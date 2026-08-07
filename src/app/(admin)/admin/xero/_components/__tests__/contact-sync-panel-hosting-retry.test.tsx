@@ -102,10 +102,13 @@ describe("ContactSyncPanel participant retry recovery (#2597)", () => {
       />,
     )
 
-    const alert = document.getElementById("xero-contact-sync-error")
+    const alert = document.getElementById("xero-contact-sync-recovery-error")
+    const routineAlert = document.getElementById("xero-contact-sync-error")
     expect(alert).toHaveAttribute("role", "alert")
     expect(alert).toBeEmptyDOMElement()
     expect(alert).toHaveClass("sr-only")
+    expect(routineAlert).toHaveAttribute("role", "alert")
+    expect(routineAlert).toBeEmptyDOMElement()
 
     fireEvent.change(
       screen.getByPlaceholderText(/Search local members and Xero contacts/i),
@@ -134,6 +137,25 @@ describe("ContactSyncPanel participant retry recovery (#2597)", () => {
     )
     expect(onRefreshDiagnostics).toHaveBeenCalledTimes(1)
     expect(recoveryAction).toBeInTheDocument()
+
+    const syncContacts = screen.getByRole("button", {
+      name: /Sync Contacts from Xero/i,
+    })
+    const forceSync = screen.getByRole("button", { name: "Run Force Sync" })
+    const changeTarget = screen.getByRole("button", { name: "Change" })
+    expect(syncContacts).toBeDisabled()
+    expect(forceSync).toBeDisabled()
+    expect(changeTarget).toBeDisabled()
+
+    fireEvent.click(syncContacts)
+    fireEvent.click(forceSync)
+    fireEvent.click(changeTarget)
+
+    expect(global.fetch).toHaveBeenCalledTimes(3)
+    expect(alert).toHaveTextContent(/Do not import this contact again/i)
+    expect(routineAlert).toBeEmptyDOMElement()
+    expect(document.activeElement).toBe(alert)
+    expect(recoveryAction).toBeInTheDocument()
   })
 
   it("shows and focuses a network error even when the panel starts collapsed", async () => {
@@ -154,8 +176,13 @@ describe("ContactSyncPanel participant retry recovery (#2597)", () => {
     )
 
     const alert = document.getElementById("xero-contact-sync-error")
+    const recoveryAlert = document.getElementById(
+      "xero-contact-sync-recovery-error",
+    )
     expect(alert).toHaveAttribute("role", "alert")
     expect(alert).toBeEmptyDOMElement()
+    expect(recoveryAlert).toHaveAttribute("role", "alert")
+    expect(recoveryAlert).toBeEmptyDOMElement()
     fireEvent.click(screen.getByRole("button", { name: /Sync Contacts from Xero/i }))
 
     await waitFor(() => expect(alert).toHaveTextContent(XERO_ACTION_NETWORK_ERROR))

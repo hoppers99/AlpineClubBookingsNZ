@@ -1,6 +1,6 @@
 "use client"
 
-import { useEffect, useState } from "react"
+import { useEffect, useRef, useState } from "react"
 import Link from "next/link"
 import { Button } from "@/components/ui/button"
 import { FocusedActionError } from "@/components/focused-action-error"
@@ -59,23 +59,38 @@ export function ContactSyncPanel({
   const [bookingSearching, setBookingSearching] = useState(false)
   const [selectedBooking, setSelectedBooking] = useState<ForceSyncBookingOption | null>(null)
   const [errorAttentionVersion, setErrorAttentionVersion] = useState(0)
+  const [recoveryError, setRecoveryError] = useState("")
+  const [recoveryAttentionVersion, setRecoveryAttentionVersion] = useState(0)
   const [recoveryMember, setRecoveryMember] = useState<{
     id: string
     name: string
   } | null>(null)
+  const recoveryActiveRef = useRef(false)
+  const recoveryActive = recoveryError.length > 0
 
-  const showActionError = (
-    message: string,
-    affectedMember: { id: string; name: string } | null = null,
-  ) => {
-    setRecoveryMember(affectedMember)
+  const showActionError = (message: string) => {
+    if (recoveryActiveRef.current) return
     setError(message)
     setErrorAttentionVersion((version) => version + 1)
   }
 
   const clearActionError = () => {
     setError("")
-    setRecoveryMember(null)
+  }
+
+  const showRecoveryError = (
+    message: string,
+    affectedMember: { id: string; name: string },
+  ) => {
+    recoveryActiveRef.current = true
+    setError("")
+    setRecoveryMember(affectedMember)
+    setRecoveryError(message)
+    setRecoveryAttentionVersion((version) => version + 1)
+  }
+
+  const retainRecoveryAttention = () => {
+    setRecoveryAttentionVersion((version) => version + 1)
   }
 
   useEffect(() => {
@@ -189,6 +204,10 @@ export function ContactSyncPanel({
   }, [bookingSearch, connected, forceSyncType, open, selectedBooking])
 
   const syncContacts = async () => {
+    if (recoveryActiveRef.current) {
+      retainRecoveryAttention()
+      return
+    }
     setSyncing("contacts")
     setSyncResult(null)
     clearActionError()
@@ -204,6 +223,10 @@ export function ContactSyncPanel({
   }
 
   const forceSync = async () => {
+    if (recoveryActiveRef.current) {
+      retainRecoveryAttention()
+      return
+    }
     if (forceSyncType === "INVOICE") {
       if (!selectedBooking) {
         showActionError("Search for and select the booking you want to sync.")
@@ -235,6 +258,10 @@ export function ContactSyncPanel({
   }
 
   const importXeroContactAsMember = async (contact: ForceSyncXeroContactOption) => {
+    if (recoveryActiveRef.current) {
+      retainRecoveryAttention()
+      return
+    }
     if (!contact.canImportAsMember) {
       showActionError(contact.importBlockReason || "This Xero contact cannot be imported.")
       return
@@ -277,7 +304,7 @@ export function ContactSyncPanel({
           setMemberResults([])
           setXeroContactResults([])
           onRefreshDiagnostics()
-          showActionError(
+          showRecoveryError(
             `${getXeroPartialSuccessGuidance(data)} Xero diagnostics are being refreshed; open the member record and check its current state before taking another action.`,
             {
               id: data.memberId,
@@ -312,6 +339,10 @@ export function ContactSyncPanel({
   }
 
   const changeForceSyncType = (value: ForceSyncType) => {
+    if (recoveryActiveRef.current) {
+      retainRecoveryAttention()
+      return
+    }
     setForceSyncType(value)
     clearActionError()
     setSelectedMember(null)
@@ -328,9 +359,9 @@ export function ContactSyncPanel({
   return (
     <>
       <FocusedActionError
-        id="xero-contact-sync-error"
-        error={error}
-        attentionKey={errorAttentionVersion}
+        id="xero-contact-sync-recovery-error"
+        error={recoveryError}
+        attentionKey={recoveryAttentionVersion}
         className="mb-3"
         action={
           recoveryMember ? (
@@ -348,13 +379,19 @@ export function ContactSyncPanel({
           ) : undefined
         }
       />
+      <FocusedActionError
+        id="xero-contact-sync-error"
+        error={error}
+        attentionKey={errorAttentionVersion}
+        className="mb-3"
+      />
       <SectionCard
         id="xero-section-contactSync"
         title="Contact Sync"
         description="Run a broad link pass, or repair a single record with a targeted force sync."
         open={open}
         onToggle={(nextOpen) => onToggle("contactSync", nextOpen)}
-        actions={<Button onClick={() => void syncContacts()} disabled={syncing !== null || !connected}>{syncing === "contacts" ? "Syncing..." : "Sync Contacts from Xero"}</Button>}
+        actions={<Button onClick={() => void syncContacts()} disabled={syncing !== null || !connected || recoveryActive}>{syncing === "contacts" ? "Syncing..." : "Sync Contacts from Xero"}</Button>}
       >
         <div className="space-y-4">
         <p className="text-sm text-muted-foreground">
@@ -368,7 +405,7 @@ export function ContactSyncPanel({
           <div className="mt-4 grid gap-3 md:grid-cols-[180px_minmax(0,1fr)_auto] md:items-end">
             <div className="space-y-1">
               <Label>Sync target</Label>
-              <Select value={forceSyncType} onValueChange={(value) => changeForceSyncType(value as ForceSyncType)}>
+              <Select value={forceSyncType} onValueChange={(value) => changeForceSyncType(value as ForceSyncType)} disabled={recoveryActive}>
                 <SelectTrigger><SelectValue /></SelectTrigger>
                 <SelectContent>
                   <SelectItem value="CONTACT">Member contact</SelectItem>
@@ -399,11 +436,13 @@ export function ContactSyncPanel({
               bookingResults={bookingResults}
               setBookingResults={setBookingResults}
               clearError={clearActionError}
+              disabled={recoveryActive}
             />
             <Button
               onClick={() => void forceSync()}
               disabled={
                 forceSyncing ||
+                recoveryActive ||
                 (forceSyncType === "INVOICE" ? !selectedBooking || !selectedBooking.canForceSyncInvoice : !selectedMember)
               }
             >
@@ -446,6 +485,7 @@ function ForceSyncPicker(props: {
   bookingResults: ForceSyncBookingOption[]
   setBookingResults: (bookings: ForceSyncBookingOption[]) => void
   clearError: () => void
+  disabled: boolean
 }) {
   if (props.type === "INVOICE") return <BookingPicker {...props} />
   return <MemberPicker {...props} />
@@ -460,6 +500,7 @@ function BookingPicker({
   bookingResults,
   setBookingResults,
   clearError,
+  disabled,
 }: Parameters<typeof ForceSyncPicker>[0]) {
   return (
     <div className="space-y-1">
@@ -474,17 +515,17 @@ function BookingPicker({
               <p className={selectedBooking.canForceSyncInvoice ? "text-xs text-success" : "text-xs text-warning"}>{selectedBooking.canForceSyncInvoice ? "Ready to queue invoice sync." : selectedBooking.forceSyncInvoiceReason}</p>
               {selectedBooking.xeroInvoiceId ? <p className="text-xs text-muted-foreground">Xero invoice: {selectedBooking.xeroInvoiceId}</p> : null}
             </div>
-            <Button type="button" variant="outline" size="sm" onClick={() => { clearError(); setSelectedBooking(null); setBookingSearch(""); setBookingResults([]) }}>Change</Button>
+            <Button type="button" variant="outline" size="sm" disabled={disabled} onClick={() => { clearError(); setSelectedBooking(null); setBookingSearch(""); setBookingResults([]) }}>Change</Button>
           </div>
         </div>
       ) : (
         <div className="relative">
-          <Input value={bookingSearch} onChange={(event) => { clearError(); setBookingSearch(event.target.value) }} placeholder="Search by booking reference, ID, member name, or email" />
+          <Input value={bookingSearch} disabled={disabled} onChange={(event) => { clearError(); setBookingSearch(event.target.value) }} placeholder="Search by booking reference, ID, member name, or email" />
           {bookingSearching ? <div className="absolute right-3 top-2.5 text-xs text-muted-foreground">Searching...</div> : null}
           {bookingResults.length > 0 ? (
             <div className="absolute z-10 mt-1 max-h-64 w-full overflow-y-auto rounded-md border bg-popover text-popover-foreground shadow-lg">
               {bookingResults.map((booking) => (
-                <button key={booking.id} type="button" onClick={() => { clearError(); setSelectedBooking(booking); setBookingSearch(""); setBookingResults([]) }} className="w-full px-3 py-2 text-left text-sm hover:bg-muted">
+                <button key={booking.id} type="button" disabled={disabled} onClick={() => { clearError(); setSelectedBooking(booking); setBookingSearch(""); setBookingResults([]) }} className="w-full px-3 py-2 text-left text-sm hover:bg-muted">
                   <div className="font-medium text-foreground">{booking.memberName}</div>
                   <div className="truncate text-xs text-muted-foreground">{booking.memberEmail}</div>
                   <div className="text-xs text-muted-foreground">{booking.id} - {booking.checkIn} to {booking.checkOut} - {booking.status}</div>
@@ -519,12 +560,12 @@ function MemberPicker(props: Parameters<typeof ForceSyncPicker>[0]) {
               <p className="truncate text-xs text-muted-foreground">{props.selectedMember.email}</p>
               <p className="text-xs text-muted-foreground">Member ID: {props.selectedMember.id}{props.selectedMember.xeroContactId ? " - already linked to Xero" : " - not yet linked to Xero"}{!props.selectedMember.active ? " - inactive" : ""}</p>
             </div>
-            <Button type="button" variant="outline" size="sm" onClick={() => { props.clearError(); props.setSelectedMember(null); props.setMemberSearch(""); props.setMemberResults([]); props.setXeroContactResults([]) }}>Change</Button>
+            <Button type="button" variant="outline" size="sm" disabled={props.disabled} onClick={() => { props.clearError(); props.setSelectedMember(null); props.setMemberSearch(""); props.setMemberResults([]); props.setXeroContactResults([]) }}>Change</Button>
           </div>
         </div>
       ) : (
         <div className="relative">
-          <Input value={props.memberSearch} onChange={(event) => { props.clearError(); props.setMemberSearch(event.target.value) }} placeholder={props.type === "CONTACT" ? "Search local members and Xero contacts by name or email" : "Search by member name, email, or member ID"} />
+          <Input value={props.memberSearch} disabled={props.disabled} onChange={(event) => { props.clearError(); props.setMemberSearch(event.target.value) }} placeholder={props.type === "CONTACT" ? "Search local members and Xero contacts by name or email" : "Search by member name, email, or member ID"} />
           {searching ? <div className="absolute right-3 top-2.5 text-xs text-muted-foreground">Searching...</div> : null}
           {props.memberResults.length > 0 || props.xeroContactResults.length > 0 ? (
             <div className="absolute z-10 mt-1 max-h-56 w-full overflow-y-auto rounded-md border bg-popover text-popover-foreground shadow-lg">
@@ -532,7 +573,7 @@ function MemberPicker(props: Parameters<typeof ForceSyncPicker>[0]) {
                 <div className={props.xeroContactResults.length > 0 ? "border-b" : ""}>
                   {props.type === "CONTACT" && props.xeroContactResults.length > 0 ? <div className="px-3 py-1 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">Local members</div> : null}
                   {props.memberResults.map((member) => (
-                    <button key={member.id} type="button" onClick={() => { props.clearError(); props.setSelectedMember(member); props.setMemberSearch(""); props.setMemberResults([]); props.setXeroContactResults([]) }} className="w-full px-3 py-2 text-left text-sm hover:bg-muted">
+                    <button key={member.id} type="button" disabled={props.disabled} onClick={() => { props.clearError(); props.setSelectedMember(member); props.setMemberSearch(""); props.setMemberResults([]); props.setXeroContactResults([]) }} className="w-full px-3 py-2 text-left text-sm hover:bg-muted">
                       <div className="font-medium text-foreground">{member.firstName} {member.lastName}</div>
                       <div className="truncate text-xs text-muted-foreground">{member.email}</div>
                       <div className="text-xs text-muted-foreground">ID {member.id}{member.xeroContactId ? " - linked" : " - unlinked"}{!member.active ? " - inactive" : ""}</div>
@@ -550,7 +591,7 @@ function MemberPicker(props: Parameters<typeof ForceSyncPicker>[0]) {
                         <div className="truncate text-xs text-muted-foreground">{contact.email || "No email address"}</div>
                         <div className={contact.canImportAsMember ? "text-xs text-success" : "text-xs text-warning"}>{contact.canImportAsMember ? "Can be imported as a linked local member." : contact.importBlockReason || "Cannot be imported from here."}</div>
                       </div>
-                      <Button type="button" size="sm" variant={contact.canImportAsMember ? "default" : "outline"} onClick={() => void props.onImportContact(contact)} disabled={!contact.canImportAsMember || props.importingXeroContactId === contact.contactId}>
+                      <Button type="button" size="sm" variant={contact.canImportAsMember ? "default" : "outline"} onClick={() => void props.onImportContact(contact)} disabled={props.disabled || !contact.canImportAsMember || props.importingXeroContactId === contact.contactId}>
                         {props.importingXeroContactId === contact.contactId ? "Importing..." : "Import"}
                       </Button>
                     </div>
