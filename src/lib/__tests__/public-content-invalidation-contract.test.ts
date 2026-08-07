@@ -6,7 +6,12 @@ const helperWriters: Array<[string, number]> = [
   ["src/app/api/admin/age-tier-settings/route.ts", 1],
   ["src/app/api/admin/lodges/route.ts", 1],
   ["src/app/api/admin/lodges/[id]/route.ts", 1],
-  ["src/app/api/admin/page-content/route.ts", 3],
+  // 3 -> 4 (#2352 MC-03D): POST, PUT, PATCH and now DELETE. The count is
+  // deliberately exact rather than ">= 1" — that is what makes a new writer on
+  // this file a decision someone has to take rather than an omission nobody
+  // notices — so a fifth mutating method must bump it again, and must not be
+  // "fixed" by loosening the assertion.
+  ["src/app/api/admin/page-content/route.ts", 4],
   ["src/app/api/admin/config-transfer/apply/route.ts", 1],
   ["src/app/api/admin/seasons/route.ts", 1],
   ["src/app/api/admin/seasons/[id]/route.ts", 2],

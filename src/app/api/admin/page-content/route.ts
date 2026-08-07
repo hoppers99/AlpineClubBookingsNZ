@@ -7,6 +7,7 @@ import {
   getAuditRequestContext,
 } from "@/lib/audit";
 import {
+  canDeletePage,
   canUnpublishPage,
   isReservedPageSlug,
   isSystemPageSlug,
@@ -58,6 +59,15 @@ const patchSchema = z
   .object({
     id: z.string().trim().min(1),
     published: z.boolean(),
+  })
+  .strict();
+
+// The id travels in the body, matching how PUT and PATCH already address a page
+// on this same collection route (#2352 D-B7(a)). See the DELETE handler's own
+// comment for why a `[id]/route.ts` was not chosen.
+const deleteSchema = z
+  .object({
+    id: z.string().trim().min(1),
   })
   .strict();
 
@@ -445,5 +455,213 @@ export async function PATCH(request: NextRequest) {
       updatedAt: updated.updatedAt.toISOString(),
       updatedByMemberId: updated.updatedByMemberId,
     },
+  });
+}
+
+/**
+ * Deletes an admin-created content page for good (#2352 MC-03D, Option B).
+ *
+ * **Why this method exists at all.** Every other way public page content can
+ * change already clears the stored public site; deletion was the one supported
+ * lifecycle step with no writer, so the measurement gate could not prove
+ * deletion invalidation the way it proves the other 39 writers'. This is that
+ * writer. It needs no new public-site behaviour: the `(website)/[...slug]`
+ * catch-all already answers 404 for an address with no published row, so a
+ * deleted page 404s through the same path a hidden one does (D-B2(a)).
+ *
+ * **It is final, by decision (D-B1(a)).** There is no second soft-delete state,
+ * because the product already has one: `PATCH published: false` hides a page and
+ * publishes it again, which is soft delete with restore. A `deletedAt` column
+ * would ship a hidden state indistinguishable from the existing one to every
+ * visitor and every officer, and would leave a soft-deleted row inside
+ * `listPublishedCmsPagePaths()` — the pre-cutover warm-up plan — demanding a 200
+ * for an address that must 404. The complete `before` row in the audit entry is
+ * the recovery route, which is why the snapshot below is the whole row and is
+ * archived at this route's own `contentHtml` cap rather than the audit log's
+ * default 1,000-character string clip.
+ *
+ * **Route shape (D-B7(a)).** `DELETE` on the collection with the id in the body,
+ * not a new `[id]/route.ts`. Both mutating methods here already address a page
+ * that way; it keeps this route's deliberate 401-shaped forbidden response, which
+ * the admin panel already handles; and the preserved MC-03D measurement harness
+ * watches THIS file for a DELETE export, so a sibling file would be invisible to
+ * it. The REST-shaped alternative reads better and is a legitimate preference —
+ * it would just require widening that scan in the same change.
+ *
+ * **References are reported, not blocking (D-B4(a)).** In-content links are free
+ * text an officer can spell any number of ways, so a substring check that refused
+ * the delete would be both bypassable and infuriating; the same check used to warn
+ * is honest about being best-effort. Navigation needs no rule — the menu is derived
+ * from the rows themselves — and the Book Now target is already safe by design:
+ * the FK is `onDelete: SetNull` and `getBookNowConfig()` fails open to the booking
+ * flow, so the button reverts rather than dangling. Reverting it SILENTLY is the
+ * surprise an audit row cannot prevent, which is what the flag in the response is
+ * for.
+ */
+export async function DELETE(request: NextRequest) {
+  // Same gate as editing and hiding (D-B5(a)): `content:edit` already permits
+  // replacing a page's entire body and taking it off the public site, both of
+  // which have an equal or larger public blast radius. A Full-Admin-only bar was
+  // considered; the two existing Full-Admin gates protect whole-instance config
+  // transfer and provider secrets, and there is no third permission tier to
+  // promote a delete into. The audit snapshot and the confirmation are the real
+  // controls.
+  const guard = await requireAdmin(editGuardOptions);
+  if (!guard.ok) {
+    return guard.response;
+  }
+
+  let body: unknown;
+  try {
+    body = await request.json();
+  } catch {
+    return NextResponse.json({ error: "Invalid JSON" }, { status: 400 });
+  }
+
+  const parsed = deleteSchema.safeParse(body);
+  if (!parsed.success) {
+    return NextResponse.json(
+      { error: "Invalid input", details: parsed.error.flatten() },
+      { status: 400 },
+    );
+  }
+
+  const existing = await prisma.pageContent.findUnique({
+    where: { id: parsed.data.id },
+  });
+
+  if (!existing) {
+    return NextResponse.json({ error: "Page not found" }, { status: 404 });
+  }
+
+  // Never wider than hiding: system pages (home, 404) and the built-in design
+  // pages are read by code routes at literal paths and linked from the footer and
+  // the sitemap, so deleting one would 404 a page the product itself links.
+  if (!canDeletePage(existing.slug)) {
+    return NextResponse.json(
+      { error: "This page cannot be deleted from the public site" },
+      { status: 422 },
+    );
+  }
+
+  // Best-effort reference report, gathered BEFORE the write so the response can
+  // describe what the club just lost. A plain substring match on the page's path,
+  // the same semantics the image-library delete uses for its own report: a page
+  // whose text happens to mention a LONGER path starting with these characters is
+  // reported too. Over-reporting a warning is the safe direction.
+  const referencingPages = await prisma.pageContent.findMany({
+    where: {
+      id: { not: existing.id },
+      OR: [
+        { contentHtml: { contains: existing.path } },
+        { headerText: { contains: existing.path } },
+      ],
+    },
+    select: { slug: true },
+    orderBy: { slug: "asc" },
+  });
+
+  // Is the public header's Book Now button pointing here right now? Gated on the
+  // target as well as the FK: the settings PUT never persists a stray page id
+  // while the target is the booking flow, and a legacy row that did would already
+  // be sending visitors to the booking flow and will keep doing so, so warning
+  // about it would be warning about nothing.
+  const bookNowTargetSettings = await prisma.publicContentSettings.findFirst({
+    where: { bookNowPageId: existing.id, bookNowTarget: "PAGE" },
+    select: { id: true },
+  });
+  const wasBookNowTarget = bookNowTargetSettings !== null;
+  const referencedBySlugs = referencingPages.map((page) => page.slug);
+
+  // Delete the row and record what was removed atomically, so a page can never
+  // vanish without the audit entry that is its only recovery route.
+  await prisma.$transaction(async (tx) => {
+    await tx.pageContent.delete({ where: { id: existing.id } });
+
+    await tx.auditLog.create(
+      buildStructuredAuditLogCreateArgs(
+        {
+          action: "PAGE_CONTENT_DELETED",
+          actor: { memberId: guard.session.user.id },
+          entity: { type: "PageContent", id: existing.id },
+          category: "admin",
+          severity: "important",
+          outcome: "success",
+          summary: `Page deleted for ${existing.slug}`,
+          // No `retentionClass` here on purpose: `classifyAuditRetention()` maps
+          // an "admin" + "important" + non-access action to `critical`, which is
+          // the seven-year class this snapshot needs. Hand-setting it would be
+          // exactly the drift that classifier exists to prevent.
+          metadata: {
+            before: {
+              id: existing.id,
+              slug: existing.slug,
+              path: existing.path,
+              caption: existing.caption,
+              menuTitle: existing.menuTitle,
+              title: existing.title,
+              headerText: existing.headerText,
+              sortOrder: existing.sortOrder,
+              contentHtml: existing.contentHtml,
+              published: existing.published,
+              updatedByMemberId: existing.updatedByMemberId,
+              createdAt: existing.createdAt.toISOString(),
+              updatedAt: existing.updatedAt.toISOString(),
+            },
+            referencedBySlugs,
+            wasBookNowTarget,
+          },
+          request: getAuditRequestContext(request),
+        },
+        // Archive mode, bounded by this route's OWN caps, following the
+        // email-template reset (`email-templates/reset/route.ts`). Without it the
+        // audit log's default clips every string at 1,000 characters, so the
+        // "complete before row" this decision rests on would in practice be the
+        // first paragraph of the page.
+        //
+        // The bound is the SUM of the two archived text fields rather than the
+        // body's cap alone, and that is not padding: `archiveText` sets the
+        // whole-metadata JSON budget to `24,000 + maxStringLength * 2`, so a page
+        // sitting at both caps at once (200,000 of body plus 20,000 of intro,
+        // each of which can double under JSON escaping) would overflow a budget
+        // sized for the body alone and fall back to the `{_truncated, preview}`
+        // stub — losing the entire snapshot rather than part of it. It does not
+        // let either field exceed its own limit: the write schemas above already
+        // bound them, and this only bounds one string.
+        //
+        // One honest caveat survives, the same one that route documents:
+        // key-value redaction still fires on body text shaped like
+        // `password: value`, and it takes the whole LINE, not a fragment. The
+        // operator guide states it rather than leaving it as a surprise.
+        {
+          archiveText: {
+            maxStringLength:
+              PAGE_CONTENT_LIMITS.contentHtmlMax +
+              PAGE_CONTENT_LIMITS.headerTextMax,
+          },
+        },
+      ),
+    );
+  });
+
+  // AFTER the transaction, on the success path only. Ordering is load-bearing in
+  // one direction: invalidating before a rollback costs a needless cold render,
+  // but deleting and then failing before this call leaves the deleted page served
+  // from the store — and `revalidate = 300` is no bound on that, because a stale
+  // entry is handed to the requester before regeneration starts. Only the tag
+  // expiry this produces forces the blocking regeneration.
+  revalidatePublicPageContent();
+
+  return NextResponse.json({
+    ok: true,
+    page: {
+      id: existing.id,
+      slug: existing.slug,
+      path: existing.path,
+      title: existing.title,
+      published: existing.published,
+    },
+    referencedBySlugs,
+    wasBookNowTarget,
   });
 }
