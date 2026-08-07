@@ -37,13 +37,31 @@ export interface FenceBookingRow {
  * Pass `missing` to model a participant that vanished under the lock — the
  * fence must then refuse rather than proceed.
  */
-export function fenceMemberFindMany(missing: readonly string[] = []) {
-  return vi.fn(async (args?: { where?: { id?: { in?: readonly string[] } } }) =>
-    [...(args?.where?.id?.in ?? [])]
+export function fenceMemberFindMany(
+  missing: readonly string[] = [],
+  /**
+   * Handles every OTHER member.findMany a suite makes. Pass a double's
+   * existing implementation when the delegate is shared, so dropping this in
+   * cannot change what the rest of the suite already asserts.
+   */
+  existing?: (args: unknown) => unknown,
+) {
+  return vi.fn(async (args?: { where?: { id?: { in?: readonly string[] } }; select?: Record<string, unknown> }) => {
+    // The fence's re-read is the one that asks for ids only.
+    const select = args?.select;
+    const isFenceRead =
+      Array.isArray(args?.where?.id?.in) &&
+      !!select &&
+      Object.keys(select).length === 1 &&
+      select.id === true;
+    if (!isFenceRead) {
+      return existing ? await existing(args) : [];
+    }
+    return [...(args?.where?.id?.in ?? [])]
       .filter((id) => !missing.includes(id))
       .sort()
-      .map((id) => ({ id })),
-  );
+      .map((id) => ({ id }));
+  });
 }
 
 /** The fence's booking re-read selects exactly these three columns. */
