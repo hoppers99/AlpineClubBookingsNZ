@@ -1152,6 +1152,19 @@ the deleted member and never reaches Xero. If reservation wins, merge sees it an
 rolls back. This closes the post-check provider race without putting Xero inside a
 transaction or adding an advisory-lock tier.
 
+Member-scoped contact UPDATE uses the same row protocol. Before authentication
+or provider work, a short transaction takes the exact target `Member FOR KEY
+SHARE`, re-reads the deleted marker and current `xeroContactId`, and commits the
+`RUNNING` UPDATE operation. After Xero returns, a second short transaction takes
+that Member `FOR UPDATE`, re-checks the same contact id, and changes the
+operation to `SUCCEEDED` together with the canonical CONTACT ledger upsert.
+Merge and account deletion re-check every RUNNING member CONTACT UPDATE while
+holding their participant Member rows. Update-first therefore keeps the member
+alive until operation/link completion; lifecycle-first makes the waiting
+reservation observe a missing, anonymised or relinked member and call no
+provider. A Member UPDATE retry is rebuilt only from the current Member row; it
+must never fall back to the stored request payload, which can contain stale PII.
+
 Manual Xero linking uses the symmetric member-row fence. Provider contact lookup
 and cache refresh remain outside transactions; the short local link transaction
 then takes the exact target `Member FOR UPDATE`, re-reads an ambiguous active
@@ -1163,7 +1176,9 @@ the losing member in that gap. If create reserved first, Link returns the fixed
 privacy-safe 409 and writes nothing. If Link locked first, the create
 reservation's waiting `FOR KEY SHARE` resumes after the link commits, re-reads
 the authoritative `Member.xeroContactId`, and refuses before reserving or calling
-Xero. An ambiguous
+Xero. The same privacy transaction clears `Member.xeroContactId` and deactivates
+every active Member CONTACT ledger row, so a change that completed before
+deletion cannot leave an active identity link. An ambiguous
 `CREATE_IN_PROGRESS` member page therefore offers only authoritative refresh;
 the stronger `PROVIDER_CREATED_LINK_PENDING` state still offers Link as its
 recovery action while suppressing another Create.
@@ -1179,6 +1194,17 @@ outside all of these transactions. Real-PostgreSQL races pin both winner orders
 for deletion versus create/manual Link and merge versus manual Link, including no
 provider reservation/call/link when deletion wins and no dangling FK-less link
 when merge wins.
+
+Approve and reject of one `DeletionRequest` share a separate exact-row winner
+protocol: one `updateMany({ id, status: PENDING })` is the only authority for a
+final decision. Approval performs that guarded transition inside the privacy
+anonymisation transaction, before any privacy mutation; rejection performs the
+same guarded transition before audit or email. PostgreSQL serialises contenders
+on the request row, so the loser returns 409 and sends no contradictory email.
+If a later approval mutation fails, the claim and anonymisation roll back
+together to PENDING. Booking cancellations committed before the approval
+transaction remain truthful partial cleanup and are reported as such if a
+concurrent rejection won.
 
 After Xero returns a newly created contact, the operation is durably marked
 `provider_contact_created_local_link_pending` before the local link transaction.

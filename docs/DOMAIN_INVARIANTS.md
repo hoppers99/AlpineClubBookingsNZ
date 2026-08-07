@@ -2908,13 +2908,20 @@ compliant indefinitely.
   deletion inherits the same central fence after its existing global → affected
   lodge → member-lifecycle prefix; it carries no route-only duplicate.
   Under its target `Member FOR UPDATE`, deletion also re-checks the complete Xero
-  contact-create reservation/recovery blocker before anonymising. The symmetric
-  create reservation, manual Link and provider-returned local-link paths re-read
+  contact-create reservation/recovery blocker plus every RUNNING member CONTACT
+  UPDATE before anonymising. A member UPDATE first commits a short `FOR KEY
+  SHARE` reservation, calls Xero outside transactions, then completes its
+  operation and canonical link together under that Member `FOR UPDATE`. Retries
+  rebuild from the current Member only; a missing/deleted member never falls
+  back to stored pre-deletion PII. The symmetric create reservation, manual Link
+  and provider-returned local-link paths re-read
   the canonical deleted-member marker under their own Member lock before any
   provider call or attribution. A deleted account can therefore neither send its
   pre-deletion profile to Xero nor regain a contact link. Manual Link commits the
   Member pointer and FK-less canonical CONTACT ledger row in the same transaction,
   so member merge cannot leave a ledger row naming a deleted losing identity.
+  Account deletion deactivates that CONTACT ledger in the same anonymisation
+  transaction that clears the Member pointer.
 - **Every confirming path re-reads the facts at confirmation, and the census proves
   it two ways** (§9). Most reconcile inside their own transaction, which REFUSES an
   uncovered booking at an enforcing club. Those that cannot — capacity claimed, money
@@ -3695,6 +3702,14 @@ override requires an explicit `pricingMode`:
   the cancellation notice too, so a reject on a silenced booking emails the
   member nothing at all; #2259's review dialog says exactly that rather than
   repeating the promise above).
+  An account-deletion approve and reject also have exactly one final winner:
+  both claim `DeletionRequest.status = PENDING` with the same guarded mutation.
+  Approval owns the claim inside the anonymisation transaction, so any later
+  privacy failure rolls the decision back to PENDING and sends no receipt;
+  rejection claims before its audit/email. A losing concurrent reviewer gets a
+  fixed conflict and sends no contradictory message. Cancellations already
+  committed before a lost approval claim are returned as explicit partial
+  cleanup, never described as anonymisation.
 
 - **recalculate** — the existing full-reprice machinery with the locked-period
   clamps lifted, so locked-night pricing semantics are otherwise preserved
