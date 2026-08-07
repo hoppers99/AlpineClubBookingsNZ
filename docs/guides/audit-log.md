@@ -59,6 +59,101 @@ and machine `action`, the actor, the affected member (subject), the entity, and
 primary drill-down links. Expanding a row reveals the request ID, IP, user
 agent, **retention class**, raw details, and JSON metadata.
 
+### Categories, and what they are actually for
+
+The **Category** on an entry is not a colour or a label for tidiness. It is the
+only thing a *filtered* reader can filter on, so it decides two things: what the
+Category filter above finds, and — for anyone using **AI Diagnostics** — which
+permission somebody needs before the assistant will show them the event at all.
+
+There are eleven, and each one belongs to exactly one AI Diagnostics area:
+
+| Category | What records there | Who can correlate it in AI Diagnostics |
+| --- | --- | --- |
+| `admin` | The **catch-all for anything an administrator did**, in every domain — member merges, lifecycle decisions, imports, seasonal assignments, and settings changes for payments, bookings, chores, lockers, rooms, beds and the lodge. The largest category by a long way | Support only |
+| `security` | Credentials, password and magic-link policy, PIN login, sign-in problems, AI Diagnostics use itself | Support only |
+| `system` | Setup, backups, platform-level events | Support only |
+| `booking` | Member-facing and automatic booking events. **Not** booking *settings* — those are `admin` | Support **+ Bookings** |
+| `payment` | Charges, refunds, credits, settlements | Support **+ Finance** |
+| `xero` | Xero sync, mappings, reconciliation | Support **+ Finance** |
+| `lodge` | Rosters, guest arrival and departure, bed-allocation lifecycle, displays, and **induction** (even though Induction sits under Membership) | Support **+ Lodge** |
+| `account` | A member's own record: profile edits, notification preferences, membership cancellation, photos, membership applications | Support **+ Membership** |
+| `family` | Family groups, partner links, login-holder changes, dependents | Support **+ Membership** |
+| `communication` | Bulk email, member notices, delivery suppressions, credential-email reissues | Support **+ Membership** |
+| `privacy` | Deletion requests, member exports, member-guest lookups, **issue reports** (even though Issue Reports sits under Support) | Support **+ Membership** |
+
+**Two of those rows changed in this release, and both change who can see what.**
+
+- **Communication entries now need Membership access to correlate**, not Support
+  alone. Somebody with Support access only can no longer pull bulk-email or
+  notice-delivery history through AI Diagnostics. That is deliberate: those
+  entries carry the recipients' email addresses, so they are membership
+  information, not general support information.
+- **Family entries can now be correlated at all.** They previously belonged to no
+  AI Diagnostics area, so family-group, partner-link and login-holder history was
+  invisible to every one of its tools. It is now readable with Support plus
+  Membership.
+
+Neither change affects this screen. **Admin → Audit Log shows every entry to
+anyone with Support access**, exactly as before — the categories above only
+govern the AI Diagnostics tools, which are deliberately narrower.
+
+**One thing to expect on the member side.** Members see a slice of their own
+activity on their profile page, and that slice is also chosen by category —
+Account, Bookings, Payments, Family, Security, Communication and Privacy, never
+Admin, Lodge, Xero or System. Three sets of entries were recorded under category
+names that did not exist (`membership` on membership applications, `auth` on
+sign-in bounces) or under `admin` (an administrator changing a member's photo for
+them), so members could not see them; corrected to real categories, they now
+appear. Each entry concerns the member reading it, and a member's view shows the
+summary only — never the stored metadata, request ID, IP address or drill-down
+links. If a member asks why sign-in entries have started appearing, that is why.
+
+Two mismatches are worth remembering when you search, because they look like
+mistakes and are not. **Induction** entries are `lodge`, not membership. **Issue
+report** entries are `privacy`, not admin. Both follow the *information* in the
+entry rather than the menu the screen sits under, and both are left that way on
+purpose — filing issue reports under `admin` would have made them readable by
+more people, not fewer.
+
+### Some entries have no category at all
+
+`Category` is optional, and **82 of the platform's 419 places that record an
+audit entry do not set one** — measured on every build, not estimated. Among
+them: subscription billing, member credit adjustments, fee configuration,
+booking-policy, season and promotional-code edits, Xero settings and retries,
+lodge display configuration, family-group and dependent changes, membership
+applications, bulk communications, and deletion-request decisions.
+
+**On this screen every one of those entries is still listed**, and the Category
+filter tries to place them: when you pick a category it also matches
+uncategorised entries whose action *looks* like that category, so filtering by
+*Payments* does find a credit adjustment that recorded no category. Treat that as
+a helpful guess rather than a guarantee — it is pattern-matching on the action
+name, it has no rules at all for *System*, and it will miss, for example, an
+uncategorised display-layout change under *Lodge*. **If you are looking for
+something specific and the category filter comes up short, clear it and search by
+event type, member or date instead** — the entry is there.
+
+**In AI Diagnostics it costs a lot.** Those tools filter on the stored category
+and nothing else, so an entry without one is returned by none of them. If you ask
+the assistant about a subscription reconcile or a booking-policy change and it
+says nothing matched, that is not evidence it did not happen — it means no
+*categorised* entry matched. The assistant is told to say so and to point you
+here. **Always confirm on this screen before concluding an event did not occur.**
+
+This is being fixed at the source, over three changes: the categories and the
+automated count are in place now, giving each of those 82 places a category is
+next, and filling in the historical entries is last. Until the second one lands,
+treat an empty AI Diagnostics result as "look in Admin → Audit Log", never as
+"it did not happen".
+
+One side effect operators should know about: an entry recorded with no category
+also gets **no retention class and no expiry**, so those entries are currently
+kept indefinitely rather than aging out. Giving them a category will also start
+them aging out on the normal schedule — that is a real change to how long some
+history is kept, and the release that makes it will say so.
+
 ### Booking-policy entries
 
 From this release, a `group-discount.update`, `cancellation-policy.update`,

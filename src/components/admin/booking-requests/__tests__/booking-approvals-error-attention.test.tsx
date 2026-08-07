@@ -6,6 +6,7 @@ import type { ReactNode } from "react"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
 import { BookingApprovalsPanel } from "../booking-approvals-panel"
+import { expectRecoveryAlertToHoldFocus } from "@/lib/__tests__/helpers/focus"
 
 vi.mock("next/navigation", () => ({
   useRouter: () => ({ replace: vi.fn(), push: vi.fn() }),
@@ -92,7 +93,7 @@ describe("BookingApprovalsPanel action error attention (#2597)", () => {
     await waitFor(() =>
       expect(alert).toHaveTextContent(/add admin notes before rejecting/i),
     )
-    expect(document.activeElement).toBe(alert)
+    await expectRecoveryAlertToHoldFocus(alert)
     expect(scrollIntoView).toHaveBeenCalledWith({
       behavior: "smooth",
       block: "center",
@@ -160,7 +161,7 @@ describe("BookingApprovalsPanel action error attention (#2597)", () => {
     expect(recoveryAlert).toHaveTextContent(/cancellation status could not be confirmed/i)
     expect(recoveryAlert).toHaveTextContent(/could not be refreshed/i)
     expect(recoveryAlert).not.toHaveTextContent("private database detail")
-    expect(document.activeElement).toBe(recoveryAlert)
+    await expectRecoveryAlertToHoldFocus(recoveryAlert)
     expect(screen.queryByText("Riley Chen")).not.toBeInTheDocument()
     const recoveryLink = screen.getByRole("link", { name: "Open affected booking" })
     expect(recoveryLink).toHaveAttribute(
@@ -172,7 +173,7 @@ describe("BookingApprovalsPanel action error attention (#2597)", () => {
     await waitFor(() =>
       expect(actionAlert).toHaveTextContent(/add admin notes before rejecting/i),
     )
-    expect(document.activeElement).toBe(actionAlert)
+    await expectRecoveryAlertToHoldFocus(actionAlert)
     expect(recoveryAlert).toHaveTextContent(/rejection was recorded/i)
   })
 })
