@@ -261,6 +261,7 @@ let reserveMemberContactUpdateOperation: (typeof import("@/lib/xero-contacts"))[
 let completeMemberContactUpdateOperation: (typeof import("@/lib/xero-contacts"))["completeMemberContactUpdateOperation"];
 let lockMemberForManualXeroContactLink: (typeof import("@/lib/xero-contact-create-recovery"))["lockMemberForManualXeroContactLink"];
 let lockMemberForAccountDeletionXeroFence: (typeof import("@/lib/xero-contact-create-recovery"))["lockMemberForAccountDeletionXeroFence"];
+let applyInboundMemberContactPatch: (typeof import("@/lib/xero-contact-create-recovery"))["applyInboundMemberContactPatch"];
 let DELETED_ACCOUNT_PASSWORD_HASH: (typeof import("@/lib/xero-contact-create-recovery"))["DELETED_ACCOUNT_PASSWORD_HASH"];
 let commitManualXeroContactLink: (typeof import("@/lib/xero-manual-contact-link"))["commitManualXeroContactLink"];
 let claimDeletionRequestDecision: (typeof import("@/lib/deletion-request-decision"))["claimDeletionRequestDecision"];
@@ -525,6 +526,11 @@ let claimDeletionRequestDecision: (typeof import("@/lib/deletion-request-decisio
           passwordHash: DELETED_ACCOUNT_PASSWORD_HASH,
           active: false,
           xeroContactId: null,
+          phoneCountryCode: null,
+          phoneAreaCode: null,
+          phoneNumber: null,
+          streetAddressLine1: null,
+          postalAddressLine1: null,
         },
       });
       await tx.xeroObjectLink.updateMany({
@@ -682,6 +688,8 @@ let claimDeletionRequestDecision: (typeof import("@/lib/deletion-request-decisio
         xeroContactCreateRecovery.lockMemberForManualXeroContactLink;
       lockMemberForAccountDeletionXeroFence =
         xeroContactCreateRecovery.lockMemberForAccountDeletionXeroFence;
+      applyInboundMemberContactPatch =
+        xeroContactCreateRecovery.applyInboundMemberContactPatch;
       DELETED_ACCOUNT_PASSWORD_HASH =
         xeroContactCreateRecovery.DELETED_ACCOUNT_PASSWORD_HASH;
       commitManualXeroContactLink =
@@ -1329,6 +1337,80 @@ let claimDeletionRequestDecision: (typeof import("@/lib/deletion-request-decisio
       ).resolves.toBe(0);
     });
 
+    it("merge-first makes a master contact UPDATE reserve the merged authoritative PII", async () => {
+      await primary.member.update({
+        where: { id: IDS.master },
+        data: {
+          xeroContactId: "contact-master-authoritative",
+          phoneCountryCode: null,
+          phoneAreaCode: null,
+          phoneNumber: null,
+          streetAddressLine1: null,
+        },
+      });
+      await primary.member.update({
+        where: { id: IDS.loser },
+        data: {
+          phoneCountryCode: "+64",
+          phoneAreaCode: "21",
+          phoneNumber: "5551234",
+          streetAddressLine1: "1 Merge Lane",
+        },
+      });
+      const { operation, pause } = await startPausedMerge("after");
+      const correlationKey = "race-2597-merge-before-master-contact-update";
+      const reservation = reserveMemberContactUpdateOperation(
+        IDS.master,
+        "contact-master-authoritative",
+        (locked) => ({
+          input: {
+            direction: "OUTBOUND",
+            entityType: "CONTACT",
+            operationType: "UPDATE",
+            localModel: "Member",
+            localId: IDS.master,
+            idempotencyKey: correlationKey,
+            correlationKey,
+            requestPayload: {
+              contacts: [{
+                phoneNumber: locked.phoneNumber,
+                streetAddressLine1: locked.streetAddressLine1,
+              }],
+            },
+            createdByMemberId: IDS.actor,
+          },
+          value: {
+            phoneNumber: locked.phoneNumber,
+            streetAddressLine1: locked.streetAddressLine1,
+          },
+        }),
+        ordinary,
+      );
+      try {
+        await waitForClientToBlock("race-2597-ordinary");
+      } finally {
+        pause.release.resolve();
+      }
+      await expect(operation).resolves.toMatchObject({ loserId: IDS.loser });
+      await expect(reservation).resolves.toMatchObject({
+        value: {
+          phoneNumber: "5551234",
+          streetAddressLine1: "1 Merge Lane",
+        },
+      });
+      const reserved = await reservation;
+      await completeMemberContactUpdateOperation(
+        IDS.master,
+        "contact-master-authoritative",
+        reserved!.operation.id,
+        {
+          xeroObjectType: "CONTACT",
+          xeroObjectId: "contact-master-authoritative",
+        },
+        ordinary,
+      );
+    });
+
     it("contact-update reservation wins before deletion; completion then deletion retires its link", async () => {
       await primary.member.update({
         where: { id: IDS.target },
@@ -1444,6 +1526,159 @@ let claimDeletionRequestDecision: (typeof import("@/lib/deletion-request-decisio
       await expect(
         primary.xeroObjectLink.count({
           where: { localModel: "Member", localId: IDS.target, active: true },
+        }),
+      ).resolves.toBe(0);
+    });
+
+    it("inbound contact reconciliation wins before deletion, which then removes its PII and FK-less link", async () => {
+      const pause: ParticipantPause = {
+        position: "after",
+        reached: deferred(),
+        release: deferred(),
+      };
+      const inboundDb = createParticipantPauseClient(ordinary, pause);
+      const inbound = applyInboundMemberContactPatch(
+        {
+          memberId: IDS.target,
+          xeroContactId: "contact-inbound-before-deletion",
+          patch: {
+            phoneCountryCode: "+64",
+            phoneAreaCode: "21",
+            phoneNumber: "5550199",
+            streetAddressLine1: "99 Provider Street",
+          },
+        },
+        inboundDb,
+      );
+      await waitForPauseOrFail(pause, inbound);
+      const deletion = mergeA.$transaction((tx) =>
+        applyXeroDeletionFence(tx, IDS.target),
+      );
+      try {
+        await waitForClientToBlock("race-2597-merge-a");
+      } finally {
+        pause.release.resolve();
+      }
+      await expect(inbound).resolves.toMatchObject({ linked: true });
+      await expect(deletion).resolves.toBeUndefined();
+      await expect(
+        primary.member.findUniqueOrThrow({
+          where: { id: IDS.target },
+          select: { phoneNumber: true, xeroContactId: true },
+        }),
+      ).resolves.toEqual({ phoneNumber: null, xeroContactId: null });
+      await expect(
+        primary.xeroObjectLink.count({
+          where: { localModel: "Member", localId: IDS.target, active: true },
+        }),
+      ).resolves.toBe(0);
+    });
+
+    it("deletion wins before inbound contact reconciliation, which cannot restore PII or a link", async () => {
+      const pause: ParticipantPause = {
+        position: "after",
+        reached: deferred(),
+        release: deferred(),
+      };
+      const deletionDb = createParticipantPauseClient(mergeA, pause);
+      const deletion = deletionDb.$transaction((tx) =>
+        applyXeroDeletionFence(tx, IDS.target),
+      );
+      await waitForPauseOrFail(pause, deletion);
+      const inbound = applyInboundMemberContactPatch(
+        {
+          memberId: IDS.target,
+          xeroContactId: "contact-deletion-before-inbound",
+          patch: { phoneNumber: "555-restored" },
+        },
+        ordinary,
+      ).then(
+        () => ({ ok: true as const }),
+        (error: unknown) => ({ ok: false as const, error }),
+      );
+      try {
+        await waitForClientToBlock("race-2597-ordinary");
+      } finally {
+        pause.release.resolve();
+      }
+      await expect(deletion).resolves.toBeUndefined();
+      const outcome = await inbound;
+      expect(outcome.ok).toBe(false);
+      if (outcome.ok) throw new Error("Inbound reconciliation unexpectedly beat deletion.");
+      expect(outcome.error).toMatchObject({ code: "XERO_MEMBER_UNAVAILABLE" });
+      await expect(
+        primary.xeroObjectLink.count({
+          where: { localModel: "Member", localId: IDS.target, active: true },
+        }),
+      ).resolves.toBe(0);
+    });
+
+    it("inbound contact reconciliation wins before merge; stale preview refuses and retry retires the loser link", async () => {
+      const preview = await previewMerge();
+      await expect(
+        applyInboundMemberContactPatch(
+          {
+            memberId: IDS.loser,
+            xeroContactId: "contact-inbound-before-merge",
+            patch: { phoneNumber: "555-loser" },
+          },
+          ordinary,
+        ),
+      ).resolves.toMatchObject({ linked: true });
+      await expect(
+        executeMemberMerge({
+          masterId: IDS.master,
+          loserId: IDS.loser,
+          actorMemberId: IDS.actor,
+          previewToken: preview.previewToken,
+          confirmationText: preview.confirmationPhrase,
+          db: mergeA,
+        }),
+      ).rejects.toMatchObject({ code: "preview_drift", statusCode: 409 });
+      const current = await previewMerge();
+      await expect(
+        executeMemberMerge({
+          masterId: IDS.master,
+          loserId: IDS.loser,
+          actorMemberId: IDS.actor,
+          previewToken: current.previewToken,
+          confirmationText: current.confirmationPhrase,
+          db: mergeA,
+        }),
+      ).resolves.toMatchObject({ loserId: IDS.loser });
+      await expect(
+        primary.xeroObjectLink.count({
+          where: { localModel: "Member", localId: IDS.loser, active: true },
+        }),
+      ).resolves.toBe(0);
+    });
+
+    it("merge wins before inbound contact reconciliation, which cannot recreate the loser identity", async () => {
+      const { operation, pause } = await startPausedMerge("after");
+      const inbound = applyInboundMemberContactPatch(
+        {
+          memberId: IDS.loser,
+          xeroContactId: "contact-merge-before-inbound",
+          patch: { phoneNumber: "555-orphan" },
+        },
+        ordinary,
+      ).then(
+        () => ({ ok: true as const }),
+        (error: unknown) => ({ ok: false as const, error }),
+      );
+      try {
+        await waitForClientToBlock("race-2597-ordinary");
+      } finally {
+        pause.release.resolve();
+      }
+      await expect(operation).resolves.toMatchObject({ loserId: IDS.loser });
+      const outcome = await inbound;
+      expect(outcome.ok).toBe(false);
+      if (outcome.ok) throw new Error("Inbound reconciliation unexpectedly beat merge.");
+      expect(outcome.error).toMatchObject({ message: `Member not found: ${IDS.loser}` });
+      await expect(
+        primary.xeroObjectLink.count({
+          where: { localModel: "Member", localId: IDS.loser, active: true },
         }),
       ).resolves.toBe(0);
     });

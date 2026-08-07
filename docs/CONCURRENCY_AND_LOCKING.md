@@ -1154,16 +1154,34 @@ transaction or adding an advisory-lock tier.
 
 Member-scoped contact UPDATE uses the same row protocol. Before authentication
 or provider work, a short transaction takes the exact target `Member FOR KEY
-SHARE`, re-reads the deleted marker and current `xeroContactId`, and commits the
-`RUNNING` UPDATE operation. After Xero returns, a second short transaction takes
-that Member `FOR UPDATE`, re-checks the same contact id, and changes the
-operation to `SUCCEEDED` together with the canonical CONTACT ledger upsert.
-Merge and account deletion re-check every RUNNING member CONTACT UPDATE while
-holding their participant Member rows. Update-first therefore keeps the member
-alive until operation/link completion; lifecycle-first makes the waiting
+SHARE`, re-reads the deleted marker, current `xeroContactId`, and complete
+contact payload, then builds and commits the `RUNNING` UPDATE operation from
+that locked snapshot. The request sent after commit is that same authoritative
+snapshot, never the caller's earlier closure. After Xero returns, a second short
+transaction takes that Member `FOR UPDATE`, re-checks the same contact id, and
+changes the operation to `SUCCEEDED` together with the canonical CONTACT ledger
+upsert. Merge and account deletion re-check every RUNNING member CONTACT UPDATE
+while holding their participant Member rows. Update-first therefore keeps the
+member alive until operation/link completion; lifecycle-first makes the waiting
 reservation observe a missing, anonymised or relinked member and call no
-provider. A Member UPDATE retry is rebuilt only from the current Member row; it
-must never fall back to the stored request payload, which can contain stale PII.
+provider. If merge first fills a surviving master's phone, address, or email,
+the waiting UPDATE sends those post-merge values. A Member UPDATE retry follows
+the same locked rebuild and must never fall back to the stored request payload,
+which can contain stale PII.
+
+Inbound webhook reconciliation, admin bulk contact sync/import, and their
+name-order repair share the same Member-row family. Every local PII fill and
+`Member.xeroContactId` write takes the exact Member `FOR UPDATE`, re-reads the
+deleted marker, contact id, and still-blank fields, then commits the patch with
+the canonical CONTACT `XeroObjectLink` in one short transaction. Name repair
+uses the outbound UPDATE reservation above and is sent only after its
+reservation commits. Provider reads and writes remain outside those
+transactions. Inbound-first therefore commits before merge/deletion can
+continue, after which lifecycle teardown removes the loser's/deleted member's
+FK-less contact link and privacy fields; lifecycle-first makes the waiting
+inbound writer observe a deleted, anonymised, or relinked member and write
+nothing. A pre-lock contact/email match is only a candidate and is never
+authority to restore local PII.
 
 Manual Xero linking uses the symmetric member-row fence. Provider contact lookup
 and cache refresh remain outside transactions; the short local link transaction
@@ -1188,12 +1206,13 @@ holding the target `Member FOR UPDATE`, deletion re-checks the complete active,
 provider-created, or stale-unknown contact-create blocker before anonymising.
 Create-first therefore makes deletion return its safe recovery contract without
 changing the member. Deletion-first makes a waiting create reservation, manual
-Link, or provider-returned local-link phase re-read the canonical deleted marker
-and refuse before any new provider call or local attribution. Provider calls stay
-outside all of these transactions. Real-PostgreSQL races pin both winner orders
-for deletion versus create/manual Link and merge versus manual Link, including no
-provider reservation/call/link when deletion wins and no dangling FK-less link
-when merge wins.
+Link, provider-returned local-link phase, or inbound contact writer re-read the
+canonical deleted marker and refuse before any new provider call or local
+attribution. Provider calls stay outside all of these transactions.
+Real-PostgreSQL races pin both winner orders for deletion/merge versus
+create/manual Link/inbound reconciliation, including no provider
+reservation/call/link when lifecycle wins and no dangling FK-less link when
+merge or deletion completes.
 
 Approve and reject of one `DeletionRequest` share a separate exact-row winner
 protocol: one `updateMany({ id, status: PENDING })` is the only authority for a

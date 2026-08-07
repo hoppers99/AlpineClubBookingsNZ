@@ -6594,6 +6594,18 @@ and is hard-deleted at the end. The merge is **additive and master-wins**:
   **contact** is not touched in Xero — the preview warns the admin to archive or
   merge it there manually (residual risk: no post-merge Xero contact-group or
   invoice re-sync, consistent with the periodic-reconciliation stance).
+- **Xero contact participants are lifecycle-fenced.** Member-scoped contact
+  UPDATE (including operator retry and bulk name repair) reserves from the
+  complete Member row only after taking that member `FOR KEY SHARE`; the
+  provider request is built from that locked snapshot, so a surviving master
+  sends fields filled by a merge that committed first rather than stale
+  pre-merge PII. Inbound webhook reconciliation, bulk contact sync, and group
+  import take the stronger exact Member `FOR UPDATE` before any local contact
+  pointer, blank-field PII fill, or FK-less CONTACT link is committed. Pointer
+  and link share that transaction. Merge/deletion-first therefore makes the
+  inbound writer refuse; inbound-first is followed by the normal teardown, so
+  no active CONTACT link remains for a deleted member or merge loser. Every Xero
+  provider call remains outside these short transactions.
 - **Guards, preview and confirmation.** Full Admin only; master ≠ loser; both
   exist; master active and not archived; loser ≠ the acting admin; the loser may
   not hold any admin access role (and the last-Full-Admin backstop applies); no

@@ -137,6 +137,56 @@ describe("Xero contact/account-deletion lock topology mutation pins (#2597)", ()
     }
   });
 
+  it("keeps inbound member PII and FK-less contact links behind one row fence", () => {
+    const recovery = between(
+      source("src/lib/xero-contact-create-recovery.ts"),
+      "export async function applyInboundMemberContactPatch(",
+      "export async function lockMemberForManualXeroContactLink(",
+    );
+    expectOrdered(recovery, [
+      "db.$transaction",
+      "lockMemberForXeroContactLink(tx, input.memberId)",
+      "tx.member.findUnique",
+      "await tx.member.update",
+      "upsertXeroObjectLink(",
+      "{ store: tx }",
+    ]);
+
+    for (const relativePath of [
+      "src/lib/xero-bulk-contact-sync.ts",
+      "src/lib/xero-inbound/contact.ts",
+      "src/lib/xero-member-import.ts",
+    ]) {
+      expect(source(relativePath)).toContain("applyInboundMemberContactPatch(");
+    }
+  });
+
+  it("builds member UPDATE payloads from the locked post-reservation snapshot", () => {
+    const contacts = source("src/lib/xero-contacts.ts");
+    const update = contacts.slice(
+      contacts.indexOf("export async function updateXeroContact("),
+    );
+    expectOrdered(update, [
+      "reserveMemberContactUpdateOperation(",
+      "buildXeroContactUpdatePayload(locked)",
+      "getAuthenticatedXeroClient()",
+      "accountingApi.updateContact(",
+    ]);
+
+    const bulk = between(
+      source("src/lib/xero-bulk-contact-sync.ts"),
+      "async function repairXeroContactNameOrderIfNeeded(",
+      "export async function syncContactsFromXero(",
+    );
+    expectOrdered(bulk, [
+      "reserveMemberContactUpdateOperation(",
+      "getXeroContactNameOrderRepair(locked",
+      "requestPayload: payload",
+      "accountingApi.updateContact(",
+      "completeMemberContactUpdateOperation(",
+    ]);
+  });
+
   it("claims each deletion decision before its status-specific mutation or email", () => {
     const route = source("src/app/api/admin/deletion-requests/[id]/route.ts");
     const reject = between(
