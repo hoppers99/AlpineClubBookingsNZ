@@ -286,7 +286,11 @@ export function countActiveGuestsForNight(
  * breaks sole-occupancy detection (issue #58) and flips guest names and phone
  * numbers on and off a public screen. The per-segment rule therefore lives only
  * in the named operational-day helpers, which every converted surface calls
- * directly; #2631 converts the three remaining flag callers and deletes this.
+ * directly.
+ *
+ * #2631 converted the two kiosk read surfaces that used to call this, so the
+ * lobby wall is the last caller — and it is a PERMANENT one, not a pending
+ * migration. Do not "finish the job" by pointing it at the operational day.
  */
 function isGuestVisibleOnLodgeDate(
   guest: GuestStayRange,
@@ -331,11 +335,10 @@ function isGuestVisibleOnLodgeDate(
  *
  * This wrapper is the LEGACY lodge-date list, unchanged in behaviour — see
  * `isGuestVisibleOnLodgeDate` above for why its `includeDepartureDate: true`
- * branch must not become the operational-day rule. It survives only so the
- * three read surfaces #2631 converts (`api/lodge/week`,
- * `api/lodge/guests/[date]`, `lodge-display-state`) keep working until that
- * issue lands; `booking-guest-stay-ranges-contract.test.ts` freezes the caller
- * list so no new one can appear in the meantime.
+ * branch must not become the operational-day rule. Since #2631 it has exactly
+ * one caller, `lodge-display-state.ts` (the fenced, privacy-load-bearing lobby
+ * wall), and `booking-guest-stay-ranges-contract.test.ts` freezes that list so
+ * no new caller can appear.
  */
 export function getLodgeVisibleGuestsForDate<Guest extends GuestStayRange>(
   guests: Guest[] | null | undefined,
