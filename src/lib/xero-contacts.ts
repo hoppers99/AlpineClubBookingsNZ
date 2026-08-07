@@ -71,11 +71,12 @@ type ContactCreateOperationInput = Omit<
  * rows under that lock, so either the reservation is visible to merge or the
  * member disappears before this transaction can reserve it.
  */
-async function reserveMemberContactCreateOperation(
+export async function reserveMemberContactCreateOperation(
   memberId: string,
   input: ContactCreateOperationInput,
+  db: typeof prisma = prisma,
 ) {
-  return prisma.$transaction(async (tx) => {
+  return db.$transaction(async (tx) => {
     const locked = await tx.$queryRaw<Array<{ id: string }>>`
       SELECT "id"
       FROM "Member"

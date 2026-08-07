@@ -254,6 +254,7 @@ let lockMinimumStayPolicySet: (typeof import("@/lib/minimum-stay-policy-set"))["
 let lockAdultMemberHostingPolicySet: (typeof import("@/lib/adult-member-hosting-policy-set"))["lockAdultMemberHostingPolicySet"];
 let enqueueActiveHostingIncidentPolicyReconciliation: (typeof import("@/lib/adult-member-hosting-policy-reconciliation"))["enqueueActiveHostingIncidentPolicyReconciliation"];
 let HOSTING_POLICY_RECONCILIATION_SELECT: (typeof import("@/lib/adult-member-hosting-policy-reconciliation"))["HOSTING_POLICY_RECONCILIATION_SELECT"];
+let reserveMemberContactCreateOperation: (typeof import("@/lib/xero-contacts"))["reserveMemberContactCreateOperation"];
 
 (RUN ? describe : describe.skip)(
   "hosting queue/member merge interleavings — real PostgreSQL (#2597)",
@@ -280,6 +281,9 @@ let HOSTING_POLICY_RECONCILIATION_SELECT: (typeof import("@/lib/adult-member-hos
             { subjectMemberId: { in: MEMBER_IDS } },
           ],
         },
+      });
+      await primary.xeroSyncOperation.deleteMany({
+        where: { localModel: "Member", localId: { in: MEMBER_IDS } },
       });
       await primary.bookingGuest.deleteMany({
         where: { bookingId: { in: ALL_BOOKING_IDS } },
@@ -577,6 +581,7 @@ let HOSTING_POLICY_RECONCILIATION_SELECT: (typeof import("@/lib/adult-member-hos
         bedAllocationLifecycle,
         memberLifecycle,
         capacity,
+        xeroContacts,
       ] = await Promise.all([
         import("@/lib/adult-member-hosting-queue-participants"),
         import("@/lib/adult-member-hosting-review"),
@@ -588,6 +593,7 @@ let HOSTING_POLICY_RECONCILIATION_SELECT: (typeof import("@/lib/adult-member-hos
         import("@/lib/bed-allocation-lifecycle"),
         import("@/lib/member-lifecycle-lock"),
         import("@/lib/capacity"),
+        import("@/lib/xero-contacts"),
       ]);
       acquireHostingCoverageQueueParticipantProof =
         participants.acquireHostingCoverageQueueParticipantProof;
@@ -620,6 +626,8 @@ let HOSTING_POLICY_RECONCILIATION_SELECT: (typeof import("@/lib/adult-member-hos
         bedAllocationLifecycle.acquireFuturePartnerSharedAllocationLocks;
       acquireMemberLifecycleLocks = memberLifecycle.acquireMemberLifecycleLocks;
       acquireLodgeCapacityLock = capacity.acquireLodgeCapacityLock;
+      reserveMemberContactCreateOperation =
+        xeroContacts.reserveMemberContactCreateOperation;
 
       const [
         { PrismaClient: SeparatePrismaClient },
@@ -1015,6 +1023,95 @@ let HOSTING_POLICY_RECONCILIATION_SELECT: (typeof import("@/lib/adult-member-hos
         masterId: IDS.master,
         loserId: IDS.loser,
       });
+    });
+
+    it("contact-create reservation wins before provider work, so the full merge rolls back and terminal resolution unblocks preview", async () => {
+      const preview = await previewMerge();
+      const correlationKey = "race-2597-contact-create-reservation-wins";
+      const reservation = await reserveMemberContactCreateOperation(
+        IDS.loser,
+        {
+          direction: "OUTBOUND",
+          entityType: "CONTACT",
+          operationType: "CREATE",
+          localModel: "Member",
+          localId: IDS.loser,
+          idempotencyKey: correlationKey,
+          correlationKey,
+          requestPayload: { contacts: [{ name: "Duplicate Race" }] },
+          createdByMemberId: IDS.actor,
+        },
+        ordinary,
+      );
+
+      await expect(
+        executeMemberMerge({
+          masterId: IDS.master,
+          loserId: IDS.loser,
+          actorMemberId: IDS.actor,
+          previewToken: preview.previewToken,
+          confirmationText: preview.confirmationPhrase,
+          db: mergeA,
+        }),
+      ).rejects.toMatchObject({
+        statusCode: 409,
+        code: "merge_blocked",
+      });
+      await expect(
+        primary.member.findUnique({ where: { id: IDS.loser } }),
+      ).resolves.not.toBeNull();
+      await expect(
+        primary.xeroSyncOperation.count({
+          where: { id: reservation.id, status: "RUNNING" },
+        }),
+      ).resolves.toBe(1);
+
+      await primary.xeroSyncOperation.update({
+        where: { id: reservation.id },
+        data: { status: "SUCCEEDED", completedAt: new Date() },
+      });
+      await expect(previewMerge()).resolves.toBeDefined();
+    });
+
+    it("merge wins the Member row, so a later contact-create reservation cannot commit or reach provider work", async () => {
+      const { operation, pause } = await startPausedMerge("after");
+      const correlationKey = "race-2597-contact-create-merge-wins";
+      const reservation = reserveMemberContactCreateOperation(
+        IDS.loser,
+        {
+          direction: "OUTBOUND",
+          entityType: "CONTACT",
+          operationType: "CREATE",
+          localModel: "Member",
+          localId: IDS.loser,
+          idempotencyKey: correlationKey,
+          correlationKey,
+          requestPayload: { contacts: [{ name: "Duplicate Race" }] },
+          createdByMemberId: IDS.actor,
+        },
+        ordinary,
+      ).then(
+        (value) => ({ ok: true as const, value }),
+        (error: unknown) => ({ ok: false as const, error }),
+      );
+      try {
+        await waitForClientToBlock("race-2597-ordinary");
+      } finally {
+        pause.release.resolve();
+      }
+
+      await expect(operation).resolves.toMatchObject({ loserId: IDS.loser });
+      const reservationOutcome = await reservation;
+      expect(reservationOutcome.ok).toBe(false);
+      if (reservationOutcome.ok) {
+        throw new Error("Contact-create reservation unexpectedly committed.");
+      }
+      expect(reservationOutcome.error).toMatchObject({
+        message: `Member not found: ${IDS.loser}`,
+      });
+      await expect(
+        primary.xeroSyncOperation.count({ where: { correlationKey } }),
+      ).resolves.toBe(0);
     });
 
     it("refuses and rolls back the full merge when a loser-linked guest commits after relation moves but before participant locks", async () => {
