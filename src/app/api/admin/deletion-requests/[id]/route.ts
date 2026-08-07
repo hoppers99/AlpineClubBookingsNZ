@@ -16,7 +16,7 @@ import { requireAdmin } from "@/lib/session-guards";
 import { getTodayDateOnly } from "@/lib/date-only";
 import { prisma } from "@/lib/prisma";
 import { cancelBooking } from "@/lib/booking-cancel";
-import { logAudit } from "@/lib/audit";
+import { createAuditLog, logAudit } from "@/lib/audit";
 import {
   EMPTY_ORPHANED_FAMILY_LINKS,
   readFamilyLinkOrphans,
@@ -47,9 +47,15 @@ import { acquireMemberLifecycleLocks } from "@/lib/member-lifecycle-lock";
 import {
   claimDeletionRequestApproval,
   claimDeletionRequestDecision,
+  DELETION_REJECT_AFTER_RELEASE_CONFIRM_CODE,
+  DELETION_REJECT_AFTER_RELEASE_CONFIRM_MESSAGE,
+  DELETION_REJECT_AFTER_RELEASE_FULL_ADMIN_MESSAGE,
   DELETION_REQUEST_ALREADY_REVIEWED_CODE,
+  DELETION_REQUEST_APPROVAL_RELEASED_CODE,
+  DELETION_REQUEST_APPROVAL_RELEASED_MESSAGE,
   DELETION_REQUEST_CLAIM_NOT_HELD_CODE,
   DELETION_REQUEST_CLAIM_NOT_HELD_MESSAGE,
+  deletionApprovalWasReleased,
   DeletionRequestClaimNotHeldError,
   DeletionRequestDecisionLostError,
   releaseDeletionRequestApprovalClaim,
@@ -73,6 +79,12 @@ const actionSchema = z.object({
   // ordinary reject path still makes the actual decision.
   action: z.enum(["approve", "reject", "release"]),
   note: z.string().max(1000).optional(),
+  // #2627: warn-and-confirm on the one rejection that can be finalised over
+  // already-cancelled stays — a request whose started approval was released.
+  // Same shape as the over-capacity confirmation: the first attempt is refused
+  // with the disclosure, and only a resubmission carrying this flag proceeds. A
+  // stale page therefore cannot finalise that rejection without being told.
+  confirmReleasedApproval: z.boolean().optional(),
   // #1788: absent/undefined = notify (default), false = suppress the member
   // email. Only honoured on the REJECT path; the APPROVE path's final privacy
   // receipt (sendAccountDeletionApprovedEmail) always sends regardless. A
@@ -158,6 +170,27 @@ async function readFinalDeletionDecision(
         },
       },
     });
+    // #2627: `PENDING` is reachable here now, and only one thing produces it —
+    // a release, the sole writer that moves this row backwards (the others are
+    // the member's create, the claim, and the two final decisions). So a
+    // finalisation that loses its guarded transition to a release lands on a
+    // state that is perfectly well known, and must not be reported as "the final
+    // state could not be confirmed": that answer durably disables the row and
+    // tells the admin not to retry a decision they can and should now make. No
+    // decision happened either, so this is not `decisionFinal`.
+    if (latest?.status === "PENDING") {
+      return {
+        code: DELETION_REQUEST_APPROVAL_RELEASED_CODE,
+        error: DELETION_REQUEST_APPROVAL_RELEASED_MESSAGE,
+        approvalReleased: true as const,
+        decisionFinal: false as const,
+        // Whatever this attempt committed before it lost the row stays
+        // committed, which is exactly what the next decider has to be told.
+        cancelledBookings,
+        memberAnonymised: isMemberAnonymised(latest.member),
+        retryAllowed: false as const,
+      };
+    }
     if (
       latest &&
       (latest.status === "APPROVED" || latest.status === "REJECTED")
@@ -243,6 +276,7 @@ export async function POST(
     action: "approve" | "reject" | "release";
     note?: string;
     notifyMember?: boolean;
+    confirmReleasedApproval?: boolean;
   };
   try {
     const raw = await request.json();
@@ -344,35 +378,89 @@ export async function POST(
         );
       }
 
-      await releaseDeletionRequestApprovalClaim(prisma, {
-        id,
-        adminNote: releaseReason,
-      });
+      // One transaction, so the record and the transition cannot part company.
+      // The release destroys the claim's attribution, which makes this audit row
+      // the only surviving record of who held it — and `logAudit` is
+      // fire-and-forget, so a failed insert or a process death right after the
+      // 200 would have lost that permanently. Awaited inside the transaction
+      // that performs the transition, an audit failure rolls the release back:
+      // the operator sees an error and the claim is still there to release
+      // again. The attribution itself comes from the release's own locked read
+      // rather than the unguarded read above, so an ABA interleaving cannot
+      // record a holder that was never displaced.
+      const release = await prisma.$transaction(async (tx) => {
+        const released = await releaseDeletionRequestApprovalClaim(tx, {
+          id,
+          adminNote: releaseReason,
+        });
 
-      logAudit({
-        action: "member.deletion_approval_claim_released",
-        memberId: session.user.id,
-        targetId: member.id,
-        details: `Started approval released back to pending. Reason: ${releaseReason}`,
-        ipAddress: ip,
-        category: "privacy",
-        severity: "important",
-        outcome: "success",
-        metadata: {
-          // The claim's own attribution is cleared by the release, so preserve
-          // who held it here — this is the only record of it.
-          previousClaimHeldBy: deletionRequest.reviewedBy,
-          previousAdminNote: deletionRequest.adminNote,
-        },
+        await createAuditLog(
+          {
+            action: "member.deletion_approval_claim_released",
+            memberId: session.user.id,
+            targetId: member.id,
+            details: `Started approval released back to pending. Reason: ${releaseReason}`,
+            ipAddress: ip,
+            category: "privacy",
+            severity: "important",
+            outcome: "success",
+            metadata: {
+              previousClaimHeldBy: released.previousClaimHeldBy,
+              previousAdminNote: released.previousAdminNote,
+              releasedAt: released.releasedAt.toISOString(),
+            },
+          },
+          tx,
+        );
+
+        return released;
       });
 
       return NextResponse.json({
         message:
-          "Approval released. The request is pending again and can be approved or rejected. Any future bookings already cancelled by the started approval stay cancelled.",
+          "Approval released. The request is pending again and can be approved or rejected. Any future bookings already cancelled by the started approval stay cancelled, and the request now says so to whoever decides it next.",
+        releasedAt: release.releasedAt.toISOString(),
       });
     }
 
     if (body.action === "reject") {
+      // #2627: the ONE rejection that can be finalised over stays a started
+      // approval already cancelled — a request whose claim was released. The
+      // release itself is gated and reasoned, but the release is not the harmful
+      // step; this is. So the gate and the disclosure are repeated here, on the
+      // step that does the harm:
+      //
+      //  - Full Admin, matching the release that produced this state. A
+      //    Membership Officer who meets one escalates instead of declining a
+      //    request whose consequences they cannot see.
+      //  - and an explicit confirmation, because a page loaded before the
+      //    release renders an ordinary Pending row with no warning on it. The
+      //    first attempt is refused WITH the disclosure, so no rejection can be
+      //    finalised here without the decider having been told.
+      const rejectingAfterRelease =
+        deletionApprovalWasReleased(deletionRequest);
+      if (rejectingAfterRelease) {
+        if (!isFullAdmin(session.user)) {
+          return NextResponse.json(
+            { error: DELETION_REJECT_AFTER_RELEASE_FULL_ADMIN_MESSAGE },
+            { status: 403 },
+          );
+        }
+        if (body.confirmReleasedApproval !== true) {
+          return NextResponse.json(
+            {
+              code: DELETION_REJECT_AFTER_RELEASE_CONFIRM_CODE,
+              error: DELETION_REJECT_AFTER_RELEASE_CONFIRM_MESSAGE,
+              approvalReleased: true,
+              approvalReleasedAt: deletionRequest.reviewedAt?.toISOString(),
+              releaseReason: deletionRequest.adminNote,
+              retryAllowed: false,
+            },
+            { status: 409 },
+          );
+        }
+      }
+
       await claimDeletionRequestDecision(prisma, {
         id,
         decision: "REJECTED",
@@ -384,10 +472,22 @@ export async function POST(
       // that truly would have sent. The member is emailed unless they have no
       // address on file (member.email is a required field, so in practice this
       // is always present) or the admin opted out.
-      const suppressedNotifyAudit =
-        member.email && body.notifyMember === false
+      //
+      // #2627: a rejection finalised over a released approval is the one that may
+      // leave the member declined with their stays already cancelled, so the
+      // audit trail says so rather than leaving it to be reconstructed from two
+      // separate entries.
+      const rejectAuditMetadata = {
+        ...(member.email && body.notifyMember === false
           ? { notifyMember: false }
-          : undefined;
+          : {}),
+        ...(rejectingAfterRelease
+          ? {
+              approvalPreviouslyReleased: true,
+              approvalReleasedAt: deletionRequest.reviewedAt?.toISOString(),
+            }
+          : {}),
+      };
 
       logAudit({
         action: "member.deletion_rejected",
@@ -395,7 +495,9 @@ export async function POST(
         targetId: member.id,
         details: body.note ? `Note: ${body.note}` : "No note",
         ipAddress: ip,
-        ...(suppressedNotifyAudit ? { metadata: suppressedNotifyAudit } : {}),
+        ...(Object.keys(rejectAuditMetadata).length > 0
+          ? { metadata: rejectAuditMetadata }
+          : {}),
       });
 
       // #1788: email the member unless the admin opted out (default = notify).

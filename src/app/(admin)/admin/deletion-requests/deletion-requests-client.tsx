@@ -43,6 +43,13 @@ import {
   useAdminAreaEditAccess,
 } from "@/hooks/use-admin-area-edit-access";
 import { isFullAdmin } from "@/lib/access-roles";
+import {
+  DELETION_APPROVAL_RELEASED_DISCLOSURE,
+  DELETION_APPROVAL_RELEASED_LEAD,
+  DELETION_REJECT_AFTER_RELEASE_CONFIRM_CODE,
+  DELETION_REQUEST_APPROVAL_RELEASED_CODE,
+  deletionApprovalWasReleased,
+} from "@/lib/deletion-request-decision";
 import { formatNZDate, formatNZDateTime } from "@/lib/nzst-date";
 import { FocusedActionError } from "@/components/focused-action-error";
 import { buildHrefWithReturnTo } from "@/lib/internal-return-path";
@@ -276,6 +283,14 @@ export default function DeletionRequestsClient({
               action: reviewDialog.action,
               note: reviewNote || undefined,
               ...(notifyMember === undefined ? {} : { notifyMember }),
+              // #2627: this dialog has just stated what the released approval
+              // already did, so the confirmation the route demands is carried
+              // from here. A page that predates the release has no marker on the
+              // request, sends no flag, and is refused WITH the disclosure.
+              ...(reviewDialog.action === "reject" &&
+              deletionApprovalWasReleased(reviewDialog.request)
+                ? { confirmReleasedApproval: true }
+                : {}),
             }),
           }
         );
@@ -354,6 +369,40 @@ export default function DeletionRequestsClient({
               : current,
           );
           setRecoveryAttentionVersion((version) => version + 1);
+          return;
+        }
+        // #2627: two refusals about a request whose started approval was
+        // released. Both describe a state that is known EXACTLY — pending, with
+        // the member's stays possibly already cancelled — so neither is the
+        // durable "needs verification" recovery below: that one suppresses the
+        // row's controls and forbids a retry, which would be wrong twice over
+        // here. The request is decidable again, and the reloaded row carries the
+        // warning the decider needs.
+        if (
+          body.code === DELETION_REQUEST_APPROVAL_RELEASED_CODE ||
+          body.code === DELETION_REJECT_AFTER_RELEASE_CONFIRM_CODE
+        ) {
+          const cancelledBookings =
+            typeof body.cancelledBookings === "number"
+              ? Math.max(0, body.cancelledBookings)
+              : 0;
+          const cancelledCopy =
+            cancelledBookings === 0
+              ? ""
+              : cancelledBookings === 1
+                ? " 1 future booking cancellation had already committed and stays cancelled."
+                : ` ${cancelledBookings} future booking cancellations had already committed and stay cancelled.`;
+          setReviewDialog(null);
+          // The typed note is deliberately kept: on the confirmation refusal the
+          // admin is expected to come straight back and reject again.
+          const refreshed = await fetchRequests();
+          showActionError(
+            `${String(body.error)}${cancelledCopy}${
+              refreshed
+                ? ""
+                : " The deletion queue could not be refreshed, so reload the page before deciding it."
+            }`,
+          );
           return;
         }
         if (
@@ -516,6 +565,21 @@ export default function DeletionRequestsClient({
     some screen-reader/browser pairings. It sits OUTSIDE the `space-y-*` stack so
     the empty wrapper an edit-capable admin gets costs no layout.
   */
+  /*
+    #2627: the disclosure the reject dialog opens with when this request's started
+    approval was released. Defined once for both reject branches (a member with an
+    email address, and one without) so a copy edit cannot reach only one of them.
+    The route refuses the first unconfirmed attempt with the same words, so a page
+    loaded before the release is told too.
+  */
+  const releasedApprovalDialogNotice =
+    reviewDialog && deletionApprovalWasReleased(reviewDialog.request) ? (
+      <>
+        <strong>{DELETION_APPROVAL_RELEASED_LEAD}</strong>{" "}
+        {DELETION_APPROVAL_RELEASED_DISCLOSURE}{" "}
+      </>
+    ) : null;
+
   const viewOnlyBanner = (
     <AdminViewOnlySectionBanner canEdit={canEdit} className="mb-6">
       Your admin role can view deletion requests but cannot approve or reject
@@ -652,7 +716,19 @@ export default function DeletionRequestsClient({
           )}
           {!loading && data && data.requests.length > 0 && (
             <div className="divide-y">
-              {data.requests.map((req) => (
+              {data.requests.map((req) => {
+                // #2627: a request whose started approval was released is
+                // PENDING again, but it is NOT an ordinary pending request — an
+                // approval may already have cancelled the member's future
+                // bookings, and rejecting it will not bring them back. The
+                // marker is in the row itself (see
+                // deletionApprovalWasReleased), so the warning cannot lag the
+                // state, and the reject path re-checks the same predicate
+                // server-side.
+                const releasedApproval = deletionApprovalWasReleased(req);
+                const canRejectReleased =
+                  !releasedApproval || canReleaseApprovalClaim;
+                return (
                 <div key={req.id} className="py-4 space-y-2">
                   <div className="flex items-start justify-between gap-4">
                     <div className="space-y-1">
@@ -676,32 +752,61 @@ export default function DeletionRequestsClient({
                       )}
                       {req.adminNote && (
                         <p className="text-sm text-muted-foreground">
-                          <span className="font-medium">Admin note:</span>{" "}
+                          <span className="font-medium">
+                            {releasedApproval
+                              ? "Release reason:"
+                              : "Admin note:"}
+                          </span>{" "}
                           {req.adminNote}
                         </p>
                       )}
-                      {req.reviewedAt && (
+                      {/* A released request carries a reviewedAt with no
+                          reviewer — that pair IS the release marker, and it must
+                          never be mislabelled as a completed review. Its date is
+                          stated in the warning below instead. */}
+                      {req.reviewedAt && !releasedApproval && (
                         <p className="text-xs text-muted-foreground">
                           Reviewed{" "}
                           {formatNZDate(new Date(req.reviewedAt))}
                         </p>
                       )}
+                      {releasedApproval && (
+                        <p className="text-xs text-warning-11 max-w-prose">
+                          <span className="font-medium">
+                            Approval started and released back to pending
+                            {req.reviewedAt
+                              ? ` ${formatNZDateTime(new Date(req.reviewedAt))}`
+                              : ""}
+                            .
+                          </span>{" "}
+                          {DELETION_APPROVAL_RELEASED_DISCLOSURE}{" "}
+                          {canRejectReleased
+                            ? "Rejecting it asks you to confirm that first."
+                            : "Only a Full Admin can reject it now; approving completes the deletion the member asked for."}
+                        </p>
+                      )}
                     </div>
                     {req.status === "PENDING" && (
                       <div className="flex gap-2 shrink-0">
-                        <ViewOnlyActionButton
-                          canEdit={canEdit}
-                          describeReason={false}
-                          size="sm"
-                          variant="outline"
-                          className="text-danger-11 border-danger-6 hover:bg-danger-3"
-                          onClick={() =>
-                            setReviewDialog({ request: req, action: "reject" })
-                          }
-                          disabled={deletionRecovery?.request.id === req.id}
-                        >
-                          Reject
-                        </ViewOnlyActionButton>
+                        {/* #2627: the route refuses a reject-after-release from
+                            anyone but a Full Admin (403), so offering it to a
+                            scoped membership admin would be a button that can
+                            only fail. The warning beside it says who can. */}
+                        {canRejectReleased ? (
+                          <ViewOnlyActionButton
+                            canEdit={canEdit}
+                            describeReason={false}
+                            size="sm"
+                            variant="outline"
+                            className="text-danger-11 border-danger-6 hover:bg-danger-3"
+                            onClick={() =>
+                              setReviewDialog({ request: req, action: "reject" })
+                            }
+                            disabled={deletionRecovery?.request.id === req.id}
+                          >
+                            Reject
+                          </ViewOnlyActionButton>
+                        ) : null}
                         <ViewOnlyActionButton
                           canEdit={canEdit}
                           describeReason={false}
@@ -773,7 +878,8 @@ export default function DeletionRequestsClient({
                     ) : null}
                   </div>
                 </div>
-              ))}
+                );
+              })}
             </div>
           )}
 
@@ -852,11 +958,13 @@ export default function DeletionRequestsClient({
                 </>
               ) : reviewDialog?.request.member.email ? (
                 <>
+                  {releasedApprovalDialogNotice}
                   Choose below whether to email the member that their request
                   was not approved — either way the request is rejected.
                 </>
               ) : (
                 <>
+                  {releasedApprovalDialogNotice}
                   The request will be rejected. This member has no email address
                   on file, so no notification is sent.
                 </>
@@ -897,7 +1005,13 @@ export default function DeletionRequestsClient({
             />
             {reviewDialog?.action === "reject" ? (
               <FieldHint id={REVIEW_NOTE_HINT_ID}>
-                E.g. Outstanding bookings must be resolved first
+                {/* #2627: on a released request the stock example is actively
+                    misleading — the stays are already gone. This note is the
+                    only thing the member is told, so the example says what they
+                    actually need to hear. */}
+                {deletionApprovalWasReleased(reviewDialog.request)
+                  ? "E.g. Your future bookings were cancelled when this deletion was started — contact us if you want to rebook"
+                  : "E.g. Outstanding bookings must be resolved first"}
               </FieldHint>
             ) : null}
           </div>

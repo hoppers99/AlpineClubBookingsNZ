@@ -16,6 +16,19 @@
   says so. Only a Full Admin sees the control, and the screen tells a Membership
   Officer who to ask.
 
+  A released request goes back into the pending queue **carrying that history**,
+  because rejecting it is the one rejection that can be final over stays that were
+  already cancelled. The row says "approval started and released back to pending",
+  with the date and the reason, instead of looking like an ordinary new request;
+  the reject dialog repeats it; only a Full Admin can reject it; and the rejection
+  has to be confirmed, so an administrator working from a page that was open
+  before the release is told what happened rather than declining the request
+  unaware. Approving one is unchanged — it simply completes the deletion the
+  member asked for. If an approval is running at the very moment somebody
+  releases it, the administrator is now told exactly that, along with any booking
+  cancellations that did complete, instead of being warned that the outcome could
+  not be determined.
+
   The claim is also no longer taken when there is nothing to protect. Approving a
   member who has no future bookings never cancelled anything, so that approval
   now stays pending until the moment it completes — which means an administrator

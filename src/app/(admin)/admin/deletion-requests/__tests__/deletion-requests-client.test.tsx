@@ -880,4 +880,336 @@ describe("deletion review outcome that never came back legibly (#2597)", () => {
       ).toBeGreaterThan(1),
     );
   });
+
+  it("states in the release dialog that already-cancelled bookings stay cancelled", async () => {
+    // The release's disclosed mitigation. Every other assertion here is about
+    // controls and payloads; if this sentence can be dropped by a copy edit then
+    // the admin who releases a claim is no longer told what it leaves behind.
+    vi.stubGlobal(
+      "fetch",
+      buildFetch(
+        () => {
+          throw new Error("no review should be submitted in this test");
+        },
+        [{ ...deletionRequest, status: "APPROVAL_IN_PROGRESS" }],
+      ),
+    );
+
+    render(<DeletionRequestsClient sessionMemberId="admin-1" />);
+    await screen.findByText("Riley Chen");
+    fireEvent.click(screen.getByRole("button", { name: "Release approval" }));
+
+    expect(
+      await screen.findByText(
+        /Any future bookings the started approval already cancelled stay cancelled/i,
+      ),
+    ).not.toBeNull();
+    // And that it decides nothing on its own.
+    expect(
+      screen.getByText(/Nobody is anonymised and the member is not emailed/i),
+    ).not.toBeNull();
+  });
+});
+
+/**
+ * #2627 review finding: a released request is PENDING again, so it renders with
+ * Reject and Approve live — but it is NOT an ordinary pending request. An
+ * approval may already have cancelled the member's future bookings, and
+ * rejecting will not bring them back. The marker travels in the row itself
+ * (PENDING + reviewedAt + no reviewer), so these tests pin that the next decider
+ * is told, and cannot reject without confirming it.
+ */
+describe("a request whose started approval was released (#2627)", () => {
+  const deletionRequest = {
+    id: "request-1",
+    status: "PENDING",
+    reason: "Please remove my account",
+    adminNote: null as string | null,
+    reviewedBy: null as string | null,
+    reviewedAt: null as string | null,
+    createdAt: "2026-08-01T00:00:00.000Z",
+    member: {
+      id: "member-1",
+      firstName: "Riley",
+      lastName: "Chen",
+      email: "riley@example.test",
+      role: "MEMBER",
+      active: true,
+    },
+  };
+
+  /** The wire shape of a released request: pending, timestamped, no reviewer. */
+  const releasedRequest = {
+    ...deletionRequest,
+    adminNote: "Xero blocker will never clear",
+    reviewedBy: null,
+    reviewedAt: "2026-08-06T21:30:00.000Z",
+  };
+
+  beforeEach(() => {
+    vi.restoreAllMocks();
+    restoreDefaultSessionUser();
+    Object.defineProperty(HTMLElement.prototype, "scrollIntoView", {
+      configurable: true,
+      value: vi.fn(),
+    });
+  });
+
+  function buildFetch(
+    post: (init?: RequestInit) => Promise<Response>,
+    listRows: Array<Record<string, unknown>> = [releasedRequest],
+  ) {
+    return vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.includes("/api/admin/member-lifecycle-action-requests")) {
+        return {
+          ok: true,
+          json: async () => ({
+            requests: [],
+            total: 0,
+            page: 1,
+            pageSize: 25,
+            totalPages: 0,
+          }),
+        } as Response;
+      }
+      if (
+        url === "/api/admin/deletion-requests/request-1" &&
+        init?.method === "POST"
+      ) {
+        return post(init);
+      }
+      if (url.startsWith("/api/admin/deletion-requests?")) {
+        return {
+          ok: true,
+          json: async () => ({
+            requests: listRows,
+            total: listRows.length,
+            page: 1,
+            pageSize: 25,
+            totalPages: 1,
+          }),
+        } as Response;
+      }
+      throw new Error(`Unexpected request: ${url}`);
+    });
+  }
+
+  function postBodies(fetchMock: ReturnType<typeof buildFetch>) {
+    return fetchMock.mock.calls
+      .filter((call) => (call[1] as RequestInit | undefined)?.method === "POST")
+      .map((call) => JSON.parse(String((call[1] as RequestInit).body)));
+  }
+
+  it("warns on the row, and does not mislabel the release marker as a completed review", async () => {
+    vi.stubGlobal(
+      "fetch",
+      buildFetch(() => {
+        throw new Error("no review should be submitted in this test");
+      }),
+    );
+
+    render(<DeletionRequestsClient sessionMemberId="admin-1" />);
+    await screen.findByText("Riley Chen");
+
+    // Still badged Pending — which is exactly why the row needs the warning.
+    expect(screen.getAllByText("Pending").length).toBeGreaterThan(0);
+    expect(
+      screen.getByText(/Approval started and released back to pending/i),
+    ).not.toBeNull();
+    expect(
+      screen.getByText(/stay cancelled — rejecting this request will not restore them/i),
+    ).not.toBeNull();
+    // The release reason is the note on the row, and it is labelled as one.
+    expect(screen.getByText("Release reason:")).not.toBeNull();
+    // A PENDING request has no reviewer, so its reviewedAt must never read as a
+    // finished review.
+    expect(screen.queryByText(/^Reviewed /)).toBeNull();
+  });
+
+  it("carries the confirmation from the dialog that stated what happened", async () => {
+    const post = vi.fn(
+      async () =>
+        ({
+          ok: true,
+          status: 200,
+          json: async () => ({ message: "Deletion request rejected." }),
+        }) as Response,
+    );
+    const fetchMock = buildFetch(post);
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<DeletionRequestsClient sessionMemberId="admin-1" />);
+    await screen.findByText("Riley Chen");
+    fireEvent.click(screen.getByRole("button", { name: "Reject" }));
+
+    // The dialog repeats the disclosure where the decision is actually taken.
+    expect(
+      await screen.findByText(
+        /A started approval on this request was released back to pending/i,
+      ),
+    ).not.toBeNull();
+    // And the note example — the only thing the MEMBER is told — stops
+    // suggesting they resolve bookings that no longer exist.
+    expect(
+      screen.getByText(/contact us if you want to rebook/i),
+    ).not.toBeNull();
+
+    fireEvent.click(
+      screen.getByRole("button", { name: "Reject and email member" }),
+    );
+
+    await waitFor(() => expect(post).toHaveBeenCalledTimes(1));
+    // The route refuses an unconfirmed reject-after-release with the disclosure,
+    // so this flag is the proof the decider was shown it.
+    expect(postBodies(fetchMock)[0]).toMatchObject({
+      action: "reject",
+      notifyMember: true,
+      confirmReleasedApproval: true,
+    });
+  });
+
+  it("sends no confirmation flag on an ordinary pending request", async () => {
+    const post = vi.fn(
+      async () =>
+        ({
+          ok: true,
+          status: 200,
+          json: async () => ({ message: "Deletion request rejected." }),
+        }) as Response,
+    );
+    const fetchMock = buildFetch(post, [deletionRequest]);
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<DeletionRequestsClient sessionMemberId="admin-1" />);
+    await screen.findByText("Riley Chen");
+    expect(
+      screen.queryByText(/Approval started and released back to pending/i),
+    ).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Reject" }));
+    fireEvent.click(
+      await screen.findByRole("button", { name: "Reject and email member" }),
+    );
+
+    await waitFor(() => expect(post).toHaveBeenCalledTimes(1));
+    expect(postBodies(fetchMock)[0].confirmReleasedApproval).toBeUndefined();
+  });
+
+  it("hides Reject from a membership admin who is not a Full Admin, and says who can decide", async () => {
+    useMembershipOfficerSession();
+    try {
+      vi.stubGlobal(
+        "fetch",
+        buildFetch(() => {
+          throw new Error("no review should be submitted in this test");
+        }),
+      );
+
+      render(<DeletionRequestsClient sessionMemberId="admin-1" />);
+      await screen.findByText("Riley Chen");
+
+      // The route answers 403, so a Reject button here could only fail.
+      expect(screen.queryByRole("button", { name: "Reject" })).toBeNull();
+      expect(screen.getByRole("button", { name: "Approve" })).not.toBeNull();
+      expect(
+        screen.getByText(/Only a Full Admin can reject it now/i),
+      ).not.toBeNull();
+    } finally {
+      restoreDefaultSessionUser();
+    }
+  });
+
+  it("explains a stale page's refused rejection and reloads the queue, leaving the row usable", async () => {
+    // A page loaded BEFORE the release renders an ordinary pending row and sends
+    // no confirmation. The route refuses it with the disclosure; the client must
+    // state that and re-read the queue so the warning appears — not enter the
+    // durable "needs verification" recovery, which suppresses the row's controls
+    // and forbids a retry that is entirely legitimate here.
+    const post = vi.fn(
+      async () =>
+        ({
+          ok: false,
+          status: 409,
+          json: async () => ({
+            code: "DELETION_REJECT_AFTER_RELEASE_CONFIRM_REQUIRED",
+            error:
+              "A started approval on this request was released back to pending. Any future bookings that approval had already cancelled stay cancelled — rejecting this request will not restore them. Reload the deletion queue, read that warning on the request, and confirm the rejection from there.",
+            approvalReleased: true,
+            retryAllowed: false,
+          }),
+        }) as unknown as Response,
+    );
+    const fetchMock = buildFetch(post, [deletionRequest]);
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<DeletionRequestsClient sessionMemberId="admin-1" />);
+    await screen.findByText("Riley Chen");
+    fireEvent.click(screen.getByRole("button", { name: "Reject" }));
+    fireEvent.click(
+      await screen.findByRole("button", { name: "Reject and email member" }),
+    );
+
+    expect(
+      await screen.findByText(/Reload the deletion queue, read that warning/i),
+    ).not.toBeNull();
+    expect(screen.queryByText("Deletion decision needs verification")).toBeNull();
+    // Re-read, so the warning is on the row when the admin comes back to it.
+    await waitFor(() =>
+      expect(
+        fetchMock.mock.calls.filter(([input]) =>
+          String(input).startsWith("/api/admin/deletion-requests?"),
+        ).length,
+      ).toBeGreaterThan(1),
+    );
+    const reject = screen.getByRole("button", {
+      name: "Reject",
+    }) as HTMLButtonElement;
+    expect(reject.disabled).toBe(false);
+  });
+
+  it("reports a finalisation that lost its guard to a release as exactly that", async () => {
+    // Not "its final state could not be confirmed": nothing is unknown, and the
+    // row must not be durably disabled over a request that is decidable again.
+    const post = vi.fn(
+      async () =>
+        ({
+          ok: false,
+          status: 409,
+          json: async () => ({
+            code: "DELETION_REQUEST_APPROVAL_RELEASED",
+            error:
+              "Another administrator released this request's started approval, so it is pending again and this action anonymised nobody. Reload the deletion queue and decide the request from there — the row shows that future bookings may already have been cancelled.",
+            approvalReleased: true,
+            decisionFinal: false,
+            cancelledBookings: 2,
+            retryAllowed: false,
+          }),
+        }) as unknown as Response,
+    );
+    const fetchMock = buildFetch(post, [releasedRequest]);
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<DeletionRequestsClient sessionMemberId="admin-1" />);
+    await screen.findByText("Riley Chen");
+    fireEvent.click(screen.getByRole("button", { name: "Approve" }));
+    fireEvent.click(
+      await screen.findByRole("button", { name: "Approve & Delete Account" }),
+    );
+
+    const message = await screen.findByText(
+      /released this request's started approval/i,
+    );
+    expect(message).not.toBeNull();
+    // What the lost attempt did commit is still stated.
+    expect(
+      screen.getByText(
+        /2 future booking cancellations had already committed and stay cancelled/i,
+      ),
+    ).not.toBeNull();
+    expect(screen.queryByText("Deletion decision needs verification")).toBeNull();
+    expect(
+      (screen.getByRole("button", { name: "Approve" }) as HTMLButtonElement)
+        .disabled,
+    ).toBe(false);
+  });
 });

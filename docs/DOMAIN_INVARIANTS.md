@@ -3709,9 +3709,17 @@ override requires an explicit `pricingMode`:
   claims `PENDING -> APPROVAL_IN_PROGRESS` — durably, before the first
   cancellation commits — and then finalises only from that claim, inside the
   anonymisation transaction, so any later privacy failure rolls finalisation
-  back to the claim and sends no receipt. **A rejection can therefore never
-  become final after an approval-triggered cancellation has committed**, which
-  the single-transition protocol could not guarantee. A repeated approval
+  back to the claim and sends no receipt. **While that claim stands, a rejection
+  can never become final after an approval-triggered cancellation has
+  committed** — which the single-transition protocol could not guarantee. It is
+  deliberately NOT an absolute: a Full Admin can release the claim (see
+  "`APPROVAL_IN_PROGRESS` is not a one-way door" below), and the request is then
+  decidable again, because the alternative was a request wedged open forever.
+  What holds after a release is a weaker but honest property — **no rejection
+  can be finalised over cancellations an approval already committed without the
+  decider being told**: the release leaves a durable marker on the row, the
+  queue and the reject dialog state what it means, and the route refuses the
+  rejection unless the actor is a Full Admin and confirms it. A repeated approval
   resumes its own claim rather than being refused, so an interrupted cleanup can
   always be completed. A losing concurrent reviewer gets a fixed conflict and
   sends no contradictory message. Cancellations already committed before a lost
@@ -3748,13 +3756,58 @@ override requires an explicit `pricingMode`:
   open forever, and while it is open the member cannot lodge a new deletion
   request and their duplicate cannot be merged. The release cannot race a
   finalisation that is already committing: it is the same guarded `updateMany`
-  on the same row, so a release arriving mid-commit blocks on the finalisation's
+  on the same row (taken under that row's own `FOR UPDATE` — see the attribution
+  paragraph below), so a release arriving mid-commit blocks on the finalisation's
   row lock and then matches zero rows (`DELETION_REQUEST_CLAIM_NOT_HELD`, 409),
   while a release that commits first makes the finalisation match zero rows and
-  roll its whole anonymisation transaction back. The release returns the request
+  roll its whole anonymisation transaction back. Both winner orders are forced
+  against real PostgreSQL in `adult-member-hosting-queue-merge.realdb.test.ts`.
+  The release returns the request
   to `PENDING` rather than straight to `REJECTED` so the decision itself is
   still made through the ordinary reject path, with its guard, its audit entry
   and its notify choice.
+  **A released request is marked, and rejecting one is gated and confirmed.**
+  A release re-opens a decision that had been closed to rejection, so the
+  re-opened state cannot look like an ordinary pending request — and after a
+  release the request can never re-take the claim (the claim is taken only when
+  there are bookings to cancel, and the earlier attempt cancelled them), so an
+  approve and a reject race the same `PENDING` guard again. The fact therefore
+  travels **in the row**: `PENDING` with a `reviewedAt` and no `reviewedBy` is a
+  combination no other writer of the row can produce, so it is a marker and not a
+  heuristic (`deletionApprovalWasReleased`, `src/lib/deletion-request-decision.ts`;
+  it deliberately overloads `reviewedAt` instead of adding a column, and every
+  reader must go through that predicate rather than reading the field). It is
+  written by the same single guarded mutation as the transition, so it cannot lag,
+  cannot be lost and cannot be forged in a free-text note. The admin queue shows
+  it as "approval started and released back to pending" with the release reason,
+  never as a completed review; the reject dialog repeats it; and the route refuses
+  a rejection of a released request unless the actor **is a Full Admin** (403 —
+  the same gate as the release that produced the state, now on the step that does
+  the harm) **and** carries `confirmReleasedApproval: true` (409
+  `DELETION_REJECT_AFTER_RELEASE_CONFIRM_REQUIRED` with the disclosure, so a page
+  loaded before the release cannot finalise one unwarned; the same warn-and-confirm
+  shape as the over-capacity override). The applied rejection records
+  `approvalPreviouslyReleased` in its audit entry. Approving a released request is
+  ungated: it completes the deletion the member asked for and destroys nothing the
+  released approval had not already destroyed.
+  **The release and its audit record commit together.** The transition nulls the
+  claim's own attribution, so the `member.deletion_approval_claim_released` entry
+  is the only surviving record of who held it — which rules out the
+  fire-and-forget `logAudit`. The release takes the row `FOR UPDATE`, reads the
+  previous holder and note through the Prisma model under that lock (so an ABA
+  interleaving cannot record a holder that was never displaced), performs the
+  guarded transition, and the route writes that audit row with the awaited
+  `createAuditLog` on the same transaction client. A failed insert rolls the
+  release back: the operator is told it failed and the claim is still there to
+  release again.
+  **A finalisation that loses its guard to a release is reported as that.**
+  `PENDING` is reachable when a decision claim matches zero rows, and it is the
+  one state that is known exactly, so the route answers
+  `DELETION_REQUEST_APPROVAL_RELEASED` (409, `retryAllowed: false`,
+  `decisionFinal: false`) with the cancellations that did commit — never
+  `DELETION_REQUEST_DECISION_STATUS_UNCONFIRMED`, whose "its final state could not
+  be confirmed … do not retry" would durably disable a row the admin can and
+  should decide again.
 
 - **recalculate** — the existing full-reprice machinery with the locked-period
   clamps lifted, so locked-night pricing semantics are otherwise preserved

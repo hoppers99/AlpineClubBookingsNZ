@@ -1245,7 +1245,26 @@ whole anonymisation transaction back. If a later approval mutation fails, the
 claim and anonymisation roll back together to whichever status the approval
 started from. Booking cancellations committed before the approval transaction
 remain truthful partial cleanup and are reported as such if a concurrent
-rejection or release won.
+rejection or release won. A finalisation that loses its guard to a release lands
+on `PENDING`, which is reported as exactly that (`DELETION_REQUEST_APPROVAL_RELEASED`)
+rather than as an unconfirmable final state.
+
+The release is the one transition that additionally takes the request row
+`FOR UPDATE`, and it must be handed a transaction client. It nulls the claim's own
+attribution, so its audit entry is the only surviving record of who held the
+claim — and that holder has to be read at the same serialised point as the
+mutation, or an ABA interleaving (a claim released and re-taken between the read
+and the write) records an admin whose claim was never displaced. So the release
+takes the row lock, reads the previous holder and note through the Prisma model
+under it ("Lock raw, read typed" above), performs the guarded transition, and the
+route writes the audit row with the awaited `createAuditLog` inside that same
+transaction: the record and the transition commit or roll back together. The
+guarded `updateMany` is retained under the lock, so a caller that forgets the
+transaction still fails closed instead of reporting a release that did not happen.
+The transition also stamps `reviewedAt` on the now-`PENDING` row which — with no
+`reviewedBy` — is the durable marker that this request was re-opened after an
+approval had started; `docs/DOMAIN_INVARIANTS.md` covers what the queue, the
+reject dialog and the reject route each do with it.
 
 After Xero returns a newly created contact, the operation is durably marked
 `provider_contact_created_local_link_pending` before the local link transaction.
