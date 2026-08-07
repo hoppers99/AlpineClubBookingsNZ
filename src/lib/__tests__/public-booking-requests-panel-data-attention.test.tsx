@@ -176,7 +176,14 @@ describe("PublicBookingRequestsPanel saved-data marker (#2342)", () => {
     await waitFor(() =>
       expect(alert?.textContent).toContain("Reload the request and try again."),
     );
-    expect(document.activeElement).toBe(alert);
+    // The message arrives with React's DOM commit, but the panel moves focus
+    // and scrolls from a `useEffect` — a PASSIVE effect React can flush a task
+    // later. The text assertion above is satisfied by the commit alone, so
+    // reading `document.activeElement` straight afterwards races that effect
+    // and intermittently sees `<body>` (seen on CI for #2634, and reproducible
+    // locally under load). Waiting for the focus asserts exactly the same
+    // thing, once the effect has actually had its turn.
+    await waitFor(() => expect(document.activeElement).toBe(alert));
     expect(scrollIntoView).toHaveBeenCalledWith({
       behavior: "smooth",
       block: "center",
@@ -236,7 +243,8 @@ describe("PublicBookingRequestsPanel saved-data marker (#2342)", () => {
     expect(recoveryAlert?.textContent).toMatch(/capacity hold status could not be confirmed/i);
     expect(recoveryAlert?.textContent).toMatch(/could not be refreshed/i);
     expect(recoveryAlert?.textContent).not.toContain("private database detail");
-    expect(document.activeElement).toBe(recoveryAlert);
+    // Same passive-effect race as the case above.
+    await waitFor(() => expect(document.activeElement).toBe(recoveryAlert));
     expect(screen.queryAllByText("Demo High School")).toHaveLength(0);
     expect(
       screen.getByRole("link", { name: "Open affected booking" }).getAttribute("href"),
@@ -248,7 +256,8 @@ describe("PublicBookingRequestsPanel saved-data marker (#2342)", () => {
     await waitFor(() =>
       expect(actionAlert?.textContent).toContain("The second request changed; reload it."),
     );
-    expect(document.activeElement).toBe(actionAlert);
+    // Same passive-effect race as the case above.
+    await waitFor(() => expect(document.activeElement).toBe(actionAlert));
     expect(recoveryAlert?.textContent).toMatch(/request was declined/i);
   });
 
