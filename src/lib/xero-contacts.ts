@@ -37,6 +37,7 @@ import {
 } from "./xero-api-client";
 import { syncManagedXeroContactGroupForMember } from "./xero-contact-groups";
 import { isPlaceholderContactEmail } from "@/lib/placeholder-contact-email";
+import { recordProviderCreatedContactPendingLocalLink } from "@/lib/xero-contact-create-recovery";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -57,6 +58,35 @@ export class XeroContactValidationError extends Error {
 export interface FindOrCreateXeroContactOptions {
   createdByMemberId?: string;
   repairExistingLink?: boolean;
+}
+
+type ContactCreateOperationInput = Omit<
+  Parameters<typeof startXeroSyncOperation>[0],
+  "store"
+>;
+
+/**
+ * Commit the exact member-scoped CREATE reservation before any provider create.
+ * Member merge takes the conflicting Member FOR UPDATE set and rechecks these
+ * rows under that lock, so either the reservation is visible to merge or the
+ * member disappears before this transaction can reserve it.
+ */
+async function reserveMemberContactCreateOperation(
+  memberId: string,
+  input: ContactCreateOperationInput,
+) {
+  return prisma.$transaction(async (tx) => {
+    const locked = await tx.$queryRaw<Array<{ id: string }>>`
+      SELECT "id"
+      FROM "Member"
+      WHERE "id" = ${memberId}
+      FOR KEY SHARE
+    `;
+    if (locked.length !== 1 || locked[0]?.id !== memberId) {
+      throw new Error(`Member not found: ${memberId}`);
+    }
+    return startXeroSyncOperation({ ...input, store: tx });
+  });
 }
 
 export interface XeroContactUpdateData {
@@ -494,7 +524,7 @@ export async function findOrCreateXeroContact(
       "find-or-create",
       "v1"
     );
-    const operation = await startXeroSyncOperation({
+    const operation = await reserveMemberContactCreateOperation(memberId, {
       direction: "OUTBOUND",
       entityType: "CONTACT",
       operationType: "CREATE",
@@ -527,6 +557,11 @@ export async function findOrCreateXeroContact(
         throw new Error("Failed to create Xero contact");
       }
 
+      await persistProviderCreatedContactProofOrThrow(
+        operation.id,
+        createdContact.contactID,
+      );
+
       resolved = {
         kind: "created",
         contactId: createdContact.contactID,
@@ -549,6 +584,7 @@ export async function findOrCreateXeroContact(
         },
       };
     } catch (error) {
+      if (error instanceof XeroContactCreatePartialSuccessError) throw error;
       if (isDuplicateActiveXeroContactNameError(error)) {
         try {
           const matchedContact = await findExistingXeroContactByExactName({
@@ -756,6 +792,36 @@ export class XeroContactCreatePartialSuccessError extends Error {
   }
 }
 
+async function persistProviderCreatedContactProofOrThrow(
+  operationId: string,
+  resolvedContactId: string,
+): Promise<void> {
+  try {
+    await recordProviderCreatedContactPendingLocalLink({
+      operationId,
+      resolvedContactId,
+    });
+  } catch (proofError) {
+    try {
+      await failXeroSyncOperation(operationId, proofError, {
+        phase: "local_link_after_xero_resolution",
+        resolvedContactId,
+        providerContactCreated: true,
+      });
+    } catch (failError) {
+      logger.error(
+        { err: failError, operationId },
+        "Failed to preserve provider-created Xero contact recovery proof",
+      );
+    }
+    throw new XeroContactCreatePartialSuccessError(
+      "PROVIDER_CONTACT_CREATED",
+      resolvedContactId,
+      proofError,
+    );
+  }
+}
+
 export async function createXeroContactForMember(
   memberId: string,
   options?: { createdByMemberId?: string }
@@ -811,7 +877,7 @@ export async function createXeroContactForMember(
       "create",
       "v1"
     );
-    const operation = await startXeroSyncOperation({
+    const operation = await reserveMemberContactCreateOperation(memberId, {
       direction: "OUTBOUND",
       entityType: "CONTACT",
       operationType: "CREATE",
@@ -846,6 +912,10 @@ export async function createXeroContactForMember(
       throw new Error("Failed to create Xero contact");
     }
     createdContactId = createdContact.contactID;
+    await persistProviderCreatedContactProofOrThrow(
+      operation.id,
+      createdContactId,
+    );
     completionInput = {
       responsePayload: response.body,
       xeroObjectType: "CONTACT",
@@ -863,6 +933,7 @@ export async function createXeroContactForMember(
       ],
     };
   } catch (error) {
+    if (error instanceof XeroContactCreatePartialSuccessError) throw error;
     await failXeroSyncOperation(operation.id, error);
     throw error;
   }

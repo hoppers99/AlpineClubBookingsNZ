@@ -8,30 +8,67 @@ type ContactCreateRecoveryDb = Pick<
 
 export const XERO_CONTACT_CREATE_LOCAL_LINK_FAILURE_PHASE =
   "local_link_after_xero_resolution";
+export const XERO_CONTACT_CREATE_PROVIDER_CREATED_PENDING_LINK_PHASE =
+  "provider_contact_created_local_link_pending";
+
+const contactCreateIdentityWhere = (memberId: string) => ({
+  direction: "OUTBOUND",
+  entityType: "CONTACT",
+  operationType: "CREATE",
+  localModel: "Member",
+  localId: memberId,
+  manuallyResolvedAt: null,
+}) satisfies Prisma.XeroSyncOperationWhereInput;
+
+const providerCreatedPayloadWhere = (phase: string) => [
+  {
+    responsePayload: {
+      path: ["phase"],
+      equals: phase,
+    },
+  },
+  {
+    responsePayload: {
+      path: ["providerContactCreated"],
+      equals: true,
+    },
+  },
+] satisfies Prisma.XeroSyncOperationWhereInput[];
 
 export function unresolvedMemberContactCreateRecoveryWhere(
   memberId: string,
 ): Prisma.XeroSyncOperationWhereInput {
   return {
-    direction: "OUTBOUND",
-    entityType: "CONTACT",
-    operationType: "CREATE",
-    localModel: "Member",
-    localId: memberId,
-    status: "FAILED",
-    manuallyResolvedAt: null,
-    AND: [
+    ...contactCreateIdentityWhere(memberId),
+    OR: [
       {
-        responsePayload: {
-          path: ["phase"],
-          equals: XERO_CONTACT_CREATE_LOCAL_LINK_FAILURE_PHASE,
-        },
+        status: "FAILED",
+        AND: providerCreatedPayloadWhere(
+          XERO_CONTACT_CREATE_LOCAL_LINK_FAILURE_PHASE,
+        ),
       },
       {
-        responsePayload: {
-          path: ["providerContactCreated"],
-          equals: true,
-        },
+        status: "RUNNING",
+        AND: providerCreatedPayloadWhere(
+          XERO_CONTACT_CREATE_PROVIDER_CREATED_PENDING_LINK_PHASE,
+        ),
+      },
+    ],
+  };
+}
+
+export function memberContactCreateMergeBlockerWhere(
+  memberId: string,
+): Prisma.XeroSyncOperationWhereInput {
+  return {
+    ...contactCreateIdentityWhere(memberId),
+    OR: [
+      { status: "RUNNING" },
+      {
+        status: "FAILED",
+        AND: providerCreatedPayloadWhere(
+          XERO_CONTACT_CREATE_LOCAL_LINK_FAILURE_PHASE,
+        ),
       },
     ],
   };
@@ -45,9 +82,40 @@ export function isProviderCreatedLocalLinkFailurePayload(
   }
   const record = payload as Record<string, unknown>;
   return (
-    record.phase === XERO_CONTACT_CREATE_LOCAL_LINK_FAILURE_PHASE &&
+    (record.phase === XERO_CONTACT_CREATE_LOCAL_LINK_FAILURE_PHASE ||
+      record.phase ===
+        XERO_CONTACT_CREATE_PROVIDER_CREATED_PENDING_LINK_PHASE) &&
     record.providerContactCreated === true
   );
+}
+
+export async function recordProviderCreatedContactPendingLocalLink(params: {
+  operationId: string;
+  resolvedContactId: string;
+  db?: ContactCreateRecoveryDb;
+}): Promise<void> {
+  const db = params.db ?? prisma;
+  const updated = await db.xeroSyncOperation.updateMany({
+    where: {
+      id: params.operationId,
+      status: "RUNNING",
+      manuallyResolvedAt: null,
+    },
+    data: {
+      responsePayload: {
+        phase: XERO_CONTACT_CREATE_PROVIDER_CREATED_PENDING_LINK_PHASE,
+        providerContactCreated: true,
+        resolvedContactId: params.resolvedContactId,
+      },
+      xeroObjectType: "CONTACT",
+      xeroObjectId: params.resolvedContactId,
+    },
+  });
+  if (updated.count !== 1) {
+    throw new Error(
+      `Could not record provider-created Xero contact for operation ${params.operationId}`,
+    );
+  }
 }
 
 export async function hasUnresolvedMemberContactCreateRecovery(
@@ -61,6 +129,21 @@ export async function hasUnresolvedMemberContactCreateRecovery(
   return (
     operation !== null &&
     isProviderCreatedLocalLinkFailurePayload(operation.responsePayload)
+  );
+}
+
+export async function hasMemberContactCreateMergeBlocker(
+  memberId: string,
+  db: ContactCreateRecoveryDb = prisma,
+): Promise<boolean> {
+  const operation = await db.xeroSyncOperation.findFirst({
+    where: memberContactCreateMergeBlockerWhere(memberId),
+    select: { id: true, status: true, responsePayload: true },
+  });
+  return (
+    operation !== null &&
+    (operation.status === "RUNNING" ||
+      isProviderCreatedLocalLinkFailurePayload(operation.responsePayload))
   );
 }
 

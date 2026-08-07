@@ -15,7 +15,7 @@ import {
 import { deleteOwnedMemberPhotoBlobs } from "@/lib/member-photo";
 import { memberDisplayName } from "@/lib/member-serialization";
 import { prisma } from "@/lib/prisma";
-import { hasUnresolvedMemberContactCreateRecovery } from "@/lib/xero-contact-create-recovery";
+import { hasMemberContactCreateMergeBlocker } from "@/lib/xero-contact-create-recovery";
 import { settleHostingCoverageAfterCommit } from "@/lib/adult-member-hosting-coverage-drain";
 import { lockAdultMemberHostingPolicySet } from "@/lib/adult-member-hosting-policy-set";
 import { lockHostingCoverageOwners } from "@/lib/adult-member-hosting-coverage-lock";
@@ -1356,11 +1356,11 @@ async function countPendingLifecycleOrFamily(
 }
 
 /**
- * A provider-created contact whose local Member link failed is an unresolved
- * identity proof, not ordinary failed sync history. `XeroSyncOperation.localId`
- * deliberately has no Member foreign key, so deleting either participant would
- * orphan that proof under the removed id and allow a later create for the
- * survivor. Refuse until an operator resolves the failed operation.
+ * A RUNNING member-contact CREATE is the short-lived reservation that fences its
+ * provider call against merge. A provider-created contact whose local Member
+ * link failed is the durable recovery form of that same identity proof.
+ * `XeroSyncOperation.localId` deliberately has no Member foreign key, so refuse
+ * either exact state before deleting a participant.
  */
 async function evaluateContactCreateRecoveryBlockers(
   db: MergeDbClient,
@@ -1368,22 +1368,22 @@ async function evaluateContactCreateRecoveryBlockers(
   loserId: string,
 ): Promise<MergeBlocker[]> {
   const [masterPending, loserPending] = await Promise.all([
-    hasUnresolvedMemberContactCreateRecovery(masterId, db),
-    hasUnresolvedMemberContactCreateRecovery(loserId, db),
+    hasMemberContactCreateMergeBlocker(masterId, db),
+    hasMemberContactCreateMergeBlocker(loserId, db),
   ]);
   const blockers: MergeBlocker[] = [];
   if (masterPending) {
     blockers.push({
       code: "master_xero_contact_create_recovery_pending",
       label:
-        "The master has a Xero contact that was created but not linked locally. Resolve or mark the failed Xero operation before merging.",
+        "The master has a Xero contact create in progress or awaiting local-link recovery. Wait for it to finish, or resolve the failed Xero operation, before merging.",
     });
   }
   if (loserPending) {
     blockers.push({
       code: "loser_xero_contact_create_recovery_pending",
       label:
-        "The duplicate has a Xero contact that was created but not linked locally. Resolve or mark the failed Xero operation before merging.",
+        "The duplicate has a Xero contact create in progress or awaiting local-link recovery. Wait for it to finish, or resolve the failed Xero operation, before merging.",
     });
   }
   return blockers;
