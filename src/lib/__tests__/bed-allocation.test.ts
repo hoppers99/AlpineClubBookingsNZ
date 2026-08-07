@@ -11,7 +11,6 @@ import {
   type BedAllocationRoom,
 } from "@/lib/bed-allocation";
 import { BED_ALLOCATION_PRIORITY_VOCABULARY } from "@/lib/bed-allocation-settings";
-import { realElapsedMs } from "@/lib/__tests__/helpers/clock";
 
 const rooms: BedAllocationRoom[] = [
   {
@@ -1823,7 +1822,7 @@ describe("bed allocation planner", () => {
     ).toThrow(/unknown/i);
   });
 
-  it("bounds a realistic 31-night school matching plan", () => {
+  it("bounds a realistic 31-night school matching plan by worker CPU", () => {
     expect(BED_ALLOCATION_MAX_MATCHING_LAYOUTS).toBe(24);
     const largeRooms: BedAllocationRoom[] = Array.from(
       { length: 20 },
@@ -1851,18 +1850,24 @@ describe("bed allocation planner", () => {
       })),
     );
     largeBooking.isSchoolGroup = true;
-    const startedAt = process.hrtime.bigint();
+    const startedCpu = process.threadCpuUsage();
     const plan = buildFirstFitBedAllocationPlan({
       enabled: true,
       rooms: largeRooms,
       bookings: [largeBooking],
     });
+    const usedCpu = process.threadCpuUsage(startedCpu);
+    const usedCpuMs = (usedCpu.user + usedCpu.system) / 1_000;
 
     expect(plan.allocations).toHaveLength(100 * 31);
-    // Coarse synchronous-latency guard with CI headroom: the pre-indexed
-    // implementation took about 7.2s for this exact 3,100-row shape.
-    expect(realElapsedMs(startedAt)).toBeLessThan(5_000);
-  });
+    // Thread CPU excludes time this Vitest worker is descheduled by sibling
+    // files. Keep the original 5s work budget: indexed focused runs consume
+    // about 2.4s, while a same-head mutation restoring the per-guest/per-night
+    // growing-array scan consumes about 16.5-17.2s and must remain red. The 15s
+    // ordinary test timeout is only wall-clock headroom for a contended hosted
+    // worker.
+    expect(usedCpuMs).toBeLessThan(5_000);
+  }, 15_000);
 
   it("falls back silently to first-fit when the requested room is full", () => {
     const plan = buildFirstFitBedAllocationPlan({
