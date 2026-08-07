@@ -127,7 +127,18 @@ export default function RosterSetupWizard() {
   const fetchData = useCallback(async () => {
     try {
       const [guestsRes, rosterRes, templatesRes] = await Promise.all([
-        fetch(`/api/lodge/guests/${dateStr}`),
+        // #2622: `scope=lodge-list` is the checkout-INCLUSIVE lodge list. The
+        // default scope is the night model, so on an all-departing morning this
+        // wizard counted nobody, `totalGuests === 0` disabled **Next**, and the
+        // hut leader could never reach the generate step — on exactly the day
+        // the shutdown chores matter most. The step-1 list and the count now
+        // include the people who leave today, which is who the generate route
+        // (already on the operational-day rule) will roster.
+        //
+        // This is the minimal unblock. #2631 converts this page and the lodge
+        // guests route onto the named operational-day helpers so step 1 and the
+        // generate step derive presence from one rule instead of two scopes.
+        fetch(`/api/lodge/guests/${dateStr}?scope=lodge-list`),
         fetch(`/api/lodge/roster/${dateStr}`),
         fetch(`/api/lodge/roster/${dateStr}/chores`),
       ]);

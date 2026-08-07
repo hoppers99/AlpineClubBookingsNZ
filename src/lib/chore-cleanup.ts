@@ -7,6 +7,7 @@
  */
 
 import type { PrismaClient } from "@prisma/client";
+import { isGuestOperationallyPresentOnDay } from "@/lib/booking-guest-stay-ranges";
 import { lockRosterDates } from "@/lib/roster-lock";
 
 type Tx = Omit<PrismaClient, "$connect" | "$disconnect" | "$on" | "$transaction" | "$use" | "$extends">;
@@ -35,9 +36,18 @@ export async function cleanupChoreAssignmentsForDateChange(
   const choreWarnings: string[] = [];
   let deletedCount = 0;
 
+  // The booking's OPERATIONAL span is [newCheckIn, newCheckOut] INCLUSIVE
+  // (#2622): its guests are here from midday on the check-in day until midday
+  // on the check-out day, so a chore dated the check-out day is legitimate and
+  // must survive. Hence `gt`, not `gte`.
+  //
+  // The check-in edge is unchanged and stays `lt`, derived from the same rule
+  // rather than by symmetry: presence on the morning of `newCheckIn` would
+  // require the night before it to be booked, and if it were, that night would
+  // be inside the booking and `newCheckIn` would not be the check-in date.
   const where = {
     bookingId,
-    OR: [{ date: { lt: newCheckIn } }, { date: { gte: newCheckOut } }],
+    OR: [{ date: { lt: newCheckIn } }, { date: { gt: newCheckOut } }],
   };
   if (!options.rosterDatesAlreadyLocked) {
     // The first query derives the advisory keys only. It is not authoritative:
@@ -97,8 +107,13 @@ export async function cleanupChoreAssignmentsForGuestStayRanges(
         select: {
           stayStart: true,
           stayEnd: true,
+          // Owner decision D-M6 (#2622): cleanup loads the CANONICAL night set
+          // and asks the same operational-day helper roster eligibility asks,
+          // so the two can never disagree about who was in the lodge on a date.
+          nights: { select: { stayDate: true } },
         },
       },
+      booking: { select: { checkIn: true, checkOut: true } },
     },
   });
 
@@ -107,11 +122,15 @@ export async function cleanupChoreAssignmentsForGuestStayRanges(
       continue;
     }
 
-    const assignmentDate = assignment.date.getTime();
-    const stayStart = assignment.bookingGuest.stayStart.getTime();
-    const stayEnd = assignment.bookingGuest.stayEnd.getTime();
-    const isOutsideGuestStay =
-      assignmentDate < stayStart || assignmentDate >= stayEnd;
+    // Replaces the old envelope comparison, which spanned a sparse stay's
+    // internal gaps and cut the departure morning off the end. Per segment this
+    // now retains every departure morning and — the accepted side effect of
+    // D-M6 — starts removing stale SUGGESTED rows stranded on gap dates.
+    const isOutsideGuestStay = !isGuestOperationallyPresentOnDay(
+      assignment.bookingGuest,
+      assignment.date,
+      assignment.booking,
+    );
 
     if (!isOutsideGuestStay) {
       continue;

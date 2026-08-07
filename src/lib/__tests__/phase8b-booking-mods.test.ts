@@ -795,7 +795,10 @@ describe("PUT /api/bookings/[id]/modify-dates", () => {
         bookingId: booking.id,
         OR: [
           { date: { lt: new Date("2026-06-02T00:00:00.000Z") } },
-          { date: { gte: new Date("2026-06-04T00:00:00.000Z") } },
+          // #2622: strictly AFTER the new check-out date. The check-out day is
+          // a departure morning the booking's guests are still present for, so
+          // a chore dated then is legitimate and must survive the date change.
+          { date: { gt: new Date("2026-06-04T00:00:00.000Z") } },
         ],
         status: "SUGGESTED",
       },

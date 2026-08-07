@@ -15,6 +15,11 @@ export interface RosterGuest {
   firstName: string
   lastName: string
   ageTier: string
+  // #2622: which half of the operational day this person occupies. Arriving is
+  // "here from midday", departing is "here until midday" — i.e. LEAVES TODAY.
+  // Derived server-side from the booked nights; no time is ever shown.
+  isArriving?: boolean
+  isDeparting?: boolean
 }
 
 export interface RosterAssignment {
@@ -113,7 +118,9 @@ export function isRosterData(value: unknown): value is RosterData {
       typeof guest.bookingGroupLabel === "string" &&
       typeof guest.firstName === "string" &&
       typeof guest.lastName === "string" &&
-      typeof guest.ageTier === "string") &&
+      typeof guest.ageTier === "string" &&
+      (guest.isArriving === undefined || typeof guest.isArriving === "boolean") &&
+      (guest.isDeparting === undefined || typeof guest.isDeparting === "boolean")) &&
     Array.isArray(value.assignments) &&
     value.assignments.every((assignment) => isRecord(assignment) &&
       typeof assignment.id === "string" &&
@@ -147,6 +154,26 @@ function groupedGuests(guests: RosterGuest[]) {
     label: members[0]?.bookingGroupLabel ?? "Booking group",
     guests: members,
   }))
+}
+
+/**
+ * The one-word half-day label, or null for someone here all day.
+ *
+ * #2622: "Departing" means they leave today and are here this morning, so they
+ * are on the roster — the opposite of what the old flag meant. No time of day
+ * is displayed anywhere; the midday boundary is definitional.
+ */
+function operationalDayLabel(guest: RosterGuest): "Arriving" | "Departing" | null {
+  if (guest.isArriving) return "Arriving"
+  if (guest.isDeparting) return "Departing"
+  return null
+}
+
+/** Plain-text form of the same label, for a `<select>` option. */
+function guestOptionLabel(guest: RosterGuest) {
+  const label = operationalDayLabel(guest)
+  const name = `${guest.firstName} ${guest.lastName}`
+  return label ? `${name} (${label.toLowerCase()} today)` : name
 }
 
 function assignmentSummary(names: string[]) {
@@ -384,7 +411,7 @@ export function RosterEditor({
       </Card>
 
       {roster.guests.length === 0 && (
-        <Card><CardContent className="py-8 text-center text-muted-foreground">No eligible guests are staying on this date.</CardContent></Card>
+        <Card><CardContent className="py-8 text-center text-muted-foreground">No one is in the lodge on this date.</CardContent></Card>
       )}
 
       {roster.templates.map((template) => {
@@ -443,7 +470,7 @@ export function RosterEditor({
                                   <option value="">Choose a person</option>
                                   {guestGroups.map((group) => (
                                     <optgroup key={group.key} label={group.label}>
-                                      {group.guests.map((option) => <option key={option.id} value={option.id}>{option.firstName} {option.lastName}</option>)}
+                                      {group.guests.map((option) => <option key={option.id} value={option.id}>{guestOptionLabel(option)}</option>)}
                                     </optgroup>
                                   ))}
                                 </select>
@@ -485,7 +512,7 @@ export function RosterEditor({
       </Card>
 
       <Card>
-        <CardHeader><CardTitle role="heading" aria-level={2} className="text-base">Guest assignment check</CardTitle><CardDescription>Every eligible guest, kept with their booking or family group.</CardDescription></CardHeader>
+        <CardHeader><CardTitle role="heading" aria-level={2} className="text-base">Guest assignment check</CardTitle><CardDescription>Everyone in the lodge today, kept with their booking or family group. Someone leaving today is here this morning and can be given morning or anytime chores.</CardDescription></CardHeader>
         <CardContent className="space-y-4">
           {guestGroups.map((group) => (
             <section key={group.key} aria-label={group.label}>
@@ -495,12 +522,19 @@ export function RosterEditor({
                   const choreNames = draftAssignments
                     .filter((assignment) => assignment.bookingGuestId === guest.id)
                     .map((assignment) => templateById.get(assignment.choreTemplateId)?.name ?? "Unknown chore")
-                  return <li key={guest.id}><span className="font-medium">{guest.firstName} {guest.lastName}:</span> {assignmentSummary(choreNames)}</li>
+                  const dayLabel = operationalDayLabel(guest)
+                  return (
+                    <li key={guest.id}>
+                      <span className="font-medium">{guest.firstName} {guest.lastName}:</span>
+                      {dayLabel && <Badge variant="outline" className="mx-1 align-middle">{dayLabel}</Badge>}
+                      {" "}{assignmentSummary(choreNames)}
+                    </li>
+                  )
                 })}
               </ul>
             </section>
           ))}
-          {guestGroups.length === 0 && <p className="text-muted-foreground">No eligible guests are staying on this date.</p>}
+          {guestGroups.length === 0 && <p className="text-muted-foreground">No one is in the lodge on this date.</p>}
         </CardContent>
       </Card>
     </div>

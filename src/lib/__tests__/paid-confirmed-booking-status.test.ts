@@ -304,7 +304,12 @@ describe("paid legacy CONFIRMED booking repair", () => {
       expect.objectContaining({
         where: expect.objectContaining({
           stayStart: { lte: dateOnly(2026, 6, 10) },
-          stayEnd: { gt: dateOnly(2026, 6, 10) },
+          // #2622: roster validation is checkout-INCLUSIVE — a guest who leaves
+          // this morning may legitimately hold a chore today. The arrive lookup
+          // above stays night-only and keeps its `gt`; only the roster question
+          // moved to the operational day. What this test is pinning — that PAID
+          // and CONFIRMED are both operational statuses — is unchanged.
+          stayEnd: { gte: dateOnly(2026, 6, 10) },
           booking: expect.objectContaining({
             status: { in: expect.arrayContaining([BookingStatus.PAID]) },
           }),

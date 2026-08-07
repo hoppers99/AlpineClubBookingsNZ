@@ -937,11 +937,11 @@ tree** (#2160, extended by #2168 and #2324) — not a claim that nothing is left
 Measured
 on the current tree by `view-only-banner-contract.test.ts`, which asserts these
 figures rather than trusting a hand count: **84 components render a banner, and
-262 of the 311 `ViewOnlyActionButton` call sites opt out** of the per-button
+263 of the 312 `ViewOnlyActionButton` call sites opt out** of the per-button
 reason. (Earlier revisions of this page published 76/232/264/211 — those were
 upstream-historical and had drifted; the numbers here are the ones the contract
-test currently pins, which is the only authority.) Those 261 split by WHICH rule
-covers them: **235** pass the literal
+test currently pins, which is the only authority.) Those 263 split by WHICH rule
+covers them: **236** pass the literal
 `describeReason={false}` and are covered by a banner in the same file, and **27**
 pass `describeReason={!ancestorRendersViewOnlyBanner}` and are covered by a
 verified vouching parent — 22 by a parent's own JSX render site (#2168), 5 by the
@@ -1755,9 +1755,19 @@ same-owner cover, a separate urgent incident opens without changing
    date. Mixed member/non-member parties split only in this pending case; inside
    the window or under First Paid, First In they stay one normal booking.
 7. `BookingGuest.stayStart` and `BookingGuest.stayEnd` record the actual
-   date-only range for each guest inside the parent booking envelope. Capacity,
-   lodge lists, rosters, and booking-derived finance metrics count a guest only
-   on nights in that individual range.
+   date-only range for each guest inside the parent booking envelope, with
+   `BookingGuestNight` rows as the authoritative night set when present.
+   Capacity and booking-derived finance metrics count a guest only on nights in
+   that individual range — the NIGHT model. Operational surfaces that ask "who
+   is in the lodge today" read the OPERATIONAL-DAY model instead (#2622): a
+   guest occupies a day's morning half if the previous night was theirs and its
+   evening half if the day itself is, so someone checking out this morning is
+   present for the morning. Chore-roster generation, roster validation and chore
+   cleanup all read one named rule in
+   `src/lib/booking-guest-stay-ranges.ts` through a single eligibility query
+   (`src/lib/roster-eligibility.ts`), and the allocator's arriving/departing
+   routing is a derived label off that rule, never separate data.
+   `docs/DOMAIN_INVARIANTS.md` owns which surfaces belong to which model.
 8. Capacity-sensitive writes use a PostgreSQL advisory transaction lock keyed
    per lodge (`acquireLodgeCapacityLock`), so overlapping booking decisions at
    the same lodge serialise while bookings at different lodges never contend.
