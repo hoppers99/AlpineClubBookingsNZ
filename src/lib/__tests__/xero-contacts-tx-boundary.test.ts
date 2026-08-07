@@ -28,10 +28,15 @@ const mocks = vi.hoisted(() => ({
   recordProviderCreatedContactPendingLocalLink: vi.fn(),
 }));
 
-vi.mock("@/lib/xero-contact-create-recovery", () => ({
-  recordProviderCreatedContactPendingLocalLink:
-    mocks.recordProviderCreatedContactPendingLocalLink,
-}));
+vi.mock("@/lib/xero-contact-create-recovery", async (importOriginal) => {
+  const actual =
+    await importOriginal<typeof import("@/lib/xero-contact-create-recovery")>();
+  return {
+    ...actual,
+    recordProviderCreatedContactPendingLocalLink:
+      mocks.recordProviderCreatedContactPendingLocalLink,
+  };
+});
 
 vi.mock("@/lib/prisma", () => ({
   prisma: {
@@ -168,10 +173,11 @@ describe("findOrCreateXeroContact transaction boundary (#1355)", () => {
   });
 
   it("keeps first-writer-wins when a concurrent resolver linked while our Xero work ran", async () => {
-    // Phase-2 re-read sees a DIFFERENT contact already linked.
-    mocks.txMemberFindUnique.mockResolvedValue({
-      xeroContactId: "contact-other",
-    });
+    // The reservation re-read still sees no link. Phase 2 then sees the
+    // DIFFERENT contact that won while provider work ran.
+    mocks.txMemberFindUnique
+      .mockResolvedValueOnce({ id: "member-1", xeroContactId: null })
+      .mockResolvedValueOnce({ xeroContactId: "contact-other" });
 
     await expect(findOrCreateXeroContact("member-1")).resolves.toBe(
       "contact-other"
