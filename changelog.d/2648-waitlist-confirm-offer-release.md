@@ -20,7 +20,7 @@
   explains the two ways to fix one. That new entry is filed under the **Bookings**
   audit category, so it is visible to exactly the administrators who can already
   see the booking it names and to nobody new; the audit writer census totals move
-  from 418 sites to 419 and `booking` from 79 to 80 to record it.
+  to 420 sites and `booking` from 79 to 80 to record it.
 
   The offer card is now honest about all of this. Previously, several refusals
   arrived *after* the offer had been used up but left an enabled "Confirm Booking"

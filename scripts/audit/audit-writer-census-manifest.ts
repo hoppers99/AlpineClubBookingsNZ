@@ -54,20 +54,31 @@ export const AUDIT_CENSUS_TOTALS = {
   /**
    * Row-producing production write sites across `src/`, `scripts/` and `prisma/`.
    *
-   * 419 since #2623: the waitlist-confirm route records
+   * 418 -> 419 (#2627): releasing a started deletion approval writes
+   * `member.deletion_approval_claim_released` with the awaited `createAuditLog`,
+   * inside the release's own transaction, because that row is the only surviving
+   * record of who held the claim the transition destroys. Categorised `privacy`
+   * at the site, so it does not join `UNCATEGORISED_AUDIT_WRITERS` below.
+   *
+   * 419 -> 420 (#2623): the waitlist-confirm route records
    * `waitlist.confirm_offer_release_failed` when its compensating offer release
    * cannot run, because that state is operator-only — no cron sweeps it and the
    * member has nothing to retry — so the audit row IS the recovery surface. It is
    * categorised `booking`, `critical` severity, and carries `entityType`/`entityId`
-   * so it correlates to the booking.
+   * so it correlates to the booking. (#2627 and #2623 landed in the same window and
+   * both claimed 419; the pin has to count BOTH, which is exactly what this file
+   * exists to catch.)
    */
-  writeSites: 419,
+  writeSites: 420,
   /** Of those, sites whose event object carries no `category` key. */
   uncategorised: 82,
   /** Per-sink totals, so a shift between forms cannot cancel out in the total. */
   bySink: {
+    // 238 -> 239 (#2623): the waitlist-confirm recovery marker, fire-and-forget
+    // outside every transaction because its own failure must not mask the strand.
     logAudit: { total: 239, uncategorised: 69 },
-    createAuditLog: { total: 101, uncategorised: 11 },
+    // 101 -> 102 (#2627): the deletion-approval release, above.
+    createAuditLog: { total: 102, uncategorised: 11 },
     createStructuredAuditLog: { total: 8, uncategorised: 0 },
     "auditLog.create": { total: 71, uncategorised: 2 },
   },
@@ -94,7 +105,10 @@ export const AUDIT_CENSUS_TOTALS = {
     lodge: 16,
     xero: 19,
     communication: 12,
-    privacy: 14,
+    // 14 -> 15 (#2627): `member.deletion_approval_claim_released`. Still a
+    // membership+support read, like every other deletion-decision row beside it,
+    // so this widens nobody's access.
+    privacy: 15,
     system: 4,
   },
 } as const;
@@ -475,11 +489,15 @@ export const UNCATEGORISED_AUDIT_WRITERS: Readonly<
   },
 
   // ─── Privacy decisions → `privacy` ─────────────────────────────────────────
-  "src/app/api/admin/deletion-requests/[id]/route.ts::POST#0": {
+  // Ordinals moved by one (#2627): the categorised release writer is now the
+  // first audit site in this `POST`, so the rejection is #1 and the approval #4.
+  // Exactly the ordinal drift this manifest's header warns about — the identity
+  // survives a reformat, not a new site earlier in the same symbol.
+  "src/app/api/admin/deletion-requests/[id]/route.ts::POST#1": {
     action: "member.deletion_rejected",
     proposedCategory: "privacy",
   },
-  "src/app/api/admin/deletion-requests/[id]/route.ts::POST#3": {
+  "src/app/api/admin/deletion-requests/[id]/route.ts::POST#4": {
     action: "member.deletion_approved",
     proposedCategory: "privacy",
   },
