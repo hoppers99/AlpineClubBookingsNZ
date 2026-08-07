@@ -1273,9 +1273,10 @@ describe("view-only section banner coverage (#2160)", () => {
                carries is applied by NOT RENDERING the control at all rather
                than by disabling it with a narrower per-button reason, so it
                adds no exception. (Re-measured, as always: 311 -> 312. The
-               running left-hand column reached 310 by the step above and so
-               still trails the measured total by one, the drift the 269 and
-               297 notes already record.)
+               running left-hand column reached 310 at the step above, so it
+               trails the measured total by one; #2637 supplies the correct
+               reconstruction of that gap and this note deliberately does not
+               guess at it.)
       */
       // #2259 adds the per-booking "No emails"
       // switch (`booking-no-emails-controls.tsx`), a leaf control dropped into

@@ -14,7 +14,11 @@
   properly. Releasing anonymises nobody and emails the member nothing; any
   bookings the started approval already cancelled stay cancelled, and the dialog
   says so. Only a Full Admin sees the control, and the screen tells a Membership
-  Officer who to ask.
+  Officer who to ask. Every release is recorded in the audit log — who released
+  it, who had held the approval, and the reason — filed under Privacy alongside
+  the approve and reject entries beside it, so it is visible to exactly the same
+  administrators as those and to nobody new. (The audit-writer census #2581 added
+  moves 418 recording points to 419 for it.)
 
   A released request goes back into the pending queue **carrying that history**,
   because rejecting it is the one rejection that can be final over stays that were
