@@ -104,43 +104,150 @@ export function isGuestActiveOnNight(
   return stayStartKey <= nightKey && nightKey < stayEndKey;
 }
 
-function isGuestVisibleOnLodgeDate(
-  guest: GuestStayRange,
-  date: Date,
-  booking: BookingStayRange,
-  options?: { includeDepartureDate?: boolean }
-): boolean {
-  const dateKey = dateOnlyKey(date);
+// ---------------------------------------------------------------------------
+// The operational day (#2622)
+// ---------------------------------------------------------------------------
+//
+// Owner rule: everyone who stays a night is in the lodge from midday NZ on the
+// day they arrive until midday NZ on the day they leave. So an NZ calendar day
+// D has two halves and a guest occupies
+//
+//   the MORNING half of D  iff  D-1 is one of their booked nights
+//   the EVENING half of D  iff  D   is one of their booked nights
+//
+// and they are operationally present on D if they occupy either half. The
+// boundary is fixed at midday NZ by definition (epic D-M3): there is no
+// setting, no threshold and no time-of-day data anywhere in this file.
+//
+// This is a PURE per-night rule, so it handles sparse (non-contiguous) stays
+// segment by segment (epic D-M4): nights {5, 8} means present on {5, 6, 8, 9},
+// and the gap day 7 — adjacent to no booked night — is an absence. A booking
+// with zero nights is never operationally present on any day.
+//
+// The derived labels the chore allocator and the roster badges consume are
+// nothing more than which half is occupied:
+//
+//   isArriving(D)  = evening half only  ("arrives today")
+//   isDeparting(D) = morning half only  ("leaves today")
+//
+// They are never independent data. `isGuestActiveOnNight` — the NIGHT model
+// that capacity, pricing and the whole-lodge rules are built on — is untouched
+// and deliberately separate; do not conflate the two.
 
-  // For explicit night sets, "visible on a lodge date" means the guest stays
-  // that night, plus the morning after their last included night when
-  // includeDepartureDate is set (the checkout-day visibility the board uses).
+const MS_PER_DAY = 24 * 60 * 60 * 1000;
+
+/**
+ * Shift a `yyyy-mm-dd` NZ date-only key by whole days.
+ *
+ * The key is re-anchored at UTC midnight, which is midday NZ (UTC+12/+13), so
+ * adding or subtracting whole days can never land on an NZ daylight-saving
+ * transition and roll the calendar day the wrong way.
+ */
+function shiftDateOnlyKey(key: string, days: number): string {
+  return formatDateOnlyForTimeZone(
+    new Date(new Date(`${key}T00:00:00.000Z`).getTime() + days * MS_PER_DAY)
+  );
+}
+
+/**
+ * Is `nightKey` one of this guest's booked nights?
+ *
+ * Deliberately duplicates `isGuestActiveOnNight`'s two branches against a
+ * pre-derived key instead of refactoring it: that function is frozen (the
+ * capacity, pricing, whole-lodge and multi-date-range suites pin it), so the
+ * operational-day rule takes a private copy rather than touching it.
+ */
+function isGuestNightKeyBooked(
+  guest: GuestStayRange,
+  nightKey: string,
+  booking: BookingStayRange
+): boolean {
   const nightKeySet = getGuestNightKeySet(guest);
   if (nightKeySet) {
-    if (nightKeySet.has(dateKey)) {
-      return true;
-    }
-    if (options?.includeDepartureDate) {
-      let maxKey: string | null = null;
-      for (const key of nightKeySet) {
-        if (maxKey === null || key > maxKey) maxKey = key;
-      }
-      if (maxKey !== null) {
-        const departureKey = formatDateOnlyForTimeZone(
-          new Date(new Date(`${maxKey}T00:00:00.000Z`).getTime() + 24 * 60 * 60 * 1000)
-        );
-        return dateKey === departureKey;
-      }
-    }
-    return false;
+    return nightKeySet.has(nightKey);
   }
-
   const stayStartKey = dateOnlyKey(getGuestStayStart(guest, booking));
   const stayEndKey = dateOnlyKey(getGuestStayEnd(guest, booking));
+  return stayStartKey <= nightKey && nightKey < stayEndKey;
+}
 
-  return options?.includeDepartureDate
-    ? stayStartKey <= dateKey && dateKey <= stayEndKey
-    : stayStartKey <= dateKey && dateKey < stayEndKey;
+/** Which halves of NZ day `day` a guest occupies, plus the derived labels. */
+export type GuestOperationalDayPresence = {
+  /** Occupies the pre-midday half: the night BEFORE `day` was booked. */
+  morning: boolean;
+  /** Occupies the post-midday half: the night OF `day` is booked. */
+  evening: boolean;
+  /** Occupies either half. */
+  present: boolean;
+  /** Evening half only — they arrive today. */
+  isArriving: boolean;
+  /** Morning half only — they leave today. */
+  isDeparting: boolean;
+};
+
+export function getGuestOperationalDayPresence(
+  guest: GuestStayRange,
+  day: Date,
+  booking: BookingStayRange
+): GuestOperationalDayPresence {
+  const dayKey = dateOnlyKey(day);
+  const evening = isGuestNightKeyBooked(guest, dayKey, booking);
+  const morning = isGuestNightKeyBooked(
+    guest,
+    shiftDateOnlyKey(dayKey, -1),
+    booking
+  );
+  return {
+    morning,
+    evening,
+    present: morning || evening,
+    isArriving: evening && !morning,
+    isDeparting: morning && !evening,
+  };
+}
+
+/**
+ * Is the guest in the lodge at any point on NZ day `day`?
+ *
+ * This is the one named eligibility rule for every operational surface — chore
+ * roster generation, roster save/confirm validation and chore cleanup all read
+ * it, so they cannot disagree about who was there.
+ */
+export function isGuestOperationallyPresentOnDay(
+  guest: GuestStayRange,
+  day: Date,
+  booking: BookingStayRange
+): boolean {
+  return getGuestOperationalDayPresence(guest, day, booking).present;
+}
+
+/** Arrives on `day`: occupies the evening half only. */
+export function isGuestArrivingOnDay(
+  guest: GuestStayRange,
+  day: Date,
+  booking: BookingStayRange
+): boolean {
+  return getGuestOperationalDayPresence(guest, day, booking).isArriving;
+}
+
+/** Leaves on `day`: occupies the morning half only. */
+export function isGuestDepartingOnDay(
+  guest: GuestStayRange,
+  day: Date,
+  booking: BookingStayRange
+): boolean {
+  return getGuestOperationalDayPresence(guest, day, booking).isDeparting;
+}
+
+/** Everyone operationally present on NZ day `day`, in input order. */
+export function getOperationallyPresentGuestsForDay<Guest extends GuestStayRange>(
+  guests: Guest[] | null | undefined,
+  day: Date,
+  booking: BookingStayRange
+): Guest[] {
+  return (guests ?? []).filter((guest) =>
+    isGuestOperationallyPresentOnDay(guest, day, booking)
+  );
 }
 
 export function getActiveGuestsForNight<Guest extends GuestStayRange>(
@@ -161,13 +268,27 @@ export function countActiveGuestsForNight(
   return getActiveGuestsForNight(guests, night, booking).length;
 }
 
+/**
+ * @deprecated (#2622) Call the named model you actually mean:
+ * `getOperationallyPresentGuestsForDay` for the operational day, or
+ * `getActiveGuestsForNight` for the night model. This wrapper now delegates to
+ * exactly those two so the `includeDepartureDate` flag can no longer select a
+ * THIRD, subtly different model — which is what it used to do for sparse
+ * stays, where it admitted only the morning after the guest's LAST night and
+ * silently dropped the morning after every earlier segment.
+ *
+ * It survives only so the three read surfaces #2631 converts
+ * (`api/lodge/week`, `api/lodge/guests/[date]`, `lodge-display-state`) keep
+ * compiling until that issue lands; `booking-guest-stay-ranges-contract.test.ts`
+ * freezes the caller list so no new one can appear in the meantime.
+ */
 export function getLodgeVisibleGuestsForDate<Guest extends GuestStayRange>(
   guests: Guest[] | null | undefined,
   date: Date,
   booking: BookingStayRange,
   options?: { includeDepartureDate?: boolean }
 ): Guest[] {
-  return (guests ?? []).filter((guest) =>
-    isGuestVisibleOnLodgeDate(guest, date, booking, options)
-  );
+  return options?.includeDepartureDate
+    ? getOperationallyPresentGuestsForDay(guests, date, booking)
+    : getActiveGuestsForNight(guests, date, booking);
 }
