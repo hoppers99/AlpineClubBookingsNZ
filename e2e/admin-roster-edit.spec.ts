@@ -27,19 +27,36 @@ type BrowserRoster = {
 // reload, including a cross-booking replacement and D-R2's exact group/order.
 test.use({ storageState: storageStatePath(E2E_ADMIN.email) });
 
-async function loadRosterDate(page: Page, date: string) {
+async function loadRosterDate(
+  page: Page,
+  date: string,
+  navigation: "goto" | "reload",
+) {
+  const lodgeScopedInitialLoad = page.waitForResponse((response) => {
+    const url = new URL(response.url());
+    return /^\/api\/admin\/roster\/\d{4}-\d{2}-\d{2}$/.test(url.pathname) &&
+      url.searchParams.has("lodgeId") &&
+      response.request().method() === "GET";
+  });
+  if (navigation === "goto") await page.goto("/admin/roster");
+  else await page.reload();
+  expect((await lodgeScopedInitialLoad).ok()).toBe(true);
+
   const loaded = page.waitForResponse((response) =>
     new URL(response.url()).pathname === `/api/admin/roster/${date}` &&
     response.request().method() === "GET",
   );
   await page.locator("#date").fill(date);
-  return loaded;
+  const response = await loaded;
+  expect(response.ok()).toBe(true);
+  await expect(page.locator("#date")).toHaveValue(date);
+  return response;
 }
 
 test("stages and atomically saves a two-booking roster in D-R2 order", async ({ page }) => {
   const date = DEMO_BOOKING_WINDOWS.rosterEdit.checkIn;
-  await page.goto("/admin/roster");
-  await loadRosterDate(page, date);
+  const initialResponse = await loadRosterDate(page, date, "goto");
+  const initialRoster = await initialResponse.json() as BrowserRoster;
   await expect(page.getByRole("button", { name: "Edit roster" })).toBeVisible();
 
   // Exercise the explicit Generate path, then use its authoritative reload for
@@ -53,7 +70,20 @@ test("stages and atomically saves a two-booking roster in D-R2 order", async ({ 
     new URL(response.url()).pathname === `/api/admin/roster/${date}` &&
     response.request().method() === "GET",
   );
-  await page.getByRole("button", { name: "Regenerate Roster" }).click();
+  const regenerateButton = page.getByRole("button", { name: "Regenerate Roster" });
+  const hasFinalAssignments = initialRoster.assignments.some(
+    (assignment) => assignment.status === "CONFIRMED" || assignment.status === "COMPLETED",
+  );
+  if (hasFinalAssignments) {
+    const dialogOpened = page.waitForEvent("dialog");
+    const clicked = regenerateButton.click();
+    const dialog = await dialogOpened;
+    expect(dialog.message()).toContain("replace the current confirmed roster");
+    await dialog.accept();
+    await clicked;
+  } else {
+    await regenerateButton.click();
+  }
   expect((await regenerated).ok()).toBe(true);
   const current = await (await regeneratedLoad).json() as BrowserRoster;
 
@@ -153,8 +183,7 @@ test("stages and atomically saves a two-booking roster in D-R2 order", async ({ 
   await page.getByRole("button", { name: "Cancel" }).click();
   await expect(page.getByText(`${targetGuest.firstName} ${targetGuest.lastName}`, { exact: true }).first()).toBeVisible();
 
-  await page.reload();
-  const reloadedResponse = await loadRosterDate(page, date);
+  const reloadedResponse = await loadRosterDate(page, date, "reload");
   const reloaded = await reloadedResponse.json() as BrowserRoster;
   expect(reloaded.assignments.find((assignment) => assignment.id === source!.id)).toMatchObject({
     bookingGuestId: targetGuest.id,
@@ -171,8 +200,7 @@ test("stages and atomically saves a two-booking roster in D-R2 order", async ({ 
   await page.getByRole("button", { name: "Confirm Roster" }).click();
   expect((await confirmed).ok()).toBe(true);
 
-  await page.reload();
-  const confirmedReloadResponse = await loadRosterDate(page, date);
+  const confirmedReloadResponse = await loadRosterDate(page, date, "reload");
   const confirmedReload = await confirmedReloadResponse.json() as BrowserRoster;
   expect(confirmedReload.assignments.find((assignment) => assignment.id === source!.id)).toMatchObject({
     bookingGuestId: targetGuest.id,
