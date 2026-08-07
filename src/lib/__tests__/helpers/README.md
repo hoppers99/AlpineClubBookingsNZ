@@ -82,6 +82,24 @@ common method sets. Each method is a `vi.fn()` typed as `Mock`, so
 same client to the callback, useful when a service is implemented as
 `prisma.$transaction((tx) => ...)`.
 
+## Recovery-alert focus (jsdom only)
+
+```ts
+import { expectRecoveryAlertToHoldFocus } from "@/lib/__tests__/helpers/focus";
+
+await waitFor(() => expect(alert).toHaveTextContent(RETRY_MESSAGE));
+await expectRecoveryAlertToHoldFocus(alert);
+```
+
+The one correct way to assert that a permanently mounted recovery alert holds
+focus. Written by hand the assertion races React's effect flush, which is what
+reddened `main` in #2635 — see [`../../../../docs/TESTING.md`](../../../../docs/TESTING.md)
+for the measurement and for the two spellings to avoid.
+
+Imported from its own module rather than the barrel above, like `clock.ts`: it
+pulls in `@testing-library/react`, which has no business being loaded by the
+node-environment suites that use the barrel for factories and Prisma mocks.
+
 ## Conventions
 
 - Helpers must not import anything from `src/app/...` so they stay

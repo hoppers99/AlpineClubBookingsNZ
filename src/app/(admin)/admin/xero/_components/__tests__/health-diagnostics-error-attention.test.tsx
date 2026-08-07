@@ -6,6 +6,7 @@ import type { ReactNode } from "react"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
 import { HealthAndDiagnosticsPanels } from "../health-diagnostics-panel"
+import { expectRecoveryAlertToHoldFocus } from "@/lib/__tests__/helpers/focus"
 
 const mocks = vi.hoisted(() => ({
   fetchJson: vi.fn(),
@@ -95,7 +96,7 @@ describe("Xero health action error attention (#2597)", () => {
     )
 
     await waitFor(() => expect(alert).toHaveTextContent(RETRY_MESSAGE))
-    expect(document.activeElement).toBe(alert)
+    await expectRecoveryAlertToHoldFocus(alert)
     expect(scrollIntoView).toHaveBeenCalledWith({
       behavior: "smooth",
       block: "center",

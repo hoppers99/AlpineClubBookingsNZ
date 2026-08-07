@@ -3,6 +3,7 @@
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { RosterEditor, type RosterData } from "@/components/admin/roster-editor"
+import { expectRecoveryAlertToHoldFocus } from "@/lib/__tests__/helpers/focus"
 
 const BASE: RosterData = {
   date: "2026-08-10",
@@ -179,7 +180,7 @@ describe("RosterEditor staged whole-roster editing", () => {
     fireEvent.change(first, { target: { value: "younger" } })
     fireEvent.click(screen.getByRole("button", { name: "Save roster" }))
     await waitFor(() => expect(screen.getByText(stale)).toBeTruthy())
-    expect(screen.getByText(stale)).toBe(document.activeElement)
+    await expectRecoveryAlertToHoldFocus(screen.getByText(stale))
     expect(first.value).toBe("younger")
 
     fireEvent.click(screen.getByRole("button", { name: "Save roster" }))
@@ -203,17 +204,24 @@ describe("RosterEditor staged whole-roster editing", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Save roster" }))
     await waitFor(() => expect(screen.getByText(permission)).toBeTruthy())
-    expect(screen.getByText(permission)).toBe(document.activeElement)
+    await expectRecoveryAlertToHoldFocus(screen.getByText(permission))
     expect(first.value).toBe("younger")
 
     fireEvent.click(screen.getByRole("button", { name: "Save roster" }))
     await waitFor(() => expect(screen.getByText(network)).toBeTruthy())
-    expect(screen.getByText(network)).toBe(document.activeElement)
+    await expectRecoveryAlertToHoldFocus(screen.getByText(network))
     expect(first.value).toBe("younger")
 
     fireEvent.click(screen.getByRole("button", { name: "Save roster" }))
     await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(3))
-    expect(screen.getByText(network)).toBe(document.activeElement)
+    // Both waits are needed. `save()` clears the message synchronously before it
+    // fetches (use-section-edit-state.ts), so the third attempt empties the alert
+    // and the fetch-count wait above resolves while it is still empty — the copy
+    // this attempt re-raises happens to be the same sentence attempt two left, so
+    // there is nothing else to distinguish it. Query the text under `waitFor` and
+    // it retries across that window.
+    await waitFor(() => expect(screen.getByText(network)).toBeTruthy())
+    await expectRecoveryAlertToHoldFocus(screen.getByText(network))
     expect(first.value).toBe("younger")
   })
 
@@ -226,7 +234,8 @@ describe("RosterEditor staged whole-roster editing", () => {
     const first = screen.getByRole("combobox", { name: "Person for Kitchen, assignment 1" }) as HTMLSelectElement
     fireEvent.change(first, { target: { value: "younger" } })
     fireEvent.click(screen.getByRole("button", { name: "Save roster" }))
-    await waitFor(() => expect(screen.getByText(network)).toBe(document.activeElement))
+    await waitFor(() => expect(screen.getByText(network)).toBeTruthy())
+    await expectRecoveryAlertToHoldFocus(screen.getByText(network))
     expect(first.value).toBe("younger")
     expect(onRosterUpdate).not.toHaveBeenCalled()
   })

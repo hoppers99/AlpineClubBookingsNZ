@@ -7,6 +7,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
 import { ContactSyncPanel } from "../contact-sync-panel"
 import { XERO_ACTION_NETWORK_ERROR } from "../api"
+import { expectRecoveryAlertToHoldFocus } from "@/lib/__tests__/helpers/focus"
 
 vi.mock("@/components/ui/select", () => ({
   Select: ({ children }: { children: ReactNode }) => <div>{children}</div>,
@@ -114,14 +115,23 @@ describe("ContactSyncPanel participant retry recovery (#2597)", () => {
       screen.getByPlaceholderText(/Search local members and Xero contacts/i),
       { target: { value: "Riley" } },
     )
-    fireEvent.click(await screen.findByRole("button", { name: "Import" }))
+    // Explicit headroom, not a style choice: the member search behind this button
+    // is debounced by 250ms in contact-sync-panel.tsx before its fetch even
+    // starts, and React Testing Library's default `findBy*` timeout is 1000ms. The
+    // 750ms that leaves is enough on an idle machine and not always enough on a
+    // loaded CI runner — this wait timed out once during the #2635 repeated-run
+    // proof, on a line identical to `main`. It is setup, not the contract under
+    // test, so waiting longer weakens nothing.
+    fireEvent.click(
+      await screen.findByRole("button", { name: "Import" }, { timeout: 5000 }),
+    )
 
     await waitFor(() =>
       expect(alert).toHaveTextContent(/member was imported and linked to Xero/i),
     )
     expect(alert).toHaveTextContent(/member was imported and linked to Xero/i)
     expect(alert).toHaveTextContent(/Do not import this contact again/i)
-    expect(document.activeElement).toBe(alert)
+    await expectRecoveryAlertToHoldFocus(alert)
     expect(scrollIntoView).toHaveBeenCalledWith({
       behavior: "smooth",
       block: "center",
@@ -154,7 +164,7 @@ describe("ContactSyncPanel participant retry recovery (#2597)", () => {
     expect(global.fetch).toHaveBeenCalledTimes(3)
     expect(alert).toHaveTextContent(/Do not import this contact again/i)
     expect(routineAlert).toBeEmptyDOMElement()
-    expect(document.activeElement).toBe(alert)
+    await expectRecoveryAlertToHoldFocus(alert)
     expect(recoveryAction).toBeInTheDocument()
   })
 
@@ -186,7 +196,7 @@ describe("ContactSyncPanel participant retry recovery (#2597)", () => {
     fireEvent.click(screen.getByRole("button", { name: /Sync Contacts from Xero/i }))
 
     await waitFor(() => expect(alert).toHaveTextContent(XERO_ACTION_NETWORK_ERROR))
-    expect(document.activeElement).toBe(alert)
+    await expectRecoveryAlertToHoldFocus(alert)
     expect(scrollIntoView).toHaveBeenCalledWith({
       behavior: "smooth",
       block: "center",
