@@ -1,24 +1,24 @@
 // @vitest-environment jsdom
 
-import "@testing-library/jest-dom/vitest";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
-import type { ReactNode } from "react";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import "@testing-library/jest-dom/vitest"
+import { fireEvent, render, screen, waitFor } from "@testing-library/react"
+import type { ReactNode } from "react"
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
-import { BookingApprovalsPanel } from "../booking-approvals-panel";
+import { BookingApprovalsPanel } from "../booking-approvals-panel"
 
 vi.mock("next/navigation", () => ({
   useRouter: () => ({ replace: vi.fn(), push: vi.fn() }),
   useSearchParams: () => new URLSearchParams(),
-}));
+}))
 
 vi.mock("next/link", () => ({
   default: ({ children, href }: { children: ReactNode; href: string }) => (
     <a href={href}>{children}</a>
   ),
-}));
+}))
 
-vi.mock("sonner", () => ({ toast: { success: vi.fn() } }));
+vi.mock("sonner", () => ({ toast: { success: vi.fn() } }))
 
 const booking = {
   id: "booking-1",
@@ -48,123 +48,112 @@ const booking = {
       isMember: true,
     },
   ],
-};
+}
 
 describe("BookingApprovalsPanel action error attention (#2597)", () => {
-  const originalScrollIntoView = HTMLElement.prototype.scrollIntoView;
-  let scrollIntoView: ReturnType<typeof vi.fn>;
+  const originalScrollIntoView = HTMLElement.prototype.scrollIntoView
+  let scrollIntoView: ReturnType<typeof vi.fn>
 
   beforeEach(() => {
-    scrollIntoView = vi.fn();
+    scrollIntoView = vi.fn()
     Object.defineProperty(HTMLElement.prototype, "scrollIntoView", {
       configurable: true,
       value: scrollIntoView,
-    });
+    })
     global.fetch = vi.fn().mockResolvedValue({
       ok: true,
       json: async () => ({ data: [booking] }),
-    }) as unknown as typeof fetch;
-  });
+    }) as unknown as typeof fetch
+  })
 
   afterEach(() => {
     if (originalScrollIntoView) {
       Object.defineProperty(HTMLElement.prototype, "scrollIntoView", {
         configurable: true,
         value: originalScrollIntoView,
-      });
+      })
     } else {
-      delete (HTMLElement.prototype as { scrollIntoView?: unknown })
-        .scrollIntoView;
+      delete (HTMLElement.prototype as { scrollIntoView?: unknown }).scrollIntoView
     }
-  });
+  })
 
   it("keeps the alert mounted and focuses a decision failure", async () => {
-    render(<BookingApprovalsPanel />);
+    render(<BookingApprovalsPanel />)
 
-    const alert = document.getElementById("booking-approvals-error");
-    expect(alert).toHaveAttribute("role", "alert");
-    expect(alert).toBeEmptyDOMElement();
-    expect(alert).toHaveClass("sr-only");
+    const alert = document.getElementById("booking-approvals-error")
+    expect(alert).toHaveAttribute("role", "alert")
+    expect(alert).toBeEmptyDOMElement()
+    expect(alert).toHaveClass("sr-only")
 
     fireEvent.click(
       await screen.findByRole("button", { name: "Reject and cancel" }),
-    );
+    )
 
     await waitFor(() =>
       expect(alert).toHaveTextContent(/add admin notes before rejecting/i),
-    );
-    expect(document.activeElement).toBe(alert);
+    )
+    expect(document.activeElement).toBe(alert)
     expect(scrollIntoView).toHaveBeenCalledWith({
       behavior: "smooth",
       block: "center",
-    });
-  });
+    })
+  })
 
-  it("retains ordinary recorded-rejection recovery, suppresses stale reject, and links back to the queue", async () => {
-    let reviewReads = 0;
-    global.fetch = vi.fn(
-      async (input: string | URL | Request, init?: RequestInit) => {
-        const url = String(input);
-        if (url.startsWith("/api/admin/booking-reviews?")) {
-          reviewReads += 1;
-          if (reviewReads === 1) {
-            return {
-              ok: true,
-              json: async () => ({ data: [booking] }),
-            } as Response;
-          }
+  it("retains a recorded-rejection recovery, suppresses stale reject, and links back to the queue", async () => {
+    let reviewReads = 0
+    global.fetch = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      const url = String(input)
+      if (url.startsWith("/api/admin/booking-reviews?")) {
+        reviewReads += 1
+        if (reviewReads === 1) {
           return {
-            ok: false,
-            json: async () => ({ error: "refresh unavailable" }),
-          } as Response;
+            ok: true,
+            json: async () => ({ data: [booking] }),
+          } as Response
         }
-        if (
-          url === "/api/admin/bookings/booking-1/review" &&
-          init?.method === "PATCH"
-        ) {
-          return {
-            ok: false,
-            status: 500,
-            json: async () => ({
-              error: "private database detail",
-              reviewRecorded: true,
-              cancellationStatusUnconfirmed: true,
-            }),
-          } as Response;
-        }
-        throw new Error(`Unexpected request: ${url}`);
-      },
-    ) as typeof fetch;
+        return {
+          ok: false,
+          json: async () => ({ error: "refresh unavailable" }),
+        } as Response
+      }
+      if (url === "/api/admin/bookings/booking-1/review" && init?.method === "PATCH") {
+        return {
+          ok: false,
+          status: 409,
+          json: async () => ({
+            code: "HOSTING_COVERAGE_PARTICIPANT_RETRY",
+            error: "private database detail",
+            reviewRecorded: true,
+            cancellationPending: true,
+          }),
+        } as Response
+      }
+      throw new Error(`Unexpected request: ${url}`)
+    }) as typeof fetch
 
-    render(<BookingApprovalsPanel />);
+    render(<BookingApprovalsPanel />)
     fireEvent.change(
       await screen.findByPlaceholderText(/Explain your decision/i),
       { target: { value: "No eligible adult host." } },
-    );
-    fireEvent.click(screen.getByRole("button", { name: "Reject and cancel" }));
+    )
+    fireEvent.click(screen.getByRole("button", { name: "Reject and cancel" }))
     fireEvent.click(
       await screen.findByRole("button", { name: "Reject and email member" }),
-    );
+    )
 
-    const alert = document.getElementById("booking-approvals-error");
+    const alert = document.getElementById("booking-approvals-error")
     await waitFor(() =>
       expect(alert).toHaveTextContent(/rejection was recorded/i),
-    );
-    expect(alert).toHaveTextContent(
-      /cancellation status could not be confirmed/i,
-    );
-    expect(alert).toHaveTextContent(/could not be refreshed/i);
-    expect(alert).not.toHaveTextContent("private database detail");
-    expect(document.activeElement).toBe(alert);
-    expect(
-      screen.queryByRole("button", { name: "Reject and cancel" }),
-    ).not.toBeInTheDocument();
-    const recoveryLink = screen.getByRole("link", {
-      name: "Open affected booking",
-    });
+    )
+    expect(alert).toHaveTextContent(/cancellation is still pending/i)
+    expect(alert).toHaveTextContent(/could not be refreshed/i)
+    expect(alert).not.toHaveTextContent("private database detail")
+    expect(document.activeElement).toBe(alert)
+    expect(screen.queryByRole("button", { name: "Reject and cancel" })).not.toBeInTheDocument()
+    const recoveryLink = screen.getByRole("link", { name: "Open affected booking" })
     expect(recoveryLink).toHaveAttribute(
       "href",
       "/admin/bookings/booking-1?returnTo=%2Fadmin%2Fbooking-requests",
-    );
-  });
-});
+    )
+  })
+})

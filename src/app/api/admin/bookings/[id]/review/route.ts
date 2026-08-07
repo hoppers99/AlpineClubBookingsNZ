@@ -138,10 +138,7 @@ export async function PATCH(
       });
       if (claim.count !== 1) return null;
 
-      await reconcileBedAllocationsForBookingWithLodgeLockHeld({
-        bookingId,
-        db: tx,
-      });
+      await reconcileBedAllocationsForBookingWithLodgeLockHeld({ bookingId, db: tx });
       return current;
     });
 
@@ -165,10 +162,7 @@ export async function PATCH(
         recipientMemberId: reviewedBooking.memberId,
         lodgeId: reviewedBooking.lodgeId,
       }).catch((err) =>
-        logger.error(
-          { err, bookingId },
-          "Failed to send booking review approved email",
-        ),
+        logger.error({ err, bookingId }, "Failed to send booking review approved email"),
       );
     }
 
@@ -224,10 +218,7 @@ export async function PATCH(
     if (claim.count !== 1) return null;
 
     if (legacyDraft) {
-      await reconcileBedAllocationsForBookingWithLodgeLockHeld({
-        bookingId,
-        db: tx,
-      });
+      await reconcileBedAllocationsForBookingWithLodgeLockHeld({ bookingId, db: tx });
     }
     return current;
   });
@@ -257,19 +248,7 @@ export async function PATCH(
         cancellationPending: true,
       });
       if (hostingRetry) return hostingRetry;
-      logger.error(
-        { err, bookingId },
-        "Rejected review committed but cancellation status could not be confirmed",
-      );
-      return NextResponse.json(
-        {
-          error:
-            "The rejection was recorded, but the booking's cancellation status could not be confirmed. Open the booking and check its status before retrying.",
-          reviewRecorded: true,
-          cancellationStatusUnconfirmed: true,
-        },
-        { status: 500 },
-      );
+      throw err;
     }
 
     // A concurrent cancel won the single-flight claim (#1160): surface the 409
@@ -277,11 +256,7 @@ export async function PATCH(
     // booking is being/has been cancelled, so this is a benign race, not a fault.
     if (cancelResult.status === 409) {
       return NextResponse.json(
-        {
-          error: cancelResult.error,
-          reviewRecorded: true,
-          cancellationStatusUnconfirmed: true,
-        },
+        { error: cancelResult.error },
         { status: 409 },
       );
     }
@@ -292,11 +267,7 @@ export async function PATCH(
         "Failed to cancel rejected booking",
       );
       return NextResponse.json(
-        {
-          error: "Review recorded but booking could not be cancelled",
-          reviewRecorded: true,
-          cancellationPending: true,
-        },
+        { error: "Review recorded but booking could not be cancelled", details: cancelResult.error },
         { status: 500 },
       );
     }
@@ -316,10 +287,7 @@ export async function PATCH(
       adminNotes: parsed.data.adminNotes,
       lodgeId: reviewedBooking.lodgeId,
     }).catch((err) =>
-      logger.error(
-        { err, bookingId },
-        "Failed to send booking review rejected email",
-      ),
+      logger.error({ err, bookingId }, "Failed to send booking review rejected email"),
     );
   }
 

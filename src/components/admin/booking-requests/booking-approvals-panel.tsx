@@ -31,12 +31,7 @@ import { buildHrefWithReturnTo } from "@/lib/internal-return-path";
 
 type ReviewFilter = "PENDING" | "APPROVED" | "REJECTED" | "ALL";
 
-const reviewFilters = new Set<ReviewFilter>([
-  "PENDING",
-  "APPROVED",
-  "REJECTED",
-  "ALL",
-]);
+const reviewFilters = new Set<ReviewFilter>(["PENDING", "APPROVED", "REJECTED", "ALL"]);
 
 function isReviewFilter(value: string | null): value is ReviewFilter {
   return reviewFilters.has(value as ReviewFilter);
@@ -80,10 +75,8 @@ interface BookingReviewData {
 }
 
 function statusBadgeClass(status: BookingReviewData["adminReviewStatus"]) {
-  if (status === "PENDING")
-    return "border-warning-6 bg-warning-3 text-warning-11";
-  if (status === "APPROVED")
-    return "border-success-6 bg-success-3 text-success-11";
+  if (status === "PENDING") return "border-warning-6 bg-warning-3 text-warning-11";
+  if (status === "APPROVED") return "border-success-6 bg-success-3 text-success-11";
   return "border-border bg-muted text-muted-foreground";
 }
 
@@ -144,11 +137,13 @@ export function BookingApprovalsPanel({
   // choice is kept set while the dialog fades out (Radix keeps the content
   // mounted through its exit animation) so the copy never flickers to the other
   // decision's wording.
-  const [notifyChoice, setNotifyChoice] = useState<{
-    bookingId: string;
-    decision: "APPROVED" | "REJECTED";
-    noEmails: boolean;
-  } | null>(null);
+  const [notifyChoice, setNotifyChoice] = useState<
+    {
+      bookingId: string;
+      decision: "APPROVED" | "REJECTED";
+      noEmails: boolean;
+    } | null
+  >(null);
   const [notifyDialogOpen, setNotifyDialogOpen] = useState(false);
   const currentPath = buildBookingApprovalsPath(
     basePath,
@@ -162,9 +157,7 @@ export function BookingApprovalsPanel({
     setLoading(true);
     setError("");
     try {
-      const response = await fetch(
-        `/api/admin/booking-reviews?status=${filter}`,
-      );
+      const response = await fetch(`/api/admin/booking-reviews?status=${filter}`);
       const data = await response.json();
       if (!response.ok) {
         throw new Error(data.error || "Failed to load booking reviews");
@@ -172,9 +165,7 @@ export function BookingApprovalsPanel({
       setBookings(Array.isArray(data?.data) ? data.data : []);
       return true;
     } catch (err) {
-      setError(
-        err instanceof Error ? err.message : "Failed to load booking reviews",
-      );
+      setError(err instanceof Error ? err.message : "Failed to load booking reviews");
       return false;
     } finally {
       setLoading(false);
@@ -199,15 +190,10 @@ export function BookingApprovalsPanel({
   // #1790: validate the decision (reject needs admin notes) and then open the
   // notify-choice dialog. Both decisions email the member either way, so the
   // dialog always asks; the actual PATCH runs from confirmNotify.
-  function requestDecision(
-    bookingId: string,
-    decision: "APPROVED" | "REJECTED",
-  ) {
+  function requestDecision(bookingId: string, decision: "APPROVED" | "REJECTED") {
     const adminNotes = notesById[bookingId]?.trim() ?? "";
     if (decision === "REJECTED" && !adminNotes) {
-      showActionError(
-        "Please add admin notes before rejecting so the member gets a reason.",
-      );
+      showActionError("Please add admin notes before rejecting so the member gets a reason.");
       return;
     }
     setError("");
@@ -276,13 +262,10 @@ export function BookingApprovalsPanel({
         if (
           decision === "REJECTED" &&
           data.reviewRecorded === true &&
-          (data.cancellationPending === true ||
-            data.cancellationStatusUnconfirmed === true)
+          data.cancellationPending === true
         ) {
           const recoveryBase =
-            data.cancellationPending === true
-              ? "The rejection was recorded, but cancellation is still pending. Do not reject this booking again."
-              : "The rejection was recorded, but the booking's cancellation status could not be confirmed. Do not reject this booking again.";
+            "The rejection was recorded, but cancellation is still pending. Do not reject this booking again.";
           setBookings((current) =>
             current.filter((booking) => booking.id !== bookingId),
           );
@@ -323,15 +306,12 @@ export function BookingApprovalsPanel({
             : " The review-declined email was not sent."
           : "";
       toast.success(
-        (decision === "APPROVED"
-          ? "Booking approved."
-          : "Booking rejected and cancelled.") + suppressedNote,
+        (decision === "APPROVED" ? "Booking approved." : "Booking rejected and cancelled.") +
+          suppressedNote,
       );
       await fetchBookings();
     } catch (err) {
-      showActionError(
-        err instanceof Error ? err.message : "Failed to record decision",
-      );
+      showActionError(err instanceof Error ? err.message : "Failed to record decision");
     } finally {
       setReviewingId(null);
     }
@@ -357,315 +337,272 @@ export function BookingApprovalsPanel({
     <div>
       {viewOnlyBanner}
       <div className="space-y-6">
-        {showHeading ? (
-          <div>
-            <h1 className="text-3xl font-bold">Booking approvals</h1>
-            <p className="mt-1 text-muted-foreground">
-              Review bookings that need admin approval before they can be paid.
-              See also{" "}
-              <Link
-                className="underline"
-                href="/admin/booking-requests?tab=changes"
-              >
-                booking change requests
-              </Link>{" "}
-              and{" "}
-              <Link className="underline" href="/admin/refund-requests">
-                refund requests
-              </Link>
-              .
-            </p>
-          </div>
-        ) : null}
-
-        <FocusedActionError
-          id="booking-approvals-error"
-          error={decisionRecovery?.message ?? error}
-          attentionKey={errorAttentionVersion}
-          heading={
-            decisionRecovery
-              ? "Rejection recorded - cancellation pending"
-              : undefined
-          }
-          action={
-            decisionRecovery ? (
-              <Button asChild variant="outline" size="sm">
-                <Link
-                  href={buildHrefWithReturnTo(
-                    `/admin/bookings/${encodeURIComponent(decisionRecovery.bookingId)}`,
-                    currentPath,
-                  )}
-                >
-                  Open affected booking
-                </Link>
-              </Button>
-            ) : error ? (
-              <Button
-                type="button"
-                variant="outline"
-                size="sm"
-                onClick={() => setError("")}
-              >
-                Dismiss
-              </Button>
-            ) : undefined
-          }
-        />
-
-        <div className="flex flex-wrap gap-2">
-          {(["PENDING", "APPROVED", "REJECTED", "ALL"] as const).map(
-            (status) => (
-              <Button
-                key={status}
-                variant={filter === status ? "default" : "outline"}
-                size="sm"
-                onClick={() => setFilter(status)}
-              >
-                {status === "ALL"
-                  ? "All"
-                  : status.charAt(0) + status.slice(1).toLowerCase()}
-              </Button>
-            ),
-          )}
-          <DatasetResetButton
-            disabled={filter === defaultFilter}
-            onReset={() => setFilter(defaultFilter)}
-          />
+      {showHeading ? (
+        <div>
+          <h1 className="text-3xl font-bold">Booking approvals</h1>
+          <p className="mt-1 text-muted-foreground">
+            Review bookings that need admin approval before they can be paid.
+            See also{" "}
+            <Link className="underline" href="/admin/booking-requests?tab=changes">
+              booking change requests
+            </Link>{" "}
+            and{" "}
+            <Link className="underline" href="/admin/refund-requests">
+              refund requests
+            </Link>
+            .
+          </p>
         </div>
+      ) : null}
 
-        {loading ? (
-          <div className="py-8 text-center">Loading...</div>
-        ) : bookings.length === 0 ? (
-          <div className="py-8 text-center text-muted-foreground">
-            No {filter === "ALL" ? "" : filter.toLowerCase() + " "}booking
-            reviews found.
-          </div>
-        ) : (
-          <div className="space-y-4">
-            {bookings.map((booking) => {
-              const decided = booking.adminReviewStatus !== "PENDING";
-              const highlighted = booking.id === focusedBookingId;
-              return (
-                <Card
-                  key={booking.id}
-                  className={highlighted ? "border-warning-6" : undefined}
-                >
-                  <CardHeader>
-                    <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
-                      <div>
-                        <CardTitle className="text-lg">
-                          {booking.member.firstName} {booking.member.lastName}
-                        </CardTitle>
-                        <p className="text-sm text-muted-foreground">
-                          Created{" "}
-                          {formatNZDateTime(new Date(booking.createdAt))} —{" "}
-                          <Link
-                            href={`/admin/bookings/${booking.id}`}
-                            className="underline"
-                          >
-                            view booking
-                          </Link>
-                        </p>
-                      </div>
-                      <Badge
-                        variant="outline"
-                        className={statusBadgeClass(booking.adminReviewStatus)}
-                      >
-                        {booking.adminReviewStatus ?? "—"}
-                      </Badge>
-                    </div>
-                  </CardHeader>
-                  <CardContent className="space-y-4">
-                    <div className="grid gap-3 text-sm sm:grid-cols-2 lg:grid-cols-4">
-                      <div>
-                        <span className="text-muted-foreground">Dates:</span>{" "}
-                        {formatNZDate(new Date(booking.checkIn))} to{" "}
-                        {formatNZDate(new Date(booking.checkOut))}
-                      </div>
-                      <div>
-                        <span className="text-muted-foreground">Status:</span>{" "}
-                        {booking.status}
-                      </div>
-                      <div>
-                        <span className="text-muted-foreground">Total:</span>{" "}
-                        {formatCents(booking.finalPriceCents)}
-                      </div>
-                      <div>
-                        <span className="text-muted-foreground">Guests:</span>{" "}
-                        {booking.guests.length}
-                      </div>
-                    </div>
+      <FocusedActionError
+        id="booking-approvals-error"
+        error={decisionRecovery?.message ?? error}
+        attentionKey={errorAttentionVersion}
+        heading={decisionRecovery ? "Rejection recorded - cancellation pending" : undefined}
+        action={
+          decisionRecovery ? (
+            <Button asChild variant="outline" size="sm">
+              <Link
+                href={buildHrefWithReturnTo(
+                  `/admin/bookings/${encodeURIComponent(decisionRecovery.bookingId)}`,
+                  currentPath,
+                )}
+              >
+                Open affected booking
+              </Link>
+            </Button>
+          ) : error ? (
+            <Button type="button" variant="outline" size="sm" onClick={() => setError("")}>
+              Dismiss
+            </Button>
+          ) : undefined
+        }
+      />
 
+
+      <div className="flex flex-wrap gap-2">
+        {(["PENDING", "APPROVED", "REJECTED", "ALL"] as const).map((status) => (
+          <Button
+            key={status}
+            variant={filter === status ? "default" : "outline"}
+            size="sm"
+            onClick={() => setFilter(status)}
+          >
+            {status === "ALL" ? "All" : status.charAt(0) + status.slice(1).toLowerCase()}
+          </Button>
+        ))}
+        <DatasetResetButton
+          disabled={filter === defaultFilter}
+          onReset={() => setFilter(defaultFilter)}
+        />
+      </div>
+
+      {loading ? (
+        <div className="py-8 text-center">Loading...</div>
+      ) : bookings.length === 0 ? (
+        <div className="py-8 text-center text-muted-foreground">
+          No {filter === "ALL" ? "" : filter.toLowerCase() + " "}booking reviews found.
+        </div>
+      ) : (
+        <div className="space-y-4">
+          {bookings.map((booking) => {
+            const decided = booking.adminReviewStatus !== "PENDING";
+            const highlighted = booking.id === focusedBookingId;
+            return (
+              <Card
+                key={booking.id}
+                className={highlighted ? "border-warning-6" : undefined}
+              >
+                <CardHeader>
+                  <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                    <div>
+                      <CardTitle className="text-lg">
+                        {booking.member.firstName} {booking.member.lastName}
+                      </CardTitle>
+                      <p className="text-sm text-muted-foreground">
+                        Created {formatNZDateTime(new Date(booking.createdAt))} —{" "}
+                        <Link href={`/admin/bookings/${booking.id}`} className="underline">
+                          view booking
+                        </Link>
+                      </p>
+                    </div>
+                    <Badge variant="outline" className={statusBadgeClass(booking.adminReviewStatus)}>
+                      {booking.adminReviewStatus ?? "—"}
+                    </Badge>
+                  </div>
+                </CardHeader>
+                <CardContent className="space-y-4">
+                  <div className="grid gap-3 text-sm sm:grid-cols-2 lg:grid-cols-4">
+                    <div>
+                      <span className="text-muted-foreground">Dates:</span>{" "}
+                      {formatNZDate(new Date(booking.checkIn))} to{" "}
+                      {formatNZDate(new Date(booking.checkOut))}
+                    </div>
+                    <div>
+                      <span className="text-muted-foreground">Status:</span> {booking.status}
+                    </div>
+                    <div>
+                      <span className="text-muted-foreground">Total:</span>{" "}
+                      {formatCents(booking.finalPriceCents)}
+                    </div>
+                    <div>
+                      <span className="text-muted-foreground">Guests:</span>{" "}
+                      {booking.guests.length}
+                    </div>
+                  </div>
+
+                  <div className="rounded-md border bg-muted p-3 text-sm">
+                    <p className="font-medium text-foreground">Guests on this booking</p>
+                    <ul className="mt-2 space-y-1 text-muted-foreground">
+                      {booking.guests.map((guest) => (
+                        <li key={guest.id}>
+                          {guest.firstName} {guest.lastName} — {guest.ageTier}
+                          {guest.isMember ? " (member)" : ""}
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+
+                  {booking.memberReviewJustification && (
+                    <div className="rounded-md border border-warning-6 bg-warning-3 p-3 text-sm">
+                      <p className="font-medium text-warning-11">
+                        Member&apos;s reason for booking without an adult
+                      </p>
+                      <p className="mt-1 whitespace-pre-wrap text-warning-11">
+                        {booking.memberReviewJustification}
+                      </p>
+                    </div>
+                  )}
+
+                  {decided ? (
                     <div className="rounded-md border bg-muted p-3 text-sm">
                       <p className="font-medium text-foreground">
-                        Guests on this booking
+                        Decision: {booking.adminReviewStatus}
+                        {booking.adminReviewedBy
+                          ? ` by ${booking.adminReviewedBy.firstName} ${booking.adminReviewedBy.lastName}`
+                          : ""}
+                        {booking.adminReviewedAt
+                          ? ` on ${formatNZDateTime(new Date(booking.adminReviewedAt))}`
+                          : ""}
                       </p>
-                      <ul className="mt-2 space-y-1 text-muted-foreground">
-                        {booking.guests.map((guest) => (
-                          <li key={guest.id}>
-                            {guest.firstName} {guest.lastName} — {guest.ageTier}
-                            {guest.isMember ? " (member)" : ""}
-                          </li>
-                        ))}
-                      </ul>
+                      {booking.adminReviewNotes && (
+                        <p className="mt-2 whitespace-pre-wrap text-muted-foreground">
+                          {booking.adminReviewNotes}
+                        </p>
+                      )}
                     </div>
-
-                    {booking.memberReviewJustification && (
-                      <div className="rounded-md border border-warning-6 bg-warning-3 p-3 text-sm">
-                        <p className="font-medium text-warning-11">
-                          Member&apos;s reason for booking without an adult
-                        </p>
-                        <p className="mt-1 whitespace-pre-wrap text-warning-11">
-                          {booking.memberReviewJustification}
-                        </p>
-                      </div>
-                    )}
-
-                    {decided ? (
-                      <div className="rounded-md border bg-muted p-3 text-sm">
-                        <p className="font-medium text-foreground">
-                          Decision: {booking.adminReviewStatus}
-                          {booking.adminReviewedBy
-                            ? ` by ${booking.adminReviewedBy.firstName} ${booking.adminReviewedBy.lastName}`
-                            : ""}
-                          {booking.adminReviewedAt
-                            ? ` on ${formatNZDateTime(new Date(booking.adminReviewedAt))}`
-                            : ""}
-                        </p>
-                        {booking.adminReviewNotes && (
-                          <p className="mt-2 whitespace-pre-wrap text-muted-foreground">
-                            {booking.adminReviewNotes}
-                          </p>
-                        )}
-                      </div>
-                    ) : (
-                      <div className="space-y-2">
-                        <label
-                          className="text-sm font-medium"
-                          htmlFor={`notes-${booking.id}`}
+                  ) : (
+                    <div className="space-y-2">
+                      <label className="text-sm font-medium" htmlFor={`notes-${booking.id}`}>
+                        Admin notes (required to reject; optional for approval)
+                      </label>
+                      <Textarea
+                        id={`notes-${booking.id}`}
+                        value={notesById[booking.id] ?? ""}
+                        disabled={!canEdit}
+                        title={canEdit === false ? ADMIN_VIEW_ONLY_ACTION_REASON : undefined}
+                        onChange={(event) =>
+                          setNotesById((prev) => ({ ...prev, [booking.id]: event.target.value }))
+                        }
+                        rows={3}
+                        maxLength={2000}
+                        placeholder="Explain your decision. The member will see this note."
+                      />
+                      <div className="flex flex-wrap gap-2">
+                        <ViewOnlyActionButton
+                          canEdit={canEdit}
+                          describeReason={false}
+                          onClick={() => requestDecision(booking.id, "APPROVED")}
+                          disabled={reviewingId === booking.id}
                         >
-                          Admin notes (required to reject; optional for
-                          approval)
-                        </label>
-                        <Textarea
-                          id={`notes-${booking.id}`}
-                          value={notesById[booking.id] ?? ""}
-                          disabled={!canEdit}
-                          title={
-                            canEdit === false
-                              ? ADMIN_VIEW_ONLY_ACTION_REASON
-                              : undefined
-                          }
-                          onChange={(event) =>
-                            setNotesById((prev) => ({
-                              ...prev,
-                              [booking.id]: event.target.value,
-                            }))
-                          }
-                          rows={3}
-                          maxLength={2000}
-                          placeholder="Explain your decision. The member will see this note."
-                        />
-                        <div className="flex flex-wrap gap-2">
-                          <ViewOnlyActionButton
-                            canEdit={canEdit}
-                            describeReason={false}
-                            onClick={() =>
-                              requestDecision(booking.id, "APPROVED")
-                            }
-                            disabled={reviewingId === booking.id}
-                          >
-                            Approve
-                          </ViewOnlyActionButton>
-                          <ViewOnlyActionButton
-                            canEdit={canEdit}
-                            describeReason={false}
-                            variant="destructive"
-                            onClick={() =>
-                              requestDecision(booking.id, "REJECTED")
-                            }
-                            disabled={reviewingId === booking.id}
-                          >
-                            Reject and cancel
-                          </ViewOnlyActionButton>
-                        </div>
+                          Approve
+                        </ViewOnlyActionButton>
+                        <ViewOnlyActionButton
+                          canEdit={canEdit}
+                          describeReason={false}
+                          variant="destructive"
+                          onClick={() => requestDecision(booking.id, "REJECTED")}
+                          disabled={reviewingId === booking.id}
+                        >
+                          Reject and cancel
+                        </ViewOnlyActionButton>
                       </div>
-                    )}
-                  </CardContent>
-                </Card>
-              );
-            })}
-          </div>
-        )}
+                    </div>
+                  )}
+                </CardContent>
+              </Card>
+            );
+          })}
+        </div>
+      )}
 
-        {/* #1790: per-decision member-email choice, mirroring the #1695/#1705
+      {/* #1790: per-decision member-email choice, mirroring the #1695/#1705
           pattern. Both approve and reject email the member either way, so the
           dialog always asks; the choice itself is recorded in the audit log.
           It suppresses only the review approval/rejection notice — the shared
           cancellation flow behind a reject is unaffected. */}
-        <Dialog
-          open={notifyDialogOpen}
-          onOpenChange={(open) => {
-            if (!open && reviewingId === null) setNotifyDialogOpen(false);
-          }}
-        >
-          <DialogContent>
-            <DialogHeader>
-              <DialogTitle>
-                {notifyChoice?.noEmails
-                  ? notifyChoice.decision === "REJECTED"
-                    ? "Decline this booking?"
-                    : "Approve this booking?"
-                  : notifyChoice?.decision === "REJECTED"
-                    ? "Email the member about this decline?"
-                    : "Email the member about this approval?"}
-              </DialogTitle>
-              <DialogDescription>
-                {notifyChoice?.noEmails
-                  ? notifyChoice.decision === "REJECTED"
-                    ? "The booking will be declined and cancelled. Nothing at all is emailed to the member — not even the standard cancellation notice."
-                    : "The booking will be approved."
-                  : notifyChoice?.decision === "REJECTED"
-                    ? "The booking is declined and cancelled either way, and the member always receives the standard cancellation notice. Choose whether they also receive the review-declined explainer email — your choice is recorded in the audit log."
-                    : "The booking is approved either way. Choose whether the member receives the standard review-approved email — your choice is recorded in the audit log."}
-              </DialogDescription>
-            </DialogHeader>
-            {/* #2259: with the booking's "No emails" switch on, the review
+      <Dialog
+        open={notifyDialogOpen}
+        onOpenChange={(open) => {
+          if (!open && reviewingId === null) setNotifyDialogOpen(false);
+        }}
+      >
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>
+              {notifyChoice?.noEmails
+                ? notifyChoice.decision === "REJECTED"
+                  ? "Decline this booking?"
+                  : "Approve this booking?"
+                : notifyChoice?.decision === "REJECTED"
+                  ? "Email the member about this decline?"
+                  : "Email the member about this approval?"}
+            </DialogTitle>
+            <DialogDescription>
+              {notifyChoice?.noEmails
+                ? notifyChoice.decision === "REJECTED"
+                  ? "The booking will be declined and cancelled. Nothing at all is emailed to the member — not even the standard cancellation notice."
+                  : "The booking will be approved."
+                : notifyChoice?.decision === "REJECTED"
+                  ? "The booking is declined and cancelled either way, and the member always receives the standard cancellation notice. Choose whether they also receive the review-declined explainer email — your choice is recorded in the audit log."
+                  : "The booking is approved either way. Choose whether the member receives the standard review-approved email — your choice is recorded in the audit log."}
+            </DialogDescription>
+          </DialogHeader>
+          {/* #2259: with the booking's "No emails" switch on, the review
               outcome email is withheld whatever is chosen — and so, on the
               reject path, is the cancellation notice the copy above would
               otherwise promise. No choice is offered. */}
-            {notifyChoice?.noEmails && <BookingNoEmailsNotice />}
-            <DialogFooter className="gap-2 sm:gap-2">
+          {notifyChoice?.noEmails && <BookingNoEmailsNotice />}
+          <DialogFooter className="gap-2 sm:gap-2">
+            <Button
+              variant="outline"
+              disabled={reviewingId !== null}
+              onClick={() =>
+                notifyChoice?.noEmails ? confirmSilenced() : confirmNotify(false)
+              }
+            >
+              {notifyChoice?.noEmails
+                ? notifyChoice.decision === "REJECTED"
+                  ? "Reject booking"
+                  : "Approve booking"
+                : notifyChoice?.decision === "REJECTED"
+                  ? "Reject without emailing"
+                  : "Approve without emailing"}
+            </Button>
+            {!notifyChoice?.noEmails && (
               <Button
-                variant="outline"
                 disabled={reviewingId !== null}
-                onClick={() =>
-                  notifyChoice?.noEmails
-                    ? confirmSilenced()
-                    : confirmNotify(false)
-                }
+                onClick={() => confirmNotify(true)}
               >
-                {notifyChoice?.noEmails
-                  ? notifyChoice.decision === "REJECTED"
-                    ? "Reject booking"
-                    : "Approve booking"
-                  : notifyChoice?.decision === "REJECTED"
-                    ? "Reject without emailing"
-                    : "Approve without emailing"}
+                {notifyChoice?.decision === "REJECTED"
+                  ? "Reject and email member"
+                  : "Approve and email member"}
               </Button>
-              {!notifyChoice?.noEmails && (
-                <Button
-                  disabled={reviewingId !== null}
-                  onClick={() => confirmNotify(true)}
-                >
-                  {notifyChoice?.decision === "REJECTED"
-                    ? "Reject and email member"
-                    : "Approve and email member"}
-                </Button>
-              )}
-            </DialogFooter>
-          </DialogContent>
-        </Dialog>
+            )}
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
       </div>
     </div>
   );
