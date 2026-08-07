@@ -351,13 +351,91 @@ Future reviews and issues should cite this file when proposing changes.
 
 ## Booking Dates And Capacity
 
+### The stay boundary: midday NZ to midday NZ (normative)
+
+This subsection is the normative stay-boundary invariant (epic #2629). It is
+stated once, here; every other sentence in this repository that touches stay
+boundaries refers to it rather than restating it, and every future change in
+this area is measured against it. All times in this invariant are New Zealand
+time (Pacific/Auckland). UTC appears only in the storage-encoding note at the
+end — never in a rule.
+
+- **Lodge night.** Night N is the period from midday NZ on date N to midday NZ
+  on date N+1. The boundary is fixed at midday NZ by definition (D-M3): there
+  is no setting, and no time-of-day data exists anywhere in the model.
+- **Stay.** A stay is the half-open date range `[checkIn, checkOut)` expanded
+  to nights — the motel rule: a guest is in the lodge from midday NZ on their
+  check-in date to midday NZ on their check-out date. The check-out date is a
+  departure morning, never an occupied night, which is why back-to-back
+  handovers and same-day turnover on one bed need no special case. When
+  explicit `BookingGuestNight` rows exist they are the authoritative night set
+  and the contiguous envelope is ignored.
+- **Presence on an operational day D** — the answer to every human-facing "who
+  is here today" question (rosters, kiosk, manifests): morning half
+  (midnight to midday NZ) iff D−1 is one of the guest's nights; evening half
+  (midday NZ to midnight) iff D is one of their nights; present iff either
+  half holds. Derived labels, never independent data: *arriving* =
+  evening-half only; *departing* = morning-half only ("leaves today"). Sparse
+  multi-segment stays follow the same rule per segment with no exception
+  (D-M4): nights {5, 8} give presence on {5, 6, 8, 9} and absence on the gap
+  day 7.
+- **Two models, two helper families**, both in
+  `src/lib/booking-guest-stay-ranges.ts`. The **night model**
+  (`isGuestActiveOnNight` / `getActiveGuestsForNight`) is canonical for
+  capacity, availability, pricing, bed allocation, whole-lodge and
+  member-night logic; under it the departure date is never occupied. The
+  **operational-day model** is canonical for rosters, the kiosk, print
+  manifests and day statuses. Ownership is strict in both directions: a roster
+  caller must not reach the night helpers, and a capacity caller must not
+  reach the operational-day ones. (The named operational-day helpers ship with
+  #2622; until that lands, this paragraph describes the rule and the helper
+  names are pending that issue.)
+- **A member departing lodge A and arriving at lodge B on the same date is
+  legal**: the two presence windows abut at midday, so the member-night
+  conflict rule (below) is satisfied by construction.
+- **Zero-night bookings** (`checkIn == checkOut`) expand to zero nights and
+  are present on no day. The shape is deliberately unrepresentable — every
+  booking-creating route refuses it — and must stay that way rather than
+  becoming an accidental day-visit feature.
+- **Deliberately outside this invariant:**
+  - `daysUntilDate` and the refund tiers
+    (`src/lib/policies/cancellation.ts:140-158`) measure time *until* a stay
+    against an NZ-local-midnight countdown boundary, not nights within it.
+    They are not governed by the midday rule; any change there is a money
+    change requiring its own issue, its own owner decision, and per-tier
+    evidence — never a side effect of work in this area.
+  - The completion cron / unpaid-finished-stays pair keeps its dual check-out
+    boundary (#2029, below). Both sides already conform to the midday rule;
+    neither is a presence definition.
+  - The custodian bed hold uses deliberate inclusive day semantics (its own
+    section below): an assignment's `endDate` is a covered day, not a
+    departure morning.
+  - The kiosk depart lookup matches only the exact departure date — a status
+    action window, not a presence rule.
+  - Minimum-stay derives its weekday as the NZ weekday: `night.getUTCDay()`
+    (`src/lib/policies/minimum-stay.ts:56`) is correct precisely because
+    nights encode NZ calendar dates (see the storage note). Any future true
+    time-of-day instant in this area would silently shift that weekday for
+    hosts behind UTC.
+- **Storage encoding, not semantics.** A stored lodge night is an NZ calendar
+  date. The `@db.Date` columns pin that date to UTC midnight internally — the
+  instant that renders as club midday, so a CI runner in UTC and a club in NZ
+  agree on the calendar day (`docs/TESTING.md` pins the frozen test clock to
+  exactly this instant as evidence). The UTC-midnight pinning is an internal
+  encoding of the NZ date and nothing more; NZ time is the semantic truth, and
+  no rule may be derived from the UTC reading of these values.
+
+### Date handling rules
+
 - Lodge bookings use New Zealand date-only nights, not arbitrary timestamps,
-  unless a feature explicitly requires time-of-day semantics.
+  unless a feature explicitly requires time-of-day semantics (the stay-boundary
+  invariant above governs what those nights mean).
 - `BookingGuest.stayStart` and `BookingGuest.stayEnd` represent each guest's
   date-only occupancy inside the booking envelope.
 - `@db.Date` columns (e.g. `Booking.checkIn`/`checkOut`,
   `BookingGuest.stayStart`/`stayEnd`, `HutLeaderAssignment.endDate`) store an NZ
-  calendar date at UTC midnight. Compare them only against date-only values
+  calendar date, encoded internally at UTC midnight (the storage-encoding note
+  in the invariant above). Compare them only against date-only values
   (`getTodayDateOnly()` / `normalizeDateOnlyForTimeZone()` from
   `src/lib/date-only.ts`), never a raw `new Date()` or a local-midnight
   (`setHours(0,0,0,0)`) instant: under the `TZ=Pacific/Auckland` server pin the
@@ -374,8 +452,10 @@ Future reviews and issues should cite this file when proposing changes.
   for a booker far enough from New Zealand. The value submitted, the club-pinned
   label displayed, the night count, and the hold deadline are all derived from
   the string via `parseDateOnly` / `addDaysDateOnly` / `countNightsDateOnly`,
-  which pin the day to UTC midnight (rendered as club midday, the same calendar
-  day in every zone). `formatCalendarDayOnly(year, monthIndex, day)` is the
+  which encode the NZ calendar day internally at UTC midnight (the
+  storage-encoding note in the stay-boundary invariant above: the instant that
+  renders as club midday, the same calendar day in every zone).
+  `formatCalendarDayOnly(year, monthIndex, day)` is the
   canonical encoder; the #2264 `localCalendarDayToDateOnly` bridge, which patched
   only the display half of this hazard while the fragile encoding lived on, is
   gone. `src/lib/__tests__/booking-calendar-timezone.test.tsx` pins the
@@ -412,7 +492,9 @@ Future reviews and issues should cite this file when proposing changes.
   `formatNZDate`. `src/lib/__tests__/member-facing-long-dates.test.ts` pins the
   four call sites so a later "tidy every date onto formatNZDate" pass fails
   loudly rather than silently shortening what a member reads.
-- Two check-out boundaries coexist by design (#2029). The completion cron flips
+- Two check-out boundaries coexist by design (#2029; named as a deliberate
+  non-presence exception by the stay-boundary invariant above). The completion
+  cron flips
   PAID → COMPLETED only once `checkOut < todayNZ` — the entire NZ check-out day
   stays PAID and self-editable/extendable — whereas the admin "finished stay"
   attention queues (`unpaid-finished-stays.ts`) intentionally use
@@ -424,7 +506,8 @@ Future reviews and issues should cite this file when proposing changes.
   finished-stay-needing-payment AND still PAID-completable under the same rule.
 - Base Reports uses lodge nights, never booking creation time (#2368). Its
   selected From/To window is inclusive and overlaps the half-open booking stay
-  `[checkIn, checkOut)`. Every non-occupancy figure uses one explicit positive
+  `[checkIn, checkOut)` (the stay-boundary invariant above). Every
+  non-occupancy figure uses one explicit positive
   cohort: `PENDING`, `PAYMENT_PENDING`, `CONFIRMED`, `PAID`,
   `AWAITING_REVIEW`, and `COMPLETED`, with the same lodge/deleted scope. Count
   bookings once per overlapped bucket. Count guest rows once when their own
@@ -698,8 +781,11 @@ Future reviews and issues should cite this file when proposing changes.
   confirmation. The creation-time price snapshot is not a price lock — an
   identical booking made directly on the offer day pays the same. If repricing
   fails, the offer proceeds at the stored snapshot rather than being blocked.
-- A linked `Member` may be present on only one live booking per lodge night.
-  This person-night guard is separate from bed capacity: it checks draft,
+- A linked `Member` may be present on only one live booking per lodge night
+  (night as defined by the stay-boundary invariant, so a same-date departure
+  from one lodge and arrival at another never conflict — the presence windows
+  abut at midday). This person-night guard is separate from bed capacity: it
+  checks draft,
   pending, confirmed/paid/completed, waitlist, offered, and admin-review
   bookings, but ignores cancelled, bumped, deleted, and expired draft rows.
 - A member put on somebody ELSE's booking may take their own place off it, and
@@ -2132,7 +2218,9 @@ supplementary Xero operation for money that must not be captured (the
 stale-WAITING_PAYMENT reaper retires that op).
 
 Per-guest stay ranges must sit inside the parent booking's checkIn/checkOut
-envelope. A guest stay range outside the current envelope is not rejected —
+envelope (both are half-open night ranges per the stay-boundary invariant in
+"Booking Dates And Capacity"). A guest stay range outside the current envelope
+is not rejected —
 it auto-expands the booking's dates (issue #713). The database enforces the
 envelope as a safety net with deferred constraint triggers
 (`BookingGuest_stay_range_within_booking`,
@@ -2404,7 +2492,9 @@ it.
 Self-service edits obey a date-window edit policy (`getBookingEditPolicy`):
 future bookings edit freely, an in-progress stay (checked in, not yet checked
 out) may only extend its **future** nights with the check-in locked, and a
-fully-past stay is not self-editable at all. On an in-progress extension the
+fully-past stay is not self-editable at all. (The booking stays editable
+through its whole check-out day — an edit-window rule, not a presence rule;
+the stay-boundary invariant in "Booking Dates And Capacity" is unaffected.) On an in-progress extension the
 minimum-stay policy is evaluated over the **whole contiguous stay**, not the
 added nights alone (#2124): because the original check-in is kept fixed, the
 modify-quote preview runs `validateMinimumStay` across `[checkIn, newCheckOut]`
@@ -3640,7 +3730,8 @@ override requires an explicit `pricingMode`:
   move with the stay), and there is no change fee, settlement, Stripe, or Xero
   activity. The `BookingModification` row is `ADMIN_DATE_SHIFT` with
   `priceDiffCents`/`changeFeeCents` = 0. All date math is date-only
-  (`addDaysDateOnly` on UTC-midnight-normalised bounds), so the delta is
+  (`addDaysDateOnly` on date-only-normalised bounds, per the stay-boundary
+  invariant's storage-encoding note), so the delta is
   DST-safe. The member-facing change-notification email is an explicit
   per-action admin choice on **every** admin edit — not only overrides (#1696).
   Whenever an admin / Booking Officer saves a booking edit (dates, guests, or
@@ -6381,7 +6472,10 @@ a **custodian occupancy** (#2286). The invariants:
   capacity or allocation consumer.
 - **Inclusive night semantics.** The hold covers the night of every date from
   `startDate` to `endDate` **inclusive**, never the half-open booking envelope.
-  The bed is bookable again for the night after `endDate`.
+  The bed is bookable again for the night after `endDate`. (This is the
+  custodian exception the stay-boundary invariant in "Booking Dates And
+  Capacity" names deliberately: an assignment's `endDate` is a covered day,
+  not a departure morning.)
 - **Counted as an occupant, never as a smaller lodge.** The capacity engines add
   the per-night custodian **count** to `occupiedBeds` rather than reducing
   `lodgeCapacity`, so `occupiedBeds + availableBeds === lodgeCapacity` still

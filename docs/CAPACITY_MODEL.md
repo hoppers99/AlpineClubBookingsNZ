@@ -6,6 +6,13 @@ source of truth is `getLodgeCapacityStatus` in `src/lib/lodge-capacity.ts`;
 finance, cron, and content-token path reads through it, so the rules below apply
 uniformly.
 
+Every "night" in this document is an NZ lodge night under the normative
+midday-to-midday stay boundary in
+[`docs/DOMAIN_INVARIANTS.md`](DOMAIN_INVARIANTS.md) → "Booking Dates And
+Capacity": a stay occupies the half-open `[checkIn, checkOut)` night range, so
+a departure date is never an occupied night on any capacity or availability
+surface (day view, month calendar, holds, or allocation).
+
 ## Two distinct quantities
 
 - **Physical bed inventory** — `LodgeBed` rows in the lodge's `LodgeRoom`s,
@@ -228,7 +235,9 @@ of the bookable pool and out of the allocatable pool, with **no `Booking` and no
 **inclusive** — matching the existing hut-leader coverage semantics. This is
 deliberately not the half-open `[checkIn, checkOut)` booking envelope: a
 booking's `checkOut` is a departure morning, an assignment's `endDate` is a
-covered day.
+covered day. (The stay-boundary invariant in
+[`docs/DOMAIN_INVARIANTS.md`](DOMAIN_INVARIANTS.md) → "Booking Dates And
+Capacity" names this as its deliberate custodian exception.)
 
 **Counted as an occupant, not as a smaller ceiling.** The engines do
 `occupiedBeds += custodianCount(night)` rather than reducing `lodgeCapacity`.
@@ -349,8 +358,12 @@ reserved headroom and reject rather than falling back into a confirm.
 ### Exclusive whole-lodge hold — a non-bypassable block (ADR-001, #118)
 
 A capacity-holding booking with `Booking.wholeLodgeHold = true` reserves the
-whole lodge for the nights it spans (`[checkIn, checkOut)` — the checkout day is
-excluded, so back-to-back handovers stay correct). This is the capacity engine's
+whole lodge for the nights it spans (`[checkIn, checkOut)` — the checkout day
+is excluded, so back-to-back handovers stay correct: under the normative
+midday-to-midday stay boundary in
+[`docs/DOMAIN_INVARIANTS.md`](DOMAIN_INVARIANTS.md) → "Booking Dates And
+Capacity", the outgoing hold ends at midday and the incoming one begins at
+midday on the same date). This is the capacity engine's
 first non-arithmetic rule and it sits *above* both override contracts:
 
 - **Member parity (ADR-001 decision 6):** a held night is reported exactly like
