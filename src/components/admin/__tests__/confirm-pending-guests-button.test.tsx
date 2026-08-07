@@ -347,38 +347,66 @@ describe("ConfirmPendingGuestsButton", () => {
     expect(alert?.textContent).toMatch(/automatic refund recovery is pending/i);
   });
 
-  it("does not claim a charge or suppress retry without both positive payment facts", async () => {
-    stubFetch({
-      ok: false,
-      body: {
+  it.each([
+    [
+      "finalisationPending",
+      {
         code: "HOSTING_COVERAGE_PARTICIPANT_RETRY",
-        error: "Reload before trying again.",
         paymentReceived: true,
       },
-    });
-    render(
-      <ConfirmPendingGuestsButton
-        bookingId="b1"
-        hasSavedPaymentMethod
-        finalPriceCents={10000}
-      />,
-    );
+    ],
+    [
+      "paymentReceived",
+      {
+        status: "CANCELLED",
+        refunded: false,
+        refundRecoveryPending: true,
+      },
+    ],
+    [
+      "refundRecoveryPending",
+      {
+        status: "CANCELLED",
+        refunded: false,
+        paymentReceived: true,
+      },
+    ],
+  ])(
+    "does not claim recovery or suppress retry without %s",
+    async (_missingFact, partialFacts) => {
+      stubFetch({
+        ok: false,
+        body: {
+          error: "Reload before trying again.",
+          ...partialFacts,
+        },
+      });
+      render(
+        <ConfirmPendingGuestsButton
+          bookingId="b1"
+          hasSavedPaymentMethod
+          finalPriceCents={10000}
+        />,
+      );
 
-    fireEvent.click(
-      screen.getByRole("button", { name: "Confirm pending guests" }),
-    );
-    fireEvent.click(screen.getByRole("button", { name: "Charge and confirm" }));
-    fireEvent.click(
-      await screen.findByRole("button", { name: "Confirm and email member" }),
-    );
+      fireEvent.click(
+        screen.getByRole("button", { name: "Confirm pending guests" }),
+      );
+      fireEvent.click(
+        screen.getByRole("button", { name: "Charge and confirm" }),
+      );
+      fireEvent.click(
+        await screen.findByRole("button", { name: "Confirm and email member" }),
+      );
 
-    await screen.findByText("Reload before trying again.");
-    expect(screen.queryByText(/saved card was charged/i)).toBeNull();
-    expect(
-      screen.getByRole("button", { name: "Confirm pending guests" }),
-    ).not.toBeNull();
-    expect(refresh).not.toHaveBeenCalled();
-  });
+      await screen.findByText("Reload before trying again.");
+      expect(screen.queryByText(/saved card was charged/i)).toBeNull();
+      expect(
+        screen.getByRole("button", { name: "Confirm pending guests" }),
+      ).not.toBeNull();
+      expect(refresh).not.toHaveBeenCalled();
+    },
+  );
 
   it("states the no-charge copy and a plain Confirm label for a $0 booking", () => {
     stubFetch({ ok: true, body: { success: true } });

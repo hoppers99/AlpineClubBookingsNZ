@@ -650,4 +650,44 @@ describe("BookingPaymentWrapper", () => {
       await waitFor(() => expect(document.activeElement).toBe(alert));
     },
   );
+
+  it.each([
+    ["refunded", { status: "CANCELLED" }],
+    ["status", { refunded: false }],
+  ])(
+    "does not invent capacity-cancellation recovery without %s",
+    async (_missingFact, partialFacts) => {
+      const onPaymentComplete = vi.fn();
+
+      fetchMock
+        .mockResolvedValueOnce({
+          ok: true,
+          json: async () => ({ clientSecret: "cs_test" }),
+        })
+        .mockResolvedValueOnce({
+          ok: false,
+          status: 409,
+          json: async () => ({
+            error: "unrecognised recovery",
+            ...partialFacts,
+          }),
+        });
+
+      render(
+        <BookingPaymentWrapper
+          bookingId="booking-1"
+          amountCents={12500}
+          paymentMode="payment"
+          returnUrl="http://localhost/bookings/booking-1"
+          onPaymentComplete={onPaymentComplete}
+        />,
+      );
+
+      fireEvent.click(await screen.findByText("trigger-success"));
+
+      await waitFor(() => expect(onPaymentComplete).toHaveBeenCalledTimes(1));
+      expect(screen.getByRole("alert", { hidden: true }).textContent).toBe("");
+      expect(screen.queryByText(/refund needs attention/i)).toBeNull();
+    },
+  );
 });
