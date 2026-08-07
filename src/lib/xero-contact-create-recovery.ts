@@ -172,11 +172,19 @@ export async function hasMemberContactCreateMergeBlocker(
 ): Promise<boolean> {
   const operation = await db.xeroSyncOperation.findFirst({
     where: memberContactCreateMergeBlockerWhere(memberId),
-    select: { id: true, status: true, responsePayload: true },
+    select: {
+      id: true,
+      status: true,
+      lastErrorCode: true,
+      responsePayload: true,
+    },
   });
   return (
     operation !== null &&
     (operation.status === "RUNNING" ||
+      (operation.status === "FAILED" &&
+        operation.lastErrorCode ===
+          XERO_CONTACT_CREATE_STALE_RUNNING_ERROR_CODE) ||
       isProviderCreatedLocalLinkFailurePayload(operation.responsePayload))
   );
 }
