@@ -1863,7 +1863,7 @@ describe("bed allocation planner", () => {
     // Thread CPU excludes time this Vitest worker is descheduled by sibling
     // files. Keep the original 5s work budget: indexed focused runs consume
     // about 2.4s, while a same-head mutation restoring the per-guest/per-night
-    // growing-array scan consumes about 15.4s and must remain red. The 15s
+    // growing-array scan consumes about 16.5-17.2s and must remain red. The 15s
     // ordinary test timeout is only wall-clock headroom for a contended hosted
     // worker.
     expect(usedCpuMs).toBeLessThan(5_000);
