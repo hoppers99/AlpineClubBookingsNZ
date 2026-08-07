@@ -86,7 +86,7 @@ export function WaitlistOfferCard({
           // Cross-lodge accept: the entry was replaced by a fresh booking at the
           // offered lodge — hard-navigate there. A full load (not router.push)
           // keeps the F28 guarantee that the CTA can never stick on "Confirming…".
-          window.location.href = `/bookings/${data.newBookingId}`;
+          window.location.assign(`/bookings/${data.newBookingId}`);
           return;
         }
         // Hard reload: the confirm POST succeeded server-side, so re-render the
