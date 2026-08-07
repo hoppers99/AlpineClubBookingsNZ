@@ -203,7 +203,13 @@ describe("recordAuthBounce classification", () => {
 
     const data = lastAuditData();
     expect(data.action).toBe("auth.bounce");
-    expect(data.category).toBe("auth");
+    // `security`, not the `auth` this used to pin (#2581). `auth` was never in the
+    // audit taxonomy — it reached the column only through the writer type's old
+    // `| (string & {})` escape — so these rows were selectable by no Admin category
+    // filter and by no Diagnostics correlation tool. The affected domain is
+    // authentication, so the canonical value is `security`, which the system
+    // correlation entry reads with `support:view`.
+    expect(data.category).toBe("security");
     expect(data.outcome).toBe("session-invalidated");
     expect(data.severity).toBe("info");
     expect(data.memberId).toBe("member-1");
