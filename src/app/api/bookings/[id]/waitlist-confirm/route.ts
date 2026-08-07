@@ -46,10 +46,12 @@ import {
  * These are deliberately generous against those defaults but TIGHTER than the
  * admin precedents (`saveClubTheme` 10s/15s, `assignBedRange` 10s/30s), because
  * a member is watching this request rather than an officer: two attempts cap the
- * member-visible wait at roughly 30s. Going higher would buy almost nothing —
- * `member-merge` holds global `lock(1)` for up to 120s, so no budget a member
- * could reasonably wait out beats it. That is exactly why the guard and the
- * operator door below exist instead of a bigger number.
+ * member-visible wait at roughly 30s. Going higher would buy little — the
+ * longest-lived holder of `lock(1)` in the tree is `assignBedRange`, which takes
+ * it inside a `timeout: 30_000` transaction — so a budget that always beat the
+ * worst contender would mean a member waiting a minute for a failure they cannot
+ * act on. That is why the guard and the operator door below exist instead of a
+ * bigger number.
  */
 const OFFER_RELEASE_MAX_WAIT_MS = 5_000;
 const OFFER_RELEASE_TIMEOUT_MS = 10_000;

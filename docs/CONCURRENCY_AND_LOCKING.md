@@ -1501,9 +1501,9 @@ rows whose guarded revert/cancel actually claimed one row.
 
 #### A compensating transaction gets its own budget, its own guard, and an operator door (#2623)
 
-`POST /api/bookings/[id]/waitlist-confirm` is a **two-phase** writer, and the
-seam between the phases is the sharpest one in the repository. Phase one
-(`confirmWaitlistOffer`) commits in its own transaction: it nulls
+`POST /api/bookings/[id]/waitlist-confirm` is a **two-phase** writer whose two
+phases commit separately, and the seam between them is where #2623 T4 lived.
+Phase one (`confirmWaitlistOffer`) commits in its own transaction: it nulls
 `waitlistOfferedAt`/`waitlistOfferExpiresAt`/`waitlistPosition` and moves the
 booking to `PAYMENT_PENDING`. **From that commit the offer no longer exists.**
 Phase two — the $0 `PAYMENT_PENDING -> PAID` claim — then takes global `lock(1)`
@@ -1527,10 +1527,11 @@ and they generalise to any compensating transaction in this codebase:
    for. It is deliberately *tighter* than the admin precedents (`saveClubTheme`
    10s/15s, `assignBedRange` 10s/30s) because a **member** is watching this
    request — two attempts cap the visible wait near 30s. Raising it further would
-   buy almost nothing: `member-merge` holds global `lock(1)` for up to 120s
-   (`member-merge.ts` `timeout: 120_000`), so no budget a member could reasonably
-   wait out beats a merge, which is why rules 2 and 3 exist rather than a bigger
-   number.
+   buy little: the longest-lived holder of global `lock(1)` in the tree is
+   `assignBedRange` itself (`admin-bed-allocation.ts:4164` takes `lock(1)` inside
+   a `timeout: 30_000` transaction), so a budget that always beat the worst
+   contender would mean a member waiting a minute for a failure they cannot act
+   on. Rules 2 and 3 exist instead of a bigger number.
 2. **Bounded retry, then a guard that cannot throw.** One retry on P2028/P2034,
    then the outcome is returned as data. A compensation is never allowed to
    throw past the handler and become the response.
