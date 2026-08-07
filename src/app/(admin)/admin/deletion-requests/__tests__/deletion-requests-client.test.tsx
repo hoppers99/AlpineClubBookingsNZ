@@ -284,6 +284,7 @@ describe("self-service deletion partial recovery (#2597)", () => {
     });
     const blockingAlert = vi.spyOn(window, "alert").mockImplementation(() => {});
     let deletionReads = 0;
+    let deletionWrites = 0;
     vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
       if (url.includes("/api/admin/member-lifecycle-action-requests")) {
@@ -299,6 +300,14 @@ describe("self-service deletion partial recovery (#2597)", () => {
         } as Response;
       }
       if (url === "/api/admin/deletion-requests/request-1" && init?.method === "POST") {
+        deletionWrites += 1;
+        if (deletionWrites > 1) {
+          return {
+            ok: false,
+            status: 409,
+            json: async () => ({ error: "The remaining cleanup changed; reload it." }),
+          } as Response;
+        }
         return {
           ok: false,
           status: 500,
@@ -335,9 +344,10 @@ describe("self-service deletion partial recovery (#2597)", () => {
 
     render(<DeletionRequestsClient sessionMemberId="admin-1" />);
     await screen.findByText("Riley Chen");
-    const alert = document.getElementById("deletion-requests-error");
-    expect(alert?.getAttribute("role")).toBe("alert");
-    expect(alert?.textContent).toBe("");
+    const recoveryAlert = document.getElementById("deletion-requests-recovery");
+    const actionAlert = document.getElementById("deletion-requests-error");
+    expect(recoveryAlert?.getAttribute("role")).toBe("alert");
+    expect(recoveryAlert?.textContent).toBe("");
 
     fireEvent.click(screen.getByRole("button", { name: "Approve" }));
     fireEvent.click(
@@ -345,14 +355,14 @@ describe("self-service deletion partial recovery (#2597)", () => {
     );
 
     await waitFor(() =>
-      expect(alert?.textContent).toMatch(/2 future bookings were cancelled/i),
+      expect(recoveryAlert?.textContent).toMatch(/2 future bookings were cancelled/i),
     );
-    expect(alert?.textContent).toMatch(/one remaining booking still needs cancellation/i);
-    expect(alert?.textContent).toMatch(/data was not anonymised/i);
-    expect(alert?.textContent).toMatch(/no approval receipt was sent/i);
-    expect(alert?.textContent).toMatch(/could not be refreshed/i);
-    expect(alert?.textContent).not.toContain("private database detail");
-    expect(document.activeElement).toBe(alert);
+    expect(recoveryAlert?.textContent).toMatch(/one remaining booking still needs cancellation/i);
+    expect(recoveryAlert?.textContent).toMatch(/data was not anonymised/i);
+    expect(recoveryAlert?.textContent).toMatch(/no approval receipt was sent/i);
+    expect(recoveryAlert?.textContent).toMatch(/could not be refreshed/i);
+    expect(recoveryAlert?.textContent).not.toContain("private database detail");
+    expect(document.activeElement).toBe(recoveryAlert);
     expect(scrollIntoView).toHaveBeenCalled();
     expect(blockingAlert).not.toHaveBeenCalled();
 
@@ -369,6 +379,14 @@ describe("self-service deletion partial recovery (#2597)", () => {
     expect(
       await screen.findByRole("heading", { name: "Approve Deletion Request" }),
     ).not.toBeNull();
+    fireEvent.click(
+      screen.getByRole("button", { name: "Approve & Delete Account" }),
+    );
+    await waitFor(() =>
+      expect(actionAlert?.textContent).toContain("The remaining cleanup changed; reload it."),
+    );
+    expect(document.activeElement).toBe(actionAlert);
+    expect(recoveryAlert?.textContent).toMatch(/2 future bookings were cancelled/i);
   });
 
   it("shows a committed cancellation with unconfirmed post-processing without calling it pending", async () => {
@@ -394,7 +412,7 @@ describe("self-service deletion partial recovery (#2597)", () => {
       await screen.findByRole("button", { name: "Approve & Delete Account" }),
     );
 
-    const alert = document.getElementById("deletion-requests-error");
+    const alert = document.getElementById("deletion-requests-recovery");
     await waitFor(() =>
       expect(alert?.textContent).toMatch(/cancellation committed/i),
     );
@@ -440,7 +458,7 @@ describe("self-service deletion partial recovery (#2597)", () => {
       await screen.findByRole("button", { name: "Approve & Delete Account" }),
     );
 
-    const alert = document.getElementById("deletion-requests-error");
+    const alert = document.getElementById("deletion-requests-recovery");
     await waitFor(() =>
       expect(alert?.textContent).toMatch(/2 future bookings were cancelled/i),
     );

@@ -446,6 +446,7 @@ export function PublicBookingRequestsPanel({
   const [declineDialogOpen, setDeclineDialogOpen] = useState(false);
   const [error, setError] = useState("");
   const [errorAttentionVersion, setErrorAttentionVersion] = useState(0);
+  const [recoveryAttentionVersion, setRecoveryAttentionVersion] = useState(0);
   const [declineRecovery, setDeclineRecovery] = useState<{
     requestId: string;
     heldBookingId: string | null;
@@ -1083,8 +1084,11 @@ export function PublicBookingRequestsPanel({
             heldBookingId: request.heldBookingId,
             message: recoveryBase,
           });
-          showActionError(recoveryBase);
+          setRecoveryAttentionVersion((version) => version + 1);
           const refreshed = await fetchRequests();
+          // The refresh outcome is folded into the durable recovery below; do
+          // not duplicate it in the ordinary action region or steal focus.
+          setError("");
           const refreshResult = refreshed
             ? " The latest request queue was loaded; open the held booking and check its cancellation status."
             : " The request queue could not be refreshed. This warning remains active; open the held booking and check its cancellation status.";
@@ -1093,7 +1097,7 @@ export function PublicBookingRequestsPanel({
             heldBookingId: request.heldBookingId,
             message: `${recoveryBase}${refreshResult}`,
           });
-          setErrorAttentionVersion((version) => version + 1);
+          setRecoveryAttentionVersion((version) => version + 1);
           return;
         }
         throw new Error(data.error || "Failed to decline request");
@@ -1141,9 +1145,9 @@ export function PublicBookingRequestsPanel({
       ) : null}
 
       <FocusedActionError
-        id="public-booking-requests-error"
-        error={declineRecovery?.message ?? error}
-        attentionKey={errorAttentionVersion}
+        id="public-booking-requests-recovery"
+        error={declineRecovery?.message ?? ""}
+        attentionKey={recoveryAttentionVersion}
         heading={declineRecovery ? "Request declined - hold release pending" : undefined}
         action={
           declineRecovery?.heldBookingId ? (
@@ -1157,7 +1161,15 @@ export function PublicBookingRequestsPanel({
                 Open affected booking
               </Link>
             </Button>
-          ) : error && !declineRecovery ? (
+          ) : undefined
+        }
+      />
+      <FocusedActionError
+        id="public-booking-requests-error"
+        error={error}
+        attentionKey={errorAttentionVersion}
+        action={
+          error ? (
             <Button type="button" variant="outline" size="sm" onClick={() => setError("")}>
               Dismiss
             </Button>

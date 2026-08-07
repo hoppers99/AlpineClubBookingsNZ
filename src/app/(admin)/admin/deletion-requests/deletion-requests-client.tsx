@@ -115,6 +115,7 @@ export default function DeletionRequestsClient({
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [errorAttentionVersion, setErrorAttentionVersion] = useState(0);
+  const [recoveryAttentionVersion, setRecoveryAttentionVersion] = useState(0);
   const [deletionRecovery, setDeletionRecovery] = useState<{
     request: DeletionRequest;
     note: string;
@@ -248,8 +249,11 @@ export default function DeletionRequestsClient({
                 : null,
             message: recoveryBase,
           });
-          showActionError(recoveryBase);
+          setRecoveryAttentionVersion((version) => version + 1);
           const refreshed = await fetchRequests();
+          // The refresh outcome is folded into the durable recovery below; do
+          // not duplicate it in the ordinary action region or steal focus.
+          setError(null);
           const refreshResult = refreshed
             ? " The latest deletion queue was loaded."
             : " The deletion queue could not be refreshed. This recovery warning remains active.";
@@ -258,7 +262,7 @@ export default function DeletionRequestsClient({
               ? { ...current, message: `${recoveryBase}${refreshResult}` }
               : current,
           );
-          setErrorAttentionVersion((version) => version + 1);
+          setRecoveryAttentionVersion((version) => version + 1);
           return;
         }
         throw new Error(body.error || "Failed");
@@ -370,9 +374,9 @@ export default function DeletionRequestsClient({
         </CardHeader>
         <CardContent>
           <FocusedActionError
-            id="deletion-requests-error"
-            error={deletionRecovery?.message ?? error ?? ""}
-            attentionKey={errorAttentionVersion}
+            id="deletion-requests-recovery"
+            error={deletionRecovery?.message ?? ""}
+            attentionKey={recoveryAttentionVersion}
             heading={
               deletionRecovery
                 ? "Deletion approval partially completed"
@@ -409,7 +413,15 @@ export default function DeletionRequestsClient({
                     </Button>
                   ) : null}
                 </div>
-              ) : error ? (
+              ) : undefined
+            }
+          />
+          <FocusedActionError
+            id="deletion-requests-error"
+            error={error ?? ""}
+            attentionKey={errorAttentionVersion}
+            action={
+              error ? (
                 <Button
                   type="button"
                   variant="outline"

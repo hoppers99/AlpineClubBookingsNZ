@@ -101,6 +101,17 @@ describe("BookingApprovalsPanel action error attention (#2597)", () => {
 
   it("retains ordinary recorded-rejection recovery, suppresses stale reject, and links back to the queue", async () => {
     let reviewReads = 0
+    const secondBooking = {
+      ...booking,
+      id: "booking-2",
+      member: {
+        ...booking.member,
+        id: "member-2",
+        firstName: "Jordan",
+        lastName: "Singh",
+        email: "jordan@example.org",
+      },
+    }
     global.fetch = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
       const url = String(input)
       if (url.startsWith("/api/admin/booking-reviews?")) {
@@ -108,7 +119,7 @@ describe("BookingApprovalsPanel action error attention (#2597)", () => {
         if (reviewReads === 1) {
           return {
             ok: true,
-            json: async () => ({ data: [booking] }),
+            json: async () => ({ data: [booking, secondBooking] }),
           } as Response
         }
         return {
@@ -131,28 +142,37 @@ describe("BookingApprovalsPanel action error attention (#2597)", () => {
     }) as typeof fetch
 
     render(<BookingApprovalsPanel />)
+    const notes = await screen.findAllByPlaceholderText(/Explain your decision/i)
     fireEvent.change(
-      await screen.findByPlaceholderText(/Explain your decision/i),
+      notes[0],
       { target: { value: "No eligible adult host." } },
     )
-    fireEvent.click(screen.getByRole("button", { name: "Reject and cancel" }))
+    fireEvent.click(screen.getAllByRole("button", { name: "Reject and cancel" })[0])
     fireEvent.click(
       await screen.findByRole("button", { name: "Reject and email member" }),
     )
 
-    const alert = document.getElementById("booking-approvals-error")
+    const recoveryAlert = document.getElementById("booking-approvals-recovery")
+    const actionAlert = document.getElementById("booking-approvals-error")
     await waitFor(() =>
-      expect(alert).toHaveTextContent(/rejection was recorded/i),
+      expect(recoveryAlert).toHaveTextContent(/rejection was recorded/i),
     )
-    expect(alert).toHaveTextContent(/cancellation status could not be confirmed/i)
-    expect(alert).toHaveTextContent(/could not be refreshed/i)
-    expect(alert).not.toHaveTextContent("private database detail")
-    expect(document.activeElement).toBe(alert)
-    expect(screen.queryByRole("button", { name: "Reject and cancel" })).not.toBeInTheDocument()
+    expect(recoveryAlert).toHaveTextContent(/cancellation status could not be confirmed/i)
+    expect(recoveryAlert).toHaveTextContent(/could not be refreshed/i)
+    expect(recoveryAlert).not.toHaveTextContent("private database detail")
+    expect(document.activeElement).toBe(recoveryAlert)
+    expect(screen.queryByText("Riley Chen")).not.toBeInTheDocument()
     const recoveryLink = screen.getByRole("link", { name: "Open affected booking" })
     expect(recoveryLink).toHaveAttribute(
       "href",
       "/bookings/booking-1?returnTo=%2Fadmin%2Fbooking-requests",
     )
+
+    fireEvent.click(screen.getByRole("button", { name: "Reject and cancel" }))
+    await waitFor(() =>
+      expect(actionAlert).toHaveTextContent(/add admin notes before rejecting/i),
+    )
+    expect(document.activeElement).toBe(actionAlert)
+    expect(recoveryAlert).toHaveTextContent(/rejection was recorded/i)
   })
 })

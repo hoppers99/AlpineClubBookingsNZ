@@ -112,14 +112,14 @@ const baseRequest = {
   createdAt: "2026-07-01T00:00:00.000Z",
 };
 
-function mockFetch(request: Record<string, unknown>) {
+function mockFetch(request: Record<string, unknown> | Record<string, unknown>[]) {
   global.fetch = vi.fn().mockResolvedValue({
     ok: true,
-    json: async () => ({ data: [request] }),
+    json: async () => ({ data: Array.isArray(request) ? request : [request] }),
   }) as unknown as typeof fetch;
 }
 
-async function renderWith(request: Record<string, unknown>) {
+async function renderWith(request: Record<string, unknown> | Record<string, unknown>[]) {
   mockFetch(request);
   render(<PublicBookingRequestsPanel />);
   // Wait for the first fetch to land before asserting on the card. (The school
@@ -189,7 +189,10 @@ describe("PublicBookingRequestsPanel saved-data marker (#2342)", () => {
       configurable: true,
       value: scrollIntoView,
     });
-    await renderWith({ ...baseRequest, heldBookingId: "booking/held" });
+    await renderWith([
+      { ...baseRequest, heldBookingId: "booking/held" },
+      { ...baseRequest, id: "req-2", schoolName: "Second School" },
+    ]);
 
     global.fetch = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
       const url = String(input);
@@ -204,6 +207,13 @@ describe("PublicBookingRequestsPanel saved-data marker (#2342)", () => {
           }),
         } as Response;
       }
+      if (url === "/api/admin/booking-requests/req-2/approve" && init?.method === "POST") {
+        return {
+          ok: false,
+          status: 409,
+          json: async () => ({ error: "The second request changed; reload it." }),
+        } as Response;
+      }
       if (url.startsWith("/api/admin/booking-requests?")) {
         return {
           ok: false,
@@ -213,25 +223,33 @@ describe("PublicBookingRequestsPanel saved-data marker (#2342)", () => {
       throw new Error(`Unexpected request: ${url}`);
     }) as typeof fetch;
 
-    fireEvent.click(button(/^Decline$/i));
+    fireEvent.click(screen.getAllByRole("button", { name: /^Decline$/i })[0]);
     fireEvent.click(
       await screen.findByRole("button", { name: "Decline and email requester" }),
     );
 
-    const alert = document.getElementById("public-booking-requests-error");
+    const recoveryAlert = document.getElementById("public-booking-requests-recovery");
+    const actionAlert = document.getElementById("public-booking-requests-error");
     await waitFor(() =>
-      expect(alert?.textContent).toMatch(/request was declined/i),
+      expect(recoveryAlert?.textContent).toMatch(/request was declined/i),
     );
-    expect(alert?.textContent).toMatch(/capacity hold status could not be confirmed/i);
-    expect(alert?.textContent).toMatch(/could not be refreshed/i);
-    expect(alert?.textContent).not.toContain("private database detail");
-    expect(document.activeElement).toBe(alert);
-    expect(screen.queryByRole("button", { name: /^Decline$/i })).toBeNull();
+    expect(recoveryAlert?.textContent).toMatch(/capacity hold status could not be confirmed/i);
+    expect(recoveryAlert?.textContent).toMatch(/could not be refreshed/i);
+    expect(recoveryAlert?.textContent).not.toContain("private database detail");
+    expect(document.activeElement).toBe(recoveryAlert);
+    expect(screen.queryAllByText("Demo High School")).toHaveLength(0);
     expect(
       screen.getByRole("link", { name: "Open affected booking" }).getAttribute("href"),
     ).toBe(
       "/bookings/booking%2Fheld?returnTo=%2Fadmin%2Fbooking-requests",
     );
+
+    fireEvent.click(button(/Approve & invoice school/i));
+    await waitFor(() =>
+      expect(actionAlert?.textContent).toContain("The second request changed; reload it."),
+    );
+    expect(document.activeElement).toBe(actionAlert);
+    expect(recoveryAlert?.textContent).toMatch(/request was declined/i);
   });
 
   it("states ONLY the guest failure when only the guest list is unreadable", async () => {

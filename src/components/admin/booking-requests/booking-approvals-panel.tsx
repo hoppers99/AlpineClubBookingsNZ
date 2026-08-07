@@ -127,6 +127,7 @@ export function BookingApprovalsPanel({
   const [notesById, setNotesById] = useState<Record<string, string>>({});
   const [error, setError] = useState("");
   const [errorAttentionVersion, setErrorAttentionVersion] = useState(0);
+  const [recoveryAttentionVersion, setRecoveryAttentionVersion] = useState(0);
   const [decisionRecovery, setDecisionRecovery] = useState<{
     bookingId: string;
     message: string;
@@ -272,8 +273,11 @@ export function BookingApprovalsPanel({
             current.filter((booking) => booking.id !== bookingId),
           );
           setDecisionRecovery({ bookingId, message: recoveryBase });
-          showActionError(recoveryBase);
+          setRecoveryAttentionVersion((version) => version + 1);
           const refreshed = await fetchBookings();
+          // The refresh outcome is folded into the durable recovery below; do
+          // not duplicate it in the ordinary action region or steal focus.
+          setError("");
           const refreshResult = refreshed
             ? " The latest review queue was loaded; open the booking and check its cancellation status."
             : " The review queue could not be refreshed. This warning remains active; open the booking and check its cancellation status.";
@@ -281,7 +285,7 @@ export function BookingApprovalsPanel({
             bookingId,
             message: `${recoveryBase}${refreshResult}`,
           });
-          setErrorAttentionVersion((version) => version + 1);
+          setRecoveryAttentionVersion((version) => version + 1);
           return;
         }
         throw new Error(data.error || "Failed to record decision");
@@ -358,9 +362,9 @@ export function BookingApprovalsPanel({
       ) : null}
 
       <FocusedActionError
-        id="booking-approvals-error"
-        error={decisionRecovery?.message ?? error}
-        attentionKey={errorAttentionVersion}
+        id="booking-approvals-recovery"
+        error={decisionRecovery?.message ?? ""}
+        attentionKey={recoveryAttentionVersion}
         heading={decisionRecovery ? "Rejection recorded - cancellation pending" : undefined}
         action={
           decisionRecovery ? (
@@ -374,7 +378,15 @@ export function BookingApprovalsPanel({
                 Open affected booking
               </Link>
             </Button>
-          ) : error ? (
+          ) : undefined
+        }
+      />
+      <FocusedActionError
+        id="booking-approvals-error"
+        error={error}
+        attentionKey={errorAttentionVersion}
+        action={
+          error ? (
             <Button type="button" variant="outline" size="sm" onClick={() => setError("")}>
               Dismiss
             </Button>
