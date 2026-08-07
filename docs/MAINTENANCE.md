@@ -180,6 +180,44 @@ extraction over expanding this table casually.
 
 ## Operational Repair Tools
 
+### Recover a stranded $0 waitlist confirm (#2623)
+
+Admin -> Audit log, filtered to action `waitlist.confirm_offer_release_failed`
+(category `booking`, severity `critical`), lists free bookings whose waitlist
+confirm got half-way and could not undo itself. It is rare by construction and
+needs no script, but it will not clear on its own — no cron sweeps
+`PAYMENT_PENDING`, and the member has no offer left to retry.
+
+What happened: the confirm's first phase committed the booking to
+`PAYMENT_PENDING` and consumed the waitlist offer; its second phase (the $0
+`PAYMENT_PENDING -> PAID` claim) then lost its locks, and the compensating
+release back to `WAITLISTED` lost its locks too. The booking therefore holds no
+bed, has no payment path (it costs nothing) and has no offer to replay. The
+member was told exactly this and told **not** to confirm again.
+
+The audit row's metadata carries the lodge, the stay dates, `finalPriceCents`
+and both underlying error codes (`claimErrorCode`, `releaseErrorCode`). Open the
+booking from Admin -> Bookings and pick the outcome:
+
+- **Put them back in the queue** — the repair the failed compensation would have
+  made: set the booking back to `WAITLISTED` and clear
+  `waitlistOfferedLodgeId` / `waitlistOfferedPriceCents`, so the ordinary offer
+  worker re-offers the next free bed. Correct whenever the bed that prompted the
+  offer has since gone. **There is no admin button for this today** — the
+  waitlist screen only lists `WAITLISTED` / `WAITLIST_OFFERED`, and Force
+  Confirm refuses any other status — so it needs someone with database access.
+- **Cancel and have them rejoin** — reachable entirely from the admin UI, and the
+  right choice when nobody can safely touch the database. Cancel the booking from
+  Admin -> Bookings and ask the member to rejoin the waitlist for those nights.
+
+Do **not** try Record payment: the dialog deliberately refuses a booking with
+nothing owing ("use Force confirm / Confirm pending guests instead"), and do not
+hand-write a `Payment` row — a $0 confirm mints its own and `Payment.bookingId`
+is unique, so a hand-written row permanently blocks the real one.
+
+Either way, tell the member. Their offer is gone, and their place in the queue is
+the outcome they were promised.
+
 ### Record a trusted legacy induction baseline (#2361)
 
 `npm run induction:baseline` is a one-off, dry-run-first maintenance command

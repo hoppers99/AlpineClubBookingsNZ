@@ -988,11 +988,24 @@ describe("review finding source/schema contracts", () => {
     const capacityFailure = sliceFrom(
       zeroDollar,
       "if (!available)",
-      "await tx.payment.create"
+      // #2623 — the end marker is the PAID claim, not `tx.payment.create`: the
+      // $0 Payment row now lives BELOW that claim so a lost claim (which returns
+      // and therefore COMMITS) cannot leave a SUCCEEDED $0 row on a booking that
+      // never reached PAID. `Payment.bookingId` is unique, so such a row would
+      // also block the booking's real payment row forever.
+      "const claimed = await tx.booking.updateMany"
     );
     expect(capacityFailure).toContain("tx.booking.updateMany");
     expect(capacityFailure).toContain("status: BookingStatus.WAITLISTED");
     expect(capacityFailure).toContain("status: BookingStatus.PAYMENT_PENDING");
+    // The $0 Payment row is written exactly once, and only after the PAID claim
+    // succeeded. A lost claim RETURNS, which commits the transaction, so a row
+    // written above the guard would survive on a booking that never reached PAID.
+    expect(zeroDollar.match(/tx\.payment\.create/g)).toHaveLength(1);
+    const claimBlock = sliceFrom(zeroDollar, "const claimed = await tx.booking.updateMany");
+    expect(claimBlock.indexOf("await tx.payment.create")).toBeGreaterThan(
+      claimBlock.indexOf("if (claimed.count === 0)")
+    );
   });
 
   it("runs the opt-in concurrency race harness against its dedicated CI PostgreSQL service (#1881)", () => {

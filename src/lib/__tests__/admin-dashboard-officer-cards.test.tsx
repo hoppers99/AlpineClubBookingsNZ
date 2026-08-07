@@ -53,19 +53,20 @@ function mockStats() {
 
   // The reworked officer-card counts compute over real fixtures so the headline
   // reconciles with each surface's own semantics (#2091 review). A single guest
-  // stays two of the next seven nights with no chore assignment → 2 roster
-  // nights needing chores; three guests each have an unallocated bed-night in
-  // the window → 3 guests awaiting a bed.
+  // stays THREE of the next seven nights with no chore assignment → 4 roster
+  // days needing chores (#2631: the three nights plus the checkout morning,
+  // when the beds get stripped and the kitchen shut down); three guests each
+  // have an unallocated bed-night in the window → 3 guests awaiting a bed.
   const today = getTodayDateOnly();
   const plus1 = addDaysDateOnly(today, 1);
-  const plus2 = addDaysDateOnly(today, 2);
+  const plus3 = addDaysDateOnly(today, 3);
 
   const rosterBookings = [
     {
       id: "rb1",
       checkIn: today,
-      checkOut: plus2,
-      guests: [{ stayStart: today, stayEnd: plus2, ageTier: null, nights: [] }],
+      checkOut: plus3,
+      guests: [{ stayStart: today, stayEnd: plus3, ageTier: null, nights: [] }],
     },
   ];
   const bedBookings = [
@@ -151,11 +152,13 @@ describe("admin dashboard officer key cards", () => {
     // Officer-card-unique copy and headline counts.
     expect(html).toContain("checking in within 7 days");
     expect(html).toContain("Roster Assignment");
-    expect(html).toContain("nights in the next 7 days with no chores assigned");
+    // #2631: DAYS, not nights. A changeover morning whose guests all leave
+    // before midday is a real day of chores and is counted here.
+    expect(html).toContain("days in the next 7 days with no chores assigned");
     expect(html).toContain("Bed Allocation");
     expect(html).toContain("guests in the next 7 days awaiting a bed");
     expect(html).toContain(">7</div>"); // upcoming check-ins
-    expect(html).toContain(">2</div>"); // roster nights needing chores
+    expect(html).toContain(">4</div>"); // roster days needing chores (#2631)
     expect(html).toContain(">3</div>"); // guests awaiting a bed
 
     // Slim secondary row keeps Members + Revenue.

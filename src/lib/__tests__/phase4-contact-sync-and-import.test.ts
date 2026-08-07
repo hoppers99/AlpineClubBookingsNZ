@@ -77,6 +77,12 @@ const mocks = vi.hoisted(() => {
       auditLog: {
         create: vi.fn(),
       },
+      // #2623 T7: the inbound contact patch closes any provider-created create
+      // recovery whose own contact is the canonical link it just landed.
+      xeroSyncOperation: {
+        findMany: vi.fn().mockResolvedValue([]),
+        updateMany: vi.fn().mockResolvedValue({ count: 0 }),
+      },
       $executeRaw: vi.fn(),
       $transaction: vi.fn(),
     },

@@ -41,6 +41,13 @@ export async function POST(
   const previousXeroContactId = member.xeroContactId;
   let memberUnlinkCommitted = false;
   let subscriptionRefreshPending = false;
+  // #2623 T3: the recovery body already said the unlink "completed only in
+  // part", but not WHICH parts survived. These track the two the operator has to
+  // go and check for themselves — the CONTACT ledger rows and the audit entry —
+  // so the disclosure names exactly what is still outstanding rather than
+  // leaving them to infer it.
+  let contactLinkRowsPending = false;
+  let unlinkAuditEntryPending = false;
 
   try {
     await prisma.member.update({
@@ -49,6 +56,8 @@ export async function POST(
     });
     memberUnlinkCommitted = true;
     subscriptionRefreshPending = true;
+    contactLinkRowsPending = true;
+    unlinkAuditEntryPending = true;
     const flushedSubscriptionHistory = await flushMemberSubscriptionHistory(id);
     subscriptionRefreshPending = false;
     await deactivateXeroObjectLinks({
@@ -56,6 +65,7 @@ export async function POST(
       localId: id,
       role: "CONTACT",
     });
+    contactLinkRowsPending = false;
 
     await logAudit({
       action: "XERO_UNLINK",
@@ -74,6 +84,7 @@ export async function POST(
           flushedSubscriptionHistory.deletedCount,
       },
     });
+    unlinkAuditEntryPending = false;
 
     logger.info(
       {
@@ -92,7 +103,11 @@ export async function POST(
     });
   } catch (err) {
     const recovery = memberUnlinkCommitted
-      ? unlinkedContactRecovery(subscriptionRefreshPending)
+      ? unlinkedContactRecovery({
+          subscriptionCleanupPending: subscriptionRefreshPending,
+          contactLinkRowsPending,
+          auditEntryPending: unlinkAuditEntryPending,
+        })
       : null;
     const hostingRetry = hostingCoverageParticipantRetryResponse(
       err,
@@ -101,7 +116,13 @@ export async function POST(
     if (hostingRetry) return hostingRetry;
     if (recovery) {
       logger.error(
-        { err, memberId: id, recoveryKind: recovery.recoveryKind },
+        {
+          err,
+          memberId: id,
+          recoveryKind: recovery.recoveryKind,
+          contactLinkRowsPending,
+          unlinkAuditEntryPending,
+        },
         "Xero contact unlink completed only in part",
       );
       return NextResponse.json(xeroPartialSuccessBody(recovery), {

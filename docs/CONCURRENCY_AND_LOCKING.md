@@ -450,6 +450,37 @@ transaction back. Interactive callers tell the operator to reload before retryin
 and to check payment status where applicable; automated callers retain their
 existing retry/redelivery boundary.
 
+That proof is a capability, not a plain value: `acquireHostingCoverageQueueParticipantProof`
+registers each object it returns in a module-private `WeakSet`, and
+`assertHostingCoverageQueueParticipantsLocked` rejects anything absent from it, so a
+structurally identical object literal cannot stand in for a locked participant set.
+**`acquireHostingCoverageQueueParticipantProof` can never issue a proof it did not lock
+for.** A client that cannot execute the lock statement (no `$executeRaw`) is refused
+with `HostingCoverageParticipantFenceUnavailableError` rather than being handed an
+unlocked proof; that error is deliberately *not* the retryable
+`HOSTING_COVERAGE_PARTICIPANT_RETRY` 409, because it reports a wiring fault that no
+amount of retrying can clear.
+
+That guarantee is scoped to the acquire seam, and deliberately so: the module's second
+proof-minting export, `proveMemberMergeHostingCoverageParticipants`, takes no lock of
+its own. It exists because member merge acquires its participants separately, through
+`lockMemberMergeHostingCoverageParticipants`, and then attests to that acquisition. Both
+sides pass plain `readonly string[]`, so **nothing at the type level ties the attested
+ids to the ids actually locked** — on that half the invariant is a convention its one
+caller (`member-merge.ts`) currently keeps, not a structural guarantee. A second
+merge-like path that hand-built `lockedMemberIds` would obtain a proof the whole
+downstream chain trusts, with no row lock ever taken. Brand that return type before
+adding one.
+
+A double standing in for this client must model **both** under-lock reads, not just the
+lock: `member.findMany` for the existence/order re-read, **and** `booking.findMany` for
+the owner/lodge re-read behind the `sourceFingerprint` drift check. Modelling only the
+first leaves the second returning nothing, which the fence correctly reads as drift and
+reports as an unexplained 409. `src/lib/__tests__/support/hosting-participant-fence-double.ts`
+provides both; `src/lib/__tests__/adult-member-hosting-queue-participants.test.ts` shows
+the minimal shape. Narrowing a double is not a licence to disable the fence for the call
+sites that double reaches.
+
 The member-standing fan-out adds a subject fence before even its first candidate
 read or empty-fan-out return. `enqueueHostingCoverageReevaluationForMember` locks
 the member whose standing changed `FOR UPDATE NOWAIT`; `FOR NO KEY UPDATE` is
@@ -1252,6 +1283,21 @@ deletion cannot leave an active identity link. An ambiguous
 the stronger `PROVIDER_CREATED_LINK_PENDING` state still offers Link as its
 recovery action while suppressing another Create.
 
+Inside that same link transaction — manual Link, the inbound patch, and
+`findOrCreateXeroContact`'s phase-2 write — a canonical link commit also closes
+the provider-created create it has just completed
+(`closeProviderCreatedContactRecoveryForLinkedContact`). It is a status-guarded
+`updateMany` on `status: "FAILED", manuallyResolvedAt: null` restricted to rows
+whose recorded `resolvedContactId` equals the contact being linked, so it is
+idempotent, a lost claim against the admin resolve action writes nothing, a
+`RUNNING` reservation is never touched, and a create that made a *different*
+contact stays open as the genuine duplicate it is. Because the close shares the
+Member `FOR UPDATE` with the pointer and ledger writes, merge and deletion can
+never observe a linked member with that operation still blocking them. Merge,
+deletion and the member detail display read the blocker through one predicate
+(`findMemberContactChangeMergeBlocker`), so the display cannot report a clean
+state for a member either lifecycle operation is refusing.
+
 Account deletion composes the same fence with its existing lifecycle order. While
 holding the target `Member FOR UPDATE`, deletion re-checks the complete active,
 provider-created, or stale-unknown contact-create blocker before anonymising.
@@ -1606,6 +1652,86 @@ vice versa). Waitlist offer confirmation resolves only the immutable lodge key
 before locking, then re-reads status and expiry under the lodge lock and fuses
 those checks with its update. The expiry reaper returns side effects only for
 rows whose guarded revert/cancel actually claimed one row.
+
+#### A compensating transaction gets its own budget, its own guard, and an operator door (#2623)
+
+`POST /api/bookings/[id]/waitlist-confirm` is a **two-phase** writer whose two
+phases commit separately, and the seam between them is where #2623 T4 lived.
+Phase one (`confirmWaitlistOffer`) commits in its own transaction: it nulls
+`waitlistOfferedAt`/`waitlistOfferExpiresAt`/`waitlistPosition` and moves the
+booking to `PAYMENT_PENDING`. **From that commit the offer no longer exists.**
+Phase two — the $0 `PAYMENT_PENDING -> PAID` claim — then takes global `lock(1)`
+and the per-lodge lock afresh, so it can lose those locks or hit the participant
+`FOR KEY SHARE NOWAIT` fence and roll back. A $0 booking left in
+`PAYMENT_PENDING` holds no capacity, has no payment path and has no offer to
+replay, so phase two's rollback MUST be compensated by releasing the booking
+back to `WAITLISTED` for the ordinary offer worker.
+
+That compensation is itself a `lock(1)` -> per-lodge transaction, and it runs at
+the moment contention is by definition highest — the thing that triggered it is
+lock contention. On Prisma's defaults (2s `maxWait`, 5s `timeout`) it was
+therefore the likeliest step in the route to fail, and it ran **unguarded inside
+the `catch`**: its own failure replaced the mapped retry with an unhandled 500
+*and* left the booking parked with a consumed offer. Three rules came out of it,
+and they generalise to any compensating transaction in this codebase:
+
+1. **Explicit budgets, sized for who is waiting.** The release runs on `maxWait`
+   5s / `timeout` 10s, not the interactive defaults: a compensation that inherits
+   the defaults is tuned for the quiet case and fails in the only case it exists
+   for. It is deliberately *tighter* than the admin precedents (`saveClubTheme`
+   10s/15s, `assignBedRange` 10s/30s) because a **member** is watching this
+   request — two attempts cap the visible wait near 30s. Raising it further would
+   buy little: the longest-lived holder of global `lock(1)` in the tree is
+   `assignBedRange` itself (`admin-bed-allocation.ts:4164` takes `lock(1)` inside
+   a `timeout: 30_000` transaction), so a budget that always beat the worst
+   contender would mean a member waiting a minute for a failure they cannot act
+   on. Rules 2 and 3 exist instead of a bigger number.
+2. **Bounded retry, then a guard that cannot throw.** One retry on P2028/P2034,
+   then the outcome is returned as data. A compensation is never allowed to
+   throw past the handler and become the response.
+3. **Every outcome is a distinct, mapped answer.** Contention maps to **503**
+   (the settled convention — see `admin/site-style/route.ts` and
+   `admin-bed-allocation-routes.ts`); anything else to 500; and the compensation
+   succeeding maps to the participant fence's frozen 409 or a coded 409/503.
+   Every one of them carries `offerRevoked: true`
+   (`src/lib/waitlist-confirm-recovery-contract.ts`), because the client cannot
+   distinguish a *phase-one* refusal — offer intact, retry genuinely available —
+   from a *phase-two* refusal on the shared error code alone, and it previously
+   invited a second click on an offer that had already been consumed.
+
+The status guard on the release (`updateMany where status: PAYMENT_PENDING`) does
+double duty: it makes the release safe to retry, and it makes a phase two that in
+fact committed (a commit whose acknowledgement was lost) match no row, so nothing
+is undone. `restored.count === 0` is therefore reported as
+`bookingStatusUnconfirmed`, never as "your place was restored".
+
+**When the compensation cannot run at all, the state is operator-only** — no cron
+sweeps `PAYMENT_PENDING`, and the member has nothing to retry. That is the one
+outcome in this route that gets an operator door rather than a self-healing path:
+a `critical` / `failure` `AuditLog` row with action
+`waitlist.confirm_offer_release_failed` (filterable by action, category and
+severity in Admin -> Audit log, carrying the lodge, the stay, and both error
+codes) plus a `logger.error` for Sentry, and member copy that names the state
+instead of inviting a retry. Swallowing it would have been the worse failure:
+silent, unsearchable, and indistinguishable from a booking the member abandoned.
+
+One residual window is accepted deliberately: the post-phase-one
+`booking.findUnique` that decides whether the $0 branch applies is not itself
+compensated. A failure there means the database is unreachable, in which case no
+compensating write and no audit row are possible either — the honest answer is
+the 500 and the Sentry/health-check path, not a compensation that cannot commit.
+
+`waitlist-confirm-hosting-retry.test.ts` pins all of it, including a compensation
+that fails both attempts (503 + the audit row, never a 500) and a contended
+compensation that succeeds on the retry.
+
+Because a lost claim `return`s — which **commits** the transaction rather than
+rolling it back — the $0 `Payment` row is created strictly *after* the
+`PAYMENT_PENDING -> PAID` claim succeeds. `Payment.bookingId` is unique, so a
+`SUCCEEDED` $0 row committed onto a booking that never reached `PAID` would both
+read as paid and permanently block that booking's real payment row. The general
+rule: inside a `$transaction` callback, only `throw` rolls back — a guard that
+`return`s must have written nothing it does not want committed.
 
 Group-settlement initiation selects/rejects `GroupBooking.CANCELLED` at entry
 and re-checks the durable fence under global `lock(1)` before taking child-lodge
@@ -1999,6 +2125,16 @@ excuse the invoice again.
   side effect.
 - **Composing two locks in one transaction?** Global `lock(1)` before any
   per-lodge lock; multiple same-family locks in sorted key order.
+- **Writing a compensating transaction?** Give it explicit `maxWait`/`timeout`
+  (never the interactive defaults — it runs under the contention that caused it),
+  a bounded retry on P2028/P2034, and a guard so it can never throw past the
+  handler. Map its failure to a real status (503 for contention) with copy that
+  names the state, and if the uncompensated state is operator-only, write a
+  `critical` audit row so it is searchable. `waitlist-confirm/route.ts` is the
+  reference (#2623).
+- **Bailing out of a `$transaction` callback?** Only `throw` rolls back;
+  `return` COMMITS everything written so far. A `count === 0` guard that returns
+  must sit above every write it does not want committed.
 - **Writing raw SQL for a row lock?** Take it with `$executeRaw` on a statement
   that selects a constant, then read what you need through the Prisma model
   under that lock (#2289). Never type a `$queryRaw` result and read it: the

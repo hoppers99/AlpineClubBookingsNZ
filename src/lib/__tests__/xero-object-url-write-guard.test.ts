@@ -60,9 +60,17 @@ const STRIP = "stripXeroOrgShortCode(";
  * for a first-writer-wins claim, `xero-subscription-invoices.ts` writes inside
  * a transaction whose shape the funnel would change, and
  * `xero-hardening-backfill.ts` reconstructs historical rows in bulk.
+ *
+ * `xero-contact-create-recovery.ts` is the fifth (#2623 T7): closing a
+ * provider-created create whose contact has since been linked is a
+ * STATUS-GUARDED claim (`updateMany` on `status: "FAILED", manuallyResolvedAt:
+ * null`), so a lost race writes nothing. `completeXeroSyncOperation` is an
+ * unguarded `update` by id and would defeat that, so this writer strips the
+ * short code itself.
  */
 const KNOWN_URL_WRITER_FILES = [
   "src/lib/membership-cancellation-xero.ts",
+  "src/lib/xero-contact-create-recovery.ts",
   "src/lib/xero-hardening-backfill.ts",
   "src/lib/xero-subscription-invoices.ts",
   "src/lib/xero-sync.ts",

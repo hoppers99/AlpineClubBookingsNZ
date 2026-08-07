@@ -127,18 +127,16 @@ export default function RosterSetupWizard() {
   const fetchData = useCallback(async () => {
     try {
       const [guestsRes, rosterRes, templatesRes] = await Promise.all([
-        // #2622: `scope=lodge-list` is the checkout-INCLUSIVE lodge list. The
-        // default scope is the night model, so on an all-departing morning this
-        // wizard counted nobody, `totalGuests === 0` disabled **Next**, and the
-        // hut leader could never reach the generate step — on exactly the day
-        // the shutdown chores matter most. The step-1 list and the count now
-        // include the people who leave today, which is who the generate route
-        // (already on the operational-day rule) will roster.
-        //
-        // This is the minimal unblock. #2631 converts this page and the lodge
-        // guests route onto the named operational-day helpers so step 1 and the
-        // generate step derive presence from one rule instead of two scopes.
-        fetch(`/api/lodge/guests/${dateStr}?scope=lodge-list`),
+        // #2631: the guests route has ONE scope now — the operational day —
+        // so this wizard, the kiosk and the generate route all read the same
+        // list. Step 1 shows everyone who is in the lodge on this date,
+        // including the people who leave this morning, which is exactly who
+        // the generate step will roster; its "Departing" badge means "leaves
+        // today", the same as the kiosk's. (It used to ask for a separate
+        // checkout-inclusive scope by query parameter, and before that it read
+        // the night model, which counted nobody on an all-departing morning and
+        // dead-ended the wizard on the day the shutdown chores matter most.)
+        fetch(`/api/lodge/guests/${dateStr}`),
         fetch(`/api/lodge/roster/${dateStr}`),
         fetch(`/api/lodge/roster/${dateStr}/chores`),
       ]);
@@ -458,12 +456,19 @@ export default function RosterSetupWizard() {
       {/* Step 1: Review Guests */}
       {step === 1 && (
         <div>
+          {/* #2631: "in the lodge", not "staying". This list is the guests
+              route's operational day, so it holds the people who leave this
+              morning as well as the people sleeping here tonight — "staying"
+              reads as the night model and made a changeover day look wrong.
+              Unlike the printed sheet, this list DOES include a booking held by
+              a pending admin review (#1422 flags rather than hides it), so
+              "in the lodge" is the accurate phrase here. */}
           <h2 className="text-xl font-semibold mb-4">
-            Guests Staying ({totalGuests})
+            Guests in the lodge ({totalGuests})
           </h2>
           {bookings.length === 0 ? (
             <div className="bg-kiosk-card rounded-xl p-6 text-center text-kiosk-muted-fg text-lg">
-              No guests staying on this date
+              No guests in the lodge on this date
             </div>
           ) : (
             <div className="space-y-3">

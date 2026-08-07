@@ -516,7 +516,7 @@ describe("Phase 8: Hut Leader & Kiosk Improvements", () => {
     expect(data.bookings[0].guests[0].phone).toBeNull();
   });
 
-  it("includes checkout-day guests only in lodge-list guest scope", async () => {
+  it("includes checkout-day guests with no scope parameter at all (#2631)", async () => {
     mockAuth.mockResolvedValue({
       user: { id: "admin-1", role: "ADMIN", accessRoles: [{ role: "ADMIN" }], email: "support@example.org" },
     });
@@ -544,9 +544,8 @@ describe("Phase 8: Hut Leader & Kiosk Improvements", () => {
 
     const { GET } = await import("@/app/api/lodge/guests/[date]/route");
     const res = await GET(
-      new Request(
-        "http://localhost/api/lodge/guests/2026-07-11?scope=lodge-list"
-      ) as any,
+      // NO `?scope=`: the route answers one question now, the operational day.
+      new Request("http://localhost/api/lodge/guests/2026-07-11") as any,
       { params: Promise.resolve({ date: "2026-07-11" }) }
     );
 
@@ -563,7 +562,11 @@ describe("Phase 8: Hut Leader & Kiosk Improvements", () => {
     expect(data.bookings[0].guests[0].isDeparting).toBe(true);
   });
 
-  it("keeps the default lodge guest API scope stay-night compatible", async () => {
+  it("MUTATION PROBE: the unified guest scope is checkout-inclusive, never `gt` (#2631)", async () => {
+    // The route used to send `checkOut: { gt: date }` unless asked for the
+    // lodge-list scope, which is what made a changeover morning read as an
+    // empty lodge. There is no scope parameter left to get wrong; reverting the
+    // predicate to `gt` fails here.
     mockAuth.mockResolvedValue({
       user: { id: "admin-1", role: "ADMIN", accessRoles: [{ role: "ADMIN" }], email: "support@example.org" },
     });
@@ -576,13 +579,21 @@ describe("Phase 8: Hut Leader & Kiosk Improvements", () => {
     );
 
     expect(res.status).toBe(200);
-    expect(mockPrisma.booking.findMany).toHaveBeenCalledWith(
-      expect.objectContaining({
-        where: expect.objectContaining({
-          checkOut: { gt: new Date("2026-07-11T00:00:00.000Z") },
-        }),
-      })
-    );
+    const args = mockPrisma.booking.findMany.mock.calls[0][0];
+    expect(args.where.checkOut).toEqual({
+      gte: new Date("2026-07-11T00:00:00.000Z"),
+    });
+    expect(args.where.guests.some.stayEnd).toEqual({
+      gte: new Date("2026-07-11T00:00:00.000Z"),
+    });
+    expect(args.include.guests.where.stayEnd).toEqual({
+      gte: new Date("2026-07-11T00:00:00.000Z"),
+    });
+    // …and the explicit night rows come with it, or a sparse stay's gap day
+    // would fall back to the envelope and show a guest who is not there.
+    expect(args.include.guests.include.nights).toEqual({
+      select: { stayDate: true },
+    });
   });
 
   it("filters lodge guest lists by individual guest stay ranges", async () => {
@@ -610,13 +621,29 @@ describe("Phase 8: Hut Leader & Kiosk Improvements", () => {
             member: { ageTier: "ADULT" },
           },
           {
-            id: "departed-guest",
-            firstName: "Departed",
+            // Last night was the 11th: still here this morning, leaves today.
+            id: "departing-guest",
+            firstName: "Departing",
             lastName: "Guest",
             ageTier: "ADULT",
             isMember: true,
             stayStart: new Date("2026-07-10T00:00:00.000Z"),
             stayEnd: new Date("2026-07-12T00:00:00.000Z"),
+            arrivedAt: null,
+            departedAt: null,
+            member: { ageTier: "ADULT" },
+          },
+          {
+            // Last night was the 10th, so they drove home yesterday morning.
+            // The coarse query cannot exclude them (their booking still
+            // overlaps); the operational-day rule must.
+            id: "left-yesterday-guest",
+            firstName: "Gone",
+            lastName: "Guest",
+            ageTier: "ADULT",
+            isMember: true,
+            stayStart: new Date("2026-07-10T00:00:00.000Z"),
+            stayEnd: new Date("2026-07-11T00:00:00.000Z"),
             arrivedAt: null,
             departedAt: null,
             member: { ageTier: "ADULT" },
@@ -638,16 +665,28 @@ describe("Phase 8: Hut Leader & Kiosk Improvements", () => {
           guests: {
             some: expect.objectContaining({
               stayStart: { lte: new Date("2026-07-12T00:00:00.000Z") },
-              stayEnd: { gt: new Date("2026-07-12T00:00:00.000Z") },
+              stayEnd: { gte: new Date("2026-07-12T00:00:00.000Z") },
             }),
           },
         }),
       })
     );
     const data = await res.json();
-    expect(data.totalGuests).toBe(1);
-    expect(data.bookings[0].guests.map((guest: { id: string }) => guest.id)).toEqual([
-      "active-guest",
+    // #2631: the guest whose last night was the 11th is HERE this morning and
+    // is flagged as leaving today; the guest whose last night was the 10th is
+    // gone. The coarse SQL bound returns the row either way, so this is the
+    // operational-day rule doing the filtering, not the query.
+    expect(data.totalGuests).toBe(2);
+    expect(
+      data.bookings[0].guests.map(
+        (guest: { id: string; isDeparting: boolean }) => [
+          guest.id,
+          guest.isDeparting,
+        ],
+      ),
+    ).toEqual([
+      ["active-guest", false],
+      ["departing-guest", true],
     ]);
   });
 
@@ -1412,13 +1451,20 @@ describe("Phase 8: Hut Leader & Kiosk Improvements", () => {
     );
     const content = fs.readFileSync(kioskPath, "utf-8");
 
-    expect(content).toContain("scope=lodge-list");
+    // #2631: one scope, so no scope parameter at all.
+    expect(content).toContain("`/api/lodge/guests/${date}`");
+    expect(content).not.toContain("scope=lodge-list");
     expect(content).toContain("Guests Arriving Today");
     expect(content).toContain("Guests Staying");
     expect(content).toContain("Guests Departing Today");
     expect(content).toContain("guest.ageTier === \"ADULT\"");
     expect(content).toContain("canMarkAttendance && guest.isArriving");
-    expect(content).toContain("canMarkAttendance && guest.isDeparting");
+    // #2631: the check-out BUTTON hangs off `isFinalDeparture`, not off the
+    // Departing badge — the depart endpoint only accepts the morning after the
+    // LAST booked night, so a sparse stay's intermediate departure morning gets
+    // the badge and no button.
+    expect(content).toContain("canMarkAttendance && guest.isFinalDeparture");
+    expect(content).not.toContain("canMarkAttendance && guest.isDeparting");
     expect(content).toContain("120000");
     expect(content).toContain("Manage Today's Roster");
     expect(content).not.toContain("Manage Today&apos;s Roster");
@@ -1445,7 +1491,7 @@ describe("Phase 8: Hut Leader & Kiosk Improvements", () => {
       "canMarkAttendance && guest.isArriving && !guest.departedAt && !booking.blockedFromCheckin"
     );
     expect(content).toContain(
-      "canMarkAttendance && guest.isDeparting && !booking.blockedFromCheckin"
+      "canMarkAttendance && guest.isFinalDeparture && !booking.blockedFromCheckin"
     );
   });
 });

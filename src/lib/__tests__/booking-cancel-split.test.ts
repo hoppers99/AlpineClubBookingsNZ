@@ -86,6 +86,10 @@ vi.mock("@/lib/logger", () => ({
   default: { error: vi.fn(), warn: vi.fn(), info: vi.fn(), debug: vi.fn() },
 }));
 
+import {
+  fenceMemberFindMany,
+  recordingBookingDouble,
+} from "@/lib/__tests__/support/hosting-participant-fence-double";
 import { cancelBooking } from "@/lib/booking-cancel";
 
 describe("cancelBooking split cascade (#738)", () => {
@@ -95,10 +99,16 @@ describe("cancelBooking split cascade (#738)", () => {
     mocks.prismaTransaction.mockImplementation(
       async (fnOrActions: unknown) => {
         if (typeof fnOrActions === "function") {
+          // #2619: model the participant fence's under-lock re-reads.
+          const fenceBooking = recordingBookingDouble((args) =>
+            mocks.txBookingFindUnique(args),
+          );
           return (fnOrActions as (tx: unknown) => Promise<unknown>)({
             $executeRaw: mocks.txExecuteRaw,
+            member: { findMany: fenceMemberFindMany() },
             booking: {
-              findUnique: mocks.txBookingFindUnique,
+              findUnique: fenceBooking.findUnique,
+              findMany: fenceBooking.findMany,
               update: mocks.bookingUpdate,
               updateMany: mocks.bookingUpdateMany,
             },

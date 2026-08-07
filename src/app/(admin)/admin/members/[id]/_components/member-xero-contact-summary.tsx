@@ -45,6 +45,25 @@ export function MemberXeroContactSummary({
             automatically.
           </p>
         )}
+        {/*
+          #2623 T7: the member merge and account-deletion refusals read the very
+          same open-operation predicate. Before this was shown here, a member
+          whose Xero link had since been repaired looked completely clean on
+          this page while both lifecycle operations kept refusing them, and
+          nothing said the remedy lived on the Xero Operations screen.
+        */}
+        {member.xeroContactLifecycleBlocker && (
+          <p className="text-xs text-warning-11" data-testid="xero-lifecycle-blocker">
+            Member merge and account deletion are blocked by open Xero contact{" "}
+            {member.xeroContactLifecycleBlocker.operationType} operation{" "}
+            <span className="font-mono">
+              {member.xeroContactLifecycleBlocker.operationId}
+            </span>{" "}
+            ({member.xeroContactLifecycleBlocker.status}). Wait for it to
+            finish, or clear it under Admin → Xero → Operations with “Resolve
+            (fixed in Xero)” once the contact is correct in Xero.
+          </p>
+        )}
         {member.xeroContactGroups.length > 0 && (
           <div className="flex flex-wrap gap-1">
             {member.xeroContactGroups.map((group) => (

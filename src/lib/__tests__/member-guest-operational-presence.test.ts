@@ -172,7 +172,7 @@ describe("kiosk arrivals list (D-12)", () => {
     const { GET } = await import("@/app/api/lodge/guests/[date]/route");
     return GET(
       new Request(
-        "http://localhost/api/lodge/guests/2026-07-10?scope=lodge-list",
+        "http://localhost/api/lodge/guests/2026-07-10",
       ) as never,
       routeParams({ date: "2026-07-10" }),
     );
@@ -562,7 +562,10 @@ describe("no site uses the NULL-hostile `not: PENDING` form", () => {
       // carry one copy of this predicate each. They are now one shared chore-
       // eligibility selector, so the predicate is asserted where it lives.
       "src/lib/roster-eligibility.ts",
-      "src/app/api/chores/roster/[date]/print/route.ts",
+      // #2631: the roster calendar and the dashboard's needs-roster headline
+      // used to be consent-BLIND, so a day could paint "needs roster" and open
+      // empty. Both DB entry points in roster-status now carry the predicate.
+      "src/lib/roster-status.ts",
       "src/lib/bed-allocation-lifecycle.ts",
       "src/lib/admin-bed-allocation.ts",
       "src/lib/cron-hut-leader-auto-assign.ts",
@@ -590,5 +593,78 @@ describe("no site uses the NULL-hostile `not: PENDING` form", () => {
         `${relativePath} must not filter consent by hand — the not: form is UNKNOWN for NULL`,
       ).not.toMatch(/consentStatus: \{ not:/);
     }
+  });
+
+  it("the roster-status entry points and the week strip also carry the REVIEW block (#2631)", async () => {
+    // Consent is one of two exclusions the roster's own population applies
+    // (`roster-eligibility.ts`); the other is #1372 / #1422's pending-admin-
+    // review block. A surface that counts "days needing a roster" has to apply
+    // BOTH, or it reports work the roster will refuse to let anyone do — the
+    // same "reads needs-roster, opens empty" defect as an unfiltered consent
+    // predicate, one axis over.
+    //
+    // Asserted per FUNCTION rather than per file: `roster-status.ts` has two
+    // independent DB entry points and dropping the filter from either one is a
+    // live defect, which a whole-file `toContain` would not notice.
+    const { readFileSync } = await import("node:fs");
+    const path = await import("node:path");
+
+    const rosterStatus = readFileSync(
+      path.resolve(process.cwd(), "src/lib/roster-status.ts"),
+      "utf8",
+    );
+    const monthEntry = rosterStatus.slice(
+      rosterStatus.indexOf("export async function getRosterMonthStatus("),
+      rosterStatus.indexOf("export async function countRosterDaysNeedingChores("),
+    );
+    const countEntry = rosterStatus.slice(
+      rosterStatus.indexOf("export async function countRosterDaysNeedingChores("),
+    );
+    const weekRoute = readFileSync(
+      path.resolve(process.cwd(), "src/app/api/lodge/week/route.ts"),
+      "utf8",
+    );
+
+    for (const [name, body] of [
+      ["getRosterMonthStatus", monthEntry],
+      ["countRosterDaysNeedingChores", countEntry],
+      ["api/lodge/week", weekRoute],
+    ] as const) {
+      expect(body.length, name).toBeGreaterThan(0);
+      expect(
+        body,
+        `${name} must spread checkinNotBlockedByPendingReviewFilter()`,
+      ).toContain("checkinNotBlockedByPendingReviewFilter()");
+    }
+
+    // The guest LIST is the deliberate exception and must stay one: #1422 flags
+    // a blocked booking rather than hiding it, so staff can see who was turned
+    // away at the door.
+    const guestList = readFileSync(
+      path.resolve(process.cwd(), "src/app/api/lodge/guests/[date]/route.ts"),
+      "utf8",
+    );
+    expect(guestList).not.toContain("checkinNotBlockedByPendingReviewFilter");
+    expect(guestList).toContain("isCheckinBlockedByPendingReview");
+  });
+
+  it("the printed chore sheet inherits the predicate from the shared selector (#2631)", async () => {
+    // This route used to carry its own copy of the consent filter. It now has
+    // no booking query of its own at all: its headcount is the roster's own
+    // population, read through `getOperationalRosterGuestsForDate` (asserted
+    // above). Keeping it in the list would demand a predicate that is correctly
+    // no longer there, so the coverage moves here instead.
+    const { readFileSync } = await import("node:fs");
+    const path = await import("node:path");
+    const source = readFileSync(
+      path.resolve(
+        process.cwd(),
+        "src/app/api/chores/roster/[date]/print/route.ts",
+      ),
+      "utf8",
+    );
+    expect(source).toContain("getOperationalRosterGuestsForDate");
+    expect(source).not.toMatch(/prisma\.booking\.findMany/);
+    expect(source.replace(/\s+/g, " ")).not.toMatch(/consentStatus: \{ not:/);
   });
 });

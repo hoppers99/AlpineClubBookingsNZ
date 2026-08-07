@@ -141,6 +141,10 @@ import {
   removeBookingGuestInTransaction,
 } from "@/lib/booking-guest-removal-service";
 import { SELF_REMOVABLE_GUEST_BOOKING_STATUSES } from "@/lib/booking-guest-self-removal";
+import {
+  fenceMemberFindMany,
+  recordingBookingDouble,
+} from "@/lib/__tests__/support/hosting-participant-fence-double";
 
 const BOOKING = "bk-1";
 const OWNER = "m-owner";
@@ -270,7 +274,22 @@ function makeBooking(options: {
   };
 }
 
-function makeTx(booking: ReturnType<typeof makeBooking>) {
+function makeTx(
+  booking: ReturnType<typeof makeBooking>,
+  // Overrides the booking this tx serves. Pass it here rather than re-stubbing
+  // tx.booking.findUnique: that would replace the recording wrapper below and
+  // the participant fence would then see no source booking at all.
+  bookingOverride?: Partial<ReturnType<typeof makeBooking>>,
+) {
+  // #2619: the hosting participant fence locks this booking's owner/actor Member
+  // rows FOR KEY SHARE NOWAIT and then re-reads, under that lock, both those
+  // members and the source booking's own owner and lodge. Replay what this tx's
+  // own findUnique served, so the no-drift case matches by construction — an
+  // empty booking.findMany made the fence report drift on data nothing touched.
+  const fenceBooking = recordingBookingDouble(async () => ({
+    ...booking,
+    ...bookingOverride,
+  }));
   return {
     $executeRaw: vi.fn().mockResolvedValue(undefined),
     $executeRawUnsafe: vi.fn().mockResolvedValue(undefined),
@@ -278,8 +297,8 @@ function makeTx(booking: ReturnType<typeof makeBooking>) {
     // every prisma/tx double a booking path runs against needs this client.
     adultMemberHostingPolicy: { findMany: vi.fn().mockResolvedValue([]) },
     booking: {
-      findUnique: vi.fn().mockResolvedValue(booking),
-      findMany: vi.fn().mockResolvedValue([]),
+      findUnique: fenceBooking.findUnique,
+      findMany: fenceBooking.findMany,
       update: vi.fn().mockImplementation(({ data }: { data: Record<string, unknown> }) =>
         Promise.resolve({ ...booking, ...data, guests: booking.guests, payment: booking.payment }),
       ),
@@ -307,16 +326,20 @@ function makeTx(booking: ReturnType<typeof makeBooking>) {
       deleteMany: vi.fn().mockResolvedValue({ count: 0 }),
     },
     member: {
-      findMany: vi.fn().mockImplementation(async (args: { where?: { id?: { in?: string[] } } }) =>
-        (args?.where?.id?.in ?? []).map((id) => ({
+      // #2619: the fence's own re-read asks for ids alone and requires every
+      // locked participant back in sorted order; every other member.findMany on
+      // this path keeps the notification rows it has always served.
+      findMany: fenceMemberFindMany([], async (args: unknown) => {
+        const { where } = (args ?? {}) as { where?: { id?: { in?: string[] } } };
+        return (where?.id?.in ?? []).map((id) => ({
           id,
           firstName: "Member",
           lastName: "Test",
           email: `${id}@example.com`,
           role: "MEMBER",
           ageTier: "ADULT",
-        })),
-      ),
+        }));
+      }),
       findUnique: vi.fn().mockResolvedValue(null),
       count: vi.fn().mockResolvedValue(1),
     },
@@ -661,9 +684,7 @@ describe("a consent removal runs the SELF-REMOVAL gate set (D-14)", () => {
   it("is refused once check-in is no longer in the future", async () => {
     // The `STAY_NOT_FUTURE` gate, and the reason the expiry clamp is set a day
     // BEFORE check-in: a deadline landing on check-in morning would fire here.
-    const tx = makeTx(makeBooking({ targetConsent: "EXPIRED" }));
-    tx.booking.findUnique.mockResolvedValue({
-      ...makeBooking({ targetConsent: "EXPIRED" }),
+    const tx = makeTx(makeBooking({ targetConsent: "EXPIRED" }), {
       checkIn: new Date("2020-01-01T00:00:00.000Z"),
       checkOut: new Date("2020-01-03T00:00:00.000Z"),
     });

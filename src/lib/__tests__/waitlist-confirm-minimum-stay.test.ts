@@ -31,13 +31,22 @@ const h = vi.hoisted(() => ({
   evaluateNonMemberPricingRequirements: vi.fn(async () => null),
 }));
 
+// #2619: the participant fence re-reads the locked Member rows and each source
+// booking's owner/lodge under the lock. Replay whatever this tx's own
+// findUnique served so the no-drift case matches by construction.
+const fenceBooking = recordingBookingDouble((args) =>
+  h.txBookingFindUnique(args),
+);
+
 const txClient = {
   $executeRaw: vi.fn(),
+  member: { findMany: fenceMemberFindMany() },
   // #2364: the hosting review is reconciled inside the booking write, so
   // every prisma/tx double a booking path runs against needs this client.
   adultMemberHostingPolicy: { findMany: vi.fn().mockResolvedValue([]) },
   booking: {
-    findUnique: h.txBookingFindUnique,
+    findUnique: fenceBooking.findUnique,
+    findMany: fenceBooking.findMany,
     updateMany: h.txBookingUpdateMany,
   },
 };
@@ -101,6 +110,10 @@ vi.mock("@/lib/logger", () => ({
   default: { error: vi.fn(), info: vi.fn(), warn: h.warn },
 }));
 
+import {
+  fenceMemberFindMany,
+  recordingBookingDouble,
+} from "@/lib/__tests__/support/hosting-participant-fence-double";
 import { confirmWaitlistOffer } from "@/lib/waitlist";
 // The real formatter, so this path and the cross-lodge promotion are checked
 // against one shared string rather than against two copies of it.

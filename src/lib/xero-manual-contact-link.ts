@@ -1,7 +1,11 @@
 import type { PrismaClient } from "@prisma/client";
 
+import logger from "@/lib/logger";
 import { buildXeroContactUrl } from "@/lib/xero-links";
-import { lockMemberForManualXeroContactLink } from "@/lib/xero-contact-create-recovery";
+import {
+  closeProviderCreatedContactRecoveryForLinkedContact,
+  lockMemberForManualXeroContactLink,
+} from "@/lib/xero-contact-create-recovery";
 import { prisma } from "@/lib/prisma";
 import { upsertXeroObjectLink } from "@/lib/xero-sync";
 
@@ -42,5 +46,28 @@ export async function commitManualXeroContactLink(
       },
       { store: tx },
     );
+
+    // #2623 T7: manual linking IS the documented remedy for a create whose Xero
+    // contact exists but whose local link failed. Closing that operation here —
+    // under the same Member fence, and only when its own recorded contact is the
+    // one just linked — stops a successfully recovered member from blocking
+    // member merge and account deletion indefinitely while their detail page
+    // reports a clean Xero state.
+    const closed = await closeProviderCreatedContactRecoveryForLinkedContact(
+      tx,
+      input.memberId,
+      input.xeroContactId,
+    );
+    if (closed.closedCount > 0) {
+      logger.info(
+        {
+          memberId: input.memberId,
+          xeroContactId: input.xeroContactId,
+          operationIds: closed.operationIds,
+          closedCount: closed.closedCount,
+        },
+        "Closed provider-created Xero contact-create recovery on manual link",
+      );
+    }
   });
 }

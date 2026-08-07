@@ -1,17 +1,21 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-const { findFirst, updateMany } = vi.hoisted(() => ({
+const { findFirst, findMany, updateMany } = vi.hoisted(() => ({
   findFirst: vi.fn(),
+  findMany: vi.fn(),
   updateMany: vi.fn(),
 }));
 
 vi.mock("@/lib/prisma", () => ({
-  prisma: { xeroSyncOperation: { findFirst, updateMany } },
+  prisma: { xeroSyncOperation: { findFirst, findMany, updateMany } },
 }));
 
 import {
   ambiguousMemberContactCreateReservationWhere,
+  assertNoMemberContactChangeBlockerForDeletion,
   assertNoMemberContactCreateBlockerForDeletion,
+  closeProviderCreatedContactRecoveryForLinkedContact,
+  findMemberContactChangeMergeBlocker,
   getMemberContactCreateRecoveryPending,
   getMemberContactCreateRecoveryState,
   hasMemberContactCreateMergeBlocker,
@@ -242,9 +246,16 @@ describe("unresolved member Xero contact-create recovery proof", () => {
     await expect(
       hasMemberContactChangeMergeBlocker("member-1"),
     ).resolves.toBe(true);
+    // #2623 T7: the blocker read now also returns what the refusal has to name.
     expect(findFirst).toHaveBeenCalledWith({
       where: memberContactChangeMergeBlockerWhere("member-1"),
-      select: { id: true },
+      select: {
+        id: true,
+        operationType: true,
+        status: true,
+        xeroObjectId: true,
+        responsePayload: true,
+      },
     });
     expect(memberContactChangeMergeBlockerWhere("member-1")).toEqual(
       expect.objectContaining({
@@ -485,5 +496,209 @@ describe("unresolved member Xero contact-create recovery proof", () => {
       }),
     ).resolves.toBe(false);
     expect(findFirst).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * #2623 T7. `manuallyResolvedAt` used to be written in exactly one place in the
+ * whole codebase — the explicit admin resolve action — and no link path ever
+ * transitioned a failed CREATE to SUCCEEDED. A member who WAS successfully
+ * linked after a provider-created/link-failed create therefore kept blocking
+ * member merge and account deletion indefinitely, while their own detail page
+ * reported a clean Xero state and said nothing about where the remedy lived.
+ */
+describe("closing a provider-created contact-create recovery on a successful link (#2623 T7)", () => {
+  const providerCreatedRecovery = (resolvedContactId: string) => ({
+    id: "operation-recovered",
+    responsePayload: {
+      phase: "provider_contact_created_local_link_pending",
+      providerContactCreated: true,
+      resolvedContactId,
+    },
+  });
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    updateMany.mockResolvedValue({ count: 1 });
+  });
+
+  it("closes the operation whose own contact is the one now linked", async () => {
+    findMany.mockResolvedValue([providerCreatedRecovery("contact-provider")]);
+
+    await expect(
+      closeProviderCreatedContactRecoveryForLinkedContact(
+        { xeroSyncOperation: { findMany, updateMany } as never },
+        "member-1",
+        "contact-provider",
+      ),
+    ).resolves.toEqual({
+      operationIds: ["operation-recovered"],
+      closedCount: 1,
+    });
+
+    // Only FAILED rows are ever read: a RUNNING reservation is live provider
+    // work and must not be declared succeeded by a link path.
+    expect(findMany.mock.calls[0][0].where).toEqual(
+      expect.objectContaining({
+        direction: "OUTBOUND",
+        entityType: "CONTACT",
+        operationType: "CREATE",
+        localModel: "Member",
+        localId: "member-1",
+        manuallyResolvedAt: null,
+        status: "FAILED",
+      }),
+    );
+    // Status-guarded claim: a concurrent admin resolve simply wins.
+    expect(updateMany).toHaveBeenCalledWith({
+      where: {
+        id: { in: ["operation-recovered"] },
+        status: "FAILED",
+        manuallyResolvedAt: null,
+      },
+      data: expect.objectContaining({
+        status: "SUCCEEDED",
+        lastErrorCode: null,
+        lastErrorMessage: null,
+        xeroObjectType: "CONTACT",
+        xeroObjectId: "contact-provider",
+        responsePayload: {
+          phase: "local_link_committed_after_provider_created_recovery",
+          providerContactCreated: true,
+          resolvedContactId: "contact-provider",
+          linkedContactId: "contact-provider",
+        },
+      }),
+    });
+    // #2314: the stored URL stays organisation-agnostic.
+    expect(updateMany.mock.calls[0][0].data.xeroObjectUrl).not.toContain(
+      "shortcode",
+    );
+  });
+
+  it("leaves a DIFFERENT provider contact open, because that is a real duplicate", async () => {
+    findMany.mockResolvedValue([providerCreatedRecovery("contact-other")]);
+
+    await expect(
+      closeProviderCreatedContactRecoveryForLinkedContact(
+        { xeroSyncOperation: { findMany, updateMany } as never },
+        "member-1",
+        "contact-provider",
+      ),
+    ).resolves.toEqual({ operationIds: [], closedCount: 0 });
+    expect(updateMany).not.toHaveBeenCalled();
+  });
+
+  it("leaves a create with no proven provider contact open", async () => {
+    findMany.mockResolvedValue([
+      {
+        id: "operation-unproven",
+        responsePayload: {
+          phase: "local_link_after_xero_resolution",
+          providerContactCreated: false,
+          resolvedContactId: "contact-provider",
+        },
+      },
+      { id: "operation-bare", responsePayload: null },
+    ]);
+
+    await expect(
+      closeProviderCreatedContactRecoveryForLinkedContact(
+        { xeroSyncOperation: { findMany, updateMany } as never },
+        "member-1",
+        "contact-provider",
+      ),
+    ).resolves.toEqual({ operationIds: [], closedCount: 0 });
+    expect(updateMany).not.toHaveBeenCalled();
+  });
+
+  it("is idempotent: a replay finds nothing left to close", async () => {
+    findMany.mockResolvedValue([]);
+
+    await expect(
+      closeProviderCreatedContactRecoveryForLinkedContact(
+        { xeroSyncOperation: { findMany, updateMany } as never },
+        "member-1",
+        "contact-provider",
+      ),
+    ).resolves.toEqual({ operationIds: [], closedCount: 0 });
+    expect(updateMany).not.toHaveBeenCalled();
+  });
+});
+
+describe("the blocker refusal and the member display read one predicate (#2623 T7)", () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  it("names the exact operation and its provider contact", async () => {
+    findFirst.mockResolvedValue({
+      id: "operation-blocking",
+      operationType: "CREATE",
+      status: "FAILED",
+      xeroObjectId: "contact-provider",
+      responsePayload: {
+        phase: "local_link_after_xero_resolution",
+        providerContactCreated: true,
+        resolvedContactId: "contact-provider",
+      },
+    });
+
+    await expect(
+      findMemberContactChangeMergeBlocker("member-1"),
+    ).resolves.toEqual({
+      operationId: "operation-blocking",
+      operationType: "CREATE",
+      status: "FAILED",
+      providerContactId: "contact-provider",
+    });
+  });
+
+  it("carries that operation id into the deletion refusal", async () => {
+    findFirst.mockResolvedValue({
+      id: "operation-blocking",
+      operationType: "CREATE",
+      status: "FAILED",
+      xeroObjectId: null,
+      responsePayload: null,
+    });
+
+    await expect(
+      assertNoMemberContactChangeBlockerForDeletion("member-1", {
+        xeroSyncOperation: { findFirst } as never,
+      }),
+    ).rejects.toMatchObject({
+      code: "XERO_CONTACT_CREATE_BLOCKS_DELETION",
+      statusCode: 409,
+      operationId: "operation-blocking",
+    });
+  });
+
+  /**
+   * The disagreement this closes: the member detail display short-circuits to
+   * "nothing to report" as soon as the member is LINKED, which is correct for
+   * the create-in-flight question it answers but was the ONLY Xero signal on the
+   * page. So a linked member with an open blocking operation looked clean while
+   * merge and deletion refused them. The page now also reads the blocker itself.
+   */
+  it("still reports no create-recovery state for a linked member, while the blocker is visible", async () => {
+    findFirst.mockResolvedValue({
+      id: "operation-blocking",
+      operationType: "CREATE",
+      status: "FAILED",
+      xeroObjectId: "contact-provider",
+      responsePayload: null,
+    });
+
+    await expect(
+      getMemberContactCreateRecoveryState({
+        memberId: "member-1",
+        xeroContactId: "contact-linked",
+      }),
+    ).resolves.toBeNull();
+    await expect(
+      hasMemberContactChangeMergeBlocker("member-1"),
+    ).resolves.toBe(true);
+    await expect(
+      findMemberContactChangeMergeBlocker("member-1"),
+    ).resolves.toMatchObject({ operationId: "operation-blocking" });
   });
 });

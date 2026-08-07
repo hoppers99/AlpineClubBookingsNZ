@@ -15,6 +15,10 @@ const mocks = vi.hoisted(() => ({
   txMemberFindFirst: vi.fn(),
   txMemberUpdate: vi.fn(),
   txXeroOperationFindFirst: vi.fn(),
+  // #2623 T7: the phase-2 link transaction closes any provider-created
+  // recovery whose own contact is the one it just linked.
+  txXeroOperationFindMany: vi.fn(),
+  txXeroOperationUpdateMany: vi.fn(),
   txExecuteRaw: vi.fn(),
   txQueryRaw: vi.fn(),
   transaction: vi.fn(),
@@ -124,6 +128,8 @@ describe("findOrCreateXeroContact transaction boundary (#1355)", () => {
     });
     mocks.txMemberFindFirst.mockResolvedValue(null);
     mocks.txXeroOperationFindFirst.mockResolvedValue(null);
+    mocks.txXeroOperationFindMany.mockResolvedValue([]);
+    mocks.txXeroOperationUpdateMany.mockResolvedValue({ count: 0 });
     mocks.txMemberUpdate.mockResolvedValue({ id: "member-1" });
     mocks.transaction.mockImplementation(
       async (fn: (tx: unknown) => Promise<unknown>) =>
@@ -137,6 +143,8 @@ describe("findOrCreateXeroContact transaction boundary (#1355)", () => {
           },
           xeroSyncOperation: {
             findFirst: mocks.txXeroOperationFindFirst,
+            findMany: mocks.txXeroOperationFindMany,
+            updateMany: mocks.txXeroOperationUpdateMany,
           },
         })
     );
@@ -226,6 +234,8 @@ describe("findOrCreateXeroContact transaction boundary (#1355)", () => {
           },
           xeroSyncOperation: {
             findFirst: mocks.txXeroOperationFindFirst,
+            findMany: mocks.txXeroOperationFindMany,
+            updateMany: mocks.txXeroOperationUpdateMany,
           },
         }),
       )
@@ -286,6 +296,8 @@ describe("findOrCreateXeroContact transaction boundary (#1355)", () => {
           },
           xeroSyncOperation: {
             findFirst: mocks.txXeroOperationFindFirst,
+            findMany: mocks.txXeroOperationFindMany,
+            updateMany: mocks.txXeroOperationUpdateMany,
           },
         }),
       )
