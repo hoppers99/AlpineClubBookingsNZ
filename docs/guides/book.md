@@ -54,8 +54,10 @@ date-only lodge nights. The behaviour and its guardrails are documented in
    the dates and pricing).
 2. To record a past stay, tick **Record a past stay (retroactive booking)**
    (allowed up to 365 days back).
-3. Choose the check-in and check-out nights on the calendar. As an admin you are
-   not blocked by member minimum-stay rules.
+3. Choose the check-in and check-out dates on the calendar. The stay covers
+   the nights from check-in up to — but not including — the check-out date,
+   which is the departure morning, not a stayed night. As an admin you are not
+   blocked by member minimum-stay rules.
 
 ### Step 2 — Add Guests
 

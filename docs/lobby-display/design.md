@@ -947,9 +947,12 @@ upstream owner's input on discussion #964):
    heuristic is the fallback: a booking that is the sole occupant on every
    NIGHT it covers in the window AND is a genuine group (organisation, or
    ≥ `WHOLE_LODGE_MIN_GUESTS` = 8 guests) collapses to its label only. Sole
-   occupancy is measured on nights, not departure-day visibility (LTV-016):
-   a group leaving in the morning keeps its blockout even when the next
-   booking arrives that evening.
+   occupancy is measured on nights, not departure-day visibility (LTV-016;
+   the night model of the
+   [stay-boundary invariant](../DOMAIN_INVARIANTS.md#the-stay-boundary-midday-nz-to-midday-nz-normative),
+   which names this wall's night counts as deliberately fenced): a group
+   leaving in the morning keeps its blockout even when the next booking
+   arrives that evening.
 3. **Bookings containing minors** (`ageTier` INFANT/CHILD/YOUTH): collapse
    to a family label — "«Surname» family" at the two fuller levels,
    "Family of N" at `FIRST_NAME_ONLY` — and guests are never listed.
