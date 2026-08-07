@@ -46,7 +46,9 @@ vi.mock("@/lib/audit", () => ({
 }));
 
 vi.mock("@/lib/bed-allocation-lifecycle", () => ({
-  reconcileBedAllocationsForBookingWithLodgeLockHeld: vi.fn().mockResolvedValue(undefined),
+  reconcileBedAllocationsForBookingWithLodgeLockHeld: vi
+    .fn()
+    .mockResolvedValue(undefined),
 }));
 
 vi.mock("@/lib/logger", () => ({
@@ -75,7 +77,9 @@ function makeRequest(body: unknown) {
 
 const adminSession = {
   ok: true as const,
-  session: { user: { id: "admin1", role: "ADMIN", accessRoles: [{ role: "ADMIN" }] } },
+  session: {
+    user: { id: "admin1", role: "ADMIN", accessRoles: [{ role: "ADMIN" }] },
+  },
 };
 
 const params = Promise.resolve({ id: "b1" });
@@ -107,7 +111,10 @@ describe("PATCH /api/admin/bookings/[id]/review", () => {
       checkIn: new Date(),
       checkOut: new Date(),
     });
-    const res = await PATCH(makeRequest({ status: "REJECTED", adminNotes: "" }), { params });
+    const res = await PATCH(
+      makeRequest({ status: "REJECTED", adminNotes: "" }),
+      { params },
+    );
     expect(res.status).toBe(400);
   });
 
@@ -163,7 +170,10 @@ describe("PATCH /api/admin/bookings/[id]/review", () => {
     mocks.bookingUpdateMany.mockResolvedValue({ count: 1 });
 
     const res = await PATCH(
-      makeRequest({ status: "APPROVED", adminNotes: "Approved on the condition that..." }),
+      makeRequest({
+        status: "APPROVED",
+        adminNotes: "Approved on the condition that...",
+      }),
       { params },
     );
     expect(res.status).toBe(200);
@@ -214,9 +224,9 @@ describe("PATCH /api/admin/bookings/[id]/review", () => {
     expect(mocks.executeRaw.mock.invocationCallOrder[0]).toBeLessThan(
       mocks.acquireLodgeCapacityLock.mock.invocationCallOrder[0],
     );
-    expect(mocks.acquireLodgeCapacityLock.mock.invocationCallOrder[0]).toBeLessThan(
-      mocks.bookingFindUnique.mock.invocationCallOrder[1],
-    );
+    expect(
+      mocks.acquireLodgeCapacityLock.mock.invocationCallOrder[0],
+    ).toBeLessThan(mocks.bookingFindUnique.mock.invocationCallOrder[1]);
     expect(mocks.bookingFindUnique.mock.invocationCallOrder[1]).toBeLessThan(
       mocks.bookingUpdateMany.mock.invocationCallOrder[0],
     );
@@ -264,7 +274,10 @@ describe("PATCH /api/admin/bookings/[id]/review", () => {
       checkOut: new Date("2026-07-03"),
     });
     mocks.bookingUpdateMany.mockResolvedValue({ count: 1 });
-    mocks.cancelBooking.mockResolvedValue({ status: 200, data: { success: true } });
+    mocks.cancelBooking.mockResolvedValue({
+      status: 200,
+      data: { success: true },
+    });
 
     const res = await PATCH(
       makeRequest({ status: "REJECTED", adminNotes: "No adult attending." }),
@@ -316,6 +329,64 @@ describe("PATCH /api/admin/bookings/[id]/review", () => {
     expect(mocks.sendRejectedEmail).not.toHaveBeenCalled();
   });
 
+  it("reports the committed rejection when an ordinary cancellation failure leaves status unconfirmed", async () => {
+    mocks.bookingFindUnique.mockResolvedValue({
+      id: "b1",
+      memberId: "m1",
+      adminReviewStatus: "PENDING",
+      status: "PAID",
+      member: { email: "member@example.com", firstName: "Alex" },
+      checkIn: new Date("2026-07-01"),
+      checkOut: new Date("2026-07-03"),
+    });
+    mocks.bookingUpdateMany.mockResolvedValue({ count: 1 });
+    mocks.cancelBooking.mockRejectedValue(new Error("private database detail"));
+
+    const response = await PATCH(
+      makeRequest({ status: "REJECTED", adminNotes: "No adult attending." }),
+      { params },
+    );
+
+    expect(response.status).toBe(500);
+    await expect(response.json()).resolves.toEqual({
+      error:
+        "The rejection was recorded, but the booking's cancellation status could not be confirmed. Open the booking and check its status before retrying.",
+      reviewRecorded: true,
+      cancellationStatusUnconfirmed: true,
+    });
+    expect(mocks.sendRejectedEmail).not.toHaveBeenCalled();
+  });
+
+  it("keeps committed-rejection facts on an ordinary cancellation 409", async () => {
+    mocks.bookingFindUnique.mockResolvedValue({
+      id: "b1",
+      memberId: "m1",
+      adminReviewStatus: "PENDING",
+      status: "PAID",
+      member: { email: "member@example.com", firstName: "Alex" },
+      checkIn: new Date("2026-07-01"),
+      checkOut: new Date("2026-07-03"),
+    });
+    mocks.bookingUpdateMany.mockResolvedValue({ count: 1 });
+    mocks.cancelBooking.mockResolvedValue({
+      status: 409,
+      error: "This booking is already being cancelled",
+    });
+
+    const response = await PATCH(
+      makeRequest({ status: "REJECTED", adminNotes: "No adult attending." }),
+      { params },
+    );
+
+    expect(response.status).toBe(409);
+    await expect(response.json()).resolves.toEqual({
+      error: "This booking is already being cancelled",
+      reviewRecorded: true,
+      cancellationStatusUnconfirmed: true,
+    });
+    expect(mocks.sendRejectedEmail).not.toHaveBeenCalled();
+  });
+
   it("rejects: records decision, cancels booking, sends rejection email", async () => {
     mocks.bookingFindUnique.mockResolvedValue({
       id: "b1",
@@ -329,11 +400,19 @@ describe("PATCH /api/admin/bookings/[id]/review", () => {
     mocks.bookingUpdateMany.mockResolvedValue({ count: 1 });
     mocks.cancelBooking.mockResolvedValue({
       status: 200,
-      data: { success: true, refundAmountCents: 0, refundPercentage: 0, refundMethod: "card" },
+      data: {
+        success: true,
+        refundAmountCents: 0,
+        refundPercentage: 0,
+        refundMethod: "card",
+      },
     });
 
     const res = await PATCH(
-      makeRequest({ status: "REJECTED", adminNotes: "Need an adult on the booking — sorry." }),
+      makeRequest({
+        status: "REJECTED",
+        adminNotes: "Need an adult on the booking — sorry.",
+      }),
       { params },
     );
     expect(res.status).toBe(200);
