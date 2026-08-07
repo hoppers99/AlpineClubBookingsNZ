@@ -322,11 +322,11 @@ const NOTICE = "AdminViewOnlyNotice";
 */
 const FIGURES = {
   /** Every `<ViewOnlyActionButton>` render site in the admin tree. */
-  callSites: 311,
+  callSites: 310,
   /** Those that hand their explanation to a banner, by either rule. */
-  optOuts: 262,
+  optOuts: 261,
   /** `describeReason={false}` — needs a banner in the SAME file. */
-  staticOptOuts: 235,
+  staticOptOuts: 234,
   /** `describeReason={!ancestorRendersViewOnlyBanner}` — needs a vouch. */
   vouchedOptOuts: 27,
   /** …of the vouched: proved at a parent's own JSX render site (#2168). */
@@ -1256,6 +1256,12 @@ describe("view-only section banner coverage (#2160)", () => {
                suppresses that child banner and covers both control sites with
                the page's existing bookings-area banner.
                static opt-outs move 234 -> 235 and banner components 83 -> 84.
+          310  -1  #2602 replaces the booking-panel removal control with a
+               plain preview button: view-only administrators may inspect the
+               staged removal, while the dialog keeps apply edit-gated. The
+               removed site was a same-file static opt-out, so static opt-outs
+               move 235 -> 234 and total opt-outs move 262 -> 261. Banner,
+               vouch and per-button-explanation counts are unchanged.
       */
       // #2259 adds the per-booking "No emails"
       // switch (`booking-no-emails-controls.tsx`), a leaf control dropped into
