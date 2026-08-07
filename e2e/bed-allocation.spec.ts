@@ -294,11 +294,15 @@ test("pointer, keyboard and menu moves share reviewed scopes and preserve origin
       .filter({ has: page.getByText(destination!.name, { exact: true }) });
     const targetCell = () =>
       targetRow().locator(`td[data-stay-date="${ken.checkOut}"]`);
+    // The exact sentence the reviewed-move drag card renders
+    // (`allocation-drag-feedback.ts`, planBedAllocationDropFeedback's "review"
+    // outcome). Naming the destination bed inside the filter is what makes a
+    // wrong-row collision fail loudly instead of passing on a neighbour.
     const preview = () =>
       page
         .getByTestId("bed-allocation-drag-feedback")
         .filter({
-          hasText: `to ${destination!.roomName} / ${destination!.name}, snapped to original lodge night`,
+          hasText: `to ${destination!.roomName} / ${destination!.name}; choose the exact scope before confirming and keep every original lodge night`,
         });
 
     // The floating drag card. It is mounted ONLY while a drag is live (the
@@ -307,14 +311,19 @@ test("pointer, keyboard and menu moves share reviewed scopes and preserve origin
     const dragCard = () => page.getByTestId("bed-allocation-drag-feedback");
 
     // Geometry is re-measured immediately before EVERY drag rather than cached
-    // across both of them. dnd-kit resolves the drop with closestCenter against
-    // droppable rects it measures at drag start, and starting a drag changes the
-    // board's own layout (the hovered cell gains its "Drop here" content, which
-    // reflows the rows below it). Coordinates taken before the first drag can
-    // therefore resolve a DIFFERENT row on the second one: CI run 30762167423
-    // failed here with the drag live and the card up, but reading "No change for
-    // Ken King; the selected allocations already use Bunk Room A / A1": the
-    // pointer had landed on the SOURCE row, one row above the destination.
+    // across both of them, because the board's own layout is free to change
+    // between two drags in the same test (a restored placement re-renders the
+    // rows). Coordinates taken before the first drag can therefore resolve a
+    // DIFFERENT row on the second one, and the symptom is not shaped like a
+    // geometry failure: the drag is live and the card is up, only naming the
+    // wrong bed, so a hasText-filtered locator matches nothing and times out.
+    //
+    // The offset arithmetic below aims the dragged CHIP's centre at the target
+    // cell, which is only correct because the DragOverlay's measured frame is
+    // pinned to the chip's rect (see the DragOverlay comment in
+    // bed-allocation/page.tsx). Do not let the floating card become the measured
+    // element again: closestCenter would then follow the card's own height and
+    // this drag would settle one row below the cell it was aimed at.
     const startPointerDragToTarget = async () => {
       await targetCell().scrollIntoViewIfNeeded();
       await dragHandle().scrollIntoViewIfNeeded();

@@ -8,3 +8,8 @@
   changed after review, the dialog shows a refreshed preview and asks for
   confirmation again; it never silently reruns auto-allocation or creates
   missing nights.
+
+  A pointer drag now always opens the bed nearest the chip being dragged. The
+  floating summary card beside the pointer previously counted towards the drop
+  calculation, so a longer wording could open the review dialog for the bed one
+  row below the one the card had just named.

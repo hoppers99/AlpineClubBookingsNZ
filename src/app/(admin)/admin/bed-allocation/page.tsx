@@ -1433,16 +1433,31 @@ export default function AdminBedAllocationPage() {
 
           <DragOverlay>
             {activeDragLabel ? (
-              <div
-                data-testid="bed-allocation-drag-feedback"
-                className="rounded-md border bg-card px-3 py-2 text-sm font-medium text-card-foreground shadow-lg"
-              >
-                <div>{activeDragLabel}</div>
-                {activeDropPreview ? (
-                  <div className="mt-1 text-xs font-normal text-muted-foreground">
-                    {activeDropPreview}
-                  </div>
-                ) : null}
+              // The drop target must follow the dragged CHIP, never the size of
+              // this floating card. dnd-kit measures the DragOverlay's own child
+              // and uses that rect — not the draggable's — for closestCenter
+              // (`draggingNodeRect = dragOverlay.rect ?? activeNodeRect`,
+              // @dnd-kit/core), re-measuring it through a ResizeObserver while
+              // the drag is live. The card grows the moment `activeDropPreview`
+              // appears, so if the card were the measured child its centre would
+              // sink below the cursor's cell mid-drag and the drop would land on
+              // the row BELOW the one the preview just named — a full lodge night
+              // on the wrong bed. This frame is the element DragOverlay sizes
+              // from the chip's own rect, so keeping it as the measured child
+              // pins collisions to the chip; the card is taken out of flow and
+              // may be any height without moving the target.
+              <div className="relative h-full w-full">
+                <div
+                  data-testid="bed-allocation-drag-feedback"
+                  className="absolute left-0 top-0 w-full rounded-md border bg-card px-3 py-2 text-sm font-medium text-card-foreground shadow-lg"
+                >
+                  <div>{activeDragLabel}</div>
+                  {activeDropPreview ? (
+                    <div className="mt-1 text-xs font-normal text-muted-foreground">
+                      {activeDropPreview}
+                    </div>
+                  ) : null}
+                </div>
               </div>
             ) : null}
           </DragOverlay>

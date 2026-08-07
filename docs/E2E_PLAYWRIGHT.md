@@ -589,25 +589,42 @@ Nothing in a spec may hardcode a calendar date. Stay windows come from
 `lodgeNightLabel` / `calendarDayLabel`. A hardcoded date produces an assertion
 that can only pass in the week it was written.
 
-### 4. Pointer geometry measured once, reused by a second drag
+### 4. A pointer drag that resolves one row off
 
-A drag-and-drop spec that drives two drags in a row must re-measure its bounding
-boxes before each one. `DndContext` resolves the drop with `closestCenter`
-against droppable rects it measures at drag start, and starting a drag changes
-the board's own layout: the hovered cell gains its "Drop here" content and
-reflows the rows beneath it. Coordinates captured before the first drag can
-therefore resolve a **different row** on the second, and the failure does not
-look like a geometry failure. The drag is live, the `DragOverlay` is up, and only
-its text is wrong, so a `hasText`-filtered locator matches nothing and times out.
+`DndContext` resolves the drop with `closestCenter`, and the rect it centres is
+**not** the dragged element's. When a `DragOverlay` is rendered, `@dnd-kit/core`
+uses the overlay's own measured child instead
+(`draggingNodeRect = dragOverlay.rect ?? activeNodeRect`) and keeps re-measuring
+it through a `ResizeObserver` for as long as the drag is live. A floating card
+that grows once it has something to say therefore *moves the drop target* mid-drag,
+downwards, by half of however much it grew.
 
-This is what `bed-allocation.spec.ts:127` did on run 30762167423: the second
-pointer drag was active with its card showing "No change for Ken King; the
-selected allocations already use Bunk Room A / A1", and the "Drop here" marker
-sat in the **source** row, one row above the destination.
+Measured on the bed board (issue #2595, 1280x720 Desktop Chrome): chip 104.6px
+tall, drag card 138px, target cell 57px. The card contributes
+`(138 - 104.6) / 2 = 16.7px` of downward bias and the spec's own one-pixel cursor
+clamp another 8.8px, against a 28.5px half-cell tolerance — 3px of margin. Any
+environment that renders the same sentence one line taller spends that margin and
+the drop lands on the row **below** the one the preview named. Forcing the card
+22px taller locally reproduced it exactly, one row every time; the hosted runner
+did the same on its own, dropping on `A3` while the spec aimed at `A2` on all
+three attempts of run 31196057937.
 
-- **Measure the handle, the dragged card and the target cell immediately before
+The failure does not look like a geometry failure. The drag is live, the overlay
+is up, and only the bed name in it is wrong, so a `hasText`-filtered locator
+matches nothing and times out.
+
+- **Keep the overlay's measured child the size of the dragged element.** On the
+  bed board the `DragOverlay` child is a `h-full w-full` frame — which
+  `DragOverlay` sizes from the chip's rect — and the readable card is absolutely
+  positioned inside it. Collisions then follow the chip, and the preview copy can
+  be any length. A spec that aims the dragged element's centre at a cell is only
+  correct while this holds.
+- **Never aim a pointer drag at a rect you did not measure.** If a spec computes a
+  grab offset from element A, `closestCenter` must be centring element A.
+- **Measure the handle, the dragged element and the target cell immediately before
   every drag.** Never hoist one measurement out of a loop or share it between two
-  scenarios in the same test.
+  scenarios in the same test — a restored placement between two drags re-renders
+  the rows.
 - **Wait for a cancelled drag to tear down before starting the next one.** The
   overlay is mounted only while a drag is live, so asserting it is hidden is both
   the honest check that the cancel worked and the settle point that leaves the
@@ -617,6 +634,9 @@ sat in the **source** row, one row above the destination.
   polls, so pure lag resolves itself well inside the timeout. A locator that
   never matches across the full 15s means the collision settled on the wrong
   droppable, which is a geometry bug.
+- **Assert the destination by name inside the preview filter.** `hasText` on the
+  room/bed label is what turns a one-row overshoot into a failure instead of a
+  pass on a neighbouring bed.
 
 ### What is deliberately NOT the fix
 

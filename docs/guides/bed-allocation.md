@@ -139,6 +139,9 @@ are taken, never by whom.
    bed, or use the chip's menu → **Move to bed**. You can choose the current
    bed too. Both paths open the same review dialog; dropping never writes a
    move immediately. The date column you hover over does not move the stay.
+   The bed you land on is always the one nearest the chip you are dragging; the
+   floating summary card that appears beside it only reports the destination and
+   never changes it, however long its wording gets.
 3. Choose the scope in the dialog:
    - **This allocation night** includes only the anchored row and keeps that
      original NZ lodge night.
