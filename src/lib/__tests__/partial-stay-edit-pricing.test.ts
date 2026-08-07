@@ -180,6 +180,10 @@ vi.mock("@/lib/booking-events", () => ({
 
 import { auth } from "@/lib/auth";
 import { checkCapacity, checkCapacityForGuestRanges } from "@/lib/capacity";
+import {
+  fenceMemberFindMany,
+  recordingBookingDouble,
+} from "@/lib/__tests__/support/hosting-participant-fence-double";
 
 const mockedAuth = vi.mocked(auth);
 const mockedCheckCapacity = vi.mocked(checkCapacity);
@@ -305,6 +309,7 @@ function makeTx(
     } | null;
   },
 ) {
+  const fenceBooking = recordingBookingDouble(async () => booking);
   return {
     $executeRawUnsafe: vi.fn().mockResolvedValue(undefined),
     $executeRaw: vi.fn().mockResolvedValue(undefined),
@@ -333,9 +338,13 @@ function makeTx(
     // #2364: the hosting review is reconciled inside the booking write, so
     // every prisma/tx double a booking path runs against needs this client.
     adultMemberHostingPolicy: { findMany: vi.fn().mockResolvedValue([]) },
+    // #2619: the participant fence re-reads the locked Member rows and each
+    // source booking's owner/lodge under the lock. An empty booking.findMany
+    // made it report drift on data that never changed.
+    member: { findMany: fenceMemberFindMany() },
     booking: {
-      findUnique: vi.fn().mockResolvedValue(booking),
-      findMany: vi.fn().mockResolvedValue([]),
+      findUnique: fenceBooking.findUnique,
+      findMany: fenceBooking.findMany,
       update: vi.fn().mockImplementation(({ data }) =>
         Promise.resolve({ ...booking, ...data, guests: booking.guests, payment: booking.payment })),
     },
