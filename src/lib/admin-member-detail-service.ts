@@ -114,6 +114,10 @@ import {
 } from "@/lib/bed-allocation-lifecycle";
 import { sendAdminPartnerShareSweptAlert } from "@/lib/email";
 import { acquireMemberLifecycleLocks } from "@/lib/member-lifecycle-lock";
+import {
+  DELETED_ACCOUNT_EDIT_REACTIVATE_MESSAGE,
+  isDeletedAccountRecord,
+} from "@/lib/deleted-account";
 
 const maxStr = (len: number) => z.string().max(len).optional().nullable();
 
@@ -844,6 +848,31 @@ export async function updateAdminMember(params: {
         { status: 400 },
       );
     }
+  }
+
+  // #2620: an approved deletion request anonymises the member in place and
+  // stamps NEITHER archivedAt nor cancelledAt, so the archived/cancelled
+  // refusal below never covered an erased account — yet everything else it
+  // needs to sign in (canLogin, googleSub, emailVerified, the second factor and
+  // the access roles) survives anonymisation, leaving `active: false` as the
+  // only barrier. Checked first, and named separately, because deletion is
+  // terminal in a way an archive is not.
+  //
+  // Keyed on a real TRANSITION rather than the submitted value, matching the
+  // no-op-echo handling below and `enablesLogin` further down: the edit dialog
+  // re-submits the current active/canLogin on every save, and a deleted row
+  // still carries `canLogin: true` today, so a blunt `data.canLogin === true`
+  // test would refuse ordinary contact upkeep on an anonymised record while
+  // catching nothing extra.
+  if (
+    isDeletedAccountRecord(existing) &&
+    ((data.active === true && !existing.active) ||
+      (data.canLogin === true && !existing.canLogin))
+  ) {
+    return jsonResult(
+      { error: DELETED_ACCOUNT_EDIT_REACTIVATE_MESSAGE },
+      { status: 409 },
+    );
   }
 
   if (

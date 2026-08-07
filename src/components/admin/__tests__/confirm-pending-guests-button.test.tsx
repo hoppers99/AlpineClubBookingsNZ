@@ -45,6 +45,7 @@ vi.mock("next-auth/react", () => ({
 }));
 
 import { ConfirmPendingGuestsButton } from "@/components/admin/confirm-pending-guests-button";
+import { expectRecoveryAlertToHoldFocus } from "@/lib/__tests__/helpers/focus";
 
 function stubFetch(response: { ok: boolean; body?: unknown }) {
   const fetchMock = vi.fn(async () => ({
@@ -263,7 +264,7 @@ describe("ConfirmPendingGuestsButton", () => {
     expect(alert?.textContent).toMatch(/could not be finalised/i);
     expect(alert?.textContent).toMatch(/do not charge again/i);
     expect(alert?.textContent).not.toContain("private database detail");
-    expect(document.activeElement).toBe(alert);
+    await expectRecoveryAlertToHoldFocus(alert);
     expect(scrollIntoView).toHaveBeenCalledWith({
       behavior: "smooth",
       block: "center",
@@ -330,7 +331,7 @@ describe("ConfirmPendingGuestsButton", () => {
     expect(alert?.textContent).not.toMatch(/finalisation unconfirmed/i);
     expect(alert?.textContent).not.toContain("private provider detail");
     expect(alert?.textContent).not.toContain("pi_private");
-    expect(document.activeElement).toBe(alert);
+    await expectRecoveryAlertToHoldFocus(alert);
     expect(scrollIntoView).toHaveBeenCalledWith({
       behavior: "smooth",
       block: "center",

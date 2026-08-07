@@ -5,6 +5,7 @@ import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import MembersPage from "@/app/(admin)/admin/members/page";
+import { expectRecoveryAlertToHoldFocus } from "@/lib/__tests__/helpers/focus";
 
 const fetchMock = vi.fn();
 const scrollIntoView = vi.fn();
@@ -194,7 +195,7 @@ describe("members-list Xero partial-success recovery", () => {
 
     const alert = document.getElementById("members-xero-recovery-error");
     await screen.findByText(/member list was refreshed successfully/i);
-    await waitFor(() => expect(document.activeElement).toBe(alert));
+    await expectRecoveryAlertToHoldFocus(alert);
     const action = screen.getByRole("link", { name: "Open affected member" });
     expect(action).toHaveAttribute(
       "href",
@@ -221,7 +222,7 @@ describe("members-list Xero partial-success recovery", () => {
     await screen.findByText(/member list could not be refreshed/i);
     expect(alert).toHaveTextContent(/Do not link it again/i);
     expect(screen.getByText("Failed to load members")).toBeInTheDocument();
-    await waitFor(() => expect(document.activeElement).toBe(alert));
+    await expectRecoveryAlertToHoldFocus(alert);
     expect(scrollIntoView).toHaveBeenLastCalledWith({
       behavior: "smooth",
       block: "center",

@@ -35,6 +35,19 @@ const h = vi.hoisted(() => ({
     },
     familyGroupMember: { deleteMany: vi.fn() },
     bookingGuest: { updateMany: vi.fn() },
+    // #2620: anonymisation revokes every outstanding credential artefact in the
+    // same commit, because each of these is independently sufficient to
+    // authenticate and deletion used to leave them all live.
+    magicLinkToken: { deleteMany: vi.fn().mockResolvedValue({ count: 0 }) },
+    passwordResetToken: { deleteMany: vi.fn().mockResolvedValue({ count: 0 }) },
+    emailChangeToken: { deleteMany: vi.fn().mockResolvedValue({ count: 0 }) },
+    twoFactorEmailCode: { deleteMany: vi.fn().mockResolvedValue({ count: 0 }) },
+    twoFactorRecoveryCode: {
+      deleteMany: vi.fn().mockResolvedValue({ count: 0 }),
+    },
+    twoFactorSessionChallenge: {
+      deleteMany: vi.fn().mockResolvedValue({ count: 0 }),
+    },
     $executeRaw: vi.fn().mockResolvedValue(1),
     $transaction: vi.fn(),
   },
@@ -590,4 +603,63 @@ describe("POST /api/admin/deletion-requests/[id] approve carve-out (#1788)", () 
       vi.useRealTimers();
     }
   });
+});
+
+describe("#2623 T1: the Xero fence is asked BEFORE anything irreversible", () => {
+  /**
+   * The blocker predicate matches an unresolved member-scoped CONTACT
+   * operation. Shape it the way `memberContactChangeMergeBlockerWhere` looks
+   * for — a RUNNING create — so the real predicate, not a stub, refuses.
+   */
+  function xeroContactOperationInFlight() {
+    h.prisma.xeroSyncOperation.findFirst.mockResolvedValue({
+      id: "xero-op-running",
+      status: "RUNNING",
+      responsePayload: null,
+    });
+  }
+
+  it("refuses the approval without cancelling a single booking", async () => {
+    // A member with future bookings the approval WOULD have cancelled.
+    h.prisma.booking.findMany
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([{ id: "booking-1" }, { id: "booking-2" }]);
+    xeroContactOperationInFlight();
+
+    const response = await POST(req({ action: "approve" }), { params });
+    const body = await response.json();
+
+    expect(response.status).toBe(409);
+    expect(body.code).toBe("XERO_CONTACT_CREATE_BLOCKS_DELETION");
+
+    // The whole point: this used to be discovered inside the anonymisation
+    // transaction, AFTER the loop below had cancelled both bookings for a
+    // condition that was knowable up front.
+    expect(h.cancelBooking).not.toHaveBeenCalled();
+    expect(h.prisma.member.update).not.toHaveBeenCalled();
+    expect(h.sendAccountDeletionApprovedEmail).not.toHaveBeenCalled();
+
+    // And it did not take ownership of the decision either, so the request is
+    // untouched rather than parked in APPROVAL_IN_PROGRESS.
+    expect(h.prisma.deletionRequest.updateMany).not.toHaveBeenCalled();
+  });
+
+  it("does not block a rejection, which anonymises nothing", async () => {
+    xeroContactOperationInFlight();
+
+    const response = await POST(req({ action: "reject" }), { params });
+
+    expect(response.status).toBe(200);
+    expect(h.prisma.deletionRequest.updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({ status: "REJECTED" }),
+      }),
+    );
+  });
+
+  // That the guard is not a blanket refusal — a member with no Xero operation
+  // in flight still reaches the cancellations and returns 200 — is already
+  // covered by "owns the approval durably before the first booking
+  // cancellation commits" above, which runs the same path with the default
+  // (empty) xeroSyncOperation stub.
 });

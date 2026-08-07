@@ -5,6 +5,7 @@ import { act, fireEvent, render, screen, waitFor } from "@testing-library/react"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { PolicyExceptionRequestsPanel } from "@/components/admin/booking-requests/policy-exception-requests-panel";
+import { expectRecoveryAlertToHoldFocus } from "@/lib/__tests__/helpers/focus";
 
 /**
  * #2562 — the officer-note split on the #2526 queue.
@@ -150,12 +151,10 @@ describe("the officer decision form labels who reads what, before submission", (
     expect(
       screen.queryByText(/No requested booking-policy exception requests/i),
     ).not.toBeInTheDocument();
-    await waitFor(() => {
-      expect(document.activeElement).toBe(alert);
-      expect(scrollIntoView).toHaveBeenCalledWith({
-        behavior: "smooth",
-        block: "center",
-      });
+    await expectRecoveryAlertToHoldFocus(alert);
+    expect(scrollIntoView).toHaveBeenCalledWith({
+      behavior: "smooth",
+      block: "center",
     });
   });
 
@@ -239,7 +238,7 @@ describe("the officer decision form labels who reads what, before submission", (
       await screen.findByText("Decision service unavailable"),
     ).toBeInTheDocument();
     const alert = document.getElementById("policy-exception-error");
-    expect(document.activeElement).toBe(alert);
+    await expectRecoveryAlertToHoldFocus(alert);
     expect(memberNote).toHaveValue("Member-visible draft must remain.");
     expect(privateNote).toHaveValue("Officer-only draft must remain.");
     expect(screen.getByLabelText(/I have read the proposal above/i)).toBeChecked();

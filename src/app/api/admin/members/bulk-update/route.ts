@@ -54,6 +54,10 @@ import {
 } from "@/lib/bed-allocation-lifecycle";
 import { sendAdminPartnerShareSweptAlert } from "@/lib/email";
 import { acquireMemberLifecycleLocks } from "@/lib/member-lifecycle-lock";
+import {
+  DELETED_ACCOUNT_BULK_REACTIVATE_MESSAGE,
+  isDeletedAccountRecord,
+} from "@/lib/deleted-account";
 
 const bulkUpdateSchema = z.object({
   ids: z.array(z.string()).min(1, "At least one member ID is required").max(100),
@@ -150,6 +154,12 @@ export async function POST(req: NextRequest) {
         archivedAt: true,
         ageTier: true,
         dateOfBirth: true,
+        // #2620: the anonymisation marker the reactivate guard below reads. An
+        // approved deletion rewrites the password hash to a sentinel and the
+        // email to `@deleted.invalid` and stamps NEITHER cancelledAt nor
+        // archivedAt, so without these two columns the guard cannot see that
+        // the selected row is an erased account.
+        passwordHash: true,
         accessRoles: { select: MEMBER_ACCESS_ROLE_SELECT },
       },
     });
@@ -158,6 +168,26 @@ export async function POST(req: NextRequest) {
     const notFound = ids.filter((id) => !existingIds.has(id)).length;
 
     if (action === "reactivate") {
+      // #2620, checked FIRST because it is the terminal state and the refusal
+      // must name it: an approved deletion request anonymises the member and
+      // leaves `active: false` as the ONLY thing between the erased person and
+      // a working session (canLogin, googleSub, emailVerified and the access
+      // roles all survive today). It writes neither archivedAt nor cancelledAt,
+      // so the refusal below never covered it — and because a deleted row is
+      // `active: false, cancelledAt: null` it lands in the members list's
+      // Inactive filter alongside genuinely deactivated members, so an officer
+      // undoing a mistaken bulk deactivate could restore an erased account by
+      // accident. Deletion is never reversible from a bulk action.
+      const deletedMember = existingMembers.find((member) =>
+        isDeletedAccountRecord(member),
+      );
+      if (deletedMember) {
+        return NextResponse.json(
+          { error: DELETED_ACCOUNT_BULK_REACTIVATE_MESSAGE },
+          { status: 409 },
+        );
+      }
+
       const blockedMember = existingMembers.find(
         (member) => member.archivedAt || member.cancelledAt,
       );

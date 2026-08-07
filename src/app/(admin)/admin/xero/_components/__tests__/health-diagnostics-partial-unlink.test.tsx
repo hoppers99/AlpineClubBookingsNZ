@@ -6,6 +6,7 @@ import type { AnchorHTMLAttributes, ReactNode } from "react"
 import { beforeEach, describe, expect, it, vi } from "vitest"
 
 import { HealthAndDiagnosticsPanels } from "../health-diagnostics-panel"
+import { expectRecoveryAlertToHoldFocus } from "@/lib/__tests__/helpers/focus"
 
 vi.mock("next/link", () => ({
   default: ({
@@ -155,7 +156,7 @@ describe("Xero health diagnostics partial unlink recovery (#2597)", () => {
     await waitFor(() => expect(alert).toHaveTextContent(/Refreshing Xero diagnostics now/i))
     expect(alert).toHaveTextContent(/link was removed/i)
     expect(alert).not.toHaveTextContent("private cleanup detail")
-    expect(document.activeElement).toBe(alert)
+    await expectRecoveryAlertToHoldFocus(alert)
     expect(screen.queryByRole("button", { name: "Unlink" })).not.toBeInTheDocument()
     const recoveryAction = screen.getByRole("link", {
       name: "Open affected member: Riley Chen",
@@ -292,7 +293,7 @@ describe("Xero health diagnostics partial unlink recovery (#2597)", () => {
     )
     expect(alert).toHaveTextContent(/link was removed/i)
     expect(alert).not.toHaveTextContent("private cleanup detail")
-    expect(document.activeElement).toBe(alert)
+    await expectRecoveryAlertToHoldFocus(alert)
     expect(screen.queryByRole("button", { name: "Unlink" })).not.toBeInTheDocument()
     const recoveryAction = screen.getByRole("link", {
       name: "Open affected member: Riley Chen",

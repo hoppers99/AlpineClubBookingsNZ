@@ -6,6 +6,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { ConfirmDraftButton } from "@/components/confirm-draft-button";
 import { HOSTING_COVERAGE_RETRY_MESSAGE } from "@/lib/adult-member-hosting-queue-participants";
+import { expectRecoveryAlertToHoldFocus } from "@/lib/__tests__/helpers/focus";
 
 const mocks = vi.hoisted(() => ({
   refresh: vi.fn(),
@@ -45,7 +46,7 @@ describe("ConfirmDraftButton error attention", () => {
     fireEvent.click(confirm);
 
     await screen.findByText(HOSTING_COVERAGE_RETRY_MESSAGE);
-    expect(document.activeElement).toBe(alert);
+    await expectRecoveryAlertToHoldFocus(alert);
     expect(scrollIntoView).toHaveBeenCalledWith({
       behavior: "smooth",
       block: "center",
@@ -64,7 +65,7 @@ describe("ConfirmDraftButton error attention", () => {
     fireEvent.click(confirm);
     await screen.findByText(/could not verify whether this draft was confirmed/i);
     expect(confirm).toBeEnabled();
-    expect(document.activeElement).toBe(screen.getByRole("alert"));
+    await expectRecoveryAlertToHoldFocus(screen.getByRole("alert"));
     expect(screen.queryByText(/network detail/i)).not.toBeInTheDocument();
 
     fireEvent.click(confirm);
@@ -87,7 +88,7 @@ describe("ConfirmDraftButton error attention", () => {
     fireEvent.click(confirm);
 
     await screen.findByText(/could not verify whether this draft was confirmed/i);
-    expect(document.activeElement).toBe(screen.getByRole("alert"));
+    await expectRecoveryAlertToHoldFocus(screen.getByRole("alert"));
     expect(scrollIntoView).toHaveBeenCalled();
     expect(confirm).toBeEnabled();
     expect(screen.queryByText(/private parse detail/i)).not.toBeInTheDocument();

@@ -187,8 +187,16 @@ export default function MembersPage() {
   }, [])
 
   const toggleSelectAll = useCallback(() => {
+    // #2620: never sweep up a member an approved deletion request has
+    // anonymised. A deleted account is `active: false, cancelledAt: null`, so it
+    // sits in the Inactive filter beside genuinely deactivated members, and a
+    // "select all → Reactivate" to undo a mistaken bulk deactivate is exactly how
+    // an erased person could get their login back without anyone intending it.
+    const selectable = members.filter((member) => !member.deletedAccount)
     setSelectedIds((current) =>
-      current.size === members.length ? new Set() : new Set(members.map((member) => member.id))
+      current.size === selectable.length
+        ? new Set()
+        : new Set(selectable.map((member) => member.id))
     )
   }, [members])
 
