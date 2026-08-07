@@ -585,17 +585,6 @@ export async function syncContactsFromXero(
         continue;
       }
 
-      const repairedContactName = await repairXeroContactNameOrderIfNeeded({
-        xero,
-        tenantId,
-        contact,
-        cachedContact,
-        member,
-      });
-      if (repairedContactName) {
-        changes.push(`Xero contact name set to ${repairedContactName}`);
-      }
-
       if (!member.joinedDate && options.backfillJoinedDates) {
         const invoiceDate = await getContactFirstInvoiceDate(
           xero,
@@ -658,6 +647,16 @@ export async function syncContactsFromXero(
       }
       if (applied.appliedFields.includes("postalAddressLine1")) {
         changes.push("Postal address set from Xero");
+      }
+      const repairedContactName = await repairXeroContactNameOrderIfNeeded({
+        xero,
+        tenantId,
+        contact,
+        cachedContact,
+        member,
+      });
+      if (repairedContactName) {
+        changes.push(`Xero contact name set to ${repairedContactName}`);
       }
 
       if (changes.length > 0) {

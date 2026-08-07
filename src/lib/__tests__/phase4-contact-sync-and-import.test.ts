@@ -248,9 +248,14 @@ describe("Phase 4 contact sync and cached import", () => {
   it("builds contact update idempotency keys from the exact outbound request payload", async () => {
     mocks.prisma.member.findUnique.mockResolvedValue({
       id: "member_1",
+      firstName: "Jane",
+      lastName: "Doe",
       email: "jane@example.com",
       passwordHash: "not-deleted",
       xeroContactId: "contact_1",
+      phoneCountryCode: "64",
+      phoneAreaCode: "21",
+      phoneNumber: "1234567",
     });
     await updateXeroContact(
       "contact_1",
@@ -301,6 +306,8 @@ describe("Phase 4 contact sync and cached import", () => {
   it("closes a committed member-update reservation when Xero authentication fails", async () => {
     mocks.prisma.member.findUnique.mockResolvedValue({
       id: "member_1",
+      firstName: "Jane",
+      lastName: "Doe",
       email: "jane@example.com",
       passwordHash: "not-deleted",
       xeroContactId: "contact_1",
@@ -507,9 +514,30 @@ describe("Phase 4 contact sync and cached import", () => {
         postalAddressLine1: null,
       })
       .mockResolvedValueOnce(null);
+    const unlinkedMember = {
+      id: "member_1",
+      firstName: "John",
+      lastName: "Smith",
+      email: "john.smith@example.com",
+      passwordHash: "not-deleted",
+      xeroContactId: null,
+      joinedDate: null,
+      dateOfBirth: null,
+      phoneNumber: null,
+      streetAddressLine1: null,
+      postalAddressLine1: null,
+    };
+    mocks.prisma.member.findUnique
+      .mockResolvedValueOnce(unlinkedMember)
+      .mockResolvedValueOnce(unlinkedMember)
+      .mockResolvedValue({
+        ...unlinkedMember,
+        xeroContactId: "contact_1",
+      });
 
     const report = await syncContactsFromXero();
 
+    expect(report.errors).toEqual([]);
     expect(report.total).toBe(2);
     expect(report.updated).toHaveLength(1);
     expect(report.skippedNoEmail).toEqual([
@@ -536,6 +564,7 @@ describe("Phase 4 contact sync and cached import", () => {
         phoneNumber: "1112222",
         streetAddressLine1: "1 Alpine Way",
       }),
+      select: { id: true },
     });
     expect(updatedMemberCall.data).not.toHaveProperty("joinedDate");
     expect(mocks.prisma.auditLog.create).toHaveBeenCalledWith({
@@ -719,6 +748,19 @@ describe("Phase 4 contact sync and cached import", () => {
       streetAddressLine1: null,
       postalAddressLine1: null,
     });
+    mocks.prisma.member.findUnique.mockResolvedValue({
+      id: "member_1",
+      firstName: "TestFirst",
+      lastName: "TestLast",
+      email: "reversed-name@example.com",
+      passwordHash: "not-deleted",
+      xeroContactId: "contact_1",
+      joinedDate: null,
+      dateOfBirth: null,
+      phoneNumber: null,
+      streetAddressLine1: null,
+      postalAddressLine1: null,
+    });
 
     const report = await syncContactsFromXero();
 
@@ -744,7 +786,7 @@ describe("Phase 4 contact sync and cached import", () => {
           }),
         ],
       },
-      "contact:contact_1:repair-name-order:payload-hash:v1"
+      "contact:contact_1:repair-name-order:payload-hash:v2"
     );
     expect(mocks.prisma.member.update).not.toHaveBeenCalled();
     expect(mocks.completeXeroSyncOperation).toHaveBeenCalledWith(
@@ -752,7 +794,8 @@ describe("Phase 4 contact sync and cached import", () => {
       expect.objectContaining({
         xeroObjectType: "CONTACT",
         xeroObjectId: "contact_1",
-      })
+      }),
+      expect.objectContaining({ store: mocks.prisma }),
     );
   });
 

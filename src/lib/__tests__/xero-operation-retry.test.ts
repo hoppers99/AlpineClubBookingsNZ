@@ -692,16 +692,7 @@ describe("retryXeroSyncOperation", () => {
 
     expect(mocks.updateXeroContact).toHaveBeenCalledWith(
       "xero_contact_current",
-      expect.objectContaining({
-        firstName: "Janet",
-        lastName: "Doe",
-        email: "janet@example.com",
-        phoneCountryCode: "64",
-        phoneAreaCode: "27",
-        phoneNumber: "7654321",
-        streetAddressLine1: "2 Current Street",
-        postalAddressLine1: "PO Box 100",
-      }),
+      undefined,
       expect.objectContaining({
         localModel: "Member",
         localId: "mem_123",

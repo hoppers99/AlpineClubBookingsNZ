@@ -235,7 +235,7 @@ describe("createXeroInvoiceForBooking", () => {
     vi.stubEnv("XERO_CLIENT_SECRET", "client-secret");
 
     mocks.prisma.$transaction.mockImplementation(async (callback) => callback(mocks.tx));
-    mocks.tx.$executeRaw.mockResolvedValue(undefined);
+    mocks.tx.$executeRaw.mockResolvedValue(1);
     mocks.tx.member.findUnique.mockResolvedValue({
       id: "mem_1",
       email: "member@example.com",
@@ -1107,7 +1107,7 @@ describe("createXeroCreditNoteForModification", () => {
     vi.stubEnv("XERO_CLIENT_SECRET", "client-secret");
 
     mocks.prisma.$transaction.mockImplementation(async (callback) => callback(mocks.tx));
-    mocks.tx.$executeRaw.mockResolvedValue(undefined);
+    mocks.tx.$executeRaw.mockResolvedValue(1);
     mocks.tx.member.findUnique.mockResolvedValue({
       id: "mem_1",
       email: "member@example.com",
