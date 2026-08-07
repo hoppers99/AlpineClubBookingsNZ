@@ -268,7 +268,7 @@ describe("Admin waitlist page", () => {
     fireEvent.click(confirm);
 
     await screen.findByText(/database update could not be completed/i);
-    expect(document.activeElement).toBe(alert);
+    await waitFor(() => expect(document.activeElement).toBe(alert));
     expect(scrollIntoView).toHaveBeenCalledWith({
       behavior: "smooth",
       block: "center",
@@ -314,7 +314,9 @@ describe("Admin waitlist page", () => {
     fireEvent.click(confirm);
     await screen.findByText(/could not verify whether this booking was force-confirmed/i);
     expect(confirm).toBeEnabled();
-    expect(document.activeElement).toBe(screen.getByRole("alert"));
+    await waitFor(() =>
+      expect(document.activeElement).toBe(screen.getByRole("alert")),
+    );
     expect(screen.queryByText(/private network detail/i)).not.toBeInTheDocument();
 
     fireEvent.click(confirm);
@@ -356,7 +358,9 @@ describe("Admin waitlist page", () => {
 
     await screen.findByText(/could not verify whether this booking was force-confirmed/i);
     expect(confirm).toBeEnabled();
-    expect(document.activeElement).toBe(screen.getByRole("alert"));
+    await waitFor(() =>
+      expect(document.activeElement).toBe(screen.getByRole("alert")),
+    );
     expect(screen.queryByText(/private JSON detail/i)).not.toBeInTheDocument();
   });
 

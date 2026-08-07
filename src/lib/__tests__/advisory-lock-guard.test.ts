@@ -345,6 +345,12 @@ const ROW_LOCK_SITE_INVENTORY: Record<string, number> = {
   // See docs/CONCURRENCY_AND_LOCKING.md → "Adult-member-hosting queue
   // participant fencing" and "Member merge".
   "src/lib/adult-member-hosting-queue-participants.ts": 2,
+  // Member-scoped Xero contact writes (#2597) share one `FOR UPDATE` protocol
+  // for canonical CONTACT-link completion. Account deletion and member merge
+  // take the same Member row before teardown, while CREATE/UPDATE reservations
+  // use the separate `FOR KEY SHARE` protocol inventoried by their source tests.
+  // See docs/CONCURRENCY_AND_LOCKING.md -> "Xero contact writers".
+  "src/lib/xero-contact-create-recovery.ts": 1,
 };
 
 const CAPACITY_LOCK_MINT = "src/lib/lodge-capacity-lock.ts";

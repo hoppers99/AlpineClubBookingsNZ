@@ -142,7 +142,8 @@ describe("adult-member hosting participant retry responses (#2597)", () => {
       ],
       "src/app/api/admin/deletion-requests/[id]/route.ts": [
         "deletionCleanupRecovery({",
-        "retryBookingId: booking.id",
+        'cancellationFact.state === "PENDING" ? booking.id : null',
+        'cancellationFact.state === "STATUS_UNCONFIRMED"',
         "remainingCleanupPending: true",
         "memberAnonymised: false",
         "memberDataAnonymised: false",
