@@ -341,11 +341,13 @@ export default function MemberDetailPage({
     (serverXeroContactCreateRecoveryState !== null ||
       (xeroRecoveryMemberId === id &&
         xeroCreateRecoveryDisplayState !== null));
+  const effectiveXeroCreateRecoveryState =
+    xeroRecoveryMemberId === id && xeroCreateRecoveryDisplayState !== null
+      ? xeroCreateRecoveryDisplayState
+      : serverXeroContactCreateRecoveryState;
   const xeroWritesSuppressed =
     !member?.xeroContactId &&
-    (serverXeroContactCreateRecoveryState === "CREATE_IN_PROGRESS" ||
-      (xeroRecoveryMemberId === id &&
-        xeroCreateRecoveryDisplayState === "CREATE_IN_PROGRESS"));
+    effectiveXeroCreateRecoveryState === "CREATE_IN_PROGRESS";
 
   // Dependent dialog state
   const {

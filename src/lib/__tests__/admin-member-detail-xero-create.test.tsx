@@ -294,12 +294,13 @@ describe("Admin member detail Xero create", () => {
       );
     });
 
-    expect(await screen.findByRole("button", { name: "Link to Xero" })).toBeInTheDocument();
+    await screen.findByText(/contact create is still in progress or awaiting recovery/i);
+    expect(screen.queryByRole("button", { name: "Link to Xero" })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /Create in Xero/ })).not.toBeInTheDocument();
     const alert = document.getElementById("member-xero-recovery-error");
-    await screen.findByText(/contact create is still in progress or awaiting recovery/i);
     expect(alert).not.toHaveTextContent(/A Xero contact was created/i);
     expect(document.activeElement).toBe(alert);
+    expect(screen.getByRole("button", { name: "Try again" })).toBeInTheDocument();
   });
 
   it("clears recovery after authoritative proof is resolved", async () => {

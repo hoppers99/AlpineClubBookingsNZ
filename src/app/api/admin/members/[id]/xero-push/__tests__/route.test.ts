@@ -93,6 +93,7 @@ import {
   HOSTING_COVERAGE_RETRY_MESSAGE,
   HostingCoverageParticipantRetryError,
 } from "@/lib/adult-member-hosting-queue-participants";
+import { XeroContactAlreadyLinkedError } from "@/lib/xero-contact-create-recovery";
 
 function okGuard(userId = "admin-1") {
   return { ok: true as const, session: { user: { id: userId } } };
@@ -204,6 +205,17 @@ describe("POST /api/admin/members/[id]/xero-push (#2089)", () => {
     const res = await POST(postReq(), { params });
     expect(res.status).toBe(409);
     expect(mockCreate).not.toHaveBeenCalled();
+  });
+
+  it("returns the same 409 when a manual link wins after the initial read", async () => {
+    mockCreate.mockRejectedValueOnce(new XeroContactAlreadyLinkedError());
+
+    const response = await POST(postReq({ forceCreate: true }), { params });
+
+    expect(response.status).toBe(409);
+    await expect(response.json()).resolves.toEqual({
+      error: "Member already linked to Xero",
+    });
   });
 
   it("marks a newly created contact as linked when history refresh is deferred", async () => {

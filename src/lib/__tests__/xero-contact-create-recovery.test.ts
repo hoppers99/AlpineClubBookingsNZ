@@ -16,9 +16,12 @@ import {
   hasMemberContactCreateMergeBlocker,
   hasUnresolvedMemberContactCreateRecovery,
   isProviderCreatedLocalLinkFailurePayload,
+  lockMemberForManualXeroContactLink,
   memberContactCreateMergeBlockerWhere,
   recordProviderCreatedContactPendingLocalLink,
   unresolvedMemberContactCreateRecoveryWhere,
+  XERO_CONTACT_CREATE_IN_PROGRESS_CODE,
+  XERO_CONTACT_CREATE_IN_PROGRESS_MESSAGE,
 } from "@/lib/xero-contact-create-recovery";
 
 describe("unresolved member Xero contact-create recovery proof", () => {
@@ -68,6 +71,34 @@ describe("unresolved member Xero contact-create recovery proof", () => {
           ],
         },
       ],
+    });
+  });
+
+  it("locks the target member before refusing a manual link against an ambiguous create", async () => {
+    const executeRaw = vi.fn().mockResolvedValue(1);
+    const memberFindUnique = vi.fn().mockResolvedValue({ id: "member-1" });
+    const operationFindFirst = vi.fn().mockResolvedValue({ id: "operation-1" });
+
+    await expect(
+      lockMemberForManualXeroContactLink(
+        {
+          $executeRaw: executeRaw,
+          member: { findUnique: memberFindUnique } as never,
+          xeroSyncOperation: { findFirst: operationFindFirst } as never,
+        },
+        "member-1",
+      ),
+    ).rejects.toMatchObject({
+      code: XERO_CONTACT_CREATE_IN_PROGRESS_CODE,
+      statusCode: 409,
+      message: XERO_CONTACT_CREATE_IN_PROGRESS_MESSAGE,
+    });
+    expect(executeRaw.mock.invocationCallOrder[0]).toBeLessThan(
+      operationFindFirst.mock.invocationCallOrder[0],
+    );
+    expect(operationFindFirst).toHaveBeenCalledWith({
+      where: ambiguousMemberContactCreateReservationWhere("member-1"),
+      select: { id: true },
     });
   });
 

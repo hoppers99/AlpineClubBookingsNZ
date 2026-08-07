@@ -15,6 +15,8 @@ vi.mock("@/lib/prisma", () => ({
       count: vi.fn(),
       update: vi.fn(),
     },
+    xeroSyncOperation: { findFirst: vi.fn() },
+    $executeRaw: vi.fn(),
     familyGroup: { findMany: vi.fn() },
     $transaction: vi.fn(),
   },
@@ -134,6 +136,11 @@ function mockSessionAndMemberListCounts(total: number) {
 describe("Xero Member Management", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    vi.mocked(prisma.$executeRaw).mockResolvedValue(1);
+    vi.mocked(prisma.xeroSyncOperation.findFirst).mockResolvedValue(null);
+    vi.mocked(prisma.$transaction).mockImplementation(async (callback) =>
+      callback(prisma as never),
+    );
     mockIsXeroConnected.mockResolvedValue(false);
     mockGetXeroContactGroupMemberships.mockResolvedValue({});
     mockGetXeroContactIdsForGroup.mockResolvedValue([]);
@@ -639,6 +646,44 @@ describe("Xero Member Management", () => {
       expect(res.status).toBe(409);
       const data = await res.json();
       expect(data.error).toContain("already linked");
+    });
+
+    it("returns a privacy-safe 409 when an ambiguous contact create owns the member fence", async () => {
+      mockedAuth.mockResolvedValue(adminSession);
+      vi.mocked(prisma.member.findUnique).mockResolvedValue({
+        id: "m1",
+        firstName: "John",
+        lastName: "Doe",
+        xeroContactId: null,
+      } as never);
+      vi.mocked(prisma.member.findFirst).mockResolvedValue(null);
+      vi.mocked(prisma.xeroSyncOperation.findFirst).mockResolvedValue({
+        id: "operation-running",
+      } as never);
+      mockGetAuthenticatedXeroClient.mockResolvedValue({
+        xero: { accountingApi: { getContact: vi.fn() } },
+        tenantId: "t1",
+      });
+      mockCallXeroApi.mockResolvedValue({
+        body: { contacts: [{ contactID: "xero-target", name: "Target Contact" }] },
+      });
+
+      const response = await xeroLink(
+        new NextRequest("http://localhost/api/admin/members/m1/xero-link", {
+          method: "POST",
+          body: JSON.stringify({ xeroContactId: "xero-target" }),
+        }),
+        { params: Promise.resolve({ id: "m1" }) },
+      );
+
+      expect(response.status).toBe(409);
+      await expect(response.json()).resolves.toEqual({
+        error:
+          "A Xero contact create is still in progress or awaiting recovery. Refresh this member before taking another Xero action.",
+        code: "XERO_CONTACT_CREATE_IN_PROGRESS",
+      });
+      expect(prisma.member.update).not.toHaveBeenCalled();
+      expect(mockUpsertXeroObjectLink).not.toHaveBeenCalled();
     });
 
     it("does not swallow participant contention as a successful history warning after the link persisted", async () => {
