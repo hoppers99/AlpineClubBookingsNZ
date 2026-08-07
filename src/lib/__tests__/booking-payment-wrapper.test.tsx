@@ -200,7 +200,6 @@ describe("BookingPaymentWrapper", () => {
         code: "HOSTING_COVERAGE_PARTICIPANT_RETRY",
         paymentReceived: true,
         finalisationPending: true,
-        paymentIntentId: "pi_captured_retry",
       }),
     });
 

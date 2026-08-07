@@ -542,6 +542,7 @@ describe("payment intent routes", () => {
 
     expect(res.status).toBe(200);
     expect(data.alreadyPaid).toBe(true);
+    expect(data).not.toHaveProperty("paymentIntentId");
     expect(mocks.markBookingPaymentSucceeded).toHaveBeenCalledWith({
       bookingId: "booking-1",
       paymentIntentId: "pi_existing",
