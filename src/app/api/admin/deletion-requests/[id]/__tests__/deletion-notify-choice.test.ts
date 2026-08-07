@@ -206,11 +206,42 @@ describe("POST /api/admin/deletion-requests/[id] approve carve-out (#1788)", () 
       cancelledBookings: 1,
       cancellationPending: true,
       retryBookingId: "booking-2",
+      remainingCleanupPending: true,
+      memberAnonymised: false,
       memberDataAnonymised: false,
+      approvalReceiptSent: false,
     });
     expect(h.cancelBooking).toHaveBeenCalledTimes(2);
     expect(h.sendAccountDeletionApprovedEmail).not.toHaveBeenCalled();
     expect(h.prisma.member.update).not.toHaveBeenCalled();
+  });
+
+  it("returns stable partial-cleanup facts after an ordinary later cancellation error", async () => {
+    h.prisma.booking.findMany
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([{ id: "booking-1" }, { id: "booking-2" }]);
+    h.cancelBooking
+      .mockResolvedValueOnce({ status: 200, data: {} })
+      .mockRejectedValueOnce(new Error("private database detail"));
+
+    const response = await POST(req({ action: "approve" }), { params });
+
+    expect(response.status).toBe(500);
+    await expect(response.json()).resolves.toEqual({
+      code: "DELETION_CLEANUP_PARTIAL",
+      error:
+        "Account deletion cleanup is incomplete. The member was not anonymised and no approval receipt was sent. Retry only the remaining cleanup.",
+      cancelledBookings: 1,
+      cancellationPending: true,
+      retryBookingId: "booking-2",
+      remainingCleanupPending: true,
+      memberAnonymised: false,
+      memberDataAnonymised: false,
+      approvalReceiptSent: false,
+    });
+    expect(h.cancelBooking).toHaveBeenCalledTimes(2);
+    expect(h.prisma.member.update).not.toHaveBeenCalled();
+    expect(h.sendAccountDeletionApprovedEmail).not.toHaveBeenCalled();
   });
 
   it("always sends the approval receipt and ignores a notifyMember suppression", async () => {
@@ -267,6 +298,9 @@ describe("POST /api/admin/deletion-requests/[id] approve carve-out (#1788)", () 
       code: HOSTING_COVERAGE_RETRY_CODE,
       cancelledBookings: 0,
       cancellationPending: false,
+      retryBookingId: null,
+      remainingCleanupPending: true,
+      memberAnonymised: false,
       memberDataAnonymised: false,
       approvalReceiptSent: false,
     });

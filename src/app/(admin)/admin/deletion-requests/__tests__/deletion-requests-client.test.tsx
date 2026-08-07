@@ -227,7 +227,7 @@ describe("self-service deletion partial recovery (#2597)", () => {
     },
   };
 
-  it("retains exact cleanup facts, focuses recovery, and replaces untouched approval with an explicit retry", async () => {
+  it("uses ordinary partial-cleanup facts to retain recovery and replace untouched approval with an explicit retry", async () => {
     const scrollIntoView = vi.fn();
     Object.defineProperty(HTMLElement.prototype, "scrollIntoView", {
       configurable: true,
@@ -252,13 +252,14 @@ describe("self-service deletion partial recovery (#2597)", () => {
       if (url === "/api/admin/deletion-requests/request-1" && init?.method === "POST") {
         return {
           ok: false,
-          status: 409,
+          status: 500,
           json: async () => ({
-            code: "HOSTING_COVERAGE_PARTICIPANT_RETRY",
             error: "private database detail",
             cancelledBookings: 2,
             cancellationPending: true,
             retryBookingId: "booking/pending",
+            remainingCleanupPending: true,
+            memberAnonymised: false,
             memberDataAnonymised: false,
             approvalReceiptSent: false,
           }),

@@ -57,6 +57,25 @@ const CANCELLABLE_DELETION_BOOKING_STATUSES = [
   "CONFIRMED",
 ] as const;
 
+function deletionCleanupRecovery(input: {
+  cancelledBookings: number;
+  cancellationPending: boolean;
+  retryBookingId: string | null;
+}) {
+  return {
+    code: "DELETION_CLEANUP_PARTIAL",
+    error:
+      "Account deletion cleanup is incomplete. The member was not anonymised and no approval receipt was sent. Retry only the remaining cleanup.",
+    cancelledBookings: input.cancelledBookings,
+    cancellationPending: input.cancellationPending,
+    retryBookingId: input.retryBookingId,
+    remainingCleanupPending: true,
+    memberAnonymised: false,
+    memberDataAnonymised: false,
+    approvalReceiptSent: false,
+  };
+}
+
 export async function POST(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
@@ -79,6 +98,7 @@ export async function POST(
   const ip =
     request.headers.get("x-forwarded-for")?.split(",")[0].trim() ?? "unknown";
   let completedBookingCancellations = 0;
+  let memberAnonymised = false;
 
   try {
     const deletionRequest = await prisma.deletionRequest.findUnique({
@@ -242,14 +262,18 @@ export async function POST(
           ip,
         );
       } catch (err) {
-        const hostingRetry = hostingCoverageParticipantRetryResponse(err, {
+        const recovery = deletionCleanupRecovery({
           cancelledBookings: cancelledBookingIds.length,
           cancellationPending: true,
           retryBookingId: booking.id,
-          memberDataAnonymised: false,
         });
+        const hostingRetry = hostingCoverageParticipantRetryResponse(err, recovery);
         if (hostingRetry) return hostingRetry;
-        throw err;
+        logger.error(
+          { err, memberId: member.id, bookingId: booking.id },
+          "Account deletion cleanup stopped after a booking cancellation error",
+        );
+        return NextResponse.json(recovery, { status: 500 });
       }
       if (result.status === 200) {
         cancelledBookingIds.push(booking.id);
@@ -277,10 +301,12 @@ export async function POST(
 
       return NextResponse.json(
         {
-          error:
-            "Account deletion could not be approved because future bookings could not be cancelled. No member data was anonymised.",
+          ...deletionCleanupRecovery({
+            cancelledBookings: cancelledBookingIds.length,
+            cancellationPending: true,
+            retryBookingId: failedBookingIds[0] ?? null,
+          }),
           failedBookingIds,
-          cancelledBookings: cancelledBookingIds.length,
         },
         { status: 409 }
       );
@@ -403,6 +429,7 @@ export async function POST(
         },
       });
     });
+    memberAnonymised = true;
 
     try {
       await sendAccountDeletionApprovedEmail(
@@ -454,12 +481,12 @@ export async function POST(
       orphanedLinks: detachedFamilyLinks,
     });
   } catch (err) {
-    const hostingRetry = hostingCoverageParticipantRetryResponse(err, {
+    const recovery = deletionCleanupRecovery({
       cancelledBookings: completedBookingCancellations,
       cancellationPending: false,
-      memberDataAnonymised: false,
-      approvalReceiptSent: false,
+      retryBookingId: null,
     });
+    const hostingRetry = hostingCoverageParticipantRetryResponse(err, recovery);
     if (hostingRetry) return hostingRetry;
     if (err instanceof AdminAccountGuardError) {
       return NextResponse.json(
@@ -468,6 +495,9 @@ export async function POST(
       );
     }
     logger.error({ err, requestId: id }, "Failed to process deletion request");
+    if (completedBookingCancellations > 0 && !memberAnonymised) {
+      return NextResponse.json(recovery, { status: 500 });
+    }
     return NextResponse.json({ error: "Failed to process deletion request" }, { status: 500 });
   }
 }

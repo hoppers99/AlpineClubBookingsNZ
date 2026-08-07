@@ -141,11 +141,11 @@ describe("adult-member hosting participant retry responses (#2597)", () => {
         "holdReleaseStatusUnconfirmed: err.holdReleaseStatusUnconfirmed",
       ],
       "src/app/api/admin/deletion-requests/[id]/route.ts": [
-        "cancelledBookings: cancelledBookingIds.length",
-        "cancellationPending: true",
+        "deletionCleanupRecovery({",
         "retryBookingId: booking.id",
+        "remainingCleanupPending: true",
+        "memberAnonymised: false",
         "memberDataAnonymised: false",
-        "cancellationPending: false",
         "approvalReceiptSent: false",
       ],
       "src/app/api/admin/bookings/[id]/confirm-pending-guests/route.ts": [

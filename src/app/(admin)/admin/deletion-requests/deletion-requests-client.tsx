@@ -185,9 +185,10 @@ export default function DeletionRequestsClient({
       if (!res.ok) {
         if (
           pendingReview.action === "approve" &&
-          body.code === "HOSTING_COVERAGE_PARTICIPANT_RETRY" &&
+          body.remainingCleanupPending === true &&
           typeof body.cancelledBookings === "number" &&
-          body.memberDataAnonymised === false &&
+          (body.memberAnonymised === false ||
+            body.memberDataAnonymised === false) &&
           body.approvalReceiptSent === false
         ) {
           const cancelledBookings = Math.max(0, body.cancelledBookings);
