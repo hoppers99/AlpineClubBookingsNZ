@@ -32,6 +32,7 @@ function makeMember(id: string, overrides: Record<string, unknown> = {}) {
 function defaultDelegate() {
   return {
     count: vi.fn().mockResolvedValue(0),
+    findFirst: vi.fn().mockResolvedValue(null),
     findUnique: vi.fn().mockResolvedValue(null),
     findMany: vi.fn().mockResolvedValue([]),
   };

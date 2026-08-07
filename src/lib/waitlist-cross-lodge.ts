@@ -33,6 +33,11 @@ import {
   buildAdultMemberHostingRefusalBody,
 } from "@/lib/adult-member-hosting-review";
 import {
+  HOSTING_COVERAGE_RETRY_CODE,
+  HOSTING_COVERAGE_RETRY_MESSAGE,
+  isHostingCoverageParticipantRetry,
+} from "@/lib/adult-member-hosting-queue-participants";
+import {
   buildPaidUpAdultRefusalBody,
   evaluateNonMemberPricingRequirements,
   toSubscriptionLockoutParticipants,
@@ -719,6 +724,13 @@ export async function confirmCrossLodgeWaitlistOffer(
       allowPastCheckIn: true,
     });
   } catch (err) {
+    if (isHostingCoverageParticipantRetry(err)) {
+      return {
+        success: false,
+        error: HOSTING_COVERAGE_RETRY_MESSAGE,
+        code: HOSTING_COVERAGE_RETRY_CODE,
+      };
+    }
     if (err instanceof DuplicateStayConflictError) {
       // A concurrent confirm committed a booking for the same stay after this
       // one passed Phase 1; the in-transaction guard rolled this creation back,

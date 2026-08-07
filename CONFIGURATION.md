@@ -1024,19 +1024,27 @@ config-transfer lock and then the minimum-stay policy-set lock, re-plans inside
 the transaction, and relies on the automatic pre-apply database backup for
 rollback. Ordinary config-transfer categories remain non-deleting.
 
-**Adult-member hosting (#2364).** A club may also ask that every non-member
-guest-night overlaps an adult member staying on the same booking. It is one
-setting per scope: the club chooses **Allowed** or **Send the booking to an admin
-to review**, and each lodge may inherit that, or decide for itself. Like
-minimum-stay rows it carries an explicit exception-capacity mode — there is no
-automatic default, so the first save must state one — and a revision that refuses
-a stale write. Turning it on never stops a member: the booking is made and an
-admin reviews it, and the review clears itself as soon as an adult member covers
-the nights. Booking on behalf of a member is the one place it refuses, and only
-until the admin gives a reason, which is stored with the approval. The hosting
-setting travels in the same destructive `booking-policies` category, as
-`booking-policies/adult-member-hosting.csv`, under the same replace-set rules: a
-scope omitted from the file is deleted, back to the built-in default.
+**Adult-member hosting (#2364, #2569, #2576).** A club may require every
+non-member guest-night to overlap an eligible adult member. The policy has two
+independent dimensions: the consequence (**Disabled**, **Send to admin review**,
+or **Enforce the rule**) and the permitted host scopes (**Same booking** and/or
+**Another booking owned by the same member** at the same lodge on the same
+night). Ownership alone never counts as attendance, and an unrelated member,
+shared email, or Family Group link never supplies cover. Each lodge may inherit
+or override each dimension independently; the built-in default is disabled with
+same-booking-only scope, preserving pre-upgrade behaviour.
+
+Review mode allows the booking and opens officer work. Enforced mode rolls back
+a non-compliant member write and offers the signed-in exception-request journey;
+school and organisation approvals remain review-only. An admin booking on
+someone else's behalf may record an explicit reason as an attributable approval.
+Accepted bookings that later lose same-owner cover remain accepted but open an
+urgent incident, which resolves automatically when cover returns. Like
+minimum-stay rows, the policy carries an explicit exception-capacity mode — there
+is no automatic default, so the first save must state one — and a revision that
+refuses a stale write. It travels in the destructive `booking-policies` category
+as `booking-policies/adult-member-hosting.csv`; a configuration scope omitted
+from that replace-set file is deleted back to inherited or built-in behaviour.
 
 ### 8. Eligibility restrictions and cross-lodge waitlist
 

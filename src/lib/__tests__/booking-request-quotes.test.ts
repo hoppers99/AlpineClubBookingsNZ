@@ -74,12 +74,24 @@ const mocks = vi.hoisted(() => ({
   // are told, in the right direction — without dragging the email graph in.
   sendMemberGuestAddNotifications: vi.fn(),
   sendMemberGuestWithdrawnNotifications: vi.fn(),
+  lockActiveBookingRequestLinkedMembers: vi.fn(),
 }));
 
 const mockApproveBookingRequest = mocks.mockApproveBookingRequest;
 const mockSendQuoteEmail = mocks.mockSendQuoteEmail;
 
 vi.mock("@/lib/prisma", () => ({ prisma: mocks.prismaMock }));
+
+vi.mock("@/lib/adult-member-hosting-queue-participants", async () => {
+  const actual = await vi.importActual<
+    typeof import("@/lib/adult-member-hosting-queue-participants")
+  >("@/lib/adult-member-hosting-queue-participants");
+  return {
+    ...actual,
+    lockActiveBookingRequestLinkedMembers:
+      mocks.lockActiveBookingRequestLinkedMembers,
+  };
+});
 
 vi.mock("@/lib/member-guest-consent-notifications", () => ({
   sendMemberGuestAddNotifications: mocks.sendMemberGuestAddNotifications,
@@ -236,13 +248,18 @@ import {
   assertNoBookingMemberNightConflicts,
   BookingMemberNightConflictError,
 } from "@/lib/booking-member-night-conflicts";
-import { checkCapacityForGuestRanges } from "@/lib/capacity";
+import {
+  acquireLodgeCapacityLock,
+  checkCapacityForGuestRanges,
+} from "@/lib/capacity";
+import { HostingCoverageParticipantRetryError } from "@/lib/adult-member-hosting-queue-participants";
 import { reconcileBedAllocationsForBookingWithGlobalLockHeld as reconcileBedAllocationsForBooking } from "@/lib/bed-allocation-lifecycle";
 import { isEffectiveModuleEnabled } from "@/lib/admin-modules";
 
 const mockedModuleEnabled = vi.mocked(isEffectiveModuleEnabled);
 const mockedAssertNoConflicts = vi.mocked(assertNoBookingMemberNightConflicts);
 const mockedCheckCapacity = vi.mocked(checkCapacityForGuestRanges);
+const mockedAcquireLodgeCapacityLock = vi.mocked(acquireLodgeCapacityLock);
 const mockedReconcile = vi.mocked(reconcileBedAllocationsForBooking);
 
 function memberNightConflictError() {
@@ -290,6 +307,7 @@ function baseRequest(overrides: Record<string, unknown> = {}) {
     message: null,
     priceCents: null,
     heldBookingId: null,
+    version: 1,
     ...overrides,
   };
 }
@@ -310,6 +328,7 @@ beforeEach(() => {
   // release. Empty is the ordinary answer — a request whose guests are all
   // free-text names owes nobody a withdrawal notice.
   vi.mocked(prisma.bookingGuest.findMany).mockResolvedValue([] as never);
+  mocks.lockActiveBookingRequestLinkedMembers.mockResolvedValue(undefined);
 });
 
 describe("createBookingRequestQuote", () => {
@@ -1310,6 +1329,99 @@ describe("holdBookingRequestSlots owner role", () => {
     vi.mocked(prisma.bookingRequest.update).mockResolvedValue({} as never);
     // Default to no member-night conflict; individual tests override to reject.
     mockedAssertNoConflicts.mockResolvedValue(undefined);
+  });
+
+  it("locks transaction-current linked members after lodge and before the versioned claim", async () => {
+    const request = baseRequest({
+      type: BookingRequestType.GENERAL,
+      priceCents: 12000,
+      quotes: [],
+      linkedGuestMembers: [
+        { guestIndex: 0, memberId: "member-b" },
+        { guestIndex: 1, memberId: "member-a" },
+      ],
+    });
+    vi.mocked(prisma.bookingRequest.findUnique).mockResolvedValue(
+      request as never,
+    );
+
+    await holdBookingRequestSlots({
+      requestId: "req-1",
+      adminMemberId: "admin-1",
+    });
+
+    expect(mocks.lockActiveBookingRequestLinkedMembers).toHaveBeenCalledWith(
+      prisma,
+      ["member-b", "member-a"],
+    );
+    expect(prisma.bookingRequest.updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({ id: "req-1", version: 1 }),
+      }),
+    );
+    const lodgeOrder = mockedAcquireLodgeCapacityLock.mock.invocationCallOrder[0];
+    const currentReadOrder = vi.mocked(prisma.bookingRequest.findUnique)
+      .mock.invocationCallOrder[1];
+    const linkedLockOrder =
+      mocks.lockActiveBookingRequestLinkedMembers.mock.invocationCallOrder[0];
+    const claimOrder = vi.mocked(prisma.bookingRequest.updateMany)
+      .mock.invocationCallOrder[0];
+    const createOrder = vi.mocked(prisma.booking.create).mock.invocationCallOrder[0];
+    expect(lodgeOrder).toBeLessThan(currentReadOrder);
+    expect(currentReadOrder).toBeLessThan(linkedLockOrder);
+    expect(linkedLockOrder).toBeLessThan(claimOrder);
+    expect(claimOrder).toBeLessThan(createOrder);
+  });
+
+  it("rolls back before claim when the transaction-current link snapshot changed", async () => {
+    const initial = baseRequest({
+      type: BookingRequestType.GENERAL,
+      priceCents: 12000,
+      quotes: [],
+      linkedGuestMembers: [{ guestIndex: 0, memberId: "member-old" }],
+    });
+    const changed = {
+      ...initial,
+      version: 2,
+      linkedGuestMembers: [{ guestIndex: 0, memberId: "member-new" }],
+    };
+    vi.mocked(prisma.bookingRequest.findUnique)
+      .mockResolvedValueOnce(initial as never)
+      .mockResolvedValueOnce(changed as never);
+
+    await expect(
+      holdBookingRequestSlots({
+        requestId: "req-1",
+        adminMemberId: "admin-1",
+      }),
+    ).rejects.toMatchObject({ status: 409 });
+    expect(mocks.lockActiveBookingRequestLinkedMembers).not.toHaveBeenCalled();
+    expect(prisma.bookingRequest.updateMany).not.toHaveBeenCalled();
+    expect(prisma.booking.create).not.toHaveBeenCalled();
+  });
+
+  it("propagates the fixed linked-member retry before claim or guest creation", async () => {
+    vi.mocked(prisma.bookingRequest.findUnique).mockResolvedValue(
+      baseRequest({
+        type: BookingRequestType.GENERAL,
+        priceCents: 12000,
+        quotes: [],
+        linkedGuestMembers: [{ guestIndex: 0, memberId: "member-42" }],
+      }) as never,
+    );
+    mocks.lockActiveBookingRequestLinkedMembers.mockRejectedValueOnce(
+      new HostingCoverageParticipantRetryError(),
+    );
+
+    await expect(
+      holdBookingRequestSlots({
+        requestId: "req-1",
+        adminMemberId: "admin-1",
+      }),
+    ).rejects.toBeInstanceOf(HostingCoverageParticipantRetryError);
+    expect(prisma.bookingRequest.updateMany).not.toHaveBeenCalled();
+    expect(prisma.member.create).not.toHaveBeenCalled();
+    expect(prisma.booking.create).not.toHaveBeenCalled();
   });
 
   it("creates a NON_MEMBER owner record for general booking requests", async () => {

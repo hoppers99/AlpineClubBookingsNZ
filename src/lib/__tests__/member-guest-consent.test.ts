@@ -356,10 +356,12 @@ describe("the documented model matches the shipped one", () => {
     }
   });
 
-  it("documents the states as unreachable until MG2 in STATE_MACHINES.md", () => {
+  it("documents the shipped MG2 member-guest consent lifecycle in STATE_MACHINES.md", () => {
     const stateMachines = readRepoFile("docs/STATE_MACHINES.md");
-    expect(stateMachines).toContain("MemberGuestConsentStatus");
-    expect(stateMachines).toMatch(/unreachable/i);
+    expect(stateMachines).toContain("## Member Guest Consent Lifecycle");
+    expect(stateMachines).toContain("#2305 / MG2 #2307");
+    expect(stateMachines).toContain("PENDING -> CONFIRMED");
+    expect(stateMachines).not.toContain("unreachable until MG2");
   });
 });
 

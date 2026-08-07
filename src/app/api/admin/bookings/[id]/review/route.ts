@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { hostingCoverageParticipantRetryResponse } from "@/lib/adult-member-hosting-retry-response";
 import { z } from "zod";
 import { AdminReviewStatus, BookingStatus, type Prisma } from "@prisma/client";
 
@@ -232,20 +233,46 @@ export async function PATCH(
   // Legacy PENDING+DRAFT rows are rejected and cancelled in the claim above;
   // every other status uses the shared cancellation/refund flow after commit.
   if (reviewedBooking.status !== BookingStatus.DRAFT) {
-    const cancelResult = await cancelBooking(
-      bookingId,
-      session.user.id,
-      "ADMIN",
-      ipAddress,
-      "card",
-    );
+    let cancelResult;
+    try {
+      cancelResult = await cancelBooking(
+        bookingId,
+        session.user.id,
+        "ADMIN",
+        ipAddress,
+        "card",
+      );
+    } catch (err) {
+      const hostingRetry = hostingCoverageParticipantRetryResponse(err, {
+        reviewRecorded: true,
+        cancellationPending: true,
+      });
+      if (hostingRetry) return hostingRetry;
+      logger.error(
+        { err, bookingId },
+        "Rejected review committed but cancellation status could not be confirmed",
+      );
+      return NextResponse.json(
+        {
+          error:
+            "The rejection was recorded, but the booking's cancellation status could not be confirmed. Open the booking and check its status before retrying.",
+          reviewRecorded: true,
+          cancellationStatusUnconfirmed: true,
+        },
+        { status: 500 },
+      );
+    }
 
     // A concurrent cancel won the single-flight claim (#1160): surface the 409
     // rather than mislabelling it a 500. The review was already recorded and the
     // booking is being/has been cancelled, so this is a benign race, not a fault.
     if (cancelResult.status === 409) {
       return NextResponse.json(
-        { error: cancelResult.error },
+        {
+          error: cancelResult.error,
+          reviewRecorded: true,
+          cancellationStatusUnconfirmed: true,
+        },
         { status: 409 },
       );
     }
@@ -256,7 +283,11 @@ export async function PATCH(
         "Failed to cancel rejected booking",
       );
       return NextResponse.json(
-        { error: "Review recorded but booking could not be cancelled", details: cancelResult.error },
+        {
+          error: "Review recorded but booking could not be cancelled",
+          reviewRecorded: true,
+          cancellationPending: true,
+        },
         { status: 500 },
       );
     }

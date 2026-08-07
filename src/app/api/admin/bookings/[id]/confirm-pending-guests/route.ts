@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { hostingCoverageParticipantRetryResponse } from "@/lib/adult-member-hosting-retry-response";
 import {
   BookingStatus,
   PaymentStatus,
@@ -626,11 +627,20 @@ export async function POST(
         )
       );
       await audit("charged_finalisation_pending", true);
+      const hostingRetry = hostingCoverageParticipantRetryResponse(
+        reconcileErr,
+        {
+          paymentReceived: true,
+          finalisationPending: true,
+        },
+      );
+      if (hostingRetry) return hostingRetry;
       return NextResponse.json(
         {
           error:
             "The charge succeeded but the booking could not be finalised yet; it stays confirmed and admins have been alerted.",
-          paymentIntentId: paymentIntent.id,
+          paymentReceived: true,
+          finalisationPending: true,
         },
         { status: 500 }
       );
@@ -678,21 +688,27 @@ export async function POST(
       });
     }
 
-    if (reconciliation.outcome !== "paid" && reconciliation.outcome !== "already_paid") {
-      // cancelled_refund_failed (the reconciler has already alerted the refund
-      // failure) or an unexpected outcome: surface an accurate error.
+    if (reconciliation.outcome === "cancelled_refund_failed") {
+      // The final capacity claim failed and the reconciler has already
+      // committed the cancellation together with a durable refund-recovery
+      // operation. This is not booking finalisation pending: the booking is
+      // definitively CANCELLED and only the captured charge's refund remains
+      // unresolved.
       logger.error(
         { bookingId, outcome: reconciliation.outcome },
-        "Admin confirm-pending-guests: payment succeeded but reconciliation did not settle"
+        "Admin confirm-pending-guests: booking cancelled and captured-charge refund recovery is pending"
       );
       await audit(`charged_${reconciliation.outcome}`, true);
       return NextResponse.json(
         {
           error:
-            "Payment succeeded but the booking could not be finalised; admins have been alerted.",
-          paymentIntentId: paymentIntent.id,
+            "The booking was cancelled because lodge capacity was no longer available. The saved-card charge was captured, but its refund could not be confirmed; automatic refund recovery is pending and admins have been alerted.",
+          status: "CANCELLED",
+          refunded: false,
+          refundRecoveryPending: true,
+          paymentReceived: true,
         },
-        { status: 500 }
+        { status: 409 }
       );
     }
 
@@ -714,6 +730,8 @@ export async function POST(
     }
     return NextResponse.json({ success: true, status: "PAID", charged: true });
   } catch (err) {
+    const hostingRetry = hostingCoverageParticipantRetryResponse(err);
+    if (hostingRetry) return hostingRetry;
     logger.error({ err, bookingId }, "Failed to confirm pending guests");
     return NextResponse.json(
       { error: "Failed to confirm pending guests" },

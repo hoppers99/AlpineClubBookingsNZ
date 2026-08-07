@@ -37,6 +37,32 @@ that recipient member's current Xero contact identity and Xero contact email.
 Inbound invoice changes are joined back through charge coverage so a shared
 family invoice updates recipient and non-recipient subscriptions together.
 
+## Contact and member partial-success boundary
+
+Contact creation keeps the provider call outside the local link transaction. Once
+Xero returns a contact id, `createXeroContactForMember` carries a typed server-only
+phase if the local link is unconfirmed or if the link committed before operation-log
+completion failed. The admin routes for create, link, unlink, and contact import
+track their own authoritative commit phases and return fixed `409 XERO_PARTIAL_SUCCESS`
+recovery metadata for ordinary failures as well as hosting-participant contention.
+Only positive, proven facts cross the API boundary; caught provider/database detail
+remains server-side. Refresh and cleanup flags are included only while that specific
+step is unfinished.
+
+An exact unmarked member contact-create reservation is treated separately as
+`CREATE_IN_PROGRESS`: it suppresses another Create but does not claim that Xero
+created a contact. Resetting a stale `RUNNING` reservation to `FAILED` preserves
+that conservative state through `ORPHANED_STALE_RUNNING`. A recorded
+provider-created pending-link phase retains the stronger recovery copy even after
+the same stale reset. Linking, successful completion, or explicit resolution
+clears either fence.
+
+All consuming admin surfaces treat this as recovery, not a retryable failure. They
+suppress duplicate create/link/unlink/import actions, reload or reflect canonical
+member state, and keep a focused alert mounted across loading and refresh failure.
+Provider idempotency, queue redelivery, and the rule that provider calls stay outside
+database transactions are unchanged.
+
 ## Entrance-fee invoices
 
 `ENTRANCE_FEE_INVOICE` is a one-off per-member charge (#1886, F21). Before

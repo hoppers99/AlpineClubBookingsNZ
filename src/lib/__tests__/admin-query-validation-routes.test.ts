@@ -484,9 +484,12 @@ describe("admin query validation and pagination", () => {
       expect(body.requests).toHaveLength(25);
       expect(body.requests.length).toBeLessThanOrEqual(body.pageSize);
       expect(body).toMatchObject({ page: 1, pageSize: 25, total: 30 });
+      // #2597: the "pending" queue is the needs-a-decision queue, so it also
+      // carries a request whose approval started and did not finish — an admin
+      // who cannot see it cannot resume it.
       expect(mocks.deletionRequestFindMany).toHaveBeenCalledWith(
         expect.objectContaining({
-          where: { status: "PENDING" },
+          where: { status: { in: ["PENDING", "APPROVAL_IN_PROGRESS"] } },
           take: 25,
           skip: 0,
         })

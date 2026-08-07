@@ -1,5 +1,6 @@
 import { revalidatePath } from "next/cache";
 import { NextRequest, NextResponse } from "next/server";
+import { hostingCoverageParticipantRetryResponse } from "@/lib/adult-member-hosting-retry-response";
 import { z } from "zod";
 import logger from "@/lib/logger";
 import { requireAdmin } from "@/lib/session-guards";
@@ -119,6 +120,8 @@ export async function POST(
           : "Manual payment reversed.",
     });
   } catch (error) {
+    const hostingRetry = hostingCoverageParticipantRetryResponse(error);
+    if (hostingRetry) return hostingRetry;
     if (error instanceof ManualSubscriptionPaymentError) {
       return NextResponse.json({ error: error.message }, { status: error.status });
     }

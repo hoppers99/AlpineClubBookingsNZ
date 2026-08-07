@@ -13,6 +13,7 @@ const mocks = vi.hoisted(() => ({
   xeroSyncOperationFindMany: vi.fn(),
   xeroSyncCursorFindUnique: vi.fn(),
   memberFindMany: vi.fn(),
+  memberFindUnique: vi.fn(),
   memberUpdate: vi.fn(),
   memberCreditAggregate: vi.fn(),
   memberCreditCreate: vi.fn(),
@@ -98,6 +99,7 @@ vi.mock("@/lib/prisma", () => ({
     },
     member: {
       findMany: mocks.memberFindMany,
+      findUnique: mocks.memberFindUnique,
       update: mocks.memberUpdate,
     },
     memberCredit: {
@@ -427,6 +429,10 @@ describe("processStoredXeroInboundEvents", () => {
         xeroSyncOperation: {
           findMany: mocks.txOperationFindMany,
         },
+        member: {
+          findUnique: mocks.memberFindUnique,
+          update: mocks.memberUpdate,
+        },
       })
     );
     mocks.getAccountMapping.mockResolvedValue("203");
@@ -495,7 +501,7 @@ describe("processStoredXeroInboundEvents", () => {
     mocks.reconcileBedAllocations.mockResolvedValue(undefined);
     mocks.acquireLodgeCapacityLock.mockResolvedValue(undefined);
     mocks.recordBookingEvent.mockResolvedValue(undefined);
-    mocks.txExecuteRaw.mockResolvedValue(undefined);
+    mocks.txExecuteRaw.mockResolvedValue(1);
     mocks.subscriptionFindMany.mockResolvedValue([]);
   });
 
@@ -628,6 +634,17 @@ describe("processStoredXeroInboundEvents", () => {
           joinedDate: null,
         },
       ]);
+    mocks.memberFindUnique.mockResolvedValue({
+      id: "mem_1",
+      email: "member@example.com",
+      passwordHash: "not-deleted",
+      xeroContactId: null,
+      dateOfBirth: null,
+      joinedDate: null,
+      phoneNumber: null,
+      streetAddressLine1: null,
+      postalAddressLine1: null,
+    });
     const accountingApi = {
       getContact: vi.fn().mockResolvedValue({
         body: {
@@ -696,6 +713,7 @@ describe("processStoredXeroInboundEvents", () => {
         postalAddressLine1: "PO Box 1",
         joinedDate: new Date("2024-04-10"),
       }),
+      select: { id: true },
     });
     expect(mocks.refreshXeroContactCachesFromContact).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -709,7 +727,8 @@ describe("processStoredXeroInboundEvents", () => {
         localId: "mem_1",
         xeroObjectId: "contact_1",
         role: "CONTACT",
-      })
+      }),
+      expect.objectContaining({ store: expect.any(Object) }),
     );
     expect(mocks.completeXeroSyncOperation).toHaveBeenCalledWith(
       "op_1",

@@ -33,6 +33,7 @@ import {
   releaseHostingCoverageReevaluationContention,
   renewHostingCoverageReevaluationClaim,
 } from "@/lib/adult-member-hosting-coverage-queue";
+import { acquireHostingCoverageQueueParticipantProof } from "@/lib/adult-member-hosting-queue-participants";
 import type { AdultMemberHostingPolicyExceptionViolation } from "@/lib/booking-policy-exceptions";
 
 function violation(
@@ -125,6 +126,9 @@ function makeIncidentDb(
           }
           if (where.resolvedAt === null && row.resolvedAt != null) return false;
           if (where.stateKey !== undefined && row.stateKey !== where.stateKey) {
+            return false;
+          }
+          if (where.cause !== undefined && row.cause !== where.cause) {
             return false;
           }
           if (where.OR !== undefined) {
@@ -293,6 +297,82 @@ describe("one active incident per booking, created or folded into (#2576 §16)",
     // One audit row, not two: the drain is at-least-once, and an "officer, look at
     // this" event per sweep would bury the ones that are new.
     expect(audits).toHaveLength(1);
+  });
+
+  it.each([
+    ["system-first", false],
+    ["officer-first", true],
+  ] as const)(
+    "keeps officer cause, actor and reason when identical-state drains race (%s)",
+    async (_label, officerFirst) => {
+      const { db, rows } = makeIncidentDb();
+      const system = {
+        bookingId: "b-main",
+        lodgeId: "lodge-a",
+        cause: "SYSTEM_CHANGE" as const,
+        violation: UNCOVERED,
+      };
+      const officer = {
+        bookingId: "b-main",
+        lodgeId: "lodge-a",
+        cause: "OFFICER_OVERRIDE" as const,
+        violation: UNCOVERED,
+        override: {
+          byMemberId: "officer-1",
+          reason: "Approved after speaking with the family",
+        },
+      };
+
+      await Promise.all(
+        officerFirst
+          ? [
+              openOrUpdateHostingCoverageIncident(officer, db),
+              openOrUpdateHostingCoverageIncident(system, db),
+            ]
+          : [
+              openOrUpdateHostingCoverageIncident(system, db),
+              openOrUpdateHostingCoverageIncident(officer, db),
+            ],
+      );
+
+      expect(rows.filter((row) => row.resolvedAt == null)).toHaveLength(1);
+      expect(rows[0]).toMatchObject({
+        stateKey: hostingCoverageStateKey(UNCOVERED),
+        cause: "OFFICER_OVERRIDE",
+        overriddenByMemberId: "officer-1",
+        overrideReason: "Approved after speaking with the family",
+      });
+      const retry = await openOrUpdateHostingCoverageIncident(officer, db);
+      expect(retry.action).toBe("unchanged");
+      expect(rows.filter((row) => row.resolvedAt == null)).toHaveLength(1);
+    },
+  );
+
+  it("never lets a later identical SYSTEM_CHANGE drain downgrade an officer incident", async () => {
+    const { db, rows } = makeIncidentDb();
+    const officer = {
+      bookingId: "b-main",
+      lodgeId: "lodge-a",
+      cause: "OFFICER_OVERRIDE" as const,
+      violation: UNCOVERED,
+      override: { byMemberId: "officer-1", reason: "Officer decision" },
+    };
+    await openOrUpdateHostingCoverageIncident(officer, db);
+    const system = await openOrUpdateHostingCoverageIncident(
+      {
+        bookingId: "b-main",
+        lodgeId: "lodge-a",
+        cause: "SYSTEM_CHANGE",
+        violation: UNCOVERED,
+      },
+      db,
+    );
+    expect(system.action).toBe("unchanged");
+    expect(rows[0]).toMatchObject({
+      cause: "OFFICER_OVERRIDE",
+      overriddenByMemberId: "officer-1",
+      overrideReason: "Officer decision",
+    });
   });
 
   it("updates the open incident when the uncovered state moves", async () => {
@@ -890,6 +970,15 @@ describe("the owner is told once per transition (#2576 §16)", () => {
 function makeQueueDb(seed: Array<Record<string, unknown>> = []) {
   const rows: Array<Record<string, unknown>> = seed.map((row) => ({ ...row }));
   const db = {
+    $executeRaw: vi.fn().mockResolvedValue(0),
+    member: {
+      findMany: vi.fn().mockResolvedValue([{ id: "owner-1" }]),
+    },
+    booking: {
+      findMany: vi.fn().mockResolvedValue([
+        { id: "source-1", memberId: "owner-1", lodgeId: "lodge-a" },
+      ]),
+    },
     hostingCoverageReevaluation: {
       create: vi.fn(async ({ data }: any) => {
         const created = {
@@ -1003,6 +1092,18 @@ function makeQueueDb(seed: Array<Record<string, unknown>> = []) {
 describe("the bounded re-evaluation queue (#2576 §8, §10)", () => {
   it("stores a sorted, de-duplicated night list and records nothing for no nights", async () => {
     const { db, rows } = makeQueueDb();
+    const proof = await acquireHostingCoverageQueueParticipantProof(
+      {
+        sources: [
+          {
+            bookingId: "source-1",
+            ownerMemberId: "owner-1",
+            lodgeId: "lodge-a",
+          },
+        ],
+      },
+      db,
+    );
     expect(
       await enqueueHostingCoverageReevaluation(
         {
@@ -1010,7 +1111,9 @@ describe("the bounded re-evaluation queue (#2576 §8, §10)", () => {
           lodgeId: "lodge-a",
           nights: ["2026-07-04", "2026-07-03", "2026-07-04"],
           cause: "SYSTEM_CHANGE",
+          sourceBookingId: "source-1",
         },
+        proof,
         db,
       ),
     ).toBe("queue-1");
@@ -1023,7 +1126,9 @@ describe("the bounded re-evaluation queue (#2576 §8, §10)", () => {
           lodgeId: "lodge-a",
           nights: [],
           cause: "SYSTEM_CHANGE",
+          sourceBookingId: "source-1",
         },
+        proof,
         db,
       ),
     ).toBeNull();
@@ -1032,6 +1137,18 @@ describe("the bounded re-evaluation queue (#2576 §8, §10)", () => {
 
   it("truncates an over-long officer reason rather than failing the change", async () => {
     const { db, rows } = makeQueueDb();
+    const proof = await acquireHostingCoverageQueueParticipantProof(
+      {
+        sources: [
+          {
+            bookingId: "source-1",
+            ownerMemberId: "owner-1",
+            lodgeId: "lodge-a",
+          },
+        ],
+      },
+      db,
+    );
     await enqueueHostingCoverageReevaluation(
       {
         memberId: "owner-1",
@@ -1039,7 +1156,9 @@ describe("the bounded re-evaluation queue (#2576 §8, §10)", () => {
         nights: ["2026-07-03"],
         cause: "OFFICER_OVERRIDE",
         reason: "x".repeat(900),
+        sourceBookingId: "source-1",
       },
+      proof,
       db,
     );
     expect((rows[0].reason as string).length).toBe(500);

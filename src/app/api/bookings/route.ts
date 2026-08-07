@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { hostingCoverageParticipantRetryResponse } from "@/lib/adult-member-hosting-retry-response";
 import { auth } from "@/lib/auth";
 import { requireActiveSessionUser } from "@/lib/session-guards";
 import { prisma } from "@/lib/prisma";
@@ -1233,6 +1234,8 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: "Failed to create waitlisted booking" }, { status: 500 });
     }
   } catch (err) {
+    const hostingRetry = hostingCoverageParticipantRetryResponse(err);
+    if (hostingRetry) return hostingRetry;
     if (err instanceof BookingGuestValidationError) {
       // The in-transaction person-night guard's D-8 refusal, reached on a race
       // with the pre-flight check above.

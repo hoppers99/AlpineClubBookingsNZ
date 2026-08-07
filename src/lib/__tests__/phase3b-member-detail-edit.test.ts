@@ -5,6 +5,9 @@ const hostingMocks = vi.hoisted(() => ({
   enqueue: vi.fn().mockResolvedValue(0),
   settle: vi.fn().mockResolvedValue(undefined),
 }));
+const recoveryMocks = vi.hoisted(() => ({
+  getMemberContactCreateRecoveryState: vi.fn().mockResolvedValue(null),
+}));
 
 vi.mock("@/lib/prisma", () => ({
   prisma: {
@@ -107,6 +110,10 @@ vi.mock("@/lib/adult-member-hosting-review", () => ({
 vi.mock("@/lib/adult-member-hosting-coverage-drain", () => ({
   settleHostingCoverageAfterCommit: hostingMocks.settle,
 }));
+vi.mock("@/lib/xero-contact-create-recovery", () => ({
+  getMemberContactCreateRecoveryState:
+    recoveryMocks.getMemberContactCreateRecoveryState,
+}));
 
 import { prisma } from "@/lib/prisma";
 import { auth } from "@/lib/auth";
@@ -117,6 +124,11 @@ import {
   buildContactEditForm,
   buildContactPayload,
 } from "@/lib/admin-member-edit-groups";
+import {
+  HOSTING_COVERAGE_RETRY_CODE,
+  HOSTING_COVERAGE_RETRY_MESSAGE,
+  HostingCoverageParticipantRetryError,
+} from "@/lib/adult-member-hosting-queue-participants";
 
 const mockedAuth = vi.mocked(auth);
 const adminSession = { user: { id: "admin1", role: "ADMIN", accessRoles: [{ role: "ADMIN" }] } } as any;
@@ -143,6 +155,7 @@ function makePutRequest(id: string, body: Record<string, unknown>) {
 describe("Phase 3b: Member Detail Edit — PUT /api/admin/members/[id]", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    recoveryMocks.getMemberContactCreateRecoveryState.mockResolvedValue(null);
     // #2106: reset the N/A-flip linked-guest query default so a per-test
     // override never leaks into a later test (clearAllMocks keeps implementations).
     vi.mocked(prisma.bookingGuest.findMany).mockResolvedValue([] as never);
@@ -353,6 +366,36 @@ describe("Phase 3b: Member Detail Edit — PUT /api/admin/members/[id]", () => {
     await expect(res.json()).resolves.toMatchObject({
       error: "Failed to update member",
     });
+  });
+
+  it("returns the fixed 409 when member fan-out participant fencing rolls back an account change", async () => {
+    mockedAuth.mockResolvedValue(adminSession);
+    vi.mocked(prisma.member.findUnique).mockResolvedValue(baseMember as any);
+    vi.mocked(prisma.member.update).mockResolvedValue({
+      ...baseMember,
+      active: false,
+      xeroContactId: null,
+    } as any);
+    hostingMocks.enqueue.mockRejectedValueOnce(
+      new HostingCoverageParticipantRetryError(),
+    );
+
+    const response = await updateMember(
+      makePutRequest("m1", {
+        active: false,
+        canLogin: true,
+        role: "USER",
+        accessRoles: ["USER"],
+      }),
+      { params: Promise.resolve({ id: "m1" }) },
+    );
+
+    expect(response.status).toBe(409);
+    await expect(response.json()).resolves.toEqual({
+      error: HOSTING_COVERAGE_RETRY_MESSAGE,
+      code: HOSTING_COVERAGE_RETRY_CODE,
+    });
+    expect(hostingMocks.settle).not.toHaveBeenCalled();
   });
 
   // Every shape a unique-constraint failure can arrive in. Which one the RAW
@@ -1090,6 +1133,68 @@ describe("Phase 3b: Member Detail Edit — PUT /api/admin/members/[id]", () => {
     expect(res.status).toBe(200);
     const body = await res.json();
     expect(body.forcePasswordChange).toBe(true);
+  });
+
+  it("GET propagates the authoritative Xero contact-create recovery proof", async () => {
+    mockedAuth.mockResolvedValue(adminSession);
+    recoveryMocks.getMemberContactCreateRecoveryState.mockResolvedValue(
+      "PROVIDER_CREATED_LINK_PENDING",
+    );
+    vi.mocked(prisma.member.findUnique).mockResolvedValue({
+      ...baseMember,
+      subscriptions: [],
+      familyGroupMemberships: [],
+    } as any);
+    vi.mocked(prisma.booking.findMany).mockResolvedValue([]);
+    vi.mocked(prisma.auditLog.findMany).mockResolvedValue([]);
+    vi.mocked(prisma.booking.aggregate).mockResolvedValue({
+      _sum: { finalPriceCents: null }, _count: 0, _max: { checkOut: null },
+    } as any);
+
+    const req = new NextRequest("http://localhost/api/admin/members/m1");
+    const res = await getMemberDetail(req, {
+      params: Promise.resolve({ id: "m1" }),
+    });
+
+    expect(res.status).toBe(200);
+    await expect(res.json()).resolves.toMatchObject({
+      xeroContactCreateRecoveryState: "PROVIDER_CREATED_LINK_PENDING",
+      xeroContactCreateRecoveryPending: true,
+    });
+    expect(
+      recoveryMocks.getMemberContactCreateRecoveryState,
+    ).toHaveBeenCalledWith({
+      memberId: "m1",
+      xeroContactId: null,
+    });
+  });
+
+  it("GET preserves ambiguous stale-reset contact-create recovery without a provider claim", async () => {
+    mockedAuth.mockResolvedValue(adminSession);
+    recoveryMocks.getMemberContactCreateRecoveryState.mockResolvedValue(
+      "CREATE_IN_PROGRESS",
+    );
+    vi.mocked(prisma.member.findUnique).mockResolvedValue({
+      ...baseMember,
+      subscriptions: [],
+      familyGroupMemberships: [],
+    } as any);
+    vi.mocked(prisma.booking.findMany).mockResolvedValue([]);
+    vi.mocked(prisma.auditLog.findMany).mockResolvedValue([]);
+    vi.mocked(prisma.booking.aggregate).mockResolvedValue({
+      _sum: { finalPriceCents: null }, _count: 0, _max: { checkOut: null },
+    } as any);
+
+    const req = new NextRequest("http://localhost/api/admin/members/m1");
+    const res = await getMemberDetail(req, {
+      params: Promise.resolve({ id: "m1" }),
+    });
+
+    expect(res.status).toBe(200);
+    await expect(res.json()).resolves.toMatchObject({
+      xeroContactCreateRecoveryState: "CREATE_IN_PROGRESS",
+      xeroContactCreateRecoveryPending: false,
+    });
   });
 
   it("GET returns committee assignments as a separate member detail axis", async () => {

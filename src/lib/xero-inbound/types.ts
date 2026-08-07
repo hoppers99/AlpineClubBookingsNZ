@@ -12,18 +12,6 @@ export interface StoredXeroInboundEvent {
   updatedAt?: Date | null;
 }
 
-export interface MemberBackfillCandidate {
-  id: string;
-  xeroContactId: string | null;
-  dateOfBirth: Date | null;
-  phoneCountryCode: string | null;
-  phoneAreaCode: string | null;
-  phoneNumber: string | null;
-  streetAddressLine1: string | null;
-  postalAddressLine1: string | null;
-  joinedDate: Date | null;
-}
-
 export interface ResolvedXeroObjectLink {
   localModel: string;
   localId: string;

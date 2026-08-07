@@ -5,10 +5,16 @@ const mocks = vi.hoisted(() => ({
   paymentFindMany: vi.fn(),
   subscriptionFindMany: vi.fn(),
   linkFindMany: vi.fn(),
+  linkFindFirst: vi.fn(),
   linkCreateMany: vi.fn(),
   linkUpdateMany: vi.fn(),
+  transaction: vi.fn(),
+  lockMemberForXeroContactLink: vi.fn(),
+  upsertXeroObjectLink: vi.fn(),
   operationCount: vi.fn(),
   operationFindMany: vi.fn(),
+  operationFindFirst: vi.fn(),
+  operationCreate: vi.fn(),
   operationCreateMany: vi.fn(),
   inboundEventCount: vi.fn(),
   inboundEventFindMany: vi.fn(),
@@ -20,6 +26,7 @@ const mocks = vi.hoisted(() => ({
 
 vi.mock("@/lib/prisma", () => ({
   prisma: {
+    $transaction: mocks.transaction,
     member: {
       findMany: mocks.memberFindMany,
     },
@@ -31,12 +38,15 @@ vi.mock("@/lib/prisma", () => ({
     },
     xeroObjectLink: {
       findMany: mocks.linkFindMany,
+      findFirst: mocks.linkFindFirst,
       createMany: mocks.linkCreateMany,
       updateMany: mocks.linkUpdateMany,
     },
     xeroSyncOperation: {
       count: mocks.operationCount,
       findMany: mocks.operationFindMany,
+      findFirst: mocks.operationFindFirst,
+      create: mocks.operationCreate,
       createMany: mocks.operationCreateMany,
     },
     xeroInboundEvent: {
@@ -50,6 +60,16 @@ vi.mock("@/lib/prisma", () => ({
       findUnique: mocks.notificationDeliveryPolicyFindUnique,
     },
   },
+}));
+
+vi.mock("@/lib/xero-contact-create-recovery", () => ({
+  XeroMemberUnavailableError: class XeroMemberUnavailableError extends Error {},
+  lockMemberForXeroContactLink: mocks.lockMemberForXeroContactLink,
+}));
+
+vi.mock("@/lib/xero-sync", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/xero-sync")>()),
+  upsertXeroObjectLink: mocks.upsertXeroObjectLink,
 }));
 
 vi.mock("@/lib/email", () => ({
@@ -583,6 +603,22 @@ describe("sendXeroReconciliationReport", () => {
 describe("backfillHistoricalXeroObjectLinks", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mocks.transaction.mockImplementation(async (callback) =>
+      callback({
+        xeroObjectLink: { findFirst: mocks.linkFindFirst },
+        xeroSyncOperation: {
+          findFirst: mocks.operationFindFirst,
+          create: mocks.operationCreate,
+        },
+      }),
+    );
+    mocks.lockMemberForXeroContactLink.mockResolvedValue({
+      xeroContactId: "contact_1",
+    });
+    mocks.linkFindFirst.mockResolvedValue(null);
+    mocks.operationFindFirst.mockResolvedValue(null);
+    mocks.operationCreate.mockResolvedValue({ id: "operation-member" });
+    mocks.upsertXeroObjectLink.mockResolvedValue({ id: "link-member" });
     mocks.linkFindMany.mockResolvedValue([]);
     mocks.operationFindMany.mockResolvedValue([]);
     mocks.linkCreateMany.mockResolvedValue({ count: 1 });
@@ -618,30 +654,25 @@ describe("backfillHistoricalXeroObjectLinks", () => {
       createdLinks: 4,
       createdOperations: 4,
     });
-    expect(mocks.linkCreateMany).toHaveBeenCalledTimes(4);
-    expect(mocks.operationCreateMany).toHaveBeenCalledTimes(4);
-    expect(mocks.linkCreateMany).toHaveBeenCalledWith(
+    expect(mocks.upsertXeroObjectLink).toHaveBeenCalledWith(
       expect.objectContaining({
-        data: expect.arrayContaining([
-          expect.objectContaining({
-            localModel: "Member",
-            localId: "mem_1",
-            role: "CONTACT",
-          }),
-        ]),
-      })
+        localModel: "Member",
+        localId: "mem_1",
+        role: "CONTACT",
+      }),
+      expect.objectContaining({ store: expect.anything() }),
     );
-    expect(mocks.operationCreateMany).toHaveBeenCalledWith(
+    expect(mocks.linkCreateMany).toHaveBeenCalledTimes(3);
+    expect(mocks.operationCreateMany).toHaveBeenCalledTimes(3);
+    expect(mocks.operationCreate).toHaveBeenCalledWith(
       expect.objectContaining({
-        data: expect.arrayContaining([
-          expect.objectContaining({
-            operationType: "BACKFILL_LINK",
-            localModel: "Member",
-            localId: "mem_1",
-            status: "SUCCEEDED",
-          }),
-        ]),
-      })
+        data: expect.objectContaining({
+          operationType: "BACKFILL_LINK",
+          localModel: "Member",
+          localId: "mem_1",
+          status: "SUCCEEDED",
+        }),
+      }),
     );
   });
 });
