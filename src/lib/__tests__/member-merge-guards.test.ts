@@ -113,8 +113,13 @@ describe("unresolved Xero contact-create recovery blockers", () => {
           expect(where.OR).toEqual(
             expect.arrayContaining([
               {
-                status: "FAILED",
-                lastErrorCode: "ORPHANED_STALE_RUNNING",
+                operationType: "CREATE",
+                OR: expect.arrayContaining([
+                  {
+                    status: "FAILED",
+                    lastErrorCode: "ORPHANED_STALE_RUNNING",
+                  },
+                ]),
               },
             ]),
           );
