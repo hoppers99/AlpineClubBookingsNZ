@@ -53,7 +53,25 @@ describe("unresolved Xero contact-create recovery blockers", () => {
 
     expect(blockers.map((blocker) => blocker.code)).toContain(code);
     expect(blockers.find((blocker) => blocker.code === code)?.label).toMatch(
-      /Resolve or mark the failed Xero operation before merging/,
+      /Wait for it to finish, or resolve the failed Xero operation/,
+    );
+  });
+
+  it("blocks an exact active contact-create reservation", async () => {
+    const xeroSyncOperation = {
+      ...defaultDelegate(),
+      findFirst: vi.fn(({ where }: { where: { localId: string } }) =>
+        Promise.resolve(
+          where.localId === LOSER_ID
+            ? { id: "xero-running", status: "RUNNING", responsePayload: null }
+            : null,
+        ),
+      ),
+    };
+
+    const blockers = await runGuards({ xeroSyncOperation });
+    expect(blockers.map((blocker) => blocker.code)).toContain(
+      "loser_xero_contact_create_recovery_pending",
     );
   });
 
@@ -79,8 +97,8 @@ describe("unresolved Xero contact-create recovery blockers", () => {
       ...defaultDelegate(),
       // Prisma applies the exact where-clause before returning a candidate.
       // These deliberately non-matching rows therefore produce no result.
-      findFirst: vi.fn(({ where }: { where: { status: string; manuallyResolvedAt: null } }) => {
-        expect(where.status).toBe("FAILED");
+      findFirst: vi.fn(({ where }: { where: { OR: unknown[]; manuallyResolvedAt: null } }) => {
+        expect(where.OR).toEqual(expect.arrayContaining([expect.objectContaining({ status: "RUNNING" })]));
         expect(where.manuallyResolvedAt).toBeNull();
         expect(excludedOperations).toHaveLength(3);
         return Promise.resolve(null);

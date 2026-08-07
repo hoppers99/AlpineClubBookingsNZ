@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const mocks = vi.hoisted(() => {
   const tx = {
     $executeRaw: vi.fn(),
+    $queryRaw: vi.fn(),
     member: {
       findFirst: vi.fn(),
       findUnique: vi.fn(),
@@ -42,6 +43,7 @@ const mocks = vi.hoisted(() => {
     startXeroSyncOperation: vi.fn(),
     completeXeroSyncOperation: vi.fn(),
     failXeroSyncOperation: vi.fn(),
+    recordProviderCreatedContactPendingLocalLink: vi.fn(),
     recordXeroApiUsage: vi.fn(),
     logger: {
       error: vi.fn(),
@@ -76,6 +78,11 @@ vi.mock("xero-node", () => ({
       POBOX: "POBOX",
     },
   },
+}));
+
+vi.mock("@/lib/xero-contact-create-recovery", () => ({
+  recordProviderCreatedContactPendingLocalLink:
+    mocks.recordProviderCreatedContactPendingLocalLink,
 }));
 
 vi.mock("@/lib/prisma", () => ({
@@ -161,10 +168,14 @@ describe("findOrCreateXeroContact", () => {
 
     mocks.prisma.$transaction.mockImplementation(async (callback) => callback(mocks.tx));
     mocks.tx.$executeRaw.mockResolvedValue(undefined);
+    mocks.tx.$queryRaw.mockImplementation(
+      async (_strings: TemplateStringsArray, memberId: string) => [{ id: memberId }],
+    );
     mocks.tx.member.findFirst.mockResolvedValue(null);
     mocks.tx.member.update.mockResolvedValue({ id: "mem_1", xeroContactId: "xero_new" });
     mocks.prisma.xeroToken.findFirst.mockResolvedValue(null);
     mocks.startXeroSyncOperation.mockResolvedValue({ id: "op_1" });
+    mocks.recordProviderCreatedContactPendingLocalLink.mockResolvedValue(undefined);
     mocks.xeroClientInstance.accountingApi.getContacts.mockResolvedValue({
       body: { contacts: [] },
     });

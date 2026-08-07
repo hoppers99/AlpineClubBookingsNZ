@@ -13,6 +13,7 @@ const mocks = vi.hoisted(() => ({
   memberFindUnique: vi.fn(),
   txMemberUpdate: vi.fn(),
   txExecuteRaw: vi.fn(),
+  txQueryRaw: vi.fn(),
   transaction: vi.fn(),
   createContacts: vi.fn(),
   getAuthenticatedXeroClient: vi.fn(),
@@ -21,6 +22,12 @@ const mocks = vi.hoisted(() => ({
   failXeroSyncOperation: vi.fn(),
   upsertXeroObjectLink: vi.fn(),
   syncManagedXeroContactGroupForMember: vi.fn(),
+  recordProviderCreatedContactPendingLocalLink: vi.fn(),
+}));
+
+vi.mock("@/lib/xero-contact-create-recovery", () => ({
+  recordProviderCreatedContactPendingLocalLink:
+    mocks.recordProviderCreatedContactPendingLocalLink,
 }));
 
 vi.mock("@/lib/prisma", () => ({
@@ -107,12 +114,17 @@ function primeHappyPath(member: Record<string, unknown>) {
   mocks.failXeroSyncOperation.mockResolvedValue(undefined);
   mocks.upsertXeroObjectLink.mockResolvedValue({ id: "link-1" });
   mocks.syncManagedXeroContactGroupForMember.mockResolvedValue(undefined);
+  mocks.recordProviderCreatedContactPendingLocalLink.mockResolvedValue(undefined);
   mocks.txExecuteRaw.mockResolvedValue(undefined);
+  mocks.txQueryRaw.mockImplementation(
+    async (_strings: TemplateStringsArray, memberId: string) => [{ id: memberId }],
+  );
   mocks.txMemberUpdate.mockResolvedValue({ id: member.id });
   mocks.transaction.mockImplementation(
     async (fn: (tx: unknown) => Promise<unknown>) =>
       fn({
         $executeRaw: mocks.txExecuteRaw,
+        $queryRaw: mocks.txQueryRaw,
         member: { update: mocks.txMemberUpdate },
       })
   );
@@ -269,7 +281,15 @@ describe("createXeroContactForMember payload hygiene (#2089)", () => {
   it("reports provider-created when the local member link fails", async () => {
     primeHappyPath(SPARSE_MEMBER);
     const linkFailure = new Error("private database detail");
-    mocks.transaction.mockRejectedValue(linkFailure);
+    mocks.transaction
+      .mockImplementationOnce(async (fn: (tx: unknown) => Promise<unknown>) =>
+        fn({
+          $executeRaw: mocks.txExecuteRaw,
+          $queryRaw: mocks.txQueryRaw,
+          member: { update: mocks.txMemberUpdate },
+        }),
+      )
+      .mockRejectedValueOnce(linkFailure);
 
     const error = await createXeroContactForMember("member-1").catch(
       (caught: unknown) => caught,

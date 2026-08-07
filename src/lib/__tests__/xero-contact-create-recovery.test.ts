@@ -1,15 +1,21 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-const { findFirst } = vi.hoisted(() => ({ findFirst: vi.fn() }));
+const { findFirst, updateMany } = vi.hoisted(() => ({
+  findFirst: vi.fn(),
+  updateMany: vi.fn(),
+}));
 
 vi.mock("@/lib/prisma", () => ({
-  prisma: { xeroSyncOperation: { findFirst } },
+  prisma: { xeroSyncOperation: { findFirst, updateMany } },
 }));
 
 import {
   getMemberContactCreateRecoveryPending,
+  hasMemberContactCreateMergeBlocker,
   hasUnresolvedMemberContactCreateRecovery,
   isProviderCreatedLocalLinkFailurePayload,
+  memberContactCreateMergeBlockerWhere,
+  recordProviderCreatedContactPendingLocalLink,
   unresolvedMemberContactCreateRecoveryWhere,
 } from "@/lib/xero-contact-create-recovery";
 
@@ -23,26 +29,53 @@ describe("unresolved member Xero contact-create recovery proof", () => {
       operationType: "CREATE",
       localModel: "Member",
       localId: "member-1",
-      status: "FAILED",
       manuallyResolvedAt: null,
-      AND: [
+      OR: [
         {
-          responsePayload: {
-            path: ["phase"],
-            equals: "local_link_after_xero_resolution",
-          },
+          status: "FAILED",
+          AND: [
+            {
+              responsePayload: {
+                path: ["phase"],
+                equals: "local_link_after_xero_resolution",
+              },
+            },
+            {
+              responsePayload: {
+                path: ["providerContactCreated"],
+                equals: true,
+              },
+            },
+          ],
         },
         {
-          responsePayload: {
-            path: ["providerContactCreated"],
-            equals: true,
-          },
+          status: "RUNNING",
+          AND: [
+            {
+              responsePayload: {
+                path: ["phase"],
+                equals: "provider_contact_created_local_link_pending",
+              },
+            },
+            {
+              responsePayload: {
+                path: ["providerContactCreated"],
+                equals: true,
+              },
+            },
+          ],
         },
       ],
     });
   });
 
   it("accepts actual provider creation and rejects matched-existing phases", () => {
+    expect(
+      isProviderCreatedLocalLinkFailurePayload({
+        phase: "provider_contact_created_local_link_pending",
+        providerContactCreated: true,
+      }),
+    ).toBe(true);
     expect(
       isProviderCreatedLocalLinkFailurePayload({
         phase: "local_link_after_xero_resolution",
@@ -60,6 +93,50 @@ describe("unresolved member Xero contact-create recovery proof", () => {
         phase: "local_link_after_xero_resolution",
       }),
     ).toBe(false);
+  });
+
+  it("blocks merge on the exact RUNNING reservation without claiming provider recovery", async () => {
+    findFirst
+      .mockResolvedValueOnce({ id: "operation-running", status: "RUNNING" })
+      .mockResolvedValueOnce({
+        id: "operation-running",
+        responsePayload: null,
+      });
+
+    await expect(
+      hasMemberContactCreateMergeBlocker("member-1"),
+    ).resolves.toBe(true);
+    await expect(
+      hasUnresolvedMemberContactCreateRecovery("member-1"),
+    ).resolves.toBe(false);
+    expect(findFirst).toHaveBeenNthCalledWith(1, {
+      where: memberContactCreateMergeBlockerWhere("member-1"),
+      select: { id: true, status: true, responsePayload: true },
+    });
+  });
+
+  it("persists provider-created proof while the operation remains active", async () => {
+    updateMany.mockResolvedValue({ count: 1 });
+    await recordProviderCreatedContactPendingLocalLink({
+      operationId: "operation-1",
+      resolvedContactId: "contact-1",
+    });
+    expect(updateMany).toHaveBeenCalledWith({
+      where: {
+        id: "operation-1",
+        status: "RUNNING",
+        manuallyResolvedAt: null,
+      },
+      data: {
+        responsePayload: {
+          phase: "provider_contact_created_local_link_pending",
+          providerContactCreated: true,
+          resolvedContactId: "contact-1",
+        },
+        xeroObjectType: "CONTACT",
+        xeroObjectId: "contact-1",
+      },
+    });
   });
 
   it("reports pending only when the authoritative query finds a row", async () => {
