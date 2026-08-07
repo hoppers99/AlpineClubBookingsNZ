@@ -23,9 +23,12 @@ import {
   xeroPartialSuccessBody,
 } from "@/lib/xero-partial-success";
 import {
+  assertMemberAvailableForXeroContactChange,
   lockMemberForManualXeroContactLink,
   XERO_CONTACT_CREATE_IN_PROGRESS_CODE,
+  XERO_MEMBER_UNAVAILABLE_CODE,
   XeroContactCreateInProgressError,
+  XeroMemberUnavailableError,
 } from "@/lib/xero-contact-create-recovery";
 
 const linkSchema = z.object({
@@ -49,10 +52,28 @@ export async function POST(
 
   const member = await prisma.member.findUnique({
     where: { id },
-    select: { id: true, firstName: true, lastName: true, xeroContactId: true },
+    select: {
+      id: true,
+      firstName: true,
+      lastName: true,
+      email: true,
+      passwordHash: true,
+      xeroContactId: true,
+    },
   });
   if (!member) {
     return NextResponse.json({ error: "Member not found" }, { status: 404 });
+  }
+  try {
+    assertMemberAvailableForXeroContactChange(member);
+  } catch (err) {
+    if (err instanceof XeroMemberUnavailableError) {
+      return NextResponse.json(
+        { error: err.message, code: XERO_MEMBER_UNAVAILABLE_CODE },
+        { status: err.statusCode },
+      );
+    }
+    throw err;
   }
 
   let body: unknown;
@@ -209,6 +230,12 @@ export async function POST(
     if (err instanceof XeroContactCreateInProgressError) {
       return NextResponse.json(
         { error: err.message, code: XERO_CONTACT_CREATE_IN_PROGRESS_CODE },
+        { status: err.statusCode },
+      );
+    }
+    if (err instanceof XeroMemberUnavailableError) {
+      return NextResponse.json(
+        { error: err.message, code: XERO_MEMBER_UNAVAILABLE_CODE },
         { status: err.statusCode },
       );
     }

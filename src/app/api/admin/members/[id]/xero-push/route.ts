@@ -26,7 +26,14 @@ import {
   createdContactRecovery,
   xeroPartialSuccessBody,
 } from "@/lib/xero-partial-success";
-import { XeroContactAlreadyLinkedError } from "@/lib/xero-contact-create-recovery";
+import {
+  assertMemberAvailableForXeroContactChange,
+  XERO_CONTACT_CREATE_IN_PROGRESS_CODE,
+  XERO_MEMBER_UNAVAILABLE_CODE,
+  XeroContactAlreadyLinkedError,
+  XeroContactCreateInProgressError,
+  XeroMemberUnavailableError,
+} from "@/lib/xero-contact-create-recovery";
 
 const pushSchema = z.object({
   createEntranceFeeInvoice: z.boolean().optional().default(false),
@@ -64,10 +71,29 @@ export async function POST(
 
   const member = await prisma.member.findUnique({
     where: { id },
-    select: { id: true, firstName: true, lastName: true, email: true, xeroContactId: true },
+    select: {
+      id: true,
+      firstName: true,
+      lastName: true,
+      email: true,
+      passwordHash: true,
+      xeroContactId: true,
+    },
   });
   if (!member) {
     return NextResponse.json({ error: "Member not found" }, { status: 404 });
+  }
+
+  try {
+    assertMemberAvailableForXeroContactChange(member);
+  } catch (err) {
+    if (err instanceof XeroMemberUnavailableError) {
+      return NextResponse.json(
+        { error: err.message, code: XERO_MEMBER_UNAVAILABLE_CODE },
+        { status: err.statusCode },
+      );
+    }
+    throw err;
   }
 
   if (member.xeroContactId) {
@@ -331,6 +357,18 @@ export async function POST(
     }
     if (err instanceof XeroContactAlreadyLinkedError) {
       return NextResponse.json({ error: err.message }, { status: err.statusCode });
+    }
+    if (err instanceof XeroContactCreateInProgressError) {
+      return NextResponse.json(
+        { error: err.message, code: XERO_CONTACT_CREATE_IN_PROGRESS_CODE },
+        { status: err.statusCode },
+      );
+    }
+    if (err instanceof XeroMemberUnavailableError) {
+      return NextResponse.json(
+        { error: err.message, code: XERO_MEMBER_UNAVAILABLE_CODE },
+        { status: err.statusCode },
+      );
     }
 
     const xeroError = getXeroApiErrorInfo(err, "Failed to create Xero contact");

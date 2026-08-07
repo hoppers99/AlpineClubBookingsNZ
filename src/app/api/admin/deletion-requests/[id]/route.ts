@@ -40,6 +40,11 @@ import {
 } from "@/lib/bed-allocation-lifecycle";
 import logger from "@/lib/logger";
 import { acquireMemberLifecycleLocks } from "@/lib/member-lifecycle-lock";
+import {
+  assertNoMemberContactCreateBlockerForDeletion,
+  DELETED_ACCOUNT_PASSWORD_HASH,
+  XeroContactCreateBlocksDeletionError,
+} from "@/lib/xero-contact-create-recovery";
 
 const actionSchema = z.object({
   action: z.enum(["approve", "reject"]),
@@ -351,6 +356,12 @@ export async function POST(
         actorMemberId: session.user.id,
       });
 
+      // The standing fan-out above holds this exact Member row FOR UPDATE.
+      // Re-check the complete contact-create recovery set while that fence is
+      // held so deletion cannot anonymise a member whose PII may already be in
+      // flight to Xero or whose provider-created contact still needs linking.
+      await assertNoMemberContactCreateBlockerForDeletion(member.id, tx);
+
       // 3. Anonymise the member record
       await tx.member.update({
         where: { id: member.id },
@@ -374,7 +385,7 @@ export async function POST(
           postalRegion: null,
           postalPostalCode: null,
           postalCountry: null,
-          passwordHash: "DELETED_ACCOUNT",
+          passwordHash: DELETED_ACCOUNT_PASSWORD_HASH,
           active: false,
           xeroContactId: null,
           inheritEmailFromId: null,
@@ -491,6 +502,16 @@ export async function POST(
     if (err instanceof AdminAccountGuardError) {
       return NextResponse.json(
         { error: err.message },
+        { status: err.statusCode },
+      );
+    }
+    if (err instanceof XeroContactCreateBlocksDeletionError) {
+      return NextResponse.json(
+        {
+          ...recovery,
+          code: err.code,
+          error: err.message,
+        },
         { status: err.statusCode },
       );
     }
