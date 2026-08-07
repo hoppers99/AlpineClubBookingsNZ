@@ -115,9 +115,20 @@ export function fenceBookingLookup(rows: readonly FenceBookingRow[]) {
  */
 export function recordingBookingDouble(
   findUnique: (args: unknown) => unknown,
-  overrides: Map<string, FenceBookingRow | undefined> = new Map(),
+  options: {
+    /**
+     * Bookings the caller planned from BEFORE entering this client — typically
+     * a read on the outer prisma double, where a transaction-scoped recorder
+     * cannot see it. Without these the fence reports drift that never happened.
+     */
+    seed?: readonly FenceBookingRow[];
+    overrides?: Map<string, FenceBookingRow | undefined>;
+  } = {},
 ) {
-  const seen = new Map<string, FenceBookingRow>();
+  const overrides = options.overrides ?? new Map();
+  const seen = new Map<string, FenceBookingRow>(
+    (options.seed ?? []).map((row) => [row.id, row]),
+  );
 
   const recordingFindUnique = vi.fn(async (args: unknown) => {
     const row = (await findUnique(args)) as
@@ -125,10 +136,14 @@ export function recordingBookingDouble(
       | null
       | undefined;
     if (row && typeof row.id === "string" && typeof row.memberId === "string") {
+      // Record lodgeId EXACTLY as served. `sourceFingerprint` interpolates it
+      // into a string, so normalising an absent lodgeId to null would print
+      // "null" where the planned source printed "undefined" and the fence
+      // would report drift on identical data.
       seen.set(row.id, {
         id: row.id,
         memberId: row.memberId,
-        lodgeId: row.lodgeId ?? null,
+        lodgeId: row.lodgeId as string | null,
       });
     }
     return row;
