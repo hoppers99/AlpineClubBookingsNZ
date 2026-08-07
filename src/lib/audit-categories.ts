@@ -34,6 +34,18 @@
  * member timeline's visible subset stays a separately reviewed list in
  * `audit-query.ts`; adding a category here must never publish it to members as
  * a side effect.
+ *
+ * That promise covers ADDING a category. It does not cover RE-CLASSIFYING a
+ * writer, which moves its rows across the member boundary whenever the old and
+ * new categories sit on different sides of it — the member timeline filters on
+ * category too. #2581 crossed it four times, all in the same direction and all
+ * disclosed at the writer: the three membership-application writers
+ * (`membership` → `account`), the auth-bounce writer (`auth` → `security`), and
+ * the on-behalf branch of the two member-photo writers (`admin` → `account`).
+ * Every one of those rows is about the member who can now see it, and the member
+ * projection returns no metadata, no request id, no IP and no drill-downs.
+ * `audit-writer-census.test.ts` pins the member-visible set so the next crossing
+ * is a named test failure rather than a discovery.
  */
 import type { AdminPermissionArea } from "@/lib/admin-permissions";
 

@@ -30,8 +30,10 @@ import {
   AUDIT_CATEGORIES,
   AUDIT_CATEGORY_CORRELATION_DOMAIN,
   AUDIT_CATEGORY_LABELS,
+  auditCategoryReaderAreas,
   isAuditCategory,
 } from "@/lib/audit-categories";
+import { MEMBER_AUDIT_TIMELINE_CATEGORY_OPTIONS } from "@/lib/audit-query";
 
 import {
   describeCategory,
@@ -276,6 +278,113 @@ describe("canonical audit taxonomy (#2581)", () => {
     expect(Object.keys(AUDIT_CATEGORY_CORRELATION_DOMAIN).sort()).toEqual(
       [...AUDIT_CATEGORIES].sort(),
     );
+  });
+
+  it("pins the ADMIN AREAS each category's evidence needs", () => {
+    /*
+      The readership pin, and the reason the taxonomy is a security artefact rather
+      than a display concern. A category IS a permission decision: it decides which
+      correlation entry can return the row, and therefore which admin areas an
+      operator must hold before the platform will show them the event.
+
+      Pinned as a literal table so a change to `AUDIT_CATEGORY_CORRELATION_DOMAIN`
+      cannot pass review as a refactor. Three categories sit behind `support:view`
+      ALONE — `admin`, `security` and `system` — so moving a category INTO that row
+      is the widening to argue for, and moving one OUT of it takes evidence away
+      from a support-only operator who can read it today.
+    */
+    const measured = Object.fromEntries(
+      AUDIT_CATEGORIES.map((category) => [
+        category,
+        [...auditCategoryReaderAreas(category)].join(" + "),
+      ]),
+    );
+
+    expect(measured).toEqual({
+      account: "support + membership",
+      booking: "support + bookings",
+      payment: "support + finance",
+      xero: "support + finance",
+      family: "support + membership",
+      admin: "support",
+      security: "support",
+      lodge: "support + lodge",
+      // Moved out of the support-only set in #2581 (decision 7): these payloads
+      // carry recipient email addresses.
+      communication: "support + membership",
+      privacy: "support + membership",
+      system: "support",
+    });
+  });
+
+  it("pins how many write sites sit behind the WEAKEST gate", () => {
+    // The number the "do not widen" constraint is really about. `admin`, `security`
+    // and `system` are readable with `support:view` alone, so the count of writers
+    // in them is the size of the population a support-only operator can correlate.
+    // It moves only when a classification decision moves it, and then deliberately.
+    const supportOnly = census().sites.filter(
+      (site) =>
+        site.category.kind === "literal" &&
+        isAuditCategory(site.category.value) &&
+        auditCategoryReaderAreas(site.category.value).length === 1,
+    );
+
+    expect(
+      supportOnly.length,
+      "The number of audit write sites readable with support:view alone changed. " +
+        "That is a widening or a narrowing of who can correlate audit evidence, " +
+        "not a refactor — say which in the changelog and update this pin.",
+    ).toBe(
+      AUDIT_CENSUS_TOTALS.categoryValues.admin +
+        AUDIT_CENSUS_TOTALS.categoryValues.security +
+        AUDIT_CENSUS_TOTALS.categoryValues.system,
+    );
+  });
+
+  it("pins the categories a MEMBER can see in their own timeline", () => {
+    /*
+      The other readership boundary, and the one a taxonomy change can cross by
+      accident. `audit-categories.ts` says membership of the canonical taxonomy must
+      never publish a category to members as a side effect — but RE-classifying an
+      existing writer still can, because the member timeline filters on category
+      too (`buildMemberVisibleAuditLogWhere`).
+
+      #2581 crossed it four times, all of them a writer moving from a category
+      members cannot see into one they can: the three membership-application
+      writers (invented `membership` → `account`), the auth-bounce writer (invented
+      `auth` → `security`), and the on-behalf branch of the two member-photo
+      writers (`admin` → `account`). Each row is about the member seeing it, and
+      the member projection returns no metadata, no request id, no IP and no
+      drill-downs — but "who can read this" changed, so it is pinned rather than
+      left to be noticed.
+    */
+    const memberVisible = MEMBER_AUDIT_TIMELINE_CATEGORY_OPTIONS.map(
+      (option) => option.value,
+    );
+
+    expect(
+      memberVisible,
+      "The categories a member can see in their own audit timeline changed. That " +
+        "publishes (or withdraws) a whole class of events on a member-facing " +
+        "surface, so it is a reviewed decision — never a consequence of adding a " +
+        "category to the taxonomy.",
+    ).toEqual([
+      "all",
+      "account",
+      "booking",
+      "payment",
+      "family",
+      "security",
+      "communication",
+      "privacy",
+    ]);
+
+    // And the four the platform keeps to administrators.
+    expect(
+      AUDIT_CATEGORIES.filter(
+        (category) => !memberVisible.includes(category),
+      ),
+    ).toEqual(["admin", "lodge", "xero", "system"]);
   });
 
   it("rejects the values that used to reach the database through the open union", () => {

@@ -444,10 +444,14 @@ export async function POST(
     // affected business DOMAIN. A member's own photo is account-domain work
     // whether the member changed it or an administrator did it for them.
     //
-    // The consequence to name: an on-behalf administrator's photo change is no
-    // longer readable through the support-only system correlation entry. It needs
-    // `membership:view` now, exactly as the member's own change always did.
-    // Admin > Audit Log still shows both to anyone holding `support`.
+    // TWO consequences to name, both only for the on-behalf branch. An
+    // administrator's photo change is no longer readable through the support-only
+    // system correlation entry: it needs `membership:view` now, exactly as the
+    // member's own change always did. And because `account` is member-visible
+    // while `admin` is not, the member now sees an administrator's change to their
+    // photo in their own profile timeline — which is the transparent answer, and
+    // the same row they already saw when they made the change themselves. Admin >
+    // Audit Log still shows both to anyone holding `support`.
     category: "account",
     outcome: "success",
     summary: actor.onBehalf

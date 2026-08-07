@@ -319,6 +319,15 @@ module boundaries, data model, integrations, cron jobs, and the mermaid maps.
   readiness, budget, background-job and audit-correlation tools, the permission each
   requires, the column-restricted `AuditLog` grant they argue for, the shared
   evidence-state and diagnostic-case contracts, and an operator troubleshooting table.
+  It also carries the **audit-category permission map** (#2581): the closed
+  canonical taxonomy lives in `src/lib/audit-categories.ts` and every reader — the
+  Admin filter, the member-visible subset, the badge colours and the five
+  correlation entries — derives from it, so a category decides which admin areas
+  an operator needs before Diagnostics will return the event. `npm run audit:census`
+  inventories every production audit writer, and
+  `src/lib/__tests__/audit-writer-census.test.ts` pins the result so a new
+  uncategorised writer fails CI by name. The operator-facing half is in
+  [Audit Log](guides/audit-log.md).
 - [`ai-diagnostics/deployment.md`](ai-diagnostics/deployment.md) — the operator
   guide for AI Diagnostics: setup order, provisioning and rotating the dedicated
   non-superuser SELECT-only database role, what the role may read, and how to read the

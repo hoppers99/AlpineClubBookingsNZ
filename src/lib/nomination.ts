@@ -1115,6 +1115,14 @@ export async function refreshMemberApplicationNominations(
     // correlation tool. A membership application is account-domain work, and
     // `account` is read with `support:view` plus `membership:view` — so these
     // rows go from readable by nobody to readable by a Membership Officer.
+    //
+    // One member-facing consequence to state, since `account` is in
+    // MEMBER_VISIBLE_AUDIT_CATEGORIES and `membership` was in nothing: the member
+    // each row is about now sees it in their own profile timeline — the acting
+    // administrator here, the replacement nominator on the writer below, and the
+    // mapped member on `MEMBER_APPLICATION_MAPPED_TO_EXISTING`. The member
+    // projection returns the summary but NO metadata, so the applicant email in
+    // that last writer's metadata stays administrator-only.
     category: "account",
     severity: "important",
     outcome: "success",

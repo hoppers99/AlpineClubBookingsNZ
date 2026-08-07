@@ -227,12 +227,24 @@ async function persistAuthBounceAuditRow(
       // category filter and by no Diagnostics correlation tool. The affected
       // domain is authentication, which is `security`.
       //
-      // TWO CONSEQUENCES, both deliberate. These rows become readable through
+      // THREE CONSEQUENCES, all deliberate. These rows become readable through
       // the system correlation entry, which needs `support:view` alone — a
       // widening from "readable by nobody". And `security` is a high-volume
       // family here, so it now competes for that entry's 22-row ceiling; the
       // explicit `diagnostic_high_volume` retention below is unchanged, so the
       // 90-day expiry still bounds how long that lasts.
+      //
+      // The third is member-facing and is the one worth stating, because a
+      // category change is an easy place to move a row across that boundary
+      // without meaning to. `security` is in MEMBER_VISIBLE_AUDIT_CATEGORIES and
+      // the invented `auth` was in nothing, so a member now sees their OWN login
+      // bounces in their profile timeline (this row sets `memberId`, no
+      // `subjectMemberId`, which the member self-timeline matches). That is the
+      // member's own sign-in data and the member projection returns no metadata,
+      // no request id and no IP — and members already see their own high-volume
+      // `diagnostic_high_volume` rows under `privacy` (`member_guest.search`), so
+      // it is consistent rather than novel. It is pinned by
+      // `audit-writer-census.test.ts` so it cannot change again unnoticed.
       category: "security",
       outcome: record.reason,
       severity: bounceSeverity(record),
