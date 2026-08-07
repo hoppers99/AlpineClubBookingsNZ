@@ -273,7 +273,9 @@ async function captureAnonymisationPayload(): Promise<Record<string, unknown>> {
     twoFactorRecoveryCode: vi.fn().mockResolvedValue({ count: 0 }),
     twoFactorSessionChallenge: vi.fn().mockResolvedValue({ count: 0 }),
   };
-  mockedPrisma.$transaction.mockImplementation(async (fn: never) => {
+  mockedPrisma.$transaction.mockImplementation((async (
+    fn: (client: unknown) => unknown,
+  ) => {
     const tx = {
       $executeRaw: vi.fn().mockResolvedValue(1),
       member: {
@@ -313,8 +315,8 @@ async function captureAnonymisationPayload(): Promise<Record<string, unknown>> {
       },
       xeroSyncOperation: { findFirst: vi.fn().mockResolvedValue(null) },
     };
-    return (fn as unknown as (client: unknown) => unknown)(tx);
-  });
+    return fn(tx);
+  }) as never);
 
   const res = await approveDeletionRequest(
     new NextRequest("http://localhost/api/admin/deletion-requests/dr1", {
@@ -623,8 +625,10 @@ describe("#2620 reactivation refusals, one path at a time", () => {
       liveMember({ active: false }),
     ] as never);
     const updateMany = vi.fn().mockResolvedValue({ count: 1 });
-    mockedPrisma.$transaction.mockImplementation(async (fn: never) =>
-      (fn as unknown as (client: unknown) => unknown)({
+    mockedPrisma.$transaction.mockImplementation((async (
+      fn: (client: unknown) => unknown,
+    ) =>
+      fn({
         $executeRaw: vi.fn().mockResolvedValue(1),
         member: { updateMany, count: vi.fn().mockResolvedValue(2) },
         familyGroupMember: { deleteMany: vi.fn().mockResolvedValue({ count: 0 }) },
@@ -632,8 +636,7 @@ describe("#2620 reactivation refusals, one path at a time", () => {
           findMany: vi.fn().mockResolvedValue([]),
           deleteMany: vi.fn().mockResolvedValue({ count: 0 }),
         },
-      }),
-    );
+      })) as never);
 
     const res = await bulkUpdate(bulkReactivateRequest(["m1"]));
     expect(res.status).toBe(200);
