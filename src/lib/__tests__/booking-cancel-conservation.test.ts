@@ -219,6 +219,7 @@ async function runCancel({
   mocks.bookingFindUnique.mockResolvedValue({
     id: "booking_m",
     memberId: "member_1",
+    lodgeId: "lodge_1",
     status: "PAID",
     finalPriceCents: FINAL_CENTS,
     checkIn: new Date("2026-08-10"),
@@ -470,6 +471,7 @@ describe("cancel-after-reduction conservation matrix (#1031)", () => {
     mocks.bookingFindUnique.mockResolvedValue({
       id: "booking_nc",
       memberId: "member_1",
+      lodgeId: "lodge_1",
       status: "PAYMENT_PENDING",
       finalPriceCents: 20000,
       checkIn: new Date("2026-08-10"),

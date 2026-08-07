@@ -143,6 +143,10 @@ function makeBooking(overrides: Record<string, unknown> = {}) {
   return {
     id: "bk1",
     memberId: "m1",
+    // Booking.lodgeId is NOT NULL in the schema, so a real row always carries
+    // one. Omitting it here let the hosting participant fence compare
+    // "bk1:m1:undefined" on both sides and pass vacuously (#2619).
+    lodgeId: "lodge-1",
     checkIn: CHECK_IN,
     checkOut: CHECK_OUT,
     status: "PAID",

@@ -23,11 +23,20 @@ import { vi } from "vitest";
  * what the rest of a suite already asserts.
  */
 
-/** A source booking as the fence re-reads it. */
+/**
+ * A source booking as the fence re-reads it.
+ *
+ * `lodgeId` is `string`, not `string | null`, deliberately: `Booking.lodgeId` is
+ * NOT NULL in the schema, so a real row always carries one. Allowing it to be
+ * absent here would let a fixture compare `"bk1:m1:undefined"` against itself
+ * and pass the drift check vacuously — and would hide a real failure, because
+ * if a planner's select ever dropped `lodgeId` production would compare an
+ * undefined plan against a re-read that has one and refuse every booking write.
+ */
 export interface FenceBookingRow {
   id: string;
   memberId: string;
-  lodgeId: string | null;
+  lodgeId: string;
 }
 
 /**
@@ -46,11 +55,28 @@ export function fenceMemberFindMany(
    */
   existing?: (args: unknown) => unknown,
 ) {
-  return vi.fn(async (args?: { where?: { id?: { in?: readonly string[] } }; select?: Record<string, unknown> }) => {
-    // The fence's re-read is the one that asks for ids only.
+  return vi.fn(async (args?: {
+    where?: { id?: { in?: readonly string[] } };
+    select?: Record<string, unknown>;
+    orderBy?: unknown;
+  }) => {
+    // The fence's re-read asks for ids only, keyed on id alone, in id order.
+    //
+    // The `where` must have EXACTLY the one `id` key. Matching on
+    // `where.id.in` plus an ids-only select is not specific enough: other
+    // production guards issue the same select with extra predicates — notably
+    // `assertLinkedMembersExist` (booking-request-quotes.ts), which asks for
+    // `{ id: { in }, active: true, archivedAt: null }`. Answering that here
+    // would report every requested member as found, active and unarchived,
+    // making its "linked member not found" refusal unfailable in any suite
+    // using this helper. Same hazard for the merge participant lock's own
+    // re-read and family-suggestions.
+    const where = args?.where as Record<string, unknown> | undefined;
     const select = args?.select;
     const isFenceRead =
       Array.isArray(args?.where?.id?.in) &&
+      !!where &&
+      Object.keys(where).length === 1 &&
       !!select &&
       Object.keys(select).length === 1 &&
       select.id === true;
@@ -144,15 +170,20 @@ export function recordingBookingDouble(
       | (Partial<FenceBookingRow> & { id?: string })
       | null
       | undefined;
-    if (row && typeof row.id === "string" && typeof row.memberId === "string") {
-      // Record lodgeId EXACTLY as served. `sourceFingerprint` interpolates it
-      // into a string, so normalising an absent lodgeId to null would print
-      // "null" where the planned source printed "undefined" and the fence
-      // would report drift on identical data.
+    if (
+      row &&
+      typeof row.id === "string" &&
+      typeof row.memberId === "string" &&
+      typeof row.lodgeId === "string"
+    ) {
+      // Record lodgeId EXACTLY as served, and only when it IS served. A row
+      // without one is not a row this fence could ever see in production, so
+      // it is not recorded — the fence then finds no source booking and
+      // refuses, which is the honest outcome and points at the fixture.
       seen.set(row.id, {
         id: row.id,
         memberId: row.memberId,
-        lodgeId: row.lodgeId as string | null,
+        lodgeId: row.lodgeId,
       });
     }
     return row;
