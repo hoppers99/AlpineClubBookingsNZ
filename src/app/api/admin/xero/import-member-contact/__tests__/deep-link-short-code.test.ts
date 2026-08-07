@@ -50,6 +50,8 @@ vi.mock("@/lib/logger", () => ({
 vi.mock("@/lib/prisma", () => ({
   prisma: {
     member: { findFirst: mocks.memberFindFirst, create: mocks.memberCreate },
+    $transaction: async (callback: (tx: unknown) => Promise<unknown>) =>
+      callback({ member: { create: mocks.memberCreate } }),
   },
 }));
 
@@ -151,6 +153,7 @@ describe("POST /api/admin/xero/import-member-contact deep links (#2314)", () => 
       expect.objectContaining({
         xeroObjectUrl: buildXeroContactUrl(CONTACT_ID),
       }),
+      expect.objectContaining({ store: expect.anything() }),
     );
     // The stored URL names no organisation at all — that is what survives a
     // reconnect to a different Xero organisation.
@@ -206,7 +209,7 @@ describe("POST /api/admin/xero/import-member-contact deep links (#2314)", () => 
     });
   });
 
-  it("preserves imported-and-linked facts when access-role setup fails", async () => {
+  it("does not claim a partial import when access-role setup rolls back the transaction", async () => {
     mocks.ensureMemberAccessRolesFromCompatibilityFields.mockRejectedValueOnce(
       new Error("private access-role detail"),
     );
@@ -214,23 +217,13 @@ describe("POST /api/admin/xero/import-member-contact deep links (#2314)", () => 
     const response = await POST(request());
     const body = await response.json();
 
-    expect(response.status).toBe(409);
-    expect(body).toEqual(
-      expect.objectContaining({
-        code: "XERO_PARTIAL_SUCCESS",
-        recoveryKind: "MEMBER_IMPORTED_AND_LINKED",
-        memberImported: true,
-        memberId: "mem_1",
-        xeroContactLinked: true,
-        xeroContactId: CONTACT_ID,
-        subscriptionRefreshPending: true,
-      }),
-    );
+    expect(response.status).toBe(500);
+    expect(body).toEqual({ error: "Failed to import Xero contact as member" });
     expect(JSON.stringify(body)).not.toContain("private access-role detail");
     expect(mocks.upsertXeroObjectLink).not.toHaveBeenCalled();
   });
 
-  it("preserves imported-and-linked facts when object-link setup fails", async () => {
+  it("does not claim a partial import when object-link setup rolls back the transaction", async () => {
     mocks.upsertXeroObjectLink.mockRejectedValueOnce(
       new Error("private object-link detail"),
     );
@@ -238,10 +231,8 @@ describe("POST /api/admin/xero/import-member-contact deep links (#2314)", () => 
     const response = await POST(request());
     const body = await response.json();
 
-    expect(response.status).toBe(409);
-    expect(body.recoveryKind).toBe("MEMBER_IMPORTED_AND_LINKED");
-    expect(body.xeroContactLinked).toBe(true);
-    expect(body.subscriptionRefreshPending).toBe(true);
+    expect(response.status).toBe(500);
+    expect(body).toEqual({ error: "Failed to import Xero contact as member" });
     expect(JSON.stringify(body)).not.toContain("private object-link detail");
   });
 
