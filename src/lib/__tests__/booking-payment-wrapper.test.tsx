@@ -373,7 +373,7 @@ describe("BookingPaymentWrapper", () => {
       expect(alert).not.toHaveTextContent("server detail");
       expect(alert).not.toHaveTextContent(/pay later from your booking page/i);
       expect(screen.queryByText("payment-form")).toBeNull();
-      expect(document.activeElement).toBe(alert);
+      await waitFor(() => expect(document.activeElement).toBe(alert));
     },
   );
 
@@ -596,9 +596,20 @@ describe("BookingPaymentWrapper", () => {
     });
   });
 
-  it.each([true, false])(
-    "refreshes the cancelled booking after a capacity-loss 409 (refunded: %s)",
-    async (refunded) => {
+  it.each([
+    [
+      true,
+      "Booking cancelled - payment refunded",
+      /card payment was refunded/i,
+    ],
+    [
+      false,
+      "Booking cancelled - refund needs attention",
+      /Automatic refund recovery is pending/i,
+    ],
+  ])(
+    "retains the cancelled-booking recovery after confirmation (refunded: %s)",
+    async (refunded, heading, copy) => {
       const onPaymentComplete = vi.fn();
 
       fetchMock
@@ -610,8 +621,7 @@ describe("BookingPaymentWrapper", () => {
           ok: false,
           status: 409,
           json: async () => ({
-            error:
-              "Payment succeeded, but lodge capacity is no longer available for this booking.",
+            error: "private provider or database detail",
             status: "CANCELLED",
             refunded,
           }),
@@ -629,9 +639,15 @@ describe("BookingPaymentWrapper", () => {
 
       fireEvent.click(await screen.findByText("trigger-success"));
 
-      await waitFor(() => expect(onPaymentComplete).toHaveBeenCalledTimes(1));
+      const alert = screen.getByRole("alert", { hidden: true });
+      await waitFor(() => expect(alert).toHaveTextContent(heading));
+      expect(alert).toHaveTextContent(copy);
+      expect(alert).toHaveTextContent(/Do not try another payment/i);
+      expect(alert).not.toHaveTextContent("private provider or database detail");
+      expect(onPaymentComplete).not.toHaveBeenCalled();
+      expect(screen.queryByText("payment-form")).toBeNull();
       expect(screen.getByText("Payment successful!")).not.toBeNull();
-      expect(screen.getByRole("alert", { hidden: true }).textContent).toBe("");
+      await waitFor(() => expect(document.activeElement).toBe(alert));
     },
   );
 });

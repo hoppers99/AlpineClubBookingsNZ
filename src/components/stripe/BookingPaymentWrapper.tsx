@@ -14,6 +14,33 @@ import {
   PAYMENT_RECEIVED_STATUS_UNCONFIRMED_MESSAGE,
 } from "@/lib/payment-recovery-contract";
 
+const CAPACITY_CANCELLATION_RECOVERY = {
+  refunded: {
+    heading: "Booking cancelled - payment refunded",
+    message:
+      "The booking was cancelled because lodge capacity was no longer available, and the card payment was refunded. Reload the booking to see its current status. Do not try another payment.",
+  },
+  refundPending: {
+    heading: "Booking cancelled - refund needs attention",
+    message:
+      "The booking was cancelled because lodge capacity was no longer available, but the refund could not be confirmed. Automatic refund recovery is pending. Do not try another payment. Reload the booking and contact the lodge administrator if the refund is not confirmed.",
+  },
+} as const;
+
+function capacityCancellationRecovery(value: unknown) {
+  if (!value || typeof value !== "object") return null;
+  const candidate = value as Record<string, unknown>;
+  if (
+    candidate.status !== "CANCELLED" ||
+    typeof candidate.refunded !== "boolean"
+  ) {
+    return null;
+  }
+  return candidate.refunded
+    ? CAPACITY_CANCELLATION_RECOVERY.refunded
+    : CAPACITY_CANCELLATION_RECOVERY.refundPending;
+}
+
 /**
  * Report a payment-initialization failure to ops WITHOUT ever surfacing the raw
  * provider detail to the member (#1223). The raw detail (from the API response
@@ -104,21 +131,13 @@ export default function BookingPaymentWrapper({
         const data = await response.json();
 
         if (!response.ok) {
-          if (
-            response.status === 409 &&
-            data.status === "CANCELLED" &&
-            typeof data.refunded === "boolean"
-          ) {
-            setRecoveryHeading(
-              data.refunded
-                ? "Booking cancelled - payment refunded"
-                : "Booking cancelled - refund needs attention",
-            );
-            setInitRecoveryError(
-              data.refunded
-                ? "The booking was cancelled because lodge capacity was no longer available, and the card payment was refunded. Reload the booking to see its current status. Do not try another payment."
-                : "The booking was cancelled because lodge capacity was no longer available, but the refund could not be confirmed. Do not try another payment. Reload the booking and contact the lodge administrator to check the refund.",
-            );
+          const cancellationRecovery =
+            response.status === 409
+              ? capacityCancellationRecovery(data)
+              : null;
+          if (cancellationRecovery) {
+            setRecoveryHeading(cancellationRecovery.heading);
+            setInitRecoveryError(cancellationRecovery.message);
             return;
           }
           if (
@@ -209,17 +228,24 @@ export default function BookingPaymentWrapper({
         body: JSON.stringify({ paymentIntentId }),
       });
       if (response.status === 409) {
-        const data = (await response.json().catch(() => ({}))) as {
-          error?: string;
-          code?: string;
-          paymentReceived?: boolean;
-          finalisationPending?: boolean;
-          bookingStatusUnconfirmed?: boolean;
-        };
+        const data = (await response.json().catch(() => ({}))) as Record<
+          string,
+          unknown
+        >;
+        const cancellationRecovery = capacityCancellationRecovery(data);
+        if (cancellationRecovery) {
+          setRecoveryHeading(cancellationRecovery.heading);
+          setConfirmationError(cancellationRecovery.message);
+          return;
+        }
         if (data.code === "HOSTING_COVERAGE_PARTICIPANT_RETRY") {
           setRecoveryHeading("Payment received - finalisation pending");
           setConfirmationError(
-            `${data.error || "The booking could not be finalised."}${
+            `${
+              typeof data.error === "string"
+                ? data.error
+                : "The booking could not be finalised."
+            }${
               data.paymentReceived && data.finalisationPending
                 ? " Your card payment was received, but booking finalisation is still pending."
                 : " Check the booking status before trying again."
