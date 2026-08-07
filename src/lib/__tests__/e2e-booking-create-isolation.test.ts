@@ -24,12 +24,23 @@ import {
 
 const E2E_ROOT = path.join(process.cwd(), "e2e");
 
-function e2eTypeScriptFiles(directory = E2E_ROOT): string[] {
+function listE2eTypeScriptFiles(directory: string): string[] {
   return fs.readdirSync(directory, { withFileTypes: true }).flatMap((entry) => {
     const absolute = path.join(directory, entry.name);
-    if (entry.isDirectory()) return e2eTypeScriptFiles(absolute);
+    if (entry.isDirectory()) return listE2eTypeScriptFiles(absolute);
     return entry.isFile() && entry.name.endsWith(".ts") ? [absolute] : [];
   });
+}
+
+// Several contracts below each sweep the whole e2e tree. Read and parse each
+// file once per run: the sweeps are read-only, and re-parsing per contract put
+// the tree scans over vitest's 5 s default timeout on a loaded machine.
+let e2eFileList: string[] | undefined;
+const parsedE2eSources = new Map<string, ts.SourceFile>();
+
+function e2eTypeScriptFiles(): string[] {
+  e2eFileList ??= listE2eTypeScriptFiles(E2E_ROOT);
+  return e2eFileList;
 }
 
 function repoRelative(file: string): string {
@@ -49,13 +60,11 @@ type ConstBinding = Readonly<{
 type ConstBindings = Map<string, ConstBinding[]>;
 
 function parseSource(file: string): ts.SourceFile {
-  return ts.createSourceFile(
-    file,
-    fs.readFileSync(file, "utf8"),
-    ts.ScriptTarget.Latest,
-    true,
-    ts.ScriptKind.TS,
-  );
+  const cached = parsedE2eSources.get(file);
+  if (cached) return cached;
+  const parsed = parseSourceText(file, fs.readFileSync(file, "utf8"));
+  parsedE2eSources.set(file, parsed);
+  return parsed;
 }
 
 function parseSourceText(file: string, text: string): ts.SourceFile {
@@ -68,7 +77,20 @@ function parseSourceText(file: string, text: string): ts.SourceFile {
   );
 }
 
+// Same reason as the parse cache: every analyzer wants the same read-only const
+// bindings for the same file, and rebuilding them per analyzer is a full tree
+// walk each time.
+const constBindingsCache = new WeakMap<ts.SourceFile, ConstBindings>();
+
 function collectConstBindings(sourceFile: ts.SourceFile): ConstBindings {
+  const cached = constBindingsCache.get(sourceFile);
+  if (cached) return cached;
+  const computed = computeConstBindings(sourceFile);
+  constBindingsCache.set(sourceFile, computed);
+  return computed;
+}
+
+function computeConstBindings(sourceFile: ts.SourceFile): ConstBindings {
   const bindings: ConstBindings = new Map();
   const visit = (node: ts.Node): void => {
     if (
@@ -196,7 +218,35 @@ function calledName(call: ts.CallExpression): string | null {
   return null;
 }
 
+// Asked for EVERY bare-identifier callee in the tree (`expect(…)` included) and
+// answered by a whole-file walk, so without memoising, the direct-POST sweep is
+// quadratic in file size and drifts past vitest's 5 s default timeout as specs
+// grow. Keyed per file because the answer is a property of that file's bindings.
+const destructuredAliasCache = new WeakMap<
+  ts.SourceFile,
+  Map<string, boolean>
+>();
+
 function isDestructuredRequestAlias(
+  identifier: ts.Identifier,
+  method: "fetch" | "post",
+): boolean {
+  const sourceFile = identifier.getSourceFile();
+  const key = `${method} ${identifier.text}`;
+  let answers = destructuredAliasCache.get(sourceFile);
+  if (!answers) {
+    answers = new Map();
+    destructuredAliasCache.set(sourceFile, answers);
+  }
+  const cached = answers.get(key);
+  if (cached !== undefined) return cached;
+
+  const found = findDestructuredRequestAlias(identifier, method);
+  answers.set(key, found);
+  return found;
+}
+
+function findDestructuredRequestAlias(
   identifier: ts.Identifier,
   method: "fetch" | "post",
 ): boolean {
@@ -318,18 +368,60 @@ function childCallNamed(node: ts.Node, name: string): ts.CallExpression | null {
   return found;
 }
 
+/**
+ * The call that consumes this inline function as its action, if any.
+ *
+ * A booking-create gesture reaches `withBookingCreateClientIp` either as a bare
+ * argument — the pre-#2610 shape, which the outcome-holding contract below now
+ * rejects outright — or as the `trigger` member of the outcome-holding object.
+ * Arriving through `waitForOutcome` deliberately does NOT count as wrapped: the
+ * create has to be the trigger, or the helper's `waitForRequest` is not paired
+ * with it and the create escapes the census.
+ */
+function actionConsumerCall(fn: ts.Expression): ts.CallExpression | null {
+  let current: ts.Node = fn;
+  while (current.parent) {
+    const parent = current.parent;
+    if (
+      ts.isCallExpression(parent) &&
+      parent.arguments.includes(current as ts.Expression)
+    ) {
+      return parent;
+    }
+    if (
+      ts.isParenthesizedExpression(parent) ||
+      ts.isAsExpression(parent) ||
+      ts.isSatisfiesExpression(parent) ||
+      ts.isNonNullExpression(parent)
+    ) {
+      current = parent;
+      continue;
+    }
+    if (ts.isPropertyAssignment(parent) && parent.initializer === current) {
+      if (propertyName(parent.name) !== "trigger") return null;
+      current = parent;
+      continue;
+    }
+    if (ts.isObjectLiteralExpression(parent)) {
+      current = parent;
+      continue;
+    }
+    return null;
+  }
+  return null;
+}
+
 function enclosingActionConsumer(node: ts.Node): string | null {
   let current: ts.Node | undefined = node;
   let nearest: string | null = null;
   while (current?.parent) {
-    if (
-      (ts.isArrowFunction(current) || ts.isFunctionExpression(current)) &&
-      ts.isCallExpression(current.parent) &&
-      current.parent.arguments.includes(current)
-    ) {
-      const consumer = calledName(current.parent);
-      nearest ??= consumer;
-      if (consumer === "withBookingCreateClientIp") return consumer;
+    if (ts.isArrowFunction(current) || ts.isFunctionExpression(current)) {
+      const consumerCall = actionConsumerCall(current);
+      const consumer = consumerCall ? calledName(consumerCall) : null;
+      if (consumer) {
+        nearest ??= consumer;
+        if (consumer === "withBookingCreateClientIp") return consumer;
+      }
     }
     current = current.parent;
   }
@@ -574,6 +666,209 @@ function bookingCreateAllocationMatchesCensus(
       entry.transport === use.transport &&
       allocatorForClassification(entry.classification) === use.allocator,
   );
+}
+
+/**
+ * How one `withBookingCreateClientIp` call shapes its action (#2610).
+ *
+ * `bare-action` is the pre-#2610 shape: the interception was torn down the
+ * moment the trigger resolved, which on the hosted runners overlapped the
+ * navigation that trigger had just started. Every remaining shape but
+ * `outcome-held` fails closed.
+ *
+ * KNOWN LIMIT — this classifies the SHAPE, not the semantics. `outcome-held`
+ * only means a `waitForOutcome` property resolves to exactly one expression. An
+ * empty body, a `Promise.resolve()`, something already true before the trigger,
+ * or a missing `await` inside it (this repo has no `no-floating-promises` rule)
+ * all classify as held and pass here. The rule that an outcome must be this
+ * journey's OWN authoritative outcome is a documented convention in
+ * `docs/E2E_PLAYWRIGHT.md` with no executable backing, and it is deliberately
+ * left that way: any heuristic strong enough to judge authority would reject
+ * legitimate callers. It cost real time once already — four navigating creates
+ * shipped holding only `toHaveURL`, which the destination's `loading.tsx`
+ * boundary satisfies before the detail RSC resolves, so they kept the exact race
+ * the hold exists to remove while passing this contract. Review the outcome, not
+ * just the shape.
+ */
+type BookingCreateHoldShape =
+  | "outcome-held"
+  | "bare-action"
+  | "missing-outcome"
+  | "unresolved";
+
+function bookingCreateHoldShape(
+  call: ts.CallExpression,
+  bindings: ConstBindings,
+): BookingCreateHoldShape {
+  if (call.arguments.length !== 3) return "unresolved";
+  const action = call.arguments[2];
+  const resolved = resolveConstExpression(action, bindings);
+  if (ts.isArrowFunction(resolved) || ts.isFunctionExpression(resolved)) {
+    return "bare-action";
+  }
+  const triggers = objectPropertyExpressions(action, "trigger", bindings);
+  const outcomes = objectPropertyExpressions(
+    action,
+    "waitForOutcome",
+    bindings,
+  );
+  if (triggers === null || outcomes === null) return "unresolved";
+  if (triggers.length !== 1) return "unresolved";
+  return outcomes.length === 1 ? "outcome-held" : "missing-outcome";
+}
+
+/**
+ * Label a hold by the census key it isolates, falling back to the enclosing
+ * helper for a wrapper that takes its isolation as a parameter.
+ */
+function bookingCreateHoldLabel(
+  call: ts.CallExpression,
+  bindings: ConstBindings,
+): string {
+  const isolation = call.arguments[1]
+    ? resolveConstExpression(call.arguments[1], bindings)
+    : undefined;
+  if (
+    isolation &&
+    ts.isCallExpression(isolation) &&
+    BOOKING_CREATE_ALLOCATORS.has(calledName(isolation) ?? "")
+  ) {
+    return (
+      resolveStaticString(isolation.arguments[0], bindings) ??
+      "<unresolved-key>"
+    );
+  }
+  return enclosingFunctionName(call) ?? "<top-level>";
+}
+
+type BookingCreateHold = Readonly<{
+  location: string;
+  shape: BookingCreateHoldShape;
+}>;
+
+function analyzeBookingCreateHolds(
+  sourceFile: ts.SourceFile,
+  file: string,
+): BookingCreateHold[] {
+  const bindings = collectConstBindings(sourceFile);
+  const holds: BookingCreateHold[] = [];
+  const visit = (node: ts.Node): void => {
+    if (
+      ts.isCallExpression(node) &&
+      calledName(node) === "withBookingCreateClientIp"
+    ) {
+      holds.push({
+        location: `${file}:${bookingCreateHoldLabel(node, bindings)}`,
+        shape: bookingCreateHoldShape(node, bindings),
+      });
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(sourceFile);
+  return holds;
+}
+
+/**
+ * Every browser census key, mapped to the ONE call site that holds its
+ * booking-create interception open until that journey's own authoritative
+ * outcome (#2610). Five keys reach the helper through a shared wrapper, which is
+ * why the map is not simply key-to-file.
+ */
+const BOOKING_CREATE_OUTCOME_HOLDERS = new Map<string, string>([
+  ["admin-override-seed", "e2e/helpers/booking.ts:confirmBookingToPaymentStep"],
+  [
+    "admin-retroactive-record",
+    "e2e/admin-retroactive-booking.spec.ts:admin-retroactive-record",
+  ],
+  ["booking-payment-pending", "e2e/helpers/booking.ts:confirmBookingToPaymentStep"],
+  ["dual-hat-member-create", "e2e/helpers/booking.ts:confirmBookingToPaymentStep"],
+  [
+    "dual-hat-officer-draft",
+    "e2e/dual-hat-booking.spec.ts:dual-hat-officer-draft",
+  ],
+  [
+    "member-exception-compliant",
+    "e2e/member-policy-exception-requests.spec.ts:member-exception-compliant",
+  ],
+  [
+    "member-exception-minimum-refusal",
+    "e2e/member-policy-exception-requests.spec.ts:bookThroughWizard",
+  ],
+  [
+    "member-exception-replacement",
+    "e2e/member-policy-exception-requests.spec.ts:member-exception-replacement",
+  ],
+  [
+    "member-exception-approval",
+    "e2e/member-policy-exception-requests.spec.ts:bookThroughWizard",
+  ],
+  [
+    "on-behalf-inline-owner",
+    "e2e/book-on-behalf-nonmember.spec.ts:on-behalf-inline-owner",
+  ],
+  [
+    "on-behalf-existing-owner",
+    "e2e/book-on-behalf-nonmember.spec.ts:on-behalf-existing-owner",
+  ],
+  [
+    "on-behalf-walk-in-owner",
+    "e2e/book-on-behalf-nonmember.spec.ts:on-behalf-walk-in-owner",
+  ],
+  ["stripe-success", "e2e/helpers/booking.ts:confirmBookingToPaymentStep"],
+  ["stripe-decline", "e2e/helpers/booking.ts:confirmBookingToPaymentStep"],
+]);
+
+/**
+ * Rewrite every outcome-holding call in `text` back to the pre-#2610 shape,
+ * passing the trigger alone so teardown lands the instant it resolves. Done
+ * through the compiler rather than by string surgery so the mutation cannot
+ * silently stop applying when the call site is reformatted.
+ */
+function revertHoldsToBareAction(text: string, file: string): string {
+  const sourceFile = parseSourceText(file, text);
+  const result = ts.transform(sourceFile, [
+    (context) => (root) => {
+      const visit = (node: ts.Node): ts.Node => {
+        if (
+          ts.isCallExpression(node) &&
+          calledName(node) === "withBookingCreateClientIp" &&
+          node.arguments.length === 3
+        ) {
+          const action = node.arguments[2];
+          const trigger = ts.isObjectLiteralExpression(action)
+            ? action.properties.find(
+                (property): property is ts.PropertyAssignment =>
+                  ts.isPropertyAssignment(property) &&
+                  propertyName(property.name) === "trigger",
+              )
+            : undefined;
+          if (trigger) {
+            return context.factory.updateCallExpression(
+              node,
+              node.expression,
+              node.typeArguments,
+              [node.arguments[0], node.arguments[1], trigger.initializer],
+            );
+          }
+        }
+        return ts.visitEachChild(node, visit, context);
+      };
+      return ts.visitNode(root, visit) as ts.SourceFile;
+    },
+  ]);
+  const printed = ts.createPrinter().printFile(result.transformed[0]);
+  result.dispose();
+  return printed;
+}
+
+function scanBookingCreateHolds(): BookingCreateHold[] {
+  const holds: BookingCreateHold[] = [];
+  for (const file of e2eTypeScriptFiles()) {
+    holds.push(
+      ...analyzeBookingCreateHolds(parseSource(file), repoRelative(file)),
+    );
+  }
+  return holds;
 }
 
 const BOOKING_CREATE_BUTTON_NAMES = [
@@ -1101,7 +1396,10 @@ describe("E2E booking-create retry isolation (#2599)", () => {
         'page.getByRole("button", { name: "Cancel" }).click();',
         'page.getByText("Confirm Booking").press("Escape");',
         'page.locator("#confirm-booking").dispatchEvent("input");',
-        "withBookingCreateClientIp(page, isolation, () => page.getByText(`Confirm Booking`).click());",
+        "withBookingCreateClientIp(page, isolation, { trigger: () => page.getByText(`Confirm Booking`).click(), waitForOutcome: () => expect(page).toHaveURL(/bookings/) });",
+        // A create gesture hidden in the OUTCOME wait is not wrapped: the
+        // helper's waitForRequest is paired with the trigger, not with this.
+        "withBookingCreateClientIp(page, isolation, { trigger: () => openDialog(), waitForOutcome: () => page.getByText(`Save as Draft`).click() });",
       ].join("\n"),
     );
 
@@ -1113,6 +1411,7 @@ describe("E2E booking-create retry isolation (#2599)", () => {
         "fixture:Continue to Payment",
         "fixture:Save as Draft",
         "fixture:Confirm Booking",
+        "fixture:Save as Draft",
       ],
       unresolved: [
         'fixture:page.getByRole(`button`, { name: confirmBookingLabel }).click()',
@@ -1148,7 +1447,7 @@ describe("E2E booking-create retry isolation (#2599)", () => {
         'page.keyboard.press("Enter");',
         'page.locator("form").dispatchEvent("submit");',
         'page.keyboard.press("Escape");',
-        'withBookingCreateClientIp(page, isolation, () => page.keyboard.press("Enter"));',
+        'withBookingCreateClientIp(page, isolation, { trigger: () => page.keyboard.press("Enter"), waitForOutcome: () => expect(page).toHaveURL(/bookings/) });',
       ].join("\n"),
     );
 
@@ -1349,24 +1648,27 @@ describe("E2E booking-create retry isolation (#2599)", () => {
     const continueRequest = vi.fn(async () => undefined);
     const isolation = bookingCreateIsolation("stripe-success", 2);
 
-    await withBookingCreateClientIp(page, isolation, async () => {
-      expect(handler).toBeTypeOf("function");
-      await handler!(
-        {
-          request: () => ({ ...nonCreateRequest }),
-          continue: continueRequest,
-        } as unknown as Route,
-        {} as PlaywrightRequest,
-      );
-      await handler!(
-        {
-          request: () => ({
-            ...bookingRequest,
-          }),
-          continue: continueRequest,
-        } as unknown as Route,
-        {} as PlaywrightRequest,
-      );
+    await withBookingCreateClientIp(page, isolation, {
+      trigger: async () => {
+        expect(handler).toBeTypeOf("function");
+        await handler!(
+          {
+            request: () => ({ ...nonCreateRequest }),
+            continue: continueRequest,
+          } as unknown as Route,
+          {} as PlaywrightRequest,
+        );
+        await handler!(
+          {
+            request: () => ({
+              ...bookingRequest,
+            }),
+            continue: continueRequest,
+          } as unknown as Route,
+          {} as PlaywrightRequest,
+        );
+      },
+      waitForOutcome: async () => undefined,
     });
 
     expect(page.route).toHaveBeenCalledWith("**/api/bookings", expect.any(Function));
@@ -1402,12 +1704,98 @@ describe("E2E booking-create retry isolation (#2599)", () => {
       withBookingCreateClientIp(
         page,
         bookingCreateIsolation("stripe-decline", 2),
-        async () => {
-          expect(handler).toBeTypeOf("function");
-          throw new Error("action failed after route registration");
+        {
+          trigger: async () => {
+            expect(handler).toBeTypeOf("function");
+            throw new Error("action failed after route registration");
+          },
+          waitForOutcome: async () => undefined,
         },
       ),
     ).rejects.toThrow("action failed after route registration");
+    expect(page.unroute).toHaveBeenCalledWith(
+      "**/api/bookings",
+      expect.any(Function),
+    );
+  });
+
+  it("holds the exact browser route until the caller's outcome resolves", async () => {
+    const bookingRequest = {
+      method: () => "POST",
+      url: () => "http://127.0.0.1:3000/api/bookings",
+      headers: () => ({}),
+    };
+    const order: string[] = [];
+    let handler: Parameters<Page["route"]>[1] | undefined;
+    const page = {
+      route: vi.fn(async (_pattern, registered) => {
+        handler = registered;
+        order.push("route");
+      }),
+      waitForRequest: vi.fn(async () => bookingRequest),
+      unroute: vi.fn(async () => {
+        order.push("unroute");
+      }),
+    } as unknown as Page;
+
+    await expect(
+      withBookingCreateClientIp(
+        page,
+        bookingCreateIsolation("dual-hat-officer-draft", 1),
+        {
+          trigger: async () => {
+            await handler!(
+              {
+                request: () => bookingRequest,
+                continue: async () => undefined,
+              } as unknown as Route,
+              {} as PlaywrightRequest,
+            );
+            order.push("trigger");
+            return "/bookings/booking-1";
+          },
+          waitForOutcome: async (triggered) => {
+            // The navigation the trigger started is still settling here, and
+            // this is the whole point: teardown must not have happened yet.
+            expect(page.unroute).not.toHaveBeenCalled();
+            order.push(`outcome:${triggered}`);
+          },
+        },
+      ),
+    ).resolves.toBe("/bookings/booking-1");
+
+    expect(order).toEqual([
+      "route",
+      "trigger",
+      "outcome:/bookings/booking-1",
+      "unroute",
+    ]);
+  });
+
+  it("still removes the exact browser route when the outcome wait fails", async () => {
+    const bookingRequest = {
+      method: () => "POST",
+      url: () => "http://127.0.0.1:3000/api/bookings",
+      headers: () => ({}),
+    };
+    const page = {
+      route: vi.fn(async () => undefined),
+      waitForRequest: vi.fn(async () => bookingRequest),
+      unroute: vi.fn(async () => undefined),
+    } as unknown as Page;
+
+    await expect(
+      withBookingCreateClientIp(
+        page,
+        bookingCreateIsolation("on-behalf-walk-in-owner", 0),
+        {
+          trigger: async () => undefined,
+          waitForOutcome: async () => {
+            throw new Error("never reached the booking detail page");
+          },
+        },
+      ),
+    ).rejects.toThrow("never reached the booking detail page");
     expect(page.unroute).toHaveBeenCalledWith(
       "**/api/bookings",
       expect.any(Function),
@@ -1438,10 +1826,17 @@ describe("E2E booking-create retry isolation (#2599)", () => {
       withBookingCreateClientIp(
         page,
         bookingCreateIsolation("stripe-success", 2),
-        async () => {
-          expect(handler).toBeTypeOf("function");
-          await handler!(route, {} as PlaywrightRequest);
-          await handler!(route, {} as PlaywrightRequest);
+        {
+          trigger: async () => {
+            expect(handler).toBeTypeOf("function");
+            await handler!(route, {} as PlaywrightRequest);
+          },
+          // A second create that only arrives while the outcome is being
+          // awaited is now caught too: before #2610 the route was already gone
+          // by this point and the extra request was invisible to the census.
+          waitForOutcome: async () => {
+            await handler!(route, {} as PlaywrightRequest);
+          },
         },
       ),
     ).rejects.toThrow(/issued 2 matching requests; expected exactly one/);
@@ -1572,6 +1967,95 @@ describe("E2E booking-create retry isolation (#2599)", () => {
       ].sort(),
     );
     expect(unresolvedCandidates).toEqual([]);
+  });
+
+  it("classifies the outcome-holding action shape and rejects the pre-#2610 one", () => {
+    const sourceFile = parseSourceText(
+      "hold-shape-positive-negative.ts",
+      [
+        "withBookingCreateClientIp(page, bookingCreateIsolation(`stripe-success`, 0), {",
+        "  trigger: () => page.getByRole(`button`, { name: `Confirm Booking` }).click(),",
+        "  waitForOutcome: () => expect(page).toHaveURL(/bookings/),",
+        "});",
+        "withBookingCreateClientIp(page, bookingCreateIsolation(`stripe-decline`, 0), () =>",
+        "  page.getByRole(`button`, { name: `Confirm Booking` }).click(),",
+        ");",
+        "withBookingCreateClientIp(",
+        "  page,",
+        "  bookingCreateIsolation(`dual-hat-officer-draft`, 0),",
+        "  { trigger: () => page.getByRole(`button`, { name: `Save as Draft` }).click() },",
+        ");",
+        "withBookingCreateClientIp(page, isolation, buildActionAtRuntime());",
+      ].join("\n"),
+    );
+
+    expect(analyzeBookingCreateHolds(sourceFile, "fixture")).toEqual([
+      { location: "fixture:stripe-success", shape: "outcome-held" },
+      { location: "fixture:stripe-decline", shape: "bare-action" },
+      { location: "fixture:dual-hat-officer-draft", shape: "missing-outcome" },
+      { location: "fixture:<top-level>", shape: "unresolved" },
+    ]);
+  });
+
+  it("holds every browser booking-create interception until its own outcome", () => {
+    const browserKeys = E2E_BOOKING_CREATE_CENSUS.filter(
+      (entry) => entry.transport === "browser",
+    ).map((entry) => entry.key);
+    expect(browserKeys).toHaveLength(14);
+    expect([...BOOKING_CREATE_OUTCOME_HOLDERS.keys()].sort()).toEqual(
+      [...browserKeys].sort(),
+    );
+
+    const holds = scanBookingCreateHolds();
+    const registeredLocations = [
+      ...new Set(BOOKING_CREATE_OUTCOME_HOLDERS.values()),
+    ].sort();
+    expect(holds).toHaveLength(registeredLocations.length);
+    expect(holds.map((hold) => hold.location).sort()).toEqual(
+      registeredLocations,
+    );
+    for (const [key, location] of BOOKING_CREATE_OUTCOME_HOLDERS) {
+      expect(
+        holds.filter((hold) => hold.location === location),
+        `${key} must hold its interception until its own outcome in ${location}`,
+      ).toEqual([{ location, shape: "outcome-held" }]);
+    }
+
+    // The helper cannot tear the route down before the outcome wait it was
+    // handed, because there is only one teardown and it sits after that await.
+    const helper = source("e2e/helpers/booking-create-client-ip.ts");
+    expect(helper.match(/page\.unroute\(/g)).toHaveLength(1);
+    expect(helper.indexOf("await action.waitForOutcome(")).toBeGreaterThan(-1);
+    expect(helper.indexOf("await action.waitForOutcome(")).toBeLessThan(
+      helper.indexOf("await page.unroute("),
+    );
+  });
+
+  it("fails a caller reverted to the pre-#2610 immediate-teardown shape", () => {
+    const file = "e2e/dual-hat-booking.spec.ts";
+    const actual = source(file);
+    const location = `${file}:dual-hat-officer-draft`;
+    expect(
+      analyzeBookingCreateHolds(parseSourceText(file, actual), file),
+    ).toEqual([{ location, shape: "outcome-held" }]);
+
+    const reverted = revertHoldsToBareAction(actual, file);
+    expect(reverted).not.toBe(actual);
+    expect(
+      analyzeBookingCreateHolds(
+        parseSourceText("hold-revert-mutation.ts", reverted),
+        file,
+      ),
+    ).toEqual([{ location, shape: "bare-action" }]);
+
+    const dropped = actual.replaceAll("waitForOutcome:", "waitForOutcomeLater:");
+    expect(dropped).not.toBe(actual);
+    expect(
+      analyzeBookingCreateHolds(
+        parseSourceText("hold-drop-mutation.ts", dropped),
+        file,
+      ),
+    ).toEqual([{ location, shape: "missing-outcome" }]);
   });
 
   it("rejects blanket context booking-create headers, including aliases", () => {

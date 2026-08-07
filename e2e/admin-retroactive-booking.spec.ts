@@ -17,7 +17,10 @@ import {
   WAITLIST_FULL_WINDOW,
 } from "./helpers/fixtures";
 import { calendarMonthDirection } from "./helpers/calendar-navigation";
-import { calendarDayLabel } from "./helpers/stay-dates";
+import {
+  calendarDayLabel,
+  pastStayWindowForAttempt,
+} from "./helpers/stay-dates";
 
 // docs/END_TO_END_TEST_MATRIX.md row "Admin retroactive create (#1695)": a Full
 // Admin records a stay that already happened via /admin/book — toggle "Record a
@@ -31,8 +34,8 @@ import { calendarDayLabel } from "./helpers/stay-dates";
 // Past dates are chosen relative to the run clock and must land inside the
 // seeded (relative) Winter season — the same season-coverage constraint every
 // date-based spec carries (issue #2117: seasons and seeded bookings are now
-// relative, so the -7..-15 past window is always in-season and clear of the
-// seeded windows on any run date).
+// relative, so attempts 0/1/2 at -7/-11/-15 days are always in-season and
+// clear of the seeded windows on any run date).
 test.describe.configure({ mode: "serial" });
 
 let memberContext: BrowserContext;
@@ -60,29 +63,6 @@ const SEEDED_BLOCKED_RANGES: ReadonlyArray<readonly [string, string]> = [
   [DEMO_BOOKING_WINDOWS.aliceDraft.checkIn, DEMO_BOOKING_WINDOWS.aliceDraft.checkOut],
   [WAITLIST_FULL_WINDOW.checkIn, WAITLIST_FULL_WINDOW.checkOut],
 ];
-
-function overlapsSeededRange(checkIn: string, checkOut: string): boolean {
-  return SEEDED_BLOCKED_RANGES.some(
-    ([start, end]) => checkIn < end && checkOut > start,
-  );
-}
-
-function pickPastWindow(): { checkIn: string; checkOut: string } {
-  // Deeper offsets only activate near the seeded August ranges, so every
-  // candidate stays inside the seeded Winter season whenever -7 does.
-  for (const offset of [-7, -11, -15]) {
-    const checkIn = isoDay(offset);
-    const checkOut = isoDay(offset + 2);
-    if (!overlapsSeededRange(checkIn, checkOut)) {
-      return { checkIn, checkOut };
-    }
-  }
-  throw new Error(
-    "No conflict-free past window; realign offsets with prisma/demo-seed.ts",
-  );
-}
-
-const { checkIn: pastCheckIn, checkOut: pastCheckOut } = pickPastWindow();
 
 // Navigate from the month the calendar currently displays to the month holding
 // dateOnly, then click the day. A retroactive stay can cross a month boundary:
@@ -175,6 +155,8 @@ test.afterAll(async () => {
 });
 
 test("an admin records a past stay on behalf of a member without emailing them", async ({}, testInfo) => {
+  const { checkIn: pastCheckIn, checkOut: pastCheckOut } =
+    pastStayWindowForAttempt(testInfo.retry, SEEDED_BLOCKED_RANGES);
   const page = await adminContext.newPage();
   await page.goto("/admin/book");
   await expect(
@@ -223,27 +205,6 @@ test("an admin records a past stay on behalf of a member without emailing them",
   });
   await expect(withoutEmail).toBeVisible();
 
-  // Wait for the POST itself — the Confirm button flips to "Creating booking..."
-  // the instant the dialog choice fires, so a button-state wait would race the
-  // in-flight request and the caller's navigation could abort it.
-  const [response] = await withBookingCreateClientIp(
-    page,
-    bookingCreateIsolation("admin-retroactive-record", testInfo.retry),
-    () =>
-      Promise.all([
-        page.waitForResponse(
-          (r) =>
-            r.url().endsWith("/api/bookings") && r.request().method() === "POST",
-          { timeout: 30_000 },
-        ),
-        withoutEmail.click(),
-      ]),
-  );
-  expect(response.status(), `retroactive create (${response.status()})`).toBe(
-    201,
-  );
-
-  await expect(page).toHaveURL(/\/bookings\/[A-Za-z0-9-]+$/);
   // The persisted booking renders its past check-in date. Match the full
   // formatted date ("Friday, 3 July 2026") — a bare day-number regex collides
   // with timestamps elsewhere on the page (strict-mode violation).
@@ -254,7 +215,36 @@ test("an admin records a past stay on behalf of a member without emailing them",
     month: "long",
     year: "numeric",
   });
-  await expect(page.getByText(checkInText).first()).toBeVisible();
+
+  // Wait for the POST itself — the Confirm button flips to "Creating booking..."
+  // the instant the dialog choice fires, so a button-state wait would race the
+  // in-flight request and the caller's navigation could abort it.
+  await withBookingCreateClientIp(
+    page,
+    bookingCreateIsolation("admin-retroactive-record", testInfo.retry),
+    {
+      trigger: () =>
+        Promise.all([
+          page.waitForResponse(
+            (r) =>
+              r.url().endsWith("/api/bookings") &&
+              r.request().method() === "POST",
+            { timeout: 30_000 },
+          ),
+          withoutEmail.click(),
+        ]),
+      // The create navigates, so the interception is held until the new
+      // booking's own detail page is really rendered.
+      waitForOutcome: async ([response]) => {
+        expect(
+          response.status(),
+          `retroactive create (${response.status()})`,
+        ).toBe(201);
+        await expect(page).toHaveURL(/\/bookings\/[A-Za-z0-9-]+$/);
+        await expect(page.getByText(checkInText).first()).toBeVisible();
+      },
+    },
+  );
   await page.close();
 });
 
