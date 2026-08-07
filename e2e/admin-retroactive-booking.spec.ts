@@ -18,6 +18,7 @@ import {
   WAITLIST_FULL_WINDOW,
 } from "./helpers/fixtures";
 import {
+  CALENDAR_CLICK_TIMEOUT_MS,
   calendarMonthDirection,
   walkCalendarToMonth,
 } from "./helpers/calendar-navigation";
@@ -78,6 +79,10 @@ const SEEDED_BLOCKED_RANGES: ReadonlyArray<readonly [string, string]> = [
 // bound, kept as head-room. What is new is that exhausting it fails naming the
 // month it could not reach (#2626) instead of walking on to click a day button
 // that is not rendered.
+//
+// 14 for a one-hop worst case is looser than `walkCalendarToMonth`'s own "keep it
+// tight" instruction asks for; it is kept as inherited because the slack costs
+// nothing — the walk breaks on arrival, and each unnecessary hop is now bounded.
 const MAX_PAST_MONTH_HOPS = 14;
 
 // Navigate from the month the calendar currently displays to the month holding
@@ -93,7 +98,14 @@ async function selectPastCalendarDay(
     maxHops: MAX_PAST_MONTH_HOPS,
     context: `retroactive stay day ${dateOnly}, from the month showing ${displayedDateOnly}`,
   });
-  await page.getByRole("button", { name: calendarDayLabel(dateOnly) }).click();
+  // Bounded with the walk's own per-click budget. Every day here is in the PAST,
+  // so this is the click most exposed to a day that resolves but is not
+  // actionable — the calendar disables past days unless "Record a past stay" has
+  // taken effect. Unbounded, that waits out the 90 s test budget and reports
+  // `Target page, context or browser has been closed` (#2302, #2626).
+  await page
+    .getByRole("button", { name: calendarDayLabel(dateOnly) })
+    .click({ timeout: CALENDAR_CLICK_TIMEOUT_MS });
 }
 
 test.beforeAll(async ({ browser }) => {

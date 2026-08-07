@@ -3,7 +3,10 @@ import {
   type BookingCreateIsolation,
   withBookingCreateClientIp,
 } from "./booking-create-client-ip";
-import { walkCalendarToMonth } from "./calendar-navigation";
+import {
+  CALENDAR_CLICK_TIMEOUT_MS,
+  walkCalendarToMonth,
+} from "./calendar-navigation";
 import type { Persona } from "./personas";
 import { calendarDayLabel, type StayWindow } from "./stay-dates";
 
@@ -144,7 +147,14 @@ export async function selectCalendarDay(page: Page, dateOnly: string): Promise<v
       `MAX_MONTH_HOPS in e2e/helpers/booking.ts and RETRY_WINDOW_STRIDE in ` +
       `e2e/helpers/stay-dates.ts`,
   });
-  await page.getByRole("button", { name: calendarDayLabel(dateOnly) }).click();
+  // Bounded with the walk's own per-click budget. Arrival is asserted above, so
+  // the month is right — but a day that RESOLVES and is not actionable (out of
+  // season, disabled as past, availability still loading) would otherwise wait
+  // out the whole test budget and report `Target page, context or browser has
+  // been closed` instead of naming the day (#2302, #2626).
+  await page
+    .getByRole("button", { name: calendarDayLabel(dateOnly) })
+    .click({ timeout: CALENDAR_CLICK_TIMEOUT_MS });
 }
 
 // Drives the /book wizard through dates → guests (booking the signed-in member

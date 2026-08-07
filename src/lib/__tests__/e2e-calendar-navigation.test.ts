@@ -66,4 +66,38 @@ describe("calendar month walk cannot burn a test budget (#2626)", () => {
     expect(booking).toContain("walkCalendarToMonth(page, {");
     expect(booking).not.toMatch(/getByRole\("button", \{ name: \/Next\/ \}\)/);
   });
+
+  // The walk bounds its own hops, then hands the DAY click back to its caller.
+  // Both callers are checked here because an unbounded one is invisible in a
+  // passing run and costs the whole 90 s budget in a failing one: arrival being
+  // asserted removes the common cause (wrong month) but not a day that resolves
+  // and is not actionable — disabled as past, out of season, availability still
+  // loading. Grep both call sites, since the bound has no runtime enforcement.
+  it("bounds the day click each walk hands back to its caller", () => {
+    const dayClick =
+      /calendarDayLabel\(dateOnly\) \}\)\s*\.click\(\{\s*timeout: CALENDAR_CLICK_TIMEOUT_MS,?\s*\}\)/;
+    const bareDayClick = /calendarDayLabel\(\w+\) \}\)\s*\.click\(\)/;
+    for (const file of [
+      "e2e/helpers/booking.ts",
+      "e2e/admin-retroactive-booking.spec.ts",
+    ]) {
+      const text = source(file);
+      expect(text, `${file} must bound its calendar day click`).toMatch(dayClick);
+      expect(text, `${file} has an unbounded calendar day click`).not.toMatch(
+        bareDayClick,
+      );
+    }
+    // One constant for the hop click and the day click, so they cannot drift.
+    expect(walk).toContain("export const CALENDAR_CLICK_TIMEOUT_MS = 15_000;");
+  });
+
+  // `direction: "current"` has no control that keeps the calendar where it is —
+  // the walk maps anything not "previous" onto /Next/ — and the loop's
+  // `isVisible()` probe does not retry, so a transient miss used to click "Next"
+  // and walk AWAY from a month already on screen. `selectPastCalendarDay` yields
+  // "current" whenever the check-out shares the check-in's month, the common case.
+  it("clicks nothing when the target month is the one already displayed", () => {
+    expect(walk).toMatch(/direction === "current" \? 0 : maxHops/);
+    expect(walk).toMatch(/for \(; hops < clickableHops; hops \+= 1\)/);
+  });
 });

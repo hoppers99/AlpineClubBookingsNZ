@@ -19,4 +19,6 @@
   two of the pop-up's three steps. The pop-up is now handled by the shared,
   fully-tested routine, and the calendar step reports exactly what it could not
   reach — in fifteen seconds rather than ninety — so the next failure of this kind
-  explains itself instead of looking like a crashed browser.
+  explains itself instead of looking like a crashed browser. The same fifteen-second
+  limit now covers the click on the day itself, and a step that only needs the month
+  already on screen no longer presses "Next" and walks away from it.

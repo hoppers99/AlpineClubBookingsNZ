@@ -681,7 +681,13 @@ Two rules follow:
   unreachable calendar fails in ~15 s naming the control, the direction and the
   target month (and pointing at the modal as the usual cause) instead of timing
   out on a day button or on a closed page. It returns the hop count, which is what
-  makes "how many hops did it really do?" answerable at all.
+  makes "how many hops did it really do?" answerable at all. Bound the **day
+  click** you make on arrival with the same exported `CALENDAR_CLICK_TIMEOUT_MS`:
+  arrival being asserted means the month is right, but a day that resolves and is
+  not actionable — disabled as past, out of season, availability still loading —
+  is an unbounded click all over again. Pass `direction: "current"` when the
+  calendar should already be on the target month; the walk then clicks nothing and
+  asserts arrival only, because there is no control that keeps it where it is.
 
 Note how this one hid: it **passes in hosted CI**. The full suite runs
 `admin-override-dates.spec.ts` first, and that spec's `bookSelfToReviewStep`

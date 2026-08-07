@@ -142,8 +142,12 @@ export function pastStayWindowForAttempt(
  * narrowest thing that makes the spec re-runnable.
  *
  * The band is -16…-6 on any run date. `admin-override-dates.spec.ts` sweeps
- * -6…+1 for the same member, so the two touch at -6 only — and only on -6, which
- * neither spec ever books (it is midnight slack for both). Overlapping there is
+ * -6…+1 for the same member, so the two touch at -6 only — and -6 is a CHECK-IN
+ * for neither spec on any run date, which is all a check-in sweep can act on. It
+ * is the day of slack each band adds at its near edge: this spec's newest
+ * check-in is -7 and the override spec's oldest is -5. (-6 is not unbooked — it
+ * is attempt 0's second night, since a check-in on -7 occupies -7 and -6 — but a
+ * booking is only ever swept by its check-in.) Overlapping there is
  * harmless anyway: `playwright.config.ts` runs one worker with
  * `fullyParallel: false`, so no two specs are ever in flight together, and each
  * clears its own leftovers in its own `beforeAll` before it creates anything.
