@@ -105,9 +105,11 @@ describe("Xero contact/account-deletion lock topology mutation pins (#2597)", ()
     );
     expectOrdered(update, [
       "reserveMemberContactUpdateOperation(",
+      "try {",
       "getAuthenticatedXeroClient()",
       "accountingApi.updateContact(",
       "completeMemberContactUpdateOperation(",
+      "failXeroSyncOperation(operation.id, error)",
     ]);
     const completion = between(
       contactSource,
@@ -118,6 +120,46 @@ describe("Xero contact/account-deletion lock topology mutation pins (#2597)", ()
       "lockMemberForXeroContactLink(tx, memberId)",
       "completeXeroSyncOperation(operationId, completion, { store: tx })",
     ]);
+  });
+
+  it("keeps every profile CONTACT UPDATE producer on the Member-scoped fence", () => {
+    for (const relativePath of [
+      "src/lib/admin-member-detail-service.ts",
+      "src/app/api/auth/confirm-email-change/route.ts",
+      "src/app/api/profile/route.ts",
+      "src/app/api/members/family/[memberId]/details/route.ts",
+    ]) {
+      const producer = source(relativePath);
+      expect(producer).toContain("updateXeroContact(");
+      expect(producer).toMatch(
+        /updateXeroContact\([\s\S]*?localModel:\s*"Member"[\s\S]*?localId:/,
+      );
+    }
+  });
+
+  it("claims each deletion decision before its status-specific mutation or email", () => {
+    const route = source("src/app/api/admin/deletion-requests/[id]/route.ts");
+    const reject = between(
+      route,
+      'if (body.action === "reject") {',
+      "// --- APPROVE ---",
+    );
+    expectOrdered(reject, [
+      "claimDeletionRequestDecision(prisma",
+      'decision: "REJECTED"',
+      "sendAccountDeletionRejectedEmail(",
+    ]);
+    const approveTransaction = between(
+      route,
+      "await prisma.$transaction(async (tx) => {",
+      "memberAnonymised = true",
+    );
+    expectOrdered(approveTransaction, [
+      "claimDeletionRequestDecision(tx",
+      'decision: "APPROVED"',
+      "await tx.member.update",
+    ]);
+    expect(approveTransaction).not.toContain("tx.deletionRequest.update(");
   });
 
   it("never falls back to stored PII for a Member contact-update retry", () => {

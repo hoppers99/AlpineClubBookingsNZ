@@ -639,7 +639,7 @@ export async function POST(
           code: err.code,
           message: err.message,
           remedy:
-            "Resolve or explicitly close the Xero contact-create recovery item, then retry only the remaining deletion cleanup.",
+            "Wait for or resolve the current Xero contact operation, then retry only the remaining deletion cleanup.",
         },
       });
       return NextResponse.json(
