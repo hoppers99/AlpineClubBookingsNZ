@@ -297,7 +297,7 @@ describe("kiosk arrive/depart/roster-confirm enforcement (D-12)", () => {
   });
 });
 
-// --- 3. Kiosk chore roster generate (the admin service's duplicate) ----------
+// --- 3. Kiosk chore roster generate (shares the admin selector since #2622) --
 describe("kiosk roster generate (D-12)", () => {
   it("carries the predicate on both the booking match and the guest include", async () => {
     lodgeAuthMocks.checkLodgeAuth.mockResolvedValue({ tier: "hut-leader" });
@@ -558,8 +558,10 @@ describe("no site uses the NULL-hostile `not: PENDING` form", () => {
     const FILTERED_FILES = [
       "src/app/api/lodge/guests/[date]/route.ts",
       "src/lib/lodge-date-scoping.ts",
-      "src/lib/admin-roster-service.ts",
-      "src/app/api/lodge/roster/[date]/generate/route.ts",
+      // #2622: `admin-roster-service.ts` and the kiosk generate route used to
+      // carry one copy of this predicate each. They are now one shared chore-
+      // eligibility selector, so the predicate is asserted where it lives.
+      "src/lib/roster-eligibility.ts",
       "src/app/api/chores/roster/[date]/print/route.ts",
       "src/lib/bed-allocation-lifecycle.ts",
       "src/lib/admin-bed-allocation.ts",

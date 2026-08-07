@@ -1,26 +1,17 @@
 import { NextRequest, NextResponse } from "next/server";
 import { checkLodgeAuth, kioskLodgeAuthErrorResponse, resolveKioskLodgeId } from "@/lib/lodge-auth";
 import { addDaysDateOnly, parseDateOnly } from "@/lib/date-only";
-import { getBookingGuestDisplayAgeTier } from "@/lib/booking-guests";
 import { lodgeNullTolerantScope } from "@/lib/lodges";
-import { OPERATIONALLY_PRESENT_GUEST_WHERE } from "@/lib/member-guest-consent";
 import { prisma } from "@/lib/prisma";
 import { z } from "zod";
 import {
   allocateChores,
   ChoreTemplateInput,
-  GuestInput,
   ChoreHistoryEntry,
 } from "@/lib/chore-allocator";
 import { getLodgeCapacity, FALLBACK_LODGE_CAPACITY } from "@/lib/lodge-capacity";
-import {
-  getActiveGuestsForNight,
-  getGuestStayEnd,
-  getGuestStayStart,
-} from "@/lib/booking-guest-stay-ranges";
+import { getOperationalRosterGuestsForDate } from "@/lib/roster-eligibility";
 import logger from "@/lib/logger";
-import { OPERATIONAL_STAY_BOOKING_STATUSES } from "@/lib/booking-status";
-import { checkinNotBlockedByPendingReviewFilter } from "@/lib/booking-review";
 
 const dateSchema = z.string().regex(/^\d{4}-\d{2}-\d{2}$/);
 const bodySchema = z.object({
@@ -74,59 +65,20 @@ export async function POST(
   }
 
   try {
-    const nextDay = addDaysDateOnly(date, 1);
     const lodgeId = await resolveKioskLodgeId(authResult, prisma);
 
-    // Get guests staying on this date
-    const bookings = await prisma.booking.findMany({
-      where: {
-        status: { in: [...OPERATIONAL_STAY_BOOKING_STATUSES] },
-        checkIn: { lte: date },
-        checkOut: { gt: date },
-        ...lodgeNullTolerantScope(lodgeId),
-        guests: {
-          some: {
-            stayStart: { lte: date },
-            stayEnd: { gt: date },
-            ...OPERATIONALLY_PRESENT_GUEST_WHERE,
-          },
-        },
-        // Don't roster a booking blocked by a pending admin review (#1372 /
-        // #1422); it can't check in until an admin clears the review, so it
-        // shouldn't get chore assignments.
-        ...checkinNotBlockedByPendingReviewFilter(),
-      },
-      include: {
-        guests: {
-          where: {
-            stayStart: { lte: date },
-            stayEnd: { gt: date },
-            // Owner decision D-12 (#2307): the kiosk keeps its own copy of the
-            // admin roster query (`getGuestsForDate` in admin-roster-service.ts),
-            // so the same exclusion has to be applied here independently or a
-            // guest kept off the admin roster still gets a chore from the kiosk.
-            ...OPERATIONALLY_PRESENT_GUEST_WHERE,
-          },
-          include: {
-            member: {
-              select: { ageTier: true },
-            },
-          },
-        },
-      },
-    });
-
-    const guests: GuestInput[] = bookings.flatMap((b) =>
-      getActiveGuestsForNight(b.guests, date, b).map((g) => ({
-        id: g.id,
-        bookingId: b.id,
-        firstName: g.firstName,
-        lastName: g.lastName,
-        ageTier: getBookingGuestDisplayAgeTier(g),
-        isArriving: getGuestStayStart(g, b).getTime() === date.getTime(),
-        isDeparting: getGuestStayEnd(g, b).getTime() === nextDay.getTime(),
-      }))
-    );
+    // #2622: the kiosk used to keep its own copy of the admin roster's
+    // eligibility query, and the two had already drifted — this one loaded no
+    // explicit night rows, so a sparse stay's gap days looked like presence.
+    // Deleting the duplicate in favour of the shared selector is safe here
+    // because this endpoint runs no transaction at all: it is a read-only
+    // preview that returns allocations for the wizard without saving them, so
+    // there is no transaction for a shared call to widen. Every guard the
+    // duplicate carried (D-12 consent on both the booking match and the guest
+    // include, the pending-review filter, operational statuses, lodge scoping)
+    // lives in `getOperationalRosterGuestsForDate` unchanged, and the wizard
+    // now sees exactly the people the admin roster would.
+    const guests = await getOperationalRosterGuestsForDate(date, lodgeId);
 
     // Get selected chore templates
     const choreTemplates = await prisma.choreTemplate.findMany({
