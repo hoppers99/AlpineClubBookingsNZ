@@ -10,6 +10,8 @@ export const XERO_CONTACT_CREATE_LOCAL_LINK_FAILURE_PHASE =
   "local_link_after_xero_resolution";
 export const XERO_CONTACT_CREATE_PROVIDER_CREATED_PENDING_LINK_PHASE =
   "provider_contact_created_local_link_pending";
+export const XERO_CONTACT_CREATE_STALE_RUNNING_ERROR_CODE =
+  "ORPHANED_STALE_RUNNING";
 
 export type MemberContactCreateRecoveryState =
   | "CREATE_IN_PROGRESS"
@@ -38,6 +40,21 @@ const providerCreatedPayloadWhere = (phase: string) => [
     },
   },
 ] satisfies Prisma.XeroSyncOperationWhereInput[];
+
+export function ambiguousMemberContactCreateReservationWhere(
+  memberId: string,
+): Prisma.XeroSyncOperationWhereInput {
+  return {
+    ...contactCreateIdentityWhere(memberId),
+    OR: [
+      { status: "RUNNING" },
+      {
+        status: "FAILED",
+        lastErrorCode: XERO_CONTACT_CREATE_STALE_RUNNING_ERROR_CODE,
+      },
+    ],
+  };
+}
 
 export function unresolvedMemberContactCreateRecoveryWhere(
   memberId: string,
@@ -68,6 +85,10 @@ export function memberContactCreateMergeBlockerWhere(
     ...contactCreateIdentityWhere(memberId),
     OR: [
       { status: "RUNNING" },
+      {
+        status: "FAILED",
+        lastErrorCode: XERO_CONTACT_CREATE_STALE_RUNNING_ERROR_CODE,
+      },
       {
         status: "FAILED",
         OR: [
@@ -177,10 +198,7 @@ export async function getMemberContactCreateRecoveryState(params: {
     return "PROVIDER_CREATED_LINK_PENDING";
   }
   const reservation = await prisma.xeroSyncOperation.findFirst({
-    where: {
-      ...contactCreateIdentityWhere(params.memberId),
-      status: "RUNNING",
-    },
+    where: ambiguousMemberContactCreateReservationWhere(params.memberId),
     select: { id: true },
   });
   return reservation ? "CREATE_IN_PROGRESS" : null;
