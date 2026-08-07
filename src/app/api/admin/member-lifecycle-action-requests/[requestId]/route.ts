@@ -10,6 +10,7 @@ import { getClientIp } from "@/lib/rate-limit";
 import { requireAdmin } from "@/lib/session-guards";
 import {
   XERO_CONTACT_CREATE_BLOCKS_DELETION_CODE,
+  XERO_CONTACT_OPERATION_RESOLVE_REMEDY,
   XeroContactCreateBlocksDeletionError,
 } from "@/lib/xero-contact-create-recovery";
 
@@ -57,7 +58,18 @@ export async function PATCH(
     if (hostingRetry) return hostingRetry;
     if (err instanceof XeroContactCreateBlocksDeletionError) {
       return NextResponse.json(
-        { error: err.message, code: XERO_CONTACT_CREATE_BLOCKS_DELETION_CODE },
+        {
+          error: err.message,
+          code: XERO_CONTACT_CREATE_BLOCKS_DELETION_CODE,
+          // #2623 T7: the operator needs to know WHICH operation refused and
+          // where to clear it, not just that something Xero-shaped did.
+          ...(err.operationId
+            ? {
+                xeroOperationId: err.operationId,
+                remedy: XERO_CONTACT_OPERATION_RESOLVE_REMEDY,
+              }
+            : {}),
+        },
         { status: err.statusCode },
       );
     }

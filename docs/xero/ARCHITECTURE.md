@@ -47,15 +47,48 @@ track their own authoritative commit phases and return fixed `409 XERO_PARTIAL_S
 recovery metadata for ordinary failures as well as hosting-participant contention.
 Only positive, proven facts cross the API boundary; caught provider/database detail
 remains server-side. Refresh and cleanup flags are included only while that specific
-step is unfinished.
+step is unfinished. The partial-unlink recovery names the two pieces of state that
+can outlive the nulled pointer — the member's CONTACT ledger rows may still be
+ACTIVE (`contactLinkRowsMayRemainActive`) and the `XERO_UNLINK` audit entry may be
+missing (`auditEntryMayBeMissing`) — each only while that step is genuinely
+unfinished, so the operator knows what to check rather than only that the unlink
+"completed only in part".
 
 An exact unmarked member contact-create reservation is treated separately as
 `CREATE_IN_PROGRESS`: it suppresses another Create but does not claim that Xero
 created a contact. Resetting a stale `RUNNING` reservation to `FAILED` preserves
 that conservative state through `ORPHANED_STALE_RUNNING`. A recorded
 provider-created pending-link phase retains the stronger recovery copy even after
-the same stale reset. Linking, successful completion, or explicit resolution
-clears either fence.
+the same stale reset.
+
+Three things clear these fences, and only these three. Successful completion closes
+the operation through the normal funnel. Explicit admin resolution
+(`/api/admin/xero/operations/[id]/resolve`) sets `manuallyResolvedAt`, which every
+blocker predicate filters on. And a canonical link commit closes a
+provider-created create whose OWN recorded contact is the one just linked —
+`closeProviderCreatedContactRecoveryForLinkedContact`, called from the manual link,
+the inbound patch, and `findOrCreateXeroContact`'s phase-2 write, inside the same
+Member row fence. That last one is deliberately narrow: `FAILED` rows only (a
+`RUNNING` reservation is still live provider work), proven provider creation only,
+and an exact `resolvedContactId` match. A create that made a *different* contact
+stays open, because Xero then holds a second contact for this member and that is a
+duplicate an operator must adjudicate. The write is a status-guarded `updateMany`,
+so it is idempotent and a concurrent admin resolve simply wins.
+
+Member merge, account deletion and the member detail display all read one predicate
+for this — `findMemberContactChangeMergeBlocker` — so a refused member can never
+render as clean. The refusals name the blocking operation id and point at
+Admin → Xero → Operations; the member detail Xero panel discloses the same
+operation even when the member IS linked, which is precisely the case that used to
+read clean while both lifecycle operations refused them.
+
+`findOrCreateXeroContact` with `repairExistingLink` is the one caller allowed to
+reserve a CREATE for an already-linked member: the caller has declared the current
+link unusable (Xero rejected the reference, or an admin forced a re-sync), and
+refusing was a dead end for a walk-in placeholder-email owner whose email search is
+skipped by design. Repair first re-resolves by exact name — that search excludes
+archived contacts, so a live same-named contact is re-linked rather than duplicated,
+while an archived or absent one leaves creation as the honest outcome.
 
 All consuming admin surfaces treat this as recovery, not a retryable failure. They
 suppress duplicate create/link/unlink/import actions, reload or reflect canonical

@@ -77,6 +77,77 @@ describe("Xero contact/account-deletion lock topology mutation pins (#2597)", ()
       "tx.member.update",
       "upsertXeroObjectLink(",
       "{ store: tx }",
+      // #2623 T7: and closes the create this link just completed, under the
+      // same fence, so the operation cannot outlive its own recovery.
+      "closeProviderCreatedContactRecoveryForLinkedContact(",
+    ]);
+  });
+
+  /**
+   * #2623 T7. The member detail page and the two lifecycle refusals must ask the
+   * SAME question. They did not: the page's only Xero signal short-circuited on
+   * `Member.xeroContactId`, while neither blocker predicate consults the link, so
+   * a linked-but-blocked member rendered clean and got refused anyway.
+   */
+  it("reads one blocker predicate for merge, deletion and the member display", () => {
+    for (const relativePath of [
+      "src/lib/member-merge.ts",
+      "src/lib/admin-member-detail-service.ts",
+    ]) {
+      expect(source(relativePath)).toContain(
+        "findMemberContactChangeMergeBlocker(",
+      );
+    }
+
+    const recovery = source("src/lib/xero-contact-create-recovery.ts");
+    // Every consumer funnels through the one reader rather than re-deriving it.
+    expect(recovery).toContain(
+      "export async function findMemberContactChangeMergeBlocker(",
+    );
+    expect(recovery).toMatch(
+      /hasMemberContactChangeMergeBlocker[\s\S]{0,240}findMemberContactChangeMergeBlocker\(memberId, db\)/,
+    );
+    expect(recovery).toMatch(
+      /assertNoMemberContactChangeBlockerForDeletion[\s\S]{0,320}findMemberContactChangeMergeBlocker\(memberId, db\)/,
+    );
+
+    // And the display renders it, so a refused member cannot look clean.
+    expect(
+      source(
+        "src/app/(admin)/admin/members/[id]/_components/member-xero-contact-summary.tsx",
+      ),
+    ).toContain("member.xeroContactLifecycleBlocker");
+  });
+
+  /**
+   * #2623 T2: the repair path reaches the create reservation whenever Xero
+   * produced no match — deterministically for a walk-in placeholder owner whose
+   * email search is skipped by design. The reservation must accept explicit
+   * repair intent, and repair must ask Xero by name BEFORE creating so a live
+   * same-named contact is re-linked instead of duplicated.
+   */
+  it("lets an explicit repair reserve, but only after a name re-resolution", () => {
+    const contacts = source("src/lib/xero-contacts.ts");
+    const reservation = between(
+      contacts,
+      "export async function reserveMemberContactCreateOperation<T>(",
+      "export async function reserveMemberContactUpdateOperation<T>(",
+    );
+    expect(reservation).toContain(
+      "if (locked.xeroContactId && !options?.repairExistingLink)",
+    );
+
+    const findOrCreate = between(
+      contacts,
+      "export async function findOrCreateXeroContact(",
+      "async function syncContactGroupsBestEffort(",
+    );
+    expectOrdered(findOrCreate, [
+      "isPlaceholderContactEmail(member.email)",
+      "options?.repairExistingLink && previousXeroContactId",
+      "findExistingXeroContactByExactName({",
+      "reserveMemberContactCreateOperation(",
+      "accountingApi.createContacts(",
     ]);
   });
 

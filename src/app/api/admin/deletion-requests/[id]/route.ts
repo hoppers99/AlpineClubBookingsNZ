@@ -50,6 +50,7 @@ import {
   assertNoMemberContactChangeBlockerForDeletion,
   DELETED_ACCOUNT_PASSWORD_HASH,
   lockMemberForAccountDeletionXeroFence,
+  XERO_CONTACT_OPERATION_RESOLVE_REMEDY,
   XeroContactCreateBlocksDeletionError,
 } from "@/lib/xero-contact-create-recovery";
 
@@ -356,7 +357,18 @@ export async function POST(
     } catch (err) {
       if (err instanceof XeroContactCreateBlocksDeletionError) {
         return NextResponse.json(
-          { error: err.message, code: err.code },
+          {
+            error: err.message,
+            code: err.code,
+            // #2623 T7: name the operation and where the remedy lives, so the
+            // refusal is actionable instead of an unexplained 409.
+            ...(err.operationId
+              ? {
+                  xeroOperationId: err.operationId,
+                  remedy: XERO_CONTACT_OPERATION_RESOLVE_REMEDY,
+                }
+              : {}),
+          },
           { status: err.statusCode },
         );
       }
@@ -776,8 +788,9 @@ export async function POST(
         blocker: {
           code: err.code,
           message: err.message,
-          remedy:
-            "Wait for or resolve the current Xero contact operation, then retry only the remaining deletion cleanup.",
+          remedy: `Wait for or resolve the current Xero contact operation${
+            err.operationId ? ` (${err.operationId})` : ""
+          } under Admin → Xero → Operations, then retry only the remaining deletion cleanup.`,
         },
       });
       return NextResponse.json(
@@ -785,6 +798,7 @@ export async function POST(
           ...xeroRecovery,
           code: err.code,
           error: err.message,
+          ...(err.operationId ? { xeroOperationId: err.operationId } : {}),
         },
         { status: err.statusCode },
       );
