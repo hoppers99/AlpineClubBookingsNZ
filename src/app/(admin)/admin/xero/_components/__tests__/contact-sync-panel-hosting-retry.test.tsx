@@ -89,6 +89,7 @@ describe("ContactSyncPanel participant retry recovery (#2597)", () => {
     render(
       <ContactSyncPanel
         connected
+        currentXeroPath="/admin/xero?section=contactSync&view=failed"
         open
         onToggle={vi.fn()}
         clubName="Test Club"
@@ -124,12 +125,12 @@ describe("ContactSyncPanel participant retry recovery (#2597)", () => {
     })
     expect(screen.getByText(/Member ID: member\/off-page - already linked to Xero/i)).toBeInTheDocument()
     const recoveryAction = screen.getByRole("link", {
-      name: "Open affected member",
+      name: "Open affected member: Riley Chen",
     })
     expect(alert).toContainElement(recoveryAction)
     expect(recoveryAction).toHaveAttribute(
       "href",
-      "/admin/members/member%2Foff-page",
+      "/admin/members/member%2Foff-page?returnTo=%2Fadmin%2Fxero%3Fsection%3DcontactSync%26view%3Dfailed",
     )
     expect(onRefreshDiagnostics).toHaveBeenCalledTimes(1)
     expect(recoveryAction).toBeInTheDocument()
@@ -139,6 +140,7 @@ describe("ContactSyncPanel participant retry recovery (#2597)", () => {
     render(
       <ContactSyncPanel
         connected
+        currentXeroPath="/admin/xero"
         open={false}
         onToggle={vi.fn()}
         clubName="Test Club"

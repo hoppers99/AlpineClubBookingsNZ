@@ -4,6 +4,7 @@ import { useEffect, useState } from "react"
 import Link from "next/link"
 import { Button } from "@/components/ui/button"
 import { FocusedActionError } from "@/components/focused-action-error"
+import { buildHrefWithReturnTo } from "@/lib/internal-return-path"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
@@ -29,6 +30,7 @@ export function ContactSyncPanel({
   onMessage,
   onRefreshOperations,
   onRefreshDiagnostics,
+  currentXeroPath,
 }: {
   connected: boolean
   open: boolean
@@ -40,6 +42,7 @@ export function ContactSyncPanel({
   onMessage: (message: string) => void
   onRefreshOperations: () => void
   onRefreshDiagnostics: () => void
+  currentXeroPath: string
 }) {
   const [error, setError] = useState("")
   const [forceSyncType, setForceSyncType] = useState<ForceSyncType>("CONTACT")
@@ -333,7 +336,11 @@ export function ContactSyncPanel({
           recoveryMember ? (
             <Button asChild variant="outline" size="sm">
               <Link
-                href={`/admin/members/${encodeURIComponent(recoveryMember.id)}`}
+                href={buildHrefWithReturnTo(
+                  `/admin/members/${encodeURIComponent(recoveryMember.id)}`,
+                  currentXeroPath,
+                )}
+                aria-label={`Open affected member: ${recoveryMember.name}`}
               >
                 Open affected member
               </Link>
