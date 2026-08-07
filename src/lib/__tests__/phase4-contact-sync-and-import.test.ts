@@ -245,7 +245,7 @@ describe("Phase 4 contact sync and cached import", () => {
     });
   });
 
-  it("builds contact update idempotency keys from the exact outbound request payload", async () => {
+  it("builds member contact updates from the locked row instead of stale caller PII", async () => {
     mocks.prisma.member.findUnique.mockResolvedValue({
       id: "member_1",
       firstName: "Jane",
@@ -260,12 +260,12 @@ describe("Phase 4 contact sync and cached import", () => {
     await updateXeroContact(
       "contact_1",
       {
-        firstName: "Jane",
-        lastName: "Doe",
-        email: "jane@example.com",
-        phoneCountryCode: "64",
-        phoneAreaCode: "21",
-        phoneNumber: "1234567",
+        firstName: "Stale",
+        lastName: "Snapshot",
+        email: "stale@example.com",
+        phoneCountryCode: "1",
+        phoneAreaCode: "555",
+        phoneNumber: "0000000",
       },
       {
         localModel: "Member",
@@ -295,6 +295,9 @@ describe("Phase 4 contact sync and cached import", () => {
       })
     );
     expect(hashPayload.contacts[0]).not.toHaveProperty("companyNumber");
+    expect(hashPayload.contacts[0]).not.toEqual(
+      expect.objectContaining({ emailAddress: "stale@example.com" }),
+    );
     expect(mocks.accountingApi.updateContact).toHaveBeenCalledWith(
       "tenant_1",
       "contact_1",

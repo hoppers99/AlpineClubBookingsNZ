@@ -157,8 +157,21 @@ describe("Xero contact/account-deletion lock topology mutation pins (#2597)", ()
       "src/lib/xero-inbound/contact.ts",
       "src/lib/xero-member-import.ts",
     ]) {
-      expect(source(relativePath)).toContain("applyInboundMemberContactPatch(");
+      const participant = source(relativePath);
+      expect(participant).toContain("applyInboundMemberContactPatch(");
+      expect(participant).not.toContain("prisma.member.update(");
     }
+
+    const oneContactImport = source(
+      "src/app/api/admin/xero/import-member-contact/route.ts",
+    );
+    expectOrdered(oneContactImport, [
+      "prisma.$transaction",
+      "tx.member.create",
+      "ensureMemberAccessRolesFromCompatibilityFields(tx",
+      "upsertXeroObjectLink(",
+      "{ store: tx }",
+    ]);
   });
 
   it("builds member UPDATE payloads from the locked post-reservation snapshot", () => {
