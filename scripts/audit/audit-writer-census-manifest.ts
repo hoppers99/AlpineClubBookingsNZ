@@ -59,15 +59,26 @@ export const AUDIT_CENSUS_TOTALS = {
    * inside the release's own transaction, because that row is the only surviving
    * record of who held the claim the transition destroys. Categorised `privacy`
    * at the site, so it does not join `UNCATEGORISED_AUDIT_WRITERS` below.
+   *
+   * 419 -> 421 (#2595): the new `bed-allocation-move.ts` records the two things
+   * a reviewed move does — `BED_ALLOCATION_MOVE_APPLIED` for the move itself and
+   * `BED_ALLOCATION_PARTNERS_PROMOTED` for the partner rows it carries with it —
+   * each with the awaited `createAuditLog` inside the move's own transaction, so
+   * a rolled-back move records nothing. Both categorised `lodge` at the site, so
+   * neither joins `UNCATEGORISED_AUDIT_WRITERS` below.
+   *
+   * Measured on the merged tree, never by adding branch deltas: this figure and
+   * the ones below came from running the census after merging `origin/main`.
    */
-  writeSites: 419,
+  writeSites: 421,
   /** Of those, sites whose event object carries no `category` key. */
   uncategorised: 82,
   /** Per-sink totals, so a shift between forms cannot cancel out in the total. */
   bySink: {
     logAudit: { total: 238, uncategorised: 69 },
     // 101 -> 102 (#2627): the deletion-approval release, above.
-    createAuditLog: { total: 102, uncategorised: 11 },
+    // 102 -> 104 (#2595): the two reviewed-move writes, above.
+    createAuditLog: { total: 104, uncategorised: 11 },
     createStructuredAuditLog: { total: 8, uncategorised: 0 },
     "auditLog.create": { total: 71, uncategorised: 2 },
   },
@@ -85,7 +96,12 @@ export const AUDIT_CENSUS_TOTALS = {
     family: 27,
     admin: 117,
     security: 16,
-    lodge: 16,
+    // 16 -> 18 (#2595): the two reviewed-move writes, above. `lodge` is the
+    // category every other bed-allocation write already uses, and it is not one
+    // of the three (`admin`, `security`, `system`) readable with support:view
+    // alone — so the support-only population pinned below does not move, and no
+    // reader gains access it did not already have to the rows beside these.
+    lodge: 18,
     xero: 19,
     communication: 12,
     // 14 -> 15 (#2627): `member.deletion_approval_claim_released`. Still a

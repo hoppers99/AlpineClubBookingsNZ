@@ -322,7 +322,7 @@ const NOTICE = "AdminViewOnlyNotice";
 */
 const FIGURES = {
   /** Every `<ViewOnlyActionButton>` render site in the admin tree. */
-  callSites: 312,
+  callSites: 313,
   /** Those that hand their explanation to a banner, by either rule. */
   optOuts: 263,
   /** `describeReason={false}` — needs a banner in the SAME file. */
@@ -1291,6 +1291,22 @@ describe("view-only section banner coverage (#2160)", () => {
                trails the measured total by one; #2637 supplies the correct
                reconstruction of that gap and this note deliberately does not
                guess at it.)
+          313  +1  #2595 adds the bed-allocation **Move** control to the
+               allocation board's row menu. It is an EXCEPTION, not an opt-out:
+               it keeps its own per-button reason because the menu it sits in is
+               popover content with no banner above it, which is the same
+               treatment every other control in that menu already has. So
+               callSites 312 -> 313 and exceptions 49 -> 50 across 26 -> 27
+               files, while optOuts and staticOptOuts do not move at all — the
+               one entry in this ledger where the opt-out figures stay still.
+
+               Re-measured on the MERGED tree rather than by adding this
+               branch's +1 to the base it was written against. That distinction
+               bit here: this branch and #2637 each add one independent control,
+               both sides' literals happened to read 312, and git resolves a
+               byte-identical literal silently — so the only trustworthy number
+               is the one the census reports after the merge, and whichever of
+               the two lands second has to run it again.
       */
       // #2259 adds the per-booking "No emails"
       // switch (`booking-no-emails-controls.tsx`), a leaf control dropped into
