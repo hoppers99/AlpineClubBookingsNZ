@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
+import { readFile } from "node:fs/promises";
 
 // ---------------------------------------------------------------------------
 // Mock Prisma
@@ -14,6 +15,12 @@ const mockPrisma = {
     findMany: vi.fn(),
     findUnique: vi.fn(),
     update: vi.fn(),
+  },
+  // #2621: the arrival-time route now records what it changed. `logAudit` is
+  // fire-and-forget over this table, so without the double the write throws
+  // inside the swallowed catch and the audit entry is untestable.
+  auditLog: {
+    create: vi.fn(),
   },
   member: {
     count: vi.fn(),
@@ -441,6 +448,112 @@ describe("#31: Expected Arrival Time", () => {
       expect(data.expectedArrivalTime).toBe("14:00");
     });
 
+    // #2621: this route wrote to a booking and recorded nothing. An admin or a
+    // Booking Officer may set the time on ANY member's booking (#1313 option
+    // A2), so without this the member had no way to learn who changed it.
+    it("records an audit entry naming the actor, the owner and the old and new values", async () => {
+      mockAuth.mockResolvedValue({
+        user: authUser("admin-1", "ADMIN"),
+      });
+      mockSessionMemberRoles("admin-1", "ADMIN");
+      mockPrisma.booking.findUnique.mockResolvedValue({
+        memberId: "member-1",
+        checkIn: futureCheckIn,
+        status: "CONFIRMED",
+        expectedArrivalTime: "09:30",
+      });
+      mockPrisma.booking.update.mockResolvedValue({
+        id: "booking-1",
+        expectedArrivalTime: "17:00",
+      });
+
+      const { NextRequest } = await import("next/server");
+      const { PUT } = await import(
+        "@/app/api/bookings/[id]/arrival-time/route"
+      );
+      const req = new NextRequest("http://localhost/api/bookings/booking-1/arrival-time", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ expectedArrivalTime: "17:00" }),
+      });
+      const res = await PUT(req, { params: Promise.resolve({ id: "booking-1" }) });
+      expect(res.status).toBe(200);
+
+      expect(mockPrisma.auditLog.create).toHaveBeenCalledTimes(1);
+      const entry = mockPrisma.auditLog.create.mock.calls[0][0].data;
+      expect(entry.action).toBe("booking.arrival-time.set");
+      // The actor is the admin, the subject is the booking's owner.
+      expect(entry.memberId).toBe("admin-1");
+      expect(entry.targetId).toBe("booking-1");
+      // The old->new pair is the reason the entry exists.
+      expect(entry.details).toContain("09:30");
+      expect(entry.details).toContain("17:00");
+    });
+
+    it("records the clear as its own audit entry", async () => {
+      mockAuth.mockResolvedValue({
+        user: authUser("member-1", "USER"),
+      });
+      mockSessionMemberRoles("member-1", "USER");
+      mockPrisma.booking.findUnique.mockResolvedValue({
+        memberId: "member-1",
+        checkIn: futureCheckIn,
+        status: "CONFIRMED",
+        expectedArrivalTime: "17:00",
+      });
+      mockPrisma.booking.update.mockResolvedValue({
+        id: "booking-1",
+        expectedArrivalTime: null,
+      });
+
+      const { NextRequest } = await import("next/server");
+      const { DELETE } = await import(
+        "@/app/api/bookings/[id]/arrival-time/route"
+      );
+      const req = new NextRequest("http://localhost/api/bookings/booking-1/arrival-time", {
+        method: "DELETE",
+      });
+      const res = await DELETE(req, { params: Promise.resolve({ id: "booking-1" }) });
+      expect(res.status).toBe(200);
+
+      expect(mockPrisma.auditLog.create).toHaveBeenCalledTimes(1);
+      const entry = mockPrisma.auditLog.create.mock.calls[0][0].data;
+      expect(entry.action).toBe("booking.arrival-time.clear");
+      expect(entry.details).toContain("17:00");
+    });
+
+    // #2621: the minute values the old `[0-5]0` pattern let through. Each of
+    // these returned 200 and stored a time the picker could never show back.
+    it.each(["14:10", "14:20", "14:40", "14:50"])(
+      "rejects %s — a minute the picker can never round-trip",
+      async (badTime) => {
+        mockAuth.mockResolvedValue({
+          user: authUser("member-1", "USER"),
+        });
+        mockPrisma.booking.findUnique.mockResolvedValue({
+          memberId: "member-1",
+          checkIn: futureCheckIn,
+          status: "CONFIRMED",
+          expectedArrivalTime: null,
+        });
+
+        const { NextRequest } = await import("next/server");
+        const { PUT } = await import(
+          "@/app/api/bookings/[id]/arrival-time/route"
+        );
+        const req = new NextRequest("http://localhost/api/bookings/booking-1/arrival-time", {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ expectedArrivalTime: badTime }),
+        });
+        const res = await PUT(req, { params: Promise.resolve({ id: "booking-1" }) });
+        expect(res.status).toBe(400);
+        expect(mockPrisma.booking.update).not.toHaveBeenCalled();
+        // A refused write records nothing.
+        expect(mockPrisma.auditLog.create).not.toHaveBeenCalled();
+      }
+    );
+
     it("rejects invalid time format", async () => {
       mockAuth.mockResolvedValue({
         user: authUser("member-1", "USER"),
@@ -741,15 +854,66 @@ describe("#31: Expected Arrival Time", () => {
 // ---------------------------------------------------------------------------
 
 describe("#31: Booking creation schema accepts expectedArrivalTime", () => {
-  it("createBookingSchema allows optional expectedArrivalTime field", async () => {
-    // The Zod schema in bookings/route.ts should accept the field
-    // We test this indirectly by verifying the regex pattern
-    const pattern = /^([01]\d|2[0-3]):[0-5]0$/;
-    expect(pattern.test("14:00")).toBe(true);
-    expect(pattern.test("06:30")).toBe(true);
-    expect(pattern.test("23:00")).toBe(true);
-    expect(pattern.test("14:15")).toBe(false);
-    expect(pattern.test("24:00")).toBe(false);
+  // #2621: this test used to declare `const pattern = /^([01]\d|2[0-3]):[0-5]0$/`
+  // — its OWN copy of the rule it was meant to be checking. So it agreed with
+  // the routes about `:15` and `24:00` while all three of them were wrong about
+  // `:10`, `:20`, `:40` and `:50`, and no amount of running it could ever have
+  // said so. It now imports the one pattern the routes import.
+  it("accepts only the canonical 30-minute set: HH:00 and HH:30", async () => {
+    const { ARRIVAL_TIME_PATTERN, isValidArrivalTime } = await import(
+      "@/lib/arrival-time"
+    );
+
+    for (const valid of ["00:00", "00:30", "06:30", "14:00", "23:00", "23:30"]) {
+      expect(isValidArrivalTime(valid)).toBe(true);
+    }
+
+    // The four the old `[0-5]0` pattern accepted and the picker can never show
+    // back. Each of these PASSED before the fix — they are the mutation proof
+    // that the shared pattern is not the old one under a new name.
+    for (const wrongMinute of ["14:10", "14:20", "14:40", "14:50"]) {
+      expect(ARRIVAL_TIME_PATTERN.test(wrongMinute)).toBe(false);
+      expect(isValidArrivalTime(wrongMinute)).toBe(false);
+    }
+
+    // Still refused, exactly as before.
+    for (const invalid of ["14:15", "24:00", "25:00", "9:00", "", "1400", "14:00:00"]) {
+      expect(isValidArrivalTime(invalid)).toBe(false);
+    }
+  });
+
+  it("is the SAME rule the booking-create schema and the arrival-time route enforce", async () => {
+    const { ARRIVAL_TIME_PATTERN } = await import("@/lib/arrival-time");
+    const createSource = await readFile(
+      new URL("../../app/api/bookings/route.ts", import.meta.url),
+      "utf8"
+    );
+    const arrivalSource = await readFile(
+      new URL("../../app/api/bookings/[id]/arrival-time/route.ts", import.meta.url),
+      "utf8"
+    );
+    // Neither route may carry a regex literal for this field again: three
+    // copies of one rule is what let the minute bug live in all three.
+    for (const source of [createSource, arrivalSource]) {
+      expect(source).toContain("ARRIVAL_TIME_PATTERN");
+      // The literal itself, not the prose about it: the comments in both files
+      // quote the old pattern by way of explaining why it is gone.
+      expect(source).not.toMatch(/:\[0-5\]0\$\//);
+    }
+    expect(ARRIVAL_TIME_PATTERN.source).toContain("(00|30)");
+  });
+
+  it("renders a stored time as a 12-hour clock, and leaves a malformed legacy value alone", async () => {
+    const { formatArrivalTime } = await import("@/lib/arrival-time");
+    expect(formatArrivalTime("00:00")).toBe("12:00 AM");
+    expect(formatArrivalTime("00:30")).toBe("12:30 AM");
+    expect(formatArrivalTime("09:30")).toBe("9:30 AM");
+    expect(formatArrivalTime("12:00")).toBe("12:00 PM");
+    expect(formatArrivalTime("17:30")).toBe("5:30 PM");
+    expect(formatArrivalTime("23:00")).toBe("11:00 PM");
+    // A row written before the pattern was tightened must not render as
+    // "NaN:NaN" on a member's booking page.
+    expect(formatArrivalTime("14:10")).toBe("14:10");
   });
 });
 

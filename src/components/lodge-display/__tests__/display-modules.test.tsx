@@ -36,6 +36,9 @@ function row(overrides: Partial<DisplayStateBooking>): DisplayStateBooking {
     guestCount: 1,
     stayStart: "2026-04-13",
     stayEnd: "2026-04-15",
+    // #2621: no expected arrival time is the ordinary case, so the base fixture
+    // has none; the cases that exercise the chip set it explicitly.
+    arrivalTime: null,
     ...overrides,
   };
 }
@@ -223,6 +226,77 @@ describe("ArrivalsBoard", () => {
     );
     // max-names clamps to 1 → 5 overflow
     expect(screen.getByText("+5")).toBeDefined();
+  });
+
+  // #2621: the expected arrival time chip. The privacy decision is made in
+  // `lodge-display-state` — by the time a payload reaches this module, a row
+  // the wall may not name already carries `arrivalTime: null`. What is tested
+  // here is that the module prints what it is given, in the 12-hour form the
+  // kiosk and the booking page use, and that it stays quiet otherwise.
+  it("shows the expected arrival time on a bar that starts inside the window", () => {
+    const { container } = render(
+      <ArrivalsBoard
+        state={state({
+          bookings: [row({ key: "a", arrivalTime: "17:30" })],
+        })}
+      />
+    );
+    expect(screen.getByText("arr 5:30 PM")).toBeDefined();
+    expect(container.querySelector(".display-bar-arrival")).not.toBeNull();
+  });
+
+  it("shows nothing when the row carries no time — the ordinary case", () => {
+    const { container } = render(
+      <ArrivalsBoard
+        state={state({ bookings: [row({ key: "a", arrivalTime: null })] })}
+      />
+    );
+    expect(container.querySelector(".display-bar-arrival")).toBeNull();
+    expect(screen.queryByText(/^arr /)).toBeNull();
+  });
+
+  it("shows no time on a bar clipped at the left edge — the arrival day is off the board", () => {
+    // The module can be configured to show fewer days than the state window, so
+    // it guards this itself rather than trusting the payload alone. A time with
+    // no visible arrival day beside it reads as tonight.
+    const { container } = render(
+      <ArrivalsBoard
+        state={state({
+          bookings: [
+            row({
+              key: "a",
+              stayStart: "2026-04-11",
+              stayEnd: "2026-04-15",
+              arrivalTime: "17:30",
+            }),
+          ],
+        })}
+      />
+    );
+    expect(container.querySelector(".display-bar-arrival")).toBeNull();
+  });
+
+  it("never shows a time on a row whose names are withheld", () => {
+    // Belt and braces against the payload: a grouped row renders "label ·
+    // count" instead of names, and must not grow a movement time beside it even
+    // if a caller hands one in.
+    const { container } = render(
+      <ArrivalsBoard
+        state={state({
+          bookings: [
+            row({
+              key: "a",
+              wholeLodge: true,
+              label: "Harakeke College",
+              guests: null,
+              guestCount: 14,
+              arrivalTime: null,
+            }),
+          ],
+        })}
+      />
+    );
+    expect(container.querySelector(".display-bar-arrival")).toBeNull();
   });
 });
 

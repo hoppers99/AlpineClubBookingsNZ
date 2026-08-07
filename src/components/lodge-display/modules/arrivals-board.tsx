@@ -12,6 +12,7 @@ import {
   type DisplayPanelOptions,
 } from "./module-options";
 import { DISPLAY_SHORT_WEEKDAY } from "./status-helpers";
+import { formatArrivalTime } from "@/lib/arrival-time";
 
 // The everyday bar board (fork issues #30/#56; visual reference:
 // docs/lobby-display/mockups/everyday-bar-board.html). Pure function of the
@@ -221,6 +222,22 @@ export function ArrivalsBoard({
                         <span className="display-bar-overflow"> +{overflow}</span>
                       )}
                     </span>
+                    {/* #2621: the expected arrival time, for tonight's (or a
+                        later window day's) arrivals. Rendered from the payload
+                        only — `lodge-display-state` has already decided
+                        whether this wall may show it at all, applying the SAME
+                        name gate that filled `guests`, so a row that shows no
+                        names carries no time to print. The extra
+                        `!startsBeforeWindow` here is the board's own local
+                        guard: this module can be configured to show fewer days
+                        than the state window, and a bar clipped at the left
+                        edge must not sprout an arrival time for a day the
+                        viewer cannot see. */}
+                    {row.arrivalTime && !layout.startsBeforeWindow && (
+                      <span className="display-bar-arrival">
+                        arr {formatArrivalTime(row.arrivalTime)}
+                      </span>
+                    )}
                     <span className="display-bar-out">{barMeta(row, layout)}</span>
                   </div>
                 );
