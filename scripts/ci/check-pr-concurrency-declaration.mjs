@@ -39,12 +39,20 @@ function fieldValuePattern(field) {
 }
 
 export function validateConcurrencyDeclaration(body, changedFiles = []) {
-  const headingIndex = body.indexOf(HEADING);
-  if (headingIndex < 0) {
+  // Anchor to the START OF A LINE. A plain indexOf also matches the heading text
+  // quoted inside prose or a code span — and a PR body that explains this gate
+  // will quote it. When that mention comes first, the "section" starts there and
+  // runs to the next `## `, so the real declaration below is never read and every
+  // field reports missing. Found exactly that way: this gate's own PR body.
+  const headingMatch = new RegExp(
+    `^[^\\S\\r\\n]*${escapeRegex(HEADING)}[^\\S\\r\\n]*\\r?$`,
+    "m",
+  ).exec(body);
+  if (!headingMatch) {
     throw new Error(`PR body must include ${HEADING}.`);
   }
 
-  const afterHeading = body.slice(headingIndex + HEADING.length);
+  const afterHeading = body.slice(headingMatch.index + headingMatch[0].length);
   const nextHeadingIndex = afterHeading.search(/\n##\s+/);
   const section = nextHeadingIndex >= 0 ? afterHeading.slice(0, nextHeadingIndex) : afterHeading;
 
@@ -62,8 +70,26 @@ export function validateConcurrencyDeclaration(body, changedFiles = []) {
 
   for (const field of REQUIRED_FIELDS) {
     if (!fieldValuePattern(field).test(section)) {
+      // Say WHY, not just WHICH. The overwhelmingly common cause is a value
+      // wrapped onto the line below its label, which reads as an empty field —
+      // and an author who is told only "complete this field" while looking at a
+      // field they believe they completed will re-guess the format, burning a
+      // full CI cycle per attempt. Naming the same-line rule here is what makes
+      // this failure self-correcting on the first try.
+      const labelPresent = new RegExp(
+        `^[^\\S\\r\\n]*-[^\\S\\r\\n]*${escapeRegex(field)}:`,
+        "m",
+      ).test(section);
       throw new Error(
-        `Concurrency declaration must complete "${field}:" or explicitly check N/A.`,
+        labelPresent
+          ? `Concurrency declaration field "${field}:" has no value on its own line. ` +
+            "Put the value on the SAME line as the label — a value wrapped onto the " +
+            "following line reads as empty. Continuation lines after that first " +
+            "line are fine. Check it before pushing with: npm run pr:check -- <body-file>"
+          : `Concurrency declaration must complete "${field}:" or explicitly check N/A. ` +
+            "Copy the field list verbatim from .github/pull_request_template.md — the " +
+            "labels are matched exactly. Check it before pushing with: " +
+            "npm run pr:check -- <body-file>",
       );
     }
   }

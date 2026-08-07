@@ -100,7 +100,7 @@ describe("PR concurrency declaration gate", () => {
 
   it("rejects template placeholders and unnumbered compatibility claims", () => {
     expect(() => validateConcurrencyDeclaration(`${heading}\n\n- Writer class(es), canonical lock key(s), and acquisition order:\n`)).toThrow(
-      /must complete/,
+      /no value on its own line/,
     );
     expect(() =>
       validateConcurrencyDeclaration(complete.replace("#1911", "recent work")),
@@ -109,14 +109,33 @@ describe("PR concurrency declaration gate", () => {
 
   it("rejects the real-template blank-field bypass (LF) where only field 4 is filled", () => {
     expect(() => validateConcurrencyDeclaration(blankFieldExploit("\n"))).toThrow(
-      /must complete/,
+      /no value on its own line/,
     );
   });
 
   it("rejects the real-template blank-field bypass (CRLF) where only field 4 is filled", () => {
     expect(() => validateConcurrencyDeclaration(blankFieldExploit("\r\n"))).toThrow(
-      /must complete/,
+      /no value on its own line/,
     );
+  });
+
+  it("finds the real heading even when the body quotes the heading text in prose", () => {
+    // A PR body that EXPLAINS this gate will quote its heading. A plain indexOf
+    // matches that mention first, so the section starts mid-prose, runs to the
+    // next `## `, and every field reports missing while the real declaration
+    // sits untouched below. Found by running this gate against its own PR body.
+    const quotedFirst = [
+      "Verified the error for a reworded heading:",
+      "`PR body must include ## Concurrency And Lock Impact`.",
+      "",
+      "## Some Other Section",
+      "",
+      "- nothing to declare here",
+      "",
+      complete,
+    ].join("\n");
+
+    expect(() => validateConcurrencyDeclaration(quotedFirst)).not.toThrow();
   });
 
   it("does not accept a value that sits on the line after the label", () => {
@@ -131,7 +150,16 @@ describe("PR concurrency declaration gate", () => {
       "- Provider calls inside a transaction (write `None`, or justify the bounded exception from `docs/CONCURRENCY_AND_LOCKING.md`): None",
       "",
     ].join("\n");
-    expect(() => validateConcurrencyDeclaration(nextLineValue)).toThrow(/must complete/);
+    // The message must SAY SO. A bare "complete this field" sent an author who
+    // believed the field was filled round four CI cycles re-guessing the format
+    // (#2634, #2640), so the same-line rule is asserted here as part of the
+    // contract rather than left as a comment in the matcher.
+    expect(() => validateConcurrencyDeclaration(nextLineValue)).toThrow(
+      /SAME line as the label/,
+    );
+    expect(() => validateConcurrencyDeclaration(nextLineValue)).toThrow(
+      /npm run pr:check/,
+    );
   });
 
   it("rejects a field whose value is only whitespace", () => {
@@ -139,7 +167,9 @@ describe("PR concurrency declaration gate", () => {
       "acquisition order: cancel; global -> lodge",
       "acquisition order:    ",
     );
-    expect(() => validateConcurrencyDeclaration(whitespaceValue)).toThrow(/must complete/);
+    expect(() => validateConcurrencyDeclaration(whitespaceValue)).toThrow(
+      /no value on its own line/,
+    );
   });
 
   it("lets a test-only change check N/A even though the path name looks sensitive", () => {
