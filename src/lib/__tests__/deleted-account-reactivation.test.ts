@@ -60,7 +60,16 @@ vi.mock("@/lib/prisma", () => ({
       updateMany: vi.fn(),
     },
     magicLinkToken: { findUnique: vi.fn(), updateMany: vi.fn() },
-    deletionRequest: { findUnique: vi.fn(), update: vi.fn() },
+    // #2597 introduced the durable PENDING -> APPROVAL_IN_PROGRESS claim, which
+    // is taken through `updateMany` on the outer client before the first
+    // cancellation commits; the count decides whether this caller owns it.
+    deletionRequest: {
+      findUnique: vi.fn(),
+      update: vi.fn(),
+      updateMany: vi.fn().mockResolvedValue({ count: 1 }),
+    },
+    // Read by the account-deletion Xero fence (#2597); no operation in flight.
+    xeroSyncOperation: { findFirst: vi.fn().mockResolvedValue(null) },
     booking: { findMany: vi.fn() },
     bookingGuest: { updateMany: vi.fn() },
     familyGroupMember: { deleteMany: vi.fn() },
@@ -165,6 +174,7 @@ vi.mock("@/lib/adult-member-hosting-coverage-drain", () => ({
 }));
 
 import { prisma } from "@/lib/prisma";
+import logger from "@/lib/logger";
 import { authConfig } from "@/lib/auth";
 import { resolveGoogleProfile } from "@/lib/google-oauth";
 import { updateAdminMember } from "@/lib/admin-member-detail-service";
@@ -252,6 +262,17 @@ async function captureAnonymisationPayload(): Promise<Record<string, unknown>> {
   mockedPrisma.booking.findMany.mockResolvedValue([] as never);
 
   const memberUpdate = vi.fn().mockResolvedValue({} as never);
+  // #2620 half B: every outstanding credential artefact is revoked in the same
+  // commit as the anonymisation. Captured so the combination test can prove it
+  // happened rather than assuming it.
+  const revokedTokens = {
+    magicLinkToken: vi.fn().mockResolvedValue({ count: 0 }),
+    passwordResetToken: vi.fn().mockResolvedValue({ count: 0 }),
+    emailChangeToken: vi.fn().mockResolvedValue({ count: 0 }),
+    twoFactorEmailCode: vi.fn().mockResolvedValue({ count: 0 }),
+    twoFactorRecoveryCode: vi.fn().mockResolvedValue({ count: 0 }),
+    twoFactorSessionChallenge: vi.fn().mockResolvedValue({ count: 0 }),
+  };
   mockedPrisma.$transaction.mockImplementation(async (fn: never) => {
     const tx = {
       $executeRaw: vi.fn().mockResolvedValue(1),
@@ -260,6 +281,11 @@ async function captureAnonymisationPayload(): Promise<Record<string, unknown>> {
         update: memberUpdate,
         updateMany: vi.fn().mockResolvedValue({ count: 0 }),
         findMany: vi.fn().mockResolvedValue([]),
+        // Read under the lock by #2597's account-deletion Xero fence. The member
+        // is still live at this point in the transaction — it is this very
+        // statement that is about to anonymise them — so the fence must see the
+        // pre-anonymisation row and allow the write through.
+        findUnique: vi.fn().mockResolvedValue(liveMember()),
       },
       familyGroupMember: { deleteMany: vi.fn().mockResolvedValue({ count: 0 }) },
       bookingGuest: { updateMany: vi.fn().mockResolvedValue({ count: 0 }) },
@@ -267,7 +293,25 @@ async function captureAnonymisationPayload(): Promise<Record<string, unknown>> {
         findMany: vi.fn().mockResolvedValue([]),
         deleteMany: vi.fn().mockResolvedValue({ count: 0 }),
       },
-      deletionRequest: { update: vi.fn().mockResolvedValue({}) },
+      // #2597 deactivates the canonical Xero CONTACT link in the same commit.
+      xeroObjectLink: { updateMany: vi.fn().mockResolvedValue({ count: 0 }) },
+      magicLinkToken: { deleteMany: revokedTokens.magicLinkToken },
+      passwordResetToken: { deleteMany: revokedTokens.passwordResetToken },
+      emailChangeToken: { deleteMany: revokedTokens.emailChangeToken },
+      twoFactorEmailCode: { deleteMany: revokedTokens.twoFactorEmailCode },
+      twoFactorRecoveryCode: {
+        deleteMany: revokedTokens.twoFactorRecoveryCode,
+      },
+      twoFactorSessionChallenge: {
+        deleteMany: revokedTokens.twoFactorSessionChallenge,
+      },
+      // The APPROVAL_IN_PROGRESS -> APPROVED finalisation is claimed inside the
+      // transaction, guarded on still owning it.
+      deletionRequest: {
+        update: vi.fn().mockResolvedValue({}),
+        updateMany: vi.fn().mockResolvedValue({ count: 1 }),
+      },
+      xeroSyncOperation: { findFirst: vi.fn().mockResolvedValue(null) },
     };
     return (fn as unknown as (client: unknown) => unknown)(tx);
   });
@@ -280,12 +324,51 @@ async function captureAnonymisationPayload(): Promise<Record<string, unknown>> {
     }),
     { params: Promise.resolve({ id: "dr1" }) },
   );
-  expect(res.status).toBe(200);
+  // Carry the body AND the logged cause into the failure message: this route
+  // answers 500 with a generic body for any unmocked dependency, and a bare
+  // "expected 500 to be 200" sends the next person guessing at which one.
+  const loggedCause =
+    res.status === 200
+      ? ""
+      : ` | logged: ${JSON.stringify(
+          (logger.error as unknown as { mock: { calls: unknown[][] } }).mock
+            .calls.map((call) => {
+              const [context] = call as [{ err?: unknown }?];
+              const err = context?.err;
+              return err instanceof Error ? err.message : String(err);
+            }),
+        )}`;
+  expect(res.status, `${await res.clone().text()}${loggedCause}`).toBe(200);
   expect(memberUpdate).toHaveBeenCalledTimes(1);
 
-  return (
+  const data = (
     memberUpdate.mock.calls[0][0] as { data: Record<string, unknown> }
   ).data;
+
+  // #2620 half B: the write itself must strip every credential, so `active` is
+  // no longer the only thing standing between an erased member and a session.
+  // Asserted on the REAL route's payload, not a fixture, so it cannot drift.
+  expect(data).toMatchObject({
+    canLogin: false,
+    googleSub: null,
+    emailVerified: false,
+    totpSecret: null,
+    twoFactorEnabled: false,
+    twoFactorMethod: null,
+    twoFactorEnrolledAt: null,
+    twoFactorLockedUntil: null,
+  });
+
+  // ...and every artefact that authenticates on its own is revoked in the same
+  // commit, because deletion previously left live magic links and unused
+  // recovery codes behind.
+  for (const [name, revoke] of Object.entries(revokedTokens)) {
+    expect(revoke, `${name} revoked`).toHaveBeenCalledWith({
+      where: { memberId: "m1" },
+    });
+  }
+
+  return data;
 }
 
 /** The exact post-anonymisation row: a live member with the route's write applied. */
@@ -381,14 +464,31 @@ describe("#2620 the combination: anonymise, then try every way back in", () => {
     const deleted = deletedMemberRow(anonymisation);
     expect(isDeletedAccountRecord(deleted)).toBe(true);
 
-    // Half B's subject, asserted here as the reason every refusal below has to
-    // exist: the credentials survive today, so `active: false` is the only
-    // barrier and `active` is exactly what Reactivate flips.
-    expect(deleted.canLogin).toBe(true);
-    expect(deleted.googleSub).toBe("google-sub-jane");
-    expect(deleted.emailVerified).toBe(true);
+    // Half B: the write now strips the credentials themselves, so `active` is no
+    // longer the only barrier. (`captureAnonymisationPayload` asserts the full
+    // field set and the token revocations; these three are repeated on the
+    // COMPOSED row because that is what every refusal below is handed.)
+    expect(deleted.canLogin).toBe(false);
+    expect(deleted.googleSub).toBeNull();
+    expect(deleted.emailVerified).toBe(false);
+
+    // Still deliberately unstamped. Deletion is its own terminal state, and the
+    // refusals below key on the deletion markers rather than borrowing
+    // `cancelledAt`/`archivedAt` — which is why they hold even though these two
+    // stay empty, and why changing that is a separate decision, not a fix.
     expect(anonymisation.cancelledAt).toBeUndefined();
     expect(anonymisation.archivedAt).toBeUndefined();
+
+    // Defence in depth is the point of everything below: even handed a row whose
+    // credentials had NOT been stripped — a pre-#2620 deletion, or a restore
+    // from an older backup — every path must still refuse on the deletion
+    // markers alone.
+    const legacyDeleted = deletedMemberRow(anonymisation, {
+      canLogin: true,
+      googleSub: "google-sub-jane",
+      emailVerified: true,
+    });
+    expect(isDeletedAccountRecord(legacyDeleted)).toBe(true);
 
     vi.clearAllMocks();
     mockRequireAdmin.mockResolvedValue({ ok: true, session: ADMIN_SESSION });
