@@ -496,6 +496,28 @@ describe("F-COMP-04: Admin - approve/reject deletion request", () => {
       .mockResolvedValueOnce([{ id: "bk1" }] as any);
 
     mockedPrisma.member.update.mockResolvedValue({} as any);
+    // #2597: anonymisation now takes the Xero contact fence, which locks the
+    // Member row and re-reads it. Answer per requested shape so the fence gets
+    // its row without changing what the admin session guard sees.
+    mockedPrisma.member.findUnique.mockImplementation((async (args: any) => {
+      if (args?.select?.accessRoles) {
+        return {
+          active: true,
+          forcePasswordChange: false,
+          twoFactorEnabled: false,
+          accessRoles: [{ role: "ADMIN" }],
+        };
+      }
+      if (args?.select?.xeroContactId) {
+        return {
+          id: "m1",
+          email: "jane@test.com",
+          passwordHash: null,
+          xeroContactId: null,
+        };
+      }
+      return undefined;
+    }) as any);
     // #2255: anonymisation reads who it is about to detach, then sweeps their
     // inheritance pointers so club email stops being aimed at the
     // @deleted.invalid address this route writes.
@@ -555,9 +577,16 @@ describe("F-COMP-04: Admin - approve/reject deletion request", () => {
     // Approval email sent
     expect(sendAccountDeletionApprovedEmail).toHaveBeenCalledWith("jane@test.com", "Jane");
 
-    // Request marked APPROVED
+    // #2597: approval is a two-step guarded transition. It first takes durable
+    // ownership from PENDING — before any booking cancellation commits — and
+    // only then finalises from that claim, so a concurrent rejection can never
+    // land after the cancellations.
     expect(mockedPrisma.deletionRequest.updateMany).toHaveBeenCalledWith({
       where: { id: "dr1", status: "PENDING" },
+      data: expect.objectContaining({ status: "APPROVAL_IN_PROGRESS" }),
+    });
+    expect(mockedPrisma.deletionRequest.updateMany).toHaveBeenCalledWith({
+      where: { id: "dr1", status: "APPROVAL_IN_PROGRESS" },
       data: expect.objectContaining({ status: "APPROVED" }),
     });
   });

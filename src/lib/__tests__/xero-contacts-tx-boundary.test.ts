@@ -183,8 +183,12 @@ describe("findOrCreateXeroContact transaction boundary (#1355)", () => {
   it("keeps first-writer-wins when a concurrent resolver linked while our Xero work ran", async () => {
     // The reservation re-read still sees no link. Phase 2 then sees the
     // DIFFERENT contact that won while provider work ran.
+    // #2597: the reservation now builds the Xero contact payload from the
+    // LOCKED row rather than a stale pre-lock read, so this re-read must carry
+    // the full contact shape or payload validation fails before the boundary
+    // this test is about.
     mocks.txMemberFindUnique
-      .mockResolvedValueOnce({ id: "member-1", xeroContactId: null })
+      .mockResolvedValueOnce({ ...MEMBER, passwordHash: null })
       .mockResolvedValueOnce({ xeroContactId: "contact-other" });
 
     await expect(findOrCreateXeroContact("member-1")).resolves.toBe(
