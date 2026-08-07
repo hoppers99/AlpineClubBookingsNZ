@@ -1755,9 +1755,19 @@ same-owner cover, a separate urgent incident opens without changing
    date. Mixed member/non-member parties split only in this pending case; inside
    the window or under First Paid, First In they stay one normal booking.
 7. `BookingGuest.stayStart` and `BookingGuest.stayEnd` record the actual
-   date-only range for each guest inside the parent booking envelope. Capacity,
-   lodge lists, rosters, and booking-derived finance metrics count a guest only
-   on nights in that individual range.
+   date-only range for each guest inside the parent booking envelope, with
+   `BookingGuestNight` rows as the authoritative night set when present.
+   Capacity and booking-derived finance metrics count a guest only on nights in
+   that individual range — the NIGHT model. Operational surfaces that ask "who
+   is in the lodge today" read the OPERATIONAL-DAY model instead (#2622): a
+   guest occupies a day's morning half if the previous night was theirs and its
+   evening half if the day itself is, so someone checking out this morning is
+   present for the morning. Chore-roster generation, roster validation and chore
+   cleanup all read one named rule in
+   `src/lib/booking-guest-stay-ranges.ts` through a single eligibility query
+   (`src/lib/roster-eligibility.ts`), and the allocator's arriving/departing
+   routing is a derived label off that rule, never separate data.
+   `docs/DOMAIN_INVARIANTS.md` owns which surfaces belong to which model.
 8. Capacity-sensitive writes use a PostgreSQL advisory transaction lock keyed
    per lodge (`acquireLodgeCapacityLock`), so overlapping booking decisions at
    the same lodge serialise while bookings at different lodges never contend.
