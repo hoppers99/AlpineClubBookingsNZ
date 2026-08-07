@@ -4,10 +4,19 @@ Audience: Operator
 
 ## What it is
 
-The daily board that assigns staying guests to the lodge's chores for a chosen
-night. It auto-suggests a roster from your [chore templates](chores.md) and who is
-staying, lets you tweak it, confirm it, print it, and email each guest their
+The daily board that assigns the people in the lodge to its chores for a chosen
+day. It auto-suggests a roster from your [chore templates](chores.md) and who is
+here, lets you tweak it, confirm it, print it, and email each guest their
 chores. Find it at **Admin → Lodge Operations → Roster** (`/admin/roster`).
+
+"Here" means the lodge day, not the night. Everyone who stays a night is in the
+lodge from midday on the day they arrive until midday on the day they leave, so
+a guest checking out this morning is on this morning's roster — they slept here,
+they ate breakfast here, and they are the obvious person to strip a bed or sweep
+a bunkroom before they drive home. They can be given morning and anytime chores
+but not evening ones; someone arriving that evening is the other way round.
+A guest who needs to leave earlier than midday arranges it with the hut leader;
+otherwise they get assigned.
 
 The roster is a **lodge** permission area: lodge view to read, lodge **edit** to
 generate, reassign, confirm, or email. The page appears only when the `chores`
@@ -16,24 +25,29 @@ module is on.
 ## When you'd use it
 
 - A group is arriving and you want a chore roster ready for the night.
+- It is a changeover day and you need the shutdown work covered by the people
+  who are actually still there to do it.
 - You need to reassign a chore because someone left early or a child can't do it.
 - You want to email everyone their chores, or print the roster for the lodge wall.
 
 ## Step-by-step
 
-### Pick a night
+### Pick a day
 
 1. Go to **Admin → Lodge Operations → Roster**. Use the **Date** field or the
-   calendar to choose a night. The calendar colours each night by roster status —
+   calendar to choose a day. The calendar colours each day by roster status —
    **Needs roster**, **Suggested (unconfirmed)**, **Confirmed — some guests need
    chores**, and **Confirmed** — and the **Who's at the lodge** panel shows who is
-   staying.
+   here. Someone arriving that evening carries an **Arriving** badge and someone
+   leaving that morning a **Departing** badge. No times appear anywhere: the
+   midday boundary is simply how a lodge day is defined, not something anyone
+   records.
 
    ![Chore Roster page showing the date picker and staged whole-roster editor for two booking groups](../images/admin/admin-roster.png)
 
 ### Generate and adjust the roster
 
-1. Click **Regenerate Roster** to auto-suggest assignments for the selected night.
+1. Click **Regenerate Roster** to auto-suggest assignments for the selected day.
    Tick **Include non-essential chores** first if you want the optional chores in
    as well. Regenerating a confirmed roster asks you to confirm — it replaces the
    confirmed roster with a fresh editable suggestion.
@@ -42,9 +56,9 @@ module is on.
    **Remove** to drop a person, or **+ Add Person** to add a row. Nothing is
    written while you make these changes.
 3. Review the always-visible **Chore staffing** and **Guest assignment check**
-   summaries. Staffing names every active chore due that night as under, within,
-   or over its recommended people count. The guest check keeps every eligible
-   guest under their booking or family group and says whether they have no chore,
+   summaries. Staffing names every active chore due that day as under, within,
+   or over its recommended people count. The guest check keeps everyone in the
+   lodge under their booking or family group and says whether they have no chore,
    one chore, or several (including repeated chores).
 4. Click **Save roster** once to commit the complete draft, or **Cancel** to
    restore the last server-saved roster. Save returns every assignment to
@@ -74,9 +88,9 @@ to guess it.
 
 | Control | What it does | Notes / constraints |
 | --- | --- | --- |
-| Date / calendar | Selects the night the roster is for | NZ date-only lodge nights |
+| Date / calendar | Selects the day the roster is for | NZ lodge days, midday to midday |
 | Include non-essential chores | Adds optional chores when regenerating | Off by default; essential chores always included |
-| Regenerate Roster | Auto-suggests assignments for the night | Overwrites a confirmed roster only after you confirm |
+| Regenerate Roster | Auto-suggests assignments for the day | Includes arriving and departing guests; overwrites a confirmed roster only after you confirm |
 | Edit roster | Opens one staged draft for the whole selected lodge night | Requires lodge edit; changing date/lodge or regenerating a dirty draft asks before discarding it |
 | Guest dropdown / Remove / + Add Person | Stages a reassignment, removal, or addition | No request is sent until **Save roster** |
 | Save roster / Cancel | Atomically commits the complete draft, or restores the saved snapshot | Save is available only after a valid change; a successful save makes every row Suggested |
@@ -91,9 +105,9 @@ to guess it.
 | --- | --- | --- |
 | The page 404s / Roster is missing from the sidebar | The `chores` module is off | Enable it under **Admin → Setup → Modules** — see [`CONFIGURATION.md`](../../CONFIGURATION.md#module-controls-and-admin-modules) |
 | Everything is read-only ("… can view the chore roster but cannot change it") | Your admin role has lodge view but not edit | Ask a full admin for **lodge edit** access |
-| "No eligible guests are staying on this date" | No operational booking and eligible guest stay cover that lodge night | Pick a night with guests, or check the booking status, review state, consent, lodge, and individual stay nights |
+| "No one is in the lodge on this date" | No operational booking and eligible guest stay cover that lodge day — remember it covers the night itself AND the morning after | Pick a day with guests, or check the booking status, review state, consent, lodge, and individual stay nights |
 | A chore says "No one assigned" | The current generated or saved roster has no retained row for that chore | Click **Edit roster**, use **+ Add Person**, choose a guest, and save the complete draft |
-| A confirmed night still says some guests need chores | A staying booking has no chore on it | Click **Regenerate Roster** to include it, or **+ Add Person** on a chore |
+| A confirmed day still says some guests need chores | A booking in the lodge has no chore on it | Click **Regenerate Roster** to include it, or **+ Add Person** on a chore |
 | "This roster changed while you were editing" | Another admin or lodge workflow changed the same night after you opened Edit | Your draft was not saved. Reload the latest roster and apply the change again |
 | "This person is no longer eligible for this lodge night" | Their booking, lodge, stay nights, review state, consent, or active status changed while you edited | Keep the draft open, choose another eligible person, or reload the roster |
 | Save says the service could not be reached | The request failed before the whole draft could commit | The draft remains on screen; try **Save roster** again |

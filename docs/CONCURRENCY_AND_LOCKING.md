@@ -139,9 +139,18 @@ old stay, wait while a booking moves or a review is approved, then insert into
 the previously empty partition.
 
 Booking date/batch modifications already hold global → lodge. They now acquire
-one sorted set containing every night in the old and proposed half-open stay
-ranges plus any exceptional stored assignment dates before changing a Booking
-or BookingGuest tuple. Guest removal likewise takes global → lodge → sorted
+one sorted set containing every night in the old and proposed stay ranges **plus
+both the old and the new CHECK-OUT dates** — since #2622 a chore row can
+legitimately sit on a booking's check-out date (the departure morning), so a set
+built from the half-open night ranges alone would leave that partition unlocked
+and a concurrent whole-roster Save could insert into it after the modification
+had already decided to clean it up. Every such caller derives its ranges through
+`rosterOperationalDayRange(checkIn, checkOut)` (`roster-lock.ts`), which extends
+a half-open night range to its inclusive operational-day span; the exceptional
+stored assignment dates are added to the same sorted set, all before changing a
+Booking or BookingGuest tuple. Guest removal and kiosk departure derive their
+sets from STORED assignment dates rather than an envelope, so they cover
+checkout-day rows without widening: guest removal takes global → lodge → sorted
 stored roster dates before its post-lock re-read and guarded deletion. Member
 guest consent and admin booking-review claims share global → lodge; guest add
 shares the immutable lodge tier. Those common tiers serialize eligibility
@@ -158,6 +167,14 @@ not a claim that every booking writer takes every tier: create, confirm, cancel,
 membership fan-out and drain paths omit the roster and/or member keys they do
 not use. The invariant is that a path which does compose them never takes a
 roster-date or member key after the coverage-owner key.
+
+Cleanup's own out-of-range predicate is the operational span, not the night
+range: it removes rows strictly before check-in or strictly after check-out, and
+its guest-level counterpart asks the same operational-day helper roster
+eligibility asks (#2622, epic D-M6) against the canonical night rows. Cleanup
+and eligibility therefore cannot disagree about whether a given date was
+occupied, which is what makes the widened lock set sufficient rather than merely
+larger.
 
 Kiosk complete/uncomplete takes only the affected roster-date key. Departure
 timestamps are not eligibility inputs, but departure cleanup also updates the

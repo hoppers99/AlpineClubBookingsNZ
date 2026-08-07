@@ -532,6 +532,14 @@ async function main() {
   const rosterB = await makeBooking(erin, "PAID", W.rosterEdit.checkIn, W.rosterEdit.checkOut);
   await addGuest(rosterB.id, { firstName: "Erin", lastName: "Evans", ageTier: "ADULT", isMember: true, memberId: erin.id }, W.rosterEdit.checkIn, W.rosterEdit.checkOut, NIGHTLY);
   await addGuest(rosterB.id, { firstName: "Aaron", lastName: "Unknown", ageTier: "ADULT" }, W.rosterEdit.checkIn, W.rosterEdit.checkOut, NIGHTLY);
+  // #2622: this booking arrives the morning the five guests above leave. Under
+  // the operational-day rule that makes W.rosterEdit.checkOut a MIXED TURNOVER
+  // day — leavers here for the morning, arrivals here for the evening — and
+  // W.rosterTurnover.checkOut an ALL-DEPARTING day, whose only occupants are on
+  // their way home and are exactly the people the shutdown chores belong to.
+  const rosterTurnover = await makeBooking(alice, "PAID", W.rosterTurnover.checkIn, W.rosterTurnover.checkOut);
+  await addGuest(rosterTurnover.id, { firstName: "Nina", lastName: "Newcomer", ageTier: "ADULT" }, W.rosterTurnover.checkIn, W.rosterTurnover.checkOut, NIGHTLY);
+  await addGuest(rosterTurnover.id, { firstName: "Owen", lastName: "Overnight", ageTier: "ADULT" }, W.rosterTurnover.checkIn, W.rosterTurnover.checkOut, NIGHTLY);
   // A booking modification (date change) + resulting credit + recovery op.
   const daveMod = await prisma.bookingModification.create({
     data: {

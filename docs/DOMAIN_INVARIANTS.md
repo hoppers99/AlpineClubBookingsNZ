@@ -395,18 +395,27 @@ derivation).
   every human-facing "who is here today" question. Ownership is strict in both
   directions: an operational-day caller must not reach the night helpers, and
   a capacity caller must not reach the operational-day ones.
-  **Status of the code against this rule:** the shipped approximation is
-  `getLodgeVisibleGuestsForDate(..., { includeDepartureDate: true })`, whose
-  sparse-stay branch is final-morning-only (nights {5, 8} give {5, 8, 9},
-  not the {5, 6, 8, 9} above) and whose option flag is a call-site fork this
-  invariant retires; several roster and status surfaces still call the night
-  helpers or private near-copies of them, and some derive arriving/departing
-  labels from the envelope rather than the night set. That is the defect this
-  epic fixes, not a licence: #2622 ships the named operational-day helpers
-  implementing the pure rule and converts roster generation, validation and
-  cleanup together; #2631 converts the remaining read surfaces. Until those
-  land, this bullet is the target rule, not a description of `main`, and no
-  surface may be "aligned" ahead of those issues.
+  **The operational-day helpers** (#2622) are
+  `getGuestOperationalDayPresence` (both halves plus the derived labels),
+  `isGuestOperationallyPresentOnDay`, `isGuestArrivingOnDay`,
+  `isGuestDepartingOnDay` and `getOperationallyPresentGuestsForDay`. They
+  implement the pure rule above, sparse segments included, and take a private
+  key-based copy of the night predicate rather than refactoring the frozen
+  night helpers. **Status of the code against this rule:** chore-roster
+  eligibility is converted. There is one chore-eligibility query,
+  `getOperationalRosterGuestsForDate` (`src/lib/roster-eligibility.ts`), read by
+  both the admin roster service and the kiosk generate route; roster-confirm
+  validation and both chore-cleanup paths read the same helpers (D-M6), and the
+  arriving/departing labels are derived from the night set on the operational
+  date. `getLodgeVisibleGuestsForDate` survives only as a deprecated wrapper
+  that delegates to the two named models — its `includeDepartureDate: true`
+  branch IS `getOperationallyPresentGuestsForDay`, so the sparse defect above is
+  gone everywhere including the surfaces that have not been converted yet — and
+  a source contract freezes its remaining callers to the three read surfaces
+  #2631 converts (`api/lodge/week`, `api/lodge/guests/[date]`,
+  `lodge-display-state`), which is where the flag is deleted. Until #2631 lands,
+  those three still fork at the call site rather than naming the model, and no
+  other surface may grow a fourth call.
 - **The lobby wall is deliberately mixed and stays fenced** (issue #58): its
   guest-name privacy gate (sole-occupancy detection) uses NIGHT counts while
   its visibility rows are checkout-inclusive. It keeps its own code path

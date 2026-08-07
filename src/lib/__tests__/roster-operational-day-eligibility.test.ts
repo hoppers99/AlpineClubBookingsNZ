@@ -92,7 +92,7 @@ function booking(id: string, guests: FixtureGuest[], owner = "Ana Booker") {
 
 /** The `db` shape the selector needs, so it can be driven without Prisma. */
 function fakeDb(bookings: unknown[]) {
-  const findMany = vi.fn(async () => bookings);
+  const findMany = vi.fn<(args: unknown) => Promise<unknown[]>>(async () => bookings);
   return { db: { booking: { findMany } } as never, findMany };
 }
 

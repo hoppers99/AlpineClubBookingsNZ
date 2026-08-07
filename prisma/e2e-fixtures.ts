@@ -136,6 +136,12 @@ export const DEMO_BOOKING_WINDOWS = {
   larsFailed: relWindow(33, 2), // PENDING (failed payment)
   mallorySplit: relWindow(-37, 2), // CONFIRMED split parent/child
   rosterEdit: relWindow(150, 1), // two PAID bookings for staged roster editing (#2586)
+  // #2622: one PAID booking arriving the morning the rosterEdit stay leaves, so
+  // day 151 is a MIXED TURNOVER day (five departing + two arriving) and day 152
+  // is an ALL-DEPARTING day. Both are chore-roster days under the operational
+  // rule and neither existed before; keep them adjacent to rosterEdit so the
+  // three roster fixtures stay in one isolated future block.
+  rosterTurnover: relWindow(151, 1),
 } as const;
 
 // --- Role-boundary personas (e2e/admin-roles.spec.ts) --------------------
