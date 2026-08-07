@@ -266,6 +266,7 @@ let backfillMemberContactLink: (typeof import("@/lib/xero-hardening-backfill"))[
 let DELETED_ACCOUNT_PASSWORD_HASH: (typeof import("@/lib/xero-contact-create-recovery"))["DELETED_ACCOUNT_PASSWORD_HASH"];
 let commitManualXeroContactLink: (typeof import("@/lib/xero-manual-contact-link"))["commitManualXeroContactLink"];
 let claimDeletionRequestDecision: (typeof import("@/lib/deletion-request-decision"))["claimDeletionRequestDecision"];
+let claimDeletionRequestApproval: (typeof import("@/lib/deletion-request-decision"))["claimDeletionRequestApproval"];
 
 (RUN ? describe : describe.skip)(
   "hosting queue/member merge interleavings — real PostgreSQL (#2597)",
@@ -714,6 +715,8 @@ let claimDeletionRequestDecision: (typeof import("@/lib/deletion-request-decisio
         xeroHardeningBackfill.backfillMemberContactLink;
       claimDeletionRequestDecision =
         deletionRequestDecision.claimDeletionRequestDecision;
+      claimDeletionRequestApproval =
+        deletionRequestDecision.claimDeletionRequestApproval;
 
       const [
         { PrismaClient: SeparatePrismaClient },
@@ -1111,24 +1114,37 @@ let claimDeletionRequestDecision: (typeof import("@/lib/deletion-request-decisio
       });
     });
 
-    it("approve wins the exact DeletionRequest claim and a waiting reject cannot overwrite it", async () => {
+    it("approve owns the claim before cancelling, and a later reject cannot take it back", async () => {
+      // The invariant the intermediate state exists for. An approval commits
+      // future-booking cancellations in separate transactions before it
+      // anonymises anything, so it takes durable ownership first. From that
+      // moment a rejection must be impossible — otherwise the request could end
+      // REJECTED with the member's stays already destroyed.
       await primary.deletionRequest.create({
         data: { id: IDS.deletionRequest, memberId: IDS.target },
       });
-      const reached = deferred();
-      const release = deferred();
-      const approve = mergeA.$transaction(async (tx) => {
-        await claimDeletionRequestDecision(tx, {
+
+      await expect(
+        claimDeletionRequestApproval(mergeA, {
           id: IDS.deletionRequest,
-          decision: "APPROVED",
           reviewedBy: IDS.actor,
           adminNote: "approve wins",
-        });
-        reached.resolve();
-        await release.promise;
+        }),
+      ).resolves.toBe("CLAIMED");
+
+      // Stands in for the separately committed cancellations: the approval is
+      // owned and partly executed, but not yet final.
+      await expect(
+        primary.deletionRequest.findUniqueOrThrow({
+          where: { id: IDS.deletionRequest },
+          select: { status: true, reviewedAt: true },
+        }),
+      ).resolves.toEqual({
+        status: "APPROVAL_IN_PROGRESS",
+        reviewedAt: null,
       });
-      await reached.promise;
-      const reject = claimDeletionRequestDecision(mergeB, {
+
+      const rejectOutcome = await claimDeletionRequestDecision(mergeB, {
         id: IDS.deletionRequest,
         decision: "REJECTED",
         reviewedBy: IDS.ownerA,
@@ -1137,25 +1153,63 @@ let claimDeletionRequestDecision: (typeof import("@/lib/deletion-request-decisio
         () => ({ ok: true as const }),
         (error: unknown) => ({ ok: false as const, error }),
       );
-      try {
-        await waitForClientToBlock("race-2597-merge-b");
-      } finally {
-        release.resolve();
-      }
-      await expect(approve).resolves.toBeUndefined();
-      const rejectOutcome = await reject;
       expect(rejectOutcome.ok).toBe(false);
-      if (rejectOutcome.ok) throw new Error("Reject unexpectedly overwrote approve.");
+      if (rejectOutcome.ok) {
+        throw new Error("Reject overwrote an approval already in progress.");
+      }
       expect(rejectOutcome.error).toMatchObject({
         code: "DELETION_REQUEST_ALREADY_REVIEWED",
         statusCode: 409,
       });
+
+      // Finalisation still succeeds from the lane's own claim.
+      await expect(
+        claimDeletionRequestDecision(mergeA, {
+          id: IDS.deletionRequest,
+          decision: "APPROVED",
+          reviewedBy: IDS.actor,
+          adminNote: "approve wins",
+        }),
+      ).resolves.toBeUndefined();
       await expect(
         primary.deletionRequest.findUniqueOrThrow({
           where: { id: IDS.deletionRequest },
           select: { status: true, adminNote: true },
         }),
       ).resolves.toEqual({ status: "APPROVED", adminNote: "approve wins" });
+    });
+
+    it("resumes its own in-progress approval rather than deadlocking a retry", async () => {
+      // An approval interrupted after some cancellations committed must be
+      // completable; refusing the retry would strand the member half-deleted.
+      await primary.deletionRequest.create({
+        data: { id: IDS.deletionRequest, memberId: IDS.target },
+      });
+      await expect(
+        claimDeletionRequestApproval(mergeA, {
+          id: IDS.deletionRequest,
+          reviewedBy: IDS.actor,
+          adminNote: "first attempt",
+        }),
+      ).resolves.toBe("CLAIMED");
+      await expect(
+        claimDeletionRequestApproval(mergeB, {
+          id: IDS.deletionRequest,
+          reviewedBy: IDS.ownerA,
+          adminNote: "retry",
+        }),
+      ).resolves.toBe("RESUMED");
+      // Resuming must not re-attribute the original claim.
+      await expect(
+        primary.deletionRequest.findUniqueOrThrow({
+          where: { id: IDS.deletionRequest },
+          select: { status: true, adminNote: true, reviewedBy: true },
+        }),
+      ).resolves.toEqual({
+        status: "APPROVAL_IN_PROGRESS",
+        adminNote: "first attempt",
+        reviewedBy: IDS.actor,
+      });
     });
 
     it("reject wins the exact DeletionRequest claim and a waiting approve cannot overwrite it", async () => {
@@ -1175,9 +1229,11 @@ let claimDeletionRequestDecision: (typeof import("@/lib/deletion-request-decisio
         await release.promise;
       });
       await reached.promise;
-      const approve = claimDeletionRequestDecision(mergeA, {
+      // Both contenders target the SAME still-PENDING row — rejection claims
+      // PENDING directly, and an approval's opening claim does too — so this
+      // still exercises a real PostgreSQL row-lock wait, not an immediate miss.
+      const approve = claimDeletionRequestApproval(mergeA, {
         id: IDS.deletionRequest,
-        decision: "APPROVED",
         reviewedBy: IDS.ownerA,
         adminNote: "approve loses",
       }).then(
@@ -1192,7 +1248,9 @@ let claimDeletionRequestDecision: (typeof import("@/lib/deletion-request-decisio
       await expect(reject).resolves.toBeUndefined();
       const approveOutcome = await approve;
       expect(approveOutcome.ok).toBe(false);
-      if (approveOutcome.ok) throw new Error("Approve unexpectedly overwrote reject.");
+      if (approveOutcome.ok) {
+        throw new Error("Approve started on an already-rejected request.");
+      }
       expect(approveOutcome.error).toMatchObject({
         code: "DELETION_REQUEST_ALREADY_REVIEWED",
         statusCode: 409,
@@ -1205,10 +1263,22 @@ let claimDeletionRequestDecision: (typeof import("@/lib/deletion-request-decisio
       ).resolves.toEqual({ status: "REJECTED", adminNote: "reject wins" });
     });
 
-    it("rolls back an approval claim with the surrounding privacy transaction", async () => {
+    it("rolls a failed finalisation back to its claim, not back to PENDING", async () => {
+      // The rollback target matters. Falling back to PENDING would re-open the
+      // request to rejection AFTER its approval had already cancelled bookings,
+      // which is precisely the hazard the intermediate claim removes. It must
+      // land on APPROVAL_IN_PROGRESS so only the approval can still finish.
       await primary.deletionRequest.create({
         data: { id: IDS.deletionRequest, memberId: IDS.target },
       });
+      await expect(
+        claimDeletionRequestApproval(primary, {
+          id: IDS.deletionRequest,
+          reviewedBy: IDS.actor,
+          adminNote: "owned before cleanup",
+        }),
+      ).resolves.toBe("CLAIMED");
+
       await expect(
         mergeA.$transaction(async (tx) => {
           await claimDeletionRequestDecision(tx, {
@@ -1220,21 +1290,36 @@ let claimDeletionRequestDecision: (typeof import("@/lib/deletion-request-decisio
           throw new Error("forced privacy rollback");
         }),
       ).rejects.toThrow("forced privacy rollback");
+
       await expect(
         primary.deletionRequest.findUniqueOrThrow({
           where: { id: IDS.deletionRequest },
           select: { status: true, reviewedAt: true, reviewedBy: true },
         }),
       ).resolves.toEqual({
-        status: "PENDING",
+        status: "APPROVAL_IN_PROGRESS",
         reviewedAt: null,
-        reviewedBy: null,
+        reviewedBy: IDS.actor,
       });
+
+      // Still un-rejectable after the failed finalisation...
       await expect(
         claimDeletionRequestDecision(primary, {
           id: IDS.deletionRequest,
           decision: "REJECTED",
           reviewedBy: IDS.ownerA,
+          adminNote: "must not win",
+        }),
+      ).rejects.toMatchObject({
+        code: "DELETION_REQUEST_ALREADY_REVIEWED",
+        statusCode: 409,
+      });
+      // ...and the approval can still be completed on a retry.
+      await expect(
+        claimDeletionRequestDecision(primary, {
+          id: IDS.deletionRequest,
+          decision: "APPROVED",
+          reviewedBy: IDS.actor,
           adminNote: "recovered",
         }),
       ).resolves.toBeUndefined();
