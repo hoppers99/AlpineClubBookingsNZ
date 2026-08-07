@@ -501,9 +501,10 @@ Four rules follow, and a new spec must satisfy all four:
 
   Do not invent a generic "some page rendered" wait to satisfy the shape — an
   outcome that is not this journey's own is worse than none, because it passes
-  while proving nothing. Two callers share a wrapper that embeds the wait for
-  them (`confirmBookingToPaymentStep` waits for the payment step;
-  `bookThroughWizard` waits for the exception-request offer), so their specs
+  while proving nothing. Seven of the fourteen browser census entries reach the
+  helper through a shared wrapper that embeds the wait for them —
+  `confirmBookingToPaymentStep` waits for the payment step and
+  `bookThroughWizard` waits for the exception-request offer — so those specs
   assert the outcome once, inside the hold, rather than twice. Holding the route
   longer also widens the "exactly one matching request" guard to cover the
   outcome window, so a second create that used to slip through after teardown
