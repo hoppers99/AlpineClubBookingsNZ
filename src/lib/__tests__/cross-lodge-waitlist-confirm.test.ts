@@ -122,6 +122,11 @@ import { formatMissingPaidUpAdultWaitlistRefusal } from "@/lib/policies/subscrip
 // Real class (this module is NOT mocked here), so both the production code and
 // the test share its identity and `instanceof` works.
 import { DuplicateStayConflictError } from "@/lib/booking-create-types";
+import {
+  HOSTING_COVERAGE_RETRY_CODE,
+  HOSTING_COVERAGE_RETRY_MESSAGE,
+  HostingCoverageParticipantRetryError,
+} from "@/lib/adult-member-hosting-queue-participants";
 
 const CHECK_IN = new Date("2026-08-10");
 const CHECK_OUT = new Date("2026-08-12");
@@ -314,6 +319,28 @@ describe("confirmCrossLodgeWaitlistOffer in-transaction duplicate-stay guard (M2
     expect(result.code).toBeUndefined();
     expect(result.error).toBe("An error occurred while confirming your booking");
     expect(mocks.createConfirmedBooking).toHaveBeenCalledTimes(1);
+  });
+
+  it("returns the stable retry result when replacement creation hits participant contention", async () => {
+    mocks.createConfirmedBooking.mockRejectedValue(
+      new HostingCoverageParticipantRetryError(),
+    );
+
+    const result = await confirmCrossLodgeWaitlistOffer(
+      "entry-1",
+      "member-1",
+    );
+
+    expect(result).toEqual({
+      success: false,
+      error: HOSTING_COVERAGE_RETRY_MESSAGE,
+      code: HOSTING_COVERAGE_RETRY_CODE,
+    });
+    expect(mocks.bookingUpdateMany).not.toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({ status: BookingStatus.CANCELLED }),
+      }),
+    );
   });
 });
 

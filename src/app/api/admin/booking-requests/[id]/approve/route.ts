@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { hostingCoverageParticipantRetryResponse } from "@/lib/adult-member-hosting-retry-response";
 import { BookingRequestType } from "@prisma/client";
 import { AdultMemberHostingRequiredError } from "@/lib/adult-member-hosting-review";
 import { approveBookingRequest, BookingRequestError } from "@/lib/booking-request";
@@ -202,6 +203,8 @@ export async function POST(
       paymentLinkExpiresAt: result.paymentLinkExpiresAt.toISOString(),
     });
   } catch (err) {
+    const hostingRetry = hostingCoverageParticipantRetryResponse(err);
+    if (hostingRetry) return hostingRetry;
     if (err instanceof BookingMemberNightConflictError) {
       return NextResponse.json(
         getBookingMemberNightConflictResponse(err.conflicts),

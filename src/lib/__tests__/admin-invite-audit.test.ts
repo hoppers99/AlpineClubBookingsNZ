@@ -58,6 +58,7 @@ vi.mock("@/lib/prisma", () => ({
       count: vi.fn().mockResolvedValue(0),
       findMany: vi.fn().mockResolvedValue([]),
     },
+    xeroSyncOperation: { findFirst: vi.fn().mockResolvedValue(null) },
     passwordResetToken: {
       create: vi.fn(),
       deleteMany: vi.fn(),

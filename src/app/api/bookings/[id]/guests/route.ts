@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { hostingCoverageParticipantRetryResponse } from "@/lib/adult-member-hosting-retry-response";
 import {
   PaymentSource,
   type AgeTier,
@@ -1086,6 +1087,8 @@ export async function POST(
       promoCoverage: result.promoCoverage,
     });
   } catch (err) {
+    const hostingRetry = hostingCoverageParticipantRetryResponse(err);
+    if (hostingRetry) return hostingRetry;
     if (err instanceof MembershipTypeBookingPolicyError) {
       // Finding 2 (privacy re-review of MG3 #2308). The membership-type refusal
       // is D-8's FOURTH collapsing refusal, so when it collapsed it owes the

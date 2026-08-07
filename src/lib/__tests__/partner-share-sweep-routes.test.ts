@@ -24,6 +24,7 @@ vi.mock("@/lib/prisma", () => ({
     deletionRequest: {
       findUnique: vi.fn(),
       update: vi.fn(),
+      updateMany: vi.fn().mockResolvedValue({ count: 1 }),
     },
     booking: { findMany: vi.fn().mockResolvedValue([]) },
     bookingGuest: {
@@ -44,6 +45,8 @@ vi.mock("@/lib/prisma", () => ({
     },
     auditLog: { create: vi.fn().mockResolvedValue({}) },
     xeroContactCache: { findUnique: vi.fn().mockResolvedValue(null) },
+    xeroSyncOperation: { findFirst: vi.fn().mockResolvedValue(null) },
+    xeroObjectLink: { updateMany: vi.fn().mockResolvedValue({ count: 0 }) },
     $executeRaw: vi.fn().mockResolvedValue(1),
     $transaction: vi.fn(),
   },
@@ -213,6 +216,7 @@ function mockTransaction() {
     op({
       $executeRaw: prisma.$executeRaw,
       member: {
+        findUnique: prisma.member.findUnique,
         update: prisma.member.update,
         updateMany: prisma.member.updateMany,
         count: prisma.member.count,
@@ -229,7 +233,12 @@ function mockTransaction() {
       familyGroupMember: { deleteMany: prisma.familyGroupMember.deleteMany },
       bookingGuest: { updateMany: prisma.bookingGuest.updateMany },
       bedAllocation: prisma.bedAllocation,
-      deletionRequest: { update: prisma.deletionRequest.update },
+      deletionRequest: {
+        update: prisma.deletionRequest.update,
+        updateMany: prisma.deletionRequest.updateMany,
+      },
+      xeroSyncOperation: prisma.xeroSyncOperation,
+      xeroObjectLink: prisma.xeroObjectLink,
       auditLog: { create: prisma.auditLog.create },
     })) as never,
   );
@@ -239,6 +248,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   mockRequireAdmin.mockResolvedValue(fullAdminGuard);
   vi.mocked(prisma.member.count).mockResolvedValue(0);
+  vi.mocked(prisma.deletionRequest.updateMany).mockResolvedValue({ count: 1 });
   vi.mocked(prisma.booking.findMany).mockResolvedValue([] as never);
   vi.mocked(prisma.bedAllocation.findMany).mockResolvedValue([] as never);
   vi.mocked(prisma.bedAllocation.deleteMany).mockResolvedValue({ count: 0 } as never);

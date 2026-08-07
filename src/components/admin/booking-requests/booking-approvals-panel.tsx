@@ -26,6 +26,8 @@ import { ADMIN_VIEW_ONLY_ACTION_REASON } from "@/hooks/use-admin-area-edit-acces
 import { BookingNoEmailsNotice } from "@/components/booking-no-emails-notice";
 import { formatNZDate, formatNZDateTime } from "@/lib/nzst-date";
 import { formatCents } from "@/lib/utils";
+import { FocusedActionError } from "@/components/focused-action-error";
+import { buildHrefWithReturnTo } from "@/lib/internal-return-path";
 
 type ReviewFilter = "PENDING" | "APPROVED" | "REJECTED" | "ALL";
 
@@ -124,6 +126,12 @@ export function BookingApprovalsPanel({
   const [reviewingId, setReviewingId] = useState<string | null>(null);
   const [notesById, setNotesById] = useState<Record<string, string>>({});
   const [error, setError] = useState("");
+  const [errorAttentionVersion, setErrorAttentionVersion] = useState(0);
+  const [recoveryAttentionVersion, setRecoveryAttentionVersion] = useState(0);
+  const [decisionRecovery, setDecisionRecovery] = useState<{
+    bookingId: string;
+    message: string;
+  } | null>(null);
   // #1790: which decision is waiting on the admin's notify-or-not choice, and
   // whether the dialog is open. Both approve and reject always email the member
   // (unconditional sends in the route), so the dialog is shown for both. The
@@ -156,8 +164,10 @@ export function BookingApprovalsPanel({
         throw new Error(data.error || "Failed to load booking reviews");
       }
       setBookings(Array.isArray(data?.data) ? data.data : []);
+      return true;
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to load booking reviews");
+      return false;
     } finally {
       setLoading(false);
     }
@@ -173,13 +183,18 @@ export function BookingApprovalsPanel({
     router.replace(currentPath, { scroll: false });
   }, [currentPath, router]);
 
+  function showActionError(message: string) {
+    setError(message);
+    setErrorAttentionVersion((version) => version + 1);
+  }
+
   // #1790: validate the decision (reject needs admin notes) and then open the
   // notify-choice dialog. Both decisions email the member either way, so the
   // dialog always asks; the actual PATCH runs from confirmNotify.
   function requestDecision(bookingId: string, decision: "APPROVED" | "REJECTED") {
     const adminNotes = notesById[bookingId]?.trim() ?? "";
     if (decision === "REJECTED" && !adminNotes) {
-      setError("Please add admin notes before rejecting so the member gets a reason.");
+      showActionError("Please add admin notes before rejecting so the member gets a reason.");
       return;
     }
     setError("");
@@ -245,6 +260,34 @@ export function BookingApprovalsPanel({
       });
       const data = await response.json().catch(() => ({}));
       if (!response.ok) {
+        if (
+          decision === "REJECTED" &&
+          data.reviewRecorded === true &&
+          (data.cancellationPending === true ||
+            data.cancellationStatusUnconfirmed === true)
+        ) {
+          const recoveryBase = data.cancellationPending === true
+            ? "The rejection was recorded, but cancellation is still pending. Do not reject this booking again."
+            : "The rejection was recorded, but the booking's cancellation status could not be confirmed. Do not reject this booking again.";
+          setBookings((current) =>
+            current.filter((booking) => booking.id !== bookingId),
+          );
+          setDecisionRecovery({ bookingId, message: recoveryBase });
+          setRecoveryAttentionVersion((version) => version + 1);
+          const refreshed = await fetchBookings();
+          // The refresh outcome is folded into the durable recovery below; do
+          // not duplicate it in the ordinary action region or steal focus.
+          setError("");
+          const refreshResult = refreshed
+            ? " The latest review queue was loaded; open the booking and check its cancellation status."
+            : " The review queue could not be refreshed. This warning remains active; open the booking and check its cancellation status.";
+          setDecisionRecovery({
+            bookingId,
+            message: `${recoveryBase}${refreshResult}`,
+          });
+          setRecoveryAttentionVersion((version) => version + 1);
+          return;
+        }
         throw new Error(data.error || "Failed to record decision");
       }
       setNotesById((prev) => {
@@ -274,7 +317,7 @@ export function BookingApprovalsPanel({
       );
       await fetchBookings();
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to record decision");
+      showActionError(err instanceof Error ? err.message : "Failed to record decision");
     } finally {
       setReviewingId(null);
     }
@@ -318,14 +361,38 @@ export function BookingApprovalsPanel({
         </div>
       ) : null}
 
-      {error && (
-        <div className="rounded-md bg-destructive/10 px-4 py-3 text-destructive">
-          {error}
-          <button onClick={() => setError("")} className="ml-2 underline">
-            Dismiss
-          </button>
-        </div>
-      )}
+      <FocusedActionError
+        id="booking-approvals-recovery"
+        error={decisionRecovery?.message ?? ""}
+        attentionKey={recoveryAttentionVersion}
+        heading={decisionRecovery ? "Rejection recorded - cancellation pending" : undefined}
+        action={
+          decisionRecovery ? (
+            <Button asChild variant="outline" size="sm">
+              <Link
+                href={buildHrefWithReturnTo(
+                  `/bookings/${encodeURIComponent(decisionRecovery.bookingId)}`,
+                  currentPath,
+                )}
+              >
+                Open affected booking
+              </Link>
+            </Button>
+          ) : undefined
+        }
+      />
+      <FocusedActionError
+        id="booking-approvals-error"
+        error={error}
+        attentionKey={errorAttentionVersion}
+        action={
+          error ? (
+            <Button type="button" variant="outline" size="sm" onClick={() => setError("")}>
+              Dismiss
+            </Button>
+          ) : undefined
+        }
+      />
 
 
       <div className="flex flex-wrap gap-2">

@@ -1,4 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
+import { hostingCoverageParticipantRetryResponse } from "@/lib/adult-member-hosting-retry-response";
+import { HOSTING_COVERAGE_RETRY_CODE } from "@/lib/adult-member-hosting-queue-participants";
 import { auth } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 import { BookingStatus } from "@prisma/client";
@@ -59,6 +61,7 @@ export async function POST(
       // party conflicting rather than a bad request, and the code stays out of the
       // hard-stop family that may not enter review.
       : result.code === "ADULT_MEMBER_HOSTING_REQUIRED" ? 409
+      : result.code === HOSTING_COVERAGE_RETRY_CODE ? 409
       : 400;
     return NextResponse.json(
       {
@@ -151,7 +154,7 @@ export async function POST(
     // global lock(1) first (mutual exclusion with cancel/settlement), then the
     // per-lodge lock (serialise the capacity claim against per-lodge creators),
     // re-read under the locks, re-check capacity, and status-guard the flip.
-    const flip = await prisma.$transaction(async (tx) => {
+    const runZeroDollarFlip = () => prisma.$transaction(async (tx) => {
       await tx.$executeRaw`SELECT pg_advisory_xact_lock(1)`;
       await acquireLodgeCapacityLock(tx, booking.lodgeId);
 
@@ -233,6 +236,46 @@ export async function POST(
       });
       return { ok: true as const };
     });
+
+    let flip: Awaited<ReturnType<typeof runZeroDollarFlip>>;
+    try {
+      flip = await runZeroDollarFlip();
+    } catch (err) {
+      const hostingRetry = hostingCoverageParticipantRetryResponse(err);
+      if (!hostingRetry) throw err;
+
+      // Phase one already consumed the offer and committed PAYMENT_PENDING.
+      // A participant NOWAIT conflict in phase two rolls that phase back, so
+      // compensate under the same global -> lodge protocol used by capacity
+      // loss. Returning the stable retry while leaving PAYMENT_PENDING would
+      // strand a free booking in a state with neither a payment path nor an
+      // offer; WAITLISTED lets the ordinary offer worker replay it safely.
+      await prisma.$transaction(async (tx) => {
+        await tx.$executeRaw`SELECT pg_advisory_xact_lock(1)`;
+        await acquireLodgeCapacityLock(tx, booking.lodgeId);
+        const restored = await tx.booking.updateMany({
+          where: { id: bookingId, status: BookingStatus.PAYMENT_PENDING },
+          data: {
+            status: BookingStatus.WAITLISTED,
+            waitlistOfferedAt: null,
+            waitlistOfferExpiresAt: null,
+            waitlistOfferedLodgeId: null,
+            waitlistOfferedPriceCents: null,
+          },
+        });
+        if (restored.count === 1) {
+          await reconcileBedAllocationsForBookingWithLodgeLockHeld({
+            bookingId,
+            db: tx,
+            previousRange: {
+              checkIn: booking.checkIn,
+              checkOut: booking.checkOut,
+            },
+          });
+        }
+      });
+      return hostingRetry;
+    }
 
     if (!flip.ok) {
       // The locked claim already restored WAITLISTED, so the normal offer cron

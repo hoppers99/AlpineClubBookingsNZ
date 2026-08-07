@@ -193,8 +193,10 @@ describe("getAdminPendingCounts", () => {
         },
       },
     });
+    // #2597: a request mid-approval has already cancelled bookings and still
+    // owes the member its anonymisation, so it stays in the admin's count.
     expect(mocks.deletionRequestCount).toHaveBeenCalledWith({
-      where: { status: "PENDING" },
+      where: { status: { in: ["PENDING", "APPROVAL_IN_PROGRESS"] } },
     });
     expect(mocks.issueReportCount).toHaveBeenCalledWith({
       where: { resolvedAt: null },

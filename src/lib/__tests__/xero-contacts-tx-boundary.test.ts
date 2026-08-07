@@ -14,7 +14,9 @@ const mocks = vi.hoisted(() => ({
   txMemberFindUnique: vi.fn(),
   txMemberFindFirst: vi.fn(),
   txMemberUpdate: vi.fn(),
+  txXeroOperationFindFirst: vi.fn(),
   txExecuteRaw: vi.fn(),
+  txQueryRaw: vi.fn(),
   transaction: vi.fn(),
   getContacts: vi.fn(),
   createContacts: vi.fn(),
@@ -24,7 +26,18 @@ const mocks = vi.hoisted(() => ({
   failXeroSyncOperation: vi.fn(),
   upsertXeroObjectLink: vi.fn(),
   syncManagedXeroContactGroupForMember: vi.fn(),
+  recordProviderCreatedContactPendingLocalLink: vi.fn(),
 }));
+
+vi.mock("@/lib/xero-contact-create-recovery", async (importOriginal) => {
+  const actual =
+    await importOriginal<typeof import("@/lib/xero-contact-create-recovery")>();
+  return {
+    ...actual,
+    recordProviderCreatedContactPendingLocalLink:
+      mocks.recordProviderCreatedContactPendingLocalLink,
+  };
+});
 
 vi.mock("@/lib/prisma", () => ({
   prisma: {
@@ -100,24 +113,36 @@ describe("findOrCreateXeroContact transaction boundary (#1355)", () => {
     mocks.failXeroSyncOperation.mockResolvedValue(undefined);
     mocks.upsertXeroObjectLink.mockResolvedValue({ id: "link-1" });
     mocks.syncManagedXeroContactGroupForMember.mockResolvedValue(undefined);
-    mocks.txExecuteRaw.mockResolvedValue(undefined);
-    mocks.txMemberFindUnique.mockResolvedValue({ xeroContactId: null });
+    mocks.recordProviderCreatedContactPendingLocalLink.mockResolvedValue(undefined);
+    mocks.txExecuteRaw.mockResolvedValue(1);
+    mocks.txQueryRaw.mockImplementation(
+      async (_strings: TemplateStringsArray, memberId: string) => [{ id: memberId }],
+    );
+    mocks.txMemberFindUnique.mockResolvedValue({
+      ...MEMBER,
+      passwordHash: null,
+    });
     mocks.txMemberFindFirst.mockResolvedValue(null);
+    mocks.txXeroOperationFindFirst.mockResolvedValue(null);
     mocks.txMemberUpdate.mockResolvedValue({ id: "member-1" });
     mocks.transaction.mockImplementation(
       async (fn: (tx: unknown) => Promise<unknown>) =>
         fn({
           $executeRaw: mocks.txExecuteRaw,
+          $queryRaw: mocks.txQueryRaw,
           member: {
             findUnique: mocks.txMemberFindUnique,
             findFirst: mocks.txMemberFindFirst,
             update: mocks.txMemberUpdate,
           },
+          xeroSyncOperation: {
+            findFirst: mocks.txXeroOperationFindFirst,
+          },
         })
     );
   });
 
-  it("performs ALL Xero calls before the advisory-locked transaction opens", async () => {
+  it("commits the reservation before create and keeps the provider outside both short transactions", async () => {
     await expect(findOrCreateXeroContact("member-1")).resolves.toBe(
       "contact-new"
     );
@@ -126,11 +151,17 @@ describe("findOrCreateXeroContact transaction boundary (#1355)", () => {
     // ever entered — a slow provider call can no longer blow the 5s
     // interactive-transaction budget or roll back local state after the
     // external side effect.
+    expect(mocks.transaction).toHaveBeenCalledTimes(2);
+    const reservationTxOrder = mocks.transaction.mock.invocationCallOrder[0];
+    const linkTxOrder = mocks.transaction.mock.invocationCallOrder[1];
     expect(mocks.getContacts.mock.invocationCallOrder[0]).toBeLessThan(
-      mocks.transaction.mock.invocationCallOrder[0]
+      reservationTxOrder,
+    );
+    expect(mocks.createContacts.mock.invocationCallOrder[0]).toBeGreaterThan(
+      reservationTxOrder,
     );
     expect(mocks.createContacts.mock.invocationCallOrder[0]).toBeLessThan(
-      mocks.transaction.mock.invocationCallOrder[0]
+      linkTxOrder,
     );
     // The short transaction still takes the per-member advisory lock and
     // writes the link.
@@ -146,14 +177,19 @@ describe("findOrCreateXeroContact transaction boundary (#1355)", () => {
     );
     expect(
       mocks.completeXeroSyncOperation.mock.invocationCallOrder[0]
-    ).toBeGreaterThan(mocks.transaction.mock.invocationCallOrder[0]);
+    ).toBeGreaterThan(linkTxOrder);
   });
 
   it("keeps first-writer-wins when a concurrent resolver linked while our Xero work ran", async () => {
-    // Phase-2 re-read sees a DIFFERENT contact already linked.
-    mocks.txMemberFindUnique.mockResolvedValue({
-      xeroContactId: "contact-other",
-    });
+    // The reservation re-read still sees no link. Phase 2 then sees the
+    // DIFFERENT contact that won while provider work ran.
+    // #2597: the reservation now builds the Xero contact payload from the
+    // LOCKED row rather than a stale pre-lock read, so this re-read must carry
+    // the full contact shape or payload validation fails before the boundary
+    // this test is about.
+    mocks.txMemberFindUnique
+      .mockResolvedValueOnce({ ...MEMBER, passwordHash: null })
+      .mockResolvedValueOnce({ xeroContactId: "contact-other" });
 
     await expect(findOrCreateXeroContact("member-1")).resolves.toBe(
       "contact-other"
@@ -178,7 +214,22 @@ describe("findOrCreateXeroContact transaction boundary (#1355)", () => {
   it("records the operation FAILED (never SUCCEEDED) when the local link fails after the Xero create", async () => {
     // Pre-#1355 this was the op-log lie: the tx aborted post-create, the
     // local link rolled back, and the op stayed SUCCEEDED.
-    mocks.transaction.mockRejectedValue(new Error("transaction aborted"));
+    mocks.transaction
+      .mockImplementationOnce(async (fn: (tx: unknown) => Promise<unknown>) =>
+        fn({
+          $executeRaw: mocks.txExecuteRaw,
+          $queryRaw: mocks.txQueryRaw,
+          member: {
+            findUnique: mocks.txMemberFindUnique,
+            findFirst: mocks.txMemberFindFirst,
+            update: mocks.txMemberUpdate,
+          },
+          xeroSyncOperation: {
+            findFirst: mocks.txXeroOperationFindFirst,
+          },
+        }),
+      )
+      .mockRejectedValueOnce(new Error("transaction aborted"));
 
     await expect(findOrCreateXeroContact("member-1")).rejects.toThrow(
       "transaction aborted"
@@ -188,7 +239,70 @@ describe("findOrCreateXeroContact transaction boundary (#1355)", () => {
     expect(mocks.failXeroSyncOperation).toHaveBeenCalledWith(
       "op-1",
       expect.objectContaining({ message: "transaction aborted" }),
-      expect.objectContaining({ phase: "local_link_after_xero_resolution" })
+      expect.objectContaining({
+        phase: "local_link_after_xero_resolution",
+        providerContactCreated: true,
+      })
+    );
+  });
+
+  it("records matched-existing local-link failures as not provider-created", async () => {
+    mocks.getContacts
+      .mockResolvedValueOnce({ body: { contacts: [] } })
+      .mockResolvedValueOnce({
+        body: {
+          contacts: [
+            { contactID: "contact-matched", name: "Alice Example" },
+          ],
+        },
+      });
+    mocks.createContacts.mockRejectedValue({
+      response: { statusCode: 400 },
+      message: JSON.stringify({
+        body: {
+          Message: "A validation exception occurred",
+          Elements: [
+            {
+              ValidationErrors: [
+                {
+                  Message:
+                    "The contact name Alice Example is already assigned to another contact. The contact name must be unique across all active contacts.",
+                },
+              ],
+            },
+          ],
+        },
+      }),
+    });
+    mocks.transaction
+      .mockImplementationOnce(async (fn: (tx: unknown) => Promise<unknown>) =>
+        fn({
+          $executeRaw: mocks.txExecuteRaw,
+          $queryRaw: mocks.txQueryRaw,
+          member: {
+            findUnique: mocks.txMemberFindUnique,
+            findFirst: mocks.txMemberFindFirst,
+            update: mocks.txMemberUpdate,
+          },
+          xeroSyncOperation: {
+            findFirst: mocks.txXeroOperationFindFirst,
+          },
+        }),
+      )
+      .mockRejectedValueOnce(new Error("transaction aborted"));
+
+    await expect(findOrCreateXeroContact("member-1")).rejects.toThrow(
+      "transaction aborted"
+    );
+
+    expect(mocks.failXeroSyncOperation).toHaveBeenCalledWith(
+      "op-1",
+      expect.objectContaining({ message: "transaction aborted" }),
+      expect.objectContaining({
+        phase: "local_link_after_xero_resolution",
+        resolvedContactId: "contact-matched",
+        providerContactCreated: false,
+      })
     );
   });
 
@@ -214,9 +328,14 @@ describe("findOrCreateXeroContact transaction boundary (#1355)", () => {
     );
   });
 
-  it("keeps the lock-free steady-state fast path returning the persisted link", async () => {
+  it("rechecks the steady-state member under the row fence before refreshing its canonical link", async () => {
     mocks.memberFindUnique.mockResolvedValue({
       ...MEMBER,
+      xeroContactId: "contact-existing",
+    });
+    mocks.txMemberFindUnique.mockResolvedValue({
+      ...MEMBER,
+      passwordHash: null,
       xeroContactId: "contact-existing",
     });
 
@@ -224,10 +343,11 @@ describe("findOrCreateXeroContact transaction boundary (#1355)", () => {
       "contact-existing"
     );
 
-    expect(mocks.transaction).not.toHaveBeenCalled();
+    expect(mocks.transaction).toHaveBeenCalledTimes(1);
     expect(mocks.getAuthenticatedXeroClient).not.toHaveBeenCalled();
     expect(mocks.upsertXeroObjectLink).toHaveBeenCalledWith(
-      expect.objectContaining({ xeroObjectId: "contact-existing" })
+      expect.objectContaining({ xeroObjectId: "contact-existing" }),
+      expect.objectContaining({ store: expect.anything() }),
     );
   });
 });

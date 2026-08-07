@@ -573,13 +573,13 @@ describe("retryXeroSyncOperation", () => {
     });
   });
 
-  it("replays contact updates using the stored request payload", async () => {
+  it("replays non-member contact updates using the stored request payload", async () => {
     mocks.findUniqueOperation.mockResolvedValue(
       makeOperation({
         entityType: "CONTACT",
         operationType: "UPDATE",
-        localModel: "Member",
-        localId: "mem_123",
+        localModel: "ExternalContact",
+        localId: "external_123",
         requestPayload: {
           contacts: [
             {
@@ -635,8 +635,8 @@ describe("retryXeroSyncOperation", () => {
         dateOfBirth: new Date(Date.UTC(1990, 2, 2)),
       }),
       expect.objectContaining({
-        localModel: "Member",
-        localId: "mem_123",
+        localModel: "ExternalContact",
+        localId: "external_123",
         createdByMemberId: "admin_1",
         preserveXeroName: false,
       })
@@ -692,16 +692,7 @@ describe("retryXeroSyncOperation", () => {
 
     expect(mocks.updateXeroContact).toHaveBeenCalledWith(
       "xero_contact_current",
-      expect.objectContaining({
-        firstName: "Janet",
-        lastName: "Doe",
-        email: "janet@example.com",
-        phoneCountryCode: "64",
-        phoneAreaCode: "27",
-        phoneNumber: "7654321",
-        streetAddressLine1: "2 Current Street",
-        postalAddressLine1: "PO Box 100",
-      }),
+      undefined,
       expect.objectContaining({
         localModel: "Member",
         localId: "mem_123",
@@ -711,13 +702,13 @@ describe("retryXeroSyncOperation", () => {
     );
   });
 
-  it("replays contact updates that intentionally preserve the Xero contact name", async () => {
+  it("replays non-member contact updates that intentionally preserve the Xero contact name", async () => {
     mocks.findUniqueOperation.mockResolvedValue(
       makeOperation({
         entityType: "CONTACT",
         operationType: "UPDATE",
-        localModel: "Member",
-        localId: "mem_123",
+        localModel: "ExternalContact",
+        localId: "external_123",
         requestPayload: {
           contacts: [
             {
@@ -747,12 +738,42 @@ describe("retryXeroSyncOperation", () => {
         phoneNumber: "7654321",
       }),
       expect.objectContaining({
-        localModel: "Member",
-        localId: "mem_123",
+        localModel: "ExternalContact",
+        localId: "external_123",
         createdByMemberId: "admin_1",
         preserveXeroName: true,
       })
     );
+  });
+
+  it("refuses a Member retry when the current contact is gone instead of replaying stored PII", async () => {
+    mocks.findUniqueMember.mockResolvedValue(null);
+    mocks.findUniqueOperation.mockResolvedValue(
+      makeOperation({
+        entityType: "CONTACT",
+        operationType: "UPDATE",
+        localModel: "Member",
+        localId: "deleted-member",
+        requestPayload: {
+          contacts: [
+            {
+              contactID: "stale-contact",
+              firstName: "Former",
+              lastName: "Member",
+              emailAddress: "former@example.test",
+            },
+          ],
+        },
+      }),
+    );
+
+    await expect(
+      retryXeroSyncOperation("op_123", { createdByMemberId: "admin_1" }),
+    ).rejects.toMatchObject({
+      status: 400,
+      message: expect.stringContaining("do not replay the stored contact payload"),
+    });
+    expect(mocks.updateXeroContact).not.toHaveBeenCalled();
   });
 
   it("replays payment credit note creation using the stored refund amount", async () => {

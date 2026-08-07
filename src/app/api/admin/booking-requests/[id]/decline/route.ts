@@ -1,6 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
+import { hostingCoverageParticipantRetryResponse } from "@/lib/adult-member-hosting-retry-response";
 import { z } from "zod";
 import {
+  BookingRequestDeclineCommittedError,
   BookingRequestError,
   declineBookingRequest,
   serializeBookingRequestForAdmin,
@@ -56,6 +58,25 @@ export async function POST(
 
     return NextResponse.json(serializeBookingRequestForAdmin(updated!));
   } catch (err) {
+    const committedRecovery =
+      err instanceof BookingRequestDeclineCommittedError
+        ? {
+            requestDeclined: true,
+            holdReleasePending: err.holdReleasePending,
+            holdReleaseStatusUnconfirmed: err.holdReleaseStatusUnconfirmed,
+          }
+        : undefined;
+    const hostingRetry = hostingCoverageParticipantRetryResponse(
+      err,
+      committedRecovery,
+    );
+    if (hostingRetry) return hostingRetry;
+    if (err instanceof BookingRequestDeclineCommittedError) {
+      return NextResponse.json(
+        { error: err.message, ...committedRecovery },
+        { status: err.status },
+      );
+    }
     if (err instanceof BookingRequestError) {
       return NextResponse.json({ error: err.message }, { status: err.status });
     }

@@ -3,9 +3,11 @@
  * GET /api/admin/deletion-requests
  */
 import { NextRequest, NextResponse } from "next/server";
+import { Prisma } from "@prisma/client";
 import { requireAdmin } from "@/lib/session-guards";
 import { prisma } from "@/lib/prisma";
 import logger from "@/lib/logger";
+import { OPEN_DELETION_REQUEST_STATUSES } from "@/lib/deletion-request-decision";
 import { z } from "zod";
 
 const querySchema = z.object({
@@ -30,10 +32,15 @@ export async function GET(request: NextRequest) {
   const { status, page, pageSize } = parsed.data;
 
   try {
-    const where =
+    // The PENDING filter is the admin's "needs a decision" queue. A request
+    // that is mid-approval must stay in it: its cleanup has already begun and
+    // an admin who cannot see it cannot resume it.
+    const where: Prisma.DeletionRequestWhereInput =
       status === "ALL"
         ? {}
-        : { status };
+        : status === "PENDING"
+          ? { status: { in: OPEN_DELETION_REQUEST_STATUSES } }
+          : { status };
 
     const [requests, total] = await Promise.all([
       prisma.deletionRequest.findMany({

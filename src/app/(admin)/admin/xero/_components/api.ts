@@ -6,6 +6,9 @@ type ErrorBody = {
   warning?: string
 }
 
+export const XERO_ACTION_NETWORK_ERROR =
+  "The service could not be reached. Your selections are still here. Check the current status, then try again."
+
 async function readJson<T>(res: Response): Promise<T> {
   return (await res.json()) as T
 }
@@ -24,7 +27,12 @@ async function readErrorMessage(res: Response, fallback: string): Promise<string
 }
 
 export async function fetchJson<T>(url: string, options?: RequestInit, fallbackMessage = "Request failed"): Promise<T> {
-  const res = await fetch(url, options)
+  let res: Response
+  try {
+    res = await fetch(url, options)
+  } catch {
+    throw new Error(XERO_ACTION_NETWORK_ERROR)
+  }
   if (!res.ok) {
     throw new Error(await readErrorMessage(res, fallbackMessage))
   }

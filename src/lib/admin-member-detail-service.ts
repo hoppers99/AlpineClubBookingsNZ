@@ -4,6 +4,10 @@ import { z } from "zod";
 import { prisma } from "@/lib/prisma";
 import { settleHostingCoverageAfterCommit } from "@/lib/adult-member-hosting-coverage-drain";
 import { enqueueHostingCoverageReevaluationForMember } from "@/lib/adult-member-hosting-review";
+import {
+  HOSTING_COVERAGE_RETRY_BODY,
+  isHostingCoverageParticipantRetry,
+} from "@/lib/adult-member-hosting-queue-participants";
 import { computeAgeTier, getSeasonStartDate } from "@/lib/age-tier";
 import { getSeasonYear } from "@/lib/utils";
 import {
@@ -18,6 +22,7 @@ import {
   shouldRepairXeroContactNameOrder,
 } from "@/lib/xero-contact-sync";
 import { getXeroApiErrorInfo } from "@/lib/xero-api-errors";
+import { getMemberContactCreateRecoveryState } from "@/lib/xero-contact-create-recovery";
 import logger from "@/lib/logger";
 import {
   copyStreetAddressToPostal,
@@ -581,12 +586,20 @@ export async function getAdminMemberDetail(params: {
     return jsonResult({ error: "Member not found" }, { status: 404 });
   }
 
-  const [deleteEligibility, deleteLifecycleActionRequests] = await Promise.all([
+  const [
+    deleteEligibility,
+    deleteLifecycleActionRequests,
+    xeroContactCreateRecoveryState,
+  ] = await Promise.all([
     getMemberDeleteEligibility({
       memberId: id,
       currentAdminMemberId,
     }),
     getMemberDeleteLifecycleRequests(id),
+    getMemberContactCreateRecoveryState({
+      memberId: id,
+      xeroContactId: member.xeroContactId,
+    }),
   ]);
   const lifecycleActionRequests = [
     ...deleteLifecycleActionRequests,
@@ -720,6 +733,9 @@ export async function getAdminMemberDetail(params: {
     auditLogs: auditLogsWithActors,
     xeroContactGroups,
     xeroContactGroupsLoaded,
+    xeroContactCreateRecoveryState,
+    xeroContactCreateRecoveryPending:
+      xeroContactCreateRecoveryState === "PROVIDER_CREATED_LINK_PENDING",
     deleteEligibility,
     lifecycleActionRequests,
     openCancellationRequest: openCancellationParticipant
@@ -1508,6 +1524,9 @@ export async function updateAdminMember(params: {
 
     return jsonResult(updated);
   } catch (error) {
+    if (isHostingCoverageParticipantRetry(error)) {
+      return jsonResult(HOSTING_COVERAGE_RETRY_BODY, { status: 409 });
+    }
     if (error instanceof AdminAccountGuardError) {
       return jsonResult(
         { error: error.message },

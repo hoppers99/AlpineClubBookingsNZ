@@ -1,4 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
+import { hostingCoverageParticipantRetryResponse } from "@/lib/adult-member-hosting-retry-response";
+import { isHostingCoverageParticipantRetry } from "@/lib/adult-member-hosting-queue-participants";
 import { requireAdmin } from "@/lib/session-guards";
 import { prisma } from "@/lib/prisma";
 import {
@@ -14,8 +16,19 @@ import logger from "@/lib/logger";
 import { z } from "zod";
 import { buildXeroContactUrl } from "@/lib/xero-links";
 import { getXeroOrgShortCode } from "@/lib/xero-link-short-code";
-import { upsertXeroObjectLink } from "@/lib/xero-sync";
 import { getSeasonYear } from "@/lib/utils";
+import {
+  linkedContactRecovery,
+  xeroPartialSuccessBody,
+} from "@/lib/xero-partial-success";
+import {
+  assertMemberAvailableForXeroContactChange,
+  XERO_CONTACT_CREATE_IN_PROGRESS_CODE,
+  XERO_MEMBER_UNAVAILABLE_CODE,
+  XeroContactCreateInProgressError,
+  XeroMemberUnavailableError,
+} from "@/lib/xero-contact-create-recovery";
+import { commitManualXeroContactLink } from "@/lib/xero-manual-contact-link";
 
 const linkSchema = z.object({
   xeroContactId: z.string().min(1),
@@ -38,13 +51,33 @@ export async function POST(
 
   const member = await prisma.member.findUnique({
     where: { id },
-    select: { id: true, firstName: true, lastName: true, xeroContactId: true },
+    select: {
+      id: true,
+      firstName: true,
+      lastName: true,
+      email: true,
+      passwordHash: true,
+      xeroContactId: true,
+    },
   });
   if (!member) {
     return NextResponse.json({ error: "Member not found" }, { status: 404 });
   }
+  try {
+    assertMemberAvailableForXeroContactChange(member);
+  } catch (err) {
+    if (err instanceof XeroMemberUnavailableError) {
+      return NextResponse.json(
+        { error: err.message, code: XERO_MEMBER_UNAVAILABLE_CODE },
+        { status: err.statusCode },
+      );
+    }
+    throw err;
+  }
 
   let body: unknown;
+  let memberLinkCommitted = false;
+  let subscriptionRefreshPending = false;
   try {
     body = await req.json();
   } catch {
@@ -87,22 +120,13 @@ export async function POST(
 
     await refreshXeroContactCachesFromContact(contact);
 
-    await prisma.member.update({
-      where: { id },
-      data: { xeroContactId: parsed.data.xeroContactId },
+    await commitManualXeroContactLink({
+      memberId: id,
+      xeroContactId: parsed.data.xeroContactId,
+      contactName: contact.name ?? null,
     });
-    await upsertXeroObjectLink({
-      localModel: "Member",
-      localId: id,
-      xeroObjectType: "CONTACT",
-      xeroObjectId: parsed.data.xeroContactId,
-      xeroObjectUrl: buildXeroContactUrl(parsed.data.xeroContactId),
-      role: "CONTACT",
-      metadata: {
-        contactName: contact.name ?? null,
-        linkedManually: true,
-      },
-    });
+    memberLinkCommitted = true;
+    subscriptionRefreshPending = true;
 
     const flushedSubscriptionHistory = await flushMemberSubscriptionHistory(id);
     let warning: string | undefined;
@@ -120,6 +144,8 @@ export async function POST(
           forceRefreshOnlineInvoiceUrl: true,
         });
 
+      subscriptionRefreshPending = subscriptionSync.errors.length > 0;
+
       if (subscriptionSync.errors.length > 0) {
         warning =
           "Member linked, but subscription history refresh did not complete for every season. Run the Member Status Repair Backfill to retry.";
@@ -134,8 +160,12 @@ export async function POST(
         );
       }
     } catch (historyError) {
+      if (isHostingCoverageParticipantRetry(historyError)) {
+        throw historyError;
+      }
       warning =
         "Member linked, but subscription history refresh did not complete. Run the Member Status Repair Backfill to retry.";
+      subscriptionRefreshPending = true;
       logger.warn(
         {
           err: historyError,
@@ -182,6 +212,38 @@ export async function POST(
       ...(warning ? { warning } : {}),
     });
   } catch (err) {
+    if (err instanceof XeroContactCreateInProgressError) {
+      return NextResponse.json(
+        { error: err.message, code: XERO_CONTACT_CREATE_IN_PROGRESS_CODE },
+        { status: err.statusCode },
+      );
+    }
+    if (err instanceof XeroMemberUnavailableError) {
+      return NextResponse.json(
+        { error: err.message, code: XERO_MEMBER_UNAVAILABLE_CODE },
+        { status: err.statusCode },
+      );
+    }
+    const recovery = memberLinkCommitted
+      ? linkedContactRecovery(
+          parsed.data.xeroContactId,
+          subscriptionRefreshPending,
+        )
+      : null;
+    const hostingRetry = hostingCoverageParticipantRetryResponse(
+      err,
+      recovery ? { ...recovery } : undefined,
+    );
+    if (hostingRetry) return hostingRetry;
+    if (recovery) {
+      logger.error(
+        { err, memberId: id, recoveryKind: recovery.recoveryKind },
+        "Xero contact link completed only in part",
+      );
+      return NextResponse.json(xeroPartialSuccessBody(recovery), {
+        status: 409,
+      });
+    }
     const xeroError = getXeroApiErrorInfo(err, "Failed to link to Xero contact");
     if (!xeroError.handled) {
       logger.error(

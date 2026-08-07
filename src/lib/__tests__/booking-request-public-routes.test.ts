@@ -47,6 +47,12 @@ vi.mock("@/lib/payment-link", () => ({
       this.status = status;
     }
   },
+  PaymentLinkPaymentRecoveryError: class PaymentLinkPaymentRecoveryError extends Error {
+    constructor(readonly kind: string) {
+      super("payment recovery");
+      this.name = "PaymentLinkPaymentRecoveryError";
+    }
+  },
 }));
 
 vi.mock("@/lib/lodge-capacity", () => ({
@@ -87,6 +93,7 @@ import {
   createPaymentIntentForPaymentLink,
   reissuePaymentLinkForToken,
   PaymentLinkError,
+  PaymentLinkPaymentRecoveryError,
 } from "@/lib/payment-link";
 import { POST as submitBookingRequest } from "@/app/api/booking-requests/route";
 import { GET as verifyBookingRequestRoute } from "@/app/api/booking-requests/verify/[token]/route";
@@ -687,16 +694,47 @@ describe("POST /api/pay/[token]/payment-intent", () => {
   it("reports alreadyPaid without leaking a fresh client secret", async () => {
     mockedCreatePaymentIntentForLink.mockResolvedValue({
       type: "alreadyPaid",
-      paymentIntentId: "pi_123",
     });
 
     const res = await intentRequest(VALID_TOKEN);
     const body = await res.json();
 
     expect(res.status).toBe(200);
-    expect(body).toEqual({ alreadyPaid: true, paymentIntentId: "pi_123" });
+    expect(body).toEqual({ alreadyPaid: true });
     expect(body).not.toHaveProperty("clientSecret");
+    expect(body).not.toHaveProperty("paymentIntentId");
   });
+
+  it.each([
+    ["payment_received_finalisation_pending", true, false],
+    ["payment_received_status_unconfirmed", true, false],
+    ["existing_card_status_unconfirmed", false, true],
+  ])(
+    "returns provider-safe %s recovery without an intent id",
+    async (kind, paymentReceived, existingCardTransactionFound) => {
+      mockedCreatePaymentIntentForLink.mockRejectedValue(
+        new PaymentLinkPaymentRecoveryError(
+          kind as ConstructorParameters<
+            typeof PaymentLinkPaymentRecoveryError
+          >[0],
+        ),
+      );
+
+      const res = await intentRequest(VALID_TOKEN);
+      const body = await res.json();
+
+      expect(res.status).toBe(409);
+      expect(body).not.toHaveProperty("paymentIntentId");
+      if (paymentReceived) expect(body.paymentReceived).toBe(true);
+      if (existingCardTransactionFound) {
+        expect(body).toMatchObject({
+          existingCardTransactionFound: true,
+          paymentStatusUnconfirmed: true,
+        });
+        expect(body).not.toHaveProperty("paymentReceived");
+      }
+    },
+  );
 
   it("returns a client secret for a payable booking", async () => {
     mockedCreatePaymentIntentForLink.mockResolvedValue({
