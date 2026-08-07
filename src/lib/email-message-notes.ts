@@ -286,6 +286,45 @@ export function splitGuestPortionOwnBookingLine(
 }
 
 /**
+ * #2621 (epic #2629, owner decision D-M5) — the checkout-day chore sentence of
+ * the pre-arrival reminder, shared by the hand-built HTML
+ * (`preArrivalReminderTemplate`) and the `{{checkoutChoreNote}}` token the
+ * admin-editable body renders.
+ *
+ * WHAT IT IS FOR. Under the midday-to-midday guest night (#2622/#2631) a guest
+ * is present on their checkout morning and is therefore eligible for that
+ * morning's chore. Nobody is asked for a departure time and none is inferred:
+ * a member who wants to leave early talks to the hut leader. This sentence is
+ * where the pre-arrival reminder says so, in the owner's own words.
+ *
+ * WHY IT IS COMPOSED RATHER THAN WRITTEN INTO THE DEFAULT BODY. **The chores
+ * module defaults OFF** (`ClubModuleSettings.chores` is `@default(false)`), and
+ * plenty of clubs never turn it on. An unconditional sentence in the shipped
+ * default would tell every member of every one of those clubs that they are on a
+ * chore roster that does not exist, and instruct them to talk to a hut leader
+ * about it — on the last message most members read before they travel. This is
+ * the `{{choreListNote}}` shape from the sibling `checkin-reminder` template in
+ * the same file: the sender composes the whole sentence or nothing at all, and
+ * the flat body carries only the token, because `renderTemplateString` has no
+ * conditional syntax to express "only when the club runs a chore roster".
+ *
+ * Empty is the ORDINARY case, not the exceptional one, so the token is declared
+ * in `OPTIONAL_TEMPLATE_TOKENS["pre-arrival-reminder"]` — it is in the shipped
+ * default body, which is what makes that the correct table rather than
+ * `EMPTYABLE_OVERRIDE_TOKENS` — and guard 4 proves the default body renders
+ * cleanly without it. The token sits on a line of its own between blank lines, so
+ * `plainTextEmailTemplate` drops the whole block when it is empty and leaves no
+ * blank-line artefact; the value therefore carries no trailing newlines of its
+ * own (the `{{outstandingAdditionalNote}}` convention in the same body).
+ *
+ * The wording is the owner's, verbatim, and may not be paraphrased here.
+ */
+export function checkoutDayChoreNote(choresModuleEnabled: boolean): string {
+  if (!choresModuleEnabled) return "";
+  return "You are on the chore roster on the morning you check out, so please talk to the hut leader beforehand if you plan to leave early.";
+}
+
+/**
  * #2550 — the one escalating sentence of the whole-lodge guest-name reminder,
  * shared by the hand-built HTML (`wholeLodgeGuestNamesReminderTemplate`) and the
  * `{{namingUrgencyNote}}` token the admin-editable body renders.

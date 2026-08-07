@@ -363,13 +363,33 @@ string, and the default body carries only the token. `{{doorCodeNote}}`,
 `{{amountRecordedNote}}`, `{{bookingReferenceNote}}`, `{{choreListNote}}`,
 `{{choreLinkNote}}`, `{{localRecordNote}}`, `{{latestErrorNote}}`,
 `{{xeroLinksNote}}`, `{{refundOutcomeNote}}`, `{{settlementActionNote}}`,
-`{{creditNote}}` and `{{ownBookingNote}}` all behave this way, alongside the
+`{{creditNote}}`, `{{checkoutChoreNote}}` and `{{ownBookingNote}}` all behave
+this way, alongside the
 older `{{provisionalGuestsNote}}`, `{{paymentNote}}` and `{{promoSummary}}`. An
 operator overriding one of these bodies should place the token on a line of its
 own and **never** write a label of their own in front of it. The raw value
 behind each (`{{doorCode}}`, `{{reason}}`, `{{adminNote}}` …) stays valid for
 overrides written before the change, so nothing an operator already saved stops
 rendering or stops being re-savable.
+
+`{{checkoutChoreNote}}` is the newest of these (#2621, owner decision D-M5) and
+shows the shape at its clearest: on the **Pre-arrival Information** template the
+sender emits the whole checkout-day chore sentence when the club's **Chores**
+module is enabled, and the empty string when it is not. It is conditional on a
+module rather than on a per-booking value because **the chores module defaults
+off** — an unconditional sentence would tell every member of every chore-free
+club that they are on a roster that does not exist, and send them to find a hut
+leader about it, on the last message most members read before they travel. The
+module read fails soft to off, which is the safe direction here: a database blip
+costs a chores club one sentence, where failing open would misinform a club that
+keeps no roster.
+
+`{{expectedArrivalNote}}` on the same template is the ordinary per-booking form
+of the pattern: the member's expected arrival time is **display-only
+information** for the hut leader (#2621, owner decision 8 Aug), so the token
+renders the whole "Expected arrival: 4:30 PM" line for a booking that has one and
+nothing at all for a booking that does not. It changes no date, no charge and no
+chore assignment.
 
 A related rule follows from the same limitation: **one registered template
 serves exactly one outcome.** A body that has to say either "your appeal was

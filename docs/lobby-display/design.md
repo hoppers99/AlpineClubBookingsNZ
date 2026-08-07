@@ -229,6 +229,12 @@ interface DisplayStateBooking {
   guestCount: number;
   stayStart: string;          // earliest guest stay-start on the row
   stayEnd: string;            // latest guest stay-end on the row
+  /** Expected arrival time, "HH:mm" (#2621) — display-only information so the
+   *  wall can say when arrivals are due. Non-null ONLY on a row that is already
+   *  naming individuals (the same `namesAllowed` decision that fills `guests`),
+   *  only when the arrival falls inside the window, and only for a value of the
+   *  canonical shape. Read by no count. */
+  arrivalTime: string | null;
 }
 
 interface DisplayState {
@@ -506,7 +512,7 @@ The twelve modules (descriptions mirror the registry):
 | Module (`name`) | Embed token | Dependency / behaviour | Renders |
 |---|---|---|---|
 | `lodge-header` *(furniture)* | `{{module:lodge-header}}` | none | Fixed page furniture: club logo, lodge name, club name, and the live clock (with the preview simulated-date affordance). Present on every template. |
-| `arrivals-board` | `{{module:arrivals-board}}` | Bed Allocation — degrades | The everyday bar board: one bar per booking across the nights it covers, with names and check-out day; groups bars into room rows with allocation on, per-booking rows with it off. |
+| `arrivals-board` | `{{module:arrivals-board}}` | Bed Allocation — degrades | The everyday bar board: one bar per booking across the nights it covers, with names, expected arrival time (#2621, on bars that start inside the window and already show names) and check-out day; groups bars into room rows with allocation on, per-booking rows with it off. |
 | `occupancy-grid` | `{{module:occupancy-grid}}` | Bed Allocation — degrades | The whole-lodge blockout: room-grid **board** variant with rooms configured; **statement** variant (full-width block + week occupancy strip) with allocation off. |
 | `welcome` | `{{module:welcome}}` | none | A warm counterpart to the operational boards: greets the current whole-lodge group (label, size, stay dates, nights, optional bunks note) or the lodge generally when no group holds it. |
 | `singles-board` | `{{module:singles-board}}` | Bed Allocation — degrades | By-booking Room \| Guest \| night rows, one per guest with their own check-out; the room label spans its guests' rows with allocation on, a single guest column with it off. |
@@ -961,6 +967,19 @@ upstream owner's input on discussion #964):
    instead).
 4. Otherwise (adults-only booking): the organiser labels the booking and
    guests list at the configured level.
+
+**The expected arrival time rides the name gate** (#2621). A booking's expected
+arrival time is display-only information — it exists so a hut leader knows when
+to expect people, and it drives nothing. On the wall it is carried on
+`DisplayStateBooking.arrivalTime`, and it is filled from the *same* decision that
+fills `guests`: a row whose names are withheld by any of rules 1–3 above, or by
+`COUNTS_ONLY`, carries **no arrival time either**. An arrival time is a movement
+fact about identifiable people, and "the «Surname» family arrives at 5:30" on an
+unattended public screen is exactly the disclosure the family label exists to
+avoid. Two further conditions: the arrival must fall inside the board window (a
+time printed against a stay that began earlier reads as tonight), and the stored
+value must match the canonical `HH:00`/`HH:30` shape, so a malformed legacy row
+degrades to no time rather than to arbitrary text on a lobby TV.
 
 **Window**: default 3 days, hard cap 7 (`DISPLAY_WINDOW_MAX_DAYS`) — an
 out-of-range request clamps rather than erroring.
