@@ -49,6 +49,7 @@ const IDS = {
   deletionHoldNonMember: "race-2597-guest-deletion-hold-nonmember",
   mergeGuestBeforeLock: "race-2597-guest-merge-before-lock",
   mergeGuestAfterLock: "race-2597-guest-merge-after-lock",
+  deletionRequest: "race-2597-deletion-request",
 } as const;
 
 const MEMBER_IDS = [
@@ -256,10 +257,13 @@ let lockAdultMemberHostingPolicySet: (typeof import("@/lib/adult-member-hosting-
 let enqueueActiveHostingIncidentPolicyReconciliation: (typeof import("@/lib/adult-member-hosting-policy-reconciliation"))["enqueueActiveHostingIncidentPolicyReconciliation"];
 let HOSTING_POLICY_RECONCILIATION_SELECT: (typeof import("@/lib/adult-member-hosting-policy-reconciliation"))["HOSTING_POLICY_RECONCILIATION_SELECT"];
 let reserveMemberContactCreateOperation: (typeof import("@/lib/xero-contacts"))["reserveMemberContactCreateOperation"];
+let reserveMemberContactUpdateOperation: (typeof import("@/lib/xero-contacts"))["reserveMemberContactUpdateOperation"];
+let completeMemberContactUpdateOperation: (typeof import("@/lib/xero-contacts"))["completeMemberContactUpdateOperation"];
 let lockMemberForManualXeroContactLink: (typeof import("@/lib/xero-contact-create-recovery"))["lockMemberForManualXeroContactLink"];
 let lockMemberForAccountDeletionXeroFence: (typeof import("@/lib/xero-contact-create-recovery"))["lockMemberForAccountDeletionXeroFence"];
 let DELETED_ACCOUNT_PASSWORD_HASH: (typeof import("@/lib/xero-contact-create-recovery"))["DELETED_ACCOUNT_PASSWORD_HASH"];
 let commitManualXeroContactLink: (typeof import("@/lib/xero-manual-contact-link"))["commitManualXeroContactLink"];
+let claimDeletionRequestDecision: (typeof import("@/lib/deletion-request-decision"))["claimDeletionRequestDecision"];
 
 (RUN ? describe : describe.skip)(
   "hosting queue/member merge interleavings — real PostgreSQL (#2597)",
@@ -292,6 +296,9 @@ let commitManualXeroContactLink: (typeof import("@/lib/xero-manual-contact-link"
       });
       await primary.xeroObjectLink.deleteMany({
         where: { localModel: "Member", localId: { in: MEMBER_IDS } },
+      });
+      await primary.deletionRequest.deleteMany({
+        where: { id: IDS.deletionRequest },
       });
       await primary.bookingGuest.deleteMany({
         where: { bookingId: { in: ALL_BOOKING_IDS } },
@@ -520,6 +527,15 @@ let commitManualXeroContactLink: (typeof import("@/lib/xero-manual-contact-link"
           xeroContactId: null,
         },
       });
+      await tx.xeroObjectLink.updateMany({
+        where: {
+          localModel: "Member",
+          localId: memberId,
+          xeroObjectType: "CONTACT",
+          active: true,
+        },
+        data: { active: false },
+      });
     }
 
     async function applyStandingDeactivationEffect(
@@ -608,6 +624,7 @@ let commitManualXeroContactLink: (typeof import("@/lib/xero-manual-contact-link"
         xeroContacts,
         xeroContactCreateRecovery,
         xeroManualContactLink,
+        deletionRequestDecision,
       ] = await Promise.all([
         import("@/lib/adult-member-hosting-queue-participants"),
         import("@/lib/adult-member-hosting-review"),
@@ -622,6 +639,7 @@ let commitManualXeroContactLink: (typeof import("@/lib/xero-manual-contact-link"
         import("@/lib/xero-contacts"),
         import("@/lib/xero-contact-create-recovery"),
         import("@/lib/xero-manual-contact-link"),
+        import("@/lib/deletion-request-decision"),
       ]);
       acquireHostingCoverageQueueParticipantProof =
         participants.acquireHostingCoverageQueueParticipantProof;
@@ -656,6 +674,10 @@ let commitManualXeroContactLink: (typeof import("@/lib/xero-manual-contact-link"
       acquireLodgeCapacityLock = capacity.acquireLodgeCapacityLock;
       reserveMemberContactCreateOperation =
         xeroContacts.reserveMemberContactCreateOperation;
+      reserveMemberContactUpdateOperation =
+        xeroContacts.reserveMemberContactUpdateOperation;
+      completeMemberContactUpdateOperation =
+        xeroContacts.completeMemberContactUpdateOperation;
       lockMemberForManualXeroContactLink =
         xeroContactCreateRecovery.lockMemberForManualXeroContactLink;
       lockMemberForAccountDeletionXeroFence =
@@ -664,6 +686,8 @@ let commitManualXeroContactLink: (typeof import("@/lib/xero-manual-contact-link"
         xeroContactCreateRecovery.DELETED_ACCOUNT_PASSWORD_HASH;
       commitManualXeroContactLink =
         xeroManualContactLink.commitManualXeroContactLink;
+      claimDeletionRequestDecision =
+        deletionRequestDecision.claimDeletionRequestDecision;
 
       const [
         { PrismaClient: SeparatePrismaClient },
@@ -1059,6 +1083,357 @@ let commitManualXeroContactLink: (typeof import("@/lib/xero-manual-contact-link"
         masterId: IDS.master,
         loserId: IDS.loser,
       });
+    });
+
+    it("approve wins the exact DeletionRequest claim and a waiting reject cannot overwrite it", async () => {
+      await primary.deletionRequest.create({
+        data: { id: IDS.deletionRequest, memberId: IDS.target },
+      });
+      const reached = deferred();
+      const release = deferred();
+      const approve = mergeA.$transaction(async (tx) => {
+        await claimDeletionRequestDecision(tx, {
+          id: IDS.deletionRequest,
+          decision: "APPROVED",
+          reviewedBy: IDS.actor,
+          adminNote: "approve wins",
+        });
+        reached.resolve();
+        await release.promise;
+      });
+      await reached.promise;
+      const reject = claimDeletionRequestDecision(mergeB, {
+        id: IDS.deletionRequest,
+        decision: "REJECTED",
+        reviewedBy: IDS.ownerA,
+        adminNote: "reject loses",
+      }).then(
+        () => ({ ok: true as const }),
+        (error: unknown) => ({ ok: false as const, error }),
+      );
+      try {
+        await waitForClientToBlock("race-2597-merge-b");
+      } finally {
+        release.resolve();
+      }
+      await expect(approve).resolves.toBeUndefined();
+      const rejectOutcome = await reject;
+      expect(rejectOutcome.ok).toBe(false);
+      if (rejectOutcome.ok) throw new Error("Reject unexpectedly overwrote approve.");
+      expect(rejectOutcome.error).toMatchObject({
+        code: "DELETION_REQUEST_ALREADY_REVIEWED",
+        statusCode: 409,
+      });
+      await expect(
+        primary.deletionRequest.findUniqueOrThrow({
+          where: { id: IDS.deletionRequest },
+          select: { status: true, adminNote: true },
+        }),
+      ).resolves.toEqual({ status: "APPROVED", adminNote: "approve wins" });
+    });
+
+    it("reject wins the exact DeletionRequest claim and a waiting approve cannot overwrite it", async () => {
+      await primary.deletionRequest.create({
+        data: { id: IDS.deletionRequest, memberId: IDS.target },
+      });
+      const reached = deferred();
+      const release = deferred();
+      const reject = mergeB.$transaction(async (tx) => {
+        await claimDeletionRequestDecision(tx, {
+          id: IDS.deletionRequest,
+          decision: "REJECTED",
+          reviewedBy: IDS.actor,
+          adminNote: "reject wins",
+        });
+        reached.resolve();
+        await release.promise;
+      });
+      await reached.promise;
+      const approve = claimDeletionRequestDecision(mergeA, {
+        id: IDS.deletionRequest,
+        decision: "APPROVED",
+        reviewedBy: IDS.ownerA,
+        adminNote: "approve loses",
+      }).then(
+        () => ({ ok: true as const }),
+        (error: unknown) => ({ ok: false as const, error }),
+      );
+      try {
+        await waitForClientToBlock("race-2597-merge-a");
+      } finally {
+        release.resolve();
+      }
+      await expect(reject).resolves.toBeUndefined();
+      const approveOutcome = await approve;
+      expect(approveOutcome.ok).toBe(false);
+      if (approveOutcome.ok) throw new Error("Approve unexpectedly overwrote reject.");
+      expect(approveOutcome.error).toMatchObject({
+        code: "DELETION_REQUEST_ALREADY_REVIEWED",
+        statusCode: 409,
+      });
+      await expect(
+        primary.deletionRequest.findUniqueOrThrow({
+          where: { id: IDS.deletionRequest },
+          select: { status: true, adminNote: true },
+        }),
+      ).resolves.toEqual({ status: "REJECTED", adminNote: "reject wins" });
+    });
+
+    it("rolls back an approval claim with the surrounding privacy transaction", async () => {
+      await primary.deletionRequest.create({
+        data: { id: IDS.deletionRequest, memberId: IDS.target },
+      });
+      await expect(
+        mergeA.$transaction(async (tx) => {
+          await claimDeletionRequestDecision(tx, {
+            id: IDS.deletionRequest,
+            decision: "APPROVED",
+            reviewedBy: IDS.actor,
+            adminNote: "must roll back",
+          });
+          throw new Error("forced privacy rollback");
+        }),
+      ).rejects.toThrow("forced privacy rollback");
+      await expect(
+        primary.deletionRequest.findUniqueOrThrow({
+          where: { id: IDS.deletionRequest },
+          select: { status: true, reviewedAt: true, reviewedBy: true },
+        }),
+      ).resolves.toEqual({
+        status: "PENDING",
+        reviewedAt: null,
+        reviewedBy: null,
+      });
+      await expect(
+        claimDeletionRequestDecision(primary, {
+          id: IDS.deletionRequest,
+          decision: "REJECTED",
+          reviewedBy: IDS.ownerA,
+          adminNote: "recovered",
+        }),
+      ).resolves.toBeUndefined();
+    });
+
+    it("contact-update reservation wins before merge and completion leaves no active loser ledger", async () => {
+      await primary.member.update({
+        where: { id: IDS.loser },
+        data: { xeroContactId: "contact-update-before-merge" },
+      });
+      const preview = await previewMerge();
+      const correlationKey = "race-2597-contact-update-before-merge";
+      const reservation = await reserveMemberContactUpdateOperation(
+        IDS.loser,
+        "contact-update-before-merge",
+        {
+          direction: "OUTBOUND",
+          entityType: "CONTACT",
+          operationType: "UPDATE",
+          localModel: "Member",
+          localId: IDS.loser,
+          idempotencyKey: correlationKey,
+          correlationKey,
+          requestPayload: { contacts: [{ emailAddress: "fresh@example.test" }] },
+          createdByMemberId: IDS.actor,
+        },
+        ordinary,
+      );
+      await expect(
+        executeMemberMerge({
+          masterId: IDS.master,
+          loserId: IDS.loser,
+          actorMemberId: IDS.actor,
+          previewToken: preview.previewToken,
+          confirmationText: preview.confirmationPhrase,
+          db: mergeA,
+        }),
+      ).rejects.toMatchObject({ code: "merge_blocked", statusCode: 409 });
+      await completeMemberContactUpdateOperation(
+        IDS.loser,
+        "contact-update-before-merge",
+        reservation.id,
+        {
+          xeroObjectType: "CONTACT",
+          xeroObjectId: "contact-update-before-merge",
+          extraLinks: [{
+            localModel: "Member",
+            localId: IDS.loser,
+            xeroObjectType: "CONTACT",
+            xeroObjectId: "contact-update-before-merge",
+            role: "CONTACT",
+          }],
+        },
+        ordinary,
+      );
+      const finalPreview = await previewMerge();
+      await expect(
+        executeMemberMerge({
+          masterId: IDS.master,
+          loserId: IDS.loser,
+          actorMemberId: IDS.actor,
+          previewToken: finalPreview.previewToken,
+          confirmationText: finalPreview.confirmationPhrase,
+          db: mergeA,
+        }),
+      ).resolves.toMatchObject({ loserId: IDS.loser });
+      await expect(
+        primary.xeroObjectLink.count({
+          where: { localModel: "Member", localId: IDS.loser, active: true },
+        }),
+      ).resolves.toBe(0);
+    });
+
+    it("merge wins the Member row and a waiting contact-update cannot reserve or replay PII", async () => {
+      await primary.member.update({
+        where: { id: IDS.loser },
+        data: { xeroContactId: "contact-merge-before-update" },
+      });
+      const { operation, pause } = await startPausedMerge("after");
+      const correlationKey = "race-2597-merge-before-contact-update";
+      const reservation = reserveMemberContactUpdateOperation(
+        IDS.loser,
+        "contact-merge-before-update",
+        {
+          direction: "OUTBOUND",
+          entityType: "CONTACT",
+          operationType: "UPDATE",
+          localModel: "Member",
+          localId: IDS.loser,
+          idempotencyKey: correlationKey,
+          correlationKey,
+          requestPayload: { contacts: [{ emailAddress: "stale@example.test" }] },
+          createdByMemberId: IDS.actor,
+        },
+        ordinary,
+      ).then(
+        () => ({ ok: true as const }),
+        (error: unknown) => ({ ok: false as const, error }),
+      );
+      try {
+        await waitForClientToBlock("race-2597-ordinary");
+      } finally {
+        pause.release.resolve();
+      }
+      await expect(operation).resolves.toMatchObject({ loserId: IDS.loser });
+      const outcome = await reservation;
+      expect(outcome.ok).toBe(false);
+      if (outcome.ok) throw new Error("Update unexpectedly reserved after merge.");
+      expect(outcome.error).toMatchObject({ message: `Member not found: ${IDS.loser}` });
+      await expect(
+        primary.xeroSyncOperation.count({ where: { correlationKey } }),
+      ).resolves.toBe(0);
+    });
+
+    it("contact-update reservation wins before deletion; completion then deletion retires its link", async () => {
+      await primary.member.update({
+        where: { id: IDS.target },
+        data: { xeroContactId: "contact-update-before-deletion" },
+      });
+      const correlationKey = "race-2597-contact-update-before-deletion";
+      const reservation = await reserveMemberContactUpdateOperation(
+        IDS.target,
+        "contact-update-before-deletion",
+        {
+          direction: "OUTBOUND",
+          entityType: "CONTACT",
+          operationType: "UPDATE",
+          localModel: "Member",
+          localId: IDS.target,
+          idempotencyKey: correlationKey,
+          correlationKey,
+          requestPayload: { contacts: [{ emailAddress: "fresh@example.test" }] },
+          createdByMemberId: IDS.actor,
+        },
+        ordinary,
+      );
+      await expect(
+        mergeA.$transaction((tx) => applyXeroDeletionFence(tx, IDS.target)),
+      ).rejects.toMatchObject({
+        code: "XERO_CONTACT_CREATE_BLOCKS_DELETION",
+        statusCode: 409,
+      });
+      await completeMemberContactUpdateOperation(
+        IDS.target,
+        "contact-update-before-deletion",
+        reservation.id,
+        {
+          xeroObjectType: "CONTACT",
+          xeroObjectId: "contact-update-before-deletion",
+          extraLinks: [{
+            localModel: "Member",
+            localId: IDS.target,
+            xeroObjectType: "CONTACT",
+            xeroObjectId: "contact-update-before-deletion",
+            role: "CONTACT",
+          }],
+        },
+        ordinary,
+      );
+      await expect(
+        mergeA.$transaction((tx) => applyXeroDeletionFence(tx, IDS.target)),
+      ).resolves.toBeUndefined();
+      await expect(
+        primary.xeroObjectLink.count({
+          where: { localModel: "Member", localId: IDS.target, active: true },
+        }),
+      ).resolves.toBe(0);
+    });
+
+    it("deletion wins the Member row and a waiting contact-update cannot reserve or create a link", async () => {
+      await primary.member.update({
+        where: { id: IDS.target },
+        data: { xeroContactId: "contact-deletion-before-update" },
+      });
+      const pause: ParticipantPause = {
+        position: "after",
+        reached: deferred(),
+        release: deferred(),
+      };
+      const deletionDb = createParticipantPauseClient(mergeA, pause);
+      const deletion = deletionDb.$transaction((tx) =>
+        applyXeroDeletionFence(tx, IDS.target),
+      );
+      await waitForPauseOrFail(pause, deletion);
+      const correlationKey = "race-2597-deletion-before-contact-update";
+      const reservation = reserveMemberContactUpdateOperation(
+        IDS.target,
+        "contact-deletion-before-update",
+        {
+          direction: "OUTBOUND",
+          entityType: "CONTACT",
+          operationType: "UPDATE",
+          localModel: "Member",
+          localId: IDS.target,
+          idempotencyKey: correlationKey,
+          correlationKey,
+          requestPayload: { contacts: [{ emailAddress: "stale@example.test" }] },
+          createdByMemberId: IDS.actor,
+        },
+        ordinary,
+      ).then(
+        () => ({ ok: true as const }),
+        (error: unknown) => ({ ok: false as const, error }),
+      );
+      try {
+        await waitForClientToBlock("race-2597-ordinary");
+      } finally {
+        pause.release.resolve();
+      }
+      await expect(deletion).resolves.toBeUndefined();
+      const outcome = await reservation;
+      expect(outcome.ok).toBe(false);
+      if (outcome.ok) throw new Error("Update unexpectedly reserved after deletion.");
+      expect(outcome.error).toMatchObject({
+        code: "XERO_MEMBER_UNAVAILABLE",
+        statusCode: 409,
+      });
+      await expect(
+        primary.xeroSyncOperation.count({ where: { correlationKey } }),
+      ).resolves.toBe(0);
+      await expect(
+        primary.xeroObjectLink.count({
+          where: { localModel: "Member", localId: IDS.target, active: true },
+        }),
+      ).resolves.toBe(0);
     });
 
     it("contact-create reservation wins before provider work, so the full merge rolls back and terminal resolution unblocks preview", async () => {
