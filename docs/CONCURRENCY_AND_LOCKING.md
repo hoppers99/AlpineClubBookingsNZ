@@ -1321,7 +1321,8 @@ alongside `settleHostingCoverageAfterCommit`.
 
 Two consequences worth stating plainly, because neither is obvious from the code:
 
-- **Merge now holds `lock(1)` for its whole window.** Advisory xact locks release
+- **Merge now holds `lock(1)` for its whole window, and a writer queued behind it
+  may be rejected rather than served.** Advisory xact locks release
   only at commit, and merge runs with `timeout: 120s`. So a merge excludes every
   cancel/capture/settle/refund and every bed-allocation writer for as long as it
   runs. That is the price of repairing the invariant *atomically*: the prefix
@@ -1330,6 +1331,22 @@ Two consequences worth stating plainly, because neither is obvious from the code
   is false. Merge is an admin-rare dedup operation, so the exposure is one rare
   operation rather than a hot path — but it is a real widening of merge's
   blast radius and is called out here rather than left to be discovered.
+
+  The concrete consequence: most cohort members open their interactive
+  transaction and *then* block on `lock(1)` on Prisma's default 5-second budget
+  (`writeUnderLocks` in `admin-bed-allocation.ts`,
+  `reconcileBedAllocationsForBookingWithGlobalLockHeld`, and the payment/booking
+  routes that take the literal key inline). If the merge outlives that budget the
+  waiter is rejected with `P2028` having written nothing, and has to be retried.
+  It is fail-safe — a rejected transaction rolls back whole, so nothing partial
+  and nothing invariant-breaking is ever committed — but it IS an availability
+  cost during a merge, and
+  `member-merge-shared-double-races.realdb.test.ts` asserts exactly that contract
+  ("THE WRITER QUEUED BEHIND A MERGE") rather than assuming every waiter is
+  served. Measured on the disposable harness, `executeMemberMerge` holds the key
+  for ~0.9-1.4s on a five-member fixture on a quiet machine and 10-60s on a loaded
+  one. Whether to accept that, raise those budgets, or give merge a narrower
+  prefix than the shared #1756 helper is an open owner decision on #2595.
 - **The counterparts are not locked, and do not need to be.** Merge locks the
   master and the loser, never the ex-partner P or the kept partner Q whose
   eligibility the sweep reads. It does not have to: every event that can
