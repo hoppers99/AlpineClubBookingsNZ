@@ -108,15 +108,6 @@ export function fenceBookingFindMany(
 }
 
 /**
- * Convenience for the common case: one lodge, one owner, and the suite's own
- * booking ids all attributed to them.
- */
-export function fenceBookingLookup(rows: readonly FenceBookingRow[]) {
-  const byId = new Map(rows.map((row) => [row.id, row]));
-  return (id: string) => byId.get(id);
-}
-
-/**
  * The generic way to satisfy the fence's drift check without restating a
  * suite's fixtures.
  *
