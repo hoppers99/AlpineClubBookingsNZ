@@ -1,7 +1,14 @@
 // @vitest-environment jsdom
 
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import type { ReactNode } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+
+vi.mock("next/link", () => ({
+  default: ({ children, href }: { children: ReactNode; href: string }) => (
+    <a href={href}>{children}</a>
+  ),
+}));
 
 // #1997: the client now derives view-only gating from the session matrix via
 // useAdminAreaEditAccess. Mock an all-edit admin so the existing approve/reject
@@ -198,5 +205,119 @@ describe("AdminInitiatedDeletionSection (#1938)", () => {
         screen.getByText(/No pending admin-initiated deletion requests\./),
       ).not.toBeNull(),
     );
+  });
+});
+
+describe("self-service deletion partial recovery (#2597)", () => {
+  const deletionRequest = {
+    id: "request-1",
+    status: "PENDING",
+    reason: "Please remove my account",
+    adminNote: null,
+    reviewedBy: null,
+    reviewedAt: null,
+    createdAt: "2026-08-01T00:00:00.000Z",
+    member: {
+      id: "member-1",
+      firstName: "Riley",
+      lastName: "Chen",
+      email: "riley@example.test",
+      role: "MEMBER",
+      active: true,
+    },
+  };
+
+  it("retains exact cleanup facts, focuses recovery, and replaces untouched approval with an explicit retry", async () => {
+    const scrollIntoView = vi.fn();
+    Object.defineProperty(HTMLElement.prototype, "scrollIntoView", {
+      configurable: true,
+      value: scrollIntoView,
+    });
+    const blockingAlert = vi.spyOn(window, "alert").mockImplementation(() => {});
+    let deletionReads = 0;
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.includes("/api/admin/member-lifecycle-action-requests")) {
+        return {
+          ok: true,
+          json: async () => ({
+            requests: [],
+            total: 0,
+            page: 1,
+            pageSize: 25,
+            totalPages: 0,
+          }),
+        } as Response;
+      }
+      if (url === "/api/admin/deletion-requests/request-1" && init?.method === "POST") {
+        return {
+          ok: false,
+          status: 409,
+          json: async () => ({
+            code: "HOSTING_COVERAGE_PARTICIPANT_RETRY",
+            error: "private database detail",
+            cancelledBookings: 2,
+            cancellationPending: true,
+            retryBookingId: "booking/pending",
+            memberDataAnonymised: false,
+            approvalReceiptSent: false,
+          }),
+        } as Response;
+      }
+      if (url.startsWith("/api/admin/deletion-requests?")) {
+        deletionReads += 1;
+        if (deletionReads === 1) {
+          return {
+            ok: true,
+            json: async () => ({
+              requests: [deletionRequest],
+              total: 1,
+              page: 1,
+              pageSize: 25,
+              totalPages: 1,
+            }),
+          } as Response;
+        }
+        return { ok: false, json: async () => ({}) } as Response;
+      }
+      throw new Error(`Unexpected request: ${url}`);
+    }) as typeof fetch);
+
+    render(<DeletionRequestsClient sessionMemberId="admin-1" />);
+    await screen.findByText("Riley Chen");
+    const alert = document.getElementById("deletion-requests-error");
+    expect(alert?.getAttribute("role")).toBe("alert");
+    expect(alert?.textContent).toBe("");
+
+    fireEvent.click(screen.getByRole("button", { name: "Approve" }));
+    fireEvent.click(
+      await screen.findByRole("button", { name: "Approve & Delete Account" }),
+    );
+
+    await waitFor(() =>
+      expect(alert?.textContent).toMatch(/2 future bookings were cancelled/i),
+    );
+    expect(alert?.textContent).toMatch(/one remaining booking still needs cancellation/i);
+    expect(alert?.textContent).toMatch(/data was not anonymised/i);
+    expect(alert?.textContent).toMatch(/no approval receipt was sent/i);
+    expect(alert?.textContent).toMatch(/could not be refreshed/i);
+    expect(alert?.textContent).not.toContain("private database detail");
+    expect(document.activeElement).toBe(alert);
+    expect(scrollIntoView).toHaveBeenCalled();
+    expect(blockingAlert).not.toHaveBeenCalled();
+
+    expect(
+      (screen.getByRole("button", { name: "Approve" }) as HTMLButtonElement)
+        .disabled,
+    ).toBe(true);
+    const openBooking = screen.getByRole("link", { name: "Open pending booking" });
+    expect(openBooking.getAttribute("href")).toBe(
+      "/admin/bookings/booking%2Fpending?returnTo=%2Fadmin%2Fdeletion-requests",
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Retry remaining cleanup" }));
+    expect(
+      await screen.findByRole("heading", { name: "Approve Deletion Request" }),
+    ).not.toBeNull();
   });
 });

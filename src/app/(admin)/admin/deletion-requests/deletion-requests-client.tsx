@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { useState, useEffect, useCallback } from "react";
 import {
   Card,
@@ -41,6 +42,8 @@ import {
   useAdminAreaEditAccess,
 } from "@/hooks/use-admin-area-edit-access";
 import { formatNZDate, formatNZDateTime } from "@/lib/nzst-date";
+import { FocusedActionError } from "@/components/focused-action-error";
+import { buildHrefWithReturnTo } from "@/lib/internal-return-path";
 
 /** #2264 — the rejection-reason hint id, spelled once. Only one review dialog
  *  is mounted at a time, so a fixed id cannot collide. */
@@ -111,6 +114,15 @@ export default function DeletionRequestsClient({
   const [data, setData] = useState<ApiResponse | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [errorAttentionVersion, setErrorAttentionVersion] = useState(0);
+  const [deletionRecovery, setDeletionRecovery] = useState<{
+    request: DeletionRequest;
+    note: string;
+    cancelledBookings: number;
+    cancellationPending: boolean;
+    retryBookingId: string | null;
+    message: string;
+  } | null>(null);
 
   const [reviewDialog, setReviewDialog] = useState<{
     request: DeletionRequest;
@@ -130,8 +142,10 @@ export default function DeletionRequestsClient({
       const res = await fetch(`/api/admin/deletion-requests?${params}`);
       if (!res.ok) throw new Error("Failed to load");
       setData(await res.json());
+      return true;
     } catch {
       setError("Failed to load deletion requests.");
+      return false;
     } finally {
       setLoading(false);
     }
@@ -141,11 +155,18 @@ export default function DeletionRequestsClient({
     fetchRequests();
   }, [fetchRequests]);
 
+  function showActionError(message: string) {
+    setError(message);
+    setErrorAttentionVersion((version) => version + 1);
+  }
+
   // #1788: `notifyMember` is only meaningful on the reject path (the approve
   // path always sends the final privacy receipt). Absent = notify (default),
   // false = suppress the member email.
   async function handleReview(notifyMember?: boolean) {
     if (!reviewDialog) return;
+    const pendingReview = reviewDialog;
+    const pendingNote = reviewNote;
     setSubmitting(true);
     try {
       const res = await fetch(
@@ -161,12 +182,62 @@ export default function DeletionRequestsClient({
         }
       );
       const body = await res.json();
-      if (!res.ok) throw new Error(body.error || "Failed");
+      if (!res.ok) {
+        if (
+          pendingReview.action === "approve" &&
+          body.code === "HOSTING_COVERAGE_PARTICIPANT_RETRY" &&
+          typeof body.cancelledBookings === "number" &&
+          body.memberDataAnonymised === false &&
+          body.approvalReceiptSent === false
+        ) {
+          const cancelledBookings = Math.max(0, body.cancelledBookings);
+          const cancellationPending = body.cancellationPending === true;
+          const retryBookingId =
+            cancellationPending && typeof body.retryBookingId === "string"
+              ? body.retryBookingId
+              : null;
+          const cancelledCopy =
+            cancelledBookings === 1
+              ? "1 future booking was cancelled."
+              : `${cancelledBookings} future bookings were cancelled.`;
+          const cancellationCopy = cancellationPending
+            ? " One remaining booking still needs cancellation."
+            : " The discovered booking cancellations completed.";
+          const recoveryBase = `${cancelledCopy}${cancellationCopy} The member's data was not anonymised and no approval receipt was sent. Retry only the remaining cleanup.`;
+
+          setReviewDialog(null);
+          setDeletionRecovery({
+            request: pendingReview.request,
+            note: pendingNote,
+            cancelledBookings,
+            cancellationPending,
+            retryBookingId,
+            message: recoveryBase,
+          });
+          showActionError(recoveryBase);
+          const refreshed = await fetchRequests();
+          const refreshResult = refreshed
+            ? " The latest deletion queue was loaded."
+            : " The deletion queue could not be refreshed. This recovery warning remains active.";
+          setDeletionRecovery((current) =>
+            current
+              ? { ...current, message: `${recoveryBase}${refreshResult}` }
+              : current,
+          );
+          setErrorAttentionVersion((version) => version + 1);
+          return;
+        }
+        throw new Error(body.error || "Failed");
+      }
       setReviewDialog(null);
       setReviewNote("");
-      fetchRequests();
+      setDeletionRecovery(null);
+      await fetchRequests();
     } catch (err) {
-      alert(err instanceof Error ? err.message : "Failed to process request");
+      setReviewDialog(null);
+      showActionError(
+        err instanceof Error ? err.message : "Failed to process request",
+      );
     } finally {
       setSubmitting(false);
     }
@@ -264,11 +335,59 @@ export default function DeletionRequestsClient({
           </div>
         </CardHeader>
         <CardContent>
+          <FocusedActionError
+            id="deletion-requests-error"
+            error={deletionRecovery?.message ?? error ?? ""}
+            attentionKey={errorAttentionVersion}
+            heading={
+              deletionRecovery
+                ? "Deletion approval partially completed"
+                : undefined
+            }
+            action={
+              deletionRecovery ? (
+                <div className="flex flex-wrap gap-2">
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    onClick={() => {
+                      setReviewNote(deletionRecovery.note);
+                      setReviewDialog({
+                        request: deletionRecovery.request,
+                        action: "approve",
+                      });
+                    }}
+                  >
+                    Retry remaining cleanup
+                  </Button>
+                  {deletionRecovery.retryBookingId ? (
+                    <Button asChild variant="outline" size="sm">
+                      <Link
+                        href={buildHrefWithReturnTo(
+                          `/admin/bookings/${encodeURIComponent(deletionRecovery.retryBookingId)}`,
+                          "/admin/deletion-requests",
+                        )}
+                      >
+                        Open pending booking
+                      </Link>
+                    </Button>
+                  ) : null}
+                </div>
+              ) : error ? (
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  onClick={() => setError(null)}
+                >
+                  Dismiss
+                </Button>
+              ) : undefined
+            }
+          />
           {loading && (
             <p className="text-sm text-muted-foreground py-4">Loading...</p>
-          )}
-          {error && (
-            <p className="text-sm text-danger-11 py-4">{error}</p>
           )}
           {!loading && data && data.requests.length === 0 && (
             <p className="text-sm text-muted-foreground py-4">
@@ -324,6 +443,7 @@ export default function DeletionRequestsClient({
                           onClick={() =>
                             setReviewDialog({ request: req, action: "reject" })
                           }
+                          disabled={deletionRecovery?.request.id === req.id}
                         >
                           Reject
                         </ViewOnlyActionButton>
@@ -335,11 +455,17 @@ export default function DeletionRequestsClient({
                           onClick={() =>
                             setReviewDialog({ request: req, action: "approve" })
                           }
+                          disabled={deletionRecovery?.request.id === req.id}
                         >
                           Approve
                         </ViewOnlyActionButton>
                       </div>
                     )}
+                    {deletionRecovery?.request.id === req.id ? (
+                      <p className="text-xs text-warning-11">
+                        Partial cleanup recovery is active above; use Retry remaining cleanup.
+                      </p>
+                    ) : null}
                   </div>
                 </div>
               ))}
@@ -528,6 +654,7 @@ function AdminInitiatedDeletionSection({
   const [data, setData] = useState<LifecycleApiResponse | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [errorAttentionVersion, setErrorAttentionVersion] = useState(0);
   const [dialog, setDialog] = useState<{
     request: LifecycleRequest;
     action: "approve" | "reject";
@@ -587,7 +714,9 @@ function AdminInitiatedDeletionSection({
       setNote("");
       fetchRequests();
     } catch (err) {
-      alert(err instanceof Error ? err.message : "Failed to process request");
+      setDialog(null);
+      setError(err instanceof Error ? err.message : "Failed to process request");
+      setErrorAttentionVersion((version) => version + 1);
     } finally {
       setSubmitting(false);
     }
@@ -610,8 +739,24 @@ function AdminInitiatedDeletionSection({
         </CardDescription>
       </CardHeader>
       <CardContent>
+        <FocusedActionError
+          id="admin-initiated-deletion-requests-error"
+          error={error ?? ""}
+          attentionKey={errorAttentionVersion}
+          action={
+            error ? (
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                onClick={() => setError(null)}
+              >
+                Dismiss
+              </Button>
+            ) : undefined
+          }
+        />
         {loading && <p className="text-sm text-muted-foreground py-4">Loading...</p>}
-        {error && <p className="text-sm text-danger-11 py-4">{error}</p>}
         {!loading && data && data.requests.length === 0 && (
           <p className="text-sm text-muted-foreground py-4">
             No {statusFilter === "ALL" ? "" : statusFilter.toLowerCase()}{" "}
