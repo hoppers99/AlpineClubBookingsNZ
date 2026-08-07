@@ -89,7 +89,7 @@ export function PublicContentSettingsPanel() {
     <div className="space-y-3 rounded-md border p-4">
       <div>
         <p className="text-sm font-medium">Book Now button</p>
-        <p className="text-sm text-muted-foreground">Controls the public website header&apos;s Book Now button; a visitor who is not signed in sees it labelled &ldquo;Member booking&rdquo;. A page target that is unpublished or removed falls back to the booking flow.</p>
+        <p className="text-sm text-muted-foreground">Controls the public website header&apos;s Book Now button; a visitor who is not signed in sees it labelled &ldquo;Member booking&rdquo;. A page target that is unpublished falls back to the booking flow while it stays hidden; deleting that page switches this setting back to the booking flow.</p>
       </div>
       <label className="flex items-center gap-3"><input type="checkbox" checked={settings.showBookNow} disabled={!canEdit} aria-describedby={!canEdit ? viewOnlyReasonId : undefined} onChange={(event) => setSettings({ ...settings, showBookNow: event.target.checked })} /><span>Show the Book Now button</span></label>
       {settings.showBookNow ? <div className="space-y-2 pl-1">

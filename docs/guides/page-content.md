@@ -130,7 +130,9 @@ Manager and have their own delete, with its own warnings.
    must also be individually marked for public listing).
 2. Under **Book Now button**, choose whether to **Show the Book Now button** and
    whether it goes to the **booking flow** or a **content page**. A page target
-   that is unpublished or removed falls back to the booking flow. The button is
+   that is unpublished falls back to the booking flow while it stays hidden, and
+   deleting the target page switches this setting back to the booking flow
+   outright. The button is
    **off** until you tick it and save — including for a club that had it on
    before, because the release that shipped this change switched every club off
    (see `docs/UPGRADING.md`). Ticking the box and saving brings it straight
