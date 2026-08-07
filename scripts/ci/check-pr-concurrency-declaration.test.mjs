@@ -119,6 +119,25 @@ describe("PR concurrency declaration gate", () => {
     );
   });
 
+  it("finds the real heading even when the body quotes the heading text in prose", () => {
+    // A PR body that EXPLAINS this gate will quote its heading. A plain indexOf
+    // matches that mention first, so the section starts mid-prose, runs to the
+    // next `## `, and every field reports missing while the real declaration
+    // sits untouched below. Found by running this gate against its own PR body.
+    const quotedFirst = [
+      "Verified the error for a reworded heading:",
+      "`PR body must include ## Concurrency And Lock Impact`.",
+      "",
+      "## Some Other Section",
+      "",
+      "- nothing to declare here",
+      "",
+      complete,
+    ].join("\n");
+
+    expect(() => validateConcurrencyDeclaration(quotedFirst)).not.toThrow();
+  });
+
   it("does not accept a value that sits on the line after the label", () => {
     const nextLineValue = [
       heading,

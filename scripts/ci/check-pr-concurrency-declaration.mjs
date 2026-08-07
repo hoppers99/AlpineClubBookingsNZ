@@ -39,12 +39,20 @@ function fieldValuePattern(field) {
 }
 
 export function validateConcurrencyDeclaration(body, changedFiles = []) {
-  const headingIndex = body.indexOf(HEADING);
-  if (headingIndex < 0) {
+  // Anchor to the START OF A LINE. A plain indexOf also matches the heading text
+  // quoted inside prose or a code span — and a PR body that explains this gate
+  // will quote it. When that mention comes first, the "section" starts there and
+  // runs to the next `## `, so the real declaration below is never read and every
+  // field reports missing. Found exactly that way: this gate's own PR body.
+  const headingMatch = new RegExp(
+    `^[^\\S\\r\\n]*${escapeRegex(HEADING)}[^\\S\\r\\n]*\\r?$`,
+    "m",
+  ).exec(body);
+  if (!headingMatch) {
     throw new Error(`PR body must include ${HEADING}.`);
   }
 
-  const afterHeading = body.slice(headingIndex + HEADING.length);
+  const afterHeading = body.slice(headingMatch.index + headingMatch[0].length);
   const nextHeadingIndex = afterHeading.search(/\n##\s+/);
   const section = nextHeadingIndex >= 0 ? afterHeading.slice(0, nextHeadingIndex) : afterHeading;
 
