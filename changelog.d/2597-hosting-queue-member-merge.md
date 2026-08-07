@@ -45,6 +45,11 @@
   so even a later failure-recorder outage cannot make the next member reload offer
   another Create action. If both local proof recorders fail, the exact operation
   remains an ambiguous create-in-progress fence without claiming that Xero created
-  anything. Resetting either stale reservation to failed preserves its recovery
-  state and merge blocker. A local link, terminal success, or explicit resolution
-  removes the blocker; an ordinary terminal failure clears the ambiguous state.
+  anything. That ambiguous state now hides every Xero write and leaves only
+  **Try again**; the stronger provider-created/pending-link state still offers
+  **Link to Xero** as its explicit repair. The server also serializes manual Link
+  against create: create-first refuses Link with a safe 409, while link-first
+  makes create re-read the committed link and stop before calling Xero. Resetting
+  either stale reservation to failed preserves its recovery state and merge
+  blocker. A local link, terminal success, or explicit resolution removes the
+  blocker; an ordinary terminal failure clears the ambiguous state.

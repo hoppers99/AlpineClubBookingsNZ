@@ -135,6 +135,7 @@ type ParticipantPause = {
 function createParticipantPauseClient(
   client: PrismaClient,
   pause: ParticipantPause,
+  lockClause = "FOR UPDATE",
 ): PrismaClient {
   let consumed = false;
   return new Proxy(client, {
@@ -157,7 +158,7 @@ function createParticipantPauseClient(
                     const isParticipantLock =
                       !consumed &&
                       statement.includes('FROM "Member"') &&
-                      statement.includes("FOR UPDATE");
+                      statement.includes(lockClause);
                     if (isParticipantLock && pause.position === "before") {
                       consumed = true;
                       pause.reached.resolve();
@@ -255,6 +256,7 @@ let lockAdultMemberHostingPolicySet: (typeof import("@/lib/adult-member-hosting-
 let enqueueActiveHostingIncidentPolicyReconciliation: (typeof import("@/lib/adult-member-hosting-policy-reconciliation"))["enqueueActiveHostingIncidentPolicyReconciliation"];
 let HOSTING_POLICY_RECONCILIATION_SELECT: (typeof import("@/lib/adult-member-hosting-policy-reconciliation"))["HOSTING_POLICY_RECONCILIATION_SELECT"];
 let reserveMemberContactCreateOperation: (typeof import("@/lib/xero-contacts"))["reserveMemberContactCreateOperation"];
+let lockMemberForManualXeroContactLink: (typeof import("@/lib/xero-contact-create-recovery"))["lockMemberForManualXeroContactLink"];
 
 (RUN ? describe : describe.skip)(
   "hosting queue/member merge interleavings — real PostgreSQL (#2597)",
@@ -582,6 +584,7 @@ let reserveMemberContactCreateOperation: (typeof import("@/lib/xero-contacts"))[
         memberLifecycle,
         capacity,
         xeroContacts,
+        xeroContactCreateRecovery,
       ] = await Promise.all([
         import("@/lib/adult-member-hosting-queue-participants"),
         import("@/lib/adult-member-hosting-review"),
@@ -594,6 +597,7 @@ let reserveMemberContactCreateOperation: (typeof import("@/lib/xero-contacts"))[
         import("@/lib/member-lifecycle-lock"),
         import("@/lib/capacity"),
         import("@/lib/xero-contacts"),
+        import("@/lib/xero-contact-create-recovery"),
       ]);
       acquireHostingCoverageQueueParticipantProof =
         participants.acquireHostingCoverageQueueParticipantProof;
@@ -628,6 +632,8 @@ let reserveMemberContactCreateOperation: (typeof import("@/lib/xero-contacts"))[
       acquireLodgeCapacityLock = capacity.acquireLodgeCapacityLock;
       reserveMemberContactCreateOperation =
         xeroContacts.reserveMemberContactCreateOperation;
+      lockMemberForManualXeroContactLink =
+        xeroContactCreateRecovery.lockMemberForManualXeroContactLink;
 
       const [
         { PrismaClient: SeparatePrismaClient },
@@ -1112,6 +1118,133 @@ let reserveMemberContactCreateOperation: (typeof import("@/lib/xero-contacts"))[
       await expect(
         primary.xeroSyncOperation.count({ where: { correlationKey } }),
       ).resolves.toBe(0);
+    });
+
+    it("contact-create reservation wins before manual link and the link refuses after the Member lock", async () => {
+      const pause: ParticipantPause = {
+        position: "after",
+        reached: deferred(),
+        release: deferred(),
+      };
+      const createDb = createParticipantPauseClient(
+        ordinary,
+        pause,
+        "FOR KEY SHARE",
+      );
+      const correlationKey = "race-2597-contact-create-before-manual-link";
+      const reservation = reserveMemberContactCreateOperation(
+        IDS.loser,
+        {
+          direction: "OUTBOUND",
+          entityType: "CONTACT",
+          operationType: "CREATE",
+          localModel: "Member",
+          localId: IDS.loser,
+          idempotencyKey: correlationKey,
+          correlationKey,
+          requestPayload: { contacts: [{ name: "Create Wins" }] },
+          createdByMemberId: IDS.actor,
+        },
+        createDb,
+      );
+      await waitForPauseOrFail(pause, reservation);
+
+      const manualLink = primary
+        .$transaction(async (tx) => {
+          await lockMemberForManualXeroContactLink(tx, IDS.loser);
+          await tx.member.update({
+            where: { id: IDS.loser },
+            data: { xeroContactId: "contact-manual-lost" },
+          });
+        })
+        .then(
+          () => ({ ok: true as const }),
+          (error: unknown) => ({ ok: false as const, error }),
+        );
+      try {
+        await waitForClientToBlock("race-2597-primary");
+      } finally {
+        pause.release.resolve();
+      }
+
+      await expect(reservation).resolves.toMatchObject({ correlationKey });
+      const linkOutcome = await manualLink;
+      expect(linkOutcome.ok).toBe(false);
+      if (linkOutcome.ok) {
+        throw new Error("Manual Xero link unexpectedly beat the create reservation.");
+      }
+      expect(linkOutcome.error).toMatchObject({
+        code: "XERO_CONTACT_CREATE_IN_PROGRESS",
+        statusCode: 409,
+      });
+      await expect(
+        primary.member.findUnique({
+          where: { id: IDS.loser },
+          select: { xeroContactId: true },
+        }),
+      ).resolves.toEqual({ xeroContactId: null });
+    });
+
+    it("manual link wins the Member row and a waiting create refuses before reserving or provider work", async () => {
+      const pause: ParticipantPause = {
+        position: "after",
+        reached: deferred(),
+        release: deferred(),
+      };
+      const linkDb = createParticipantPauseClient(mergeA, pause);
+      const manualLink = linkDb.$transaction(async (tx) => {
+        await lockMemberForManualXeroContactLink(tx, IDS.loser);
+        await tx.member.update({
+          where: { id: IDS.loser },
+          data: { xeroContactId: "contact-manual-winner" },
+        });
+      });
+      await waitForPauseOrFail(pause, manualLink);
+
+      const correlationKey = "race-2597-manual-link-before-contact-create";
+      const reservation = reserveMemberContactCreateOperation(
+        IDS.loser,
+        {
+          direction: "OUTBOUND",
+          entityType: "CONTACT",
+          operationType: "CREATE",
+          localModel: "Member",
+          localId: IDS.loser,
+          idempotencyKey: correlationKey,
+          correlationKey,
+          requestPayload: { contacts: [{ name: "Link Wins" }] },
+          createdByMemberId: IDS.actor,
+        },
+        ordinary,
+      ).then(
+        (value) => ({ ok: true as const, value }),
+        (error: unknown) => ({ ok: false as const, error }),
+      );
+      try {
+        await waitForClientToBlock("race-2597-ordinary");
+      } finally {
+        pause.release.resolve();
+      }
+
+      await expect(manualLink).resolves.toBeUndefined();
+      const reservationOutcome = await reservation;
+      expect(reservationOutcome.ok).toBe(false);
+      if (reservationOutcome.ok) {
+        throw new Error("Contact create unexpectedly reserved after manual link.");
+      }
+      expect(reservationOutcome.error).toMatchObject({
+        code: "XERO_CONTACT_ALREADY_LINKED",
+        statusCode: 409,
+      });
+      await expect(
+        primary.xeroSyncOperation.count({ where: { correlationKey } }),
+      ).resolves.toBe(0);
+      await expect(
+        primary.member.findUnique({
+          where: { id: IDS.loser },
+          select: { xeroContactId: true },
+        }),
+      ).resolves.toEqual({ xeroContactId: "contact-manual-winner" });
     });
 
     it("refuses and rolls back the full merge when a loser-linked guest commits after relation moves but before participant locks", async () => {

@@ -1152,6 +1152,18 @@ the deleted member and never reaches Xero. If reservation wins, merge sees it an
 rolls back. This closes the post-check provider race without putting Xero inside a
 transaction or adding an advisory-lock tier.
 
+Manual Xero linking uses the symmetric member-row fence. Provider contact lookup
+and cache refresh remain outside transactions; the short local link transaction
+then takes the exact target `Member FOR UPDATE`, re-reads an ambiguous active
+contact-create reservation under that lock, and writes the member link only when
+none exists. If create reserved first, Link returns the fixed privacy-safe 409 and
+writes nothing. If Link locked first, the create reservation's waiting `FOR KEY
+SHARE` resumes after the link commits, re-reads the authoritative
+`Member.xeroContactId`, and refuses before reserving or calling Xero. An ambiguous
+`CREATE_IN_PROGRESS` member page therefore offers only authoritative refresh;
+the stronger `PROVIDER_CREATED_LINK_PENDING` state still offers Link as its
+recovery action while suppressing another Create.
+
 After Xero returns a newly created contact, the operation is durably marked
 `provider_contact_created_local_link_pending` before the local link transaction.
 That marker remains authoritative recovery proof while `RUNNING` and after the

@@ -272,6 +272,9 @@ proved. Member detail, member list/editor, Contact Sync, and diagnostics close o
 disable the stale action, reload or reflect canonical state, and keep their focused
 warning visible through loading and refresh failure. **Try again** reloads state;
 Member Status Repair Backfill is offered only when refresh/cleanup remains pending.
+An ambiguous contact create hides every Xero write and leaves only **Try again**;
+once provider creation is proven but the local link is pending, **Link to Xero**
+returns as the explicit repair while another Create remains suppressed.
 Interfaces must distinguish a rolled-back queue transaction from truthful partial
 completion at these multi-phase boundaries. Officer override reasons remain attached
 to the original incident work, while merge-generated follow-up is a separate
