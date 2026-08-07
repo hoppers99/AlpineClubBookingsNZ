@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 
 import "@testing-library/jest-dom/vitest"
-import { act, fireEvent, render, screen, waitFor } from "@testing-library/react"
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react"
 import type { AnchorHTMLAttributes, ReactNode } from "react"
 import { beforeEach, describe, expect, it, vi } from "vitest"
 
@@ -66,6 +66,7 @@ describe("Xero health diagnostics partial unlink recovery (#2597)", () => {
 
   it("removes the proven unlink from the retry surface and keeps focused recovery through refresh", async () => {
     let linkReads = 0
+    let manualRefreshes = 0
     let resolveHealth: ((response: Response) => void) | undefined
     let resolveLinks: ((response: Response) => void) | undefined
 
@@ -81,9 +82,29 @@ describe("Xero health diagnostics partial unlink recovery (#2597)", () => {
             new Response(JSON.stringify(mismatchResponse), { status: 200 }),
           )
         }
-        return new Promise<Response>((resolve) => {
-          resolveLinks = resolve
-        })
+        if (linkReads === 2) {
+          return new Promise<Response>((resolve) => {
+            resolveLinks = resolve
+          })
+        }
+        return Promise.resolve(
+          new Response(
+            JSON.stringify({ ...mismatchResponse, count: 0, mismatches: [] }),
+            { status: 200 },
+          ),
+        )
+      }
+      if (
+        url === "/api/admin/xero/contact-link-mismatches" &&
+        init?.method === "POST"
+      ) {
+        manualRefreshes += 1
+        return Promise.resolve(
+          new Response(
+            JSON.stringify({ ...mismatchResponse, count: 0, mismatches: [] }),
+            { status: 200 },
+          ),
+        )
       }
       if (
         url === "/api/admin/members/member-1/xero-unlink" &&
@@ -112,7 +133,7 @@ describe("Xero health diagnostics partial unlink recovery (#2597)", () => {
       return Promise.reject(new Error(`Unexpected fetch: ${url}`))
     }) as typeof fetch
 
-    render(
+    const { rerender } = render(
       <HealthAndDiagnosticsPanels
         connected
         shortCode={null}
@@ -130,7 +151,7 @@ describe("Xero health diagnostics partial unlink recovery (#2597)", () => {
 
     fireEvent.click(await screen.findByRole("button", { name: "Unlink" }))
 
-    const alert = document.getElementById("xero-contact-link-error")
+    const alert = document.getElementById("xero-contact-link-recovery")
     await waitFor(() => expect(alert).toHaveTextContent(/Refreshing Xero diagnostics now/i))
     expect(alert).toHaveTextContent(/link was removed/i)
     expect(alert).not.toHaveTextContent("private cleanup detail")
@@ -160,17 +181,46 @@ describe("Xero health diagnostics partial unlink recovery (#2597)", () => {
     })
 
     await waitFor(() => expect(alert).toHaveTextContent(/Diagnostics were refreshed/i))
-    expect(alert).toBe(document.getElementById("xero-contact-link-error"))
+    expect(alert).toBe(document.getElementById("xero-contact-link-recovery"))
     expect(screen.queryByRole("button", { name: "Unlink" })).not.toBeInTheDocument()
     expect(recoveryAction).toBeInTheDocument()
     expect(recoveryAction).toHaveAttribute(
       "href",
       "/admin/members/member-1?returnTo=%2Fadmin%2Fxero",
     )
+
+    rerender(
+      <HealthAndDiagnosticsPanels
+        connected
+        shortCode={null}
+        currentXeroPath="/admin/xero"
+        healthOpen={false}
+        contactGroupMismatchesOpen={false}
+        contactLinkMismatchesOpen
+        onToggle={vi.fn()}
+        onMessage={vi.fn()}
+        onRefreshOperations={vi.fn()}
+        refreshToken={1}
+        scrollToSection={vi.fn()}
+      />,
+    )
+    await waitFor(() => expect(linkReads).toBe(3))
+    expect(alert).toHaveTextContent(/link was removed/i)
+    expect(recoveryAction).toBeInTheDocument()
+
+    const manualRefresh = within(
+      document.getElementById("xero-section-contactLinkMismatches")!,
+    ).getByRole("button", { name: "Refresh" }) as HTMLButtonElement
+    await waitFor(() => expect(manualRefresh.disabled).toBe(false))
+    fireEvent.click(manualRefresh)
+    await waitFor(() => expect(manualRefreshes).toBe(1))
+    expect(alert).toHaveTextContent(/link was removed/i)
+    expect(recoveryAction).toBeInTheDocument()
   })
 
   it("keeps the focused member recovery action when diagnostics refresh fails", async () => {
     let linkReads = 0
+    let manualRefreshes = 0
 
     global.fetch = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input)
@@ -184,6 +234,13 @@ describe("Xero health diagnostics partial unlink recovery (#2597)", () => {
             new Response(JSON.stringify(mismatchResponse), { status: 200 }),
           )
         }
+        return Promise.reject(new Error("diagnostics unavailable"))
+      }
+      if (
+        url === "/api/admin/xero/contact-link-mismatches" &&
+        init?.method === "POST"
+      ) {
+        manualRefreshes += 1
         return Promise.reject(new Error("diagnostics unavailable"))
       }
       if (
@@ -211,7 +268,7 @@ describe("Xero health diagnostics partial unlink recovery (#2597)", () => {
       return Promise.reject(new Error(`Unexpected fetch: ${url}`))
     }) as typeof fetch
 
-    render(
+    const { rerender } = render(
       <HealthAndDiagnosticsPanels
         connected
         shortCode={null}
@@ -229,7 +286,7 @@ describe("Xero health diagnostics partial unlink recovery (#2597)", () => {
 
     fireEvent.click(await screen.findByRole("button", { name: "Unlink" }))
 
-    const alert = document.getElementById("xero-contact-link-error")
+    const alert = document.getElementById("xero-contact-link-recovery")
     await waitFor(() =>
       expect(alert).toHaveTextContent(/Diagnostics could not be refreshed/i),
     )
@@ -245,5 +302,37 @@ describe("Xero health diagnostics partial unlink recovery (#2597)", () => {
       "href",
       "/admin/members/member-1?returnTo=%2Fadmin%2Fxero",
     )
+
+    rerender(
+      <HealthAndDiagnosticsPanels
+        connected
+        shortCode={null}
+        currentXeroPath="/admin/xero"
+        healthOpen={false}
+        contactGroupMismatchesOpen={false}
+        contactLinkMismatchesOpen
+        onToggle={vi.fn()}
+        onMessage={vi.fn()}
+        onRefreshOperations={vi.fn()}
+        refreshToken={1}
+        scrollToSection={vi.fn()}
+      />,
+    )
+    const genericError = document.getElementById("xero-contact-link-error")
+    await waitFor(() =>
+      expect(genericError).toHaveTextContent(/service could not be reached/i),
+    )
+    expect(alert).toHaveTextContent(/link was removed/i)
+    expect(recoveryAction).toBeInTheDocument()
+
+    const manualRefresh = within(
+      document.getElementById("xero-section-contactLinkMismatches")!,
+    ).getByRole("button", { name: "Refresh" }) as HTMLButtonElement
+    await waitFor(() => expect(manualRefresh.disabled).toBe(false))
+    fireEvent.click(manualRefresh)
+    await waitFor(() => expect(manualRefreshes).toBe(1))
+    expect(genericError).toHaveTextContent(/service could not be reached/i)
+    expect(alert).toHaveTextContent(/link was removed/i)
+    expect(recoveryAction).toBeInTheDocument()
   })
 })

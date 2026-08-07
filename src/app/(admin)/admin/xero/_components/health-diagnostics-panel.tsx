@@ -85,10 +85,12 @@ export function HealthAndDiagnosticsPanels({
   const [loadingLinkMismatches, setLoadingLinkMismatches] = useState(false)
   const [resyncingLinkMismatches, setResyncingLinkMismatches] = useState(false)
   const [unlinkingMemberId, setUnlinkingMemberId] = useState<string | null>(null)
-  const [linkRecoveryMember, setLinkRecoveryMember] = useState<{
+  const [linkRecovery, setLinkRecovery] = useState<{
     id: string
     name: string
+    message: string
   } | null>(null)
+  const [linkRecoveryAttention, setLinkRecoveryAttention] = useState(0)
 
   const fetchHealth = useCallback(async () => {
     setLoadingHealth(true)
@@ -129,7 +131,6 @@ export function HealthAndDiagnosticsPanels({
   const fetchLinkMismatches = useCallback(async () => {
     setLoadingLinkMismatches(true)
     setLinkError("")
-    setLinkRecoveryMember(null)
     try {
       setLinkMismatches(await fetchJson<ContactLinkMismatchResponse>("/api/admin/xero/contact-link-mismatches?limit=200", undefined, "Failed to fetch contact link mismatches"))
     } catch (err) {
@@ -156,7 +157,6 @@ export function HealthAndDiagnosticsPanels({
   const resyncLinkMismatches = useCallback(async () => {
     setResyncingLinkMismatches(true)
     setLinkError("")
-    setLinkRecoveryMember(null)
     try {
       setLinkMismatches(await postJson<ContactLinkMismatchResponse>("/api/admin/xero/contact-link-mismatches", { limit: 200 }, "Failed to re-sync the flagged contacts from Xero"))
     } catch (err) {
@@ -220,7 +220,6 @@ export function HealthAndDiagnosticsPanels({
   const unlinkContactMismatch = async (memberId: string, memberName: string) => {
     setUnlinkingMemberId(memberId)
     setLinkError("")
-    setLinkRecoveryMember(null)
     onMessage("")
     try {
       await unlinkMemberXeroContact(memberId)
@@ -237,7 +236,12 @@ export function HealthAndDiagnosticsPanels({
         err.recovery.xeroContactUnlinked
       ) {
         const guidance = getXeroPartialSuccessGuidance(err.recovery)
-        setLinkRecoveryMember({ id: memberId, name: memberName })
+        setLinkRecovery({
+          id: memberId,
+          name: memberName,
+          message: `${guidance} Refreshing Xero diagnostics now...`,
+        })
+        setLinkRecoveryAttention((version) => version + 1)
         setLinkMismatches((current) =>
           current
             ? {
@@ -249,7 +253,6 @@ export function HealthAndDiagnosticsPanels({
               }
             : current,
         )
-        setLinkError(`${guidance} Refreshing Xero diagnostics now...`)
         try {
           const [nextHealth, nextLinks, nextGroups] = await Promise.all([
             fetchJson<XeroHealthSnapshot>(
@@ -273,14 +276,19 @@ export function HealthAndDiagnosticsPanels({
           setHealth(nextHealth)
           setLinkMismatches(nextLinks)
           if (nextGroups) setGroupMismatches(nextGroups)
-          setLinkError(
-            `${guidance} Diagnostics were refreshed; check the member before taking another Xero action.`,
-          )
+          setLinkRecovery({
+            id: memberId,
+            name: memberName,
+            message: `${guidance} Diagnostics were refreshed; check the member before taking another Xero action.`,
+          })
         } catch {
-          setLinkError(
-            `${guidance} Diagnostics could not be refreshed. This warning remains active; reload before taking another Xero action.`,
-          )
+          setLinkRecovery({
+            id: memberId,
+            name: memberName,
+            message: `${guidance} Diagnostics could not be refreshed. This warning remains active; reload before taking another Xero action.`,
+          })
         }
+        setLinkRecoveryAttention((version) => version + 1)
         return
       }
       setLinkError(err instanceof Error ? err.message : "Failed to unlink member from Xero")
@@ -398,15 +406,21 @@ export function HealthAndDiagnosticsPanels({
         id="xero-contact-link-error"
         error={linkError}
         className="mb-3"
+      />
+      <FocusedActionError
+        id="xero-contact-link-recovery"
+        error={linkRecovery?.message ?? ""}
+        attentionKey={linkRecoveryAttention}
+        className="mb-3"
         action={
-          linkRecoveryMember ? (
+          linkRecovery ? (
             <Button asChild variant="outline" size="sm">
               <Link
                 href={buildHrefWithReturnTo(
-                  `/admin/members/${encodeURIComponent(linkRecoveryMember.id)}`,
+                  `/admin/members/${encodeURIComponent(linkRecovery.id)}`,
                   currentXeroPath,
                 )}
-                aria-label={`Open affected member: ${linkRecoveryMember.name}`}
+                aria-label={`Open affected member: ${linkRecovery.name}`}
               >
                 Open affected member
               </Link>
@@ -424,6 +438,7 @@ export function HealthAndDiagnosticsPanels({
         onToggle={onToggle}
         onRefresh={resyncLinkMismatches}
         unlinkingMemberId={unlinkingMemberId}
+        recoveryActive={linkRecovery !== null}
         onUnlink={unlinkContactMismatch}
       />
     </>
@@ -589,6 +604,7 @@ function ContactLinkMismatchPanel({
   onToggle,
   onRefresh,
   unlinkingMemberId,
+  recoveryActive,
   onUnlink,
 }: {
   open: boolean
@@ -600,6 +616,7 @@ function ContactLinkMismatchPanel({
   onToggle: ToggleSection
   onRefresh: () => Promise<void>
   unlinkingMemberId: string | null
+  recoveryActive: boolean
   onUnlink: (memberId: string, memberName: string) => Promise<void>
 }) {
   return (
@@ -665,7 +682,7 @@ function ContactLinkMismatchPanel({
                     <div className="flex flex-wrap gap-2">
                       <a href={buildHrefWithReturnTo(`/admin/members/${mismatch.memberId}`, currentXeroPath)} className="inline-flex"><Button variant="outline" size="sm">Open Member</Button></a>
                       <a href={buildXeroContactUrl(mismatch.xeroContactId, { shortCode })} target="_blank" rel="noopener noreferrer" className="inline-flex"><Button variant="outline" size="sm">Open in Xero</Button></a>
-                      <Button size="sm" variant="outline" onClick={() => void onUnlink(mismatch.memberId, mismatch.memberName)} disabled={unlinkingMemberId === mismatch.memberId}>
+                      <Button size="sm" variant="outline" onClick={() => void onUnlink(mismatch.memberId, mismatch.memberName)} disabled={recoveryActive || unlinkingMemberId === mismatch.memberId}>
                         {unlinkingMemberId === mismatch.memberId ? "Unlinking..." : "Unlink"}
                       </Button>
                     </div>
