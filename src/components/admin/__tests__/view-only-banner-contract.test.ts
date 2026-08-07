@@ -1256,12 +1256,12 @@ describe("view-only section banner coverage (#2160)", () => {
                suppresses that child banner and covers both control sites with
                the page's existing bookings-area banner.
                static opt-outs move 234 -> 235 and banner components 83 -> 84.
-          310  -1  #2594 replaces the booking panel's edit-gated direct Remove
-               write with a read-visible reviewed-removal preview. The plain
-               preview Button remains available to view-only officers while
-               Apply is gated inside the shared dialog, so that former static
-               opt-out is deliberately no longer a ViewOnlyActionButton site.
-               static opt-outs move 235 -> 234 and total opt-outs 262 -> 261.
+          310  -1  #2602 replaces the booking-panel removal control with a
+               plain preview button: view-only administrators may inspect the
+               staged removal, while the dialog keeps apply edit-gated. The
+               removed site was a same-file static opt-out, so static opt-outs
+               move 235 -> 234 and total opt-outs move 262 -> 261. Banner,
+               vouch and per-button-explanation counts are unchanged.
       */
       // #2259 adds the per-booking "No emails"
       // switch (`booking-no-emails-controls.tsx`), a leaf control dropped into
