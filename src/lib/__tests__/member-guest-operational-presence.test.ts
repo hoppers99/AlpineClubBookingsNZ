@@ -562,7 +562,10 @@ describe("no site uses the NULL-hostile `not: PENDING` form", () => {
       // carry one copy of this predicate each. They are now one shared chore-
       // eligibility selector, so the predicate is asserted where it lives.
       "src/lib/roster-eligibility.ts",
-      "src/app/api/chores/roster/[date]/print/route.ts",
+      // #2631: the roster calendar and the dashboard's needs-roster headline
+      // used to be consent-BLIND, so a day could paint "needs roster" and open
+      // empty. Both DB entry points in roster-status now carry the predicate.
+      "src/lib/roster-status.ts",
       "src/lib/bed-allocation-lifecycle.ts",
       "src/lib/admin-bed-allocation.ts",
       "src/lib/cron-hut-leader-auto-assign.ts",
@@ -590,5 +593,25 @@ describe("no site uses the NULL-hostile `not: PENDING` form", () => {
         `${relativePath} must not filter consent by hand — the not: form is UNKNOWN for NULL`,
       ).not.toMatch(/consentStatus: \{ not:/);
     }
+  });
+
+  it("the printed chore sheet inherits the predicate from the shared selector (#2631)", async () => {
+    // This route used to carry its own copy of the consent filter. It now has
+    // no booking query of its own at all: its headcount is the roster's own
+    // population, read through `getOperationalRosterGuestsForDate` (asserted
+    // above). Keeping it in the list would demand a predicate that is correctly
+    // no longer there, so the coverage moves here instead.
+    const { readFileSync } = await import("node:fs");
+    const path = await import("node:path");
+    const source = readFileSync(
+      path.resolve(
+        process.cwd(),
+        "src/app/api/chores/roster/[date]/print/route.ts",
+      ),
+      "utf8",
+    );
+    expect(source).toContain("getOperationalRosterGuestsForDate");
+    expect(source).not.toMatch(/prisma\.booking\.findMany/);
+    expect(source.replace(/\s+/g, " ")).not.toMatch(/consentStatus: \{ not:/);
   });
 });

@@ -134,7 +134,12 @@ export default function PrintRosterPage() {
           <h2 className="text-xl mt-1">Chore Roster</h2>
           <p className="text-lg mt-1">{formattedDate}</p>
           <p className="text-sm text-gray-600 mt-1">
-            {roster.guestCount} guest{roster.guestCount !== 1 ? "s" : ""} staying
+            {/* #2631: "in the lodge", not "staying". The count is the
+                operational day — everyone here at some point today, including
+                the people who leave this morning — which is who the chore
+                table below assigns work to. */}
+            {roster.guestCount} guest{roster.guestCount !== 1 ? "s" : ""} in the
+            lodge
           </p>
         </div>
 

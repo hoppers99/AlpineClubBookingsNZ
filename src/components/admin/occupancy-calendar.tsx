@@ -559,6 +559,20 @@ export function OccupancyCalendar({
                     ? "Select a date to see bookings."
                     : "Select a start and end date to see bookings."}
               </p>
+              {/* #2631: this panel and the day colours above measure two
+                  different things, and on a changeover morning they read like a
+                  contradiction unless each says what it counts. This one counts
+                  guest-NIGHTS (who sleeps here); the colours count the
+                  operational DAY (who is here at any point, including guests
+                  who leave before midday), which is what the chore roster
+                  covers. Shown only where an overlay is actually painted. */}
+              {overlayLegend && overlayLegend.length > 0 && (
+                <p className="text-xs text-muted-foreground">
+                  Counts guest-nights — who sleeps here. The day colours above
+                  count who is in the lodge that day, which includes a checkout
+                  morning.
+                </p>
+              )}
             </div>
             {selectedPanelRange && (
               <Badge variant="outline" className="bg-card">
