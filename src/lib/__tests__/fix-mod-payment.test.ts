@@ -239,6 +239,10 @@ import { calculateBookingPrice } from "@/lib/pricing";
 import { calculateChangeFee } from "@/lib/change-fee";
 import { processRefund, createPaymentIntent, findOrCreateCustomer, getPaymentIntent, constructWebhookEvent } from "@/lib/stripe";
 import { calculateDualRefundAmounts } from "@/lib/cancellation";
+import {
+  fenceMemberFindMany,
+  recordingBookingDouble,
+} from "@/lib/__tests__/support/hosting-participant-fence-double";
 
 const mockedAuth = vi.mocked(auth);
 const mockedCalcDualRefund = vi.mocked(calculateDualRefundAmounts);
@@ -308,6 +312,21 @@ function makeBooking(overrides: Record<string, unknown> = {}) {
 }
 
 function makeTx(booking: ReturnType<typeof makeBooking>) {
+  /*
+    #2619: the hosting participant fence runs inside this very transaction. It
+    locks the source booking's owner/actor Member rows FOR KEY SHARE NOWAIT and
+    then, UNDER that lock, re-reads (1) those Member rows and (2) each source
+    booking's owner and lodge, refusing unless the second read still fingerprints
+    identically to what the caller planned.
+
+    This tx had no `booking.findMany` at all, so the re-read could not even be
+    attempted. The recorder replays exactly what this tx's own `findUnique`
+    served the planner — including an ABSENT lodgeId left absent, since the
+    fingerprint interpolates it and a re-read normalised to null would read as
+    drift against a plan that printed "undefined". So the no-drift case matches
+    by construction, and real drift is still refused.
+  */
+  const fenceBooking = recordingBookingDouble(async () => booking);
   return {
     $executeRawUnsafe: vi.fn().mockResolvedValue(undefined),
     // F1 (#1887): the date path now reads the applied-credit ledger for every
@@ -351,7 +370,8 @@ function makeTx(booking: ReturnType<typeof makeBooking>) {
     // every prisma/tx double a booking path runs against needs this client.
     adultMemberHostingPolicy: { findMany: vi.fn().mockResolvedValue([]) },
     booking: {
-      findUnique: vi.fn().mockResolvedValue(booking),
+      findUnique: fenceBooking.findUnique,
+      findMany: fenceBooking.findMany,
       update: vi.fn().mockImplementation(({ data }) => {
         return Promise.resolve({ ...booking, ...data, guests: booking.guests, payment: booking.payment });
       }),
@@ -397,8 +417,11 @@ function makeTx(booking: ReturnType<typeof makeBooking>) {
     // policy-db delegates so the resolver sees the built-in types (member guests
     // -> FULL/member rate, true non-members -> NON_MEMBER) instead of throwing.
     member: {
-      findMany: vi.fn().mockImplementation(async (args: { where?: { id?: { in?: string[] } } }) =>
-        (args?.where?.id?.in ?? []).map((id) => ({
+      // #2619: the fence's own id-only re-read is answered by the shared helper
+      // — every locked id back, in sorted order. Every OTHER member.findMany
+      // (the rate resolver's, below) still gets exactly the rows it always did.
+      findMany: fenceMemberFindMany([], async (args) =>
+        ((args as { where?: { id?: { in?: string[] } } })?.where?.id?.in ?? []).map((id) => ({
           id,
           firstName: "Member",
           lastName: "Test",
