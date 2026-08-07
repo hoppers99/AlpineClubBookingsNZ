@@ -33,6 +33,7 @@ vi.mock("next-auth/react", () => ({
 }));
 
 import DeletionRequestsClient from "../deletion-requests-client";
+import { expectRecoveryAlertToHoldFocus } from "@/lib/__tests__/helpers/focus";
 
 interface LifecycleRow {
   id: string;
@@ -338,7 +339,7 @@ describe("self-service deletion partial recovery (#2597)", () => {
       expect(
         screen.queryByRole("button", { name: "Retry remaining cleanup" }),
       ).toBeNull();
-      expect(document.activeElement).toBe(alert);
+      await expectRecoveryAlertToHoldFocus(alert);
     },
   );
 
@@ -428,7 +429,7 @@ describe("self-service deletion partial recovery (#2597)", () => {
     expect(recoveryAlert?.textContent).toMatch(/no approval receipt was sent/i);
     expect(recoveryAlert?.textContent).toMatch(/could not be refreshed/i);
     expect(recoveryAlert?.textContent).not.toContain("private database detail");
-    expect(document.activeElement).toBe(recoveryAlert);
+    await expectRecoveryAlertToHoldFocus(recoveryAlert);
     expect(scrollIntoView).toHaveBeenCalled();
     expect(blockingAlert).not.toHaveBeenCalled();
 
@@ -451,7 +452,7 @@ describe("self-service deletion partial recovery (#2597)", () => {
     await waitFor(() =>
       expect(actionAlert?.textContent).toContain("The remaining cleanup changed; reload it."),
     );
-    expect(document.activeElement).toBe(actionAlert);
+    await expectRecoveryAlertToHoldFocus(actionAlert);
     expect(recoveryAlert?.textContent).toMatch(/2 future bookings were cancelled/i);
   });
 

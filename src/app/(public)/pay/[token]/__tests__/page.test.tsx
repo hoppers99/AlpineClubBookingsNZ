@@ -9,6 +9,7 @@ import {
   EXISTING_CARD_TRANSACTION_STATUS_UNCONFIRMED_BODY,
   PAYMENT_RECEIVED_STATUS_UNCONFIRMED_BODY,
 } from "@/lib/payment-recovery-contract";
+import { expectRecoveryAlertToHoldFocus } from "@/lib/__tests__/helpers/focus";
 
 vi.mock("next/navigation", () => ({
   useParams: () => ({ token: "public-token" }),
@@ -203,7 +204,7 @@ describe("public payment-link captured-payment recovery", () => {
       expect(
         screen.getByRole("button", { name: "Reload payment status" }),
       ).not.toBeNull();
-      await waitFor(() => expect(document.activeElement).toBe(alert));
+      await expectRecoveryAlertToHoldFocus(alert);
     },
   );
 });
