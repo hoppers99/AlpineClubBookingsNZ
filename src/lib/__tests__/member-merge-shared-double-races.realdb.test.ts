@@ -41,11 +41,12 @@ const RACE_DB_URL = process.env.CONCURRENCY_RACE_DATABASE_URL ?? "";
 
 // A member merge joins the global cohort at the TOP of its transaction (#2595
 // takes the partner-share prefix immediately after the hosting policy-set key, so
-// the fixed global -> lodge -> member order holds), but it still runs its preview
-// and hundreds of sequential relation round-trips inside the same window. The
-// poller therefore gets a far larger bound than the parent harness's 5s
-// diagnostic — a timeout here must mean "a production writer stopped joining the
-// cohort", never "the merge was still counting relations".
+// the fixed global -> lodge -> member order holds). Reaching that point still
+// costs a whole preview pass first, run outside the transaction by the admin
+// route and by `runRealMemberMerge` below. The poller therefore gets a far larger
+// bound than the parent harness's 5s diagnostic — a timeout here must mean "a
+// production writer stopped joining the cohort", never "the merge was still
+// building its preview".
 const LOCK_POLL_TIMEOUT_MS = 30_000;
 const RACE_TEST_TIMEOUT_MS = 120_000;
 
