@@ -77,6 +77,7 @@ const mocks = vi.hoisted(() => {
       auditLog: {
         create: vi.fn(),
       },
+      $executeRaw: vi.fn(),
       $transaction: vi.fn(),
     },
     recordXeroApiUsage: vi.fn(),
@@ -221,6 +222,7 @@ describe("Phase 4 contact sync and cached import", () => {
       email: "new@example.com",
     });
     mocks.prisma.member.findUnique.mockResolvedValue(null);
+    mocks.prisma.$executeRaw.mockResolvedValue(1);
     mocks.prisma.member.findMany.mockResolvedValue([]);
     mocks.prisma.familyGroupMember.findFirst.mockResolvedValue(null);
     mocks.prisma.familyGroupMember.create.mockResolvedValue({});
@@ -244,6 +246,12 @@ describe("Phase 4 contact sync and cached import", () => {
   });
 
   it("builds contact update idempotency keys from the exact outbound request payload", async () => {
+    mocks.prisma.member.findUnique.mockResolvedValue({
+      id: "member_1",
+      email: "jane@example.com",
+      passwordHash: "not-deleted",
+      xeroContactId: "contact_1",
+    });
     await updateXeroContact(
       "contact_1",
       {
@@ -287,6 +295,33 @@ describe("Phase 4 contact sync and cached import", () => {
       "contact_1",
       hashPayload,
       "contact:contact_1:update:payload-hash:v2"
+    );
+  });
+
+  it("closes a committed member-update reservation when Xero authentication fails", async () => {
+    mocks.prisma.member.findUnique.mockResolvedValue({
+      id: "member_1",
+      email: "jane@example.com",
+      passwordHash: "not-deleted",
+      xeroContactId: "contact_1",
+    });
+    mocks.prisma.xeroToken.findFirst.mockRejectedValueOnce(
+      new Error("authentication unavailable"),
+    );
+
+    await expect(
+      updateXeroContact(
+        "contact_1",
+        { firstName: "Jane", lastName: "Doe", email: "jane@example.com" },
+        { localModel: "Member", localId: "member_1" },
+      ),
+    ).rejects.toThrow("authentication unavailable");
+
+    expect(mocks.startXeroSyncOperation).toHaveBeenCalledTimes(1);
+    expect(mocks.accountingApi.updateContact).not.toHaveBeenCalled();
+    expect(mocks.failXeroSyncOperation).toHaveBeenCalledWith(
+      "op_1",
+      expect.objectContaining({ message: "authentication unavailable" }),
     );
   });
 

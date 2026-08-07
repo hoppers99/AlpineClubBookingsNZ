@@ -1323,11 +1323,11 @@ export async function updateXeroContact(
       )
     : await startXeroSyncOperation(operationInput);
 
-  // Authentication and every provider call remain outside both short Member
-  // transactions. The committed RUNNING reservation is their authority.
-  const { xero, tenantId } = await getAuthenticatedXeroClient();
-
   try {
+    // Authentication and every provider call remain outside both short Member
+    // transactions. The committed RUNNING reservation is their authority, and
+    // authentication failure closes it through the same failure path.
+    const { xero, tenantId } = await getAuthenticatedXeroClient();
     const response = await retryXeroWriteWithContactRepair({
       memberId:
         options?.localModel === "Member" && options.localId
