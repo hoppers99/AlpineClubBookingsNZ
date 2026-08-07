@@ -1441,6 +1441,37 @@ derivation).
   had left `DRAFT` and could never be paid. The settlement clears the Payment's
   card-intent pointers but keeps `stripePaymentMethodId`, which a split
   parent's deferred non-member guest charge falls back to.
+- **A $0 waitlist confirm always ends in a state the member or a worker can
+  move** (#2623). `POST /api/bookings/[id]/waitlist-confirm` is two-phase:
+  phase one commits `WAITLIST_OFFERED -> PAYMENT_PENDING` and, in doing so,
+  **consumes the offer** (`waitlistOfferedAt`, `waitlistOfferExpiresAt` and
+  `waitlistPosition` are all nulled). A $0 booking sitting in `PAYMENT_PENDING`
+  therefore holds no capacity, has no payment path and has no offer to replay,
+  so every way phase two (the `PAYMENT_PENDING -> PAID` claim) can fail must
+  either return the booking to `WAITLISTED` for the ordinary offer worker or say
+  plainly that it could not. There are exactly four end states, and each one is a
+  distinct coded response carrying `offerRevoked: true`
+  (`src/lib/waitlist-confirm-recovery-contract.ts`):
+  - capacity was lost under the locks — restored to `WAITLISTED` inside the same
+    transaction, `WAITLIST_OFFER_RELEASED_CAPACITY` (409);
+  - the booking moved under another writer — nothing written,
+    `WAITLIST_CONFIRM_STATUS_MOVED` (409) with `bookingStatusUnconfirmed`, never
+    a "capacity is gone" claim it cannot support;
+  - phase two threw and the compensating release succeeded — the participant
+    fence's frozen 409 (or `WAITLIST_CONFIRM_RELEASED_UNAVAILABLE`, 503 for
+    contention) with `waitlistPlaceRestored: true`;
+  - the compensating release itself failed — `WAITLIST_CONFIRM_AWAITING_OPERATOR`
+    (503 for contention, else 500) with `awaitingOperatorRecovery: true`, plus a
+    `critical` audit row (`waitlist.confirm_offer_release_failed`) so the
+    operator-only state is searchable rather than silent.
+  `WaitlistOfferCard` keys on `offerRevoked` — **not** on the error code, because
+  a *phase-one* refusal shares `HOSTING_COVERAGE_PARTICIPANT_RETRY` with a
+  phase-two one while leaving the offer intact — and withdraws the CTA in favour
+  of "Reload booking status" whenever the flag is present. Money stays in integer
+  cents throughout: the $0 `SUCCEEDED` Payment row is written only after the
+  `PAID` claim succeeds, because a lost claim `return`s (and therefore commits),
+  and `Payment.bookingId` is unique, so a row written before the claim would read
+  as paid and block the booking's real payment row forever.
 - No SETTLED booking carries a stored credit election (#2265, #2319). Once the
   money has been taken for the amount the intent or the invoice was raised at,
   the election can no longer be honoured: "applying" it then would debit the

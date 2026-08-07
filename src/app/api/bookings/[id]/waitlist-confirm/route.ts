@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { hostingCoverageParticipantRetryResponse } from "@/lib/adult-member-hosting-retry-response";
 import { HOSTING_COVERAGE_RETRY_CODE } from "@/lib/adult-member-hosting-queue-participants";
 import { auth } from "@/lib/auth";
+import { logAudit } from "@/lib/audit";
 import { prisma } from "@/lib/prisma";
 import { BookingStatus } from "@prisma/client";
 import { confirmWaitlistOffer } from "@/lib/waitlist";
@@ -22,6 +23,55 @@ import {
 } from "@/lib/capacity";
 import { settleHostingCoverageAfterCommit } from "@/lib/adult-member-hosting-coverage-drain";
 import { enqueueOwnHostingCoverageReevaluation } from "@/lib/adult-member-hosting-review";
+import {
+  WAITLIST_CONFIRM_AWAITING_OPERATOR_BODY,
+  WAITLIST_CONFIRM_OFFER_RELEASE_FAILED_AUDIT_ACTION,
+  WAITLIST_CONFIRM_RELEASED_UNAVAILABLE_BODY,
+  WAITLIST_CONFIRM_STATUS_MOVED_BODY,
+  WAITLIST_OFFER_CONSUMED_STATUS_MOVED_FLAGS,
+  WAITLIST_OFFER_RELEASED_CAPACITY_BODY,
+  WAITLIST_OFFER_RELEASED_FLAGS,
+} from "@/lib/waitlist-confirm-recovery-contract";
+
+/**
+ * #2623 T4 — budgets for the compensating offer release.
+ *
+ * The release runs precisely when contention is highest: the thing that
+ * triggered it is a participant `NOWAIT` conflict or a lost/timed-out phase-two
+ * transaction. On Prisma's defaults (2s `maxWait`, 5s `timeout`) the
+ * compensation was therefore the likeliest step in the whole route to fail, and
+ * its failure is what leaves a $0 booking parked in `PAYMENT_PENDING` with the
+ * offer already consumed. Explicit budgets plus one retry, and a mapped
+ * response either way.
+ */
+const OFFER_RELEASE_MAX_WAIT_MS = 10_000;
+const OFFER_RELEASE_TIMEOUT_MS = 20_000;
+const OFFER_RELEASE_ATTEMPTS = 2;
+const OFFER_RELEASE_RETRY_DELAY_MS = 250;
+
+/**
+ * Prisma's transaction contention codes: P2028 (transaction API error, which
+ * covers an exhausted `maxWait`/`timeout`) and P2034 (write conflict/deadlock,
+ * retryable by definition). Mapped to 503 for the same reason
+ * `admin/site-style/route.ts` and `admin-bed-allocation-routes.ts` map them
+ * there — nothing was committed and the actionable advice is "later", not
+ * "differently" (`docs/CONCURRENCY_AND_LOCKING.md`).
+ */
+const TRANSACTION_CONTENTION_CODES = new Set(["P2028", "P2034"]);
+
+function transactionErrorCode(error: unknown): string | null {
+  const code = (error as { code?: unknown } | null)?.code;
+  return typeof code === "string" ? code : null;
+}
+
+function isTransactionContentionError(error: unknown): boolean {
+  const code = transactionErrorCode(error);
+  return code !== null && TRANSACTION_CONTENTION_CODES.has(code);
+}
+
+function contendedStatus(error: unknown): 503 | 500 {
+  return isTransactionContentionError(error) ? 503 : 500;
+}
 
 export async function POST(
   _request: NextRequest,
@@ -163,7 +213,11 @@ export async function POST(
         include: { guests: { include: { nights: true } } },
       });
       if (!locked || locked.status !== BookingStatus.PAYMENT_PENDING) {
-        return { ok: false as const, status: 409 };
+        // Another writer owns this booking now. Phase one already consumed the
+        // offer, so this is NOT a "capacity is gone" answer and must not be
+        // reported as one (#2623 T8): where the booking landed is not this
+        // request's to claim, and the member is sent to canonical state.
+        return { ok: false as const, reason: "status-moved" as const };
       }
 
       const { available } = await checkCapacityForGuestRanges(
@@ -199,9 +253,29 @@ export async function POST(
             },
           });
         }
-        return { ok: false as const, status: 409 };
+        return {
+          ok: false as const,
+          reason:
+            restored.count === 1
+              ? ("capacity-released" as const)
+              : ("status-moved" as const),
+        };
       }
 
+      const claimed = await tx.booking.updateMany({
+        where: { id: bookingId, status: BookingStatus.PAYMENT_PENDING },
+        data: { status: BookingStatus.PAID },
+      });
+      if (claimed.count === 0) {
+        // Lost the claim to a concurrent writer despite the lock (defense in
+        // depth). Returning here COMMITS the transaction — a lost claim must
+        // therefore have written nothing, which is why the $0 Payment row is
+        // created below this guard rather than above it (#2623). `Payment
+        // .bookingId` is unique, so a SUCCEEDED $0 row committed onto a booking
+        // that never reached PAID would both read as paid and permanently block
+        // the booking's real payment row.
+        return { ok: false as const, reason: "status-moved" as const };
+      }
       await tx.payment.create({
         data: {
           bookingId,
@@ -209,15 +283,6 @@ export async function POST(
           status: "SUCCEEDED",
         },
       });
-      const claimed = await tx.booking.updateMany({
-        where: { id: bookingId, status: BookingStatus.PAYMENT_PENDING },
-        data: { status: BookingStatus.PAID },
-      });
-      if (claimed.count === 0) {
-        // Lost the claim to a concurrent writer despite the lock (defense in
-        // depth). The payment.create above rolls back with the transaction.
-        return { ok: false as const, status: 409 };
-      }
       // The final PAYMENT_PENDING -> PAID claim is the transition that makes this
       // booking a live coverage source. Reconcile the committed shape without
       // trying to unwind an already-consumed offer, and durably enqueue any
@@ -237,53 +302,171 @@ export async function POST(
       return { ok: true as const };
     });
 
+    // Phase one already consumed the offer and committed PAYMENT_PENDING. Any
+    // phase-two failure rolls phase two back, so compensate under the same
+    // global -> lodge protocol used by capacity loss. Leaving PAYMENT_PENDING
+    // would strand a free booking in a state with neither a payment path nor an
+    // offer; WAITLISTED lets the ordinary offer worker replay it safely. The
+    // update is status-guarded, so a phase two that did in fact commit (a commit
+    // whose acknowledgement was lost) matches no row and nothing is undone.
+    const runOfferRelease = () =>
+      prisma.$transaction(
+        async (tx) => {
+          await tx.$executeRaw`SELECT pg_advisory_xact_lock(1)`;
+          await acquireLodgeCapacityLock(tx, booking.lodgeId);
+          const restored = await tx.booking.updateMany({
+            where: { id: bookingId, status: BookingStatus.PAYMENT_PENDING },
+            data: {
+              status: BookingStatus.WAITLISTED,
+              waitlistOfferedAt: null,
+              waitlistOfferExpiresAt: null,
+              waitlistOfferedLodgeId: null,
+              waitlistOfferedPriceCents: null,
+            },
+          });
+          if (restored.count === 1) {
+            await reconcileBedAllocationsForBookingWithLodgeLockHeld({
+              bookingId,
+              db: tx,
+              previousRange: {
+                checkIn: booking.checkIn,
+                checkOut: booking.checkOut,
+              },
+            });
+          }
+          return restored.count === 1;
+        },
+        { maxWait: OFFER_RELEASE_MAX_WAIT_MS, timeout: OFFER_RELEASE_TIMEOUT_MS },
+      );
+
+    // #2623 T4 — the compensation is itself a locked transaction under known
+    // contention, so it gets a bounded retry and, crucially, is never allowed to
+    // throw past this function. Before this it ran unguarded inside the catch:
+    // its own lock-wait exhaustion replaced the mapped retry with an unhandled
+    // 500 AND left the $0 booking parked in PAYMENT_PENDING with no offer.
+    const releaseConsumedOffer = async (): Promise<
+      | { released: true; placeRestored: boolean }
+      | { released: false; cause: unknown }
+    > => {
+      let cause: unknown;
+      for (let attempt = 1; attempt <= OFFER_RELEASE_ATTEMPTS; attempt += 1) {
+        try {
+          // `false` means the status guard matched nothing: the booking had
+          // already left PAYMENT_PENDING under another writer, so it is not
+          // stranded — but this request did not put the waitlist place back and
+          // must not claim it did.
+          return { released: true, placeRestored: await runOfferRelease() };
+        } catch (releaseErr) {
+          cause = releaseErr;
+          if (
+            attempt >= OFFER_RELEASE_ATTEMPTS ||
+            !isTransactionContentionError(releaseErr)
+          ) {
+            break;
+          }
+          logger.warn(
+            {
+              err: releaseErr,
+              bookingId,
+              attempt,
+              attempts: OFFER_RELEASE_ATTEMPTS,
+            },
+            "Waitlist offer release contended; retrying once before reporting",
+          );
+          await new Promise((resolve) =>
+            setTimeout(resolve, OFFER_RELEASE_RETRY_DELAY_MS),
+          );
+        }
+      }
+      return { released: false, cause };
+    };
+
     let flip: Awaited<ReturnType<typeof runZeroDollarFlip>>;
     try {
       flip = await runZeroDollarFlip();
     } catch (err) {
-      const hostingRetry = hostingCoverageParticipantRetryResponse(err);
-      if (!hostingRetry) throw err;
+      const release = await releaseConsumedOffer();
 
-      // Phase one already consumed the offer and committed PAYMENT_PENDING.
-      // A participant NOWAIT conflict in phase two rolls that phase back, so
-      // compensate under the same global -> lodge protocol used by capacity
-      // loss. Returning the stable retry while leaving PAYMENT_PENDING would
-      // strand a free booking in a state with neither a payment path nor an
-      // offer; WAITLISTED lets the ordinary offer worker replay it safely.
-      await prisma.$transaction(async (tx) => {
-        await tx.$executeRaw`SELECT pg_advisory_xact_lock(1)`;
-        await acquireLodgeCapacityLock(tx, booking.lodgeId);
-        const restored = await tx.booking.updateMany({
-          where: { id: bookingId, status: BookingStatus.PAYMENT_PENDING },
-          data: {
-            status: BookingStatus.WAITLISTED,
-            waitlistOfferedAt: null,
-            waitlistOfferExpiresAt: null,
-            waitlistOfferedLodgeId: null,
-            waitlistOfferedPriceCents: null,
+      if (!release.released) {
+        // The compensation could not run. This is the ONE waitlist-confirm
+        // outcome that neither the member nor any cron can clear: a $0 booking
+        // sitting in PAYMENT_PENDING with the offer consumed has no payment path
+        // and nothing to replay. Raise it where an operator looks — a critical
+        // Booking audit row (filterable by action/severity in Admin -> Audit
+        // log) plus an error log for Sentry — and answer with copy that tells
+        // the member the truth instead of inviting a retry that cannot work.
+        logger.error(
+          {
+            err,
+            releaseErr: release.cause,
+            bookingId,
+            memberId: booking.memberId,
+            lodgeId: booking.lodgeId,
+          },
+          "Zero-dollar waitlist confirm is stranded in PAYMENT_PENDING: the consumed offer could not be released and needs operator recovery",
+        );
+        logAudit({
+          action: WAITLIST_CONFIRM_OFFER_RELEASE_FAILED_AUDIT_ACTION,
+          memberId: session.user.id,
+          targetId: bookingId,
+          subjectMemberId: booking.memberId,
+          entityType: "Booking",
+          entityId: bookingId,
+          category: "booking",
+          severity: "critical",
+          outcome: "failure",
+          summary: "Zero-dollar waitlist confirm stranded in PAYMENT_PENDING",
+          details:
+            "The waitlist offer was consumed and the booking committed to PAYMENT_PENDING, then the zero-dollar PAID claim failed and the compensating release back to WAITLISTED could not run. The booking holds no capacity, has no payment path and has no offer to replay: set it back to WAITLISTED (or confirm it) manually.",
+          metadata: {
+            lodgeId: booking.lodgeId,
+            checkIn: booking.checkIn.toISOString(),
+            checkOut: booking.checkOut.toISOString(),
+            finalPriceCents: booking.finalPriceCents,
+            claimErrorCode: transactionErrorCode(err),
+            releaseErrorCode: transactionErrorCode(release.cause),
           },
         });
-        if (restored.count === 1) {
-          await reconcileBedAllocationsForBookingWithLodgeLockHeld({
-            bookingId,
-            db: tx,
-            previousRange: {
-              checkIn: booking.checkIn,
-              checkOut: booking.checkOut,
-            },
-          });
-        }
-      });
-      return hostingRetry;
+        return NextResponse.json(WAITLIST_CONFIRM_AWAITING_OPERATOR_BODY, {
+          status: contendedStatus(release.cause),
+        });
+      }
+
+      // The booking is out of PAYMENT_PENDING, so nothing is stranded. The
+      // participant fence keeps its one public sentence (byte-identical across
+      // every writer that maps it) and carries the consumed-offer flags so the
+      // card stops offering a confirm for an offer that no longer exists
+      // (#2623 T8).
+      const hostingRetry = hostingCoverageParticipantRetryResponse(
+        err,
+        release.placeRestored
+          ? WAITLIST_OFFER_RELEASED_FLAGS
+          : WAITLIST_OFFER_CONSUMED_STATUS_MOVED_FLAGS,
+      );
+      if (hostingRetry) return hostingRetry;
+
+      logger.error(
+        { err, bookingId, placeRestored: release.placeRestored },
+        "Zero-dollar waitlist confirm failed after the offer was consumed; the offer is no longer held by this booking",
+      );
+      return release.placeRestored
+        ? NextResponse.json(WAITLIST_CONFIRM_RELEASED_UNAVAILABLE_BODY, {
+            status: contendedStatus(err),
+          })
+        : NextResponse.json(WAITLIST_CONFIRM_STATUS_MOVED_BODY, { status: 409 });
     }
 
     if (!flip.ok) {
-      // The locked claim already restored WAITLISTED, so the normal offer cron
-      // can retry it; PAYMENT_PENDING does not hold capacity and is never left
-      // parked as an operator-only recovery state.
+      // Phase one consumed the offer, so neither outcome may answer in the
+      // enabled-CTA shape (#2623 T8) and neither may claim "capacity is gone"
+      // when that is not what happened. `capacity-released` restored WAITLISTED
+      // under the locks, so the ordinary offer worker replays it;
+      // `status-moved` wrote nothing and sends the member to canonical state.
       return NextResponse.json(
-        { error: "Capacity is no longer available for this booking." },
-        { status: flip.status }
+        flip.reason === "capacity-released"
+          ? WAITLIST_OFFER_RELEASED_CAPACITY_BODY
+          : WAITLIST_CONFIRM_STATUS_MOVED_BODY,
+        { status: 409 },
       );
     }
 
