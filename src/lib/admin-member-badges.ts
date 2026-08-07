@@ -38,14 +38,26 @@ export type MemberLifecycleInput = {
   active: boolean;
   cancelledAt: Date | string | null;
   archivedAt: Date | string | null;
+  /**
+   * True when an approved deletion request has anonymised this member (#2620).
+   * Supplied as a resolved boolean rather than the raw markers so this module
+   * stays a dependency-free leaf safe to import from a client component — the
+   * server computes it with `isDeletedAccountRecord` (src/lib/deleted-account.ts)
+   * and the members-list response carries it.
+   */
+  deletedAccount?: boolean;
 };
 
 export type LifecycleStatusConfig = {
-  label: "Active" | "Inactive" | "Cancelled" | "Archived";
+  label: "Active" | "Inactive" | "Cancelled" | "Archived" | "Deleted";
   className: string;
 };
 
 const LIFECYCLE_CONFIG = {
+  Deleted: {
+    label: "Deleted" as const,
+    className: "bg-danger-3 text-danger-11 border-danger-6 hover:bg-danger-3",
+  },
   Archived: {
     label: "Archived" as const,
     className: "bg-accent text-foreground border-border hover:bg-accent",
@@ -66,11 +78,20 @@ const LIFECYCLE_CONFIG = {
 
 /**
  * Pick the badge label + colour class for a member's lifecycle state.
- * Archive wins over cancellation; cancellation wins over inactive.
+ * Deletion wins over everything; archive wins over cancellation; cancellation
+ * wins over inactive.
+ *
+ * Deletion leads because it is the only terminal state and because it is
+ * otherwise INVISIBLE (#2620): anonymisation sets `active: false` and stamps
+ * neither `cancelledAt` nor `archivedAt`, so an erased account rendered
+ * "Inactive" is indistinguishable in the list from a member someone deactivated
+ * yesterday — which is how an officer undoing a mistaken bulk deactivate could
+ * select one for Reactivate without meaning to.
  */
 export function getLifecycleStatusConfig(
   member: MemberLifecycleInput,
 ): LifecycleStatusConfig {
+  if (member.deletedAccount) return LIFECYCLE_CONFIG.Deleted;
   if (member.archivedAt) return LIFECYCLE_CONFIG.Archived;
   if (member.cancelledAt) return LIFECYCLE_CONFIG.Cancelled;
   if (member.active) return LIFECYCLE_CONFIG.Active;

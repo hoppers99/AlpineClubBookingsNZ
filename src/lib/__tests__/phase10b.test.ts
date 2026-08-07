@@ -64,6 +64,19 @@ vi.mock("@/lib/prisma", () => ({
     familyGroupMember: {
       deleteMany: vi.fn(),
     },
+    // #2620: anonymisation revokes every outstanding credential artefact in the
+    // same commit — each is independently enough to authenticate, and deletion
+    // used to leave them all live.
+    magicLinkToken: { deleteMany: vi.fn().mockResolvedValue({ count: 0 }) },
+    passwordResetToken: { deleteMany: vi.fn().mockResolvedValue({ count: 0 }) },
+    emailChangeToken: { deleteMany: vi.fn().mockResolvedValue({ count: 0 }) },
+    twoFactorEmailCode: { deleteMany: vi.fn().mockResolvedValue({ count: 0 }) },
+    twoFactorRecoveryCode: {
+      deleteMany: vi.fn().mockResolvedValue({ count: 0 }),
+    },
+    twoFactorSessionChallenge: {
+      deleteMany: vi.fn().mockResolvedValue({ count: 0 }),
+    },
     // #1756: deletion approval sweeps future shared-double placements inside
     // the anonymise transaction; empty by default so it is a no-op here.
     bedAllocation: {
