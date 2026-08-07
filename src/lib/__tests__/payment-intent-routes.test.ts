@@ -1185,7 +1185,6 @@ describe("generic-catch error-message leak (F31 #1888)", () => {
       code: HOSTING_COVERAGE_RETRY_CODE,
       paymentReceived: true,
       finalisationPending: true,
-      paymentIntentId: "pi_hosting_retry",
     });
     expect(mocks.queueXeroInvoiceForPaidBooking).not.toHaveBeenCalled();
   });

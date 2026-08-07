@@ -262,7 +262,6 @@ export async function POST(
         ? {
             paymentReceived: true,
             finalisationPending: true,
-            paymentIntentId,
           }
         : undefined,
     );
