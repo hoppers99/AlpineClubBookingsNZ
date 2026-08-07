@@ -118,7 +118,7 @@ more people, not fewer.
 
 ### Some entries have no category at all
 
-`Category` is optional, and **82 of the platform's 418 places that record an
+`Category` is optional, and **82 of the platform's 419 places that record an
 audit entry do not set one** — measured on every build, not estimated. Among
 them: subscription billing, member credit adjustments, fee configuration,
 booking-policy, season and promotional-code edits, Xero settings and retries,

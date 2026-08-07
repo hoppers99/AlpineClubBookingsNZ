@@ -5,21 +5,8 @@ import { NextRequest } from "next/server";
 // review (#1788, mirroring #1705/#1769a): the REJECT path honours
 // `notifyMember` (absent = notify, false = suppress + audited), while the
 // APPROVE path always sends its final privacy receipt regardless of the flag.
-const h = vi.hoisted(() => ({
-  requireAdmin: vi.fn(),
-  logAudit: vi.fn(),
-  isFullAdmin: vi.fn(),
-  memberHoldsPrivilegedRole: vi.fn(),
-  wouldRemoveLastFullAdmin: vi.fn(),
-  cancelBooking: vi.fn(),
-  sendAccountDeletionApprovedEmail: vi.fn(),
-  sendAccountDeletionRejectedEmail: vi.fn(),
-  sendAdminPartnerShareSweptAlert: vi.fn(),
-  enqueueHostingCoverageReevaluationForMember: vi.fn(),
-  settleHostingCoverageAfterCommit: vi.fn(),
-  acquireFuturePartnerSharedAllocationLocks: vi.fn(),
-  sweepFuturePartnerSharedAllocationsWithLocksHeld: vi.fn(),
-  prisma: {
+const h = vi.hoisted(() => {
+  const prisma = {
     deletionRequest: { findUnique: vi.fn(), updateMany: vi.fn() },
     booking: { findMany: vi.fn(), findUnique: vi.fn() },
     xeroSyncOperation: { findFirst: vi.fn() },
@@ -50,12 +37,45 @@ const h = vi.hoisted(() => ({
     },
     $executeRaw: vi.fn().mockResolvedValue(1),
     $transaction: vi.fn(),
-  },
-}));
+  };
+  return {
+    requireAdmin: vi.fn(),
+    logAudit: vi.fn(),
+    // #2627: the release's audit row is written with the AWAITED,
+    // transaction-aware writer, not the fire-and-forget one — it is the only
+    // record of who held the claim the release destroys.
+    createAuditLog: vi.fn(),
+    isFullAdmin: vi.fn(),
+    memberHoldsPrivilegedRole: vi.fn(),
+    wouldRemoveLastFullAdmin: vi.fn(),
+    cancelBooking: vi.fn(),
+    sendAccountDeletionApprovedEmail: vi.fn(),
+    sendAccountDeletionRejectedEmail: vi.fn(),
+    sendAdminPartnerShareSweptAlert: vi.fn(),
+    enqueueHostingCoverageReevaluationForMember: vi.fn(),
+    settleHostingCoverageAfterCommit: vi.fn(),
+    acquireFuturePartnerSharedAllocationLocks: vi.fn(),
+    sweepFuturePartnerSharedAllocationsWithLocksHeld: vi.fn(),
+    prisma,
+    // The transaction client `$transaction` hands its callback: a DISTINCT
+    // object identity that forwards every property to the same mocks above.
+    //
+    // #2627 re-review: handing the callback `prisma` itself made
+    // `expect(auditCall[1]).toBe(prisma)` a proof that could not fail — an audit
+    // row written on the ambient client, outside the transaction, would have
+    // satisfied it too. With a separate identity, "written on the transaction
+    // client" is a claim a mutation can break, while every existing assertion on
+    // `h.prisma.<model>.<fn>` still sees the same call.
+    tx: new Proxy(prisma, {}),
+  };
+});
 
 vi.mock("@/lib/session-guards", () => ({ requireAdmin: h.requireAdmin }));
 vi.mock("@/lib/prisma", () => ({ prisma: h.prisma }));
-vi.mock("@/lib/audit", () => ({ logAudit: h.logAudit }));
+vi.mock("@/lib/audit", () => ({
+  logAudit: h.logAudit,
+  createAuditLog: h.createAuditLog,
+}));
 vi.mock("@/lib/booking-cancel", () => ({ cancelBooking: h.cancelBooking }));
 vi.mock("@/lib/adult-member-hosting-review", () => ({
   enqueueHostingCoverageReevaluationForMember:
@@ -153,7 +173,7 @@ beforeEach(() => {
   h.prisma.bookingGuest.updateMany.mockResolvedValue({ count: 0 });
   h.prisma.xeroObjectLink.updateMany.mockResolvedValue({ count: 0 });
   h.prisma.$transaction.mockImplementation(
-    async (cb: (tx: typeof h.prisma) => Promise<unknown>) => cb(h.prisma),
+    async (cb: (tx: typeof h.prisma) => Promise<unknown>) => cb(h.tx),
   );
   h.isFullAdmin.mockReturnValue(true);
   h.memberHoldsPrivilegedRole.mockReturnValue(false);
@@ -164,6 +184,7 @@ beforeEach(() => {
   h.settleHostingCoverageAfterCommit.mockResolvedValue({});
   h.sendAccountDeletionApprovedEmail.mockResolvedValue(undefined);
   h.sendAccountDeletionRejectedEmail.mockResolvedValue(undefined);
+  h.createAuditLog.mockResolvedValue(undefined);
 });
 afterEach(() => {
   vi.restoreAllMocks();
@@ -186,10 +207,12 @@ describe("POST /api/admin/deletion-requests/[id] reject notify choice (#1788)", 
     expect(res.status).toBe(200);
     expect(h.sendAccountDeletionRejectedEmail).not.toHaveBeenCalled();
     expect(deletionRejectedMetadata()).toMatchObject({ notifyMember: false });
-    // The request is still marked REJECTED regardless of the notify choice.
+    // The request is still marked REJECTED regardless of the notify choice —
+    // guarded on a PENDING row with no release marker (#2627), which is what an
+    // ordinary rejection is authorised against.
     expect(h.prisma.deletionRequest.updateMany).toHaveBeenCalledWith(
       expect.objectContaining({
-        where: { id: "req-1", status: "PENDING" },
+        where: { id: "req-1", status: "PENDING", reviewedAt: null },
         data: expect.objectContaining({ status: "REJECTED" }),
       }),
     );
@@ -245,18 +268,30 @@ describe("POST /api/admin/deletion-requests/[id] reject notify choice (#1788)", 
 
 describe("POST /api/admin/deletion-requests/[id] approve carve-out (#1788)", () => {
   /**
-   * #2597: approve now takes TWO guarded `deletionRequest.updateMany` calls —
-   * the durable PENDING -> APPROVAL_IN_PROGRESS claim before any booking
-   * cancellation commits, then APPROVAL_IN_PROGRESS -> APPROVED inside the
-   * anonymisation transaction. Tests that mean "another admin won the final
-   * decision" must let the first succeed and only the second lose, otherwise
-   * the approval never starts and no cancellation is attempted at all.
+   * #2597: an approve WITH future bookings to cancel takes TWO guarded
+   * `deletionRequest.updateMany` calls — the durable PENDING ->
+   * APPROVAL_IN_PROGRESS claim before any booking cancellation commits, then
+   * APPROVAL_IN_PROGRESS -> APPROVED inside the anonymisation transaction. Tests
+   * that mean "another admin won the final decision" must let the first succeed
+   * and only the second lose, otherwise the approval never starts and no
+   * cancellation is attempted at all.
+   *
+   * #2627: this helper is therefore ONLY correct for an approval that has
+   * something to cancel. An approval with nothing to cancel takes no claim at
+   * all and finalises straight from PENDING, so letting the PENDING-guarded
+   * mutation win would be letting the approval win. Use
+   * {@link everyDecisionClaimLoses} for that shape.
    */
   function finalDecisionClaimLoses() {
     h.prisma.deletionRequest.updateMany.mockImplementation(
       async ({ where }: { where: { status: string } }) =>
         where.status === "PENDING" ? { count: 1 } : { count: 0 },
     );
+  }
+
+  /** No guarded decision transition matches: another admin owns the request. */
+  function everyDecisionClaimLoses() {
+    h.prisma.deletionRequest.updateMany.mockResolvedValue({ count: 0 });
   }
 
   it("reports the winning approval and anonymisation after earlier cancellations without an unsafe retry", async () => {
@@ -298,7 +333,10 @@ describe("POST /api/admin/deletion-requests/[id] approve carve-out (#1788)", () 
   });
 
   it("suppresses retry when the winning decision cannot be authoritatively re-read", async () => {
-    finalDecisionClaimLoses();
+    // This member has no future bookings, so (#2627) the approval takes no
+    // claim and its ONE guarded transition is PENDING -> APPROVED. "Another
+    // admin won" therefore means that transition matches nothing.
+    everyDecisionClaimLoses();
     h.prisma.deletionRequest.findUnique
       .mockResolvedValueOnce({ id: "req-1", status: "PENDING", member })
       .mockRejectedValueOnce(new Error("private database detail"));
@@ -471,6 +509,17 @@ describe("POST /api/admin/deletion-requests/[id] approve carve-out (#1788)", () 
   });
 
   it("rolls back anonymisation when the shared standing-fanout fence retries", async () => {
+    // #2627: this test's subject is that finalisation is guarded on the DURABLE
+    // CLAIM rather than on PENDING, so it must run the shape that actually takes
+    // the claim — an approval with a future booking to cancel. It used to have
+    // none, and only passed because the claim was then taken unconditionally.
+    // With the claim now conditional, keeping it bookingless would have silently
+    // turned this into a test of the PENDING-guarded path and stopped covering
+    // the invariant it was written for.
+    h.prisma.booking.findMany
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([{ id: "booking-1" }]);
+    h.cancelBooking.mockResolvedValueOnce({ status: 200, data: {} });
     h.enqueueHostingCoverageReevaluationForMember.mockRejectedValue(
       new HostingCoverageParticipantRetryError(),
     );
@@ -481,7 +530,7 @@ describe("POST /api/admin/deletion-requests/[id] approve carve-out (#1788)", () 
     await expect(response.json()).resolves.toEqual({
       error: HOSTING_COVERAGE_RETRY_MESSAGE,
       code: HOSTING_COVERAGE_RETRY_CODE,
-      cancelledBookings: 0,
+      cancelledBookings: 1,
       cancellationPending: false,
       retryBookingId: null,
       remainingCleanupPending: true,
@@ -553,6 +602,65 @@ describe("POST /api/admin/deletion-requests/[id] approve carve-out (#1788)", () 
     expect(h.sendAccountDeletionApprovedEmail).not.toHaveBeenCalled();
   });
 
+  it("takes no approval claim when there is nothing irreversible to cancel", async () => {
+    // #2627 defect 2, half one. The claim exists to stop a rejection overtaking
+    // booking cancellations an approval has already committed. With no future
+    // bookings there are none, everything this approval does commits in the one
+    // anonymisation transaction, and taking the claim would permanently burn the
+    // ability to reject in exchange for nothing — wedging the request for good
+    // if that transaction then failed permanently.
+    h.prisma.booking.findMany.mockResolvedValue([]);
+
+    const res = await POST(req({ action: "approve" }), { params });
+    expect(res.status).toBe(200);
+
+    expect(h.cancelBooking).not.toHaveBeenCalled();
+    // Nothing was ever moved into the intermediate state.
+    expect(h.prisma.deletionRequest.updateMany).not.toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({ status: "APPROVAL_IN_PROGRESS" }),
+      }),
+    );
+    // The decision is the single guarded PENDING -> APPROVED transition, which
+    // an ordinary rejection could still have won right up to the commit.
+    expect(h.prisma.deletionRequest.updateMany).toHaveBeenCalledTimes(1);
+    expect(h.prisma.deletionRequest.updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { id: "req-1", status: "PENDING" },
+        data: expect.objectContaining({ status: "APPROVED" }),
+      }),
+    );
+    expect(h.prisma.member.update).toHaveBeenCalled();
+  });
+
+  it("still claims before the first cancellation when there IS something to cancel", async () => {
+    // The other side of the same conditional: the protection must not have been
+    // traded away for the conditional.
+    h.prisma.booking.findMany
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([{ id: "booking-1" }]);
+    h.cancelBooking.mockResolvedValueOnce({ status: 200, data: {} });
+
+    const res = await POST(req({ action: "approve" }), { params });
+    expect(res.status).toBe(200);
+
+    expect(h.prisma.deletionRequest.updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { id: "req-1", status: "PENDING" },
+        data: expect.objectContaining({ status: "APPROVAL_IN_PROGRESS" }),
+      }),
+    );
+    expect(h.prisma.deletionRequest.updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { id: "req-1", status: "APPROVAL_IN_PROGRESS" },
+        data: expect.objectContaining({ status: "APPROVED" }),
+      }),
+    );
+    expect(
+      h.prisma.deletionRequest.updateMany.mock.invocationCallOrder[0],
+    ).toBeLessThan(h.cancelBooking.mock.invocationCallOrder[0]);
+  });
+
   it("resumes an interrupted approval instead of refusing the retry", async () => {
     // The admin returns to a request left in APPROVAL_IN_PROGRESS by a crashed
     // or disconnected earlier attempt; the remaining cleanup must complete.
@@ -602,6 +710,575 @@ describe("POST /api/admin/deletion-requests/[id] approve carve-out (#1788)", () 
     } finally {
       vi.useRealTimers();
     }
+  });
+});
+
+/**
+ * #2627 defect 2, half two. `APPROVAL_IN_PROGRESS` used to be a one-way door:
+ * the only exit was a successful anonymisation, so a permanently blocked
+ * approval wedged the request forever — and while it is open the member cannot
+ * lodge a new deletion request and their duplicate cannot be merged. A Full
+ * Admin can now release the claim back to PENDING; the decision itself is still
+ * made through the ordinary approve/reject paths.
+ */
+describe("POST /api/admin/deletion-requests/[id] release a started approval (#2627)", () => {
+  function claimed() {
+    h.prisma.deletionRequest.findUnique.mockResolvedValue({
+      id: "req-1",
+      status: "APPROVAL_IN_PROGRESS",
+      adminNote: "starting approval",
+      reviewedBy: "admin-9",
+      member,
+    });
+  }
+
+  function releaseAudit() {
+    return h.createAuditLog.mock.calls.find(
+      (c) => c[0]?.action === "member.deletion_approval_claim_released",
+    );
+  }
+
+  it("returns a wedged claim to pending, anonymising nobody and emailing no one", async () => {
+    claimed();
+
+    const res = await POST(
+      req({ action: "release", note: "Xero blocker will never clear" }),
+      { params },
+    );
+
+    expect(res.status).toBe(200);
+    await expect(res.json()).resolves.toMatchObject({
+      message: expect.stringContaining("pending again"),
+    });
+    expect(h.prisma.deletionRequest.updateMany).toHaveBeenCalledWith({
+      where: { id: "req-1", status: "APPROVAL_IN_PROGRESS" },
+      data: {
+        status: "PENDING",
+        adminNote: "Xero blocker will never clear",
+        reviewedBy: null,
+        // The durable marker. A PENDING request with a reviewedAt and no
+        // reviewer is one whose started approval was released, and that is what
+        // warns the next decider that the member's stays may already be
+        // cancelled. Nulling it here would restore the exact silent state this
+        // fix exists to remove.
+        reviewedAt: expect.any(Date),
+      },
+    });
+    // A release decides nothing and destroys nothing.
+    expect(h.prisma.member.update).not.toHaveBeenCalled();
+    expect(h.cancelBooking).not.toHaveBeenCalled();
+    expect(h.sendAccountDeletionApprovedEmail).not.toHaveBeenCalled();
+    expect(h.sendAccountDeletionRejectedEmail).not.toHaveBeenCalled();
+  });
+
+  it("writes the only record of the destroyed claim inside the same transaction, awaited", async () => {
+    // `logAudit` is fire-and-forget: a failed insert or a process death after the
+    // 200 would lose the previous claim holder permanently, and this row is the
+    // only place it survives. So the release and its record are one transaction.
+    claimed();
+
+    const res = await POST(req({ action: "release", note: "let it go" }), {
+      params,
+    });
+
+    expect(res.status).toBe(200);
+    expect(h.prisma.$transaction).toHaveBeenCalledTimes(1);
+    const audit = releaseAudit();
+    expect(audit?.[0]).toMatchObject({
+      memberId: "admin-1",
+      targetId: member.id,
+      category: "privacy",
+      outcome: "success",
+      metadata: {
+        previousClaimHeldBy: "admin-9",
+        previousAdminNote: "starting approval",
+      },
+    });
+    // Written through the TRANSACTION client the release ran on, not the ambient
+    // one. `$transaction` hands the callback a distinct identity from
+    // `h.prisma`, so this fails if the audit row moves outside the transaction
+    // (or is written on the singleton from inside it).
+    expect(audit?.[1]).toBe(h.tx);
+    expect(audit?.[1]).not.toBe(h.prisma);
+    // Never through the fire-and-forget writer.
+    expect(
+      h.logAudit.mock.calls.filter(
+        (c) => c[0]?.action === "member.deletion_approval_claim_released",
+      ),
+    ).toEqual([]);
+    // Transition first, then its record — both inside the transaction.
+    expect(
+      h.prisma.deletionRequest.updateMany.mock.invocationCallOrder[0],
+    ).toBeLessThan(h.createAuditLog.mock.invocationCallOrder[0]);
+  });
+
+  it("attributes the released claim from the locked read, not from the earlier unguarded one", async () => {
+    // ABA: the route's opening read is unguarded, so between it and the release a
+    // claim can be released and re-taken by somebody else. Recording the holder
+    // that read saw would name an admin whose claim was never displaced.
+    h.prisma.deletionRequest.findUnique
+      .mockResolvedValueOnce({
+        id: "req-1",
+        status: "APPROVAL_IN_PROGRESS",
+        adminNote: "note the operator saw",
+        reviewedBy: "admin-stale",
+        member,
+      })
+      .mockResolvedValue({
+        status: "APPROVAL_IN_PROGRESS",
+        adminNote: "note under the lock",
+        reviewedBy: "admin-current",
+      });
+
+    const res = await POST(req({ action: "release", note: "release it" }), {
+      params,
+    });
+
+    expect(res.status).toBe(200);
+    expect(releaseAudit()?.[0]).toMatchObject({
+      metadata: {
+        previousClaimHeldBy: "admin-current",
+        previousAdminNote: "note under the lock",
+      },
+    });
+  });
+
+  it("does not report a release whose record could not be written", async () => {
+    // Awaited inside the transaction, so a failed audit insert rolls the release
+    // back: the operator is told it failed and the claim is still there to
+    // release again. Reporting success with no record is the outcome this
+    // forbids.
+    claimed();
+    h.createAuditLog.mockRejectedValue(new Error("audit insert failed"));
+
+    const res = await POST(req({ action: "release", note: "no record" }), {
+      params,
+    });
+
+    expect(res.status).toBe(500);
+    await expect(res.json()).resolves.not.toMatchObject({
+      message: expect.stringContaining("pending again"),
+    });
+  });
+
+  it("gives the release a budget bigger than the transaction it has to wait behind", async () => {
+    // This is the one transaction here whose FIRST statement is designed to
+    // block: it takes the request row FOR UPDATE while the counterpart
+    // anonymisation transaction may hold that row from its claim to its commit.
+    // Prisma's 5s default would abort a legitimate wait; 15s is deliberately
+    // longer than the anonymisation transaction's own (default) budget, so a
+    // release loses to it on the guard rather than on the clock.
+    claimed();
+
+    const res = await POST(req({ action: "release", note: "let it go" }), {
+      params,
+    });
+
+    expect(res.status).toBe(200);
+    expect(h.prisma.$transaction.mock.calls[0][1]).toEqual({
+      maxWait: 10_000,
+      timeout: 15_000,
+    });
+  });
+
+  it.each(["P2028", "P2034"])(
+    "answers a contended release (%s) with a retry-later, not a bare 500",
+    async (code) => {
+      // Before the release moved into a transaction it was an auto-commit
+      // `updateMany`: it blocked on the row and then returned the mapped 409. An
+      // exhausted interactive-transaction wait falling through to the generic 500
+      // would therefore be a regression in behaviour under contention. The whole
+      // transaction rolled back, so nothing was released, nothing was recorded,
+      // and the claim is still there — which is what the answer says.
+      claimed();
+      h.prisma.$transaction.mockRejectedValue(
+        Object.assign(new Error("Transaction API error"), { code }),
+      );
+
+      const res = await POST(req({ action: "release", note: "too busy" }), {
+        params,
+      });
+
+      expect(res.status).toBe(503);
+      await expect(res.json()).resolves.toMatchObject({
+        code: "DELETION_REQUEST_RELEASE_CONTENDED",
+        error: expect.stringContaining("try again shortly"),
+        retryAllowed: true,
+      });
+      expect(releaseAudit()).toBeUndefined();
+    },
+  );
+
+  it("does not turn an ordinary release failure into a retry-later", async () => {
+    // The mapping is scoped to contention codes. A real fault must keep failing
+    // loudly rather than inviting a retry that will fail the same way.
+    claimed();
+    h.prisma.$transaction.mockRejectedValue(
+      Object.assign(new Error("column does not exist"), { code: "P2022" }),
+    );
+
+    const res = await POST(req({ action: "release", note: "broken" }), {
+      params,
+    });
+
+    expect(res.status).toBe(500);
+    await expect(res.json()).resolves.not.toMatchObject({
+      code: "DELETION_REQUEST_RELEASE_CONTENDED",
+    });
+  });
+
+  it("refuses a scoped membership admin who is not a Full Admin", async () => {
+    claimed();
+    h.isFullAdmin.mockReturnValue(false);
+
+    const res = await POST(req({ action: "release", note: "let me out" }), {
+      params,
+    });
+
+    expect(res.status).toBe(403);
+    expect(h.prisma.deletionRequest.updateMany).not.toHaveBeenCalled();
+    expect(releaseAudit()).toBeUndefined();
+  });
+
+  it("requires a reason, because releasing re-opens a decision closed to rejection", async () => {
+    claimed();
+
+    for (const body of [
+      { action: "release" },
+      { action: "release", note: "   " },
+    ]) {
+      h.prisma.deletionRequest.updateMany.mockClear();
+      const res = await POST(req(body), { params });
+      expect(res.status).toBe(400);
+      expect(h.prisma.deletionRequest.updateMany).not.toHaveBeenCalled();
+    }
+  });
+
+  it("refuses a release on a request that holds no claim", async () => {
+    // Still PENDING: there is nothing to release, and the refusal says so
+    // rather than reporting it as already reviewed.
+    const res = await POST(req({ action: "release", note: "nothing here" }), {
+      params,
+    });
+
+    expect(res.status).toBe(409);
+    await expect(res.json()).resolves.toMatchObject({
+      code: "DELETION_REQUEST_CLAIM_NOT_HELD",
+      retryAllowed: false,
+    });
+    expect(h.prisma.deletionRequest.updateMany).not.toHaveBeenCalled();
+  });
+
+  it("loses cleanly to a finalisation that was already committing", async () => {
+    // The guard IS the race protection: the release's guarded updateMany blocks
+    // on the row lock the committing finalisation holds, then re-evaluates its
+    // `status: APPROVAL_IN_PROGRESS` predicate against the committed row and
+    // matches nothing. It must never silently report success.
+    claimed();
+    h.prisma.deletionRequest.updateMany.mockResolvedValue({ count: 0 });
+
+    const res = await POST(req({ action: "release", note: "too late" }), {
+      params,
+    });
+
+    expect(res.status).toBe(409);
+    await expect(res.json()).resolves.toMatchObject({
+      code: "DELETION_REQUEST_CLAIM_NOT_HELD",
+      retryAllowed: false,
+    });
+    expect(releaseAudit()).toBeUndefined();
+  });
+
+  it("refuses a release once the request has reached a final decision", async () => {
+    h.prisma.deletionRequest.findUnique.mockResolvedValue({
+      id: "req-1",
+      status: "APPROVED",
+      member,
+    });
+
+    const res = await POST(req({ action: "release", note: "undo it" }), {
+      params,
+    });
+
+    expect(res.status).toBe(409);
+    await expect(res.json()).resolves.toMatchObject({
+      decisionFinal: true,
+      finalDecision: "APPROVED",
+      retryAllowed: false,
+    });
+    expect(h.prisma.deletionRequest.updateMany).not.toHaveBeenCalled();
+  });
+
+  it("rejects an unknown action with 400 and touches nothing", async () => {
+    const res = await POST(req({ action: "unclaim" }), { params });
+
+    expect(res.status).toBe(400);
+    expect(h.prisma.deletionRequest.updateMany).not.toHaveBeenCalled();
+  });
+});
+
+describe("POST /api/admin/deletion-requests/[id] deciding a released request (#2627)", () => {
+  const RELEASED_AT = new Date("2026-08-06T21:30:00.000Z");
+
+  /**
+   * A request whose started approval was released: PENDING again, with the
+   * marker that says so. Rejecting it is the one rejection that can be final
+   * over stays an approval already cancelled, so it carries the release's own
+   * Full-Admin gate and an explicit confirmation.
+   */
+  function released() {
+    h.prisma.deletionRequest.findUnique.mockResolvedValue({
+      id: "req-1",
+      status: "PENDING",
+      adminNote: "Xero blocker will never clear",
+      reviewedBy: null,
+      reviewedAt: RELEASED_AT,
+      member,
+    });
+  }
+
+  function rejectAuditMetadata() {
+    return h.logAudit.mock.calls.find(
+      (c) => c[0]?.action === "member.deletion_rejected",
+    )?.[0]?.metadata;
+  }
+
+  it("refuses a scoped membership admin, because a Full Admin re-opened this decision", async () => {
+    released();
+    h.isFullAdmin.mockReturnValue(false);
+
+    const res = await POST(req({ action: "reject" }), { params });
+
+    expect(res.status).toBe(403);
+    await expect(res.json()).resolves.toMatchObject({
+      error: expect.stringContaining("stay cancelled"),
+    });
+    expect(h.prisma.deletionRequest.updateMany).not.toHaveBeenCalled();
+    expect(h.sendAccountDeletionRejectedEmail).not.toHaveBeenCalled();
+  });
+
+  it("refuses an unconfirmed rejection WITH the disclosure, so a stale page cannot finalise one unwarned", async () => {
+    released();
+
+    const res = await POST(req({ action: "reject" }), { params });
+
+    expect(res.status).toBe(409);
+    await expect(res.json()).resolves.toMatchObject({
+      code: "DELETION_REJECT_AFTER_RELEASE_CONFIRM_REQUIRED",
+      error: expect.stringContaining("stay cancelled"),
+      approvalReleased: true,
+      approvalReleasedAt: RELEASED_AT.toISOString(),
+      releaseReason: "Xero blocker will never clear",
+    });
+    // Nothing decided, nobody emailed: the member is not told their request was
+    // declined by a refusal.
+    expect(h.prisma.deletionRequest.updateMany).not.toHaveBeenCalled();
+    expect(h.sendAccountDeletionRejectedEmail).not.toHaveBeenCalled();
+  });
+
+  it("applies a confirmed rejection and records that it landed over a released approval", async () => {
+    released();
+
+    const res = await POST(
+      req({
+        action: "reject",
+        note: "Resolve the blocker first",
+        confirmReleasedApproval: true,
+      }),
+      { params },
+    );
+
+    expect(res.status).toBe(200);
+    // The confirmed rejection's guard names the RELEASED flavour of pending, not
+    // pending in general: the disclosure the decider was shown describes a marked
+    // row, so that is the only row this decision may win.
+    expect(h.prisma.deletionRequest.updateMany).toHaveBeenCalledWith({
+      where: { id: "req-1", status: "PENDING", reviewedAt: { not: null } },
+      data: expect.objectContaining({ status: "REJECTED" }),
+    });
+    // The audit trail states the hazard in one entry rather than leaving it to be
+    // reconstructed from two.
+    expect(rejectAuditMetadata()).toMatchObject({
+      approvalPreviouslyReleased: true,
+      approvalReleasedAt: RELEASED_AT.toISOString(),
+    });
+  });
+
+  it("refuses an ordinary rejection when the release marker appears between the route's read and its write", async () => {
+    // The interleaving the gate above cannot see, because it is evaluated against
+    // the opening read and there is latency (not a human) in the window — Prisma
+    // queues on an exhausted pool. A Membership Officer POSTs `reject` on a row
+    // that is genuinely unmarked; a Full Admin then claims, cancels the member's
+    // stays, fails and releases. Guarded on `status: "PENDING"` alone this
+    // rejection LANDS: final REJECTED over committed cancellations, with no
+    // Full-Admin check and no confirmation, which is the state
+    // docs/DOMAIN_INVARIANTS.md says cannot happen.
+    h.prisma.deletionRequest.findUnique
+      .mockResolvedValueOnce({
+        id: "req-1",
+        status: "PENDING",
+        adminNote: null,
+        reviewedBy: null,
+        reviewedAt: null,
+        member,
+      })
+      // What the row has become by the time the write runs, and what the
+      // route's re-read finds afterwards.
+      .mockResolvedValue({
+        status: "PENDING",
+        adminNote: "Xero blocker will never clear",
+        reviewedBy: null,
+        reviewedAt: RELEASED_AT,
+        member,
+      });
+    // Stands in for PostgreSQL: the row now carries a marker, so a guard naming
+    // `reviewedAt: null` matches nothing — and anything laxer matches it.
+    h.prisma.deletionRequest.updateMany.mockImplementation(
+      async (args: { where: { reviewedAt?: unknown } }) => ({
+        count: args.where.reviewedAt === null ? 0 : 1,
+      }),
+    );
+    h.isFullAdmin.mockReturnValue(false);
+
+    const res = await POST(req({ action: "reject", note: "unaware" }), {
+      params,
+    });
+
+    expect(res.status).toBe(409);
+    const body = await res.json();
+    expect(body).toMatchObject({
+      code: "DELETION_REQUEST_APPROVAL_RELEASED",
+      approvalReleased: true,
+      decisionFinal: false,
+      retryAllowed: false,
+    });
+    // The guard is what refused it, in one attempt, and the marker's absence is
+    // part of it rather than of a preceding read.
+    expect(h.prisma.deletionRequest.updateMany).toHaveBeenCalledTimes(1);
+    expect(
+      h.prisma.deletionRequest.updateMany.mock.calls[0][0].where,
+    ).toEqual({ id: "req-1", status: "PENDING", reviewedAt: null });
+    // Nothing decided and nothing said: the member is not emailed a rejection
+    // that did not happen.
+    expect(h.sendAccountDeletionRejectedEmail).not.toHaveBeenCalled();
+  });
+
+  it("requires a reason on a confirmed reject-after-release, because the note is all the member gets", async () => {
+    // Everything else about this state is admin-facing. The member's stays are
+    // what was destroyed, and this note is the only thing they are ever told, so
+    // the release's own mandatory reason is mirrored onto the rejection.
+    released();
+
+    for (const body of [
+      { action: "reject", confirmReleasedApproval: true },
+      { action: "reject", note: "   ", confirmReleasedApproval: true },
+    ]) {
+      h.prisma.deletionRequest.updateMany.mockClear();
+      h.sendAccountDeletionRejectedEmail.mockClear();
+
+      const res = await POST(req(body), { params });
+
+      expect(res.status).toBe(400);
+      await expect(res.json()).resolves.toMatchObject({
+        code: "DELETION_REJECT_AFTER_RELEASE_REASON_REQUIRED",
+        error: expect.stringContaining("stay cancelled"),
+      });
+      expect(h.prisma.deletionRequest.updateMany).not.toHaveBeenCalled();
+      expect(h.sendAccountDeletionRejectedEmail).not.toHaveBeenCalled();
+    }
+  });
+
+  it("refuses to suppress the member's email on a confirmed reject-after-release", async () => {
+    // #1788's free choice stays on every ordinary rejection, where nothing has
+    // been destroyed. Here it would mean declining the request over cancelled
+    // stays with no notice at all.
+    released();
+
+    const res = await POST(
+      req({
+        action: "reject",
+        note: "Resolve the blocker first",
+        notifyMember: false,
+        confirmReleasedApproval: true,
+      }),
+      { params },
+    );
+
+    expect(res.status).toBe(400);
+    await expect(res.json()).resolves.toMatchObject({
+      code: "DELETION_REJECT_AFTER_RELEASE_NOTICE_REQUIRED",
+      error: expect.stringContaining("stay cancelled"),
+    });
+    expect(h.prisma.deletionRequest.updateMany).not.toHaveBeenCalled();
+    expect(h.sendAccountDeletionRejectedEmail).not.toHaveBeenCalled();
+  });
+
+  it("still lets an ORDINARY rejection be reasonless and silent", async () => {
+    // The two requirements above are scoped to the released path only. Widening
+    // them would quietly rewrite #1788's audited notify choice for every
+    // rejection.
+    const res = await POST(req({ action: "reject", notifyMember: false }), {
+      params,
+    });
+
+    expect(res.status).toBe(200);
+    expect(h.sendAccountDeletionRejectedEmail).not.toHaveBeenCalled();
+    expect(h.prisma.deletionRequest.updateMany).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not gate or confirm an APPROVAL of a released request", async () => {
+    // Approving completes the deletion the member asked for. It destroys nothing
+    // that the released approval had not already destroyed, so it stays an
+    // ordinary membership-edit action.
+    released();
+
+    const res = await POST(req({ action: "approve" }), { params });
+
+    expect(res.status).toBe(200);
+    expect(h.prisma.deletionRequest.updateMany).toHaveBeenCalledWith({
+      where: { id: "req-1", status: "PENDING" },
+      data: expect.objectContaining({ status: "APPROVED" }),
+    });
+  });
+
+  it("names the release when a finalisation loses its guard to one, instead of calling the state unconfirmed", async () => {
+    // The interleaving this action introduces: the release commits while an
+    // approval is finalising, so the approval's guarded transition matches zero
+    // rows and its transaction rolls back. The request is PENDING — a state known
+    // EXACTLY. Reporting "its final state could not be confirmed … do not retry"
+    // would durably disable the row over a request that is simply decidable
+    // again.
+    h.prisma.deletionRequest.findUnique
+      .mockResolvedValueOnce({
+        id: "req-1",
+        status: "PENDING",
+        adminNote: null,
+        reviewedBy: null,
+        reviewedAt: null,
+        member,
+      })
+      .mockResolvedValue({
+        status: "PENDING",
+        reviewedBy: null,
+        reviewedAt: RELEASED_AT,
+        member,
+      });
+    h.prisma.deletionRequest.updateMany.mockResolvedValue({ count: 0 });
+
+    const res = await POST(req({ action: "approve" }), { params });
+
+    expect(res.status).toBe(409);
+    const body = await res.json();
+    expect(body).toMatchObject({
+      code: "DELETION_REQUEST_APPROVAL_RELEASED",
+      approvalReleased: true,
+      decisionFinal: false,
+      retryAllowed: false,
+    });
+    expect(body.error).toContain("pending again");
+    expect(body.decisionStatusUnconfirmed).toBeUndefined();
+    // No receipt, no anonymisation: the transaction rolled back.
+    expect(h.sendAccountDeletionApprovedEmail).not.toHaveBeenCalled();
   });
 });
 

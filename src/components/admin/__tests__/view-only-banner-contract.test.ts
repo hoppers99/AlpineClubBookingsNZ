@@ -324,9 +324,9 @@ const FIGURES = {
   /** Every `<ViewOnlyActionButton>` render site in the admin tree. */
   callSites: 312,
   /** Those that hand their explanation to a banner, by either rule. */
-  optOuts: 262,
+  optOuts: 263,
   /** `describeReason={false}` — needs a banner in the SAME file. */
-  staticOptOuts: 235,
+  staticOptOuts: 236,
   /** `describeReason={!ancestorRendersViewOnlyBanner}` — needs a vouch. */
   vouchedOptOuts: 27,
   /** …of the vouched: proved at a parent's own JSX render site (#2168). */
@@ -1276,6 +1276,21 @@ describe("view-only section banner coverage (#2160)", () => {
                INTEGRATED tree rather than added to either side's figure:
                #2602's -1, #2597's +1 and this +1 all landed in the same
                window, so 311 -> 310 -> 311 -> 312.
+          312  +1  #2627 adds "Release approval" to the deletion queue's
+               self-service rows — the Full-Admin way out of an approval left
+               mid-flight, beside the existing "Resume approval". A static
+               opt-out under the page's own unconditional
+               AdminViewOnlySectionBanner, which the sibling Approve/Reject/
+               Resume controls already opt out under, so static opt-outs move
+               235 -> 236 and total opt-outs 262 -> 263. Nothing else moves: no
+               new banner component, and the Full-Admin gate it additionally
+               carries is applied by NOT RENDERING the control at all rather
+               than by disabling it with a narrower per-button reason, so it
+               adds no exception. (Re-measured, as always: 311 -> 312. The
+               running left-hand column reached 310 at the step above, so it
+               trails the measured total by one; #2637 supplies the correct
+               reconstruction of that gap and this note deliberately does not
+               guess at it.)
       */
       // #2259 adds the per-booking "No emails"
       // switch (`booking-no-emails-controls.tsx`), a leaf control dropped into

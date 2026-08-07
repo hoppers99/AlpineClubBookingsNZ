@@ -267,6 +267,8 @@ let DELETED_ACCOUNT_PASSWORD_HASH: (typeof import("@/lib/xero-contact-create-rec
 let commitManualXeroContactLink: (typeof import("@/lib/xero-manual-contact-link"))["commitManualXeroContactLink"];
 let claimDeletionRequestDecision: (typeof import("@/lib/deletion-request-decision"))["claimDeletionRequestDecision"];
 let claimDeletionRequestApproval: (typeof import("@/lib/deletion-request-decision"))["claimDeletionRequestApproval"];
+let releaseDeletionRequestApprovalClaim: (typeof import("@/lib/deletion-request-decision"))["releaseDeletionRequestApprovalClaim"];
+let deletionApprovalWasReleased: (typeof import("@/lib/deletion-request-decision"))["deletionApprovalWasReleased"];
 
 (RUN ? describe : describe.skip)(
   "hosting queue/member merge interleavings — real PostgreSQL (#2597)",
@@ -717,6 +719,10 @@ let claimDeletionRequestApproval: (typeof import("@/lib/deletion-request-decisio
         deletionRequestDecision.claimDeletionRequestDecision;
       claimDeletionRequestApproval =
         deletionRequestDecision.claimDeletionRequestApproval;
+      releaseDeletionRequestApprovalClaim =
+        deletionRequestDecision.releaseDeletionRequestApprovalClaim;
+      deletionApprovalWasReleased =
+        deletionRequestDecision.deletionApprovalWasReleased;
 
       const [
         { PrismaClient: SeparatePrismaClient },
@@ -1118,8 +1124,17 @@ let claimDeletionRequestApproval: (typeof import("@/lib/deletion-request-decisio
       // The invariant the intermediate state exists for. An approval commits
       // future-booking cancellations in separate transactions before it
       // anonymises anything, so it takes durable ownership first. From that
-      // moment a rejection must be impossible — otherwise the request could end
-      // REJECTED with the member's stays already destroyed.
+      // moment an ORDINARY rejection must be impossible — otherwise the request
+      // could end REJECTED with the member's stays already destroyed.
+      //
+      // #2627: "impossible" is exact for as long as the claim stands, which is
+      // the property pinned here. It is no longer the same as "a rejection can
+      // never be final after a cancellation committed": a Full Admin may release
+      // the claim (the tests below), and the request is then rejectable again —
+      // deliberately, because the alternative was a request wedged open forever.
+      // What closes that hole is disclosure, not the claim: the release leaves a
+      // durable marker on the row and the reject path refuses to finalise
+      // without a Full Admin and an explicit confirmation.
       await primary.deletionRequest.create({
         data: { id: IDS.deletionRequest, memberId: IDS.target },
       });
@@ -1264,10 +1279,11 @@ let claimDeletionRequestApproval: (typeof import("@/lib/deletion-request-decisio
     });
 
     it("rolls a failed finalisation back to its claim, not back to PENDING", async () => {
-      // The rollback target matters. Falling back to PENDING would re-open the
-      // request to rejection AFTER its approval had already cancelled bookings,
-      // which is precisely the hazard the intermediate claim removes. It must
-      // land on APPROVAL_IN_PROGRESS so only the approval can still finish.
+      // The rollback target matters. Falling back to PENDING would silently
+      // re-open the request to rejection AFTER its approval had already cancelled
+      // bookings. It must land on APPROVAL_IN_PROGRESS so only the approval can
+      // still finish, and any re-opening is a deliberate, gated, marked release
+      // (#2627) rather than a side effect of a failure nobody chose.
       await primary.deletionRequest.create({
         data: { id: IDS.deletionRequest, memberId: IDS.target },
       });
@@ -1323,6 +1339,335 @@ let claimDeletionRequestApproval: (typeof import("@/lib/deletion-request-decisio
           adminNote: "recovered",
         }),
       ).resolves.toBeUndefined();
+    });
+
+    it("a release that arrives while a finalisation is committing loses on the row lock", async () => {
+      // The release's whole safety argument is "PostgreSQL does the work", and a
+      // mocked `{ count: 0 }` only proves the code's reaction to a zero-row
+      // match — not that PostgreSQL produces one. This forces the losing order
+      // for real: the finalisation holds this exact row's write lock, the release
+      // blocks on it, and only then re-evaluates its guard against the committed
+      // row.
+      await primary.deletionRequest.create({
+        data: { id: IDS.deletionRequest, memberId: IDS.target },
+      });
+      await expect(
+        claimDeletionRequestApproval(primary, {
+          id: IDS.deletionRequest,
+          reviewedBy: IDS.actor,
+          adminNote: "approval under way",
+        }),
+      ).resolves.toBe("CLAIMED");
+
+      const reached = deferred();
+      const finish = deferred();
+      const finalisation = mergeB.$transaction(async (tx) => {
+        await claimDeletionRequestDecision(tx, {
+          id: IDS.deletionRequest,
+          decision: "APPROVED",
+          reviewedBy: IDS.actor,
+          adminNote: "approval wins",
+        });
+        reached.resolve();
+        await finish.promise;
+      });
+      await reached.promise;
+
+      const release = mergeA
+        .$transaction(async (tx) =>
+          releaseDeletionRequestApprovalClaim(tx, {
+            id: IDS.deletionRequest,
+            adminNote: "release loses",
+          }),
+        )
+        .then(
+          () => ({ ok: true as const }),
+          (error: unknown) => ({ ok: false as const, error }),
+        );
+      try {
+        // A real PostgreSQL lock wait, not an immediate miss: the release's own
+        // `SELECT 1 … FOR UPDATE` blocks behind the uncommitted finalisation.
+        await waitForClientToBlock("race-2597-merge-a");
+      } finally {
+        finish.resolve();
+      }
+      await expect(finalisation).resolves.toBeUndefined();
+
+      const releaseOutcome = await release;
+      expect(releaseOutcome.ok).toBe(false);
+      if (releaseOutcome.ok) {
+        throw new Error("A release re-opened an approval that had committed.");
+      }
+      expect(releaseOutcome.error).toMatchObject({
+        code: "DELETION_REQUEST_CLAIM_NOT_HELD",
+        statusCode: 409,
+      });
+      const finalRow = await primary.deletionRequest.findUniqueOrThrow({
+        where: { id: IDS.deletionRequest },
+        select: {
+          status: true,
+          adminNote: true,
+          reviewedBy: true,
+          reviewedAt: true,
+        },
+      });
+      expect(finalRow).toMatchObject({
+        status: "APPROVED",
+        // The finalisation writes only status + reviewedAt; the note the claim
+        // recorded stands, and the release's note never lands.
+        adminNote: "approval under way",
+        reviewedBy: IDS.actor,
+      });
+      // And the loser left no marker behind on a decided request.
+      expect(deletionApprovalWasReleased(finalRow)).toBe(false);
+    });
+
+    it("a release that commits first makes the finalisation match zero rows, and leaves the marker", async () => {
+      // The winning order, and the one the review is about: the request is
+      // re-opened, so the next decider MUST be able to see that an approval had
+      // already started here. That is carried by the row itself — PENDING with a
+      // reviewedAt and no reviewer — written by the same guarded mutation as the
+      // transition.
+      await primary.deletionRequest.create({
+        data: { id: IDS.deletionRequest, memberId: IDS.target },
+      });
+      await expect(
+        claimDeletionRequestApproval(primary, {
+          id: IDS.deletionRequest,
+          reviewedBy: IDS.actor,
+          adminNote: "claim being abandoned",
+        }),
+      ).resolves.toBe("CLAIMED");
+
+      const reached = deferred();
+      const finish = deferred();
+      const release = mergeB.$transaction(async (tx) => {
+        const released = await releaseDeletionRequestApprovalClaim(tx, {
+          id: IDS.deletionRequest,
+          adminNote: "release wins",
+        });
+        reached.resolve();
+        await finish.promise;
+        return released;
+      });
+      await reached.promise;
+
+      const finalisation = mergeA
+        .$transaction(async (tx) => {
+          await claimDeletionRequestDecision(tx, {
+            id: IDS.deletionRequest,
+            decision: "APPROVED",
+            reviewedBy: IDS.actor,
+            adminNote: "finalisation loses",
+          });
+        })
+        .then(
+          () => ({ ok: true as const }),
+          (error: unknown) => ({ ok: false as const, error }),
+        );
+      try {
+        await waitForClientToBlock("race-2597-merge-a");
+      } finally {
+        finish.resolve();
+      }
+
+      // The release's attribution comes from the read it took under that lock.
+      await expect(release).resolves.toMatchObject({
+        previousClaimHeldBy: IDS.actor,
+        previousAdminNote: "claim being abandoned",
+      });
+
+      const finalisationOutcome = await finalisation;
+      expect(finalisationOutcome.ok).toBe(false);
+      if (finalisationOutcome.ok) {
+        throw new Error("An approval finalised over a committed release.");
+      }
+      expect(finalisationOutcome.error).toMatchObject({
+        code: "DELETION_REQUEST_ALREADY_REVIEWED",
+        statusCode: 409,
+      });
+
+      const finalRow = await primary.deletionRequest.findUniqueOrThrow({
+        where: { id: IDS.deletionRequest },
+        select: {
+          status: true,
+          adminNote: true,
+          reviewedBy: true,
+          reviewedAt: true,
+        },
+      });
+      // The whole finalisation rolled back: pending again, the release's reason
+      // on the row, and no approval attribution.
+      expect(finalRow.status).toBe("PENDING");
+      expect(finalRow.adminNote).toBe("release wins");
+      expect(finalRow.reviewedBy).toBeNull();
+      expect(finalRow.reviewedAt).not.toBeNull();
+      // Which the queue and the reject path both read as "this was released".
+      expect(deletionApprovalWasReleased(finalRow)).toBe(true);
+    });
+
+    it("an unconfirmed rejection blocks behind a release and then cannot take the row it re-opened", async () => {
+      // The TOCTOU the second review found, forced for real. The route decides
+      // whether a rejection is a reject-after-release from an UNGUARDED opening
+      // read, and there is latency in the window between that read and the write —
+      // Prisma queues on an exhausted pool. So:
+      //
+      //   1. a Membership Officer reads the row: PENDING, no marker, pre-claim;
+      //   2. a Full Admin claims it, cancels the member's future stays, fails,
+      //      and releases — PENDING again, WITH the marker;
+      //   3. the officer's guarded update runs.
+      //
+      // Guarded on `status: "PENDING"` alone, step 3 lands: a final REJECTED over
+      // cancellations that already committed, with no Full-Admin check and no
+      // confirmation. Guarded on the flavour of pending it was authorised
+      // against — `reviewedAt: null` — PostgreSQL re-evaluates the predicate
+      // against the committed row after the lock wait and matches nothing.
+      await primary.deletionRequest.create({
+        data: { id: IDS.deletionRequest, memberId: IDS.target },
+      });
+
+      // What the officer's request read before anything happened.
+      const asRead = await primary.deletionRequest.findUniqueOrThrow({
+        where: { id: IDS.deletionRequest },
+        select: { status: true, reviewedBy: true, reviewedAt: true },
+      });
+      expect(deletionApprovalWasReleased(asRead)).toBe(false);
+
+      // Steps 1-2 as one uncommitted unit, so the rejection's predicate still
+      // matches the row's committed version and it must genuinely WAIT on the
+      // lock rather than miss immediately.
+      const reached = deferred();
+      const finish = deferred();
+      const claimAndRelease = mergeB.$transaction(async (tx) => {
+        await claimDeletionRequestApproval(tx, {
+          id: IDS.deletionRequest,
+          reviewedBy: IDS.actor,
+          adminNote: "approval that cancelled stays and then failed",
+        });
+        const released = await releaseDeletionRequestApprovalClaim(tx, {
+          id: IDS.deletionRequest,
+          adminNote: "blocker will never clear",
+        });
+        reached.resolve();
+        await finish.promise;
+        return released;
+      });
+      await reached.promise;
+
+      const rejection = claimDeletionRequestDecision(mergeA, {
+        id: IDS.deletionRequest,
+        decision: "REJECTED",
+        reviewedBy: IDS.ownerA,
+        adminNote: "declined, unaware of the release",
+        // Exactly what the route derives from `asRead`: no marker was seen, so
+        // nobody was shown the disclosure.
+        rejectFrom: "PENDING",
+      }).then(
+        () => ({ ok: true as const }),
+        (error: unknown) => ({ ok: false as const, error }),
+      );
+      try {
+        await waitForClientToBlock("race-2597-merge-a");
+      } finally {
+        finish.resolve();
+      }
+      await expect(claimAndRelease).resolves.toMatchObject({
+        previousClaimHeldBy: IDS.actor,
+      });
+
+      const rejectionOutcome = await rejection;
+      expect(rejectionOutcome.ok).toBe(false);
+      if (rejectionOutcome.ok) {
+        throw new Error(
+          "An unwarned rejection finalised over a released approval.",
+        );
+      }
+      expect(rejectionOutcome.error).toMatchObject({
+        code: "DELETION_REQUEST_ALREADY_REVIEWED",
+        statusCode: 409,
+      });
+
+      const afterRow = await primary.deletionRequest.findUniqueOrThrow({
+        where: { id: IDS.deletionRequest },
+        select: {
+          status: true,
+          adminNote: true,
+          reviewedBy: true,
+          reviewedAt: true,
+        },
+      });
+      // Still re-openable and still marked: nothing was decided, and the next
+      // decider is still told.
+      expect(afterRow.status).toBe("PENDING");
+      expect(afterRow.adminNote).toBe("blocker will never clear");
+      expect(deletionApprovalWasReleased(afterRow)).toBe(true);
+
+      // And the decision is not lost, only re-routed: a Full Admin who IS shown
+      // the marker and confirms it rejects the same row through the other half of
+      // the partition.
+      await expect(
+        claimDeletionRequestDecision(primary, {
+          id: IDS.deletionRequest,
+          decision: "REJECTED",
+          reviewedBy: IDS.ownerA,
+          adminNote: "declined, and the member is told their stays are gone",
+          rejectFrom: "PENDING_RELEASED",
+        }),
+      ).resolves.toBeUndefined();
+      await expect(
+        primary.deletionRequest.findUniqueOrThrow({
+          where: { id: IDS.deletionRequest },
+          select: { status: true, reviewedBy: true },
+        }),
+      ).resolves.toEqual({ status: "REJECTED", reviewedBy: IDS.ownerA });
+    });
+
+    it("loses the release and its audit record together, or neither", async () => {
+      // The release destroys the claim's own attribution, so its audit row is the
+      // only surviving record of who held it. Written best-effort it could vanish
+      // independently of the transition; written inside the release's transaction
+      // and awaited, an abort takes both.
+      await primary.deletionRequest.create({
+        data: { id: IDS.deletionRequest, memberId: IDS.target },
+      });
+      await expect(
+        claimDeletionRequestApproval(primary, {
+          id: IDS.deletionRequest,
+          reviewedBy: IDS.actor,
+          adminNote: "held by the first attempt",
+        }),
+      ).resolves.toBe("CLAIMED");
+
+      await expect(
+        mergeA.$transaction(async (tx) => {
+          const released = await releaseDeletionRequestApprovalClaim(tx, {
+            id: IDS.deletionRequest,
+            adminNote: "released then aborted",
+          });
+          await tx.auditLog.create({
+            data: {
+              action: MARKER_ACTION,
+              entityId: IDS.target,
+              details: `previous claim: ${released.previousClaimHeldBy}`,
+            },
+          });
+          throw new Error("forced release rollback");
+        }),
+      ).rejects.toThrow("forced release rollback");
+
+      await expect(
+        primary.deletionRequest.findUniqueOrThrow({
+          where: { id: IDS.deletionRequest },
+          select: { status: true, adminNote: true, reviewedBy: true },
+        }),
+      ).resolves.toEqual({
+        status: "APPROVAL_IN_PROGRESS",
+        adminNote: "held by the first attempt",
+        reviewedBy: IDS.actor,
+      });
+      expect(
+        await primary.auditLog.count({ where: { action: MARKER_ACTION } }),
+      ).toBe(0);
     });
 
     it("contact-update reservation wins before merge and completion leaves no active loser ledger", async () => {

@@ -368,6 +368,21 @@ const ROW_LOCK_SITE_INVENTORY: Record<string, number> = {
   // use the separate `FOR KEY SHARE` protocol inventoried by their source tests.
   // See docs/CONCURRENCY_AND_LOCKING.md -> "Xero contact writers".
   "src/lib/xero-contact-create-recovery.ts": 1,
+  // Releasing a started deletion approval (#2627) locks the exact
+  // `DeletionRequest` row (`SELECT 1 … FOR UPDATE`) and reads the claim's
+  // previous holder and note back through the Prisma model under it, because
+  // the transition destroys that attribution and its audit entry — written in
+  // the same transaction, awaited — is the only surviving record of it. Reading
+  // the holder outside the lock would be an ABA guess. The guarded
+  // `APPROVAL_IN_PROGRESS -> PENDING` `updateMany` is retained under the lock,
+  // so the winner protocol every transition on this row shares is unchanged.
+  // Request-id keyed on an immutable cuid; no advisory lock. Counterparts are
+  // the other two transitions on the same row — an approval finalising inside
+  // the anonymisation transaction (which also holds the target `Member FOR
+  // UPDATE` via the Xero fence; the release takes only this row, so no cycle)
+  // and an ordinary rejection. See docs/CONCURRENCY_AND_LOCKING.md ->
+  // "Approve, reject and release of one `DeletionRequest`".
+  "src/lib/deletion-request-decision.ts": 1,
 };
 
 const CAPACITY_LOCK_MINT = "src/lib/lodge-capacity-lock.ts";
