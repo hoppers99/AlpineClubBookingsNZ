@@ -7,6 +7,10 @@ const hostingMocks = vi.hoisted(() => ({
 }));
 const recoveryMocks = vi.hoisted(() => ({
   getMemberContactCreateRecoveryState: vi.fn().mockResolvedValue(null),
+  // #2623 T7: member detail also reads the SAME blocker predicate merge and
+  // account deletion refuse on, so a linked-but-blocked member cannot render as
+  // reconciled.
+  findMemberContactChangeMergeBlocker: vi.fn().mockResolvedValue(null),
 }));
 
 vi.mock("@/lib/prisma", () => ({
@@ -113,6 +117,8 @@ vi.mock("@/lib/adult-member-hosting-coverage-drain", () => ({
 vi.mock("@/lib/xero-contact-create-recovery", () => ({
   getMemberContactCreateRecoveryState:
     recoveryMocks.getMemberContactCreateRecoveryState,
+  findMemberContactChangeMergeBlocker:
+    recoveryMocks.findMemberContactChangeMergeBlocker,
 }));
 
 import { prisma } from "@/lib/prisma";
@@ -156,6 +162,7 @@ describe("Phase 3b: Member Detail Edit — PUT /api/admin/members/[id]", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     recoveryMocks.getMemberContactCreateRecoveryState.mockResolvedValue(null);
+    recoveryMocks.findMemberContactChangeMergeBlocker.mockResolvedValue(null);
     // #2106: reset the N/A-flip linked-guest query default so a per-test
     // override never leaks into a later test (clearAllMocks keeps implementations).
     vi.mocked(prisma.bookingGuest.findMany).mockResolvedValue([] as never);
@@ -1167,6 +1174,59 @@ describe("Phase 3b: Member Detail Edit — PUT /api/admin/members/[id]", () => {
       memberId: "m1",
       xeroContactId: null,
     });
+  });
+
+  /**
+   * #2623 T7. The create-recovery state deliberately reports nothing once the
+   * member is linked, and it used to be the ONLY Xero signal on this payload.
+   * So a member who had been recovered — link repaired, page clean — kept being
+   * refused for member merge and account deletion by an operation nobody could
+   * see. The payload now also carries the blocker itself, read from the same
+   * predicate those refusals use.
+   */
+  it("GET surfaces the lifecycle blocker for a LINKED member whose create is still open", async () => {
+    mockedAuth.mockResolvedValue(adminSession);
+    recoveryMocks.getMemberContactCreateRecoveryState.mockResolvedValue(null);
+    recoveryMocks.findMemberContactChangeMergeBlocker.mockResolvedValue({
+      operationId: "xero-op-open",
+      operationType: "CREATE",
+      status: "FAILED",
+      providerContactId: "contact-provider",
+    });
+    vi.mocked(prisma.member.findUnique).mockResolvedValue({
+      ...baseMember,
+      xeroContactId: "contact-linked",
+      subscriptions: [],
+      familyGroupMemberships: [],
+    } as any);
+    vi.mocked(prisma.booking.findMany).mockResolvedValue([]);
+    vi.mocked(prisma.auditLog.findMany).mockResolvedValue([]);
+    vi.mocked(prisma.booking.aggregate).mockResolvedValue({
+      _sum: { finalPriceCents: null }, _count: 0, _max: { checkOut: null },
+    } as any);
+
+    const res = await getMemberDetail(
+      new NextRequest("http://localhost/api/admin/members/m1"),
+      { params: Promise.resolve({ id: "m1" }) },
+    );
+
+    expect(res.status).toBe(200);
+    await expect(res.json()).resolves.toMatchObject({
+      xeroContactId: "contact-linked",
+      // The old signal is still silent for a linked member...
+      xeroContactCreateRecoveryState: null,
+      xeroContactCreateRecoveryPending: false,
+      // ...and the refusal is no longer invisible.
+      xeroContactLifecycleBlocker: {
+        operationId: "xero-op-open",
+        operationType: "CREATE",
+        status: "FAILED",
+        providerContactId: "contact-provider",
+      },
+    });
+    expect(
+      recoveryMocks.findMemberContactChangeMergeBlocker,
+    ).toHaveBeenCalledWith("m1");
   });
 
   it("GET preserves ambiguous stale-reset contact-create recovery without a provider claim", async () => {

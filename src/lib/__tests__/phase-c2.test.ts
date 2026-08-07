@@ -24,6 +24,10 @@ findUnique: vi.fn(),
   },
   xeroSyncOperation: {
     findFirst: vi.fn().mockResolvedValue(null),
+    // #2623 T7: the manual-link transaction closes any provider-created
+    // recovery whose own contact is the one it just linked.
+    findMany: vi.fn().mockResolvedValue([]),
+    updateMany: vi.fn().mockResolvedValue({ count: 0 }),
   },
 };
 
