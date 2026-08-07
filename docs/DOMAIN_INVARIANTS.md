@@ -354,15 +354,21 @@ Future reviews and issues should cite this file when proposing changes.
 ### The stay boundary: midday NZ to midday NZ (normative)
 
 This subsection is the normative stay-boundary invariant (epic #2629). It is
-stated once, here; every other sentence in this repository that touches stay
-boundaries refers to it rather than restating it, and every future change in
-this area is measured against it. All times in this invariant are New Zealand
-time (Pacific/Auckland). UTC appears only in the storage-encoding note at the
-end — never in a rule.
+stated once, here; write any new stay-boundary sentence elsewhere as a
+reference to this subsection rather than a restatement, fold restatements you
+find into references as their files are touched, and measure every future
+change in this area against it. All
+times in this invariant are New Zealand time (Pacific/Auckland). UTC is never
+a semantic boundary in this subsection; it appears only as the storage
+encoding described at the end (and once as a code-level aside on weekday
+derivation).
 
 - **Lodge night.** Night N is the period from midday NZ on date N to midday NZ
   on date N+1. The boundary is fixed at midday NZ by definition (D-M3): there
-  is no setting, and no time-of-day data exists anywhere in the model.
+  is no configurable boundary, and no time-of-day value participates in the
+  stay boundary or in presence. (The kiosk arrive/depart stamps
+  `BookingGuest.arrivedAt` / `departedAt` are action audit timestamps, never
+  presence inputs.)
 - **Stay.** A stay is the half-open date range `[checkIn, checkOut)` expanded
   to nights — the motel rule: a guest is in the lodge from midday NZ on their
   check-in date to midday NZ on their check-out date. The check-out date is a
@@ -383,13 +389,30 @@ end — never in a rule.
   `src/lib/booking-guest-stay-ranges.ts`. The **night model**
   (`isGuestActiveOnNight` / `getActiveGuestsForNight`) is canonical for
   capacity, availability, pricing, bed allocation, whole-lodge and
-  member-night logic; under it the departure date is never occupied. The
-  **operational-day model** is canonical for rosters, the kiosk, print
-  manifests and day statuses. Ownership is strict in both directions: a roster
-  caller must not reach the night helpers, and a capacity caller must not
-  reach the operational-day ones. (The named operational-day helpers ship with
-  #2622; until that lands, this paragraph describes the rule and the helper
-  names are pending that issue.)
+  member-night logic — every per-night resource question; under it the
+  departure date is never occupied. The **operational-day model** is canonical
+  for chore-roster eligibility, the kiosk, print manifests and day statuses —
+  every human-facing "who is here today" question. Ownership is strict in both
+  directions: an operational-day caller must not reach the night helpers, and
+  a capacity caller must not reach the operational-day ones.
+  **Status of the code against this rule:** the shipped approximation is
+  `getLodgeVisibleGuestsForDate(..., { includeDepartureDate: true })`, whose
+  sparse-stay branch is final-morning-only (nights {5, 8} give {5, 8, 9},
+  not the {5, 6, 8, 9} above) and whose option flag is a call-site fork this
+  invariant retires; several roster and status surfaces still call the night
+  helpers or private near-copies of them, and some derive arriving/departing
+  labels from the envelope rather than the night set. That is the defect this
+  epic fixes, not a licence: #2622 ships the named operational-day helpers
+  implementing the pure rule and converts roster generation, validation and
+  cleanup together; #2631 converts the remaining read surfaces. Until those
+  land, this bullet is the target rule, not a description of `main`, and no
+  surface may be "aligned" ahead of those issues.
+- **The lobby wall is deliberately mixed and stays fenced** (issue #58): its
+  guest-name privacy gate (sole-occupancy detection) uses NIGHT counts while
+  its visibility rows are checkout-inclusive. It keeps its own code path
+  (`src/lib/lodge-display-state.ts`) and is never unified onto either helper
+  family — widening its night counts would put guest names on an
+  unauthenticated public screen during back-to-back handovers.
 - **A member departing lodge A and arriving at lodge B on the same date is
   legal**: the two presence windows abut at midday, so the member-night
   conflict rule (below) is satisfied by construction.
@@ -398,32 +421,40 @@ end — never in a rule.
   booking-creating route refuses it — and must stay that way rather than
   becoming an accidental day-visit feature.
 - **Deliberately outside this invariant:**
-  - `daysUntilDate` and the refund tiers
-    (`src/lib/policies/cancellation.ts:140-158`) measure time *until* a stay
+  - `daysUntilDate` (`src/lib/policies/cancellation.ts:140-158`) and the
+    refund tiers it feeds (`getRefundTier` and the refund calculators,
+    `src/lib/policies/cancellation.ts:13-90`) measure time *until* a stay
     against an NZ-local-midnight countdown boundary, not nights within it.
     They are not governed by the midday rule; any change there is a money
     change requiring its own issue, its own owner decision, and per-tier
     evidence — never a side effect of work in this area.
   - The completion cron / unpaid-finished-stays pair keeps its dual check-out
-    boundary (#2029, below). Both sides already conform to the midday rule;
-    neither is a presence definition.
+    boundary (#2029, below). Both operate on NZ date-only lodge nights and
+    neither is a presence definition; their `<` / `<=` split brackets the
+    check-out day deliberately and must not be "aligned" onto one boundary.
   - The custodian bed hold uses deliberate inclusive day semantics (its own
     section below): an assignment's `endDate` is a covered day, not a
     departure morning.
   - The kiosk depart lookup matches only the exact departure date — a status
     action window, not a presence rule.
+  - The group-join window closes once the stay's check-out date is reached
+    (`hasGroupStayFullyEnded`, `src/lib/group-booking.ts:469-476`) — an
+    action window on dates, settled by its own owner decision, not a presence
+    rule.
   - Minimum-stay derives its weekday as the NZ weekday: `night.getUTCDay()`
     (`src/lib/policies/minimum-stay.ts:56`) is correct precisely because
     nights encode NZ calendar dates (see the storage note). Any future true
     time-of-day instant in this area would silently shift that weekday for
     hosts behind UTC.
 - **Storage encoding, not semantics.** A stored lodge night is an NZ calendar
-  date. The `@db.Date` columns pin that date to UTC midnight internally — the
-  instant that renders as club midday, so a CI runner in UTC and a club in NZ
-  agree on the calendar day (`docs/TESTING.md` pins the frozen test clock to
-  exactly this instant as evidence). The UTC-midnight pinning is an internal
-  encoding of the NZ date and nothing more; NZ time is the semantic truth, and
-  no rule may be derived from the UTC reading of these values.
+  date. The `@db.Date` columns pin that date to UTC midnight internally — an
+  instant that renders as club midday in NZST (1pm during NZ daylight saving),
+  either way the same NZ calendar day in every zone, so a CI runner in UTC and
+  a club in NZ agree on the date ([`docs/TESTING.md`](TESTING.md) pins the
+  frozen test clock to an NZST instance of exactly this instant as evidence).
+  The UTC-midnight pinning is an internal encoding of the NZ date and nothing
+  more: it is NOT the midday boundary instant, NZ time is the semantic truth,
+  and no rule may be derived from the UTC reading of these values.
 
 ### Date handling rules
 
@@ -525,6 +556,8 @@ end — never in a rule.
   exact integer cents.
   Occupancy is the deliberate exception within the page: it stays limited to
   PAID/COMPLETED and continues to exclude custodian occupancy (#2286).
+### Capacity and allocation
+
 - Capacity is per lodge. A booking belongs to exactly one lodge
   (`Booking.lodgeId`); capacity is "beds available on date D at lodge L", and
   no code path may sum beds across lodges into a single club-wide number. Two
@@ -782,10 +815,9 @@ end — never in a rule.
   identical booking made directly on the offer day pays the same. If repricing
   fails, the offer proceeds at the stored snapshot rather than being blocked.
 - A linked `Member` may be present on only one live booking per lodge night
-  (night as defined by the stay-boundary invariant, so a same-date departure
-  from one lodge and arrival at another never conflict — the presence windows
-  abut at midday). This person-night guard is separate from bed capacity: it
-  checks draft,
+  (night as defined by the stay-boundary invariant above, which also makes a
+  same-date lodge-to-lodge move legal by construction). This person-night
+  guard is separate from bed capacity: it checks draft,
   pending, confirmed/paid/completed, waitlist, offered, and admin-review
   bookings, but ignores cancelled, bumped, deleted, and expired draft rows.
 - A member put on somebody ELSE's booking may take their own place off it, and
@@ -2494,7 +2526,8 @@ future bookings edit freely, an in-progress stay (checked in, not yet checked
 out) may only extend its **future** nights with the check-in locked, and a
 fully-past stay is not self-editable at all. (The booking stays editable
 through its whole check-out day — an edit-window rule, not a presence rule;
-the stay-boundary invariant in "Booking Dates And Capacity" is unaffected.) On an in-progress extension the
+the stay-boundary invariant in "Booking Dates And Capacity" is unaffected.)
+On an in-progress extension the
 minimum-stay policy is evaluated over the **whole contiguous stay**, not the
 added nights alone (#2124): because the original check-in is kept fixed, the
 modify-quote preview runs `validateMinimumStay` across `[checkIn, newCheckOut]`
@@ -4745,8 +4778,10 @@ Three side doors into the finished-unpaid state are closed at the door
   on the card additional-payment flow rather than blocked; the uncollected
   delta counts on the second queue above.
 - **Stale group join** (path 3, decision A — exclude): a group whose
-  organiser booking's stay has fully ended (`checkOut ≤ NZ today`, the same
-  cutoff as the queues — a stay checking out today has fully ended) leaves
+  organiser booking's last night is over (`checkOut ≤ NZ today`, the same
+  cutoff as the queues — a stay checking out today accepts no new joiners;
+  an action window on dates, named as such by the stay-boundary invariant in
+  "Booking Dates And Capacity", not a presence rule) leaves
   the joinable set entirely: `hasGroupStayFullyEnded` gates the public
   summary's `isJoinable`, the member join (409), the non-member join request
   (409 `GROUP_STAY_ENDED`), and the emailed-token verify (`not_joinable`),
