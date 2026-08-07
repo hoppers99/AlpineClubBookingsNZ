@@ -1292,8 +1292,8 @@ That is the #2597 order with exactly one tier inserted, at the top. Nothing
 already in the sequence moved, and no new key is taken late.
 
 The lodge tier MUST be taken **before** the member-lifecycle pair, never after.
-Merge's own lock set is member-scoped and takes no lodge key today, so bolting
-the sweep on at the point of use — after the relation moves, with the
+Merge's own lock set was member-scoped and took no lodge key before this, so
+bolting the sweep on at the point of use — after the relation moves, with the
 member-lifecycle keys already held — would acquire a lodge key *after* a member
 key and invert the fixed **global → lodge → member** order this document opens
 with, against every ordinary bed-allocation writer that takes global → lodge and
