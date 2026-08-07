@@ -257,6 +257,9 @@ let enqueueActiveHostingIncidentPolicyReconciliation: (typeof import("@/lib/adul
 let HOSTING_POLICY_RECONCILIATION_SELECT: (typeof import("@/lib/adult-member-hosting-policy-reconciliation"))["HOSTING_POLICY_RECONCILIATION_SELECT"];
 let reserveMemberContactCreateOperation: (typeof import("@/lib/xero-contacts"))["reserveMemberContactCreateOperation"];
 let lockMemberForManualXeroContactLink: (typeof import("@/lib/xero-contact-create-recovery"))["lockMemberForManualXeroContactLink"];
+let lockMemberForAccountDeletionXeroFence: (typeof import("@/lib/xero-contact-create-recovery"))["lockMemberForAccountDeletionXeroFence"];
+let DELETED_ACCOUNT_PASSWORD_HASH: (typeof import("@/lib/xero-contact-create-recovery"))["DELETED_ACCOUNT_PASSWORD_HASH"];
+let commitManualXeroContactLink: (typeof import("@/lib/xero-manual-contact-link"))["commitManualXeroContactLink"];
 
 (RUN ? describe : describe.skip)(
   "hosting queue/member merge interleavings — real PostgreSQL (#2597)",
@@ -285,6 +288,9 @@ let lockMemberForManualXeroContactLink: (typeof import("@/lib/xero-contact-creat
         },
       });
       await primary.xeroSyncOperation.deleteMany({
+        where: { localModel: "Member", localId: { in: MEMBER_IDS } },
+      });
+      await primary.xeroObjectLink.deleteMany({
         where: { localModel: "Member", localId: { in: MEMBER_IDS } },
       });
       await primary.bookingGuest.deleteMany({
@@ -500,6 +506,22 @@ let lockMemberForManualXeroContactLink: (typeof import("@/lib/xero-contact-creat
       return queued;
     }
 
+    async function applyXeroDeletionFence(
+      tx: Prisma.TransactionClient,
+      memberId: string,
+    ): Promise<void> {
+      await lockMemberForAccountDeletionXeroFence(tx, memberId);
+      await tx.member.update({
+        where: { id: memberId },
+        data: {
+          email: `deleted-${memberId}@deleted.invalid`,
+          passwordHash: DELETED_ACCOUNT_PASSWORD_HASH,
+          active: false,
+          xeroContactId: null,
+        },
+      });
+    }
+
     async function applyStandingDeactivationEffect(
       tx: Prisma.TransactionClient,
       afterStandingFanout?: () => Promise<void>,
@@ -585,6 +607,7 @@ let lockMemberForManualXeroContactLink: (typeof import("@/lib/xero-contact-creat
         capacity,
         xeroContacts,
         xeroContactCreateRecovery,
+        xeroManualContactLink,
       ] = await Promise.all([
         import("@/lib/adult-member-hosting-queue-participants"),
         import("@/lib/adult-member-hosting-review"),
@@ -598,6 +621,7 @@ let lockMemberForManualXeroContactLink: (typeof import("@/lib/xero-contact-creat
         import("@/lib/capacity"),
         import("@/lib/xero-contacts"),
         import("@/lib/xero-contact-create-recovery"),
+        import("@/lib/xero-manual-contact-link"),
       ]);
       acquireHostingCoverageQueueParticipantProof =
         participants.acquireHostingCoverageQueueParticipantProof;
@@ -634,6 +658,12 @@ let lockMemberForManualXeroContactLink: (typeof import("@/lib/xero-contact-creat
         xeroContacts.reserveMemberContactCreateOperation;
       lockMemberForManualXeroContactLink =
         xeroContactCreateRecovery.lockMemberForManualXeroContactLink;
+      lockMemberForAccountDeletionXeroFence =
+        xeroContactCreateRecovery.lockMemberForAccountDeletionXeroFence;
+      DELETED_ACCOUNT_PASSWORD_HASH =
+        xeroContactCreateRecovery.DELETED_ACCOUNT_PASSWORD_HASH;
+      commitManualXeroContactLink =
+        xeroManualContactLink.commitManualXeroContactLink;
 
       const [
         { PrismaClient: SeparatePrismaClient },
@@ -1245,6 +1275,302 @@ let lockMemberForManualXeroContactLink: (typeof import("@/lib/xero-contact-creat
           select: { xeroContactId: true },
         }),
       ).resolves.toEqual({ xeroContactId: "contact-manual-winner" });
+    });
+
+    it("contact-create reservation wins before account deletion and blocks anonymisation", async () => {
+      const correlationKey = "race-2597-contact-create-before-deletion";
+      const reservation = await reserveMemberContactCreateOperation(
+        IDS.target,
+        {
+          direction: "OUTBOUND",
+          entityType: "CONTACT",
+          operationType: "CREATE",
+          localModel: "Member",
+          localId: IDS.target,
+          idempotencyKey: correlationKey,
+          correlationKey,
+          requestPayload: { contacts: [{ name: "Create Before Delete" }] },
+          createdByMemberId: IDS.actor,
+        },
+        ordinary,
+      );
+
+      await expect(
+        mergeA.$transaction((tx) => applyXeroDeletionFence(tx, IDS.target)),
+      ).rejects.toMatchObject({
+        code: "XERO_CONTACT_CREATE_BLOCKS_DELETION",
+        statusCode: 409,
+      });
+      await expect(
+        primary.member.findUniqueOrThrow({
+          where: { id: IDS.target },
+          select: { active: true, email: true, passwordHash: true },
+        }),
+      ).resolves.toEqual({
+        active: true,
+        email: `${IDS.target}@example.invalid`,
+        passwordHash: "not-a-real-password",
+      });
+      await expect(
+        primary.xeroSyncOperation.count({
+          where: { id: reservation.id, status: "RUNNING" },
+        }),
+      ).resolves.toBe(1);
+    });
+
+    it("account deletion wins the Member row and a waiting contact-create refuses without a reservation", async () => {
+      const pause: ParticipantPause = {
+        position: "after",
+        reached: deferred(),
+        release: deferred(),
+      };
+      const deletionDb = createParticipantPauseClient(mergeA, pause);
+      const deletion = deletionDb.$transaction((tx) =>
+        applyXeroDeletionFence(tx, IDS.target),
+      );
+      await waitForPauseOrFail(pause, deletion);
+
+      const correlationKey = "race-2597-deletion-before-contact-create";
+      const reservation = reserveMemberContactCreateOperation(
+        IDS.target,
+        {
+          direction: "OUTBOUND",
+          entityType: "CONTACT",
+          operationType: "CREATE",
+          localModel: "Member",
+          localId: IDS.target,
+          idempotencyKey: correlationKey,
+          correlationKey,
+          requestPayload: { contacts: [{ name: "Delete Before Create" }] },
+          createdByMemberId: IDS.actor,
+        },
+        ordinary,
+      ).then(
+        (value) => ({ ok: true as const, value }),
+        (error: unknown) => ({ ok: false as const, error }),
+      );
+      try {
+        await waitForClientToBlock("race-2597-ordinary");
+      } finally {
+        pause.release.resolve();
+      }
+
+      await expect(deletion).resolves.toBeUndefined();
+      const reservationOutcome = await reservation;
+      expect(reservationOutcome.ok).toBe(false);
+      if (reservationOutcome.ok) {
+        throw new Error("Contact-create reservation unexpectedly beat deletion.");
+      }
+      expect(reservationOutcome.error).toMatchObject({
+        code: "XERO_MEMBER_UNAVAILABLE",
+        statusCode: 409,
+      });
+      await expect(
+        primary.xeroSyncOperation.count({ where: { correlationKey } }),
+      ).resolves.toBe(0);
+      await expect(
+        primary.member.findUniqueOrThrow({
+          where: { id: IDS.target },
+          select: { active: true, passwordHash: true },
+        }),
+      ).resolves.toEqual({
+        active: false,
+        passwordHash: DELETED_ACCOUNT_PASSWORD_HASH,
+      });
+    });
+
+    it("manual link wins before account deletion, which waits and then clears the local pointer", async () => {
+      const pause: ParticipantPause = {
+        position: "after",
+        reached: deferred(),
+        release: deferred(),
+      };
+      const linkDb = createParticipantPauseClient(mergeA, pause);
+      const manualLink = commitManualXeroContactLink(
+        {
+          memberId: IDS.target,
+          xeroContactId: "contact-manual-before-deletion",
+          contactName: "Manual Before Deletion",
+        },
+        linkDb,
+      );
+      await waitForPauseOrFail(pause, manualLink);
+
+      const deletion = ordinary.$transaction((tx) =>
+        applyXeroDeletionFence(tx, IDS.target),
+      );
+      try {
+        await waitForClientToBlock("race-2597-ordinary");
+      } finally {
+        pause.release.resolve();
+      }
+
+      await expect(manualLink).resolves.toBeUndefined();
+      await expect(deletion).resolves.toBeUndefined();
+      await expect(
+        primary.member.findUniqueOrThrow({
+          where: { id: IDS.target },
+          select: { active: true, passwordHash: true, xeroContactId: true },
+        }),
+      ).resolves.toEqual({
+        active: false,
+        passwordHash: DELETED_ACCOUNT_PASSWORD_HASH,
+        xeroContactId: null,
+      });
+    });
+
+    it("account deletion wins before manual link, which refuses without writing either local link", async () => {
+      const pause: ParticipantPause = {
+        position: "after",
+        reached: deferred(),
+        release: deferred(),
+      };
+      const deletionDb = createParticipantPauseClient(mergeA, pause);
+      const deletion = deletionDb.$transaction((tx) =>
+        applyXeroDeletionFence(tx, IDS.target),
+      );
+      await waitForPauseOrFail(pause, deletion);
+
+      const manualLink = commitManualXeroContactLink(
+        {
+          memberId: IDS.target,
+          xeroContactId: "contact-manual-after-deletion",
+          contactName: "Manual After Deletion",
+        },
+        ordinary,
+      ).then(
+        () => ({ ok: true as const }),
+        (error: unknown) => ({ ok: false as const, error }),
+      );
+      try {
+        await waitForClientToBlock("race-2597-ordinary");
+      } finally {
+        pause.release.resolve();
+      }
+
+      await expect(deletion).resolves.toBeUndefined();
+      const linkOutcome = await manualLink;
+      expect(linkOutcome.ok).toBe(false);
+      if (linkOutcome.ok) {
+        throw new Error("Manual link unexpectedly committed after deletion.");
+      }
+      expect(linkOutcome.error).toMatchObject({
+        code: "XERO_MEMBER_UNAVAILABLE",
+        statusCode: 409,
+      });
+      await expect(
+        primary.xeroObjectLink.count({
+          where: { localModel: "Member", localId: IDS.target },
+        }),
+      ).resolves.toBe(0);
+      await expect(
+        primary.member.findUniqueOrThrow({
+          where: { id: IDS.target },
+          select: { xeroContactId: true },
+        }),
+      ).resolves.toEqual({ xeroContactId: null });
+    });
+
+    it("manual link wins before merge and merge deactivates its contact ledger without dangling it", async () => {
+      const preview = await previewMerge();
+      const pause: ParticipantPause = {
+        position: "after",
+        reached: deferred(),
+        release: deferred(),
+      };
+      const linkDb = createParticipantPauseClient(mergeA, pause);
+      const manualLink = commitManualXeroContactLink(
+        {
+          memberId: IDS.loser,
+          xeroContactId: "contact-manual-before-merge",
+          contactName: "Manual Before Merge",
+        },
+        linkDb,
+      );
+      await waitForPauseOrFail(pause, manualLink);
+
+      const merge = executeMemberMerge({
+        masterId: IDS.master,
+        loserId: IDS.loser,
+        actorMemberId: IDS.actor,
+        previewToken: preview.previewToken,
+        confirmationText: preview.confirmationPhrase,
+        db: ordinary,
+      }).then(
+        (value) => ({ ok: true as const, value }),
+        (error: unknown) => ({ ok: false as const, error }),
+      );
+      try {
+        await waitForClientToBlock("race-2597-ordinary");
+      } finally {
+        pause.release.resolve();
+      }
+
+      await expect(manualLink).resolves.toBeUndefined();
+      const mergeOutcome = await merge;
+      expect(mergeOutcome.ok).toBe(true);
+      if (!mergeOutcome.ok) throw mergeOutcome.error;
+      await expect(
+        primary.member.findUnique({
+          where: { id: IDS.loser },
+        }),
+      ).resolves.toBeNull();
+      await expect(
+        primary.xeroObjectLink.count({
+          where: {
+            localModel: "Member",
+            localId: IDS.loser,
+            xeroObjectType: "CONTACT",
+            xeroObjectId: "contact-manual-before-merge",
+            role: "CONTACT",
+            active: true,
+          },
+        }),
+      ).resolves.toBe(0);
+      await expect(
+        primary.xeroObjectLink.count({
+          where: {
+            localModel: "Member",
+            localId: IDS.loser,
+            xeroObjectType: "CONTACT",
+            xeroObjectId: "contact-manual-before-merge",
+            role: "CONTACT",
+            active: false,
+          },
+        }),
+      ).resolves.toBe(1);
+    });
+
+    it("merge wins before manual link, which refuses without leaving a loser ledger row", async () => {
+      const { operation, pause } = await startPausedMerge("after");
+      const manualLink = commitManualXeroContactLink(
+        {
+          memberId: IDS.loser,
+          xeroContactId: "contact-manual-after-merge",
+          contactName: "Manual After Merge",
+        },
+        ordinary,
+      ).then(
+        () => ({ ok: true as const }),
+        (error: unknown) => ({ ok: false as const, error }),
+      );
+      try {
+        await waitForClientToBlock("race-2597-ordinary");
+      } finally {
+        pause.release.resolve();
+      }
+
+      await expect(operation).resolves.toMatchObject({ loserId: IDS.loser });
+      const linkOutcome = await manualLink;
+      expect(linkOutcome.ok).toBe(false);
+      await expect(
+        primary.member.findUnique({ where: { id: IDS.loser } }),
+      ).resolves.toBeNull();
+      await expect(
+        primary.xeroObjectLink.count({
+          where: { localModel: "Member", localId: IDS.loser },
+        }),
+      ).resolves.toBe(0);
     });
 
     it("refuses and rolls back the full merge when a loser-linked guest commits after relation moves but before participant locks", async () => {
