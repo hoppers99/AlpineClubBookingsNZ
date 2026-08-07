@@ -26,6 +26,7 @@ import {
   createdContactRecovery,
   xeroPartialSuccessBody,
 } from "@/lib/xero-partial-success";
+import { XeroContactAlreadyLinkedError } from "@/lib/xero-contact-create-recovery";
 
 const pushSchema = z.object({
   createEntranceFeeInvoice: z.boolean().optional().default(false),
@@ -327,6 +328,9 @@ export async function POST(
         },
         { status: 422 }
       );
+    }
+    if (err instanceof XeroContactAlreadyLinkedError) {
+      return NextResponse.json({ error: err.message }, { status: err.statusCode });
     }
 
     const xeroError = getXeroApiErrorInfo(err, "Failed to create Xero contact");

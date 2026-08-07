@@ -6,12 +6,41 @@ type ContactCreateRecoveryDb = Pick<
   "xeroSyncOperation"
 >;
 
+type ManualContactLinkFenceDb = Pick<
+  Prisma.TransactionClient,
+  "$executeRaw" | "member" | "xeroSyncOperation"
+>;
+
 export const XERO_CONTACT_CREATE_LOCAL_LINK_FAILURE_PHASE =
   "local_link_after_xero_resolution";
 export const XERO_CONTACT_CREATE_PROVIDER_CREATED_PENDING_LINK_PHASE =
   "provider_contact_created_local_link_pending";
 export const XERO_CONTACT_CREATE_STALE_RUNNING_ERROR_CODE =
   "ORPHANED_STALE_RUNNING";
+export const XERO_CONTACT_CREATE_IN_PROGRESS_CODE =
+  "XERO_CONTACT_CREATE_IN_PROGRESS";
+export const XERO_CONTACT_CREATE_IN_PROGRESS_MESSAGE =
+  "A Xero contact create is still in progress or awaiting recovery. Refresh this member before taking another Xero action.";
+
+export class XeroContactCreateInProgressError extends Error {
+  readonly code = XERO_CONTACT_CREATE_IN_PROGRESS_CODE;
+  readonly statusCode = 409;
+
+  constructor() {
+    super(XERO_CONTACT_CREATE_IN_PROGRESS_MESSAGE);
+    this.name = "XeroContactCreateInProgressError";
+  }
+}
+
+export class XeroContactAlreadyLinkedError extends Error {
+  readonly code = "XERO_CONTACT_ALREADY_LINKED";
+  readonly statusCode = 409;
+
+  constructor() {
+    super("Member already linked to Xero");
+    this.name = "XeroContactAlreadyLinkedError";
+  }
+}
 
 export type MemberContactCreateRecoveryState =
   | "CREATE_IN_PROGRESS"
@@ -54,6 +83,46 @@ export function ambiguousMemberContactCreateReservationWhere(
       },
     ],
   };
+}
+
+/**
+ * Fence a manual Xero link against an ambiguous provider create.
+ *
+ * Provider contact verification happens before the caller's short transaction.
+ * Inside it, this exact target Member row is the first lock. The active create
+ * reservation is then re-read under that lock, so either the reservation wins
+ * and manual linking refuses, or the manual link commits before a later create
+ * reservation can re-read the authoritative `xeroContactId`.
+ */
+export async function lockMemberForManualXeroContactLink(
+  db: ManualContactLinkFenceDb,
+  memberId: string,
+): Promise<void> {
+  const locked = await db.$executeRaw`
+    SELECT 1
+    FROM "Member"
+    WHERE "id" = ${memberId}
+    FOR UPDATE
+  `;
+  if (locked !== 1) {
+    throw new Error(`Member not found: ${memberId}`);
+  }
+
+  const member = await db.member.findUnique({
+    where: { id: memberId },
+    select: { id: true },
+  });
+  if (!member) {
+    throw new Error(`Member not found: ${memberId}`);
+  }
+
+  const activeCreate = await db.xeroSyncOperation.findFirst({
+    where: ambiguousMemberContactCreateReservationWhere(memberId),
+    select: { id: true },
+  });
+  if (activeCreate) {
+    throw new XeroContactCreateInProgressError();
+  }
 }
 
 export function unresolvedMemberContactCreateRecoveryWhere(

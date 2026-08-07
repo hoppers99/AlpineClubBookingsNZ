@@ -22,6 +22,11 @@ import {
   linkedContactRecovery,
   xeroPartialSuccessBody,
 } from "@/lib/xero-partial-success";
+import {
+  lockMemberForManualXeroContactLink,
+  XERO_CONTACT_CREATE_IN_PROGRESS_CODE,
+  XeroContactCreateInProgressError,
+} from "@/lib/xero-contact-create-recovery";
 
 const linkSchema = z.object({
   xeroContactId: z.string().min(1),
@@ -95,9 +100,12 @@ export async function POST(
 
     await refreshXeroContactCachesFromContact(contact);
 
-    await prisma.member.update({
-      where: { id },
-      data: { xeroContactId: parsed.data.xeroContactId },
+    await prisma.$transaction(async (tx) => {
+      await lockMemberForManualXeroContactLink(tx, id);
+      await tx.member.update({
+        where: { id },
+        data: { xeroContactId: parsed.data.xeroContactId },
+      });
     });
     memberLinkCommitted = true;
     subscriptionRefreshPending = true;
@@ -198,6 +206,12 @@ export async function POST(
       ...(warning ? { warning } : {}),
     });
   } catch (err) {
+    if (err instanceof XeroContactCreateInProgressError) {
+      return NextResponse.json(
+        { error: err.message, code: XERO_CONTACT_CREATE_IN_PROGRESS_CODE },
+        { status: err.statusCode },
+      );
+    }
     const recovery = memberLinkCommitted
       ? linkedContactRecovery(
           parsed.data.xeroContactId,

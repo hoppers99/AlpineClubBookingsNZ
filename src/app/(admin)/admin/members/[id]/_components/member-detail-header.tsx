@@ -43,6 +43,7 @@ interface MemberDetailHeaderProps {
   xeroPushing: boolean;
   xeroUnlinking: boolean;
   xeroCreateSuppressed?: boolean;
+  xeroWritesSuppressed?: boolean;
   /**
    * Add Dependent writes the membership-area members route (#1997).
    * Tri-state (#2065): `undefined` while the client session resolves — the
@@ -72,6 +73,7 @@ export function MemberDetailHeader({
   xeroPushing,
   xeroUnlinking,
   xeroCreateSuppressed = false,
+  xeroWritesSuppressed = false,
   canEditMembership,
   canEditFinance,
   onOpenDependentDialog,
@@ -201,7 +203,7 @@ export function MemberDetailHeader({
                     View in Xero
                   </Button>
                 </a>
-                <DropdownMenu>
+                {!xeroWritesSuppressed && <DropdownMenu>
                   <DropdownMenuTrigger asChild>
                     <Button
                       variant="outline"
@@ -226,20 +228,22 @@ export function MemberDetailHeader({
                       {xeroUnlinking ? "Unlinking..." : "Unlink Xero Contact"}
                     </DropdownMenuItem>
                   </DropdownMenuContent>
-                </DropdownMenu>
+                </DropdownMenu>}
               </>
             ) : (
               <>
-                <ViewOnlyActionButton
-                  canEdit={canEditFinance}
-                  variant="outline"
-                  size="sm"
-                  onClick={onOpenLinkXero}
-                >
-                  <Link2 className="h-4 w-4 mr-1" />
-                  Link to Xero
-                </ViewOnlyActionButton>
-                {!xeroCreateSuppressed && (
+                {!xeroWritesSuppressed && (
+                  <ViewOnlyActionButton
+                    canEdit={canEditFinance}
+                    variant="outline"
+                    size="sm"
+                    onClick={onOpenLinkXero}
+                  >
+                    <Link2 className="h-4 w-4 mr-1" />
+                    Link to Xero
+                  </ViewOnlyActionButton>
+                )}
+                {!xeroWritesSuppressed && !xeroCreateSuppressed && (
                   <DropdownMenu>
                     <DropdownMenuTrigger asChild>
                       <Button

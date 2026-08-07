@@ -341,6 +341,11 @@ export default function MemberDetailPage({
     (serverXeroContactCreateRecoveryState !== null ||
       (xeroRecoveryMemberId === id &&
         xeroCreateRecoveryDisplayState !== null));
+  const xeroWritesSuppressed =
+    !member?.xeroContactId &&
+    (serverXeroContactCreateRecoveryState === "CREATE_IN_PROGRESS" ||
+      (xeroRecoveryMemberId === id &&
+        xeroCreateRecoveryDisplayState === "CREATE_IN_PROGRESS"));
 
   // Dependent dialog state
   const {
@@ -495,6 +500,7 @@ export default function MemberDetailPage({
     setXeroError,
     onPartialSuccess: recoverXeroPartialSuccess,
     xeroCreateSuppressed,
+    xeroWritesSuppressed,
   });
 
   // Per-group inline edit state: each group unlocks and saves only its own
@@ -793,6 +799,7 @@ export default function MemberDetailPage({
         xeroPushing={xeroPushing}
         xeroUnlinking={xeroUnlinking}
         xeroCreateSuppressed={xeroCreateSuppressed}
+        xeroWritesSuppressed={xeroWritesSuppressed}
         canEditMembership={canEditMembership}
         canEditFinance={canEditFinance}
         onOpenDependentDialog={openDependentDialog}

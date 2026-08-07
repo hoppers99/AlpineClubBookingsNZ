@@ -37,7 +37,10 @@ import {
 } from "./xero-api-client";
 import { syncManagedXeroContactGroupForMember } from "./xero-contact-groups";
 import { isPlaceholderContactEmail } from "@/lib/placeholder-contact-email";
-import { recordProviderCreatedContactPendingLocalLink } from "@/lib/xero-contact-create-recovery";
+import {
+  recordProviderCreatedContactPendingLocalLink,
+  XeroContactAlreadyLinkedError,
+} from "@/lib/xero-contact-create-recovery";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -85,10 +88,13 @@ export async function reserveMemberContactCreateOperation(
     `;
     const locked = await tx.member.findUnique({
       where: { id: memberId },
-      select: { id: true },
+      select: { id: true, xeroContactId: true },
     });
     if (!locked) {
       throw new Error(`Member not found: ${memberId}`);
+    }
+    if (locked.xeroContactId) {
+      throw new XeroContactAlreadyLinkedError();
     }
     return startXeroSyncOperation({ ...input, store: tx });
   });
