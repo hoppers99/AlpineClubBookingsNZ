@@ -161,21 +161,36 @@ describe("GET /api/lodge/week — the changeover morning (#2631)", () => {
 
   it("a sparse stay leaves its gap day empty at every count on the strip", async () => {
     // THE NIGHTS REGRESSION TRAP. Nights 2 and 5 only: present 2, 3, 5, 6.
-    mockPrisma.booking.findMany.mockResolvedValue([
-      {
-        id: "booking-1",
-        checkIn: day("2026-07-02"),
-        checkOut: day("2026-07-06"),
-        guests: [
-          {
-            stayStart: day("2026-07-02"),
-            stayEnd: day("2026-07-06"),
-            ageTier: "ADULT",
-            nights: [{ stayDate: day("2026-07-02") }, { stayDate: day("2026-07-05") }],
-          },
-        ],
-      },
-    ]);
+    // The mock HONOURS the select, the way Prisma does — drop the `nights`
+    // load from the route and the rows arrive without night data, the envelope
+    // 2→6 takes over and the gap day fills in. A mock that always returned the
+    // nights would pass with the regression in place.
+    mockPrisma.booking.findMany.mockImplementation(async (args: never) => {
+      const { select } = args as unknown as {
+        select?: { guests?: { select?: { nights?: unknown } } };
+      };
+      const guest = {
+        stayStart: day("2026-07-02"),
+        stayEnd: day("2026-07-06"),
+        ageTier: "ADULT",
+        ...(select?.guests?.select?.nights
+          ? {
+              nights: [
+                { stayDate: day("2026-07-02") },
+                { stayDate: day("2026-07-05") },
+              ],
+            }
+          : {}),
+      };
+      return [
+        {
+          id: "booking-1",
+          checkIn: day("2026-07-02"),
+          checkOut: day("2026-07-06"),
+          guests: [guest],
+        },
+      ];
+    });
 
     const days = await week();
     expect(days.map((entry) => entry.guestCount)).toEqual([0, 1, 1, 0, 1, 1, 0]);

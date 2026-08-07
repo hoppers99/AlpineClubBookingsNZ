@@ -572,16 +572,27 @@ describe("hut-leader roster wizard reaches the generate step (#2622)", () => {
       vi.clearAllMocks();
       lodgeAuthMocks.checkLodgeAuth.mockResolvedValue({ tier: "hut-leader" });
       lodgeAuthMocks.resolveKioskLodgeId.mockResolvedValue("lodge-1");
-      mockPrisma.booking.findMany.mockResolvedValue([
-        {
-          id: "booking-1",
-          checkIn: day("2026-07-11"),
-          checkOut: day("2026-07-15"),
-          expectedArrivalTime: null,
-          member: { firstName: "Bev", lastName: "Booker" },
-          guests: [sparseGuest],
-        },
-      ]);
+      // The mock HONOURS the include, the way Prisma does: drop the `nights`
+      // load from the route and the rows come back without night data, the
+      // envelope takes over and the gap day fills in. A mock that always
+      // returned the nights would pass with the regression in place.
+      mockPrisma.booking.findMany.mockImplementation(async (args: never) => {
+        const { include } = args as unknown as {
+          include?: { guests?: { include?: { nights?: unknown } } };
+        };
+        const loadsNights = Boolean(include?.guests?.include?.nights);
+        const { nights, ...withoutNights } = sparseGuest;
+        return [
+          {
+            id: "booking-1",
+            checkIn: day("2026-07-11"),
+            checkOut: day("2026-07-15"),
+            expectedArrivalTime: null,
+            member: { firstName: "Bev", lastName: "Booker" },
+            guests: [loadsNights ? { ...withoutNights, nights } : withoutNights],
+          },
+        ];
+      });
       const { GET } = await import("@/app/api/lodge/guests/[date]/route");
       const response = await GET(
         new Request(`http://localhost/api/lodge/guests/${date}`) as never,
