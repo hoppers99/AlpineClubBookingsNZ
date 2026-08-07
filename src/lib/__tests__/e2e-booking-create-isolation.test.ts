@@ -24,12 +24,23 @@ import {
 
 const E2E_ROOT = path.join(process.cwd(), "e2e");
 
-function e2eTypeScriptFiles(directory = E2E_ROOT): string[] {
+function listE2eTypeScriptFiles(directory: string): string[] {
   return fs.readdirSync(directory, { withFileTypes: true }).flatMap((entry) => {
     const absolute = path.join(directory, entry.name);
-    if (entry.isDirectory()) return e2eTypeScriptFiles(absolute);
+    if (entry.isDirectory()) return listE2eTypeScriptFiles(absolute);
     return entry.isFile() && entry.name.endsWith(".ts") ? [absolute] : [];
   });
+}
+
+// Several contracts below each sweep the whole e2e tree. Read and parse each
+// file once per run: the sweeps are read-only, and re-parsing per contract put
+// the tree scans over vitest's 5 s default timeout on a loaded machine.
+let e2eFileList: string[] | undefined;
+const parsedE2eSources = new Map<string, ts.SourceFile>();
+
+function e2eTypeScriptFiles(): string[] {
+  e2eFileList ??= listE2eTypeScriptFiles(E2E_ROOT);
+  return e2eFileList;
 }
 
 function repoRelative(file: string): string {
@@ -49,13 +60,11 @@ type ConstBinding = Readonly<{
 type ConstBindings = Map<string, ConstBinding[]>;
 
 function parseSource(file: string): ts.SourceFile {
-  return ts.createSourceFile(
-    file,
-    fs.readFileSync(file, "utf8"),
-    ts.ScriptTarget.Latest,
-    true,
-    ts.ScriptKind.TS,
-  );
+  const cached = parsedE2eSources.get(file);
+  if (cached) return cached;
+  const parsed = parseSourceText(file, fs.readFileSync(file, "utf8"));
+  parsedE2eSources.set(file, parsed);
+  return parsed;
 }
 
 function parseSourceText(file: string, text: string): ts.SourceFile {
@@ -68,7 +77,20 @@ function parseSourceText(file: string, text: string): ts.SourceFile {
   );
 }
 
+// Same reason as the parse cache: every analyzer wants the same read-only const
+// bindings for the same file, and rebuilding them per analyzer is a full tree
+// walk each time.
+const constBindingsCache = new WeakMap<ts.SourceFile, ConstBindings>();
+
 function collectConstBindings(sourceFile: ts.SourceFile): ConstBindings {
+  const cached = constBindingsCache.get(sourceFile);
+  if (cached) return cached;
+  const computed = computeConstBindings(sourceFile);
+  constBindingsCache.set(sourceFile, computed);
+  return computed;
+}
+
+function computeConstBindings(sourceFile: ts.SourceFile): ConstBindings {
   const bindings: ConstBindings = new Map();
   const visit = (node: ts.Node): void => {
     if (
@@ -196,7 +218,35 @@ function calledName(call: ts.CallExpression): string | null {
   return null;
 }
 
+// Asked for EVERY bare-identifier callee in the tree (`expect(…)` included) and
+// answered by a whole-file walk, so without memoising, the direct-POST sweep is
+// quadratic in file size and drifts past vitest's 5 s default timeout as specs
+// grow. Keyed per file because the answer is a property of that file's bindings.
+const destructuredAliasCache = new WeakMap<
+  ts.SourceFile,
+  Map<string, boolean>
+>();
+
 function isDestructuredRequestAlias(
+  identifier: ts.Identifier,
+  method: "fetch" | "post",
+): boolean {
+  const sourceFile = identifier.getSourceFile();
+  const key = `${method} ${identifier.text}`;
+  let answers = destructuredAliasCache.get(sourceFile);
+  if (!answers) {
+    answers = new Map();
+    destructuredAliasCache.set(sourceFile, answers);
+  }
+  const cached = answers.get(key);
+  if (cached !== undefined) return cached;
+
+  const found = findDestructuredRequestAlias(identifier, method);
+  answers.set(key, found);
+  return found;
+}
+
+function findDestructuredRequestAlias(
   identifier: ts.Identifier,
   method: "fetch" | "post",
 ): boolean {
