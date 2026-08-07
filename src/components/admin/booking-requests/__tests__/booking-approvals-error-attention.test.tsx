@@ -99,7 +99,7 @@ describe("BookingApprovalsPanel action error attention (#2597)", () => {
     })
   })
 
-  it("retains a recorded-rejection recovery, suppresses stale reject, and links back to the queue", async () => {
+  it("retains ordinary recorded-rejection recovery, suppresses stale reject, and links back to the queue", async () => {
     let reviewReads = 0
     global.fetch = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
       const url = String(input)
@@ -119,12 +119,11 @@ describe("BookingApprovalsPanel action error attention (#2597)", () => {
       if (url === "/api/admin/bookings/booking-1/review" && init?.method === "PATCH") {
         return {
           ok: false,
-          status: 409,
+          status: 500,
           json: async () => ({
-            code: "HOSTING_COVERAGE_PARTICIPANT_RETRY",
             error: "private database detail",
             reviewRecorded: true,
-            cancellationPending: true,
+            cancellationStatusUnconfirmed: true,
           }),
         } as Response
       }
@@ -145,7 +144,7 @@ describe("BookingApprovalsPanel action error attention (#2597)", () => {
     await waitFor(() =>
       expect(alert).toHaveTextContent(/rejection was recorded/i),
     )
-    expect(alert).toHaveTextContent(/cancellation is still pending/i)
+    expect(alert).toHaveTextContent(/cancellation status could not be confirmed/i)
     expect(alert).toHaveTextContent(/could not be refreshed/i)
     expect(alert).not.toHaveTextContent("private database detail")
     expect(document.activeElement).toBe(alert)

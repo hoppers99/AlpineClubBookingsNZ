@@ -316,6 +316,64 @@ describe("PATCH /api/admin/bookings/[id]/review", () => {
     expect(mocks.sendRejectedEmail).not.toHaveBeenCalled();
   });
 
+  it("reports the committed rejection when an ordinary cancellation failure leaves status unconfirmed", async () => {
+    mocks.bookingFindUnique.mockResolvedValue({
+      id: "b1",
+      memberId: "m1",
+      adminReviewStatus: "PENDING",
+      status: "PAID",
+      member: { email: "member@example.com", firstName: "Alex" },
+      checkIn: new Date("2026-07-01"),
+      checkOut: new Date("2026-07-03"),
+    });
+    mocks.bookingUpdateMany.mockResolvedValue({ count: 1 });
+    mocks.cancelBooking.mockRejectedValue(new Error("private database detail"));
+
+    const response = await PATCH(
+      makeRequest({ status: "REJECTED", adminNotes: "No adult attending." }),
+      { params },
+    );
+
+    expect(response.status).toBe(500);
+    await expect(response.json()).resolves.toEqual({
+      error:
+        "The rejection was recorded, but the booking's cancellation status could not be confirmed. Open the booking and check its status before retrying.",
+      reviewRecorded: true,
+      cancellationStatusUnconfirmed: true,
+    });
+    expect(mocks.sendRejectedEmail).not.toHaveBeenCalled();
+  });
+
+  it("keeps committed-rejection facts on an ordinary cancellation 409", async () => {
+    mocks.bookingFindUnique.mockResolvedValue({
+      id: "b1",
+      memberId: "m1",
+      adminReviewStatus: "PENDING",
+      status: "PAID",
+      member: { email: "member@example.com", firstName: "Alex" },
+      checkIn: new Date("2026-07-01"),
+      checkOut: new Date("2026-07-03"),
+    });
+    mocks.bookingUpdateMany.mockResolvedValue({ count: 1 });
+    mocks.cancelBooking.mockResolvedValue({
+      status: 409,
+      error: "This booking is already being cancelled",
+    });
+
+    const response = await PATCH(
+      makeRequest({ status: "REJECTED", adminNotes: "No adult attending." }),
+      { params },
+    );
+
+    expect(response.status).toBe(409);
+    await expect(response.json()).resolves.toEqual({
+      error: "This booking is already being cancelled",
+      reviewRecorded: true,
+      cancellationStatusUnconfirmed: true,
+    });
+    expect(mocks.sendRejectedEmail).not.toHaveBeenCalled();
+  });
+
   it("rejects: records decision, cancels booking, sends rejection email", async () => {
     mocks.bookingFindUnique.mockResolvedValue({
       id: "b1",

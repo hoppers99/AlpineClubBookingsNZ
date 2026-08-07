@@ -248,7 +248,19 @@ export async function PATCH(
         cancellationPending: true,
       });
       if (hostingRetry) return hostingRetry;
-      throw err;
+      logger.error(
+        { err, bookingId },
+        "Rejected review committed but cancellation status could not be confirmed",
+      );
+      return NextResponse.json(
+        {
+          error:
+            "The rejection was recorded, but the booking's cancellation status could not be confirmed. Open the booking and check its status before retrying.",
+          reviewRecorded: true,
+          cancellationStatusUnconfirmed: true,
+        },
+        { status: 500 },
+      );
     }
 
     // A concurrent cancel won the single-flight claim (#1160): surface the 409
@@ -256,7 +268,11 @@ export async function PATCH(
     // booking is being/has been cancelled, so this is a benign race, not a fault.
     if (cancelResult.status === 409) {
       return NextResponse.json(
-        { error: cancelResult.error },
+        {
+          error: cancelResult.error,
+          reviewRecorded: true,
+          cancellationStatusUnconfirmed: true,
+        },
         { status: 409 },
       );
     }
@@ -267,7 +283,11 @@ export async function PATCH(
         "Failed to cancel rejected booking",
       );
       return NextResponse.json(
-        { error: "Review recorded but booking could not be cancelled", details: cancelResult.error },
+        {
+          error: "Review recorded but booking could not be cancelled",
+          reviewRecorded: true,
+          cancellationPending: true,
+        },
         { status: 500 },
       );
     }

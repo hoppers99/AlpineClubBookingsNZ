@@ -262,10 +262,12 @@ export function BookingApprovalsPanel({
         if (
           decision === "REJECTED" &&
           data.reviewRecorded === true &&
-          data.cancellationPending === true
+          (data.cancellationPending === true ||
+            data.cancellationStatusUnconfirmed === true)
         ) {
-          const recoveryBase =
-            "The rejection was recorded, but cancellation is still pending. Do not reject this booking again.";
+          const recoveryBase = data.cancellationPending === true
+            ? "The rejection was recorded, but cancellation is still pending. Do not reject this booking again."
+            : "The rejection was recorded, but the booking's cancellation status could not be confirmed. Do not reject this booking again.";
           setBookings((current) =>
             current.filter((booking) => booking.id !== bookingId),
           );
