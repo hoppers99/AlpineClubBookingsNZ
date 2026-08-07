@@ -1170,13 +1170,14 @@ the same locked rebuild and must never fall back to the stored request payload,
 which can contain stale PII.
 
 Inbound webhook reconciliation, admin bulk contact sync/import, historical
-canonical-contact backfill, and name-order repair share the same Member-row
-family. Every local PII fill, `Member.xeroContactId` write, and reconstructed
-FK-less CONTACT link takes the exact Member `FOR UPDATE`, re-reads the deleted
-marker and current contact id (plus still-blank fields for PII), then commits
-the pointer/link/ledger work in one short transaction. Name repair uses the
-outbound UPDATE reservation above and is sent only after its reservation
-commits. Provider reads and writes remain outside those transactions.
+canonical-contact backfill, managed contact-group completion, and name-order
+repair share the same Member-row family. Every local PII fill,
+`Member.xeroContactId` write, and reconstructed/refreshed FK-less CONTACT link
+takes the exact Member `FOR UPDATE`, re-reads the deleted marker and current
+contact id (plus still-blank fields for PII), then commits the
+pointer/link/ledger work in one short transaction. Name repair uses the outbound
+UPDATE reservation above and is sent only after its reservation commits.
+Provider reads and writes remain outside those transactions.
 Inbound/backfill-first therefore commits before merge/deletion can
 continue, after which lifecycle teardown removes the loser's/deleted member's
 FK-less contact link and privacy fields; lifecycle-first makes the waiting

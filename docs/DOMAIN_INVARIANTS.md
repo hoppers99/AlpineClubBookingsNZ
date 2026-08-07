@@ -6600,11 +6600,12 @@ and is hard-deleted at the end. The merge is **additive and master-wins**:
   provider request is built from that locked snapshot, so a surviving master
   sends fields filled by a merge that committed first rather than stale
   pre-merge PII. Inbound webhook reconciliation, bulk contact sync, group
-  import, and historical canonical-link backfill take the stronger exact Member
-  `FOR UPDATE` before any local contact pointer, blank-field PII fill, or FK-less
-  CONTACT link is committed. Pointer, link, and any synthetic backfill ledger
-  share that transaction. Merge/deletion-first therefore makes the inbound or
-  backfill writer refuse; writer-first is followed by the normal teardown, so no
+  import, historical canonical-link backfill, and managed contact-group
+  completion take the stronger exact Member `FOR UPDATE` before any local
+  contact pointer, blank-field PII fill, or FK-less CONTACT link is committed.
+  Pointer, link, and operation ledger share that transaction.
+  Merge/deletion-first therefore makes the inbound, backfill, or group-sync
+  completion refuse; writer-first is followed by the normal teardown, so no
   active CONTACT link remains for a deleted member or merge loser. Every Xero
   provider call remains outside these short transactions.
 - **Guards, preview and confirmation.** Full Admin only; master ≠ loser; both

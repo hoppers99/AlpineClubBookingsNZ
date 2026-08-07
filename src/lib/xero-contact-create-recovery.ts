@@ -2,7 +2,10 @@ import type { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { DELETED_CONTACT_EMAIL_DOMAIN } from "@/lib/placeholder-contact-email";
 import { buildXeroContactUrl } from "@/lib/xero-links";
-import { upsertXeroObjectLink } from "@/lib/xero-sync";
+import {
+  completeXeroSyncOperation,
+  upsertXeroObjectLink,
+} from "@/lib/xero-sync";
 
 type ContactCreateRecoveryDb = Pick<
   Prisma.TransactionClient,
@@ -215,6 +218,28 @@ export async function lockMemberForXeroContactLink(
   }
   assertMemberAvailableForXeroContactChange(member);
   return member;
+}
+
+/**
+ * Close any member-scoped operation that would write a canonical CONTACT link
+ * under the same row fence as merge and deletion. The operation need not be a
+ * CONTACT UPDATE (managed contact-group sync also refreshes this link), so the
+ * lifecycle guarantee belongs at the link-completion boundary.
+ */
+export async function completeMemberContactOperation(
+  memberId: string,
+  expectedXeroContactId: string,
+  operationId: string,
+  completion: Parameters<typeof completeXeroSyncOperation>[1],
+  db: typeof prisma = prisma,
+): Promise<void> {
+  await db.$transaction(async (tx) => {
+    const locked = await lockMemberForXeroContactLink(tx, memberId);
+    if (locked.xeroContactId !== expectedXeroContactId) {
+      throw new XeroContactLinkChangedError();
+    }
+    await completeXeroSyncOperation(operationId, completion, { store: tx });
+  });
 }
 
 /**

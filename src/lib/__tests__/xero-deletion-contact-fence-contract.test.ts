@@ -120,6 +120,21 @@ describe("Xero contact/account-deletion lock topology mutation pins (#2597)", ()
       "lockMemberForXeroContactLink(tx, memberId)",
       "completeXeroSyncOperation(operationId, completion, { store: tx })",
     ]);
+
+    const genericCompletion = between(
+      source("src/lib/xero-contact-create-recovery.ts"),
+      "export async function completeMemberContactOperation(",
+      "export async function applyInboundMemberContactPatch(",
+    );
+    expectOrdered(genericCompletion, [
+      "db.$transaction",
+      "lockMemberForXeroContactLink(tx, memberId)",
+      "locked.xeroContactId !== expectedXeroContactId",
+      "completeXeroSyncOperation(operationId, completion, { store: tx })",
+    ]);
+    expect(source("src/lib/xero-contact-groups.ts")).toContain(
+      "completeMemberContactOperation(",
+    );
   });
 
   it("keeps every profile CONTACT UPDATE producer on the Member-scoped fence", () => {
