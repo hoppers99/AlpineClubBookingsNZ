@@ -314,6 +314,37 @@ describe("createXeroContactForMember payload hygiene (#2089)", () => {
     expect(mocks.completeXeroSyncOperation).not.toHaveBeenCalled();
   });
 
+  it("retains the pre-link provider proof when recording the terminal failure also fails", async () => {
+    primeHappyPath(SPARSE_MEMBER);
+    const linkFailure = new Error("local link unavailable");
+    mocks.txMemberUpdate.mockRejectedValue(linkFailure);
+    mocks.failXeroSyncOperation.mockRejectedValue(
+      new Error("failure recorder unavailable"),
+    );
+
+    const error = await createXeroContactForMember("member-1").catch(
+      (caught: unknown) => caught,
+    );
+
+    expect(error).toMatchObject({
+      phase: "PROVIDER_CONTACT_CREATED",
+      xeroContactId: "contact-new",
+      originalError: linkFailure,
+    });
+    expect(
+      mocks.recordProviderCreatedContactPendingLocalLink,
+    ).toHaveBeenCalledWith({
+      operationId: "op-1",
+      resolvedContactId: "contact-new",
+    });
+    expect(
+      mocks.recordProviderCreatedContactPendingLocalLink.mock
+        .invocationCallOrder[0],
+    ).toBeLessThan(mocks.txMemberUpdate.mock.invocationCallOrder[0]);
+    expect(mocks.failXeroSyncOperation).toHaveBeenCalled();
+    expect(mocks.completeXeroSyncOperation).not.toHaveBeenCalled();
+  });
+
   it("reports local-link-committed when operation close fails post-commit", async () => {
     primeHappyPath(SPARSE_MEMBER);
     const completionFailure = new Error("private operation detail");

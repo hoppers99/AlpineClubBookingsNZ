@@ -1142,16 +1142,24 @@ relation moves → one sorted master/loser/ancillary Member FOR UPDATE → under
 re-plan → sorted coverage-owner → unresolved Xero contact-create proof re-check →
 late owner+actor sweeps → actorless enqueue → loser delete**.
 
-`XeroSyncOperation.localId` is deliberately FK-less, so an unresolved failed
-contact CREATE whose payload proves Xero created the contact cannot be moved by
-the relation sweeps. Preview blocks when either merge participant has that exact
-proof (`FAILED`, not manually resolved, local-link phase,
-`providerContactCreated: true`). Execution repeats the same strict query on its
-in-flight transaction after the complete Member/coverage-owner lock set and
-before the final sweeps, Xero teardown, or loser delete. A proof appearing after
-preview therefore returns the existing actionable `merge_blocked` 409 and rolls
-back the whole merge. Matched-existing contacts, resolved failures, and completed
-operations do not block. This adds no provider call and no new lock tier.
+`XeroSyncOperation.localId` is deliberately FK-less, so each provider contact
+CREATE first commits one exact `RUNNING` reservation in a short transaction that
+holds the target Member row `FOR KEY SHARE`. Only after that transaction commits
+does the Xero provider call begin. Preview and execution block on that active
+reservation; execution repeats the query after the complete Member/coverage-owner
+lock set. If merge already owns `FOR UPDATE`, the reservation waits, then finds
+the deleted member and never reaches Xero. If reservation wins, merge sees it and
+rolls back. This closes the post-check provider race without putting Xero inside a
+transaction or adding an advisory-lock tier.
+
+After Xero returns a newly created contact, the operation is durably marked
+`provider_contact_created_local_link_pending` before the local link transaction.
+That active marker is authoritative recovery proof even if recording the later
+link failure also fails. A successful operation close makes it `SUCCEEDED`; an
+explicitly resolved failure sets `manuallyResolvedAt`; neither terminal state
+blocks future merge. A failed local link remains a blocker only with the strict
+`FAILED` + local-link phase + `providerContactCreated: true` proof. Matched-existing
+contacts and unrelated failed or completed operations do not block.
 
 Inside the locks the merge re-reads both members, re-runs the full guard matrix,
 and re-verifies the HMAC preview token (which bakes in both `updatedAt` values)

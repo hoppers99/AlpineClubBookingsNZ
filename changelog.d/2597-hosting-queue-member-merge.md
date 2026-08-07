@@ -37,9 +37,11 @@
   the inactive member before creating any booking or guest, even where hosting is
   disabled or review-only.
 
-  Member merge also refuses while either participant has an unresolved Xero
-  contact-create recovery proving the contact already exists at Xero but its
-  local member link failed. The preview explains how to resolve the failed
-  operation, and execution re-checks after acquiring the complete merge lock set
-  so a newly appeared proof rolls the whole merge back instead of orphaning it
-  under the deleted member id and permitting a duplicate contact create.
+  Xero contact creation now commits a short member-row reservation before calling
+  Xero, while the provider call remains outside every transaction. Member merge
+  refuses while either participant has that exact active reservation or strict
+  unresolved proof that Xero created a contact whose local link failed. Once Xero
+  creates the contact, the durable pending-link marker is written before linking,
+  so even a later failure-recorder outage cannot make the next member reload offer
+  another Create action. A terminal success or explicit resolution removes the
+  blocker.

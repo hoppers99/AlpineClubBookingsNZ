@@ -172,6 +172,24 @@ describe("unresolved member Xero contact-create recovery proof", () => {
     });
   });
 
+  it("keeps the next authoritative member GET in recovery while the durable pre-link marker is active", async () => {
+    findFirst.mockResolvedValue({
+      id: "operation-running",
+      responsePayload: {
+        phase: "provider_contact_created_local_link_pending",
+        providerContactCreated: true,
+        resolvedContactId: "contact-provider-only",
+      },
+    });
+
+    await expect(
+      getMemberContactCreateRecoveryPending({
+        memberId: "member-1",
+        xeroContactId: null,
+      }),
+    ).resolves.toBe(true);
+  });
+
   it("can run the strict proof lookup on an in-flight transaction client", async () => {
     const txFindFirst = vi.fn().mockResolvedValue({
       id: "operation-tx",
