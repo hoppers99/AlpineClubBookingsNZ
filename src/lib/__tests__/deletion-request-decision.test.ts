@@ -4,7 +4,9 @@ import {
   claimDeletionRequestApproval,
   claimDeletionRequestDecision,
   DELETION_REQUEST_ALREADY_REVIEWED_CODE,
+  DELETION_REQUEST_CLAIM_NOT_HELD_CODE,
   OPEN_DELETION_REQUEST_STATUSES,
+  releaseDeletionRequestApprovalClaim,
 } from "@/lib/deletion-request-decision";
 
 describe("deletion request approval ownership claim (#2597)", () => {
@@ -103,6 +105,68 @@ describe("deletion request final decision claim", () => {
     expect(call.data.adminNote).toBeUndefined();
   });
 
+  it("finalises from PENDING when the approval never needed a claim", async () => {
+    // #2627: an approval with no future bookings to cancel takes no claim, so
+    // its single guarded transition is PENDING -> APPROVED. Defaulting to
+    // APPROVAL_IN_PROGRESS there would match zero rows and refuse a perfectly
+    // ordinary approval.
+    const updateMany = vi.fn().mockResolvedValue({ count: 1 });
+
+    await expect(
+      claimDeletionRequestDecision(
+        { deletionRequest: { updateMany } as never },
+        {
+          id: "request-1",
+          decision: "APPROVED",
+          reviewedBy: "admin-1",
+          adminNote: "agreed",
+          approvalFrom: "PENDING",
+        },
+      ),
+    ).resolves.toBeUndefined();
+
+    expect(updateMany.mock.calls[0][0].where).toEqual({
+      id: "request-1",
+      status: "PENDING",
+    });
+  });
+
+  it("still defaults an approval to its durable claim when no origin is named", async () => {
+    const updateMany = vi.fn().mockResolvedValue({ count: 1 });
+
+    await claimDeletionRequestDecision(
+      { deletionRequest: { updateMany } as never },
+      {
+        id: "request-1",
+        decision: "APPROVED",
+        reviewedBy: "admin-1",
+        adminNote: null,
+      },
+    );
+
+    expect(updateMany.mock.calls[0][0].where.status).toBe(
+      "APPROVAL_IN_PROGRESS",
+    );
+  });
+
+  it("ignores an approval origin on the rejection path", async () => {
+    // Rejection's guard is not negotiable: it may only ever claim PENDING.
+    const updateMany = vi.fn().mockResolvedValue({ count: 1 });
+
+    await claimDeletionRequestDecision(
+      { deletionRequest: { updateMany } as never },
+      {
+        id: "request-1",
+        decision: "REJECTED",
+        reviewedBy: "admin-2",
+        adminNote: null,
+        approvalFrom: "APPROVAL_IN_PROGRESS",
+      },
+    );
+
+    expect(updateMany.mock.calls[0][0].where.status).toBe("PENDING");
+  });
+
   it("lets a rejection claim only a still-PENDING request", async () => {
     const updateMany = vi.fn().mockResolvedValue({ count: 1 });
 
@@ -170,6 +234,51 @@ describe("deletion request final decision claim", () => {
       code: DELETION_REQUEST_ALREADY_REVIEWED_CODE,
       statusCode: 409,
     });
+    expect(updateMany).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("releasing a started approval (#2627)", () => {
+  it("returns the claim to PENDING and clears the abandoned attribution", async () => {
+    const updateMany = vi.fn().mockResolvedValue({ count: 1 });
+
+    await expect(
+      releaseDeletionRequestApprovalClaim(
+        { deletionRequest: { updateMany } as never },
+        { id: "request-1", adminNote: "blocker will never clear" },
+      ),
+    ).resolves.toBeUndefined();
+
+    expect(updateMany).toHaveBeenCalledWith({
+      // The guard is the whole race protection: a release that arrives while a
+      // finalisation is committing waits on this row's write lock and then
+      // matches nothing, and a release that commits first makes the
+      // finalisation match nothing.
+      where: { id: "request-1", status: "APPROVAL_IN_PROGRESS" },
+      data: {
+        status: "PENDING",
+        adminNote: "blocker will never clear",
+        // A PENDING request has no reviewer: the claim being abandoned must not
+        // leave attribution behind that reads as a decision.
+        reviewedBy: null,
+        reviewedAt: null,
+      },
+    });
+  });
+
+  it("refuses when the request no longer holds the claim", async () => {
+    const updateMany = vi.fn().mockResolvedValue({ count: 0 });
+
+    await expect(
+      releaseDeletionRequestApprovalClaim(
+        { deletionRequest: { updateMany } as never },
+        { id: "request-1", adminNote: "too late" },
+      ),
+    ).rejects.toMatchObject({
+      code: DELETION_REQUEST_CLAIM_NOT_HELD_CODE,
+      statusCode: 409,
+    });
+    // One guarded mutation, no second-guessing read: the row is the authority.
     expect(updateMany).toHaveBeenCalledTimes(1);
   });
 });

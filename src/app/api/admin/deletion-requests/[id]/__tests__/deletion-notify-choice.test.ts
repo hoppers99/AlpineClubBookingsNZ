@@ -232,18 +232,30 @@ describe("POST /api/admin/deletion-requests/[id] reject notify choice (#1788)", 
 
 describe("POST /api/admin/deletion-requests/[id] approve carve-out (#1788)", () => {
   /**
-   * #2597: approve now takes TWO guarded `deletionRequest.updateMany` calls —
-   * the durable PENDING -> APPROVAL_IN_PROGRESS claim before any booking
-   * cancellation commits, then APPROVAL_IN_PROGRESS -> APPROVED inside the
-   * anonymisation transaction. Tests that mean "another admin won the final
-   * decision" must let the first succeed and only the second lose, otherwise
-   * the approval never starts and no cancellation is attempted at all.
+   * #2597: an approve WITH future bookings to cancel takes TWO guarded
+   * `deletionRequest.updateMany` calls — the durable PENDING ->
+   * APPROVAL_IN_PROGRESS claim before any booking cancellation commits, then
+   * APPROVAL_IN_PROGRESS -> APPROVED inside the anonymisation transaction. Tests
+   * that mean "another admin won the final decision" must let the first succeed
+   * and only the second lose, otherwise the approval never starts and no
+   * cancellation is attempted at all.
+   *
+   * #2627: this helper is therefore ONLY correct for an approval that has
+   * something to cancel. An approval with nothing to cancel takes no claim at
+   * all and finalises straight from PENDING, so letting the PENDING-guarded
+   * mutation win would be letting the approval win. Use
+   * {@link everyDecisionClaimLoses} for that shape.
    */
   function finalDecisionClaimLoses() {
     h.prisma.deletionRequest.updateMany.mockImplementation(
       async ({ where }: { where: { status: string } }) =>
         where.status === "PENDING" ? { count: 1 } : { count: 0 },
     );
+  }
+
+  /** No guarded decision transition matches: another admin owns the request. */
+  function everyDecisionClaimLoses() {
+    h.prisma.deletionRequest.updateMany.mockResolvedValue({ count: 0 });
   }
 
   it("reports the winning approval and anonymisation after earlier cancellations without an unsafe retry", async () => {
@@ -285,7 +297,10 @@ describe("POST /api/admin/deletion-requests/[id] approve carve-out (#1788)", () 
   });
 
   it("suppresses retry when the winning decision cannot be authoritatively re-read", async () => {
-    finalDecisionClaimLoses();
+    // This member has no future bookings, so (#2627) the approval takes no
+    // claim and its ONE guarded transition is PENDING -> APPROVED. "Another
+    // admin won" therefore means that transition matches nothing.
+    everyDecisionClaimLoses();
     h.prisma.deletionRequest.findUnique
       .mockResolvedValueOnce({ id: "req-1", status: "PENDING", member })
       .mockRejectedValueOnce(new Error("private database detail"));
@@ -458,6 +473,17 @@ describe("POST /api/admin/deletion-requests/[id] approve carve-out (#1788)", () 
   });
 
   it("rolls back anonymisation when the shared standing-fanout fence retries", async () => {
+    // #2627: this test's subject is that finalisation is guarded on the DURABLE
+    // CLAIM rather than on PENDING, so it must run the shape that actually takes
+    // the claim — an approval with a future booking to cancel. It used to have
+    // none, and only passed because the claim was then taken unconditionally.
+    // With the claim now conditional, keeping it bookingless would have silently
+    // turned this into a test of the PENDING-guarded path and stopped covering
+    // the invariant it was written for.
+    h.prisma.booking.findMany
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([{ id: "booking-1" }]);
+    h.cancelBooking.mockResolvedValueOnce({ status: 200, data: {} });
     h.enqueueHostingCoverageReevaluationForMember.mockRejectedValue(
       new HostingCoverageParticipantRetryError(),
     );
@@ -468,7 +494,7 @@ describe("POST /api/admin/deletion-requests/[id] approve carve-out (#1788)", () 
     await expect(response.json()).resolves.toEqual({
       error: HOSTING_COVERAGE_RETRY_MESSAGE,
       code: HOSTING_COVERAGE_RETRY_CODE,
-      cancelledBookings: 0,
+      cancelledBookings: 1,
       cancellationPending: false,
       retryBookingId: null,
       remainingCleanupPending: true,
@@ -540,6 +566,65 @@ describe("POST /api/admin/deletion-requests/[id] approve carve-out (#1788)", () 
     expect(h.sendAccountDeletionApprovedEmail).not.toHaveBeenCalled();
   });
 
+  it("takes no approval claim when there is nothing irreversible to cancel", async () => {
+    // #2627 defect 2, half one. The claim exists to stop a rejection overtaking
+    // booking cancellations an approval has already committed. With no future
+    // bookings there are none, everything this approval does commits in the one
+    // anonymisation transaction, and taking the claim would permanently burn the
+    // ability to reject in exchange for nothing — wedging the request for good
+    // if that transaction then failed permanently.
+    h.prisma.booking.findMany.mockResolvedValue([]);
+
+    const res = await POST(req({ action: "approve" }), { params });
+    expect(res.status).toBe(200);
+
+    expect(h.cancelBooking).not.toHaveBeenCalled();
+    // Nothing was ever moved into the intermediate state.
+    expect(h.prisma.deletionRequest.updateMany).not.toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({ status: "APPROVAL_IN_PROGRESS" }),
+      }),
+    );
+    // The decision is the single guarded PENDING -> APPROVED transition, which
+    // an ordinary rejection could still have won right up to the commit.
+    expect(h.prisma.deletionRequest.updateMany).toHaveBeenCalledTimes(1);
+    expect(h.prisma.deletionRequest.updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { id: "req-1", status: "PENDING" },
+        data: expect.objectContaining({ status: "APPROVED" }),
+      }),
+    );
+    expect(h.prisma.member.update).toHaveBeenCalled();
+  });
+
+  it("still claims before the first cancellation when there IS something to cancel", async () => {
+    // The other side of the same conditional: the protection must not have been
+    // traded away for the conditional.
+    h.prisma.booking.findMany
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([{ id: "booking-1" }]);
+    h.cancelBooking.mockResolvedValueOnce({ status: 200, data: {} });
+
+    const res = await POST(req({ action: "approve" }), { params });
+    expect(res.status).toBe(200);
+
+    expect(h.prisma.deletionRequest.updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { id: "req-1", status: "PENDING" },
+        data: expect.objectContaining({ status: "APPROVAL_IN_PROGRESS" }),
+      }),
+    );
+    expect(h.prisma.deletionRequest.updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { id: "req-1", status: "APPROVAL_IN_PROGRESS" },
+        data: expect.objectContaining({ status: "APPROVED" }),
+      }),
+    );
+    expect(
+      h.prisma.deletionRequest.updateMany.mock.invocationCallOrder[0],
+    ).toBeLessThan(h.cancelBooking.mock.invocationCallOrder[0]);
+  });
+
   it("resumes an interrupted approval instead of refusing the retry", async () => {
     // The admin returns to a request left in APPROVAL_IN_PROGRESS by a crashed
     // or disconnected earlier attempt; the remaining cleanup must complete.
@@ -589,5 +674,160 @@ describe("POST /api/admin/deletion-requests/[id] approve carve-out (#1788)", () 
     } finally {
       vi.useRealTimers();
     }
+  });
+});
+
+/**
+ * #2627 defect 2, half two. `APPROVAL_IN_PROGRESS` used to be a one-way door:
+ * the only exit was a successful anonymisation, so a permanently blocked
+ * approval wedged the request forever — and while it is open the member cannot
+ * lodge a new deletion request and their duplicate cannot be merged. A Full
+ * Admin can now release the claim back to PENDING; the decision itself is still
+ * made through the ordinary approve/reject paths.
+ */
+describe("POST /api/admin/deletion-requests/[id] release a started approval (#2627)", () => {
+  function claimed() {
+    h.prisma.deletionRequest.findUnique.mockResolvedValue({
+      id: "req-1",
+      status: "APPROVAL_IN_PROGRESS",
+      adminNote: "starting approval",
+      reviewedBy: "admin-9",
+      member,
+    });
+  }
+
+  function releaseAudit() {
+    return h.logAudit.mock.calls.find(
+      (c) => c[0]?.action === "member.deletion_approval_claim_released",
+    )?.[0];
+  }
+
+  it("returns a wedged claim to pending, anonymising nobody and emailing no one", async () => {
+    claimed();
+
+    const res = await POST(
+      req({ action: "release", note: "Xero blocker will never clear" }),
+      { params },
+    );
+
+    expect(res.status).toBe(200);
+    await expect(res.json()).resolves.toMatchObject({
+      message: expect.stringContaining("pending again"),
+    });
+    expect(h.prisma.deletionRequest.updateMany).toHaveBeenCalledWith({
+      where: { id: "req-1", status: "APPROVAL_IN_PROGRESS" },
+      data: {
+        status: "PENDING",
+        adminNote: "Xero blocker will never clear",
+        reviewedBy: null,
+        reviewedAt: null,
+      },
+    });
+    // A release decides nothing and destroys nothing.
+    expect(h.prisma.member.update).not.toHaveBeenCalled();
+    expect(h.cancelBooking).not.toHaveBeenCalled();
+    expect(h.sendAccountDeletionApprovedEmail).not.toHaveBeenCalled();
+    expect(h.sendAccountDeletionRejectedEmail).not.toHaveBeenCalled();
+    // The claim's own attribution is cleared by the transition, so the audit is
+    // the only surviving record of who held it.
+    expect(releaseAudit()).toMatchObject({
+      memberId: "admin-1",
+      targetId: member.id,
+      category: "privacy",
+      outcome: "success",
+      metadata: {
+        previousClaimHeldBy: "admin-9",
+        previousAdminNote: "starting approval",
+      },
+    });
+  });
+
+  it("refuses a scoped membership admin who is not a Full Admin", async () => {
+    claimed();
+    h.isFullAdmin.mockReturnValue(false);
+
+    const res = await POST(req({ action: "release", note: "let me out" }), {
+      params,
+    });
+
+    expect(res.status).toBe(403);
+    expect(h.prisma.deletionRequest.updateMany).not.toHaveBeenCalled();
+    expect(releaseAudit()).toBeUndefined();
+  });
+
+  it("requires a reason, because releasing re-opens a decision closed to rejection", async () => {
+    claimed();
+
+    for (const body of [
+      { action: "release" },
+      { action: "release", note: "   " },
+    ]) {
+      h.prisma.deletionRequest.updateMany.mockClear();
+      const res = await POST(req(body), { params });
+      expect(res.status).toBe(400);
+      expect(h.prisma.deletionRequest.updateMany).not.toHaveBeenCalled();
+    }
+  });
+
+  it("refuses a release on a request that holds no claim", async () => {
+    // Still PENDING: there is nothing to release, and the refusal says so
+    // rather than reporting it as already reviewed.
+    const res = await POST(req({ action: "release", note: "nothing here" }), {
+      params,
+    });
+
+    expect(res.status).toBe(409);
+    await expect(res.json()).resolves.toMatchObject({
+      code: "DELETION_REQUEST_CLAIM_NOT_HELD",
+      retryAllowed: false,
+    });
+    expect(h.prisma.deletionRequest.updateMany).not.toHaveBeenCalled();
+  });
+
+  it("loses cleanly to a finalisation that was already committing", async () => {
+    // The guard IS the race protection: the release's guarded updateMany blocks
+    // on the row lock the committing finalisation holds, then re-evaluates its
+    // `status: APPROVAL_IN_PROGRESS` predicate against the committed row and
+    // matches nothing. It must never silently report success.
+    claimed();
+    h.prisma.deletionRequest.updateMany.mockResolvedValue({ count: 0 });
+
+    const res = await POST(req({ action: "release", note: "too late" }), {
+      params,
+    });
+
+    expect(res.status).toBe(409);
+    await expect(res.json()).resolves.toMatchObject({
+      code: "DELETION_REQUEST_CLAIM_NOT_HELD",
+      retryAllowed: false,
+    });
+    expect(releaseAudit()).toBeUndefined();
+  });
+
+  it("refuses a release once the request has reached a final decision", async () => {
+    h.prisma.deletionRequest.findUnique.mockResolvedValue({
+      id: "req-1",
+      status: "APPROVED",
+      member,
+    });
+
+    const res = await POST(req({ action: "release", note: "undo it" }), {
+      params,
+    });
+
+    expect(res.status).toBe(409);
+    await expect(res.json()).resolves.toMatchObject({
+      decisionFinal: true,
+      finalDecision: "APPROVED",
+      retryAllowed: false,
+    });
+    expect(h.prisma.deletionRequest.updateMany).not.toHaveBeenCalled();
+  });
+
+  it("rejects an unknown action with 400 and touches nothing", async () => {
+    const res = await POST(req({ action: "unclaim" }), { params });
+
+    expect(res.status).toBe(400);
+    expect(h.prisma.deletionRequest.updateMany).not.toHaveBeenCalled();
   });
 });

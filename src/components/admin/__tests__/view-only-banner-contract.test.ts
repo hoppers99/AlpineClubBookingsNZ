@@ -322,11 +322,11 @@ const NOTICE = "AdminViewOnlyNotice";
 */
 const FIGURES = {
   /** Every `<ViewOnlyActionButton>` render site in the admin tree. */
-  callSites: 311,
+  callSites: 312,
   /** Those that hand their explanation to a banner, by either rule. */
-  optOuts: 262,
+  optOuts: 263,
   /** `describeReason={false}` — needs a banner in the SAME file. */
-  staticOptOuts: 235,
+  staticOptOuts: 236,
   /** `describeReason={!ancestorRendersViewOnlyBanner}` — needs a vouch. */
   vouchedOptOuts: 27,
   /** …of the vouched: proved at a parent's own JSX render site (#2168). */
@@ -1262,6 +1262,20 @@ describe("view-only section banner coverage (#2160)", () => {
                removed site was a same-file static opt-out, so static opt-outs
                move 235 -> 234 and total opt-outs move 262 -> 261. Banner,
                vouch and per-button-explanation counts are unchanged.
+          312  +1  #2627 adds "Release approval" to the deletion queue's
+               self-service rows — the Full-Admin way out of an approval left
+               mid-flight, beside the existing "Resume approval". A static
+               opt-out under the page's own unconditional
+               AdminViewOnlySectionBanner, which the sibling Approve/Reject/
+               Resume controls already opt out under, so static opt-outs move
+               235 -> 236 and total opt-outs 262 -> 263. Nothing else moves: no
+               new banner component, and the Full-Admin gate it additionally
+               carries is applied by NOT RENDERING the control at all rather
+               than by disabling it with a narrower per-button reason, so it
+               adds no exception. (Re-measured, as always: 311 -> 312. The
+               running left-hand column reached 310 by the step above and so
+               still trails the measured total by one, the drift the 269 and
+               297 notes already record.)
       */
       // #2259 adds the per-booking "No emails"
       // switch (`booking-no-emails-controls.tsx`), a leaf control dropped into

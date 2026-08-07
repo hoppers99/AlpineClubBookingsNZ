@@ -1,7 +1,11 @@
 /**
- * F-COMP-04: Admin — Approve or Reject a Deletion Request
+ * F-COMP-04: Admin — Approve, Reject, or Release a Deletion Request
  * POST /api/admin/deletion-requests/[id]
- * Body: { action: "approve" | "reject", note?: string }
+ * Body: { action: "approve" | "reject" | "release", note?: string }
+ *
+ * `release` (#2627) is the Full-Admin way out of a started approval: it returns
+ * an APPROVAL_IN_PROGRESS request to PENDING so it can be decided again, and
+ * requires a reason.
  */
 import { NextRequest, NextResponse } from "next/server";
 import { hostingCoverageParticipantRetryResponse } from "@/lib/adult-member-hosting-retry-response";
@@ -44,7 +48,12 @@ import {
   claimDeletionRequestApproval,
   claimDeletionRequestDecision,
   DELETION_REQUEST_ALREADY_REVIEWED_CODE,
+  DELETION_REQUEST_CLAIM_NOT_HELD_CODE,
+  DELETION_REQUEST_CLAIM_NOT_HELD_MESSAGE,
+  DeletionRequestClaimNotHeldError,
   DeletionRequestDecisionLostError,
+  releaseDeletionRequestApprovalClaim,
+  type DeletionRequestApprovalOrigin,
 } from "@/lib/deletion-request-decision";
 import {
   DELETED_ACCOUNT_PASSWORD_HASH,
@@ -52,8 +61,17 @@ import {
   XeroContactCreateBlocksDeletionError,
 } from "@/lib/xero-contact-create-recovery";
 
+// Route-private: a Next.js route module's export surface is its handlers.
+const DELETION_CLAIM_RELEASE_FULL_ADMIN_MESSAGE =
+  "Releasing a started approval needs Full Admin access, because future bookings may already have been cancelled.";
+const DELETION_CLAIM_RELEASE_REASON_REQUIRED_MESSAGE =
+  "A reason is required to release a started approval.";
+
 const actionSchema = z.object({
-  action: z.enum(["approve", "reject"]),
+  // #2627: `release` returns a wedged or mistaken APPROVAL_IN_PROGRESS claim to
+  // PENDING so the request can be decided again. Full Admin only, and the
+  // ordinary reject path still makes the actual decision.
+  action: z.enum(["approve", "reject", "release"]),
   note: z.string().max(1000).optional(),
   // #1788: absent/undefined = notify (default), false = suppress the member
   // email. Only honoured on the REJECT path; the APPROVE path's final privacy
@@ -221,7 +239,11 @@ export async function POST(
   const session = guard.session;
   const { id } = await params;
 
-  let body: { action: "approve" | "reject"; note?: string; notifyMember?: boolean };
+  let body: {
+    action: "approve" | "reject" | "release";
+    note?: string;
+    notifyMember?: boolean;
+  };
   try {
     const raw = await request.json();
     body = actionSchema.parse(raw);
@@ -257,10 +279,17 @@ export async function POST(
       return NextResponse.json({ error: "Deletion request not found" }, { status: 404 });
     }
 
-    const approvalCanResume =
-      body.action === "approve" &&
-      deletionRequest.status === "APPROVAL_IN_PROGRESS";
-    if (deletionRequest.status !== "PENDING" && !approvalCanResume) {
+    const claimIsHeld = deletionRequest.status === "APPROVAL_IN_PROGRESS";
+    const approvalCanResume = body.action === "approve" && claimIsHeld;
+    // #2627: a release acts ON the claim, so the claimed state is the only one
+    // it can run from. A release aimed at a PENDING request falls through to the
+    // dedicated 409 below rather than this "already reviewed" one.
+    const releaseCanRun = body.action === "release" && claimIsHeld;
+    if (
+      deletionRequest.status !== "PENDING" &&
+      !approvalCanResume &&
+      !releaseCanRun
+    ) {
       return NextResponse.json(
         await readFinalDeletionDecision(
           id,
@@ -272,6 +301,76 @@ export async function POST(
     }
 
     const member = deletionRequest.member;
+
+    // --- RELEASE a started approval (#2627) ---
+    //
+    // The claim exists so a rejection cannot overtake booking cancellations an
+    // approval already committed. That protection must not become a trap: a
+    // permanently blocked approval would otherwise leave the request open
+    // forever, and while it is open the member cannot lodge a new deletion
+    // request and their duplicate cannot be merged.
+    //
+    // Full Admin only, and the reason is mandatory, because on the path where
+    // cancellations DID commit this deliberately re-opens a decision that had
+    // been closed to rejection. Releasing anonymises nobody and sends the
+    // member nothing; it returns the request to PENDING so the ordinary
+    // approve/reject paths — with their own guards, audit entries and notify
+    // choice — can decide it again.
+    if (body.action === "release") {
+      if (!isFullAdmin(session.user)) {
+        return NextResponse.json(
+          { error: DELETION_CLAIM_RELEASE_FULL_ADMIN_MESSAGE },
+          { status: 403 },
+        );
+      }
+      // Only a PENDING request can reach here without holding the claim (the
+      // status gate above already refused a decided one). Say that plainly
+      // before asking for a reason to do something there is nothing to do.
+      if (!claimIsHeld) {
+        return NextResponse.json(
+          {
+            code: DELETION_REQUEST_CLAIM_NOT_HELD_CODE,
+            error: DELETION_REQUEST_CLAIM_NOT_HELD_MESSAGE,
+            retryAllowed: false,
+          },
+          { status: 409 },
+        );
+      }
+      const releaseReason = body.note?.trim();
+      if (!releaseReason) {
+        return NextResponse.json(
+          { error: DELETION_CLAIM_RELEASE_REASON_REQUIRED_MESSAGE },
+          { status: 400 },
+        );
+      }
+
+      await releaseDeletionRequestApprovalClaim(prisma, {
+        id,
+        adminNote: releaseReason,
+      });
+
+      logAudit({
+        action: "member.deletion_approval_claim_released",
+        memberId: session.user.id,
+        targetId: member.id,
+        details: `Started approval released back to pending. Reason: ${releaseReason}`,
+        ipAddress: ip,
+        category: "privacy",
+        severity: "important",
+        outcome: "success",
+        metadata: {
+          // The claim's own attribution is cleared by the release, so preserve
+          // who held it here — this is the only record of it.
+          previousClaimHeldBy: deletionRequest.reviewedBy,
+          previousAdminNote: deletionRequest.adminNote,
+        },
+      });
+
+      return NextResponse.json({
+        message:
+          "Approval released. The request is pending again and can be approved or rejected. Any future bookings already cancelled by the started approval stay cancelled.",
+      });
+    }
 
     if (body.action === "reject") {
       await claimDeletionRequestDecision(prisma, {
@@ -392,11 +491,24 @@ export async function POST(
     // approval decision durably before the first such commit, so rejection can
     // only win while the request is still PENDING and no approval cleanup has
     // begun. A retry resumes this same intermediate claim.
-    await claimDeletionRequestApproval(prisma, {
-      id,
-      adminNote: body.note ?? null,
-      reviewedBy: session.user.id,
-    });
+    //
+    // #2627: only when there is genuinely something irreversible to protect.
+    // With no future bookings to cancel, this approval commits everything it
+    // does in the single anonymisation transaction below, so claiming would
+    // consume the ability to reject in exchange for nothing — and a permanent
+    // failure inside that transaction would then wedge a request that nobody
+    // had done anything to. A claim that already exists is still resumed (and
+    // re-validated) here, because the earlier attempt may well have cancelled
+    // bookings before it stopped.
+    let approvalOrigin: DeletionRequestApprovalOrigin = "PENDING";
+    if (futureBookings.length > 0 || approvalCanResume) {
+      await claimDeletionRequestApproval(prisma, {
+        id,
+        adminNote: body.note ?? null,
+        reviewedBy: session.user.id,
+      });
+      approvalOrigin = "APPROVAL_IN_PROGRESS";
+    }
 
     const cancelledBookingIds: string[] = [];
     for (const booking of futureBookings) {
@@ -500,14 +612,18 @@ export async function POST(
       }
 
       // Final approval is deliberately inside the anonymisation transaction so
-      // any later failure restores APPROVAL_IN_PROGRESS and sends no receipt.
-      // Rejection cannot claim that intermediate state; a later approval may
-      // safely resume only the remaining cleanup.
+      // any later failure restores the state it started from and sends no
+      // receipt. Where that state is the durable claim, rejection cannot take
+      // it, and a later approval may safely resume only the remaining cleanup.
+      // Where no claim was needed (#2627 — nothing to cancel), it is still
+      // PENDING, an ordinary rejection can still win, and exactly one of the two
+      // guarded transitions succeeds.
       await claimDeletionRequestDecision(tx, {
         id,
         decision: "APPROVED",
         adminNote: body.note ?? null,
         reviewedBy: session.user.id,
+        approvalFrom: approvalOrigin,
       });
 
       // #1756: anonymisation deactivates the member and unlinks their guest
@@ -704,6 +820,14 @@ export async function POST(
           completedBookingCancellations,
           err.code,
         ),
+        { status: err.statusCode },
+      );
+    }
+    // #2627: the release lost the row to a finalisation that was already
+    // committing (or to another release). Name the cause; do not retry.
+    if (err instanceof DeletionRequestClaimNotHeldError) {
+      return NextResponse.json(
+        { code: err.code, error: err.message, retryAllowed: false },
         { status: err.statusCode },
       );
     }

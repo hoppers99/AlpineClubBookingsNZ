@@ -3703,28 +3703,58 @@ override requires an explicit `pricingMode`:
   member nothing at all; #2259's review dialog says exactly that rather than
   repeating the promise above).
   An account-deletion approve and reject also have exactly one final winner,
-  but they do not race for the same transition (#2597). An approval cancels
-  future bookings in separately committed transactions before it anonymises
-  anything, so it first claims `PENDING -> APPROVAL_IN_PROGRESS` — durably,
-  before the first cancellation commits. Rejection may claim only `PENDING`;
-  approval may finalise only from `APPROVAL_IN_PROGRESS`, inside the
+  but they do not always race for the same transition (#2597, #2627). An
+  approval that has future bookings to cancel commits those cancellations in
+  separately committed transactions before it anonymises anything, so it first
+  claims `PENDING -> APPROVAL_IN_PROGRESS` — durably, before the first
+  cancellation commits — and then finalises only from that claim, inside the
   anonymisation transaction, so any later privacy failure rolls finalisation
-  back to that intermediate claim and sends no receipt. **A rejection can
-  therefore never become final after an approval-triggered cancellation has
-  committed**, which the single-transition protocol could not guarantee. A
-  repeated approval resumes its own claim rather than being refused, so an
-  interrupted cleanup can always be completed. A losing concurrent reviewer
-  gets a fixed conflict and sends no contradictory message. Cancellations
-  already committed before a lost claim are returned as explicit partial
-  cleanup, never described as anonymisation.
-  `APPROVAL_IN_PROGRESS` is an OPEN state, not a decided one: it has already
-  destroyed bookings and still owes the member their anonymisation. Every
-  "is there an outstanding request?" reader — admin queue, pending counts,
-  dashboard, the member's own re-request guard, and the member-merge blocker —
-  must therefore treat it as open via `OPEN_DELETION_REQUEST_STATUSES`.
+  back to the claim and sends no receipt. **A rejection can therefore never
+  become final after an approval-triggered cancellation has committed**, which
+  the single-transition protocol could not guarantee. A repeated approval
+  resumes its own claim rather than being refused, so an interrupted cleanup can
+  always be completed. A losing concurrent reviewer gets a fixed conflict and
+  sends no contradictory message. Cancellations already committed before a lost
+  claim are returned as explicit partial cleanup, never described as
+  anonymisation.
+  **The claim is taken only when there is something irreversible to protect**
+  (#2627). An approval with no future bookings to cancel commits everything it
+  does in the one anonymisation transaction, so it stays `PENDING` and finalises
+  `PENDING -> APPROVED` in a single guarded transition — the pre-#2597 protocol,
+  which is safe precisely because nothing was committed ahead of it. Claiming
+  there would consume the ability to reject in exchange for nothing, and a
+  permanent failure inside that transaction would wedge a request that nobody
+  had acted on. Rejection still claims only `PENDING`, so on this path an
+  approve and a reject do race for the same transition, exactly one wins, and
+  the loser is told the request was already reviewed with nothing destroyed
+  either way.
+  `APPROVAL_IN_PROGRESS` is an OPEN state, not a decided one: it still owes the
+  member their anonymisation, and it **may** already have cancelled their future
+  bookings — the admin UI's "may already be cancelled" is the honest wording,
+  because the claim is now only ever taken when there were bookings to cancel,
+  but it is taken before the first cancellation commits and a resumed claim can
+  outlive them all. Every "is there an outstanding request?" reader — admin
+  queue, pending counts, dashboard, the member's own re-request guard, and the
+  member-merge blocker — must therefore treat it as open via
+  `OPEN_DELETION_REQUEST_STATUSES`.
   Filtering on `PENDING` alone would hide a half-finished deletion from the
   queue that has to finish it, and would silently unblock a merge that then
   re-points the request at the surviving member.
+  **`APPROVAL_IN_PROGRESS` is not a one-way door** (#2627). A Full Admin may
+  release a started approval — `APPROVAL_IN_PROGRESS -> PENDING`, guarded on the
+  claimed status, with a mandatory reason, audited as
+  `member.deletion_approval_claim_released`, anonymising nobody and emailing the
+  member nothing. Without it a permanently blocked approval left the request
+  open forever, and while it is open the member cannot lodge a new deletion
+  request and their duplicate cannot be merged. The release cannot race a
+  finalisation that is already committing: it is the same guarded `updateMany`
+  on the same row, so a release arriving mid-commit blocks on the finalisation's
+  row lock and then matches zero rows (`DELETION_REQUEST_CLAIM_NOT_HELD`, 409),
+  while a release that commits first makes the finalisation match zero rows and
+  roll its whole anonymisation transaction back. The release returns the request
+  to `PENDING` rather than straight to `REJECTED` so the decision itself is
+  still made through the ordinary reject path, with its guard, its audit entry
+  and its notify choice.
 
 - **recalculate** — the existing full-reprice machinery with the locked-period
   clamps lifted, so locked-night pricing semantics are otherwise preserved

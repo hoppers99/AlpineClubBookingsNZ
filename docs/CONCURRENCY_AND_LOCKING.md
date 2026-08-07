@@ -1216,16 +1216,36 @@ create/manual Link/inbound reconciliation/historical backfill, including no prov
 reservation/call/link when lifecycle wins and no dangling FK-less link when
 merge or deletion completes.
 
-Approve and reject of one `DeletionRequest` share a separate exact-row winner
-protocol: one `updateMany({ id, status: PENDING })` is the only authority for a
-final decision. Approval performs that guarded transition inside the privacy
-anonymisation transaction, before any privacy mutation; rejection performs the
-same guarded transition before audit or email. PostgreSQL serialises contenders
-on the request row, so the loser returns 409 and sends no contradictory email.
-If a later approval mutation fails, the claim and anonymisation roll back
-together to PENDING. Booking cancellations committed before the approval
-transaction remain truthful partial cleanup and are reported as such if a
-concurrent rejection won.
+The deletion side of that fence takes the row lock and re-checks the blocker set,
+but deliberately does **not** re-read the deleted marker as a refusal (#2627).
+Deletion is what writes that marker, so asserting it there made a member who had
+already been through an approved self-service deletion permanently impossible to
+hard delete — the fence raised `XeroMemberUnavailableError`, which no delete path
+catches or maps, so the operator got a bare 500 with no code and no remedy.
+Anonymisation has already torn the contact linkage down (`Member.xeroContactId`
+nulled, every active Member CONTACT ledger row deactivated), so Xero
+availability is not a question that applies to such a member. The
+contact-*writing* participants still assert it, which is what makes
+deletion-first refuse them.
+
+Approve, reject and release of one `DeletionRequest` share a separate exact-row
+winner protocol: a guarded `updateMany` naming the exact status it transitions
+FROM is the only authority for any transition. Rejection claims `PENDING`. An
+approval with future bookings to cancel first claims
+`PENDING -> APPROVAL_IN_PROGRESS`, before the first cancellation commits, and
+finalises only from that claim inside the privacy anonymisation transaction; an
+approval with nothing to cancel takes no claim and finalises `PENDING ->
+APPROVED` in that same transaction, because it committed nothing ahead of it
+(#2627). A Full Admin release performs `APPROVAL_IN_PROGRESS -> PENDING`.
+PostgreSQL serialises contenders on the request row, so the loser returns 409 and
+sends no contradictory email: a release arriving while a finalisation is
+committing blocks on that row's write lock and then matches zero rows, and a
+release that commits first makes the finalisation match zero rows and roll its
+whole anonymisation transaction back. If a later approval mutation fails, the
+claim and anonymisation roll back together to whichever status the approval
+started from. Booking cancellations committed before the approval transaction
+remain truthful partial cleanup and are reported as such if a concurrent
+rejection or release won.
 
 After Xero returns a newly created contact, the operation is durably marked
 `provider_contact_created_local_link_pending` before the local link transaction.

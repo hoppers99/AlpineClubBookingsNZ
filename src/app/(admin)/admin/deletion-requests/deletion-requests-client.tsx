@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import { useSession } from "next-auth/react";
 import { useState, useEffect, useCallback } from "react";
 import {
   Card,
@@ -41,6 +42,7 @@ import {
   ADMIN_VIEW_ONLY_ACTION_REASON,
   useAdminAreaEditAccess,
 } from "@/hooks/use-admin-area-edit-access";
+import { isFullAdmin } from "@/lib/access-roles";
 import { formatNZDate, formatNZDateTime } from "@/lib/nzst-date";
 import { FocusedActionError } from "@/components/focused-action-error";
 import { buildHrefWithReturnTo } from "@/lib/internal-return-path";
@@ -129,6 +131,14 @@ export default function DeletionRequestsClient({
   // Approve/reject write the membership-area deletion routes; a view-only
   // membership admin browses the queues but cannot act (#1997).
   const canEdit = useAdminAreaEditAccess("membership");
+  // #2627: releasing a started approval re-opens a decision that had been closed
+  // to rejection, on a path where future bookings may already have been
+  // cancelled. The route requires Full Admin (403 otherwise) and stays the
+  // authority; hiding the control for everyone else keeps the UI honest.
+  const { data: session } = useSession();
+  const canReleaseApprovalClaim = session?.user
+    ? isFullAdmin({ accessRoles: session.user.accessRoles })
+    : false;
   const [statusFilter, setStatusFilter] = useState("PENDING");
   const [page, setPage] = useState(1);
   const [adminInitiatedPage, setAdminInitiatedPage] = useState(1);
@@ -152,7 +162,7 @@ export default function DeletionRequestsClient({
 
   const [reviewDialog, setReviewDialog] = useState<{
     request: DeletionRequest;
-    action: "approve" | "reject";
+    action: "approve" | "reject" | "release";
   } | null>(null);
   const [reviewNote, setReviewNote] = useState("");
   const [submitting, setSubmitting] = useState(false);
@@ -188,21 +198,30 @@ export default function DeletionRequestsClient({
 
   /**
    * The review reached the server, or may have, but its outcome never came
-   * back legibly. That is NOT the same as "it failed": approval takes a durable
-   * APPROVAL_IN_PROGRESS claim and commits future-booking cancellations one at
-   * a time before it ever anonymises anything. Leaving Approve/Reject live on
+   * back legibly. That is NOT the same as "it failed": an approval with future
+   * bookings to cancel takes a durable APPROVAL_IN_PROGRESS claim and commits
+   * those cancellations one at a time before it ever anonymises anything, and
+   * one with none commits its whole decision in a single transaction it may
+   * already have finished. Leaving Approve/Reject live on
    * the row would invite a second destructive attempt against a request the
    * server may already be part-way through — so suppress that row's controls
    * (the recovery banner disables them), re-read the authoritative queue, and
    * offer no retry.
    */
   async function enterUnconfirmedRecovery(
-    pendingReview: { request: DeletionRequest; action: "approve" | "reject" },
+    pendingReview: {
+      request: DeletionRequest;
+      action: "approve" | "reject" | "release";
+    },
     pendingNote: string,
     cause: string,
   ) {
     const attempted =
-      pendingReview.action === "approve" ? "approval" : "rejection";
+      pendingReview.action === "approve"
+        ? "approval"
+        : pendingReview.action === "release"
+          ? "approval release"
+          : "rejection";
     const recoveryBase = `This ${attempted} could not be confirmed because ${cause}. It may already have been recorded, and an approval may already have cancelled future bookings. Do not retry it — check this request's current status in the reloaded queue first.`;
     setReviewDialog(null);
     setDeletionRecovery({
@@ -468,9 +487,9 @@ export default function DeletionRequestsClient({
           Pending
         </Badge>
       );
-    // A request mid-approval has already cancelled bookings and still owes the
-    // member its anonymisation. It is emphatically not "Rejected", which is
-    // what the fall-through below would otherwise label it.
+    // A request mid-approval still owes the member its anonymisation, and may
+    // already have cancelled their future bookings. It is emphatically not
+    // "Rejected", which is what the fall-through below would otherwise label it.
     if (status === "APPROVAL_IN_PROGRESS")
       return (
         <Badge className="bg-warning-3 text-warning-11 border-warning-6">
@@ -697,28 +716,53 @@ export default function DeletionRequestsClient({
                         </ViewOnlyActionButton>
                       </div>
                     )}
-                    {/* Approval already owns this request, so rejection can no
-                        longer win it server-side and offering Reject here would
-                        be a button that can only fail. The only live action is
-                        finishing the cleanup that has already begun. */}
+                    {/* Approval already owns this request, so rejection cannot
+                        win it server-side while the claim stands, and offering
+                        Reject here would be a button that can only fail. The
+                        ordinary way forward is finishing the cleanup that has
+                        already begun. #2627: a Full Admin can instead release
+                        the claim, which hands the request back to the pending
+                        queue so it can be approved or rejected again — the way
+                        out of an approval that can never complete. */}
                     {req.status === "APPROVAL_IN_PROGRESS" && (
                       <div className="flex flex-col items-end gap-1 shrink-0">
-                        <ViewOnlyActionButton
-                          canEdit={canEdit}
-                          describeReason={false}
-                          size="sm"
-                          variant="destructive"
-                          onClick={() =>
-                            setReviewDialog({ request: req, action: "approve" })
-                          }
-                          disabled={deletionRecovery?.request.id === req.id}
-                        >
-                          Resume approval
-                        </ViewOnlyActionButton>
+                        <div className="flex gap-2">
+                          {canReleaseApprovalClaim ? (
+                            <ViewOnlyActionButton
+                              canEdit={canEdit}
+                              describeReason={false}
+                              size="sm"
+                              variant="outline"
+                              onClick={() =>
+                                setReviewDialog({
+                                  request: req,
+                                  action: "release",
+                                })
+                              }
+                              disabled={deletionRecovery?.request.id === req.id}
+                            >
+                              Release approval
+                            </ViewOnlyActionButton>
+                          ) : null}
+                          <ViewOnlyActionButton
+                            canEdit={canEdit}
+                            describeReason={false}
+                            size="sm"
+                            variant="destructive"
+                            onClick={() =>
+                              setReviewDialog({ request: req, action: "approve" })
+                            }
+                            disabled={deletionRecovery?.request.id === req.id}
+                          >
+                            Resume approval
+                          </ViewOnlyActionButton>
+                        </div>
                         <p className="text-xs text-warning-11 max-w-56 text-right">
                           Approval started and did not finish. Future bookings
-                          may already be cancelled; this request can only be
-                          completed, not rejected.
+                          may already be cancelled.{" "}
+                          {canReleaseApprovalClaim
+                            ? "Resume to complete it, or release it back to pending to decide again."
+                            : "It cannot be rejected while the approval is started; a Full Admin can release it back to pending."}
                         </p>
                       </div>
                     )}
@@ -783,7 +827,9 @@ export default function DeletionRequestsClient({
             <DialogTitle>
               {reviewDialog?.action === "approve"
                 ? "Approve Deletion Request"
-                : "Reject Deletion Request"}
+                : reviewDialog?.action === "release"
+                  ? "Release Started Approval"
+                  : "Reject Deletion Request"}
             </DialogTitle>
             <DialogDescription>
               {reviewDialog?.action === "approve" ? (
@@ -795,6 +841,14 @@ export default function DeletionRequestsClient({
                   </strong>
                   &apos;s account, cancel all future bookings, and deactivate
                   their login. This action cannot be undone.
+                </>
+              ) : reviewDialog?.action === "release" ? (
+                <>
+                  This hands the request back to the pending queue so it can be
+                  approved or rejected again. Nobody is anonymised and the
+                  member is not emailed. Any future bookings the started
+                  approval already cancelled stay cancelled — say why you are
+                  releasing it.
                 </>
               ) : reviewDialog?.request.member.email ? (
                 <>
@@ -813,7 +867,9 @@ export default function DeletionRequestsClient({
             <Label htmlFor="review-note">
               {reviewDialog?.action === "approve"
                 ? "Note (optional)"
-                : "Reason for rejection (optional — will be sent to member)"}
+                : reviewDialog?.action === "release"
+                  ? "Reason for releasing (required — recorded on the request)"
+                  : "Reason for rejection (optional — will be sent to member)"}
             </Label>
             <Textarea
               id="review-note"
@@ -826,7 +882,11 @@ export default function DeletionRequestsClient({
                  `useFieldHint` because the hint only exists on one branch —
                  an always-spread `aria-describedby` would dangle on the other. */
               placeholder={
-                reviewDialog?.action === "reject" ? undefined : "Internal note"
+                reviewDialog?.action === "reject"
+                  ? undefined
+                  : reviewDialog?.action === "release"
+                    ? undefined
+                    : "Internal note"
               }
               aria-describedby={
                 reviewDialog?.action === "reject"
@@ -861,6 +921,17 @@ export default function DeletionRequestsClient({
                 disabled={submitting}
               >
                 {submitting ? "Processing..." : "Approve & Delete Account"}
+              </Button>
+            ) : reviewDialog?.action === "release" ? (
+              // #2627: no member email on this path — the release decides
+              // nothing, it only re-opens the decision. The reason is mandatory
+              // (the route returns 400 without one), so the control says so
+              // rather than letting the submission fail.
+              <Button
+                onClick={() => handleReview()}
+                disabled={submitting || reviewNote.trim().length === 0}
+              >
+                {submitting ? "Processing..." : "Release back to pending"}
               </Button>
             ) : reviewDialog?.request.member.email ? (
               // #1788: reject with a member on file — two-button email choice.

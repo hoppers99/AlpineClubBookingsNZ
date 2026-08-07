@@ -13,23 +13,43 @@ vi.mock("next/link", () => ({
 // #1997: the client now derives view-only gating from the session matrix via
 // useAdminAreaEditAccess. Mock an all-edit admin so the existing approve/reject
 // action assertions (enabled buttons) hold.
-vi.mock("next-auth/react", () => ({
-  useSession: () => ({
-    data: {
-      user: {
-        id: "admin-1",
-        adminPermissionMatrix: {
-          overview: "edit",
-          bookings: "edit",
-          membership: "edit",
-          finance: "edit",
-          lodge: "edit",
-          content: "edit",
-          support: "edit",
-        },
-      },
+//
+// #2627: the release control is additionally gated on Full Admin (the ADMIN
+// access role), which is NOT the same permission as membership edit — a
+// Membership Officer has the latter and not the former. The session is therefore
+// mutable so both sides of that gate can be driven. `FULL_ADMIN_SESSION_USER` is
+// the default; `restoreDefaultSessionUser()` puts it back.
+const sessionMock = vi.hoisted(() => {
+  const fullAdmin = {
+    id: "admin-1",
+    accessRoles: [{ role: "ADMIN" }],
+    adminPermissionMatrix: {
+      overview: "edit",
+      bookings: "edit",
+      membership: "edit",
+      finance: "edit",
+      lodge: "edit",
+      content: "edit",
+      support: "edit",
     },
-  }),
+  };
+  return { fullAdmin, user: fullAdmin as Record<string, unknown> };
+});
+
+function restoreDefaultSessionUser() {
+  sessionMock.user = sessionMock.fullAdmin;
+}
+
+/** A Membership Officer: membership edit access, no Full Admin access role. */
+function useMembershipOfficerSession() {
+  sessionMock.user = {
+    ...sessionMock.fullAdmin,
+    accessRoles: [{ role: "ADMIN_MEMBERSHIP" }],
+  };
+}
+
+vi.mock("next-auth/react", () => ({
+  useSession: () => ({ data: { user: sessionMock.user } }),
 }));
 
 import DeletionRequestsClient from "../deletion-requests-client";
@@ -733,7 +753,14 @@ describe("deletion review outcome that never came back legibly (#2597)", () => {
     expect(alert?.textContent).toMatch(/stays active until you reload/i);
   });
 
-  it("offers only a resume on an APPROVAL_IN_PROGRESS row, never a reject", async () => {
+  /**
+   * #2627: this test used to assert that Resume was the ONLY control an
+   * `APPROVAL_IN_PROGRESS` row offered, which pinned the claim as a one-way
+   * door — the exact defect. It now pins the replacement contract: Reject is
+   * still absent (it could only fail while the claim stands), and the way out is
+   * an explicit Full-Admin release rather than nothing at all.
+   */
+  it("offers resume and a Full Admin release on an APPROVAL_IN_PROGRESS row, never a reject", async () => {
     vi.stubGlobal(
       "fetch",
       buildFetch(
@@ -747,19 +774,110 @@ describe("deletion review outcome that never came back legibly (#2597)", () => {
     render(<DeletionRequestsClient sessionMemberId="admin-1" />);
     await screen.findByText("Riley Chen");
 
-    // Rejection can no longer win this request server-side, so the button that
-    // could only fail is not offered at all.
+    // Rejection cannot win this request server-side while the claim stands, so
+    // the button that could only fail is still not offered at all.
     expect(screen.queryByRole("button", { name: "Reject" })).toBeNull();
     expect(screen.queryByRole("button", { name: "Approve" })).toBeNull();
     expect(
       screen.getByRole("button", { name: "Resume approval" }),
+    ).not.toBeNull();
+    // The way out of a claim that can never complete.
+    expect(
+      screen.getByRole("button", { name: "Release approval" }),
     ).not.toBeNull();
 
     // And it is not mislabelled as a finished rejection.
     expect(screen.getByText("Approval in progress")).not.toBeNull();
     expect(screen.queryByText("Rejected")).toBeNull();
     expect(
-      screen.getByText(/can only be completed, not rejected/i),
+      screen.getByText(/release it back to pending to decide again/i),
     ).not.toBeNull();
+  });
+
+  it("hides the release from a membership admin who is not a Full Admin, and says who can", async () => {
+    useMembershipOfficerSession();
+    try {
+      vi.stubGlobal(
+        "fetch",
+        buildFetch(
+          () => {
+            throw new Error("no review should be submitted in this test");
+          },
+          [{ ...deletionRequest, status: "APPROVAL_IN_PROGRESS" }],
+        ),
+      );
+
+      render(<DeletionRequestsClient sessionMemberId="admin-1" />);
+      await screen.findByText("Riley Chen");
+
+      // Membership edit access still gets Resume; the route refuses the release
+      // with a 403, so offering it here would be a button that can only fail.
+      expect(
+        screen.getByRole("button", { name: "Resume approval" }),
+      ).not.toBeNull();
+      expect(screen.queryByRole("button", { name: "Release approval" })).toBeNull();
+      expect(
+        screen.getByText(/a Full Admin can release it back to pending/i),
+      ).not.toBeNull();
+    } finally {
+      restoreDefaultSessionUser();
+    }
+  });
+
+  it("requires a reason before releasing, then posts the release and reloads the queue", async () => {
+    const post = vi.fn(
+      async () =>
+        ({
+          ok: true,
+          status: 200,
+          json: async () => ({ message: "Approval released." }),
+        }) as Response,
+    );
+    const fetchMock = buildFetch(post, [
+      { ...deletionRequest, status: "APPROVAL_IN_PROGRESS" },
+    ]);
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<DeletionRequestsClient sessionMemberId="admin-1" />);
+    await screen.findByText("Riley Chen");
+    fireEvent.click(screen.getByRole("button", { name: "Release approval" }));
+
+    // The route rejects a reasonless release with a 400, so the control must not
+    // let one be submitted in the first place.
+    const submit = (await screen.findByRole("button", {
+      name: "Release back to pending",
+    })) as HTMLButtonElement;
+    expect(submit.disabled).toBe(true);
+
+    fireEvent.change(screen.getByLabelText(/Reason for releasing/i), {
+      target: { value: "Xero blocker will never clear" },
+    });
+    expect(submit.disabled).toBe(false);
+    fireEvent.click(submit);
+
+    await waitFor(() => expect(post).toHaveBeenCalledTimes(1));
+    const body = JSON.parse(
+      String(
+        (
+          fetchMock.mock.calls.find(
+            (call) => (call[1] as RequestInit | undefined)?.method === "POST",
+          )?.[1] as RequestInit
+        ).body,
+      ),
+    );
+    expect(body).toEqual({
+      action: "release",
+      note: "Xero blocker will never clear",
+    });
+
+    // A release changes the row's status, so the queue is re-read rather than
+    // patched locally.
+    await waitFor(() =>
+      expect(
+        fetchMock.mock.calls.filter(([input]) =>
+          String(input).startsWith("/api/admin/deletion-requests?"),
+        ).length,
+      ).toBeGreaterThan(1),
+    );
   });
 });
