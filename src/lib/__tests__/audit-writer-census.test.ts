@@ -42,6 +42,7 @@ import {
 } from "../../../scripts/audit/audit-writer-census";
 import {
   APPROVED_FORWARDED_CATEGORY_SITES,
+  APPROVED_MIGRATION_AUDIT_SQL,
   APPROVED_NON_PRODUCING_AUDIT_DML,
   AUDIT_CENSUS_TOTALS,
   AUDIT_WRITER_WRAPPERS,
@@ -256,14 +257,56 @@ describe("audit writer census (#2581)", { timeout: 180_000 }, () => {
     expect(selfReferences).toEqual([]);
   });
 
-  it("finds no audit write in scripts/ or prisma/ at all", () => {
+  it("finds no TypeScript audit write in scripts/ or prisma/", () => {
     // Both trees reach the same database without going through a route, so a seed or
     // an operator backfill could write audit rows with no request context and no
     // review. Neither does today; a first one should be a conversation.
+    //
+    // Scoped to TypeScript deliberately, because `prisma/` is NOT clean in SQL —
+    // see the migration assertion below. An unqualified "nothing writes the table
+    // outside src/" would have been false.
     const outsideSrc = [...census().sites, ...census().nonProducingDml].filter(
       (site) => !site.file.startsWith("src/"),
     );
     expect(ids(outsideSrc)).toEqual([]);
+  });
+
+  it("has exactly the approved raw-SQL AuditLog statements in migrations", () => {
+    /*
+      The form no TypeScript census can see, and the reason the assertion above is
+      qualified. Two committed migrations write `"AuditLog"` in raw SQL: a
+      door-code redaction (four UPDATEs) and an email-override cleanup (one INSERT).
+      Both bypass `audit.ts` entirely — no metadata sanitisation, no retention
+      derivation, no closed category type — so a third one needs the same review,
+      and before this pin nothing would have shown it.
+
+      The scan strips SQL comments first: the door-code migration's own header
+      discusses `UPDATE "AuditLog"` as well as performing it, which is the same
+      comment false positive that put a phantom uncategorised writer in this
+      issue's title.
+    */
+    expect(census().sqlFilesScanned).toBeGreaterThan(250);
+
+    expect(
+      census().sqlStatements.map((statement) => statement.id).sort(),
+      "A migration writes, rewrites or deletes AuditLog rows in raw SQL. That " +
+        "bypasses the audit boundary's sanitisation, retention derivation and " +
+        "category type, and it changes the club's own history, so it must be " +
+        "declared in APPROVED_MIGRATION_AUDIT_SQL with its reason.",
+    ).toEqual(Object.keys(APPROVED_MIGRATION_AUDIT_SQL).sort());
+
+    // And a row-producing INSERT must name the column, or its rows are born
+    // uncategorised in exactly the way the 82 TypeScript sites are.
+    expect(
+      census()
+        .sqlStatements.filter(
+          (statement) => statement.producesRow && !statement.namesCategory,
+        )
+        .map((statement) => statement.id),
+      "A migration INSERTs AuditLog rows without naming \"category\" in its " +
+        "column list. Those rows are returned by no correlation tool and, unless " +
+        "the migration also sets expiresAt by hand, are kept forever.",
+    ).toEqual([]);
   });
 });
 

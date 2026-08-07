@@ -170,6 +170,16 @@ stale. They are measured on every CI run now, and a **new** uncategorised audit 
 fails the census contract with its own symbol named — the mechanism that stops this
 population growing again while it is being drained.
 
+The census covers all four TypeScript writer forms (`logAudit`, `createAuditLog`,
+`createStructuredAuditLog`, and a direct `auditLog.create`), the fourteen wrapper helpers
+that write on a caller's behalf, and — because a TypeScript-only census would have claimed
+`prisma/` was clean when it is not — the **raw SQL** in committed migrations. Two
+migrations write `"AuditLog"` directly, bypassing the audit boundary's sanitisation and
+retention derivation; both are pinned with a reason, and a migration that `INSERT`s audit
+rows without naming `"category"` fails the same contract. It parses rather than greps, so a
+sink named inside a comment is not counted — the phantom `createStructuredAuditLog`
+omission preserved in the issue's own title was exactly that.
+
 One consequence worth stating because it is not obvious: all 82 also pass no `severity`
 and no `retentionClass`, and the writer derives a retention class only when one of those
 three is present. So every one of those rows is stored today with **no expiry at all** —

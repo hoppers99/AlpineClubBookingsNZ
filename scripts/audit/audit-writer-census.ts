@@ -43,6 +43,14 @@
  * statements in `src/lib/audit-retention.ts`; the contract test pins that set so
  * a new hand-written mutation of the audit trail has to be declared.
  *
+ * ONE FORM IS NOT TYPESCRIPT AT ALL, and a TS-only census would claim `prisma/`
+ * was clean while a migration wrote the table: raw SQL DML against `"AuditLog"`
+ * inside `prisma/migrations/…/migration.sql`. Two migrations do it today — a
+ * door-code redaction `UPDATE` and an email-override `INSERT` — so the SQL is
+ * scanned as well, comment-stripped, and inventoried separately. An `INSERT` is
+ * row-producing and its column list is checked for `"category"`; `UPDATE` and
+ * `DELETE` cannot carry one and are recorded as mutations of existing evidence.
+ *
  * Run it: `npm run audit:census` prints a deterministic TSV of every site.
  */
 import { readdirSync, readFileSync } from "node:fs";
@@ -500,6 +508,143 @@ function scanFile(file: string, repoRoot: string): AuditWriteSite[] {
   return found;
 }
 
+/**
+ * One raw-SQL statement against `"AuditLog"` in a committed migration.
+ *
+ * Identity is `<path>::<statement kind>#<ordinal>` — the same shape as a
+ * TypeScript site's, and equally line-independent, because a migration file is
+ * immutable once committed but its position in a reformatted tree is not.
+ */
+export type AuditSqlStatement = {
+  file: string;
+  id: string;
+  line: number;
+  kind: "insert" | "update" | "delete";
+  /** True for `INSERT`; `UPDATE`/`DELETE` mutate rows that already have one. */
+  producesRow: boolean;
+  /** For an `INSERT`, whether its column list names `"category"`. */
+  namesCategory: boolean;
+};
+
+/**
+ * SQL with `--` line comments and `/* … *​/` blocks blanked out, newlines kept so
+ * line numbers survive. Blanking rather than deleting is what keeps the offsets
+ * usable; the door-code migration discusses `UPDATE "AuditLog"` in its header
+ * comment as well as performing it, so a census that did not strip comments would
+ * over-count exactly the way the TypeScript docblock false positive did.
+ */
+function stripSqlComments(sql: string): string {
+  let out = "";
+  let index = 0;
+  let inLine = false;
+  let inBlock = false;
+  let inString = false;
+
+  while (index < sql.length) {
+    const char = sql[index];
+    const next = sql[index + 1];
+
+    if (inLine) {
+      if (char === "\n") {
+        inLine = false;
+        out += char;
+      } else {
+        out += " ";
+      }
+      index += 1;
+      continue;
+    }
+    if (inBlock) {
+      if (char === "*" && next === "/") {
+        inBlock = false;
+        out += "  ";
+        index += 2;
+        continue;
+      }
+      out += char === "\n" ? "\n" : " ";
+      index += 1;
+      continue;
+    }
+    if (inString) {
+      // Postgres doubles a quote to escape it; either way the state machine only
+      // has to know it is still inside the literal.
+      if (char === "'") inString = false;
+      out += char;
+      index += 1;
+      continue;
+    }
+    if (char === "'") {
+      inString = true;
+      out += char;
+      index += 1;
+      continue;
+    }
+    if (char === "-" && next === "-") {
+      inLine = true;
+      out += "  ";
+      index += 2;
+      continue;
+    }
+    if (char === "/" && next === "*") {
+      inBlock = true;
+      out += "  ";
+      index += 2;
+      continue;
+    }
+    out += char;
+    index += 1;
+  }
+
+  return out;
+}
+
+const SQL_AUDIT_DML =
+  /\b(INSERT\s+INTO|UPDATE|DELETE\s+FROM)\s+"AuditLog"/gi;
+
+function scanSqlFile(file: string, repoRoot: string): AuditSqlStatement[] {
+  const relativePath = toPosix(relative(repoRoot, file));
+  const sql = stripSqlComments(readFileSync(file, "utf8"));
+  const found: AuditSqlStatement[] = [];
+  const ordinals = new Map<string, number>();
+
+  for (const match of sql.matchAll(SQL_AUDIT_DML)) {
+    const keyword = match[1].toUpperCase();
+    const kind = keyword.startsWith("INSERT")
+      ? "insert"
+      : keyword.startsWith("UPDATE")
+        ? "update"
+        : "delete";
+    const at = match.index ?? 0;
+    const ordinalKey = `${relativePath}::${kind}`;
+    const ordinal = ordinals.get(ordinalKey) ?? 0;
+    ordinals.set(ordinalKey, ordinal + 1);
+
+    // The column list is the first parenthesised group after the table name; an
+    // INSERT that omits it is relying on positional columns, which cannot be read
+    // here, so it counts as NOT naming a category and has to be declared.
+    let namesCategory = false;
+    if (kind === "insert") {
+      const rest = sql.slice(at + match[0].length);
+      const open = rest.indexOf("(");
+      const close = rest.indexOf(")");
+      if (open !== -1 && close > open && rest.slice(0, open).trim() === "") {
+        namesCategory = /"category"/i.test(rest.slice(open, close));
+      }
+    }
+
+    found.push({
+      file: relativePath,
+      id: `${ordinalKey}#${ordinal}`,
+      line: sql.slice(0, at).split("\n").length,
+      kind,
+      producesRow: kind === "insert",
+      namesCategory,
+    });
+  }
+
+  return found;
+}
+
 export type AuditWriterCensus = {
   /** Every row-producing site, sorted by id. */
   sites: readonly AuditWriteSite[];
@@ -515,17 +660,35 @@ export type AuditWriterCensus = {
   categoryCounts: Readonly<Record<string, number>>;
   /** Sink to `{ total, uncategorised }`. */
   sinkCounts: Readonly<Record<string, { total: number; uncategorised: number }>>;
+  /** Raw-SQL DML against `"AuditLog"` in committed migrations, sorted by id. */
+  sqlStatements: readonly AuditSqlStatement[];
   /** Files scanned, for the "did the scan actually run" assertion. */
   filesScanned: number;
+  /** Migration `.sql` files scanned, for the same reason. */
+  sqlFilesScanned: number;
 };
+
+function listSqlFiles(dir: string, out: string[]): string[] {
+  for (const entry of readdirSync(dir, { withFileTypes: true })) {
+    const full = join(dir, entry.name);
+    if (entry.isDirectory()) {
+      listSqlFiles(full, out);
+      continue;
+    }
+    if (entry.name.endsWith(".sql")) out.push(full);
+  }
+  return out;
+}
 
 /**
  * Walk `src/`, `scripts/` and `prisma/` and inventory every audit write.
  *
  * `prisma/` and `scripts/` are in scope because they reach the same database
  * without going through a route: a seed or an operator backfill that wrote an
- * audit row would be invisible to a `src`-only scan. Neither contributes a site
- * today, and the contract test pins that.
+ * audit row would be invisible to a `src`-only scan. Neither contributes a
+ * TypeScript site today, and the contract test pins that — but `prisma/` DOES
+ * write the table in raw SQL, which is why `sqlStatements` exists rather than the
+ * TS-only claim that the tree is clean.
  */
 export function scanAuditWriterCensus(
   repoRoot: string = process.cwd(),
@@ -535,6 +698,11 @@ export function scanAuditWriterCensus(
     listSourceFiles(join(repoRoot, root), files);
   }
   files.sort();
+
+  const sqlFiles = listSqlFiles(join(repoRoot, "prisma"), []).sort();
+  const sqlStatements = sqlFiles
+    .flatMap((file) => scanSqlFile(file, repoRoot))
+    .sort((a, b) => a.id.localeCompare(b.id));
 
   const all = files.flatMap((file) => scanFile(file, repoRoot));
   const byId = (a: AuditWriteSite, b: AuditWriteSite) => a.id.localeCompare(b.id);
@@ -562,7 +730,9 @@ export function scanAuditWriterCensus(
     conditional: sites.filter((site) => site.category.kind === "conditional"),
     categoryCounts,
     sinkCounts,
+    sqlStatements,
     filesScanned: files.length,
+    sqlFilesScanned: sqlFiles.length,
   };
 }
 
@@ -609,7 +779,27 @@ export function renderCensusTsv(census: AuditWriterCensus): string {
       String(site.hasEntityIdentifier),
     ].join("\t"),
   );
-  return [TSV_HEADER, ...rows].join("\n");
+  // Migration SQL shares the table so it shares the report; `sink` reads
+  // `sql.<kind>` and `category` reads whether an INSERT names the column.
+  const sqlRows = census.sqlStatements.map((statement) =>
+    [
+      statement.id,
+      statement.file,
+      "<migration>",
+      String(statement.line),
+      `sql.${statement.kind}`,
+      String(statement.producesRow),
+      "(sql)",
+      statement.producesRow
+        ? statement.namesCategory
+          ? "named"
+          : "(absent)"
+        : "(dml)",
+      "false",
+      "false",
+    ].join("\t"),
+  );
+  return [TSV_HEADER, ...rows, ...sqlRows].join("\n");
 }
 
 function main(): void {
@@ -618,11 +808,13 @@ function main(): void {
   process.stderr.write(
     [
       `files scanned:        ${census.filesScanned}`,
+      `sql files scanned:    ${census.sqlFilesScanned}`,
       `row-producing sites:  ${census.sites.length}`,
       `uncategorised:        ${census.uncategorised.length}`,
       `forwarded category:   ${census.forwarded.length}`,
       `conditional category: ${census.conditional.length}`,
       `non-producing DML:    ${census.nonProducingDml.length}`,
+      `migration SQL on AuditLog: ${census.sqlStatements.length}`,
       `category values:      ${JSON.stringify(census.categoryCounts)}`,
       `by sink:              ${JSON.stringify(census.sinkCounts)}`,
       "",

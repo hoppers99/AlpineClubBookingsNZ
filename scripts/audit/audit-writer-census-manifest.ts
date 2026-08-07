@@ -606,6 +606,39 @@ export const APPROVED_NON_PRODUCING_AUDIT_DML: Readonly<Record<string, string>> 
 };
 
 /**
+ * Raw-SQL DML against `"AuditLog"` inside committed migrations.
+ *
+ * WHY THIS LIST EXISTS RATHER THAN AN ASSERTION THAT `prisma/` IS CLEAN. It is
+ * not clean, and a TypeScript-only census would have said it was: two migrations
+ * write the audit table directly, bypassing `audit.ts` and everything it
+ * guarantees — no `sanitizeAuditMetadata`, no retention derivation, no closed
+ * category type. Both are legitimate and both are reviewed; the point is that a
+ * THIRD one has to be reviewed too, and a census that could not see them would
+ * have let it through while reporting a clean tree.
+ *
+ * An `INSERT` here is a row-producing write and its column list is checked for
+ * `"category"` — the email-override migration names it and passes `'admin'`.
+ * `UPDATE` and `DELETE` mutate rows that already carry whatever category they were
+ * written with, so they are the SQL counterpart of
+ * `APPROVED_NON_PRODUCING_AUDIT_DML`.
+ *
+ * Committed migrations are immutable, so this list only ever grows, and every
+ * addition is a deliberate change to the club's audit history.
+ */
+export const APPROVED_MIGRATION_AUDIT_SQL: Readonly<Record<string, string>> = {
+  "prisma/migrations/20260710000100_redact_audit_log_door_codes/migration.sql::update#0":
+    "Door-code redaction (#2115): removes leaked lodge door codes from historical audit summaries.",
+  "prisma/migrations/20260710000100_redact_audit_log_door_codes/migration.sql::update#1":
+    "Door-code redaction: the same sweep over `details`.",
+  "prisma/migrations/20260710000100_redact_audit_log_door_codes/migration.sql::update#2":
+    "Door-code redaction: the same sweep over `metadata`.",
+  "prisma/migrations/20260710000100_redact_audit_log_door_codes/migration.sql::update#3":
+    "Door-code redaction: the final sweep pass.",
+  "prisma/migrations/20260801150000_strip_email_override_bracket_annotations/migration.sql::insert#0":
+    "Email-override cleanup: records one EMAIL_TEMPLATE_OVERRIDE_UPDATED row per template the upgrade rewrote. Names `\"category\"` and writes `admin`, plus an explicit severity, retentionClass and expiresAt.",
+};
+
+/**
  * Row-producing sites whose category is decided somewhere other than the call.
  *
  * Exactly one today, and it is safe for a specific reason rather than by
