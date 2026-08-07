@@ -129,10 +129,22 @@ export async function POST(
         payment.booking.finalPriceCents -
           (await deriveBookingAppliedCreditCents(bookingId, prisma))
     ) {
-      return NextResponse.json(
-        { error: "Payment amount does not match booking total" },
-        { status: 400 }
+      // Stripe has already confirmed that money moved. An amount drift means
+      // we cannot safely promote the booking from the snapshot above, but it
+      // must never look like an ordinary validation failure that invites a
+      // second payment. Keep the response provider-safe and use the same
+      // status-unconfirmed contract as every unexpected post-capture failure.
+      logger.error(
+        {
+          bookingId,
+          capturedAmountCents: pi.amount,
+          bookingAmountCents: payment.booking.finalPriceCents,
+        },
+        "Succeeded payment amount no longer matches booking total",
       );
+      return NextResponse.json(PAYMENT_RECEIVED_STATUS_UNCONFIRMED_BODY, {
+        status: 409,
+      });
     }
 
     const reconciliation = await markBookingPaymentSucceeded({

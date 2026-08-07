@@ -1271,6 +1271,45 @@ describe("generic-catch error-message leak (F31 #1888)", () => {
     );
   });
 
+  it("confirm-payment preserves the captured-payment fact when the booking amount drifted", async () => {
+    mockPrisma.payment.findUnique.mockResolvedValue({
+      id: "payment-1",
+      stripePaymentIntentId: "pi_amount_drift",
+      status: "PROCESSING",
+      booking: {
+        memberId: "member-1",
+        finalPriceCents: 12500,
+        status: "CONFIRMED",
+      },
+    });
+    mockGetPaymentIntent.mockResolvedValue({
+      id: "pi_amount_drift",
+      amount: 12000,
+      payment_method: "pm_private",
+      status: "succeeded",
+    });
+
+    const response = await confirmPaymentRoute(
+      new NextRequest(
+        "http://localhost/api/bookings/booking-1/confirm-payment",
+        {
+          method: "POST",
+          body: JSON.stringify({ paymentIntentId: "pi_amount_drift" }),
+          headers: { "Content-Type": "application/json" },
+        },
+      ),
+      { params: Promise.resolve({ id: "booking-1" }) },
+    );
+    const body = await response.json();
+
+    expect(response.status).toBe(409);
+    expect(body).toEqual(PAYMENT_RECEIVED_STATUS_UNCONFIRMED_BODY);
+    expect(JSON.stringify(body)).not.toContain("pi_amount_drift");
+    expect(JSON.stringify(body)).not.toContain("pm_private");
+    expect(mocks.markBookingPaymentSucceeded).not.toHaveBeenCalled();
+    expect(mocks.queueXeroInvoiceForPaidBooking).not.toHaveBeenCalled();
+  });
+
   it("confirm-payment: an unexpected pre-capture provider error stays on the fixed generic response", async () => {
     mockPrisma.payment.findUnique.mockResolvedValue({
       id: "payment-1",
