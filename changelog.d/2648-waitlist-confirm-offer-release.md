@@ -8,8 +8,10 @@
   collide, and when it did the member saw a generic failure while their booking sat
   in a state with no offer left, nothing to pay, and nothing to retry.
 
-  The undo now gets a much longer window to succeed, tries a second time if it
-  collides, and can no longer turn into an unexplained error. In the rare case
+  The undo now gets a considerably longer window to succeed, tries a second time
+  if it collides, and can no longer turn into an unexplained error. The window is
+  kept short enough that a member is never left waiting much past half a minute.
+  In the rare case
   where it still cannot run, the member is told plainly what happened — their offer
   was used up, the booking is waiting on a lodge administrator, and they should not
   try again — and the club gets a critical entry in Admin -> Audit log (filter on

@@ -41,11 +41,18 @@ import {
  * transaction. On Prisma's defaults (2s `maxWait`, 5s `timeout`) the
  * compensation was therefore the likeliest step in the whole route to fail, and
  * its failure is what leaves a $0 booking parked in `PAYMENT_PENDING` with the
- * offer already consumed. Explicit budgets plus one retry, and a mapped
- * response either way.
+ * offer already consumed.
+ *
+ * These are deliberately generous against those defaults but TIGHTER than the
+ * admin precedents (`saveClubTheme` 10s/15s, `assignBedRange` 10s/30s), because
+ * a member is watching this request rather than an officer: two attempts cap the
+ * member-visible wait at roughly 30s. Going higher would buy almost nothing —
+ * `member-merge` holds global `lock(1)` for up to 120s, so no budget a member
+ * could reasonably wait out beats it. That is exactly why the guard and the
+ * operator door below exist instead of a bigger number.
  */
-const OFFER_RELEASE_MAX_WAIT_MS = 10_000;
-const OFFER_RELEASE_TIMEOUT_MS = 20_000;
+const OFFER_RELEASE_MAX_WAIT_MS = 5_000;
+const OFFER_RELEASE_TIMEOUT_MS = 10_000;
 const OFFER_RELEASE_ATTEMPTS = 2;
 const OFFER_RELEASE_RETRY_DELAY_MS = 250;
 

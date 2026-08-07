@@ -1521,9 +1521,16 @@ the `catch`**: its own failure replaced the mapped retry with an unhandled 500
 *and* left the booking parked with a consumed offer. Three rules came out of it,
 and they generalise to any compensating transaction in this codebase:
 
-1. **Explicit budgets.** The release runs on `maxWait` 10s / `timeout` 20s, not
-   the interactive defaults. A compensation that inherits the defaults is tuned
-   for the quiet case and fails in the only case it exists for.
+1. **Explicit budgets, sized for who is waiting.** The release runs on `maxWait`
+   5s / `timeout` 10s, not the interactive defaults: a compensation that inherits
+   the defaults is tuned for the quiet case and fails in the only case it exists
+   for. It is deliberately *tighter* than the admin precedents (`saveClubTheme`
+   10s/15s, `assignBedRange` 10s/30s) because a **member** is watching this
+   request — two attempts cap the visible wait near 30s. Raising it further would
+   buy almost nothing: `member-merge` holds global `lock(1)` for up to 120s
+   (`member-merge.ts` `timeout: 120_000`), so no budget a member could reasonably
+   wait out beats a merge, which is why rules 2 and 3 exist rather than a bigger
+   number.
 2. **Bounded retry, then a guard that cannot throw.** One retry on P2028/P2034,
    then the outcome is returned as data. A compensation is never allowed to
    throw past the handler and become the response.

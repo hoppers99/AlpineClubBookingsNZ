@@ -180,10 +180,12 @@ describe("zero-dollar waitlist participant contention (#2597)", () => {
       },
     });
     // The compensation runs on explicit budgets rather than Prisma's 2s/5s
-    // defaults, because it runs under exactly the contention that triggered it.
+    // defaults, because it runs under exactly the contention that triggered it —
+    // but tighter than the admin precedents, because two attempts must not keep a
+    // member waiting much past 30s (#2623).
     expect(mocks.transaction.mock.calls[1]?.[1]).toEqual({
-      maxWait: 10_000,
-      timeout: 20_000,
+      maxWait: 5_000,
+      timeout: 10_000,
     });
     expect(mocks.reconcileBeds).toHaveBeenCalledWith(
       expect.objectContaining({ bookingId: "booking-1" }),
