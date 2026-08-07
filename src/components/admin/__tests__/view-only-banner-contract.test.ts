@@ -322,11 +322,11 @@ const NOTICE = "AdminViewOnlyNotice";
 */
 const FIGURES = {
   /** Every `<ViewOnlyActionButton>` render site in the admin tree. */
-  callSites: 311,
+  callSites: 312,
   /** Those that hand their explanation to a banner, by either rule. */
-  optOuts: 262,
+  optOuts: 263,
   /** `describeReason={false}` — needs a banner in the SAME file. */
-  staticOptOuts: 235,
+  staticOptOuts: 236,
   /** `describeReason={!ancestorRendersViewOnlyBanner}` — needs a vouch. */
   vouchedOptOuts: 27,
   /** …of the vouched: proved at a parent's own JSX render site (#2168). */
@@ -1262,6 +1262,20 @@ describe("view-only section banner coverage (#2160)", () => {
                removed site was a same-file static opt-out, so static opt-outs
                move 235 -> 234 and total opt-outs move 262 -> 261. Banner,
                vouch and per-button-explanation counts are unchanged.
+          311  +1  Unrecorded when it landed, reconstructed here from the
+               commit rather than left as a hole in the chain: #2597 restored a
+               same-file static opt-out (callSites 310 -> 311, optOuts
+               261 -> 262, staticOptOuts 234 -> 235) and updated the measured
+               figures without adding its ledger line. The entry above it reads
+               310, the figures read 311, and the gap was exactly this. Noticed
+               while measuring the entry below, whose own numbers would
+               otherwise have looked like +2.
+          312  +1  #2352 MC-03D adds the per-page Delete control to the Page
+               Content cards, beside the Hide/Publish toggle it sits with and
+               under the banner that file already renders. Static opt-outs move
+               235 -> 236 and total opt-outs 262 -> 263; the vouched split,
+               the exceptions and the banner count are untouched, because the
+               control is gated on the same content area the banner states.
       */
       // #2259 adds the per-booking "No emails"
       // switch (`booking-no-emails-controls.tsx`), a leaf control dropped into

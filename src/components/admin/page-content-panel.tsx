@@ -64,6 +64,7 @@ import {
 } from "@/components/ui/dialog";
 import type { EditablePageRecord } from "@/lib/page-content";
 import {
+  canDeletePage,
   canUnpublishPage,
   isSystemPageSlug,
   SYSTEM_PAGE_SLUGS,
@@ -1476,6 +1477,7 @@ export const WysiwygEditor = forwardRef<
 
 export function PageContentPanel() {
   const canEdit = useAdminAreaEditAccess("content");
+  const { confirm, confirmDialog } = useConfirm();
   const [pages, setPages] = useState<EditablePageRecord[]>([]);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -1500,6 +1502,15 @@ export function PageContentPanel() {
   const [newSortOrder, setNewSortOrder] = useState(100);
   const bodyEditorRef = useRef<WysiwygEditorHandle | null>(null);
   const headerEditorRef = useRef<WysiwygEditorHandle | null>(null);
+  /*
+    In-flight guard for the one destructive row action on these cards, held in a
+    ref rather than derived from a disabled button (AGENTS.md, the row-level
+    write rule): two clicks dispatched inside a single tick both see the
+    pre-update state, so a disabled attribute is set too late to stop the second
+    request. Here the second request would 404 on a row the first already
+    removed, which is harmless but reads to the officer as a failure.
+  */
+  const deleteInFlightRef = useRef<string | null>(null);
   /*
     #2264: the Add-Page dialog and the Edit-Page panel are twins — the same four
     facts about a page, asked twice — so their example values are converted
@@ -1599,6 +1610,150 @@ export function PageContentPanel() {
           ? error.message
           : "Failed to update page visibility",
       );
+    }
+  }
+
+  /**
+   * Which page the public header's Book Now button currently points at.
+   *
+   * Read lazily, at the moment the officer asks to delete something, rather than
+   * on mount: it is only ever needed to answer one sentence in one dialog, and a
+   * failed read must not stop a page load. `undefined` means "could not be
+   * determined" and is deliberately distinct from `null` ("nothing is targeted")
+   * — the dialog stays silent on the subject rather than asserting either way,
+   * and the endpoint's own answer still drives the warning after the delete.
+   *
+   * The control itself lives in the sibling Public Content Settings panel on the
+   * same admin page, so this is a read of that panel's authority, not a second
+   * source of truth.
+   */
+  async function loadBookNowTargetPageId(): Promise<string | null | undefined> {
+    try {
+      const response = await fetch("/api/admin/public-content-settings", {
+        credentials: "same-origin",
+      });
+      if (!response.ok) {
+        return undefined;
+      }
+      const body = (await response.json()) as {
+        settings?: { bookNowTarget?: string; bookNowPageId?: string | null };
+      } | null;
+      const settings = body?.settings;
+      if (!settings || settings.bookNowTarget !== "PAGE") {
+        return null;
+      }
+      return typeof settings.bookNowPageId === "string"
+        ? settings.bookNowPageId
+        : null;
+    } catch {
+      return undefined;
+    }
+  }
+
+  /**
+   * Deletes a page for good (#2352 MC-03D).
+   *
+   * The confirmation has to carry the three facts an officer cannot see from the
+   * card in front of them: which address disappears, whether that address is live
+   * on the public site right now, and what else in the club's own content points
+   * at it. The link references are computed from the list this panel already
+   * holds — every page's body and intro text come down with it — so no extra
+   * round trip is needed for the common case, and the endpoint's authoritative
+   * report still drives the message afterwards in case the list was stale.
+   */
+  async function deletePage(page: EditablePageRecord) {
+    if (deleteInFlightRef.current) {
+      return;
+    }
+    deleteInFlightRef.current = page.id;
+
+    try {
+      // Same substring semantics the endpoint uses, so the dialog and the toast
+      // cannot disagree: best-effort, and honest about it.
+      const referencingSlugs = pages
+        .filter(
+          (other) =>
+            other.id !== page.id &&
+            ((other.contentHtml ?? "").includes(page.path) ||
+              (other.headerText ?? "").includes(page.path)),
+        )
+        .map((other) => other.slug)
+        .sort();
+      const bookNowTargetPageId = await loadBookNowTargetPageId();
+
+      const description = [
+        `${page.path} and its content will be removed permanently. This cannot be undone.`,
+        page.published
+          ? "The page is live on the public site now, so that address will start returning “page not found” straight away."
+          : "The page is already hidden from the public site, so visitors will notice no change.",
+        referencingSlugs.length > 0
+          ? `Other pages link to it: ${referencingSlugs.join(", ")}. Those links will break.`
+          : null,
+        bookNowTargetPageId === page.id
+          ? "The public Book Now button points at this page and will go back to the booking flow."
+          : null,
+        "Hide it instead if you might want it back.",
+      ]
+        .filter((line): line is string => line !== null)
+        .join(" ");
+
+      if (
+        !(await confirm({
+          title: `Delete ${page.title}?`,
+          description,
+          confirmLabel: "Delete",
+          destructive: true,
+        }))
+      ) {
+        return;
+      }
+
+      setForbidden(false);
+      const response = await fetch("/api/admin/page-content", {
+        method: "DELETE",
+        credentials: "same-origin",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ id: page.id }),
+      });
+      const body = await response.json().catch(() => null);
+      if (!response.ok) {
+        // The page-content routes' custom forbiddenResponse replies 401
+        // ("Unauthorized") on permission denial, so treat 401 as forbidden
+        // too — only authenticated admins can reach this panel.
+        if (response.status === 403 || response.status === 401)
+          setForbidden(true);
+        throw new Error(body?.error ?? "Failed to delete page");
+      }
+
+      setPages((current) => current.filter((item) => item.id !== page.id));
+      if (selectedPageId === page.id) {
+        setDialogOpen(false);
+        setSelectedPageId(null);
+      }
+
+      const referencedBySlugs = Array.isArray(body?.referencedBySlugs)
+        ? (body.referencedBySlugs as string[])
+        : [];
+      const consequences = [
+        referencedBySlugs.length > 0
+          ? `these pages still link to it: ${referencedBySlugs.join(", ")}`
+          : null,
+        body?.wasBookNowTarget === true
+          ? "the Book Now button has gone back to the booking flow"
+          : null,
+      ].filter((part): part is string => part !== null);
+
+      if (consequences.length > 0) {
+        toast.warning(`Deleted ${page.title} — ${consequences.join("; ")}.`);
+      } else {
+        toast.success(`Deleted ${page.title}`);
+      }
+    } catch (error) {
+      toast.error(
+        error instanceof Error ? error.message : "Failed to delete page",
+      );
+    } finally {
+      deleteInFlightRef.current = null;
     }
   }
 
@@ -1791,6 +1946,10 @@ export function PageContentPanel() {
   return (
     <>
       {viewOnlyBanner}
+      {/* The delete confirmation's host. Mounted in the loaded branch only,
+          because the Delete control it serves is rendered on the page cards
+          below and there are none until the list arrives. */}
+      {confirmDialog}
       {forbidden ? <AdminForbiddenSaveNotice className="mb-4" /> : null}
       <div className="mb-4 flex items-center justify-end gap-2">
         <Button
@@ -1909,6 +2068,12 @@ export function PageContentPanel() {
           // showing the toggle whenever the page is hidden gives a one-click
           // repair without ever exposing a Hide button on a protected page.
           const showVisibilityToggle = canHide || !page.published;
+          // Deletion is never wider than hiding (#2352 D-B3): the same predicate
+          // the endpoint enforces, so a protected page shows no Delete control
+          // rather than one that answers 422. Note the deliberate difference from
+          // `showVisibilityToggle` above — that has a recovery arm for a hidden
+          // built-in page, and there is nothing to recover by DELETING one.
+          const showDelete = canDeletePage(page.slug);
 
           return (
             <Card key={page.slug}>
@@ -1985,6 +2150,18 @@ export function PageContentPanel() {
                           Publish
                         </>
                       )}
+                    </ViewOnlyActionButton>
+                  )}
+                  {showDelete && (
+                    <ViewOnlyActionButton
+                      canEdit={canEdit}
+                      describeReason={false}
+                      type="button"
+                      variant="destructive"
+                      onClick={() => void deletePage(page)}
+                    >
+                      <Trash2 className="h-4 w-4" />
+                      Delete
                     </ViewOnlyActionButton>
                   )}
                 </div>
