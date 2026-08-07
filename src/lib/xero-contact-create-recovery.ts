@@ -30,10 +30,13 @@ export const XERO_CONTACT_CREATE_IN_PROGRESS_MESSAGE =
 export const XERO_MEMBER_UNAVAILABLE_CODE = "XERO_MEMBER_UNAVAILABLE";
 export const XERO_MEMBER_UNAVAILABLE_MESSAGE =
   "This member account is no longer available for Xero contact changes. Refresh the member and do not retry this action.";
+export const XERO_CONTACT_LINK_CHANGED_CODE = "XERO_CONTACT_LINK_CHANGED";
+export const XERO_CONTACT_LINK_CHANGED_MESSAGE =
+  "This member's Xero contact link changed before the update could run. Refresh the member and do not retry the stale action.";
 export const XERO_CONTACT_CREATE_BLOCKS_DELETION_CODE =
   "XERO_CONTACT_CREATE_BLOCKS_DELETION";
 export const XERO_CONTACT_CREATE_BLOCKS_DELETION_MESSAGE =
-  "Account deletion was not completed because a Xero contact create is still in progress or awaiting recovery. Resolve that Xero operation, then retry the remaining deletion cleanup.";
+  "Account deletion was not completed because a Xero contact change is still in progress or awaiting recovery. Resolve that Xero operation, then retry the remaining deletion cleanup.";
 export const DELETED_ACCOUNT_PASSWORD_HASH = "DELETED_ACCOUNT";
 
 export class XeroContactCreateInProgressError extends Error {
@@ -63,6 +66,16 @@ export class XeroMemberUnavailableError extends Error {
   constructor() {
     super(XERO_MEMBER_UNAVAILABLE_MESSAGE);
     this.name = "XeroMemberUnavailableError";
+  }
+}
+
+export class XeroContactLinkChangedError extends Error {
+  readonly code = XERO_CONTACT_LINK_CHANGED_CODE;
+  readonly statusCode = 409;
+
+  constructor() {
+    super(XERO_CONTACT_LINK_CHANGED_MESSAGE);
+    this.name = "XeroContactLinkChangedError";
   }
 }
 
@@ -254,6 +267,34 @@ export function memberContactCreateMergeBlockerWhere(
   };
 }
 
+/**
+ * Exact provider-work reservations that must keep the participant Member row
+ * alive. CREATE additionally carries durable provider-created recovery states;
+ * UPDATE only blocks while RUNNING because provider failure closes the attempt
+ * before a retry may reserve again from current Member data.
+ */
+export function memberContactChangeMergeBlockerWhere(
+  memberId: string,
+): Prisma.XeroSyncOperationWhereInput {
+  return {
+    direction: "OUTBOUND",
+    entityType: "CONTACT",
+    localModel: "Member",
+    localId: memberId,
+    manuallyResolvedAt: null,
+    OR: [
+      {
+        operationType: "UPDATE",
+        status: "RUNNING",
+      },
+      {
+        operationType: "CREATE",
+        OR: memberContactCreateMergeBlockerWhere(memberId).OR,
+      },
+    ],
+  };
+}
+
 export function isProviderCreatedLocalLinkFailurePayload(
   payload: unknown,
 ): boolean {
@@ -335,6 +376,17 @@ export async function hasMemberContactCreateMergeBlocker(
   );
 }
 
+export async function hasMemberContactChangeMergeBlocker(
+  memberId: string,
+  db: ContactCreateRecoveryDb = prisma,
+): Promise<boolean> {
+  const operation = await db.xeroSyncOperation.findFirst({
+    where: memberContactChangeMergeBlockerWhere(memberId),
+    select: { id: true },
+  });
+  return operation !== null;
+}
+
 /**
  * Account deletion calls this only after its standing fan-out has taken the
  * target Member FOR UPDATE. The blocker read therefore shares one snapshot and
@@ -351,6 +403,15 @@ export async function assertNoMemberContactCreateBlockerForDeletion(
   }
 }
 
+export async function assertNoMemberContactChangeBlockerForDeletion(
+  memberId: string,
+  db: ContactCreateRecoveryDb,
+): Promise<void> {
+  if (await hasMemberContactChangeMergeBlocker(memberId, db)) {
+    throw new XeroContactCreateBlocksDeletionError();
+  }
+}
+
 /**
  * Standalone account-deletion side of the contact-create row protocol. The
  * live route already owns this Member row through its standing fan-out; taking
@@ -362,7 +423,7 @@ export async function lockMemberForAccountDeletionXeroFence(
   memberId: string,
 ) {
   const member = await lockMemberForXeroContactLink(db, memberId);
-  await assertNoMemberContactCreateBlockerForDeletion(memberId, db);
+  await assertNoMemberContactChangeBlockerForDeletion(memberId, db);
   return member;
 }
 

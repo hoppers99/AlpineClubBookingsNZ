@@ -958,10 +958,15 @@ export async function retryXeroSyncOperation(
 
   if (operation.entityType === "CONTACT" && operation.operationType === "UPDATE") {
     const retryInput =
-      (await buildCurrentMemberContactUpdateRetryInput(operation)) ??
-      parseContactUpdateRetryInput(operation);
+      operation.localModel === "Member" && operation.localId
+        ? await buildCurrentMemberContactUpdateRetryInput(operation)
+        : parseContactUpdateRetryInput(operation);
     if (!retryInput) {
-      throw new XeroOperationRetryError("Stored contact update payload is incomplete.");
+      throw new XeroOperationRetryError(
+        operation.localModel === "Member" && operation.localId
+          ? "The current member Xero contact is unavailable. Refresh the member and do not replay the stored contact payload."
+          : "Stored contact update payload is incomplete.",
+      );
     }
     if (containsRedactedContactRetryData(retryInput)) {
       throw new XeroOperationRetryError(

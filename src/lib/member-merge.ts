@@ -15,7 +15,7 @@ import {
 import { deleteOwnedMemberPhotoBlobs } from "@/lib/member-photo";
 import { memberDisplayName } from "@/lib/member-serialization";
 import { prisma } from "@/lib/prisma";
-import { hasMemberContactCreateMergeBlocker } from "@/lib/xero-contact-create-recovery";
+import { hasMemberContactChangeMergeBlocker } from "@/lib/xero-contact-create-recovery";
 import { settleHostingCoverageAfterCommit } from "@/lib/adult-member-hosting-coverage-drain";
 import { lockAdultMemberHostingPolicySet } from "@/lib/adult-member-hosting-policy-set";
 import { lockHostingCoverageOwners } from "@/lib/adult-member-hosting-coverage-lock";
@@ -1368,22 +1368,22 @@ async function evaluateContactCreateRecoveryBlockers(
   loserId: string,
 ): Promise<MergeBlocker[]> {
   const [masterPending, loserPending] = await Promise.all([
-    hasMemberContactCreateMergeBlocker(masterId, db),
-    hasMemberContactCreateMergeBlocker(loserId, db),
+    hasMemberContactChangeMergeBlocker(masterId, db),
+    hasMemberContactChangeMergeBlocker(loserId, db),
   ]);
   const blockers: MergeBlocker[] = [];
   if (masterPending) {
     blockers.push({
       code: "master_xero_contact_create_recovery_pending",
       label:
-        "The master has a Xero contact create in progress or awaiting local-link recovery. Wait for it to finish, or resolve the failed Xero operation, before merging.",
+        "The master has a Xero contact change in progress or awaiting local-link recovery. Wait for it to finish, or resolve the failed Xero operation, before merging.",
     });
   }
   if (loserPending) {
     blockers.push({
       code: "loser_xero_contact_create_recovery_pending",
       label:
-        "The duplicate has a Xero contact create in progress or awaiting local-link recovery. Wait for it to finish, or resolve the failed Xero operation, before merging.",
+        "The duplicate has a Xero contact change in progress or awaiting local-link recovery. Wait for it to finish, or resolve the failed Xero operation, before merging.",
     });
   }
   return blockers;

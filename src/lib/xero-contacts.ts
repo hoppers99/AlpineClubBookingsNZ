@@ -44,6 +44,7 @@ import {
   recordProviderCreatedContactPendingLocalLink,
   XeroContactAlreadyLinkedError,
   XeroContactCreateInProgressError,
+  XeroContactLinkChangedError,
 } from "@/lib/xero-contact-create-recovery";
 
 // ---------------------------------------------------------------------------
@@ -71,6 +72,8 @@ type ContactCreateOperationInput = Omit<
   Parameters<typeof startXeroSyncOperation>[0],
   "store"
 >;
+
+type ContactUpdateOperationInput = ContactCreateOperationInput;
 
 /**
  * Commit the exact member-scoped CREATE reservation before any provider create.
@@ -112,6 +115,45 @@ export async function reserveMemberContactCreateOperation(
     });
     if (ambiguousReservation) {
       throw new XeroContactCreateInProgressError();
+    }
+    return startXeroSyncOperation({ ...input, store: tx });
+  });
+}
+
+/**
+ * Commit a Member-scoped UPDATE reservation before provider work. Merge and
+ * deletion take the conflicting Member FOR UPDATE row and re-check this exact
+ * RUNNING operation, while completion takes the same row and closes the
+ * operation plus canonical link atomically.
+ */
+export async function reserveMemberContactUpdateOperation(
+  memberId: string,
+  xeroContactId: string,
+  input: ContactUpdateOperationInput,
+  db: typeof prisma = prisma,
+) {
+  return db.$transaction(async (tx) => {
+    await tx.$executeRaw`
+      SELECT 1
+      FROM "Member"
+      WHERE "id" = ${memberId}
+      FOR KEY SHARE
+    `;
+    const locked = await tx.member.findUnique({
+      where: { id: memberId },
+      select: {
+        id: true,
+        email: true,
+        passwordHash: true,
+        xeroContactId: true,
+      },
+    });
+    if (!locked) {
+      throw new Error(`Member not found: ${memberId}`);
+    }
+    assertMemberAvailableForXeroContactChange(locked);
+    if (locked.xeroContactId !== xeroContactId) {
+      throw new XeroContactLinkChangedError();
     }
     return startXeroSyncOperation({ ...input, store: tx });
   });
@@ -1190,8 +1232,6 @@ export async function updateXeroContact(
     preserveXeroName?: boolean;
   }
 ): Promise<void> {
-  const { xero, tenantId } = await getAuthenticatedXeroClient();
-
   const buildContact = (contactId: string): Contact => {
     const contact: Contact = {
       contactID: contactId,
@@ -1244,7 +1284,7 @@ export async function updateXeroContact(
 
   const initialPayload = buildRequestPayload(xeroContactId);
   const initialKeys = buildOperationKeys(xeroContactId);
-  const operation = await startXeroSyncOperation({
+  const operationInput: ContactUpdateOperationInput = {
     direction: "OUTBOUND",
     entityType: "CONTACT",
     operationType: "UPDATE",
@@ -1254,7 +1294,22 @@ export async function updateXeroContact(
     correlationKey: initialKeys.correlationKey,
     requestPayload: initialPayload,
     createdByMemberId: options?.createdByMemberId ?? null,
-  });
+  };
+  const memberId =
+    options?.localModel === "Member" && options.localId
+      ? options.localId
+      : null;
+  const operation = memberId
+    ? await reserveMemberContactUpdateOperation(
+        memberId,
+        xeroContactId,
+        operationInput,
+      )
+    : await startXeroSyncOperation(operationInput);
+
+  // Authentication and every provider call remain outside both short Member
+  // transactions. The committed RUNNING reservation is their authority.
+  const { xero, tenantId } = await getAuthenticatedXeroClient();
 
   try {
     const response = await retryXeroWriteWithContactRepair({
@@ -1290,7 +1345,7 @@ export async function updateXeroContact(
     const completedContactId =
       response.body.contacts?.[0]?.contactID ?? xeroContactId;
 
-    await completeXeroSyncOperation(operation.id, {
+    const completion: Parameters<typeof completeXeroSyncOperation>[1] = {
       responsePayload: response.body,
       xeroObjectType: "CONTACT",
       xeroObjectId: completedContactId,
@@ -1308,7 +1363,18 @@ export async function updateXeroContact(
               },
             ]
           : [],
-    });
+    };
+    if (memberId) {
+      await prisma.$transaction(async (tx) => {
+        const locked = await lockMemberForXeroContactLink(tx, memberId);
+        if (locked.xeroContactId !== xeroContactId) {
+          throw new XeroContactLinkChangedError();
+        }
+        await completeXeroSyncOperation(operation.id, completion, { store: tx });
+      });
+    } else {
+      await completeXeroSyncOperation(operation.id, completion);
+    }
   } catch (error) {
     await failXeroSyncOperation(operation.id, error);
     throw error;
