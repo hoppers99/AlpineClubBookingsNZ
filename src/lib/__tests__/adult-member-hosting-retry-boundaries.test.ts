@@ -167,6 +167,15 @@ describe("adult-member hosting participant retry responses (#2597)", () => {
         "paymentReceived: true",
         "finalisationPending: true",
       ],
+      // #2623 T4/T8: phase one consumed the offer, so a phase-two refusal must
+      // say so — the flags ride the frozen retry body when the compensating
+      // release worked, and the awaiting-operator body when it could not run.
+      "src/app/api/bookings/[id]/waitlist-confirm/route.ts": [
+        "WAITLIST_OFFER_RELEASED_FLAGS",
+        "WAITLIST_OFFER_CONSUMED_STATUS_MOVED_FLAGS",
+        "WAITLIST_CONFIRM_AWAITING_OPERATOR_BODY",
+        "WAITLIST_CONFIRM_OFFER_RELEASE_FAILED_AUDIT_ACTION",
+      ],
     };
     for (const [file, fragments] of Object.entries(expected)) {
       const source = readRepoCode(file);
