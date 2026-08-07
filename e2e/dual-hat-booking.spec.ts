@@ -116,10 +116,13 @@ test("a booking officer completes an on-behalf booking draft", async ({
   await withBookingCreateClientIp(
     page,
     bookingCreateIsolation("dual-hat-officer-draft", testInfo.retry),
-    () => page.getByRole("button", { name: "Save as Draft" }).click(),
+    {
+      trigger: () => page.getByRole("button", { name: "Save as Draft" }).click(),
+      // Creation succeeded: the officer lands on the new booking's detail page
+      // (bookings:edit holders can view it per #1313). The draft create
+      // navigates, so the interception is held until that URL is reached.
+      waitForOutcome: () =>
+        expect(page).toHaveURL(/\/bookings\/[A-Za-z0-9-]+/),
+    },
   );
-
-  // Creation succeeded: the officer lands on the new booking's detail page
-  // (bookings:edit holders can view it per #1313).
-  await expect(page).toHaveURL(/\/bookings\/[A-Za-z0-9-]+/);
 });

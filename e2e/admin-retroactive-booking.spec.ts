@@ -205,27 +205,6 @@ test("an admin records a past stay on behalf of a member without emailing them",
   });
   await expect(withoutEmail).toBeVisible();
 
-  // Wait for the POST itself — the Confirm button flips to "Creating booking..."
-  // the instant the dialog choice fires, so a button-state wait would race the
-  // in-flight request and the caller's navigation could abort it.
-  const [response] = await withBookingCreateClientIp(
-    page,
-    bookingCreateIsolation("admin-retroactive-record", testInfo.retry),
-    () =>
-      Promise.all([
-        page.waitForResponse(
-          (r) =>
-            r.url().endsWith("/api/bookings") && r.request().method() === "POST",
-          { timeout: 30_000 },
-        ),
-        withoutEmail.click(),
-      ]),
-  );
-  expect(response.status(), `retroactive create (${response.status()})`).toBe(
-    201,
-  );
-
-  await expect(page).toHaveURL(/\/bookings\/[A-Za-z0-9-]+$/);
   // The persisted booking renders its past check-in date. Match the full
   // formatted date ("Friday, 3 July 2026") — a bare day-number regex collides
   // with timestamps elsewhere on the page (strict-mode violation).
@@ -236,7 +215,36 @@ test("an admin records a past stay on behalf of a member without emailing them",
     month: "long",
     year: "numeric",
   });
-  await expect(page.getByText(checkInText).first()).toBeVisible();
+
+  // Wait for the POST itself — the Confirm button flips to "Creating booking..."
+  // the instant the dialog choice fires, so a button-state wait would race the
+  // in-flight request and the caller's navigation could abort it.
+  await withBookingCreateClientIp(
+    page,
+    bookingCreateIsolation("admin-retroactive-record", testInfo.retry),
+    {
+      trigger: () =>
+        Promise.all([
+          page.waitForResponse(
+            (r) =>
+              r.url().endsWith("/api/bookings") &&
+              r.request().method() === "POST",
+            { timeout: 30_000 },
+          ),
+          withoutEmail.click(),
+        ]),
+      // The create navigates, so the interception is held until the new
+      // booking's own detail page is really rendered.
+      waitForOutcome: async ([response]) => {
+        expect(
+          response.status(),
+          `retroactive create (${response.status()})`,
+        ).toBe(201);
+        await expect(page).toHaveURL(/\/bookings\/[A-Za-z0-9-]+$/);
+        await expect(page.getByText(checkInText).first()).toBeVisible();
+      },
+    },
+  );
   await page.close();
 });
 

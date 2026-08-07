@@ -202,8 +202,13 @@ async function submitGuestStepForQuote(
 }
 
 /**
- * Pick a stay in the `/book` wizard and press confirm, leaving the review step
- * showing whatever the server answered.
+ * Pick a stay in the `/book` wizard and press confirm on a stay the policy
+ * refuses, leaving the review step showing the exception-request offer the
+ * server answered with.
+ *
+ * Both callers book the same short stay, so the offer card IS this journey's
+ * authoritative outcome: the booking-create interception stays installed until
+ * it is on screen rather than being torn down when the click resolves.
  */
 async function bookThroughWizard(
   page: Page,
@@ -214,11 +219,16 @@ async function bookThroughWizard(
   await submitGuestStepForQuote(page, checkIn, checkOut);
 
   await expect(page.getByText("Booking Summary")).toBeVisible();
-  await withBookingCreateClientIp(page, isolation, () =>
-    page
-      .getByRole("button", { name: /Continue to Payment|Confirm Booking/ })
-      .click(),
-  );
+  await withBookingCreateClientIp(page, isolation, {
+    trigger: () =>
+      page
+        .getByRole("button", { name: /Continue to Payment|Confirm Booking/ })
+        .click(),
+    waitForOutcome: () =>
+      expect(page.getByTestId("request-officer-approval")).toBeVisible({
+        timeout: 30_000,
+      }),
+  });
 }
 
 /** Submit the offered request with an explanation, and wait for the receipt. */
@@ -336,17 +346,22 @@ test("a stay that meets the minimum still books normally, with no exception step
   await withBookingCreateClientIp(
     page,
     bookingCreateIsolation("member-exception-compliant", testInfo.retry),
-    () =>
-      page
-        .getByRole("button", { name: /Continue to Payment|Confirm Booking/ })
-        .click(),
+    {
+      trigger: () =>
+        page
+          .getByRole("button", { name: /Continue to Payment|Confirm Booking/ })
+          .click(),
+      // The ordinary journey reaches payment, and that step showing is this
+      // create's authoritative outcome, so the interception is held until then.
+      waitForOutcome: () =>
+        expect(page.getByText("Complete Payment").first()).toBeVisible({
+          timeout: 30_000,
+        }),
+    },
   );
 
-  // The ordinary journey reaches payment, and the exception card is nowhere near
-  // it: a member who broke no rule is never asked to ask.
-  await expect(page.getByText("Complete Payment").first()).toBeVisible({
-    timeout: 30_000,
-  });
+  // The exception card is nowhere near it: a member who broke no rule is never
+  // asked to ask.
   await expect(page.getByTestId("request-officer-approval")).toBeHidden();
   await page.close();
 });
@@ -375,8 +390,9 @@ test("a minimum-stay refusal offers the request, tells the truth about beds, and
     bookingCreateIsolation("member-exception-minimum-refusal", testInfo.retry),
   );
 
+  // `bookThroughWizard` holds the create's interception until this card is on
+  // screen, so scope straight into it rather than waiting for it twice.
   const card = page.getByTestId("request-officer-approval");
-  await expect(card).toBeVisible({ timeout: 30_000 });
 
   // The rule being asked about, named for a member rather than as an enum.
   await expect(card.getByText("Minimum length of stay")).toBeVisible();
@@ -506,17 +522,21 @@ test("replacing a request supersedes the old one and leaves exactly one live", a
   ).toBeVisible();
   await page.getByRole("button", { name: "Continue", exact: true }).click();
   await expect(page.getByText("Booking Summary")).toBeVisible();
+  const card = page.getByTestId("request-officer-approval");
   await withBookingCreateClientIp(
     page,
     bookingCreateIsolation("member-exception-replacement", testInfo.retry),
-    () =>
-      page
-        .getByRole("button", { name: /Continue to Payment|Confirm Booking/ })
-        .click(),
+    {
+      trigger: () =>
+        page
+          .getByRole("button", { name: /Continue to Payment|Confirm Booking/ })
+          .click(),
+      // The replacement is refused the same way, so the offer card is this
+      // create's authoritative outcome; hold the interception until it shows.
+      waitForOutcome: () => expect(card).toBeVisible({ timeout: 30_000 }),
+    },
   );
 
-  const card = page.getByTestId("request-officer-approval");
-  await expect(card).toBeVisible({ timeout: 30_000 });
   // The card knows it is replacing something, and says so on its heading and its
   // button rather than looking like a second, parallel request.
   await expect(
