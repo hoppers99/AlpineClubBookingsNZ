@@ -182,7 +182,10 @@ function buildTx(
   // Overrides the pre-edit booking this tx serves. Pass it here rather than
   // re-stubbing tx.booking.findUnique: that would replace the recording
   // wrapper below and the fence would then see no source booking at all.
-  bookingOverride?: Partial<ReturnType<typeof preEditBooking>>,
+  // Deliberately loose: the fixture types several review fields as literal
+  // null, so a Partial<> of it would reject the non-null values these tests
+  // exist to set.
+  bookingOverride?: Record<string, unknown>,
 ) {
   // #2619: the participant fence re-reads the locked Member rows and each
   // source booking's owner/lodge under the lock. Replay what this tx's own

@@ -289,7 +289,12 @@ const mockedReconcile = vi.mocked(reconcileBedAllocationsForBooking);
 let servedBooking: (args: unknown) => unknown = async () => null;
 
 /** State the booking row this test's transaction serves, or a per-query function. */
-function serveBooking(row: unknown | ((args: unknown) => unknown)): void {
+// The function branch is listed first and the value branch is `object | null`
+// rather than `unknown`: `unknown | fn` collapses to `unknown`, which would
+// stop TypeScript inferring `args` for the per-query callers below.
+function serveBooking(
+  row: ((args: unknown) => unknown) | object | null,
+): void {
   servedBooking =
     typeof row === "function"
       ? (row as (args: unknown) => unknown)

@@ -341,7 +341,6 @@ function makeTx(
     // #2619: the participant fence re-reads the locked Member rows and each
     // source booking's owner/lodge under the lock. An empty booking.findMany
     // made it report drift on data that never changed.
-    member: { findMany: fenceMemberFindMany() },
     booking: {
       findUnique: fenceBooking.findUnique,
       findMany: fenceBooking.findMany,
@@ -389,8 +388,12 @@ function makeTx(
     // FULL type (role default) -> member rate; the built-in NON_MEMBER type
     // backs true non-members and the discount substitution.
     member: {
-      findMany: vi.fn().mockImplementation(async (args: { where?: { id?: { in?: string[] } } }) =>
-        (args?.where?.id?.in ?? []).map((id) => ({
+      // #2619: the participant fence's id-only re-read is answered by the
+      // helper (which sorts, as the fence requires); the rate resolver's read
+      // keeps the rows it always served. One delegate deliberately — a second
+      // `member:` key in this literal would be silently overridden.
+      findMany: fenceMemberFindMany([], async (args: unknown) =>
+        ((args as { where?: { id?: { in?: string[] } } })?.where?.id?.in ?? []).map((id) => ({
           id,
           firstName: "Member",
           lastName: "Test",
