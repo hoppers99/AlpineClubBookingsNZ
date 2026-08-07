@@ -11,6 +11,7 @@ import { Address, Phone } from "xero-node";
 
 const mocks = vi.hoisted(() => ({
   memberFindUnique: vi.fn(),
+  txMemberFindUnique: vi.fn(),
   txMemberUpdate: vi.fn(),
   txExecuteRaw: vi.fn(),
   txQueryRaw: vi.fn(),
@@ -116,6 +117,7 @@ function primeHappyPath(member: Record<string, unknown>) {
   mocks.syncManagedXeroContactGroupForMember.mockResolvedValue(undefined);
   mocks.recordProviderCreatedContactPendingLocalLink.mockResolvedValue(undefined);
   mocks.txExecuteRaw.mockResolvedValue(undefined);
+  mocks.txMemberFindUnique.mockResolvedValue({ id: member.id });
   mocks.txQueryRaw.mockImplementation(
     async (_strings: TemplateStringsArray, memberId: string) => [{ id: memberId }],
   );
@@ -125,7 +127,10 @@ function primeHappyPath(member: Record<string, unknown>) {
       fn({
         $executeRaw: mocks.txExecuteRaw,
         $queryRaw: mocks.txQueryRaw,
-        member: { update: mocks.txMemberUpdate },
+        member: {
+          findUnique: mocks.txMemberFindUnique,
+          update: mocks.txMemberUpdate,
+        },
       })
   );
 }
@@ -286,7 +291,10 @@ describe("createXeroContactForMember payload hygiene (#2089)", () => {
         fn({
           $executeRaw: mocks.txExecuteRaw,
           $queryRaw: mocks.txQueryRaw,
-          member: { update: mocks.txMemberUpdate },
+          member: {
+            findUnique: mocks.txMemberFindUnique,
+            update: mocks.txMemberUpdate,
+          },
         }),
       )
       .mockRejectedValueOnce(linkFailure);

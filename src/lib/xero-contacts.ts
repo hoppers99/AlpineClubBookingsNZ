@@ -77,13 +77,17 @@ export async function reserveMemberContactCreateOperation(
   db: typeof prisma = prisma,
 ) {
   return db.$transaction(async (tx) => {
-    const locked = await tx.$queryRaw<Array<{ id: string }>>`
-      SELECT "id"
+    await tx.$executeRaw`
+      SELECT 1
       FROM "Member"
       WHERE "id" = ${memberId}
       FOR KEY SHARE
     `;
-    if (locked.length !== 1 || locked[0]?.id !== memberId) {
+    const locked = await tx.member.findUnique({
+      where: { id: memberId },
+      select: { id: true },
+    });
+    if (!locked) {
       throw new Error(`Member not found: ${memberId}`);
     }
     return startXeroSyncOperation({ ...input, store: tx });
