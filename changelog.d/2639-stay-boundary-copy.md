@@ -2,9 +2,9 @@
   (#2632).** A stay runs from midday on the day of arrival to midday on the day
   of departure, like a motel. Two pieces of copy could contradict that: the
   lobby-display setup wizard suggested "10am" as its checkout-time example, and
-  the booking guide (and the matching in-app Book a Stay help) told members to
-  choose their "check-out night" — a check-out is a departure morning, not a
-  stayed night.
+  two booking surfaces — the operator "Book on Behalf" guide and the in-app
+  Book a Stay help members read — said to choose a "check-out night". A
+  check-out is a departure morning, not a stayed night.
 
   The wizard's example now reads "midday" and mentions the midday-to-midday
   handover; the guide and help text now say the stay covers the nights up to,
