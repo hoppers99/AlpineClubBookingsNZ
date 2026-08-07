@@ -4,12 +4,25 @@ import { lodgeNullTolerantScope } from "@/lib/lodges";
 import { checkinNotBlockedByPendingReviewFilter } from "@/lib/booking-review";
 import { OPERATIONALLY_PRESENT_GUEST_WHERE } from "@/lib/member-guest-consent";
 import type { Prisma } from "@prisma/client";
-import { isGuestActiveOnNight } from "@/lib/booking-guest-stay-ranges";
+import { isGuestOperationallyPresentOnDay } from "@/lib/booking-guest-stay-ranges";
 
+// PRE-EXISTING DIVERGENCE, PRESERVED ON PURPOSE (#2622): this alias is a
+// separate name for the same list as `OPERATIONAL_STAY_BOOKING_STATUSES`, and
+// the two are free to drift. Unifying them would silently re-scope the kiosk
+// arrive/depart lookups as well as roster validation, which is not this issue's
+// change. Leave them as two names until something deliberately reconciles them.
 export const LODGE_VISIBLE_BOOKING_STATUSES = [
   ...OPERATIONAL_STAY_BOOKING_STATUSES,
 ] as const;
 
+// THE ARRIVE/DEPART ASYMMETRY IS DELIBERATE AND #2622 LEFT IT ALONE.
+// `findLodgeGuestForDate` (arrive) stays NIGHT-only: you can only mark someone
+// arrived for a night they are actually sleeping. `findLodgeGuestDepartingOnDate`
+// (depart) stays pinned to the EXACT departure date: you leave on one specific
+// day, not on any day you happen to be present. Neither is the roster's
+// operational-day question — "was this person in the building this morning?" —
+// so neither moved to the operational-day rule. Do not "unify" them.
+//
 // lodgeId is optional so existing (pre-phase-5) callers keep club-wide
 // behaviour; kiosk routes pass the resolved lodge to scope the lookup
 // (docs/multi-lodge/lodge-scoping-contract.md — roster/guest lookups are
@@ -100,6 +113,14 @@ export async function findLodgeGuestDepartingOnDate(
   });
 }
 
+/**
+ * Does every submitted allocation name someone who is actually here today?
+ *
+ * #2622: "here today" is the operational day, not the night — a guest who
+ * checks out this morning is on the roster, so both coarse envelope bounds are
+ * checkout-inclusive (`gte`) and the authoritative decision is the shared
+ * operational-day rule applied to the loaded night rows.
+ */
 export async function validateRosterAllocationsForDate(
   allocations: Array<{ bookingGuestId: string; bookingId: string }>,
   date: Date,
@@ -114,14 +135,14 @@ export async function validateRosterAllocationsForDate(
     where: {
       id: { in: guestIds },
       stayStart: { lte: date },
-      stayEnd: { gt: date },
+      stayEnd: { gte: date },
       // D-12 (#2307): an unconsented guest is not on the roster at all, so an
       // allocation naming them fails validation and roster-confirm rejects it.
       ...OPERATIONALLY_PRESENT_GUEST_WHERE,
       booking: {
         status: { in: [...LODGE_VISIBLE_BOOKING_STATUSES] },
         checkIn: { lte: date },
-        checkOut: { gt: date },
+        checkOut: { gte: date },
         ...(lodgeId ? lodgeNullTolerantScope(lodgeId) : {}),
         // Enforcement path (#1372 / #1422): keep excluding a booking blocked by
         // a pending admin review so roster-confirm rejects it — even though the
@@ -141,7 +162,9 @@ export async function validateRosterAllocationsForDate(
 
   const guestBookingMap = new Map(
     guests
-      .filter((guest) => isGuestActiveOnNight(guest, date, guest.booking))
+      .filter((guest) =>
+        isGuestOperationallyPresentOnDay(guest, date, guest.booking),
+      )
       .map((guest) => [guest.id, guest.bookingId])
   );
 

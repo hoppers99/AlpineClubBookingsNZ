@@ -152,15 +152,36 @@ describe("Xero contact/account-deletion lock topology mutation pins (#2597)", ()
   });
 
   it("re-checks the complete Xero blocker under the deletion Member lock before anonymising", () => {
+    const recoverySource = source("src/lib/xero-contact-create-recovery.ts");
     const recovery = between(
-      source("src/lib/xero-contact-create-recovery.ts"),
+      recoverySource,
       "export async function lockMemberForAccountDeletionXeroFence(",
       "export async function getMemberContactCreateRecoveryPending(",
     );
     expectOrdered(recovery, [
-      "lockMemberForXeroContactLink(db, memberId)",
+      "lockMemberRowForXeroFence(db, memberId)",
       "assertNoMemberContactChangeBlockerForDeletion(memberId, db)",
     ]);
+
+    // #2627: the deletion fence takes the row lock WITHOUT the contact-writer
+    // availability assert. That assert refuses any member carrying the
+    // anonymisation marker — which deletion itself writes — so running it here
+    // made an already-anonymised member impossible to hard delete, with an
+    // unmapped 500 as the only signal. Deletion must never route through the
+    // asserting helper; the contact writers still must.
+    expect(recovery).not.toContain("lockMemberForXeroContactLink(");
+    expect(recovery).not.toContain("assertMemberAvailableForXeroContactChange");
+    expectOrdered(
+      between(
+        recoverySource,
+        "export async function lockMemberForXeroContactLink(",
+        "export async function completeMemberContactOperation(",
+      ),
+      [
+        "lockMemberRowForXeroFence(db, memberId)",
+        "assertMemberAvailableForXeroContactChange(member)",
+      ],
+    );
 
     const route = source("src/app/api/admin/deletion-requests/[id]/route.ts");
     expectOrdered(route, [

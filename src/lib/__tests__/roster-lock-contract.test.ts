@@ -2,6 +2,12 @@ import fs from "node:fs"
 import path from "node:path"
 import { describe, expect, it } from "vitest"
 
+import {
+  lockRosterDateRangesAndDates,
+  lockRosterDates,
+  rosterOperationalDayRange,
+} from "@/lib/roster-lock"
+
 const ROOT = process.cwd()
 const WRITERS = [
   "src/app/api/lodge/guests/[date]/depart/route.ts",
@@ -11,6 +17,18 @@ const WRITERS = [
   "src/lib/booking-guest-removal-service.ts",
   "src/lib/booking-modify-plan.ts",
   "src/lib/chore-cleanup.ts",
+] as const
+
+/**
+ * Every caller that derives a roster-date lock set from a STAY ENVELOPE (#2622).
+ *
+ * Reviewed allowlist, enforced by a scan below rather than spot-checks, because
+ * the failure mode is a NEW caller passing a raw `{ start: checkIn, end:
+ * checkOut }` night range and leaving the check-out day's partition unlocked.
+ */
+const ENVELOPE_LOCK_CALLERS = [
+  "src/lib/booking-batch-modification-service.ts",
+  "src/lib/booking-date-modification-service.ts",
 ] as const
 
 function source(file: string) {
@@ -241,5 +259,130 @@ describe("roster-date lock source contract (#2586)", () => {
     expect(contents).not.toContain('z.literal("add")')
     expect(contents).not.toContain('z.literal("remove")')
     expect(contents).toContain('action: z.literal("save")')
+  })
+
+  it("derives every envelope lock set through the checkout-inclusive helper (#2622)", () => {
+    // A raw `{ start: checkIn, end: checkOut }` locks only the NIGHTS, leaving
+    // the check-out day's partition — where a departure-morning row now lives —
+    // unlocked while the booking's dates move underneath it.
+    //
+    // Scanned, not hard-coded: pinning two known files would let a FOURTH
+    // `lockRosterDateRangesAndDates` caller appear with a raw night range and
+    // regress this silently. Mirrors the WRITERS inventory above.
+    const found = allSourceFiles(path.join(ROOT, "src"))
+      .filter((file) => !file.includes(`${path.sep}__tests__${path.sep}`))
+      .filter((file) => /await lockRosterDateRangesAndDates\s*\(/.test(fs.readFileSync(file, "utf8")))
+      .map((file) => path.relative(ROOT, file).replaceAll("\\", "/"))
+      .sort()
+    expect(found).toEqual([...ENVELOPE_LOCK_CALLERS].sort())
+
+    for (const file of ENVELOPE_LOCK_CALLERS) {
+      const contents = source(file)
+      expect(contents, file).toContain("rosterOperationalDayRange(")
+      expect(contents.replace(/\s+/g, " "), file).not.toMatch(
+        /\{ start: \w+\.?\w*[Cc]heckIn, end: \w+\.?\w*[Cc]heckOut \}/,
+      )
+    }
+    expect(source("src/lib/roster-lock.ts")).toContain(
+      "addDaysDateOnly(checkOut, 1)",
+    )
+  })
+})
+
+// ---------------------------------------------------------------------------
+// The lock SETS themselves, not just the call sites (#2622)
+// ---------------------------------------------------------------------------
+
+function day(iso: string): Date {
+  return new Date(`${iso}T00:00:00.000Z`)
+}
+
+/** Capture the roster keys a lock helper actually acquires, in order. */
+function recordingTx() {
+  const keys: string[] = []
+  const tx = {
+    $executeRaw: async (_strings: TemplateStringsArray, ...values: unknown[]) => {
+      keys.push(String(values[0]))
+      return 1
+    },
+  }
+  // The helpers only ever call `$executeRaw`; a real PrismaPromise is not
+  // needed to observe which keys, in which order, they ask for.
+  return { keys, tx: tx as unknown as Parameters<typeof lockRosterDates>[0] }
+}
+
+describe("roster-date lock sets are checkout-inclusive (#2622)", () => {
+  it("locks the check-out day as well as every night", async () => {
+    const { keys, tx } = recordingTx()
+    await lockRosterDateRangesAndDates(
+      tx,
+      [rosterOperationalDayRange(day("2026-07-10"), day("2026-07-13"))],
+      [],
+    )
+    expect(keys).toEqual([
+      "roster:2026-07-10",
+      "roster:2026-07-11",
+      "roster:2026-07-12",
+      "roster:2026-07-13",
+    ])
+  })
+
+  it("MUTATION PROBE: a date change holds BOTH the old and the new check-out day", async () => {
+    // The exact set a booking date change must hold. Drop either check-out key
+    // and a concurrent whole-roster Save can insert a departure-morning row
+    // into a partition this transaction has already decided to clean up.
+    const { keys, tx } = recordingTx()
+    await lockRosterDateRangesAndDates(
+      tx,
+      [
+        rosterOperationalDayRange(day("2026-07-10"), day("2026-07-12")),
+        rosterOperationalDayRange(day("2026-07-14"), day("2026-07-16")),
+      ],
+      [],
+    )
+    expect(keys).toContain("roster:2026-07-12") // old check-out day
+    expect(keys).toContain("roster:2026-07-16") // new check-out day
+    expect(keys).toEqual([
+      "roster:2026-07-10",
+      "roster:2026-07-11",
+      "roster:2026-07-12",
+      "roster:2026-07-14",
+      "roster:2026-07-15",
+      "roster:2026-07-16",
+    ])
+  })
+
+  it("keeps one ascending, de-duplicated order across overlapping envelopes and stored dates", async () => {
+    // Deadlock safety: every roster key this transaction will ever take is
+    // acquired once, ascending, before the first tuple write.
+    const { keys, tx } = recordingTx()
+    await lockRosterDateRangesAndDates(
+      tx,
+      [
+        rosterOperationalDayRange(day("2026-07-12"), day("2026-07-14")),
+        rosterOperationalDayRange(day("2026-07-10"), day("2026-07-12")),
+      ],
+      [day("2026-07-20"), day("2026-07-09"), day("2026-07-14")],
+    )
+    expect(keys).toEqual([
+      "roster:2026-07-09",
+      "roster:2026-07-10",
+      "roster:2026-07-11",
+      "roster:2026-07-12",
+      "roster:2026-07-13",
+      "roster:2026-07-14",
+      "roster:2026-07-20",
+    ])
+    expect(new Set(keys).size).toBe(keys.length)
+    expect([...keys].sort()).toEqual(keys)
+  })
+
+  it("still locks stored assignment dates alone for the guest-scoped writers", async () => {
+    // Guest removal and kiosk departure derive their sets from STORED rows
+    // rather than an envelope, so they pick up checkout-day rows automatically
+    // and needed no widening. This pins that they stay sorted.
+    const { keys, tx } = recordingTx()
+    await lockRosterDates(tx, [day("2026-07-14"), day("2026-07-11"), day("2026-07-14")])
+    expect(keys).toEqual(["roster:2026-07-11", "roster:2026-07-14"])
   })
 })

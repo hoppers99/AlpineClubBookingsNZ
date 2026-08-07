@@ -139,9 +139,18 @@ old stay, wait while a booking moves or a review is approved, then insert into
 the previously empty partition.
 
 Booking date/batch modifications already hold global → lodge. They now acquire
-one sorted set containing every night in the old and proposed half-open stay
-ranges plus any exceptional stored assignment dates before changing a Booking
-or BookingGuest tuple. Guest removal likewise takes global → lodge → sorted
+one sorted set containing every night in the old and proposed stay ranges **plus
+both the old and the new CHECK-OUT dates** — since #2622 a chore row can
+legitimately sit on a booking's check-out date (the departure morning), so a set
+built from the half-open night ranges alone would leave that partition unlocked
+and a concurrent whole-roster Save could insert into it after the modification
+had already decided to clean it up. Every such caller derives its ranges through
+`rosterOperationalDayRange(checkIn, checkOut)` (`roster-lock.ts`), which extends
+a half-open night range to its inclusive operational-day span; the exceptional
+stored assignment dates are added to the same sorted set, all before changing a
+Booking or BookingGuest tuple. Guest removal and kiosk departure derive their
+sets from STORED assignment dates rather than an envelope, so they cover
+checkout-day rows without widening: guest removal takes global → lodge → sorted
 stored roster dates before its post-lock re-read and guarded deletion. Member
 guest consent and admin booking-review claims share global → lodge; guest add
 shares the immutable lodge tier. Those common tiers serialize eligibility
@@ -158,6 +167,14 @@ not a claim that every booking writer takes every tier: create, confirm, cancel,
 membership fan-out and drain paths omit the roster and/or member keys they do
 not use. The invariant is that a path which does compose them never takes a
 roster-date or member key after the coverage-owner key.
+
+Cleanup's own out-of-range predicate is the operational span, not the night
+range: it removes rows strictly before check-in or strictly after check-out, and
+its guest-level counterpart asks the same operational-day helper roster
+eligibility asks (#2622, epic D-M6) against the canonical night rows. Cleanup
+and eligibility therefore cannot disagree about whether a given date was
+occupied, which is what makes the widened lock set sufficient rather than merely
+larger.
 
 Kiosk complete/uncomplete takes only the affected roster-date key. Departure
 timestamps are not eligibility inputs, but departure cleanup also updates the
@@ -1086,6 +1103,38 @@ mispricing a booking.
   deliberately **not** taken — the master stays unlocked until step 5, and the
   family-link drift re-check above is what closes that window.
 
+- **Deletion-request approval release** — `src/lib/deletion-request-decision.ts`
+  (`releaseDeletionRequestApprovalClaim`, #2627): takes
+  `$executeRaw`SELECT 1 FROM "DeletionRequest" WHERE "id" = $1 FOR UPDATE`` as the
+  first statement of its transaction, reads the claim's holder and note back
+  through the Prisma model under that lock (lock raw, read typed — #2289), and
+  only then performs the guarded `APPROVAL_IN_PROGRESS -> PENDING` transition; the
+  route writes the `member.deletion_approval_claim_released` audit row with the
+  awaited `createAuditLog` on the same transaction client, so the record and the
+  transition commit or roll back together. The lock exists for the ATTRIBUTION,
+  not for the transition — the transition is safe on its guard alone, but the
+  holder it nulls has to be read at the same serialised point or an ABA
+  interleaving records an admin whose claim was never displaced. Request-id keyed
+  on an immutable cuid, so the zero-match exception above cannot bite (a zero
+  count means the request itself is gone, which is emphatically not a held claim);
+  no advisory lock; disjoint from the booking/capacity/credit and money clusters.
+  Counterpart, and why there is no cycle: the approval finalisation takes the
+  future-partner-shared-allocation and member-lifecycle advisory locks, then this
+  row (through its own guarded `updateMany`), then the `Member` row. The release
+  takes this row and inserts an `AuditLog`, which carries no FK to `Member` and so
+  takes no `Member` lock at all — one lock each way, no inversion. Because the
+  finalisation legitimately holds this row from its claim to its commit, the
+  release runs with explicit `maxWait` 10s / `timeout` 15s — deliberately longer
+  than the finalisation's own default 5s budget, so a release loses to it on the
+  guard rather than on the clock — and the route maps P2028/P2034 to a 503
+  retry-later (`DELETION_REQUEST_RELEASE_CONTENDED`) rather than a bare 500, the
+  same shape as the club-theme logo writer above. Before the release existed as a
+  transaction it was an auto-commit `updateMany` that blocked and then returned
+  the mapped 409, so the 503 keeps a contended release actionable instead of
+  regressing it to an opaque failure. Both winner orders, the release/audit
+  atomicity, and the rejection guard's own lock wait are forced against real
+  PostgreSQL in `adult-member-hosting-queue-merge.realdb.test.ts`.
+
 Do not add or compose a row lock without updating this inventory and documenting
 its order against every advisory- and row-lock counterpart.
 
@@ -1231,16 +1280,75 @@ create/manual Link/inbound reconciliation/historical backfill, including no prov
 reservation/call/link when lifecycle wins and no dangling FK-less link when
 merge or deletion completes.
 
-Approve and reject of one `DeletionRequest` share a separate exact-row winner
-protocol: one `updateMany({ id, status: PENDING })` is the only authority for a
-final decision. Approval performs that guarded transition inside the privacy
-anonymisation transaction, before any privacy mutation; rejection performs the
-same guarded transition before audit or email. PostgreSQL serialises contenders
-on the request row, so the loser returns 409 and sends no contradictory email.
-If a later approval mutation fails, the claim and anonymisation roll back
-together to PENDING. Booking cancellations committed before the approval
-transaction remain truthful partial cleanup and are reported as such if a
-concurrent rejection won.
+The deletion side of that fence takes the row lock and re-checks the blocker set,
+but deliberately does **not** re-read the deleted marker as a refusal (#2627).
+Deletion is what writes that marker, so asserting it there made a member who had
+already been through an approved self-service deletion permanently impossible to
+hard delete — the fence raised `XeroMemberUnavailableError`, which no delete path
+catches or maps, so the operator got a bare 500 with no code and no remedy.
+Anonymisation has already torn the contact linkage down (`Member.xeroContactId`
+nulled, every active Member CONTACT ledger row deactivated), so Xero
+availability is not a question that applies to such a member. The
+contact-*writing* participants still assert it, which is what makes
+deletion-first refuse them.
+
+Approve, reject and release of one `DeletionRequest` share a separate exact-row
+winner protocol: a guarded `updateMany` naming the exact status it transitions
+FROM is the only authority for any transition. Rejection claims `PENDING` — and,
+since #2627, the exact FLAVOUR of `PENDING` it was authorised against, because a
+released request is `PENDING` too. An unconfirmed rejection guards on
+`reviewedAt: null`, a confirmed reject-after-release on `reviewedAt: { not: null }`,
+and the two shapes partition `PENDING` exactly. The Full-Admin gate and the
+confirmation that separate those two cases are evaluated against the route's
+opening read, which is not the serialised point, so putting the marker in the
+guard is what stops a release committing in that window from silently converting
+an ordinary rejection into an unwarned reject-after-release over
+already-committed cancellations. An
+approval with future bookings to cancel first claims
+`PENDING -> APPROVAL_IN_PROGRESS`, before the first cancellation commits, and
+finalises only from that claim inside the privacy anonymisation transaction; an
+approval with nothing to cancel takes no claim and finalises `PENDING ->
+APPROVED` in that same transaction, because it committed nothing ahead of it
+(#2627). A Full Admin release performs `APPROVAL_IN_PROGRESS -> PENDING`.
+PostgreSQL serialises contenders on the request row, so the loser returns 409 and
+sends no contradictory email: a release arriving while a finalisation is
+committing blocks on that row's write lock and then matches zero rows, and a
+release that commits first makes the finalisation match zero rows and roll its
+whole anonymisation transaction back. If a later approval mutation fails, the
+claim and anonymisation roll back together to whichever status the approval
+started from. Booking cancellations committed before the approval transaction
+remain truthful partial cleanup and are reported as such if a concurrent
+rejection or release won. A finalisation that loses its guard to a release lands
+on `PENDING`, which is reported as exactly that (`DELETION_REQUEST_APPROVAL_RELEASED`)
+rather than as an unconfirmable final state.
+
+The release is the one transition that additionally takes the request row
+`FOR UPDATE`, and it must be handed a transaction client. It nulls the claim's own
+attribution, so its audit entry is the only surviving record of who held the
+claim — and that holder has to be read at the same serialised point as the
+mutation, or an ABA interleaving (a claim released and re-taken between the read
+and the write) records an admin whose claim was never displaced. So the release
+takes the row lock, reads the previous holder and note through the Prisma model
+under it ("Lock raw, read typed" above), performs the guarded transition, and the
+route writes the audit row with the awaited `createAuditLog` inside that same
+transaction: the record and the transition commit or roll back together. The
+guarded `updateMany` is retained under the lock, so a caller that forgets the
+transaction still fails closed instead of reporting a release that did not happen.
+The transition also stamps `reviewedAt` on the now-`PENDING` row which — with no
+`reviewedBy` — is the durable marker that this request was re-opened after an
+approval had started; `docs/DOMAIN_INVARIANTS.md` covers what the queue, the
+reject dialog and the reject route each do with it, and the guard above is what
+makes it binding rather than advisory.
+
+Because that lock is the release's first statement and the finalisation
+legitimately holds the same row from its claim to its commit, this is the one
+transaction here designed to WAIT. It therefore carries explicit
+`maxWait` 10s / `timeout` 15s (longer than the finalisation's own default 5s
+budget, so a release loses on the guard rather than on the clock) and the route
+maps P2028/P2034 to a 503 `DELETION_REQUEST_RELEASE_CONTENDED` retry-later, the
+same convention as the site-style/club-theme writer recorded earlier in this
+document. See the "Deletion-request approval release" entry under "Narrow row- and
+table-lock protocols" for the full lock order and counterpart analysis.
 
 After Xero returns a newly created contact, the operation is durably marked
 `provider_contact_created_local_link_pending` before the local link transaction.

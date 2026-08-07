@@ -66,9 +66,9 @@ module is on.
 | Minimum Age | Youngest guest who may be assigned | 0 | Integer years |
 | Age Restriction | Any age · Adults only (18+) · Mixed (adult + child preferred) · Adult supervised | Any age | Drives who the roster auto-suggests |
 | Conditional Note | A note about when the chore applies | — | Optional; free text |
-| Time of Day | Morning · Evening · Anytime | Anytime | Groups the chore on this page and the roster |
+| Time of Day | Morning · Evening · Anytime | Anytime | Groups the chore on this page and the roster, and decides who can be given it on a changeover day: a guest leaving that morning can take Morning and Anytime work but not Evening, and a guest arriving that evening the reverse |
 | Frequency | Daily · Every X days · Specific days of week | Daily | "Every X days" needs an interval; "Specific days" needs the ticked days. The roster's due-chore summary uses this lodge's own prior assignment history |
-| Essential | Whether the chore is always rostered | off | Essential chores appear every day regardless of occupancy |
+| Essential | Whether the chore is always rostered | off | Essential chores appear every day regardless of occupancy — including a changeover day whose only occupants are checking out, because they are still here for the morning |
 | Active | Whether the chore is in the library | on | Inactive chores are dimmed and not rostered |
 | Lodge selector | Which lodge's chores are shown | first/only lodge | Only shown with more than one active lodge; a chore's lodge is fixed at creation |
 

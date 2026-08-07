@@ -103,7 +103,10 @@ import {
   calculateBookingHoldDecision,
   toGroupDiscountConfig,
 } from "@/lib/policies/booking-route-decisions";
-import { lockRosterDateRangesAndDates } from "@/lib/roster-lock";
+import {
+  lockRosterDateRangesAndDates,
+  rosterOperationalDayRange,
+} from "@/lib/roster-lock";
 import { processWaitlistForDates } from "@/lib/waitlist";
 import { queueXeroBookingEditSettlement } from "@/lib/xero-booking-edit-settlement";
 import {
@@ -406,11 +409,14 @@ export async function modifyBookingDates({
       where: { bookingId },
       select: { date: true },
     });
+    // #2622: the ranges reach the check-out day, so the old and new check-out
+    // dates — where a departure-morning chore row can now live — are inside the
+    // one sorted set taken before any tuple write.
     await lockRosterDateRangesAndDates(
       tx,
       [
-        { start: booking.checkIn, end: booking.checkOut },
-        { start: newCheckIn, end: newCheckOut },
+        rosterOperationalDayRange(booking.checkIn, booking.checkOut),
+        rosterOperationalDayRange(newCheckIn, newCheckOut),
       ],
       existingAssignmentDates.map((assignment) => assignment.date),
     );
@@ -1410,11 +1416,12 @@ export async function adminShiftBookingDates({
       where: { bookingId },
       select: { date: true },
     });
+    // #2622: checkout-inclusive on both envelopes — see `modifyBookingDates`.
     await lockRosterDateRangesAndDates(
       tx,
       [
-        { start: oldCheckIn, end: oldCheckOut },
-        { start: newCheckIn, end: newCheckOut },
+        rosterOperationalDayRange(oldCheckIn, oldCheckOut),
+        rosterOperationalDayRange(newCheckIn, newCheckOut),
       ],
       existingAssignmentDates.map((assignment) => assignment.date),
     );
