@@ -65,7 +65,7 @@ export const XERO_CONTACT_LINK_CHANGED_MESSAGE =
 export const XERO_CONTACT_CREATE_BLOCKS_DELETION_CODE =
   "XERO_CONTACT_CREATE_BLOCKS_DELETION";
 export const XERO_CONTACT_CREATE_BLOCKS_DELETION_MESSAGE =
-  "Account deletion was not completed because a Xero contact change is still in progress or awaiting recovery. Resolve that Xero operation, then retry the remaining deletion cleanup.";
+  "Member deletion was not completed because a Xero contact change is still in progress or awaiting recovery. Resolve that Xero operation, then retry the remaining deletion cleanup.";
 export const DELETED_ACCOUNT_PASSWORD_HASH = "DELETED_ACCOUNT";
 
 export class XeroContactCreateInProgressError extends Error {

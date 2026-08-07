@@ -33,7 +33,7 @@ describe("Xero contact/account-deletion lock topology mutation pins (#2597)", ()
   it("reserves only after the Member KEY SHARE re-read and ambiguous-create proof", () => {
     const block = between(
       source("src/lib/xero-contacts.ts"),
-      "export async function reserveMemberContactCreateOperation(",
+      "export async function reserveMemberContactCreateOperation<T>(",
       "export interface XeroContactUpdateData",
     );
 
@@ -42,7 +42,8 @@ describe("Xero contact/account-deletion lock topology mutation pins (#2597)", ()
       "tx.member.findUnique",
       "assertMemberAvailableForXeroContactChange(locked)",
       "ambiguousMemberContactCreateReservationWhere(memberId)",
-      "startXeroSyncOperation({ ...input, store: tx })",
+      "const plan = buildPlan(locked)",
+      "startXeroSyncOperation({",
     ]);
   });
 
@@ -55,6 +56,7 @@ describe("Xero contact/account-deletion lock topology mutation pins (#2597)", ()
 
     expectOrdered(block, [
       "reserveMemberContactCreateOperation(memberId",
+      "buildMemberXeroContactCreatePayload(locked)",
       "getAuthenticatedXeroClient()",
       "persistProviderCreatedContactProofOrThrow(",
       "lockMemberForXeroContactLink(tx, memberId)",

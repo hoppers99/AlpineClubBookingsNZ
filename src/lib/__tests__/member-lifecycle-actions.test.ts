@@ -60,11 +60,14 @@ const mockPrisma = vi.hoisted(() => {
       findMany: vi.fn().mockResolvedValue([]),
       updateMany: vi.fn(),
     },
+    xeroSyncOperation: {
+      findFirst: vi.fn().mockResolvedValue(null),
+    },
     auditLog: {
       create: vi.fn(),
     },
     $transaction: vi.fn(),
-    $executeRaw: vi.fn().mockResolvedValue(0),
+    $executeRaw: vi.fn().mockResolvedValue(1),
     $executeRawUnsafe: vi.fn().mockResolvedValue(0),
   };
 });
@@ -376,6 +379,7 @@ describe("member delete lifecycle actions", () => {
       },
     ]);
     mockPrisma.xeroObjectLink.updateMany.mockResolvedValue({ count: 1 });
+    mockPrisma.xeroSyncOperation.findFirst.mockResolvedValue(null);
     mockPrisma.member.update.mockResolvedValue({ ...cleanMember, xeroContactId: null });
     mockPrisma.member.delete.mockResolvedValue(cleanMember);
     mockPrisma.memberLifecycleActionRequest.findMany.mockResolvedValue([]);
@@ -696,6 +700,29 @@ describe("member delete lifecycle actions", () => {
         photoOfMembers: { none: { id: { not: "member-1" } } },
       },
     });
+  });
+
+  it("refuses hard delete before its review claim when a Xero contact change is unresolved", async () => {
+    mockPrisma.xeroSyncOperation.findFirst.mockResolvedValue({
+      id: "contact-operation-1",
+    });
+
+    await expect(
+      reviewMemberDeleteRequest({
+        requestId: "request-1",
+        reviewedByMemberId: "admin-2",
+        action: "approve",
+      }),
+    ).rejects.toMatchObject({
+      name: "XeroContactCreateBlocksDeletionError",
+      code: "XERO_CONTACT_CREATE_BLOCKS_DELETION",
+      statusCode: 409,
+    });
+
+    expect(mockPrisma.memberLifecycleActionRequest.updateMany).not.toHaveBeenCalled();
+    expect(mockPrisma.xeroObjectLink.updateMany).not.toHaveBeenCalled();
+    expect(mockPrisma.member.update).not.toHaveBeenCalled();
+    expect(mockPrisma.member.delete).not.toHaveBeenCalled();
   });
 
   /**

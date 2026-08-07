@@ -271,6 +271,19 @@ let claimDeletionRequestDecision: (typeof import("@/lib/deletion-request-decisio
   "hosting queue/member merge interleavings — real PostgreSQL (#2597)",
   { timeout: 120_000 },
   () => {
+    async function reserveStaticContactCreate(
+      memberId: string,
+      input: import("@/lib/xero-contacts").MemberContactCreateReservationPlan<null>["input"],
+      db: PrismaClient = ordinary,
+    ) {
+      const { operation } = await reserveMemberContactCreateOperation(
+        memberId,
+        () => ({ input, value: null }),
+        db,
+      );
+      return operation;
+    }
+
     async function clearFixtures(): Promise<void> {
       await primary.hostingCoverageIncident.deleteMany({
         where: { bookingId: { in: ALL_BOOKING_IDS } },
@@ -1824,7 +1837,7 @@ let claimDeletionRequestDecision: (typeof import("@/lib/deletion-request-decisio
     it("contact-create reservation wins before provider work, so the full merge rolls back and terminal resolution unblocks preview", async () => {
       const preview = await previewMerge();
       const correlationKey = "race-2597-contact-create-reservation-wins";
-      const reservation = await reserveMemberContactCreateOperation(
+      const reservation = await reserveStaticContactCreate(
         IDS.loser,
         {
           direction: "OUTBOUND",
@@ -1872,7 +1885,7 @@ let claimDeletionRequestDecision: (typeof import("@/lib/deletion-request-decisio
     it("merge wins the Member row, so a later contact-create reservation cannot commit or reach provider work", async () => {
       const { operation, pause } = await startPausedMerge("after");
       const correlationKey = "race-2597-contact-create-merge-wins";
-      const reservation = reserveMemberContactCreateOperation(
+      const reservation = reserveStaticContactCreate(
         IDS.loser,
         {
           direction: "OUTBOUND",
@@ -1922,7 +1935,7 @@ let claimDeletionRequestDecision: (typeof import("@/lib/deletion-request-decisio
         "FOR KEY SHARE",
       );
       const correlationKey = "race-2597-contact-create-before-manual-link";
-      const reservation = reserveMemberContactCreateOperation(
+      const reservation = reserveStaticContactCreate(
         IDS.loser,
         {
           direction: "OUTBOUND",
@@ -1992,7 +2005,7 @@ let claimDeletionRequestDecision: (typeof import("@/lib/deletion-request-decisio
       await waitForPauseOrFail(pause, manualLink);
 
       const correlationKey = "race-2597-manual-link-before-contact-create";
-      const reservation = reserveMemberContactCreateOperation(
+      const reservation = reserveStaticContactCreate(
         IDS.loser,
         {
           direction: "OUTBOUND",
@@ -2039,7 +2052,7 @@ let claimDeletionRequestDecision: (typeof import("@/lib/deletion-request-decisio
 
     it("contact-create reservation wins before account deletion and blocks anonymisation", async () => {
       const correlationKey = "race-2597-contact-create-before-deletion";
-      const reservation = await reserveMemberContactCreateOperation(
+      const reservation = await reserveStaticContactCreate(
         IDS.target,
         {
           direction: "OUTBOUND",
@@ -2091,7 +2104,7 @@ let claimDeletionRequestDecision: (typeof import("@/lib/deletion-request-decisio
       await waitForPauseOrFail(pause, deletion);
 
       const correlationKey = "race-2597-deletion-before-contact-create";
-      const reservation = reserveMemberContactCreateOperation(
+      const reservation = reserveStaticContactCreate(
         IDS.target,
         {
           direction: "OUTBOUND",
