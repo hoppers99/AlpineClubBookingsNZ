@@ -226,6 +226,11 @@ describe("the per-owner coverage lock (#2576 §9)", () => {
     const body = source.slice(executeStart, executeStart + 50_000);
     const markers = [
       "await lockAdultMemberHostingPolicySet(tx)",
+      // #2595: the partner-share prefix (global cohort + every affected lodge,
+      // sorted) sits BETWEEN the policy-set key and the member-lifecycle pair.
+      // Pinned by position, because taking it any later would invert the
+      // documented global -> lodge -> member order.
+      "await acquireFuturePartnerSharedAllocationLocks(tx, [masterId, loserId])",
       "member-lifecycle:${lockA}",
       "const relationMoves = await applyMoves(",
       "const hostingPlan = await buildMemberMergeHostingCoveragePlan(",
@@ -237,9 +242,13 @@ describe("the per-owner coverage lock (#2576 §9)", () => {
       "const residualLoserGuestRows = await tx.bookingGuest.findMany(",
       "await lockHostingCoverageOwners(",
       "await applyLateHostingCoverageMoves(",
+      // #2595 step 3b: after the moves and every drift refusal, before the Xero
+      // teardown, and its alert strictly after the transaction commits.
+      "sweptShares = await sweepUnbackedFutureSharedDoublesWithLocksHeld({",
       "await enqueueMemberMergeHostingCoveragePlan(",
       "await tx.member.delete({ where: { id: loserId } })",
       "await settleHostingCoverageAfterCommit({ limit: 50 }, client)",
+      "sendAdminPartnerShareSweptAlert({",
     ];
     const positions = markers.map((marker) => body.indexOf(marker));
     expect(positions.every((position) => position >= 0), markers.join(" -> ")).toBe(

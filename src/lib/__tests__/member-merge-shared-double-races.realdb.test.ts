@@ -11,10 +11,13 @@
  * supplies the invariant.
  *
  * This suite drives the REAL production entrypoints against a real database:
- * `buildMemberMergePreview` + `executeMemberMerge` for the merge, and the real
+ * `buildMemberMergePreview` + `executeMemberMerge`, which since the #2618
+ * integration performs the repair itself as merge step 3b. Every assertion below
+ * therefore reads COMMITTED rows written by the production merge — no
+ * re-implementation of either side, and no test-only composition of the two.
  * `acquireFuturePartnerSharedAllocationLocks` +
- * `sweepUnbackedFutureSharedDoublesWithLocksHeld` for the repair. Nothing is
- * re-implemented.
+ * `sweepUnbackedFutureSharedDoublesWithLocksHeld` are imported only to drive a
+ * SECOND pass for the idempotence case.
  *
  * Ordinary Vitest runs skip the whole file. It reuses the guarded, disposable
  * loopback PostgreSQL that `concurrency-lock-races.realdb.test.ts` already
@@ -36,12 +39,13 @@ import { realElapsedMs } from "@/lib/__tests__/helpers/clock";
 const RUN = process.env.RUN_CONCURRENCY_RACE_TESTS === "1";
 const RACE_DB_URL = process.env.CONCURRENCY_RACE_DATABASE_URL ?? "";
 
-// A member merge does hundreds of sequential round-trips over 70+ relations
-// before it reaches its bed-allocation reconciliation, so the merge writer joins
-// the global cohort much later than a single-purpose board writer. The poller
-// therefore gets a far larger bound than the parent harness's 5s diagnostic — a
-// timeout here must mean "a production writer stopped joining the cohort", never
-// "the merge was still counting relations".
+// A member merge joins the global cohort at the TOP of its transaction (#2595
+// takes the partner-share prefix immediately after the hosting policy-set key, so
+// the fixed global -> lodge -> member order holds), but it still runs its preview
+// and hundreds of sequential relation round-trips inside the same window. The
+// poller therefore gets a far larger bound than the parent harness's 5s
+// diagnostic — a timeout here must mean "a production writer stopped joining the
+// cohort", never "the merge was still counting relations".
 const LOCK_POLL_TIMEOUT_MS = 30_000;
 const RACE_TEST_TIMEOUT_MS = 120_000;
 
@@ -547,24 +551,22 @@ async function runRealMemberMerge() {
 }
 
 /**
- * ============================ INTEGRATION POINT ============================
- * The one production edit #2595 still needs, held out of this branch on
- * purpose: `applyMoves` in `src/lib/member-merge.ts` is rewritten by PR #2618
- * (hosting-queue producer topology), and editing the merge transaction here
- * would collide with it. The orchestrator wires it after #2618 merges, and the
- * PIN test below fails the moment it does — which is the forcing function to
- * delete that pin.
- *
- * Inside `executeMemberMerge`'s single transaction, in exactly two places:
+ * ============================= THE WIRED SEAM ==============================
+ * `executeMemberMerge` now owns the reconciliation. The two edits that used to
+ * be held out of this branch behind PR #2618 are in `src/lib/member-merge.ts`:
  *
  *   1. immediately AFTER `await lockAdultMemberHostingPolicySet(tx)` and BEFORE
  *      the two sorted `member-lifecycle:` advisory locks:
  *
  *          await acquireFuturePartnerSharedAllocationLocks(tx, [masterId, loserId]);
  *
- *   2. as step 3b, AFTER `applyMoves` (guest rows now name the master) and
- *      AFTER step 2's `resolvePartnerLinks` (the surviving partnerships are
- *      final), BEFORE step 4's Xero teardown:
+ *      — the global cohort `lock(1)` plus every affected lodge key, sorted, so
+ *      the fixed global -> lodge -> member order holds. Taking it at the point
+ *      of use would acquire a lodge key with member keys already held.
+ *
+ *   2. as step 3b, AFTER `applyMoves` (guest rows now name the master), AFTER
+ *      step 2's `resolvePartnerLinks` (the surviving partnerships are final),
+ *      and after every drift refusal, BEFORE step 4's Xero teardown:
  *
  *          sweptShares = await sweepUnbackedFutureSharedDoublesWithLocksHeld({
  *            memberIds: [masterId, loserId],
@@ -575,11 +577,21 @@ async function runRealMemberMerge() {
  * plus the post-commit `sendAdminPartnerShareSweptAlert` next to
  * `settleHostingCoverageAfterCommit`.
  *
- * Everything this suite runs below is that composition, in that order, using
- * the real production helpers — no re-implementation of either side.
+ * That source order is pinned structurally by
+ * `adult-member-hosting-coverage-lock.test.ts` ("pins the merge participant
+ * re-plan, late sweeps, queue write and drain order"). This suite proves the
+ * OBSERVABLE result of it on real PostgreSQL: `runRealMemberMerge()` below is
+ * the entire production path, and every assertion reads committed rows.
  * ==========================================================================
  */
-async function reconcileMergedSharedDoubles() {
+
+/**
+ * A SECOND reconciliation pass over the same scope, driven through the same two
+ * production helpers the merge itself uses. Only the idempotence case needs it:
+ * the merge hard-deletes the loser, so a second merge cannot be run, and this is
+ * the only way to ask "does another pass write anything?".
+ */
+async function runSecondReconciliationPass() {
   return prisma.$transaction(async (tx) => {
     await acquireFuturePartnerSharedAllocationLocks(tx, [MASTER_ID, LOSER_ID]);
     return sweepUnbackedFutureSharedDoublesWithLocksHeld({
@@ -588,13 +600,6 @@ async function reconcileMergedSharedDoubles() {
       db: tx,
     });
   });
-}
-
-/** Real merge followed by the reconciliation the integration point above adds. */
-async function runMergeWithSharedDoubleReconciliation() {
-  const merge = await runRealMemberMerge();
-  const swept = await reconcileMergedSharedDoubles();
-  return { merge, swept };
 }
 
 async function sharedDoubleOccupants(bedId: string) {
@@ -892,22 +897,9 @@ describe("member-merge shared-double race DB safety guard (#2595)", () => {
     it("removes the shared double the dropped partner link no longer backs", async () => {
       await seedMergeScenario();
 
-      const { merge, swept } = await runMergeWithSharedDoubleReconciliation();
+      // THE defect this issue records. Nothing but the production merge runs.
+      const merge = await runRealMemberMerge();
       expect(merge.masterId).toBe(MASTER_ID);
-
-      // The removed row, named by the reconciliation for the post-commit alert.
-      expect(swept).toEqual([
-        expect.objectContaining({
-          allocationId: EX_PARTNER_ALLOCATION_ID,
-          bookingId: EX_PARTNER_BOOKING_ID,
-          bedId: UNBACKED_DOUBLE_ID,
-          secondOccupantMemberId: EX_PARTNER_ID,
-          secondOccupantName: "Dropped Partner",
-          primaryBookingId: LOSER_BOOKING_ID,
-          primaryMemberId: MASTER_ID,
-          primaryName: "Duplicate Loser",
-        }),
-      ]);
 
       const [unbacked, backed, masterPartners, sweptAudits] = await Promise.all([
         sharedDoubleOccupants(UNBACKED_DOUBLE_ID),
@@ -951,6 +943,8 @@ describe("member-merge shared-double race DB safety guard (#2595)", () => {
       ]);
 
       // Both sides of the swept bed-night are audited, against the merge issue.
+      // This is also where the removed row is NAMED in committed state — the
+      // same facts the post-commit admin alert is built from.
       expect(sweptAudits).toHaveLength(2);
       expect(sweptAudits.map((row) => row.targetId).sort()).toEqual(
         [EX_PARTNER_BOOKING_ID, LOSER_BOOKING_ID].sort(),
@@ -960,15 +954,29 @@ describe("member-merge shared-double race DB safety guard (#2595)", () => {
           issue: 2595,
           reason: "members_merged",
           stayDates: [MERGE_NIGHT_DATE_ONLY],
+          allocationIds: [EX_PARTNER_ALLOCATION_ID],
         });
       }
+      expect(
+        sweptAudits.map((row) => [
+          row.targetId,
+          (row.metadata as { role?: string } | null)?.role,
+          (row.metadata as { counterpartBookingId?: string } | null)
+            ?.counterpartBookingId,
+        ]),
+      ).toEqual(
+        [
+          [EX_PARTNER_BOOKING_ID, "second_occupant", LOSER_BOOKING_ID],
+          [LOSER_BOOKING_ID, "primary", EX_PARTNER_BOOKING_ID],
+        ].sort((a, b) => String(a[0]).localeCompare(String(b[0]))),
+      );
     });
 
     it("is idempotent: a second reconciliation pass writes nothing", async () => {
       await seedMergeScenario();
-      await runMergeWithSharedDoubleReconciliation();
+      await runRealMemberMerge();
 
-      const second = await reconcileMergedSharedDoubles();
+      const second = await runSecondReconciliationPass();
       expect(second).toEqual([]);
       expect(await shareSweptAuditRows()).toHaveLength(2);
       expect(await sharedDoubleOccupants(UNBACKED_DOUBLE_ID)).toHaveLength(1);
@@ -987,9 +995,8 @@ describe("member-merge shared-double race DB safety guard (#2595)", () => {
         where: { id: MASTER_PARTNER_ALLOCATION_ID },
       });
 
-      const { swept } = await runMergeWithSharedDoubleReconciliation();
+      await runRealMemberMerge();
 
-      expect(swept).toEqual([]);
       expect(await confirmedPartnerIdsOf(MASTER_ID)).toEqual([EX_PARTNER_ID]);
       expect(await sharedDoubleOccupants(UNBACKED_DOUBLE_ID)).toEqual([
         {
@@ -1010,41 +1017,11 @@ describe("member-merge shared-double race DB safety guard (#2595)", () => {
       expect(await shareSweptAuditRows()).toEqual([]);
     });
 
-    // -----------------------------------------------------------------------
-    // DELETE THIS TEST when the integration point documented above is wired.
-    //
-    // It pins the deliberate boundary of this branch: the reconciliation is
-    // built, tested and lock-ordered, but `executeMemberMerge` does not call it
-    // yet, because the one edit that would do so lands inside the region PR
-    // #2618 rewrites. Until then a bare merge still commits the invalid share,
-    // which is also what makes the sweep above load-bearing rather than
-    // vacuous. The moment the wiring lands this test fails — that is how it
-    // removes itself.
-    // -----------------------------------------------------------------------
-    it("PIN: the merge transaction does not yet reconcile (wiring deferred behind #2618)", async () => {
-      await seedMergeScenario();
-
-      await runRealMemberMerge();
-
-      expect(await confirmedPartnerIdsOf(MASTER_ID)).toEqual([MASTER_PARTNER_ID]);
-      expect(await shareSweptAuditRows()).toEqual([]);
-      expect(await sharedDoubleOccupants(UNBACKED_DOUBLE_ID)).toEqual([
-        {
-          id: LOSER_ALLOCATION_ID,
-          bedId: UNBACKED_DOUBLE_ID,
-          isSecondOccupant: false,
-          bookingId: LOSER_BOOKING_ID,
-          memberId: MASTER_ID,
-        },
-        {
-          id: EX_PARTNER_ALLOCATION_ID,
-          bedId: UNBACKED_DOUBLE_ID,
-          isSecondOccupant: true,
-          bookingId: EX_PARTNER_BOOKING_ID,
-          memberId: EX_PARTNER_ID,
-        },
-      ]);
-    });
+    // The PIN that used to sit here — "the merge transaction does not yet
+    // reconcile (wiring deferred behind #2618)" — is deleted, because the wiring
+    // landed and it was written to fail the moment it did. The first case above
+    // is its replacement: the SAME bare `runRealMemberMerge()` call, now
+    // asserting that the invalid share is gone instead of that it survives.
 
     // -----------------------------------------------------------------------
     // NEIGHBOUR_ALLOCATION_WINDOW_NOTE
@@ -1080,6 +1057,30 @@ describe("member-merge shared-double race DB safety guard (#2595)", () => {
       toDate: NEIGHBOUR_CHECK_OUT_DATE_ONLY,
     };
 
+    /**
+     * The committed evidence that the MERGE removed exactly the unbacked row:
+     * the row is gone and both audit sides name its allocation id. Read from
+     * committed state rather than a returned array, because the production
+     * entrypoint under test is `executeMemberMerge` alone.
+     */
+    async function expectMergeSweptOnlyTheUnbackedRow(): Promise<void> {
+      const audits = await shareSweptAuditRows();
+      expect(audits).toHaveLength(2);
+      for (const row of audits) {
+        expect(row.metadata).toMatchObject({
+          issue: 2595,
+          reason: "members_merged",
+          allocationIds: [EX_PARTNER_ALLOCATION_ID],
+        });
+      }
+      expect(
+        await prisma.bedAllocation.findUnique({
+          where: { id: EX_PARTNER_ALLOCATION_ID },
+          select: { id: true },
+        }),
+      ).toBeNull();
+    }
+
     async function expectNeighbourAllocated(): Promise<void> {
       const rows = await prisma.bedAllocation.findMany({
         where: { bookingId: NEIGHBOUR_BOOKING_ID },
@@ -1099,7 +1100,7 @@ describe("member-merge shared-double race DB safety guard (#2595)", () => {
       async (order) => {
         await seedMergeScenario();
 
-        const mergeWriter = () => runMergeWithSharedDoubleReconciliation();
+        const mergeWriter = () => runRealMemberMerge();
         const autoWriter = () =>
           runAutoBedAllocation({ range: NEIGHBOUR_RANGE, lodgeId: LODGE_ID });
 
@@ -1124,12 +1125,12 @@ describe("member-merge shared-double race DB safety guard (#2595)", () => {
           );
         }
 
-        // Both production writers committed: the reconciliation removed exactly
-        // the unbacked row, the auto run placed exactly the neighbour.
+        // Both production writers committed: the merge's step-3b reconciliation
+        // removed exactly the unbacked row, the auto run placed exactly the
+        // neighbour.
         expect(settledValueOrThrow(autoOutcome)).toEqual({ count: 1 });
-        expect(
-          settledValueOrThrow(mergeOutcome).swept.map((row) => row.allocationId),
-        ).toEqual([EX_PARTNER_ALLOCATION_ID]);
+        expect(settledValueOrThrow(mergeOutcome).masterId).toBe(MASTER_ID);
+        await expectMergeSweptOnlyTheUnbackedRow();
         await expectNeighbourAllocated();
         await expectNoUnbackedSharedDouble();
       },
@@ -1140,7 +1141,7 @@ describe("member-merge shared-double race DB safety guard (#2595)", () => {
       async (order) => {
         await seedMergeScenario();
 
-        const mergeWriter = () => runMergeWithSharedDoubleReconciliation();
+        const mergeWriter = () => runRealMemberMerge();
         const lifecycleWriter = () =>
           reconcileBedAllocationsForBooking({ bookingId: NEIGHBOUR_BOOKING_ID });
 
@@ -1167,9 +1168,8 @@ describe("member-merge shared-double race DB safety guard (#2595)", () => {
           createdCount: 1,
           deletedCount: 0,
         });
-        expect(
-          settledValueOrThrow(mergeOutcome).swept.map((row) => row.allocationId),
-        ).toEqual([EX_PARTNER_ALLOCATION_ID]);
+        expect(settledValueOrThrow(mergeOutcome).masterId).toBe(MASTER_ID);
+        await expectMergeSweptOnlyTheUnbackedRow();
         await expectNeighbourAllocated();
         await expectNoUnbackedSharedDouble();
       },
