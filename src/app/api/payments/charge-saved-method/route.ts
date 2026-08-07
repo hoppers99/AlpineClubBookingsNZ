@@ -313,7 +313,6 @@ export async function POST(request: NextRequest) {
       const hostingRetry = hostingCoverageParticipantRetryResponse(error, {
         paymentReceived: true,
         finalisationPending: true,
-        paymentIntentId: capturedPaymentIntentId,
       });
       if (hostingRetry) return hostingRetry;
     }

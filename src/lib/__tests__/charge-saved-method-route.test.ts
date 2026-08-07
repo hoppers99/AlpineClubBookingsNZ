@@ -351,7 +351,6 @@ describe("POST /api/payments/charge-saved-method", () => {
       code: HOSTING_COVERAGE_RETRY_CODE,
       paymentReceived: true,
       finalisationPending: true,
-      paymentIntentId: "pi_hosting_retry",
     });
     expect(mockUpsertPaymentIntentTransaction).toHaveBeenCalledWith(
       expect.objectContaining({

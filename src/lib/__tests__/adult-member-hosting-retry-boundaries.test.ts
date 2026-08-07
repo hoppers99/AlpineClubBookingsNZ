@@ -166,13 +166,22 @@ describe("adult-member hosting participant retry responses (#2597)", () => {
         "receivedPaymentIntentId = existingIntent.id",
         "paymentReceived: true",
         "finalisationPending: true",
-        "paymentIntentId: receivedPaymentIntentId",
       ],
     };
     for (const [file, fragments] of Object.entries(expected)) {
       const source = readRepoCode(file);
       for (const fragment of fragments) expect(source, file).toContain(fragment);
     }
+    expect(
+      readRepoCode("src/app/api/payments/create-payment-intent/route.ts"),
+    ).not.toMatch(
+      /hostingCoverageParticipantRetryResponse\(\s*error,[\s\S]{0,180}paymentIntentId:/,
+    );
+    expect(
+      readRepoCode("src/app/api/payments/charge-saved-method/route.ts"),
+    ).not.toMatch(
+      /hostingCoverageParticipantRetryResponse\(\s*error,[\s\S]{0,180}paymentIntentId:/,
+    );
   });
 
   it("pins the service-return boundaries that do not use NextResponse directly", () => {

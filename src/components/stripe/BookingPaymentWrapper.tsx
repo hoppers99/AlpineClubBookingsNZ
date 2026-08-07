@@ -10,8 +10,11 @@ import { FocusedActionError } from "@/components/focused-action-error";
 import {
   EXISTING_CARD_TRANSACTION_STATUS_UNCONFIRMED_MESSAGE,
   isExistingCardTransactionStatusUnconfirmed,
+  isPaymentReceivedFinalisationPending,
   isPaymentReceivedStatusUnconfirmed,
+  isRefundedCardTransactionRepaymentRequired,
   PAYMENT_RECEIVED_STATUS_UNCONFIRMED_MESSAGE,
+  REFUNDED_CARD_TRANSACTION_REPAYMENT_REQUIRED_MESSAGE,
 } from "@/lib/payment-recovery-contract";
 
 const CAPACITY_CANCELLATION_RECOVERY = {
@@ -238,24 +241,37 @@ export default function BookingPaymentWrapper({
           setConfirmationError(cancellationRecovery.message);
           return;
         }
-        if (data.code === "HOSTING_COVERAGE_PARTICIPANT_RETRY") {
+        const safeHostingMessage =
+          typeof data.error === "string"
+            ? data.error
+            : "The booking could not be finalised.";
+        if (
+          data.code === "HOSTING_COVERAGE_PARTICIPANT_RETRY" &&
+          isPaymentReceivedFinalisationPending(data)
+        ) {
           setRecoveryHeading("Payment received - finalisation pending");
           setConfirmationError(
-            `${
-              typeof data.error === "string"
-                ? data.error
-                : "The booking could not be finalised."
-            }${
-              data.paymentReceived && data.finalisationPending
-                ? " Your card payment was received, but booking finalisation is still pending."
-                : " Check the booking status before trying again."
-            }`,
+            `${safeHostingMessage} Your card payment was received, but booking finalisation is still pending.`,
           );
           return;
         }
         if (isPaymentReceivedStatusUnconfirmed(data)) {
           setRecoveryHeading("Payment received - check booking status");
           setConfirmationError(PAYMENT_RECEIVED_STATUS_UNCONFIRMED_MESSAGE);
+          return;
+        }
+        if (isExistingCardTransactionStatusUnconfirmed(data)) {
+          setRecoveryHeading("Card transaction found - check payment status");
+          setConfirmationError(
+            EXISTING_CARD_TRANSACTION_STATUS_UNCONFIRMED_MESSAGE,
+          );
+          return;
+        }
+        if (isRefundedCardTransactionRepaymentRequired(data)) {
+          setRecoveryHeading("Previous card payment refunded");
+          setConfirmationError(
+            REFUNDED_CARD_TRANSACTION_REPAYMENT_REQUIRED_MESSAGE,
+          );
           return;
         }
       }

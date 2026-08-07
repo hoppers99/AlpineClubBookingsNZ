@@ -24,6 +24,19 @@ export const EXISTING_CARD_TRANSACTION_STATUS_UNCONFIRMED_BODY = Object.freeze({
   paymentStatusUnconfirmed: true as const,
 });
 
+export const REFUNDED_CARD_TRANSACTION_REPAYMENT_REQUIRED_CODE =
+  "REFUNDED_CARD_TRANSACTION_REPAYMENT_REQUIRED" as const;
+
+export const REFUNDED_CARD_TRANSACTION_REPAYMENT_REQUIRED_MESSAGE =
+  "This card payment was already refunded. Reload the booking before starting a new payment.";
+
+export const REFUNDED_CARD_TRANSACTION_REPAYMENT_REQUIRED_BODY = Object.freeze({
+  code: REFUNDED_CARD_TRANSACTION_REPAYMENT_REQUIRED_CODE,
+  error: REFUNDED_CARD_TRANSACTION_REPAYMENT_REQUIRED_MESSAGE,
+  paymentRefunded: true as const,
+  repaymentRequired: true as const,
+});
+
 export type PaymentReceivedFinalisationPending = Readonly<{
   paymentReceived: true;
   finalisationPending: true;
@@ -71,5 +84,18 @@ export function isExistingCardTransactionStatusUnconfirmed(
     candidate.paymentStatusUnconfirmed === true &&
     candidate.paymentReceived !== true &&
     candidate.finalisationPending !== true
+  );
+}
+
+export function isRefundedCardTransactionRepaymentRequired(
+  value: unknown,
+): value is typeof REFUNDED_CARD_TRANSACTION_REPAYMENT_REQUIRED_BODY {
+  if (!value || typeof value !== "object") return false;
+  const candidate = value as Record<string, unknown>;
+  return (
+    candidate.code === REFUNDED_CARD_TRANSACTION_REPAYMENT_REQUIRED_CODE &&
+    candidate.paymentRefunded === true &&
+    candidate.repaymentRequired === true &&
+    candidate.paymentReceived !== true
   );
 }

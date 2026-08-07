@@ -59,6 +59,7 @@ vi.mock("@/lib/booking-payment-cleanup", () => ({
 }));
 
 vi.mock("@/lib/payment-transactions", () => ({
+  findPaymentTransactionByIntentId: vi.fn().mockResolvedValue(null),
   upsertPaymentIntentTransaction: vi.fn().mockResolvedValue(undefined),
 }));
 
@@ -90,6 +91,7 @@ vi.mock("@/lib/logger", () => ({
 import { prisma } from "@/lib/prisma";
 import { createPaymentIntent, findOrCreateCustomer, getPaymentIntent } from "@/lib/stripe";
 import { markBookingPaymentSucceeded } from "@/lib/payment-reconciliation";
+import { findPaymentTransactionByIntentId } from "@/lib/payment-transactions";
 import { checkCapacityForGuestRanges } from "@/lib/capacity";
 import { hashActionToken, issueActionToken } from "@/lib/action-tokens";
 import {
@@ -117,6 +119,9 @@ const mockedGetPaymentIntent = vi.mocked(getPaymentIntent);
 const mockedCreatePaymentIntent = vi.mocked(createPaymentIntent);
 const mockedFindOrCreateCustomer = vi.mocked(findOrCreateCustomer);
 const mockedMarkSucceeded = vi.mocked(markBookingPaymentSucceeded);
+const mockedFindPaymentTransaction = vi.mocked(
+  findPaymentTransactionByIntentId,
+);
 const mockedCheckCapacity = vi.mocked(checkCapacityForGuestRanges);
 
 const RAW_TOKEN = issueActionToken().token;
@@ -612,13 +617,119 @@ describe("createPaymentIntentForPaymentLink", () => {
 
     const result = await createPaymentIntentForPaymentLink(RAW_TOKEN);
 
-    expect(result).toEqual({ type: "alreadyPaid", paymentIntentId: "pi_existing" });
+    expect(result).toEqual({ type: "alreadyPaid" });
     expect(mockedMarkSucceeded).toHaveBeenCalledWith(
       expect.objectContaining({ bookingId: "booking-1", paymentIntentId: "pi_existing" })
     );
     expect(queueXeroInvoiceForPaidBookingMock).toHaveBeenCalledWith({
       bookingId: "booking-1",
     });
+  });
+
+  it.each([PaymentStatus.REFUNDED, PaymentStatus.PARTIALLY_REFUNDED])(
+    "mints a fresh repayment intent when the succeeded prior intent is %s",
+    async (refundedStatus) => {
+      mockedFindUnique.mockResolvedValue(
+        baseLink({
+          booking: baseBooking({
+            payment: {
+              id: "pay-1",
+              stripePaymentIntentId: "pi_refunded",
+              status: PaymentStatus.SUCCEEDED,
+            },
+          }),
+        }) as never,
+      );
+      mockedGetPaymentIntent.mockResolvedValue({
+        id: "pi_refunded",
+        status: "succeeded",
+        amount: 12000,
+        payment_method: "pm_old",
+      } as never);
+      mockedFindPaymentTransaction.mockResolvedValueOnce({
+        status: refundedStatus,
+      } as never);
+      vi.mocked(prisma.booking.findUnique).mockResolvedValue(
+        baseBooking({ guests: [{ id: "guest-1" }] }) as never,
+      );
+      mockedFindOrCreateCustomer.mockResolvedValue({ id: "cus_123" } as never);
+      mockedCreatePaymentIntent.mockResolvedValue({
+        id: "pi_repay",
+        client_secret: "secret_repay",
+      } as never);
+      vi.mocked(prisma.payment.upsert).mockResolvedValue({ id: "pay-1" } as never);
+
+      await expect(
+        createPaymentIntentForPaymentLink(RAW_TOKEN),
+      ).resolves.toEqual({
+        type: "clientSecret",
+        clientSecret: "secret_repay",
+        paymentIntentId: "pi_repay",
+      });
+      expect(mockedMarkSucceeded).not.toHaveBeenCalled();
+      expect(mockedCreatePaymentIntent).toHaveBeenCalledWith(
+        expect.objectContaining({
+          amountCents: 12000,
+          idempotencyKey: "pl_pi_booking-1_pi_refunded",
+        }),
+      );
+    },
+  );
+
+  it("does not claim receipt when the succeeded prior intent cannot be classified", async () => {
+    mockedFindUnique.mockResolvedValue(
+      baseLink({
+        booking: baseBooking({
+          payment: {
+            id: "pay-1",
+            stripePaymentIntentId: "pi_unknown",
+            status: PaymentStatus.PENDING,
+          },
+        }),
+      }) as never,
+    );
+    mockedGetPaymentIntent.mockResolvedValue({
+      id: "pi_unknown",
+      status: "succeeded",
+      amount: 12000,
+      payment_method: "pm_old",
+    } as never);
+    mockedFindPaymentTransaction.mockRejectedValueOnce(
+      new Error("database detail must stay private"),
+    );
+
+    await expect(
+      createPaymentIntentForPaymentLink(RAW_TOKEN),
+    ).rejects.toMatchObject({ kind: "existing_card_status_unconfirmed" });
+    expect(mockedMarkSucceeded).not.toHaveBeenCalled();
+    expect(mockedCreatePaymentIntent).not.toHaveBeenCalled();
+  });
+
+  it("classifies an ordinary post-capture failure without exposing provider detail", async () => {
+    mockedFindUnique.mockResolvedValue(
+      baseLink({
+        booking: baseBooking({
+          payment: {
+            id: "pay-1",
+            stripePaymentIntentId: "pi_captured",
+            status: PaymentStatus.PENDING,
+          },
+        }),
+      }) as never,
+    );
+    mockedGetPaymentIntent.mockResolvedValue({
+      id: "pi_captured",
+      status: "succeeded",
+      amount: 12000,
+      payment_method: "pm_old",
+    } as never);
+    mockedMarkSucceeded.mockRejectedValueOnce(
+      new Error("sk_test_private provider detail"),
+    );
+
+    await expect(
+      createPaymentIntentForPaymentLink(RAW_TOKEN),
+    ).rejects.toMatchObject({ kind: "payment_received_status_unconfirmed" });
   });
 
   /**

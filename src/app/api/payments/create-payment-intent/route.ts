@@ -589,7 +589,6 @@ export async function POST(request: NextRequest) {
 
           return NextResponse.json({
             alreadyPaid: true,
-            paymentIntentId: existingIntent.id,
             // #2265 — this recovery path is reachable AFTER an election was
             // consumed above (an admin payment link or saved-card charge can
             // have minted and captured an intent against a PAYMENT_PENDING
@@ -741,10 +740,9 @@ export async function POST(request: NextRequest) {
     const hostingRetry = hostingCoverageParticipantRetryResponse(
       error,
       receivedPaymentIntentId
-        ? {
+          ? {
             paymentReceived: true,
             finalisationPending: true,
-            paymentIntentId: receivedPaymentIntentId,
           }
         : succeededPaymentIntentObserved
           ? {

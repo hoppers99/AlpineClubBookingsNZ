@@ -14,8 +14,12 @@ import { canCreateImmediatePaymentIntent } from "@/lib/booking-payment-flow";
 import { queueXeroInvoiceForPaidBooking } from "@/lib/xero-booking-invoice-queue";
 import { hasAdminAccess } from "@/lib/access-roles";
 import { deriveBookingAppliedCreditCents } from "@/lib/member-credit";
+import { findPaymentTransactionByIntentId } from "@/lib/payment-transactions";
+import { PaymentStatus } from "@prisma/client";
 import {
+  EXISTING_CARD_TRANSACTION_STATUS_UNCONFIRMED_BODY,
   PAYMENT_RECEIVED_STATUS_UNCONFIRMED_BODY,
+  REFUNDED_CARD_TRANSACTION_REPAYMENT_REQUIRED_BODY,
 } from "@/lib/payment-recovery-contract";
 
 const schema = z.object({
@@ -50,6 +54,7 @@ export async function POST(
   const ipAddress =
     request.headers.get("x-forwarded-for")?.split(",")[0]?.trim() ?? "unknown";
   let succeededPaymentIntentObserved = false;
+  let successfulIntentClassificationPending = false;
 
   try {
     const payment = await prisma.payment.findUnique({
@@ -114,6 +119,23 @@ export async function POST(
         { status: 400 }
       );
     }
+    successfulIntentClassificationPending = true;
+    const pointedTransaction = await findPaymentTransactionByIntentId({
+      paymentIntentId: pi.id,
+    });
+    const refundedHistory = pointedTransaction
+      ? pointedTransaction.status === PaymentStatus.REFUNDED ||
+        pointedTransaction.status === PaymentStatus.PARTIALLY_REFUNDED
+      : payment.status === PaymentStatus.REFUNDED ||
+        payment.status === PaymentStatus.PARTIALLY_REFUNDED;
+
+    if (refundedHistory) {
+      return NextResponse.json(
+        REFUNDED_CARD_TRANSACTION_REPAYMENT_REQUIRED_BODY,
+        { status: 409 },
+      );
+    }
+    successfulIntentClassificationPending = false;
     // Stripe is authoritative for capture. From this point onward, an
     // unexpected local failure must never send the member back through an
     // ordinary payment-error path where they could try to pay again.
@@ -256,6 +278,16 @@ export async function POST(
 
     return NextResponse.json({ success: true });
   } catch (err) {
+    if (successfulIntentClassificationPending) {
+      logger.error(
+        { err, bookingId },
+        "Could not classify an existing successful card transaction",
+      );
+      return NextResponse.json(
+        EXISTING_CARD_TRANSACTION_STATUS_UNCONFIRMED_BODY,
+        { status: 409 },
+      );
+    }
     const hostingRetry = hostingCoverageParticipantRetryResponse(
       err,
       succeededPaymentIntentObserved

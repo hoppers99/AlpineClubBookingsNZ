@@ -601,7 +601,6 @@ describe("payment intent routes", () => {
       code: HOSTING_COVERAGE_RETRY_CODE,
       paymentReceived: true,
       finalisationPending: true,
-      paymentIntentId: "pi_captured_retry",
     });
     expect(mocks.queueXeroInvoiceForPaidBooking).not.toHaveBeenCalled();
     expect(mockStripeCreatePaymentIntent).not.toHaveBeenCalled();
