@@ -1,11 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
+import { checkinNotBlockedByPendingReviewFilter } from "@/lib/booking-review";
 import { OPERATIONAL_STAY_BOOKING_STATUSES } from "@/lib/booking-status";
-import {
-  getGuestStayEnd,
-  getGuestStayStart,
-  getLodgeVisibleGuestsForDate,
-} from "@/lib/booking-guest-stay-ranges";
+import { getGuestOperationalDayPresence } from "@/lib/booking-guest-stay-ranges";
 import {
   addDaysDateOnly,
   eachDateOnlyInRange,
@@ -22,8 +19,8 @@ import {
 import { lodgeNullTolerantScope } from "@/lib/lodges";
 import { prisma } from "@/lib/prisma";
 import {
-  computeRosterDayStatuses,
-  type RosterDayStatus,
+  computeRosterDayStatusForStayingBookings,
+  getRosterStatusStayingBookings,
 } from "@/lib/roster-status";
 
 const dateSchema = z.string().regex(/^\d{4}-\d{2}-\d{2}$/);
@@ -118,6 +115,26 @@ export async function GET(req: NextRequest) {
     throw err;
   }
 
+  // ONE FILTERED SET BEHIND THE WHOLE STRIP (#2631). Everything the week
+  // payload says about a day — the guest count, the arriving and departing
+  // counts and the roster colour — is derived from this query's rows, so the
+  // strip is consistent by construction rather than by two queries agreeing.
+  // The population is therefore the ROSTERABLE one, matching
+  // `roster-eligibility.ts` and `roster-status.ts` exclusion for exclusion:
+  // consent-pending member guests (D-12, #2307) and bookings held by a pending
+  // admin review (#1372 / #1422) are both out.
+  //
+  // THE DELIBERATE ASYMMETRY WITH THE DAY LIST, stated here because it looks
+  // like a bug from either side. `/api/lodge/guests/[date]` keeps #1422's
+  // flag-don't-hide rule: it LISTS a review-blocked booking's guests and marks
+  // them `blockedFromCheckin`, because the leader at the door has to see who
+  // was turned away. So a day whose ONLY booking is review-blocked reads
+  // `guestCount: 0` / `rosterStatus: "no-guests"` on this strip and still opens
+  // onto a populated, flagged lodge list. That is correct: the strip is
+  // answering "is there a roster to do here", the list is answering "who is in
+  // the building". Making the strip count them would put a `needs-roster`
+  // colour on a day the roster refuses to populate — the very defect this
+  // issue was filed for, on a second axis.
   const endInclusive = addDaysDateOnly(endDate, -1);
   const bookings = await prisma.booking.findMany({
     where: {
@@ -132,6 +149,7 @@ export async function GET(req: NextRequest) {
           ...OPERATIONALLY_PRESENT_GUEST_WHERE,
         },
       },
+      ...checkinNotBlockedByPendingReviewFilter(),
     },
     select: {
       id: true,
@@ -173,13 +191,6 @@ export async function GET(req: NextRequest) {
     },
   });
 
-  const rosterByDate = new Map<string, RosterDayStatus>(
-    computeRosterDayStatuses(dateKeys, bookings, assignments).map((result) => [
-      result.date,
-      result.status,
-    ])
-  );
-
   const days = weekDates.map((date, index) => {
     const dateKey = dateKeys[index];
 
@@ -187,32 +198,29 @@ export async function GET(req: NextRequest) {
       return { date: dateKey, accessible: false };
     }
 
-    const visibleGuestsByBooking = bookings.map((booking) => ({
-      booking,
-      guests: getLodgeVisibleGuestsForDate(booking.guests, date, booking, {
-        includeDepartureDate: true,
-      }),
-    }));
-    const guestCount = visibleGuestsByBooking.reduce(
-      (sum, booking) => sum + booking.guests.length,
-      0
-    );
-    const arrivingCount = visibleGuestsByBooking.reduce(
-      (sum, { booking, guests }) =>
-        sum +
-        guests.filter(
-          (guest) => getGuestStayStart(guest, booking).getTime() === date.getTime()
-        ).length,
-      0
-    );
-    const departingCount = visibleGuestsByBooking.reduce(
-      (sum, { booking, guests }) =>
-        sum +
-        guests.filter(
-          (guest) => getGuestStayEnd(guest, booking).getTime() === date.getTime()
-        ).length,
-      0
-    );
+    // ONE CANDIDATE SET PER DAY (#2631). The headline count, the arriving and
+    // departing counts and the roster colour are all read off this one list, so
+    // the payload that started this work — `guestCount: 4` beside
+    // `rosterStatus: "no-guests"` on a changeover morning — is impossible by
+    // construction rather than by two rules happening to agree. What it counts
+    // is ROSTERABLE presence; see the query above for why that is not the same
+    // population as the day list's.
+    const stayingBookings = getRosterStatusStayingBookings(bookings, date);
+
+    let guestCount = 0;
+    let arrivingCount = 0;
+    let departingCount = 0;
+    for (const { booking, presentGuests } of stayingBookings) {
+      guestCount += presentGuests.length;
+      for (const guest of presentGuests) {
+        // Arriving and departing are the two halves of the same presence, so
+        // they can only ever be a subset of `guestCount`. "Departing" means
+        // LEAVES TODAY.
+        const presence = getGuestOperationalDayPresence(guest, date, booking);
+        if (presence.isArriving) arrivingCount += 1;
+        if (presence.isDeparting) departingCount += 1;
+      }
+    }
 
     return {
       date: dateKey,
@@ -220,7 +228,11 @@ export async function GET(req: NextRequest) {
       guestCount,
       arrivingCount,
       departingCount,
-      rosterStatus: rosterByDate.get(dateKey) ?? "no-guests",
+      rosterStatus: computeRosterDayStatusForStayingBookings(
+        dateKey,
+        stayingBookings,
+        assignments
+      ).status,
     };
   });
 

@@ -43,6 +43,29 @@ module is on.
    midday boundary is simply how a lodge day is defined, not something anyone
    records.
 
+   The colours count the same lodge day the roster does, and they count the
+   same **people** it does. A changeover morning is coloured **Needs roster**
+   rather than left blank. A day is left uncoloured when nobody on it can be
+   rostered — because the only member guests are still waiting to accept their
+   invitation, or because the only booking is held by an admin review and so
+   cannot check in. Either way the calendar can no longer say a roster is
+   needed and then open with nobody to roster. The same two exclusions apply to
+   the **Roster Assignment** count on the admin dashboard.
+
+   One place deliberately does *not* hide them: the kiosk lodge list still
+   shows a review-held booking's guests, marked "Blocked from Check-In", so the
+   hut leader at the door can see who has been turned away. So a day can read
+   as having no roster to do on the kiosk week strip and still open onto a list
+   of flagged people. Both are right — one is asking who can be given a chore,
+   the other who is standing in the building.
+
+   The two numbers beside each other measure different things, which matters on
+   a changeover day. The **Who's at the lodge** panel counts **guest-nights** —
+   who sleeps here — so a day whose occupants all leave that morning shows zero
+   there while the calendar colours it as needing a roster. Both are right: the
+   beds are empty tonight and the kitchen still needs shutting down this
+   morning. The panel says which of the two it is counting.
+
    ![Chore Roster page on a changeover day, showing the date picker and the staged whole-roster editor with departing guests from two booking groups alongside the group arriving that evening](../images/admin/admin-roster.png)
 
 ### Generate and adjust the roster
@@ -83,6 +106,13 @@ to guess it.
    "Admin suppressed the chore-roster email send"); an ordinary send leaves no
    audit record, by design.
 3. Use **Print Roster** (top right) for a printable sheet for the lodge wall.
+   Its headline reads "N guests on this roster", which is exactly the people in
+   the chore table below it — the same lodge day, so on a changeover morning it
+   counts the ones who leave before midday, because they are the ones the
+   chores are assigned to. It is deliberately **not** a headcount of everyone in
+   the building: a booking still waiting on an admin review is not rostered, so
+   it is not in this number even though its guests may well be on site (the
+   kiosk lodge list shows them, flagged).
 
 ## Settings reference
 
@@ -104,6 +134,7 @@ to guess it.
 | Symptom | Likely cause | Fix |
 | --- | --- | --- |
 | The page 404s / Roster is missing from the sidebar | The `chores` module is off | Enable it under **Admin → Setup → Modules** — see [`CONFIGURATION.md`](../../CONFIGURATION.md#module-controls-and-admin-modules) |
+| A day is coloured **Needs roster** but **Who's at the lodge** shows no guest-nights | It is a changeover morning: everyone here leaves before midday, so nobody sleeps there that night | Nothing is wrong. The panel counts guest-nights, the colour counts the lodge day. Open the day and roster the shutdown chores |
 | Everything is read-only ("… can view the chore roster but cannot change it") | Your admin role has lodge view but not edit | Ask a full admin for **lodge edit** access |
 | "No one is in the lodge on this date" | No operational booking and eligible guest stay cover that lodge day — remember it covers the night itself AND the morning after | Pick a day with guests, or check the booking status, review state, consent, lodge, and individual stay nights |
 | A chore says "No one assigned" | The current generated or saved roster has no retained row for that chore | Click **Edit roster**, use **+ Add Person**, choose a guest, and save the complete draft |

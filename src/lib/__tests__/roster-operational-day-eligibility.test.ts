@@ -470,24 +470,40 @@ describe("kiosk generate route shares the selector (#2622)", () => {
 
 describe("hut-leader roster wizard reaches the generate step (#2622)", () => {
   // The wizard's step 1 reads `/api/lodge/guests/[date]`; its `totalGuests`
-  // gates the Next button. The DEFAULT scope of that route is the night model,
-  // so on an all-departing morning it returned nobody and the wizard dead-ended
-  // before the (already converted) generate route could run. The page therefore
-  // has to ask for the checkout-inclusive lodge list.
-  it("the setup page asks the guests route for the checkout-inclusive scope", async () => {
+  // gates the Next button. That route used to answer the night model by
+  // default, so on an all-departing morning it returned nobody and the wizard
+  // dead-ended before the (already converted) generate route could run. #2622
+  // unblocked it with a `?scope=lodge-list` parameter; #2631 removed the
+  // parameter by giving the route one operational-day answer.
+  //
+  // SOURCE CONTRACT (#2631): the kiosk and the roster setup wizard must ask the
+  // guests route the SAME question. They are the two screens whose "Departing"
+  // badges meant opposite days, and nothing at runtime can see them disagree —
+  // they are separate pages that are never rendered together. If one of them
+  // ever grows a scope parameter, or stops calling the shared route, this
+  // fails.
+  it("the kiosk and the setup page ask the guests route the same question", async () => {
     const fs = await import("node:fs");
     const path = await import("node:path");
-    const source = fs.readFileSync(
-      path.join(
-        process.cwd(),
-        "src/app/(lodge)/lodge/roster/[date]/setup/page.tsx",
-      ),
-      "utf8",
-    );
-    expect(source).toContain("`/api/lodge/guests/${dateStr}?scope=lodge-list`");
+    const read = (relative: string) =>
+      fs.readFileSync(path.join(process.cwd(), relative), "utf8");
+
+    const setup = read("src/app/(lodge)/lodge/roster/[date]/setup/page.tsx");
+    const kiosk = read("src/app/(lodge)/lodge/kiosk/page.tsx");
+
+    expect(setup).toContain("`/api/lodge/guests/${dateStr}`");
+    expect(kiosk).toContain("`/api/lodge/guests/${date}`");
+    for (const [name, source] of [
+      ["setup page", setup],
+      ["kiosk", kiosk],
+    ] as const) {
+      // No scope parameter on either side, ever again.
+      expect(source, name).not.toMatch(/api\/lodge\/guests\/\$\{[^}]+\}\?/);
+      expect(source, name).not.toContain("scope=");
+    }
   });
 
-  it("that scope returns the departing guest and a non-zero count", async () => {
+  it("the unified scope returns the departing guest and a non-zero count", async () => {
     vi.clearAllMocks();
     lodgeAuthMocks.checkLodgeAuth.mockResolvedValue({ tier: "hut-leader" });
     lodgeAuthMocks.resolveKioskLodgeId.mockResolvedValue("lodge-1");
@@ -518,9 +534,7 @@ describe("hut-leader roster wizard reaches the generate step (#2622)", () => {
 
     const { GET } = await import("@/app/api/lodge/guests/[date]/route");
     const response = await GET(
-      new Request(
-        "http://localhost/api/lodge/guests/2026-07-13?scope=lodge-list",
-      ) as never,
+      new Request("http://localhost/api/lodge/guests/2026-07-13") as never,
       { params: Promise.resolve({ date: "2026-07-13" }) } as never,
     );
 
@@ -531,6 +545,93 @@ describe("hut-leader roster wizard reaches the generate step (#2622)", () => {
       id: "leaving",
       isDeparting: true,
       isArriving: false,
+      // Their last night was the 12th and `stayEnd` is the 13th, so this is
+      // also the one morning the depart endpoint will accept.
+      isFinalDeparture: true,
+    });
+  });
+
+  it("a sparse stay shows nobody on its gap day, and both flags on each segment", async () => {
+    // THE NIGHTS REGRESSION TRAP (#2631). Nights {11, 14}: the guest is here on
+    // the 11th and 12th, away on the 13th, back on the 14th and 15th. The
+    // coarse SQL bound returns the row on every one of those dates, so if the
+    // route ever stops loading `nights` the envelope 11→15 fills the gap and
+    // the kiosk shows a guest who is not in the building.
+    const sparseGuest = {
+      id: "sparse",
+      firstName: "Sam",
+      lastName: "Sparse",
+      ageTier: "ADULT",
+      isMember: false,
+      arrivedAt: null,
+      departedAt: null,
+      stayStart: day("2026-07-11"),
+      stayEnd: day("2026-07-15"),
+      member: null,
+      nights: [{ stayDate: day("2026-07-11") }, { stayDate: day("2026-07-14") }],
+    };
+
+    async function guestsOn(date: string) {
+      vi.clearAllMocks();
+      lodgeAuthMocks.checkLodgeAuth.mockResolvedValue({ tier: "hut-leader" });
+      lodgeAuthMocks.resolveKioskLodgeId.mockResolvedValue("lodge-1");
+      // The mock HONOURS the include, the way Prisma does: drop the `nights`
+      // load from the route and the rows come back without night data, the
+      // envelope takes over and the gap day fills in. A mock that always
+      // returned the nights would pass with the regression in place.
+      mockPrisma.booking.findMany.mockImplementation(async (args: never) => {
+        const { include } = args as unknown as {
+          include?: { guests?: { include?: { nights?: unknown } } };
+        };
+        const loadsNights = Boolean(include?.guests?.include?.nights);
+        const { nights, ...withoutNights } = sparseGuest;
+        return [
+          {
+            id: "booking-1",
+            checkIn: day("2026-07-11"),
+            checkOut: day("2026-07-15"),
+            expectedArrivalTime: null,
+            member: { firstName: "Bev", lastName: "Booker" },
+            guests: [loadsNights ? { ...withoutNights, nights } : withoutNights],
+          },
+        ];
+      });
+      const { GET } = await import("@/app/api/lodge/guests/[date]/route");
+      const response = await GET(
+        new Request(`http://localhost/api/lodge/guests/${date}`) as never,
+        { params: Promise.resolve({ date }) } as never,
+      );
+      expect(response.status).toBe(200);
+      const body = await response.json();
+      return body.bookings[0]?.guests[0] ?? null;
+    }
+
+    expect(await guestsOn("2026-07-11")).toMatchObject({
+      isArriving: true,
+      isDeparting: false,
+      isFinalDeparture: false,
+    });
+    // THE INTERMEDIATE DEPARTURE MORNING. They really do leave today — the
+    // badge is right — but `stayEnd` is the 15th, so the depart endpoint
+    // (`stayEnd` equality, fenced) can never accept a check-out on the 12th.
+    // The flag the kiosk's button reads therefore stays false here.
+    expect(await guestsOn("2026-07-12")).toMatchObject({
+      isArriving: false,
+      isDeparting: true,
+      isFinalDeparture: false,
+    });
+    // The gap day: nobody at all, and therefore no booking card either.
+    expect(await guestsOn("2026-07-13")).toBeNull();
+    expect(await guestsOn("2026-07-14")).toMatchObject({
+      isArriving: true,
+      isDeparting: false,
+      isFinalDeparture: false,
+    });
+    // The FINAL departure morning: both flags, and the button appears.
+    expect(await guestsOn("2026-07-15")).toMatchObject({
+      isArriving: false,
+      isDeparting: true,
+      isFinalDeparture: true,
     });
   });
 });

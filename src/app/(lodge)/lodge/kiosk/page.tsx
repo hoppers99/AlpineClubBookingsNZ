@@ -24,6 +24,13 @@ interface Guest {
   isMember: boolean;
   isArriving: boolean;
   isDeparting: boolean;
+  // #2631: the DEPARTING BADGE (`isDeparting`) is the operational day — "leaves
+  // today" — and a sparse stay has one on every segment. The CHECK-OUT BUTTON
+  // rides on `isFinalDeparture` instead, because the depart endpoint resolves
+  // its guest by `stayEnd` equality and 404s on any earlier departure morning.
+  // Gate the button on the badge and the kiosk dead-ends: staff tap "Mark
+  // Departed", the server refuses, and there is nothing they can do about it.
+  isFinalDeparture: boolean;
   arrivedAt: string | null;
   departedAt: string | null;
 }
@@ -256,7 +263,12 @@ export default function KioskPage() {
       }
 
       const [guestsRes, rosterRes] = await Promise.all([
-        fetch(withPreview(`/api/lodge/guests/${date}?scope=lodge-list`)),
+        // #2631: no scope query parameter any more. The guests route answers
+        // one question — the operational day — so this screen, the roster setup
+        // wizard and chore generation cannot drift apart. "Departing Today" keeps
+        // exactly the meaning it always had here: this guest's last night was
+        // last night, so they leave before midday.
+        fetch(withPreview(`/api/lodge/guests/${date}`)),
         fetch(withPreview(`/api/lodge/roster/${date}`)),
       ]);
 
@@ -911,7 +923,7 @@ export default function KioskPage() {
                                       {guest.arrivedAt ? "Arrived" : "Mark Arrived"}
                                     </button>
                                   )}
-                                  {canMarkAttendance && guest.isDeparting && !booking.blockedFromCheckin && (
+                                  {canMarkAttendance && guest.isFinalDeparture && !booking.blockedFromCheckin && (
                                     <button
                                       onClick={() => toggleDeparture(guest.id)}
                                       className={`text-sm font-medium px-4 py-2 rounded-lg min-h-[44px] transition-colors ${

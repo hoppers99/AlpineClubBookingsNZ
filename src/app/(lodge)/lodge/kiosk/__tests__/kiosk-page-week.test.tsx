@@ -114,7 +114,8 @@ describe("KioskPage week view", () => {
     await waitFor(() => {
       expect(
         fetchMock.mock.calls.some(
-          ([url]) => String(url) === `/api/lodge/guests/${servedWeekStart}?scope=lodge-list`
+          // #2631: one operational-day scope, so no query parameter.
+          ([url]) => String(url) === `/api/lodge/guests/${servedWeekStart}`
         )
       ).toBe(true);
     });

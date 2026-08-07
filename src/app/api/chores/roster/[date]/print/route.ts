@@ -2,15 +2,13 @@ import { NextRequest, NextResponse } from "next/server"
 import { auth } from "@/lib/auth"
 import { requireActiveSessionUser } from "@/lib/session-guards"
 import { prisma } from "@/lib/prisma"
-import { OPERATIONAL_STAY_BOOKING_STATUSES } from "@/lib/booking-status"
-import { countActiveGuestsForNight } from "@/lib/booking-guest-stay-ranges"
 import { isDateOnlyString, parseDateOnly } from "@/lib/date-only"
 import {
   lodgeNullTolerantScope,
   resolveOptionalActiveLodgeId,
 } from "@/lib/lodges"
 import { hasAdminAccess } from "@/lib/access-roles"
-import { OPERATIONALLY_PRESENT_GUEST_WHERE } from "@/lib/member-guest-consent"
+import { getOperationalRosterGuestsForDate } from "@/lib/roster-eligibility"
 
 // The two-step date contract every sibling `[date]` roster route keeps (see
 // `/api/admin/roster/[date]`): a value that is not a calendar day at all is
@@ -118,42 +116,20 @@ export async function GET(
     orderBy: { choreTemplate: { sortOrder: "asc" } },
   })
 
-  const bookings = await prisma.booking.findMany({
-    where: {
-      ...lodgeNullTolerantScope(lodge.lodgeId),
-      status: { in: [...OPERATIONAL_STAY_BOOKING_STATUSES] },
-      checkIn: { lte: date },
-      checkOut: { gt: date },
-      guests: {
-        some: {
-          stayStart: { lte: date },
-          stayEnd: { gt: date },
-          ...OPERATIONALLY_PRESENT_GUEST_WHERE,
-        },
-      },
-    },
-    include: {
-      guests: {
-        where: {
-          stayStart: { lte: date },
-          stayEnd: { gt: date },
-          // Owner decision D-12 (#2307): the printed roster sheet is what goes
-          // on the lodge wall, so its guest list describes who is actually
-          // there. An unconsented guest is excluded here — which also fixes the
-          // headcount below, because it counts the rows this `where` returns.
-          // The headcount is an OPERATIONAL number (how many people the leader
-          // should see), not a capacity number: a PENDING guest still holds a
-          // bed under D-4 and is still counted by everything in capacity.ts.
-          ...OPERATIONALLY_PRESENT_GUEST_WHERE,
-        },
-      },
-    },
-  })
-
-  const guestCount = bookings.reduce(
-    (sum, b) => sum + countActiveGuestsForNight(b.guests, date, b),
-    0
-  )
+  // ONE CHOKE POINT FOR THE HEADCOUNT (#2631). The sheet's "N guests" sits
+  // beside the chore table, so it has to be the roster's own population, not a
+  // second query that can disagree with it. `getOperationalRosterGuestsForDate`
+  // is the same selector the admin roster, the hut-leader wizard and chore
+  // generation read: the OPERATIONAL DAY (so a guest whose last night was last
+  // night is counted — they are here this morning and they are on the sheet),
+  // with the explicit night rows loaded so a sparse stay's gap day is not
+  // counted, owner decision D-12's consent predicate applied, soft-deleted
+  // bookings excluded, and a booking blocked by a pending admin review left out
+  // exactly as the roster leaves it out. Only the count is used here; none of
+  // the selector's other fields (including its booking-owner label) is returned.
+  const guestCount = (
+    await getOperationalRosterGuestsForDate(date, lodge.lodgeId)
+  ).length
 
   // Group by chore
   const byChore = new Map<string, {

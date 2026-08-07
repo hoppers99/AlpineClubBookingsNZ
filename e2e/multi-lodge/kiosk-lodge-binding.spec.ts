@@ -52,8 +52,9 @@ test("(c) a kiosk bound to lodge B sees lodge B's roster and never lodge A's", a
   expect(access.lodgeName).toBe(SECOND_LODGE.name);
 
   // The lodge list for that date shows lodge B's arriving guest, never lodge A's.
+  // #2631: one operational-day scope, so no scope parameter.
   const guestsResponse = await kioskContext.request.get(
-    `/api/lodge/guests/${date}?scope=lodge-list`,
+    `/api/lodge/guests/${date}`,
   );
   expect(guestsResponse.ok(), "kiosk guest list must load").toBeTruthy();
   const guests = (await guestsResponse.json()) as LodgeGuests;
