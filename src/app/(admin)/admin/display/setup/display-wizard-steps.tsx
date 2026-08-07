@@ -670,7 +670,7 @@ export const DISPLAY_QUICK_SET_FIELDS: Array<{
   {
     key: "checkout-time",
     label: "Checkout time",
-    hint: "Shown as {{config:checkout-time}}, e.g. “10am”.",
+    hint: "Shown as {{config:checkout-time}}, e.g. “midday” — the lodge handover is midday to midday.",
   },
   {
     key: "door-code",
