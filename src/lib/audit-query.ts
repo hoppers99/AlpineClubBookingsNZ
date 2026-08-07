@@ -1,23 +1,40 @@
 import type { AuditLog, Prisma } from "@prisma/client";
 
-export const AUDIT_TIMELINE_CATEGORY_OPTIONS = [
+import {
+  AUDIT_CATEGORIES,
+  AUDIT_CATEGORY_LABELS,
+  type AuditCategory,
+} from "./audit-categories";
+
+/**
+ * The Admin Audit Log's category filter, DERIVED from the canonical taxonomy
+ * (#2581) rather than hand-listed beside it. The two lists had already drifted
+ * once — `family` was in this one and missing from the writer union — and a
+ * category the filter does not offer is a category an operator cannot search
+ * for, however many rows carry it.
+ */
+export const AUDIT_TIMELINE_CATEGORY_OPTIONS: readonly {
+  value: AuditTimelineCategory;
+  label: string;
+}[] = [
   { value: "all", label: "All" },
-  { value: "account", label: "Account" },
-  { value: "booking", label: "Bookings" },
-  { value: "payment", label: "Payments" },
-  { value: "family", label: "Family" },
-  { value: "admin", label: "Admin" },
-  { value: "security", label: "Security" },
-  { value: "lodge", label: "Lodge" },
-  { value: "xero", label: "Xero" },
-  { value: "communication", label: "Communication" },
-  { value: "privacy", label: "Privacy" },
-  { value: "system", label: "System" },
-] as const;
+  ...AUDIT_CATEGORIES.map((category) => ({
+    value: category,
+    label: AUDIT_CATEGORY_LABELS[category],
+  })),
+];
 
-export type AuditTimelineCategory =
-  (typeof AUDIT_TIMELINE_CATEGORY_OPTIONS)[number]["value"];
+export type AuditTimelineCategory = "all" | AuditCategory;
 
+/**
+ * The categories a MEMBER may see in their own timeline.
+ *
+ * Deliberately a separate reviewed list rather than a filter over the canonical
+ * taxonomy (#2581): membership of the platform's taxonomy must never publish a
+ * category to members as a side effect of adding it. `satisfies` keeps every
+ * entry a real canonical value while leaving the subset a decision — a new
+ * category is invisible to members until someone adds it here on purpose.
+ */
 const MEMBER_VISIBLE_AUDIT_CATEGORIES = [
   "account",
   "booking",
@@ -26,7 +43,7 @@ const MEMBER_VISIBLE_AUDIT_CATEGORIES = [
   "security",
   "communication",
   "privacy",
-] as const;
+] as const satisfies readonly AuditCategory[];
 
 export const MEMBER_AUDIT_TIMELINE_CATEGORY_OPTIONS =
   AUDIT_TIMELINE_CATEGORY_OPTIONS.filter(
