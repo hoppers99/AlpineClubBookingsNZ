@@ -41,6 +41,7 @@ import { isPlaceholderContactEmail } from "@/lib/placeholder-contact-email";
 import {
   ambiguousMemberContactCreateReservationWhere,
   assertMemberAvailableForXeroContactChange,
+  closeProviderCreatedContactRecoveryForLinkedContact,
   lockMemberForXeroContactLink,
   recordProviderCreatedContactPendingLocalLink,
   XeroContactAlreadyLinkedError,
@@ -123,6 +124,16 @@ export type MemberContactUpdateReservationPlan<T> = {
  * Member merge takes the conflicting Member FOR UPDATE set and rechecks these
  * rows under that lock, so either the reservation is visible to merge or the
  * member disappears before this transaction can reserve it.
+ *
+ * `repairExistingLink` is the caller's EXPLICIT declaration that the member's
+ * current link is unusable — Xero rejected the contact reference, or an admin
+ * asked for a forced re-resolution. Without it an already-linked member is
+ * refused, because minting a second contact for a member who has a good one is
+ * a duplicate in the club's books. With it the reservation is allowed, since
+ * refusing was a dead end: the repair path reaches this reservation whenever
+ * Xero produced no match, deterministically so for a walk-in placeholder-email
+ * owner whose email search is skipped by design, and `XERO_CONTACT_ALREADY_LINKED`
+ * then 409'd every attempt with nothing able to clear it (#2623 T2).
  */
 export async function reserveMemberContactCreateOperation<T>(
   memberId: string,
@@ -130,6 +141,7 @@ export async function reserveMemberContactCreateOperation<T>(
     member: LockedMemberContactCreateSnapshot,
   ) => MemberContactCreateReservationPlan<T>,
   db: typeof prisma = prisma,
+  options?: { repairExistingLink?: boolean },
 ): Promise<{
   operation: Awaited<ReturnType<typeof startXeroSyncOperation>>;
   value: T;
@@ -149,7 +161,7 @@ export async function reserveMemberContactCreateOperation<T>(
       throw new Error(`Member not found: ${memberId}`);
     }
     assertMemberAvailableForXeroContactChange(locked);
-    if (locked.xeroContactId) {
+    if (locked.xeroContactId && !options?.repairExistingLink) {
       throw new XeroContactAlreadyLinkedError();
     }
     const ambiguousReservation = await tx.xeroSyncOperation.findFirst({
@@ -680,6 +692,40 @@ export async function findOrCreateXeroContact(
     );
   }
 
+  // #2623 T2: a repair of an EXISTING link that found no email match is one
+  // step from minting a second Xero contact for a member who may already have a
+  // perfectly good one — and for a walk-in placeholder owner the email search
+  // never runs at all, so that is the only step left. Ask Xero by exact name
+  // first. `getContacts` here excludes archived contacts, which is precisely the
+  // discrimination wanted: a live same-named contact is the link to repair TO,
+  // while an archived/absent one leaves creation as the honest outcome.
+  if (!resolved && options?.repairExistingLink && previousXeroContactId) {
+    try {
+      const matchedByName = await findExistingXeroContactByExactName({
+        xero,
+        tenantId,
+        fullName: buildMemberFullName(member),
+        contextPrefix: "findOrCreateXeroContact repair name re-resolution",
+      });
+      if (matchedByName?.contactID) {
+        resolved = {
+          kind: "matched",
+          contactId: matchedByName.contactID,
+          linkedVia: "name_match_repair",
+          contactName: buildXeroContactDisplayName(matchedByName),
+          operationId: null,
+          completionInput: null,
+        };
+      }
+    } catch (nameSearchErr) {
+      if (nameSearchErr instanceof XeroDailyLimitError) throw nameSearchErr;
+      logger.warn(
+        { err: nameSearchErr, memberId, previousXeroContactId },
+        "Xero name search failed during link repair; falling through to contact creation",
+      );
+    }
+  }
+
   if (!resolved) {
     // Create new contact (still outside any transaction). The member-scoped
     // Xero idempotency key makes concurrent duplicate creates converge on
@@ -695,23 +741,29 @@ export async function findOrCreateXeroContact(
     const {
       operation,
       value: { contact, lockedMember },
-    } = await reserveMemberContactCreateOperation(memberId, (locked) => {
-      const contact = buildMemberXeroContactCreatePayload(locked);
-      return {
-        input: {
-          direction: "OUTBOUND",
-          entityType: "CONTACT",
-          operationType: "CREATE",
-          localModel: "Member",
-          localId: memberId,
-          idempotencyKey,
-          correlationKey: idempotencyKey,
-          requestPayload: { contacts: [contact] },
-          createdByMemberId: options?.createdByMemberId ?? null,
-        },
-        value: { contact, lockedMember: locked },
-      };
-    });
+    } = await reserveMemberContactCreateOperation(
+      memberId,
+      (locked) => {
+        const contact = buildMemberXeroContactCreatePayload(locked);
+        return {
+          input: {
+            direction: "OUTBOUND",
+            entityType: "CONTACT",
+            operationType: "CREATE",
+            localModel: "Member",
+            localId: memberId,
+            idempotencyKey,
+            correlationKey: idempotencyKey,
+            requestPayload: { contacts: [contact] },
+            createdByMemberId: options?.createdByMemberId ?? null,
+          },
+          value: { contact, lockedMember: locked },
+        };
+      },
+      prisma,
+      // Only an explicit repair may reserve for an already-linked member.
+      { repairExistingLink: options?.repairExistingLink },
+    );
 
     try {
       const response = await callXeroApi(
@@ -857,6 +909,15 @@ export async function findOrCreateXeroContact(
           data: { xeroContactId: finalResolved.contactId },
         });
       }
+      // #2623 T7: if an EARLIER create already made this very contact in Xero
+      // and only failed to link it, this write is the local half it was waiting
+      // for. Close it under the same Member fence rather than leaving a stale
+      // blocker on member merge and account deletion.
+      await closeProviderCreatedContactRecoveryForLinkedContact(
+        tx,
+        memberId,
+        finalResolved.contactId,
+      );
       return { contactId: finalResolved.contactId, wonWrite: true };
     });
   } catch (linkError) {

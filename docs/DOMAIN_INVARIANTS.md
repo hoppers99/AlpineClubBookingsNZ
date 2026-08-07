@@ -3063,6 +3063,22 @@ compliant indefinitely.
   so member merge cannot leave a ledger row naming a deleted losing identity.
   Account deletion deactivates that CONTACT ledger in the same anonymisation
   transaction that clears the Member pointer.
+  A canonical link commit also CLOSES the provider-created create it just
+  completed, in that same transaction: a `FAILED` member CONTACT create that
+  proves Xero made contact X, where X is now the member's link, becomes
+  `SUCCEEDED` through a status-guarded claim. Nothing else is touched — a
+  `RUNNING` reservation is live provider work, and a create that made a
+  *different* contact stays open because Xero then holds a duplicate for this
+  member that an operator must adjudicate. Without this the blocker predicates,
+  which never consult `Member.xeroContactId`, kept refusing member merge and
+  account deletion for a member who had already been recovered. Merge, deletion
+  and the member detail display read that blocker through one predicate, so a
+  refused member can never render as reconciled, and each refusal names the
+  blocking operation and the Admin → Xero → Operations screen that clears it.
+  Only an explicit `repairExistingLink` may reserve a CREATE for an
+  already-linked member, and repair re-resolves by exact non-archived name
+  before creating, so a live same-named contact is re-linked rather than
+  duplicated.
 - **Every confirming path re-reads the facts at confirmation, and the census proves
   it two ways** (§9). Most reconcile inside their own transaction, which REFUSES an
   uncovered booking at an enforcing club. Those that cannot — capacity claimed, money

@@ -15,7 +15,13 @@ vi.mock("@/lib/prisma", () => ({
       count: vi.fn(),
       update: vi.fn(),
     },
-    xeroSyncOperation: { findFirst: vi.fn() },
+    // #2623 T7: the manual-link transaction closes any provider-created
+    // recovery whose own contact is the one it just linked.
+    xeroSyncOperation: {
+      findFirst: vi.fn(),
+      findMany: vi.fn(),
+      updateMany: vi.fn(),
+    },
     $executeRaw: vi.fn(),
     familyGroup: { findMany: vi.fn() },
     $transaction: vi.fn(),
@@ -138,6 +144,10 @@ describe("Xero Member Management", () => {
     vi.clearAllMocks();
     vi.mocked(prisma.$executeRaw).mockResolvedValue(1);
     vi.mocked(prisma.xeroSyncOperation.findFirst).mockResolvedValue(null);
+    vi.mocked(prisma.xeroSyncOperation.findMany).mockResolvedValue([]);
+    vi.mocked(prisma.xeroSyncOperation.updateMany).mockResolvedValue({
+      count: 0,
+    } as never);
     vi.mocked(prisma.$transaction).mockImplementation(async (callback) =>
       callback(prisma as never),
     );
@@ -246,8 +256,14 @@ describe("Xero Member Management", () => {
           xeroContactUnlinked: true,
           subscriptionCleanupPending: true,
           xeroPostProcessingPending: true,
+          // #2623 T3: this failure lands before the CONTACT ledger
+          // deactivation and before the audit write, so both are disclosed.
+          contactLinkRowsMayRemainActive: true,
+          auditEntryMayBeMissing: true,
         }),
       );
+      expect(body.error).toContain("may also still be ACTIVE");
+      expect(body.error).toContain("audit entry for this action may be missing");
       expect(body).not.toHaveProperty("subscriptionRefreshPending");
       expect(JSON.stringify(body)).not.toContain("private cleanup detail");
     });
@@ -271,6 +287,12 @@ describe("Xero Member Management", () => {
       expect(res.status).toBe(409);
       expect(body.recoveryKind).toBe("CONTACT_UNLINKED");
       expect(body).not.toHaveProperty("subscriptionCleanupPending");
+      // #2623 T3: the ledger deactivation DID run here, so the disclosure is
+      // scoped to the audit entry only — the flags stay per-step, not blanket.
+      expect(body).not.toHaveProperty("contactLinkRowsMayRemainActive");
+      expect(body.auditEntryMayBeMissing).toBe(true);
+      expect(body.error).not.toContain("may also still be ACTIVE");
+      expect(body.error).toContain("audit entry for this action may be missing");
       expect(JSON.stringify(body)).not.toContain("private audit detail");
     });
 
@@ -300,8 +322,18 @@ describe("Xero Member Management", () => {
           xeroContactUnlinked: true,
           xeroLinkMayHaveChanged: true,
           xeroPostProcessingPending: true,
+          // #2623 T3: this is EXACTLY the end state the report described —
+          // pointer nulled, CONTACT ledger rows still active, no audit row. The
+          // route always caught it, but the copy never said either of those two
+          // things, so the operator had nothing to go and check.
+          contactLinkRowsMayRemainActive: true,
+          auditEntryMayBeMissing: true,
         }),
       );
+      expect(body.error).toContain(
+        "check the member's Xero links and deactivate any that remain",
+      );
+      expect(body.error).toContain("audit entry for this action may be missing");
       expect(body).not.toHaveProperty("subscriptionCleanupPending");
       expect(JSON.stringify(body)).not.toContain("private operation-link detail");
       expect(logAudit).not.toHaveBeenCalled();
@@ -631,6 +663,104 @@ describe("Xero Member Management", () => {
       expect(mockRefreshXeroContactCachesFromContact).toHaveBeenCalledWith(
         { contactID: "new-xero-id", name: "Jane Doe" }
       );
+    });
+
+    // #2623 T7: the manual link IS the documented remedy for a create whose
+    // Xero contact exists but whose local link failed. Before this, recovering
+    // the member left that operation open forever, so member merge and account
+    // deletion kept refusing them while their detail page reported a clean Xero
+    // state — and `manuallyResolvedAt` was written in exactly one place in the
+    // codebase, the admin resolve action on a different screen.
+    it("closes the provider-created create recovery it just completed", async () => {
+      mockedAuth.mockResolvedValue(adminSession);
+      vi.mocked(prisma.member.findUnique).mockResolvedValue({
+        id: "m1", firstName: "John", lastName: "Doe", xeroContactId: null,
+      } as never);
+      vi.mocked(prisma.member.findFirst).mockResolvedValue(null);
+      vi.mocked(prisma.xeroSyncOperation.findMany).mockResolvedValue([
+        {
+          id: "op-provider-created",
+          responsePayload: {
+            phase: "provider_contact_created_local_link_pending",
+            providerContactCreated: true,
+            resolvedContactId: "new-xero-id",
+          },
+        },
+      ] as never);
+      vi.mocked(prisma.xeroSyncOperation.updateMany).mockResolvedValue({
+        count: 1,
+      } as never);
+      mockGetAuthenticatedXeroClient.mockResolvedValue({
+        xero: { accountingApi: { getContact: vi.fn() } },
+        tenantId: "t1",
+      });
+      mockCallXeroApi.mockResolvedValue({
+        body: { contacts: [{ contactID: "new-xero-id", name: "Jane Doe" }] },
+      });
+
+      const res = await xeroLink(
+        new NextRequest("http://localhost/api/admin/members/m1/xero-link", {
+          method: "POST",
+          body: JSON.stringify({ xeroContactId: "new-xero-id" }),
+        }),
+        { params: Promise.resolve({ id: "m1" }) },
+      );
+
+      expect(res.status).toBe(200);
+      expect(prisma.xeroSyncOperation.updateMany).toHaveBeenCalledWith({
+        where: {
+          id: { in: ["op-provider-created"] },
+          status: "FAILED",
+          manuallyResolvedAt: null,
+        },
+        data: expect.objectContaining({ status: "SUCCEEDED" }),
+      });
+      // Same transaction as the pointer and ledger writes, so merge/deletion
+      // cannot observe a linked member with the operation still open.
+      expect(
+        vi.mocked(prisma.member.update).mock.invocationCallOrder[0],
+      ).toBeLessThan(
+        vi.mocked(prisma.xeroSyncOperation.updateMany).mock
+          .invocationCallOrder[0],
+      );
+    });
+
+    it("leaves a create recovery for a DIFFERENT contact open on a manual link", async () => {
+      mockedAuth.mockResolvedValue(adminSession);
+      vi.mocked(prisma.member.findUnique).mockResolvedValue({
+        id: "m1", firstName: "John", lastName: "Doe", xeroContactId: null,
+      } as never);
+      vi.mocked(prisma.member.findFirst).mockResolvedValue(null);
+      vi.mocked(prisma.xeroSyncOperation.findMany).mockResolvedValue([
+        {
+          id: "op-provider-created",
+          responsePayload: {
+            phase: "provider_contact_created_local_link_pending",
+            providerContactCreated: true,
+            resolvedContactId: "some-other-contact",
+          },
+        },
+      ] as never);
+      mockGetAuthenticatedXeroClient.mockResolvedValue({
+        xero: { accountingApi: { getContact: vi.fn() } },
+        tenantId: "t1",
+      });
+      mockCallXeroApi.mockResolvedValue({
+        body: { contacts: [{ contactID: "new-xero-id", name: "Jane Doe" }] },
+      });
+
+      const res = await xeroLink(
+        new NextRequest("http://localhost/api/admin/members/m1/xero-link", {
+          method: "POST",
+          body: JSON.stringify({ xeroContactId: "new-xero-id" }),
+        }),
+        { params: Promise.resolve({ id: "m1" }) },
+      );
+
+      // Xero holds a second contact for this member; that is a duplicate an
+      // operator must adjudicate, not something a link may wave away.
+      expect(res.status).toBe(200);
+      expect(prisma.xeroSyncOperation.updateMany).not.toHaveBeenCalled();
     });
 
     it("rejects linking to a contact already linked to another member", async () => {

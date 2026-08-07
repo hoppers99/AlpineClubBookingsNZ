@@ -1283,6 +1283,21 @@ deletion cannot leave an active identity link. An ambiguous
 the stronger `PROVIDER_CREATED_LINK_PENDING` state still offers Link as its
 recovery action while suppressing another Create.
 
+Inside that same link transaction — manual Link, the inbound patch, and
+`findOrCreateXeroContact`'s phase-2 write — a canonical link commit also closes
+the provider-created create it has just completed
+(`closeProviderCreatedContactRecoveryForLinkedContact`). It is a status-guarded
+`updateMany` on `status: "FAILED", manuallyResolvedAt: null` restricted to rows
+whose recorded `resolvedContactId` equals the contact being linked, so it is
+idempotent, a lost claim against the admin resolve action writes nothing, a
+`RUNNING` reservation is never touched, and a create that made a *different*
+contact stays open as the genuine duplicate it is. Because the close shares the
+Member `FOR UPDATE` with the pointer and ledger writes, merge and deletion can
+never observe a linked member with that operation still blocking them. Merge,
+deletion and the member detail display read the blocker through one predicate
+(`findMemberContactChangeMergeBlocker`), so the display cannot report a clean
+state for a member either lifecycle operation is refusing.
+
 Account deletion composes the same fence with its existing lifecycle order. While
 holding the target `Member FOR UPDATE`, deletion re-checks the complete active,
 provider-created, or stale-unknown contact-create blocker before anonymising.

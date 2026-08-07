@@ -33,6 +33,11 @@ vi.mock("@/lib/xero-contact-create-recovery", () => {
   return {
     XERO_CONTACT_CREATE_BLOCKS_DELETION_CODE:
       "XERO_CONTACT_CREATE_BLOCKS_DELETION",
+    // #2623 T7: the route also names where the remedy lives. The mocked error
+    // above carries no operation id, so the route never reads this — it is here
+    // so the factory matches every binding the route imports.
+    XERO_CONTACT_OPERATION_RESOLVE_REMEDY:
+      "Open Admin → Xero → Operations, find the member's open CONTACT operation.",
     XeroContactCreateBlocksDeletionError,
   };
 });
