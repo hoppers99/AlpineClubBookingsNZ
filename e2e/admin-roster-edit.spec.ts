@@ -44,6 +44,7 @@ async function loadRosterDate(
 
   const loaded = page.waitForResponse((response) =>
     new URL(response.url()).pathname === `/api/admin/roster/${date}` &&
+    new URL(response.url()).searchParams.has("lodgeId") &&
     response.request().method() === "GET",
   );
   await page.locator("#date").fill(date);
