@@ -287,7 +287,7 @@ describe("the night model stays separate", () => {
   });
 });
 
-describe("getLodgeVisibleGuestsForDate delegates rather than deciding", () => {
+describe("getLodgeVisibleGuestsForDate keeps LEGACY lodge-date semantics", () => {
   const guests = [ENVELOPE_GUEST, SPARSE_GUEST];
 
   it("without includeDepartureDate it is the night model", () => {
@@ -299,23 +299,48 @@ describe("getLodgeVisibleGuestsForDate delegates rather than deciding", () => {
     ).toEqual([ENVELOPE_GUEST]);
   });
 
-  it("with includeDepartureDate it is the operational day, sparse gaps included", () => {
+  it("with includeDepartureDate an envelope stay gains its checkout day", () => {
     expect(
       getLodgeVisibleGuestsForDate(guests, day("2026-07-13"), BOOKING, {
         includeDepartureDate: true,
       }),
     ).toEqual([ENVELOPE_GUEST]);
-    // The retired branch only ever admitted the morning after a sparse guest's
-    // LAST night. Under D-M4 the morning after the FIRST segment counts too.
+  });
+
+  it("PRIVACY GUARD: the flag does NOT give a sparse stay per-segment presence", () => {
+    // SPARSE_GUEST books nights N and N+3 (the 5th and the 8th). The named
+    // operational-day helper is present on the gap morning N+1 — that is D-M4,
+    // and it is correct for the converted operational surfaces. The deprecated
+    // flag must NOT be, because `lodge-display-state.ts` (fenced) derives its
+    // NIGHT counts by subtracting only the envelope end from this list: a
+    // per-segment gap morning would become a phantom night there, break
+    // sole-occupancy detection (#58) and expose guest names and phone numbers
+    // on the unauthenticated lobby wall. #2631 converts the two safe callers.
     expect(
       getLodgeVisibleGuestsForDate([SPARSE_GUEST], day("2026-07-06"), BOOKING, {
         includeDepartureDate: true,
       }),
-    ).toEqual([SPARSE_GUEST]);
-    expect(
-      getLodgeVisibleGuestsForDate([SPARSE_GUEST], day("2026-07-07"), BOOKING, {
-        includeDepartureDate: true,
-      }),
     ).toEqual([]);
+    expect(
+      getOperationallyPresentGuestsForDay([SPARSE_GUEST], day("2026-07-06"), BOOKING),
+    ).toEqual([SPARSE_GUEST]);
+  });
+
+  it("admits only the morning after a sparse stay's FINAL listed night", () => {
+    for (const [iso, visible] of [
+      ["2026-07-05", true], // first booked night
+      ["2026-07-06", false], // gap morning — legacy has never shown it
+      ["2026-07-07", false], // gap day, adjacent to no booked night
+      ["2026-07-08", true], // final booked night
+      ["2026-07-09", true], // the one departure morning legacy admits
+      ["2026-07-10", false],
+    ] as const) {
+      expect(
+        getLodgeVisibleGuestsForDate([SPARSE_GUEST], day(iso), BOOKING, {
+          includeDepartureDate: true,
+        }),
+        iso,
+      ).toEqual(visible ? [SPARSE_GUEST] : []);
+    }
   });
 });

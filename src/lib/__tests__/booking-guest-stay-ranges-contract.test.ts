@@ -85,10 +85,35 @@ describe("stay-range model contract (#2622)", () => {
     expect(stayRanges).not.toMatch(/arrivalTime|departureTime|getHours|setHours/);
   });
 
+  it("keeps the deprecated flag on LEGACY semantics, never the operational day", () => {
+    // PRIVACY CONTRACT. `lodge-display-state.ts` (fenced, issue #58) subtracts
+    // only the envelope end from this list to get its NIGHT counts, so giving
+    // the flag D-M4 per-segment presence turns a sparse stay's gap morning into
+    // a phantom night, breaks sole-occupancy detection and puts guest names and
+    // phone numbers on the unauthenticated lobby wall. The per-segment rule
+    // belongs to the named helpers only.
+    const wrapper = stayRanges.slice(
+      stayRanges.indexOf("export function getLodgeVisibleGuestsForDate<"),
+    );
+    expect(wrapper).toContain("isGuestVisibleOnLodgeDate(guest, date, booking, options)");
+    expect(wrapper).not.toContain("getOperationallyPresentGuestsForDay(");
+
+    // The legacy true-branch, byte-for-byte: night-set membership OR the single
+    // morning after the FINAL listed night; otherwise the closed envelope.
+    const legacyBranch = stayRanges.slice(
+      stayRanges.indexOf("function isGuestVisibleOnLodgeDate("),
+      stayRanges.indexOf("export function getLodgeVisibleGuestsForDate<"),
+    );
+    expect(legacyBranch).toContain("if (maxKey === null || key > maxKey) maxKey = key;");
+    expect(legacyBranch).toContain("return dateKey === shiftDateOnlyKey(maxKey, 1);");
+    expect(legacyBranch).toContain(
+      "return stayStartKey <= dateKey && dateKey <= stayEndKey;",
+    );
+  });
+
   it("freezes the deprecated includeDepartureDate flag to the #2631 surfaces", () => {
-    // The flag no longer selects a different MODEL — it picks between the two
-    // named helpers — but it is still the wrong way to ask. #2631 converts
-    // these three read surfaces and deletes it; until then no fourth caller.
+    // The flag is still the wrong way to ask. #2631 converts these three read
+    // surfaces and deletes it; until then no fourth caller.
     const callers = allSourceFiles(path.join(ROOT, "src"))
       .filter((file) => !file.includes(`${path.sep}__tests__${path.sep}`))
       .filter((file) => /includeDepartureDate/.test(fs.readFileSync(file, "utf8")))

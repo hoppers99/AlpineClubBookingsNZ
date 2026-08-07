@@ -407,15 +407,23 @@ derivation).
   both the admin roster service and the kiosk generate route; roster-confirm
   validation and both chore-cleanup paths read the same helpers (D-M6), and the
   arriving/departing labels are derived from the night set on the operational
-  date. `getLodgeVisibleGuestsForDate` survives only as a deprecated wrapper
-  that delegates to the two named models — its `includeDepartureDate: true`
-  branch IS `getOperationallyPresentGuestsForDay`, so the sparse defect above is
-  gone everywhere including the surfaces that have not been converted yet — and
-  a source contract freezes its remaining callers to the three read surfaces
-  #2631 converts (`api/lodge/week`, `api/lodge/guests/[date]`,
-  `lodge-display-state`), which is where the flag is deleted. Until #2631 lands,
-  those three still fork at the call site rather than naming the model, and no
-  other surface may grow a fourth call.
+  date. **The sparse fix applies per converted surface, not globally.**
+  `getLodgeVisibleGuestsForDate` survives as a deprecated wrapper carrying the
+  LEGACY lodge-date meaning unchanged: `includeDepartureDate: false` is the
+  night model, and `includeDepartureDate: true` admits the guest's own nights
+  plus the single morning after their FINAL listed night (or, for an
+  envelope-only guest, the closed range `[stayStart, stayEnd]`). It is
+  deliberately NOT `getOperationallyPresentGuestsForDay`: the lobby wall
+  (fenced, below) derives its night counts by subtracting only the envelope end
+  from that list, so per-segment presence there would count a sparse stay's gap
+  morning as a phantom night and put guest names on a public screen. A source
+  contract freezes both the legacy semantics and the wrapper's remaining callers
+  to the three read surfaces #2631 converts (`api/lodge/week`,
+  `api/lodge/guests/[date]`, `lodge-display-state`), which is where the flag is
+  deleted and the first two pick up the per-segment rule. The lobby wall keeps
+  legacy semantics by design. Until #2631 lands those three still fork at the
+  call site rather than naming the model, and no other surface may grow a fourth
+  call.
 - **The lobby wall is deliberately mixed and stays fenced** (issue #58): its
   guest-name privacy gate (sole-occupancy detection) uses NIGHT counts while
   its visibility rows are checkout-inclusive. It keeps its own code path

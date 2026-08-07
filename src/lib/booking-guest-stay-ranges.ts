@@ -269,18 +269,73 @@ export function countActiveGuestsForNight(
 }
 
 /**
+ * LEGACY lodge-date visibility. Frozen, not the operational-day rule (#2622).
+ *
+ * `includeDepartureDate: false` is the night model and delegates to it — the
+ * two branches were byte-equivalent, so that is a proven no-op.
+ *
+ * `includeDepartureDate: true` deliberately keeps the SHIPPED legacy meaning:
+ * an explicit night set admits its own nights plus the single morning after the
+ * FINAL listed night, and an envelope stay is the closed range
+ * `[stayStart, stayEnd]`. It is NOT `getOperationallyPresentGuestsForDay`.
+ *
+ * Why it must not be: `lodge-display-state.ts` — the unauthenticated lobby wall
+ * — derives its NIGHT counts by subtracting only the envelope end from this
+ * list (`getGuestStayEnd(...) !== date`). Give it D-M4 per-segment presence and
+ * a sparse stay's mid-stay gap morning is counted as a phantom night, which
+ * breaks sole-occupancy detection (issue #58) and flips guest names and phone
+ * numbers on and off a public screen. The per-segment rule therefore lives only
+ * in the named operational-day helpers, which every converted surface calls
+ * directly; #2631 converts the three remaining flag callers and deletes this.
+ */
+function isGuestVisibleOnLodgeDate(
+  guest: GuestStayRange,
+  date: Date,
+  booking: BookingStayRange,
+  options?: { includeDepartureDate?: boolean }
+): boolean {
+  if (!options?.includeDepartureDate) {
+    return isGuestActiveOnNight(guest, date, booking);
+  }
+
+  const dateKey = dateOnlyKey(date);
+
+  // For explicit night sets, "visible on a lodge date" means the guest stays
+  // that night, plus the morning after their last included night (the
+  // checkout-day visibility the board uses).
+  const nightKeySet = getGuestNightKeySet(guest);
+  if (nightKeySet) {
+    if (nightKeySet.has(dateKey)) {
+      return true;
+    }
+    let maxKey: string | null = null;
+    for (const key of nightKeySet) {
+      if (maxKey === null || key > maxKey) maxKey = key;
+    }
+    if (maxKey !== null) {
+      return dateKey === shiftDateOnlyKey(maxKey, 1);
+    }
+    return false;
+  }
+
+  const stayStartKey = dateOnlyKey(getGuestStayStart(guest, booking));
+  const stayEndKey = dateOnlyKey(getGuestStayEnd(guest, booking));
+
+  return stayStartKey <= dateKey && dateKey <= stayEndKey;
+}
+
+/**
  * @deprecated (#2622) Call the named model you actually mean:
  * `getOperationallyPresentGuestsForDay` for the operational day, or
- * `getActiveGuestsForNight` for the night model. This wrapper now delegates to
- * exactly those two so the `includeDepartureDate` flag can no longer select a
- * THIRD, subtly different model — which is what it used to do for sparse
- * stays, where it admitted only the morning after the guest's LAST night and
- * silently dropped the morning after every earlier segment.
+ * `getActiveGuestsForNight` for the night model.
  *
- * It survives only so the three read surfaces #2631 converts
- * (`api/lodge/week`, `api/lodge/guests/[date]`, `lodge-display-state`) keep
- * compiling until that issue lands; `booking-guest-stay-ranges-contract.test.ts`
- * freezes the caller list so no new one can appear in the meantime.
+ * This wrapper is the LEGACY lodge-date list, unchanged in behaviour — see
+ * `isGuestVisibleOnLodgeDate` above for why its `includeDepartureDate: true`
+ * branch must not become the operational-day rule. It survives only so the
+ * three read surfaces #2631 converts (`api/lodge/week`,
+ * `api/lodge/guests/[date]`, `lodge-display-state`) keep working until that
+ * issue lands; `booking-guest-stay-ranges-contract.test.ts` freezes the caller
+ * list so no new one can appear in the meantime.
  */
 export function getLodgeVisibleGuestsForDate<Guest extends GuestStayRange>(
   guests: Guest[] | null | undefined,
@@ -288,7 +343,7 @@ export function getLodgeVisibleGuestsForDate<Guest extends GuestStayRange>(
   booking: BookingStayRange,
   options?: { includeDepartureDate?: boolean }
 ): Guest[] {
-  return options?.includeDepartureDate
-    ? getOperationallyPresentGuestsForDay(guests, date, booking)
-    : getActiveGuestsForNight(guests, date, booking);
+  return (guests ?? []).filter((guest) =>
+    isGuestVisibleOnLodgeDate(guest, date, booking, options)
+  );
 }
