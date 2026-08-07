@@ -1,21 +1,28 @@
 import { prisma } from "./prisma";
 import type { Prisma, PrismaClient } from "@prisma/client";
 import logger from "@/lib/logger";
+import type { AuditCategory } from "./audit-categories";
 // test seam
 export { buildMemberAuditLogWhere } from "./audit-query";
 
-export type AuditCategory =
-  | "account"
-  | "booking"
-  | "payment"
-  | "admin"
-  | "security"
-  | "lodge"
-  | "xero"
-  | "communication"
-  | "privacy"
-  | "system"
-  | (string & {});
+/**
+ * The writer's category type is the canonical CLOSED taxonomy (#2581), re-exported
+ * here so every existing `import type { AuditCategory } from "@/lib/audit"` keeps
+ * resolving.
+ *
+ * It used to be an eleven-member union ending in `| (string & {})`, which accepts
+ * any string at all. Two invented values reached the database through that escape
+ * — `membership` from three nomination writers and `auth` from the auth-bounce
+ * writer — and each produced rows that no Admin filter and no Diagnostics
+ * correlation tool could select, because every reader filters on the named values.
+ * A typo would have done the same thing without anyone noticing. `family` had the
+ * mirror-image problem: 27 sites wrote it while it was missing from the union, so
+ * it was only ever accepted BY the escape.
+ *
+ * See `audit-categories.ts` for the list itself and for which permission each
+ * category's evidence sits behind.
+ */
+export type { AuditCategory };
 
 export type AuditSeverity = "info" | "important" | "critical";
 // The auth-bounce diagnostics (#1669) store their classification reason in
