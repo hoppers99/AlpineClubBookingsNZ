@@ -777,6 +777,10 @@ describe("member-merge shared-double race DB safety guard (#2595)", () => {
         where: { id: "default" },
         create: { id: "default", bedAllocation: true },
         update: { bedAllocation: true },
+        // Explicit select on a WRITE too: Prisma's implicit RETURNING would
+        // otherwise name every column of the singleton, which the #175
+        // blue/green guard forbids anywhere under `src/`.
+        select: { id: true },
       });
 
       await prisma.bedAllocationSettings.deleteMany({ where: { id: LODGE_ID } });
@@ -877,6 +881,7 @@ describe("member-merge shared-double race DB safety guard (#2595)", () => {
               data: {
                 bedAllocation: previousBedAllocationModuleEnabled ?? false,
               },
+              select: { id: true },
             }),
           );
         } else {
