@@ -37,6 +37,7 @@ import { buildHrefWithReturnTo } from "@/lib/internal-return-path";
 import { formatNZDate, formatNZDateTime } from "@/lib/nzst-date";
 import { countNightsDateOnly } from "@/lib/date-only";
 import { formatCents } from "@/lib/utils";
+import { FocusedActionError } from "@/components/focused-action-error";
 import {
   BookingRequestContactPicker,
   type OwnerContactChoice,
@@ -444,16 +445,12 @@ export function PublicBookingRequestsPanel({
     useState<PublicBookingRequestData | null>(null);
   const [declineDialogOpen, setDeclineDialogOpen] = useState(false);
   const [error, setError] = useState("");
-  const errorRef = useRef<HTMLDivElement>(null);
   const [errorAttentionVersion, setErrorAttentionVersion] = useState(0);
-
-  useEffect(() => {
-    if (!error || errorAttentionVersion === 0) return;
-    const alert = errorRef.current;
-    if (!alert) return;
-    alert.focus({ preventScroll: true });
-    alert.scrollIntoView?.({ behavior: "smooth", block: "center" });
-  }, [error, errorAttentionVersion]);
+  const [declineRecovery, setDeclineRecovery] = useState<{
+    requestId: string;
+    heldBookingId: string | null;
+    message: string;
+  } | null>(null);
 
   function showActionError(message: string) {
     setError(message);
@@ -503,8 +500,10 @@ export function PublicBookingRequestsPanel({
         throw new Error(data.error || "Failed to load booking requests");
       }
       setRequests(Array.isArray(data?.data) ? data.data : []);
+      return true;
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to load booking requests");
+      return false;
     } finally {
       setLoading(false);
     }
@@ -1070,6 +1069,33 @@ export function PublicBookingRequestsPanel({
       });
       const data = await response.json().catch(() => ({}));
       if (!response.ok) {
+        if (
+          data.requestDeclined === true &&
+          data.holdReleasePending === true
+        ) {
+          const recoveryBase =
+            "The request was declined, but its capacity hold still needs to be released. Do not decline this request again.";
+          setRequests((current) =>
+            current.filter((candidate) => candidate.id !== request.id),
+          );
+          setDeclineRecovery({
+            requestId: request.id,
+            heldBookingId: request.heldBookingId,
+            message: recoveryBase,
+          });
+          showActionError(recoveryBase);
+          const refreshed = await fetchRequests();
+          const refreshResult = refreshed
+            ? " The latest request queue was loaded; open the held booking and check its cancellation status."
+            : " The request queue could not be refreshed. This warning remains active; open the held booking and check its cancellation status.";
+          setDeclineRecovery({
+            requestId: request.id,
+            heldBookingId: request.heldBookingId,
+            message: `${recoveryBase}${refreshResult}`,
+          });
+          setErrorAttentionVersion((version) => version + 1);
+          return;
+        }
         throw new Error(data.error || "Failed to decline request");
       }
       toast.success(
@@ -1114,27 +1140,30 @@ export function PublicBookingRequestsPanel({
         </div>
       ) : null}
 
-      <div
+      <FocusedActionError
         id="public-booking-requests-error"
-        ref={errorRef}
-        role="alert"
-        aria-atomic="true"
-        tabIndex={-1}
-        className={
-          error
-            ? "rounded-md bg-destructive/10 px-4 py-3 text-destructive"
-            : "sr-only"
-        }
-      >
-        {error ? (
-          <>
-            {error}
-            <button onClick={() => setError("")} className="ml-2 underline">
+        error={declineRecovery?.message ?? error}
+        attentionKey={errorAttentionVersion}
+        heading={declineRecovery ? "Request declined - hold release pending" : undefined}
+        action={
+          declineRecovery?.heldBookingId ? (
+            <Button asChild variant="outline" size="sm">
+              <Link
+                href={buildHrefWithReturnTo(
+                  `/admin/bookings/${encodeURIComponent(declineRecovery.heldBookingId)}`,
+                  currentPath,
+                )}
+              >
+                Open affected booking
+              </Link>
+            </Button>
+          ) : error && !declineRecovery ? (
+            <Button type="button" variant="outline" size="sm" onClick={() => setError("")}>
               Dismiss
-            </button>
-          </>
-        ) : null}
-      </div>
+            </Button>
+          ) : undefined
+        }
+      />
 
 
       <div className="flex flex-wrap gap-2">

@@ -20,7 +20,7 @@ import { PublicBookingRequestsPanel } from "@/components/admin/booking-requests/
 const replace = vi.fn();
 vi.mock("next/navigation", () => ({
   useRouter: () => ({ replace, push: vi.fn() }),
-  useSearchParams: () => ({ get: () => null }),
+  useSearchParams: () => new URLSearchParams(),
 }));
 
 vi.mock("next/link", () => ({
@@ -181,6 +181,58 @@ describe("PublicBookingRequestsPanel saved-data marker (#2342)", () => {
       behavior: "smooth",
       block: "center",
     });
+  });
+
+  it("retains declined-request recovery, suppresses stale decline, and links to the held booking", async () => {
+    const scrollIntoView = vi.fn();
+    Object.defineProperty(HTMLElement.prototype, "scrollIntoView", {
+      configurable: true,
+      value: scrollIntoView,
+    });
+    await renderWith({ ...baseRequest, heldBookingId: "booking/held" });
+
+    global.fetch = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      const url = String(input);
+      if (url === "/api/admin/booking-requests/req-1/decline" && init?.method === "POST") {
+        return {
+          ok: false,
+          status: 409,
+          json: async () => ({
+            code: "HOSTING_COVERAGE_PARTICIPANT_RETRY",
+            error: "private database detail",
+            requestDeclined: true,
+            holdReleasePending: true,
+          }),
+        } as Response;
+      }
+      if (url.startsWith("/api/admin/booking-requests?")) {
+        return {
+          ok: false,
+          json: async () => ({ error: "refresh unavailable" }),
+        } as Response;
+      }
+      throw new Error(`Unexpected request: ${url}`);
+    }) as typeof fetch;
+
+    fireEvent.click(button(/^Decline$/i));
+    fireEvent.click(
+      await screen.findByRole("button", { name: "Decline and email requester" }),
+    );
+
+    const alert = document.getElementById("public-booking-requests-error");
+    await waitFor(() =>
+      expect(alert?.textContent).toMatch(/request was declined/i),
+    );
+    expect(alert?.textContent).toMatch(/capacity hold still needs to be released/i);
+    expect(alert?.textContent).toMatch(/could not be refreshed/i);
+    expect(alert?.textContent).not.toContain("private database detail");
+    expect(document.activeElement).toBe(alert);
+    expect(screen.queryByRole("button", { name: /^Decline$/i })).toBeNull();
+    expect(
+      screen.getByRole("link", { name: "Open affected booking" }).getAttribute("href"),
+    ).toBe(
+      "/admin/bookings/booking%2Fheld?returnTo=%2Fadmin%2Fbooking-requests",
+    );
   });
 
   it("states ONLY the guest failure when only the guest list is unreadable", async () => {
