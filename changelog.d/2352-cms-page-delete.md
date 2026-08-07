@@ -16,7 +16,11 @@
 
   Nothing you have deleted vanishes without a trace: the full content of the page
   is written into the audit log at the moment it is removed and kept for seven
-  years, so a full administrator can read a page back out and retype it. That is
+  years, so a full administrator can read a page back out and retype it. That
+  record is filed under **admin**, the same heading as the existing "page created"
+  and "page edited" records beside it, so exactly the officers who could already
+  read those can read this one — deletion does not open the audit log to anyone
+  new. That is
   a records trail, not an undo button, which is why the dialog suggests hiding
   instead if you might want the page back. Two things the record cannot keep, both
   the privacy protection doing its job: a value written as `password: ...` is
@@ -38,6 +42,13 @@
   case that clearing the copy fails, the message says so plainly — the page is
   deleted, the old address may answer for a few more minutes — instead of
   reporting a failure for something that succeeded.
+
+  The **Public Content** settings further down the same screen also re-read
+  themselves the moment a page is deleted. Without that, they were still holding
+  the page you had just removed — in the list of pages the **Book Now** button can
+  point at, and in the setting itself when the delete had just moved it — and the
+  next save in that section failed with "The selected Book Now page is not
+  published." until you reloaded the screen. That save now goes through.
 
   Decisions taken here, each the recommended option on the issue: deletion is
   final rather than a second hidden state; a deleted address 404s through the

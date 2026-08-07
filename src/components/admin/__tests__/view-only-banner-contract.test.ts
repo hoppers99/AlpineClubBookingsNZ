@@ -322,11 +322,11 @@ const NOTICE = "AdminViewOnlyNotice";
 */
 const FIGURES = {
   /** Every `<ViewOnlyActionButton>` render site in the admin tree. */
-  callSites: 312,
+  callSites: 313,
   /** Those that hand their explanation to a banner, by either rule. */
-  optOuts: 263,
+  optOuts: 264,
   /** `describeReason={false}` — needs a banner in the SAME file. */
-  staticOptOuts: 236,
+  staticOptOuts: 237,
   /** `describeReason={!ancestorRendersViewOnlyBanner}` — needs a vouch. */
   vouchedOptOuts: 27,
   /** …of the vouched: proved at a parent's own JSX render site (#2168). */

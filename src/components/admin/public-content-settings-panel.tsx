@@ -4,6 +4,7 @@ import { useEffect, useId, useState } from "react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { useAdminAreaEditAccess } from "@/hooks/use-admin-area-edit-access";
+import { PUBLIC_CONTENT_SETTINGS_CHANGED_EVENT } from "@/lib/public-content-settings-events";
 import { AdminViewOnlySectionBanner, ViewOnlyActionButton } from "@/components/admin/view-only-action";
 
 type Settings = {
@@ -52,6 +53,25 @@ export function PublicContentSettingsPanel() {
   }
   useEffect(() => {
     load();
+    /*
+      Second review finding S2 (#2352). `admin/page-content` renders this panel
+      and `PageContentPanel` as siblings with no common client ancestor, and this
+      one posts its WHOLE settings object on save. Deleting a page therefore left
+      this panel holding a published-page list that still contained it and — when
+      the delete repointed the setting inside its own transaction — a
+      `bookNowTarget: "PAGE"` plus a page id that no longer existed, so every
+      later save here failed with 400 "The selected Book Now page is not
+      published." until the officer thought to reload. Deterministic, not a race.
+
+      A re-read rather than a local patch: the endpoint is the authority on what
+      it repointed to, and re-reading also refreshes the page list the Book Now
+      selector offers. `router.refresh()` would not help — it re-renders the
+      server tree without touching either panel's own fetched state.
+    */
+    window.addEventListener(PUBLIC_CONTENT_SETTINGS_CHANGED_EVENT, load);
+    return () => {
+      window.removeEventListener(PUBLIC_CONTENT_SETTINGS_CHANGED_EVENT, load);
+    };
     // Load once on mount; retry is explicit after an error.
   }, []);
   /*

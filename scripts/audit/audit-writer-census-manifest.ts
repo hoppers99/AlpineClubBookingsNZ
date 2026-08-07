@@ -59,8 +59,16 @@ export const AUDIT_CENSUS_TOTALS = {
    * inside the release's own transaction, because that row is the only surviving
    * record of who held the claim the transition destroys. Categorised `privacy`
    * at the site, so it does not join `UNCATEGORISED_AUDIT_WRITERS` below.
+   *
+   * 419 -> 420 (#2352 MC-03D): deleting a page-content page writes
+   * `PAGE_CONTENT_DELETED` inside the delete's own transaction, because the row
+   * carries the deleted page's whole `before` snapshot and is the only record of
+   * what was removed. Written with `buildStructuredAuditLogCreateArgs` through
+   * `tx.auditLog.create`, matching the three sibling writes already in that
+   * route rather than introducing a fourth form; categorised `admin` at the
+   * site, so it does not join `UNCATEGORISED_AUDIT_WRITERS` below.
    */
-  writeSites: 419,
+  writeSites: 420,
   /** Of those, sites whose event object carries no `category` key. */
   uncategorised: 82,
   /** Per-sink totals, so a shift between forms cannot cancel out in the total. */
@@ -69,7 +77,8 @@ export const AUDIT_CENSUS_TOTALS = {
     // 101 -> 102 (#2627): the deletion-approval release, above.
     createAuditLog: { total: 102, uncategorised: 11 },
     createStructuredAuditLog: { total: 8, uncategorised: 0 },
-    "auditLog.create": { total: 71, uncategorised: 2 },
+    // 71 -> 72 (#2352 MC-03D): the page-content deletion, above.
+    "auditLog.create": { total: 72, uncategorised: 2 },
   },
   /**
    * Literal category values written, and by how many sites. The three `membership`
@@ -83,7 +92,11 @@ export const AUDIT_CENSUS_TOTALS = {
     booking: 79,
     payment: 16,
     family: 27,
-    admin: 117,
+    // 117 -> 118 (#2352 MC-03D): `PAGE_CONTENT_DELETED`. `admin` is the same
+    // category the three sibling page-content writes already use, and it is
+    // readable with support:view alone — so this widens nobody's access beyond
+    // what the page-content create/update rows beside it already grant.
+    admin: 118,
     security: 16,
     lodge: 16,
     xero: 19,

@@ -69,6 +69,7 @@ import {
   isSystemPageSlug,
   SYSTEM_PAGE_SLUGS,
 } from "@/lib/page-content";
+import { emitPublicContentSettingsChanged } from "@/lib/public-content-settings-events";
 import {
   TokenCatalogueSections,
   TokenChips,
@@ -1838,6 +1839,16 @@ export function PageContentPanel() {
       } else {
         toast.success(`Deleted ${page.title}`);
       }
+
+      // Second review finding S2. The sibling PublicContentSettingsPanel loads
+      // once on mount and posts its WHOLE settings object on save, so after this
+      // delete it is holding two things that are no longer true: the published-page
+      // list this page was in, and — when the delete repointed it — the stored
+      // `bookNowTarget`/`bookNowPageId`. Its next save would then fail with
+      // 400 "The selected Book Now page is not published." until the officer
+      // happened to reload. Announced unconditionally: the page list goes stale on
+      // every delete, not only on the ones that moved the Book Now target.
+      emitPublicContentSettingsChanged();
     } catch (error) {
       toast.error(
         error instanceof Error ? error.message : "Failed to delete page",
