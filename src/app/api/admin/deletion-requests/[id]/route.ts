@@ -479,6 +479,19 @@ export async function POST(
         },
       });
 
+      // The pointer and canonical ledger are one privacy boundary. A contact
+      // update that completed before this transaction may have refreshed the
+      // active link; deactivate it in the same commit that anonymises Member.
+      await tx.xeroObjectLink.updateMany({
+        where: {
+          localModel: "Member",
+          localId: member.id,
+          xeroObjectType: "CONTACT",
+          active: true,
+        },
+        data: { active: false },
+      });
+
       // 4. Remove from all family groups
       await tx.familyGroupMember.deleteMany({
         where: { memberId: member.id },

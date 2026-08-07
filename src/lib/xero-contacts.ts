@@ -159,6 +159,22 @@ export async function reserveMemberContactUpdateOperation(
   });
 }
 
+export async function completeMemberContactUpdateOperation(
+  memberId: string,
+  expectedXeroContactId: string,
+  operationId: string,
+  completion: Parameters<typeof completeXeroSyncOperation>[1],
+  db: typeof prisma = prisma,
+): Promise<void> {
+  await db.$transaction(async (tx) => {
+    const locked = await lockMemberForXeroContactLink(tx, memberId);
+    if (locked.xeroContactId !== expectedXeroContactId) {
+      throw new XeroContactLinkChangedError();
+    }
+    await completeXeroSyncOperation(operationId, completion, { store: tx });
+  });
+}
+
 export interface XeroContactUpdateData {
   firstName?: string;
   lastName?: string;
@@ -1365,13 +1381,12 @@ export async function updateXeroContact(
           : [],
     };
     if (memberId) {
-      await prisma.$transaction(async (tx) => {
-        const locked = await lockMemberForXeroContactLink(tx, memberId);
-        if (locked.xeroContactId !== xeroContactId) {
-          throw new XeroContactLinkChangedError();
-        }
-        await completeXeroSyncOperation(operation.id, completion, { store: tx });
-      });
+      await completeMemberContactUpdateOperation(
+        memberId,
+        xeroContactId,
+        operation.id,
+        completion,
+      );
     } else {
       await completeXeroSyncOperation(operation.id, completion);
     }

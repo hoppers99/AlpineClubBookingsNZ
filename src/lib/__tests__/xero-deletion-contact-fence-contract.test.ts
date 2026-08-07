@@ -94,6 +94,7 @@ describe("Xero contact/account-deletion lock topology mutation pins (#2597)", ()
       "lockMemberForAccountDeletionXeroFence(tx, member.id)",
       "await tx.member.update",
       "passwordHash: DELETED_ACCOUNT_PASSWORD_HASH",
+      "await tx.xeroObjectLink.updateMany",
     ]);
   });
 
@@ -106,8 +107,16 @@ describe("Xero contact/account-deletion lock topology mutation pins (#2597)", ()
       "reserveMemberContactUpdateOperation(",
       "getAuthenticatedXeroClient()",
       "accountingApi.updateContact(",
+      "completeMemberContactUpdateOperation(",
+    ]);
+    const completion = between(
+      contactSource,
+      "export async function completeMemberContactUpdateOperation(",
+      "export interface XeroContactUpdateData",
+    );
+    expectOrdered(completion, [
       "lockMemberForXeroContactLink(tx, memberId)",
-      "completeXeroSyncOperation(operation.id, completion, { store: tx })",
+      "completeXeroSyncOperation(operationId, completion, { store: tx })",
     ]);
   });
 

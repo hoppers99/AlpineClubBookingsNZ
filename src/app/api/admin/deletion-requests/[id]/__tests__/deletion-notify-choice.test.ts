@@ -23,6 +23,7 @@ const h = vi.hoisted(() => ({
     deletionRequest: { findUnique: vi.fn(), updateMany: vi.fn() },
     booking: { findMany: vi.fn(), findUnique: vi.fn() },
     xeroSyncOperation: { findFirst: vi.fn() },
+    xeroObjectLink: { updateMany: vi.fn() },
     // #2255: `findMany` reads who the anonymisation is about to detach and
     // `updateMany` sweeps their inheritance pointers, so club email stops being
     // aimed at the @deleted.invalid address the route has just written.
@@ -137,6 +138,7 @@ beforeEach(() => {
   });
   h.prisma.familyGroupMember.deleteMany.mockResolvedValue({ count: 0 });
   h.prisma.bookingGuest.updateMany.mockResolvedValue({ count: 0 });
+  h.prisma.xeroObjectLink.updateMany.mockResolvedValue({ count: 0 });
   h.prisma.$transaction.mockImplementation(
     async (cb: (tx: typeof h.prisma) => Promise<unknown>) => cb(h.prisma),
   );
