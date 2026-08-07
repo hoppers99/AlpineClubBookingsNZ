@@ -28,6 +28,8 @@ export function WaitlistOfferCard({
 }: WaitlistOfferCardProps) {
   const [confirming, setConfirming] = useState(false);
   const [error, setError] = useState("");
+  const [confirmationStatusUnconfirmed, setConfirmationStatusUnconfirmed] =
+    useState(false);
   const [timeLeft, setTimeLeft] = useState("");
   // Refreshed quote after an OFFER_PRICE_CHANGED rejection; the member
   // re-confirms at this figure.
@@ -65,13 +67,19 @@ export function WaitlistOfferCard({
         method: "POST",
       });
 
-      const data = (await res.json().catch(() => ({}))) as {
+      let data: {
         success?: boolean;
         newBookingId?: string;
         code?: string;
         error?: string;
         updatedPriceCents?: number;
       };
+      try {
+        data = (await res.json()) as typeof data;
+      } catch {
+        showUnconfirmedStatus();
+        return;
+      }
 
       if (res.ok && data.success) {
         if (data.newBookingId) {
@@ -90,6 +98,14 @@ export function WaitlistOfferCard({
         return;
       }
 
+      if (res.ok) {
+        // A successful HTTP response without the success contract is just as
+        // ambiguous as an unreadable response: the write may have landed, so
+        // another confirm must remain unavailable until canonical state reloads.
+        showUnconfirmedStatus();
+        return;
+      }
+
       if (
         data.code === "OFFER_PRICE_CHANGED" &&
         typeof data.updatedPriceCents === "number"
@@ -99,11 +115,16 @@ export function WaitlistOfferCard({
       setError(data.error || "Failed to confirm booking");
       setConfirming(false);
     } catch {
-      setError(
-        "We couldn't confirm this booking because the service could not be reached. Your offer is still here; try again.",
-      );
-      setConfirming(false);
+      showUnconfirmedStatus();
     }
+  }
+
+  function showUnconfirmedStatus() {
+    setError(
+      "The service response could not be read, so we could not verify whether this offer was confirmed. Reload the booking and check its current status before trying again.",
+    );
+    setConfirmationStatusUnconfirmed(true);
+    setConfirming(false);
   }
 
   const isExpired = timeLeft === "Expired";
@@ -152,19 +173,41 @@ export function WaitlistOfferCard({
           </p>
         )}
 
-        <FocusedActionError id="waitlist-confirm-error" error={error} />
+        <FocusedActionError
+          id="waitlist-confirm-error"
+          error={error}
+          heading={
+            confirmationStatusUnconfirmed
+              ? "Confirmation status could not be verified"
+              : undefined
+          }
+          action={
+            confirmationStatusUnconfirmed ? (
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                onClick={() => window.location.reload()}
+              >
+                Reload booking status
+              </Button>
+            ) : undefined
+          }
+        />
 
         <div className="flex gap-3">
-          <Button
-            onClick={handleConfirm}
-            disabled={confirming || isExpired}
-          >
-            {confirming
-              ? "Confirming..."
-              : isCrossLodge && displayPriceCents !== null && displayPriceCents !== undefined
-                ? `Confirm at ${offeredLodgeName ?? "this lodge"} for ${formatOfferCents(displayPriceCents)}`
-                : "Confirm Booking"}
-          </Button>
+          {!confirmationStatusUnconfirmed ? (
+            <Button
+              onClick={handleConfirm}
+              disabled={confirming || isExpired}
+            >
+              {confirming
+                ? "Confirming..."
+                : isCrossLodge && displayPriceCents !== null && displayPriceCents !== undefined
+                  ? `Confirm at ${offeredLodgeName ?? "this lodge"} for ${formatOfferCents(displayPriceCents)}`
+                  : "Confirm Booking"}
+            </Button>
+          ) : null}
         </div>
       </CardContent>
     </Card>

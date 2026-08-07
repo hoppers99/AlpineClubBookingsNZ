@@ -11,13 +11,20 @@ const RETRY_MESSAGE =
 
 describe("WaitlistOfferCard participant retry attention (#2597)", () => {
   const originalScrollIntoView = HTMLElement.prototype.scrollIntoView;
+  const originalLocation = window.location;
   let scrollIntoView: ReturnType<typeof vi.fn>;
+  let reload: ReturnType<typeof vi.fn>;
 
   beforeEach(() => {
     scrollIntoView = vi.fn();
     Object.defineProperty(HTMLElement.prototype, "scrollIntoView", {
       configurable: true,
       value: scrollIntoView,
+    });
+    reload = vi.fn();
+    Object.defineProperty(window, "location", {
+      configurable: true,
+      value: { ...originalLocation, reload },
     });
   });
 
@@ -32,6 +39,10 @@ describe("WaitlistOfferCard participant retry attention (#2597)", () => {
       delete (HTMLElement.prototype as { scrollIntoView?: unknown })
         .scrollIntoView;
     }
+    Object.defineProperty(window, "location", {
+      configurable: true,
+      value: originalLocation,
+    });
   });
 
   it("keeps the offer available and focuses the permanently mounted retry alert", async () => {
@@ -75,7 +86,7 @@ describe("WaitlistOfferCard participant retry attention (#2597)", () => {
     ).toBeEnabled();
   });
 
-  it("recovers the confirm button after a network failure", async () => {
+  it("suppresses another confirm after a network failure until status is reloaded", async () => {
     global.fetch = vi
       .fn()
       .mockRejectedValue(new Error("network unavailable")) as unknown as typeof fetch;
@@ -91,10 +102,35 @@ describe("WaitlistOfferCard participant retry attention (#2597)", () => {
     fireEvent.click(screen.getByRole("button", { name: "Confirm Booking" }));
 
     expect(
-      await screen.findByText(/the service could not be reached/i),
-    ).toHaveTextContent("Your offer is still here; try again.");
+      await screen.findByText(/could not verify whether this offer was confirmed/i),
+    ).toHaveTextContent(/Reload the booking and check its current status before trying again/i);
+    expect(screen.queryByRole("button", { name: "Confirm Booking" })).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Reload booking status" }));
+    expect(reload).toHaveBeenCalledTimes(1);
+  });
+
+  it("treats an unreadable successful response as status-unconfirmed", async () => {
+    global.fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => {
+        throw new SyntaxError("invalid json");
+      },
+    }) as unknown as typeof fetch;
+
+    render(
+      <WaitlistOfferCard
+        bookingId="booking-1"
+        expiresAt="2026-08-01T00:00:00.000Z"
+        finalPriceCents={12500}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Confirm Booking" }));
+
     expect(
-      screen.getByRole("button", { name: "Confirm Booking" }),
+      await screen.findByRole("button", { name: "Reload booking status" }),
     ).toBeEnabled();
+    expect(screen.queryByRole("button", { name: "Confirm Booking" })).not.toBeInTheDocument();
   });
 });
