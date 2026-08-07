@@ -437,4 +437,100 @@ describe("kiosk generate route shares the selector (#2622)", () => {
     await generate();
     expect(mockPrisma.choreAssignment.createMany).not.toHaveBeenCalled();
   });
+
+  it("PRIVACY: the kiosk response never carries the booking-owner label", async () => {
+    // The shared selector adds `bookingGroupLabel` ("Booking for Bev Booker")
+    // for the ADMIN roster editor. This endpoint answers a shared hut-leader PIN
+    // session, the owner need not be staying, and the duplicate query this route
+    // replaced never exposed it. Anything that returns the selector rows
+    // wholesale — now or later — fails here.
+    mockPrisma.booking.findMany.mockResolvedValue([
+      booking("booking-1", [guest("leaving", ["2026-07-11", "2026-07-12"])]),
+    ]);
+    mockPrisma.choreTemplate.findMany.mockResolvedValue(morningAndEveningTemplates());
+
+    const response = await generate();
+    const raw = await response.text();
+    expect(raw).not.toContain("bookingGroupLabel");
+    expect(raw).not.toContain("Booking for");
+    expect(raw).not.toContain("Ana"); // the booking OWNER, who need not be staying
+
+    const body = JSON.parse(raw);
+    expect(Object.keys(body.guests[0]).sort()).toEqual([
+      "ageTier",
+      "bookingId",
+      "firstName",
+      "isArriving",
+      "isDeparting",
+      "id",
+      "lastName",
+    ].sort());
+  });
+});
+
+describe("hut-leader roster wizard reaches the generate step (#2622)", () => {
+  // The wizard's step 1 reads `/api/lodge/guests/[date]`; its `totalGuests`
+  // gates the Next button. The DEFAULT scope of that route is the night model,
+  // so on an all-departing morning it returned nobody and the wizard dead-ended
+  // before the (already converted) generate route could run. The page therefore
+  // has to ask for the checkout-inclusive lodge list.
+  it("the setup page asks the guests route for the checkout-inclusive scope", async () => {
+    const fs = await import("node:fs");
+    const path = await import("node:path");
+    const source = fs.readFileSync(
+      path.join(
+        process.cwd(),
+        "src/app/(lodge)/lodge/roster/[date]/setup/page.tsx",
+      ),
+      "utf8",
+    );
+    expect(source).toContain("`/api/lodge/guests/${dateStr}?scope=lodge-list`");
+  });
+
+  it("that scope returns the departing guest and a non-zero count", async () => {
+    vi.clearAllMocks();
+    lodgeAuthMocks.checkLodgeAuth.mockResolvedValue({ tier: "hut-leader" });
+    lodgeAuthMocks.resolveKioskLodgeId.mockResolvedValue("lodge-1");
+    // An all-departing morning: the booking's only guest checks out on the 13th.
+    mockPrisma.booking.findMany.mockResolvedValue([
+      {
+        id: "booking-1",
+        checkIn: day("2026-07-11"),
+        checkOut: DATE,
+        expectedArrivalTime: null,
+        member: { firstName: "Bev", lastName: "Booker" },
+        guests: [
+          {
+            id: "leaving",
+            firstName: "Lee",
+            lastName: "Leaver",
+            ageTier: "ADULT",
+            isMember: false,
+            arrivedAt: null,
+            departedAt: null,
+            stayStart: day("2026-07-11"),
+            stayEnd: DATE,
+            member: null,
+          },
+        ],
+      },
+    ]);
+
+    const { GET } = await import("@/app/api/lodge/guests/[date]/route");
+    const response = await GET(
+      new Request(
+        "http://localhost/api/lodge/guests/2026-07-13?scope=lodge-list",
+      ) as never,
+      { params: Promise.resolve({ date: "2026-07-13" }) } as never,
+    );
+
+    expect(response.status).toBe(200);
+    const body = await response.json();
+    expect(body.totalGuests).toBe(1);
+    expect(body.bookings[0].guests[0]).toMatchObject({
+      id: "leaving",
+      isDeparting: true,
+      isArriving: false,
+    });
+  });
 });

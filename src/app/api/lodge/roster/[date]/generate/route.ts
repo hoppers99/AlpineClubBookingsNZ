@@ -165,10 +165,28 @@ export async function POST(
       };
     });
 
+    // PRIVACY PROJECTION (#2622). The shared selector also carries
+    // `bookingGroupLabel` — "Booking for <owner first name> <surname>" — which
+    // the admin roster editor groups by. This endpoint answers a SHARED
+    // hut-leader PIN session on a kiosk in the lodge, and the booking owner is
+    // not necessarily anyone staying, so that label would name a person the
+    // kiosk has no reason to show. The duplicate query this route used to keep
+    // never produced it; list the fields explicitly so the wizard's shape stays
+    // exactly what it was and nothing new leaks in by inheritance.
+    const kioskGuests = guests.map((guest) => ({
+      id: guest.id,
+      bookingId: guest.bookingId,
+      firstName: guest.firstName,
+      lastName: guest.lastName,
+      ageTier: guest.ageTier,
+      isArriving: guest.isArriving,
+      isDeparting: guest.isDeparting,
+    }));
+
     return NextResponse.json({
       date: dateStr,
       allocations: result,
-      guests,
+      guests: kioskGuests,
     });
   } catch (err) {
     const denied = kioskLodgeAuthErrorResponse(err);
