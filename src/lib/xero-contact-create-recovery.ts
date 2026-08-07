@@ -185,12 +185,17 @@ export function assertMemberAvailableForXeroContactChange(member: {
 }
 
 /**
- * Take the exact Member row before any local Xero contact link is written.
- * Account deletion takes the same row FOR UPDATE, so either it commits first
- * and this writer observes the canonical anonymisation marker, or this short
- * local-link transaction commits before deletion can continue.
+ * Take the exact Member row FOR UPDATE and re-read it under that lock, without
+ * asking whether the member is still available for Xero contact changes.
+ *
+ * This is the half of the fence that every participant shares: the row lock is
+ * what serialises contact writers, member merge, and account deletion against
+ * each other. Only the *contact-writing* participants may additionally refuse
+ * an anonymised member — see {@link lockMemberForXeroContactLink}. A deletion
+ * must not, because deletion is what writes that marker in the first place
+ * (#2627).
  */
-export async function lockMemberForXeroContactLink(
+async function lockMemberRowForXeroFence(
   db: ContactLinkMemberFenceDb,
   memberId: string,
 ) {
@@ -216,6 +221,20 @@ export async function lockMemberForXeroContactLink(
   if (!member) {
     throw new Error(`Member not found: ${memberId}`);
   }
+  return member;
+}
+
+/**
+ * Take the exact Member row before any local Xero contact link is written.
+ * Account deletion takes the same row FOR UPDATE, so either it commits first
+ * and this writer observes the canonical anonymisation marker, or this short
+ * local-link transaction commits before deletion can continue.
+ */
+export async function lockMemberForXeroContactLink(
+  db: ContactLinkMemberFenceDb,
+  memberId: string,
+) {
+  const member = await lockMemberRowForXeroFence(db, memberId);
   assertMemberAvailableForXeroContactChange(member);
   return member;
 }
@@ -596,12 +615,25 @@ export async function assertNoMemberContactChangeBlockerForDeletion(
  * live route already owns this Member row through its standing fan-out; taking
  * the same lock again is re-entrant and makes the production boundary directly
  * executable by the PostgreSQL race suite.
+ *
+ * #2627: this deliberately takes the row lock WITHOUT the contact-writer
+ * availability assert. That assert refuses a member carrying the anonymisation
+ * marker — which is exactly what a completed self-service deletion writes — so
+ * running it here made every deletion of an already-anonymised member throw
+ * `XeroMemberUnavailableError` from inside a delete path that neither catches
+ * nor maps it: the admin hard delete of such a member 500'd and could never
+ * succeed. Xero availability is also the wrong question to ask about them,
+ * because anonymisation already tore down the contact linkage (it nulls
+ * `Member.xeroContactId` and deactivates the canonical CONTACT ledger row).
+ * The blocker re-check below is the fence that actually matters here, and it
+ * still runs under the same lock and raises the mapped
+ * `XeroContactCreateBlocksDeletionError`.
  */
 export async function lockMemberForAccountDeletionXeroFence(
   db: ManualContactLinkFenceDb,
   memberId: string,
 ) {
-  const member = await lockMemberForXeroContactLink(db, memberId);
+  const member = await lockMemberRowForXeroFence(db, memberId);
   await assertNoMemberContactChangeBlockerForDeletion(memberId, db);
   return member;
 }
