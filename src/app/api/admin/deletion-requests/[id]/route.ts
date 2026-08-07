@@ -41,7 +41,9 @@ import {
 import logger from "@/lib/logger";
 import { acquireMemberLifecycleLocks } from "@/lib/member-lifecycle-lock";
 import {
+  claimDeletionRequestApproval,
   claimDeletionRequestDecision,
+  DELETION_REQUEST_ALREADY_REVIEWED_CODE,
   DeletionRequestDecisionLostError,
 } from "@/lib/deletion-request-decision";
 import {
@@ -255,9 +257,16 @@ export async function POST(
       return NextResponse.json({ error: "Deletion request not found" }, { status: 404 });
     }
 
-    if (deletionRequest.status !== "PENDING") {
+    const approvalCanResume =
+      body.action === "approve" &&
+      deletionRequest.status === "APPROVAL_IN_PROGRESS";
+    if (deletionRequest.status !== "PENDING" && !approvalCanResume) {
       return NextResponse.json(
-        { error: "This request has already been reviewed." },
+        await readFinalDeletionDecision(
+          id,
+          completedBookingCancellations,
+          DELETION_REQUEST_ALREADY_REVIEWED_CODE,
+        ),
         { status: 409 }
       );
     }
@@ -379,6 +388,16 @@ export async function POST(
       select: { id: true },
     });
 
+    // The cleanup below commits one booking cancellation at a time. Own the
+    // approval decision durably before the first such commit, so rejection can
+    // only win while the request is still PENDING and no approval cleanup has
+    // begun. A retry resumes this same intermediate claim.
+    await claimDeletionRequestApproval(prisma, {
+      id,
+      adminNote: body.note ?? null,
+      reviewedBy: session.user.id,
+    });
+
     const cancelledBookingIds: string[] = [];
     for (const booking of futureBookings) {
       let result;
@@ -480,11 +499,10 @@ export async function POST(
         throw new AdminAccountGuardError(LAST_FULL_ADMIN_GUARD_MESSAGE);
       }
 
-      // Exact decision winner: reject uses this same PENDING transition. The
-      // claim is deliberately inside the anonymisation transaction so any
-      // later failure restores PENDING and sends no approval receipt. Booking
-      // cancellations already committed before this point remain truthfully
-      // reported by the partial-cleanup response if this claim loses.
+      // Final approval is deliberately inside the anonymisation transaction so
+      // any later failure restores APPROVAL_IN_PROGRESS and sends no receipt.
+      // Rejection cannot claim that intermediate state; a later approval may
+      // safely resume only the remaining cleanup.
       await claimDeletionRequestDecision(tx, {
         id,
         decision: "APPROVED",

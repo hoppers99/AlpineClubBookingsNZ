@@ -231,12 +231,27 @@ describe("POST /api/admin/deletion-requests/[id] reject notify choice (#1788)", 
 });
 
 describe("POST /api/admin/deletion-requests/[id] approve carve-out (#1788)", () => {
+  /**
+   * #2597: approve now takes TWO guarded `deletionRequest.updateMany` calls —
+   * the durable PENDING -> APPROVAL_IN_PROGRESS claim before any booking
+   * cancellation commits, then APPROVAL_IN_PROGRESS -> APPROVED inside the
+   * anonymisation transaction. Tests that mean "another admin won the final
+   * decision" must let the first succeed and only the second lose, otherwise
+   * the approval never starts and no cancellation is attempted at all.
+   */
+  function finalDecisionClaimLoses() {
+    h.prisma.deletionRequest.updateMany.mockImplementation(
+      async ({ where }: { where: { status: string } }) =>
+        where.status === "PENDING" ? { count: 1 } : { count: 0 },
+    );
+  }
+
   it("reports the winning approval and anonymisation after earlier cancellations without an unsafe retry", async () => {
     h.prisma.booking.findMany
       .mockResolvedValueOnce([])
       .mockResolvedValueOnce([{ id: "booking-1" }]);
     h.cancelBooking.mockResolvedValueOnce({ status: 200, data: {} });
-    h.prisma.deletionRequest.updateMany.mockResolvedValueOnce({ count: 0 });
+    finalDecisionClaimLoses();
     h.prisma.deletionRequest.findUnique
       .mockResolvedValueOnce({ id: "req-1", status: "PENDING", member })
       .mockResolvedValueOnce({
@@ -270,7 +285,7 @@ describe("POST /api/admin/deletion-requests/[id] approve carve-out (#1788)", () 
   });
 
   it("suppresses retry when the winning decision cannot be authoritatively re-read", async () => {
-    h.prisma.deletionRequest.updateMany.mockResolvedValueOnce({ count: 0 });
+    finalDecisionClaimLoses();
     h.prisma.deletionRequest.findUnique
       .mockResolvedValueOnce({ id: "req-1", status: "PENDING", member })
       .mockRejectedValueOnce(new Error("private database detail"));
@@ -464,13 +479,87 @@ describe("POST /api/admin/deletion-requests/[id] approve carve-out (#1788)", () 
     expect(h.sendAccountDeletionApprovedEmail).not.toHaveBeenCalled();
     expect(h.prisma.member.update).not.toHaveBeenCalled();
     expect(h.prisma.bookingGuest.updateMany).not.toHaveBeenCalled();
+    // #2597: finalisation is guarded on the durable claim, not on PENDING —
+    // a rejection can no longer overtake an approval that has already begun.
     expect(h.prisma.deletionRequest.updateMany).toHaveBeenCalledWith(
       expect.objectContaining({
-        where: { id: "req-1", status: "PENDING" },
+        where: { id: "req-1", status: "APPROVAL_IN_PROGRESS" },
         data: expect.objectContaining({ status: "APPROVED" }),
       }),
     );
     expect(h.settleHostingCoverageAfterCommit).not.toHaveBeenCalled();
+  });
+
+  it("owns the approval durably before the first booking cancellation commits", async () => {
+    h.prisma.booking.findMany
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([{ id: "booking-1" }]);
+    h.cancelBooking.mockResolvedValueOnce({ status: 200, data: {} });
+
+    const res = await POST(req({ action: "approve" }), { params });
+    expect(res.status).toBe(200);
+
+    // The claim is what makes the cleanup recoverable and un-rejectable, so it
+    // must be written before any irreversible cancellation, not after.
+    const claimCall = h.prisma.deletionRequest.updateMany.mock.calls.find(
+      (c) => c[0]?.data?.status === "APPROVAL_IN_PROGRESS",
+    );
+    expect(claimCall?.[0]).toMatchObject({
+      where: { id: "req-1", status: "PENDING" },
+      data: { reviewedBy: "admin-1", reviewedAt: null },
+    });
+    const claimOrder =
+      h.prisma.deletionRequest.updateMany.mock.invocationCallOrder[0];
+    expect(claimOrder).toBeLessThan(h.cancelBooking.mock.invocationCallOrder[0]);
+  });
+
+  it("refuses to start an approval a rejection already won, cancelling nothing", async () => {
+    h.prisma.booking.findMany
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([{ id: "booking-1" }]);
+    // The opening claim loses: the request is no longer PENDING.
+    h.prisma.deletionRequest.updateMany.mockResolvedValue({ count: 0 });
+    h.prisma.deletionRequest.findUnique
+      .mockResolvedValueOnce({ id: "req-1", status: "PENDING", member })
+      .mockResolvedValueOnce({ id: "req-1", status: "REJECTED", member })
+      .mockResolvedValueOnce({ id: "req-1", status: "REJECTED", member });
+
+    const response = await POST(req({ action: "approve" }), { params });
+    const body = await response.json();
+
+    expect(response.status).toBe(409);
+    expect(body).toMatchObject({
+      decisionFinal: true,
+      finalDecision: "REJECTED",
+      cancelledBookings: 0,
+      retryAllowed: false,
+    });
+    // The whole point of claiming first: nothing destructive happened.
+    expect(h.cancelBooking).not.toHaveBeenCalled();
+    expect(h.prisma.member.update).not.toHaveBeenCalled();
+    expect(h.sendAccountDeletionApprovedEmail).not.toHaveBeenCalled();
+  });
+
+  it("resumes an interrupted approval instead of refusing the retry", async () => {
+    // The admin returns to a request left in APPROVAL_IN_PROGRESS by a crashed
+    // or disconnected earlier attempt; the remaining cleanup must complete.
+    h.prisma.deletionRequest.findUnique.mockResolvedValue({
+      id: "req-1",
+      status: "APPROVAL_IN_PROGRESS",
+      member,
+    });
+    h.prisma.deletionRequest.updateMany.mockImplementation(
+      async ({ where }: { where: { status: string } }) =>
+        // The opening claim finds no PENDING row and falls back to the
+        // findUnique resume check; finalisation then wins from the claim.
+        where.status === "PENDING" ? { count: 0 } : { count: 1 },
+    );
+
+    const res = await POST(req({ action: "approve" }), { params });
+
+    expect(res.status).toBe(200);
+    expect(h.prisma.member.update).toHaveBeenCalled();
+    expect(h.sendAccountDeletionApprovedEmail).toHaveBeenCalledTimes(1);
   });
 
   // F32 (#1888): booking.checkIn is @db.Date (NZ calendar date at UTC midnight).

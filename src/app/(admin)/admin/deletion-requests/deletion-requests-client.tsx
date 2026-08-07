@@ -49,6 +49,27 @@ import { buildHrefWithReturnTo } from "@/lib/internal-return-path";
  *  is mounted at a time, so a fixed id cannot collide. */
 const REVIEW_NOTE_HINT_ID = "review-note-hint";
 
+/** Shown on a row whose last review outcome was never legibly confirmed. */
+const UNCONFIRMED_REVIEW_REASON =
+  "The last review of this request could not be confirmed. Check its current status before acting again.";
+
+/**
+ * Read a review response body without letting an unreadable one masquerade as
+ * a failure. A deletion review commits real work before it answers — future
+ * bookings are cancelled in separately committed transactions, and approval
+ * takes a durable claim before the first of them — so a proxy error page, a
+ * truncated body, or a dropped connection tells us the outcome is UNKNOWN, not
+ * that nothing happened. `res.json()` throwing must therefore be distinguished
+ * from a decoded error body, never merged into one generic catch.
+ */
+async function readReviewResponseBody(res: Response) {
+  try {
+    return { readable: true as const, body: await res.json() };
+  } catch {
+    return { readable: false as const, body: null };
+  }
+}
+
 interface DeletionRequestMember {
   id: string;
   firstName: string;
@@ -60,7 +81,7 @@ interface DeletionRequestMember {
 
 interface DeletionRequest {
   id: string;
-  status: "PENDING" | "APPROVED" | "REJECTED";
+  status: "PENDING" | "APPROVAL_IN_PROGRESS" | "APPROVED" | "REJECTED";
   reason: string | null;
   adminNote: string | null;
   reviewedBy: string | null;
@@ -165,6 +186,57 @@ export default function DeletionRequestsClient({
     setErrorAttentionVersion((version) => version + 1);
   }
 
+  /**
+   * The review reached the server, or may have, but its outcome never came
+   * back legibly. That is NOT the same as "it failed": approval takes a durable
+   * APPROVAL_IN_PROGRESS claim and commits future-booking cancellations one at
+   * a time before it ever anonymises anything. Leaving Approve/Reject live on
+   * the row would invite a second destructive attempt against a request the
+   * server may already be part-way through — so suppress that row's controls
+   * (the recovery banner disables them), re-read the authoritative queue, and
+   * offer no retry.
+   */
+  async function enterUnconfirmedRecovery(
+    pendingReview: { request: DeletionRequest; action: "approve" | "reject" },
+    pendingNote: string,
+    cause: string,
+  ) {
+    const attempted =
+      pendingReview.action === "approve" ? "approval" : "rejection";
+    const recoveryBase = `This ${attempted} could not be confirmed because ${cause}. It may already have been recorded, and an approval may already have cancelled future bookings. Do not retry it — check this request's current status in the reloaded queue first.`;
+    setReviewDialog(null);
+    setDeletionRecovery({
+      request: pendingReview.request,
+      note: pendingNote,
+      cancelledBookings: 0,
+      cancellationPending: false,
+      retryBookingId: null,
+      reviewBookingId: null,
+      bookingActionLabel: null,
+      heading: "Deletion decision could not be confirmed",
+      retryAllowed: false,
+      message: recoveryBase,
+    });
+    setRecoveryAttentionVersion((version) => version + 1);
+    const refreshed = await fetchRequests();
+    // The refresh outcome belongs in the durable recovery, not the ordinary
+    // action region, so it cannot steal focus from this warning.
+    setError(null);
+    setDeletionRecovery((current) =>
+      current
+        ? {
+            ...current,
+            message: `${recoveryBase}${
+              refreshed
+                ? " The latest deletion queue was loaded."
+                : " The deletion queue could not be refreshed either, so this warning stays active until you reload the page."
+            }`,
+          }
+        : current,
+    );
+    setRecoveryAttentionVersion((version) => version + 1);
+  }
+
   // #1788: `notifyMember` is only meaningful on the reject path (the approve
   // path always sends the final privacy receipt). Absent = notify (default),
   // false = suppress the member email.
@@ -174,19 +246,42 @@ export default function DeletionRequestsClient({
     const pendingNote = reviewNote;
     setSubmitting(true);
     try {
-      const res = await fetch(
-        `/api/admin/deletion-requests/${reviewDialog.request.id}`,
-        {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            action: reviewDialog.action,
-            note: reviewNote || undefined,
-            ...(notifyMember === undefined ? {} : { notifyMember }),
-          }),
-        }
-      );
-      const body = await res.json();
+      let res: Response;
+      try {
+        res = await fetch(
+          `/api/admin/deletion-requests/${reviewDialog.request.id}`,
+          {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              action: reviewDialog.action,
+              note: reviewNote || undefined,
+              ...(notifyMember === undefined ? {} : { notifyMember }),
+            }),
+          }
+        );
+      } catch {
+        // The request may still have been received and acted on.
+        await enterUnconfirmedRecovery(
+          pendingReview,
+          pendingNote,
+          "the server could not be reached",
+        );
+        return;
+      }
+
+      const parsed = await readReviewResponseBody(res);
+      if (!parsed.readable) {
+        await enterUnconfirmedRecovery(
+          pendingReview,
+          pendingNote,
+          res.ok
+            ? "the server accepted it but its confirmation could not be read"
+            : "the server's response could not be read",
+        );
+        return;
+      }
+      const body = parsed.body;
       if (!res.ok) {
         if (
           body.decisionFinal === true &&
@@ -371,6 +466,15 @@ export default function DeletionRequestsClient({
       return (
         <Badge className="bg-warning-3 text-warning-11 border-warning-6">
           Pending
+        </Badge>
+      );
+    // A request mid-approval has already cancelled bookings and still owes the
+    // member its anonymisation. It is emphatically not "Rejected", which is
+    // what the fall-through below would otherwise label it.
+    if (status === "APPROVAL_IN_PROGRESS")
+      return (
+        <Badge className="bg-warning-3 text-warning-11 border-warning-6">
+          Approval in progress
         </Badge>
       );
     if (status === "APPROVED")
@@ -593,6 +697,31 @@ export default function DeletionRequestsClient({
                         </ViewOnlyActionButton>
                       </div>
                     )}
+                    {/* Approval already owns this request, so rejection can no
+                        longer win it server-side and offering Reject here would
+                        be a button that can only fail. The only live action is
+                        finishing the cleanup that has already begun. */}
+                    {req.status === "APPROVAL_IN_PROGRESS" && (
+                      <div className="flex flex-col items-end gap-1 shrink-0">
+                        <ViewOnlyActionButton
+                          canEdit={canEdit}
+                          describeReason={false}
+                          size="sm"
+                          variant="destructive"
+                          onClick={() =>
+                            setReviewDialog({ request: req, action: "approve" })
+                          }
+                          disabled={deletionRecovery?.request.id === req.id}
+                        >
+                          Resume approval
+                        </ViewOnlyActionButton>
+                        <p className="text-xs text-warning-11 max-w-56 text-right">
+                          Approval started and did not finish. Future bookings
+                          may already be cancelled; this request can only be
+                          completed, not rejected.
+                        </p>
+                      </div>
+                    )}
                     {deletionRecovery?.request.id === req.id ? (
                       <p className="text-xs text-warning-11">
                         Partial cleanup recovery is active above; use Retry remaining cleanup.
@@ -793,6 +922,11 @@ function AdminInitiatedDeletionSection({
   } | null>(null);
   const [note, setNote] = useState("");
   const [submitting, setSubmitting] = useState(false);
+  // Rows whose review outcome never came back legibly. A hard delete is
+  // irreversible, so its controls stay suppressed until the queue is re-read.
+  const [unconfirmedRequestId, setUnconfirmedRequestId] = useState<
+    string | null
+  >(null);
 
   // The status filter lives in the parent card header; when it changes, jump
   // back to page 1 so a deep page from the previous filter is never shown.
@@ -825,25 +959,64 @@ function AdminInitiatedDeletionSection({
     fetchRequests();
   }, [fetchRequests]);
 
+  /**
+   * Same hazard as the self-service queue: an approved hard delete removes the
+   * member record permanently, so an unreadable or unreachable response leaves
+   * the outcome unknown rather than failed. Suppress that row's controls and
+   * force an authoritative re-read instead of leaving Approve live.
+   */
+  async function enterUnconfirmedReview(requestId: string, cause: string) {
+    setDialog(null);
+    setNote("");
+    setUnconfirmedRequestId(requestId);
+    setError(
+      `This review could not be confirmed because ${cause}. The record may already have been deleted. Do not retry it — check this request's current status in the reloaded queue first.`,
+    );
+    setErrorAttentionVersion((version) => version + 1);
+    await fetchRequests();
+  }
+
   async function submitReview() {
     if (!dialog) return;
+    const pendingRequestId = dialog.request.id;
     setSubmitting(true);
     try {
-      const res = await fetch(
-        `/api/admin/member-lifecycle-action-requests/${dialog.request.id}`,
-        {
-          method: "PATCH",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            action: dialog.action,
-            note: note || undefined,
-          }),
-        }
-      );
-      const body = await res.json();
+      let res: Response;
+      try {
+        res = await fetch(
+          `/api/admin/member-lifecycle-action-requests/${pendingRequestId}`,
+          {
+            method: "PATCH",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              action: dialog.action,
+              note: note || undefined,
+            }),
+          }
+        );
+      } catch {
+        await enterUnconfirmedReview(
+          pendingRequestId,
+          "the server could not be reached",
+        );
+        return;
+      }
+
+      const parsed = await readReviewResponseBody(res);
+      if (!parsed.readable) {
+        await enterUnconfirmedReview(
+          pendingRequestId,
+          res.ok
+            ? "the server accepted it but its confirmation could not be read"
+            : "the server's response could not be read",
+        );
+        return;
+      }
+      const body = parsed.body;
       if (!res.ok) throw new Error(body.error || "Failed");
       setDialog(null);
       setNote("");
+      setUnconfirmedRequestId(null);
       fetchRequests();
     } catch (err) {
       setDialog(null);
@@ -900,6 +1073,7 @@ function AdminInitiatedDeletionSection({
             {data.requests.map((req) => {
               const isOwnRequest =
                 req.requestedByMemberId === sessionMemberId;
+              const isUnconfirmed = unconfirmedRequestId === req.id;
               const requesterLabel =
                 req.requestedBy?.name ||
                 req.requestedBy?.email ||
@@ -942,13 +1116,17 @@ function AdminInitiatedDeletionSection({
                             size="sm"
                             variant="outline"
                             className="text-danger-11 border-danger-6 hover:bg-danger-3"
-                            disabled={isOwnRequest || !canEdit}
+                            disabled={
+                              isOwnRequest || !canEdit || isUnconfirmed
+                            }
                             title={
                               !canEdit
                                 ? ADMIN_VIEW_ONLY_ACTION_REASON
                                 : isOwnRequest
                                   ? "A different admin must review this request"
-                                  : undefined
+                                  : isUnconfirmed
+                                    ? UNCONFIRMED_REVIEW_REASON
+                                    : undefined
                             }
                             onClick={() =>
                               setDialog({ request: req, action: "reject" })
@@ -959,13 +1137,17 @@ function AdminInitiatedDeletionSection({
                           <Button
                             size="sm"
                             variant="destructive"
-                            disabled={isOwnRequest || !canEdit}
+                            disabled={
+                              isOwnRequest || !canEdit || isUnconfirmed
+                            }
                             title={
                               !canEdit
                                 ? ADMIN_VIEW_ONLY_ACTION_REASON
                                 : isOwnRequest
                                   ? "A different admin must review this request"
-                                  : undefined
+                                  : isUnconfirmed
+                                    ? UNCONFIRMED_REVIEW_REASON
+                                    : undefined
                             }
                             onClick={() =>
                               setDialog({ request: req, action: "approve" })
@@ -977,6 +1159,11 @@ function AdminInitiatedDeletionSection({
                         {isOwnRequest && (
                           <p className="text-xs text-muted-foreground">
                             A different admin must review this request
+                          </p>
+                        )}
+                        {isUnconfirmed && (
+                          <p className="text-xs text-warning-11 max-w-56 text-right">
+                            {UNCONFIRMED_REVIEW_REASON}
                           </p>
                         )}
                       </div>

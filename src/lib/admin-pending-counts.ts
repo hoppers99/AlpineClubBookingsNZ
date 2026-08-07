@@ -6,6 +6,7 @@ import {
   getPendingMemberDeleteReviewCount,
 } from "@/lib/member-lifecycle-actions";
 import { getUnassignedHutLeaderDates } from "@/lib/hut-leader-coverage";
+import { OPEN_DELETION_REQUEST_STATUSES } from "@/lib/deletion-request-decision";
 import { REVIEWED_REQUEST_TYPES } from "@/lib/admin-family-group-requests-service";
 import {
   buildUnpaidFinishedStaysWhere,
@@ -113,7 +114,9 @@ export async function getAdminPendingCounts(): Promise<AdminPendingCounts> {
     }),
     getPendingMembershipCancellationReviewCount(),
     getPendingMemberArchiveReviewCount(),
-    prisma.deletionRequest.count({ where: { status: "PENDING" } }),
+    prisma.deletionRequest.count({
+      where: { status: { in: OPEN_DELETION_REQUEST_STATUSES } },
+    }),
     getPendingMemberDeleteReviewCount(),
     prisma.issueReport.count({ where: { resolvedAt: null } }),
     getUnassignedHutLeaderDates(),

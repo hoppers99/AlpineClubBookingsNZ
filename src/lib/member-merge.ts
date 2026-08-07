@@ -12,6 +12,7 @@ import {
   MAX_FAMILY_LINK_GENERATIONS,
   MAX_PARENT_LINK_CHAIN_LENGTH,
 } from "@/lib/member-family-link-depth";
+import { OPEN_DELETION_REQUEST_STATUSES } from "@/lib/deletion-request-decision";
 import { deleteOwnedMemberPhotoBlobs } from "@/lib/member-photo";
 import { memberDisplayName } from "@/lib/member-serialization";
 import { prisma } from "@/lib/prisma";
@@ -1343,13 +1344,13 @@ async function countPendingLifecycleOrFamily(
         ],
       },
     }),
-    // A PENDING self-service account-deletion request must block the merge:
+    // An open self-service account-deletion request must block the merge:
     // DeletionRequest.member is classified `move`, so without this guard a
     // loser's pending deletion would silently re-point to the master and a
     // later approval would anonymise/wipe the MERGED record (cross-check:
     // MEMBER_DELETE_BLOCKER_SPECS `account_deletion_requests`).
     db.deletionRequest.count({
-      where: { memberId, status: "PENDING" },
+      where: { memberId, status: { in: OPEN_DELETION_REQUEST_STATUSES } },
     }),
   ]);
   return lifecycle + family + deletion;

@@ -291,12 +291,23 @@ describe("subscription-collision blocker (B1 matrix)", () => {
   });
 });
 
-describe("pending DeletionRequest blocker (M2)", () => {
-  it("blocks when the LOSER has a PENDING account-deletion request", async () => {
+describe("open DeletionRequest blocker (M2)", () => {
+  /** The status filter the guard is expected to issue (#2597). */
+  type OpenStatusWhere = {
+    memberId: string;
+    status: { in: string[] };
+  };
+
+  const matchesOpenRequest = (where: OpenStatusWhere, memberId: string) =>
+    where.memberId === memberId &&
+    where.status.in.includes("PENDING") &&
+    where.status.in.includes("APPROVAL_IN_PROGRESS");
+
+  it("blocks when the LOSER has an open account-deletion request", async () => {
     const deletionRequest = {
       ...defaultDelegate(),
-      count: vi.fn(({ where }: { where: { memberId: string; status: string } }) =>
-        Promise.resolve(where.memberId === LOSER_ID && where.status === "PENDING" ? 1 : 0),
+      count: vi.fn(({ where }: { where: OpenStatusWhere }) =>
+        Promise.resolve(matchesOpenRequest(where, LOSER_ID) ? 1 : 0),
       ),
     };
     const blockers = await runGuards({ deletionRequest });
@@ -304,11 +315,11 @@ describe("pending DeletionRequest blocker (M2)", () => {
     expect(blockers.map((b) => b.code)).not.toContain("master_pending_requests");
   });
 
-  it("blocks when the MASTER has a PENDING account-deletion request", async () => {
+  it("blocks when the MASTER has an open account-deletion request", async () => {
     const deletionRequest = {
       ...defaultDelegate(),
-      count: vi.fn(({ where }: { where: { memberId: string; status: string } }) =>
-        Promise.resolve(where.memberId === MASTER_ID && where.status === "PENDING" ? 1 : 0),
+      count: vi.fn(({ where }: { where: OpenStatusWhere }) =>
+        Promise.resolve(matchesOpenRequest(where, MASTER_ID) ? 1 : 0),
       ),
     };
     const blockers = await runGuards({ deletionRequest });
@@ -316,11 +327,16 @@ describe("pending DeletionRequest blocker (M2)", () => {
     expect(blockers.map((b) => b.code)).not.toContain("loser_pending_requests");
   });
 
-  it("only PENDING deletion requests block (queries filter on status)", async () => {
+  it("counts a mid-approval request as open, not as a decided one", async () => {
+    // #2597: an approval that has already cancelled bookings but not yet
+    // anonymised must still block a merge. Were the guard to filter on PENDING
+    // alone, DeletionRequest.member (classified `move`) would silently
+    // re-point to the master and the later approval would wipe the MERGED
+    // record — the exact hazard this blocker exists to prevent.
     const deletionRequest = {
       ...defaultDelegate(),
-      count: vi.fn(({ where }: { where: { status?: string } }) => {
-        expect(where.status).toBe("PENDING");
+      count: vi.fn(({ where }: { where: OpenStatusWhere }) => {
+        expect(where.status.in).toEqual(["PENDING", "APPROVAL_IN_PROGRESS"]);
         return Promise.resolve(0);
       }),
     };
