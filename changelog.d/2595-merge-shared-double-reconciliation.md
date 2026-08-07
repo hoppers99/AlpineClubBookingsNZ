@@ -30,3 +30,11 @@
 
   Nothing changes for a merge that broke no bed sharing, and past nights are
   never touched — they are history.
+
+  Because the merge now touches bed bookings, it briefly holds the bed board for
+  the lodges those two records have future nights at — not for the whole club, so
+  ordinary payments, cancellations and bed changes at other lodges carry on
+  untouched. In the rare case where somebody adds one of the two records to a
+  booking at a lodge the merge had not already accounted for, while the merge is
+  running, the merge stops and reports that a booking changed and nothing was
+  merged; trying again picks the new booking up.

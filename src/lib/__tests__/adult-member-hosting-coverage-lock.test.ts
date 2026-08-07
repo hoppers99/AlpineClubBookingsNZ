@@ -226,11 +226,11 @@ describe("the per-owner coverage lock (#2576 §9)", () => {
     const body = source.slice(executeStart, executeStart + 50_000);
     const markers = [
       "await lockAdultMemberHostingPolicySet(tx)",
-      // #2595: the partner-share prefix (global cohort + every affected lodge,
-      // sorted) sits BETWEEN the policy-set key and the member-lifecycle pair.
-      // Pinned by position, because taking it any later would invert the
-      // documented global -> lodge -> member order.
-      "await acquireFuturePartnerSharedAllocationLocks(tx, [masterId, loserId])",
+      // #2595: the partner-share prefix (every affected lodge capacity key,
+      // sorted — and deliberately NOT the global cohort key) sits BETWEEN the
+      // policy-set key and the member-lifecycle pair. Pinned by position, because
+      // taking it any later would invert the documented lodge -> member order.
+      "await acquireMemberMergePartnerSharedLodgeLocks(",
       "member-lifecycle:${lockA}",
       "const relationMoves = await applyMoves(",
       "const hostingPlan = await buildMemberMergeHostingCoveragePlan(",

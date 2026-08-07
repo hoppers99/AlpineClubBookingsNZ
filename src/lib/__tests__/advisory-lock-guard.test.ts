@@ -271,16 +271,18 @@ const SCOPED_ADVISORY_LOCK_INVENTORY: Record<string, number> = {
   // first, then this key; live CRUD takes only this key.
   "src/lib/minimum-stay-policy-set.ts": 1,
   // #1937/#2596: executeMemberMerge first calls the shared hosting policy-set
-  // helper, then — since #2595 — the shared partner-share prefix helper
-  // (`acquireFuturePartnerSharedAllocationLocks`: global cohort `lock(1)` plus
-  // every affected lodge capacity key, sorted), and only then takes the two raw
+  // helper, then — since #2595 — the merge-only partner-share prefix helper
+  // (`acquireMemberMergePartnerSharedLodgeLocks`: every affected lodge capacity
+  // key, sorted, and NO global cohort key), and only then takes the two raw
   // member-lifecycle:{id} keys in sorted order. The count stays 2 because both
   // added tiers come from helpers that own their own raw sites
   // (adult-member-hosting-policy-set.ts, bed-allocation-lifecycle.ts +
   // lodge-capacity-lock.ts) — merge mints no new key of its own. This order
   // serialises policy enumeration before relation moves, keeps the fixed
-  // global -> lodge -> member order for the #2595 shared-double reconciliation,
-  // and excludes every delete/archive/merge touching either member.
+  // lodge -> member order for the #2595 shared-double reconciliation, and
+  // excludes every delete/archive/merge touching either member. Merge is
+  // deliberately absent from GLOBAL_BOOKING_MONEY_LOCK_INVENTORY above:
+  // `member-merge-execute.test.ts` pins that it takes no `lock(1)` at all.
   "src/lib/member-merge.ts": 2,
   // #2595: the partner-link service and reviewed move service share this one
   // canonical sorted member-partner-link lock mint.

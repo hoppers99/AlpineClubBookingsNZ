@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 
 import {
   acquireFuturePartnerSharedAllocationLocks,
+  acquireMemberMergePartnerSharedLodgeLocks,
   BED_ALLOCATABLE_BOOKING_STATUSES,
   describePartnerSharedSweepReason,
   partnerShareSweepCounterpartNames,
@@ -64,6 +65,123 @@ describe("partner-share lock prefix", () => {
       "member-lifecycle:member-1",
       "member-lifecycle:member-2",
     ]);
+  });
+});
+
+/**
+ * Member merge's own prefix (#2595). Two differences from the #1756 sibling
+ * above, and each is load-bearing:
+ *
+ *  - it does NOT take the global cohort `lock(1)`, because a merge holds its
+ *    locks for up to 120s and would reject every 5s-budget cohort writer in the
+ *    club, and
+ *  - it therefore derives the lodge set from the members' future GUEST-NIGHTS as
+ *    well as their existing future allocations, so a lodge where a placement
+ *    could still land — but no allocation exists yet — is covered.
+ *
+ * Delete the guest-night half and this describe fails on both counts.
+ */
+describe("member-merge partner-share lodge prefix (#2595)", () => {
+  function makeMergeLockTx(input: {
+    allocationLodgeIds: (string | null)[];
+    guestNightLodgeIds: (string | null)[];
+  }) {
+    const events: unknown[] = [];
+    const executeRaw = vi.fn(
+      async (_strings: TemplateStringsArray, ...values: unknown[]) => {
+        events.push(values[0] ?? "global");
+        return 1;
+      },
+    );
+    const bedAllocationFindMany = vi.fn(async () => {
+      events.push("discover-allocation-lodges");
+      return input.allocationLodgeIds.map((lodgeId) => ({ room: { lodgeId } }));
+    });
+    const bookingGuestFindMany = vi.fn(async () => {
+      events.push("discover-guest-night-lodges");
+      return input.guestNightLodgeIds.map((lodgeId) => ({
+        booking: { lodgeId },
+      }));
+    });
+    const tx = {
+      $executeRaw: executeRaw,
+      bedAllocation: { findMany: bedAllocationFindMany },
+      bookingGuest: { findMany: bookingGuestFindMany },
+    } as any;
+    return { tx, events, bedAllocationFindMany, bookingGuestFindMany };
+  }
+
+  it("takes only the sorted union of allocation and guest-night lodges, and no global key", async () => {
+    const { tx, events, bookingGuestFindMany } = makeMergeLockTx({
+      allocationLodgeIds: ["lodge-z", "lodge-a", "lodge-z", null],
+      // `lodge-m` exists ONLY as a future guest-night: no bed is allocated
+      // there yet, and a concurrent placement could still create one.
+      guestNightLodgeIds: ["lodge-m", "lodge-a", null],
+    });
+
+    const locked = await acquireMemberMergePartnerSharedLodgeLocks(tx, [
+      "member-2",
+      "member-1",
+      "member-2",
+    ]);
+    await acquireMemberLifecycleLocks(tx, ["member-2", "member-1"]);
+
+    expect(locked).toEqual(["lodge-a", "lodge-m", "lodge-z"]);
+    expect(events).toEqual([
+      "discover-allocation-lodges",
+      "discover-guest-night-lodges",
+      "lodge-a",
+      "lodge-m",
+      "lodge-z",
+      "member-lifecycle:member-1",
+      "member-lifecycle:member-2",
+    ]);
+    // The global cohort key is what the owner decision removed; assert its
+    // absence explicitly rather than relying on the array comparison above.
+    expect(events).not.toContain("global");
+
+    // Both members, and future nights only — the immutable request ids are the
+    // only input, and a past stay can hold no future placement.
+    expect(bookingGuestFindMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          memberId: { in: ["member-2", "member-1"] },
+          OR: [
+            { stayEnd: { gte: expect.any(Date) } },
+            { nights: { some: { stayDate: { gte: expect.any(Date) } } } },
+          ],
+        }),
+        select: { booking: { select: { lodgeId: true } } },
+      }),
+    );
+  });
+
+  it("locks a guest-night-only lodge even when the members hold no allocation at all", async () => {
+    const { tx, events } = makeMergeLockTx({
+      allocationLodgeIds: [],
+      guestNightLodgeIds: ["lodge-future-only"],
+    });
+
+    const locked = await acquireMemberMergePartnerSharedLodgeLocks(tx, [
+      "member-1",
+    ]);
+
+    expect(locked).toEqual(["lodge-future-only"]);
+    expect(events).toEqual([
+      "discover-allocation-lodges",
+      "discover-guest-night-lodges",
+      "lodge-future-only",
+    ]);
+  });
+
+  it("takes nothing at all for an empty member set", async () => {
+    const { tx, events, bedAllocationFindMany, bookingGuestFindMany } =
+      makeMergeLockTx({ allocationLodgeIds: [], guestNightLodgeIds: [] });
+
+    expect(await acquireMemberMergePartnerSharedLodgeLocks(tx, [])).toEqual([]);
+    expect(events).toEqual([]);
+    expect(bedAllocationFindMany).not.toHaveBeenCalled();
+    expect(bookingGuestFindMany).not.toHaveBeenCalled();
   });
 });
 
@@ -3396,6 +3514,10 @@ describe("sweepFuturePartnerSharedAllocationsWithLocksHeld (#1756)", () => {
 describe("sweepUnbackedFutureSharedDoublesWithLocksHeld (#2595)", () => {
   const AUG1 = parseDateOnly("2026-08-01");
   const AUG2 = parseDateOnly("2026-08-02");
+  // The lodge every fixture row sits in, and the one the caller says it locked.
+  // Merge holds no global cohort key, so the sweep refuses any candidate row
+  // outside this set rather than write bed inventory it has not serialised.
+  const SWEEP_LODGE_ID = "lodge-1";
 
   /**
    * `mayShareDoubleBedWith` reads `member` and `memberPartnerLink` off the same
@@ -3435,6 +3557,7 @@ describe("sweepUnbackedFutureSharedDoublesWithLocksHeld (#2595)", () => {
     stayDate: Date;
     memberId: string | null;
     name?: [string, string];
+    lodgeId?: string;
   }) {
     const [firstName, lastName] = opts.name ?? ["Guest", opts.id];
     return {
@@ -3445,6 +3568,7 @@ describe("sweepUnbackedFutureSharedDoublesWithLocksHeld (#2595)", () => {
       roomId: "room-1",
       stayDate: opts.stayDate,
       bookingGuest: { memberId: opts.memberId, firstName, lastName },
+      room: { lodgeId: opts.lodgeId ?? SWEEP_LODGE_ID },
     };
   }
 
@@ -3508,6 +3632,7 @@ describe("sweepUnbackedFutureSharedDoublesWithLocksHeld (#2595)", () => {
 
     const swept = await sweepUnbackedFutureSharedDoublesWithLocksHeld({
       memberIds: ["member-m", "member-loser"],
+      lockedLodgeIds: [SWEEP_LODGE_ID],
       reason: "members_merged",
       db: db as any,
     });
@@ -3596,6 +3721,7 @@ describe("sweepUnbackedFutureSharedDoublesWithLocksHeld (#2595)", () => {
 
     const swept = await sweepUnbackedFutureSharedDoublesWithLocksHeld({
       memberIds: ["member-m"],
+      lockedLodgeIds: [SWEEP_LODGE_ID],
       reason: "members_merged",
       db: db as any,
     });
@@ -3642,6 +3768,7 @@ describe("sweepUnbackedFutureSharedDoublesWithLocksHeld (#2595)", () => {
 
     const swept = await sweepUnbackedFutureSharedDoublesWithLocksHeld({
       memberIds: ["member-m"],
+      lockedLodgeIds: [SWEEP_LODGE_ID],
       reason: "members_merged",
       db: db as any,
     });
@@ -3670,6 +3797,7 @@ describe("sweepUnbackedFutureSharedDoublesWithLocksHeld (#2595)", () => {
 
     const swept = await sweepUnbackedFutureSharedDoublesWithLocksHeld({
       memberIds: ["member-m"],
+      lockedLodgeIds: [SWEEP_LODGE_ID],
       reason: "members_merged",
       db: db as any,
     });
@@ -3684,6 +3812,7 @@ describe("sweepUnbackedFutureSharedDoublesWithLocksHeld (#2595)", () => {
 
     const emptyScope = await sweepUnbackedFutureSharedDoublesWithLocksHeld({
       memberIds: [],
+      lockedLodgeIds: [SWEEP_LODGE_ID],
       reason: "members_merged",
       db: db as any,
     });
@@ -3692,11 +3821,13 @@ describe("sweepUnbackedFutureSharedDoublesWithLocksHeld (#2595)", () => {
 
     const first = await sweepUnbackedFutureSharedDoublesWithLocksHeld({
       memberIds: ["member-m"],
+      lockedLodgeIds: [SWEEP_LODGE_ID],
       reason: "members_merged",
       db: db as any,
     });
     const second = await sweepUnbackedFutureSharedDoublesWithLocksHeld({
       memberIds: ["member-m"],
+      lockedLodgeIds: [SWEEP_LODGE_ID],
       reason: "members_merged",
       db: db as any,
     });
@@ -3714,6 +3845,45 @@ describe("sweepUnbackedFutureSharedDoublesWithLocksHeld (#2595)", () => {
     expect(describePartnerSharedSweepReason("partner_link_dissolved")).toBe(
       "Partner link dissolved",
     );
+  });
+
+  /**
+   * The safety net for dropping merge's global cohort key: the sweep serialises
+   * against the bed-allocation writers ONLY through the per-lodge capacity keys
+   * the caller holds, so a candidate row outside that set must roll the merge
+   * back — never be deleted under no lock. Reachable only if a lodge appeared
+   * for one of these members after the prefix derived its set.
+   */
+  it("refuses without writing when a candidate sits in an unlocked lodge", async () => {
+    const db = makeSweepDb([]);
+    db.bedAllocation.findMany
+      .mockResolvedValueOnce([
+        allocationRow({
+          id: "alloc-elsewhere",
+          bookingId: "booking-p",
+          bookingGuestId: "guest-p",
+          bedId: "bed-far",
+          stayDate: AUG1,
+          memberId: "member-p",
+          lodgeId: "lodge-appeared-late",
+        }),
+      ])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([]);
+
+    await expect(
+      sweepUnbackedFutureSharedDoublesWithLocksHeld({
+        memberIds: ["member-m"],
+        lockedLodgeIds: [SWEEP_LODGE_ID],
+        reason: "members_merged",
+        db: db as any,
+      }),
+    ).rejects.toThrow(/unlocked lodge\(s\): lodge-appeared-late/);
+
+    // Refused BEFORE any eligibility read, delete or audit.
+    expect(db.memberPartnerLink.findMany).not.toHaveBeenCalled();
+    expect(db.bedAllocation.deleteMany).not.toHaveBeenCalled();
+    expect(db.auditLog.create).not.toHaveBeenCalled();
   });
 });
 

@@ -769,10 +769,16 @@ derivation).
   eligibility round-trip; a bed-night whose primary is missing is left to the
   #1750 promotion pass rather than judged as a pair that does not exist. Being
   validity-driven it is idempotent and vacuous on a merge that broke nothing.
-  Its lock prefix is identical to its #1756 sibling —
-  `acquireFuturePartnerSharedAllocationLocks` BEFORE any member-lifecycle key,
-  because the documented order is global -> lodge -> member (see
-  docs/CONCURRENCY_AND_LOCKING.md -> "Member merge").
+  Its lock prefix is DELIBERATELY narrower than its #1756 sibling's:
+  `acquireMemberMergePartnerSharedLodgeLocks` takes every affected lodge
+  capacity key in sorted order BEFORE any member-lifecycle key, and takes NO
+  global cohort `lock(1)` — a merge holds its keys for up to 120s and the global
+  key would reject every 5s-budget cohort writer in the club. What replaces it
+  is a wider lodge derivation (the members' future bed allocations UNION their
+  future guest-nights, so a lodge a placement could still land in is covered)
+  plus a run-time check: the sweep is handed the locked lodge set and refuses the
+  whole merge with a 409 rather than judge a bed-night outside it (see
+  docs/CONCURRENCY_AND_LOCKING.md -> "Merge joins the bed-allocation cohort").
 
   Membership cancellation and archive need no sweep call: approval
   is blocked while ANY future booking or member guest appearance exists, so a
@@ -6869,7 +6875,8 @@ and is hard-deleted at the end. The merge is **additive and master-wins**:
   carries drift, and there is no drift field in the audit to read.
 - **Refused attempts are audited too (#2498).** Every refusal — self-merge,
   missing member, `merge_blocked`, wrong confirmation phrase, `preview_drift`,
-  and the `merge_drift_in_transaction` field/family-link arms — throws from
+  the #2595 `partner_share_lodge_drift` arm, and the
+  `merge_drift_in_transaction` field/family-link arms — throws from
   inside the transaction and rolls it (and the `MEMBER_MERGED` audit) back. A
   single boundary in `executeMemberMerge` then writes one best-effort
   `MEMBER_MERGE_REFUSED` audit (category `admin`, outcome `blocked`) on the base

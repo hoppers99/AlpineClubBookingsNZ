@@ -106,12 +106,12 @@ are the literal `1`.
 
 | Lock | Key | Helper / where | Tier | Serialises |
 | --- | --- | --- | --- | --- |
-| **Global booking / money** | `1` (literal) | inline `tx.$executeRaw` | 2 | Booking-status + money side effects that must exclude across the whole booking regardless of lodge: cancel, capture/settle, hold-release, group-settlement reaper/settle/refund/organiser-cancel, refunds, credit restore; plus bed-allocation inventory/placement/move/range/auto/approval/removal writers that must serialize with lifecycle prune, and the member-merge partner-share reconciliation (#2595). |
+| **Global booking / money** | `1` (literal) | inline `tx.$executeRaw` | 2 | Booking-status + money side effects that must exclude across the whole booking regardless of lodge: cancel, capture/settle, hold-release, group-settlement reaper/settle/refund/organiser-cancel, refunds, credit restore; plus bed-allocation inventory/placement/move/range/auto/approval/removal writers that must serialize with lifecycle prune. Member merge is the one bed-allocation writer that deliberately does NOT take this key — see "Merge joins the bed-allocation cohort" (#2595). |
 | **Per-lodge capacity** | `hashtextextended(<lodgeId>, 0)` | `acquireLodgeCapacityLock(tx, lodgeId)` (`lodge-capacity-lock.ts`, re-exported by `capacity.ts`) | 1 | Capacity claims/checks and bed-allocation mutations for one lodge; roster eligibility snapshots; and direct or config-transfer chore-template changes, which serialize active-template validation for that lodge. |
 | **Per-member night footprint** | `hashtext("booking-member-night"), hashtext(<memberId>)` | `lockBookingMemberNights(tx, guests)` (`booking-member-night-conflicts.ts`) | cross-lodge | Serialises the person-night guard ACROSS lodges (see below). |
 | **Per-owner hosting coverage** | `hashtext("hosting-coverage-owner"), hashtext(<Booking.memberId>)` | `lockHostingCoverageOwner` / `lockHostingCoverageOwners` (`adult-member-hosting-coverage-lock.ts`) | cross-booking | Serialises `SAME_BOOKING_OWNER` coverage (#2576 §9): one booking's compliance depends on another booking of the SAME owner, so the key remains authoritative even though #2600 made allocation-participating confirmation and cancellation compose global → lodge. Taken LAST among the application lock families a caller composes. Roster-aware modification paths take global → lodge → roster-date → any applicable member keys → sorted queue-participant `Member FOR KEY SHARE NOWAIT` rows → coverage-owner; queued incident reconciliation takes hosting policy-set → sorted claimed member-lifecycle keys → sorted claimed `Member FOR KEY SHARE` rows → coverage-owner. Paths that do not use roster or member keys omit those tiers. Ordinary producers try sorted owner keys before re-entering the blocking helper, while merge takes its sorted owner keys only after its one sorted participant `FOR UPDATE` statement. The key is taken only when the lodge actually has the scope enabled. |
 | **Per-member credit ledger** | `hashtext("member-credit-ledger"), hashtext(<memberId>)` | `lockMemberCreditLedger(memberId, tx)` (`member-credit.ts`) | — | A member's credit-ledger balance operations (spend, negative-adjustment validation, orphan-restore repair, the Xero inbound applied-credit repair, and the F20 pre-payment-reduction applied-credit clamp `clampAppliedCreditToBookingPrice`, taken inside the modification transaction only when the booking carries applied credit, and the #2265 stored-election consumption `consumeStoredCreditElection`, taken inside the `create-payment-intent` pay transaction and the Internet Banking switch transaction only when the booking carries an outstanding election). |
-| **Member lifecycle** | `hashtext("member-lifecycle:<memberId>")` | inline (`member-lifecycle-actions.ts`, `app/api/admin/deletion-requests/[id]/route.ts`, `nomination.ts` approval mapping, `admin-family-group-requests-service.ts`, `member-merge.ts`, `adult-member-hosting-coverage-drain.ts`) | — | Archive/delete of one member; account-deletion approval (the #1756 partner-share prefix — global cohort `lock(1)` + every affected lodge, sorted — and only then member lifecycle → shared standing-subject `Member FOR UPDATE NOWAIT` → exact queue-participant `Member FOR KEY SHARE NOWAIT` rows → coverage-owner before deactivation and guest unlink); overwrite of one member by application-approval mapping (E10, #1936); linking/removing one member into/from a family group on admin request review; **member merge** (dual-lock on master + loser, E11 #1937, see below — merge takes the same partner-share prefix, so the global cohort key and every affected lodge key are held BEFORE this tier, #2595); and the queue-drain handshake that prevents a claimed hosting item from using identities while merge re-points them. |
+| **Member lifecycle** | `hashtext("member-lifecycle:<memberId>")` | inline (`member-lifecycle-actions.ts`, `app/api/admin/deletion-requests/[id]/route.ts`, `nomination.ts` approval mapping, `admin-family-group-requests-service.ts`, `member-merge.ts`, `adult-member-hosting-coverage-drain.ts`) | — | Archive/delete of one member; account-deletion approval (the #1756 partner-share prefix — global cohort `lock(1)` + every affected lodge, sorted — and only then member lifecycle → shared standing-subject `Member FOR UPDATE NOWAIT` → exact queue-participant `Member FOR KEY SHARE NOWAIT` rows → coverage-owner before deactivation and guest unlink); overwrite of one member by application-approval mapping (E10, #1936); linking/removing one member into/from a family group on admin request review; **member merge** (dual-lock on master + loser, E11 #1937, see below — merge takes the merge-only partner-share prefix, so every affected lodge key is held BEFORE this tier while the global cohort key is deliberately NOT taken at all, #2595); and the queue-drain handshake that prevents a claimed hosting item from using identities while merge re-points them. |
 | **Membership application** | `hashtext(<application key>)` | `membershipApplicationLockKey` (`nomination.ts`) | — | State transitions of one membership application. |
 | **Membership applicant** | `hashtext(<applicant-email key>)` | `membershipApplicationApplicantLockKey` (`nomination.ts`) | — | Per-email applicant dedup at submit time. |
 | **Roster-date writers** | `hashtext("roster:<date>")` | `lockRosterDate(tx, date)` / sorted `lockRosterDates(tx, dates)` (`roster-lock.ts`) | date | Serialises whole-roster save/regenerate/confirm/auto-suggest, kiosk confirm and complete/uncomplete, and booking/guest cleanup that can remove suggested rows for the same lodge night. |
@@ -1056,8 +1056,9 @@ mispricing a booking.
   lands — but the refused attempt is **not** silent: since #2498 a single
   boundary in `executeMemberMerge` writes one best-effort `MEMBER_MERGE_REFUSED`
   audit on the base client, OUTSIDE the rolled-back transaction, for this arm and
-  every other merge refusal (`merge_blocked`, `preview_drift`, the field-drift
-  arm, self-merge, missing member, confirmation mismatch). It records the actor,
+  every other merge refusal (`merge_blocked`, `preview_drift`,
+  `partner_share_lodge_drift`, the field-drift arm, self-merge, missing member,
+  confirmation mismatch). It records the actor,
   both member ids, the refusal code/status, and a non-PII structural summary of
   what drifted or blocked; the write is best-effort so it can never turn a clean
   409 into a 500, and one refusal yields at most one row (owner decision on
@@ -1137,8 +1138,8 @@ can proceed, so the late sweep moves it. A merge that owns `FOR UPDATE` makes th
 ordinary `NOWAIT` fail before any queue write, rolling back the complete caller
 transaction. Repeated bulk calls also try coverage-owner keys without waiting; a
 later conflict rolls back earlier calls instead of forming a hold-and-wait cycle.
-The composed merge order is **hosting policy-set → global cohort `lock(1)` +
-every affected lodge key in sorted order (#2595) → sorted member-lifecycle →
+The composed merge order is **hosting policy-set → every affected lodge key in
+sorted order, and no global cohort key (#2595) → sorted member-lifecycle →
 relation moves → one sorted master/loser/ancillary Member FOR UPDATE → under-lock
 re-plan → sorted coverage-owner → unresolved Xero contact-create proof re-check →
 late owner+actor sweeps → unbacked shared-double reconciliation (#2595) →
@@ -1265,49 +1266,126 @@ sequential round-trips on a heavy member, and the dual advisory lock already
 serialises every competing lifecycle writer, so the long window cannot admit a
 concurrent conflicting write.
 
-#### Merge joins the bed-allocation cohort — global and lodge BEFORE member (#2595)
+#### Merge joins the bed-allocation cohort — lodge BEFORE member, and no global key (#2595)
 
 Merge invalidates future partner-shared double-bed placements (see
 docs/DOMAIN_INVARIANTS.md → "Double-bed shared occupancy": dropping the
 duplicate's CONFIRMED partner link leaves the master sharing a double with
 somebody it has no partnership with). Repairing that inside the merge
-transaction means merge is a bed-allocation writer, so it takes the **complete
-partner-share prefix**, and *where* it takes it is the whole point:
+transaction means merge is a bed-allocation writer, so it takes a
+**partner-share prefix** — and both *what* is in that prefix and *where* it is
+taken are load-bearing:
 
 ```
 lockAdultMemberHostingPolicySet(tx)                              policy config
-  → acquireFuturePartnerSharedAllocationLocks(tx, [master, loser])
-        = pg_advisory_xact_lock(1)                               global cohort
-        + acquireLodgeCapacityLock per affected lodge, sorted     per-lodge
+  → acquireMemberMergePartnerSharedLodgeLocks(tx, [master, loser])
+        = acquireLodgeCapacityLock per affected lodge, sorted     per-lodge
+          (affected = the lodges of their future bed allocations
+           UNION the lodges of their future guest-nights)
+        = NO pg_advisory_xact_lock(1)                             deliberately
   → member-lifecycle:<master> / member-lifecycle:<loser>, sorted  member
   → steps 1-3: null self-cycles, resolve collisions, applyMoves
   → one sorted master/loser/ancillary `Member … FOR UPDATE`        member rows
   → under-lock hosting re-plan + sorted hosting-coverage-owner     last
   → contact-create proof re-check + late owner/actor queue sweeps
   → step 3b: sweepUnbackedFutureSharedDoublesWithLocksHeld
+             (handed the locked lodge set; refuses 409 outside it)
   → steps 4-8: Xero teardown, field merge, audit, enqueue, delete
 ```
 
 That is the #2597 order with exactly one tier inserted, at the top. Nothing
 already in the sequence moved, and no new key is taken late.
 
-The lodge tier MUST be taken **before** the member-lifecycle pair, never after.
-Merge's own lock set was member-scoped and took no lodge key before this, so
-bolting the sweep on at the point of use — after the relation moves, with the
-member-lifecycle keys already held — would acquire a lodge key *after* a member
-key and invert the fixed **global → lodge → member** order this document opens
-with, against every ordinary bed-allocation writer that takes global → lodge and
-then reaches a member tier. That is a deadlock, not a style point. The same
-reason forces the lodge set to be **derived** before the relation moves:
-`acquireFuturePartnerSharedAllocationLocks` discovers the affected lodges from
-the two members' own future allocations, so it has to run while both identities
-still name their rows.
+**Why the lodge tier is at the top.** It MUST be taken before the
+member-lifecycle pair, never after. Merge's own lock set was member-scoped and
+took no lodge key before this, so bolting the sweep on at the point of use —
+after the relation moves, with the member-lifecycle keys already held — would
+acquire a lodge key *after* a member key and invert the fixed
+**global → lodge → member** order this document opens with, against every
+ordinary bed-allocation writer that takes global → lodge and then reaches a
+member tier. That is a deadlock, not a style point. The same reason forces the
+lodge set to be **derived** before the relation moves: the helper reads the two
+members' own future allocations and guest-nights, so it has to run while both
+identities still name their rows.
 
-The one new edge is `adult-member-hosting-policy-set` → `lock(1)`. It cannot
-cycle: no writer takes the global lock and then the hosting policy-set key (the
-enforcement sites *read* the policy under `lock(1)`/a lodge lock, they never take
-the policy-set key), and the policy-set → lodge direction already exists in
-configuration transfer. Nothing else in the merge order moves.
+**Why merge takes no global cohort key.** An advisory xact lock is released only
+at COMMIT and merge runs with `timeout: 120s`, so a merge holding `lock(1)` would
+exclude every cancel/capture/settle/refund and every bed-allocation writer in the
+club for its whole window. Those writers open their own interactive transaction
+and *then* block, on Prisma's default 5-second budget, so they are **rejected with
+`P2028`, not merely queued**. Measured on the disposable harness, a merge held the
+key ~0.9-1.4s on a five-member fixture on a quiet machine and 10-60s on a loaded
+one; hosted CI sat at the loaded end. The #1756 partner-share callers (link
+dissolve, deactivation, ADULT→minor correction, seasonal reassignment, bulk
+update, account-deletion approval) are all short transactions and keep the global
+key through `acquireFuturePartnerSharedAllocationLocks`. Merge is the one caller
+long enough for it to matter, so it has its own narrower helper.
+
+**What pays for dropping it: the guest-night derivation.** With no global key, the
+only thing serialising the sweep against the bed-allocation writers is the
+per-lodge capacity key, so the derived lodge set has to cover every lodge a
+placement could *land* in, not just the lodges where a bed is already allocated.
+It is the union of two reads:
+
+- the lodges of the two members' future `BedAllocation` rows (each row's own
+  `room.lodgeId`, so a legacy row that has drifted out of its booking's lodge
+  partition is still covered), and
+- the lodges of every booking holding a future guest-night for either member
+  (`BookingGuest.stayEnd >= today` OR any `BookingGuestNight.stayDate >= today`,
+  which is deliberately status-unfiltered: booking-status transitions serialise on
+  the global key that merge no longer holds, so a booking that is not allocatable
+  when the set is derived could become allocatable while the merge runs).
+
+That is complete because a `BedAllocation` exists only for a `BookingGuest`
+(FK-constrained), every allocating writer picks its room from that booking's own
+lodge (`roomsForBooking`/`roomsAtLodge`, plus the explicit "Bed belongs to a
+different lodge than the booking" refusal on the manual paths and the reviewed
+move's `LODGE_MISMATCH`), both `Booking.lodgeId` and `LodgeRoom.lodgeId` are NOT
+NULL, and a placement is only written on one of that guest's own nights. So a
+future placement implies a future guest-night in the same lodge.
+
+**And it is enforced, not merely argued.**
+`acquireMemberMergePartnerSharedLodgeLocks` returns the exact lodge ids it locked
+and step 3b is handed them: any candidate bed-night outside that set aborts the
+whole merge with a 409 (`partner_share_lodge_drift`, audited as a refused merge)
+instead of deleting a row in a lodge this transaction never serialised against.
+Only a lodge that appeared for one of these members *after* the derivation can
+trigger it — a guest row added to a booking in a new lodge by a concurrent
+writer — and a retry derives it. The residual cost of the owner decision is
+therefore a rare, safe, retryable refusal of the merge, in place of a guaranteed
+club-wide stall on every merge.
+
+**Deadlock analysis, re-done for the new edge set.** The edges merge contributes
+are now `adult-member-hosting-policy-set` → per-lodge capacity, and per-lodge
+capacity → `member-lifecycle`. Both already exist elsewhere in the same
+direction, and neither reverse edge exists anywhere in the tree:
+
+- `policy-set → lodge` is also configuration transfer's order
+  (`config-transfer/apply.ts`: config-import singleton → minimum-stay set →
+  hosting set → affected lodge ids, sorted). No transaction anywhere takes a
+  lodge key, or the global key, and then the policy-set key: the enforcement
+  sites *read* the policy under a global or lodge lock and never take its key,
+  live policy CRUD takes only that key, queued incident reconciliation takes it
+  first, and the queue drain uses the fail-fast `tryLock` while holding nothing.
+- `lodge → member-lifecycle` is the order every partner-share caller and the
+  reviewed bed-allocation move already use. No transaction takes a
+  member-lifecycle key and then a lodge key, or the global key.
+- Every multi-key acquisition inside a family is sorted — lodge ids and
+  member-lifecycle ids here — so two merges, or a merge and any lodge writer,
+  cannot hold each other's next lodge key.
+- The edge that DISAPPEARS is `policy-set → lock(1)`. Merge is no longer a holder
+  of the global key at all, so the bed-allocation and money writers that take
+  `lock(1)` and then a lodge key can never queue behind a merge on the global
+  key. They can still queue behind it on a lodge key it holds, while themselves
+  holding `lock(1)`; that is a convoy, not a cycle, because merge never waits for
+  the global key.
+
+`member-merge-execute.test.ts` pins that `executeMemberMerge` issues no
+`pg_advisory_xact_lock(1)` at all, and
+`member-merge-shared-double-races.realdb.test.ts` proves the same thing against
+real PostgreSQL by running a whole merge while another session holds `lock(1)`,
+plus the converse — that the merge still queues on the affected lodge key, and on
+the key of a lodge known only from a future guest-night.
 
 The sweep itself is `sweepUnbackedFutureSharedDoublesWithLocksHeld`, run as merge
 step 3b — after `applyMoves` (the guest rows now name the master) and after step
@@ -1321,45 +1399,34 @@ alongside `settleHostingCoverageAfterCommit`.
 
 Two consequences worth stating plainly, because neither is obvious from the code:
 
-- **Merge now holds `lock(1)` for its whole window, and a writer queued behind it
-  may be rejected rather than served.** Advisory xact locks release
-  only at commit, and merge runs with `timeout: 120s`. So a merge excludes every
-  cancel/capture/settle/refund and every bed-allocation writer for as long as it
-  runs. That is the price of repairing the invariant *atomically*: the prefix
-  cannot be taken later without inverting the lock order, and a post-commit
-  second transaction would leave a window (and a crash gap) where the invariant
-  is false. Merge is an admin-rare dedup operation, so the exposure is one rare
-  operation rather than a hot path — but it is a real widening of merge's
-  blast radius and is called out here rather than left to be discovered.
-
-  The concrete consequence: most cohort members open their interactive
-  transaction and *then* block on `lock(1)` on Prisma's default 5-second budget
-  (`writeUnderLocks` in `admin-bed-allocation.ts`,
-  `reconcileBedAllocationsForBookingWithGlobalLockHeld`, and the payment/booking
-  routes that take the literal key inline). If the merge outlives that budget the
-  waiter is rejected with `P2028` having written nothing, and has to be retried.
-  It is fail-safe — a rejected transaction rolls back whole, so nothing partial
-  and nothing invariant-breaking is ever committed — but it IS an availability
-  cost during a merge, and
-  `member-merge-shared-double-races.realdb.test.ts` asserts exactly that contract
-  ("THE WRITER QUEUED BEHIND A MERGE") rather than assuming every waiter is
-  served. Measured on the disposable harness, `executeMemberMerge` holds the key
-  for ~0.9-1.4s on a five-member fixture on a quiet machine and 10-60s on a loaded
-  one. Whether to accept that, raise those budgets, or give merge a narrower
-  prefix than the shared #1756 helper is an open owner decision on #2595.
+- **A same-lodge bed-allocation writer queued behind a merge may still be
+  rejected rather than served.** Dropping the global key removes the club-wide
+  stall, not the per-lodge one: merge holds each affected lodge's capacity key
+  until it commits, and the writers that block on it run on the default 5-second
+  budget. If the merge outlives that budget the waiter is rejected with `P2028`
+  having written nothing, and has to be retried. It is fail-safe — a rejected
+  transaction rolls back whole, so nothing partial and nothing invariant-breaking
+  is ever committed — and the exposure is now limited to the merge's own lodges
+  and to bed-allocation writers, instead of every money and booking writer in the
+  club. `member-merge-shared-double-races.realdb.test.ts` asserts exactly that
+  contract ("THE SAME-LODGE WRITER QUEUED BEHIND A MERGE") for the arms where the
+  writer is queued *behind* the merge, and asserts strict must-commit for the arms
+  where the writer is queued *first* — those never wait on the merge at all.
 - **The counterparts are not locked, and do not need to be.** Merge locks the
   master and the loser, never the ex-partner P or the kept partner Q whose
   eligibility the sweep reads. It does not have to: every event that can
   invalidate a share — link dissolution, deactivation, an ADULT→minor
-  correction, a seasonal reassignment — runs the #1756 sweep behind the SAME
-  global cohort `lock(1)` and the same lodge keys. So such an event either
-  commits before this merge (and the sweep sees its result) or waits until after
-  it (and sweeps whatever the merge left), and no interleaving can leave an
-  unbacked share behind. `mayShareDoubleBedWith` reads only `Member.ageTier`,
-  `Member.active` and CONFIRMED links; the merge's own step-5 field patch touches
-  none of those three (`FILL_IF_BLANK_FIELDS`/`GROUP_FILL_SPECS` carry no
-  `ageTier` or `active`), which is why judging the bed-nights at step 3b gives
-  the same answer as judging them after the field merge.
+  correction, a seasonal reassignment — runs the #1756 sweep behind the same
+  per-lodge capacity keys, and a counterpart the sweep judges necessarily holds an
+  allocation on the contested bed, hence in a lodge merge has locked. So such an
+  event either commits before this merge (and the sweep sees its result) or waits
+  until after it (and sweeps whatever the merge left), and no interleaving can
+  leave an unbacked share behind. `mayShareDoubleBedWith` reads only
+  `Member.ageTier`, `Member.active` and CONFIRMED links; the merge's own step-5
+  field patch touches none of those three
+  (`FILL_IF_BLANK_FIELDS`/`GROUP_FILL_SPECS` carry no `ageTier` or `active`),
+  which is why judging the bed-nights at step 3b gives the same answer as judging
+  them after the field merge.
 
 ## The disciplines, by writer class
 

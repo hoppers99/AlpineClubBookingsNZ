@@ -1623,16 +1623,96 @@ async function recordPartnerShareSweepAudits(
 }
 
 /**
+ * The lodges of every FUTURE bed allocation these members already hold — the
+ * rows a partner-share sweep may judge or delete in this transaction.
+ *
+ * A conservative over-lock: it also names a lodge where the member merely has
+ * an unshared future placement. It cannot MISS the lodge of a shared bed-night
+ * whose counterpart belongs to another booking, because both occupants sit on
+ * the same bed, hence in the same room and the same lodge.
+ */
+async function futurePartnerShareAllocationLodgeIds(
+  tx: Prisma.TransactionClient,
+  uniqueMemberIds: string[],
+): Promise<string[]> {
+  const allocationLodges = await tx.bedAllocation.findMany({
+    where: {
+      stayDate: { gte: getTodayDateOnly() },
+      bookingGuest: { memberId: { in: uniqueMemberIds } },
+    },
+    select: { room: { select: { lodgeId: true } } },
+  });
+  return allocationLodges
+    .map((allocation) => allocation.room.lodgeId)
+    .filter((lodgeId): lodgeId is string => Boolean(lodgeId));
+}
+
+/**
+ * The lodges of every booking that holds a FUTURE guest-night for one of these
+ * members — the lodges a placement for them could still LAND in while this
+ * transaction runs, whether or not a bed allocation exists there yet (#2595).
+ *
+ * This is the derivation that lets a caller drop the global cohort key, so its
+ * completeness argument is the whole safety case and is spelled out here:
+ *
+ *  - A `BedAllocation` row exists only for a `BookingGuest` (`bookingGuestId`
+ *    is NOT NULL and FK-constrained), so no placement can name a member who has
+ *    no guest row.
+ *  - Every allocating writer picks its rooms from the guest's OWN booking's
+ *    lodge (`roomsForBooking`/`roomsAtLodge` in `bed-allocation.ts`, and the
+ *    lodge-scoped room reads in `admin-bed-allocation.ts`), and both
+ *    `Booking.lodgeId` and `LodgeRoom.lodgeId` are NOT NULL, so the allocation's
+ *    lodge is the booking's lodge.
+ *  - A placement is only ever written for one of that guest's own nights, and
+ *    the sweep only ever judges `stayDate >= today`, so a FUTURE placement
+ *    implies a FUTURE guest-night.
+ *
+ * Deliberately NOT filtered by `Booking.status`. Status transitions serialise on
+ * the global cohort key, which merge no longer holds, so a booking that is not
+ * allocatable when the set is derived could become allocatable while the merge
+ * runs. Reading the immutable member ids and over-locking on a mutable status is
+ * the safe direction; narrowing on status would reintroduce exactly the hole
+ * this query closes.
+ *
+ * The `stayEnd`/`nights` disjunction is deliberate too: `BookingGuestNight` rows
+ * are the per-night truth for modern bookings, but legacy guests can carry only
+ * the `stayStart..stayEnd` envelope (which is why the planners fall back to it),
+ * so either signal alone could miss a lodge.
+ */
+async function futurePartnerShareGuestNightLodgeIds(
+  tx: Prisma.TransactionClient,
+  uniqueMemberIds: string[],
+): Promise<string[]> {
+  const today = getTodayDateOnly();
+  const guestRows = await tx.bookingGuest.findMany({
+    where: {
+      memberId: { in: uniqueMemberIds },
+      OR: [
+        { stayEnd: { gte: today } },
+        { nights: { some: { stayDate: { gte: today } } } },
+      ],
+    },
+    select: { booking: { select: { lodgeId: true } } },
+  });
+  return guestRows
+    .map((guest) => guest.booking.lodgeId)
+    .filter((lodgeId): lodgeId is string => Boolean(lodgeId));
+}
+
+/**
  * Acquire the complete lock prefix for a transaction that will invalidate
  * future partner-shared placements. Call this before any member/link mutation:
  * the sweep may touch allocations in several lodges, so the canonical order is
  * global cohort, then every affected lodge in sorted order, then any member
  * lifecycle locks owned by the caller.
  *
- * Shared by BOTH lock-held sweeps below — the #1756 pair/member sweep and the
- * #2595 validity-driven merge reconciliation. Neither may take the lodge tier
- * after a member-lifecycle key: this helper is what keeps every caller on the
- * documented global -> lodge -> member order.
+ * Used by the #1756 pair/member sweep callers (link dissolve, deactivation,
+ * age-tier correction, seasonal reassignment, bulk update, account-deletion
+ * approval). Member merge takes the narrower
+ * {@link acquireMemberMergePartnerSharedLodgeLocks} instead — see that helper
+ * for why, and `docs/CONCURRENCY_AND_LOCKING.md` for the composed orders.
+ * Neither may take the lodge tier after a member-lifecycle key: these helpers
+ * are what keep every caller on the documented global -> lodge -> member order.
  */
 export async function acquireFuturePartnerSharedAllocationLocks(
   tx: Prisma.TransactionClient,
@@ -1642,27 +1722,72 @@ export async function acquireFuturePartnerSharedAllocationLocks(
   const uniqueMemberIds = [...new Set(memberIds.filter(Boolean))];
   if (uniqueMemberIds.length === 0) return;
 
-  // Either occupant's own allocation names the affected lodge. This may lock
-  // a lodge where the member has another, non-shared future placement too; the
-  // conservative over-lock keeps discovery bounded and cannot miss the lodge
-  // of a shared bed-night whose counterpart belongs to another booking.
-  const allocationLodges = await tx.bedAllocation.findMany({
-    where: {
-      stayDate: { gte: getTodayDateOnly() },
-      bookingGuest: { memberId: { in: uniqueMemberIds } },
-    },
-    select: { room: { select: { lodgeId: true } } },
-  });
   const lodgeIds = [
-    ...new Set(
-      allocationLodges
-        .map((allocation) => allocation.room.lodgeId)
-        .filter((lodgeId): lodgeId is string => Boolean(lodgeId)),
-    ),
+    ...new Set(await futurePartnerShareAllocationLodgeIds(tx, uniqueMemberIds)),
   ].sort();
   for (const lodgeId of lodgeIds) {
     await acquireLodgeCapacityLock(tx, lodgeId);
   }
+}
+
+/**
+ * Member merge's partner-share prefix (#2595): every affected lodge capacity
+ * key in sorted order and NOTHING ELSE — no global cohort `lock(1)`.
+ *
+ * Merge is the one partner-share caller that cannot afford the global key. An
+ * advisory xact lock is released only at COMMIT and merge runs with a 120s
+ * budget because it makes hundreds of sequential round-trips, so holding
+ * `lock(1)` for a whole merge excludes every cancel/capture/settle/refund and
+ * every bed-allocation writer in the club for that entire window — writers whose
+ * own transactions run on Prisma's default 5s budget and are rejected with
+ * `P2028` rather than served. The #1756 callers are all short transactions, so
+ * they keep the global key.
+ *
+ * Dropping it is only sound because the lodge set is derived from BOTH sources
+ * (see {@link futurePartnerShareGuestNightLodgeIds}): the lodges the members
+ * already hold future allocations in, and the lodges they hold future
+ * guest-nights in. Every writer that could create, move or invalidate a future
+ * shared double in a lodge takes that lodge's capacity key
+ * (`docs/CONCURRENCY_AND_LOCKING.md` -> "The counterpart inventory is
+ * deliberate"), so covering every lodge a placement could land in is equivalent
+ * to covering the cohort for the rows this sweep judges — without serialising
+ * the club.
+ *
+ * Immutable pre-lock keys: `memberIds` come from the request. Everything the
+ * set is derived FROM is re-read under the locks by the sweep itself.
+ *
+ * Call it BEFORE any member-lifecycle key, exactly like its sibling; the
+ * documented order is lodge -> member and merge's own hosting policy-set key
+ * comes before both.
+ *
+ * Returns the sorted lodge ids it locked, so the caller can hand them to
+ * {@link sweepUnbackedFutureSharedDoublesWithLocksHeld} and have the sweep
+ * REFUSE rather than touch a row in a lodge this prefix does not cover. The
+ * derivation argument above is thereby enforced at run time instead of trusted.
+ */
+export async function acquireMemberMergePartnerSharedLodgeLocks(
+  tx: Prisma.TransactionClient,
+  memberIds: readonly string[],
+): Promise<string[]> {
+  const uniqueMemberIds = [...new Set(memberIds.filter(Boolean))];
+  if (uniqueMemberIds.length === 0) return [];
+
+  // Sequential on purpose: both reads share one interactive transaction client.
+  const allocationLodgeIds = await futurePartnerShareAllocationLodgeIds(
+    tx,
+    uniqueMemberIds,
+  );
+  const guestNightLodgeIds = await futurePartnerShareGuestNightLodgeIds(
+    tx,
+    uniqueMemberIds,
+  );
+  const lodgeIds = [
+    ...new Set([...allocationLodgeIds, ...guestNightLodgeIds]),
+  ].sort();
+  for (const lodgeId of lodgeIds) {
+    await acquireLodgeCapacityLock(tx, lodgeId);
+  }
+  return lodgeIds;
 }
 
 /**
@@ -1839,13 +1964,44 @@ export async function sweepFuturePartnerSharedAllocationsWithLocksHeld(params: {
 // also idempotent and safe to run on an unaffected merge: the candidate set is
 // simply empty, or every pair still qualifies and nothing is written.
 //
-// LOCKS. Identical prefix to the #1756 sweep — take
-// `acquireFuturePartnerSharedAllocationLocks(tx, memberIds)` (global cohort
-// `lock(1)`, then every affected lodge in sorted order) BEFORE any
-// member-lifecycle key, because the documented order is global -> lodge ->
-// member (docs/CONCURRENCY_AND_LOCKING.md). A caller that already holds
-// member-lifecycle keys must NOT reach for the lodge tier afterwards.
+// LOCKS. Take `acquireMemberMergePartnerSharedLodgeLocks(tx, memberIds)` —
+// every affected lodge in sorted order, and NOT the global cohort key — BEFORE
+// any member-lifecycle key, because the documented order is lodge -> member
+// (docs/CONCURRENCY_AND_LOCKING.md). A caller that already holds
+// member-lifecycle keys must NOT reach for the lodge tier afterwards. Pass the
+// lodge ids that helper returns as `lockedLodgeIds`: without the global key,
+// nothing else proves this sweep is not judging a row in an unlocked lodge, so
+// it refuses instead of guessing.
 // ---------------------------------------------------------------------------
+
+/**
+ * Thrown when a candidate future shared-double sits in a lodge the caller does
+ * not hold the capacity key for (#2595).
+ *
+ * That is only reachable if a lodge appeared for one of these members AFTER the
+ * prefix derived its set — a booking guest row added, in a new lodge, by a
+ * concurrent writer. Deleting the row anyway would mutate bed inventory in a
+ * lodge this transaction never serialised against, so the caller must roll back
+ * and let the operator retry; the retry derives the new lodge and covers it.
+ */
+export class UnlockedPartnerShareLodgeError extends Error {
+  constructor(public readonly lodgeIds: string[]) {
+    super(
+      `Future shared-double reconciliation found candidate rows in unlocked lodge(s): ${lodgeIds.join(", ")}`,
+    );
+    this.name = "UnlockedPartnerShareLodgeError";
+  }
+}
+
+/** The #2595 sweep also needs each candidate's lodge, to prove it is locked. */
+const MERGE_SWEEP_ALLOCATION_SELECT = {
+  ...SWEEP_ALLOCATION_SELECT,
+  room: { select: { lodgeId: true } },
+} as const;
+
+type MergeSweepAllocationRow = Prisma.BedAllocationGetPayload<{
+  select: typeof MERGE_SWEEP_ALLOCATION_SELECT;
+}>;
 
 /**
  * Remove every FUTURE shared-double placement involving these members that no
@@ -1853,7 +2009,7 @@ export async function sweepFuturePartnerSharedAllocationsWithLocksHeld(params: {
  * removed bed-night.
  *
  * For callers that already hold the complete prefix from
- * `acquireFuturePartnerSharedAllocationLocks(tx, memberIds)`; the candidate rows
+ * `acquireMemberMergePartnerSharedLodgeLocks(tx, memberIds)`; the candidate rows
  * are deliberately re-read after those locks. Returns the removed rows so the
  * caller can alert admins AFTER the enclosing transaction commits (external
  * calls stay outside it), exactly like its #1756 sibling.
@@ -1861,15 +2017,21 @@ export async function sweepFuturePartnerSharedAllocationsWithLocksHeld(params: {
  * `memberIds` is a SCOPE, not a pair: a bed-night is a candidate when either of
  * its two occupants is one of these members. Everything else is left alone, so
  * this can never turn into a lodge-wide re-plan.
+ *
+ * `lockedLodgeIds` is that prefix's own return value. Every candidate row must
+ * sit in one of those lodges or the sweep throws
+ * {@link UnlockedPartnerShareLodgeError} without writing anything.
  */
 export async function sweepUnbackedFutureSharedDoublesWithLocksHeld(params: {
   memberIds: readonly string[];
+  lockedLodgeIds: readonly string[];
   reason: PartnerSharedSweepReason;
   db: BedAllocationLifecycleDb;
 }): Promise<SweptPartnerSharedAllocation[]> {
   const db = params.db;
   const scopeIds = [...new Set(params.memberIds.filter(Boolean))];
   if (scopeIds.length === 0) return [];
+  const lockedLodgeIds = new Set(params.lockedLodgeIds);
   const today = getTodayDateOnly();
 
   // Candidate second-occupant rows, from both sides of the share:
@@ -1879,14 +2041,14 @@ export async function sweepUnbackedFutureSharedDoublesWithLocksHeld(params: {
   // Both are needed for merge: `applyMoves` re-points the duplicate's guest
   // rows onto the master, and the master may end up on either side of the
   // bed-night depending on which booking placed which guest first.
-  const candidates = new Map<string, SweepAllocationRow>();
+  const candidates = new Map<string, MergeSweepAllocationRow>();
   const secondRows = await db.bedAllocation.findMany({
     where: {
       isSecondOccupant: true,
       stayDate: { gte: today },
       bookingGuest: { memberId: { in: scopeIds } },
     },
-    select: SWEEP_ALLOCATION_SELECT,
+    select: MERGE_SWEEP_ALLOCATION_SELECT,
   });
   for (const row of secondRows) {
     candidates.set(row.id, row);
@@ -1909,13 +2071,33 @@ export async function sweepUnbackedFutureSharedDoublesWithLocksHeld(params: {
           stayDate: night.stayDate,
         })),
       },
-      select: SWEEP_ALLOCATION_SELECT,
+      select: MERGE_SWEEP_ALLOCATION_SELECT,
     });
     for (const row of partneredRows) {
       candidates.set(row.id, row);
     }
   }
   if (candidates.size === 0) return [];
+
+  // #2595 — the derivation check, enforced rather than trusted. Without the
+  // global cohort key the ONLY thing serialising this sweep against the
+  // bed-allocation writers is the per-lodge capacity key, so every row it is
+  // about to judge must sit in a lodge whose key the caller holds. It always
+  // does when the prefix derived the set from these members' future
+  // guest-nights (a placement can only exist for a guest row of a booking, in
+  // that booking's own lodge); a miss means a lodge appeared for one of them
+  // after the derivation, and the safe answer is to roll the merge back.
+  const unlockedLodgeIds = [
+    ...new Set(
+      [...candidates.values()]
+        .map((row) => row.room.lodgeId)
+        .filter((lodgeId): lodgeId is string => Boolean(lodgeId))
+        .filter((lodgeId) => !lockedLodgeIds.has(lodgeId)),
+    ),
+  ].sort();
+  if (unlockedLodgeIds.length > 0) {
+    throw new UnlockedPartnerShareLodgeError(unlockedLodgeIds);
+  }
 
   // The primary occupant on each candidate bed-night names the OTHER half of
   // the pair being judged, and the cross-booking side of the audit trail.

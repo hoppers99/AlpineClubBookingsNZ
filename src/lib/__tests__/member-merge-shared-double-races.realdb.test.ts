@@ -15,7 +15,7 @@
  * integration performs the repair itself as merge step 3b. Every assertion below
  * therefore reads COMMITTED rows written by the production merge — no
  * re-implementation of either side, and no test-only composition of the two.
- * `acquireFuturePartnerSharedAllocationLocks` +
+ * `acquireMemberMergePartnerSharedLodgeLocks` +
  * `sweepUnbackedFutureSharedDoublesWithLocksHeld` are imported only to drive a
  * SECOND pass for the idempotence case.
  *
@@ -23,7 +23,7 @@
  * loopback PostgreSQL that `concurrency-lock-races.realdb.test.ts` already
  * provisions (#1881) and cleans its own uniquely-namespaced fixtures.
  */
-import type { PrismaClient } from "@prisma/client";
+import type { Prisma, PrismaClient } from "@prisma/client";
 import {
   afterAll,
   afterEach,
@@ -39,14 +39,14 @@ import { realElapsedMs } from "@/lib/__tests__/helpers/clock";
 const RUN = process.env.RUN_CONCURRENCY_RACE_TESTS === "1";
 const RACE_DB_URL = process.env.CONCURRENCY_RACE_DATABASE_URL ?? "";
 
-// A member merge joins the global cohort at the TOP of its transaction (#2595
-// takes the partner-share prefix immediately after the hosting policy-set key, so
-// the fixed global -> lodge -> member order holds). Reaching that point still
-// costs a whole preview pass first, run outside the transaction by the admin
-// route and by `runRealMemberMerge` below. The poller therefore gets a far larger
-// bound than the parent harness's 5s diagnostic — a timeout here must mean "a
-// production writer stopped joining the cohort", never "the merge was still
-// building its preview".
+// A member merge joins the per-lodge tier at the TOP of its transaction (#2595
+// takes the partner-share lodge prefix immediately after the hosting policy-set
+// key, so the fixed lodge -> member order holds). Merge deliberately takes NO
+// global cohort key, which is why the queue device below sequences writers on the
+// LODGE capacity key. A timeout in the poller must mean "a production writer
+// stopped taking the lodge key", never "the merge was still building its
+// preview" — every case pre-builds the preview outside the queued window (see
+// `queueableMergeWriter`).
 const LOCK_POLL_TIMEOUT_MS = 30_000;
 const RACE_TEST_TIMEOUT_MS = 120_000;
 
@@ -65,6 +65,15 @@ const MERGE_MEMBER_IDS = [
 
 const LODGE_ID = "race-2595-merge-lodge";
 const ROOM_ID = "race-2595-merge-room";
+// A SECOND lodge, used only by the derivation case. The master holds a future
+// booking here and NOT ONE bed allocation, so it is in merge's prefix if and
+// only if the prefix derives lodges from future GUEST-NIGHTS (#2595). It has a
+// room and a bed purely so the lodge is a realistic allocation target.
+const GUEST_NIGHT_ONLY_LODGE_ID = "race-2595-guestnight-lodge";
+const GUEST_NIGHT_ONLY_ROOM_ID = "race-2595-guestnight-room";
+const GUEST_NIGHT_ONLY_BED_ID = "race-2595-guestnight-bed";
+const GUEST_NIGHT_ONLY_BOOKING_ID = "race-2595-guestnight-booking";
+const GUEST_NIGHT_ONLY_GUEST_ID = "race-2595-guestnight-guest";
 const UNBACKED_DOUBLE_ID = "race-2595-unbacked-double";
 const BACKED_DOUBLE_ID = "race-2595-backed-double";
 // Spare singles so the racing production writers have somewhere to place their
@@ -92,7 +101,11 @@ const MERGE_BOOKING_IDS = [
   MASTER_BOOKING_ID,
   MASTER_PARTNER_BOOKING_ID,
 ];
-const ALL_BOOKING_IDS = [...MERGE_BOOKING_IDS, NEIGHBOUR_BOOKING_ID];
+const ALL_BOOKING_IDS = [
+  ...MERGE_BOOKING_IDS,
+  NEIGHBOUR_BOOKING_ID,
+  GUEST_NIGHT_ONLY_BOOKING_ID,
+];
 
 const LOSER_GUEST_ID = "race-2595-loser-guest";
 const EX_PARTNER_GUEST_ID = "race-2595-partner-guest";
@@ -123,7 +136,7 @@ let buildMemberMergePreview: typeof import("@/lib/member-merge")["buildMemberMer
 let executeMemberMerge: typeof import("@/lib/member-merge")["executeMemberMerge"];
 let runAutoBedAllocation: typeof import("@/lib/admin-bed-allocation")["runAutoBedAllocation"];
 let reconcileBedAllocationsForBooking: typeof import("@/lib/bed-allocation-lifecycle")["reconcileBedAllocationsForBooking"];
-let acquireFuturePartnerSharedAllocationLocks: typeof import("@/lib/bed-allocation-lifecycle")["acquireFuturePartnerSharedAllocationLocks"];
+let acquireMemberMergePartnerSharedLodgeLocks: typeof import("@/lib/bed-allocation-lifecycle")["acquireMemberMergePartnerSharedLodgeLocks"];
 let sweepUnbackedFutureSharedDoublesWithLocksHeld: typeof import("@/lib/bed-allocation-lifecycle")["sweepUnbackedFutureSharedDoublesWithLocksHeld"];
 let lockHolderClient: PrismaClient;
 let observerClient: PrismaClient;
@@ -164,6 +177,7 @@ function deferred() {
   return { promise, resolve };
 }
 
+/** Ungranted waiters on the global cohort key `pg_advisory_xact_lock(1)`. */
 async function pendingGlobalLockWaiters(): Promise<number> {
   const rows = await observerClient.$queryRaw<Array<{ count: number }>>`
     SELECT COUNT(*)::int AS "count"
@@ -176,36 +190,55 @@ async function pendingGlobalLockWaiters(): Promise<number> {
   return rows[0]?.count ?? 0;
 }
 
-async function waitForGlobalLockWaiters(expected: number): Promise<void> {
+/**
+ * Ungranted waiters on ONE per-lodge capacity key.
+ *
+ * `acquireLodgeCapacityLock` takes the single-argument `pg_advisory_xact_lock`
+ * form, so PostgreSQL splits the 64-bit `hashtextextended(lodgeId, 0)` key into
+ * `(classid, objid)` with `objsubid = 1`. The split is done in SQL rather than in
+ * JS so the observer never has to marshal a signed 64-bit hash.
+ */
+async function pendingLodgeLockWaiters(lodgeId: string): Promise<number> {
+  const rows = await observerClient.$queryRaw<Array<{ count: number }>>`
+    SELECT COUNT(*)::int AS "count"
+    FROM pg_locks
+    WHERE locktype = 'advisory'
+      AND objsubid = 1
+      AND granted = false
+      AND classid::bigint = ((hashtextextended(${lodgeId}, 0) >> 32) & 4294967295)
+      AND objid::bigint = (hashtextextended(${lodgeId}, 0) & 4294967295)
+  `;
+  return rows[0]?.count ?? 0;
+}
+
+async function waitForLodgeLockWaiters(
+  expected: number,
+  lodgeId = LODGE_ID,
+): Promise<void> {
   const startedAt = process.hrtime.bigint();
   let seen = 0;
   while (realElapsedMs(startedAt) < LOCK_POLL_TIMEOUT_MS) {
-    seen = await pendingGlobalLockWaiters();
+    seen = await pendingLodgeLockWaiters(lodgeId);
     if (seen >= expected) return;
     await new Promise((resolve) => setTimeout(resolve, 10));
   }
   throw new Error(
-    `Timed out waiting for ${expected} writer(s) on global bed-allocation lock(1); saw ${seen}. A production writer may have stopped joining the global cohort.`,
+    `Timed out waiting for ${expected} writer(s) on the ${lodgeId} capacity key; saw ${seen}. A production writer may have stopped taking the per-lodge tier.`,
   );
 }
 
-/**
- * Queue two production writers in an explicit order behind a real holder of
- * lock(1). PostgreSQL grants advisory waiters in queue order, so observing each
- * waiter before starting the next makes the serialized outcome deterministic
- * without sleeps or test-only hooks in production code.
- */
-async function runWritersInGlobalQueueOrder<A, B>(
-  firstWriter: () => Promise<A>,
-  secondWriter: () => Promise<B>,
-): Promise<[PromiseSettledResult<A>, PromiseSettledResult<B>]> {
+/** Hold one advisory key on a separate connection for the body's duration. */
+async function whileHoldingAdvisoryKey<T>(
+  take: (tx: Prisma.TransactionClient) => Promise<unknown>,
+  body: () => Promise<T>,
+): Promise<T> {
   const lockHeld = deferred();
   const releaseLock = deferred();
   let holderError: unknown;
   const holder = lockHolderClient
     .$transaction(
       async (tx) => {
-        await tx.$executeRaw`SELECT pg_advisory_xact_lock(1)`;
+        await take(tx);
         lockHeld.resolve();
         await releaseLock.promise;
       },
@@ -218,16 +251,71 @@ async function runWritersInGlobalQueueOrder<A, B>(
 
   await lockHeld.promise;
   if (holderError) {
-    throw new Error(`Could not hold global lock(1): ${String(holderError)}`);
+    throw new Error(`Could not hold the advisory key: ${String(holderError)}`);
+  }
+  try {
+    return await body();
+  } finally {
+    releaseLock.resolve();
+    await holder;
+  }
+}
+
+/**
+ * Queue two production writers in an explicit order behind a real holder of the
+ * fixture lodge's capacity key. PostgreSQL grants advisory waiters in queue
+ * order, so observing each waiter before starting the next makes the serialized
+ * outcome deterministic without sleeps or test-only hooks in production code.
+ *
+ * The device sits on the LODGE key, not the global cohort key, because #2595's
+ * merge deliberately takes no global key at all. Both racing bed-allocation
+ * writers still take `lock(1)` first and then this lodge key, so they queue here
+ * too — while holding the global key, which is exactly the convoy the owner
+ * decision was weighing.
+ *
+ * The second writer's ARRIVAL time is part of the first writer's transaction
+ * budget: the holder cannot release until both are queued, and the first writer
+ * has already opened its own (default 5s) transaction. Every merge writer passed
+ * here must therefore be a `queueableMergeWriter`, whose preview is built BEFORE
+ * the window opens; a raw `runRealMemberMerge` would spend seconds of the first
+ * writer's budget on preview work and reject it for reasons that have nothing to
+ * do with the lock protocol.
+ */
+async function runWritersInLodgeQueueOrder<A, B>(
+  firstWriter: () => Promise<A>,
+  secondWriter: () => Promise<B>,
+): Promise<[PromiseSettledResult<A>, PromiseSettledResult<B>]> {
+  const lockHeld = deferred();
+  const releaseLock = deferred();
+  let holderError: unknown;
+  const holder = lockHolderClient
+    .$transaction(
+      async (tx) => {
+        await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtextextended(${LODGE_ID}, 0))`;
+        lockHeld.resolve();
+        await releaseLock.promise;
+      },
+      { maxWait: 5_000, timeout: LOCK_POLL_TIMEOUT_MS + 30_000 },
+    )
+    .catch((error: unknown) => {
+      holderError = error;
+      lockHeld.resolve();
+    });
+
+  await lockHeld.promise;
+  if (holderError) {
+    throw new Error(
+      `Could not hold the ${LODGE_ID} capacity key: ${String(holderError)}`,
+    );
   }
 
   const first = firstWriter();
   let second: Promise<B> | undefined;
   let observationError: unknown;
   try {
-    await waitForGlobalLockWaiters(1);
+    await waitForLodgeLockWaiters(1);
     second = secondWriter();
-    await waitForGlobalLockWaiters(2);
+    await waitForLodgeLockWaiters(2);
   } catch (error) {
     observationError = error;
   } finally {
@@ -236,7 +324,9 @@ async function runWritersInGlobalQueueOrder<A, B>(
 
   await holder;
   if (holderError) {
-    throw new Error(`Global lock(1) holder failed: ${String(holderError)}`);
+    throw new Error(
+      `The ${LODGE_ID} capacity key holder failed: ${String(holderError)}`,
+    );
   }
   if (!second) {
     await Promise.allSettled([first]);
@@ -372,12 +462,14 @@ async function seedBooking(params: {
   lastName: string;
   night: Date;
   checkOut: Date;
+  /** Defaults to the fixture lodge; the derivation case seeds a second one. */
+  lodgeId?: string;
 }): Promise<void> {
   await prisma.booking.create({
     data: {
       id: params.bookingId,
       memberId: params.memberId,
-      lodgeId: LODGE_ID,
+      lodgeId: params.lodgeId ?? LODGE_ID,
       checkIn: params.night,
       checkOut: params.checkOut,
       status: "CONFIRMED",
@@ -536,19 +628,34 @@ async function seedMergeScenario(): Promise<void> {
 
 /** Drive the real preview + execute pair, exactly as the admin route does. */
 async function runRealMemberMerge() {
+  return (await queueableMergeWriter())();
+}
+
+/**
+ * The same production pair, split so the PREVIEW happens now and only the
+ * transaction-owning `executeMemberMerge` is left in the returned closure.
+ *
+ * The admin route builds its preview in a separate request, outside the merge
+ * transaction, so this is faithful rather than a shortcut — and it is what makes
+ * the queued-order cases about the lock protocol instead of about how long a
+ * preview takes on a loaded runner. `buildMemberMergePreview` takes no lock, so
+ * calling it before the queue window cannot perturb the race.
+ */
+async function queueableMergeWriter() {
   const preview = await buildMemberMergePreview({
     masterId: MASTER_ID,
     loserId: LOSER_ID,
     actorMemberId: ACTOR_ID,
   });
   expect(preview.blockers).toEqual([]);
-  return executeMemberMerge({
-    masterId: MASTER_ID,
-    loserId: LOSER_ID,
-    actorMemberId: ACTOR_ID,
-    previewToken: preview.previewToken,
-    confirmationText: preview.confirmationPhrase,
-  });
+  return () =>
+    executeMemberMerge({
+      masterId: MASTER_ID,
+      loserId: LOSER_ID,
+      actorMemberId: ACTOR_ID,
+      previewToken: preview.previewToken,
+      confirmationText: preview.confirmationPhrase,
+    });
 }
 
 /**
@@ -559,11 +666,16 @@ async function runRealMemberMerge() {
  *   1. immediately AFTER `await lockAdultMemberHostingPolicySet(tx)` and BEFORE
  *      the two sorted `member-lifecycle:` advisory locks:
  *
- *          await acquireFuturePartnerSharedAllocationLocks(tx, [masterId, loserId]);
+ *          const partnerShareLodgeIds =
+ *            await acquireMemberMergePartnerSharedLodgeLocks(tx, [masterId, loserId]);
  *
- *      — the global cohort `lock(1)` plus every affected lodge key, sorted, so
- *      the fixed global -> lodge -> member order holds. Taking it at the point
- *      of use would acquire a lodge key with member keys already held.
+ *      — every affected lodge key, sorted, and deliberately NOT the global cohort
+ *      `lock(1)` (#2595 owner decision): a merge holds its keys for up to 120s,
+ *      and the global key would reject every 5s-budget cohort writer in the club.
+ *      The lodge set is therefore derived from the two members' future
+ *      GUEST-NIGHTS as well as their existing allocations, so a lodge a placement
+ *      could still land in is covered. Taking any of it at the point of use would
+ *      acquire a lodge key with member keys already held.
  *
  *   2. as step 3b, AFTER `applyMoves` (guest rows now name the master), AFTER
  *      step 2's `resolvePartnerLinks` (the surviving partnerships are final),
@@ -571,9 +683,13 @@ async function runRealMemberMerge() {
  *
  *          sweptShares = await sweepUnbackedFutureSharedDoublesWithLocksHeld({
  *            memberIds: [masterId, loserId],
+ *            lockedLodgeIds: partnerShareLodgeIds,
  *            reason: "members_merged",
  *            db: tx,
  *          });
+ *
+ *      — the lodge set is passed back in so the sweep REFUSES (409) rather than
+ *      judge a bed-night in a lodge the prefix did not cover.
  *
  * plus the post-commit `sendAdminPartnerShareSweptAlert` next to
  * `settleHostingCoverageAfterCommit`.
@@ -594,9 +710,13 @@ async function runRealMemberMerge() {
  */
 async function runSecondReconciliationPass() {
   return prisma.$transaction(async (tx) => {
-    await acquireFuturePartnerSharedAllocationLocks(tx, [MASTER_ID, LOSER_ID]);
+    const lockedLodgeIds = await acquireMemberMergePartnerSharedLodgeLocks(tx, [
+      MASTER_ID,
+      LOSER_ID,
+    ]);
     return sweepUnbackedFutureSharedDoublesWithLocksHeld({
       memberIds: [MASTER_ID, LOSER_ID],
+      lockedLodgeIds,
       reason: "members_merged",
       db: tx,
     });
@@ -744,7 +864,7 @@ describe("member-merge shared-double race DB safety guard (#2595)", () => {
       ));
       ({ runAutoBedAllocation } = await import("@/lib/admin-bed-allocation"));
       ({
-        acquireFuturePartnerSharedAllocationLocks,
+        acquireMemberMergePartnerSharedLodgeLocks,
         reconcileBedAllocationsForBooking,
         sweepUnbackedFutureSharedDoublesWithLocksHeld,
       } = await import("@/lib/bed-allocation-lifecycle"));
@@ -783,11 +903,19 @@ describe("member-merge shared-double race DB safety guard (#2595)", () => {
         select: { id: true },
       });
 
-      await prisma.bedAllocationSettings.deleteMany({ where: { id: LODGE_ID } });
+      await prisma.bedAllocationSettings.deleteMany({
+        where: { id: { in: [LODGE_ID, GUEST_NIGHT_ONLY_LODGE_ID] } },
+      });
       await clearMergeFixtures();
-      await prisma.lodgeBed.deleteMany({ where: { id: { in: MERGE_BED_IDS } } });
-      await prisma.lodgeRoom.deleteMany({ where: { id: ROOM_ID } });
-      await prisma.lodge.deleteMany({ where: { id: LODGE_ID } });
+      await prisma.lodgeBed.deleteMany({
+        where: { id: { in: [...MERGE_BED_IDS, GUEST_NIGHT_ONLY_BED_ID] } },
+      });
+      await prisma.lodgeRoom.deleteMany({
+        where: { id: { in: [ROOM_ID, GUEST_NIGHT_ONLY_ROOM_ID] } },
+      });
+      await prisma.lodge.deleteMany({
+        where: { id: { in: [LODGE_ID, GUEST_NIGHT_ONLY_LODGE_ID] } },
+      });
       await prisma.member.deleteMany({
         where: { id: { in: [...MERGE_MEMBER_IDS] } },
       });
@@ -828,6 +956,30 @@ describe("member-merge shared-double race DB safety guard (#2595)", () => {
           })),
         ],
       });
+      // The second lodge: a room and one DOUBLE bed, and NO allocation ever.
+      await prisma.lodge.create({
+        data: {
+          id: GUEST_NIGHT_ONLY_LODGE_ID,
+          name: "Race 2595 Guest-night Lodge",
+          slug: "race-2595-guestnight",
+        },
+      });
+      await prisma.lodgeRoom.create({
+        data: {
+          id: GUEST_NIGHT_ONLY_ROOM_ID,
+          lodgeId: GUEST_NIGHT_ONLY_LODGE_ID,
+          name: "Race 2595 Guest-night Room",
+        },
+      });
+      await prisma.lodgeBed.create({
+        data: {
+          id: GUEST_NIGHT_ONLY_BED_ID,
+          roomId: GUEST_NIGHT_ONLY_ROOM_ID,
+          name: "Guest-night double",
+          bedType: "DOUBLE",
+          sortOrder: 0,
+        },
+      });
       await prisma.bedAllocationSettings.create({
         data: {
           id: LODGE_ID,
@@ -864,13 +1016,25 @@ describe("member-merge shared-double race DB safety guard (#2595)", () => {
       if (typeof prisma !== "undefined") {
         await attempt(clearMergeFixtures);
         await attempt(() =>
-          prisma.bedAllocationSettings.deleteMany({ where: { id: LODGE_ID } }),
+          prisma.bedAllocationSettings.deleteMany({
+            where: { id: { in: [LODGE_ID, GUEST_NIGHT_ONLY_LODGE_ID] } },
+          }),
         );
         await attempt(() =>
-          prisma.lodgeBed.deleteMany({ where: { id: { in: MERGE_BED_IDS } } }),
+          prisma.lodgeBed.deleteMany({
+            where: { id: { in: [...MERGE_BED_IDS, GUEST_NIGHT_ONLY_BED_ID] } },
+          }),
         );
-        await attempt(() => prisma.lodgeRoom.deleteMany({ where: { id: ROOM_ID } }));
-        await attempt(() => prisma.lodge.deleteMany({ where: { id: LODGE_ID } }));
+        await attempt(() =>
+          prisma.lodgeRoom.deleteMany({
+            where: { id: { in: [ROOM_ID, GUEST_NIGHT_ONLY_ROOM_ID] } },
+          }),
+        );
+        await attempt(() =>
+          prisma.lodge.deleteMany({
+            where: { id: { in: [LODGE_ID, GUEST_NIGHT_ONLY_LODGE_ID] } },
+          }),
+        );
         await attempt(() =>
           prisma.member.deleteMany({ where: { id: { in: [...MERGE_MEMBER_IDS] } } }),
         );
@@ -1051,10 +1215,10 @@ describe("member-merge shared-double race DB safety guard (#2595)", () => {
     // booking whose envelope starts earlier — reproduces it every time.
     //
     // What these cases do still prove, which is what this issue needs: the
-    // merge reconciliation JOINS the global cohort, so PostgreSQL grants it and
+    // merge reconciliation JOINS the per-lodge tier, so PostgreSQL grants it and
     // the other bed-allocation writer in a deterministic order on the same
-    // lodge; both commit; and the #2595 invariant holds on the committed rows in
-    // EITHER grant order.
+    // lodge, and the #2595 invariant holds on the committed rows in EITHER grant
+    // order.
     // -----------------------------------------------------------------------
     const NEIGHBOUR_RANGE = {
       from: NEIGHBOUR_NIGHT,
@@ -1088,32 +1252,37 @@ describe("member-merge shared-double race DB safety guard (#2595)", () => {
     }
 
     /**
-     * ================== THE WRITER QUEUED BEHIND A MERGE ===================
+     * ============ THE SAME-LODGE WRITER QUEUED BEHIND A MERGE ==============
      * A consequence of #2595 that is production behaviour, not a test artifact,
      * and is stated here rather than hidden behind a retry.
      *
-     * A PostgreSQL advisory xact lock is released only at COMMIT, so once merge
-     * takes the global cohort `lock(1)` at the top of its transaction it holds it
-     * for the whole merge — and a merge deliberately runs with `timeout: 120s`
-     * because re-pointing 70+ relations takes hundreds of sequential round-trips
-     * (docs/CONCURRENCY_AND_LOCKING.md → "Member merge"). The ordinary
-     * bed-allocation writers raced here open their own interactive transaction
-     * and THEN block on `lock(1)`, on Prisma's default 5-second budget
-     * (`writeUnderLocks` in `admin-bed-allocation.ts`,
-     * `reconcileBedAllocationsForBookingWithGlobalLockHeld`). So a writer that
-     * arrives while a merge is running either gets the lock in time, or its own
-     * budget expires first and Prisma rejects it with `P2028`.
+     * The owner decision took the global cohort `lock(1)` OUT of merge's prefix,
+     * so a merge no longer excludes the whole club. What it necessarily still
+     * holds is the capacity key of every lodge it touches, and an advisory xact
+     * lock is released only at COMMIT — while a merge deliberately runs with
+     * `timeout: 120s`, because re-pointing 70+ relations takes hundreds of
+     * sequential round-trips (docs/CONCURRENCY_AND_LOCKING.md → "Member merge").
+     * The ordinary bed-allocation writers raced here open their own interactive
+     * transaction and then block on that lodge key on Prisma's default 5-second
+     * budget (`writeUnderLocks` in `admin-bed-allocation.ts`,
+     * `reconcileBedAllocationsForBookingWithGlobalLockHeld`). So a same-lodge
+     * writer that arrives while a merge is running either gets the key in time,
+     * or its own budget expires first and Prisma rejects it with `P2028`.
+     *
+     * That is the residue of the cost, and it is much smaller than before: it now
+     * needs the writer to be in one of the merge's OWN lodges, where previously
+     * every cancel/capture/settle/refund and every bed-allocation writer in the
+     * club queued behind `lock(1)`. "Commits while another session holds lock(1)"
+     * below is the proof of the difference.
      *
      * Both outcomes are SAFE, and this helper asserts exactly that: the writer
      * either committed its own work, or it wrote NOTHING and was rejected with a
      * retryable transaction expiry. What it must never do is commit anything that
      * breaks the #2595 invariant, and the caller asserts the invariant itself
-     * either way. The alternative — asserting only "it always commits" — was true
-     * only while merge took no global key, and would now pass or fail on how
-     * loaded the machine is rather than on the contract.
-     *
-     * Whether that availability cost is acceptable, or whether merge should get a
-     * narrower prefix, is recorded as an owner decision on #2595.
+     * either way. Asserting "it always commits" for a writer queued BEHIND the
+     * merge would pass or fail on how loaded the machine is rather than on the
+     * contract — and unlike the previous shape of this suite, the writer queued
+     * FIRST now genuinely must commit, because it never waits on the merge at all.
      * ======================================================================
      */
     function isRetryableTransactionExpiry(error: unknown): boolean {
@@ -1168,7 +1337,8 @@ describe("member-merge shared-double race DB safety guard (#2595)", () => {
       async (order) => {
         await seedMergeScenario();
 
-        const mergeWriter = () => runRealMemberMerge();
+        // Preview built OUTSIDE the queue window: see `queueableMergeWriter`.
+        const mergeWriter = await queueableMergeWriter();
         const autoWriter = () =>
           runAutoBedAllocation({ range: NEIGHBOUR_RANGE, lodgeId: LODGE_ID });
 
@@ -1182,12 +1352,12 @@ describe("member-merge shared-double race DB safety guard (#2595)", () => {
           Awaited<ReturnType<typeof autoWriter>>
         >;
         if (order === "MERGE_FIRST") {
-          [mergeOutcome, autoOutcome] = await runWritersInGlobalQueueOrder(
+          [mergeOutcome, autoOutcome] = await runWritersInLodgeQueueOrder(
             mergeWriter,
             autoWriter,
           );
         } else {
-          [autoOutcome, mergeOutcome] = await runWritersInGlobalQueueOrder(
+          [autoOutcome, mergeOutcome] = await runWritersInLodgeQueueOrder(
             autoWriter,
             mergeWriter,
           );
@@ -1200,12 +1370,17 @@ describe("member-merge shared-double race DB safety guard (#2595)", () => {
         await expectMergeSweptOnlyTheUnbackedRow();
 
         if (order === "AUTO_FIRST") {
-          // Queued FIRST, so it never waits on the merge: it must commit.
+          // Queued FIRST, so it is granted the lodge key before the merge and
+          // never waits on it: STRICT must-commit. This arm was the CI failure on
+          // `75b9582bc`, and the cause was the harness, not the merge — the
+          // holder could not release until the merge had queued, and the merge
+          // spent seconds of this writer's 5s budget building its preview. The
+          // preview now happens before the window opens.
           expect(settledValueOrThrow(autoOutcome)).toEqual({ count: 1 });
           await expectNeighbourAllocated();
         } else {
-          // Queued BEHIND the merge on its own 5s budget — see
-          // "THE WRITER QUEUED BEHIND A MERGE" above.
+          // Queued BEHIND the merge on its own 5s budget, in one of the merge's
+          // OWN lodges — see "THE SAME-LODGE WRITER QUEUED BEHIND A MERGE".
           await expectQueuedWriterCommittedOrCleanlyRejected(
             autoOutcome,
             (value) => expect(value).toEqual({ count: 1 }),
@@ -1223,7 +1398,8 @@ describe("member-merge shared-double race DB safety guard (#2595)", () => {
       async (order) => {
         await seedMergeScenario();
 
-        const mergeWriter = () => runRealMemberMerge();
+        // Preview built OUTSIDE the queue window: see `queueableMergeWriter`.
+        const mergeWriter = await queueableMergeWriter();
         const lifecycleWriter = () =>
           reconcileBedAllocationsForBooking({ bookingId: NEIGHBOUR_BOOKING_ID });
 
@@ -1234,12 +1410,12 @@ describe("member-merge shared-double race DB safety guard (#2595)", () => {
           Awaited<ReturnType<typeof lifecycleWriter>>
         >;
         if (order === "MERGE_FIRST") {
-          [mergeOutcome, lifecycleOutcome] = await runWritersInGlobalQueueOrder(
+          [mergeOutcome, lifecycleOutcome] = await runWritersInLodgeQueueOrder(
             mergeWriter,
             lifecycleWriter,
           );
         } else {
-          [lifecycleOutcome, mergeOutcome] = await runWritersInGlobalQueueOrder(
+          [lifecycleOutcome, mergeOutcome] = await runWritersInLodgeQueueOrder(
             lifecycleWriter,
             mergeWriter,
           );
@@ -1249,6 +1425,7 @@ describe("member-merge shared-double race DB safety guard (#2595)", () => {
         await expectMergeSweptOnlyTheUnbackedRow();
 
         if (order === "LIFECYCLE_FIRST") {
+          // Queued FIRST: STRICT must-commit, for the same reason as AUTO_FIRST.
           expect(settledValueOrThrow(lifecycleOutcome)).toMatchObject({
             enabled: true,
             createdCount: 1,
@@ -1270,5 +1447,142 @@ describe("member-merge shared-double race DB safety guard (#2595)", () => {
         await expectNoUnbackedSharedDouble();
       },
     );
+
+    /**
+     * ============ THE OWNER DECISION, PROVED DIRECTLY (#2595) ==============
+     * Merge must NOT take the global cohort `lock(1)`.
+     *
+     * A separate session holds `lock(1)` for the whole of the real merge, and the
+     * `pg_locks` waiter count on that exact key is polled until the merge settles:
+     * a merge that reached for the global key would show up as an ungranted
+     * waiter and fail here immediately.
+     *
+     * "It commits eventually" is deliberately NOT the assertion. That version of
+     * this test PASSED against a mutant that re-added `lock(1)`: the holder's own
+     * transaction budget expired after 60s, released the key, and the merge — on
+     * its 120s budget — then went on to commit. Only the waiter poll distinguishes
+     * "never asked for the key" from "waited a minute for it".
+     */
+    it("commits and sweeps while another session holds the global cohort lock(1)", async () => {
+      await seedMergeScenario();
+      const mergeWriter = await queueableMergeWriter();
+
+      const merged = await whileHoldingAdvisoryKey(
+        (tx) => tx.$executeRaw`SELECT pg_advisory_xact_lock(1)`,
+        async () => {
+          // The key really is held by the other session while we run.
+          const held = await observerClient.$queryRaw<Array<{ count: number }>>`
+            SELECT COUNT(*)::int AS "count"
+            FROM pg_locks
+            WHERE locktype = 'advisory'
+              AND classid = 0
+              AND objid = 1
+              AND granted = true
+          `;
+          expect(held[0]?.count ?? 0).toBeGreaterThanOrEqual(1);
+
+          let settled = false;
+          const merge = mergeWriter();
+          // Keep the rejection handled even if the poll below throws first.
+          const outcome = merge.then(
+            (value) => {
+              settled = true;
+              return { ok: true as const, value };
+            },
+            (error: unknown) => {
+              settled = true;
+              return { ok: false as const, error };
+            },
+          );
+          while (!settled) {
+            expect(
+              await pendingGlobalLockWaiters(),
+              "the merge must never queue on the global cohort key",
+            ).toBe(0);
+            await new Promise((resolve) => setTimeout(resolve, 10));
+          }
+          const result = await outcome;
+          if (!result.ok) throw result.error;
+          return result.value;
+        },
+      );
+
+      expect(merged.masterId).toBe(MASTER_ID);
+      await expectMergeSweptOnlyTheUnbackedRow();
+      await expectNoUnbackedSharedDouble();
+    });
+
+    /**
+     * The other half of the same contract: dropping the global key must NOT have
+     * dropped the lodge tier. Hold the fixture lodge's capacity key and prove the
+     * real merge QUEUES on that exact key, then commits and sweeps once released.
+     */
+    it("waits on the affected lodge capacity key it must still hold", async () => {
+      await seedMergeScenario();
+      const mergeWriter = await queueableMergeWriter();
+
+      let merge: Promise<Awaited<ReturnType<typeof mergeWriter>>> | undefined;
+      await whileHoldingAdvisoryKey(
+        (tx) =>
+          tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtextextended(${LODGE_ID}, 0))`,
+        async () => {
+          merge = mergeWriter();
+          await waitForLodgeLockWaiters(1, LODGE_ID);
+        },
+      );
+
+      const merged = await merge!;
+      expect(merged.masterId).toBe(MASTER_ID);
+      await expectMergeSweptOnlyTheUnbackedRow();
+      await expectNoUnbackedSharedDouble();
+    });
+
+    /**
+     * ========= THE GUEST-NIGHT DERIVATION, PROVED ON REAL LOCKS ============
+     * The reason the global key can be dropped at all: merge's lodge set covers
+     * every lodge a placement could still LAND in, not just the lodges where a
+     * bed is already allocated.
+     *
+     * The master holds a future booking in a SECOND lodge with no allocation in
+     * it whatsoever. That lodge's capacity key is held by another session, and the
+     * merge must queue on it. Derive the set from existing allocations only and
+     * the merge sails past this key and the poller times out.
+     */
+    it("takes the capacity key of a lodge known only from a future guest-night", async () => {
+      await seedMergeScenario();
+      await seedBooking({
+        bookingId: GUEST_NIGHT_ONLY_BOOKING_ID,
+        memberId: MASTER_ID,
+        guestId: GUEST_NIGHT_ONLY_GUEST_ID,
+        guestMemberId: MASTER_ID,
+        firstName: "Surviving",
+        lastName: "Master",
+        night: NEIGHBOUR_NIGHT,
+        checkOut: NEIGHBOUR_CHECK_OUT,
+        lodgeId: GUEST_NIGHT_ONLY_LODGE_ID,
+      });
+      // The premise, asserted rather than assumed: not one allocation there.
+      expect(
+        await prisma.bedAllocation.count({
+          where: { room: { lodgeId: GUEST_NIGHT_ONLY_LODGE_ID } },
+        }),
+      ).toBe(0);
+
+      const mergeWriter = await queueableMergeWriter();
+      let merge: Promise<Awaited<ReturnType<typeof mergeWriter>>> | undefined;
+      await whileHoldingAdvisoryKey(
+        (tx) =>
+          tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtextextended(${GUEST_NIGHT_ONLY_LODGE_ID}, 0))`,
+        async () => {
+          merge = mergeWriter();
+          await waitForLodgeLockWaiters(1, GUEST_NIGHT_ONLY_LODGE_ID);
+        },
+      );
+
+      const merged = await merge!;
+      expect(merged.masterId).toBe(MASTER_ID);
+      await expectMergeSweptOnlyTheUnbackedRow();
+      await expectNoUnbackedSharedDouble();
+    });
   },
 );

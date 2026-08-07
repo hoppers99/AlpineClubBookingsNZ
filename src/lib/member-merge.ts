@@ -32,11 +32,12 @@ import {
   type HostingCoverageQueueParticipantProof,
 } from "@/lib/adult-member-hosting-queue-participants";
 import {
-  acquireFuturePartnerSharedAllocationLocks,
+  acquireMemberMergePartnerSharedLodgeLocks,
   describePartnerSharedSweepReason,
   partnerShareSweepCounterpartNames,
   partnerShareSweepNights,
   sweepUnbackedFutureSharedDoublesWithLocksHeld,
+  UnlockedPartnerShareLodgeError,
   type SweptPartnerSharedAllocation,
 } from "@/lib/bed-allocation-lifecycle";
 import { sendAdminPartnerShareSweptAlert } from "@/lib/email";
@@ -47,10 +48,12 @@ import logger from "@/lib/logger";
  *
  * The whole operation runs in ONE interactive transaction guarded first by the
  * hosting policy-set lock, then — since #2595, because merge repairs future
- * shared-double bed placements it invalidates — the partner-share prefix (global
- * cohort `lock(1)` plus every affected lodge capacity key, sorted), and only then
- * the dual `member-lifecycle:{id}` advisory lock, so the fixed global -> lodge ->
- * member order holds (see docs/CONCURRENCY_AND_LOCKING.md).
+ * shared-double bed placements it invalidates — every affected lodge capacity
+ * key in sorted order (and deliberately NOT the global cohort `lock(1)`, whose
+ * cost over a 120s merge is why the lodge set is derived from future
+ * guest-nights instead), and only then the dual `member-lifecycle:{id}` advisory
+ * lock, so the fixed lodge -> member order holds
+ * (see docs/CONCURRENCY_AND_LOCKING.md).
  * The hosting drain takes the same sorted keys for its claimed owner and actor,
  * then refreshes the exact queue payload. For a queue row that already exists,
  * this handshake starts here, before any relation move. After the moves, one
@@ -2099,6 +2102,15 @@ function extractRefusalContext(
       )
       .map((link) => ({ column: link.column, where: link.where }));
   }
+  if (Array.isArray(source.lodgeIds)) {
+    // #2595 `partner_share_lodge_drift`: the lodges that appeared for one of
+    // these members after the partner-share prefix derived its set. Lodge ids
+    // are structural, never member data, so they fit the non-PII contract and
+    // tell an operator which board changed under the merge.
+    context.unlockedLodgeIds = source.lodgeIds.filter(
+      (lodgeId): lodgeId is string => typeof lodgeId === "string",
+    );
+  }
   if (Array.isArray(source.blockers)) {
     context.blockerCodes = source.blockers
       .map((blocker) =>
@@ -2233,9 +2245,8 @@ export async function executeMemberMerge(params: {
     // #2595 — merge is a BED-ALLOCATION writer, because dropping the duplicate's
     // CONFIRMED partner link invalidates any future shared DOUBLE bed sitting
     // behind it, and step 3b below repairs that in this same transaction. So the
-    // complete partner-share prefix (global cohort `lock(1)`, then every affected
-    // lodge capacity key in sorted order) is taken HERE — before the
-    // member-lifecycle pair, never at the point of use.
+    // affected lodge capacity keys are taken HERE, in sorted order, before the
+    // member-lifecycle pair and never at the point of use.
     //
     // That placement is the whole point, not a preference. The documented
     // acquisition order is global -> lodge -> member
@@ -2246,23 +2257,34 @@ export async function executeMemberMerge(params: {
     // member key and invert that order against every ordinary bed-allocation
     // writer, which takes global -> lodge and only then reaches a member tier.
     // Two such writers would then hold each other's next key: a deadlock, not a
-    // style point. Account-deletion approval takes the same prefix in the same
-    // position (`app/api/admin/deletion-requests/[id]/route.ts`), and this is the
-    // shared helper that keeps both callers honest.
+    // style point.
     //
-    // Deriving the lodge set here also needs BOTH identities: the helper finds
-    // the affected lodges from the two members' own future allocations, and it
-    // must run while the loser's guest rows still name the loser.
+    // What merge deliberately does NOT take is the global cohort `lock(1)` that
+    // the #1756 partner-share callers take (account-deletion approval, link
+    // dissolve, deactivation, seasonal reassignment). An advisory xact lock is
+    // released only at COMMIT and merge runs on a 120s budget, so holding the
+    // global key for a whole merge excludes every cancel/capture/settle/refund
+    // and every bed-allocation writer in the club — on their own default 5s
+    // budgets, which means REJECTED with `P2028`, not merely queued. Merge is the
+    // only partner-share caller long enough for that to matter, so it takes the
+    // narrow lodge-only prefix and pays for it with a WIDER lodge derivation:
+    // `acquireMemberMergePartnerSharedLodgeLocks` unions the lodges of the two
+    // members' future allocations with the lodges of their future GUEST-NIGHTS,
+    // so every lodge a concurrent placement could land in is covered even where
+    // no allocation exists yet. See docs/CONCURRENCY_AND_LOCKING.md -> "Merge
+    // joins the bed-allocation cohort" for the deadlock analysis of the
+    // resulting edges.
     //
-    // Cost, stated openly: an advisory xact lock releases only at commit, so a
-    // merge now holds `lock(1)` for its whole (up to 120s) window and excludes
-    // every cancel/capture/settle/refund and bed-allocation writer while it runs.
-    // Merge is an admin-rare dedup operation and the invariant has to be repaired
-    // ATOMICALLY — a later prefix inverts the order, and a second post-commit
-    // transaction leaves a window (and a crash gap) where two people share a
-    // double with no partnership. See docs/CONCURRENCY_AND_LOCKING.md ->
-    // "Merge joins the bed-allocation cohort".
-    await acquireFuturePartnerSharedAllocationLocks(tx, [masterId, loserId]);
+    // Deriving the lodge set here also needs BOTH identities: the helper reads
+    // the two members' own future allocations and guest-nights, so it must run
+    // while the loser's guest rows still name the loser.
+    //
+    // The returned set is carried to step 3b, which REFUSES the whole merge
+    // rather than judge a bed-night in a lodge this prefix did not cover.
+    const partnerShareLodgeIds = await acquireMemberMergePartnerSharedLodgeLocks(
+      tx,
+      [masterId, loserId],
+    );
 
     // Dual advisory lock in sorted id order (deadlock-free) on the shared
     // member-lifecycle key space, so a merge serialises with any concurrent
@@ -2535,15 +2557,33 @@ export async function executeMemberMerge(params: {
     // Placed after BOTH of those steps, so the guest rows name the master and the
     // surviving partnerships are final, and after every drift refusal above, so
     // no bed-night is judged against state this merge is about to 409 on. It
-    // acquires nothing: the complete prefix has been held since the top of the
+    // acquires nothing: the lodge prefix has been held since the top of the
     // transaction. Validity-driven rather than pair-driven, so it is idempotent
     // and writes nothing on a merge that broke no share (including the merge that
     // CARRIES the duplicate's link over to a master that had none).
-    sweptShares = await sweepUnbackedFutureSharedDoublesWithLocksHeld({
-      memberIds: [masterId, loserId],
-      reason: "members_merged",
-      db: tx,
-    });
+    //
+    // Because merge holds no global cohort key, the sweep is handed the exact
+    // lodge set the prefix locked and refuses if a candidate row turns up outside
+    // it — one more drift refusal, in the same shape as the ones above, rather
+    // than a bed-inventory write in an unserialised lodge.
+    try {
+      sweptShares = await sweepUnbackedFutureSharedDoublesWithLocksHeld({
+        memberIds: [masterId, loserId],
+        lockedLodgeIds: partnerShareLodgeIds,
+        reason: "members_merged",
+        db: tx,
+      });
+    } catch (sweepError) {
+      if (sweepError instanceof UnlockedPartnerShareLodgeError) {
+        throw new MemberMergeError(
+          "A lodge booking for one of these members changed while the merge was running. Nothing was merged — please try again.",
+          409,
+          "partner_share_lodge_drift",
+          { lodgeIds: sweepError.lodgeIds },
+        );
+      }
+      throw sweepError;
+    }
     if (sweptShares.length > 0) {
       // The master's name for the post-commit alert. Read from the
       // transaction-opening row on purpose: the step-5 field patch never touches

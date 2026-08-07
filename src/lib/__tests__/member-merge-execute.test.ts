@@ -1589,29 +1589,36 @@ describe("member-photo reconciliation at execute time (MP1, #189)", () => {
       lockInput.values ??
       (executeRaw.mock.calls[rowLockIndex].slice(1) as string[]);
     expect(lockArgs).toEqual([MASTER_ID, LOSER_ID].sort());
-    // Hosting policy-set first, then the #2595 partner-share prefix, then both
-    // lifecycle keys in sorted order. This is the counterpart order shared with
-    // policy reconciliation and the drain.
+    // Hosting policy-set first, then the #2595 partner-share lodge prefix, then
+    // both lifecycle keys in sorted order. This is the counterpart order shared
+    // with policy reconciliation and the drain.
     expect(
       statements
-        .slice(0, 4)
+        .slice(0, 3)
         .every((s) => s.includes("pg_advisory_xact_lock")),
     ).toBe(true);
     expect(executeRaw.mock.calls[0][1]).toBe(
       ADULT_MEMBER_HOSTING_POLICY_SET_LOCK_KEY,
     );
-    // #2595 — the global cohort key, taken BEFORE either member-lifecycle key so
-    // the fixed global -> lodge -> member order holds. Its lodge tier is derived
-    // from the two members' own future allocations, and this fixture has none, so
-    // no lodge key follows it here; `acquireFuturePartnerSharedAllocationLocks`
-    // owns that half and `bed-allocation-lifecycle.test.ts` covers it.
-    expect(statements[1]).toContain("pg_advisory_xact_lock(1)");
-    expect(executeRaw.mock.calls[1].slice(1)).toEqual([]);
-    expect(executeRaw.mock.calls.slice(2, 4).map((call) => call[1])).toEqual(
+    // #2595 — merge's partner-share prefix is the affected LODGE capacity keys
+    // and NOTHING ELSE. This fixture's members hold no future allocation and no
+    // future guest-night, so the derived set is empty and the two member-lifecycle
+    // keys follow the policy-set key directly;
+    // `acquireMemberMergePartnerSharedLodgeLocks` owns the derivation and
+    // `bed-allocation-lifecycle.test.ts` covers it.
+    expect(executeRaw.mock.calls.slice(1, 3).map((call) => call[1])).toEqual(
       [MASTER_ID, LOSER_ID]
         .sort()
         .map((id) => `member-lifecycle:${id}`),
     );
+    // The owner decision on #2595, pinned: a merge must NEVER take the global
+    // cohort key. It is held until COMMIT and a merge runs on a 120s budget, so
+    // taking it here rejects every 5s-budget cohort writer in the club. Written
+    // as a whole-transaction assertion, not a positional one, so re-adding it
+    // anywhere in `executeMemberMerge` fails this test.
+    expect(
+      statements.filter((s) => /pg_advisory_xact_lock\(\s*1\s*\)/.test(s)),
+    ).toEqual([]);
   });
 
   it("holds the policy set through booking moves and loser deletion so a late reconcile sees the survivor", async () => {
