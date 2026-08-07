@@ -11,6 +11,10 @@ export const XERO_CONTACT_CREATE_LOCAL_LINK_FAILURE_PHASE =
 export const XERO_CONTACT_CREATE_PROVIDER_CREATED_PENDING_LINK_PHASE =
   "provider_contact_created_local_link_pending";
 
+export type MemberContactCreateRecoveryState =
+  | "CREATE_IN_PROGRESS"
+  | "PROVIDER_CREATED_LINK_PENDING";
+
 const contactCreateIdentityWhere = (memberId: string) => ({
   direction: "OUTBOUND",
   entityType: "CONTACT",
@@ -48,7 +52,7 @@ export function unresolvedMemberContactCreateRecoveryWhere(
         ),
       },
       {
-        status: "RUNNING",
+        status: { in: ["RUNNING", "FAILED"] },
         AND: providerCreatedPayloadWhere(
           XERO_CONTACT_CREATE_PROVIDER_CREATED_PENDING_LINK_PHASE,
         ),
@@ -66,9 +70,18 @@ export function memberContactCreateMergeBlockerWhere(
       { status: "RUNNING" },
       {
         status: "FAILED",
-        AND: providerCreatedPayloadWhere(
-          XERO_CONTACT_CREATE_LOCAL_LINK_FAILURE_PHASE,
-        ),
+        OR: [
+          {
+            AND: providerCreatedPayloadWhere(
+              XERO_CONTACT_CREATE_LOCAL_LINK_FAILURE_PHASE,
+            ),
+          },
+          {
+            AND: providerCreatedPayloadWhere(
+              XERO_CONTACT_CREATE_PROVIDER_CREATED_PENDING_LINK_PHASE,
+            ),
+          },
+        ],
       },
     ],
   };
@@ -153,4 +166,22 @@ export async function getMemberContactCreateRecoveryPending(params: {
 }): Promise<boolean> {
   if (params.xeroContactId) return false;
   return hasUnresolvedMemberContactCreateRecovery(params.memberId);
+}
+
+export async function getMemberContactCreateRecoveryState(params: {
+  memberId: string;
+  xeroContactId: string | null;
+}): Promise<MemberContactCreateRecoveryState | null> {
+  if (params.xeroContactId) return null;
+  if (await hasUnresolvedMemberContactCreateRecovery(params.memberId)) {
+    return "PROVIDER_CREATED_LINK_PENDING";
+  }
+  const reservation = await prisma.xeroSyncOperation.findFirst({
+    where: {
+      ...contactCreateIdentityWhere(params.memberId),
+      status: "RUNNING",
+    },
+    select: { id: true },
+  });
+  return reservation ? "CREATE_IN_PROGRESS" : null;
 }

@@ -14,6 +14,7 @@ import type { DependentLinkIneligibleMatch } from "@/lib/dependent-link-eligibil
 import type { MemberAddressValues } from "@/lib/member-address";
 import type { MembershipTypeAgeExemption } from "@/lib/membership-types";
 import type { AppRole } from "@/lib/member-roles";
+import type { MemberContactCreateRecoveryState } from "@/lib/xero-contact-create-recovery";
 
 export interface MemberDeleteEligibilityBlocker {
   code: string;
@@ -198,6 +199,7 @@ export interface MemberDetail {
   photoUpdatedAt: string | null;
   forcePasswordChange: boolean;
   xeroContactId: string | null;
+  xeroContactCreateRecoveryState?: MemberContactCreateRecoveryState | null;
   xeroContactCreateRecoveryPending?: boolean;
   joinedDate: string | null;
   lifeMemberDate: string | null;

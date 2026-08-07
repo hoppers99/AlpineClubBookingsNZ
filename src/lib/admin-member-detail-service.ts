@@ -22,7 +22,7 @@ import {
   shouldRepairXeroContactNameOrder,
 } from "@/lib/xero-contact-sync";
 import { getXeroApiErrorInfo } from "@/lib/xero-api-errors";
-import { getMemberContactCreateRecoveryPending } from "@/lib/xero-contact-create-recovery";
+import { getMemberContactCreateRecoveryState } from "@/lib/xero-contact-create-recovery";
 import logger from "@/lib/logger";
 import {
   copyStreetAddressToPostal,
@@ -589,14 +589,14 @@ export async function getAdminMemberDetail(params: {
   const [
     deleteEligibility,
     deleteLifecycleActionRequests,
-    xeroContactCreateRecoveryPending,
+    xeroContactCreateRecoveryState,
   ] = await Promise.all([
     getMemberDeleteEligibility({
       memberId: id,
       currentAdminMemberId,
     }),
     getMemberDeleteLifecycleRequests(id),
-    getMemberContactCreateRecoveryPending({
+    getMemberContactCreateRecoveryState({
       memberId: id,
       xeroContactId: member.xeroContactId,
     }),
@@ -733,7 +733,9 @@ export async function getAdminMemberDetail(params: {
     auditLogs: auditLogsWithActors,
     xeroContactGroups,
     xeroContactGroupsLoaded,
-    xeroContactCreateRecoveryPending,
+    xeroContactCreateRecoveryState,
+    xeroContactCreateRecoveryPending:
+      xeroContactCreateRecoveryState === "PROVIDER_CREATED_LINK_PENDING",
     deleteEligibility,
     lifecycleActionRequests,
     openCancellationRequest: openCancellationParticipant

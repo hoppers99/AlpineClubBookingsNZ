@@ -84,6 +84,7 @@ import type {
   AdminMemberXeroActionError,
   XeroActionRecovery,
 } from "@/lib/admin-member-xero-actions";
+import type { MemberContactCreateRecoveryState } from "@/lib/xero-contact-create-recovery";
 import {
   getXeroPartialSuccessGuidance,
   isXeroPartialSuccessRecovery,
@@ -95,6 +96,9 @@ import {
 export const formatMemberAuditLogSummary = formatMemberAuditLogSummaryHelper;
 export const parseInviteAuditDetails = parseInviteAuditDetailsHelper;
 export const getAuditActorDisplayName = getAuditActorDisplayNameHelper;
+
+const XERO_CONTACT_CREATE_IN_PROGRESS_GUIDANCE =
+  "A Xero contact create is still in progress or awaiting recovery. Do not start another create. Refresh the member before taking another Xero action.";
 
 export default function MemberDetailPage({
   params,
@@ -154,16 +158,16 @@ export default function MemberDetailPage({
   const [xeroError, setXeroError] = useState("");
   const [xeroRecoveryError, setXeroRecoveryError] = useState("");
   const [xeroRecoveryGuidance, setXeroRecoveryGuidance] = useState("");
-  const [xeroRecovery, setXeroRecovery] =
-    useState<XeroActionRecovery | null>(null);
+  const [, setXeroRecovery] = useState<XeroActionRecovery | null>(null);
   const [xeroRecoveryMemberId, setXeroRecoveryMemberId] =
     useState<string | null>(null);
+  const [xeroCreateRecoveryDisplayState, setXeroCreateRecoveryDisplayState] =
+    useState<MemberContactCreateRecoveryState | null>(null);
   const [xeroRecoveryAttention, setXeroRecoveryAttention] = useState(0);
-  // A provider-created/local-link-unconfirmed recovery may arrive while the
-  // page still holds the member snapshot from before that action. Require one
-  // later successful member GET before that old `pending=false` value is
-  // allowed to clear the recovery. Failed reads do not advance this version,
-  // so the warning and Create suppression remain available for recovery.
+  // A create recovery may arrive while the page still holds the member
+  // snapshot from before that action. Require one later successful member GET
+  // before an absent server recovery state can clear it. Failed reads do not
+  // advance this version, so the warning and Create suppression remain active.
   const [authoritativeMemberReadVersion, setAuthoritativeMemberReadVersion] =
     useState(0);
   const [xeroRecoveryClearAfterReadVersion, setXeroRecoveryClearAfterReadVersion] =
@@ -198,12 +202,22 @@ export default function MemberDetailPage({
     await fetchMemberWithResult();
   }, [fetchMemberWithResult]);
 
+  const serverXeroContactCreateRecoveryState =
+    member?.xeroContactCreateRecoveryState ??
+    (member?.xeroContactCreateRecoveryPending
+      ? "PROVIDER_CREATED_LINK_PENDING"
+      : null);
+
   useEffect(() => {
     if (!member || member.id !== id) return;
-    const recoveryKind = xeroRecovery?.recoveryKind;
-    if (!member.xeroContactId && member.xeroContactCreateRecoveryPending) {
+    if (
+      !member.xeroContactId &&
+      serverXeroContactCreateRecoveryState ===
+        "PROVIDER_CREATED_LINK_PENDING"
+    ) {
       if (
-        recoveryKind === "CONTACT_CREATED_LINK_UNCONFIRMED" &&
+        xeroCreateRecoveryDisplayState ===
+          "PROVIDER_CREATED_LINK_PENDING" &&
         xeroRecoveryMemberId === id
       ) {
         return;
@@ -217,6 +231,7 @@ export default function MemberDetailPage({
         xeroPostProcessingPending: true,
       });
       setXeroRecoveryMemberId(id);
+      setXeroCreateRecoveryDisplayState("PROVIDER_CREATED_LINK_PENDING");
       setXeroRecoveryGuidance(guidance);
       setXeroRecoveryClearAfterReadVersion(
         authoritativeMemberReadVersion + 1,
@@ -228,13 +243,46 @@ export default function MemberDetailPage({
       return;
     }
     if (
-      recoveryKind === "CONTACT_CREATED_LINK_UNCONFIRMED" &&
+      !member.xeroContactId &&
+      serverXeroContactCreateRecoveryState === "CREATE_IN_PROGRESS"
+    ) {
+      // A route response that already proved provider creation is stronger
+      // evidence than the plain RUNNING reservation visible to this GET.
+      if (
+        xeroRecoveryMemberId === id &&
+        xeroCreateRecoveryDisplayState ===
+          "PROVIDER_CREATED_LINK_PENDING"
+      ) {
+        return;
+      }
+      if (
+        xeroRecoveryMemberId === id &&
+        xeroCreateRecoveryDisplayState === "CREATE_IN_PROGRESS"
+      ) {
+        return;
+      }
+      setXeroRecovery(null);
+      setXeroRecoveryMemberId(id);
+      setXeroCreateRecoveryDisplayState("CREATE_IN_PROGRESS");
+      setXeroRecoveryGuidance(XERO_CONTACT_CREATE_IN_PROGRESS_GUIDANCE);
+      setXeroRecoveryClearAfterReadVersion(
+        authoritativeMemberReadVersion + 1,
+      );
+      setXeroRecoveryError(
+        `${XERO_CONTACT_CREATE_IN_PROGRESS_GUIDANCE} The member has no confirmed Xero contact link.`,
+      );
+      setXeroRecoveryAttention((value) => value + 1);
+      return;
+    }
+    if (
+      xeroCreateRecoveryDisplayState !== null &&
       xeroRecoveryMemberId === id &&
       xeroRecoveryClearAfterReadVersion !== null &&
       authoritativeMemberReadVersion >= xeroRecoveryClearAfterReadVersion
     ) {
       setXeroRecovery(null);
       setXeroRecoveryMemberId(null);
+      setXeroCreateRecoveryDisplayState(null);
       setXeroRecoveryGuidance("");
       setXeroRecoveryError("");
       setXeroRecoveryClearAfterReadVersion(null);
@@ -243,7 +291,8 @@ export default function MemberDetailPage({
     authoritativeMemberReadVersion,
     id,
     member,
-    xeroRecovery?.recoveryKind,
+    serverXeroContactCreateRecoveryState,
+    xeroCreateRecoveryDisplayState,
     xeroRecoveryClearAfterReadVersion,
     xeroRecoveryMemberId,
   ]);
@@ -272,6 +321,11 @@ export default function MemberDetailPage({
       setXeroRecoveryGuidance(guidance);
       setXeroRecovery(error.recovery);
       setXeroRecoveryMemberId(id);
+      setXeroCreateRecoveryDisplayState(
+        error.recovery.recoveryKind === "CONTACT_CREATED_LINK_UNCONFIRMED"
+          ? "PROVIDER_CREATED_LINK_PENDING"
+          : null,
+      );
       setXeroRecoveryClearAfterReadVersion(
         error.recovery.recoveryKind === "CONTACT_CREATED_LINK_UNCONFIRMED"
           ? authoritativeMemberReadVersion + 1
@@ -283,10 +337,10 @@ export default function MemberDetailPage({
   );
 
   const xeroCreateSuppressed =
-    (!member?.xeroContactId &&
-      member?.xeroContactCreateRecoveryPending === true) ||
-    (xeroRecoveryMemberId === id &&
-      xeroRecovery?.recoveryKind === "CONTACT_CREATED_LINK_UNCONFIRMED");
+    !member?.xeroContactId &&
+    (serverXeroContactCreateRecoveryState !== null ||
+      (xeroRecoveryMemberId === id &&
+        xeroCreateRecoveryDisplayState !== null));
 
   // Dependent dialog state
   const {
