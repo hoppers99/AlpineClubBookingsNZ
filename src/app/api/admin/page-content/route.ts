@@ -601,16 +601,10 @@ export async function DELETE(request: NextRequest) {
     }),
   ]);
 
-  // Is the public header's Book Now button pointing here right now? Gated on the
-  // target as well as the FK: the settings PUT never persists a stray page id
-  // while the target is the booking flow, and a legacy row that did would already
-  // be sending visitors to the booking flow and will keep doing so, so warning
-  // about it would be warning about nothing.
-  const bookNowTargetSettings = await prisma.publicContentSettings.findFirst({
-    where: { bookNowPageId: existing.id, bookNowTarget: "PAGE" },
-    select: { id: true },
-  });
-  const wasBookNowTarget = bookNowTargetSettings !== null;
+  // Was the public header's Book Now button pointing here? Answered by the same
+  // statement that moves it, inside the transaction below, rather than by a read
+  // taken out here and hoped to still be true when the delete lands.
+  let wasBookNowTarget = false;
   const referencedBySlugs = referencingPages.map((page) => page.slug);
   const referencedByFooterSections = referencingFooterSections.map(
     (section) => section.key,
@@ -622,34 +616,40 @@ export async function DELETE(request: NextRequest) {
     // Repoint the Book Now button BEFORE the delete, in the same transaction
     // (first review, finding 1). `onDelete: SetNull` would clear the id and leave
     // the target reading "PAGE", and that pair is one the settings panel's own PUT
-    // refuses to save — wedging every unrelated control in that panel. Writing it
-    // here means the only states this route can leave behind are states that
-    // panel accepts. It is recorded, not silent: `wasBookNowTarget` goes into the
-    // audit metadata below and into the response, which is what the confirmation
-    // warned about and what the post-delete message repeats. No second
+    // refuses to save — wedging every unrelated control in that panel (fee and
+    // policy visibility, the committee photo, `showBookNow`) until the officer
+    // noticed the empty selector and moved the radio by hand. Writing it here
+    // means the only states this route can leave behind are states that panel
+    // accepts.
+    //
+    // ONE scoped statement, and the same statement answers whether the button
+    // pointed here: `updateMany` touches only a row that still points at this
+    // page with the target still on `PAGE`, so `count` is the fact at delete
+    // time rather than a read taken earlier. That closes the window in both
+    // directions — a second officer who repoints AT this page between the
+    // confirmation and the delete cannot leave the wedged pair behind, and one
+    // who repoints at ANOTHER page keeps their choice, because the where-clause
+    // no longer matches their row and the FK then has nothing to null. Gated on
+    // the target as well as the id for the same reason the warning is: the
+    // settings PUT never persists a stray page id while the target is the
+    // booking flow, and a legacy row that did is already sending visitors to
+    // the booking flow and will keep doing so.
+    //
+    // Recorded, not silent: `wasBookNowTarget` goes into the audit metadata
+    // below and into the response, which is what the confirmation warned about
+    // and what the post-delete message repeats. No second
     // PUBLIC_CONTENT_SETTINGS_UPDATED row is written for it on purpose — the
     // deletion entry is the one that explains WHY the target moved, and the page
     // id it moved off is the entity that entry is already about.
-    //
-    // Written by id, not conditioned on the pair this request read: one
-    // statement, whose result does not depend on what else committed in
-    // between. The cost is stated rather than hidden — if a SECOND officer
-    // repoints the button at another page in the window between the read above
-    // and this write, their choice is overwritten with the booking flow. That
-    // is narrow (two content officers, the same singleton row, the same
-    // instant), it is visible (the panel shows the saved value, and this
-    // deletion's own audit entry records that the delete moved the target), and
-    // it is one click to redo.
-    if (bookNowTargetSettings !== null) {
-      await tx.publicContentSettings.update({
-        where: { id: bookNowTargetSettings.id },
-        data: {
-          bookNowTarget: "BOOKING_FLOW",
-          bookNowPageId: null,
-          updatedByMemberId: guard.session.user.id,
-        },
-      });
-    }
+    const repointed = await tx.publicContentSettings.updateMany({
+      where: { bookNowPageId: existing.id, bookNowTarget: "PAGE" },
+      data: {
+        bookNowTarget: "BOOKING_FLOW",
+        bookNowPageId: null,
+        updatedByMemberId: guard.session.user.id,
+      },
+    });
+    wasBookNowTarget = repointed.count > 0;
 
     await tx.pageContent.delete({ where: { id: existing.id } });
 

@@ -12,9 +12,8 @@ const mocks = vi.hoisted(() => ({
   pageContentCreate: vi.fn(),
   pageContentUpdate: vi.fn(),
   pageContentDelete: vi.fn(),
-  publicContentSettingsFindFirst: vi.fn(),
   publicContentSettingsFindUnique: vi.fn(),
-  publicContentSettingsUpdate: vi.fn(),
+  publicContentSettingsUpdateMany: vi.fn(),
   publicContentSettingsUpsert: vi.fn(),
   siteContentFindMany: vi.fn(),
   auditLogCreate: vi.fn(),
@@ -71,9 +70,8 @@ vi.mock("@/lib/prisma", () => ({
       delete: mocks.pageContentDelete,
     },
     publicContentSettings: {
-      findFirst: mocks.publicContentSettingsFindFirst,
       findUnique: mocks.publicContentSettingsFindUnique,
-      update: mocks.publicContentSettingsUpdate,
+      updateMany: mocks.publicContentSettingsUpdateMany,
       upsert: mocks.publicContentSettingsUpsert,
     },
     siteContent: {
@@ -384,8 +382,9 @@ describe("DELETE /api/admin/page-content", () => {
     mocks.pageContentFindUnique.mockResolvedValue(probeRow);
     mocks.pageContentFindMany.mockResolvedValue([]);
     mocks.siteContentFindMany.mockResolvedValue([]);
-    mocks.publicContentSettingsFindFirst.mockResolvedValue(null);
-    mocks.publicContentSettingsUpdate.mockResolvedValue({ id: "default" });
+    // The default: the Book Now button points somewhere else, so the scoped
+    // repoint matches no row. `count` is what the route reads, not a row.
+    mocks.publicContentSettingsUpdateMany.mockResolvedValue({ count: 0 });
     mocks.pageContentDelete.mockResolvedValue(probeRow);
     mocks.auditLogCreate.mockResolvedValue({});
     // Interactive transaction: run the callback against the mocked models, so
@@ -393,7 +392,9 @@ describe("DELETE /api/admin/page-content", () => {
     mocks.transaction.mockImplementation(async (callback) =>
       callback({
         pageContent: { delete: mocks.pageContentDelete },
-        publicContentSettings: { update: mocks.publicContentSettingsUpdate },
+        publicContentSettings: {
+          updateMany: mocks.publicContentSettingsUpdateMany,
+        },
         auditLog: { create: mocks.auditLogCreate },
       }),
     );
@@ -533,6 +534,9 @@ describe("DELETE /api/admin/page-content", () => {
     mocks.transaction.mockImplementation(async (callback) => {
       const result = await callback({
         pageContent: { delete: mocks.pageContentDelete },
+        publicContentSettings: {
+          updateMany: mocks.publicContentSettingsUpdateMany,
+        },
         auditLog: { create: mocks.auditLogCreate },
       });
       order.push("transaction");
@@ -630,7 +634,7 @@ describe("DELETE /api/admin/page-content", () => {
   });
 
   it("reports that the Book Now button was pointing at the deleted page", async () => {
-    mocks.publicContentSettingsFindFirst.mockResolvedValue({ id: "default" });
+    mocks.publicContentSettingsUpdateMany.mockResolvedValue({ count: 1 });
 
     const response = await DELETE(jsonRequest("DELETE", { id: "page-1" }));
     const body = await response.json();
@@ -640,7 +644,7 @@ describe("DELETE /api/admin/page-content", () => {
     // Gated on the live target, not merely the stored id: the settings PUT never
     // keeps a page id while the target is the booking flow, and a legacy row
     // that did is already sending visitors to the booking flow.
-    expect(mocks.publicContentSettingsFindFirst).toHaveBeenCalledWith(
+    expect(mocks.publicContentSettingsUpdateMany).toHaveBeenCalledWith(
       expect.objectContaining({
         where: { bookNowPageId: "page-1", bookNowTarget: "PAGE" },
       }),
@@ -658,11 +662,10 @@ describe("DELETE /api/admin/page-content", () => {
   // policy visibility, committee photo, showBookNow) until they noticed the empty
   // selector and moved the radio themselves.
   it("repoints the Book Now target inside the same transaction", async () => {
-    mocks.publicContentSettingsFindFirst.mockResolvedValue({ id: "default" });
     const order: string[] = [];
-    mocks.publicContentSettingsUpdate.mockImplementation(async () => {
+    mocks.publicContentSettingsUpdateMany.mockImplementation(async () => {
       order.push("settings");
-      return { id: "default" };
+      return { count: 1 };
     });
     mocks.pageContentDelete.mockImplementation(async () => {
       order.push("delete");
@@ -672,8 +675,8 @@ describe("DELETE /api/admin/page-content", () => {
     const response = await DELETE(jsonRequest("DELETE", { id: "page-1" }));
 
     expect(response.status).toBe(200);
-    expect(mocks.publicContentSettingsUpdate).toHaveBeenCalledWith({
-      where: { id: "default" },
+    expect(mocks.publicContentSettingsUpdateMany).toHaveBeenCalledWith({
+      where: { bookNowPageId: "page-1", bookNowTarget: "PAGE" },
       data: {
         bookNowTarget: "BOOKING_FLOW",
         bookNowPageId: null,
@@ -686,13 +689,29 @@ describe("DELETE /api/admin/page-content", () => {
     expect(order).toEqual(["settings", "delete"]);
   });
 
-  it("does not touch the settings row when the button pointed elsewhere", async () => {
-    mocks.publicContentSettingsFindFirst.mockResolvedValue(null);
+  // The repoint is scoped rather than conditioned on an earlier read, so it is
+  // issued on every delete and simply matches nothing when the button points
+  // elsewhere. That is the direction that matters: a second officer who repoints
+  // AT this page after the confirmation is still covered, and one who repoints at
+  // ANOTHER page keeps their choice because the where-clause no longer matches.
+  it("cannot move a Book Now target that points at another page", async () => {
+    mocks.publicContentSettingsUpdateMany.mockResolvedValue({ count: 0 });
 
     const response = await DELETE(jsonRequest("DELETE", { id: "page-1" }));
+    const body = await response.json();
 
     expect(response.status).toBe(200);
-    expect(mocks.publicContentSettingsUpdate).not.toHaveBeenCalled();
+    // No row matched, so nothing moved and nothing is claimed to have moved.
+    expect(body.wasBookNowTarget).toBe(false);
+    const [auditEvent] =
+      mocks.buildStructuredAuditLogCreateArgs.mock.calls.at(-1)!;
+    expect(auditEvent.metadata.wasBookNowTarget).toBe(false);
+    // …and the statement it did issue could only ever have hit a row still
+    // pointing at the page being deleted.
+    const [[{ where }]] = mocks.publicContentSettingsUpdateMany.mock.calls as [
+      [{ where: Record<string, unknown> }],
+    ];
+    expect(where).toEqual({ bookNowPageId: "page-1", bookNowTarget: "PAGE" });
   });
 
   // The finding-1 contract stated as the property that actually matters: the pair
@@ -701,12 +720,12 @@ describe("DELETE /api/admin/page-content", () => {
   // shape, because the wedge was that route's validation rejecting this route's
   // leftovers.
   it("leaves a Book Now pair the Public Content Settings PUT will accept", async () => {
-    mocks.publicContentSettingsFindFirst.mockResolvedValue({ id: "default" });
+    mocks.publicContentSettingsUpdateMany.mockResolvedValue({ count: 1 });
 
     const deleteResponse = await DELETE(jsonRequest("DELETE", { id: "page-1" }));
     expect(deleteResponse.status).toBe(200);
 
-    const [[{ data: written }]] = mocks.publicContentSettingsUpdate.mock
+    const [[{ data: written }]] = mocks.publicContentSettingsUpdateMany.mock
       .calls as [[{ data: { bookNowTarget: string; bookNowPageId: null } }]];
 
     // What the panel now loads, and what it sends back when the officer saves an
