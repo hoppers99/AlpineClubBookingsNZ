@@ -42,6 +42,13 @@ import "./ai-diagnostics-budget-race.realdb.test";
 // cancellation writers. Its own describe stays skipped unless the shared race
 // flag is set, and its uniquely-namespaced fixtures are cleaned independently.
 import "./bed-allocation-removal-races.realdb.test";
+// #2595 reuses the same guarded disposable PostgreSQL to prove that a member
+// merge cannot leave two people sharing a double bed with no confirmed
+// partnership, driving the real `executeMemberMerge` and the real
+// bed-allocation reconciliation. Its own describe stays skipped unless the
+// shared race flag is set, and its uniquely-namespaced fixtures are cleaned
+// independently.
+import "./member-merge-shared-double-races.realdb.test";
 // #2374 (AID-5) deliberately is NOT imported here, unlike the two suites above.
 // `ai-diagnostics-select-only-role.realdb.test.ts` provisions and drops a cluster
 // ROLE and revokes `TEMPORARY ... FROM PUBLIC` on the shared throwaway database
