@@ -127,21 +127,28 @@ export async function POST(
         where: { id },
         data: { xeroContactId: parsed.data.xeroContactId },
       });
+      // `XeroObjectLink.localId` has no FK. Keep the canonical CONTACT link in
+      // the same target-Member FOR UPDATE transaction as xeroContactId so merge
+      // can never delete the loser in a post-link/pre-ledger gap and leave a
+      // dangling active link behind.
+      await upsertXeroObjectLink(
+        {
+          localModel: "Member",
+          localId: id,
+          xeroObjectType: "CONTACT",
+          xeroObjectId: parsed.data.xeroContactId,
+          xeroObjectUrl: buildXeroContactUrl(parsed.data.xeroContactId),
+          role: "CONTACT",
+          metadata: {
+            contactName: contact.name ?? null,
+            linkedManually: true,
+          },
+        },
+        { store: tx },
+      );
     });
     memberLinkCommitted = true;
     subscriptionRefreshPending = true;
-    await upsertXeroObjectLink({
-      localModel: "Member",
-      localId: id,
-      xeroObjectType: "CONTACT",
-      xeroObjectId: parsed.data.xeroContactId,
-      xeroObjectUrl: buildXeroContactUrl(parsed.data.xeroContactId),
-      role: "CONTACT",
-      metadata: {
-        contactName: contact.name ?? null,
-        linkedManually: true,
-      },
-    });
 
     const flushedSubscriptionHistory = await flushMemberSubscriptionHistory(id);
     let warning: string | undefined;
