@@ -283,6 +283,70 @@ describe("ConfirmPendingGuestsButton", () => {
     ).toBeNull();
   });
 
+  it("keeps cancelled refund recovery distinct from booking finalisation pending", async () => {
+    const scrollIntoView = vi.fn();
+    Object.defineProperty(HTMLElement.prototype, "scrollIntoView", {
+      configurable: true,
+      value: scrollIntoView,
+    });
+    stubFetch({
+      ok: false,
+      body: {
+        error: "private provider detail",
+        status: "CANCELLED",
+        refunded: false,
+        refundRecoveryPending: true,
+        paymentReceived: true,
+        paymentIntentId: "pi_private",
+      },
+    });
+    render(
+      <ConfirmPendingGuestsButton
+        bookingId="b1"
+        hasSavedPaymentMethod
+        finalPriceCents={10000}
+      />,
+    );
+
+    const alert = document.getElementById("confirm-pending-guests-error-b1");
+    expect(alert?.getAttribute("role")).toBe("alert");
+    expect(alert?.textContent).toBe("");
+
+    fireEvent.click(
+      screen.getByRole("button", { name: "Confirm pending guests" }),
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Charge and confirm" }));
+    fireEvent.click(
+      await screen.findByRole("button", { name: "Confirm and email member" }),
+    );
+
+    await waitFor(() =>
+      expect(alert?.textContent).toMatch(
+        /booking cancelled - refund recovery pending/i,
+      ),
+    );
+    expect(alert?.textContent).toMatch(/automatic refund recovery is pending/i);
+    expect(alert?.textContent).toMatch(/do not charge again/i);
+    expect(alert?.textContent).not.toMatch(/finalisation unconfirmed/i);
+    expect(alert?.textContent).not.toContain("private provider detail");
+    expect(alert?.textContent).not.toContain("pi_private");
+    expect(document.activeElement).toBe(alert);
+    expect(scrollIntoView).toHaveBeenCalledWith({
+      behavior: "smooth",
+      block: "center",
+    });
+    expect(refresh).toHaveBeenCalledTimes(1);
+    expect(
+      screen.queryByRole("button", { name: "Confirm pending guests" }),
+    ).toBeNull();
+
+    fireEvent.click(
+      screen.getByRole("button", { name: "Reload booking and refund status" }),
+    );
+    expect(refresh).toHaveBeenCalledTimes(2);
+    expect(alert?.textContent).toMatch(/automatic refund recovery is pending/i);
+  });
+
   it("does not claim a charge or suppress retry without both positive payment facts", async () => {
     stubFetch({
       ok: false,

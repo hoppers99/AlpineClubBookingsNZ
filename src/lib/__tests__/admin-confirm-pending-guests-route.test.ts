@@ -397,8 +397,8 @@ describe("POST /api/admin/bookings/[id]/confirm-pending-guests", () => {
     expect(body).toMatchObject({
       paymentReceived: true,
       finalisationPending: true,
-      paymentIntentId: "pi_1",
     });
+    expect(body).not.toHaveProperty("paymentIntentId");
     expect(body.error).toContain("charge succeeded");
     // The captured charge was durably recorded BEFORE reconciliation ran.
     expect(mocks.upsertPaymentIntentTransaction).toHaveBeenCalledWith(
@@ -442,7 +442,6 @@ describe("POST /api/admin/bookings/[id]/confirm-pending-guests", () => {
       code: HOSTING_COVERAGE_RETRY_CODE,
       paymentReceived: true,
       finalisationPending: true,
-      paymentIntentId: "pi_hosting_retry",
     });
     expect(mocks.upsertPaymentIntentTransaction).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -551,7 +550,7 @@ describe("POST /api/admin/bookings/[id]/confirm-pending-guests", () => {
     expect(mocks.enqueueXero).not.toHaveBeenCalled();
   });
 
-  it("surfaces a refund failure after a capacity-failed charge as a 500 (#1418)", async () => {
+  it("reports durable refund recovery after a capacity-failed charge cancels the booking (#1418)", async () => {
     mocks.bookingFindUnique.mockResolvedValue(makeBooking());
     mocks.chargePaymentMethod.mockResolvedValue({
       id: "pi_1",
@@ -566,12 +565,16 @@ describe("POST /api/admin/bookings/[id]/confirm-pending-guests", () => {
     const res = await POST(makeRequest(), { params });
     const body = await res.json();
 
-    expect(res.status).toBe(500);
+    expect(res.status).toBe(409);
     expect(body).toMatchObject({
+      status: "CANCELLED",
+      refunded: false,
+      refundRecoveryPending: true,
       paymentReceived: true,
-      finalisationPending: true,
-      paymentIntentId: "pi_1",
     });
+    expect(body.error).toContain("automatic refund recovery is pending");
+    expect(body).not.toHaveProperty("finalisationPending");
+    expect(body).not.toHaveProperty("paymentIntentId");
     expect(mocks.sendConfirmedEmail).not.toHaveBeenCalled();
   });
 

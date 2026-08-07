@@ -26,6 +26,21 @@ import { isPaymentReceivedFinalisationPending } from "@/lib/payment-recovery-con
 
 const CAPTURED_CARD_RECOVERY_MESSAGE =
   "The saved card was charged, but the booking could not be finalised yet. Do not charge again. Reload the booking and check its payment status before taking another payment action.";
+const CANCELLED_REFUND_RECOVERY_MESSAGE =
+  "The booking was cancelled because lodge capacity was no longer available. The saved-card charge was captured, but its refund could not be confirmed and automatic refund recovery is pending. Do not charge again. Reload the booking and check the refund status; contact the lodge administrator if it is not confirmed.";
+
+type PaymentRecoveryKind = "finalisation-pending" | "refund-pending";
+
+function isCancelledRefundRecovery(value: unknown): boolean {
+  if (!value || typeof value !== "object") return false;
+  const candidate = value as Record<string, unknown>;
+  return (
+    candidate.status === "CANCELLED" &&
+    candidate.refunded === false &&
+    candidate.refundRecoveryPending === true &&
+    candidate.paymentReceived === true
+  );
+}
 
 interface ConfirmPendingGuestsButtonProps {
   bookingId: string;
@@ -55,7 +70,8 @@ export function ConfirmPendingGuestsButton({
   const [confirming, setConfirming] = useState(false);
   const [error, setError] = useState("");
   const [errorAttentionVersion, setErrorAttentionVersion] = useState(0);
-  const [capturedCardRecovery, setCapturedCardRecovery] = useState(false);
+  const [paymentRecoveryKind, setPaymentRecoveryKind] =
+    useState<PaymentRecoveryKind | null>(null);
   // #1769b: the admin's explicit email-choice dialog, shown only when this
   // confirmation would actually send the member a confirmation email.
   const [notifyDialogOpen, setNotifyDialogOpen] = useState(false);
@@ -127,8 +143,19 @@ export function ConfirmPendingGuestsButton({
       }
 
       const data = await res.json().catch(() => ({}));
+      if (isCancelledRefundRecovery(data)) {
+        setPaymentRecoveryKind("refund-pending");
+        showActionError(CANCELLED_REFUND_RECOVERY_MESSAGE);
+        toast.error(CANCELLED_REFUND_RECOVERY_MESSAGE);
+        setConfirming(false);
+        // The cancellation is canonical and the refund recovery is durable.
+        // Keep that local proof visible if the parent refresh cannot replace
+        // this card, and never offer the charge action again from this mount.
+        router.refresh();
+        return;
+      }
       if (isPaymentReceivedFinalisationPending(data)) {
-        setCapturedCardRecovery(true);
+        setPaymentRecoveryKind("finalisation-pending");
         showActionError(CAPTURED_CARD_RECOVERY_MESSAGE);
         toast.error(CAPTURED_CARD_RECOVERY_MESSAGE);
         setConfirming(false);
@@ -193,19 +220,23 @@ export function ConfirmPendingGuestsButton({
           error={error}
           attentionKey={errorAttentionVersion}
           heading={
-            capturedCardRecovery
-              ? "Saved card charged - finalisation unconfirmed"
-              : undefined
+            paymentRecoveryKind === "refund-pending"
+              ? "Booking cancelled - refund recovery pending"
+              : paymentRecoveryKind === "finalisation-pending"
+                ? "Saved card charged - finalisation unconfirmed"
+                : undefined
           }
           action={
-            capturedCardRecovery ? (
+            paymentRecoveryKind ? (
               <Button type="button" variant="outline" size="sm" onClick={() => router.refresh()}>
-                Reload booking status
+                {paymentRecoveryKind === "refund-pending"
+                  ? "Reload booking and refund status"
+                  : "Reload booking status"}
               </Button>
             ) : undefined
           }
         />
-        {!capturedCardRecovery ? (
+        {!paymentRecoveryKind ? (
           <ViewOnlyActionButton
             canEdit={canEdit}
             describeReason={false}
