@@ -1,6 +1,7 @@
 "use client"
 
 import { useEffect, useState } from "react"
+import Link from "next/link"
 import { Button } from "@/components/ui/button"
 import { FocusedActionError } from "@/components/focused-action-error"
 import { Input } from "@/components/ui/input"
@@ -55,10 +56,23 @@ export function ContactSyncPanel({
   const [bookingSearching, setBookingSearching] = useState(false)
   const [selectedBooking, setSelectedBooking] = useState<ForceSyncBookingOption | null>(null)
   const [errorAttentionVersion, setErrorAttentionVersion] = useState(0)
+  const [recoveryMember, setRecoveryMember] = useState<{
+    id: string
+    name: string
+  } | null>(null)
 
-  const showActionError = (message: string) => {
+  const showActionError = (
+    message: string,
+    affectedMember: { id: string; name: string } | null = null,
+  ) => {
+    setRecoveryMember(affectedMember)
     setError(message)
     setErrorAttentionVersion((version) => version + 1)
+  }
+
+  const clearActionError = () => {
+    setError("")
+    setRecoveryMember(null)
   }
 
   useEffect(() => {
@@ -93,7 +107,7 @@ export function ContactSyncPanel({
       } catch (err) {
         if (!cancelled) {
           setMemberResults([])
-          setError(err instanceof Error ? err.message : "Failed to search members")
+          showActionError(err instanceof Error ? err.message : "Failed to search members")
         }
       } finally {
         if (!cancelled) setMemberSearching(false)
@@ -126,7 +140,7 @@ export function ContactSyncPanel({
       } catch (err) {
         if (!cancelled) {
           setXeroContactResults([])
-          setError(err instanceof Error ? err.message : "Failed to search Xero contacts")
+          showActionError(err instanceof Error ? err.message : "Failed to search Xero contacts")
         }
       } finally {
         if (!cancelled) setXeroContactSearching(false)
@@ -159,7 +173,7 @@ export function ContactSyncPanel({
       } catch (err) {
         if (!cancelled) {
           setBookingResults([])
-          setError(err instanceof Error ? err.message : "Failed to search bookings")
+          showActionError(err instanceof Error ? err.message : "Failed to search bookings")
         }
       } finally {
         if (!cancelled) setBookingSearching(false)
@@ -174,7 +188,7 @@ export function ContactSyncPanel({
   const syncContacts = async () => {
     setSyncing("contacts")
     setSyncResult(null)
-    setError("")
+    clearActionError()
     try {
       const data = await postJson<SyncResult>("/api/admin/xero/sync-contacts", { fullResync: true }, "Sync failed")
       setSyncResult(data)
@@ -201,7 +215,7 @@ export function ContactSyncPanel({
       return
     }
     setForceSyncing(true)
-    setError("")
+    clearActionError()
     onMessage("")
     try {
       const query = forceSyncType === "INVOICE" ? selectedBooking?.id : selectedMember?.id
@@ -223,7 +237,7 @@ export function ContactSyncPanel({
       return
     }
     setImportingXeroContactId(contact.contactId)
-    setError("")
+    clearActionError()
     onMessage("")
     try {
       let response: Response
@@ -260,9 +274,17 @@ export function ContactSyncPanel({
           setMemberResults([])
           setXeroContactResults([])
           onRefreshDiagnostics()
-          throw new Error(
+          showActionError(
             `${getXeroPartialSuccessGuidance(data)} Xero diagnostics are being refreshed; open the member record and check its current state before taking another action.`,
+            {
+              id: data.memberId,
+              name:
+                [contact.firstName, contact.lastName]
+                  .filter(Boolean)
+                  .join(" ") || contact.name,
+            },
           )
+          return
         }
         throw new Error(data.error || "Failed to import Xero contact")
       }
@@ -288,7 +310,7 @@ export function ContactSyncPanel({
 
   const changeForceSyncType = (value: ForceSyncType) => {
     setForceSyncType(value)
-    setError("")
+    clearActionError()
     setSelectedMember(null)
     setMemberSearch("")
     setMemberResults([])
@@ -307,6 +329,17 @@ export function ContactSyncPanel({
         error={error}
         attentionKey={errorAttentionVersion}
         className="mb-3"
+        action={
+          recoveryMember ? (
+            <Button asChild variant="outline" size="sm">
+              <Link
+                href={`/admin/members/${encodeURIComponent(recoveryMember.id)}`}
+              >
+                Open affected member
+              </Link>
+            </Button>
+          ) : undefined
+        }
       />
       <SectionCard
         id="xero-section-contactSync"
@@ -358,7 +391,7 @@ export function ContactSyncPanel({
               setSelectedBooking={setSelectedBooking}
               bookingResults={bookingResults}
               setBookingResults={setBookingResults}
-              clearError={() => setError("")}
+              clearError={clearActionError}
             />
             <Button
               onClick={() => void forceSync()}
