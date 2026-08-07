@@ -17,6 +17,6 @@
 
   The escape hatch is gone: a connection that cannot take the lock is now refused outright
   rather than handed a proof it did not earn. All fourteen suites were reworked to model
-  what the lock genuinely reads, and each one now demonstrably fails if the protection is
-  removed — which is the property that was missing before. No club-facing behaviour
-  changes, and nothing is required of operators.
+  what the lock genuinely reads, so they exercise the protection instead of stepping around
+  it, and the check that the lock is actually taken is pinned directly. No club-facing
+  behaviour changes, and nothing is required of operators.

@@ -1125,9 +1125,18 @@ export async function reconcileAdultMemberHostingReview(
  * belongs to the booking they were making, never to a row reached through it, so
  * a hazard that appears on a sibling always opens PENDING.
  *
- * Costs nothing while the rule is off: the mode reported by the first
- * reconciliation is the same one it evaluated under, so a club that has not
- * turned the policy on pays no extra query on any booking write.
+ * Costs no extra SIBLING work while the rule is off: the mode reported by the
+ * first reconciliation is the same one it evaluated under, so a club that has
+ * not turned the policy on never fans out.
+ *
+ * It is NOT free, though, and this docstring used to claim it was. The
+ * participant fence below is acquired BEFORE the policy mode is read, so a club
+ * with hosting disabled still pays the `FOR KEY SHARE NOWAIT` statement and its
+ * two under-lock re-reads on every booking write — and can still be refused
+ * with the fixed retry 409 by a concurrent member-lifecycle writer, for a rule
+ * it does not use. The sibling seams at `reconcileHostingCoverageForConfirmedCover`
+ * and `enqueueHostingCoverageReevaluationForMember` check the mode first; these
+ * two do not. That asymmetry is tracked as T5 on #2623.
  */
 export async function reconcileAdultMemberHostingReviewWithSiblings(
   bookingId: string,

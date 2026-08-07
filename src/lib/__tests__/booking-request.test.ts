@@ -1774,6 +1774,14 @@ describe("approveBookingRequest", () => {
     expect(JSON.stringify(rawStatements[0][0])).toContain(
       "pg_advisory_xact_lock"
     );
+    // Pin the fence's own statement too. This is the one assertion across the
+    // widened suites that would FAIL if the lock were deleted from
+    // acquireHostingCoverageQueueParticipantProof — the rest model what the
+    // fence reads without asserting that it locked, so without this the seam
+    // could be gutted and stay green.
+    expect(JSON.stringify(rawStatements[1][0])).toContain(
+      "FOR KEY SHARE NOWAIT"
+    );
     expect(
       vi.mocked(prisma.$executeRaw).mock.invocationCallOrder[0]
     ).toBeLessThan(mockedAcquireLodgeCapacityLock.mock.invocationCallOrder[0]);
