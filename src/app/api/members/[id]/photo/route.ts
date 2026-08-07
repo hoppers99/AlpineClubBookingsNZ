@@ -437,7 +437,22 @@ export async function POST(
     targetId: id,
     entityType: "Member",
     entityId: id,
-    category: actor.onBehalf ? "admin" : "account",
+    // `account` unconditionally (#2581). This used to be
+    // `actor.onBehalf ? "admin" : "account"` - the same action on the same record
+    // filed under two different categories depending on WHO acted, which is the
+    // platform's clearest violation of the rule that category follows the
+    // affected business DOMAIN. A member's own photo is account-domain work
+    // whether the member changed it or an administrator did it for them.
+    //
+    // TWO consequences to name, both only for the on-behalf branch. An
+    // administrator's photo change is no longer readable through the support-only
+    // system correlation entry: it needs `membership:view` now, exactly as the
+    // member's own change always did. And because `account` is member-visible
+    // while `admin` is not, the member now sees an administrator's change to their
+    // photo in their own profile timeline — which is the transparent answer, and
+    // the same row they already saw when they made the change themselves. Admin >
+    // Audit Log still shows both to anyone holding `support`.
+    category: "account",
     outcome: "success",
     summary: actor.onBehalf
       ? "Uploaded a member photo on behalf of a member"
@@ -526,7 +541,9 @@ export async function DELETE(
     targetId: id,
     entityType: "Member",
     entityId: id,
-    category: actor.onBehalf ? "admin" : "account",
+    // `account` unconditionally (#2581) - see the note on the upload writer
+    // above; this site carried the same actor-based conditional.
+    category: "account",
     outcome: "success",
     summary: actor.onBehalf
       ? "Removed a member photo on behalf of a member"

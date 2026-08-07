@@ -1,13 +1,13 @@
 import { type AuditLog, Prisma, PrismaClient } from "@prisma/client";
 import { createPrismaPgAdapter } from "@/lib/prisma-adapter";
 import {
-  type AuditCategory,
   type AuditRetentionClass,
   type AuditSeverity,
   classifyAuditRetention,
   sanitizeAuditArchiveText,
   sanitizeAuditMetadata,
 } from "@/lib/audit";
+import { isAuditCategory } from "@/lib/audit-categories";
 import logger from "@/lib/logger";
 import { prisma } from "@/lib/prisma";
 
@@ -356,7 +356,16 @@ export function isAuditLogRetentionCritical(input: {
   return (
     classifyAuditRetention({
       action: input.action,
-      category: input.category as AuditCategory | null | undefined,
+      // NARROWED, not cast (#2581). This reads a STORED row's category, so the
+      // value is whatever was written — including the historical `auth` and
+      // `membership` rows the old open writer type let through, which #2581's
+      // third child inventories rather than rewrites. `as AuditCategory` was
+      // honest while that type ended in `| (string & {})` and accepted anything;
+      // now the type is closed it would be a lie, and it would hide the case from
+      // any future exhaustive check. The guard produces the same answer a cast
+      // does — `classifyAuditRetention` only tests for `security`, `admin` and
+      // `system`, so a non-canonical value falls through to `critical` either way.
+      category: isAuditCategory(input.category) ? input.category : null,
       severity: input.severity as AuditSeverity | null | undefined,
     }) === "critical"
   );
