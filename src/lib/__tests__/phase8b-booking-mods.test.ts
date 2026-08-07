@@ -169,6 +169,10 @@ vi.mock("@/lib/booking-batch-modification-service", () => ({
   modifyBookingBatch: vi.fn(),
 }));
 
+import {
+  fenceMemberFindMany,
+  recordingBookingDouble,
+} from "@/lib/__tests__/support/hosting-participant-fence-double";
 import { auth } from "@/lib/auth";
 import { checkCapacity, checkCapacityForGuestRanges } from "@/lib/capacity";
 import { calculateBookingPrice } from "@/lib/pricing";
@@ -241,6 +245,13 @@ function makeBooking(overrides: Record<string, unknown> = {}) {
 
 // Create a mock tx that behaves like prisma inside a transaction
 function makeTx(booking: ReturnType<typeof makeBooking>) {
+  // #2619: every booking write reconciles the hosting review, and that
+  // reconciliation opens by locking the queue participants FOR KEY SHARE NOWAIT
+  // and re-reading them under that lock. `recordingBookingDouble` replays what
+  // this tx's own `booking.findUnique` served, so the fence's owner/lodge
+  // re-read matches the source the reconciler planned from — a real no-drift
+  // pass, not a bypass.
+  const fenceBooking = recordingBookingDouble(async () => booking);
   return {
     // #1881 — the date/batch service takes the global lock(1) via $executeRaw.
     $executeRaw: vi.fn().mockResolvedValue(undefined),
@@ -254,7 +265,8 @@ function makeTx(booking: ReturnType<typeof makeBooking>) {
     // every prisma/tx double a booking path runs against needs this client.
     adultMemberHostingPolicy: { findMany: vi.fn().mockResolvedValue([]) },
     booking: {
-      findUnique: vi.fn().mockResolvedValue(booking),
+      findUnique: fenceBooking.findUnique,
+      findMany: fenceBooking.findMany,
       update: vi.fn().mockImplementation(({ data }) => {
         const updated = { ...booking, ...data, guests: booking.guests };
         return Promise.resolve(updated);
@@ -287,7 +299,9 @@ function makeTx(booking: ReturnType<typeof makeBooking>) {
       findMany: vi.fn().mockResolvedValue([]),
     },
     member: {
-      findMany: vi.fn().mockResolvedValue([]),
+      // Answers the fence's ids-only existence/order re-read and nothing else;
+      // every other member.findMany still resolves to [] as before.
+      findMany: fenceMemberFindMany(),
     },
     // #1930, E4 — the rate resolver reads these to key rates by membership type.
     seasonalMembershipAssignment: {
