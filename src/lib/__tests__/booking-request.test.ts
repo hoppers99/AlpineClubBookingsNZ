@@ -1299,6 +1299,32 @@ describe("declineBookingRequest", () => {
     });
   });
 
+  it("does not claim hold uncertainty when a committed decline had no hold", async () => {
+    mockedFindUnique
+      .mockResolvedValueOnce(
+        baseRequest({
+          status: BookingRequestStatus.PRICED,
+          heldBookingId: null,
+        }) as never
+      )
+      .mockRejectedValueOnce(new Error("private reload failure"));
+    mockedUpdateMany.mockResolvedValue({ count: 1 } as never);
+
+    await expect(
+      declineBookingRequest({
+        requestId: "req-1",
+        adminMemberId: "admin-1",
+      })
+    ).rejects.toMatchObject({
+      status: 500,
+      message:
+        "The request was declined, but the updated request could not be loaded. Reload the request queue before continuing.",
+      holdReleasePending: false,
+      holdReleaseStatusUnconfirmed: false,
+    });
+    expect(mockedCancelBooking).not.toHaveBeenCalled();
+  });
+
   it("detaches a non-live held booking (already CANCELLED) on a successful decline and proceeds (#1365)", async () => {
     mockedFindUnique
       .mockResolvedValueOnce(

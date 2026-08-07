@@ -1454,13 +1454,22 @@ export async function declineBookingRequest(input: {
     }
   }
 
-    return await prisma.bookingRequest.findUnique({ where: { id: input.requestId } });
+    const updated = await prisma.bookingRequest.findUnique({
+      where: { id: input.requestId },
+    });
+    if (!updated) {
+      throw new Error("Declined booking request could not be reloaded");
+    }
+    return updated;
   } catch (error) {
     if (error instanceof BookingRequestDeclineCommittedError) throw error;
     const holdReleasePending = isHostingCoverageParticipantRetry(error);
+    const holdReleaseStatusUnconfirmed =
+      !holdReleasePending && request.heldBookingId !== null;
     throw new BookingRequestDeclineCommittedError({
-      message:
-        "The request was declined, but its capacity hold status could not be confirmed. Open the held booking and check its status before retrying.",
+      message: holdReleasePending || holdReleaseStatusUnconfirmed
+        ? "The request was declined, but its capacity hold status could not be confirmed. Open the held booking and check its status before retrying."
+        : "The request was declined, but the updated request could not be loaded. Reload the request queue before continuing.",
       status:
         error instanceof BookingRequestError
           ? error.status
@@ -1468,7 +1477,7 @@ export async function declineBookingRequest(input: {
             ? 409
             : 500,
       holdReleasePending,
-      holdReleaseStatusUnconfirmed: !holdReleasePending,
+      holdReleaseStatusUnconfirmed,
       cause: error,
     });
   }
