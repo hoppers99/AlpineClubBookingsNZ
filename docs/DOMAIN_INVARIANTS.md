@@ -5234,11 +5234,64 @@ permissions". The dormant rows are what keep the account inside the
 canLogin-blind `memberHoldsPrivilegedRole` guard for any later archive, and
 deleting them on cancellation would be novel and would weaken that later guard.
 The corollary is a hard constraint on any future work: **a path that reactivates
-a cancelled member would silently restore every privileged role it left in
-place.** No such path exists today — the member edit service and bulk update
-both refuse to reactivate a cancelled member, and nothing writes
-`cancelledAt: null` — and any that is added must clear or re-grant the roles
-deliberately.
+a member who kept privileged roles would silently restore every one of them.**
+Any path that is added must clear or re-grant the roles deliberately.
+
+What refuses reactivation today, precisely. Two paths write `active: true` onto
+an existing member — bulk update (`action: "reactivate"`,
+`src/app/api/admin/members/bulk-update/route.ts`) and the member edit service
+(`updateAdminMember`, `src/lib/admin-member-detail-service.ts`). Every other
+`active: true` in the codebase is on a `member.create` (or the schema's
+`@default(true)`), i.e. a brand-new row that can resurrect nobody. Each of the
+two refuses **three** states, with a 409 naming which:
+
+- **Cancelled** (`cancelledAt` set) and **archived** (`archivedAt` set) — and
+  nothing in the application writes `cancelledAt: null` or `archivedAt: null`, so
+  those two states are terminal.
+- **Deleted** — a member an approved deletion request has anonymised (#2620).
+  This one is NOT covered by the `cancelledAt`/`archivedAt` refusal and was
+  wrongly documented here as if it were. Anonymisation
+  (`POST /api/admin/deletion-requests/[id]`) sets `active: false` but stamps
+  **neither** flag, so a deleted account passed both guards, and `active` is
+  exactly what bulk Reactivate flips. Because anonymisation also retains
+  `canLogin`, `googleSub`, `emailVerified` and the second factor, `active: false`
+  was the only thing between the erased person and a working session carrying
+  their retained admin roles — and a deleted row is `active: false,
+  cancelledAt: null`, i.e. squarely inside the members list's **Inactive**
+  lifecycle filter, so an officer undoing a mistaken bulk deactivate could
+  restore one without intending to. Deletion is recognised by the anonymisation
+  markers it writes — the `DELETED_ACCOUNT` password-hash sentinel and the
+  `@deleted.invalid` address — through the single shared predicate
+  `isDeletedAccountRecord` (`src/lib/deleted-account.ts`). Every path that must
+  recognise a deleted account consults that one predicate; a second copy of the
+  marker test is the drift the module exists to prevent.
+
+Reactivation refusal is not the whole defence for a deleted account, because it
+protects only the application's own write paths. **A deleted account yields no
+session even with `active: true`** (#2620): all three sign-in providers refuse on
+the same predicate, independently of `active` — password and magic-link
+`authorize` return null (the password path still burns its dummy bcrypt compare,
+so the refusal stays timing-identical to an unknown email), and
+`resolveGoogleProfile` returns `refused`. The Google path is the one that most
+needs it: it resolves on `googleSub` alone, never on email, and anonymisation
+does not clear `googleSub`. Behind all three, the per-request token refresh in
+the `jwt` callback sets `sessionInvalidated` for a deleted member, so `auth()`
+nulls the session on the member's next request — which also covers a session
+minted *before* the deletion, since deletion revokes no tokens today. The
+members list surfaces the state as a distinct "Deleted" lifecycle chip and takes
+the row out of bulk selection, so the mistake is hard to make as well as
+refused.
+
+The marker predicate is a strong signal, not a schema invariant: it holds because
+the anonymisation write is the only producer of either marker and nothing else
+clears them. One path does overwrite both — the membership-application approval
+MAP branch (`src/lib/nomination.ts`) rewrites `email` to the applicant's real
+address and, on the non-login→login promotion, writes a fresh `passwordHash` — so
+a mapped-over deleted row stops being recognisable as one. That path writes no
+`active`, so it cannot itself mint a session for an inactive member. Stamping
+`cancelledAt` (or a dedicated `deletedAt`) at anonymisation time would make the
+state structural instead of inferred; it is deliberately still open, because it
+would also change how deleted members appear in every lifecycle filter and count.
 
 The same fact constrains session-authenticated routes: cancellation neither
 clears the rows nor invalidates the JWT (`auth()` invalidates only on

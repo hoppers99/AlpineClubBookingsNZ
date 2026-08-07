@@ -131,6 +131,14 @@ export function MemberTable({
     )
   }
 
+  // #2620: "select all" means all SELECTABLE rows. A member an approved deletion
+  // request has anonymised is never a bulk-action target — bulk Reactivate,
+  // deactivate and set-role all have nothing legitimate to do to an erased
+  // account — so it is excluded here and in the page's toggleSelectAll. Keying
+  // the header tick to the same count stops it sitting unticked forever on a page
+  // that happens to contain one.
+  const selectableCount = members.filter((member) => !member.deletedAccount).length
+
   return (
     <AdminDataTable aria-label="Members">
       <TableHeader>
@@ -141,7 +149,7 @@ export function MemberTable({
               <input
                 type="checkbox"
                 aria-label="Select all members on this page"
-                checked={selectedIds.size === members.length && members.length > 0}
+                checked={selectedIds.size === selectableCount && selectableCount > 0}
                 onChange={onToggleSelectAll}
                 className={CHECKBOX_CLASS}
               />
@@ -223,6 +231,16 @@ export function MemberTable({
                     aria-label={`Select ${name}`}
                     checked={selectedIds.has(member.id)}
                     onChange={() => onToggleSelect(member.id)}
+                    // #2620: an erased account cannot be selected at all, so a
+                    // bulk Reactivate can never reach it by accident. The server
+                    // refuses too (409) — this is the half that stops the
+                    // mistake being made.
+                    disabled={member.deletedAccount === true}
+                    title={
+                      member.deletedAccount
+                        ? "This member has been deleted and cannot be included in a bulk action"
+                        : undefined
+                    }
                     className={CHECKBOX_CLASS}
                   />
                 </TableCell>
