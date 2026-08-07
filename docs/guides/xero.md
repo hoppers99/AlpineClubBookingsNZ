@@ -103,6 +103,10 @@ idempotent — retrying the same work never double-charges.
    contact was created. Resetting the stale operation does not make Create safe:
    reload the member, then explicitly resolve the operation only after checking
    Xero and the member's current link.
+8. Account deletion and Xero contact writes exclude one another. If either page
+   asks you to reload and retry, check the member and deletion request first; do
+   not repeat Create or Link while deletion or contact recovery remains pending.
+   A deleted/anonymised member cannot be sent to or re-linked with Xero.
 
 ### Set up mappings and import (Xero Setup)
 

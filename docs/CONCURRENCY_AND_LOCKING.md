@@ -1156,13 +1156,29 @@ Manual Xero linking uses the symmetric member-row fence. Provider contact lookup
 and cache refresh remain outside transactions; the short local link transaction
 then takes the exact target `Member FOR UPDATE`, re-reads an ambiguous active
 contact-create reservation under that lock, and writes the member link only when
-none exists. If create reserved first, Link returns the fixed privacy-safe 409 and
-writes nothing. If Link locked first, the create reservation's waiting `FOR KEY
-SHARE` resumes after the link commits, re-reads the authoritative
-`Member.xeroContactId`, and refuses before reserving or calling Xero. An ambiguous
+none exists. The `Member.xeroContactId` write and canonical CONTACT
+`XeroObjectLink` upsert commit in that same transaction; the FK-less ledger row
+must never be written after releasing the Member lock because merge could delete
+the losing member in that gap. If create reserved first, Link returns the fixed
+privacy-safe 409 and writes nothing. If Link locked first, the create
+reservation's waiting `FOR KEY SHARE` resumes after the link commits, re-reads
+the authoritative `Member.xeroContactId`, and refuses before reserving or calling
+Xero. An ambiguous
 `CREATE_IN_PROGRESS` member page therefore offers only authoritative refresh;
 the stronger `PROVIDER_CREATED_LINK_PENDING` state still offers Link as its
 recovery action while suppressing another Create.
+
+Account deletion composes the same fence with its existing lifecycle order. While
+holding the target `Member FOR UPDATE`, deletion re-checks the complete active,
+provider-created, or stale-unknown contact-create blocker before anonymising.
+Create-first therefore makes deletion return its safe recovery contract without
+changing the member. Deletion-first makes a waiting create reservation, manual
+Link, or provider-returned local-link phase re-read the canonical deleted marker
+and refuse before any new provider call or local attribution. Provider calls stay
+outside all of these transactions. Real-PostgreSQL races pin both winner orders
+for deletion versus create/manual Link and merge versus manual Link, including no
+provider reservation/call/link when deletion wins and no dangling FK-less link
+when merge wins.
 
 After Xero returns a newly created contact, the operation is durably marked
 `provider_contact_created_local_link_pending` before the local link transaction.

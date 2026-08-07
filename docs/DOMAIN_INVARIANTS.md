@@ -2907,6 +2907,14 @@ compliant indefinitely.
   every consequence mode, including `DISABLED` and review-required. Account
   deletion inherits the same central fence after its existing global → affected
   lodge → member-lifecycle prefix; it carries no route-only duplicate.
+  Under its target `Member FOR UPDATE`, deletion also re-checks the complete Xero
+  contact-create reservation/recovery blocker before anonymising. The symmetric
+  create reservation, manual Link and provider-returned local-link paths re-read
+  the canonical deleted-member marker under their own Member lock before any
+  provider call or attribution. A deleted account can therefore neither send its
+  pre-deletion profile to Xero nor regain a contact link. Manual Link commits the
+  Member pointer and FK-less canonical CONTACT ledger row in the same transaction,
+  so member merge cannot leave a ledger row naming a deleted losing identity.
 - **Every confirming path re-reads the facts at confirmation, and the census proves
   it two ways** (§9). Most reconcile inside their own transaction, which REFUSES an
   uncovered booking at an enforcing club. Those that cannot — capacity claimed, money

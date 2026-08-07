@@ -57,3 +57,14 @@
   either stale reservation to failed preserves its recovery state and merge
   blocker. A local link, terminal success, or explicit resolution removes the
   blocker; an ordinary terminal failure clears the ambiguous state.
+
+  Account deletion now participates in that same contact fence. A contact create
+  or manual Link that wins first makes deletion stop with actionable recovery;
+  deletion that wins first makes every waiting create, manual Link, or local-link
+  phase refuse the anonymised member before another provider call or attribution.
+  Manual Link also commits the member pointer and canonical CONTACT ledger row in
+  one transaction, so member merge cannot leave a dangling Xero link. Deletion
+  errors distinguish a proven pending cancellation, an already committed
+  cancellation with later cleanup pending, and a status that could not be
+  confirmed; already committed cleanup facts remain visible even if the final
+  last-admin guard blocks anonymisation.
