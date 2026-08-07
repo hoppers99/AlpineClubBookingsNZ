@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { Badge } from "@/components/ui/badge";
 import { toast } from "sonner";
@@ -26,6 +26,8 @@ import { ADMIN_VIEW_ONLY_ACTION_REASON } from "@/hooks/use-admin-area-edit-acces
 import { BookingNoEmailsNotice } from "@/components/booking-no-emails-notice";
 import { formatNZDate, formatNZDateTime } from "@/lib/nzst-date";
 import { formatCents } from "@/lib/utils";
+import { FocusedActionError } from "@/components/focused-action-error";
+import { buildHrefWithReturnTo } from "@/lib/internal-return-path";
 
 type ReviewFilter = "PENDING" | "APPROVED" | "REJECTED" | "ALL";
 
@@ -124,8 +126,11 @@ export function BookingApprovalsPanel({
   const [reviewingId, setReviewingId] = useState<string | null>(null);
   const [notesById, setNotesById] = useState<Record<string, string>>({});
   const [error, setError] = useState("");
-  const errorRef = useRef<HTMLDivElement>(null);
   const [errorAttentionVersion, setErrorAttentionVersion] = useState(0);
+  const [decisionRecovery, setDecisionRecovery] = useState<{
+    bookingId: string;
+    message: string;
+  } | null>(null);
   // #1790: which decision is waiting on the admin's notify-or-not choice, and
   // whether the dialog is open. Both approve and reject always email the member
   // (unconditional sends in the route), so the dialog is shown for both. The
@@ -158,8 +163,10 @@ export function BookingApprovalsPanel({
         throw new Error(data.error || "Failed to load booking reviews");
       }
       setBookings(Array.isArray(data?.data) ? data.data : []);
+      return true;
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to load booking reviews");
+      return false;
     } finally {
       setLoading(false);
     }
@@ -174,14 +181,6 @@ export function BookingApprovalsPanel({
   useEffect(() => {
     router.replace(currentPath, { scroll: false });
   }, [currentPath, router]);
-
-  useEffect(() => {
-    if (!error || errorAttentionVersion === 0) return;
-    const alert = errorRef.current;
-    if (!alert) return;
-    alert.focus({ preventScroll: true });
-    alert.scrollIntoView?.({ behavior: "smooth", block: "center" });
-  }, [error, errorAttentionVersion]);
 
   function showActionError(message: string) {
     setError(message);
@@ -260,6 +259,29 @@ export function BookingApprovalsPanel({
       });
       const data = await response.json().catch(() => ({}));
       if (!response.ok) {
+        if (
+          decision === "REJECTED" &&
+          data.reviewRecorded === true &&
+          data.cancellationPending === true
+        ) {
+          const recoveryBase =
+            "The rejection was recorded, but cancellation is still pending. Do not reject this booking again.";
+          setBookings((current) =>
+            current.filter((booking) => booking.id !== bookingId),
+          );
+          setDecisionRecovery({ bookingId, message: recoveryBase });
+          showActionError(recoveryBase);
+          const refreshed = await fetchBookings();
+          const refreshResult = refreshed
+            ? " The latest review queue was loaded; open the booking and check its cancellation status."
+            : " The review queue could not be refreshed. This warning remains active; open the booking and check its cancellation status.";
+          setDecisionRecovery({
+            bookingId,
+            message: `${recoveryBase}${refreshResult}`,
+          });
+          setErrorAttentionVersion((version) => version + 1);
+          return;
+        }
         throw new Error(data.error || "Failed to record decision");
       }
       setNotesById((prev) => {
@@ -333,27 +355,30 @@ export function BookingApprovalsPanel({
         </div>
       ) : null}
 
-      <div
+      <FocusedActionError
         id="booking-approvals-error"
-        ref={errorRef}
-        role="alert"
-        aria-atomic="true"
-        tabIndex={-1}
-        className={
-          error
-            ? "rounded-md bg-destructive/10 px-4 py-3 text-destructive"
-            : "sr-only"
-        }
-      >
-        {error ? (
-          <>
-            {error}
-            <button onClick={() => setError("")} className="ml-2 underline">
+        error={decisionRecovery?.message ?? error}
+        attentionKey={errorAttentionVersion}
+        heading={decisionRecovery ? "Rejection recorded - cancellation pending" : undefined}
+        action={
+          decisionRecovery ? (
+            <Button asChild variant="outline" size="sm">
+              <Link
+                href={buildHrefWithReturnTo(
+                  `/admin/bookings/${encodeURIComponent(decisionRecovery.bookingId)}`,
+                  currentPath,
+                )}
+              >
+                Open affected booking
+              </Link>
+            </Button>
+          ) : error ? (
+            <Button type="button" variant="outline" size="sm" onClick={() => setError("")}>
               Dismiss
-            </button>
-          </>
-        ) : null}
-      </div>
+            </Button>
+          ) : undefined
+        }
+      />
 
 
       <div className="flex flex-wrap gap-2">

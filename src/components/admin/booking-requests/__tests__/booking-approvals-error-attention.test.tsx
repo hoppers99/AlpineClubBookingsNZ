@@ -98,4 +98,62 @@ describe("BookingApprovalsPanel action error attention (#2597)", () => {
       block: "center",
     })
   })
+
+  it("retains a recorded-rejection recovery, suppresses stale reject, and links back to the queue", async () => {
+    let reviewReads = 0
+    global.fetch = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      const url = String(input)
+      if (url.startsWith("/api/admin/booking-reviews?")) {
+        reviewReads += 1
+        if (reviewReads === 1) {
+          return {
+            ok: true,
+            json: async () => ({ data: [booking] }),
+          } as Response
+        }
+        return {
+          ok: false,
+          json: async () => ({ error: "refresh unavailable" }),
+        } as Response
+      }
+      if (url === "/api/admin/bookings/booking-1/review" && init?.method === "PATCH") {
+        return {
+          ok: false,
+          status: 409,
+          json: async () => ({
+            code: "HOSTING_COVERAGE_PARTICIPANT_RETRY",
+            error: "private database detail",
+            reviewRecorded: true,
+            cancellationPending: true,
+          }),
+        } as Response
+      }
+      throw new Error(`Unexpected request: ${url}`)
+    }) as typeof fetch
+
+    render(<BookingApprovalsPanel />)
+    fireEvent.change(
+      await screen.findByPlaceholderText(/Explain your decision/i),
+      { target: { value: "No eligible adult host." } },
+    )
+    fireEvent.click(screen.getByRole("button", { name: "Reject and cancel" }))
+    fireEvent.click(
+      await screen.findByRole("button", { name: "Reject and email member" }),
+    )
+
+    const alert = document.getElementById("booking-approvals-error")
+    await waitFor(() =>
+      expect(alert).toHaveTextContent(/rejection was recorded/i),
+    )
+    expect(alert).toHaveTextContent(/cancellation is still pending/i)
+    expect(alert).toHaveTextContent(/could not be refreshed/i)
+    expect(alert).not.toHaveTextContent("private database detail")
+    expect(document.activeElement).toBe(alert)
+    expect(screen.queryByRole("button", { name: "Reject and cancel" })).not.toBeInTheDocument()
+    const recoveryLink = screen.getByRole("link", { name: "Open affected booking" })
+    expect(recoveryLink).toHaveAttribute(
+      "href",
+      "/admin/bookings/booking-1?returnTo=%2Fadmin%2Fbooking-requests",
+    )
+  })
 })
