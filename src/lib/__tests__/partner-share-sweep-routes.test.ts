@@ -232,6 +232,19 @@ function mockTransaction() {
       },
       familyGroupMember: { deleteMany: prisma.familyGroupMember.deleteMany },
       bookingGuest: { updateMany: prisma.bookingGuest.updateMany },
+      // #2620: anonymisation revokes every outstanding credential artefact in
+      // the same commit — each authenticates on its own, and deletion used to
+      // leave them all live.
+      magicLinkToken: { deleteMany: vi.fn().mockResolvedValue({ count: 0 }) },
+      passwordResetToken: { deleteMany: vi.fn().mockResolvedValue({ count: 0 }) },
+      emailChangeToken: { deleteMany: vi.fn().mockResolvedValue({ count: 0 }) },
+      twoFactorEmailCode: { deleteMany: vi.fn().mockResolvedValue({ count: 0 }) },
+      twoFactorRecoveryCode: {
+        deleteMany: vi.fn().mockResolvedValue({ count: 0 }),
+      },
+      twoFactorSessionChallenge: {
+        deleteMany: vi.fn().mockResolvedValue({ count: 0 }),
+      },
       bedAllocation: prisma.bedAllocation,
       deletionRequest: {
         update: prisma.deletionRequest.update,

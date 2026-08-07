@@ -35,6 +35,19 @@ const h = vi.hoisted(() => ({
     },
     familyGroupMember: { deleteMany: vi.fn() },
     bookingGuest: { updateMany: vi.fn() },
+    // #2620: anonymisation revokes every outstanding credential artefact in the
+    // same commit, because each of these is independently sufficient to
+    // authenticate and deletion used to leave them all live.
+    magicLinkToken: { deleteMany: vi.fn().mockResolvedValue({ count: 0 }) },
+    passwordResetToken: { deleteMany: vi.fn().mockResolvedValue({ count: 0 }) },
+    emailChangeToken: { deleteMany: vi.fn().mockResolvedValue({ count: 0 }) },
+    twoFactorEmailCode: { deleteMany: vi.fn().mockResolvedValue({ count: 0 }) },
+    twoFactorRecoveryCode: {
+      deleteMany: vi.fn().mockResolvedValue({ count: 0 }),
+    },
+    twoFactorSessionChallenge: {
+      deleteMany: vi.fn().mockResolvedValue({ count: 0 }),
+    },
     $executeRaw: vi.fn().mockResolvedValue(1),
     $transaction: vi.fn(),
   },

@@ -94,6 +94,7 @@ import {
   getAdminPermissionMatrix,
 } from "@/lib/admin-permissions";
 import { getMemberLoginStageSortRank } from "@/lib/member-login-stage";
+import { isDeletedAccountRecord } from "@/lib/deleted-account";
 
 const maxStr = (len: number) => z.string().max(len).optional().nullable();
 
@@ -1155,6 +1156,16 @@ export async function listAdminMembers(
     return {
       ...m,
       accessRoles: resolveAccessRoleTokens(m),
+      // #2620: a deletion-anonymised member is `active: false, cancelledAt: null`
+      // — exactly the "inactive" lifecycle filter above — so without this flag an
+      // erased account is indistinguishable in the list from a member someone
+      // deactivated yesterday, and a multi-select Reactivate to undo a mistaken
+      // bulk deactivate would sweep it up. Resolved from the email marker (the
+      // password hash is deliberately NOT selected into a list response); the
+      // predicate reads whichever markers are present, so it stays correct if the
+      // select ever widens. The list badge is the visible warning; the refusals in
+      // bulk update, member edit and the login providers are the enforcement.
+      deletedAccount: isDeletedAccountRecord(m),
       subscriptionStatus:
         subscriptionNotRequired
           ? "NOT_REQUIRED"

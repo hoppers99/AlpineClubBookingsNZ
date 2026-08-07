@@ -560,6 +560,24 @@ export async function POST(
           postalCountry: null,
           passwordHash: DELETED_ACCOUNT_PASSWORD_HASH,
           active: false,
+          // #2620: anonymisation used to leave every credential usable, so
+          // `active: false` was the only thing between an erased member and a
+          // working session — and Reactivate flips exactly that. Google sign-in
+          // resolves on `googleSub` and never on email, so the placeholder
+          // address stopped nothing. Clear the credentials themselves, so no
+          // path that reaches `active` can produce a login. Dropping `canLogin`
+          // also takes the row out of the partial unique index on (email) WHERE
+          // canLogin, which removes the collision between two anonymised
+          // members whose ids share the truncated prefix in `anonymisedEmail`.
+          canLogin: false,
+          googleSub: null,
+          emailVerified: false,
+          totpSecret: null,
+          twoFactorEnabled: false,
+          twoFactorMethod: null,
+          twoFactorEnrolledAt: null,
+          twoFactorFailedAttempts: 0,
+          twoFactorLockedUntil: null,
           xeroContactId: null,
           inheritEmailFromId: null,
           // Billing-family removal sweep (#1932, E6): the member is leaving all
@@ -567,6 +585,22 @@ export async function POST(
           billingFamilyGroupId: null,
         },
       });
+
+      // #2620: the credentials cleared above are not the only ones. Every
+      // outstanding token and second-factor artefact is independently sufficient
+      // to authenticate, and deletion revoked none of them — a live magic link
+      // or an unused recovery code still worked. Revoke them in the same commit,
+      // so the erased account holds nothing that can be presented later.
+      await Promise.all([
+        tx.magicLinkToken.deleteMany({ where: { memberId: member.id } }),
+        tx.passwordResetToken.deleteMany({ where: { memberId: member.id } }),
+        tx.emailChangeToken.deleteMany({ where: { memberId: member.id } }),
+        tx.twoFactorEmailCode.deleteMany({ where: { memberId: member.id } }),
+        tx.twoFactorRecoveryCode.deleteMany({ where: { memberId: member.id } }),
+        tx.twoFactorSessionChallenge.deleteMany({
+          where: { memberId: member.id },
+        }),
+      ]);
 
       // The pointer and canonical ledger are one privacy boundary. A contact
       // update that completed before this transaction may have refreshed the

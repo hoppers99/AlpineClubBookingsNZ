@@ -5,6 +5,7 @@ import { prisma } from "./prisma";
 import { getAuthSecret } from "./runtime-config";
 import logger from "./logger";
 import { getGoogleOAuthConfig } from "./google-config";
+import { isDeletedAccountRecord } from "./deleted-account";
 import {
   buildStructuredAuditLogCreateArgs,
   type StructuredAuditEvent,
@@ -340,6 +341,21 @@ export async function resolveGoogleProfile(profile: {
 
     if (!member) {
       return { id: sentinelId, email, googleLoginStatus: "unlinked" };
+    }
+    // #2620, deliberately BEFORE the `active` gate and independent of it. This
+    // is the sharpest edge of the deleted-account defect: anonymisation does not
+    // clear `googleSub`, and this resolver matches on `googleSub` alone — the
+    // `@deleted.invalid` address is never consulted — so the erased person's
+    // Google account still points at their row. `active: false` is the only
+    // thing refusing them, and `active` is precisely what an admin Reactivate
+    // flips. Refusing on the anonymisation markers here means a directly
+    // flipped `active` column still yields no session.
+    if (isDeletedAccountRecord(member)) {
+      logger.warn(
+        { memberId: member.id },
+        "Refusing Google sign-in for a deleted account (#2620)",
+      );
+      return { id: sentinelId, email, googleLoginStatus: "refused" };
     }
     if (!member.active || !member.emailVerified) {
       return { id: sentinelId, email, googleLoginStatus: "refused" };

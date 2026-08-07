@@ -32,6 +32,7 @@ import {
   type GoogleProfileResult,
 } from "./google-oauth";
 import { getGoogleOAuthConfig, recordGoogleVerified } from "./google-config";
+import { isDeletedAccountRecord } from "./deleted-account";
 
 class EmailNotVerifiedError extends CredentialsSignin {
   code = "EMAIL_NOT_VERIFIED";
@@ -60,6 +61,15 @@ const SESSION_MEMBER_SECURITY_SELECT = {
   forcePasswordChange: true,
   emailVerified: true,
   passwordChangedAt: true,
+  // #2620: the two markers an approved deletion request writes over the row.
+  // Read on every token refresh so an anonymised member's session dies on their
+  // NEXT request through the same kill-switch a revoking password change uses —
+  // deletion invalidates no token today, so without this a session minted
+  // before the deletion (or after a direct `active` flip) would keep working.
+  // Neither value is ever copied into the token; only the predicate's verdict
+  // is used.
+  email: true,
+  passwordHash: true,
   twoFactorEnabled: true,
   twoFactorMethod: true,
   // Post-login landing preference (#2090), refreshed per request alongside the
@@ -230,7 +240,17 @@ export const authConfig = {
           where: { email: email.toLowerCase(), canLogin: true },
         });
 
-        if (!member || !member.active) {
+        // #2620: `isDeletedAccountRecord` is an INDEPENDENT refusal, not a
+        // restatement of `!member.active`. An approved deletion request
+        // anonymises the row and leaves `active: false` as the only barrier, and
+        // an admin Reactivate (or a direct column edit) flips exactly that flag.
+        // Refusing on the anonymisation markers means an erased account cannot
+        // sign in even with `active: true`. The sentinel password hash is not a
+        // bcrypt hash so a compare could never match anyway — this is here so a
+        // future credential-restoring path cannot re-open the door silently.
+        // Still burns the dummy compare, so the refusal is timing-identical to
+        // an unknown email and cannot be used to enumerate deleted accounts.
+        if (!member || !member.active || isDeletedAccountRecord(member)) {
           await bcrypt.compare(password, DUMMY_PASSWORD_HASH);
           return null;
         }
@@ -331,7 +351,12 @@ export const authConfig = {
         const member = await prisma.member.findFirst({
           where: { id: tokenRow.memberId, canLogin: true },
         });
-        if (!member || !member.active) {
+        // #2620: and never for an account an approved deletion request has
+        // anonymised. Deletion does not revoke outstanding magic-link tokens
+        // (Half B of #2620 will), so any unexpired link the erased member was
+        // sent stays redeemable the moment `active` goes back to true. Refuse on
+        // the anonymisation markers, independently of `active`.
+        if (!member || !member.active || isDeletedAccountRecord(member)) {
           return null;
         }
 
@@ -600,9 +625,25 @@ export const authConfig = {
           token.forcePasswordChange = member.forcePasswordChange;
           token.postLoginLanding = member.postLoginLanding ?? null;
           token.isEmailVerified = member.emailVerified;
+          // #2620: an account an approved deletion request has anonymised holds
+          // no session, full stop — whatever `active` currently says. This is the
+          // defence-in-depth backstop behind the provider refusals above: it
+          // covers a session minted BEFORE the deletion (nothing revokes tokens
+          // on deletion today) and a session minted after someone flipped
+          // `active` back directly in the database. Same kill-switch as a
+          // revoking password change: auth() nulls any session carrying it, so
+          // every server touch reads as logged-out.
+          const deletedAccountSession = isDeletedAccountRecord(member);
+          if (deletedAccountSession) {
+            logger.warn(
+              { memberId: token.id },
+              "Invalidating session for a deleted account (#2620)",
+            );
+          }
           token.sessionInvalidated =
-            member.passwordChangedAt instanceof Date &&
-            member.passwordChangedAt.getTime() > sessionIssuedAt;
+            deletedAccountSession ||
+            (member.passwordChangedAt instanceof Date &&
+              member.passwordChangedAt.getTime() > sessionIssuedAt);
           token.twoFactorRequired = twoFactorRequired;
           token.twoFactorEnrolled = member.twoFactorEnabled;
           token.twoFactorMethod = member.twoFactorMethod ?? null;
