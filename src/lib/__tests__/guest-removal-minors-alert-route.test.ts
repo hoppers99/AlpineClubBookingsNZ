@@ -101,6 +101,10 @@ vi.mock("@/lib/logger", () => ({
   default: { error: vi.fn(), warn: vi.fn(), info: vi.fn(), debug: vi.fn() },
 }));
 
+import {
+  fenceMemberFindMany,
+  recordingBookingDouble,
+} from "@/lib/__tests__/support/hosting-participant-fence-double";
 import { DELETE } from "@/app/api/bookings/[id]/guests/[guestId]/route";
 
 const CHECK_IN = new Date("2027-07-15");
@@ -173,9 +177,23 @@ function preEditBooking(guests: Guest[]) {
   };
 }
 
-function buildTx(guests: Guest[]) {
+function buildTx(
+  guests: Guest[],
+  // Overrides the pre-edit booking this tx serves. Pass it here rather than
+  // re-stubbing tx.booking.findUnique: that would replace the recording
+  // wrapper below and the fence would then see no source booking at all.
+  bookingOverride?: Partial<ReturnType<typeof preEditBooking>>,
+) {
+  // #2619: the participant fence re-reads the locked Member rows and each
+  // source booking's owner/lodge under the lock. Replay what this tx's own
+  // findUnique served so the no-drift case matches by construction.
+  const fenceBooking = recordingBookingDouble(async () => ({
+    ...preEditBooking(guests),
+    ...bookingOverride,
+  }));
   return {
     $executeRawUnsafe: vi.fn().mockResolvedValue(undefined),
+    member: { findMany: fenceMemberFindMany() },
     // Per-lodge advisory capacity lock (acquireLodgeCapacityLock) uses
     // $executeRaw, not $executeRawUnsafe — pg_advisory_xact_lock returns void
     // so $queryRaw can't deserialize it; every advisory lock uses $executeRaw.
@@ -184,12 +202,17 @@ function buildTx(guests: Guest[]) {
     // every prisma/tx double a booking path runs against needs this client.
     adultMemberHostingPolicy: { findMany: vi.fn().mockResolvedValue([]) },
     booking: {
-      findUnique: vi.fn().mockResolvedValue(preEditBooking(guests)),
+      findUnique: fenceBooking.findUnique,
+      findMany: fenceBooking.findMany,
       // Echo the written review fields + status so the service's real
       // minorsReviewAlertShouldFire reads the actual computed state.
       update: vi.fn(async ({ data }: { data: Record<string, unknown> }) => ({
         id: "b1",
         memberId: "m1",
+        // A real update returns the row's lodgeId. Omitting it made the
+        // hosting participant fence compare a source planned with an
+        // undefined lodge against a re-read that had one, and refuse (#2619).
+        lodgeId: "lodge-1",
         checkIn: CHECK_IN,
         checkOut: CHECK_OUT,
         payment: null,
@@ -322,16 +345,15 @@ describe("DELETE guest removal — minors-only admin alert wiring (#1372)", () =
   it("does not double-fire the alert when the booking was already under review", async () => {
     // Pre-edit booking already carried a pending minors-only review: removing a
     // further guest that keeps it minors-only must not re-alert (#1372).
-    mocks.transaction.mockImplementation((cb: (tx: unknown) => unknown) => {
-      const tx = buildTx([ADULT, CHILD]);
-      tx.booking.findUnique.mockResolvedValue({
-        ...preEditBooking([ADULT, CHILD]),
-        requiresAdminReview: true,
-        adminReviewStatus: AdminReviewStatus.PENDING,
-        adminReviewReason: ADULT_SUPERVISION_REVIEW_REASON,
-      });
-      return cb(tx);
-    });
+    mocks.transaction.mockImplementation((cb: (tx: unknown) => unknown) =>
+      cb(
+        buildTx([ADULT, CHILD], {
+          requiresAdminReview: true,
+          adminReviewStatus: AdminReviewStatus.PENDING,
+          adminReviewReason: ADULT_SUPERVISION_REVIEW_REASON,
+        }),
+      ),
+    );
 
     const res = await DELETE(makeRequest(), {
       params: Promise.resolve({ id: "b1", guestId: "g-adult" }),
