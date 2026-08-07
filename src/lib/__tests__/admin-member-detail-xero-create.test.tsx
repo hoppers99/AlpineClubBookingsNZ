@@ -6,6 +6,7 @@ import type { ReactNode } from "react";
 import { Suspense } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import MemberDetailPage from "@/app/(admin)/admin/members/[id]/page";
+import { expectRecoveryAlertToHoldFocus } from "@/lib/__tests__/helpers/focus";
 
 const fetchMock = vi.fn();
 let searchParamsMock = new URLSearchParams();
@@ -257,7 +258,7 @@ describe("Admin member detail Xero create", () => {
     expect(screen.queryByRole("button", { name: /Create in Xero/ })).not.toBeInTheDocument();
     const alert = document.getElementById("member-xero-recovery-error");
     await screen.findByText(/Do not create another contact/i);
-    expect(document.activeElement).toBe(alert);
+    await expectRecoveryAlertToHoldFocus(alert);
     expect(screen.getByRole("button", { name: "Try again" })).toBeInTheDocument();
   });
 
@@ -299,7 +300,7 @@ describe("Admin member detail Xero create", () => {
     expect(screen.queryByRole("button", { name: /Create in Xero/ })).not.toBeInTheDocument();
     const alert = document.getElementById("member-xero-recovery-error");
     expect(alert).not.toHaveTextContent(/A Xero contact was created/i);
-    expect(document.activeElement).toBe(alert);
+    await expectRecoveryAlertToHoldFocus(alert);
     expect(screen.getByRole("button", { name: "Try again" })).toBeInTheDocument();
   });
 
@@ -569,7 +570,7 @@ describe("Admin member detail Xero create", () => {
 
     await screen.findByText(/member could not be refreshed/i);
     expect(alert).toHaveTextContent(/Do not create another contact/i);
-    expect(document.activeElement).toBe(alert);
+    await expectRecoveryAlertToHoldFocus(alert);
     expect(screen.getByRole("button", { name: "Try again" })).toBeInTheDocument();
   });
 
@@ -631,7 +632,7 @@ describe("Admin member detail Xero create", () => {
     await screen.findByText(/Refreshing the member now/i);
     expect(alert).toBe(document.getElementById("member-xero-recovery-error"));
     expect(alert).toHaveTextContent(/Xero link was removed/i);
-    expect(document.activeElement).toBe(alert);
+    await expectRecoveryAlertToHoldFocus(alert);
     expect(screen.getByText("Loading member details...")).toBeInTheDocument();
 
     await act(async () => {
@@ -702,6 +703,6 @@ describe("Admin member detail Xero create", () => {
     expect(alert).toBeInTheDocument();
     expect(alert).toHaveTextContent(/warning remains active/i);
     expect(screen.getByText("Failed to load member")).toBeInTheDocument();
-    expect(document.activeElement).toBe(alert);
+    await expectRecoveryAlertToHoldFocus(alert);
   });
 });

@@ -7,6 +7,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { MemberXeroCreateDialog } from "@/app/(admin)/admin/members/[id]/_components/member-xero-create-dialog";
 import { MemberXeroDecisionDialog } from "@/app/(admin)/admin/members/[id]/_components/member-xero-decision-dialog";
 import { MemberXeroLinkDialog } from "@/app/(admin)/admin/members/[id]/_components/member-xero-link-dialog";
+import { expectRecoveryAlertToHoldFocus } from "@/lib/__tests__/helpers/focus";
 
 const RETRY_MESSAGE =
   "The database update could not be completed because this booking or member changed. Reload before trying again. If a payment was involved, check its status before retrying.";
@@ -38,7 +39,7 @@ async function expectFocusedRetry(
   scrollIntoView: ReturnType<typeof vi.fn>,
 ) {
   await waitFor(() => expect(alert).toHaveTextContent(RETRY_MESSAGE));
-  expect(document.activeElement).toBe(alert);
+  await expectRecoveryAlertToHoldFocus(alert);
   expect(scrollIntoView).toHaveBeenCalledWith({
     behavior: "smooth",
     block: "center",
