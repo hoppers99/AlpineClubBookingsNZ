@@ -172,7 +172,7 @@ describe("kiosk arrivals list (D-12)", () => {
     const { GET } = await import("@/app/api/lodge/guests/[date]/route");
     return GET(
       new Request(
-        "http://localhost/api/lodge/guests/2026-07-10?scope=lodge-list",
+        "http://localhost/api/lodge/guests/2026-07-10",
       ) as never,
       routeParams({ date: "2026-07-10" }),
     );
