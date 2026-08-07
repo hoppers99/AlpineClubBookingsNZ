@@ -3702,14 +3702,29 @@ override requires an explicit `pricingMode`:
   the cancellation notice too, so a reject on a silenced booking emails the
   member nothing at all; #2259's review dialog says exactly that rather than
   repeating the promise above).
-  An account-deletion approve and reject also have exactly one final winner:
-  both claim `DeletionRequest.status = PENDING` with the same guarded mutation.
-  Approval owns the claim inside the anonymisation transaction, so any later
-  privacy failure rolls the decision back to PENDING and sends no receipt;
-  rejection claims before its audit/email. A losing concurrent reviewer gets a
-  fixed conflict and sends no contradictory message. Cancellations already
-  committed before a lost approval claim are returned as explicit partial
+  An account-deletion approve and reject also have exactly one final winner,
+  but they do not race for the same transition (#2597). An approval cancels
+  future bookings in separately committed transactions before it anonymises
+  anything, so it first claims `PENDING -> APPROVAL_IN_PROGRESS` — durably,
+  before the first cancellation commits. Rejection may claim only `PENDING`;
+  approval may finalise only from `APPROVAL_IN_PROGRESS`, inside the
+  anonymisation transaction, so any later privacy failure rolls finalisation
+  back to that intermediate claim and sends no receipt. **A rejection can
+  therefore never become final after an approval-triggered cancellation has
+  committed**, which the single-transition protocol could not guarantee. A
+  repeated approval resumes its own claim rather than being refused, so an
+  interrupted cleanup can always be completed. A losing concurrent reviewer
+  gets a fixed conflict and sends no contradictory message. Cancellations
+  already committed before a lost claim are returned as explicit partial
   cleanup, never described as anonymisation.
+  `APPROVAL_IN_PROGRESS` is an OPEN state, not a decided one: it has already
+  destroyed bookings and still owes the member their anonymisation. Every
+  "is there an outstanding request?" reader — admin queue, pending counts,
+  dashboard, the member's own re-request guard, and the member-merge blocker —
+  must therefore treat it as open via `OPEN_DELETION_REQUEST_STATUSES`.
+  Filtering on `PENDING` alone would hide a half-finished deletion from the
+  queue that has to finish it, and would silently unblock a merge that then
+  re-points the request at the surviving member.
 
 - **recalculate** — the existing full-reprice machinery with the locked-period
   clamps lifted, so locked-night pricing semantics are otherwise preserved

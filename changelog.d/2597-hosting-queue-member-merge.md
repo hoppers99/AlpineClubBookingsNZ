@@ -68,3 +68,30 @@
   cancellation with later cleanup pending, and a status that could not be
   confirmed; already committed cleanup facts remain visible even if the final
   last-admin guard blocks anonymisation.
+
+  Approving an account-deletion request now takes ownership of that decision
+  before it cancels anything. An approval cancels the member's future bookings
+  one at a time and only anonymises them at the end, so previously a second
+  administrator could still reject the request in the middle — leaving it marked
+  **Rejected** even though the member's stays had already been cancelled. The
+  request now moves to **Approval in progress** before the first cancellation,
+  and from there only the approval can complete; rejection is refused with the
+  usual "already reviewed" conflict. An approval interrupted by a crash, a lost
+  connection, or a blocked final step can be picked up and finished, because
+  starting it again resumes the same claim instead of being turned away.
+
+  A request in that state stays in the pending queue, the dashboard count and
+  the admin badge, shows an **Approval in progress** label, and offers only
+  **Resume approval** — there is no Reject button that could only fail. It also
+  continues to block a member merge and to stop the member lodging a second
+  deletion request, both of which previously treated a half-finished deletion as
+  though it were settled.
+
+  If a deletion review's result never comes back — the connection drops, or the
+  server answers with something the page cannot read — the page no longer leaves
+  **Approve** and **Reject** live on that row. Because the request may already
+  have been recorded and may already have cancelled bookings, the page now says
+  the outcome could not be confirmed, reloads the queue from the server, and
+  asks the administrator to check the request's current status rather than
+  offering a retry that could act twice. The same protection covers the
+  admin-initiated permanent-delete queue on that page.

@@ -478,9 +478,15 @@ describe("hosting coverage queue participant fence (#2597)", () => {
  * silently switch the check off everywhere the proof travels.
  */
 describe("participant proof cannot exist without its lock", () => {
+  /** A client shaped like a narrow in-memory double: no way to take the lock. */
+  function makeDbWithoutRawLock() {
+    const db: Record<string, unknown> = { ...makeDb() };
+    delete db.$executeRaw;
+    return db;
+  }
+
   it("refuses a client that cannot take the row lock instead of issuing a proof", async () => {
-    const db = makeDb();
-    const { $executeRaw: _omitted, ...withoutRawLock } = db;
+    const withoutRawLock = makeDbWithoutRawLock();
 
     await expect(
       acquireHostingCoverageQueueParticipantProof(
@@ -493,8 +499,7 @@ describe("participant proof cannot exist without its lock", () => {
   it("does not dress the wiring fault as retryable contention", async () => {
     // A 409 retry contract here would invite an endless client retry loop: no
     // amount of retrying grows the client a $executeRaw method.
-    const db = makeDb();
-    const { $executeRaw: _omitted, ...withoutRawLock } = db;
+    const withoutRawLock = makeDbWithoutRawLock();
 
     const error = await acquireHostingCoverageQueueParticipantProof(
       { sources: [SOURCE], actorMemberId: "actor-1" },
