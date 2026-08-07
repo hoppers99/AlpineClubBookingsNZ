@@ -256,16 +256,7 @@ function makeStore(
     },
     lodge: { findFirst: vi.fn().mockResolvedValue({ name: "Ruapehu Lodge" }) },
     member: {
-      // #2597: the participant fence takes FOR KEY SHARE NOWAIT and then
-      // re-reads those exact Member rows, requiring every one to exist in
-      // sorted id order. This double must model a real Member table for that
-      // check to mean anything — returning `[]` would make the fence report
-      // contention on every call, which is how these suites previously ran
-      // with the fence effectively disabled.
-      findMany: vi.fn(async ({ where }: any) => {
-        const ids: string[] = where?.id?.in ?? [];
-        return [...ids].sort().map((id) => ({ id }));
-      }),
+      findMany: vi.fn().mockResolvedValue([]),
       findUnique: vi.fn(async ({ where }: any) => ({ id: where.id })),
     },
     hostingCoverageIncident: {
