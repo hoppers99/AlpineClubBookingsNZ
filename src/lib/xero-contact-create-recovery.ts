@@ -1,6 +1,8 @@
 import type { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { DELETED_CONTACT_EMAIL_DOMAIN } from "@/lib/placeholder-contact-email";
+import { buildXeroContactUrl } from "@/lib/xero-links";
+import { upsertXeroObjectLink } from "@/lib/xero-sync";
 
 type ContactCreateRecoveryDb = Pick<
   Prisma.TransactionClient,
@@ -16,6 +18,30 @@ type ContactLinkMemberFenceDb = Pick<
   Prisma.TransactionClient,
   "$executeRaw" | "member"
 >;
+
+export type InboundMemberContactPatch = {
+  dateOfBirth?: Date | null;
+  joinedDate?: Date | null;
+  phoneCountryCode?: string | null;
+  phoneAreaCode?: string | null;
+  phoneNumber?: string | null;
+  streetAddressLine1?: string | null;
+  streetAddressLine2?: string | null;
+  streetCity?: string | null;
+  streetRegion?: string | null;
+  streetPostalCode?: string | null;
+  streetCountry?: string | null;
+  postalAddressLine1?: string | null;
+  postalAddressLine2?: string | null;
+  postalCity?: string | null;
+  postalRegion?: string | null;
+  postalPostalCode?: string | null;
+  postalCountry?: string | null;
+};
+
+type InboundMemberContactUpdateData = InboundMemberContactPatch & {
+  xeroContactId?: string;
+};
 
 export const XERO_CONTACT_CREATE_LOCAL_LINK_FAILURE_PHASE =
   "local_link_after_xero_resolution";
@@ -189,6 +215,134 @@ export async function lockMemberForXeroContactLink(
   }
   assertMemberAvailableForXeroContactChange(member);
   return member;
+}
+
+/**
+ * Apply an inbound Xero contact backfill under the same Member-row privacy
+ * fence as outbound completion and manual linking.
+ *
+ * The candidate values may have been fetched from Xero well before this short
+ * transaction starts. Nothing is copied until the target row is locked and
+ * re-read: deletion-first observes the canonical deleted marker, merge-first
+ * observes a missing loser, and a concurrent relink is rejected. Blank-field
+ * predicates are re-evaluated under that lock so an inbound replay cannot
+ * overwrite a newer local edit. The pointer and FK-less CONTACT ledger row are
+ * committed together; callers must not write either one separately afterward.
+ */
+export async function applyInboundMemberContactPatch(
+  input: {
+    memberId: string;
+    xeroContactId: string;
+    patch?: InboundMemberContactPatch;
+    setCanonicalLink?: boolean;
+  },
+  db: typeof prisma = prisma,
+): Promise<{
+  appliedFields: string[];
+  linked: boolean;
+}> {
+  return db.$transaction(async (tx) => {
+    const lockedLink = await lockMemberForXeroContactLink(tx, input.memberId);
+    if (
+      lockedLink.xeroContactId &&
+      lockedLink.xeroContactId !== input.xeroContactId
+    ) {
+      throw new XeroContactLinkChangedError();
+    }
+
+    const current = await tx.member.findUnique({
+      where: { id: input.memberId },
+      select: {
+        id: true,
+        xeroContactId: true,
+        dateOfBirth: true,
+        joinedDate: true,
+        phoneNumber: true,
+        streetAddressLine1: true,
+        postalAddressLine1: true,
+      },
+    });
+    if (!current) {
+      throw new Error(`Member not found: ${input.memberId}`);
+    }
+
+    const candidate = input.patch ?? {};
+    const data: InboundMemberContactUpdateData = {};
+    const appliedFields: string[] = [];
+    const linked =
+      input.setCanonicalLink !== false && current.xeroContactId === null;
+    if (linked) {
+      data.xeroContactId = input.xeroContactId;
+      appliedFields.push("xeroContactId");
+    }
+    if (!current.dateOfBirth && candidate.dateOfBirth) {
+      data.dateOfBirth = candidate.dateOfBirth;
+      appliedFields.push("dateOfBirth");
+    }
+    if (!current.joinedDate && candidate.joinedDate) {
+      data.joinedDate = candidate.joinedDate;
+      appliedFields.push("joinedDate");
+    }
+    if (!current.phoneNumber && candidate.phoneNumber) {
+      data.phoneCountryCode = candidate.phoneCountryCode ?? null;
+      data.phoneAreaCode = candidate.phoneAreaCode ?? null;
+      data.phoneNumber = candidate.phoneNumber;
+      appliedFields.push("phoneCountryCode", "phoneAreaCode", "phoneNumber");
+    }
+    if (!current.streetAddressLine1 && candidate.streetAddressLine1) {
+      data.streetAddressLine1 = candidate.streetAddressLine1;
+      data.streetAddressLine2 = candidate.streetAddressLine2 ?? null;
+      data.streetCity = candidate.streetCity ?? null;
+      data.streetRegion = candidate.streetRegion ?? null;
+      data.streetPostalCode = candidate.streetPostalCode ?? null;
+      data.streetCountry = candidate.streetCountry ?? null;
+      appliedFields.push(
+        "streetAddressLine1",
+        "streetAddressLine2",
+        "streetCity",
+        "streetRegion",
+        "streetPostalCode",
+        "streetCountry",
+      );
+    }
+    if (!current.postalAddressLine1 && candidate.postalAddressLine1) {
+      data.postalAddressLine1 = candidate.postalAddressLine1;
+      data.postalAddressLine2 = candidate.postalAddressLine2 ?? null;
+      data.postalCity = candidate.postalCity ?? null;
+      data.postalRegion = candidate.postalRegion ?? null;
+      data.postalPostalCode = candidate.postalPostalCode ?? null;
+      data.postalCountry = candidate.postalCountry ?? null;
+      appliedFields.push(
+        "postalAddressLine1",
+        "postalAddressLine2",
+        "postalCity",
+        "postalRegion",
+        "postalPostalCode",
+        "postalCountry",
+      );
+    }
+
+    if (appliedFields.length > 0) {
+      await tx.member.update({
+        where: { id: input.memberId },
+        data,
+        select: { id: true },
+      });
+    }
+    await upsertXeroObjectLink(
+      {
+        localModel: "Member",
+        localId: input.memberId,
+        xeroObjectType: "CONTACT",
+        xeroObjectId: input.xeroContactId,
+        xeroObjectUrl: buildXeroContactUrl(input.xeroContactId),
+        role: "CONTACT",
+      },
+      { store: tx },
+    );
+
+    return { appliedFields, linked };
+  });
 }
 
 /**

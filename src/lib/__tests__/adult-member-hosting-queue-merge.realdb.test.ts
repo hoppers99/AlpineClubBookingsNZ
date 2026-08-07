@@ -1224,17 +1224,20 @@ let claimDeletionRequestDecision: (typeof import("@/lib/deletion-request-decisio
       const reservation = await reserveMemberContactUpdateOperation(
         IDS.loser,
         "contact-update-before-merge",
-        {
-          direction: "OUTBOUND",
-          entityType: "CONTACT",
-          operationType: "UPDATE",
-          localModel: "Member",
-          localId: IDS.loser,
-          idempotencyKey: correlationKey,
-          correlationKey,
-          requestPayload: { contacts: [{ emailAddress: "fresh@example.test" }] },
-          createdByMemberId: IDS.actor,
-        },
+        (locked) => ({
+          input: {
+            direction: "OUTBOUND",
+            entityType: "CONTACT",
+            operationType: "UPDATE",
+            localModel: "Member",
+            localId: IDS.loser,
+            idempotencyKey: correlationKey,
+            correlationKey,
+            requestPayload: { contacts: [{ emailAddress: locked.email }] },
+            createdByMemberId: IDS.actor,
+          },
+          value: locked.email,
+        }),
         ordinary,
       );
       await expect(
@@ -1250,7 +1253,7 @@ let claimDeletionRequestDecision: (typeof import("@/lib/deletion-request-decisio
       await completeMemberContactUpdateOperation(
         IDS.loser,
         "contact-update-before-merge",
-        reservation.id,
+        reservation!.operation.id,
         {
           xeroObjectType: "CONTACT",
           xeroObjectId: "contact-update-before-merge",
@@ -1292,17 +1295,20 @@ let claimDeletionRequestDecision: (typeof import("@/lib/deletion-request-decisio
       const reservation = reserveMemberContactUpdateOperation(
         IDS.loser,
         "contact-merge-before-update",
-        {
-          direction: "OUTBOUND",
-          entityType: "CONTACT",
-          operationType: "UPDATE",
-          localModel: "Member",
-          localId: IDS.loser,
-          idempotencyKey: correlationKey,
-          correlationKey,
-          requestPayload: { contacts: [{ emailAddress: "stale@example.test" }] },
-          createdByMemberId: IDS.actor,
-        },
+        (locked) => ({
+          input: {
+            direction: "OUTBOUND",
+            entityType: "CONTACT",
+            operationType: "UPDATE",
+            localModel: "Member",
+            localId: IDS.loser,
+            idempotencyKey: correlationKey,
+            correlationKey,
+            requestPayload: { contacts: [{ emailAddress: locked.email }] },
+            createdByMemberId: IDS.actor,
+          },
+          value: locked.email,
+        }),
         ordinary,
       ).then(
         () => ({ ok: true as const }),
@@ -1332,17 +1338,20 @@ let claimDeletionRequestDecision: (typeof import("@/lib/deletion-request-decisio
       const reservation = await reserveMemberContactUpdateOperation(
         IDS.target,
         "contact-update-before-deletion",
-        {
-          direction: "OUTBOUND",
-          entityType: "CONTACT",
-          operationType: "UPDATE",
-          localModel: "Member",
-          localId: IDS.target,
-          idempotencyKey: correlationKey,
-          correlationKey,
-          requestPayload: { contacts: [{ emailAddress: "fresh@example.test" }] },
-          createdByMemberId: IDS.actor,
-        },
+        (locked) => ({
+          input: {
+            direction: "OUTBOUND",
+            entityType: "CONTACT",
+            operationType: "UPDATE",
+            localModel: "Member",
+            localId: IDS.target,
+            idempotencyKey: correlationKey,
+            correlationKey,
+            requestPayload: { contacts: [{ emailAddress: locked.email }] },
+            createdByMemberId: IDS.actor,
+          },
+          value: locked.email,
+        }),
         ordinary,
       );
       await expect(
@@ -1354,7 +1363,7 @@ let claimDeletionRequestDecision: (typeof import("@/lib/deletion-request-decisio
       await completeMemberContactUpdateOperation(
         IDS.target,
         "contact-update-before-deletion",
-        reservation.id,
+        reservation!.operation.id,
         {
           xeroObjectType: "CONTACT",
           xeroObjectId: "contact-update-before-deletion",
@@ -1397,17 +1406,20 @@ let claimDeletionRequestDecision: (typeof import("@/lib/deletion-request-decisio
       const reservation = reserveMemberContactUpdateOperation(
         IDS.target,
         "contact-deletion-before-update",
-        {
-          direction: "OUTBOUND",
-          entityType: "CONTACT",
-          operationType: "UPDATE",
-          localModel: "Member",
-          localId: IDS.target,
-          idempotencyKey: correlationKey,
-          correlationKey,
-          requestPayload: { contacts: [{ emailAddress: "stale@example.test" }] },
-          createdByMemberId: IDS.actor,
-        },
+        (locked) => ({
+          input: {
+            direction: "OUTBOUND",
+            entityType: "CONTACT",
+            operationType: "UPDATE",
+            localModel: "Member",
+            localId: IDS.target,
+            idempotencyKey: correlationKey,
+            correlationKey,
+            requestPayload: { contacts: [{ emailAddress: locked.email }] },
+            createdByMemberId: IDS.actor,
+          },
+          value: locked.email,
+        }),
         ordinary,
       ).then(
         () => ({ ok: true as const }),

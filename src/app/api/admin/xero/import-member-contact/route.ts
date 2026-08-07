@@ -165,8 +165,10 @@ export async function POST(request: NextRequest) {
     const canLogin = !existingLoginForEmail;
     const placeholderHash = await hash(randomBytes(32).toString("hex"), 13);
 
-    const member = await prisma.member.create({
-      data: {
+    const storedXeroLink = buildXeroContactUrl(cachedContact.contactId);
+    const member = await prisma.$transaction(async (tx) => {
+      const created = await tx.member.create({
+        data: {
         email,
         firstName,
         lastName,
@@ -194,47 +196,50 @@ export async function POST(request: NextRequest) {
         emailVerified: !canLogin,
         inheritEmailFromId: existingLoginForEmail?.id ?? null,
       },
-      select: {
-        id: true,
-        firstName: true,
-        lastName: true,
-        email: true,
-        active: true,
-        xeroContactId: true,
-      },
+        select: {
+          id: true,
+          firstName: true,
+          lastName: true,
+          email: true,
+          active: true,
+          xeroContactId: true,
+        },
+      });
+      await ensureMemberAccessRolesFromCompatibilityFields(tx, {
+        memberId: created.id,
+        role: "USER",
+        canLogin,
+        assignedByMemberId: session.user.id,
+      });
+      await upsertXeroObjectLink(
+        {
+          localModel: "Member",
+          localId: created.id,
+          xeroObjectType: "CONTACT",
+          xeroObjectId: cachedContact.contactId,
+          xeroObjectUrl: storedXeroLink,
+          role: "CONTACT",
+          metadata: {
+            contactName: cachedContact.name ?? `${firstName} ${lastName}`,
+            importedFromXeroContactSearch: true,
+          },
+        },
+        { store: tx },
+      );
+      return created;
     });
     importedMemberId = member.id;
     importedXeroContactId = member.xeroContactId;
     contactLinked = Boolean(member.xeroContactId);
     subscriptionRefreshPending = true;
-    await ensureMemberAccessRolesFromCompatibilityFields(prisma, {
-      memberId: member.id,
-      role: "USER",
-      canLogin,
-      assignedByMemberId: session.user.id,
-    });
-
     // #2314: two links, deliberately different. The STORED one is
     // organisation-agnostic — a short code baked into a XeroObjectLink row is
     // wrong the moment the club reconnects to a different Xero organisation, so
     // the short code is applied when the row is rendered instead. The one
     // RETURNED to the admin who just imported is scoped now, so their click
     // lands in this club's books.
-    const storedXeroLink = buildXeroContactUrl(cachedContact.contactId);
     const xeroLink = buildXeroContactUrl(cachedContact.contactId, {
       shortCode: await getXeroOrgShortCode(),
-    });
-    await upsertXeroObjectLink({
-      localModel: "Member",
-      localId: member.id,
-      xeroObjectType: "CONTACT",
-      xeroObjectId: cachedContact.contactId,
-      xeroObjectUrl: storedXeroLink,
-      role: "CONTACT",
-      metadata: {
-        contactName: cachedContact.name ?? `${firstName} ${lastName}`,
-        importedFromXeroContactSearch: true,
-      },
     });
     contactLinked = true;
 

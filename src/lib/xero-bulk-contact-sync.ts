@@ -20,11 +20,13 @@ import {
 } from "@/lib/xero-contact-link-mismatches";
 import { buildXeroContactUrl } from "@/lib/xero-links";
 import {
+  applyInboundMemberContactPatch,
+  type InboundMemberContactPatch,
+} from "@/lib/xero-contact-create-recovery";
+import {
   buildXeroIdempotencyKey,
   buildXeroPayloadHash,
-  completeXeroSyncOperation,
   failXeroSyncOperation,
-  startXeroSyncOperation,
 } from "@/lib/xero-sync";
 import {
   callXeroApi,
@@ -37,7 +39,11 @@ import {
   refreshXeroContactCachesFromContact,
   type CachedXeroContact,
 } from "./xero-contact-cache";
-import { getContactFirstInvoiceDate } from "./xero-contacts";
+import {
+  completeMemberContactUpdateOperation,
+  getContactFirstInvoiceDate,
+  reserveMemberContactUpdateOperation,
+} from "./xero-contacts";
 import {
   DEFAULT_XERO_SYNC_SCOPE,
   getXeroSyncCursor,
@@ -178,42 +184,50 @@ async function repairXeroContactNameOrderIfNeeded(input: {
   cachedContact: CachedXeroContact;
   member: { id: string; firstName: string; lastName: string };
 }): Promise<string | null> {
-  const repair = getXeroContactNameOrderRepair(input.member, {
-    name: input.cachedContact.name,
-    firstName: input.cachedContact.firstName,
-    lastName: input.cachedContact.lastName,
-  });
-
-  if (!repair) {
-    return null;
-  }
-
   const contactId = input.cachedContact.contactId;
-  const contactUpdate: Contact = {
-    contactID: contactId,
-    name: repair.name,
-    firstName: repair.firstName,
-    lastName: repair.lastName,
-  };
-  const payload = { contacts: [contactUpdate] };
-  const payloadHash = buildXeroPayloadHash(payload);
-  const idempotencyKey = buildXeroIdempotencyKey(
-    "contact",
+  const reservation = await reserveMemberContactUpdateOperation(
+    input.member.id,
     contactId,
-    "repair-name-order",
-    payloadHash,
-    "v1"
+    (locked) => {
+      const repair = getXeroContactNameOrderRepair(locked, {
+        name: input.cachedContact.name,
+        firstName: input.cachedContact.firstName,
+        lastName: input.cachedContact.lastName,
+      });
+      if (!repair) return null;
+
+      const contactUpdate: Contact = {
+        contactID: contactId,
+        name: repair.name,
+        firstName: repair.firstName,
+        lastName: repair.lastName,
+      };
+      const payload = { contacts: [contactUpdate] };
+      const payloadHash = buildXeroPayloadHash(payload);
+      const idempotencyKey = buildXeroIdempotencyKey(
+        "contact",
+        contactId,
+        "repair-name-order",
+        payloadHash,
+        "v2",
+      );
+      return {
+        input: {
+          direction: "OUTBOUND",
+          entityType: "CONTACT",
+          operationType: "UPDATE",
+          localModel: "Member",
+          localId: locked.id,
+          idempotencyKey,
+          correlationKey: idempotencyKey,
+          requestPayload: payload,
+        },
+        value: { repair, payload, idempotencyKey },
+      };
+    },
   );
-  const operation = await startXeroSyncOperation({
-    direction: "OUTBOUND",
-    entityType: "CONTACT",
-    operationType: "UPDATE",
-    localModel: "Member",
-    localId: input.member.id,
-    idempotencyKey,
-    correlationKey: idempotencyKey,
-    requestPayload: payload,
-  });
+  if (!reservation) return null;
+  const { operation, value } = reservation;
 
   try {
     const response = await callXeroApi(
@@ -221,8 +235,8 @@ async function repairXeroContactNameOrderIfNeeded(input: {
         input.xero.accountingApi.updateContact(
           input.tenantId,
           contactId,
-          payload,
-          idempotencyKey
+          value.payload,
+          value.idempotencyKey,
         ),
       {
         operation: "updateContact",
@@ -234,35 +248,40 @@ async function repairXeroContactNameOrderIfNeeded(input: {
     const completedContactId =
       response.body.contacts?.[0]?.contactID ?? contactId;
 
-    await completeXeroSyncOperation(operation.id, {
-      responsePayload: response.body,
-      xeroObjectType: "CONTACT",
-      xeroObjectId: completedContactId,
-      xeroObjectUrl: buildXeroContactUrl(completedContactId),
-      extraLinks: [
-        {
-          localModel: "Member",
-          localId: input.member.id,
-          xeroObjectType: "CONTACT",
-          xeroObjectId: completedContactId,
-          xeroObjectUrl: buildXeroContactUrl(completedContactId),
-          role: "CONTACT",
-        },
-      ],
-    });
+    await completeMemberContactUpdateOperation(
+      input.member.id,
+      contactId,
+      operation.id,
+      {
+        responsePayload: response.body,
+        xeroObjectType: "CONTACT",
+        xeroObjectId: completedContactId,
+        xeroObjectUrl: buildXeroContactUrl(completedContactId),
+        extraLinks: [
+          {
+            localModel: "Member",
+            localId: input.member.id,
+            xeroObjectType: "CONTACT",
+            xeroObjectId: completedContactId,
+            xeroObjectUrl: buildXeroContactUrl(completedContactId),
+            role: "CONTACT",
+          },
+        ],
+      },
+    );
 
     await refreshXeroContactCachesFromContact(
       {
         ...input.contact,
         contactID: completedContactId,
-        name: repair.name,
-        firstName: repair.firstName,
-        lastName: repair.lastName,
+        name: value.repair.name,
+        firstName: value.repair.firstName,
+        lastName: value.repair.lastName,
       },
       new Date()
     );
 
-    return repair.name;
+    return value.repair.name;
   } catch (error) {
     await failXeroSyncOperation(operation.id, error);
     throw error;
@@ -367,7 +386,7 @@ export async function syncContactsFromXero(
       });
       if (alreadyLinked) {
         const changes: string[] = [];
-        const updateData: Record<string, unknown> = {};
+        const updateData: InboundMemberContactPatch = {};
         const mismatch = getMemberXeroContactLinkMismatch(
           {
             id: alreadyLinked.id,
@@ -418,9 +437,6 @@ export async function syncContactsFromXero(
           );
           if (invoiceDate) {
             updateData.joinedDate = invoiceDate;
-            changes.push(
-              `Joined date set to ${invoiceDate.toISOString().split("T")[0]}`
-            );
           }
           await throttle(1500);
         }
@@ -429,15 +445,6 @@ export async function syncContactsFromXero(
           updateData.phoneCountryCode = cachedContact.phoneCountryCode;
           updateData.phoneAreaCode = cachedContact.phoneAreaCode;
           updateData.phoneNumber = cachedContact.phoneNumber;
-          changes.push(
-            `Phone set to ${
-              formatXeroPhone({
-                phoneCountryCode: cachedContact.phoneCountryCode,
-                phoneAreaCode: cachedContact.phoneAreaCode,
-                phoneNumber: cachedContact.phoneNumber,
-              }) ?? cachedContact.phoneNumber
-            }`
-          );
         }
 
         if (
@@ -450,7 +457,6 @@ export async function syncContactsFromXero(
           updateData.streetRegion = cachedContact.streetRegion;
           updateData.streetPostalCode = cachedContact.streetPostalCode;
           updateData.streetCountry = cachedContact.streetCountry;
-          changes.push("Street address set from Xero");
         }
         if (
           !alreadyLinked.postalAddressLine1 &&
@@ -462,15 +468,34 @@ export async function syncContactsFromXero(
           updateData.postalRegion = cachedContact.postalRegion;
           updateData.postalPostalCode = cachedContact.postalPostalCode;
           updateData.postalCountry = cachedContact.postalCountry;
-          changes.push("Postal address set from Xero");
         }
 
-        const hasMemberUpdates = Object.keys(updateData).length > 0;
-        if (hasMemberUpdates) {
-          await prisma.member.update({
-            where: { id: alreadyLinked.id },
-            data: updateData,
-          });
+        const applied = await applyInboundMemberContactPatch({
+          memberId: alreadyLinked.id,
+          xeroContactId: contact.contactID,
+          patch: updateData,
+        });
+        if (applied.appliedFields.includes("joinedDate") && updateData.joinedDate) {
+          changes.push(
+            `Joined date set to ${updateData.joinedDate.toISOString().split("T")[0]}`,
+          );
+        }
+        if (applied.appliedFields.includes("phoneNumber") && updateData.phoneNumber) {
+          changes.push(
+            `Phone set to ${
+              formatXeroPhone({
+                phoneCountryCode: updateData.phoneCountryCode,
+                phoneAreaCode: updateData.phoneAreaCode,
+                phoneNumber: updateData.phoneNumber,
+              }) ?? updateData.phoneNumber
+            }`,
+          );
+        }
+        if (applied.appliedFields.includes("streetAddressLine1")) {
+          changes.push("Street address set from Xero");
+        }
+        if (applied.appliedFields.includes("postalAddressLine1")) {
+          changes.push("Postal address set from Xero");
         }
 
         if (changes.length > 0) {
@@ -527,7 +552,7 @@ export async function syncContactsFromXero(
       }
 
       const changes: string[] = [];
-      const updateData: Record<string, unknown> = {};
+      const updateData: InboundMemberContactPatch = {};
 
       const mismatch = getMemberXeroContactLinkMismatch(
         {
@@ -571,11 +596,6 @@ export async function syncContactsFromXero(
         changes.push(`Xero contact name set to ${repairedContactName}`);
       }
 
-      if (member.xeroContactId !== contact.contactID) {
-        updateData.xeroContactId = contact.contactID;
-        changes.push("Linked to Xero contact");
-      }
-
       if (!member.joinedDate && options.backfillJoinedDates) {
         const invoiceDate = await getContactFirstInvoiceDate(
           xero,
@@ -584,9 +604,6 @@ export async function syncContactsFromXero(
         );
         if (invoiceDate) {
           updateData.joinedDate = invoiceDate;
-          changes.push(
-            `Joined date set to ${invoiceDate.toISOString().split("T")[0]}`
-          );
         }
         await throttle(1500);
       }
@@ -595,15 +612,6 @@ export async function syncContactsFromXero(
         updateData.phoneCountryCode = cachedContact.phoneCountryCode;
         updateData.phoneAreaCode = cachedContact.phoneAreaCode;
         updateData.phoneNumber = cachedContact.phoneNumber;
-        changes.push(
-          `Phone set to ${
-            formatXeroPhone({
-              phoneCountryCode: cachedContact.phoneCountryCode,
-              phoneAreaCode: cachedContact.phoneAreaCode,
-              phoneNumber: cachedContact.phoneNumber,
-            }) ?? cachedContact.phoneNumber
-          }`
-        );
       }
 
       if (!member.streetAddressLine1 && cachedContact.streetAddressLine1) {
@@ -613,7 +621,6 @@ export async function syncContactsFromXero(
         updateData.streetRegion = cachedContact.streetRegion;
         updateData.streetPostalCode = cachedContact.streetPostalCode;
         updateData.streetCountry = cachedContact.streetCountry;
-        changes.push("Street address set from Xero");
       }
       if (!member.postalAddressLine1 && cachedContact.postalAddressLine1) {
         updateData.postalAddressLine1 = cachedContact.postalAddressLine1;
@@ -622,15 +629,35 @@ export async function syncContactsFromXero(
         updateData.postalRegion = cachedContact.postalRegion;
         updateData.postalPostalCode = cachedContact.postalPostalCode;
         updateData.postalCountry = cachedContact.postalCountry;
-        changes.push("Postal address set from Xero");
       }
 
-      const hasMemberUpdates = Object.keys(updateData).length > 0;
-      if (hasMemberUpdates) {
-        await prisma.member.update({
-          where: { id: member.id },
-          data: updateData,
-        });
+      const applied = await applyInboundMemberContactPatch({
+        memberId: member.id,
+        xeroContactId: contact.contactID,
+        patch: updateData,
+      });
+      if (applied.linked) changes.push("Linked to Xero contact");
+      if (applied.appliedFields.includes("joinedDate") && updateData.joinedDate) {
+        changes.push(
+          `Joined date set to ${updateData.joinedDate.toISOString().split("T")[0]}`,
+        );
+      }
+      if (applied.appliedFields.includes("phoneNumber") && updateData.phoneNumber) {
+        changes.push(
+          `Phone set to ${
+            formatXeroPhone({
+              phoneCountryCode: updateData.phoneCountryCode,
+              phoneAreaCode: updateData.phoneAreaCode,
+              phoneNumber: updateData.phoneNumber,
+            }) ?? updateData.phoneNumber
+          }`,
+        );
+      }
+      if (applied.appliedFields.includes("streetAddressLine1")) {
+        changes.push("Street address set from Xero");
+      }
+      if (applied.appliedFields.includes("postalAddressLine1")) {
+        changes.push("Postal address set from Xero");
       }
 
       if (changes.length > 0) {
