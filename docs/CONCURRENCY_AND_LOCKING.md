@@ -437,15 +437,32 @@ That proof is a capability, not a plain value: `acquireHostingCoverageQueueParti
 registers each object it returns in a module-private `WeakSet`, and
 `assertHostingCoverageQueueParticipantsLocked` rejects anything absent from it, so a
 structurally identical object literal cannot stand in for a locked participant set.
-The fence is therefore unconditional in the strict sense — **the seam can never issue
-a proof it did not lock for**. A client that cannot execute the lock statement (no
-`$executeRaw`) is refused with `HostingCoverageParticipantFenceUnavailableError`
-rather than being handed an unlocked proof; that error is deliberately *not* the
-retryable `HOSTING_COVERAGE_PARTICIPANT_RETRY` 409, because it reports a wiring fault
-that no amount of retrying can clear. Test doubles must therefore supply `$executeRaw`
-and a `Member.findMany` that models the real table (see
-`src/lib/__tests__/adult-member-hosting-queue-participants.test.ts`); narrowing a
-double is not a licence to disable the fence for the call sites that double reaches.
+**`acquireHostingCoverageQueueParticipantProof` can never issue a proof it did not lock
+for.** A client that cannot execute the lock statement (no `$executeRaw`) is refused
+with `HostingCoverageParticipantFenceUnavailableError` rather than being handed an
+unlocked proof; that error is deliberately *not* the retryable
+`HOSTING_COVERAGE_PARTICIPANT_RETRY` 409, because it reports a wiring fault that no
+amount of retrying can clear.
+
+That guarantee is scoped to the acquire seam, and deliberately so: the module's second
+proof-minting export, `proveMemberMergeHostingCoverageParticipants`, takes no lock of
+its own. It exists because member merge acquires its participants separately, through
+`lockMemberMergeHostingCoverageParticipants`, and then attests to that acquisition. Both
+sides pass plain `readonly string[]`, so **nothing at the type level ties the attested
+ids to the ids actually locked** — on that half the invariant is a convention its one
+caller (`member-merge.ts`) currently keeps, not a structural guarantee. A second
+merge-like path that hand-built `lockedMemberIds` would obtain a proof the whole
+downstream chain trusts, with no row lock ever taken. Brand that return type before
+adding one.
+
+A double standing in for this client must model **both** under-lock reads, not just the
+lock: `member.findMany` for the existence/order re-read, **and** `booking.findMany` for
+the owner/lodge re-read behind the `sourceFingerprint` drift check. Modelling only the
+first leaves the second returning nothing, which the fence correctly reads as drift and
+reports as an unexplained 409. `src/lib/__tests__/support/hosting-participant-fence-double.ts`
+provides both; `src/lib/__tests__/adult-member-hosting-queue-participants.test.ts` shows
+the minimal shape. Narrowing a double is not a licence to disable the fence for the call
+sites that double reaches.
 
 The member-standing fan-out adds a subject fence before even its first candidate
 read or empty-fan-out return. `enqueueHostingCoverageReevaluationForMember` locks
