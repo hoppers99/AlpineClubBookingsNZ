@@ -56,6 +56,13 @@ function rosterAction(page: Page, date: string, action: string) {
 }
 
 async function loadRosterDate(page: Page, date: string): Promise<BrowserRoster> {
+  // One tolerant auto-accepter for the whole test. Regenerate only shows its
+  // confirm dialog when it would overwrite confirmed/completed chores, so a
+  // per-action `page.once` handler goes stale on an empty day and then
+  // double-fires on the next dialog ("Cannot accept dialog which is already
+  // handled!"). A persistent handler with a swallowed re-accept is safe in
+  // both states.
+  page.on("dialog", (dialog) => void dialog.accept().catch(() => {}));
   const initialLoad = rosterGet(page, DEMO_BOOKING_WINDOWS.rosterEdit.checkIn);
   await page.goto("/admin/roster");
   // The page opens on today; wait for its own load to settle before switching.
@@ -72,7 +79,7 @@ async function loadRosterDate(page: Page, date: string): Promise<BrowserRoster> 
 async function regenerate(page: Page, date: string): Promise<BrowserRoster> {
   const action = rosterAction(page, date, "regenerate");
   const reload = rosterGet(page, date);
-  page.once("dialog", (dialog) => void dialog.accept());
+
   await page.getByRole("button", { name: "Regenerate Roster" }).click();
   expect((await action).ok()).toBe(true);
   const response = await reload;
@@ -80,18 +87,38 @@ async function regenerate(page: Page, date: string): Promise<BrowserRoster> {
   return response.json() as Promise<BrowserRoster>;
 }
 
-async function saveUnchanged(page: Page, date: string) {
-  const saved = rosterAction(page, date, "save");
+/**
+ * Enter edit mode and perform a REAL save. Save is dirty-gated (#2143: a
+ * pristine re-save must not write an audit entry), so the button stays
+ * disabled until an assignment actually changes: we assert that, then move
+ * the first assignment to a different eligible guest and save.
+ */
+async function editAndSave(page: Page, date: string) {
   await page.getByRole("button", { name: "Edit roster" }).click();
+  await expect(page.getByRole("button", { name: "Save roster" })).toBeDisabled();
+  const firstSelect = page.getByRole("combobox").first();
+  const currentValue = await firstSelect.inputValue();
+  const optionValues = await firstSelect
+    .locator("option")
+    .evaluateAll((options) =>
+      options
+        .map((option) => (option as HTMLOptionElement).value)
+        .filter((value) => value !== ""),
+    );
+  const otherGuestId = optionValues.find((value) => value !== currentValue);
+  expect(otherGuestId, "the day must offer more than one eligible guest").toBeTruthy();
+  const saved = rosterAction(page, date, "save");
+  await firstSelect.selectOption(otherGuestId!);
   await page.getByRole("button", { name: "Save roster" }).click();
   const response = await saved;
   expect(response.status(), await response.text()).toBe(200);
+  return { movedToGuestId: otherGuestId!, response };
 }
 
 async function confirm(page: Page, date: string) {
   const confirmed = rosterAction(page, date, "confirm");
   const reload = rosterGet(page, date);
-  page.once("dialog", (dialog) => void dialog.accept());
+
   await page.getByRole("button", { name: "Confirm Roster" }).click();
   expect((await confirmed).ok()).toBe(true);
   const response = await reload;
@@ -120,7 +147,8 @@ test("rosters an all-departing day and confirms it", async ({ page }) => {
     expect(departingIds.has(assignment.bookingGuestId ?? "")).toBe(true);
   }
 
-  await saveUnchanged(page, ALL_DEPARTING_DAY);
+  const { movedToGuestId } = await editAndSave(page, ALL_DEPARTING_DAY);
+  expect(departingIds.has(movedToGuestId)).toBe(true);
   const confirmed = await confirm(page, ALL_DEPARTING_DAY);
   expect(confirmed.assignments.length).toBeGreaterThan(0);
   expect(
@@ -154,20 +182,27 @@ test("rosters a mixed turnover day with both sides of midday", async ({ page }) 
   }
 
   // A departing guest can be chosen manually for any chore on the day: the
-  // dropdown offers them and Save accepts them.
+  // dropdown offers them and Save accepts them. Save is dirty-gated, so pick
+  // a departing guest who is NOT already the current assignee.
   await page.getByRole("button", { name: "Edit roster" }).click();
   const firstSelect = page.getByRole("combobox").first();
   const departingLabel = `${departing[0].firstName} ${departing[0].lastName} (departing today)`;
   await expect(firstSelect.locator("option", { hasText: departingLabel })).toHaveCount(1);
+  const currentValue = await firstSelect.inputValue();
+  const chosenDeparting =
+    departing.find((guest) => guest.id !== currentValue) ?? departing[0];
+  expect(chosenDeparting.id, "need a departing guest not already assigned here").not.toBe(
+    currentValue,
+  );
   const saved = rosterAction(page, TURNOVER_DAY, "save");
-  await firstSelect.selectOption(departing[0].id);
+  await firstSelect.selectOption(chosenDeparting.id);
   await page.getByRole("button", { name: "Save roster" }).click();
   const savedResponse = await saved;
   expect(savedResponse.status(), await savedResponse.text()).toBe(200);
   const savedRoster = await savedResponse.json() as BrowserRoster;
   expect(
     savedRoster.assignments.some(
-      (assignment) => assignment.bookingGuestId === departing[0].id,
+      (assignment) => assignment.bookingGuestId === chosenDeparting.id,
     ),
   ).toBe(true);
 
