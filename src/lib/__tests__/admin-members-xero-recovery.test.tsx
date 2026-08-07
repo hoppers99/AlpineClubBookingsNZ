@@ -200,7 +200,10 @@ describe("members-list Xero partial-success recovery", () => {
     await screen.findByText(/member list was refreshed successfully/i);
     expect(document.activeElement).toBe(alert);
     const action = screen.getByRole("link", { name: "Open affected member" });
-    expect(action).toHaveAttribute("href", "/admin/members/member%2Foff-page");
+    expect(action).toHaveAttribute(
+      "href",
+      "/admin/members/member%2Foff-page?returnTo=%2Fadmin%2Fmembers%3Fpage%3D4%26active%3Dfalse",
+    );
     expect(screen.getByText(/No affected member in this filtered page/i)).toBeInTheDocument();
   });
 
@@ -224,7 +227,7 @@ describe("members-list Xero partial-success recovery", () => {
     expect(document.activeElement).toBe(alert);
     expect(screen.getByRole("link", { name: "Open affected member" })).toHaveAttribute(
       "href",
-      "/admin/members/member%2Foff-page",
+      "/admin/members/member%2Foff-page?returnTo=%2Fadmin%2Fmembers%3Fpage%3D4%26active%3Dfalse",
     );
   });
 });

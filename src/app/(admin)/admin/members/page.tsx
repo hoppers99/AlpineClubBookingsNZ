@@ -25,6 +25,7 @@ import {
   isXeroPartialSuccessRecovery,
 } from "@/lib/xero-partial-success"
 import type { XeroActionRecovery } from "@/lib/admin-member-xero-actions"
+import { buildHrefWithReturnTo } from "@/lib/internal-return-path"
 import { MemberBulkActionBar } from "./_components/member-bulk-action-bar"
 import { MemberBulkDialog } from "./_components/member-bulk-dialog"
 import { MemberBulkMembershipDialog } from "./_components/member-bulk-membership-dialog"
@@ -388,7 +389,10 @@ export default function MembersPage() {
           xeroRecoveryMemberId ? (
             <Button asChild variant="outline" size="sm">
               <Link
-                href={`/admin/members/${encodeURIComponent(xeroRecoveryMemberId)}`}
+                href={buildHrefWithReturnTo(
+                  `/admin/members/${encodeURIComponent(xeroRecoveryMemberId)}`,
+                  membersListPath,
+                )}
               >
                 Open affected member
               </Link>

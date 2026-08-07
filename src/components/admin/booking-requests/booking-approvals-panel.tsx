@@ -367,7 +367,7 @@ export function BookingApprovalsPanel({
             <Button asChild variant="outline" size="sm">
               <Link
                 href={buildHrefWithReturnTo(
-                  `/admin/bookings/${encodeURIComponent(decisionRecovery.bookingId)}`,
+                  `/bookings/${encodeURIComponent(decisionRecovery.bookingId)}`,
                   currentPath,
                 )}
               >

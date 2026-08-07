@@ -362,7 +362,7 @@ describe("self-service deletion partial recovery (#2597)", () => {
     ).toBe(true);
     const openBooking = screen.getByRole("link", { name: "Open pending booking" });
     expect(openBooking.getAttribute("href")).toBe(
-      "/admin/bookings/booking%2Fpending?returnTo=%2Fadmin%2Fdeletion-requests",
+      "/bookings/booking%2Fpending?returnTo=%2Fadmin%2Fdeletion-requests",
     );
 
     fireEvent.click(screen.getByRole("button", { name: "Retry remaining cleanup" }));
@@ -409,7 +409,7 @@ describe("self-service deletion partial recovery (#2597)", () => {
         .getByRole("link", { name: "Open booking for review" })
         .getAttribute("href"),
     ).toBe(
-      "/admin/bookings/booking%2Fcommitted?returnTo=%2Fadmin%2Fdeletion-requests",
+      "/bookings/booking%2Fcommitted?returnTo=%2Fadmin%2Fdeletion-requests",
     );
   });
 

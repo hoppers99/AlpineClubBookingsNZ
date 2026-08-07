@@ -230,7 +230,7 @@ describe("PublicBookingRequestsPanel saved-data marker (#2342)", () => {
     expect(
       screen.getByRole("link", { name: "Open affected booking" }).getAttribute("href"),
     ).toBe(
-      "/admin/bookings/booking%2Fheld?returnTo=%2Fadmin%2Fbooking-requests",
+      "/bookings/booking%2Fheld?returnTo=%2Fadmin%2Fbooking-requests",
     );
   });
 

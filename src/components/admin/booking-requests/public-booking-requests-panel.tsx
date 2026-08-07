@@ -1150,7 +1150,7 @@ export function PublicBookingRequestsPanel({
             <Button asChild variant="outline" size="sm">
               <Link
                 href={buildHrefWithReturnTo(
-                  `/admin/bookings/${encodeURIComponent(declineRecovery.heldBookingId)}`,
+                  `/bookings/${encodeURIComponent(declineRecovery.heldBookingId)}`,
                   currentPath,
                 )}
               >

@@ -152,7 +152,7 @@ describe("BookingApprovalsPanel action error attention (#2597)", () => {
     const recoveryLink = screen.getByRole("link", { name: "Open affected booking" })
     expect(recoveryLink).toHaveAttribute(
       "href",
-      "/admin/bookings/booking-1?returnTo=%2Fadmin%2Fbooking-requests",
+      "/bookings/booking-1?returnTo=%2Fadmin%2Fbooking-requests",
     )
   })
 })

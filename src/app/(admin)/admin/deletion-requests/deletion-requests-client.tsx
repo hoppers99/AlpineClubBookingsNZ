@@ -400,7 +400,7 @@ export default function DeletionRequestsClient({
                     <Button asChild variant="outline" size="sm">
                       <Link
                         href={buildHrefWithReturnTo(
-                          `/admin/bookings/${encodeURIComponent(deletionRecovery.reviewBookingId)}`,
+                          `/bookings/${encodeURIComponent(deletionRecovery.reviewBookingId)}`,
                           "/admin/deletion-requests",
                         )}
                       >
