@@ -13,6 +13,7 @@ import {
   REFUNDED_CARD_TRANSACTION_REPAYMENT_REQUIRED_BODY,
   REFUNDED_CARD_TRANSACTION_REPAYMENT_REQUIRED_MESSAGE,
 } from "@/lib/payment-recovery-contract";
+import { expectRecoveryAlertToHoldFocus } from "@/lib/__tests__/helpers/focus";
 
 const fetchMock = vi.fn();
 const scrollIntoView = vi.fn();
@@ -177,7 +178,7 @@ describe("BookingPaymentWrapper", () => {
     );
 
     const alert = await screen.findByRole("alert");
-    expect(alert).toHaveTextContent("Payment Error");
+    await waitFor(() => expect(alert).toHaveTextContent("Payment Error"));
     expect(alert).toHaveTextContent(/pay later from your booking page/i);
     expect(alert).not.toHaveTextContent(
       "Card transaction found - check payment status",
@@ -214,7 +215,7 @@ describe("BookingPaymentWrapper", () => {
     );
 
     const alert = await screen.findByRole("alert");
-    expect(alert.textContent).toContain(retryMessage);
+    await waitFor(() => expect(alert.textContent).toContain(retryMessage));
     expect(alert.textContent).toContain(
       "Your card payment was received, but booking finalisation is still pending.",
     );
@@ -228,7 +229,7 @@ describe("BookingPaymentWrapper", () => {
     expect(screen.queryByText("payment-form")).toBeNull();
     expect(Sentry.captureException).not.toHaveBeenCalled();
     expect(onPaymentComplete).not.toHaveBeenCalled();
-    await waitFor(() => expect(document.activeElement).toBe(alert));
+    await expectRecoveryAlertToHoldFocus(alert);
     expect(scrollIntoView).toHaveBeenCalledWith({
       behavior: "smooth",
       block: "center",
@@ -258,12 +259,14 @@ describe("BookingPaymentWrapper", () => {
     );
 
     const alert = await screen.findByRole("alert");
-    expect(alert).toHaveTextContent("Payment received - check booking status");
+    await waitFor(() =>
+      expect(alert).toHaveTextContent("Payment received - check booking status"),
+    );
     expect(alert).toHaveTextContent(PAYMENT_RECEIVED_STATUS_UNCONFIRMED_MESSAGE);
     expect(alert).not.toHaveTextContent("raw server text");
     expect(alert).not.toHaveTextContent("finalisation pending");
     expect(screen.queryByText("payment-form")).toBeNull();
-    await waitFor(() => expect(document.activeElement).toBe(alert));
+    await expectRecoveryAlertToHoldFocus(alert);
     expect(scrollIntoView).toHaveBeenCalledWith({
       behavior: "smooth",
       block: "center",
@@ -295,7 +298,7 @@ describe("BookingPaymentWrapper", () => {
     );
 
     const alert = await screen.findByRole("alert");
-    expect(alert).toHaveTextContent("Payment Error");
+    await waitFor(() => expect(alert).toHaveTextContent("Payment Error"));
     expect(alert).not.toHaveTextContent("Payment received - check booking status");
     consoleErrorSpy.mockRestore();
   });
@@ -334,7 +337,7 @@ describe("BookingPaymentWrapper", () => {
     expect(alert).not.toHaveTextContent("private refund lookup detail");
     expect(alert).not.toHaveTextContent("Your card payment was received");
     expect(screen.queryByText("payment-form")).toBeNull();
-    await waitFor(() => expect(document.activeElement).toBe(alert));
+    await expectRecoveryAlertToHoldFocus(alert);
   });
 
   it.each([
@@ -374,7 +377,7 @@ describe("BookingPaymentWrapper", () => {
       expect(alert).not.toHaveTextContent("server detail");
       expect(alert).not.toHaveTextContent(/pay later from your booking page/i);
       expect(screen.queryByText("payment-form")).toBeNull();
-      await waitFor(() => expect(document.activeElement).toBe(alert));
+      await expectRecoveryAlertToHoldFocus(alert);
     },
   );
 
@@ -546,7 +549,7 @@ describe("BookingPaymentWrapper", () => {
     expect(screen.queryByText("payment-form")).toBeNull();
     expect(screen.getByText("Payment successful!")).not.toBeNull();
     expect(onPaymentComplete).not.toHaveBeenCalled();
-    await waitFor(() => expect(document.activeElement).toBe(alert));
+    await expectRecoveryAlertToHoldFocus(alert);
     expect(scrollIntoView).toHaveBeenCalledWith({
       behavior: "smooth",
       block: "center",
@@ -590,7 +593,7 @@ describe("BookingPaymentWrapper", () => {
     expect(alert).not.toHaveTextContent("raw server text");
     expect(screen.getByText("Payment successful!")).not.toBeNull();
     expect(onPaymentComplete).not.toHaveBeenCalled();
-    await waitFor(() => expect(document.activeElement).toBe(alert));
+    await expectRecoveryAlertToHoldFocus(alert);
     expect(scrollIntoView).toHaveBeenCalledWith({
       behavior: "smooth",
       block: "center",
@@ -688,7 +691,7 @@ describe("BookingPaymentWrapper", () => {
       expect(onPaymentComplete).not.toHaveBeenCalled();
       expect(screen.queryByText("payment-form")).toBeNull();
       expect(screen.getByText("Payment successful!")).not.toBeNull();
-      await waitFor(() => expect(document.activeElement).toBe(alert));
+      await expectRecoveryAlertToHoldFocus(alert);
     },
   );
 

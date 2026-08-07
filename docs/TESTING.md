@@ -292,3 +292,80 @@ A malformed value fails the run rather than falling back to the frozen instant �
 falling back would report green while checking something other than what you
 asked for, which is the same vacuous-pass failure this whole convention exists to
 prevent.
+
+## Asserting that a recovery alert holds focus
+
+The other convention that is load-bearing rather than stylistic, for the same
+reason as the frozen clock: written the obvious way, the assertion reports green
+or red on something other than what it claims to check.
+
+Eighteen admin and member surfaces render a **permanently mounted** `role="alert"`
+that a failed action populates and then takes focus, so a keyboard or
+screen-reader user is not left on a control that has just been re-enabled while
+the explanation appears elsewhere on the page. Sixteen use
+`src/components/focused-action-error.tsx`; `policy-exception-requests-panel.tsx`
+and `roster-editor.tsx` inline their own copy.
+
+Assert that contract with the shared helper, never by hand:
+
+```ts
+import { expectRecoveryAlertToHoldFocus } from "@/lib/__tests__/helpers/focus";
+
+fireEvent.click(screen.getByRole("button", { name: "Confirm Booking" }));
+await waitFor(() => expect(alert).toHaveTextContent(RETRY_MESSAGE));
+await expectRecoveryAlertToHoldFocus(alert);
+```
+
+### Why not by hand
+
+Both obvious spellings are wrong, and this repository shipped both before #2635.
+
+**A synchronous `expect(document.activeElement).toBe(alert)`** taken straight
+after a `waitFor` on the alert's text passes only by luck. The component focuses
+in a passive effect, which React flushes in a Scheduler task *after* the commit
+that puts the message in the DOM. Measured on this stack: at the
+mutation-observer checkpoint where `waitFor`'s callback first succeeds, focus had
+landed in **0 of 30 runs**, arriving exactly one event-loop turn later. The
+assertion survived only because React Testing Library's `asyncWrapper` happens to
+drain one `setTimeout(0)` before handing control back — a one-turn margin inside
+a library internal that nothing guarantees. A loaded CI runner is enough to lose
+it, and `main` went intermittently red on a commit that passed on a rerun of the
+identical SHA.
+
+**A bare `await waitFor(() => expect(document.activeElement).toBe(alert))`** is
+not the fix either. `waitFor` resolves on the first poll where the condition
+holds, so focus that lands and is then stolen by a later commit passes it — a
+weaker guarantee than the one being claimed. #2618 relaxed the member-facing
+waitlist card to this spelling to dodge the race above, and an earlier review
+recorded that as a finding rather than a fix.
+
+`expectRecoveryAlertToHoldFocus` asserts both halves: it waits for focus to
+arrive, then settles every pending render and effect and re-asserts
+synchronously. So it depends on no ordering between React's flush and the test
+runner's drain, and it fails if the focus does not stay.
+
+### The related trap: `findByRole("alert")` on a permanently mounted alert
+
+Because the live region is mounted **empty** from the start,
+`await screen.findByRole("alert")` matches it immediately and waits for nothing.
+Any text assertion on the next line inherits the same one-turn margin. Wait for
+the text, not the element:
+
+```ts
+const alert = await screen.findByRole("alert");
+await waitFor(() => expect(alert).toHaveTextContent("Payment Error"));
+```
+
+### Do not make the component's effect a layout effect
+
+It looks like the tidy fix — focus in the same commit as the message, no window
+at all — and it regresses the surfaces that raise their failure from inside a
+closing dialog, to exactly the outcome the component exists to prevent. Radix's
+focus scope traps focus inside an open dialog and releases it from a *passive*
+effect cleanup, restoring focus to whatever was focused when the dialog opened.
+Those surfaces batch "close the dialog" and "record the failure" into one commit,
+so a layout effect focuses the alert while the closing dialog's content is still
+mounted: the trap steals it back and the release then hands focus to the control
+that opened the dialog — or to `<body>` under a synthetic click, which does not
+focus its button. `focused-action-error-focus-contract.test.tsx` pins this
+deliberately; so, incidentally, does `deletion-requests-client.test.tsx`.
