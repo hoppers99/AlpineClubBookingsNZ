@@ -207,6 +207,10 @@ vi.mock("@/lib/xero-applied-credit-allocation-repair", () => ({
     mocks.repairLegacyAppliedCreditNoteAllocationsForBooking,
 }));
 
+import {
+  fenceMemberFindMany,
+  recordingBookingDouble,
+} from "@/lib/__tests__/support/hosting-participant-fence-double";
 import { cancelBooking } from "@/lib/booking-cancel";
 import { addDaysDateOnly, getTodayDateOnly } from "@/lib/date-only";
 
@@ -249,10 +253,20 @@ describe("cancelBooking credit refunds", () => {
         arg: ((tx: unknown) => Promise<unknown>) | Array<Promise<unknown>>,
       ) => {
         if (typeof arg === "function") {
+          // #2619: the hosting participant fence locks the participant Member
+          // rows and then re-reads them, plus each source booking's owner and
+          // lodge, to detect drift under the lock. Model both reads — the
+          // booking side replays whatever this tx's own findUnique served, so
+          // the no-drift case matches by construction.
+          const fenceBooking = recordingBookingDouble((args) =>
+            mocks.txBookingFindUnique(args),
+          );
           const mockTx = {
             $executeRaw: mocks.txExecuteRaw,
+            member: { findMany: fenceMemberFindMany() },
             booking: {
-              findUnique: mocks.txBookingFindUnique,
+              findUnique: fenceBooking.findUnique,
+              findMany: fenceBooking.findMany,
               update: mocks.bookingUpdate,
               updateMany: mocks.bookingUpdateMany,
             },
@@ -2539,10 +2553,20 @@ describe("cancelBooking detaches the held booking-request pointer (issue #1254)"
         arg: ((tx: unknown) => Promise<unknown>) | Array<Promise<unknown>>,
       ) => {
         if (typeof arg === "function") {
+          // #2619: the hosting participant fence locks the participant Member
+          // rows and then re-reads them, plus each source booking's owner and
+          // lodge, to detect drift under the lock. Model both reads — the
+          // booking side replays whatever this tx's own findUnique served, so
+          // the no-drift case matches by construction.
+          const fenceBooking = recordingBookingDouble((args) =>
+            mocks.txBookingFindUnique(args),
+          );
           const mockTx = {
             $executeRaw: mocks.txExecuteRaw,
+            member: { findMany: fenceMemberFindMany() },
             booking: {
-              findUnique: mocks.txBookingFindUnique,
+              findUnique: fenceBooking.findUnique,
+              findMany: fenceBooking.findMany,
               update: mocks.bookingUpdate,
               updateMany: mocks.bookingUpdateMany,
             },
@@ -2684,10 +2708,20 @@ describe("cancelBooking no-payment claim-first (issue #1311)", () => {
         arg: ((tx: unknown) => Promise<unknown>) | Array<Promise<unknown>>,
       ) => {
         if (typeof arg === "function") {
+          // #2619: the hosting participant fence locks the participant Member
+          // rows and then re-reads them, plus each source booking's owner and
+          // lodge, to detect drift under the lock. Model both reads — the
+          // booking side replays whatever this tx's own findUnique served, so
+          // the no-drift case matches by construction.
+          const fenceBooking = recordingBookingDouble((args) =>
+            mocks.txBookingFindUnique(args),
+          );
           const mockTx = {
             $executeRaw: mocks.txExecuteRaw,
+            member: { findMany: fenceMemberFindMany() },
             booking: {
-              findUnique: mocks.txBookingFindUnique,
+              findUnique: fenceBooking.findUnique,
+              findMany: fenceBooking.findMany,
               update: mocks.bookingUpdate,
               updateMany: mocks.bookingUpdateMany,
             },
@@ -2957,10 +2991,20 @@ describe("cancelBooking requireRequestHold guard (issue #1406)", () => {
         arg: ((tx: unknown) => Promise<unknown>) | Array<Promise<unknown>>,
       ) => {
         if (typeof arg === "function") {
+          // #2619: the hosting participant fence locks the participant Member
+          // rows and then re-reads them, plus each source booking's owner and
+          // lodge, to detect drift under the lock. Model both reads — the
+          // booking side replays whatever this tx's own findUnique served, so
+          // the no-drift case matches by construction.
+          const fenceBooking = recordingBookingDouble((args) =>
+            mocks.txBookingFindUnique(args),
+          );
           const mockTx = {
             $executeRaw: mocks.txExecuteRaw,
+            member: { findMany: fenceMemberFindMany() },
             booking: {
-              findUnique: mocks.txBookingFindUnique,
+              findUnique: fenceBooking.findUnique,
+              findMany: fenceBooking.findMany,
               update: mocks.bookingUpdate,
               updateMany: mocks.bookingUpdateMany,
             },
