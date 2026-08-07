@@ -50,16 +50,24 @@ import {
   DELETION_REJECT_AFTER_RELEASE_CONFIRM_CODE,
   DELETION_REJECT_AFTER_RELEASE_CONFIRM_MESSAGE,
   DELETION_REJECT_AFTER_RELEASE_FULL_ADMIN_MESSAGE,
+  DELETION_REJECT_AFTER_RELEASE_NOTICE_REQUIRED_CODE,
+  DELETION_REJECT_AFTER_RELEASE_NOTICE_REQUIRED_MESSAGE,
+  DELETION_REJECT_AFTER_RELEASE_REASON_REQUIRED_CODE,
+  DELETION_REJECT_AFTER_RELEASE_REASON_REQUIRED_MESSAGE,
   DELETION_REQUEST_ALREADY_REVIEWED_CODE,
   DELETION_REQUEST_APPROVAL_RELEASED_CODE,
   DELETION_REQUEST_APPROVAL_RELEASED_MESSAGE,
   DELETION_REQUEST_CLAIM_NOT_HELD_CODE,
   DELETION_REQUEST_CLAIM_NOT_HELD_MESSAGE,
+  DELETION_REQUEST_RELEASE_CONTENDED_CODE,
+  DELETION_REQUEST_RELEASE_CONTENDED_MESSAGE,
   deletionApprovalWasReleased,
   DeletionRequestClaimNotHeldError,
   DeletionRequestDecisionLostError,
+  isDeletionRequestTransactionContention,
   releaseDeletionRequestApprovalClaim,
   type DeletionRequestApprovalOrigin,
+  type DeletionRequestRejectionOrigin,
 } from "@/lib/deletion-request-decision";
 import {
   DELETED_ACCOUNT_PASSWORD_HASH,
@@ -173,11 +181,17 @@ async function readFinalDeletionDecision(
     // #2627: `PENDING` is reachable here now, and only one thing produces it —
     // a release, the sole writer that moves this row backwards (the others are
     // the member's create, the claim, and the two final decisions). So a
-    // finalisation that loses its guarded transition to a release lands on a
+    // decision that loses its guarded transition to a release lands on a
     // state that is perfectly well known, and must not be reported as "the final
     // state could not be confirmed": that answer durably disables the row and
     // tells the admin not to retry a decision they can and should now make. No
     // decision happened either, so this is not `decisionFinal`.
+    //
+    // Two losers arrive here. An approval finalising from a claim that has since
+    // been released, and an UNCONFIRMED rejection whose strict guard
+    // (`reviewedAt: null`) refused a row the release marker had appeared on
+    // between the route's read and its write. Both are told the same true thing:
+    // decide it again from the queue, where the row now carries the warning.
     if (latest?.status === "PENDING") {
       return {
         code: DELETION_REQUEST_APPROVAL_RELEASED_CODE,
@@ -388,33 +402,77 @@ export async function POST(
       // again. The attribution itself comes from the release's own locked read
       // rather than the unguarded read above, so an ABA interleaving cannot
       // record a holder that was never displaced.
-      const release = await prisma.$transaction(async (tx) => {
-        const released = await releaseDeletionRequestApprovalClaim(tx, {
-          id,
-          adminNote: releaseReason,
-        });
+      //
+      // Explicit timings, and a mapped answer for an exhausted wait. This is the
+      // one transaction here whose FIRST statement is designed to block: it takes
+      // the request row `FOR UPDATE` while the counterpart anonymisation
+      // transaction may hold that same row from its claim to its commit. Prisma's
+      // 5s default would abort a legitimate wait with P2028 — and before this
+      // action existed the release was an auto-commit `updateMany`, which blocked
+      // and then returned the mapped 409, so a bare 500 here would be a
+      // regression under contention. 15s is deliberately longer than the
+      // anonymisation transaction's own (default 5s) budget, so a release loses
+      // to it on the guard rather than on the clock; 10s `maxWait` covers a
+      // saturated pool. An exhausted wait is mapped to 503 below, following
+      // `src/app/api/admin/site-style/route.ts` and
+      // `docs/CONCURRENCY_AND_LOCKING.md`.
+      let release: Awaited<
+        ReturnType<typeof releaseDeletionRequestApprovalClaim>
+      >;
+      try {
+        release = await prisma.$transaction(
+          async (tx) => {
+            const released = await releaseDeletionRequestApprovalClaim(tx, {
+              id,
+              adminNote: releaseReason,
+            });
 
-        await createAuditLog(
-          {
-            action: "member.deletion_approval_claim_released",
-            memberId: session.user.id,
-            targetId: member.id,
-            details: `Started approval released back to pending. Reason: ${releaseReason}`,
-            ipAddress: ip,
-            category: "privacy",
-            severity: "important",
-            outcome: "success",
-            metadata: {
-              previousClaimHeldBy: released.previousClaimHeldBy,
-              previousAdminNote: released.previousAdminNote,
-              releasedAt: released.releasedAt.toISOString(),
-            },
+            await createAuditLog(
+              {
+                action: "member.deletion_approval_claim_released",
+                memberId: session.user.id,
+                targetId: member.id,
+                details: `Started approval released back to pending. Reason: ${releaseReason}`,
+                ipAddress: ip,
+                category: "privacy",
+                severity: "important",
+                outcome: "success",
+                metadata: {
+                  previousClaimHeldBy: released.previousClaimHeldBy,
+                  previousAdminNote: released.previousAdminNote,
+                  releasedAt: released.releasedAt.toISOString(),
+                },
+              },
+              tx,
+            );
+
+            return released;
           },
-          tx,
+          { maxWait: 10_000, timeout: 15_000 },
         );
-
-        return released;
-      });
+      } catch (releaseError) {
+        // Contention, not a fault: the whole transaction rolled back, so nothing
+        // was released, nothing was recorded, and the claim is still there. Say
+        // that and invite a retry, rather than reporting a failure the operator
+        // cannot act on. Scoped to this branch on purpose — the approval's own
+        // transaction reports contention through its partial-cleanup contract,
+        // which must not be replaced by a bare retry-later.
+        if (isDeletionRequestTransactionContention(releaseError)) {
+          logger.warn(
+            { err: releaseError, requestId: id },
+            "Deletion approval release contended with a committing decision",
+          );
+          return NextResponse.json(
+            {
+              code: DELETION_REQUEST_RELEASE_CONTENDED_CODE,
+              error: DELETION_REQUEST_RELEASE_CONTENDED_MESSAGE,
+              retryAllowed: true,
+            },
+            { status: 503 },
+          );
+        }
+        throw releaseError;
+      }
 
       return NextResponse.json({
         message:
@@ -433,12 +491,28 @@ export async function POST(
       //  - Full Admin, matching the release that produced this state. A
       //    Membership Officer who meets one escalates instead of declining a
       //    request whose consequences they cannot see.
-      //  - and an explicit confirmation, because a page loaded before the
+      //  - an explicit confirmation, because a page loaded before the
       //    release renders an ordinary Pending row with no warning on it. The
       //    first attempt is refused WITH the disclosure, so no rejection can be
       //    finalised here without the decider having been told.
+      //  - and, mirroring the release, a mandatory reason that the member is
+      //    actually sent. Everything above is admin-facing; these two are the
+      //    only things the MEMBER gets, and without them a Full Admin could
+      //    confirm, leave the note empty, suppress the email, and decline them
+      //    over cancelled stays with nothing said at all.
+      //
+      // The gate is evaluated against the opening read, which is not the
+      // serialised point — so it decides only what to REFUSE. What the rejection
+      // is allowed to WIN is carried into the guarded transition itself as
+      // `rejectFrom`: an unconfirmed rejection can take only a row with no
+      // release marker, so a release committing between that read and this write
+      // makes it lose rather than silently converting it into an unwarned
+      // reject-after-release.
       const rejectingAfterRelease =
         deletionApprovalWasReleased(deletionRequest);
+      const rejectFrom: DeletionRequestRejectionOrigin = rejectingAfterRelease
+        ? "PENDING_RELEASED"
+        : "PENDING";
       if (rejectingAfterRelease) {
         if (!isFullAdmin(session.user)) {
           return NextResponse.json(
@@ -459,6 +533,24 @@ export async function POST(
             { status: 409 },
           );
         }
+        if (!body.note?.trim()) {
+          return NextResponse.json(
+            {
+              code: DELETION_REJECT_AFTER_RELEASE_REASON_REQUIRED_CODE,
+              error: DELETION_REJECT_AFTER_RELEASE_REASON_REQUIRED_MESSAGE,
+            },
+            { status: 400 },
+          );
+        }
+        if (body.notifyMember === false) {
+          return NextResponse.json(
+            {
+              code: DELETION_REJECT_AFTER_RELEASE_NOTICE_REQUIRED_CODE,
+              error: DELETION_REJECT_AFTER_RELEASE_NOTICE_REQUIRED_MESSAGE,
+            },
+            { status: 400 },
+          );
+        }
       }
 
       await claimDeletionRequestDecision(prisma, {
@@ -466,6 +558,7 @@ export async function POST(
         decision: "REJECTED",
         adminNote: body.note ?? null,
         reviewedBy: session.user.id,
+        rejectFrom,
       });
 
       // #1788 honesty rule — record the suppression in the audit ONLY on a path

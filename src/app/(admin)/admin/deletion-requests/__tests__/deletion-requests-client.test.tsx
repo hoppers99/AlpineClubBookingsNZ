@@ -53,6 +53,21 @@ vi.mock("next-auth/react", () => ({
 }));
 
 import DeletionRequestsClient from "../deletion-requests-client";
+import {
+  DELETION_APPROVAL_RELEASED_DISCLOSURE,
+  DELETION_APPROVAL_RELEASED_LEAD,
+  DELETION_REJECT_AFTER_RELEASE_CONFIRM_MESSAGE,
+} from "@/lib/deletion-request-decision";
+
+/**
+ * #2627: the release/reject disclosure is asserted as the shared CONSTANT rather
+ * than retyped, so a copy that drifts from the single source fails here. It is
+ * rendered inside a longer sentence, so it has to be matched as a substring —
+ * hence a regex over the escaped literal rather than a string matcher.
+ */
+function escapeForRegExp(literal: string): string {
+  return literal.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
 
 interface LifecycleRow {
   id: string;
@@ -885,6 +900,11 @@ describe("deletion review outcome that never came back legibly (#2597)", () => {
     // The release's disclosed mitigation. Every other assertion here is about
     // controls and payloads; if this sentence can be dropped by a copy edit then
     // the admin who releases a claim is no longer told what it leaves behind.
+    //
+    // Asserted as the shared constant, not as prose: the release dialog used to
+    // keep a near-duplicate of it, so "spelled once" was a claim two sentences
+    // could drift apart behind. This dialog and the reject dialog now render the
+    // same string, and this test fails if either grows its own copy.
     vi.stubGlobal(
       "fetch",
       buildFetch(
@@ -901,7 +921,7 @@ describe("deletion review outcome that never came back legibly (#2597)", () => {
 
     expect(
       await screen.findByText(
-        /Any future bookings the started approval already cancelled stay cancelled/i,
+        new RegExp(escapeForRegExp(DELETION_APPROVAL_RELEASED_DISCLOSURE)),
       ),
     ).not.toBeNull();
     // And that it decides nothing on its own.
@@ -1043,18 +1063,27 @@ describe("a request whose started approval was released (#2627)", () => {
     await screen.findByText("Riley Chen");
     fireEvent.click(screen.getByRole("button", { name: "Reject" }));
 
-    // The dialog repeats the disclosure where the decision is actually taken.
+    // The dialog repeats the disclosure where the decision is actually taken,
+    // from the same constant every other site renders.
     expect(
       await screen.findByText(
-        /A started approval on this request was released back to pending/i,
+        new RegExp(escapeForRegExp(DELETION_APPROVAL_RELEASED_LEAD)),
       ),
     ).not.toBeNull();
+    // Scoped to the dialog: the queue row behind it renders the same constant,
+    // which is the point — one string, four sites.
+    expect(screen.getByRole("dialog").textContent).toContain(
+      DELETION_APPROVAL_RELEASED_DISCLOSURE,
+    );
     // And the note example — the only thing the MEMBER is told — stops
     // suggesting they resolve bookings that no longer exist.
     expect(
       screen.getByText(/contact us if you want to rebook/i),
     ).not.toBeNull();
 
+    fireEvent.change(screen.getByLabelText(/Reason for rejection/i), {
+      target: { value: "The blocker will not clear — contact us to rebook" },
+    });
     fireEvent.click(
       screen.getByRole("button", { name: "Reject and email member" }),
     );
@@ -1064,9 +1093,46 @@ describe("a request whose started approval was released (#2627)", () => {
     // so this flag is the proof the decider was shown it.
     expect(postBodies(fetchMock)[0]).toMatchObject({
       action: "reject",
+      note: "The blocker will not clear — contact us to rebook",
       notifyMember: true,
       confirmReleasedApproval: true,
     });
+  });
+
+  it("makes the reason mandatory and offers no silent rejection", async () => {
+    // The two things the MEMBER gets, as controls rather than as a 400 they have
+    // to hit first. Their future stays were cancelled by the started approval,
+    // this note is the only thing they are ever told about it, and the route
+    // refuses a reasonless or suppressed rejection here (#1788's free choice
+    // stays on every ordinary rejection, where nothing has been destroyed).
+    vi.stubGlobal(
+      "fetch",
+      buildFetch(() => {
+        throw new Error("no review should be submitted in this test");
+      }),
+    );
+
+    render(<DeletionRequestsClient sessionMemberId="admin-1" />);
+    await screen.findByText("Riley Chen");
+    fireEvent.click(screen.getByRole("button", { name: "Reject" }));
+
+    const submit = (await screen.findByRole("button", {
+      name: "Reject and email member",
+    })) as HTMLButtonElement;
+    expect(submit.disabled).toBe(true);
+    // Not offered at all, rather than offered and refused by the server.
+    expect(
+      screen.queryByRole("button", { name: "Reject without emailing" }),
+    ).toBeNull();
+    // And the label says the reason is required and where it goes.
+    expect(
+      screen.getByText(/Reason for rejection \(required — will be sent to member\)/i),
+    ).not.toBeNull();
+
+    fireEvent.change(screen.getByLabelText(/Reason for rejection/i), {
+      target: { value: "Contact us if you want to rebook" },
+    });
+    expect(submit.disabled).toBe(false);
   });
 
   it("sends no confirmation flag on an ordinary pending request", async () => {
@@ -1132,8 +1198,9 @@ describe("a request whose started approval was released (#2627)", () => {
           status: 409,
           json: async () => ({
             code: "DELETION_REJECT_AFTER_RELEASE_CONFIRM_REQUIRED",
-            error:
-              "A started approval on this request was released back to pending. Any future bookings that approval had already cancelled stay cancelled — rejecting this request will not restore them. Reload the deletion queue, read that warning on the request, and confirm the rejection from there.",
+            // The route's own words, from the constant, so this test cannot pin a
+            // stale copy of the refusal it exists to check.
+            error: DELETION_REJECT_AFTER_RELEASE_CONFIRM_MESSAGE,
             approvalReleased: true,
             retryAllowed: false,
           }),

@@ -1086,6 +1086,38 @@ mispricing a booking.
   deliberately **not** taken — the master stays unlocked until step 5, and the
   family-link drift re-check above is what closes that window.
 
+- **Deletion-request approval release** — `src/lib/deletion-request-decision.ts`
+  (`releaseDeletionRequestApprovalClaim`, #2627): takes
+  `$executeRaw`SELECT 1 FROM "DeletionRequest" WHERE "id" = $1 FOR UPDATE`` as the
+  first statement of its transaction, reads the claim's holder and note back
+  through the Prisma model under that lock (lock raw, read typed — #2289), and
+  only then performs the guarded `APPROVAL_IN_PROGRESS -> PENDING` transition; the
+  route writes the `member.deletion_approval_claim_released` audit row with the
+  awaited `createAuditLog` on the same transaction client, so the record and the
+  transition commit or roll back together. The lock exists for the ATTRIBUTION,
+  not for the transition — the transition is safe on its guard alone, but the
+  holder it nulls has to be read at the same serialised point or an ABA
+  interleaving records an admin whose claim was never displaced. Request-id keyed
+  on an immutable cuid, so the zero-match exception above cannot bite (a zero
+  count means the request itself is gone, which is emphatically not a held claim);
+  no advisory lock; disjoint from the booking/capacity/credit and money clusters.
+  Counterpart, and why there is no cycle: the approval finalisation takes the
+  future-partner-shared-allocation and member-lifecycle advisory locks, then this
+  row (through its own guarded `updateMany`), then the `Member` row. The release
+  takes this row and inserts an `AuditLog`, which carries no FK to `Member` and so
+  takes no `Member` lock at all — one lock each way, no inversion. Because the
+  finalisation legitimately holds this row from its claim to its commit, the
+  release runs with explicit `maxWait` 10s / `timeout` 15s — deliberately longer
+  than the finalisation's own default 5s budget, so a release loses to it on the
+  guard rather than on the clock — and the route maps P2028/P2034 to a 503
+  retry-later (`DELETION_REQUEST_RELEASE_CONTENDED`) rather than a bare 500, the
+  same shape as the club-theme logo writer above. Before the release existed as a
+  transaction it was an auto-commit `updateMany` that blocked and then returned
+  the mapped 409, so the 503 keeps a contended release actionable instead of
+  regressing it to an opaque failure. Both winner orders, the release/audit
+  atomicity, and the rejection guard's own lock wait are forced against real
+  PostgreSQL in `adult-member-hosting-queue-merge.realdb.test.ts`.
+
 Do not add or compose a row lock without updating this inventory and documenting
 its order against every advisory- and row-lock counterpart.
 
@@ -1230,7 +1262,16 @@ deletion-first refuse them.
 
 Approve, reject and release of one `DeletionRequest` share a separate exact-row
 winner protocol: a guarded `updateMany` naming the exact status it transitions
-FROM is the only authority for any transition. Rejection claims `PENDING`. An
+FROM is the only authority for any transition. Rejection claims `PENDING` — and,
+since #2627, the exact FLAVOUR of `PENDING` it was authorised against, because a
+released request is `PENDING` too. An unconfirmed rejection guards on
+`reviewedAt: null`, a confirmed reject-after-release on `reviewedAt: { not: null }`,
+and the two shapes partition `PENDING` exactly. The Full-Admin gate and the
+confirmation that separate those two cases are evaluated against the route's
+opening read, which is not the serialised point, so putting the marker in the
+guard is what stops a release committing in that window from silently converting
+an ordinary rejection into an unwarned reject-after-release over
+already-committed cancellations. An
 approval with future bookings to cancel first claims
 `PENDING -> APPROVAL_IN_PROGRESS`, before the first cancellation commits, and
 finalises only from that claim inside the privacy anonymisation transaction; an
@@ -1264,7 +1305,18 @@ transaction still fails closed instead of reporting a release that did not happe
 The transition also stamps `reviewedAt` on the now-`PENDING` row which — with no
 `reviewedBy` — is the durable marker that this request was re-opened after an
 approval had started; `docs/DOMAIN_INVARIANTS.md` covers what the queue, the
-reject dialog and the reject route each do with it.
+reject dialog and the reject route each do with it, and the guard above is what
+makes it binding rather than advisory.
+
+Because that lock is the release's first statement and the finalisation
+legitimately holds the same row from its claim to its commit, this is the one
+transaction here designed to WAIT. It therefore carries explicit
+`maxWait` 10s / `timeout` 15s (longer than the finalisation's own default 5s
+budget, so a release loses on the guard rather than on the clock) and the route
+maps P2028/P2034 to a 503 `DELETION_REQUEST_RELEASE_CONTENDED` retry-later, the
+same convention as the site-style/club-theme writer recorded earlier in this
+document. See the "Deletion-request approval release" entry under "Narrow row- and
+table-lock protocols" for the full lock order and counterpart analysis.
 
 After Xero returns a newly created contact, the operation is durably marked
 `provider_contact_created_local_link_pending` before the local link transaction.

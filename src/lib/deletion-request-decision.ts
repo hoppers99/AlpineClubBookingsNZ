@@ -96,9 +96,18 @@ export class DeletionRequestClaimNotHeldError extends Error {
  * - {@link releaseDeletionRequestApprovalClaim} — `PENDING`, `reviewedBy` null,
  *   `reviewedAt` set. Only this one.
  *
- * `src/lib/__tests__/deletion-request-decision.test.ts` pins that truth table,
- * and the release's own real-PostgreSQL race test pins the marker surviving the
- * transition it is written by.
+ * `src/lib/__tests__/deletion-request-decision.test.ts` pins that truth table by
+ * DERIVING each of the three library writers' rows from the `data` they actually
+ * write, rather than restating what they are believed to write; the member's own
+ * `create` lives in another module and is pinned there, field for field, by
+ * `src/lib/__tests__/phase10b.test.ts`. The release's own real-PostgreSQL race
+ * test pins the marker surviving the transition it is written by.
+ *
+ * This predicate is what every *display* and gate reads. It is deliberately not
+ * the authority for the rejection: that is the `reviewedAt` shape inside the
+ * rejection's own guarded `updateMany` (see
+ * {@link DeletionRequestRejectionOrigin}), because a predicate evaluated over a
+ * row read earlier is a check-then-act.
  *
  * The trade-off, stated plainly: it overloads `reviewedAt` on a status that has
  * no reviewer, so the meaning lives here rather than in the schema, and every
@@ -123,12 +132,15 @@ export function deletionApprovalWasReleased(request: {
 }
 
 /**
- * What the next decider must be told, wherever they meet a released request —
- * the queue row, the reject dialog, and the route's own refusals. Spelled once
- * so a copy edit in one place cannot silently drop the disclosure from another.
+ * What a decider must be told about a started approval that is being, or has
+ * been, released — the release dialog, the queue row, the reject dialog and the
+ * route's own refusals all render THIS string, so a copy edit cannot drop the
+ * disclosure from one of them while the others keep promising it. It names "the
+ * started approval" rather than leaning on a preceding sentence for its
+ * antecedent, which is what lets all four sites share one string.
  */
 export const DELETION_APPROVAL_RELEASED_DISCLOSURE =
-  "Any future bookings that approval had already cancelled stay cancelled — rejecting this request will not restore them.";
+  "Any future bookings the started approval already cancelled stay cancelled — rejecting this request will not restore them.";
 
 /** The lead-in every site shares before {@link DELETION_APPROVAL_RELEASED_DISCLOSURE}. */
 export const DELETION_APPROVAL_RELEASED_LEAD =
@@ -141,16 +153,69 @@ export const DELETION_REJECT_AFTER_RELEASE_CONFIRM_CODE =
 export const DELETION_REJECT_AFTER_RELEASE_CONFIRM_MESSAGE = `${DELETION_APPROVAL_RELEASED_LEAD} ${DELETION_APPROVAL_RELEASED_DISCLOSURE} Reload the deletion queue, read that warning on the request, and confirm the rejection from there.`;
 
 /**
- * A finalisation lost its guarded transition to a release: the request is
- * `PENDING` again. Distinct from
- * {@link DELETION_REQUEST_ALREADY_REVIEWED_CODE} because nothing was decided,
- * and emphatically distinct from "the final state could not be confirmed" —
- * this state is known exactly.
+ * The two things a confirmed reject-after-release owes the MEMBER, as opposed to
+ * the two the confirmation owes the decider.
+ *
+ * Everything else about this state is admin-facing: the Full-Admin gate, the
+ * warning on the row, the dialog, the confirmation flag and the audit metadata
+ * are all seen only by administrators. The member's stays are the thing that was
+ * destroyed, and until now they could be declined over them with an empty note
+ * and `notifyMember: false` — told nothing at all. So on this one path the
+ * release's own mandatory reason is mirrored onto the rejection, and the email is
+ * not optional. Ordinary rejections keep #1788's free choice: nothing has been
+ * destroyed there, so silence is a legitimate (and audited) option.
+ */
+export const DELETION_REJECT_AFTER_RELEASE_REASON_REQUIRED_CODE =
+  "DELETION_REJECT_AFTER_RELEASE_REASON_REQUIRED";
+export const DELETION_REJECT_AFTER_RELEASE_REASON_REQUIRED_MESSAGE = `A reason is required to reject this request. ${DELETION_APPROVAL_RELEASED_DISCLOSURE} The note is the only thing the member is told, so it is mandatory here — exactly as it was for the release that produced this state.`;
+
+export const DELETION_REJECT_AFTER_RELEASE_NOTICE_REQUIRED_CODE =
+  "DELETION_REJECT_AFTER_RELEASE_NOTICE_REQUIRED";
+export const DELETION_REJECT_AFTER_RELEASE_NOTICE_REQUIRED_MESSAGE = `This rejection must be emailed to the member. ${DELETION_APPROVAL_RELEASED_DISCLOSURE} Declining the request silently would leave them with cancelled stays and no notice at all.`;
+
+/**
+ * Prisma's transaction contention codes: P2028 (transaction API error, which
+ * covers an exhausted `maxWait`/`timeout`) and P2034 (write conflict / deadlock,
+ * retryable by definition). Same set, and the same 503 answer, as
+ * `src/app/api/admin/site-style/route.ts` and `admin-bed-allocation-routes.ts`,
+ * for the same reason those chose it: the counterpart writer legitimately holds
+ * the row for the length of a whole transaction, so an exhausted wait is
+ * contention rather than a fault, nothing was written, and trying again shortly
+ * is the real remedy. See `docs/CONCURRENCY_AND_LOCKING.md`.
+ */
+const TRANSACTION_CONTENTION_CODES = new Set(["P2028", "P2034"]);
+
+export function isDeletionRequestTransactionContention(
+  error: unknown,
+): boolean {
+  const code = (error as { code?: unknown } | null)?.code;
+  return typeof code === "string" && TRANSACTION_CONTENTION_CODES.has(code);
+}
+
+export const DELETION_REQUEST_RELEASE_CONTENDED_CODE =
+  "DELETION_REQUEST_RELEASE_CONTENDED";
+export const DELETION_REQUEST_RELEASE_CONTENDED_MESSAGE =
+  "Another decision on this deletion request is still committing, so the release could not take the request row in time. Nothing was changed and the claim is still there to release — try again shortly.";
+
+/**
+ * A decision lost its guarded transition to a release: the request is `PENDING`
+ * again. Distinct from {@link DELETION_REQUEST_ALREADY_REVIEWED_CODE} because
+ * nothing was decided, and emphatically distinct from "the final state could not
+ * be confirmed" — this state is known exactly.
+ *
+ * Two losers reach it. An approval finalising from its claim matches zero rows
+ * once the claim has been released. And an *unconfirmed* rejection — one whose
+ * decider was shown no disclosure because the row carried no marker when the
+ * route read it — matches zero rows once the marker exists, which is what stops
+ * it landing over cancellations nobody told it about (see
+ * {@link DeletionRequestRejectionOrigin}). The wording therefore has to be true
+ * of both, which is why it says "decided nothing" rather than describing an
+ * approval.
  */
 export const DELETION_REQUEST_APPROVAL_RELEASED_CODE =
   "DELETION_REQUEST_APPROVAL_RELEASED";
 export const DELETION_REQUEST_APPROVAL_RELEASED_MESSAGE =
-  "Another administrator released this request's started approval, so it is pending again and this action anonymised nobody. Reload the deletion queue and decide the request from there — the row shows that future bookings may already have been cancelled.";
+  "Another administrator released this request's started approval, so it is pending again: this action decided nothing and anonymised nobody. Reload the deletion queue and decide the request from there — the row shows that future bookings may already have been cancelled.";
 
 /**
  * The status an approval finalises FROM (#2627).
@@ -161,6 +226,33 @@ export const DELETION_REQUEST_APPROVAL_RELEASED_MESSAGE =
  * moment the anonymisation transaction committed.
  */
 export type DeletionRequestApprovalOrigin = "PENDING" | "APPROVAL_IN_PROGRESS";
+
+/**
+ * Which flavour of `PENDING` a rejection is authorised to take (#2627).
+ *
+ * `PENDING` is an ordinary undecided request. `PENDING_RELEASED` is one whose
+ * started approval was released back to pending, so it carries the marker
+ * ({@link deletionApprovalWasReleased}) meaning the member's future bookings may
+ * already have been cancelled. The route gates and confirms the second — but it
+ * evaluates that gate against a row it read BEFORE this transition, and Prisma
+ * queues on an exhausted connection pool, so seconds of latency can sit in that
+ * window. A release committing inside it would otherwise turn an ordinary
+ * rejection into a reject-after-release with no Full-Admin check and no
+ * confirmation: precisely the state `docs/DOMAIN_INVARIANTS.md` says cannot
+ * happen, produced by a check-then-act.
+ *
+ * So the flavour is part of the guard, not a precondition read beforehand. The
+ * two `where` shapes partition `PENDING` exactly — `reviewedAt: null` against
+ * `reviewedAt: { not: null }` — so a rejection can only ever win the flavour it
+ * was authorised against, and the loser gets the ordinary 409 and re-reads the
+ * row (`DELETION_REQUEST_APPROVAL_RELEASED`). Nothing but a release can add the
+ * marker and nothing but a claim can clear it, and a claim also moves `status`
+ * out of `PENDING`, so neither shape can be reached by accident.
+ *
+ * Omitting it therefore fails closed on the strict variant: a caller that has
+ * not shown anybody a disclosure cannot take a released row.
+ */
+export type DeletionRequestRejectionOrigin = "PENDING" | "PENDING_RELEASED";
 
 /**
  * Durably owns approval before any separately committed booking cancellation.
@@ -220,6 +312,11 @@ export async function claimDeletionRequestApproval(
  * were none: an approval and a rejection then race for the same guarded
  * transition, exactly one wins, and the loser is told the request was already
  * reviewed — with nothing destructive having happened either way.
+ *
+ * Rejection likewise declares which flavour of `PENDING` it is authorised
+ * against in `rejectFrom` (see {@link DeletionRequestRejectionOrigin}), so the
+ * release marker is enforced by the same guarded mutation as the transition
+ * instead of by a read taken before it.
  */
 export async function claimDeletionRequestDecision(
   db: DeletionRequestDecisionDb,
@@ -229,16 +326,25 @@ export async function claimDeletionRequestDecision(
     reviewedBy: string;
     adminNote: string | null;
     approvalFrom?: DeletionRequestApprovalOrigin;
+    rejectFrom?: DeletionRequestRejectionOrigin;
   },
 ): Promise<void> {
   const claimed = await db.deletionRequest.updateMany({
-    where: {
-      id: input.id,
-      status:
-        input.decision === "APPROVED"
-          ? (input.approvalFrom ?? "APPROVAL_IN_PROGRESS")
-          : "PENDING",
-    },
+    where:
+      input.decision === "APPROVED"
+        ? {
+            id: input.id,
+            status: input.approvalFrom ?? "APPROVAL_IN_PROGRESS",
+          }
+        : {
+            id: input.id,
+            status: "PENDING",
+            // The release marker, inside the guard. Absent `rejectFrom` this is
+            // the strict shape, so a caller who showed nobody the disclosure
+            // cannot take a released row.
+            reviewedAt:
+              input.rejectFrom === "PENDING_RELEASED" ? { not: null } : null,
+          },
     data:
       input.decision === "APPROVED"
         ? { status: "APPROVED", reviewedAt: new Date() }
@@ -298,6 +404,12 @@ export async function claimDeletionRequestDecision(
  * caller writes the audit row inside the same transaction, awaited, so the
  * record and the transition commit or roll back together: neither can survive
  * without the other.
+ *
+ * Because that lock is the FIRST statement and its counterpart legitimately
+ * holds the row for a whole anonymisation transaction, the caller must give the
+ * transaction a budget bigger than Prisma's 5 s default and map an exhausted
+ * wait to a retry-later rather than a bare 500 — see
+ * {@link isDeletionRequestTransactionContention} and the route's release branch.
  *
  * @returns the attribution the transition destroyed, and the `reviewedAt` it
  * stamped — the durable release marker, see {@link deletionApprovalWasReleased}.

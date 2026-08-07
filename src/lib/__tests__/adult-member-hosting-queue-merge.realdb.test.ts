@@ -1506,6 +1506,122 @@ let deletionApprovalWasReleased: (typeof import("@/lib/deletion-request-decision
       expect(deletionApprovalWasReleased(finalRow)).toBe(true);
     });
 
+    it("an unconfirmed rejection blocks behind a release and then cannot take the row it re-opened", async () => {
+      // The TOCTOU the second review found, forced for real. The route decides
+      // whether a rejection is a reject-after-release from an UNGUARDED opening
+      // read, and there is latency in the window between that read and the write —
+      // Prisma queues on an exhausted pool. So:
+      //
+      //   1. a Membership Officer reads the row: PENDING, no marker, pre-claim;
+      //   2. a Full Admin claims it, cancels the member's future stays, fails,
+      //      and releases — PENDING again, WITH the marker;
+      //   3. the officer's guarded update runs.
+      //
+      // Guarded on `status: "PENDING"` alone, step 3 lands: a final REJECTED over
+      // cancellations that already committed, with no Full-Admin check and no
+      // confirmation. Guarded on the flavour of pending it was authorised
+      // against — `reviewedAt: null` — PostgreSQL re-evaluates the predicate
+      // against the committed row after the lock wait and matches nothing.
+      await primary.deletionRequest.create({
+        data: { id: IDS.deletionRequest, memberId: IDS.target },
+      });
+
+      // What the officer's request read before anything happened.
+      const asRead = await primary.deletionRequest.findUniqueOrThrow({
+        where: { id: IDS.deletionRequest },
+        select: { status: true, reviewedBy: true, reviewedAt: true },
+      });
+      expect(deletionApprovalWasReleased(asRead)).toBe(false);
+
+      // Steps 1-2 as one uncommitted unit, so the rejection's predicate still
+      // matches the row's committed version and it must genuinely WAIT on the
+      // lock rather than miss immediately.
+      const reached = deferred();
+      const finish = deferred();
+      const claimAndRelease = mergeB.$transaction(async (tx) => {
+        await claimDeletionRequestApproval(tx, {
+          id: IDS.deletionRequest,
+          reviewedBy: IDS.actor,
+          adminNote: "approval that cancelled stays and then failed",
+        });
+        const released = await releaseDeletionRequestApprovalClaim(tx, {
+          id: IDS.deletionRequest,
+          adminNote: "blocker will never clear",
+        });
+        reached.resolve();
+        await finish.promise;
+        return released;
+      });
+      await reached.promise;
+
+      const rejection = claimDeletionRequestDecision(mergeA, {
+        id: IDS.deletionRequest,
+        decision: "REJECTED",
+        reviewedBy: IDS.ownerA,
+        adminNote: "declined, unaware of the release",
+        // Exactly what the route derives from `asRead`: no marker was seen, so
+        // nobody was shown the disclosure.
+        rejectFrom: "PENDING",
+      }).then(
+        () => ({ ok: true as const }),
+        (error: unknown) => ({ ok: false as const, error }),
+      );
+      try {
+        await waitForClientToBlock("race-2597-merge-a");
+      } finally {
+        finish.resolve();
+      }
+      await expect(claimAndRelease).resolves.toMatchObject({
+        previousClaimHeldBy: IDS.actor,
+      });
+
+      const rejectionOutcome = await rejection;
+      expect(rejectionOutcome.ok).toBe(false);
+      if (rejectionOutcome.ok) {
+        throw new Error(
+          "An unwarned rejection finalised over a released approval.",
+        );
+      }
+      expect(rejectionOutcome.error).toMatchObject({
+        code: "DELETION_REQUEST_ALREADY_REVIEWED",
+        statusCode: 409,
+      });
+
+      const afterRow = await primary.deletionRequest.findUniqueOrThrow({
+        where: { id: IDS.deletionRequest },
+        select: {
+          status: true,
+          adminNote: true,
+          reviewedBy: true,
+          reviewedAt: true,
+        },
+      });
+      // Still re-openable and still marked: nothing was decided, and the next
+      // decider is still told.
+      expect(afterRow.status).toBe("PENDING");
+      expect(afterRow.adminNote).toBe("blocker will never clear");
+      expect(deletionApprovalWasReleased(afterRow)).toBe(true);
+
+      // And the decision is not lost, only re-routed: a Full Admin who IS shown
+      // the marker and confirms it rejects the same row through the other half of
+      // the partition.
+      await expect(
+        claimDeletionRequestDecision(primary, {
+          id: IDS.deletionRequest,
+          decision: "REJECTED",
+          reviewedBy: IDS.ownerA,
+          adminNote: "declined, and the member is told their stays are gone",
+          rejectFrom: "PENDING_RELEASED",
+        }),
+      ).resolves.toBeUndefined();
+      await expect(
+        primary.deletionRequest.findUniqueOrThrow({
+          where: { id: IDS.deletionRequest },
+          select: { status: true, reviewedBy: true },
+        }),
+      ).resolves.toEqual({ status: "REJECTED", reviewedBy: IDS.ownerA });
+    });
+
     it("loses the release and its audit record together, or neither", async () => {
       // The release destroys the claim's own attribution, so its audit row is the
       // only surviving record of who held it. Written best-effort it could vanish

@@ -23,11 +23,25 @@
   the reject dialog repeats it; only a Full Admin can reject it; and the rejection
   has to be confirmed, so an administrator working from a page that was open
   before the release is told what happened rather than declining the request
-  unaware. Approving one is unchanged — it simply completes the deletion the
-  member asked for. If an approval is running at the very moment somebody
-  releases it, the administrator is now told exactly that, along with any booking
-  cancellations that did complete, instead of being warned that the outcome could
-  not be determined.
+  unaware.
+
+  **And the member is told too.** Rejecting a released request now requires a
+  reason and always emails it to them. Everything else about this protection is
+  something only administrators see, and the rejection note is the only thing the
+  member ever receives about stays that are already gone — so on this one path it
+  is mandatory and the "reject without emailing" option is not offered. Every
+  ordinary rejection keeps its optional note and its free choice about emailing,
+  because nothing has been cancelled there.
+
+  Approving a released request is unchanged — it simply completes the deletion the
+  member asked for. If an approval or a rejection is running at the very moment
+  somebody releases the request, that administrator is now told exactly that,
+  along with any booking cancellations that did complete, instead of being warned
+  that the outcome could not be determined; and a rejection that was decided
+  before the release happened can no longer land after it, so nobody is declined
+  over cancelled bookings without having been shown the warning. If a release
+  arrives while a decision on the same request is still being written, it now says
+  "try again shortly" instead of reporting an unexplained failure.
 
   The claim is also no longer taken when there is nothing to protect. Approving a
   member who has no future bookings never cancelled anything, so that approval

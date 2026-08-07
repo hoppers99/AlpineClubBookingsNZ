@@ -566,19 +566,31 @@ export default function DeletionRequestsClient({
     the empty wrapper an edit-capable admin gets costs no layout.
   */
   /*
-    #2627: the disclosure the reject dialog opens with when this request's started
-    approval was released. Defined once for both reject branches (a member with an
-    email address, and one without) so a copy edit cannot reach only one of them.
-    The route refuses the first unconfirmed attempt with the same words, so a page
-    loaded before the release is told too.
+    #2627: rejecting a request whose started approval was released is the one
+    rejection that can be final over stays that are already gone, so this dialog
+    is not an ordinary reject dialog: it opens with the disclosure, its reason is
+    mandatory, and the member is emailed it. The route enforces all three (403 /
+    409 / 400), so these controls are the honest shape of what it will accept
+    rather than the authority.
   */
-  const releasedApprovalDialogNotice =
-    reviewDialog && deletionApprovalWasReleased(reviewDialog.request) ? (
-      <>
-        <strong>{DELETION_APPROVAL_RELEASED_LEAD}</strong>{" "}
-        {DELETION_APPROVAL_RELEASED_DISCLOSURE}{" "}
-      </>
-    ) : null;
+  const rejectingReleasedApproval =
+    reviewDialog?.action === "reject" &&
+    deletionApprovalWasReleased(reviewDialog.request);
+  const rejectedMemberHasEmail = Boolean(reviewDialog?.request.member.email);
+  const reviewNoteLabel =
+    reviewDialog?.action === "approve"
+      ? "Note (optional)"
+      : reviewDialog?.action === "release"
+        ? "Reason for releasing (required — recorded on the request)"
+        : rejectingReleasedApproval
+          ? rejectedMemberHasEmail
+            ? "Reason for rejection (required — will be sent to member)"
+            : "Reason for rejection (required — recorded on the request)"
+          : "Reason for rejection (optional — will be sent to member)";
+  // Mandatory only where the member is owed an explanation for stays that were
+  // already cancelled; an ordinary rejection keeps its optional note.
+  const reviewNoteMissing =
+    rejectingReleasedApproval && reviewNote.trim().length === 0;
 
   const viewOnlyBanner = (
     <AdminViewOnlySectionBanner canEdit={canEdit} className="mb-6">
@@ -781,7 +793,7 @@ export default function DeletionRequestsClient({
                           </span>{" "}
                           {DELETION_APPROVAL_RELEASED_DISCLOSURE}{" "}
                           {canRejectReleased
-                            ? "Rejecting it asks you to confirm that first."
+                            ? "Rejecting it asks you to confirm that first, and to give a reason the member is emailed."
                             : "Only a Full Admin can reject it now; approving completes the deletion the member asked for."}
                         </p>
                       )}
@@ -951,20 +963,25 @@ export default function DeletionRequestsClient({
               ) : reviewDialog?.action === "release" ? (
                 <>
                   This hands the request back to the pending queue so it can be
-                  approved or rejected again. Nobody is anonymised and the
-                  member is not emailed. Any future bookings the started
-                  approval already cancelled stay cancelled — say why you are
-                  releasing it.
+                  approved or rejected again. Nobody is anonymised and the member
+                  is not emailed. {DELETION_APPROVAL_RELEASED_DISCLOSURE} Say why
+                  you are releasing it.
+                </>
+              ) : rejectingReleasedApproval ? (
+                <>
+                  <strong>{DELETION_APPROVAL_RELEASED_LEAD}</strong>{" "}
+                  {DELETION_APPROVAL_RELEASED_DISCLOSURE}{" "}
+                  {rejectedMemberHasEmail
+                    ? "A reason is required and the member is emailed it: it is the only thing they are told about stays that are already gone, so there is no silent option here."
+                    : "A reason is required and is recorded on the request. This member has no email address on file, so nothing can be sent to them."}
                 </>
               ) : reviewDialog?.request.member.email ? (
                 <>
-                  {releasedApprovalDialogNotice}
                   Choose below whether to email the member that their request
                   was not approved — either way the request is rejected.
                 </>
               ) : (
                 <>
-                  {releasedApprovalDialogNotice}
                   The request will be rejected. This member has no email address
                   on file, so no notification is sent.
                 </>
@@ -972,13 +989,7 @@ export default function DeletionRequestsClient({
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-3 py-2">
-            <Label htmlFor="review-note">
-              {reviewDialog?.action === "approve"
-                ? "Note (optional)"
-                : reviewDialog?.action === "release"
-                  ? "Reason for releasing (required — recorded on the request)"
-                  : "Reason for rejection (optional — will be sent to member)"}
-            </Label>
+            <Label htmlFor="review-note">{reviewNoteLabel}</Label>
             <Textarea
               id="review-note"
               value={reviewNote}
@@ -1046,6 +1057,24 @@ export default function DeletionRequestsClient({
                 disabled={submitting || reviewNote.trim().length === 0}
               >
                 {submitting ? "Processing..." : "Release back to pending"}
+              </Button>
+            ) : rejectingReleasedApproval ? (
+              // #2627: no "without emailing" here. The member's future stays were
+              // cancelled by the started approval and this note is the only thing
+              // they are ever told, so the route refuses a suppressed or
+              // reasonless rejection with a 400 (#1788's free choice stays on
+              // every ordinary rejection, where nothing has been destroyed).
+              <Button
+                onClick={() =>
+                  handleReview(rejectedMemberHasEmail ? true : undefined)
+                }
+                disabled={submitting || reviewNoteMissing}
+              >
+                {submitting
+                  ? "Processing..."
+                  : rejectedMemberHasEmail
+                    ? "Reject and email member"
+                    : "Reject Request"}
               </Button>
             ) : reviewDialog?.request.member.email ? (
               // #1788: reject with a member on file — two-button email choice.

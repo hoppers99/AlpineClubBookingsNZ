@@ -277,13 +277,20 @@ describe("F-COMP-04: Account Deletion - request endpoint", () => {
     expect(res.status).toBe(200);
     const body = await res.json();
     expect(body.requestId).toBe("dr1");
+    // #2627: `data` is pinned field for field, not `objectContaining`. A PENDING
+    // request that carries a `reviewedAt` and no `reviewedBy` IS the marker
+    // meaning "a started approval was released here", which gates and confirms
+    // its rejection — so this create adding a review field would silently mark
+    // every brand-new request as released. It is the one writer of that row that
+    // `deletion-request-decision.test.ts`'s derived truth table cannot reach, so
+    // it is pinned here instead.
     expect(mockedPrisma.deletionRequest.create).toHaveBeenCalledWith(
       expect.objectContaining({
-        data: expect.objectContaining({
+        data: {
           memberId: "m1",
           reason: "Moving overseas",
           status: "PENDING",
-        }),
+        },
       }),
     );
     const { sendAdminAccountDeletionRequestedAlert } = await import("@/lib/email");
@@ -465,8 +472,11 @@ describe("F-COMP-04: Admin - approve/reject deletion request", () => {
       { params }
     );
     expect(res.status).toBe(200);
+    // #2627: an ordinary rejection guards on a PENDING row with NO release
+    // marker, so a release committing between the route's read and this write
+    // makes it lose rather than becoming an unwarned reject-after-release.
     expect(mockedPrisma.deletionRequest.updateMany).toHaveBeenCalledWith({
-      where: { id: "dr1", status: "PENDING" },
+      where: { id: "dr1", status: "PENDING", reviewedAt: null },
       data: expect.objectContaining({ status: "REJECTED", adminNote: "Outstanding booking" }),
     });
     expect(sendAccountDeletionRejectedEmail).toHaveBeenCalledWith(

@@ -6,6 +6,7 @@ import {
   DELETION_REQUEST_ALREADY_REVIEWED_CODE,
   DELETION_REQUEST_CLAIM_NOT_HELD_CODE,
   deletionApprovalWasReleased,
+  isDeletionRequestTransactionContention,
   OPEN_DELETION_REQUEST_STATUSES,
   releaseDeletionRequestApprovalClaim,
 } from "@/lib/deletion-request-decision";
@@ -168,7 +169,12 @@ describe("deletion request final decision claim", () => {
     expect(updateMany.mock.calls[0][0].where.status).toBe("PENDING");
   });
 
-  it("lets a rejection claim only a still-PENDING request", async () => {
+  it("lets a rejection claim only a still-PENDING request that carries no release marker", async () => {
+    // #2627 re-review: `status: "PENDING"` alone is not the whole guard. A
+    // rejection nobody warned about the release must also be unable to win a
+    // MARKED row, because the route evaluated that gate against a row it read
+    // before this write — so the marker's absence belongs in the guard, not in a
+    // preceding check.
     const updateMany = vi.fn().mockResolvedValue({ count: 1 });
 
     await expect(
@@ -184,13 +190,84 @@ describe("deletion request final decision claim", () => {
     ).resolves.toBeUndefined();
 
     expect(updateMany).toHaveBeenCalledWith({
-      where: { id: "request-1", status: "PENDING" },
+      where: { id: "request-1", status: "PENDING", reviewedAt: null },
       data: expect.objectContaining({
         status: "REJECTED",
         reviewedBy: "admin-2",
         adminNote: "not yet",
       }),
     });
+  });
+
+  it("lets a confirmed reject-after-release win only a row that still carries the marker", async () => {
+    // The other half of the partition. A Full Admin who was shown the disclosure
+    // and confirmed it is deciding a RELEASED request, so its guard names that
+    // shape — and the two shapes together cover PENDING exactly, so no rejection
+    // can land on the flavour it was not authorised against.
+    const updateMany = vi.fn().mockResolvedValue({ count: 1 });
+
+    await expect(
+      claimDeletionRequestDecision(
+        { deletionRequest: { updateMany } as never },
+        {
+          id: "request-1",
+          decision: "REJECTED",
+          reviewedBy: "admin-2",
+          adminNote: "the blocker will not clear",
+          rejectFrom: "PENDING_RELEASED",
+        },
+      ),
+    ).resolves.toBeUndefined();
+
+    expect(updateMany.mock.calls[0][0].where).toEqual({
+      id: "request-1",
+      status: "PENDING",
+      reviewedAt: { not: null },
+    });
+  });
+
+  it("refuses an unconfirmed rejection once the release marker has appeared", async () => {
+    // The interleaving itself, at this seam: the caller read a row with no
+    // marker, a release committed, and the guarded mutation now matches zero
+    // rows. Before the guard carried `reviewedAt`, this same call landed a final
+    // REJECTED over already-committed cancellations with no Full-Admin check and
+    // no confirmation.
+    const updateMany = vi.fn().mockResolvedValue({ count: 0 });
+
+    await expect(
+      claimDeletionRequestDecision(
+        { deletionRequest: { updateMany } as never },
+        {
+          id: "request-1",
+          decision: "REJECTED",
+          reviewedBy: "admin-2",
+          adminNote: "unaware",
+          rejectFrom: "PENDING",
+        },
+      ),
+    ).rejects.toMatchObject({
+      code: DELETION_REQUEST_ALREADY_REVIEWED_CODE,
+      statusCode: 409,
+    });
+    expect(updateMany).toHaveBeenCalledTimes(1);
+  });
+
+  it("fails closed on the strict guard when no rejection origin is named", async () => {
+    // A caller who has shown nobody a disclosure cannot take a released row by
+    // omission.
+    const updateMany = vi.fn().mockResolvedValue({ count: 1 });
+
+    await claimDeletionRequestDecision(
+      { deletionRequest: { updateMany } as never },
+      {
+        id: "request-1",
+        decision: "REJECTED",
+        reviewedBy: "admin-2",
+        adminNote: null,
+      },
+    );
+
+    expect(updateMany.mock.calls[0][0].where.reviewedAt).toBeNull();
   });
 
   it("cannot reject a request whose approval already began", async () => {
@@ -399,19 +476,80 @@ describe("releasing a started approval (#2627)", () => {
 });
 
 describe("the released-approval marker (#2627)", () => {
-  // The marker has no column of its own: it is the (status, reviewedBy,
-  // reviewedAt) combination that NO other writer of this row can produce. That
-  // claim is the whole reason the predicate is trustworthy, so pin every writer's
-  // output against it — a future change to any of them fails here.
-  it.each([
-    {
-      writer: "the member's own create",
-      row: { status: "PENDING", reviewedBy: null, reviewedAt: null },
-      released: false,
-    },
+  /**
+   * The marker has no column of its own: it is the (status, reviewedBy,
+   * reviewedAt) combination that NO other writer of this row can produce, and
+   * that claim is the whole reason the predicate is trustworthy.
+   *
+   * So these rows are DERIVED from the writers rather than restated next to them.
+   * Each case runs the real function against a capturing mock and applies the
+   * `data` it wrote over the row it wrote it to — which means an omitted field is
+   * part of the derivation too (an approval that never writes `reviewedBy`
+   * inherits whatever the claim left there). A change to any of the three
+   * functions in this module therefore lands here on its own.
+   *
+   * What this does NOT prove: the member's own `create`, which lives in
+   * `src/app/api/member/request-deletion/route.ts` and cannot be driven from
+   * here. Its `data` is pinned field for field — so an added `reviewedAt` fails —
+   * by `src/lib/__tests__/phase10b.test.ts` -> "creates a deletion request for a
+   * member".
+   */
+  type MarkerRow = {
+    status: string;
+    reviewedBy: string | null;
+    reviewedAt: Date | string | null;
+  };
+
+  type CapturedDb = Parameters<typeof releaseDeletionRequestApprovalClaim>[0] &
+    Parameters<typeof claimDeletionRequestApproval>[0];
+
+  async function rowAfter(
+    before: MarkerRow,
+    write: (db: CapturedDb) => Promise<unknown>,
+  ): Promise<MarkerRow> {
+    const updateMany = vi.fn().mockResolvedValue({ count: 1 });
+    const findUnique = vi.fn().mockResolvedValue({
+      status: before.status,
+      reviewedBy: before.reviewedBy,
+      adminNote: null,
+    });
+    const db = {
+      $executeRaw: vi.fn().mockResolvedValue(1),
+      deletionRequest: { updateMany, findUnique },
+    } as unknown as CapturedDb;
+
+    await write(db);
+
+    expect(updateMany).toHaveBeenCalledTimes(1);
+    const written = updateMany.mock.calls[0][0].data as Record<string, unknown>;
+    // Projected back onto the marker's three fields: everything the writer did
+    // not mention keeps the value it had, which is the whole point of deriving
+    // rather than restating.
+    const after = { ...before, ...written } as Record<string, unknown>;
+    return {
+      status: after.status as string,
+      reviewedBy: (after.reviewedBy ?? null) as string | null,
+      reviewedAt: (after.reviewedAt ?? null) as Date | string | null,
+    };
+  }
+
+  const writers: Array<{
+    writer: string;
+    before: MarkerRow;
+    write: (db: CapturedDb) => Promise<unknown>;
+    expected: MarkerRow;
+    released: boolean;
+  }> = [
     {
       writer: "claimDeletionRequestApproval",
-      row: {
+      before: { status: "PENDING", reviewedBy: null, reviewedAt: null },
+      write: (db: CapturedDb) =>
+        claimDeletionRequestApproval(db, {
+          id: "request-1",
+          reviewedBy: "admin-1",
+          adminNote: "starting approval",
+        }),
+      expected: {
         status: "APPROVAL_IN_PROGRESS",
         reviewedBy: "admin-1",
         reviewedAt: null,
@@ -419,35 +557,117 @@ describe("the released-approval marker (#2627)", () => {
       released: false,
     },
     {
-      writer: "claimDeletionRequestDecision (approved)",
-      row: {
+      writer: "claimDeletionRequestApproval re-claiming a released request",
+      before: {
+        status: "PENDING",
+        reviewedBy: null,
+        reviewedAt: new Date("2026-08-01T00:00:00Z"),
+      },
+      write: (db: CapturedDb) =>
+        claimDeletionRequestApproval(db, {
+          id: "request-1",
+          reviewedBy: "admin-1",
+          adminNote: "trying again",
+        }),
+      // The marker is cleared, deliberately: from APPROVAL_IN_PROGRESS a
+      // rejection cannot win at all, and releasing THIS claim writes it again.
+      expected: {
+        status: "APPROVAL_IN_PROGRESS",
+        reviewedBy: "admin-1",
+        reviewedAt: null,
+      },
+      released: false,
+    },
+    {
+      writer: "claimDeletionRequestDecision (approved from its claim)",
+      before: {
+        status: "APPROVAL_IN_PROGRESS",
+        reviewedBy: "admin-1",
+        reviewedAt: null,
+      },
+      write: (db: CapturedDb) =>
+        claimDeletionRequestDecision(db, {
+          id: "request-1",
+          decision: "APPROVED",
+          reviewedBy: "admin-1",
+          adminNote: null,
+        }),
+      // Finalisation writes status + reviewedAt only, so the attribution is
+      // whatever the CLAIM recorded — it is not re-stamped here.
+      expected: {
         status: "APPROVED",
         reviewedBy: "admin-1",
-        reviewedAt: new Date("2026-08-01T00:00:00Z"),
+        reviewedAt: expect.any(Date),
+      },
+      released: false,
+    },
+    {
+      writer: "claimDeletionRequestDecision (approved with no claim, #2627)",
+      before: { status: "PENDING", reviewedBy: null, reviewedAt: null },
+      write: (db: CapturedDb) =>
+        claimDeletionRequestDecision(db, {
+          id: "request-1",
+          decision: "APPROVED",
+          reviewedBy: "admin-1",
+          adminNote: null,
+          approvalFrom: "PENDING",
+        }),
+      // An approval that never needed a claim leaves NO reviewer behind, which
+      // the previous hand-written table did not have at all.
+      expected: {
+        status: "APPROVED",
+        reviewedBy: null,
+        reviewedAt: expect.any(Date),
       },
       released: false,
     },
     {
       writer: "claimDeletionRequestDecision (rejected)",
-      row: {
+      before: { status: "PENDING", reviewedBy: null, reviewedAt: null },
+      write: (db: CapturedDb) =>
+        claimDeletionRequestDecision(db, {
+          id: "request-1",
+          decision: "REJECTED",
+          reviewedBy: "admin-2",
+          adminNote: "declined",
+        }),
+      expected: {
         status: "REJECTED",
-        reviewedBy: "admin-1",
-        reviewedAt: new Date("2026-08-01T00:00:00Z"),
+        reviewedBy: "admin-2",
+        reviewedAt: expect.any(Date),
       },
       released: false,
     },
     {
       writer: "releaseDeletionRequestApprovalClaim",
-      row: {
+      before: {
+        status: "APPROVAL_IN_PROGRESS",
+        reviewedBy: "admin-1",
+        reviewedAt: null,
+      },
+      write: (db: CapturedDb) =>
+        releaseDeletionRequestApprovalClaim(db, {
+          id: "request-1",
+          adminNote: "blocker will never clear",
+        }),
+      expected: {
         status: "PENDING",
         reviewedBy: null,
-        reviewedAt: new Date("2026-08-01T00:00:00Z"),
+        reviewedAt: expect.any(Date),
       },
       released: true,
     },
-  ])("reads $writer as released=$released", ({ row, released }) => {
-    expect(deletionApprovalWasReleased(row)).toBe(released);
-  });
+  ];
+
+  it.each(writers)(
+    "derives $writer from what it writes, and reads it as released=$released",
+    async ({ before, write, expected, released }) => {
+      const row = await rowAfter(before, write);
+
+      expect(row).toEqual(expected);
+      expect(deletionApprovalWasReleased(row)).toBe(released);
+    },
+  );
 
   it("reads the marker off the JSON the admin queue is served", () => {
     // The admin client derives the row warning from the same predicate over the
@@ -476,5 +696,28 @@ describe("open deletion request statuses", () => {
 
   it("is a mutable array Prisma's `in` filter accepts", () => {
     expect(Array.isArray(OPEN_DELETION_REQUEST_STATUSES)).toBe(true);
+  });
+});
+
+describe("release transaction contention (#2627)", () => {
+  // The release's first statement takes the request row FOR UPDATE while the
+  // counterpart anonymisation transaction may legitimately hold it to commit, so
+  // an exhausted wait is contention, not a fault. The route maps this set to a
+  // 503 retry-later; before the release moved into a transaction the same
+  // interleaving blocked on an auto-commit statement and returned the mapped 409,
+  // so a bare 500 would be a regression.
+  it.each(["P2028", "P2034"])("recognises Prisma %s as contention", (code) => {
+    expect(isDeletionRequestTransactionContention({ code })).toBe(true);
+  });
+
+  it.each([
+    ["a foreign key violation", { code: "P2003" }],
+    ["a record-not-found error", { code: "P2025" }],
+    ["a non-string code", { code: 2028 }],
+    ["an ordinary error", new Error("boom")],
+    ["null", null],
+    ["undefined", undefined],
+  ])("does not treat %s as contention", (_label, error) => {
+    expect(isDeletionRequestTransactionContention(error)).toBe(false);
   });
 });
