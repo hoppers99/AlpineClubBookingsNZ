@@ -43,7 +43,7 @@ module is on.
    midday boundary is simply how a lodge day is defined, not something anyone
    records.
 
-   ![Chore Roster page showing the date picker and staged whole-roster editor for two booking groups](../images/admin/admin-roster.png)
+   ![Chore Roster page on a changeover day, showing the date picker and the staged whole-roster editor with departing guests from two booking groups alongside the group arriving that evening](../images/admin/admin-roster.png)
 
 ### Generate and adjust the roster
 

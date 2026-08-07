@@ -19,6 +19,18 @@ const WRITERS = [
   "src/lib/chore-cleanup.ts",
 ] as const
 
+/**
+ * Every caller that derives a roster-date lock set from a STAY ENVELOPE (#2622).
+ *
+ * Reviewed allowlist, enforced by a scan below rather than spot-checks, because
+ * the failure mode is a NEW caller passing a raw `{ start: checkIn, end:
+ * checkOut }` night range and leaving the check-out day's partition unlocked.
+ */
+const ENVELOPE_LOCK_CALLERS = [
+  "src/lib/booking-batch-modification-service.ts",
+  "src/lib/booking-date-modification-service.ts",
+] as const
+
 function source(file: string) {
   return fs.readFileSync(path.join(ROOT, file), "utf8")
 }
@@ -253,10 +265,18 @@ describe("roster-date lock source contract (#2586)", () => {
     // A raw `{ start: checkIn, end: checkOut }` locks only the NIGHTS, leaving
     // the check-out day's partition — where a departure-morning row now lives —
     // unlocked while the booking's dates move underneath it.
-    for (const file of [
-      "src/lib/booking-date-modification-service.ts",
-      "src/lib/booking-batch-modification-service.ts",
-    ]) {
+    //
+    // Scanned, not hard-coded: pinning two known files would let a FOURTH
+    // `lockRosterDateRangesAndDates` caller appear with a raw night range and
+    // regress this silently. Mirrors the WRITERS inventory above.
+    const found = allSourceFiles(path.join(ROOT, "src"))
+      .filter((file) => !file.includes(`${path.sep}__tests__${path.sep}`))
+      .filter((file) => /await lockRosterDateRangesAndDates\s*\(/.test(fs.readFileSync(file, "utf8")))
+      .map((file) => path.relative(ROOT, file).replaceAll("\\", "/"))
+      .sort()
+    expect(found).toEqual([...ENVELOPE_LOCK_CALLERS].sort())
+
+    for (const file of ENVELOPE_LOCK_CALLERS) {
       const contents = source(file)
       expect(contents, file).toContain("rosterOperationalDayRange(")
       expect(contents.replace(/\s+/g, " "), file).not.toMatch(
