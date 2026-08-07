@@ -20,7 +20,7 @@ const h = vi.hoisted(() => ({
   acquireFuturePartnerSharedAllocationLocks: vi.fn(),
   sweepFuturePartnerSharedAllocationsWithLocksHeld: vi.fn(),
   prisma: {
-    deletionRequest: { findUnique: vi.fn(), update: vi.fn() },
+    deletionRequest: { findUnique: vi.fn(), updateMany: vi.fn() },
     booking: { findMany: vi.fn(), findUnique: vi.fn() },
     xeroSyncOperation: { findFirst: vi.fn() },
     // #2255: `findMany` reads who the anonymisation is about to detach and
@@ -124,7 +124,7 @@ beforeEach(() => {
     status: "PENDING",
     member,
   });
-  h.prisma.deletionRequest.update.mockResolvedValue({});
+  h.prisma.deletionRequest.updateMany.mockResolvedValue({ count: 1 });
   h.prisma.booking.findMany.mockResolvedValue([]);
   h.prisma.booking.findUnique.mockResolvedValue({ status: "PENDING" });
   h.prisma.xeroSyncOperation.findFirst.mockResolvedValue(null);
@@ -172,8 +172,11 @@ describe("POST /api/admin/deletion-requests/[id] reject notify choice (#1788)", 
     expect(h.sendAccountDeletionRejectedEmail).not.toHaveBeenCalled();
     expect(deletionRejectedMetadata()).toMatchObject({ notifyMember: false });
     // The request is still marked REJECTED regardless of the notify choice.
-    expect(h.prisma.deletionRequest.update).toHaveBeenCalledWith(
-      expect.objectContaining({ data: expect.objectContaining({ status: "REJECTED" }) }),
+    expect(h.prisma.deletionRequest.updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { id: "req-1", status: "PENDING" },
+        data: expect.objectContaining({ status: "REJECTED" }),
+      }),
     );
   });
 
@@ -193,7 +196,7 @@ describe("POST /api/admin/deletion-requests/[id] reject notify choice (#1788)", 
     });
 
     expect(res.status).toBe(400);
-    expect(h.prisma.deletionRequest.update).not.toHaveBeenCalled();
+    expect(h.prisma.deletionRequest.updateMany).not.toHaveBeenCalled();
     expect(h.sendAccountDeletionRejectedEmail).not.toHaveBeenCalled();
   });
 });
@@ -374,7 +377,12 @@ describe("POST /api/admin/deletion-requests/[id] approve carve-out (#1788)", () 
     expect(h.sendAccountDeletionApprovedEmail).not.toHaveBeenCalled();
     expect(h.prisma.member.update).not.toHaveBeenCalled();
     expect(h.prisma.bookingGuest.updateMany).not.toHaveBeenCalled();
-    expect(h.prisma.deletionRequest.update).not.toHaveBeenCalled();
+    expect(h.prisma.deletionRequest.updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { id: "req-1", status: "PENDING" },
+        data: expect.objectContaining({ status: "APPROVED" }),
+      }),
+    );
     expect(h.settleHostingCoverageAfterCommit).not.toHaveBeenCalled();
   });
 

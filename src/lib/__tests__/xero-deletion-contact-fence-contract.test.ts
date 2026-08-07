@@ -86,7 +86,7 @@ describe("Xero contact/account-deletion lock topology mutation pins (#2597)", ()
     );
     expectOrdered(recovery, [
       "lockMemberForXeroContactLink(db, memberId)",
-      "assertNoMemberContactCreateBlockerForDeletion(memberId, db)",
+      "assertNoMemberContactChangeBlockerForDeletion(memberId, db)",
     ]);
 
     const route = source("src/app/api/admin/deletion-requests/[id]/route.ts");
@@ -95,6 +95,33 @@ describe("Xero contact/account-deletion lock topology mutation pins (#2597)", ()
       "await tx.member.update",
       "passwordHash: DELETED_ACCOUNT_PASSWORD_HASH",
     ]);
+  });
+
+  it("reserves member updates before provider work and completes the link under the same Member fence", () => {
+    const contactSource = source("src/lib/xero-contacts.ts");
+    const update = contactSource.slice(
+      contactSource.indexOf("export async function updateXeroContact("),
+    );
+    expectOrdered(update, [
+      "reserveMemberContactUpdateOperation(",
+      "getAuthenticatedXeroClient()",
+      "accountingApi.updateContact(",
+      "lockMemberForXeroContactLink(tx, memberId)",
+      "completeXeroSyncOperation(operation.id, completion, { store: tx })",
+    ]);
+  });
+
+  it("never falls back to stored PII for a Member contact-update retry", () => {
+    const retry = between(
+      source("src/lib/xero-operation-retry.ts"),
+      "const retryInput =\n      operation.localModel",
+      'if (operation.entityType === "INVOICE" && operation.operationType === "CREATE") {',
+    );
+    expect(retry).toContain('operation.localModel === "Member"');
+    expect(retry).toContain("buildCurrentMemberContactUpdateRetryInput(operation)");
+    expect(retry).not.toContain(
+      "buildCurrentMemberContactUpdateRetryInput(operation)) ??",
+    );
   });
 
   it("maps contention to privacy-safe route errors instead of provider detail", () => {

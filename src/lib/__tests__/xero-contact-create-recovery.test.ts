@@ -15,10 +15,12 @@ import {
   getMemberContactCreateRecoveryPending,
   getMemberContactCreateRecoveryState,
   hasMemberContactCreateMergeBlocker,
+  hasMemberContactChangeMergeBlocker,
   hasUnresolvedMemberContactCreateRecovery,
   isProviderCreatedLocalLinkFailurePayload,
   lockMemberForManualXeroContactLink,
   memberContactCreateMergeBlockerWhere,
+  memberContactChangeMergeBlockerWhere,
   recordProviderCreatedContactPendingLocalLink,
   unresolvedMemberContactCreateRecoveryWhere,
   XERO_CONTACT_CREATE_IN_PROGRESS_CODE,
@@ -232,6 +234,29 @@ describe("unresolved member Xero contact-create recovery proof", () => {
         responsePayload: true,
       },
     });
+  });
+
+  it("blocks merge and deletion on a RUNNING member CONTACT UPDATE only", async () => {
+    findFirst.mockResolvedValueOnce({ id: "operation-update-running" });
+
+    await expect(
+      hasMemberContactChangeMergeBlocker("member-1"),
+    ).resolves.toBe(true);
+    expect(findFirst).toHaveBeenCalledWith({
+      where: memberContactChangeMergeBlockerWhere("member-1"),
+      select: { id: true },
+    });
+    expect(memberContactChangeMergeBlockerWhere("member-1")).toEqual(
+      expect.objectContaining({
+        direction: "OUTBOUND",
+        entityType: "CONTACT",
+        localModel: "Member",
+        localId: "member-1",
+        OR: expect.arrayContaining([
+          { operationType: "UPDATE", status: "RUNNING" },
+        ]),
+      }),
+    );
   });
 
   it("keeps stale-reset pending-link proof unresolved and merge-blocking", async () => {
