@@ -276,6 +276,72 @@ describe("self-service deletion partial recovery (#2597)", () => {
     });
   }
 
+  it.each([
+    {
+      action: "approve" as const,
+      finalDecision: "APPROVED",
+      memberAnonymised: true,
+      submitButton: "Approve & Delete Account",
+      expectedDecision: /another administrator approved/i,
+      expectedMember: /latest member record is anonymised/i,
+    },
+    {
+      action: "reject" as const,
+      finalDecision: "REJECTED",
+      memberAnonymised: false,
+      submitButton: "Reject and email member",
+      expectedDecision: /another administrator rejected/i,
+      expectedMember: /latest member record is not anonymised/i,
+    },
+  ])(
+    "shows final $finalDecision facts without a cleanup retry",
+    async ({
+      action,
+      finalDecision,
+      memberAnonymised,
+      submitButton,
+      expectedDecision,
+      expectedMember,
+    }) => {
+      vi.stubGlobal(
+        "fetch",
+        buildPartialRecoveryFetch({
+          error: "private database detail",
+          decisionFinal: true,
+          finalDecision,
+          cancelledBookings: 1,
+          memberAnonymised,
+          memberDataAnonymised: memberAnonymised,
+          retryAllowed: false,
+        }) as typeof fetch,
+      );
+
+      render(<DeletionRequestsClient sessionMemberId="admin-1" />);
+      await screen.findByText("Riley Chen");
+      fireEvent.click(
+        screen.getByRole("button", {
+          name: action === "approve" ? "Approve" : "Reject",
+        }),
+      );
+      fireEvent.click(
+        await screen.findByRole("button", { name: submitButton }),
+      );
+
+      const alert = document.getElementById("deletion-requests-recovery");
+      await waitFor(() =>
+        expect(alert?.textContent).toMatch(expectedDecision),
+      );
+      expect(alert?.textContent).toMatch(expectedMember);
+      expect(alert?.textContent).toMatch(/1 future booking cancellation completed/i);
+      expect(alert?.textContent).toMatch(/decision is final/i);
+      expect(alert?.textContent).not.toContain("private database detail");
+      expect(
+        screen.queryByRole("button", { name: "Retry remaining cleanup" }),
+      ).toBeNull();
+      expect(document.activeElement).toBe(alert);
+    },
+  );
+
   it("uses ordinary partial-cleanup facts to retain recovery and replace untouched approval with an explicit retry", async () => {
     const scrollIntoView = vi.fn();
     Object.defineProperty(HTMLElement.prototype, "scrollIntoView", {

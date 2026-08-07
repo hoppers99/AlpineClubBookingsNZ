@@ -192,6 +192,33 @@ describe("POST /api/admin/deletion-requests/[id] reject notify choice (#1788)", 
     expect(deletionRejectedMetadata()).toBeUndefined();
   });
 
+  it("re-reads and reports an authoritative rejected decision without offering cleanup retry", async () => {
+    h.prisma.deletionRequest.updateMany.mockResolvedValueOnce({ count: 0 });
+    h.prisma.deletionRequest.findUnique
+      .mockResolvedValueOnce({ id: "req-1", status: "PENDING", member })
+      .mockResolvedValueOnce({
+        id: "req-1",
+        status: "REJECTED",
+        member,
+      });
+
+    const response = await POST(req({ action: "reject" }), { params });
+    const body = await response.json();
+
+    expect(response.status).toBe(409);
+    expect(body).toMatchObject({
+      decisionFinal: true,
+      finalDecision: "REJECTED",
+      cancelledBookings: 0,
+      memberAnonymised: false,
+      memberDataAnonymised: false,
+      retryAllowed: false,
+    });
+    expect(body).not.toHaveProperty("remainingCleanupPending");
+    expect(body).not.toHaveProperty("approvalReceiptSent");
+    expect(h.sendAccountDeletionRejectedEmail).not.toHaveBeenCalled();
+  });
+
   it("rejects a non-boolean notifyMember with 400 and does not touch the request", async () => {
     const res = await POST(req({ action: "reject", notifyMember: "false" }), {
       params,
@@ -204,6 +231,64 @@ describe("POST /api/admin/deletion-requests/[id] reject notify choice (#1788)", 
 });
 
 describe("POST /api/admin/deletion-requests/[id] approve carve-out (#1788)", () => {
+  it("reports the winning approval and anonymisation after earlier cancellations without an unsafe retry", async () => {
+    h.prisma.booking.findMany
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([{ id: "booking-1" }]);
+    h.cancelBooking.mockResolvedValueOnce({ status: 200, data: {} });
+    h.prisma.deletionRequest.updateMany.mockResolvedValueOnce({ count: 0 });
+    h.prisma.deletionRequest.findUnique
+      .mockResolvedValueOnce({ id: "req-1", status: "PENDING", member })
+      .mockResolvedValueOnce({
+        id: "req-1",
+        status: "APPROVED",
+        member: {
+          ...member,
+          firstName: "Deleted",
+          lastName: "Member",
+          email: "deleted-m1@deleted.invalid",
+          active: false,
+        },
+      });
+
+    const response = await POST(req({ action: "approve" }), { params });
+    const body = await response.json();
+
+    expect(response.status).toBe(409);
+    expect(body).toMatchObject({
+      decisionFinal: true,
+      finalDecision: "APPROVED",
+      cancelledBookings: 1,
+      memberAnonymised: true,
+      memberDataAnonymised: true,
+      retryAllowed: false,
+    });
+    expect(body).not.toHaveProperty("remainingCleanupPending");
+    expect(body).not.toHaveProperty("approvalReceiptSent");
+    expect(h.prisma.member.update).not.toHaveBeenCalled();
+    expect(h.sendAccountDeletionApprovedEmail).not.toHaveBeenCalled();
+  });
+
+  it("suppresses retry when the winning decision cannot be authoritatively re-read", async () => {
+    h.prisma.deletionRequest.updateMany.mockResolvedValueOnce({ count: 0 });
+    h.prisma.deletionRequest.findUnique
+      .mockResolvedValueOnce({ id: "req-1", status: "PENDING", member })
+      .mockRejectedValueOnce(new Error("private database detail"));
+
+    const response = await POST(req({ action: "approve" }), { params });
+    const body = await response.json();
+
+    expect(response.status).toBe(409);
+    expect(body).toEqual({
+      code: "DELETION_REQUEST_DECISION_STATUS_UNCONFIRMED",
+      error:
+        "Another administrator claimed this deletion request, but its final state could not be confirmed. Reload the deletion queue; do not retry the deletion action.",
+      decisionStatusUnconfirmed: true,
+      cancelledBookings: 0,
+      retryAllowed: false,
+    });
+    expect(JSON.stringify(body)).not.toContain("private database detail");
+  });
   it("reports earlier cancellations truthfully when a later participant fence contends", async () => {
     h.prisma.booking.findMany
       .mockResolvedValueOnce([])

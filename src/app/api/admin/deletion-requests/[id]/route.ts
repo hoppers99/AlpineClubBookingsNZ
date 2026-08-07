@@ -103,6 +103,76 @@ function deletionCleanupRecovery(input: {
   };
 }
 
+function isMemberAnonymised(member: {
+  firstName: string;
+  lastName: string;
+  email: string;
+  active: boolean;
+}): boolean {
+  return (
+    member.active === false &&
+    member.firstName === "Deleted" &&
+    member.lastName === "Member" &&
+    member.email.startsWith("deleted-") &&
+    member.email.endsWith("@deleted.invalid")
+  );
+}
+
+async function readFinalDeletionDecision(
+  requestId: string,
+  cancelledBookings: number,
+) {
+  try {
+    const latest = await prisma.deletionRequest.findUnique({
+      where: { id: requestId },
+      select: {
+        status: true,
+        member: {
+          select: {
+            firstName: true,
+            lastName: true,
+            email: true,
+            active: true,
+          },
+        },
+      },
+    });
+    if (
+      latest &&
+      (latest.status === "APPROVED" || latest.status === "REJECTED")
+    ) {
+      const memberAnonymised = isMemberAnonymised(latest.member);
+      return {
+        code: "DELETION_REQUEST_DECISION_LOST",
+        error:
+          latest.status === "APPROVED"
+            ? "Another administrator approved this deletion request. Reload the deletion queue to see the final state."
+            : "Another administrator rejected this deletion request. Reload the deletion queue to see the final state.",
+        decisionFinal: true as const,
+        finalDecision: latest.status,
+        cancelledBookings,
+        memberAnonymised,
+        memberDataAnonymised: memberAnonymised,
+        retryAllowed: false as const,
+      };
+    }
+  } catch (error) {
+    logger.error(
+      { err: error, requestId },
+      "Could not re-read a deletion request after its decision claim was lost",
+    );
+  }
+
+  return {
+    code: "DELETION_REQUEST_DECISION_STATUS_UNCONFIRMED",
+    error:
+      "Another administrator claimed this deletion request, but its final state could not be confirmed. Reload the deletion queue; do not retry the deletion action.",
+    decisionStatusUnconfirmed: true as const,
+    cancelledBookings,
+    retryAllowed: false as const,
+  };
+}
+
 type CancellationFailureFact =
   | { state: "CANCELLED" }
   | { state: "PENDING" }
@@ -609,24 +679,8 @@ export async function POST(
       );
     }
     if (err instanceof DeletionRequestDecisionLostError) {
-      if (completedBookingCancellations > 0 && !memberAnonymised) {
-        return NextResponse.json(
-          deletionCleanupRecovery({
-            cancelledBookings: completedBookingCancellations,
-            cancellationPending: false,
-            retryBookingId: null,
-            blocker: {
-              code: err.code,
-              message: err.message,
-              remedy:
-                "Refresh the deletion queue. This request has a final decision; do not retry anonymisation.",
-            },
-          }),
-          { status: err.statusCode },
-        );
-      }
       return NextResponse.json(
-        { code: err.code, error: err.message },
+        await readFinalDeletionDecision(id, completedBookingCancellations),
         { status: err.statusCode },
       );
     }

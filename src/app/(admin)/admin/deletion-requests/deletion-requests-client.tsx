@@ -124,6 +124,8 @@ export default function DeletionRequestsClient({
     retryBookingId: string | null;
     reviewBookingId: string | null;
     bookingActionLabel: string | null;
+    heading: string;
+    retryAllowed: boolean;
     message: string;
   } | null>(null);
 
@@ -187,6 +189,87 @@ export default function DeletionRequestsClient({
       const body = await res.json();
       if (!res.ok) {
         if (
+          body.decisionFinal === true &&
+          (body.finalDecision === "APPROVED" ||
+            body.finalDecision === "REJECTED") &&
+          typeof body.memberAnonymised === "boolean" &&
+          typeof body.cancelledBookings === "number" &&
+          body.retryAllowed === false &&
+          body.remainingCleanupPending !== true
+        ) {
+          const cancelledBookings = Math.max(0, body.cancelledBookings);
+          const cancelledCopy =
+            cancelledBookings === 1
+              ? "1 future booking cancellation completed before the final decision."
+              : `${cancelledBookings} future booking cancellations completed before the final decision.`;
+          const memberCopy = body.memberAnonymised
+            ? "The latest member record is anonymised."
+            : "The latest member record is not anonymised.";
+          const decisionCopy =
+            body.finalDecision === "APPROVED"
+              ? "Another administrator approved this deletion request."
+              : "Another administrator rejected this deletion request.";
+          const recoveryBase = `${decisionCopy} ${memberCopy} ${cancelledCopy} This decision is final; no deletion action was retried.`;
+
+          setReviewDialog(null);
+          setDeletionRecovery({
+            request: pendingReview.request,
+            note: pendingNote,
+            cancelledBookings,
+            cancellationPending: false,
+            retryBookingId: null,
+            reviewBookingId: null,
+            bookingActionLabel: null,
+            heading: "Deletion request already decided",
+            retryAllowed: false,
+            message: recoveryBase,
+          });
+          setRecoveryAttentionVersion((version) => version + 1);
+          const refreshed = await fetchRequests();
+          setError(null);
+          setDeletionRecovery((current) =>
+            current
+              ? {
+                  ...current,
+                  message: `${recoveryBase}${
+                    refreshed
+                      ? " The latest deletion queue was loaded."
+                      : " The deletion queue could not be refreshed. This final-decision warning remains active."
+                  }`,
+                }
+              : current,
+          );
+          setRecoveryAttentionVersion((version) => version + 1);
+          return;
+        }
+        if (
+          body.decisionStatusUnconfirmed === true &&
+          body.retryAllowed === false
+        ) {
+          const recoveryBase =
+            "Another administrator claimed this deletion request, but its final state could not be confirmed. Reload the deletion queue; do not retry the deletion action.";
+          setReviewDialog(null);
+          setDeletionRecovery({
+            request: pendingReview.request,
+            note: pendingNote,
+            cancelledBookings:
+              typeof body.cancelledBookings === "number"
+                ? Math.max(0, body.cancelledBookings)
+                : 0,
+            cancellationPending: false,
+            retryBookingId: null,
+            reviewBookingId: null,
+            bookingActionLabel: null,
+            heading: "Deletion decision needs verification",
+            retryAllowed: false,
+            message: recoveryBase,
+          });
+          setRecoveryAttentionVersion((version) => version + 1);
+          await fetchRequests();
+          setError(null);
+          return;
+        }
+        if (
           pendingReview.action === "approve" &&
           body.remainingCleanupPending === true &&
           typeof body.cancelledBookings === "number" &&
@@ -247,6 +330,8 @@ export default function DeletionRequestsClient({
               : reviewBookingId
                 ? "Open booking for review"
                 : null,
+            heading: "Deletion approval partially completed",
+            retryAllowed: true,
             message: recoveryBase,
           });
           setRecoveryAttentionVersion((version) => version + 1);
@@ -378,27 +463,27 @@ export default function DeletionRequestsClient({
             error={deletionRecovery?.message ?? ""}
             attentionKey={recoveryAttentionVersion}
             heading={
-              deletionRecovery
-                ? "Deletion approval partially completed"
-                : undefined
+              deletionRecovery?.heading
             }
             action={
               deletionRecovery ? (
                 <div className="flex flex-wrap gap-2">
-                  <Button
-                    type="button"
-                    variant="outline"
-                    size="sm"
-                    onClick={() => {
-                      setReviewNote(deletionRecovery.note);
-                      setReviewDialog({
-                        request: deletionRecovery.request,
-                        action: "approve",
-                      });
-                    }}
-                  >
-                    Retry remaining cleanup
-                  </Button>
+                  {deletionRecovery.retryAllowed ? (
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      onClick={() => {
+                        setReviewNote(deletionRecovery.note);
+                        setReviewDialog({
+                          request: deletionRecovery.request,
+                          action: "approve",
+                        });
+                      }}
+                    >
+                      Retry remaining cleanup
+                    </Button>
+                  ) : null}
                   {deletionRecovery.reviewBookingId &&
                   deletionRecovery.bookingActionLabel ? (
                     <Button asChild variant="outline" size="sm">
