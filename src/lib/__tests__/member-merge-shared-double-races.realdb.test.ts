@@ -1081,11 +1081,73 @@ describe("member-merge shared-double race DB safety guard (#2595)", () => {
       ).toBeNull();
     }
 
-    async function expectNeighbourAllocated(): Promise<void> {
-      const rows = await prisma.bedAllocation.findMany({
+    /**
+     * ================== THE WRITER QUEUED BEHIND A MERGE ===================
+     * A consequence of #2595 that is production behaviour, not a test artifact,
+     * and is stated here rather than hidden behind a retry.
+     *
+     * A PostgreSQL advisory xact lock is released only at COMMIT, so once merge
+     * takes the global cohort `lock(1)` at the top of its transaction it holds it
+     * for the whole merge — and a merge deliberately runs with `timeout: 120s`
+     * because re-pointing 70+ relations takes hundreds of sequential round-trips
+     * (docs/CONCURRENCY_AND_LOCKING.md → "Member merge"). The ordinary
+     * bed-allocation writers raced here open their own interactive transaction
+     * and THEN block on `lock(1)`, on Prisma's default 5-second budget
+     * (`writeUnderLocks` in `admin-bed-allocation.ts`,
+     * `reconcileBedAllocationsForBookingWithGlobalLockHeld`). So a writer that
+     * arrives while a merge is running either gets the lock in time, or its own
+     * budget expires first and Prisma rejects it with `P2028`.
+     *
+     * Both outcomes are SAFE, and this helper asserts exactly that: the writer
+     * either committed its own work, or it wrote NOTHING and was rejected with a
+     * retryable transaction expiry. What it must never do is commit anything that
+     * breaks the #2595 invariant, and the caller asserts the invariant itself
+     * either way. The alternative — asserting only "it always commits" — was true
+     * only while merge took no global key, and would now pass or fail on how
+     * loaded the machine is rather than on the contract.
+     *
+     * Whether that availability cost is acceptable, or whether merge should get a
+     * narrower prefix, is recorded as an owner decision on #2595.
+     * ======================================================================
+     */
+    function isRetryableTransactionExpiry(error: unknown): boolean {
+      return (
+        error instanceof Error && /expired transaction/i.test(error.message)
+      );
+    }
+
+    async function neighbourAllocationRows() {
+      return prisma.bedAllocation.findMany({
         where: { bookingId: NEIGHBOUR_BOOKING_ID },
         select: { bookingGuestId: true, stayDate: true, source: true },
       });
+    }
+
+    /**
+     * The queued writer's outcome, whichever way the budget fell. `onCommitted`
+     * asserts the writer's OWN success contract; the rejected arm proves it wrote
+     * nothing at all.
+     */
+    async function expectQueuedWriterCommittedOrCleanlyRejected<T>(
+      outcome: PromiseSettledResult<T>,
+      onCommitted: (value: T) => void,
+    ): Promise<void> {
+      if (outcome.status === "fulfilled") {
+        onCommitted(outcome.value);
+        await expectNeighbourAllocated();
+        return;
+      }
+      expect(
+        isRetryableTransactionExpiry(outcome.reason),
+        `A writer queued behind a merge may only fail with a retryable ` +
+          `transaction expiry; got: ${String(outcome.reason)}`,
+      ).toBe(true);
+      // Rejected, so its whole transaction rolled back: no partial placement.
+      expect(await neighbourAllocationRows()).toEqual([]);
+    }
+
+    async function expectNeighbourAllocated(): Promise<void> {
+      const rows = await neighbourAllocationRows();
       expect(rows).toEqual([
         {
           bookingGuestId: NEIGHBOUR_GUEST_ID,
@@ -1125,13 +1187,27 @@ describe("member-merge shared-double race DB safety guard (#2595)", () => {
           );
         }
 
-        // Both production writers committed: the merge's step-3b reconciliation
-        // removed exactly the unbacked row, the auto run placed exactly the
-        // neighbour.
-        expect(settledValueOrThrow(autoOutcome)).toEqual({ count: 1 });
+        // The merge always commits: its own 120s budget outlasts the queue wait
+        // in either order, and its step-3b reconciliation removed exactly the
+        // unbacked row.
         expect(settledValueOrThrow(mergeOutcome).masterId).toBe(MASTER_ID);
         await expectMergeSweptOnlyTheUnbackedRow();
-        await expectNeighbourAllocated();
+
+        if (order === "AUTO_FIRST") {
+          // Queued FIRST, so it never waits on the merge: it must commit.
+          expect(settledValueOrThrow(autoOutcome)).toEqual({ count: 1 });
+          await expectNeighbourAllocated();
+        } else {
+          // Queued BEHIND the merge on its own 5s budget — see
+          // "THE WRITER QUEUED BEHIND A MERGE" above.
+          await expectQueuedWriterCommittedOrCleanlyRejected(
+            autoOutcome,
+            (value) => expect(value).toEqual({ count: 1 }),
+          );
+        }
+
+        // The invariant holds on the committed rows either way — the point of
+        // the whole case.
         await expectNoUnbackedSharedDouble();
       },
     );
@@ -1163,14 +1239,28 @@ describe("member-merge shared-double race DB safety guard (#2595)", () => {
           );
         }
 
-        expect(settledValueOrThrow(lifecycleOutcome)).toMatchObject({
-          enabled: true,
-          createdCount: 1,
-          deletedCount: 0,
-        });
         expect(settledValueOrThrow(mergeOutcome).masterId).toBe(MASTER_ID);
         await expectMergeSweptOnlyTheUnbackedRow();
-        await expectNeighbourAllocated();
+
+        if (order === "LIFECYCLE_FIRST") {
+          expect(settledValueOrThrow(lifecycleOutcome)).toMatchObject({
+            enabled: true,
+            createdCount: 1,
+            deletedCount: 0,
+          });
+          await expectNeighbourAllocated();
+        } else {
+          await expectQueuedWriterCommittedOrCleanlyRejected(
+            lifecycleOutcome,
+            (value) =>
+              expect(value).toMatchObject({
+                enabled: true,
+                createdCount: 1,
+                deletedCount: 0,
+              }),
+          );
+        }
+
         await expectNoUnbackedSharedDouble();
       },
     );
