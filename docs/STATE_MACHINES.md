@@ -131,8 +131,11 @@ Xero contact fetched -> local member created -> Xero contact linked
   -> select the created member; repair subscription history; do not import again
 ```
 
-Booking-approval, public-request and Xero action consumers announce the fixed 409
-in a permanently mounted alert and focus/scroll the global action failure. Ordinary
+Booking-approval (including admin waitlist force-confirm), member draft-confirm,
+public-request and Xero action consumers announce the fixed 409 in a permanently
+mounted alert and focus/scroll the global action failure. Draft/waitlist transport
+or unreadable-response failures restore the control but describe the outcome as
+unverified and require a reload/status check before retry. Ordinary
 Xero subscription-history failures still complete the import with the existing
 repair warning; only the participant-fence code takes the fixed 409 path.
 

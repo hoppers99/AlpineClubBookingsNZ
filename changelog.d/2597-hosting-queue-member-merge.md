@@ -12,7 +12,11 @@
   at-least-once retry behavior are unchanged.
 
   The retry message now stays visible and is announced on the affected booking
-  approval, public-request, payment, and Xero admin actions. A post-capture create
+  approval, public-request, member draft-confirm, admin waitlist force-confirm,
+  payment, and Xero admin actions. Draft and waitlist confirmation controls always
+  recover after a network or unreadable response; because that response may have
+  been lost after the write, the message tells the operator to reload and verify
+  status before trying again. A post-capture create
   or saved-method failure returns the privacy-safe
   `PAYMENT_RECEIVED_STATUS_UNCONFIRMED` 409 with only `paymentReceived` and
   `bookingStatusUnconfirmed`; the payment UI suppresses retry and focuses its

@@ -260,6 +260,12 @@ surviving member or rolls back as one unit with the fixed safe message: the data
 update could not be completed because the booking or member changed, reload before
 trying again, and check payment status before retrying where relevant.
 
+The member's zero-dollar draft confirmation and the admin waitlist Force Confirm
+keep that failure in a permanently mounted, focused/scrolled alert and restore the
+action in every exit path. A network or unreadable response cannot prove whether
+the write landed, so those surfaces retain the selected retry context but instruct
+the user to reload and verify booking status before trying again.
+
 That atomic promise stops at the transaction boundary. A provider or an earlier
 phase may already have completed before a later local reconciliation reaches the
 participant fence. The card-payment panel therefore suppresses another payment and
