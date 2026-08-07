@@ -17,7 +17,10 @@
   try again — and the club gets a critical entry in Admin -> Audit log (filter on
   `waitlist.confirm_offer_release_failed`) naming the booking, the lodge and the
   stay, so it can be put right rather than sitting unnoticed. `docs/MAINTENANCE.md`
-  explains the two ways to fix one.
+  explains the two ways to fix one. That new entry is filed under the **Bookings**
+  audit category, so it is visible to exactly the administrators who can already
+  see the booking it names and to nobody new; the audit writer census totals move
+  from 418 sites to 419 and `booking` from 79 to 80 to record it.
 
   The offer card is now honest about all of this. Previously, several refusals
   arrived *after* the offer had been used up but left an enabled "Confirm Booking"

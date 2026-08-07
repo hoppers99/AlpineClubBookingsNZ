@@ -51,13 +51,22 @@ type ProposedCategory =
  * comment says 350 total, and the Diagnostics docblock said "81 of ~350".
  */
 export const AUDIT_CENSUS_TOTALS = {
-  /** Row-producing production write sites across `src/`, `scripts/` and `prisma/`. */
-  writeSites: 418,
+  /**
+   * Row-producing production write sites across `src/`, `scripts/` and `prisma/`.
+   *
+   * 419 since #2623: the waitlist-confirm route records
+   * `waitlist.confirm_offer_release_failed` when its compensating offer release
+   * cannot run, because that state is operator-only — no cron sweeps it and the
+   * member has nothing to retry — so the audit row IS the recovery surface. It is
+   * categorised `booking`, `critical` severity, and carries `entityType`/`entityId`
+   * so it correlates to the booking.
+   */
+  writeSites: 419,
   /** Of those, sites whose event object carries no `category` key. */
   uncategorised: 82,
   /** Per-sink totals, so a shift between forms cannot cancel out in the total. */
   bySink: {
-    logAudit: { total: 238, uncategorised: 69 },
+    logAudit: { total: 239, uncategorised: 69 },
     createAuditLog: { total: 101, uncategorised: 11 },
     createStructuredAuditLog: { total: 8, uncategorised: 0 },
     "auditLog.create": { total: 71, uncategorised: 2 },
@@ -68,10 +77,16 @@ export const AUDIT_CENSUS_TOTALS = {
    * taxonomy, selectable by no reader — and are corrected in this change
    * (#2581 decisions 1 and 2), which is why `account` is 15 rather than 10 and
    * `security` is 16 rather than 15.
+   *
+   * `booking` is 80 rather than 79 since #2623 (the stranded waitlist-confirm
+   * recovery marker above). Correlation reads of `booking` require `support` plus
+   * `bookings` (`AUDIT_CORRELATION_DOMAIN_AREAS`), which the lodge administrators
+   * who have to act on that row already hold — so this adds no reader who could not
+   * already see the booking the row names.
    */
   categoryValues: {
     account: 15,
-    booking: 79,
+    booking: 80,
     payment: 16,
     family: 27,
     admin: 117,
