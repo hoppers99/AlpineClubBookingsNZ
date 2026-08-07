@@ -394,7 +394,11 @@ describe("POST /api/admin/bookings/[id]/confirm-pending-guests", () => {
     const body = await res.json();
 
     expect(res.status).toBe(500);
-    expect(body).toMatchObject({ paymentIntentId: "pi_1" });
+    expect(body).toMatchObject({
+      paymentReceived: true,
+      finalisationPending: true,
+      paymentIntentId: "pi_1",
+    });
     expect(body.error).toContain("charge succeeded");
     // The captured charge was durably recorded BEFORE reconciliation ran.
     expect(mocks.upsertPaymentIntentTransaction).toHaveBeenCalledWith(
@@ -563,7 +567,11 @@ describe("POST /api/admin/bookings/[id]/confirm-pending-guests", () => {
     const body = await res.json();
 
     expect(res.status).toBe(500);
-    expect(body).toMatchObject({ paymentIntentId: "pi_1" });
+    expect(body).toMatchObject({
+      paymentReceived: true,
+      finalisationPending: true,
+      paymentIntentId: "pi_1",
+    });
     expect(mocks.sendConfirmedEmail).not.toHaveBeenCalled();
   });
 

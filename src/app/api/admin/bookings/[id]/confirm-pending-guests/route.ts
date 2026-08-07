@@ -640,6 +640,8 @@ export async function POST(
         {
           error:
             "The charge succeeded but the booking could not be finalised yet; it stays confirmed and admins have been alerted.",
+          paymentReceived: true,
+          finalisationPending: true,
           paymentIntentId: paymentIntent.id,
         },
         { status: 500 }
@@ -700,6 +702,8 @@ export async function POST(
         {
           error:
             "Payment succeeded but the booking could not be finalised; admins have been alerted.",
+          paymentReceived: true,
+          finalisationPending: true,
           paymentIntentId: paymentIntent.id,
         },
         { status: 500 }

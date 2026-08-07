@@ -223,7 +223,7 @@ describe("ConfirmPendingGuestsButton", () => {
     expect(toastSuccess).not.toHaveBeenCalled();
   });
 
-  it("keeps captured-card recovery focused and suppresses another charge while canonical refresh is unresolved", async () => {
+  it("uses positive payment facts from an ordinary failure to suppress another charge while canonical refresh is unresolved", async () => {
     const scrollIntoView = vi.fn();
     Object.defineProperty(HTMLElement.prototype, "scrollIntoView", {
       configurable: true,
@@ -232,7 +232,6 @@ describe("ConfirmPendingGuestsButton", () => {
     stubFetch({
       ok: false,
       body: {
-        code: "HOSTING_COVERAGE_PARTICIPANT_RETRY",
         error: "private database detail",
         paymentReceived: true,
         finalisationPending: true,
