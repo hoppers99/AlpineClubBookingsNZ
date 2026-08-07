@@ -172,6 +172,20 @@ describe("Xero contact/account-deletion lock topology mutation pins (#2597)", ()
       "upsertXeroObjectLink(",
       "{ store: tx }",
     ]);
+
+    const historicalBackfill = between(
+      source("src/lib/xero-hardening-backfill.ts"),
+      "export async function backfillMemberContactLink(",
+      "async function backfillMemberContactLinks(",
+    );
+    expectOrdered(historicalBackfill, [
+      "db.$transaction",
+      "lockMemberForXeroContactLink(tx, memberId)",
+      "locked.xeroContactId !== expectedXeroContactId",
+      "upsertXeroObjectLink(",
+      "{ store: tx }",
+      "tx.xeroSyncOperation.create",
+    ]);
   });
 
   it("builds member UPDATE payloads from the locked post-reservation snapshot", () => {

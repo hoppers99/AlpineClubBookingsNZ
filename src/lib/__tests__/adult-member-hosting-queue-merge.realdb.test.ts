@@ -262,6 +262,7 @@ let completeMemberContactUpdateOperation: (typeof import("@/lib/xero-contacts"))
 let lockMemberForManualXeroContactLink: (typeof import("@/lib/xero-contact-create-recovery"))["lockMemberForManualXeroContactLink"];
 let lockMemberForAccountDeletionXeroFence: (typeof import("@/lib/xero-contact-create-recovery"))["lockMemberForAccountDeletionXeroFence"];
 let applyInboundMemberContactPatch: (typeof import("@/lib/xero-contact-create-recovery"))["applyInboundMemberContactPatch"];
+let backfillMemberContactLink: (typeof import("@/lib/xero-hardening-backfill"))["backfillMemberContactLink"];
 let DELETED_ACCOUNT_PASSWORD_HASH: (typeof import("@/lib/xero-contact-create-recovery"))["DELETED_ACCOUNT_PASSWORD_HASH"];
 let commitManualXeroContactLink: (typeof import("@/lib/xero-manual-contact-link"))["commitManualXeroContactLink"];
 let claimDeletionRequestDecision: (typeof import("@/lib/deletion-request-decision"))["claimDeletionRequestDecision"];
@@ -630,6 +631,7 @@ let claimDeletionRequestDecision: (typeof import("@/lib/deletion-request-decisio
         xeroContacts,
         xeroContactCreateRecovery,
         xeroManualContactLink,
+        xeroHardeningBackfill,
         deletionRequestDecision,
       ] = await Promise.all([
         import("@/lib/adult-member-hosting-queue-participants"),
@@ -645,6 +647,7 @@ let claimDeletionRequestDecision: (typeof import("@/lib/deletion-request-decisio
         import("@/lib/xero-contacts"),
         import("@/lib/xero-contact-create-recovery"),
         import("@/lib/xero-manual-contact-link"),
+        import("@/lib/xero-hardening-backfill"),
         import("@/lib/deletion-request-decision"),
       ]);
       acquireHostingCoverageQueueParticipantProof =
@@ -694,6 +697,8 @@ let claimDeletionRequestDecision: (typeof import("@/lib/deletion-request-decisio
         xeroContactCreateRecovery.DELETED_ACCOUNT_PASSWORD_HASH;
       commitManualXeroContactLink =
         xeroManualContactLink.commitManualXeroContactLink;
+      backfillMemberContactLink =
+        xeroHardeningBackfill.backfillMemberContactLink;
       claimDeletionRequestDecision =
         deletionRequestDecision.claimDeletionRequestDecision;
 
@@ -1676,6 +1681,139 @@ let claimDeletionRequestDecision: (typeof import("@/lib/deletion-request-decisio
       expect(outcome.ok).toBe(false);
       if (outcome.ok) throw new Error("Inbound reconciliation unexpectedly beat merge.");
       expect(outcome.error).toMatchObject({ message: `Member not found: ${IDS.loser}` });
+      await expect(
+        primary.xeroObjectLink.count({
+          where: { localModel: "Member", localId: IDS.loser, active: true },
+        }),
+      ).resolves.toBe(0);
+    });
+
+    it("historical contact backfill wins before deletion, which retires the atomically-created FK-less link", async () => {
+      await primary.member.update({
+        where: { id: IDS.target },
+        data: { xeroContactId: "contact-backfill-before-deletion" },
+      });
+      const pause: ParticipantPause = {
+        position: "after",
+        reached: deferred(),
+        release: deferred(),
+      };
+      const backfillDb = createParticipantPauseClient(ordinary, pause);
+      const backfill = backfillMemberContactLink(
+        IDS.target,
+        "contact-backfill-before-deletion",
+        backfillDb,
+      );
+      await waitForPauseOrFail(pause, backfill);
+      const deletion = mergeA.$transaction((tx) =>
+        applyXeroDeletionFence(tx, IDS.target),
+      );
+      try {
+        await waitForClientToBlock("race-2597-merge-a");
+      } finally {
+        pause.release.resolve();
+      }
+      await expect(backfill).resolves.toMatchObject({ createdLinks: 1 });
+      await expect(deletion).resolves.toBeUndefined();
+      await expect(
+        primary.xeroObjectLink.count({
+          where: { localModel: "Member", localId: IDS.target, active: true },
+        }),
+      ).resolves.toBe(0);
+    });
+
+    it("deletion wins before historical contact backfill, which cannot recreate its FK-less link", async () => {
+      await primary.member.update({
+        where: { id: IDS.target },
+        data: { xeroContactId: "contact-deletion-before-backfill" },
+      });
+      const pause: ParticipantPause = {
+        position: "after",
+        reached: deferred(),
+        release: deferred(),
+      };
+      const deletionDb = createParticipantPauseClient(mergeA, pause);
+      const deletion = deletionDb.$transaction((tx) =>
+        applyXeroDeletionFence(tx, IDS.target),
+      );
+      await waitForPauseOrFail(pause, deletion);
+      const backfill = backfillMemberContactLink(
+        IDS.target,
+        "contact-deletion-before-backfill",
+        ordinary,
+      );
+      try {
+        await waitForClientToBlock("race-2597-ordinary");
+      } finally {
+        pause.release.resolve();
+      }
+      await expect(deletion).resolves.toBeUndefined();
+      await expect(backfill).resolves.toMatchObject({ createdLinks: 0 });
+      await expect(
+        primary.xeroObjectLink.count({
+          where: { localModel: "Member", localId: IDS.target, active: true },
+        }),
+      ).resolves.toBe(0);
+    });
+
+    it("historical contact backfill wins before merge, which then retires the loser link", async () => {
+      await primary.member.update({
+        where: { id: IDS.loser },
+        data: { xeroContactId: "contact-backfill-before-merge" },
+      });
+      const preview = await previewMerge();
+      const pause: ParticipantPause = {
+        position: "after",
+        reached: deferred(),
+        release: deferred(),
+      };
+      const backfillDb = createParticipantPauseClient(ordinary, pause);
+      const backfill = backfillMemberContactLink(
+        IDS.loser,
+        "contact-backfill-before-merge",
+        backfillDb,
+      );
+      await waitForPauseOrFail(pause, backfill);
+      const merge = executeMemberMerge({
+        masterId: IDS.master,
+        loserId: IDS.loser,
+        actorMemberId: IDS.actor,
+        previewToken: preview.previewToken,
+        confirmationText: preview.confirmationPhrase,
+        db: mergeA,
+      });
+      try {
+        await waitForClientToBlock("race-2597-merge-a");
+      } finally {
+        pause.release.resolve();
+      }
+      await expect(backfill).resolves.toMatchObject({ createdLinks: 1 });
+      await expect(merge).resolves.toMatchObject({ loserId: IDS.loser });
+      await expect(
+        primary.xeroObjectLink.count({
+          where: { localModel: "Member", localId: IDS.loser, active: true },
+        }),
+      ).resolves.toBe(0);
+    });
+
+    it("merge wins before historical contact backfill, which cannot recreate the loser identity", async () => {
+      await primary.member.update({
+        where: { id: IDS.loser },
+        data: { xeroContactId: "contact-merge-before-backfill" },
+      });
+      const { operation, pause } = await startPausedMerge("after");
+      const backfill = backfillMemberContactLink(
+        IDS.loser,
+        "contact-merge-before-backfill",
+        ordinary,
+      );
+      try {
+        await waitForClientToBlock("race-2597-ordinary");
+      } finally {
+        pause.release.resolve();
+      }
+      await expect(operation).resolves.toMatchObject({ loserId: IDS.loser });
+      await expect(backfill).resolves.toMatchObject({ createdLinks: 0 });
       await expect(
         primary.xeroObjectLink.count({
           where: { localModel: "Member", localId: IDS.loser, active: true },

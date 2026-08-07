@@ -1169,14 +1169,15 @@ the waiting UPDATE sends those post-merge values. A Member UPDATE retry follows
 the same locked rebuild and must never fall back to the stored request payload,
 which can contain stale PII.
 
-Inbound webhook reconciliation, admin bulk contact sync/import, and their
-name-order repair share the same Member-row family. Every local PII fill and
-`Member.xeroContactId` write takes the exact Member `FOR UPDATE`, re-reads the
-deleted marker, contact id, and still-blank fields, then commits the patch with
-the canonical CONTACT `XeroObjectLink` in one short transaction. Name repair
-uses the outbound UPDATE reservation above and is sent only after its
-reservation commits. Provider reads and writes remain outside those
-transactions. Inbound-first therefore commits before merge/deletion can
+Inbound webhook reconciliation, admin bulk contact sync/import, historical
+canonical-contact backfill, and name-order repair share the same Member-row
+family. Every local PII fill, `Member.xeroContactId` write, and reconstructed
+FK-less CONTACT link takes the exact Member `FOR UPDATE`, re-reads the deleted
+marker and current contact id (plus still-blank fields for PII), then commits
+the pointer/link/ledger work in one short transaction. Name repair uses the
+outbound UPDATE reservation above and is sent only after its reservation
+commits. Provider reads and writes remain outside those transactions.
+Inbound/backfill-first therefore commits before merge/deletion can
 continue, after which lifecycle teardown removes the loser's/deleted member's
 FK-less contact link and privacy fields; lifecycle-first makes the waiting
 inbound writer observe a deleted, anonymised, or relinked member and write
@@ -1210,7 +1211,7 @@ Link, provider-returned local-link phase, or inbound contact writer re-read the
 canonical deleted marker and refuse before any new provider call or local
 attribution. Provider calls stay outside all of these transactions.
 Real-PostgreSQL races pin both winner orders for deletion/merge versus
-create/manual Link/inbound reconciliation, including no provider
+create/manual Link/inbound reconciliation/historical backfill, including no provider
 reservation/call/link when lifecycle wins and no dangling FK-less link when
 merge or deletion completes.
 
