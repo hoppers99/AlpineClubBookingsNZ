@@ -24,6 +24,28 @@ export const EXISTING_CARD_TRANSACTION_STATUS_UNCONFIRMED_BODY = Object.freeze({
   paymentStatusUnconfirmed: true as const,
 });
 
+export type PaymentReceivedFinalisationPending = Readonly<{
+  paymentReceived: true;
+  finalisationPending: true;
+}>;
+
+/**
+ * Positive, provider-safe proof that money was received before a later local
+ * finalisation step failed. Consumers must suppress every payment action as
+ * soon as these two facts are present; the error code identifies the local
+ * cause, but is not what proves the captured-money phase.
+ */
+export function isPaymentReceivedFinalisationPending(
+  value: unknown,
+): value is PaymentReceivedFinalisationPending {
+  if (!value || typeof value !== "object") return false;
+  const candidate = value as Record<string, unknown>;
+  return (
+    candidate.paymentReceived === true &&
+    candidate.finalisationPending === true
+  );
+}
+
 export function isPaymentReceivedStatusUnconfirmed(
   value: unknown,
 ): value is typeof PAYMENT_RECEIVED_STATUS_UNCONFIRMED_BODY {

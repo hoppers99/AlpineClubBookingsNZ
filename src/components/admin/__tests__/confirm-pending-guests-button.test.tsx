@@ -223,6 +223,100 @@ describe("ConfirmPendingGuestsButton", () => {
     expect(toastSuccess).not.toHaveBeenCalled();
   });
 
+  it("keeps captured-card recovery focused and suppresses another charge while canonical refresh is unresolved", async () => {
+    const scrollIntoView = vi.fn();
+    Object.defineProperty(HTMLElement.prototype, "scrollIntoView", {
+      configurable: true,
+      value: scrollIntoView,
+    });
+    stubFetch({
+      ok: false,
+      body: {
+        code: "HOSTING_COVERAGE_PARTICIPANT_RETRY",
+        error: "private database detail",
+        paymentReceived: true,
+        finalisationPending: true,
+      },
+    });
+    render(
+      <ConfirmPendingGuestsButton
+        bookingId="b1"
+        hasSavedPaymentMethod
+        finalPriceCents={10000}
+      />,
+    );
+
+    const alert = document.getElementById("confirm-pending-guests-error-b1");
+    expect(alert?.getAttribute("role")).toBe("alert");
+    expect(alert?.textContent).toBe("");
+
+    fireEvent.click(
+      screen.getByRole("button", { name: "Confirm pending guests" }),
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Charge and confirm" }));
+    fireEvent.click(
+      await screen.findByRole("button", { name: "Confirm and email member" }),
+    );
+
+    await waitFor(() =>
+      expect(alert?.textContent).toMatch(/saved card was charged/i),
+    );
+    expect(alert?.textContent).toMatch(/could not be finalised/i);
+    expect(alert?.textContent).toMatch(/do not charge again/i);
+    expect(alert?.textContent).not.toContain("private database detail");
+    expect(document.activeElement).toBe(alert);
+    expect(scrollIntoView).toHaveBeenCalledWith({
+      behavior: "smooth",
+      block: "center",
+    });
+    expect(refresh).toHaveBeenCalledTimes(1);
+    expect(
+      screen.queryByRole("button", { name: "Confirm pending guests" }),
+    ).toBeNull();
+
+    // A router refresh has no success callback. If the server component cannot
+    // replace this card, the local proof and suppression must survive.
+    fireEvent.click(screen.getByRole("button", { name: "Reload booking status" }));
+    expect(refresh).toHaveBeenCalledTimes(2);
+    expect(alert?.textContent).toMatch(/saved card was charged/i);
+    expect(
+      screen.queryByRole("button", { name: "Confirm pending guests" }),
+    ).toBeNull();
+  });
+
+  it("does not claim a charge or suppress retry without both positive payment facts", async () => {
+    stubFetch({
+      ok: false,
+      body: {
+        code: "HOSTING_COVERAGE_PARTICIPANT_RETRY",
+        error: "Reload before trying again.",
+        paymentReceived: true,
+      },
+    });
+    render(
+      <ConfirmPendingGuestsButton
+        bookingId="b1"
+        hasSavedPaymentMethod
+        finalPriceCents={10000}
+      />,
+    );
+
+    fireEvent.click(
+      screen.getByRole("button", { name: "Confirm pending guests" }),
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Charge and confirm" }));
+    fireEvent.click(
+      await screen.findByRole("button", { name: "Confirm and email member" }),
+    );
+
+    await screen.findByText("Reload before trying again.");
+    expect(screen.queryByText(/saved card was charged/i)).toBeNull();
+    expect(
+      screen.getByRole("button", { name: "Confirm pending guests" }),
+    ).not.toBeNull();
+    expect(refresh).not.toHaveBeenCalled();
+  });
+
   it("states the no-charge copy and a plain Confirm label for a $0 booking", () => {
     stubFetch({ ok: true, body: { success: true } });
     render(
