@@ -433,6 +433,20 @@ transaction back. Interactive callers tell the operator to reload before retryin
 and to check payment status where applicable; automated callers retain their
 existing retry/redelivery boundary.
 
+That proof is a capability, not a plain value: `acquireHostingCoverageQueueParticipantProof`
+registers each object it returns in a module-private `WeakSet`, and
+`assertHostingCoverageQueueParticipantsLocked` rejects anything absent from it, so a
+structurally identical object literal cannot stand in for a locked participant set.
+The fence is therefore unconditional in the strict sense — **the seam can never issue
+a proof it did not lock for**. A client that cannot execute the lock statement (no
+`$executeRaw`) is refused with `HostingCoverageParticipantFenceUnavailableError`
+rather than being handed an unlocked proof; that error is deliberately *not* the
+retryable `HOSTING_COVERAGE_PARTICIPANT_RETRY` 409, because it reports a wiring fault
+that no amount of retrying can clear. Test doubles must therefore supply `$executeRaw`
+and a `Member.findMany` that models the real table (see
+`src/lib/__tests__/adult-member-hosting-queue-participants.test.ts`); narrowing a
+double is not a licence to disable the fence for the call sites that double reaches.
+
 The member-standing fan-out adds a subject fence before even its first candidate
 read or empty-fan-out return. `enqueueHostingCoverageReevaluationForMember` locks
 the member whose standing changed `FOR UPDATE NOWAIT`; `FOR NO KEY UPDATE` is

@@ -1,0 +1,149 @@
+import { vi } from "vitest";
+
+/**
+ * Test doubles for the hosting participant fence (#2597, hardened in #2619).
+ *
+ * `acquireHostingCoverageQueueParticipantProof` locks the exact sorted Member
+ * rows `FOR KEY SHARE NOWAIT`, then does two reads UNDER that lock:
+ *
+ *   1. a typed `member.findMany` re-read, requiring every locked id to still
+ *      exist, in sorted order;
+ *   2. a `booking.findMany` re-read of each source booking's owner and lodge,
+ *      requiring the `sourceFingerprint` to match what the caller planned.
+ *
+ * A double that models neither read makes the fence report contention — or
+ * crash outright when the delegate is missing — so before #2619 these suites
+ * exercised their seams with the fence effectively switched off. Modelling both
+ * reads is what makes the drift check mean anything: it must PASS for unchanged
+ * data and FAIL for drifted data, and a double that always returns nothing can
+ * do neither.
+ *
+ * These helpers deliberately answer only the fence's own query shapes and
+ * delegate everything else, so adding them to an existing double cannot change
+ * what the rest of a suite already asserts.
+ */
+
+/** A source booking as the fence re-reads it. */
+export interface FenceBookingRow {
+  id: string;
+  memberId: string;
+  lodgeId: string | null;
+}
+
+/**
+ * `member.findMany` for the fence's existence/order re-read: echo the requested
+ * ids back, sorted, so every locked participant is present and in order.
+ *
+ * Pass `missing` to model a participant that vanished under the lock — the
+ * fence must then refuse rather than proceed.
+ */
+export function fenceMemberFindMany(missing: readonly string[] = []) {
+  return vi.fn(async (args?: { where?: { id?: { in?: readonly string[] } } }) =>
+    [...(args?.where?.id?.in ?? [])]
+      .filter((id) => !missing.includes(id))
+      .sort()
+      .map((id) => ({ id })),
+  );
+}
+
+/** The fence's booking re-read selects exactly these three columns. */
+function isFenceBookingRead(args: unknown): args is {
+  where: { id: { in: string[] } };
+  select: Record<string, boolean>;
+} {
+  const a = args as
+    | { where?: { id?: { in?: unknown } }; select?: Record<string, unknown> }
+    | undefined;
+  if (!Array.isArray(a?.where?.id?.in)) return false;
+  const select = a?.select;
+  if (!select) return false;
+  const keys = Object.keys(select).sort();
+  return (
+    keys.length === 3 &&
+    keys[0] === "id" &&
+    keys[1] === "lodgeId" &&
+    keys[2] === "memberId"
+  );
+}
+
+/**
+ * `booking.findMany` that answers the fence's owner/lodge re-read from the
+ * bookings a suite already set up, and hands every other query to the double's
+ * existing implementation.
+ *
+ * `lookup` returns the authoritative row for an id, or undefined if the booking
+ * is gone — which the fence must treat as drift.
+ */
+export function fenceBookingFindMany(
+  lookup: (id: string) => FenceBookingRow | undefined,
+  existing?: (args: unknown) => unknown,
+) {
+  return vi.fn(async (args: unknown) => {
+    if (isFenceBookingRead(args)) {
+      return [...args.where.id.in]
+        .sort()
+        .map(lookup)
+        .filter((row): row is FenceBookingRow => Boolean(row));
+    }
+    return existing ? await existing(args) : [];
+  });
+}
+
+/**
+ * Convenience for the common case: one lodge, one owner, and the suite's own
+ * booking ids all attributed to them.
+ */
+export function fenceBookingLookup(rows: readonly FenceBookingRow[]) {
+  const byId = new Map(rows.map((row) => [row.id, row]));
+  return (id: string) => byId.get(id);
+}
+
+/**
+ * The generic way to satisfy the fence's drift check without restating a
+ * suite's fixtures.
+ *
+ * The production caller plans its participants from a booking it just read, so
+ * the no-drift case is exactly "the fence sees what that read returned". This
+ * wraps a suite's own `booking.findUnique` double, remembers the owner/lodge of
+ * every booking it serves, and replays those rows for the fence's re-read — so
+ * the fingerprints match by construction rather than by a hand-copied fixture
+ * that can silently drift away from the real one.
+ *
+ * Drift is still expressible, and still fails: change what `findUnique`
+ * returns between the plan and the re-read, or use `overrides` to state the
+ * post-lock truth directly.
+ */
+export function recordingBookingDouble(
+  findUnique: (args: unknown) => unknown,
+  overrides: Map<string, FenceBookingRow | undefined> = new Map(),
+) {
+  const seen = new Map<string, FenceBookingRow>();
+
+  const recordingFindUnique = vi.fn(async (args: unknown) => {
+    const row = (await findUnique(args)) as
+      | (Partial<FenceBookingRow> & { id?: string })
+      | null
+      | undefined;
+    if (row && typeof row.id === "string" && typeof row.memberId === "string") {
+      seen.set(row.id, {
+        id: row.id,
+        memberId: row.memberId,
+        lodgeId: row.lodgeId ?? null,
+      });
+    }
+    return row;
+  });
+
+  const lookup = (id: string) =>
+    overrides.has(id) ? overrides.get(id) : seen.get(id);
+
+  return {
+    findUnique: recordingFindUnique,
+    findMany: fenceBookingFindMany(lookup),
+    lookup,
+    /** State the post-lock truth for one booking, to model drift. */
+    drift(id: string, row: FenceBookingRow | undefined) {
+      overrides.set(id, row);
+    },
+  };
+}
