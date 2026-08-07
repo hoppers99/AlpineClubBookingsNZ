@@ -169,7 +169,37 @@ async function waitForGlobalLockWaiters(expected: number): Promise<void> {
  * lock(1). PostgreSQL grants advisory waiters in queue order; observing each
  * waiter before starting the next makes the expected serialized outcome
  * deterministic and mutation-sensitive.
+ *
+ * ONE PROPERTY OF THIS DEVICE THAT ITS FAILURES DO NOT ADVERTISE: the second
+ * writer's ARRIVAL time is spent inside the FIRST writer's transaction budget.
+ * The holder cannot release until both are queued, and the first writer has
+ * already opened its own transaction (Prisma's default 5s) to reach lock(1). So a
+ * second writer that does any real work before its first `pg_advisory_xact_lock`
+ * rejects the first writer with `P2028` for reasons that have nothing to do with
+ * the lock protocol under test. `member-merge-shared-double-races` documents the
+ * same hazard on its lodge-key device and requires a pre-built preview for that
+ * reason. Assert with `settledValueOrThrow` rather than `toMatchObject` on the
+ * settled result, so when it does happen the error says which it was instead of
+ * a bare "rejected".
  */
+/**
+ * Surface a losing writer's real error instead of a bare "rejected".
+ *
+ * `expect(outcome).toMatchObject({ status: "fulfilled", ... })` prints only
+ * `{ status: "rejected" }` and omits `reason` from the diff, so a CI-only failure
+ * here says nothing about WHY — which cost a full cycle on #2641 before the cause
+ * could even be named. Throwing the reason puts the real error, and its Prisma
+ * code, in the test output.
+ */
+function settledValueOrThrow(outcome: PromiseSettledResult<unknown>): unknown {
+  // Deliberately not generic. These call sites destructure a two-writer tuple
+  // whose element type is a union of both writers' results, so a generic
+  // `PromiseSettledResult<T>` cannot narrow and TypeScript rejects the call.
+  // `unknown` is enough: the value only ever reaches a runtime `toMatchObject`.
+  if (outcome.status === "rejected") throw outcome.reason;
+  return outcome.value;
+}
+
 async function runWritersInGlobalQueueOrder<A, B>(
   firstWriter: () => Promise<A>,
   secondWriter: () => Promise<B>,
@@ -1170,10 +1200,7 @@ describe("bed-allocation removal race DB safety guard (#2594)", () => {
             ? outcomes
             : [outcomes[1], outcomes[0]];
 
-        expect(autoOutcome).toMatchObject({
-          status: "fulfilled",
-          value: { count: 2 },
-        });
+        expect(settledValueOrThrow(autoOutcome)).toMatchObject({ count: 2 });
         const [targetRows, partner, moveAuditCount, promotionAuditCount] =
           await Promise.all([
             prisma.bedAllocation.findMany({
@@ -1207,14 +1234,11 @@ describe("bed-allocation removal race DB safety guard (#2594)", () => {
         });
 
         if (order === "MOVE_FIRST") {
-          expect(moveOutcome).toMatchObject({
-            status: "fulfilled",
-            value: {
-              noop: false,
-              movedRowCount: 1,
-              promotedRowCount: 1,
-              affectedNights: [FIRST_NIGHT_DATE_ONLY],
-            },
+          expect(settledValueOrThrow(moveOutcome)).toMatchObject({
+            noop: false,
+            movedRowCount: 1,
+            promotedRowCount: 1,
+            affectedNights: [FIRST_NIGHT_DATE_ONLY],
           });
           expect(targetRows[0]).toEqual({
             id: TARGET_ALLOCATION_ID,
@@ -1287,14 +1311,11 @@ describe("bed-allocation removal race DB safety guard (#2594)", () => {
             ? outcomes
             : [outcomes[1], outcomes[0]];
 
-        expect(lifecycleOutcome).toMatchObject({
-          status: "fulfilled",
-          value: {
-            enabled: true,
-            deletedCount: 0,
-            createdCount: 1,
-            promotedCount: 0,
-          },
+        expect(settledValueOrThrow(lifecycleOutcome)).toMatchObject({
+          enabled: true,
+          deletedCount: 0,
+          createdCount: 1,
+          promotedCount: 0,
         });
         const [targetRows, partner, moveAuditCount, promotionAuditCount] =
           await Promise.all([
@@ -1329,14 +1350,11 @@ describe("bed-allocation removal race DB safety guard (#2594)", () => {
         });
 
         if (order === "MOVE_FIRST") {
-          expect(moveOutcome).toMatchObject({
-            status: "fulfilled",
-            value: {
-              noop: false,
-              movedRowCount: 1,
-              promotedRowCount: 1,
-              affectedNights: [FIRST_NIGHT_DATE_ONLY],
-            },
+          expect(settledValueOrThrow(moveOutcome)).toMatchObject({
+            noop: false,
+            movedRowCount: 1,
+            promotedRowCount: 1,
+            affectedNights: [FIRST_NIGHT_DATE_ONLY],
           });
           expect(targetRows[0]).toEqual({
             id: TARGET_ALLOCATION_ID,
