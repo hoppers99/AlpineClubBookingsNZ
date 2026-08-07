@@ -54,6 +54,12 @@ import "./bed-allocation-removal-races.realdb.test";
 // shared race flag is set, and its uniquely-namespaced fixtures are cleaned
 // independently.
 import "./member-merge-shared-double-races.realdb.test";
+// #2622 reuses the same guarded PostgreSQL to force both winner orders of a
+// booking date change against roster Save/Regenerate/Confirm now that a chore
+// row can legitimately sit on a booking's CHECK-OUT date. Its describe stays
+// skipped unless RUN_CONCURRENCY_RACE_TESTS=1 and its fixtures are namespaced
+// and cleaned independently.
+import "./roster-checkout-day-races.realdb.test";
 // #2374 (AID-5) deliberately is NOT imported here, unlike the two suites above.
 // `ai-diagnostics-select-only-role.realdb.test.ts` provisions and drops a cluster
 // ROLE and revokes `TEMPORARY ... FROM PUBLIC` on the shared throwaway database

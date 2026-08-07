@@ -55,6 +55,12 @@
 
 ## Concurrency And Lock Impact
 
+<!-- Each field's value must sit on the SAME line as its label. A value wrapped
+     onto the following line reads as EMPTY and fails the gate; continuation
+     lines after that first line are fine. Do not reword the heading or the
+     labels — they are matched exactly.
+     Check before pushing:  npm run pr:check -- <body-file>  -->
+
 - [ ] N/A — no transaction, lifecycle, capacity, settlement, credit, webhook,
       cron, or concurrency-sensitive writer changed.
 - Writer class(es), canonical lock key(s), and acquisition order:

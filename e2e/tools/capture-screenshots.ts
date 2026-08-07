@@ -312,11 +312,16 @@ async function prepareMembersDocumentationTable(page: Page): Promise<void> {
 }
 
 /**
- * Show the staged whole-roster editor against the dedicated two-booking demo
- * night. Entering Edit is non-persistent; the capture never clicks Save.
+ * Show the staged whole-roster editor on the MIXED TURNOVER day (#2622).
+ *
+ * `rosterEdit.checkOut` is also `rosterTurnover.checkIn` in the demo seed, so
+ * that one day carries five guests leaving in the morning and two arriving in
+ * the evening — the case the roster guide describes and the case the old
+ * capture (`rosterEdit.checkIn`, an all-arrival night) could not show.
+ * Entering Edit is non-persistent; the capture never clicks Save.
  */
 async function prepareAdminRosterDocumentation(page: Page): Promise<void> {
-  const date = DEMO_BOOKING_WINDOWS.rosterEdit.checkIn;
+  const date = DEMO_BOOKING_WINDOWS.rosterEdit.checkOut;
   const loaded = page.waitForResponse((response) =>
     new URL(response.url()).pathname === `/api/admin/roster/${date}` &&
     response.request().method() === "GET",

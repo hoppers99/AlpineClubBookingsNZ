@@ -85,7 +85,10 @@ import {
 } from "@/lib/member-guest-add-policy";
 import type { MemberGuestAddActor } from "@/lib/member-guest-consent";
 import { resolveSubscriptionLockoutMode } from "@/lib/member-subscription-eligibility";
-import { lockRosterDateRangesAndDates } from "@/lib/roster-lock";
+import {
+  lockRosterDateRangesAndDates,
+  rosterOperationalDayRange,
+} from "@/lib/roster-lock";
 
 type ModifiedBooking = Booking & {
   guests: BookingGuest[];
@@ -488,7 +491,10 @@ export async function modifyBookingBatch({
     // Lock the complete old and proposed booking envelopes before any
     // Booking/BookingGuest tuple write. This includes empty roster partitions,
     // so a concurrent whole-roster Save cannot validate the old stay and then
-    // insert after this modification moves or removes the guest.
+    // insert after this modification moves or removes the guest. Both envelopes
+    // run through `rosterOperationalDayRange`, which extends them to the
+    // check-out day: since #2622 a roster row can legitimately sit there, so
+    // the OLD and NEW check-out dates are both inside the sorted set.
     const existingAssignmentDates = await tx.choreAssignment.findMany({
       where: { bookingId },
       select: { date: true },
@@ -496,8 +502,8 @@ export async function modifyBookingBatch({
     await lockRosterDateRangesAndDates(
       tx,
       [
-        { start: booking.checkIn, end: booking.checkOut },
-        { start: dates.newCheckIn, end: dates.newCheckOut },
+        rosterOperationalDayRange(booking.checkIn, booking.checkOut),
+        rosterOperationalDayRange(dates.newCheckIn, dates.newCheckOut),
       ],
       existingAssignmentDates.map((assignment) => assignment.date),
     );

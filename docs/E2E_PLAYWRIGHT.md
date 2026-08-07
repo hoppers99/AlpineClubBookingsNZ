@@ -460,12 +460,40 @@ Four rules follow, and a new spec must satisfy all four:
   instead — including, for the override spec, every date the booking is moved
   through.
 
+  **Per-attempt windows fix a RETRY, never a re-RUN (#2625).** Attempt 0 draws the
+  same window every time, and the past bands are derived from the RUN DATE — so a
+  spec that creates a booking and leaves it behind still fails the second time it
+  is run against one seeded database, and can wedge the NEXT DAY's run too,
+  because the bands slide a day while the leftover stays on its absolute date.
+  Both were observed on a real staging stack:
+  `admin-retroactive-booking.spec.ts` was the last date-based spec with no reset,
+  and a booking left by the previous day's run was found sitting on the current
+  day's attempt-0 nights and had to be cancelled through the app before the suite
+  would pass. A spec that creates a booking needs BOTH halves — its own window per
+  attempt *and* an idempotent `beforeAll` sweep.
+
+  Sweep every check-in that can hold one of this run's nights, not just the
+  attempt's own: a two-night stay checking in on `c` occupies nights `c` and
+  `c + 1`, so it collides with the window at offset `o` (nights `o`, `o + 1`)
+  exactly when `c` is `o - 1`, `o` or `o + 1`. `pastStayLeftoverCheckIns()`
+  (`e2e/helpers/stay-dates.ts`) derives that contiguous band straight from
+  `PAST_RETRY_OFFSETS_DAYS`, so it cannot drift from the windows it protects, and
+  it stops short of Alice's seeded DRAFT booking — a sweep wide enough to clear
+  seeded fixtures would trade one dirty database for another.
+
   Those retry bands cost calendar navigation: a spec reaches its dates by
   clicking the wizard calendar's "Next ›" one month at a time, bounded by
   `MAX_MONTH_HOPS` in `e2e/helpers/booking.ts`. Base 0–15 × attempt 0–2 needs at
   most 14 hops on any run date and the bound is 24, so nothing in range can run
   out — and if a future base or stride does, `selectCalendarDay` now fails on the
   month it could not reach rather than timing out on a day button.
+
+  The walk itself is `walkCalendarToMonth` in
+  [`e2e/helpers/calendar-navigation.ts`](../e2e/helpers/calendar-navigation.ts),
+  shared by the forward walk and the retroactive spec's backwards ones. Use it
+  rather than a local loop: a hop count is not a time bound, and only the shared
+  walk bounds the per-hop click. See "5. A bounded loop with an unbounded click in
+  it is not bounded" below for the 90-second timeout that cost.
 - **Give each retryable booking-create spec attempt its own client-IP bucket.**
   `POST /api/bookings` is protected by the real 20-per-hour `bookingCreate`
   limiter before authentication. The serial suite therefore must not let an
@@ -637,6 +665,58 @@ matches nothing and times out.
 - **Assert the destination by name inside the preview filter.** `hasText` on the
   room/bed label is what turns a one-row overshoot into a failure instead of a
   pass on a neighbouring bed.
+
+### 5. A bounded loop with an unbounded click in it is not bounded (issue #2626)
+
+`playwright.config.ts` sets no `actionTimeout`, and Playwright's default is **0 —
+no timeout, wait until the test itself is killed**. So the hop count on a calendar
+walk bounds the number of clicks, not the time: if the nav control never becomes
+actionable, hop 0's single `click()` consumes the whole 90 s budget, and the
+walk's own arrival assertion is never reached. The reported error is then
+`locator.click: Target page, context or browser has been closed`, which reads as a
+browser crash and says nothing about the calendar — and in a serial group the
+tests after it never run at all.
+
+`admin-retroactive-booking.spec.ts` did exactly this. Measured on a real staging
+stack, the three-hop loop completed **zero** hops: `getByRole('button', { name:
+/Prev/ })` matched nothing, because the **"Confirm member details" onboarding gate
+was still open** over the page. A Radix modal puts the rest of the document behind
+an overlay *and* marks it `aria-hidden`, so the calendar is out of the
+accessibility tree entirely — while `getByText("Select Your Dates")` still reports
+visible, because Playwright's visibility check is not occlusion-aware. The
+pre-flight assertion passed and hid the problem.
+
+Two rules follow:
+
+- **Use `completeMemberDetailsGateIfShown`; never hand-roll the gate.** The spec
+  carried a private two-branch copy that knew only "Confirm details are correct"
+  and "Confirm and finish", and sampled them in the same tick the dialog title
+  appeared. The demo-seed members are missing a date of birth and a postal
+  address, so the gate actually opens on its **profile** step — "Save and
+  continue", which the copy had no branch for — and the shared helper exists
+  precisely because the title and the current step do not mount in the same
+  commit. A lossy copy of a hardened helper is a latent version of every bug that
+  helper was hardened against.
+- **Walk the calendar through `walkCalendarToMonth`**
+  (`e2e/helpers/calendar-navigation.ts`). It asserts the nav control is present
+  and enabled *before* each click, bounds the click, and asserts arrival — so an
+  unreachable calendar fails in ~15 s naming the control, the direction and the
+  target month (and pointing at the modal as the usual cause) instead of timing
+  out on a day button or on a closed page. It returns the hop count, which is what
+  makes "how many hops did it really do?" answerable at all. Bound the **day
+  click** you make on arrival with the same exported `CALENDAR_CLICK_TIMEOUT_MS`:
+  arrival being asserted means the month is right, but a day that resolves and is
+  not actionable — disabled as past, out of season, availability still loading —
+  is an unbounded click all over again. Pass `direction: "current"` when the
+  calendar should already be on the target month; the walk then clicks nothing and
+  asserts arrival only, because there is no control that keeps it where it is.
+
+Note how this one hid: it **passes in hosted CI**. The full suite runs
+`admin-override-dates.spec.ts` first, and that spec's `bookSelfToReviewStep`
+completes Alice's onboarding through the shared helper, so by the time the
+retroactive spec's member test runs the gate is gone. Running one spec on its own
+— exactly what you do while working on it — leaves the gate outstanding. **A spec
+must pass run on its own, not only in file order.**
 
 ### What is deliberately NOT the fix
 
