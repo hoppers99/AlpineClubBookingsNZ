@@ -1834,6 +1834,7 @@ either CONFIRMED partner removes the link -> row hard-deleted, other partner ema
 admin removes any link -> row hard-deleted, both partners emailed when it was CONFIRMED unless the admin chose not to notify (#1769a); a PENDING removal emails no one
 CONFIRMED link deleted (either dissolve path) -> pair's FUTURE shared double-bed second-occupant allocations swept back to the awaiting-allocation queue in the same transaction (#1756; both bookings audited, admins alerted post-commit)
 member deactivated / anonymised / re-tiered off ADULT -> same sweep, single-member scope (either side of the shared bed)
+CONFIRMED link DROPPED by a member merge (the master already had its one confirmed partner) -> the merge's own validity-driven reconciliation instead of the sweep above (#2595): every future shared bed-night involving the master or the duplicate is re-judged against mayShareDoubleBedWith and only the ones that no longer qualify are swept, so the master's own still-confirmed share survives
 ```
 
 To verify: canonical pair ordering (`memberAId < memberBId` CHECK), the
@@ -1841,8 +1842,8 @@ one-CONFIRMED-partner-per-member invariant (advisory locks + partial unique
 indexes), ADULT-only + no-self-partner guards, pending pruning on confirm,
 one outstanding outgoing request per member, the memberId-target
 shared-family-group guard on the member API, and the stale-share sweep
-invariant (#1756): no future `isSecondOccupant` allocation may outlive its
-partner link or the active-adult precondition (see
+invariant (#1756, extended to merge by #2595): no future `isSecondOccupant`
+allocation may outlive its partner link or the active-adult precondition (see
 docs/DOMAIN_INVARIANTS.md, "Double-bed shared occupancy").
 
 ## Member Guest Consent Lifecycle ("+ Add Member Guest", #2305 / MG2 #2307, MG4 #2309)

@@ -106,12 +106,12 @@ are the literal `1`.
 
 | Lock | Key | Helper / where | Tier | Serialises |
 | --- | --- | --- | --- | --- |
-| **Global booking / money** | `1` (literal) | inline `tx.$executeRaw` | 2 | Booking-status + money side effects that must exclude across the whole booking regardless of lodge: cancel, capture/settle, hold-release, group-settlement reaper/settle/refund/organiser-cancel, refunds, credit restore; plus bed-allocation inventory/placement/move/range/auto/approval/removal writers that must serialize with lifecycle prune. |
+| **Global booking / money** | `1` (literal) | inline `tx.$executeRaw` | 2 | Booking-status + money side effects that must exclude across the whole booking regardless of lodge: cancel, capture/settle, hold-release, group-settlement reaper/settle/refund/organiser-cancel, refunds, credit restore; plus bed-allocation inventory/placement/move/range/auto/approval/removal writers that must serialize with lifecycle prune, and the member-merge partner-share reconciliation (#2595). |
 | **Per-lodge capacity** | `hashtextextended(<lodgeId>, 0)` | `acquireLodgeCapacityLock(tx, lodgeId)` (`lodge-capacity-lock.ts`, re-exported by `capacity.ts`) | 1 | Capacity claims/checks and bed-allocation mutations for one lodge; roster eligibility snapshots; and direct or config-transfer chore-template changes, which serialize active-template validation for that lodge. |
 | **Per-member night footprint** | `hashtext("booking-member-night"), hashtext(<memberId>)` | `lockBookingMemberNights(tx, guests)` (`booking-member-night-conflicts.ts`) | cross-lodge | Serialises the person-night guard ACROSS lodges (see below). |
 | **Per-owner hosting coverage** | `hashtext("hosting-coverage-owner"), hashtext(<Booking.memberId>)` | `lockHostingCoverageOwner` / `lockHostingCoverageOwners` (`adult-member-hosting-coverage-lock.ts`) | cross-booking | Serialises `SAME_BOOKING_OWNER` coverage (#2576 §9): one booking's compliance depends on another booking of the SAME owner, and per-lodge locks cannot serialise that because the cancel paths take only `lock(1)` while the create paths take only the lodge lock. Taken LAST among the application lock families a caller composes. Roster-aware modification paths take global → lodge → roster-date → any applicable member keys → coverage-owner; queued incident reconciliation takes hosting policy-set → sorted claimed member-lifecycle keys → sorted claimed `Member FOR KEY SHARE` rows → coverage-owner. Paths that do not use roster or member keys omit those tiers. Several owners are sorted, and the key is taken only when the lodge actually has the scope enabled. |
 | **Per-member credit ledger** | `hashtext("member-credit-ledger"), hashtext(<memberId>)` | `lockMemberCreditLedger(memberId, tx)` (`member-credit.ts`) | — | A member's credit-ledger balance operations (spend, negative-adjustment validation, orphan-restore repair, the Xero inbound applied-credit repair, and the F20 pre-payment-reduction applied-credit clamp `clampAppliedCreditToBookingPrice`, taken inside the modification transaction only when the booking carries applied credit, and the #2265 stored-election consumption `consumeStoredCreditElection`, taken inside the `create-payment-intent` pay transaction and the Internet Banking switch transaction only when the booking carries an outstanding election). |
-| **Member lifecycle** | `hashtext("member-lifecycle:<memberId>")` | inline (`member-lifecycle-actions.ts`, `nomination.ts` approval mapping, `admin-family-group-requests-service.ts`, `member-merge.ts`, `adult-member-hosting-coverage-drain.ts`) | — | Archive/delete of one member; overwrite of one member by application-approval mapping (E10, #1936); linking/removing one member into/from a family group on admin request review; **member merge** (dual-lock on master + loser, E11 #1937, see below); and the queue-drain handshake that prevents a claimed hosting item from using identities while merge re-points them. |
+| **Member lifecycle** | `hashtext("member-lifecycle:<memberId>")` | inline (`member-lifecycle-actions.ts`, `nomination.ts` approval mapping, `admin-family-group-requests-service.ts`, `member-merge.ts`, `adult-member-hosting-coverage-drain.ts`) | — | Archive/delete of one member; overwrite of one member by application-approval mapping (E10, #1936); linking/removing one member into/from a family group on admin request review; **member merge** (dual-lock on master + loser, E11 #1937, see below — merge also takes the global cohort key and every affected lodge key BEFORE this tier, #2595); and the queue-drain handshake that prevents a claimed hosting item from using identities while merge re-points them. |
 | **Membership application** | `hashtext(<application key>)` | `membershipApplicationLockKey` (`nomination.ts`) | — | State transitions of one membership application. |
 | **Membership applicant** | `hashtext(<applicant-email key>)` | `membershipApplicationApplicantLockKey` (`nomination.ts`) | — | Per-email applicant dedup at submit time. |
 | **Roster-date writers** | `hashtext("roster:<date>")` | `lockRosterDate(tx, date)` / sorted `lockRosterDates(tx, dates)` (`roster-lock.ts`) | date | Serialises whole-roster save/regenerate/confirm/auto-suggest, kiosk confirm and complete/uncomplete, and booking/guest cleanup that can remove suggested rows for the same lodge night. |
@@ -1075,6 +1075,50 @@ The merge transaction runs with an extended interactive-transaction window
 sequential round-trips on a heavy member, and the dual advisory lock already
 serialises every competing lifecycle writer, so the long window cannot admit a
 concurrent conflicting write.
+
+#### Merge joins the bed-allocation cohort — global and lodge BEFORE member (#2595)
+
+Merge invalidates future partner-shared double-bed placements (see
+docs/DOMAIN_INVARIANTS.md → "Double-bed shared occupancy": dropping the
+duplicate's CONFIRMED partner link leaves the master sharing a double with
+somebody it has no partnership with). Repairing that inside the merge
+transaction means merge is a bed-allocation writer, so it takes the **complete
+partner-share prefix**, and *where* it takes it is the whole point:
+
+```
+lockAdultMemberHostingPolicySet(tx)                              policy config
+  → acquireFuturePartnerSharedAllocationLocks(tx, [master, loser])
+        = pg_advisory_xact_lock(1)                               global cohort
+        + acquireLodgeCapacityLock per affected lodge, sorted     per-lodge
+  → member-lifecycle:<master> / member-lifecycle:<loser>, sorted  member
+  → (step 5) sorted `Member … FOR UPDATE`                         member rows
+  → sorted hosting-coverage-owner keys                            last
+```
+
+The lodge tier MUST be taken **before** the member-lifecycle pair, never after.
+Merge's own lock set is member-scoped and takes no lodge key today, so bolting
+the sweep on at the point of use — after the relation moves, with the
+member-lifecycle keys already held — would acquire a lodge key *after* a member
+key and invert the fixed **global → lodge → member** order this document opens
+with, against every ordinary bed-allocation writer that takes global → lodge and
+then reaches a member tier. That is a deadlock, not a style point. The same
+reason forces the lodge set to be **derived** before the relation moves:
+`acquireFuturePartnerSharedAllocationLocks` discovers the affected lodges from
+the two members' own future allocations, so it has to run while both identities
+still name their rows.
+
+The one new edge is `adult-member-hosting-policy-set` → `lock(1)`. It cannot
+cycle: no writer takes the global lock and then the hosting policy-set key (the
+enforcement sites *read* the policy under `lock(1)`/a lodge lock, they never take
+the policy-set key), and the policy-set → lodge direction already exists in
+configuration transfer. Nothing else in the merge order moves.
+
+The sweep itself is `sweepUnbackedFutureSharedDoublesWithLocksHeld`, run as merge
+step 3b — after `applyMoves` (the guest rows now name the master) and after step
+2's `resolvePartnerLinks` (the surviving partnerships are final), before the Xero
+teardown. Its candidate rows are re-read under the locks; the removed rows are
+returned so the admin alert can be sent AFTER commit, alongside
+`settleHostingCoverageAfterCommit`.
 
 ## The disciplines, by writer class
 

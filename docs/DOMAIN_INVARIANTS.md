@@ -626,7 +626,39 @@ Future reviews and issues should cite this file when proposing changes.
   are exactly the dissolved pair; deactivation/tier change sweeps any future
   shared bed-night involving the member on either side. Past lodge nights are
   history and stay untouched, and the sweep is idempotent (a second run finds
-  nothing). Membership cancellation and archive need no sweep call: approval
+  nothing).
+
+  **Member merge is the fifth writer of this invariant, and needs its own,
+  validity-driven form (#2595).** Merge is not a pair-breaking event about one
+  pair — it COLLAPSES two identities. `planPartnerLinkMerge` keeps at most one
+  CONFIRMED partner for the surviving master, so merging a duplicate that
+  already had its own confirmed partner DROPS that link, and `applyMoves` then
+  re-points `BookingGuest.memberId` onto the master and leaves every bed
+  allocation exactly where it was — so the master and the duplicate's
+  ex-partner are left sharing a future DOUBLE with nothing behind it. Neither
+  #1756 scope fits: the pair scope knows only one pair (a merge can invalidate
+  several bed-nights against several counterparts), and the member scope would
+  also remove the master's OWN still-CONFIRMED share, which the merge did
+  nothing to invalidate. So merge runs
+  `sweepUnbackedFutureSharedDoublesWithLocksHeld`
+  (`bed-allocation-lifecycle.ts`) instead: for the `[master, loser]` scope it
+  re-derives each candidate future bed-night's actual two occupants and
+  re-asks the same single source of truth (`mayShareDoubleBedWith`, the
+  batched form of `mayShareDoubleBed`) whether they may still share, sweeping
+  ONLY the bed-nights that fail — again only the `isSecondOccupant` row, with
+  the same `BED_ALLOCATION_PARTNER_SHARE_SWEPT` audit against both bookings
+  (reason `members_merged`, `issue: 2595`) and the same post-commit admin
+  alert. A guest with no member on either side is unbacked by construction
+  (placement requires a member on both sides) and is swept without an
+  eligibility round-trip; a bed-night whose primary is missing is left to the
+  #1750 promotion pass rather than judged as a pair that does not exist. Being
+  validity-driven it is idempotent and vacuous on a merge that broke nothing.
+  Its lock prefix is identical to its #1756 sibling —
+  `acquireFuturePartnerSharedAllocationLocks` BEFORE any member-lifecycle key,
+  because the documented order is global -> lodge -> member (see
+  docs/CONCURRENCY_AND_LOCKING.md -> "Member merge").
+
+  Membership cancellation and archive need no sweep call: approval
   is blocked while ANY future booking or member guest appearance exists, so a
   cancellable member cannot occupy a future shared bed-night. Only an admin adds the second occupant on the board,
   and only onto a bed whose primary already **holds capacity** — so displacement
