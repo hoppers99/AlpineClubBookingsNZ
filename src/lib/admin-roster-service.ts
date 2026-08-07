@@ -14,15 +14,15 @@ import { sendChoreRosterEmail, shouldSendChoreRoster } from "@/lib/email"
 import { createGuestChoreToken } from "@/lib/guest-chore-token"
 import { getEffectiveEmail } from "@/lib/member-utils"
 import { addDaysDateOnly, formatDateOnly } from "@/lib/date-only"
-import { getActiveGuestsForNight, getGuestStayEnd, getGuestStayStart } from "@/lib/booking-guest-stay-ranges"
 import { lodgeNullTolerantScope } from "@/lib/lodges"
-import { OPERATIONALLY_PRESENT_GUEST_WHERE } from "@/lib/member-guest-consent"
-import { checkinNotBlockedByPendingReviewFilter } from "@/lib/booking-review"
+import {
+  getOperationalRosterGuestsForDate,
+  type OperationalRosterGuest,
+} from "@/lib/roster-eligibility"
 import { lockRosterEligibilityMutation } from "@/lib/roster-lock"
 import { z } from "zod"
 import logger from "@/lib/logger"
 import { logAudit } from "@/lib/audit"
-import { OPERATIONAL_STAY_BOOKING_STATUSES } from "@/lib/booking-status"
 
 type JsonRouteResult = {
   body: unknown
@@ -100,89 +100,25 @@ export function createRosterRevision(assignments: RevisionAssignment[]) {
   return createHash("sha256").update(JSON.stringify(canonical)).digest("base64url")
 }
 
-type RosterGuest = GuestInput & { bookingGroupLabel: string }
+type RosterGuest = OperationalRosterGuest
 
+/**
+ * Who may be given a chore on this roster date.
+ *
+ * #2622 moved the query itself into `@/lib/roster-eligibility` so the kiosk
+ * generate route reads the identical rule instead of keeping its own copy, and
+ * swapped the night model for the operational day: a guest who checks out today
+ * slept here last night and belongs on this morning's roster. Everything the
+ * choke point guarded travelled with it unchanged — the D-12 consent predicate
+ * on both the booking match and the guest include, the pending-review filter,
+ * the operational booking statuses, lodge scoping and the explicit night rows.
+ */
 async function getGuestsForDate(
   date: Date,
   lodgeId: string,
   db: Prisma.TransactionClient | typeof prisma = prisma,
 ): Promise<RosterGuest[]> {
-  const bookings = await db.booking.findMany({
-    where: {
-      status: { in: [...OPERATIONAL_STAY_BOOKING_STATUSES] },
-      deletedAt: null,
-      checkIn: { lte: date },
-      checkOut: { gt: date },
-      ...lodgeNullTolerantScope(lodgeId),
-      guests: {
-        some: {
-          stayStart: { lte: date },
-          stayEnd: { gt: date },
-          ...OPERATIONALLY_PRESENT_GUEST_WHERE,
-        },
-      },
-      ...checkinNotBlockedByPendingReviewFilter(),
-    },
-    include: {
-      member: { select: { firstName: true, lastName: true } },
-      guests: {
-        where: {
-          stayStart: { lte: date },
-          stayEnd: { gt: date },
-          // Owner decision D-12 (#2307): this one query is the choke point for
-          // the whole admin roster — chore allocation, the roster email
-          // fan-out, and GuestChoreToken minting all read the list it returns.
-          // A guest whose member consent is still PENDING holds a bed (D-4) but
-          // is not operationally present, so they are never given a chore, never
-          // emailed a roster, and never issued a chore token.
-          ...OPERATIONALLY_PRESENT_GUEST_WHERE,
-        },
-        include: {
-          member: {
-            select: { ageTier: true, dateOfBirth: true },
-          },
-          nights: { select: { stayDate: true } },
-        },
-      },
-    },
-    orderBy: [{ createdAt: "asc" }, { id: "asc" }],
-  })
-
-  const nextDay = addDaysDateOnly(date, 1)
-
-  return bookings.flatMap((booking, bookingIndex) => {
-    const ownerName = [booking.member?.firstName, booking.member?.lastName]
-      .filter(Boolean)
-      .join(" ")
-    const bookingGroupLabel = ownerName
-      ? `Booking for ${ownerName}`
-      : `Booking group ${bookingIndex + 1}`
-    const activeGuests = getActiveGuestsForNight(booking.guests, date, booking)
-      .sort((a, b) => {
-        const aDob = a.member?.dateOfBirth?.getTime()
-        const bDob = b.member?.dateOfBirth?.getTime()
-        const byName = () => `${a.firstName}\u0000${a.lastName}\u0000${a.id}`.localeCompare(
-          `${b.firstName}\u0000${b.lastName}\u0000${b.id}`,
-        )
-        if (aDob !== undefined && bDob !== undefined) {
-          return aDob === bDob ? byName() : aDob - bDob
-        }
-        if (aDob !== undefined) return -1
-        if (bDob !== undefined) return 1
-        return byName()
-      })
-
-    return activeGuests.map((guest) => ({
-      id: guest.id,
-      bookingId: booking.id,
-      firstName: guest.firstName,
-      lastName: guest.lastName,
-      ageTier: getBookingGuestDisplayAgeTier(guest),
-      isArriving: getGuestStayStart(guest, booking).getTime() === date.getTime(),
-      isDeparting: getGuestStayEnd(guest, booking).getTime() === nextDay.getTime(),
-      bookingGroupLabel,
-    }))
-  })
+  return getOperationalRosterGuestsForDate(date, lodgeId, db)
 }
 
 async function buildSuggestedAllocations(

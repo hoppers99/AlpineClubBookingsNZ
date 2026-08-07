@@ -384,8 +384,11 @@ is reason-agnostic (#1422): any pending admin review gates check-in — today
 adult-supervision is the only such reason, but a future review type inherits the
 gate automatically. Enforcement is a single shared where-fragment
 (`checkinNotBlockedByPendingReviewFilter` in `src/lib/booking-review.ts`) applied
-to the arrive/depart and roster generate/confirm queries, so a blocked booking's
-guest resolves to null server-side (arrive returns 404, roster-confirm 400) — the
+to the arrive/depart and roster generate/confirm queries — since #2622 the roster
+side is one shared query (`getOperationalRosterGuestsForDate` in
+`src/lib/roster-eligibility.ts`) rather than a copy per surface, so the admin
+roster and the hut-leader wizard cannot drift on who is blocked — so a blocked
+booking's guest resolves to null server-side (arrive returns 404, roster-confirm 400) — the
 block is safe because every lodge query already restricts to the operational
 stay statuses (PAID/COMPLETED), so no parked `AWAITING_REVIEW` booking is
 over-blocked. The lodge guest list (the check-in roster staff read on the kiosk)

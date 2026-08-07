@@ -238,7 +238,9 @@ describe("admin whole-roster save", () => {
       where: expect.objectContaining({
         status: { in: expect.any(Array) },
         checkIn: { lte: DATE },
-        checkOut: { gt: DATE },
+        // #2622: checkout-INCLUSIVE. A booking whose last night was yesterday
+        // still has people in the lodge this morning.
+        checkOut: { gte: DATE },
         lodgeId: "lodge-1",
         OR: [
           { requiresAdminReview: false },
@@ -331,9 +333,9 @@ describe("admin whole-roster save", () => {
   })
 
   it.each([
-    ["night envelope", (args: any) =>
+    ["operational-day envelope", (args: any) =>
       args.where?.checkIn?.lte?.getTime?.() === DATE.getTime() &&
-      args.where?.checkOut?.gt?.getTime?.() === DATE.getTime()],
+      args.where?.checkOut?.gte?.getTime?.() === DATE.getTime()],
     ["lodge", (args: any) => args.where?.lodgeId === "lodge-1"],
     ["operational status", (args: any) =>
       Array.isArray(args.where?.status?.in) && !args.where.status.in.includes("CANCELLED")],
@@ -434,9 +436,9 @@ describe("admin whole-roster save", () => {
   it.each([
     ["wrong date", (args: any) => Boolean(
       args.where?.checkIn?.lte?.getTime?.() === DATE.getTime() &&
-      args.where?.checkOut?.gt?.getTime?.() === DATE.getTime() &&
+      args.where?.checkOut?.gte?.getTime?.() === DATE.getTime() &&
       args.include?.guests?.where?.stayStart?.lte?.getTime?.() === DATE.getTime() &&
-      args.include?.guests?.where?.stayEnd?.gt?.getTime?.() === DATE.getTime()
+      args.include?.guests?.where?.stayEnd?.gte?.getTime?.() === DATE.getTime()
     )],
     ["wrong lodge", (args: any) => args.where?.lodgeId === "lodge-1"],
     ["non-operational booking status", (args: any) =>
@@ -464,15 +466,31 @@ describe("admin whole-roster save", () => {
     expect(mocks.assignmentCreate).not.toHaveBeenCalled()
   })
 
-  it("rejects a guest whose sparse night rows omit the roster date with zero writes", async () => {
+  it("rejects a guest whose sparse night rows leave the roster date a gap day with zero writes", async () => {
+    // #2622: a true gap is a day adjacent to NO booked night. The 8th is two
+    // days before the roster date, so the guest is neither here on the evening
+    // of the 10th nor here on its morning.
     const candidate = eligibleBooking("booking-gap", "guest-gap", "Gap")
-    candidate.guests[0].nights = [{ stayDate: new Date("2026-08-09T00:00:00.000Z") }]
+    candidate.guests[0].nights = [{ stayDate: new Date("2026-08-08T00:00:00.000Z") }]
     mocks.bookingFindMany.mockResolvedValueOnce([candidate])
     const result = await save([{ rowKey: "gap", choreTemplateId: "kitchen", bookingGuestId: "guest-gap" }])
     expect(result).toMatchObject({ init: { status: 400 }, body: { code: "ROSTER_GUEST_INELIGIBLE" } })
     expect(mocks.assignmentDeleteMany).not.toHaveBeenCalled()
     expect(mocks.assignmentUpdateMany).not.toHaveBeenCalled()
     expect(mocks.assignmentCreate).not.toHaveBeenCalled()
+  })
+
+  it("MUTATION PROBE: keeps a guest whose last night was yesterday on the roster", async () => {
+    // The exact case #2622 exists for. Reverting the eligibility rule to the
+    // half-open night model makes this save 400 instead of succeeding.
+    const candidate = eligibleBooking("booking-out", "guest-out", "Out")
+    candidate.guests[0].nights = [{ stayDate: new Date("2026-08-09T00:00:00.000Z") }]
+    candidate.guests[0].stayEnd = DATE
+    candidate.checkOut = DATE
+    mocks.bookingFindMany.mockResolvedValueOnce([candidate])
+    const result = await save([{ rowKey: "out", choreTemplateId: "kitchen", bookingGuestId: "guest-out" }])
+    expect(result).not.toMatchObject({ body: { code: "ROSTER_GUEST_INELIGIBLE" } })
+    expect(mocks.assignmentCreate).toHaveBeenCalled()
   })
 
   it("groups by booking and applies D-R2 known-DOB then unknown-name order without exposing DOB", async () => {

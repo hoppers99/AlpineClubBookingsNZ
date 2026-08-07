@@ -329,3 +329,163 @@ describe("combined F7 + F11: arriving/departing + frequency", () => {
     expect(result).toHaveLength(0);
   });
 });
+
+// ---------------------------------------------------------------------------
+// #2622: the departure MORNING. The three allocator rules above are unchanged;
+// what changed is that `isDeparting` now means LEAVES TODAY, so a checkout-day
+// guest reaches these rules at all. Every row of the rule table, re-asserted
+// against the operational-day meaning of the flags.
+// ---------------------------------------------------------------------------
+
+describe("allocateChores on an operational day (#2622)", () => {
+  it("MUTATION PROBE: a day whose only occupants are departing still gets its morning chores", () => {
+    // The whole point of the issue. Before #2622 nobody on this day was
+    // visible to the roster at all; now the people physically doing the
+    // shutdown are the ones it assigns.
+    const morningChore = makeChore({
+      id: "strip-beds",
+      name: "Strip beds",
+      timeOfDay: "MORNING",
+      recommendedPeopleMin: 2,
+      recommendedPeopleMax: 2,
+    });
+    const anytimeChore = makeChore({
+      id: "sweep",
+      name: "Sweep",
+      timeOfDay: "ANYTIME",
+      sortOrder: 2,
+      recommendedPeopleMin: 1,
+      recommendedPeopleMax: 1,
+    });
+    const eveningChore = makeChore({
+      id: "dinner",
+      name: "Dinner",
+      timeOfDay: "EVENING",
+      sortOrder: 3,
+      recommendedPeopleMin: 1,
+      recommendedPeopleMax: 1,
+    });
+    const departing = [
+      makeGuest({ id: "g1", isDeparting: true }),
+      makeGuest({ id: "g2", isDeparting: true }),
+    ];
+
+    const result = allocateChores(
+      [morningChore, anytimeChore, eveningChore],
+      departing,
+      [],
+      { includeNonEssential: true },
+    );
+    expect(result.filter((a) => a.choreTemplateId === "strip-beds")).toHaveLength(2);
+    expect(result.filter((a) => a.choreTemplateId === "sweep")).toHaveLength(1);
+    // Nobody is here tonight, so the evening chore stays unassigned rather
+    // than being forced onto someone who has already driven home.
+    expect(result.filter((a) => a.choreTemplateId === "dinner")).toHaveLength(0);
+  });
+
+  it("splits a turnover day across the midday boundary", () => {
+    const morningChore = makeChore({
+      id: "strip-beds",
+      timeOfDay: "MORNING",
+      recommendedPeopleMin: 1,
+      recommendedPeopleMax: 1,
+    });
+    const eveningChore = makeChore({
+      id: "dinner",
+      timeOfDay: "EVENING",
+      sortOrder: 2,
+      recommendedPeopleMin: 1,
+      recommendedPeopleMax: 1,
+    });
+    // Derived from the operational day: the leaver owns the morning half, the
+    // newcomer owns the evening half.
+    const leaving = makeGuest({ id: "leaving", isDeparting: true, bookingId: "b1" });
+    const arriving = makeGuest({ id: "arriving", isArriving: true, bookingId: "b2" });
+
+    const result = allocateChores([morningChore, eveningChore], [leaving, arriving], [], {
+      includeNonEssential: true,
+    });
+    expect(result).toEqual([
+      { choreTemplateId: "strip-beds", bookingGuestId: "leaving", bookingId: "b1" },
+      { choreTemplateId: "dinner", bookingGuestId: "arriving", bookingId: "b2" },
+    ]);
+  });
+
+  it("a guest occupying BOTH halves of a turnover day is eligible for everything", () => {
+    // Someone who slept here last night and is sleeping here tonight arrives
+    // and departs on no boundary at all: under the derived flags that is
+    // simply isArriving === false && isDeparting === false.
+    const morningChore = makeChore({
+      id: "strip-beds",
+      timeOfDay: "MORNING",
+      recommendedPeopleMin: 1,
+      recommendedPeopleMax: 1,
+    });
+    const eveningChore = makeChore({
+      id: "dinner",
+      timeOfDay: "EVENING",
+      sortOrder: 2,
+      recommendedPeopleMin: 1,
+      recommendedPeopleMax: 1,
+    });
+    const bothHalves = makeGuest({ id: "g1", isArriving: false, isDeparting: false });
+
+    expect(isEligibleForTimeOfDay(bothHalves, "MORNING")).toBe(true);
+    expect(isEligibleForTimeOfDay(bothHalves, "EVENING")).toBe(true);
+    expect(isEligibleForTimeOfDay(bothHalves, "ANYTIME")).toBe(true);
+    const result = allocateChores([morningChore, eveningChore], [bothHalves], [], {
+      includeNonEssential: true,
+    });
+    expect(result.map((a) => a.choreTemplateId)).toEqual(["strip-beds", "dinner"]);
+  });
+
+  it("defensive: a hand-built both-flags-true guest stays conservative", () => {
+    // The derived flags can never both be true — evening-only and morning-only
+    // are mutually exclusive — but the allocator is not the place to discover
+    // that. If such an input ever arrives it keeps the safe reading: eligible
+    // for ANYTIME work only.
+    const guest = makeGuest({ id: "g1", isArriving: true, isDeparting: true });
+    expect(isEligibleForTimeOfDay(guest, "MORNING")).toBe(false);
+    expect(isEligibleForTimeOfDay(guest, "EVENING")).toBe(false);
+    expect(isEligibleForTimeOfDay(guest, "ANYTIME")).toBe(true);
+  });
+
+  it("makes no promise of one chore per departing guest", () => {
+    // Fairness, frequency and staffing rules are unchanged: a checkout-day
+    // guest is a candidate, not an entitlement.
+    const morningChore = makeChore({
+      id: "strip-beds",
+      timeOfDay: "MORNING",
+      recommendedPeopleMin: 1,
+      recommendedPeopleMax: 1,
+    });
+    const departing = [
+      makeGuest({ id: "g1", isDeparting: true }),
+      makeGuest({ id: "g2", isDeparting: true }),
+      makeGuest({ id: "g3", isDeparting: true }),
+    ];
+
+    const result = allocateChores([morningChore], departing, [], {
+      includeNonEssential: true,
+    });
+    expect(result).toHaveLength(1);
+  });
+
+  it("keeps age restrictions ahead of the time-of-day routing", () => {
+    const adultsOnly = makeChore({
+      id: "gas",
+      timeOfDay: "MORNING",
+      ageRestriction: "ADULTS_ONLY",
+      recommendedPeopleMin: 1,
+      recommendedPeopleMax: 1,
+    });
+    const departingChild = makeGuest({ id: "child", ageTier: "CHILD", isDeparting: true });
+    const departingAdult = makeGuest({ id: "adult", ageTier: "ADULT", isDeparting: true });
+
+    const result = allocateChores([adultsOnly], [departingChild, departingAdult], [], {
+      includeNonEssential: true,
+    });
+    expect(result).toHaveLength(1);
+    expect(result[0].bookingGuestId).toBe("adult");
+  });
+});

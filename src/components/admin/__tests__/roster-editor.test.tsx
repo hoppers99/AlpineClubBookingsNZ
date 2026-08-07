@@ -292,4 +292,56 @@ describe("RosterEditor staged whole-roster editing", () => {
     expect(within(familyB).getByText(/2 assignments: Kitchen, Firewood/)).toBeTruthy()
     expect(within(familyB).getByText("No chore assigned")).toBeTruthy()
   })
+
+  it("lists everyone in the lodge today, including the people leaving this morning (#2622)", () => {
+    const roster: RosterData = {
+      ...BASE,
+      guests: [
+        { ...BASE.guests[0], isDeparting: true },
+        { ...BASE.guests[1] },
+        { ...BASE.guests[2], isArriving: true },
+        { ...BASE.guests[3] },
+      ],
+    }
+    renderEditor(roster)
+    fireEvent.click(screen.getByRole("button", { name: "Edit roster" }))
+    const options = (screen.getAllByRole("combobox")[0] as HTMLSelectElement).options
+    const labels = [...options].map((option) => option.textContent)
+    // A departing guest is a selectable person, not a filtered-out one.
+    expect(labels).toContain("Aroha Bell (departing today)")
+    expect(labels).toContain("Alex Chen (arriving today)")
+    expect(labels).toContain("Mika Bell")
+    expect(labels).toContain("Zoe Chen")
+  })
+
+  it("MUTATION PROBE: badges stay on their own side of midday (#2622)", () => {
+    // Swapping the two labels puts "Arriving" on the person who is here this
+    // morning, which is the opposite of what the hut leader needs to see.
+    const roster: RosterData = {
+      ...BASE,
+      guests: [
+        { ...BASE.guests[0], isDeparting: true },
+        { ...BASE.guests[1] },
+        { ...BASE.guests[2], isArriving: true },
+        { ...BASE.guests[3] },
+      ],
+    }
+    renderEditor(roster)
+    const familyA = screen.getByRole("region", { name: "Booking for Aroha Bell" })
+    expect(within(familyA).getByText("Departing")).toBeTruthy()
+    expect(within(familyA).queryByText("Arriving")).toBeNull()
+    const familyB = screen.getByRole("region", { name: "Booking for Taylor Chen" })
+    expect(within(familyB).getByText("Arriving")).toBeTruthy()
+    expect(within(familyB).queryByText("Departing")).toBeNull()
+  })
+
+  it("shows no badge and no time for someone here all day", () => {
+    renderEditor()
+    expect(screen.queryByText("Arriving")).toBeNull()
+    expect(screen.queryByText("Departing")).toBeNull()
+    // The midday boundary is definitional (D-M3): no clock time is rendered
+    // anywhere, and no "arrives at"/"leaves at" copy exists to render one.
+    expect(document.body.textContent).not.toMatch(/\d{1,2}[:.]\d{2}\s*(am|pm)?/i)
+    expect(document.body.textContent).not.toMatch(/midday|noon|arrival time/i)
+  })
 })
