@@ -254,24 +254,37 @@ test("inline-creates a non-member owner, prices them as a non-member, and emails
   const emailThem = page.getByRole("button", { name: "Create and email them" });
   await expect(emailThem).toBeVisible();
 
-  const [createResponse] = await withBookingCreateClientIp(
+  await withBookingCreateClientIp(
     page,
     bookingCreateIsolation("on-behalf-inline-owner", testInfo.retry),
-    () =>
-      Promise.all([
-        page.waitForResponse(
-          (r) =>
-            r.url().endsWith("/api/bookings") && r.request().method() === "POST",
-          { timeout: 30_000 },
-        ),
-        emailThem.click(),
-      ]),
+    {
+      trigger: () =>
+        Promise.all([
+          page.waitForResponse(
+            (r) =>
+              r.url().endsWith("/api/bookings") &&
+              r.request().method() === "POST",
+            { timeout: 30_000 },
+          ),
+          emailThem.click(),
+        ]),
+      // The create navigates. The destination has a loading boundary, so the
+      // URL commits on the skeleton while the detail RSC is still in flight —
+      // holding only to the URL would tear interception down inside the window
+      // this helper exists to keep open. The server-rendered heading is the
+      // authoritative outcome.
+      waitForOutcome: async ([createResponse]) => {
+        expect(
+          createResponse.status(),
+          `non-member on-behalf create (${createResponse.status()})`,
+        ).toBe(201);
+        await expect(page).toHaveURL(/\/bookings\/[A-Za-z0-9-]+$/);
+        await expect(
+          page.getByRole("heading", { name: "Booking Details" }),
+        ).toBeVisible();
+      },
+    },
   );
-  expect(
-    createResponse.status(),
-    `non-member on-behalf create (${createResponse.status()})`,
-  ).toBe(201);
-  await expect(page).toHaveURL(/\/bookings\/[A-Za-z0-9-]+$/);
 
   // The owner's real address receives the "Booking Pending - …" hold email.
   const email = await waitForEmail(REAL_OWNER.email, "Booking Pending");
@@ -332,25 +345,38 @@ test("suggest-and-pick reuses the existing non-member contact instead of duplica
 
   await expect(page.getByText("Booking Summary")).toBeVisible();
   await page.getByRole("button", { name: "Confirm Booking" }).click();
-  const [createResponse] = await withBookingCreateClientIp(
+  await withBookingCreateClientIp(
     page,
     bookingCreateIsolation("on-behalf-existing-owner", testInfo.retry),
-    () =>
-      Promise.all([
-        page.waitForResponse(
-          (r) =>
-            r.url().endsWith("/api/bookings") && r.request().method() === "POST",
-          { timeout: 30_000 },
-        ),
-        // Keep this leg email-free; the owner-email contract is asserted elsewhere.
-        page.getByRole("button", { name: "Create without emailing" }).click(),
-      ]),
+    {
+      trigger: () =>
+        Promise.all([
+          page.waitForResponse(
+            (r) =>
+              r.url().endsWith("/api/bookings") &&
+              r.request().method() === "POST",
+            { timeout: 30_000 },
+          ),
+          // Keep this leg email-free; the owner-email contract is asserted elsewhere.
+          page.getByRole("button", { name: "Create without emailing" }).click(),
+        ]),
+      // The create navigates, so the interception is held until the new
+      // booking's own detail URL is reached.
+      waitForOutcome: async ([createResponse]) => {
+        expect(
+          createResponse.status(),
+          `reused-owner create (${createResponse.status()})`,
+        ).toBe(201);
+        await expect(page).toHaveURL(/\/bookings\/[A-Za-z0-9-]+$/);
+        // The URL commits on the destination's loading boundary; the heading
+        // only renders once the detail RSC has resolved, so it is the outcome
+        // that actually keeps teardown out of the navigation window.
+        await expect(
+          page.getByRole("heading", { name: "Booking Details" }),
+        ).toBeVisible();
+      },
+    },
   );
-  expect(
-    createResponse.status(),
-    `reused-owner create (${createResponse.status()})`,
-  ).toBe(201);
-  await expect(page).toHaveURL(/\/bookings\/[A-Za-z0-9-]+$/);
 });
 
 test("a no-email walk-in owner is created with a placeholder and never emailed", async ({
@@ -389,24 +415,37 @@ test("a no-email walk-in owner is created with a placeholder and never emailed",
   // Clear the mailbox first so any leaked placeholder-recipient send would be
   // caught fresh.
   await clearMailbox();
-  const [createResponse] = await withBookingCreateClientIp(
+  await withBookingCreateClientIp(
     page,
     bookingCreateIsolation("on-behalf-walk-in-owner", testInfo.retry),
-    () =>
-      Promise.all([
-        page.waitForResponse(
-          (r) =>
-            r.url().endsWith("/api/bookings") && r.request().method() === "POST",
-          { timeout: 30_000 },
-        ),
-        page.getByRole("button", { name: "Confirm Booking" }).click(),
-      ]),
+    {
+      trigger: () =>
+        Promise.all([
+          page.waitForResponse(
+            (r) =>
+              r.url().endsWith("/api/bookings") &&
+              r.request().method() === "POST",
+            { timeout: 30_000 },
+          ),
+          page.getByRole("button", { name: "Confirm Booking" }).click(),
+        ]),
+      // The create navigates, so the interception is held until the new
+      // booking's own detail URL is reached.
+      waitForOutcome: async ([createResponse]) => {
+        expect(
+          createResponse.status(),
+          `walk-in create (${createResponse.status()})`,
+        ).toBe(201);
+        await expect(page).toHaveURL(/\/bookings\/[A-Za-z0-9-]+$/);
+        // The URL commits on the destination's loading boundary; the heading
+        // only renders once the detail RSC has resolved, so it is the outcome
+        // that actually keeps teardown out of the navigation window.
+        await expect(
+          page.getByRole("heading", { name: "Booking Details" }),
+        ).toBeVisible();
+      },
+    },
   );
-  expect(
-    createResponse.status(),
-    `walk-in create (${createResponse.status()})`,
-  ).toBe(201);
-  await expect(page).toHaveURL(/\/bookings\/[A-Za-z0-9-]+$/);
 
   // No confirmation/hold email is ever addressed to the reserved placeholder
   // domain — the walk-in owner is never emailed.

@@ -291,15 +291,47 @@ export function postBookingCreate(
 }
 
 /**
+ * One browser-driven booking-create action, split into the gesture that emits
+ * the create and the wait that proves what the create did.
+ *
+ * Both halves run with the interception installed. Splitting them is what lets
+ * the helper keep the route registered across the whole action instead of
+ * tearing it down the moment the click resolves.
+ */
+export type BookingCreateBrowserAction<T> = Readonly<{
+  /** Fire exactly the UI gesture that emits `POST /api/bookings`. */
+  trigger: () => Promise<T>;
+  /**
+   * Await this journey's OWN authoritative outcome for that create: the exact
+   * `/bookings/<id>` URL it navigates to, the wizard step it reveals, or the
+   * refusal it renders. Not a generic "some page rendered" wait.
+   */
+  waitForOutcome: (triggered: T) => Promise<void>;
+}>;
+
+/**
  * Add the synthetic IP to exactly one browser-driven booking-create action.
  * Other page requests — including login, policy requests and availability —
  * retain their original headers. The completed action must issue exactly one
  * `POST /api/bookings`, so a stale census entry fails loudly.
+ *
+ * The interception is held across BOTH halves of the action and removed only
+ * once `waitForOutcome` has resolved. Playwright implements `page.unroute` by
+ * recomputing Chromium's global Fetch interception patterns, so a teardown that
+ * overlaps a navigation the trigger just started is a race by construction:
+ * the client-side `router.push` the create issues, and the RSC GET it starts
+ * within a few milliseconds, are both in flight while the patterns are being
+ * rewritten. Holding the route until the caller has seen its outcome keeps
+ * teardown outside that window.
+ *
+ * This is test-harness hygiene, not a proven diagnosis of #2610. The stall
+ * reproduces only on the hosted runners, so the shape above is also the A/B
+ * being measured there; do not read it as a root-cause fix.
  */
 export async function withBookingCreateClientIp<T>(
   page: Page,
   isolation: BookingCreateIsolation,
-  action: () => Promise<T>,
+  action: BookingCreateBrowserAction<T>,
 ): Promise<T> {
   let matchingRequests = 0;
   const routePattern = "**/api/bookings";
@@ -326,9 +358,10 @@ export async function withBookingCreateClientIp<T>(
   const requestObserved = page.waitForRequest(isBookingCreate);
   let completed = false;
   try {
-    const [result] = await Promise.all([action(), requestObserved]);
+    const [triggered] = await Promise.all([action.trigger(), requestObserved]);
+    await action.waitForOutcome(triggered);
     completed = true;
-    return result;
+    return triggered;
   } finally {
     await page.unroute(routePattern, handler);
     if (completed && matchingRequests !== 1) {
