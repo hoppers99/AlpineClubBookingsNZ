@@ -44,6 +44,7 @@
     "load:contention": "k6 run load/scenarios/booking-contention.js",
     "load:dashboard": "k6 run load/scenarios/member-dashboard.js",
     "quality:report": "tsx scripts/quality-report.ts",
+    "audit:census": "tsx scripts/audit/audit-writer-census.ts",
     "diagnostics:bundle": "tsx scripts/diagnostics/generate-knowledge-bundle.ts",
     "diagnostics:provision-role": "tsx scripts/diagnostics/provision-ai-diagnostics-role.ts",
     "setup:check": "tsx scripts/setup.ts check",
