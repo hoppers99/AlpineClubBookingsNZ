@@ -43,5 +43,8 @@
   unresolved proof that Xero created a contact whose local link failed. Once Xero
   creates the contact, the durable pending-link marker is written before linking,
   so even a later failure-recorder outage cannot make the next member reload offer
-  another Create action. A terminal success or explicit resolution removes the
-  blocker.
+  another Create action. If both local proof recorders fail, the exact operation
+  remains an ambiguous create-in-progress fence without claiming that Xero created
+  anything. Resetting either stale reservation to failed preserves its recovery
+  state and merge blocker. A local link, terminal success, or explicit resolution
+  removes the blocker; an ordinary terminal failure clears the ambiguous state.

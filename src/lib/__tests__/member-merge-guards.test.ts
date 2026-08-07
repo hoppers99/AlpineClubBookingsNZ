@@ -37,6 +37,17 @@ function contactCreateFailure(providerContactCreated = true) {
   };
 }
 
+function staleResetContactCreatePendingProof() {
+  return {
+    id: "xero-op-stale-reset",
+    status: "FAILED",
+    responsePayload: {
+      phase: "provider_contact_created_local_link_pending",
+      providerContactCreated: true,
+    },
+  };
+}
+
 describe("unresolved Xero contact-create recovery blockers", () => {
   it.each([
     ["master", MASTER_ID, "master_xero_contact_create_recovery_pending"],
@@ -66,6 +77,54 @@ describe("unresolved Xero contact-create recovery blockers", () => {
             ? { id: "xero-running", status: "RUNNING", responsePayload: null }
             : null,
         ),
+      ),
+    };
+
+    const blockers = await runGuards({ xeroSyncOperation });
+    expect(blockers.map((blocker) => blocker.code)).toContain(
+      "loser_xero_contact_create_recovery_pending",
+    );
+  });
+
+  it("blocks merge after a provider-created pending-link row is reset to FAILED", async () => {
+    const xeroSyncOperation = {
+      ...defaultDelegate(),
+      findFirst: vi.fn(({ where }: { where: { localId: string } }) =>
+        Promise.resolve(
+          where.localId === LOSER_ID
+            ? staleResetContactCreatePendingProof()
+            : null,
+        ),
+      ),
+    };
+
+    const blockers = await runGuards({ xeroSyncOperation });
+    expect(blockers.map((blocker) => blocker.code)).toContain(
+      "loser_xero_contact_create_recovery_pending",
+    );
+  });
+
+  it("blocks merge on an unmarked contact-create reservation reset as stale", async () => {
+    const xeroSyncOperation = {
+      ...defaultDelegate(),
+      findFirst: vi.fn(
+        ({ where }: { where: { localId: string; OR: unknown[] } }) => {
+          if (where.localId !== LOSER_ID) return Promise.resolve(null);
+          expect(where.OR).toEqual(
+            expect.arrayContaining([
+              {
+                status: "FAILED",
+                lastErrorCode: "ORPHANED_STALE_RUNNING",
+              },
+            ]),
+          );
+          return Promise.resolve({
+            id: "xero-stale-reset",
+            status: "FAILED",
+            lastErrorCode: "ORPHANED_STALE_RUNNING",
+            responsePayload: null,
+          });
+        },
       ),
     };
 

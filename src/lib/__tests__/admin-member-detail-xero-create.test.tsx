@@ -261,6 +261,47 @@ describe("Admin member detail Xero create", () => {
     expect(screen.getByRole("button", { name: "Try again" })).toBeInTheDocument();
   });
 
+  it("suppresses Create for an unmarked stale-reset reservation without claiming provider creation", async () => {
+    fetchMock.mockImplementation((input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url === "/api/admin/members/member-1") {
+        return Promise.resolve({
+          ok: true,
+          json: async () =>
+            adminMember({
+              xeroContactCreateRecoveryState: "CREATE_IN_PROGRESS",
+              xeroContactCreateRecoveryPending: false,
+            }),
+        });
+      }
+      if (url === "/api/admin/members/member-1/credits") {
+        return Promise.resolve({
+          ok: true,
+          json: async () => ({ balanceCents: 0, history: [], pendingRequests: [] }),
+        });
+      }
+      if (url === "/api/admin/xero/status") {
+        return Promise.resolve({ ok: true, json: async () => ({ connected: true, features: {} }) });
+      }
+      return Promise.reject(new Error(`Unexpected fetch: ${url}`));
+    });
+
+    await act(async () => {
+      render(
+        <Suspense fallback={<div>Loading route params...</div>}>
+          <MemberDetailPage params={Promise.resolve({ id: "member-1" })} />
+        </Suspense>,
+      );
+    });
+
+    expect(await screen.findByRole("button", { name: "Link to Xero" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /Create in Xero/ })).not.toBeInTheDocument();
+    const alert = document.getElementById("member-xero-recovery-error");
+    await screen.findByText(/contact create is still in progress or awaiting recovery/i);
+    expect(alert).not.toHaveTextContent(/A Xero contact was created/i);
+    expect(document.activeElement).toBe(alert);
+  });
+
   it("clears recovery after authoritative proof is resolved", async () => {
     let memberReads = 0;
     fetchMock.mockImplementation((input: RequestInfo | URL) => {
@@ -379,7 +420,7 @@ describe("Admin member detail Xero create", () => {
     );
   });
 
-  it("keeps Create suppressed after an unconfirmed provider contact survives refresh", async () => {
+  it("retains route-proven provider creation when both recorders leave only a RUNNING reservation", async () => {
     let memberReads = 0;
     let resolveRefresh: ((value: Response) => void) | null = null;
     fetchMock.mockImplementation((input: RequestInfo | URL) => {
@@ -451,10 +492,14 @@ describe("Admin member detail Xero create", () => {
       resolveRefresh?.({
         ok: true,
         json: async () =>
-          adminMember({ xeroContactCreateRecoveryPending: true }),
+          adminMember({
+            xeroContactCreateRecoveryState: "CREATE_IN_PROGRESS",
+            xeroContactCreateRecoveryPending: false,
+          }),
       } as Response);
     });
     await screen.findByText(/member was refreshed successfully/i);
+    expect(alert).toHaveTextContent(/A Xero contact was created/i);
     expect(
       screen.queryByRole("button", { name: /Create in Xero/ }),
     ).not.toBeInTheDocument();

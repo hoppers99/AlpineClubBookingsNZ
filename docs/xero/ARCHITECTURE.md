@@ -49,6 +49,14 @@ Only positive, proven facts cross the API boundary; caught provider/database det
 remains server-side. Refresh and cleanup flags are included only while that specific
 step is unfinished.
 
+An exact unmarked member contact-create reservation is treated separately as
+`CREATE_IN_PROGRESS`: it suppresses another Create but does not claim that Xero
+created a contact. Resetting a stale `RUNNING` reservation to `FAILED` preserves
+that conservative state through `ORPHANED_STALE_RUNNING`. A recorded
+provider-created pending-link phase retains the stronger recovery copy even after
+the same stale reset. Linking, successful completion, or explicit resolution
+clears either fence.
+
 All consuming admin surfaces treat this as recovery, not a retryable failure. They
 suppress duplicate create/link/unlink/import actions, reload or reflect canonical
 member state, and keep a focused alert mounted across loading and refresh failure.

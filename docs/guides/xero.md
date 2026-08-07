@@ -98,6 +98,11 @@ idempotent — retrying the same work never double-charges.
    list refreshes its current results automatically; Contact Sync and diagnostics
    direct you to reload the status or open the affected member before another
    Xero action.
+7. If the app can prove only that a contact create is still running or awaiting
+   recovery, it says exactly that and hides **Create in Xero** without claiming a
+   contact was created. Resetting the stale operation does not make Create safe:
+   reload the member, then explicitly resolve the operation only after checking
+   Xero and the member's current link.
 
 ### Set up mappings and import (Xero Setup)
 

@@ -353,6 +353,39 @@ describe("createXeroContactForMember payload hygiene (#2089)", () => {
     expect(mocks.completeXeroSyncOperation).not.toHaveBeenCalled();
   });
 
+  it("returns provider-created recovery when both proof recorders fail before linking", async () => {
+    primeHappyPath(SPARSE_MEMBER);
+    const proofFailure = new Error("pending proof recorder unavailable");
+    mocks.recordProviderCreatedContactPendingLocalLink.mockRejectedValue(
+      proofFailure,
+    );
+    mocks.failXeroSyncOperation.mockRejectedValue(
+      new Error("terminal proof recorder unavailable"),
+    );
+
+    const error = await createXeroContactForMember("member-1").catch(
+      (caught: unknown) => caught,
+    );
+
+    expect(error).toBeInstanceOf(XeroContactCreatePartialSuccessError);
+    expect(error).toMatchObject({
+      phase: "PROVIDER_CONTACT_CREATED",
+      xeroContactId: "contact-new",
+      originalError: proofFailure,
+    });
+    expect(mocks.startXeroSyncOperation).toHaveBeenCalled();
+    expect(mocks.recordProviderCreatedContactPendingLocalLink).toHaveBeenCalled();
+    expect(mocks.failXeroSyncOperation).toHaveBeenCalledWith(
+      "op-1",
+      proofFailure,
+      expect.objectContaining({
+        providerContactCreated: true,
+      }),
+    );
+    expect(mocks.txMemberUpdate).not.toHaveBeenCalled();
+    expect(mocks.completeXeroSyncOperation).not.toHaveBeenCalled();
+  });
+
   it("reports local-link-committed when operation close fails post-commit", async () => {
     primeHappyPath(SPARSE_MEMBER);
     const completionFailure = new Error("private operation detail");

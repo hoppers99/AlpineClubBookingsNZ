@@ -1154,12 +1154,18 @@ transaction or adding an advisory-lock tier.
 
 After Xero returns a newly created contact, the operation is durably marked
 `provider_contact_created_local_link_pending` before the local link transaction.
-That active marker is authoritative recovery proof even if recording the later
-link failure also fails. A successful operation close makes it `SUCCEEDED`; an
-explicitly resolved failure sets `manuallyResolvedAt`; neither terminal state
-blocks future merge. A failed local link remains a blocker only with the strict
-`FAILED` + local-link phase + `providerContactCreated: true` proof. Matched-existing
-contacts and unrelated failed or completed operations do not block.
+That marker remains authoritative recovery proof while `RUNNING` and after the
+stale-operation reset changes it to `FAILED`; resetting a row must not erase a
+known provider-created contact. If both attempts to record that proof fail, the
+exact unmarked `RUNNING` reservation remains an ambiguous create-in-progress
+fence. A stale reset preserves that uncertainty as exact `FAILED` +
+`ORPHANED_STALE_RUNNING`, without claiming that Xero created anything. Both
+states suppress another Create and block member merge. They clear only after the
+member is linked, the operation succeeds, or an operator explicitly resolves it;
+a terminal non-provider failure clears the ambiguous state. A failed local link
+also remains a blocker with the strict `FAILED` + local-link phase +
+`providerContactCreated: true` proof. Matched-existing contacts and unrelated
+failed or completed operations do not block.
 
 Inside the locks the merge re-reads both members, re-runs the full guard matrix,
 and re-verifies the HMAC preview token (which bakes in both `updatedAt` values)

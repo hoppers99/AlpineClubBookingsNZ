@@ -10,7 +10,9 @@ vi.mock("@/lib/prisma", () => ({
 }));
 
 import {
+  ambiguousMemberContactCreateReservationWhere,
   getMemberContactCreateRecoveryPending,
+  getMemberContactCreateRecoveryState,
   hasMemberContactCreateMergeBlocker,
   hasUnresolvedMemberContactCreateRecovery,
   isProviderCreatedLocalLinkFailurePayload,
@@ -49,7 +51,7 @@ describe("unresolved member Xero contact-create recovery proof", () => {
           ],
         },
         {
-          status: "RUNNING",
+          status: { in: ["RUNNING", "FAILED"] },
           AND: [
             {
               responsePayload: {
@@ -111,8 +113,135 @@ describe("unresolved member Xero contact-create recovery proof", () => {
     ).resolves.toBe(false);
     expect(findFirst).toHaveBeenNthCalledWith(1, {
       where: memberContactCreateMergeBlockerWhere("member-1"),
-      select: { id: true, status: true, responsePayload: true },
+      select: {
+        id: true,
+        status: true,
+        lastErrorCode: true,
+        responsePayload: true,
+      },
     });
+  });
+
+  it("keeps stale-reset pending-link proof unresolved and merge-blocking", async () => {
+    const staleResetProof = {
+      id: "operation-stale-reset",
+      status: "FAILED",
+      responsePayload: {
+        phase: "provider_contact_created_local_link_pending",
+        providerContactCreated: true,
+        resolvedContactId: "contact-provider-only",
+      },
+    };
+    findFirst
+      .mockResolvedValueOnce(staleResetProof)
+      .mockResolvedValueOnce(staleResetProof);
+
+    await expect(
+      hasUnresolvedMemberContactCreateRecovery("member-1"),
+    ).resolves.toBe(true);
+    await expect(
+      hasMemberContactCreateMergeBlocker("member-1"),
+    ).resolves.toBe(true);
+    expect(unresolvedMemberContactCreateRecoveryWhere("member-1")).toEqual(
+      expect.objectContaining({
+        OR: expect.arrayContaining([
+          expect.objectContaining({
+            status: { in: ["RUNNING", "FAILED"] },
+          }),
+        ]),
+      }),
+    );
+    expect(memberContactCreateMergeBlockerWhere("member-1")).toEqual(
+      expect.objectContaining({
+        OR: expect.arrayContaining([
+          expect.objectContaining({
+            status: "FAILED",
+            OR: expect.arrayContaining([
+              expect.objectContaining({
+                AND: expect.arrayContaining([
+                  expect.objectContaining({
+                    responsePayload: {
+                      path: ["phase"],
+                      equals:
+                        "provider_contact_created_local_link_pending",
+                    },
+                  }),
+                ]),
+              }),
+            ]),
+          }),
+        ]),
+      }),
+    );
+  });
+
+  it("reports an unmarked RUNNING reservation without claiming provider creation", async () => {
+    findFirst
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce({ id: "operation-running" });
+
+    await expect(
+      getMemberContactCreateRecoveryState({
+        memberId: "member-1",
+        xeroContactId: null,
+      }),
+    ).resolves.toBe("CREATE_IN_PROGRESS");
+  });
+
+  it("keeps an unmarked stale-reset reservation ambiguous until resolution", async () => {
+    findFirst
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce({ id: "operation-stale-reset" })
+      .mockResolvedValueOnce({
+        id: "operation-stale-reset",
+        status: "FAILED",
+        lastErrorCode: "ORPHANED_STALE_RUNNING",
+        responsePayload: null,
+      });
+
+    await expect(
+      getMemberContactCreateRecoveryState({
+        memberId: "member-1",
+        xeroContactId: null,
+      }),
+    ).resolves.toBe("CREATE_IN_PROGRESS");
+    expect(findFirst).toHaveBeenNthCalledWith(2, {
+      where: ambiguousMemberContactCreateReservationWhere("member-1"),
+      select: { id: true },
+    });
+    expect(ambiguousMemberContactCreateReservationWhere("member-1")).toEqual(
+      expect.objectContaining({
+        manuallyResolvedAt: null,
+        OR: [
+          { status: "RUNNING" },
+          {
+            status: "FAILED",
+            lastErrorCode: "ORPHANED_STALE_RUNNING",
+          },
+        ],
+      }),
+    );
+    await expect(
+      hasMemberContactCreateMergeBlocker("member-1"),
+    ).resolves.toBe(true);
+  });
+
+  it("retains the stronger state for stale-reset provider-created proof", async () => {
+    findFirst.mockResolvedValueOnce({
+      id: "operation-stale-reset",
+      responsePayload: {
+        phase: "provider_contact_created_local_link_pending",
+        providerContactCreated: true,
+      },
+    });
+
+    await expect(
+      getMemberContactCreateRecoveryState({
+        memberId: "member-1",
+        xeroContactId: null,
+      }),
+    ).resolves.toBe("PROVIDER_CREATED_LINK_PENDING");
+    expect(findFirst).toHaveBeenCalledTimes(1);
   });
 
   it("persists provider-created proof while the operation remains active", async () => {
