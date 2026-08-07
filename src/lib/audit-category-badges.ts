@@ -1,3 +1,4 @@
+import { isAuditCategory, type AuditCategory } from "@/lib/audit-categories";
 import { CHIP_TONE_CLASSES } from "@/lib/chip-tones";
 
 /**
@@ -21,8 +22,12 @@ import { CHIP_TONE_CLASSES } from "@/lib/chip-tones";
  * admin/system stay neutral. The two accepted collisions (account≡xero on info,
  * admin≡system on neutral) are sibling meta-categories — meaning is carried by
  * icon + label, never colour alone (the M1 "collisions accepted" clause).
+ *
+ * #2581 — keyed by the canonical `AuditCategory` rather than by `string`, so a
+ * category added to the taxonomy without a colour fails to compile instead of
+ * silently rendering in the `system` neutral tone alongside genuine system rows.
  */
-export const AUDIT_CATEGORY_BADGE_CLASSES: Record<string, string> = {
+export const AUDIT_CATEGORY_BADGE_CLASSES: Record<AuditCategory, string> = {
   account: `${CHIP_TONE_CLASSES.info} border-info-6`,
   booking: `${CHIP_TONE_CLASSES.success} border-success-6`,
   payment: `${CHIP_TONE_CLASSES.cat1} border-cat1-6`,
@@ -36,10 +41,17 @@ export const AUDIT_CATEGORY_BADGE_CLASSES: Record<string, string> = {
   system: `${CHIP_TONE_CLASSES.neutral} border-border`,
 };
 
-/** Badge classes for an audit category, falling back to the `system` tone. */
+/**
+ * Badge classes for an audit category, falling back to the `system` tone.
+ *
+ * Still takes a plain `string`: the value reaching a badge is often not a
+ * canonical category at all. A legacy row's category is inferred from its action
+ * for display (`inferAuditCategoryFromAction`), and historical rows carry values
+ * written before the taxonomy was closed. The runtime guard is what keeps those
+ * out of the exhaustive map without giving the map a `string` key again.
+ */
 export function auditCategoryBadgeClass(category: string): string {
-  return (
-    AUDIT_CATEGORY_BADGE_CLASSES[category] ??
-    AUDIT_CATEGORY_BADGE_CLASSES.system
-  );
+  return isAuditCategory(category)
+    ? AUDIT_CATEGORY_BADGE_CLASSES[category]
+    : AUDIT_CATEGORY_BADGE_CLASSES.system;
 }

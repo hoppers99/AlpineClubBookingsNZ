@@ -27,6 +27,7 @@ import {
 import { recordDiagnosticsToolAudit } from "../audit";
 import { invokeDiagnosticsTool } from "../invoke";
 import {
+  DIAGNOSTICS_CORRELATION_CATEGORY_SETS,
   DIAGNOSTICS_MEMBERSHIP_CORRELATION_TOOL_ID,
   DIAGNOSTICS_SUPPORT_CORRELATION_TOOLS,
 } from "../packs/support-correlation";
@@ -280,7 +281,13 @@ describe("invokeDiagnosticsTool — the happy path (#2374)", () => {
     // the empty-result path — which is the only path where it changes an answer.
     const block = renderToolResultEvidenceBlock(result);
     expect(block).toContain("scope: ");
-    expect(block).toContain("account, privacy");
+    // The entry's own derived category set (#2581 made these derive from the
+    // canonical taxonomy, and the membership set gained `family` and
+    // `communication`), not a hard-coded pair a classification decision would
+    // silently invalidate.
+    expect(block).toContain(
+      DIAGNOSTICS_CORRELATION_CATEGORY_SETS[correlation.id].join(", "),
+    );
     expect(block).toContain("rows: none matched");
     expect(block.indexOf("scope:")).toBeLessThan(block.indexOf("rows:"));
   });

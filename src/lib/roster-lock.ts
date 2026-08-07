@@ -1,6 +1,6 @@
 import type { Prisma } from "@prisma/client";
 import { acquireLodgeCapacityLock } from "@/lib/capacity";
-import { eachDateOnlyInRange, formatDateOnly } from "@/lib/date-only";
+import { addDaysDateOnly, eachDateOnlyInRange, formatDateOnly } from "@/lib/date-only";
 
 type RosterLockTx = Pick<Prisma.TransactionClient, "$executeRaw">;
 
@@ -48,6 +48,27 @@ export async function lockRosterDates(
   for (const [, date] of [...uniqueDates].sort(([a], [b]) => a.localeCompare(b))) {
     await lockRosterDate(tx, date);
   }
+}
+
+/**
+ * The roster dates one half-open night range now occupies.
+ *
+ * A stay of nights [checkIn, checkOut) can carry chore rows on every one of
+ * those nights AND on the check-out day itself, because its guests are in the
+ * lodge until midday then (#2622). Returned as a half-open range for
+ * `eachDateOnlyInRange`, so `end` is the day after check-out.
+ *
+ * Every writer that derives a roster-date lock set from a stay envelope must
+ * build it through here. Locking only the nights would leave the check-out
+ * date's partition unlocked, and a concurrent whole-roster Save could validate
+ * the old stay, wait, and then insert a checkout-day row the mutation has
+ * already decided to remove.
+ */
+export function rosterOperationalDayRange(
+  checkIn: Date,
+  checkOut: Date,
+): { start: Date; end: Date } {
+  return { start: checkIn, end: addDaysDateOnly(checkOut, 1) };
 }
 
 /**
