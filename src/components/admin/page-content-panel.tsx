@@ -94,6 +94,28 @@ function stripHtml(html: string): string {
     .trim();
 }
 
+/**
+ * How a keyed footer section is named inside a sentence about a page delete
+ * (#2352, first review finding 3).
+ *
+ * The footer's link lists are the OTHER place a club authors links, under the
+ * same `content` permission, and they render on every public page — so the
+ * delete confirmation has to be able to name them. Phrased as sentence
+ * fragments rather than as the headings the Site Content panel shows
+ * ("Footer: quick links"), because that is where these appear. Keyed by the
+ * `SITE_CONTENT_KEYS` string the endpoint reports; an unknown key falls back to
+ * itself rather than disappearing from the warning.
+ */
+const FOOTER_SECTION_LABELS: Record<string, string> = {
+  FOOTER_BLURB: "the footer's club blurb",
+  FOOTER_QUICK_LINKS: "the footer's quick links",
+  FOOTER_AFFILIATIONS: "the footer's affiliations",
+};
+
+function describeFooterSections(keys: readonly string[]): string {
+  return keys.map((key) => FOOTER_SECTION_LABELS[key] ?? key).join(", ");
+}
+
 function formatUpdatedAt(value: string | null): string {
   if (!value) {
     return "Never updated";
@@ -1651,6 +1673,48 @@ export function PageContentPanel() {
   }
 
   /**
+   * Which footer sections link to an address (#2352, first review finding 3).
+   *
+   * Read lazily for the same reasons as the Book Now target: it answers one
+   * sentence in one dialog, and it must not slow or break a page load. The
+   * sections are edited in the Site Content panel, so this is a read of that
+   * panel's authority rather than a second source of truth, and it uses the same
+   * best-effort substring semantics as the endpoint so dialog and toast cannot
+   * disagree. An empty array is a real "nothing in the footer points at it"; a
+   * failed read returns undefined so the dialog stays silent on the subject
+   * rather than asserting either way, and the endpoint's authoritative answer
+   * still drives the message afterwards.
+   */
+  async function loadFooterSectionsLinkingTo(
+    path: string,
+  ): Promise<string[] | undefined> {
+    try {
+      const response = await fetch("/api/admin/site-content", {
+        credentials: "same-origin",
+      });
+      if (!response.ok) {
+        return undefined;
+      }
+      const body = (await response.json()) as {
+        documents?: Array<{ key?: unknown; contentHtml?: unknown }>;
+      } | null;
+      if (!Array.isArray(body?.documents)) {
+        return undefined;
+      }
+      return body.documents
+        .filter(
+          (document) =>
+            typeof document.key === "string" &&
+            typeof document.contentHtml === "string" &&
+            document.contentHtml.includes(path),
+        )
+        .map((document) => document.key as string);
+    } catch {
+      return undefined;
+    }
+  }
+
+  /**
    * Deletes a page for good (#2352 MC-03D).
    *
    * The confirmation has to carry the three facts an officer cannot see from the
@@ -1679,7 +1743,13 @@ export function PageContentPanel() {
         )
         .map((other) => other.slug)
         .sort();
-      const bookNowTargetPageId = await loadBookNowTargetPageId();
+      // Two reads, in parallel: the two link surfaces the officer cannot see from
+      // this card. Neither can stop the dialog opening — both answer undefined
+      // when they fail, and the dialog then says nothing on that subject.
+      const [bookNowTargetPageId, footerSectionKeys] = await Promise.all([
+        loadBookNowTargetPageId(),
+        loadFooterSectionsLinkingTo(page.path),
+      ]);
 
       const description = [
         `${page.path} and its content will be removed permanently. This cannot be undone.`,
@@ -1689,8 +1759,11 @@ export function PageContentPanel() {
         referencingSlugs.length > 0
           ? `Other pages link to it: ${referencingSlugs.join(", ")}. Those links will break.`
           : null,
+        footerSectionKeys !== undefined && footerSectionKeys.length > 0
+          ? `The site footer links to it (${describeFooterSections(footerSectionKeys)}), and the footer is on every public page. That link will break too.`
+          : null,
         bookNowTargetPageId === page.id
-          ? "The public Book Now button points at this page and will go back to the booking flow."
+          ? "The public Book Now button points at this page, so it will be set back to the booking flow."
           : null,
         "Hide it instead if you might want it back.",
       ]
@@ -1734,12 +1807,29 @@ export function PageContentPanel() {
       const referencedBySlugs = Array.isArray(body?.referencedBySlugs)
         ? (body.referencedBySlugs as string[])
         : [];
+      const referencedByFooterSections = Array.isArray(
+        body?.referencedByFooterSections,
+      )
+        ? (body.referencedByFooterSections as string[])
+        : [];
       const consequences = [
         referencedBySlugs.length > 0
           ? `these pages still link to it: ${referencedBySlugs.join(", ")}`
           : null,
+        referencedByFooterSections.length > 0
+          ? `the site footer still links to it (${describeFooterSections(referencedByFooterSections)})`
+          : null,
+        // True as of the finding-1 fix: the endpoint moves the setting itself
+        // inside the delete transaction, so this reports a change that happened
+        // rather than describing a runtime fallback.
         body?.wasBookNowTarget === true
-          ? "the Book Now button has gone back to the booking flow"
+          ? "the Book Now button has been set back to the booking flow"
+          : null,
+        // The delete succeeded and the cache flush did not (finding 5). Worth the
+        // officer's attention because the old address can keep answering for a
+        // few minutes, and refreshing the public page is what proves it cleared.
+        body?.publicCacheCleared === false
+          ? "the public site's stored copy could not be cleared, so that address may keep answering for a few minutes"
           : null,
       ].filter((part): part is string => part !== null);
 

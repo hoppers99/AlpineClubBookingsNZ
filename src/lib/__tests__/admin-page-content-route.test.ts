@@ -13,7 +13,13 @@ const mocks = vi.hoisted(() => ({
   pageContentUpdate: vi.fn(),
   pageContentDelete: vi.fn(),
   publicContentSettingsFindFirst: vi.fn(),
+  publicContentSettingsFindUnique: vi.fn(),
+  publicContentSettingsUpdate: vi.fn(),
+  publicContentSettingsUpsert: vi.fn(),
+  siteContentFindMany: vi.fn(),
   auditLogCreate: vi.fn(),
+  loggerError: vi.fn(),
+  revalidatePath: vi.fn(),
   transaction: vi.fn(),
   buildStructuredAuditLogCreateArgs: vi.fn((event, options) => ({
     data: event,
@@ -49,6 +55,10 @@ vi.mock("@/lib/audit", () => ({
 vi.mock("@/lib/public-content-revalidation", () => ({
   revalidatePublicPageContent: mocks.revalidatePublicPageContent,
 }));
+vi.mock("@/lib/logger", () => ({ default: { error: mocks.loggerError } }));
+// Needed only by the sibling Public Content Settings route, which one DELETE test
+// drives for real to prove the pair this route leaves behind is savable there.
+vi.mock("next/cache", () => ({ revalidatePath: mocks.revalidatePath }));
 
 vi.mock("@/lib/prisma", () => ({
   prisma: {
@@ -62,6 +72,12 @@ vi.mock("@/lib/prisma", () => ({
     },
     publicContentSettings: {
       findFirst: mocks.publicContentSettingsFindFirst,
+      findUnique: mocks.publicContentSettingsFindUnique,
+      update: mocks.publicContentSettingsUpdate,
+      upsert: mocks.publicContentSettingsUpsert,
+    },
+    siteContent: {
+      findMany: mocks.siteContentFindMany,
     },
     auditLog: {
       create: mocks.auditLogCreate,
@@ -71,7 +87,8 @@ vi.mock("@/lib/prisma", () => ({
 }));
 
 import { DELETE, PATCH, POST, PUT } from "@/app/api/admin/page-content/route";
-import { PAGE_CONTENT_LIMITS } from "@/lib/page-content";
+import { PUT as PUBLIC_CONTENT_SETTINGS_PUT } from "@/app/api/admin/public-content-settings/route";
+import { PAGE_CONTENT_LIMITS, SITE_CONTENT_KEYS } from "@/lib/page-content";
 
 function jsonRequest(
   method: "POST" | "PUT" | "PATCH" | "DELETE",
@@ -366,7 +383,9 @@ describe("DELETE /api/admin/page-content", () => {
     mocks.requireActiveSessionUser.mockResolvedValue(null);
     mocks.pageContentFindUnique.mockResolvedValue(probeRow);
     mocks.pageContentFindMany.mockResolvedValue([]);
+    mocks.siteContentFindMany.mockResolvedValue([]);
     mocks.publicContentSettingsFindFirst.mockResolvedValue(null);
+    mocks.publicContentSettingsUpdate.mockResolvedValue({ id: "default" });
     mocks.pageContentDelete.mockResolvedValue(probeRow);
     mocks.auditLogCreate.mockResolvedValue({});
     // Interactive transaction: run the callback against the mocked models, so
@@ -374,6 +393,7 @@ describe("DELETE /api/admin/page-content", () => {
     mocks.transaction.mockImplementation(async (callback) =>
       callback({
         pageContent: { delete: mocks.pageContentDelete },
+        publicContentSettings: { update: mocks.publicContentSettingsUpdate },
         auditLog: { create: mocks.auditLogCreate },
       }),
     );
@@ -440,7 +460,9 @@ describe("DELETE /api/admin/page-content", () => {
         published: true,
       },
       referencedBySlugs: [],
+      referencedByFooterSections: [],
       wasBookNowTarget: false,
+      publicCacheCleared: true,
     });
 
     // The row is gone, addressed by id.
@@ -623,12 +645,257 @@ describe("DELETE /api/admin/page-content", () => {
         where: { bookNowPageId: "page-1", bookNowTarget: "PAGE" },
       }),
     );
-    // The FK is `onDelete: SetNull` and `getBookNowConfig()` fails open, so the
-    // button reverts to the booking flow rather than dangling — the delete does
-    // not have to null anything itself, and must not refuse.
+    // Reported, never a refusal.
     expect(mocks.pageContentDelete).toHaveBeenCalledOnce();
     const [auditEvent] =
       mocks.buildStructuredAuditLogCreateArgs.mock.calls.at(-1)!;
     expect(auditEvent.metadata.wasBookNowTarget).toBe(true);
+  });
+
+  // First review, finding 1. `onDelete: SetNull` alone left the settings row at
+  // `PAGE` + null, and that pair is one the Public Content Settings panel's own
+  // PUT refuses — so the officer could not save ANY change in that panel (fee and
+  // policy visibility, committee photo, showBookNow) until they noticed the empty
+  // selector and moved the radio themselves.
+  it("repoints the Book Now target inside the same transaction", async () => {
+    mocks.publicContentSettingsFindFirst.mockResolvedValue({ id: "default" });
+    const order: string[] = [];
+    mocks.publicContentSettingsUpdate.mockImplementation(async () => {
+      order.push("settings");
+      return { id: "default" };
+    });
+    mocks.pageContentDelete.mockImplementation(async () => {
+      order.push("delete");
+      return probeRow;
+    });
+
+    const response = await DELETE(jsonRequest("DELETE", { id: "page-1" }));
+
+    expect(response.status).toBe(200);
+    expect(mocks.publicContentSettingsUpdate).toHaveBeenCalledWith({
+      where: { id: "default" },
+      data: {
+        bookNowTarget: "BOOKING_FLOW",
+        bookNowPageId: null,
+        updatedByMemberId: "admin-1",
+      },
+    });
+    // Inside the one transaction, and before the row goes: a rolled-back delete
+    // must not leave the club's button moved.
+    expect(mocks.transaction).toHaveBeenCalledOnce();
+    expect(order).toEqual(["settings", "delete"]);
+  });
+
+  it("does not touch the settings row when the button pointed elsewhere", async () => {
+    mocks.publicContentSettingsFindFirst.mockResolvedValue(null);
+
+    const response = await DELETE(jsonRequest("DELETE", { id: "page-1" }));
+
+    expect(response.status).toBe(200);
+    expect(mocks.publicContentSettingsUpdate).not.toHaveBeenCalled();
+  });
+
+  // The finding-1 contract stated as the property that actually matters: the pair
+  // this route leaves behind must be one the sibling panel's OWN writer accepts.
+  // Driven through the real `public-content-settings` PUT rather than asserting a
+  // shape, because the wedge was that route's validation rejecting this route's
+  // leftovers.
+  it("leaves a Book Now pair the Public Content Settings PUT will accept", async () => {
+    mocks.publicContentSettingsFindFirst.mockResolvedValue({ id: "default" });
+
+    const deleteResponse = await DELETE(jsonRequest("DELETE", { id: "page-1" }));
+    expect(deleteResponse.status).toBe(200);
+
+    const [[{ data: written }]] = mocks.publicContentSettingsUpdate.mock
+      .calls as [[{ data: { bookNowTarget: string; bookNowPageId: null } }]];
+
+    // What the panel now loads, and what it sends back when the officer saves an
+    // unrelated change in it (ticking hut fees).
+    const storedRow = {
+      membershipTypes: false,
+      entranceFees: false,
+      hutFees: false,
+      bookingPolicySummary: false,
+      cancellationPolicy: false,
+      annualFees: false,
+      showBookNow: true,
+      bookNowTarget: written.bookNowTarget,
+      bookNowPageId: written.bookNowPageId,
+      committeePhotoDisplay: "NONE" as const,
+    };
+    mocks.publicContentSettingsFindUnique.mockResolvedValue(storedRow);
+    mocks.publicContentSettingsUpsert.mockImplementation(
+      async ({ update }: { update: Record<string, unknown> }) => ({
+        ...storedRow,
+        ...update,
+      }),
+    );
+    mocks.transaction.mockImplementation(async (callback) =>
+      callback({
+        publicContentSettings: {
+          findUnique: mocks.publicContentSettingsFindUnique,
+          upsert: mocks.publicContentSettingsUpsert,
+        },
+        auditLog: { create: mocks.auditLogCreate },
+      }),
+    );
+
+    const saveResponse = await PUBLIC_CONTENT_SETTINGS_PUT(
+      new NextRequest("http://localhost/api/admin/public-content-settings", {
+        method: "PUT",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ ...storedRow, hutFees: true }),
+      }),
+    );
+
+    expect(saveResponse.status).toBe(200);
+    expect(mocks.publicContentSettingsUpsert).toHaveBeenCalled();
+
+    // …and this is what it used to answer, which is the wedge itself: the pair
+    // `onDelete: SetNull` leaves on its own is refused, so every other control in
+    // that panel is unsavable until the radio is moved by hand.
+    const wedgedResponse = await PUBLIC_CONTENT_SETTINGS_PUT(
+      new NextRequest("http://localhost/api/admin/public-content-settings", {
+        method: "PUT",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          ...storedRow,
+          hutFees: true,
+          bookNowTarget: "PAGE",
+          bookNowPageId: null,
+        }),
+      }),
+    );
+
+    expect(wedgedResponse.status).toBe(400);
+    expect(await wedgedResponse.json()).toEqual({
+      error: "Select a published page for the Book Now target.",
+    });
+  });
+
+  // First review, finding 3. The footer's link lists are admin-authored under the
+  // same `content` permission and render on every public page, so a report that
+  // could not see them told the officer "nothing points at it" when something did.
+  it("reports the footer sections that link to the deleted address", async () => {
+    mocks.siteContentFindMany.mockResolvedValue([
+      { key: "FOOTER_QUICK_LINKS" },
+      { key: "FOOTER_AFFILIATIONS" },
+    ]);
+
+    const response = await DELETE(jsonRequest("DELETE", { id: "page-1" }));
+    const body = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(body.referencedByFooterSections).toEqual([
+      "FOOTER_QUICK_LINKS",
+      "FOOTER_AFFILIATIONS",
+    ]);
+    // Same substring semantics as the page scan, over the keys the site-content
+    // route's own allowlist permits.
+    expect(mocks.siteContentFindMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: {
+          key: { in: [...SITE_CONTENT_KEYS] },
+          contentHtml: { contains: "/trip-reports" },
+        },
+      }),
+    );
+    // Reported, not blocking — and preserved in the audit row too.
+    expect(mocks.pageContentDelete).toHaveBeenCalledOnce();
+    const [auditEvent] =
+      mocks.buildStructuredAuditLogCreateArgs.mock.calls.at(-1)!;
+    expect(auditEvent.metadata.referencedByFooterSections).toEqual([
+      "FOOTER_QUICK_LINKS",
+      "FOOTER_AFFILIATIONS",
+    ]);
+  });
+
+  // First review, finding 5. Past the commit the delete HAS happened; letting a
+  // cache-clear failure escape answered 500 for a success, and the retry it
+  // invited answered 404 — two failures for one completed delete.
+  it("reports a completed delete whose cache flush failed, rather than a 500", async () => {
+    // …Once, not for the rest of the file: `vi.clearAllMocks()` clears calls but
+    // keeps implementations, so a throwing stub left behind would leak into every
+    // later test in this describe.
+    mocks.revalidatePublicPageContent.mockImplementationOnce(() => {
+      throw new Error("revalidation transport down");
+    });
+
+    const response = await DELETE(jsonRequest("DELETE", { id: "page-1" }));
+    const body = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(body.ok).toBe(true);
+    expect(body.publicCacheCleared).toBe(false);
+    // The row really is gone, so the truthful answer is "deleted, not flushed".
+    expect(mocks.pageContentDelete).toHaveBeenCalledOnce();
+    // …and it is logged distinctly, because the audit row is already committed
+    // and cannot record it.
+    expect(mocks.loggerError).toHaveBeenCalledWith(
+      expect.objectContaining({ pageId: "page-1", slug: "trip-reports" }),
+      "Page deleted but the public site cache could not be cleared",
+    );
+  });
+
+  // First review, finding 4. The archive bound was asserted by comment: this file
+  // mocks `@/lib/audit`, so the test above proves only that the OPTION is passed,
+  // and the sanitiser's own suite exercises a 10,000-character cap. This runs the
+  // REAL sanitiser, with the options this route actually passed, over a page
+  // sitting at both write caps at once.
+  it("keeps a page at both content caps whole in the real audit sanitiser", async () => {
+    // The worst ORDINARY escape: a value made of newlines doubles in length as
+    // JSON. Real HTML escapes far less, so this is the bound, not the average.
+    const maximalRow = {
+      ...probeRow,
+      contentHtml: "\n".repeat(PAGE_CONTENT_LIMITS.contentHtmlMax),
+      headerText: "\n".repeat(PAGE_CONTENT_LIMITS.headerTextMax),
+    };
+    mocks.pageContentFindUnique.mockResolvedValue(maximalRow);
+    mocks.pageContentDelete.mockResolvedValue(maximalRow);
+
+    const response = await DELETE(jsonRequest("DELETE", { id: "page-1" }));
+    expect(response.status).toBe(200);
+
+    const [auditEvent, auditOptions] =
+      mocks.buildStructuredAuditLogCreateArgs.mock.calls.at(-1)!;
+    const { sanitizeAuditMetadata } =
+      await vi.importActual<typeof import("@/lib/audit")>("@/lib/audit");
+
+    const sanitized = sanitizeAuditMetadata(
+      auditEvent.metadata,
+      auditOptions,
+    ) as {
+      _truncated?: true;
+      before?: { contentHtml: string; headerText: string };
+    };
+
+    // The whole point of the sum: the snapshot survives intact rather than
+    // collapsing to the {_truncated, preview} stub, and neither field is clipped.
+    expect(sanitized._truncated).toBeUndefined();
+    expect(sanitized.before?.contentHtml).toBe(maximalRow.contentHtml);
+    expect(sanitized.before?.headerText).toBe(maximalRow.headerText);
+
+    // The arithmetic the route's comment asserts, measured rather than reasoned:
+    // the budget is 24,000 + (200,000 + 20,000) × 2 = 464,000 characters, and
+    // this worst-ordinary-escape page serialises to 440,385 of it — over the
+    // 400,000 a body-cap-only budget would allow for, and inside the sum.
+    const serializedLength = JSON.stringify(sanitized).length;
+    const budget =
+      24_000 +
+      (PAGE_CONTENT_LIMITS.contentHtmlMax + PAGE_CONTENT_LIMITS.headerTextMax) *
+        2;
+    expect(serializedLength).toBeGreaterThan(
+      24_000 + PAGE_CONTENT_LIMITS.contentHtmlMax * 2,
+    );
+    expect(serializedLength).toBeLessThanOrEqual(budget);
+
+    // And the counterfactual that makes the deviation from the plan correct:
+    // sized on the BODY cap alone, this same page overflows the whole-metadata
+    // budget and the entire snapshot is replaced by a preview stub.
+    const sizedOnBodyCapAlone = sanitizeAuditMetadata(auditEvent.metadata, {
+      archiveText: { maxStringLength: PAGE_CONTENT_LIMITS.contentHtmlMax },
+    }) as { _truncated?: true; before?: unknown };
+    expect(sizedOnBodyCapAlone._truncated).toBe(true);
+    expect(sizedOnBodyCapAlone.before).toBeUndefined();
   });
 });

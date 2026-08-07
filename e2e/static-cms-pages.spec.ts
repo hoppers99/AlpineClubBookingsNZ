@@ -864,11 +864,23 @@ test.describe("deleting a CMS page", () => {
       const removedBody = (await removed.json()) as {
         ok: boolean;
         referencedBySlugs: string[];
+        referencedByFooterSections: string[];
         wasBookNowTarget: boolean;
+        publicCacheCleared: boolean;
       };
       expect(removedBody.ok).toBe(true);
       expect(removedBody.referencedBySlugs).toEqual([]);
+      // The footer's admin-authored link lists are scanned too (first review,
+      // finding 3); the starter footer links only built-in pages, so a probe page
+      // is genuinely unreferenced there.
+      expect(removedBody.referencedByFooterSections).toEqual([]);
       expect(removedBody.wasBookNowTarget).toBe(false);
+      // Against a real server the flush really happened, which is what the 404
+      // below then proves behaviourally. The flag exists so that a flush failure
+      // is reported as "deleted but not flushed" rather than as a failed delete
+      // (finding 5) — here it must be true, or the 404 assertion is testing the
+      // wrong thing.
+      expect(removedBody.publicCacheCleared).toBe(true);
 
       // The assertion the measurement gate is for. No sleep.
       expect(

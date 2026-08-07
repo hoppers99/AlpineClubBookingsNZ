@@ -14,9 +14,11 @@ import {
   isValidPageSlug,
   normalizePageSlug,
   PAGE_CONTENT_LIMITS,
+  SITE_CONTENT_KEYS,
   SYSTEM_PAGE_SLUGS,
   toPagePath,
 } from "@/lib/page-content";
+import logger from "@/lib/logger";
 import {
   listEditablePageContent,
   sanitizePageContentHtml,
@@ -491,10 +493,23 @@ export async function PATCH(request: NextRequest) {
  * **References are reported, not blocking (D-B4(a)).** In-content links are free
  * text an officer can spell any number of ways, so a substring check that refused
  * the delete would be both bypassable and infuriating; the same check used to warn
- * is honest about being best-effort. Navigation needs no rule — the menu is derived
- * from the rows themselves — and the Book Now target is already safe by design:
- * the FK is `onDelete: SetNull` and `getBookNowConfig()` fails open to the booking
- * flow, so the button reverts rather than dangling. Reverting it SILENTLY is the
+ * is honest about being best-effort. It covers BOTH admin-authored link surfaces:
+ * the other pages' body/intro text, and the keyed `SiteContent` footer sections —
+ * which are edited under this same `content` permission and render on every public
+ * page, so a footer link left dangling is the widest miss of the two (first review,
+ * finding 3). Navigation needs no rule — the menu is derived from the rows
+ * themselves.
+ *
+ * **The Book Now target is repointed, not left half-set (first review, finding 1).**
+ * The FK is `onDelete: SetNull` and `getBookNowConfig()` fails open, so the public
+ * button was never going to dangle. The stored PAIR was the problem: `SetNull`
+ * clears `bookNowPageId` and leaves `bookNowTarget = "PAGE"`, which is a
+ * combination the settings panel's own PUT rejects with
+ * `400 "Select a published page for the Book Now target."` — so the officer could
+ * not save ANY change in that sibling panel (fee/policy visibility, committee
+ * photo, `showBookNow`) until they noticed and moved the radio. The transaction
+ * below sets the target back to the booking flow itself, so the row it leaves
+ * behind is always one its own writer would accept. Doing that SILENTLY is the
  * surprise an audit row cannot prevent, which is what the flag in the response is
  * for.
  */
@@ -548,18 +563,43 @@ export async function DELETE(request: NextRequest) {
   // describe what the club just lost. A plain substring match on the page's path,
   // the same semantics the image-library delete uses for its own report: a page
   // whose text happens to mention a LONGER path starting with these characters is
-  // reported too. Over-reporting a warning is the safe direction.
-  const referencingPages = await prisma.pageContent.findMany({
-    where: {
-      id: { not: existing.id },
-      OR: [
-        { contentHtml: { contains: existing.path } },
-        { headerText: { contains: existing.path } },
-      ],
-    },
-    select: { slug: true },
-    orderBy: { slug: "asc" },
-  });
+  // reported too. Over-reporting a warning is the safe direction. A RELATIVE href
+  // ("../trip-reports") still slips past it, and that limitation is stated in the
+  // operator guide rather than left as a surprise.
+  //
+  // Two sources, because the club has two places to author a link (first review,
+  // finding 3). The footer sections were the silent gap: `FOOTER_QUICK_LINKS` and
+  // `FOOTER_AFFILIATIONS` are HTML link lists edited under this same `content`
+  // permission and rendered on EVERY public page, so reporting "nothing points at
+  // it" while the footer did was the most misleading answer this endpoint could
+  // give. Filtered to the same `SITE_CONTENT_KEYS` allowlist the site-content
+  // route enforces, so a future non-public key cannot silently join the scan.
+  //
+  // The missing-row fallback in `getSiteFooterContent()` cannot hide a reference
+  // here: a club with no stored row renders `starterSiteContent`, whose only links
+  // are to built-in pages (`/about`, `/join`, `/faq`, `/rules`, `/contact`,
+  // `/login`) — none of which is deletable at all.
+  const [referencingPages, referencingFooterSections] = await Promise.all([
+    prisma.pageContent.findMany({
+      where: {
+        id: { not: existing.id },
+        OR: [
+          { contentHtml: { contains: existing.path } },
+          { headerText: { contains: existing.path } },
+        ],
+      },
+      select: { slug: true },
+      orderBy: { slug: "asc" },
+    }),
+    prisma.siteContent.findMany({
+      where: {
+        key: { in: [...SITE_CONTENT_KEYS] },
+        contentHtml: { contains: existing.path },
+      },
+      select: { key: true },
+      orderBy: { key: "asc" },
+    }),
+  ]);
 
   // Is the public header's Book Now button pointing here right now? Gated on the
   // target as well as the FK: the settings PUT never persists a stray page id
@@ -572,10 +612,45 @@ export async function DELETE(request: NextRequest) {
   });
   const wasBookNowTarget = bookNowTargetSettings !== null;
   const referencedBySlugs = referencingPages.map((page) => page.slug);
+  const referencedByFooterSections = referencingFooterSections.map(
+    (section) => section.key,
+  );
 
   // Delete the row and record what was removed atomically, so a page can never
   // vanish without the audit entry that is its only recovery route.
   await prisma.$transaction(async (tx) => {
+    // Repoint the Book Now button BEFORE the delete, in the same transaction
+    // (first review, finding 1). `onDelete: SetNull` would clear the id and leave
+    // the target reading "PAGE", and that pair is one the settings panel's own PUT
+    // refuses to save — wedging every unrelated control in that panel. Writing it
+    // here means the only states this route can leave behind are states that
+    // panel accepts. It is recorded, not silent: `wasBookNowTarget` goes into the
+    // audit metadata below and into the response, which is what the confirmation
+    // warned about and what the post-delete message repeats. No second
+    // PUBLIC_CONTENT_SETTINGS_UPDATED row is written for it on purpose — the
+    // deletion entry is the one that explains WHY the target moved, and the page
+    // id it moved off is the entity that entry is already about.
+    //
+    // Written by id, not conditioned on the pair this request read: one
+    // statement, whose result does not depend on what else committed in
+    // between. The cost is stated rather than hidden — if a SECOND officer
+    // repoints the button at another page in the window between the read above
+    // and this write, their choice is overwritten with the booking flow. That
+    // is narrow (two content officers, the same singleton row, the same
+    // instant), it is visible (the panel shows the saved value, and this
+    // deletion's own audit entry records that the delete moved the target), and
+    // it is one click to redo.
+    if (bookNowTargetSettings !== null) {
+      await tx.publicContentSettings.update({
+        where: { id: bookNowTargetSettings.id },
+        data: {
+          bookNowTarget: "BOOKING_FLOW",
+          bookNowPageId: null,
+          updatedByMemberId: guard.session.user.id,
+        },
+      });
+    }
+
     await tx.pageContent.delete({ where: { id: existing.id } });
 
     await tx.auditLog.create(
@@ -609,6 +684,7 @@ export async function DELETE(request: NextRequest) {
               updatedAt: existing.updatedAt.toISOString(),
             },
             referencedBySlugs,
+            referencedByFooterSections,
             wasBookNowTarget,
           },
           request: getAuditRequestContext(request),
@@ -629,10 +705,25 @@ export async function DELETE(request: NextRequest) {
         // let either field exceed its own limit: the write schemas above already
         // bound them, and this only bounds one string.
         //
-        // One honest caveat survives, the same one that route documents:
-        // key-value redaction still fires on body text shaped like
-        // `password: value`, and it takes the whole LINE, not a fragment. The
-        // operator guide states it rather than leaving it as a surprise.
+        // THREE honest caveats survive. The operator guide states all three
+        // rather than leaving them as surprises:
+        //
+        //  1. key-value redaction still fires on body text shaped like
+        //     `password: value`, and it takes the whole matched value, not a
+        //     fragment — the same caveat the email-template route documents.
+        //  2. `SECRET_VALUE_PATTERN` replaces the ENTIRE field with
+        //     `[REDACTED]` on a single match, not just the match. One
+        //     `/membership-cancellation/<token>` URL, Stripe key or JWT pasted
+        //     into a help page therefore costs the whole body snapshot, not a
+        //     line of it (first review, finding 4).
+        //  3. the caps below bound the INPUT, not the stored value. `PUT` parses
+        //     with zod and THEN entity-escapes through
+        //     `sanitizePageContentHtml` (`&` → `&amp;`), and the column is
+        //     unbounded, so an entity-dense body accepted at 200,000 characters
+        //     can be stored longer than that. Past the sum below the archived
+        //     string is clipped with `...[TRUNCATED]` — degraded, but visible in
+        //     the row rather than silent, and it needs a page within ~10% of the
+        //     cap AND entity-dense text to reach.
         {
           archiveText: {
             maxStringLength:
@@ -650,7 +741,27 @@ export async function DELETE(request: NextRequest) {
   // from the store — and `revalidate = 300` is no bound on that, because a stale
   // entry is handed to the requester before regeneration starts. Only the tag
   // expiry this produces forces the blocking regeneration.
-  revalidatePublicPageContent();
+  //
+  // Guarded, unlike the sibling methods (first review, finding 5). By this line
+  // the row is gone and the audit entry is written, so letting a cache-clear
+  // failure escape would answer 500 for a delete that SUCCEEDED: the panel keeps
+  // the row on screen, the officer retries, and the retry answers
+  // `404 "Page not found"` — two failures for one completed delete, on the one
+  // method that cannot be repeated. So the response tells the truth instead: the
+  // delete happened, the flush did not, and the address may keep answering until
+  // the 300-second backstop lapses. The failure is logged distinctly because
+  // nothing else in the request records it — the audit row cannot, it is already
+  // committed.
+  let publicCacheCleared = true;
+  try {
+    revalidatePublicPageContent();
+  } catch (err) {
+    publicCacheCleared = false;
+    logger.error(
+      { err, pageId: existing.id, slug: existing.slug, path: existing.path },
+      "Page deleted but the public site cache could not be cleared",
+    );
+  }
 
   return NextResponse.json({
     ok: true,
@@ -662,6 +773,8 @@ export async function DELETE(request: NextRequest) {
       published: existing.published,
     },
     referencedBySlugs,
+    referencedByFooterSections,
     wasBookNowTarget,
+    publicCacheCleared,
   });
 }

@@ -1263,13 +1263,19 @@ describe("view-only section banner coverage (#2160)", () => {
                move 235 -> 234 and total opt-outs move 262 -> 261. Banner,
                vouch and per-button-explanation counts are unchanged.
           311  +1  Unrecorded when it landed, reconstructed here from the
-               commit rather than left as a hole in the chain: #2597 restored a
-               same-file static opt-out (callSites 310 -> 311, optOuts
-               261 -> 262, staticOptOuts 234 -> 235) and updated the measured
-               figures without adding its ledger line. The entry above it reads
-               310, the figures read 311, and the gap was exactly this. Noticed
-               while measuring the entry below, whose own numbers would
-               otherwise have looked like +2.
+               commit rather than left as a hole in the chain: #2597 ADDED a
+               control — the "Resume approval" button, which finishes a deletion
+               approval that started and did not finish, in
+               `app/(admin)/admin/deletion-requests/deletion-requests-client.tsx`.
+               It is a `describeReason={false}` static opt-out in the same file
+               as that page's own unconditional banner, so callSites
+               310 -> 311, optOuts 261 -> 262 and staticOptOuts 234 -> 235,
+               and nothing else moves. Commit 969b88943
+               re-measured the figures to 311/262/235 and updated every place
+               that publishes them, but added no ledger line: the entry above
+               it reads 310, the figures read 311, and the gap was exactly
+               this. Noticed while measuring the entry below, whose own numbers
+               would otherwise have looked like +2.
           312  +1  #2352 MC-03D adds the per-page Delete control to the Page
                Content cards, beside the Hide/Publish toggle it sits with and
                under the banner that file already renders. Static opt-outs move
