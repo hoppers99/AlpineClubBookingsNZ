@@ -1282,6 +1282,16 @@ describe("view-only section banner coverage (#2160)", () => {
                235 -> 236 and total opt-outs 262 -> 263; the vouched split,
                the exceptions and the banner count are untouched, because the
                control is gated on the same content area the banner states.
+          312      Re-measured on the merged tree rather than trusting the entry
+               above it, because three open PRs (#2595, #2636 and this one) each
+               move this census off the same base and `callSites: 312` is
+               byte-identical on all three sides — so git merges that cell
+               without a conflict and a predicted number would land red. Merged
+               main at 54b282b61 (#2643) and ran the census: still
+               312 / 263 / 236, because this PR is the first of the three to
+               reach main and nothing between 84638aa5d and 54b282b61 touched a
+               ViewOnlyActionButton call site. Whichever of the other two lands
+               next has to repeat this and will measure 313, not 312.
       */
       // #2259 adds the per-booking "No emails"
       // switch (`booking-no-emails-controls.tsx`), a leaf control dropped into
