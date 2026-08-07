@@ -66,6 +66,14 @@ function deletionCleanupRecovery(input: {
   cancelledBookings: number;
   cancellationPending: boolean;
   retryBookingId: string | null;
+  cancellationStatusUnconfirmed?: boolean;
+  cancellationPostProcessingUnconfirmed?: boolean;
+  reviewBookingId?: string | null;
+  blocker?: {
+    code: string;
+    message: string;
+    remedy: string;
+  };
 }) {
   return {
     code: "DELETION_CLEANUP_PARTIAL",
@@ -74,11 +82,55 @@ function deletionCleanupRecovery(input: {
     cancelledBookings: input.cancelledBookings,
     cancellationPending: input.cancellationPending,
     retryBookingId: input.retryBookingId,
+    ...(input.cancellationStatusUnconfirmed
+      ? { cancellationStatusUnconfirmed: true }
+      : {}),
+    ...(input.cancellationPostProcessingUnconfirmed
+      ? { cancellationPostProcessingUnconfirmed: true }
+      : {}),
+    ...(input.reviewBookingId
+      ? { reviewBookingId: input.reviewBookingId }
+      : {}),
+    ...(input.blocker ? { blocker: input.blocker } : {}),
     remainingCleanupPending: true,
     memberAnonymised: false,
     memberDataAnonymised: false,
     approvalReceiptSent: false,
   };
+}
+
+type CancellationFailureFact =
+  | { state: "CANCELLED" }
+  | { state: "PENDING" }
+  | { state: "STATUS_UNCONFIRMED" };
+
+async function recheckCancellationFailure(
+  bookingId: string,
+): Promise<CancellationFailureFact> {
+  try {
+    const booking = await prisma.booking.findUnique({
+      where: { id: bookingId },
+      select: { status: true },
+    });
+    if (booking?.status === "CANCELLED") {
+      return { state: "CANCELLED" };
+    }
+    if (
+      booking &&
+      CANCELLABLE_DELETION_BOOKING_STATUSES.some(
+        (status) => status === booking.status,
+      )
+    ) {
+      return { state: "PENDING" };
+    }
+    return { state: "STATUS_UNCONFIRMED" };
+  } catch (error) {
+    logger.error(
+      { err: error, bookingId },
+      "Could not authoritatively recheck booking after deletion cleanup failure",
+    );
+    return { state: "STATUS_UNCONFIRMED" };
+  }
 }
 
 export async function POST(
@@ -256,7 +308,6 @@ export async function POST(
     });
 
     const cancelledBookingIds: string[] = [];
-    const failedBookingIds: string[] = [];
     for (const booking of futureBookings) {
       let result;
       try {
@@ -267,10 +318,24 @@ export async function POST(
           ip,
         );
       } catch (err) {
+        const cancellationFact = await recheckCancellationFailure(booking.id);
+        if (
+          cancellationFact.state === "CANCELLED" &&
+          !cancelledBookingIds.includes(booking.id)
+        ) {
+          cancelledBookingIds.push(booking.id);
+          completedBookingCancellations = cancelledBookingIds.length;
+        }
         const recovery = deletionCleanupRecovery({
           cancelledBookings: cancelledBookingIds.length,
-          cancellationPending: true,
-          retryBookingId: booking.id,
+          cancellationPending: cancellationFact.state === "PENDING",
+          retryBookingId:
+            cancellationFact.state === "PENDING" ? booking.id : null,
+          cancellationStatusUnconfirmed:
+            cancellationFact.state === "STATUS_UNCONFIRMED",
+          cancellationPostProcessingUnconfirmed:
+            cancellationFact.state === "CANCELLED",
+          reviewBookingId: booking.id,
         });
         const hostingRetry = hostingCoverageParticipantRetryResponse(err, recovery);
         if (hostingRetry) return hostingRetry;
@@ -284,37 +349,41 @@ export async function POST(
         cancelledBookingIds.push(booking.id);
         completedBookingCancellations = cancelledBookingIds.length;
       } else {
-        failedBookingIds.push(booking.id);
+        const cancellationFact = await recheckCancellationFailure(booking.id);
+        if (cancellationFact.state === "CANCELLED") {
+          if (!cancelledBookingIds.includes(booking.id)) {
+            cancelledBookingIds.push(booking.id);
+            completedBookingCancellations = cancelledBookingIds.length;
+          }
+          continue;
+        }
         logger.warn(
           { bookingId: booking.id, memberId: member.id, result },
           "Failed to cancel booking during account deletion"
         );
-      }
-    }
-
-    if (failedBookingIds.length > 0) {
-      logAudit({
-        action: "member.deletion_cleanup_failed",
-        memberId: session.user.id,
-        targetId: member.id,
-        details: `Account deletion approval stopped; failed to cancel future bookings: ${failedBookingIds.join(", ")}`,
-        ipAddress: ip,
-        category: "privacy",
-        severity: "critical",
-        outcome: "failure",
-      });
-
-      return NextResponse.json(
-        {
-          ...deletionCleanupRecovery({
+        logAudit({
+          action: "member.deletion_cleanup_failed",
+          memberId: session.user.id,
+          targetId: member.id,
+          details: `Account deletion approval stopped; failed to cancel future booking: ${booking.id}`,
+          ipAddress: ip,
+          category: "privacy",
+          severity: "critical",
+          outcome: "failure",
+        });
+        return NextResponse.json(
+          deletionCleanupRecovery({
             cancelledBookings: cancelledBookingIds.length,
-            cancellationPending: true,
-            retryBookingId: failedBookingIds[0] ?? null,
+            cancellationPending: cancellationFact.state === "PENDING",
+            retryBookingId:
+              cancellationFact.state === "PENDING" ? booking.id : null,
+            cancellationStatusUnconfirmed:
+              cancellationFact.state === "STATUS_UNCONFIRMED",
+            reviewBookingId: booking.id,
           }),
-          failedBookingIds,
-        },
-        { status: 409 }
-      );
+          { status: 409 },
+        );
+      }
     }
 
     // Capture the destination before anonymisation, but send only after commit.
@@ -500,15 +569,42 @@ export async function POST(
     const hostingRetry = hostingCoverageParticipantRetryResponse(err, recovery);
     if (hostingRetry) return hostingRetry;
     if (err instanceof AdminAccountGuardError) {
+      if (completedBookingCancellations > 0 && !memberAnonymised) {
+        return NextResponse.json(
+          deletionCleanupRecovery({
+            cancelledBookings: completedBookingCancellations,
+            cancellationPending: false,
+            retryBookingId: null,
+            blocker: {
+              code: "LAST_FULL_ADMIN_GUARD",
+              message: err.message,
+              remedy:
+                "Give another active account Full Admin access, then retry only the remaining deletion cleanup.",
+            },
+          }),
+          { status: err.statusCode },
+        );
+      }
       return NextResponse.json(
         { error: err.message },
         { status: err.statusCode },
       );
     }
     if (err instanceof XeroContactCreateBlocksDeletionError) {
+      const xeroRecovery = deletionCleanupRecovery({
+        cancelledBookings: completedBookingCancellations,
+        cancellationPending: false,
+        retryBookingId: null,
+        blocker: {
+          code: err.code,
+          message: err.message,
+          remedy:
+            "Resolve or explicitly close the Xero contact-create recovery item, then retry only the remaining deletion cleanup.",
+        },
+      });
       return NextResponse.json(
         {
-          ...recovery,
+          ...xeroRecovery,
           code: err.code,
           error: err.message,
         },

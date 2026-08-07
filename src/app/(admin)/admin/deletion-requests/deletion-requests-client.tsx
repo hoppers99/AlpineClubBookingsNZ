@@ -121,6 +121,8 @@ export default function DeletionRequestsClient({
     cancelledBookings: number;
     cancellationPending: boolean;
     retryBookingId: string | null;
+    reviewBookingId: string | null;
+    bookingActionLabel: string | null;
     message: string;
   } | null>(null);
 
@@ -197,14 +199,39 @@ export default function DeletionRequestsClient({
             cancellationPending && typeof body.retryBookingId === "string"
               ? body.retryBookingId
               : null;
+          const cancellationStatusUnconfirmed =
+            body.cancellationStatusUnconfirmed === true;
+          const cancellationPostProcessingUnconfirmed =
+            body.cancellationPostProcessingUnconfirmed === true;
+          const reviewBookingId =
+            typeof body.reviewBookingId === "string"
+              ? body.reviewBookingId
+              : retryBookingId;
+          const blocker =
+            body.blocker &&
+            typeof body.blocker === "object" &&
+            typeof body.blocker.message === "string" &&
+            typeof body.blocker.remedy === "string"
+              ? {
+                  message: body.blocker.message as string,
+                  remedy: body.blocker.remedy as string,
+                }
+              : null;
           const cancelledCopy =
             cancelledBookings === 1
               ? "1 future booking was cancelled."
               : `${cancelledBookings} future bookings were cancelled.`;
-          const cancellationCopy = cancellationPending
-            ? " One remaining booking still needs cancellation."
-            : " The discovered booking cancellations completed.";
-          const recoveryBase = `${cancelledCopy}${cancellationCopy} The member's data was not anonymised and no approval receipt was sent. Retry only the remaining cleanup.`;
+          const cancellationCopy = cancellationPostProcessingUnconfirmed
+            ? " The booking cancellation committed, but its post-cancellation processing could not be confirmed."
+            : cancellationStatusUnconfirmed
+              ? " The current cancellation status of one booking could not be confirmed. Review that booking before retrying."
+              : cancellationPending
+                ? " One remaining booking still needs cancellation."
+                : " The discovered booking cancellations completed.";
+          const blockerCopy = blocker
+            ? ` Approval is still blocked: ${blocker.message} ${blocker.remedy}`
+            : "";
+          const recoveryBase = `${cancelledCopy}${cancellationCopy} The member's data was not anonymised and no approval receipt was sent.${blockerCopy} Retry only the remaining cleanup.`;
 
           setReviewDialog(null);
           setDeletionRecovery({
@@ -213,6 +240,12 @@ export default function DeletionRequestsClient({
             cancelledBookings,
             cancellationPending,
             retryBookingId,
+            reviewBookingId,
+            bookingActionLabel: retryBookingId
+              ? "Open pending booking"
+              : reviewBookingId
+                ? "Open booking for review"
+                : null,
             message: recoveryBase,
           });
           showActionError(recoveryBase);
@@ -362,15 +395,16 @@ export default function DeletionRequestsClient({
                   >
                     Retry remaining cleanup
                   </Button>
-                  {deletionRecovery.retryBookingId ? (
+                  {deletionRecovery.reviewBookingId &&
+                  deletionRecovery.bookingActionLabel ? (
                     <Button asChild variant="outline" size="sm">
                       <Link
                         href={buildHrefWithReturnTo(
-                          `/admin/bookings/${encodeURIComponent(deletionRecovery.retryBookingId)}`,
+                          `/admin/bookings/${encodeURIComponent(deletionRecovery.reviewBookingId)}`,
                           "/admin/deletion-requests",
                         )}
                       >
-                        Open pending booking
+                        {deletionRecovery.bookingActionLabel}
                       </Link>
                     </Button>
                   ) : null}
