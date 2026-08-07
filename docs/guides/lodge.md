@@ -6,7 +6,7 @@ Audience: Operator
 
 The shared sign-in for the physical lodge **kiosk** — the tablet at the lodge that
 guests and hut leaders use to check in and out, see who's staying (including a
-week-at-a-glance of nightly guest counts), and view lodge information. This
+week-at-a-glance of daily guest counts), and view lodge information. This
 page sets the kiosk account's email and password (and, for a
 multi-lodge club, which lodge each kiosk device serves); it is **not** a personal
 admin login. Find it at **Admin → Lodge Operations → Lodge Kiosk**
@@ -40,6 +40,23 @@ module is on.
 
 1. Click **Preview kiosk** to open the kiosk exactly as this login would see it — a
    **read-only** preview, so nothing is saved.
+
+### What "here today" means on the kiosk
+
+Every count and badge on the kiosk answers one question: who is in the lodge on
+this **day**. Everyone who stays a night is here from midday on the day they
+arrive until midday on the day they leave, so a day's list holds the people
+sleeping there tonight **and** the people who slept there last night and leave
+this morning. **Departing** always means *leaves today* — on the day list, on
+the week strip, and in the roster setup wizard, which reads the same list.
+
+Two consequences worth knowing. A changeover morning is not an empty day: the
+week strip shows a guest count and offers a roster, because the beds still need
+stripping. And a stay with a gap in it — someone booked in for Friday and then
+again for Monday — shows nobody on the days in between, because they went home.
+
+The **Who's at the lodge** panel on the admin roster calendar is the one place
+that still counts guest-**nights** rather than days; it says so.
 
 ### Multi-lodge: bind and add kiosk accounts
 
