@@ -256,7 +256,12 @@ export default function KioskPage() {
       }
 
       const [guestsRes, rosterRes] = await Promise.all([
-        fetch(withPreview(`/api/lodge/guests/${date}?scope=lodge-list`)),
+        // #2631: no scope query parameter any more. The guests route answers
+        // one question — the operational day — so this screen, the roster setup
+        // wizard and chore generation cannot drift apart. "Departing Today" keeps
+        // exactly the meaning it always had here: this guest's last night was
+        // last night, so they leave before midday.
+        fetch(withPreview(`/api/lodge/guests/${date}`)),
         fetch(withPreview(`/api/lodge/roster/${date}`)),
       ]);
 
