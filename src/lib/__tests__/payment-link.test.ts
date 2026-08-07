@@ -732,6 +732,37 @@ describe("createPaymentIntentForPaymentLink", () => {
     ).rejects.toMatchObject({ kind: "payment_received_status_unconfirmed" });
   });
 
+  it("classifies participant contention after capture as finalisation pending", async () => {
+    mockedFindUnique.mockResolvedValue(
+      baseLink({
+        booking: baseBooking({
+          payment: {
+            id: "pay-1",
+            stripePaymentIntentId: "pi_captured",
+            status: PaymentStatus.PENDING,
+          },
+        }),
+      }) as never,
+    );
+    mockedGetPaymentIntent.mockResolvedValue({
+      id: "pi_captured",
+      status: "succeeded",
+      amount: 12000,
+      payment_method: "pm_old",
+    } as never);
+    mockedMarkSucceeded.mockRejectedValueOnce({
+      code: "HOSTING_COVERAGE_PARTICIPANT_RETRY",
+      message: "private contention detail",
+    });
+
+    await expect(
+      createPaymentIntentForPaymentLink(RAW_TOKEN),
+    ).rejects.toMatchObject({
+      kind: "payment_received_finalisation_pending",
+      message: "Payment-link card status requires recovery",
+    });
+  });
+
   /**
    * #2265 (#2319 door 1). A stored credit election is a member's standing request
    * to spend their own account-credit balance. This route is authenticated by a

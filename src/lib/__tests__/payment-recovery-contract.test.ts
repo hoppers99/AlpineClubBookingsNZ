@@ -4,7 +4,9 @@ import {
   isExistingCardTransactionStatusUnconfirmed,
   isPaymentReceivedFinalisationPending,
   isPaymentReceivedStatusUnconfirmed,
+  isRefundedCardTransactionRepaymentRequired,
   PAYMENT_RECEIVED_STATUS_UNCONFIRMED_BODY,
+  REFUNDED_CARD_TRANSACTION_REPAYMENT_REQUIRED_BODY,
 } from "@/lib/payment-recovery-contract";
 
 describe("ordinary post-capture payment recovery contract", () => {
@@ -74,5 +76,25 @@ describe("ordinary post-capture payment recovery contract", () => {
         paymentReceived: true,
       }),
     ).toBe(false);
+  });
+
+  it("recognises only the paired local-refund and repayment-required facts", () => {
+    expect(
+      isRefundedCardTransactionRepaymentRequired(
+        REFUNDED_CARD_TRANSACTION_REPAYMENT_REQUIRED_BODY,
+      ),
+    ).toBe(true);
+    expect(
+      isRefundedCardTransactionRepaymentRequired({
+        ...REFUNDED_CARD_TRANSACTION_REPAYMENT_REQUIRED_BODY,
+        repaymentRequired: false,
+      }),
+    ).toBe(false);
+    expect(REFUNDED_CARD_TRANSACTION_REPAYMENT_REQUIRED_BODY).not.toHaveProperty(
+      "paymentReceived",
+    );
+    expect(REFUNDED_CARD_TRANSACTION_REPAYMENT_REQUIRED_BODY).not.toHaveProperty(
+      "paymentIntentId",
+    );
   });
 });

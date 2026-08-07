@@ -10,6 +10,8 @@ import {
   EXISTING_CARD_TRANSACTION_STATUS_UNCONFIRMED_MESSAGE,
   PAYMENT_RECEIVED_STATUS_UNCONFIRMED_BODY,
   PAYMENT_RECEIVED_STATUS_UNCONFIRMED_MESSAGE,
+  REFUNDED_CARD_TRANSACTION_REPAYMENT_REQUIRED_BODY,
+  REFUNDED_CARD_TRANSACTION_REPAYMENT_REQUIRED_MESSAGE,
 } from "@/lib/payment-recovery-contract";
 
 const fetchMock = vi.fn();
@@ -594,6 +596,46 @@ describe("BookingPaymentWrapper", () => {
       behavior: "smooth",
       block: "center",
     });
+  });
+
+  it("shows locally proven refund recovery without claiming payment receipt", async () => {
+    const onPaymentComplete = vi.fn();
+    fetchMock
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({ clientSecret: "cs_test" }),
+      })
+      .mockResolvedValueOnce({
+        ok: false,
+        status: 409,
+        json: async () => ({
+          ...REFUNDED_CARD_TRANSACTION_REPAYMENT_REQUIRED_BODY,
+          error: "raw server text must not be shown",
+        }),
+      });
+
+    render(
+      <BookingPaymentWrapper
+        bookingId="booking-1"
+        amountCents={12500}
+        paymentMode="payment"
+        returnUrl="http://localhost/bookings/booking-1"
+        onPaymentComplete={onPaymentComplete}
+      />,
+    );
+    fireEvent.click(await screen.findByText("trigger-success"));
+
+    const alert = screen.getByRole("alert", { hidden: true });
+    await waitFor(() =>
+      expect(alert).toHaveTextContent("Previous card payment refunded"),
+    );
+    expect(alert).toHaveTextContent(
+      REFUNDED_CARD_TRANSACTION_REPAYMENT_REQUIRED_MESSAGE,
+    );
+    expect(alert).not.toHaveTextContent("Payment received");
+    expect(alert).not.toHaveTextContent("raw server text");
+    expect(onPaymentComplete).not.toHaveBeenCalled();
+    expect(screen.getByText("Payment successful!")).not.toBeNull();
   });
 
   it.each([

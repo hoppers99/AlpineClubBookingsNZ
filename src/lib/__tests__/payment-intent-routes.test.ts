@@ -143,6 +143,7 @@ import {
 import {
   EXISTING_CARD_TRANSACTION_STATUS_UNCONFIRMED_BODY,
   PAYMENT_RECEIVED_STATUS_UNCONFIRMED_BODY,
+  REFUNDED_CARD_TRANSACTION_REPAYMENT_REQUIRED_BODY,
 } from "@/lib/payment-recovery-contract";
 
 const mockPrisma = prisma as unknown as {
@@ -1267,6 +1268,91 @@ describe("generic-catch error-message leak (F31 #1888)", () => {
       expect.objectContaining({ err: expect.any(Error) }),
       "Failed to confirm primary booking payment"
     );
+  });
+
+  it.each(["REFUNDED", "PARTIALLY_REFUNDED"])(
+    "confirm-payment reports a locally proven %s intent as refunded, not newly received",
+    async (status) => {
+      mockPrisma.payment.findUnique.mockResolvedValue({
+        id: "payment-1",
+        stripePaymentIntentId: "pi_refunded",
+        status: "PROCESSING",
+        booking: {
+          memberId: "member-1",
+          finalPriceCents: 12500,
+          status: "CONFIRMED",
+          hasNonMembers: false,
+        },
+      });
+      mockGetPaymentIntent.mockResolvedValue({
+        id: "pi_refunded",
+        amount: 12500,
+        payment_method: "pm_old",
+        status: "succeeded",
+      });
+      mocks.findPaymentTransactionByIntentId.mockResolvedValueOnce({ status });
+
+      const response = await confirmPaymentRoute(
+        new NextRequest(
+          "http://localhost/api/bookings/booking-1/confirm-payment",
+          {
+            method: "POST",
+            body: JSON.stringify({ paymentIntentId: "pi_refunded" }),
+            headers: { "Content-Type": "application/json" },
+          },
+        ),
+        { params: Promise.resolve({ id: "booking-1" }) },
+      );
+
+      expect(response.status).toBe(409);
+      await expect(response.json()).resolves.toEqual(
+        REFUNDED_CARD_TRANSACTION_REPAYMENT_REQUIRED_BODY,
+      );
+      expect(mocks.markBookingPaymentSucceeded).not.toHaveBeenCalled();
+      expect(mocks.queueXeroInvoiceForPaidBooking).not.toHaveBeenCalled();
+    },
+  );
+
+  it("confirm-payment does not claim receipt when local refund classification fails", async () => {
+    mockPrisma.payment.findUnique.mockResolvedValue({
+      id: "payment-1",
+      stripePaymentIntentId: "pi_unknown",
+      status: "PROCESSING",
+      booking: {
+        memberId: "member-1",
+        finalPriceCents: 12500,
+        status: "CONFIRMED",
+        hasNonMembers: false,
+      },
+    });
+    mockGetPaymentIntent.mockResolvedValue({
+      id: "pi_unknown",
+      amount: 12500,
+      payment_method: "pm_old",
+      status: "succeeded",
+    });
+    mocks.findPaymentTransactionByIntentId.mockRejectedValueOnce(
+      new Error("private ledger detail"),
+    );
+
+    const response = await confirmPaymentRoute(
+      new NextRequest(
+        "http://localhost/api/bookings/booking-1/confirm-payment",
+        {
+          method: "POST",
+          body: JSON.stringify({ paymentIntentId: "pi_unknown" }),
+          headers: { "Content-Type": "application/json" },
+        },
+      ),
+      { params: Promise.resolve({ id: "booking-1" }) },
+    );
+    const body = await response.json();
+
+    expect(response.status).toBe(409);
+    expect(body).toEqual(EXISTING_CARD_TRANSACTION_STATUS_UNCONFIRMED_BODY);
+    expect(body).not.toHaveProperty("paymentReceived");
+    expect(JSON.stringify(body)).not.toContain("private ledger detail");
+    expect(mocks.markBookingPaymentSucceeded).not.toHaveBeenCalled();
   });
 
   it("confirm-payment preserves the captured-payment fact when the booking amount drifted", async () => {
