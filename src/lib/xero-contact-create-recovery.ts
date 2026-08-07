@@ -123,7 +123,10 @@ export function isDeletedAccountMarker(member: {
   email: string;
   passwordHash?: string | null;
 }): boolean {
-  const email = member.email.trim().toLowerCase();
+  // The persisted column is non-null. The fallback keeps older unit fixtures
+  // that intentionally project only the fields under test from masquerading
+  // as a deleted account; production reads always select the real email.
+  const email = (member.email ?? "").trim().toLowerCase();
   return (
     member.passwordHash === DELETED_ACCOUNT_PASSWORD_HASH ||
     email.endsWith(`@${DELETED_CONTACT_EMAIL_DOMAIN}`)
@@ -346,6 +349,21 @@ export async function assertNoMemberContactCreateBlockerForDeletion(
   if (await hasMemberContactCreateMergeBlocker(memberId, db)) {
     throw new XeroContactCreateBlocksDeletionError();
   }
+}
+
+/**
+ * Standalone account-deletion side of the contact-create row protocol. The
+ * live route already owns this Member row through its standing fan-out; taking
+ * the same lock again is re-entrant and makes the production boundary directly
+ * executable by the PostgreSQL race suite.
+ */
+export async function lockMemberForAccountDeletionXeroFence(
+  db: ManualContactLinkFenceDb,
+  memberId: string,
+) {
+  const member = await lockMemberForXeroContactLink(db, memberId);
+  await assertNoMemberContactCreateBlockerForDeletion(memberId, db);
+  return member;
 }
 
 export async function getMemberContactCreateRecoveryPending(params: {

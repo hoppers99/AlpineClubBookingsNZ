@@ -13,6 +13,7 @@ const mocks = vi.hoisted(() => ({
   memberFindUnique: vi.fn(),
   txMemberFindUnique: vi.fn(),
   txMemberUpdate: vi.fn(),
+  txXeroOperationFindFirst: vi.fn(),
   txExecuteRaw: vi.fn(),
   txQueryRaw: vi.fn(),
   transaction: vi.fn(),
@@ -26,10 +27,15 @@ const mocks = vi.hoisted(() => ({
   recordProviderCreatedContactPendingLocalLink: vi.fn(),
 }));
 
-vi.mock("@/lib/xero-contact-create-recovery", () => ({
-  recordProviderCreatedContactPendingLocalLink:
-    mocks.recordProviderCreatedContactPendingLocalLink,
-}));
+vi.mock("@/lib/xero-contact-create-recovery", async (importOriginal) => {
+  const actual =
+    await importOriginal<typeof import("@/lib/xero-contact-create-recovery")>();
+  return {
+    ...actual,
+    recordProviderCreatedContactPendingLocalLink:
+      mocks.recordProviderCreatedContactPendingLocalLink,
+  };
+});
 
 vi.mock("@/lib/prisma", () => ({
   prisma: {
@@ -75,6 +81,10 @@ import {
   XeroContactValidationError,
 } from "@/lib/xero-contacts";
 import { buildXeroIdempotencyKey } from "@/lib/xero-sync";
+import {
+  ambiguousMemberContactCreateReservationWhere,
+  XeroContactCreateInProgressError,
+} from "@/lib/xero-contact-create-recovery";
 
 const SPARSE_MEMBER = {
   id: "member-1",
@@ -116,8 +126,9 @@ function primeHappyPath(member: Record<string, unknown>) {
   mocks.upsertXeroObjectLink.mockResolvedValue({ id: "link-1" });
   mocks.syncManagedXeroContactGroupForMember.mockResolvedValue(undefined);
   mocks.recordProviderCreatedContactPendingLocalLink.mockResolvedValue(undefined);
-  mocks.txExecuteRaw.mockResolvedValue(undefined);
-  mocks.txMemberFindUnique.mockResolvedValue({ id: member.id });
+  mocks.txExecuteRaw.mockResolvedValue(1);
+  mocks.txMemberFindUnique.mockResolvedValue({ ...member });
+  mocks.txXeroOperationFindFirst.mockResolvedValue(null);
   mocks.txQueryRaw.mockImplementation(
     async (_strings: TemplateStringsArray, memberId: string) => [{ id: memberId }],
   );
@@ -130,6 +141,9 @@ function primeHappyPath(member: Record<string, unknown>) {
         member: {
           findUnique: mocks.txMemberFindUnique,
           update: mocks.txMemberUpdate,
+        },
+        xeroSyncOperation: {
+          findFirst: mocks.txXeroOperationFindFirst,
         },
       })
   );
@@ -192,6 +206,36 @@ describe("createXeroContactForMember payload hygiene (#2089)", () => {
       })
     );
   });
+
+  it.each([
+    ["active", { id: "operation-running", status: "RUNNING" }],
+    [
+      "stale orphaned",
+      {
+        id: "operation-stale",
+        status: "FAILED",
+        lastErrorCode: "ORPHANED_STALE_RUNNING",
+      },
+    ],
+  ])(
+    "refuses a %s contact-create reservation before authentication or provider work",
+    async (_label, reservation) => {
+      primeHappyPath(SPARSE_MEMBER);
+      mocks.txXeroOperationFindFirst.mockResolvedValueOnce(reservation);
+
+      await expect(
+        createXeroContactForMember("member-1"),
+      ).rejects.toBeInstanceOf(XeroContactCreateInProgressError);
+
+      expect(mocks.txXeroOperationFindFirst).toHaveBeenCalledWith({
+        where: ambiguousMemberContactCreateReservationWhere("member-1"),
+        select: { id: true },
+      });
+      expect(mocks.startXeroSyncOperation).not.toHaveBeenCalled();
+      expect(mocks.getAuthenticatedXeroClient).not.toHaveBeenCalled();
+      expect(mocks.createContacts).not.toHaveBeenCalled();
+    },
+  );
 
   it("still sends a MOBILE phone block when any phone part is present", async () => {
     primeHappyPath({
@@ -294,6 +338,9 @@ describe("createXeroContactForMember payload hygiene (#2089)", () => {
           member: {
             findUnique: mocks.txMemberFindUnique,
             update: mocks.txMemberUpdate,
+          },
+          xeroSyncOperation: {
+            findFirst: mocks.txXeroOperationFindFirst,
           },
         }),
       )

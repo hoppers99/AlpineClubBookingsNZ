@@ -16,7 +16,6 @@ import logger from "@/lib/logger";
 import { z } from "zod";
 import { buildXeroContactUrl } from "@/lib/xero-links";
 import { getXeroOrgShortCode } from "@/lib/xero-link-short-code";
-import { upsertXeroObjectLink } from "@/lib/xero-sync";
 import { getSeasonYear } from "@/lib/utils";
 import {
   linkedContactRecovery,
@@ -24,12 +23,12 @@ import {
 } from "@/lib/xero-partial-success";
 import {
   assertMemberAvailableForXeroContactChange,
-  lockMemberForManualXeroContactLink,
   XERO_CONTACT_CREATE_IN_PROGRESS_CODE,
   XERO_MEMBER_UNAVAILABLE_CODE,
   XeroContactCreateInProgressError,
   XeroMemberUnavailableError,
 } from "@/lib/xero-contact-create-recovery";
+import { commitManualXeroContactLink } from "@/lib/xero-manual-contact-link";
 
 const linkSchema = z.object({
   xeroContactId: z.string().min(1),
@@ -121,31 +120,10 @@ export async function POST(
 
     await refreshXeroContactCachesFromContact(contact);
 
-    await prisma.$transaction(async (tx) => {
-      await lockMemberForManualXeroContactLink(tx, id);
-      await tx.member.update({
-        where: { id },
-        data: { xeroContactId: parsed.data.xeroContactId },
-      });
-      // `XeroObjectLink.localId` has no FK. Keep the canonical CONTACT link in
-      // the same target-Member FOR UPDATE transaction as xeroContactId so merge
-      // can never delete the loser in a post-link/pre-ledger gap and leave a
-      // dangling active link behind.
-      await upsertXeroObjectLink(
-        {
-          localModel: "Member",
-          localId: id,
-          xeroObjectType: "CONTACT",
-          xeroObjectId: parsed.data.xeroContactId,
-          xeroObjectUrl: buildXeroContactUrl(parsed.data.xeroContactId),
-          role: "CONTACT",
-          metadata: {
-            contactName: contact.name ?? null,
-            linkedManually: true,
-          },
-        },
-        { store: tx },
-      );
+    await commitManualXeroContactLink({
+      memberId: id,
+      xeroContactId: parsed.data.xeroContactId,
+      contactName: contact.name ?? null,
     });
     memberLinkCommitted = true;
     subscriptionRefreshPending = true;

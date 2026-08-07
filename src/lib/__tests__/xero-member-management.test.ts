@@ -606,6 +606,19 @@ describe("Xero Member Management", () => {
         where: { id: "m1" },
         data: { xeroContactId: "new-xero-id" },
       });
+      expect(mockUpsertXeroObjectLink).toHaveBeenCalledWith(
+        expect.objectContaining({
+          localModel: "Member",
+          localId: "m1",
+          xeroObjectType: "CONTACT",
+          xeroObjectId: "new-xero-id",
+          role: "CONTACT",
+        }),
+        { store: prisma },
+      );
+      expect(
+        vi.mocked(prisma.member.update).mock.invocationCallOrder[0],
+      ).toBeLessThan(mockUpsertXeroObjectLink.mock.invocationCallOrder[0]);
       expect(mockFlushMemberSubscriptionHistory).toHaveBeenCalledWith("m1");
       expect(
         mockSyncMemberSubscriptionHistoryForLinkedContact
@@ -686,6 +699,37 @@ describe("Xero Member Management", () => {
       expect(mockUpsertXeroObjectLink).not.toHaveBeenCalled();
     });
 
+    it("refuses an anonymised member before the Xero contact lookup", async () => {
+      mockedAuth.mockResolvedValue(adminSession);
+      vi.mocked(prisma.member.findUnique).mockResolvedValue({
+        id: "m1",
+        firstName: "Deleted",
+        lastName: "Member",
+        email: "deleted-m1@deleted.invalid",
+        passwordHash: "DELETED_ACCOUNT",
+        xeroContactId: null,
+      } as never);
+
+      const response = await xeroLink(
+        new NextRequest("http://localhost/api/admin/members/m1/xero-link", {
+          method: "POST",
+          body: JSON.stringify({ xeroContactId: "xero-target" }),
+        }),
+        { params: Promise.resolve({ id: "m1" }) },
+      );
+
+      expect(response.status).toBe(409);
+      await expect(response.json()).resolves.toEqual({
+        error:
+          "This member account is no longer available for Xero contact changes. Refresh the member and do not retry this action.",
+        code: "XERO_MEMBER_UNAVAILABLE",
+      });
+      expect(mockGetAuthenticatedXeroClient).not.toHaveBeenCalled();
+      expect(mockCallXeroApi).not.toHaveBeenCalled();
+      expect(prisma.member.update).not.toHaveBeenCalled();
+      expect(mockUpsertXeroObjectLink).not.toHaveBeenCalled();
+    });
+
     it("does not swallow participant contention as a successful history warning after the link persisted", async () => {
       mockedAuth.mockResolvedValue(adminSession);
       vi.mocked(prisma.member.findUnique).mockResolvedValue({
@@ -735,7 +779,7 @@ describe("Xero Member Management", () => {
       );
     });
 
-    it("returns proven link recovery when object-link bookkeeping fails", async () => {
+    it("does not claim the member link committed when atomic object-link bookkeeping rolls back", async () => {
       mockedAuth.mockResolvedValue(adminSession);
       vi.mocked(prisma.member.findUnique).mockResolvedValue({
         id: "m1", firstName: "John", lastName: "Doe", xeroContactId: null,
@@ -761,15 +805,9 @@ describe("Xero Member Management", () => {
       );
       const body = await res.json();
 
-      expect(res.status).toBe(409);
-      expect(body).toEqual(
-        expect.objectContaining({
-          code: "XERO_PARTIAL_SUCCESS",
-          recoveryKind: "CONTACT_LINKED",
-          xeroContactLinked: true,
-          subscriptionRefreshPending: true,
-        }),
-      );
+      expect(res.status).toBeGreaterThanOrEqual(400);
+      expect(body).not.toHaveProperty("recoveryKind");
+      expect(body).not.toHaveProperty("xeroContactLinked");
       expect(JSON.stringify(body)).not.toContain("private object-link detail");
     });
 

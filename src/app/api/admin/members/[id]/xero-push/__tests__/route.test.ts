@@ -93,7 +93,10 @@ import {
   HOSTING_COVERAGE_RETRY_MESSAGE,
   HostingCoverageParticipantRetryError,
 } from "@/lib/adult-member-hosting-queue-participants";
-import { XeroContactAlreadyLinkedError } from "@/lib/xero-contact-create-recovery";
+import {
+  XeroContactAlreadyLinkedError,
+  XeroContactCreateInProgressError,
+} from "@/lib/xero-contact-create-recovery";
 
 function okGuard(userId = "admin-1") {
   return { ok: true as const, session: { user: { id: userId } } };
@@ -123,6 +126,7 @@ beforeEach(() => {
     firstName: "Alice",
     lastName: "Example",
     email: "alice@example.org",
+    passwordHash: null,
     xeroContactId: null,
   });
   mockFindPotential.mockResolvedValue([]);
@@ -216,6 +220,49 @@ describe("POST /api/admin/members/[id]/xero-push (#2089)", () => {
     await expect(response.json()).resolves.toEqual({
       error: "Member already linked to Xero",
     });
+  });
+
+  it.each([
+    ["direct", {}],
+    ["force-create", { forceCreate: true }],
+  ])(
+    "maps an ambiguous reservation to the fixed safe 409 on the %s path",
+    async (_label, body) => {
+      mockCreate.mockRejectedValueOnce(
+        new XeroContactCreateInProgressError(),
+      );
+
+      const response = await POST(postReq(body), { params });
+
+      expect(response.status).toBe(409);
+      await expect(response.json()).resolves.toEqual({
+        error:
+          "A Xero contact create is still in progress or awaiting recovery. Refresh this member before taking another Xero action.",
+        code: "XERO_CONTACT_CREATE_IN_PROGRESS",
+      });
+    },
+  );
+
+  it("refuses an anonymised member before suggestions, reservation, or provider work", async () => {
+    mockMemberFindUnique.mockResolvedValue({
+      id: "mem_1",
+      firstName: "Deleted",
+      lastName: "Member",
+      email: "deleted-mem_1@deleted.invalid",
+      passwordHash: "DELETED_ACCOUNT",
+      xeroContactId: null,
+    });
+
+    const response = await POST(postReq(), { params });
+
+    expect(response.status).toBe(409);
+    await expect(response.json()).resolves.toEqual({
+      error:
+        "This member account is no longer available for Xero contact changes. Refresh the member and do not retry this action.",
+      code: "XERO_MEMBER_UNAVAILABLE",
+    });
+    expect(mockFindPotential).not.toHaveBeenCalled();
+    expect(mockCreate).not.toHaveBeenCalled();
   });
 
   it("marks a newly created contact as linked when history refresh is deferred", async () => {

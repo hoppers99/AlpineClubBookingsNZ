@@ -21,7 +21,8 @@ const h = vi.hoisted(() => ({
   sweepFuturePartnerSharedAllocationsWithLocksHeld: vi.fn(),
   prisma: {
     deletionRequest: { findUnique: vi.fn(), update: vi.fn() },
-    booking: { findMany: vi.fn() },
+    booking: { findMany: vi.fn(), findUnique: vi.fn() },
+    xeroSyncOperation: { findFirst: vi.fn() },
     // #2255: `findMany` reads who the anonymisation is about to detach and
     // `updateMany` sweeps their inheritance pointers, so club email stops being
     // aimed at the @deleted.invalid address the route has just written.
@@ -29,6 +30,7 @@ const h = vi.hoisted(() => ({
       update: vi.fn(),
       updateMany: vi.fn().mockResolvedValue({ count: 0 }),
       findMany: vi.fn().mockResolvedValue([]),
+      findUnique: vi.fn(),
     },
     familyGroupMember: { deleteMany: vi.fn() },
     bookingGuest: { updateMany: vi.fn() },
@@ -124,7 +126,15 @@ beforeEach(() => {
   });
   h.prisma.deletionRequest.update.mockResolvedValue({});
   h.prisma.booking.findMany.mockResolvedValue([]);
+  h.prisma.booking.findUnique.mockResolvedValue({ status: "PENDING" });
+  h.prisma.xeroSyncOperation.findFirst.mockResolvedValue(null);
   h.prisma.member.update.mockResolvedValue({});
+  h.prisma.member.findUnique.mockResolvedValue({
+    id: member.id,
+    email: member.email,
+    passwordHash: null,
+    xeroContactId: null,
+  });
   h.prisma.familyGroupMember.deleteMany.mockResolvedValue({ count: 0 });
   h.prisma.bookingGuest.updateMany.mockResolvedValue({ count: 0 });
   h.prisma.$transaction.mockImplementation(
@@ -223,6 +233,7 @@ describe("POST /api/admin/deletion-requests/[id] approve carve-out (#1788)", () 
     h.cancelBooking
       .mockResolvedValueOnce({ status: 200, data: {} })
       .mockRejectedValueOnce(new Error("private database detail"));
+    h.prisma.booking.findUnique.mockResolvedValue({ status: "CANCELLED" });
 
     const response = await POST(req({ action: "approve" }), { params });
 
@@ -231,15 +242,71 @@ describe("POST /api/admin/deletion-requests/[id] approve carve-out (#1788)", () 
       code: "DELETION_CLEANUP_PARTIAL",
       error:
         "Account deletion cleanup is incomplete. The member was not anonymised and no approval receipt was sent. Retry only the remaining cleanup.",
-      cancelledBookings: 1,
-      cancellationPending: true,
-      retryBookingId: "booking-2",
+      cancelledBookings: 2,
+      cancellationPending: false,
+      retryBookingId: null,
+      cancellationPostProcessingUnconfirmed: true,
+      reviewBookingId: "booking-2",
       remainingCleanupPending: true,
       memberAnonymised: false,
       memberDataAnonymised: false,
       approvalReceiptSent: false,
     });
     expect(h.cancelBooking).toHaveBeenCalledTimes(2);
+    expect(h.prisma.member.update).not.toHaveBeenCalled();
+    expect(h.sendAccountDeletionApprovedEmail).not.toHaveBeenCalled();
+  });
+
+  it("reports status-unconfirmed instead of inventing a pending cancellation when the authoritative re-read fails", async () => {
+    h.prisma.booking.findMany
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([{ id: "booking-1" }]);
+    h.cancelBooking.mockRejectedValueOnce(new Error("post-cancel failure"));
+    h.prisma.booking.findUnique.mockRejectedValueOnce(
+      new Error("authoritative read unavailable"),
+    );
+
+    const response = await POST(req({ action: "approve" }), { params });
+
+    expect(response.status).toBe(500);
+    await expect(response.json()).resolves.toMatchObject({
+      code: "DELETION_CLEANUP_PARTIAL",
+      cancelledBookings: 0,
+      cancellationPending: false,
+      cancellationStatusUnconfirmed: true,
+      retryBookingId: null,
+      reviewBookingId: "booking-1",
+      memberDataAnonymised: false,
+      approvalReceiptSent: false,
+    });
+  });
+
+  it("keeps completed cancellations when the locked last-full-admin guard later blocks anonymisation", async () => {
+    h.prisma.booking.findMany
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([{ id: "booking-1" }]);
+    h.cancelBooking.mockResolvedValueOnce({ status: 200, data: {} });
+    h.wouldRemoveLastFullAdmin
+      .mockResolvedValueOnce(false)
+      .mockResolvedValueOnce(true);
+
+    const response = await POST(req({ action: "approve" }), { params });
+
+    expect(response.status).toBe(409);
+    await expect(response.json()).resolves.toMatchObject({
+      code: "DELETION_CLEANUP_PARTIAL",
+      cancelledBookings: 1,
+      cancellationPending: false,
+      retryBookingId: null,
+      remainingCleanupPending: true,
+      memberDataAnonymised: false,
+      approvalReceiptSent: false,
+      blocker: {
+        code: "LAST_FULL_ADMIN_GUARD",
+        message: expect.stringContaining("last Full Admin"),
+        remedy: expect.stringContaining("another active account Full Admin access"),
+      },
+    });
     expect(h.prisma.member.update).not.toHaveBeenCalled();
     expect(h.sendAccountDeletionApprovedEmail).not.toHaveBeenCalled();
   });

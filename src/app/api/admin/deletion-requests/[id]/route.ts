@@ -41,8 +41,8 @@ import {
 import logger from "@/lib/logger";
 import { acquireMemberLifecycleLocks } from "@/lib/member-lifecycle-lock";
 import {
-  assertNoMemberContactCreateBlockerForDeletion,
   DELETED_ACCOUNT_PASSWORD_HASH,
+  lockMemberForAccountDeletionXeroFence,
   XeroContactCreateBlocksDeletionError,
 } from "@/lib/xero-contact-create-recovery";
 
@@ -335,7 +335,8 @@ export async function POST(
             cancellationFact.state === "STATUS_UNCONFIRMED",
           cancellationPostProcessingUnconfirmed:
             cancellationFact.state === "CANCELLED",
-          reviewBookingId: booking.id,
+          reviewBookingId:
+            cancellationFact.state === "PENDING" ? null : booking.id,
         });
         const hostingRetry = hostingCoverageParticipantRetryResponse(err, recovery);
         if (hostingRetry) return hostingRetry;
@@ -379,7 +380,8 @@ export async function POST(
               cancellationFact.state === "PENDING" ? booking.id : null,
             cancellationStatusUnconfirmed:
               cancellationFact.state === "STATUS_UNCONFIRMED",
-            reviewBookingId: booking.id,
+            reviewBookingId:
+              cancellationFact.state === "PENDING" ? null : booking.id,
           }),
           { status: 409 },
         );
@@ -429,7 +431,7 @@ export async function POST(
       // Re-check the complete contact-create recovery set while that fence is
       // held so deletion cannot anonymise a member whose PII may already be in
       // flight to Xero or whose provider-created contact still needs linking.
-      await assertNoMemberContactCreateBlockerForDeletion(member.id, tx);
+      await lockMemberForAccountDeletionXeroFence(tx, member.id);
 
       // 3. Anonymise the member record
       await tx.member.update({

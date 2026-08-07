@@ -227,6 +227,55 @@ describe("self-service deletion partial recovery (#2597)", () => {
     },
   };
 
+  beforeEach(() => {
+    vi.restoreAllMocks();
+    Object.defineProperty(HTMLElement.prototype, "scrollIntoView", {
+      configurable: true,
+      value: vi.fn(),
+    });
+  });
+
+  function buildPartialRecoveryFetch(responseBody: Record<string, unknown>) {
+    return vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.includes("/api/admin/member-lifecycle-action-requests")) {
+        return {
+          ok: true,
+          json: async () => ({
+            requests: [],
+            total: 0,
+            page: 1,
+            pageSize: 25,
+            totalPages: 0,
+          }),
+        } as Response;
+      }
+      if (
+        url === "/api/admin/deletion-requests/request-1" &&
+        init?.method === "POST"
+      ) {
+        return {
+          ok: false,
+          status: 409,
+          json: async () => responseBody,
+        } as Response;
+      }
+      if (url.startsWith("/api/admin/deletion-requests?")) {
+        return {
+          ok: true,
+          json: async () => ({
+            requests: [deletionRequest],
+            total: 1,
+            page: 1,
+            pageSize: 25,
+            totalPages: 1,
+          }),
+        } as Response;
+      }
+      throw new Error(`Unexpected request: ${url}`);
+    });
+  }
+
   it("uses ordinary partial-cleanup facts to retain recovery and replace untouched approval with an explicit retry", async () => {
     const scrollIntoView = vi.fn();
     Object.defineProperty(HTMLElement.prototype, "scrollIntoView", {
@@ -319,6 +368,90 @@ describe("self-service deletion partial recovery (#2597)", () => {
     fireEvent.click(screen.getByRole("button", { name: "Retry remaining cleanup" }));
     expect(
       await screen.findByRole("heading", { name: "Approve Deletion Request" }),
+    ).not.toBeNull();
+  });
+
+  it("shows a committed cancellation with unconfirmed post-processing without calling it pending", async () => {
+    vi.stubGlobal(
+      "fetch",
+      buildPartialRecoveryFetch({
+        cancelledBookings: 1,
+        cancellationPending: false,
+        retryBookingId: null,
+        cancellationPostProcessingUnconfirmed: true,
+        reviewBookingId: "booking/committed",
+        remainingCleanupPending: true,
+        memberAnonymised: false,
+        memberDataAnonymised: false,
+        approvalReceiptSent: false,
+      }) as typeof fetch,
+    );
+
+    render(<DeletionRequestsClient sessionMemberId="admin-1" />);
+    await screen.findByText("Riley Chen");
+    fireEvent.click(screen.getByRole("button", { name: "Approve" }));
+    fireEvent.click(
+      await screen.findByRole("button", { name: "Approve & Delete Account" }),
+    );
+
+    const alert = document.getElementById("deletion-requests-error");
+    await waitFor(() =>
+      expect(alert?.textContent).toMatch(/cancellation committed/i),
+    );
+    expect(alert?.textContent).toMatch(/post-cancellation processing could not be confirmed/i);
+    expect(alert?.textContent).not.toMatch(/still needs cancellation/i);
+    expect(
+      (screen.getByRole("button", { name: "Approve" }) as HTMLButtonElement)
+        .disabled,
+    ).toBe(true);
+    expect(
+      screen
+        .getByRole("link", { name: "Open booking for review" })
+        .getAttribute("href"),
+    ).toBe(
+      "/admin/bookings/booking%2Fcommitted?returnTo=%2Fadmin%2Fdeletion-requests",
+    );
+  });
+
+  it("retains cancellation facts and the last-admin remedy while suppressing a fresh approval", async () => {
+    vi.stubGlobal(
+      "fetch",
+      buildPartialRecoveryFetch({
+        cancelledBookings: 2,
+        cancellationPending: false,
+        retryBookingId: null,
+        remainingCleanupPending: true,
+        memberAnonymised: false,
+        memberDataAnonymised: false,
+        approvalReceiptSent: false,
+        blocker: {
+          code: "LAST_FULL_ADMIN_GUARD",
+          message: "This is the last Full Admin account.",
+          remedy:
+            "Give another active account Full Admin access, then retry only the remaining deletion cleanup.",
+        },
+      }) as typeof fetch,
+    );
+
+    render(<DeletionRequestsClient sessionMemberId="admin-1" />);
+    await screen.findByText("Riley Chen");
+    fireEvent.click(screen.getByRole("button", { name: "Approve" }));
+    fireEvent.click(
+      await screen.findByRole("button", { name: "Approve & Delete Account" }),
+    );
+
+    const alert = document.getElementById("deletion-requests-error");
+    await waitFor(() =>
+      expect(alert?.textContent).toMatch(/2 future bookings were cancelled/i),
+    );
+    expect(alert?.textContent).toMatch(/last Full Admin/i);
+    expect(alert?.textContent).toMatch(/another active account Full Admin access/i);
+    expect(
+      (screen.getByRole("button", { name: "Approve" }) as HTMLButtonElement)
+        .disabled,
+    ).toBe(true);
+    expect(
+      screen.getByRole("button", { name: "Retry remaining cleanup" }),
     ).not.toBeNull();
   });
 });

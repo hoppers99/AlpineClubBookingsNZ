@@ -11,6 +11,7 @@ vi.mock("@/lib/prisma", () => ({
 
 import {
   ambiguousMemberContactCreateReservationWhere,
+  assertNoMemberContactCreateBlockerForDeletion,
   getMemberContactCreateRecoveryPending,
   getMemberContactCreateRecoveryState,
   hasMemberContactCreateMergeBlocker,
@@ -22,6 +23,7 @@ import {
   unresolvedMemberContactCreateRecoveryWhere,
   XERO_CONTACT_CREATE_IN_PROGRESS_CODE,
   XERO_CONTACT_CREATE_IN_PROGRESS_MESSAGE,
+  XERO_MEMBER_UNAVAILABLE_CODE,
 } from "@/lib/xero-contact-create-recovery";
 
 describe("unresolved member Xero contact-create recovery proof", () => {
@@ -76,7 +78,12 @@ describe("unresolved member Xero contact-create recovery proof", () => {
 
   it("locks the target member before refusing a manual link against an ambiguous create", async () => {
     const executeRaw = vi.fn().mockResolvedValue(1);
-    const memberFindUnique = vi.fn().mockResolvedValue({ id: "member-1" });
+    const memberFindUnique = vi.fn().mockResolvedValue({
+      id: "member-1",
+      email: "member@example.test",
+      passwordHash: null,
+      xeroContactId: null,
+    });
     const operationFindFirst = vi.fn().mockResolvedValue({ id: "operation-1" });
 
     await expect(
@@ -99,6 +106,80 @@ describe("unresolved member Xero contact-create recovery proof", () => {
     expect(operationFindFirst).toHaveBeenCalledWith({
       where: ambiguousMemberContactCreateReservationWhere("member-1"),
       select: { id: true },
+    });
+  });
+
+  it("refuses an anonymised member under the manual-link row lock before reading create operations", async () => {
+    const executeRaw = vi.fn().mockResolvedValue(1);
+    const memberFindUnique = vi.fn().mockResolvedValue({
+      id: "member-1",
+      email: "deleted-member@deleted.invalid",
+      passwordHash: "DELETED_ACCOUNT",
+      xeroContactId: null,
+    });
+    const operationFindFirst = vi.fn();
+
+    await expect(
+      lockMemberForManualXeroContactLink(
+        {
+          $executeRaw: executeRaw,
+          member: { findUnique: memberFindUnique } as never,
+          xeroSyncOperation: { findFirst: operationFindFirst } as never,
+        },
+        "member-1",
+      ),
+    ).rejects.toMatchObject({
+      code: XERO_MEMBER_UNAVAILABLE_CODE,
+      statusCode: 409,
+    });
+    expect(operationFindFirst).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    [
+      "running",
+      { id: "running", status: "RUNNING", lastErrorCode: null, responsePayload: null },
+    ],
+    [
+      "stale orphaned",
+      {
+        id: "stale",
+        status: "FAILED",
+        lastErrorCode: "ORPHANED_STALE_RUNNING",
+        responsePayload: null,
+      },
+    ],
+    [
+      "provider-created link pending",
+      {
+        id: "provider-created",
+        status: "FAILED",
+        lastErrorCode: null,
+        responsePayload: {
+          phase: "provider_contact_created_local_link_pending",
+          providerContactCreated: true,
+        },
+      },
+    ],
+  ])("blocks deletion on the complete %s recovery proof", async (_label, operation) => {
+    const operationFindFirst = vi.fn().mockResolvedValue(operation);
+
+    await expect(
+      assertNoMemberContactCreateBlockerForDeletion("member-1", {
+        xeroSyncOperation: { findFirst: operationFindFirst } as never,
+      }),
+    ).rejects.toMatchObject({
+      code: "XERO_CONTACT_CREATE_BLOCKS_DELETION",
+      statusCode: 409,
+    });
+    expect(operationFindFirst).toHaveBeenCalledWith({
+      where: memberContactCreateMergeBlockerWhere("member-1"),
+      select: {
+        id: true,
+        status: true,
+        lastErrorCode: true,
+        responsePayload: true,
+      },
     });
   });
 
