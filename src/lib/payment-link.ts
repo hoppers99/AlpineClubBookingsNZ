@@ -33,7 +33,11 @@ import { recordWithheldBookingEmail } from "@/lib/booking-email-suppression";
 import logger from "@/lib/logger";
 import { loadEffectiveModuleFlags } from "@/lib/module-settings";
 import { markBookingPaymentSucceeded } from "@/lib/payment-reconciliation";
-import { upsertPaymentIntentTransaction } from "@/lib/payment-transactions";
+import {
+  findPaymentTransactionByIntentId,
+  upsertPaymentIntentTransaction,
+} from "@/lib/payment-transactions";
+import { isHostingCoverageParticipantRetry } from "@/lib/adult-member-hosting-queue-participants";
 import { queueSupersededPrimaryIntentCancellations } from "@/lib/booking-payment-cleanup";
 import { prisma } from "@/lib/prisma";
 import {
@@ -67,6 +71,25 @@ export class PaymentLinkError extends Error {
     super(message);
     this.name = "PaymentLinkError";
     this.status = status;
+  }
+}
+
+export type PaymentLinkPaymentRecoveryKind =
+  | "payment_received_finalisation_pending"
+  | "payment_received_status_unconfirmed"
+  | "existing_card_status_unconfirmed"
+  | "cancelled_refunded"
+  | "cancelled_refund_pending";
+
+/**
+ * Provider-safe recovery signal for failures after Stripe reports a successful
+ * intent. The public route maps only these fixed phases and never exposes the
+ * intent id or the underlying provider/database error.
+ */
+export class PaymentLinkPaymentRecoveryError extends Error {
+  constructor(readonly kind: PaymentLinkPaymentRecoveryKind) {
+    super("Payment-link card status requires recovery");
+    this.name = "PaymentLinkPaymentRecoveryError";
   }
 }
 
@@ -436,7 +459,7 @@ export async function reissuePaymentLinkForToken(
 }
 
 export type PaymentLinkIntentResult =
-  | { type: "alreadyPaid"; paymentIntentId: string }
+  | { type: "alreadyPaid" }
   | { type: "clientSecret"; clientSecret: string; paymentIntentId: string };
 
 /**
@@ -469,10 +492,49 @@ export async function createPaymentIntentForPaymentLink(
 
   // Reuse or reconcile an existing PaymentIntent before creating a new one
   // (same behaviour as the session payment-intent route).
+  //
+  // A refunded succeeded intent remains the current Payment pointer until the
+  // fresh PRIMARY transaction below is recorded. Carry that exact intent id as
+  // a repayment generation marker so the refunded intent cannot fall through
+  // to the generic equal-amount/client-secret reuse arm, and so retries use a
+  // Stripe idempotency key disjoint from every non-repayment generation.
+  let repaySupersededIntentId: string | null = null;
   if (booking.payment?.stripePaymentIntentId) {
     const existingIntent = await getPaymentIntent(booking.payment.stripePaymentIntentId);
 
     if (existingIntent.status === "succeeded") {
+      // A refunded PaymentIntent remains `succeeded` at Stripe. The immutable
+      // local transaction row is therefore the discriminator between a
+      // captured payment that needs reconciliation and refund history that
+      // must lead to a fresh repayment intent.
+      let refundedHistory: boolean;
+      try {
+        const pointedTransaction = await findPaymentTransactionByIntentId({
+          paymentIntentId: existingIntent.id,
+        });
+        refundedHistory = pointedTransaction
+          ? pointedTransaction.status === PaymentStatus.REFUNDED ||
+            pointedTransaction.status === PaymentStatus.PARTIALLY_REFUNDED
+          : booking.payment.status === PaymentStatus.REFUNDED ||
+            booking.payment.status === PaymentStatus.PARTIALLY_REFUNDED;
+      } catch (error) {
+        logger.error(
+          { err: error, bookingId: booking.id },
+          "Could not classify an existing successful payment-link intent",
+        );
+        throw new PaymentLinkPaymentRecoveryError(
+          "existing_card_status_unconfirmed",
+        );
+      }
+
+      if (refundedHistory) {
+        repaySupersededIntentId = existingIntent.id;
+        await queueSupersededPrimaryIntentCancellations(prisma, {
+          bookingId: booking.id,
+          paymentId: booking.payment.id,
+          newFinalPriceCents: booking.finalPriceCents,
+        });
+      } else {
       // #2265 (#2319 door 1, settle arm). The card money is already captured, so
       // a stored credit election can no longer be honoured here — but the clear
       // and its reporting live in `markBookingPaymentSucceeded` below, the single
@@ -480,34 +542,48 @@ export async function createPaymentIntentForPaymentLink(
       // in this caller. When the payment is ALREADY SUCCEEDED this arm settles
       // nothing at all, so an earlier run through that same door has already
       // dealt with it.
-      if (booking.payment.status !== PaymentStatus.SUCCEEDED) {
-        const reconciliation = await markBookingPaymentSucceeded({
-          bookingId: booking.id,
-          paymentIntentId: existingIntent.id,
-          amountCents: existingIntent.amount,
-          paymentMethodId:
-            typeof existingIntent.payment_method === "string"
-              ? existingIntent.payment_method
-              : existingIntent.payment_method?.id ?? null,
-        });
+        try {
+          if (booking.payment.status !== PaymentStatus.SUCCEEDED) {
+            const reconciliation = await markBookingPaymentSucceeded({
+              bookingId: booking.id,
+              paymentIntentId: existingIntent.id,
+              amountCents: existingIntent.amount,
+              paymentMethodId:
+                typeof existingIntent.payment_method === "string"
+                  ? existingIntent.payment_method
+                  : existingIntent.payment_method?.id ?? null,
+            });
 
-        if (
-          reconciliation.outcome === "cancelled_refunded" ||
-          reconciliation.outcome === "cancelled_refund_failed"
-        ) {
-          throw new PaymentLinkError(
-            "Payment succeeded, but lodge capacity is no longer available for this booking. The club will be in touch.",
-            409
+            if (reconciliation.outcome === "cancelled_refunded") {
+              throw new PaymentLinkPaymentRecoveryError("cancelled_refunded");
+            }
+            if (reconciliation.outcome === "cancelled_refund_failed") {
+              throw new PaymentLinkPaymentRecoveryError(
+                "cancelled_refund_pending",
+              );
+            }
+          }
+
+          await queueXeroInvoiceForPaidBooking({ bookingId: booking.id });
+        } catch (error) {
+          if (error instanceof PaymentLinkPaymentRecoveryError) throw error;
+          logger.error(
+            { err: error, bookingId: booking.id },
+            "A captured payment-link payment could not finish locally",
+          );
+          throw new PaymentLinkPaymentRecoveryError(
+            isHostingCoverageParticipantRetry(error)
+              ? "payment_received_finalisation_pending"
+              : "payment_received_status_unconfirmed",
           );
         }
+
+        return { type: "alreadyPaid" };
       }
-
-      await queueXeroInvoiceForPaidBooking({ bookingId: booking.id });
-
-      return { type: "alreadyPaid", paymentIntentId: existingIntent.id };
     }
 
     if (
+      repaySupersededIntentId === null &&
       existingIntent.status !== "canceled" &&
       existingIntent.amount !== booking.finalPriceCents
     ) {
@@ -521,7 +597,11 @@ export async function createPaymentIntentForPaymentLink(
           newFinalPriceCents: booking.finalPriceCents,
         });
       }
-    } else if (existingIntent.client_secret && existingIntent.status !== "canceled") {
+    } else if (
+      repaySupersededIntentId === null &&
+      existingIntent.client_secret &&
+      existingIntent.status !== "canceled"
+    ) {
       return {
         type: "clientSecret",
         clientSecret: existingIntent.client_secret,
@@ -681,7 +761,9 @@ export async function createPaymentIntentForPaymentLink(
       memberId: booking.memberId,
       paymentLinkId: link.id,
     },
-    idempotencyKey: `pl_pi_${booking.id}_${booking.payment?.stripePaymentIntentId ?? "initial"}`,
+    idempotencyKey: repaySupersededIntentId
+      ? `pl_pi_${booking.id}_repay_${repaySupersededIntentId}`
+      : `pl_pi_${booking.id}_${booking.payment?.stripePaymentIntentId ?? "initial"}`,
   });
 
   const payment = await prisma.payment.upsert({
@@ -703,7 +785,9 @@ export async function createPaymentIntentForPaymentLink(
     paymentIntentId: paymentIntent.id,
     amountCents: booking.finalPriceCents,
     status: PaymentStatus.PROCESSING,
-    reason: "payment_link_booking_payment",
+    reason: repaySupersededIntentId
+      ? "payment_link_repay_after_refund"
+      : "payment_link_booking_payment",
     stripeCustomerId: customer.id,
   });
 

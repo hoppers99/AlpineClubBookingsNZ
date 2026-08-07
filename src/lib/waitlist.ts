@@ -19,6 +19,11 @@ import logger from "@/lib/logger";
 import { reconcileBedAllocationsForBookingWithGlobalLockHeld } from "@/lib/bed-allocation-lifecycle";
 import { settleHostingCoverageAfterCommit } from "@/lib/adult-member-hosting-coverage-drain";
 import {
+  HOSTING_COVERAGE_RETRY_CODE,
+  HOSTING_COVERAGE_RETRY_MESSAGE,
+  isHostingCoverageParticipantRetry,
+} from "@/lib/adult-member-hosting-queue-participants";
+import {
   AdultMemberHostingRequiredError,
   buildAdultMemberHostingRefusalBody,
   reconcileAdultMemberHostingReviewWithSiblings,
@@ -1054,6 +1059,13 @@ export async function confirmWaitlistOffer(
       return { success: true, newStatus };
     });
   } catch (err) {
+    if (isHostingCoverageParticipantRetry(err)) {
+      return {
+        success: false,
+        error: HOSTING_COVERAGE_RETRY_MESSAGE,
+        code: HOSTING_COVERAGE_RETRY_CODE,
+      };
+    }
     // #2569 — the ENFORCED hosting refusal, BEFORE the generic handler below,
     // which reported it as "an error occurred" and answered 400. That was the
     // worst of the available answers: the member was refused for a rule they

@@ -17,9 +17,22 @@ import {
 import {
   lockHostingCoverageOwner,
   lockHostingCoverageOwners,
+  tryLockHostingCoverageOwner,
+  tryLockHostingCoverageOwners,
 } from "@/lib/adult-member-hosting-coverage-lock";
 import { lockAdultMemberHostingPolicySet } from "@/lib/adult-member-hosting-policy-set";
-import { enqueueHostingCoverageReevaluation } from "@/lib/adult-member-hosting-coverage-queue";
+import {
+  enqueueHostingCoverageReevaluation,
+  type HostingCoverageReevaluationInput,
+} from "@/lib/adult-member-hosting-coverage-queue";
+import {
+  acquireHostingCoverageQueueParticipantProof,
+  assertHostingCoverageQueueParticipantsLocked,
+  HostingCoverageParticipantRetryError,
+  lockHostingCoverageMemberLifecycleTarget,
+  type HostingCoverageQueueParticipantProof,
+  type HostingCoverageSourceParticipant,
+} from "@/lib/adult-member-hosting-queue-participants";
 import {
   SameOwnerCoverageOverrideRequiredError,
   SameOwnerCoverageWouldBreakError,
@@ -518,6 +531,7 @@ async function loadHostingSiblingIds(
 export async function evaluateBookingAdultMemberHosting(
   booking: LoadedHostingBooking,
   db: AdultMemberHostingReviewDb,
+  failFastCoverageOwner = false,
 ): Promise<{
   violation: AdultMemberHostingPolicyExceptionViolation | null;
   resolved: ResolvedAdultMemberHostingPolicy;
@@ -556,7 +570,13 @@ export async function evaluateBookingAdultMemberHosting(
     // concurrent removal of that cover cannot interleave with this evaluation.
     // Re-entrant, so a caller that already took it (the settle step) pays nothing.
     if (resolved.hostScopes.sameBookingOwner) {
-      await lockHostingCoverageOwner(db, booking.memberId);
+      if (failFastCoverageOwner) {
+        if (!(await tryLockHostingCoverageOwner(db, booking.memberId))) {
+          throw new HostingCoverageParticipantRetryError();
+        }
+      } else {
+        await lockHostingCoverageOwner(db, booking.memberId);
+      }
     }
     participants = await withSubscriptionSettlement(
       [
@@ -957,6 +977,11 @@ export async function reconcileAdultMemberHostingReview(
   bookingId: string,
   db: AdultMemberHostingReviewDb,
   options: HostingReconcileOptions = {},
+  failFastCoverageOwner = false,
+  participantContext?: {
+    proof: HostingCoverageQueueParticipantProof;
+    actorMemberId: string | null;
+  },
 ): Promise<HostingReviewOutcome> {
   const booking = (await db.booking.findUnique({
     where: { id: bookingId },
@@ -971,10 +996,19 @@ export async function reconcileAdultMemberHostingReview(
   if (!Array.isArray(booking.guests)) {
     return { action: "none", violation: null, mode: null };
   }
+  if (participantContext) {
+    assertHostingCoverageQueueParticipantsLocked(participantContext.proof, {
+      memberId: booking.memberId,
+      lodgeId: booking.lodgeId,
+      sourceBookingId: booking.id,
+      actorMemberId: participantContext.actorMemberId,
+    });
+  }
 
   const { violation, resolved } = await evaluateBookingAdultMemberHosting(
     booking,
     db,
+    failFastCoverageOwner,
   );
   const mode = resolved.mode;
 
@@ -1100,7 +1134,36 @@ export async function reconcileAdultMemberHostingReviewWithSiblings(
   db: AdultMemberHostingReviewDb,
   options: HostingReconcileOptions = {},
 ): Promise<HostingReviewOutcome> {
-  const outcome = await reconcileAdultMemberHostingReview(bookingId, db, options);
+  // #2597: acquire the exact queue owner/actor Member rows BEFORE the first
+  // evaluation can take a coverage-owner advisory key. Acquiring only inside
+  // the later settle step would invert coverage-owner -> Member against merge.
+  const plannedBooking = (await db.booking.findUnique({
+    where: { id: bookingId },
+    select: {
+      id: true,
+      memberId: true,
+      lodgeId: true,
+      checkIn: true,
+      checkOut: true,
+    },
+  })) as CoverageOwnerFacts | null;
+  if (!plannedBooking) {
+    return { action: "none", violation: null, mode: null };
+  }
+  const actorMemberId = options.coverageChange?.actorMemberId ?? null;
+  const participantProof = await acquireOrValidateQueueParticipantProof(
+    [sourceParticipant(plannedBooking)],
+    actorMemberId,
+    db,
+  );
+
+  const outcome = await reconcileAdultMemberHostingReview(
+    bookingId,
+    db,
+    options,
+    true,
+    { proof: participantProof, actorMemberId },
+  );
   if (outcome.mode === null || !hostingModeIsActive(outcome.mode)) return outcome;
 
   for (const siblingId of await loadHostingSiblingIds(bookingId, db)) {
@@ -1109,15 +1172,25 @@ export async function reconcileAdultMemberHostingReviewWithSiblings(
     // never to a row reached through it, but a school booking's §13 carve-out
     // has to reach its split sibling too — otherwise one half of a #738 pair is
     // exempt and the other is refused, for the same party.
-    await reconcileAdultMemberHostingReview(siblingId, db, {
-      ...(options.enforcement ? { enforcement: options.enforcement } : {}),
-    });
+    await reconcileAdultMemberHostingReview(
+      siblingId,
+      db,
+      {
+        ...(options.enforcement ? { enforcement: options.enforcement } : {}),
+      },
+      true,
+    );
   }
 
   // #2576 §6 to §8: this booking's rows can also decide whether ANOTHER booking on
   // the same account is compliant. Last, and after the siblings, because it is a
   // question about the resulting state of the whole account at this lodge.
-  await settleSameOwnerDependentCoverage(bookingId, db, options);
+  await settleSameOwnerDependentCoverage(
+    bookingId,
+    db,
+    options,
+    participantProof,
+  );
   return outcome;
 }
 
@@ -1139,10 +1212,32 @@ export async function recordAdultMemberHostingReviewForNewBooking(
   tx: AdultMemberHostingReviewDb,
   admin: { reason: string; byMemberId: string } | null,
 ): Promise<HostingReviewOutcome> {
-  return reconcileAdultMemberHostingReview(bookingId, tx, {
+  const options: HostingReconcileOptions = {
     openedStatus: admin ? AdminReviewStatus.APPROVED : AdminReviewStatus.PENDING,
     decision: admin,
+  };
+  const booking = await tx.booking.findUnique({
+    where: { id: bookingId },
+    select: { status: true, deletedAt: true },
   });
+
+  // A newly-created CONFIRMED/PAID booking is immediately authoritative cover
+  // for its split siblings and same-owner dependants. Route that live source
+  // through the fenced high-level seam so the review snapshot, sibling
+  // restoration and any durable re-evaluation obligation commit atomically.
+  // Draft, waitlist and provisional states still receive their own review
+  // snapshot, but cannot supply cover and therefore must not fan out queue work.
+  if (
+    booking?.deletedAt == null &&
+    isHostingCoverageSourceBookingStatus(String(booking?.status))
+  ) {
+    return reconcileAdultMemberHostingReviewWithSiblings(
+      bookingId,
+      tx,
+      options,
+    );
+  }
+  return reconcileAdultMemberHostingReview(bookingId, tx, options);
 }
 
 /**
@@ -1356,6 +1451,39 @@ type CoverageOwnerFactsWithOutcome = CoverageOwnerFacts & {
   adultMemberHostingReviewStatus: AdminReviewStatus | null;
 };
 
+function sourceParticipant(
+  booking: Pick<CoverageOwnerFacts, "id" | "memberId" | "lodgeId">,
+): HostingCoverageSourceParticipant {
+  return {
+    bookingId: booking.id,
+    ownerMemberId: booking.memberId,
+    lodgeId: booking.lodgeId,
+  };
+}
+
+async function acquireOrValidateQueueParticipantProof(
+  sources: readonly HostingCoverageSourceParticipant[],
+  actorMemberId: string | null,
+  db: AdultMemberHostingReviewDb,
+  suppliedProof?: HostingCoverageQueueParticipantProof,
+): Promise<HostingCoverageQueueParticipantProof> {
+  if (!suppliedProof) {
+    return acquireHostingCoverageQueueParticipantProof(
+      { sources, actorMemberId },
+      db,
+    );
+  }
+  for (const source of sources) {
+    assertHostingCoverageQueueParticipantsLocked(suppliedProof, {
+      memberId: source.ownerMemberId,
+      lodgeId: source.lodgeId,
+      sourceBookingId: source.bookingId,
+      actorMemberId,
+    });
+  }
+  return suppliedProof;
+}
+
 const COVERAGE_OWNER_FACTS_SELECT = {
   id: true,
   memberId: true,
@@ -1492,6 +1620,7 @@ async function settleSameOwnerDependentCoverage(
   bookingId: string,
   db: AdultMemberHostingReviewDb,
   options: HostingReconcileOptions,
+  participantProof: HostingCoverageQueueParticipantProof,
 ): Promise<void> {
   const booking = (await db.booking.findUnique({
     where: { id: bookingId },
@@ -1503,6 +1632,16 @@ async function settleSameOwnerDependentCoverage(
   if (resolved.mode !== "ENFORCED" && resolved.mode !== "ADMIN_REVIEW_REQUIRED") {
     return;
   }
+
+  // Exact queue attribution only. An on-behalf review decision is a separate
+  // Booking FK and must never be substituted for a missing coverage-change actor.
+  const actorMemberId = options.coverageChange?.actorMemberId ?? null;
+  assertHostingCoverageQueueParticipantsLocked(participantProof, {
+    memberId: booking.memberId,
+    lodgeId: booking.lodgeId,
+    sourceBookingId: booking.id,
+    actorMemberId,
+  });
 
   // Before any coverage read, and held to commit — see the concurrency note above.
 
@@ -1534,15 +1673,19 @@ async function settleSameOwnerDependentCoverage(
         nights,
         cause: context.cause,
         sourceBookingId: booking.id,
-        actorMemberId: context.actorMemberId ?? null,
+        actorMemberId,
         reason: context.reason ?? null,
       },
+      participantProof,
       db,
     );
     return;
   }
 
   // Before any cross-booking coverage read, and held to commit.
+  if (!(await tryLockHostingCoverageOwner(db, booking.memberId))) {
+    throw new HostingCoverageParticipantRetryError();
+  }
   await lockHostingCoverageOwner(db, booking.memberId);
 
   if (resolved.mode === "ADMIN_REVIEW_REQUIRED") {
@@ -1560,9 +1703,10 @@ async function settleSameOwnerDependentCoverage(
         nights,
         cause: "SYSTEM_CHANGE",
         sourceBookingId: booking.id,
-        actorMemberId: options.coverageChange?.actorMemberId ?? null,
+        actorMemberId,
         reason: null,
       },
+      participantProof,
       db,
     );
     return;
@@ -1664,9 +1808,10 @@ async function settleSameOwnerDependentCoverage(
       nights,
       cause: context.cause,
       sourceBookingId: booking.id,
-      actorMemberId: context.actorMemberId ?? null,
+      actorMemberId,
       reason: context.reason ?? null,
     },
+    participantProof,
     db,
   );
 }
@@ -1747,8 +1892,9 @@ export async function enqueueOwnHostingCoverageReevaluation(
   bookingId: string,
   db: AdultMemberHostingReviewDb,
   context: HostingCoverageChangeContext = { cause: "SYSTEM_CHANGE" },
+  suppliedParticipantProof?: HostingCoverageQueueParticipantProof,
 ): Promise<string | null> {
-  const booking = (await db.booking.findUnique({
+  const plannedBooking = (await db.booking.findUnique({
     where: { id: bookingId },
     select: {
       id: true,
@@ -1758,15 +1904,43 @@ export async function enqueueOwnHostingCoverageReevaluation(
       checkOut: true,
     },
   })) as CoverageOwnerFacts | null;
-  if (!booking) return null;
+  if (!plannedBooking) return null;
 
-  const resolved = await loadAdultMemberHostingPolicy(booking.lodgeId, db);
+  const resolved = await loadAdultMemberHostingPolicy(plannedBooking.lodgeId, db);
   if (resolved.mode !== "ENFORCED") return null;
+
+  const actorMemberId = context.actorMemberId ?? null;
+  const participantProof = await acquireOrValidateQueueParticipantProof(
+    [sourceParticipant(plannedBooking)],
+    actorMemberId,
+    db,
+    suppliedParticipantProof,
+  );
+  const booking = (await db.booking.findUnique({
+    where: { id: plannedBooking.id },
+    select: {
+      id: true,
+      memberId: true,
+      lodgeId: true,
+      checkIn: true,
+      checkOut: true,
+    },
+  })) as CoverageOwnerFacts | null;
+  if (!booking) throw new HostingCoverageParticipantRetryError();
+  assertHostingCoverageQueueParticipantsLocked(participantProof, {
+    memberId: booking.memberId,
+    lodgeId: booking.lodgeId,
+    sourceBookingId: booking.id,
+    actorMemberId,
+  });
 
   // §9. Confirming paths use this seam instead of evaluating, so this is where they
   // join the owner-key discipline: the queue row and the confirmation commit
   // together, and a concurrent removal of the cover cannot slip between them.
   if (resolved.hostScopes.sameBookingOwner) {
+    if (!(await tryLockHostingCoverageOwner(db, booking.memberId))) {
+      throw new HostingCoverageParticipantRetryError();
+    }
     await lockHostingCoverageOwner(db, booking.memberId);
   }
 
@@ -1779,9 +1953,10 @@ export async function enqueueOwnHostingCoverageReevaluation(
       ),
       cause: context.cause,
       sourceBookingId: booking.id,
-      actorMemberId: context.actorMemberId ?? null,
+      actorMemberId,
       reason: context.reason ?? null,
     },
+    participantProof,
     db,
   );
 }
@@ -1794,7 +1969,148 @@ export async function enqueueOwnHostingCoverageReevaluation(
  * fifty live stays for one member is already far beyond a club member's real
  * footprint. Truncation is warned about for the same reason the dependent reads warn.
  */
-const HOSTING_COVERAGE_MEMBER_FANOUT_LIMIT = 50;
+export const HOSTING_COVERAGE_MEMBER_FANOUT_LIMIT = 50;
+
+/** The deterministic bounded candidate set shared by ordinary fan-out and merge. */
+export async function loadHostingCoverageMemberFanoutCandidates(
+  memberId: string,
+  db: AdultMemberHostingReviewDb,
+): Promise<CoverageOwnerFacts[]> {
+  const today = getTodayDateOnly();
+  return (await db.booking.findMany({
+    where: {
+      deletedAt: null,
+      status: { in: [...ACTIVE_BOOKING_STATUSES] },
+      // Current or future stays only — a checkout on or after today still has
+      // nights the rule can judge.
+      checkOut: { gte: today },
+      guests: { some: { memberId } },
+    },
+    orderBy: [{ checkIn: "asc" }, { id: "asc" }],
+    take: HOSTING_COVERAGE_MEMBER_FANOUT_LIMIT,
+    select: {
+      id: true,
+      memberId: true,
+      lodgeId: true,
+      checkIn: true,
+      checkOut: true,
+    },
+  })) as CoverageOwnerFacts[];
+}
+
+export type MemberMergeHostingCoveragePlan = Readonly<{
+  items: readonly HostingCoverageReevaluationInput[];
+  sources: readonly HostingCoverageSourceParticipant[];
+  coverageOwnerIds: readonly string[];
+}>;
+
+/**
+ * Plan the merge's exact actorless SYSTEM_CHANGE fan-out after relation moves.
+ * The policy-set lock held by merge keeps the ENFORCED decisions stable while
+ * the Member participant rows are acquired and this plan is re-read.
+ */
+export async function buildMemberMergeHostingCoveragePlan(
+  params: {
+    masterId: string;
+    capturedLoserOwnedBookingIds: readonly string[];
+  },
+  db: AdultMemberHostingReviewDb,
+): Promise<MemberMergeHostingCoveragePlan> {
+  const [attended, movedOwnerBookings] = await Promise.all([
+    loadHostingCoverageMemberFanoutCandidates(params.masterId, db),
+    params.capturedLoserOwnedBookingIds.length > 0
+      ? (db.booking.findMany({
+          where: { id: { in: [...params.capturedLoserOwnedBookingIds] } },
+          orderBy: { id: "asc" },
+          select: {
+            id: true,
+            memberId: true,
+            lodgeId: true,
+            checkIn: true,
+            checkOut: true,
+          },
+        }) as Promise<CoverageOwnerFacts[]>)
+      : Promise.resolve([]),
+  ]);
+  const candidatesById = new Map<string, CoverageOwnerFacts>();
+  for (const booking of [...attended, ...movedOwnerBookings]) {
+    candidatesById.set(booking.id, booking);
+  }
+  const candidates = [...candidatesById.values()].sort((a, b) =>
+    a.id.localeCompare(b.id),
+  );
+  const policyByLodge = new Map<string, ResolvedAdultMemberHostingPolicy>();
+  for (const booking of candidates) {
+    if (!policyByLodge.has(booking.lodgeId)) {
+      const policy = await loadAdultMemberHostingPolicy(booking.lodgeId, db);
+      policyByLodge.set(booking.lodgeId, policy);
+    }
+  }
+  const included = candidates.filter(
+    (booking) => policyByLodge.get(booking.lodgeId)?.mode === "ENFORCED",
+  );
+  const items = included.map((booking) => ({
+    memberId: booking.memberId,
+    lodgeId: booking.lodgeId,
+    nights: eachDateOnlyInRange(booking.checkIn, booking.checkOut).map(
+      formatDateOnly,
+    ),
+    cause: "SYSTEM_CHANGE" as const,
+    sourceBookingId: booking.id,
+    actorMemberId: null,
+    reason: null,
+  }));
+  const sourcesByBooking = new Map<string, HostingCoverageSourceParticipant>();
+  for (const booking of included) {
+    sourcesByBooking.set(booking.id, sourceParticipant(booking));
+  }
+  return Object.freeze({
+    items: Object.freeze(items.map((item) => Object.freeze(item))),
+    sources: Object.freeze(
+      [...sourcesByBooking.values()].sort((a, b) =>
+        a.bookingId.localeCompare(b.bookingId),
+      ),
+    ),
+    coverageOwnerIds: Object.freeze(
+      [...new Set(
+        included
+          .filter(
+            (booking) =>
+              policyByLodge.get(booking.lodgeId)?.hostScopes.sameBookingOwner ===
+              true,
+          )
+          .map((booking) => booking.memberId),
+      )].sort(),
+    ),
+  });
+}
+
+export function memberMergeHostingCoveragePlanFingerprint(
+  plan: MemberMergeHostingCoveragePlan,
+): string {
+  return JSON.stringify(
+    plan.items.map((item) => ({
+      memberId: item.memberId,
+      lodgeId: item.lodgeId,
+      nights: [...item.nights],
+      cause: item.cause,
+      sourceBookingId: item.sourceBookingId ?? null,
+    })),
+  ) + JSON.stringify(plan.coverageOwnerIds);
+}
+
+export async function enqueueMemberMergeHostingCoveragePlan(
+  plan: MemberMergeHostingCoveragePlan,
+  proof: HostingCoverageQueueParticipantProof,
+  db: AdultMemberHostingReviewDb,
+): Promise<number> {
+  let queued = 0;
+  for (const item of plan.items) {
+    assertHostingCoverageQueueParticipantsLocked(proof, item);
+    if (await enqueueHostingCoverageReevaluation(item, proof, db)) queued += 1;
+  }
+  return queued;
+}
 
 /**
  * Record the re-evaluation a change to ONE PERSON's standing implies (#2576 §8).
@@ -1840,29 +2156,17 @@ export async function enqueueHostingCoverageReevaluationForMember(
   memberId: string,
   db: AdultMemberHostingReviewDb,
   context: HostingCoverageChangeContext = { cause: "SYSTEM_CHANGE" },
+  suppliedParticipantProof?: HostingCoverageQueueParticipantProof,
 ): Promise<number> {
-  const today = getTodayDateOnly();
-  const attended = (await db.booking.findMany({
-    where: {
-      deletedAt: null,
-      status: { in: [...ACTIVE_BOOKING_STATUSES] },
-      // Current or future stays only — a checkout on or after today still has
-      // nights the rule can judge.
-      checkOut: { gte: today },
-      guests: { some: { memberId } },
-    },
-    orderBy: [{ checkIn: "asc" }, { id: "asc" }],
-    take: HOSTING_COVERAGE_MEMBER_FANOUT_LIMIT,
-    select: {
-      id: true,
-      memberId: true,
-      lodgeId: true,
-      checkIn: true,
-      checkOut: true,
-    },
-  })) as CoverageOwnerFacts[];
-  if (attended.length === 0) return 0;
-  if (attended.length >= HOSTING_COVERAGE_MEMBER_FANOUT_LIMIT) {
+  // Freeze the standing subject before even deciding that the fan-out is
+  // empty. A linked-guest hold takes KEY SHARE on this same row after its lodge
+  // lock, so one side wins cleanly: the hold is included in the candidate
+  // snapshot, or the hold resumes after this standing change and refuses its
+  // now-inactive member. NOWAIT keeps repeated bulk fan-outs fail-fast.
+  await lockHostingCoverageMemberLifecycleTarget(db, memberId);
+  const plannedAttended = await loadHostingCoverageMemberFanoutCandidates(memberId, db);
+  if (plannedAttended.length === 0) return 0;
+  if (plannedAttended.length >= HOSTING_COVERAGE_MEMBER_FANOUT_LIMIT) {
     logger.warn(
       { memberId, limit: HOSTING_COVERAGE_MEMBER_FANOUT_LIMIT },
       "Hosting coverage member fan-out hit its ceiling; a booking this member attends may not have been re-evaluated",
@@ -1873,7 +2177,7 @@ export async function enqueueHostingCoverageReevaluationForMember(
   // already the hot path on every booking write and this can touch several stays.
   const enforcingByLodge = new Map<string, boolean>();
   const sameOwnerByLodge = new Map<string, boolean>();
-  for (const booking of attended) {
+  for (const booking of plannedAttended) {
     if (enforcingByLodge.has(booking.lodgeId)) continue;
     const resolved = await loadAdultMemberHostingPolicy(booking.lodgeId, db);
     enforcingByLodge.set(booking.lodgeId, resolved.mode === "ENFORCED");
@@ -1882,15 +2186,62 @@ export async function enqueueHostingCoverageReevaluationForMember(
       resolved.hostScopes.sameBookingOwner,
     );
   }
+  const plannedQueueOwners = plannedAttended
+    .filter((booking) => enforcingByLodge.get(booking.lodgeId) === true)
+    .map((booking) => booking.memberId);
+  if (plannedQueueOwners.length === 0) return 0;
+
+  const actorMemberId = context.actorMemberId ?? null;
+  const plannedSources = plannedAttended
+    .filter((booking) => enforcingByLodge.get(booking.lodgeId) === true)
+    .map(sourceParticipant);
+  const participantProof = await acquireOrValidateQueueParticipantProof(
+    plannedSources,
+    actorMemberId,
+    db,
+    suppliedParticipantProof,
+  );
+
+  // Re-query after the Member locks. Every final owner must already belong to
+  // the one planned set; a changed owner or new booking outside it is a safe
+  // retry, never a late participant acquisition.
+  const attended = await loadHostingCoverageMemberFanoutCandidates(memberId, db);
+  const plannedById = new Map(plannedAttended.map((booking) => [booking.id, booking]));
+  if (attended.length !== plannedAttended.length) {
+    throw new HostingCoverageParticipantRetryError();
+  }
+  for (const booking of attended) {
+    const planned = plannedById.get(booking.id);
+    if (
+      !planned ||
+      planned.memberId !== booking.memberId ||
+      planned.lodgeId !== booking.lodgeId
+    ) {
+      throw new HostingCoverageParticipantRetryError();
+    }
+    if (enforcingByLodge.get(booking.lodgeId) === true) {
+      assertHostingCoverageQueueParticipantsLocked(participantProof, {
+        memberId: booking.memberId,
+        lodgeId: booking.lodgeId,
+        sourceBookingId: booking.id,
+        actorMemberId,
+      });
+    }
+  }
+
+  const sameOwnerQueueOwners = attended
+    .filter(
+      (booking) =>
+        enforcingByLodge.get(booking.lodgeId) === true &&
+        sameOwnerByLodge.get(booking.lodgeId) === true,
+    )
+    .map((booking) => booking.memberId);
+  if (!(await tryLockHostingCoverageOwners(db, sameOwnerQueueOwners))) {
+    throw new HostingCoverageParticipantRetryError();
+  }
   await lockHostingCoverageOwners(
     db,
-    attended
-      .filter(
-        (booking) =>
-          enforcingByLodge.get(booking.lodgeId) === true &&
-          sameOwnerByLodge.get(booking.lodgeId) === true,
-      )
-      .map((booking) => booking.memberId),
+    sameOwnerQueueOwners,
   );
   let queued = 0;
   for (const booking of attended) {
@@ -1908,9 +2259,10 @@ export async function enqueueHostingCoverageReevaluationForMember(
         ),
         cause: context.cause,
         sourceBookingId: booking.id,
-        actorMemberId: context.actorMemberId ?? null,
+        actorMemberId,
         reason: context.reason ?? null,
       },
+      participantProof,
       db,
     );
     if (id) queued += 1;

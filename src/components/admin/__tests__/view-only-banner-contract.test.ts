@@ -322,11 +322,11 @@ const NOTICE = "AdminViewOnlyNotice";
 */
 const FIGURES = {
   /** Every `<ViewOnlyActionButton>` render site in the admin tree. */
-  callSites: 311,
+  callSites: 312,
   /** Those that hand their explanation to a banner, by either rule. */
-  optOuts: 261,
+  optOuts: 262,
   /** `describeReason={false}` — needs a banner in the SAME file. */
-  staticOptOuts: 234,
+  staticOptOuts: 235,
   /** `describeReason={!ancestorRendersViewOnlyBanner}` — needs a vouch. */
   vouchedOptOuts: 27,
   /** …of the vouched: proved at a parent's own JSX render site (#2168). */
@@ -1255,13 +1255,27 @@ describe("view-only section banner coverage (#2160)", () => {
                banner for standalone reuse, while the bed-allocation page
                suppresses that child banner and covers both control sites with
                the page's existing bookings-area banner.
-               banner components move 83 -> 84. A re-measure on the integrated
-               tree leaves static opt-outs at 234.
-          311      #2595 adds the confirmed bed-move dialog's local-reason
-               control while reconciling the prior count against the current
-               tree. Exceptions move 49 -> 50 and exception files 26 -> 27;
+               static opt-outs move 234 -> 235 and banner components 83 -> 84.
+          310  -1  #2602 replaces the booking-panel removal control with a
+               plain preview button: view-only administrators may inspect the
+               staged removal, while the dialog keeps apply edit-gated. The
+               removed site was a same-file static opt-out, so static opt-outs
+               move 235 -> 234 and total opt-outs move 262 -> 261. Banner,
+               vouch and per-button-explanation counts are unchanged.
+          311  +1  #2597's "Resume approval" control on the deletion-request
+               queue, a real extra call site and a static opt-out under that
+               page's existing banner, so static opt-outs move 234 -> 235 and
+               total opt-outs move 261 -> 262. Recorded here because the
+               commit that re-measured it (969b88943) moved the figures
+               without adding its ledger line.
+          312  +1  #2595 adds the confirmed bed-move dialog's local-reason
+               control. Exceptions move 49 -> 50 and exception files 26 -> 27;
                the control is inside a separate modal accessibility container,
-               so it must not inherit the board page's banner.
+               so it must not inherit the board page's banner. Opt-outs,
+               vouches and banner components are untouched. Re-measured on the
+               INTEGRATED tree rather than added to either side's figure:
+               #2602's -1, #2597's +1 and this +1 all landed in the same
+               window, so 311 -> 310 -> 311 -> 312.
       */
       // #2259 adds the per-booking "No emails"
       // switch (`booking-no-emails-controls.tsx`), a leaf control dropped into

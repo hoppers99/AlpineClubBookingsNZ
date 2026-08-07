@@ -1,4 +1,5 @@
 import { after, NextRequest, NextResponse } from "next/server";
+import { hostingCoverageParticipantRetryResponse } from "@/lib/adult-member-hosting-retry-response";
 import { z } from "zod";
 import { logAudit } from "@/lib/audit";
 import logger from "@/lib/logger";
@@ -299,6 +300,8 @@ export async function POST(request: NextRequest) {
       { status: queueResult.queueOperationId ? 202 : 200 }
     );
   } catch (error) {
+    const hostingRetry = hostingCoverageParticipantRetryResponse(error);
+    if (hostingRetry) return hostingRetry;
     if (error instanceof ForceSyncLookupError) {
       return NextResponse.json({ error: error.message }, { status: error.status });
     }

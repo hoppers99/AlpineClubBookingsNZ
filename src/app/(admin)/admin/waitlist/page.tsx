@@ -28,6 +28,7 @@ import {
 import { bookingStatusClass, bookingStatusLabel } from "@/lib/status-colors";
 import { formatNZDateTime } from "@/lib/nzst-date";
 import { buildHrefWithReturnTo, buildPathWithSearch } from "@/lib/internal-return-path";
+import { FocusedActionError } from "@/components/focused-action-error";
 
 const PAGE_SIZE_OPTIONS = [10, 25, 50, 100] as const;
 
@@ -273,6 +274,7 @@ export default function AdminWaitlistPage() {
   const [forceConfirmReport, setForceConfirmReport] =
     useState<ForceConfirmReport | null>(null);
   const [error, setError] = useState("");
+  const [errorAttention, setErrorAttention] = useState(0);
   const [from, setFrom] = useState(fromParam);
   const [to, setTo] = useState(toParam);
   const [pagination, setPagination] = useState({
@@ -323,6 +325,7 @@ export default function AdminWaitlistPage() {
         total: 0,
       });
       setError(err instanceof Error ? err.message : "Failed to load waitlist");
+      setErrorAttention((value) => value + 1);
     } finally {
       setLoading(false);
     }
@@ -420,47 +423,58 @@ export default function AdminWaitlistPage() {
     setForceConfirming(bookingId);
     setError("");
 
-    const res = await fetch(`/api/admin/bookings/${bookingId}/force-confirm`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        allowOverbook,
-        ...(notifyMember !== undefined ? { notifyMember } : {}),
-      }),
-    });
-
-    const data = await res.json();
-
-    if (res.ok && data.success) {
-      setOverbookDialog(null);
-      setNotifyDialog(null);
-      setForceConfirmReport({
-        bookingId,
-        status: readString(data.status),
-        overbooked: data.overbooked === true,
-        overbookDates: readStringArray(data.overbookDates),
-        auditAction: readString(data.auditAction),
-        unpaidFinishedStay: data.unpaidFinishedStay === true,
-        notifiedMember: notifyMember ?? null,
-        noEmails,
+    try {
+      const res = await fetch(`/api/admin/bookings/${bookingId}/force-confirm`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          allowOverbook,
+          ...(notifyMember !== undefined ? { notifyMember } : {}),
+        }),
       });
-      await loadEntries();
-    } else if (data.error === "CAPACITY_EXCEEDED" && data.overbookDates) {
+      const data = (await res.json()) as Record<string, unknown>;
+
+      if (res.ok && data.success) {
+        setOverbookDialog(null);
+        setNotifyDialog(null);
+        setForceConfirmReport({
+          bookingId,
+          status: readString(data.status),
+          overbooked: data.overbooked === true,
+          overbookDates: readStringArray(data.overbookDates),
+          auditAction: readString(data.auditAction),
+          unpaidFinishedStay: data.unpaidFinishedStay === true,
+          notifiedMember: notifyMember ?? null,
+          noEmails,
+        });
+        await loadEntries();
+      } else if (
+        data.error === "CAPACITY_EXCEEDED" &&
+        Array.isArray(data.overbookDates)
+      ) {
+        setForceConfirmReport(null);
+        setNotifyDialog(null);
+        // Preserve the admin's email choice into the overbook retry (#1769b).
+        setOverbookDialog({
+          bookingId,
+          dates: readStringArray(data.overbookDates),
+          notifyMember,
+          noEmails,
+        });
+      } else {
+        setForceConfirmReport(null);
+        setError(readString(data.error) || "Failed to force-confirm booking");
+        setErrorAttention((value) => value + 1);
+      }
+    } catch {
       setForceConfirmReport(null);
-      setNotifyDialog(null);
-      // Preserve the admin's email choice into the overbook retry (#1769b).
-      setOverbookDialog({
-        bookingId,
-        dates: data.overbookDates,
-        notifyMember,
-        noEmails,
-      });
-    } else {
-      setForceConfirmReport(null);
-      setError(data.error || "Failed to force-confirm booking");
+      setError(
+        "The service response could not be read, so we could not verify whether this booking was force-confirmed. Reload the waitlist and check the booking before trying again.",
+      );
+      setErrorAttention((value) => value + 1);
+    } finally {
+      setForceConfirming(null);
     }
-
-    setForceConfirming(null);
   }
 
   /*
@@ -480,11 +494,20 @@ export default function AdminWaitlistPage() {
       bookings.
     </AdminViewOnlySectionBanner>
   );
+  const actionErrorAlert = (
+    <FocusedActionError
+      id="waitlist-action-error"
+      error={error}
+      attentionKey={errorAttention}
+      className="mb-6 scroll-mt-20"
+    />
+  );
 
   if (loading) {
     return (
       <div className="p-6">
         {viewOnlyBanner}
+        {actionErrorAlert}
         <div>Loading waitlist...</div>
       </div>
     );
@@ -493,15 +516,12 @@ export default function AdminWaitlistPage() {
   return (
     <div>
       {viewOnlyBanner}
+      {actionErrorAlert}
       <div className="space-y-6">
       <AdminPageHeader
         title="Waitlist"
         actions={<Badge variant="secondary">{pagination.total} total</Badge>}
       />
-
-      {error && (
-        <div className="rounded-md border border-danger/20 bg-danger-muted p-3 text-sm text-danger">{error}</div>
-      )}
 
       {/* #1723 path 1 (owner decision B): allowed, but the admin is told at
           creation that this booking is already an unpaid finished stay. */}

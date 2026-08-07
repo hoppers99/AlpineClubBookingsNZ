@@ -190,14 +190,16 @@ export async function confirmBookingToPaymentStep(
   page: Page,
   isolation: BookingCreateIsolation,
 ): Promise<void> {
-  await withBookingCreateClientIp(page, isolation, async () => {
-    await page
-      .getByRole("button", { name: /Continue to Payment|Confirm Booking/ })
-      .click();
+  await withBookingCreateClientIp(page, isolation, {
+    trigger: () =>
+      page
+        .getByRole("button", { name: /Continue to Payment|Confirm Booking/ })
+        .click(),
     // "Complete Payment" appears both as the step-4 indicator and as the card
     // title, so match loosely and just require the payment step to be showing.
-    await expect(page.getByText("Complete Payment").first()).toBeVisible({
-      timeout: 30_000,
-    });
+    waitForOutcome: () =>
+      expect(page.getByText("Complete Payment").first()).toBeVisible({
+        timeout: 30_000,
+      }),
   });
 }

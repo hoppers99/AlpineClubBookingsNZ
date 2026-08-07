@@ -11,8 +11,11 @@ import { Address, Phone } from "xero-node";
 
 const mocks = vi.hoisted(() => ({
   memberFindUnique: vi.fn(),
+  txMemberFindUnique: vi.fn(),
   txMemberUpdate: vi.fn(),
+  txXeroOperationFindFirst: vi.fn(),
   txExecuteRaw: vi.fn(),
+  txQueryRaw: vi.fn(),
   transaction: vi.fn(),
   createContacts: vi.fn(),
   getAuthenticatedXeroClient: vi.fn(),
@@ -21,7 +24,18 @@ const mocks = vi.hoisted(() => ({
   failXeroSyncOperation: vi.fn(),
   upsertXeroObjectLink: vi.fn(),
   syncManagedXeroContactGroupForMember: vi.fn(),
+  recordProviderCreatedContactPendingLocalLink: vi.fn(),
 }));
+
+vi.mock("@/lib/xero-contact-create-recovery", async (importOriginal) => {
+  const actual =
+    await importOriginal<typeof import("@/lib/xero-contact-create-recovery")>();
+  return {
+    ...actual,
+    recordProviderCreatedContactPendingLocalLink:
+      mocks.recordProviderCreatedContactPendingLocalLink,
+  };
+});
 
 vi.mock("@/lib/prisma", () => ({
   prisma: {
@@ -61,9 +75,16 @@ vi.mock("@/lib/logger", () => ({
   default: { error: vi.fn(), warn: vi.fn(), info: vi.fn(), debug: vi.fn() },
 }));
 
-import { createXeroContactForMember } from "@/lib/xero-contacts";
-import { XeroContactValidationError } from "@/lib/xero-contacts";
+import {
+  createXeroContactForMember,
+  XeroContactCreatePartialSuccessError,
+  XeroContactValidationError,
+} from "@/lib/xero-contacts";
 import { buildXeroIdempotencyKey } from "@/lib/xero-sync";
+import {
+  ambiguousMemberContactCreateReservationWhere,
+  XeroContactCreateInProgressError,
+} from "@/lib/xero-contact-create-recovery";
 
 const SPARSE_MEMBER = {
   id: "member-1",
@@ -104,13 +125,26 @@ function primeHappyPath(member: Record<string, unknown>) {
   mocks.failXeroSyncOperation.mockResolvedValue(undefined);
   mocks.upsertXeroObjectLink.mockResolvedValue({ id: "link-1" });
   mocks.syncManagedXeroContactGroupForMember.mockResolvedValue(undefined);
-  mocks.txExecuteRaw.mockResolvedValue(undefined);
+  mocks.recordProviderCreatedContactPendingLocalLink.mockResolvedValue(undefined);
+  mocks.txExecuteRaw.mockResolvedValue(1);
+  mocks.txMemberFindUnique.mockResolvedValue({ ...member });
+  mocks.txXeroOperationFindFirst.mockResolvedValue(null);
+  mocks.txQueryRaw.mockImplementation(
+    async (_strings: TemplateStringsArray, memberId: string) => [{ id: memberId }],
+  );
   mocks.txMemberUpdate.mockResolvedValue({ id: member.id });
   mocks.transaction.mockImplementation(
     async (fn: (tx: unknown) => Promise<unknown>) =>
       fn({
         $executeRaw: mocks.txExecuteRaw,
-        member: { update: mocks.txMemberUpdate },
+        $queryRaw: mocks.txQueryRaw,
+        member: {
+          findUnique: mocks.txMemberFindUnique,
+          update: mocks.txMemberUpdate,
+        },
+        xeroSyncOperation: {
+          findFirst: mocks.txXeroOperationFindFirst,
+        },
       })
   );
 }
@@ -172,6 +206,36 @@ describe("createXeroContactForMember payload hygiene (#2089)", () => {
       })
     );
   });
+
+  it.each([
+    ["active", { id: "operation-running", status: "RUNNING" }],
+    [
+      "stale orphaned",
+      {
+        id: "operation-stale",
+        status: "FAILED",
+        lastErrorCode: "ORPHANED_STALE_RUNNING",
+      },
+    ],
+  ])(
+    "refuses a %s contact-create reservation before authentication or provider work",
+    async (_label, reservation) => {
+      primeHappyPath(SPARSE_MEMBER);
+      mocks.txXeroOperationFindFirst.mockResolvedValueOnce(reservation);
+
+      await expect(
+        createXeroContactForMember("member-1"),
+      ).rejects.toBeInstanceOf(XeroContactCreateInProgressError);
+
+      expect(mocks.txXeroOperationFindFirst).toHaveBeenCalledWith({
+        where: ambiguousMemberContactCreateReservationWhere("member-1"),
+        select: { id: true },
+      });
+      expect(mocks.startXeroSyncOperation).not.toHaveBeenCalled();
+      expect(mocks.getAuthenticatedXeroClient).not.toHaveBeenCalled();
+      expect(mocks.createContacts).not.toHaveBeenCalled();
+    },
+  );
 
   it("still sends a MOBILE phone block when any phone part is present", async () => {
     primeHappyPath({
@@ -261,6 +325,134 @@ describe("createXeroContactForMember payload hygiene (#2089)", () => {
       "name",
       "phones",
     ]);
+  });
+
+  it("reports provider-created when the local member link fails", async () => {
+    primeHappyPath(SPARSE_MEMBER);
+    const linkFailure = new Error("private database detail");
+    mocks.transaction
+      .mockImplementationOnce(async (fn: (tx: unknown) => Promise<unknown>) =>
+        fn({
+          $executeRaw: mocks.txExecuteRaw,
+          $queryRaw: mocks.txQueryRaw,
+          member: {
+            findUnique: mocks.txMemberFindUnique,
+            update: mocks.txMemberUpdate,
+          },
+          xeroSyncOperation: {
+            findFirst: mocks.txXeroOperationFindFirst,
+          },
+        }),
+      )
+      .mockRejectedValueOnce(linkFailure);
+
+    const error = await createXeroContactForMember("member-1").catch(
+      (caught: unknown) => caught,
+    );
+
+    expect(error).toBeInstanceOf(XeroContactCreatePartialSuccessError);
+    expect(error).toMatchObject({
+      message: "Xero contact creation completed only in part",
+      phase: "PROVIDER_CONTACT_CREATED",
+      xeroContactId: "contact-new",
+      originalError: linkFailure,
+    });
+    expect(mocks.failXeroSyncOperation).toHaveBeenCalledWith(
+      "op-1",
+      linkFailure,
+      expect.objectContaining({
+        phase: "local_link_after_xero_resolution",
+        resolvedContactId: "contact-new",
+        providerContactCreated: true,
+      }),
+    );
+    expect(mocks.completeXeroSyncOperation).not.toHaveBeenCalled();
+  });
+
+  it("retains the pre-link provider proof when recording the terminal failure also fails", async () => {
+    primeHappyPath(SPARSE_MEMBER);
+    const linkFailure = new Error("local link unavailable");
+    mocks.txMemberUpdate.mockRejectedValue(linkFailure);
+    mocks.failXeroSyncOperation.mockRejectedValue(
+      new Error("failure recorder unavailable"),
+    );
+
+    const error = await createXeroContactForMember("member-1").catch(
+      (caught: unknown) => caught,
+    );
+
+    expect(error).toMatchObject({
+      phase: "PROVIDER_CONTACT_CREATED",
+      xeroContactId: "contact-new",
+      originalError: linkFailure,
+    });
+    expect(
+      mocks.recordProviderCreatedContactPendingLocalLink,
+    ).toHaveBeenCalledWith({
+      operationId: "op-1",
+      resolvedContactId: "contact-new",
+    });
+    expect(
+      mocks.recordProviderCreatedContactPendingLocalLink.mock
+        .invocationCallOrder[0],
+    ).toBeLessThan(mocks.txMemberUpdate.mock.invocationCallOrder[0]);
+    expect(mocks.failXeroSyncOperation).toHaveBeenCalled();
+    expect(mocks.completeXeroSyncOperation).not.toHaveBeenCalled();
+  });
+
+  it("returns provider-created recovery when both proof recorders fail before linking", async () => {
+    primeHappyPath(SPARSE_MEMBER);
+    const proofFailure = new Error("pending proof recorder unavailable");
+    mocks.recordProviderCreatedContactPendingLocalLink.mockRejectedValue(
+      proofFailure,
+    );
+    mocks.failXeroSyncOperation.mockRejectedValue(
+      new Error("terminal proof recorder unavailable"),
+    );
+
+    const error = await createXeroContactForMember("member-1").catch(
+      (caught: unknown) => caught,
+    );
+
+    expect(error).toBeInstanceOf(XeroContactCreatePartialSuccessError);
+    expect(error).toMatchObject({
+      phase: "PROVIDER_CONTACT_CREATED",
+      xeroContactId: "contact-new",
+      originalError: proofFailure,
+    });
+    expect(mocks.startXeroSyncOperation).toHaveBeenCalled();
+    expect(mocks.recordProviderCreatedContactPendingLocalLink).toHaveBeenCalled();
+    expect(mocks.failXeroSyncOperation).toHaveBeenCalledWith(
+      "op-1",
+      proofFailure,
+      expect.objectContaining({
+        providerContactCreated: true,
+      }),
+    );
+    expect(mocks.txMemberUpdate).not.toHaveBeenCalled();
+    expect(mocks.completeXeroSyncOperation).not.toHaveBeenCalled();
+  });
+
+  it("reports local-link-committed when operation close fails post-commit", async () => {
+    primeHappyPath(SPARSE_MEMBER);
+    const completionFailure = new Error("private operation detail");
+    mocks.completeXeroSyncOperation.mockRejectedValue(completionFailure);
+
+    const error = await createXeroContactForMember("member-1").catch(
+      (caught: unknown) => caught,
+    );
+
+    expect(error).toBeInstanceOf(XeroContactCreatePartialSuccessError);
+    expect(error).toMatchObject({
+      message: "Xero contact creation completed only in part",
+      phase: "LOCAL_MEMBER_LINK_COMMITTED",
+      xeroContactId: "contact-new",
+      originalError: completionFailure,
+    });
+    expect(mocks.txMemberUpdate).toHaveBeenCalledWith({
+      where: { id: "member-1" },
+      data: { xeroContactId: "contact-new" },
+    });
   });
 
   it("rejects a member missing email before any Xero call", async () => {

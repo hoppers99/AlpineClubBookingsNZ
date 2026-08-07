@@ -36,6 +36,7 @@ const mocks = vi.hoisted(() => ({
 vi.mock("@/lib/prisma", () => ({
   prisma: {
     groupBooking: { findUnique: mocks.groupFindUnique },
+    groupDiscountSetting: { findUnique: vi.fn().mockResolvedValue(null) },
     groupBookingJoin: {
       findFirst: mocks.joinFindFirst,
       count: mocks.joinCount,
@@ -121,6 +122,11 @@ import {
   formatDateOnly,
   getTodayDateOnly,
 } from "@/lib/date-only";
+import {
+  HOSTING_COVERAGE_RETRY_CODE,
+  HOSTING_COVERAGE_RETRY_MESSAGE,
+  HostingCoverageParticipantRetryError,
+} from "@/lib/adult-member-hosting-queue-participants";
 
 // Kept relative to the real clock: the ended-stay gate (#1723 path 3) rejects
 // joins once the organiser booking's check-out reaches NZ today, so a
@@ -321,5 +327,35 @@ describe("joinGroupBookingAsMember caps against the group's lodge", () => {
       }),
     );
     expect(mocks.createConfirmedBooking).not.toHaveBeenCalled();
+  });
+
+  it("translates participant contention from booking creation into the stable group 409", async () => {
+    mocks.groupFindUnique.mockResolvedValue(activeGroup(LODGE_B));
+    mocks.createConfirmedBooking.mockRejectedValue(
+      new HostingCoverageParticipantRetryError(),
+    );
+
+    await expect(
+      joinGroupBookingAsMember(
+        {
+          code: "ABCD2345",
+          guests: [
+            {
+              firstName: "Jo",
+              lastName: "Member",
+              ageTier: "ADULT",
+              memberId: "joiner-1",
+              isMember: true,
+            },
+          ],
+        },
+        "joiner-1",
+        "MEMBER",
+      ),
+    ).rejects.toMatchObject({
+      status: 409,
+      message: HOSTING_COVERAGE_RETRY_MESSAGE,
+      code: HOSTING_COVERAGE_RETRY_CODE,
+    });
   });
 });

@@ -49,7 +49,9 @@ const GLOBAL_BOOKING_MONEY_LOCK_INVENTORY: Record<string, number> = {
   "src/app/api/admin/bookings/[id]/force-confirm/route.ts": 1,
   "src/app/api/bookings/[id]/confirm-draft/route.ts": 1,
   "src/app/api/bookings/[id]/guests/route.ts": 1,
-  "src/app/api/bookings/[id]/waitlist-confirm/route.ts": 1,
+  // #2597: phase-two participant contention compensates the already-committed
+  // zero-dollar offer claim under a fresh global -> lodge transaction.
+  "src/app/api/bookings/[id]/waitlist-confirm/route.ts": 2,
   // #2586: departure cleanup shares the consent writer's global -> lodge ->
   // roster -> BookingGuest order so it cannot deadlock by locking the guest
   // tuple before consent decline/expiry reaches the same roster partition.
@@ -342,18 +344,22 @@ const ROW_LOCK_SITE_INVENTORY: Record<string, number> = {
   // advisory lock; disjoint from booking/money writers. See
   // docs/CONCURRENCY_AND_LOCKING.md → "Member photo writer".
   "src/app/api/members/[id]/photo/route.ts": 2,
-  // Member merge (#2243): one id-ordered `SELECT 1 … FOR UPDATE` over BOTH
-  // member rows immediately before the merge's fresh field-patch read, inside
-  // the transaction that already holds both member-lifecycle advisory locks
-  // (order: advisory locks -> row locks; the loser's row was already locked by
-  // teardownLoserXero's update, so this adds only the master's). Counterpart
-  // writers are the member-photo route above (member-row lock, no advisory
-  // lock) and admin member edits — both serialise behind this lock or land a
-  // drift the merge refuses with a 409. Ids are sorted so two merges sharing a
-  // member cannot deadlock. See docs/CONCURRENCY_AND_LOCKING.md →
-  // "Member merge — dual member-lifecycle lock (E11 #1937)" and the #2243
-  // fresh-read/drift-refusal paragraphs above it.
-  "src/lib/member-merge.ts": 1,
+  // Adult-member-hosting queue participants (#2597): the shared helper mints
+  // one reviewed `FOR UPDATE` protocol for member merge over master, loser and
+  // every planned ancillary owner, plus the shared standing-subject barrier
+  // that excludes a late BookingGuest FK `KEY SHARE` for every member-standing
+  // fan-out. Ordinary seams use the separate sorted `FOR KEY SHARE NOWAIT`
+  // protocol in this helper. It issues the runtime exact-participant proofs
+  // consumed by queue writes.
+  // See docs/CONCURRENCY_AND_LOCKING.md → "Adult-member-hosting queue
+  // participant fencing" and "Member merge".
+  "src/lib/adult-member-hosting-queue-participants.ts": 2,
+  // Member-scoped Xero contact writes (#2597) share one `FOR UPDATE` protocol
+  // for canonical CONTACT-link completion. Account deletion and member merge
+  // take the same Member row before teardown, while CREATE/UPDATE reservations
+  // use the separate `FOR KEY SHARE` protocol inventoried by their source tests.
+  // See docs/CONCURRENCY_AND_LOCKING.md -> "Xero contact writers".
+  "src/lib/xero-contact-create-recovery.ts": 1,
 };
 
 const CAPACITY_LOCK_MINT = "src/lib/lodge-capacity-lock.ts";

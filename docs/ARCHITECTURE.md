@@ -977,11 +977,11 @@ tree** (#2160, extended by #2168 and #2324) — not a claim that nothing is left
 Measured
 on the current tree by `view-only-banner-contract.test.ts`, which asserts these
 figures rather than trusting a hand count: **84 components render a banner, and
-261 of the 311 `ViewOnlyActionButton` call sites opt out** of the per-button
+262 of the 312 `ViewOnlyActionButton` call sites opt out** of the per-button
 reason. (Earlier revisions of this page published 76/232/264/211 — those were
 upstream-historical and had drifted; the numbers here are the ones the contract
-test currently pins, which is the only authority.) Those 261 split by WHICH rule
-covers them: **234** pass the literal
+test currently pins, which is the only authority.) Those 262 split by WHICH rule
+covers them: **235** pass the literal
 `describeReason={false}` and are covered by a banner in the same file, and **27**
 pass `describeReason={!ancestorRendersViewOnlyBanner}` and are covered by a
 verified vouching parent — 22 by a parent's own JSX render site (#2168), 5 by the
@@ -1701,21 +1701,26 @@ the soft allowlist structurally.
 
 ### Adult-member hosting policy
 
-The second consumer of that foundation, and the first that does not block
-anybody. A club may ask that every non-member guest-night overlaps an adult
-member staying on the same booking; `AdultMemberHostingPolicy` holds one row per
-scope (club-wide plus per-lodge overrides that may also say `Inherit`), with
-scope identity pinned by a CHECK on `scopeKey`, an explicit `capacityMode`
-carrying no database default, and a revision that every write compare-and-swaps
-on under the `adult-member-hosting-policy-set` advisory key.
+The second consumer of that foundation now has two independently inherited
+dimensions. The CONSEQUENCE is `DISABLED`, `ADMIN_REVIEW_REQUIRED`, or
+`ENFORCED`; the host-scope set enables `SAME_BOOKING`,
+`SAME_BOOKING_OWNER`, or both. `AdultMemberHostingPolicy` holds one row per
+configuration scope (club-wide plus per-lodge override), with scope identity
+pinned by a CHECK on `scopeKey`, an explicit `capacityMode` carrying no database
+default, and a revision that every write compare-and-swaps on under the
+`adult-member-hosting-policy-set` advisory key. A lodge may inherit either
+dimension while overriding the other. Existing NULL scope columns resolve to
+same-booking only, so the expansion does not broaden an existing club's policy.
 
-The evaluator in `src/lib/policies/adult-member-hosting.ts` is pure: it takes
-resolved policy rows and participant facts and returns the frozen
-`ADULT_MEMBER_HOSTING_REQUIRED` violation, extended with the exact uncovered
-guest+night pairs and the qualifying member ids for every candidate night.
-Booking ownership is never an input, so it can never be mistaken for attendance,
-and the live `Member` row — not the guest row's `isMember` snapshot — decides who
-qualifies.
+The evaluator in `src/lib/policies/adult-member-hosting.ts` is pure: it takes a
+resolved consequence/scope set and participant facts stamped with the scope by
+which they may qualify, then returns the frozen
+`ADULT_MEMBER_HOSTING_REQUIRED` violation with exact uncovered guest+night pairs
+and qualifying member ids. Same-owner candidates come only from another
+eligible booking with the exact same `Booking.memberId`, lodge, and night;
+ownership alone never proves attendance. The live `Member` row — not the guest
+row's `isMember` snapshot — decides who qualifies, and unrelated members,
+shared emails, and Family Groups never supply cover.
 
 `src/lib/adult-member-hosting-review.ts` is the only module that turns a
 persisted booking into evaluator input and the answer back into review state.
@@ -1743,15 +1748,19 @@ reconciler.
 The review is deliberately NOT folded into `requiresAdminReview` /
 `adminReviewStatus`: those carry the minors-only rule, several paths wipe them
 when it stops applying, and a hosting hazard has a different lifecycle. The two
-are reported together as structured codes at read time instead. The only
-enforcement that refuses anything is D-R4's on-behalf seam on create: an admin
-booking for somebody else is stopped with 409
-`ADULT_MEMBER_HOSTING_CONFIRM_REQUIRED` until they give a reason, which is stored
-with their id against the approval — `/admin/book` renders the reason panel that
-answers it, on the confirm and the save-as-draft path alike, because the check
-runs ahead of the draft fork. `adultMemberHostingReviewedById` is a real
-`SetNull` relation to `Member` with a `member-merge.ts` spec, so that attribution
-survives a merge and does not dangle after a deletion.
+are reported together as structured codes at read time instead. In review mode
+the booking exists while an officer decides; in enforced mode a non-compliant
+member create or modification throws the waivable 409 inside its transaction,
+so the write rolls back and the signed-in exception-request flow becomes the
+door forward. School and organisation approval stays review-only, while
+member-owned flows — including member whole-lodge approval — remain enforced.
+An admin booking for somebody else may supply an explicit reason, which records
+an attributable APPROVED review; `/admin/book` renders that reason panel for
+confirm and save-as-draft. `adultMemberHostingReviewedById` is a real `SetNull`
+relation to `Member` with a `member-merge.ts` spec, so that attribution survives
+a merge and does not dangle after deletion. Once an accepted booking loses
+same-owner cover, a separate urgent incident opens without changing
+`Booking.status` and resolves automatically when cover returns.
 
 1. A member selects a lodge (implicit when only one active lodge exists) and
    check-in and check-out dates.

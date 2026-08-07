@@ -475,16 +475,24 @@ describe("config-transfer booking policies (#2363)", () => {
     });
   });
 
-  it("pins config singleton -> policy set -> in-lock re-plan ordering", () => {
+  it("pins config singleton -> both policy sets -> re-plan -> apply ordering", () => {
     const source = readFileSync(
       join(process.cwd(), "src/lib/config-transfer/apply.ts"),
       "utf8",
     );
     const configLock = source.indexOf("await acquireConfigImportLock(tx)");
-    const policyLock = source.indexOf("await lockMinimumStayPolicySet(tx)");
+    const minimumStayPolicyLock = source.indexOf(
+      "await lockMinimumStayPolicySet(tx)",
+    );
+    const hostingPolicyLock = source.indexOf(
+      "await lockAdultMemberHostingPolicySet(tx)",
+    );
     const replan = source.indexOf("const replan = await buildImportPlanFromParsed");
+    const categoryApply = source.indexOf("await importer.apply(applyCtx)");
     expect(configLock).toBeGreaterThan(-1);
-    expect(policyLock).toBeGreaterThan(configLock);
-    expect(replan).toBeGreaterThan(policyLock);
+    expect(minimumStayPolicyLock).toBeGreaterThan(configLock);
+    expect(hostingPolicyLock).toBeGreaterThan(minimumStayPolicyLock);
+    expect(replan).toBeGreaterThan(hostingPolicyLock);
+    expect(categoryApply).toBeGreaterThan(replan);
   });
 });

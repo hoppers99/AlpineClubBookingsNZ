@@ -11,7 +11,6 @@ import {
   type BedAllocationRoom,
 } from "@/lib/bed-allocation";
 import { BED_ALLOCATION_PRIORITY_VOCABULARY } from "@/lib/bed-allocation-settings";
-import { realElapsedMs } from "@/lib/__tests__/helpers/clock";
 
 const rooms: BedAllocationRoom[] = [
   {
@@ -94,6 +93,58 @@ function permutations<T>(values: readonly T[]): T[][] {
       (rest) => [value, ...rest],
     ),
   );
+}
+
+type ArrayFilter = (
+  this: unknown[],
+  predicate: (value: unknown, index: number, array: unknown[]) => unknown,
+  thisArg?: unknown,
+) => unknown[];
+
+function isAllocationRow(value: unknown): boolean {
+  if (typeof value !== "object" || value === null) return false;
+  const row = value as Record<string, unknown>;
+  return (
+    typeof row.bookingId === "string" &&
+    typeof row.bookingGuestId === "string" &&
+    typeof row.roomId === "string" &&
+    typeof row.bedId === "string" &&
+    typeof row.stayDate === "string" &&
+    (row.source === "AUTO" || row.source === "MANUAL")
+  );
+}
+
+function measureAllocationFilterVisits<T>(
+  maxVisits: number,
+  run: () => T,
+): { result: T; visits: number } {
+  const descriptor = Object.getOwnPropertyDescriptor(Array.prototype, "filter");
+  if (!descriptor || typeof descriptor.value !== "function") {
+    throw new Error("Array.prototype.filter is not available to instrument");
+  }
+  const originalFilter = descriptor.value as ArrayFilter;
+  let visits = 0;
+  const measuredFilter: ArrayFilter = function (predicate, thisArg) {
+    if (this.length > 0 && isAllocationRow(this[0])) {
+      visits += this.length;
+      if (visits > maxVisits) {
+        throw new Error(
+          `Allocation-row filter work reached ${visits} visits and exceeded the deterministic ${maxVisits}-visit budget`,
+        );
+      }
+    }
+    return Reflect.apply(originalFilter, this, [predicate, thisArg]) as unknown[];
+  };
+
+  Object.defineProperty(Array.prototype, "filter", {
+    ...descriptor,
+    value: measuredFilter,
+  });
+  try {
+    return { result: run(), visits };
+  } finally {
+    Object.defineProperty(Array.prototype, "filter", descriptor);
+  }
 }
 
 describe("bed allocation planner", () => {
@@ -1823,8 +1874,11 @@ describe("bed allocation planner", () => {
     ).toThrow(/unknown/i);
   });
 
-  it("bounds a realistic 31-night school matching plan", () => {
+  it("bounds repeated allocation-row filtering in a realistic school plan", () => {
     expect(BED_ALLOCATION_MAX_MATCHING_LAYOUTS).toBe(24);
+    const expectedAllocationCount = 100 * 31;
+    const allocationFilterVisitBudget =
+      BED_ALLOCATION_MAX_MATCHING_LAYOUTS * 31 * expectedAllocationCount * 4;
     const largeRooms: BedAllocationRoom[] = Array.from(
       { length: 20 },
       (_, roomIndex) => ({
@@ -1851,18 +1905,25 @@ describe("bed allocation planner", () => {
       })),
     );
     largeBooking.isSchoolGroup = true;
-    const startedAt = process.hrtime.bigint();
-    const plan = buildFirstFitBedAllocationPlan({
-      enabled: true,
-      rooms: largeRooms,
-      bookings: [largeBooking],
-    });
+    const { result: plan, visits } = measureAllocationFilterVisits(
+      allocationFilterVisitBudget,
+      () =>
+        buildFirstFitBedAllocationPlan({
+          enabled: true,
+          rooms: largeRooms,
+          bookings: [largeBooking],
+        }),
+    );
 
-    expect(plan.allocations).toHaveLength(100 * 31);
-    // Coarse synchronous-latency guard with CI headroom: the pre-indexed
-    // implementation took about 7.2s for this exact 3,100-row shape.
-    expect(realElapsedMs(startedAt)).toBeLessThan(5_000);
-  });
+    expect(plan.allocations).toHaveLength(expectedAllocationCount);
+    // Runtime instrumentation catches aliases as well as direct access without
+    // inspecting planner source. Four complete allocation-array scans per
+    // matching layout and lodge-night leave ample room for efficient refactors;
+    // the former per-guest/per-night scan visits 111,600,000 rows and fails this
+    // 9,225,600-visit budget early. This is deliberately a regression guard for
+    // repeated allocation filtering, not a universal complexity proof.
+    expect(visits).toBeLessThanOrEqual(allocationFilterVisitBudget);
+  }, 15_000);
 
   it("falls back silently to first-fit when the requested room is full", () => {
     const plan = buildFirstFitBedAllocationPlan({

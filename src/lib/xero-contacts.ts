@@ -36,7 +36,17 @@ import {
   XeroDailyLimitError,
 } from "./xero-api-client";
 import { syncManagedXeroContactGroupForMember } from "./xero-contact-groups";
+import { buildXeroContactUpdatePayload } from "./xero-contact-sync";
 import { isPlaceholderContactEmail } from "@/lib/placeholder-contact-email";
+import {
+  ambiguousMemberContactCreateReservationWhere,
+  assertMemberAvailableForXeroContactChange,
+  lockMemberForXeroContactLink,
+  recordProviderCreatedContactPendingLocalLink,
+  XeroContactAlreadyLinkedError,
+  XeroContactCreateInProgressError,
+  XeroContactLinkChangedError,
+} from "@/lib/xero-contact-create-recovery";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -57,6 +67,166 @@ export class XeroContactValidationError extends Error {
 export interface FindOrCreateXeroContactOptions {
   createdByMemberId?: string;
   repairExistingLink?: boolean;
+}
+
+type ContactCreateOperationInput = Omit<
+  Parameters<typeof startXeroSyncOperation>[0],
+  "store"
+>;
+
+type ContactUpdateOperationInput = ContactCreateOperationInput;
+
+const MEMBER_CONTACT_UPDATE_RESERVATION_SELECT = {
+  id: true,
+  firstName: true,
+  lastName: true,
+  email: true,
+  passwordHash: true,
+  xeroContactId: true,
+  dateOfBirth: true,
+  phoneCountryCode: true,
+  phoneAreaCode: true,
+  phoneNumber: true,
+  streetAddressLine1: true,
+  streetAddressLine2: true,
+  streetCity: true,
+  streetRegion: true,
+  streetPostalCode: true,
+  streetCountry: true,
+  postalAddressLine1: true,
+  postalAddressLine2: true,
+  postalCity: true,
+  postalRegion: true,
+  postalPostalCode: true,
+  postalCountry: true,
+} as const;
+
+export type LockedMemberContactUpdateSnapshot = Prisma.MemberGetPayload<{
+  select: typeof MEMBER_CONTACT_UPDATE_RESERVATION_SELECT;
+}>;
+
+export type LockedMemberContactCreateSnapshot =
+  LockedMemberContactUpdateSnapshot;
+
+export type MemberContactCreateReservationPlan<T> = {
+  input: ContactCreateOperationInput;
+  value: T;
+};
+
+export type MemberContactUpdateReservationPlan<T> = {
+  input: ContactUpdateOperationInput;
+  value: T;
+};
+
+/**
+ * Commit the exact member-scoped CREATE reservation before any provider create.
+ * Member merge takes the conflicting Member FOR UPDATE set and rechecks these
+ * rows under that lock, so either the reservation is visible to merge or the
+ * member disappears before this transaction can reserve it.
+ */
+export async function reserveMemberContactCreateOperation<T>(
+  memberId: string,
+  buildPlan: (
+    member: LockedMemberContactCreateSnapshot,
+  ) => MemberContactCreateReservationPlan<T>,
+  db: typeof prisma = prisma,
+): Promise<{
+  operation: Awaited<ReturnType<typeof startXeroSyncOperation>>;
+  value: T;
+}> {
+  return db.$transaction(async (tx) => {
+    await tx.$executeRaw`
+      SELECT 1
+      FROM "Member"
+      WHERE "id" = ${memberId}
+      FOR KEY SHARE
+    `;
+    const locked = await tx.member.findUnique({
+      where: { id: memberId },
+      select: MEMBER_CONTACT_UPDATE_RESERVATION_SELECT,
+    });
+    if (!locked) {
+      throw new Error(`Member not found: ${memberId}`);
+    }
+    assertMemberAvailableForXeroContactChange(locked);
+    if (locked.xeroContactId) {
+      throw new XeroContactAlreadyLinkedError();
+    }
+    const ambiguousReservation = await tx.xeroSyncOperation.findFirst({
+      where: ambiguousMemberContactCreateReservationWhere(memberId),
+      select: { id: true },
+    });
+    if (ambiguousReservation) {
+      throw new XeroContactCreateInProgressError();
+    }
+    const plan = buildPlan(locked);
+    const operation = await startXeroSyncOperation({
+      ...plan.input,
+      store: tx,
+    });
+    return { operation, value: plan.value };
+  });
+}
+
+/**
+ * Commit a Member-scoped UPDATE reservation before provider work. Merge and
+ * deletion take the conflicting Member FOR UPDATE row and re-check this exact
+ * RUNNING operation, while completion takes the same row and closes the
+ * operation plus canonical link atomically.
+ */
+export async function reserveMemberContactUpdateOperation<T>(
+  memberId: string,
+  xeroContactId: string,
+  buildPlan: (
+    member: LockedMemberContactUpdateSnapshot,
+  ) => MemberContactUpdateReservationPlan<T> | null,
+  db: typeof prisma = prisma,
+): Promise<{
+  operation: Awaited<ReturnType<typeof startXeroSyncOperation>>;
+  value: T;
+} | null> {
+  return db.$transaction(async (tx) => {
+    await tx.$executeRaw`
+      SELECT 1
+      FROM "Member"
+      WHERE "id" = ${memberId}
+      FOR KEY SHARE
+    `;
+    const locked = await tx.member.findUnique({
+      where: { id: memberId },
+      select: MEMBER_CONTACT_UPDATE_RESERVATION_SELECT,
+    });
+    if (!locked) {
+      throw new Error(`Member not found: ${memberId}`);
+    }
+    assertMemberAvailableForXeroContactChange(locked);
+    if (locked.xeroContactId !== xeroContactId) {
+      throw new XeroContactLinkChangedError();
+    }
+    const plan = buildPlan(locked);
+    if (!plan) return null;
+    const operation = await startXeroSyncOperation({
+      ...plan.input,
+      store: tx,
+    });
+    return { operation, value: plan.value };
+  });
+}
+
+export async function completeMemberContactUpdateOperation(
+  memberId: string,
+  expectedXeroContactId: string,
+  operationId: string,
+  completion: Parameters<typeof completeXeroSyncOperation>[1],
+  db: typeof prisma = prisma,
+): Promise<void> {
+  await db.$transaction(async (tx) => {
+    const locked = await lockMemberForXeroContactLink(tx, memberId);
+    if (locked.xeroContactId !== expectedXeroContactId) {
+      throw new XeroContactLinkChangedError();
+    }
+    await completeXeroSyncOperation(operationId, completion, { store: tx });
+  });
 }
 
 export interface XeroContactUpdateData {
@@ -249,6 +419,38 @@ export function getMissingFieldsForXeroContactCreate(member: {
   return missingFields;
 }
 
+function buildMemberXeroContactCreatePayload(
+  member: LockedMemberContactCreateSnapshot,
+): Contact {
+  const missingFields = getMissingFieldsForXeroContactCreate(member);
+  if (missingFields.length > 0) {
+    throw new XeroContactValidationError(missingFields);
+  }
+
+  const hasAnyPhonePart = Boolean(
+    member.phoneCountryCode?.trim() ||
+      member.phoneAreaCode?.trim() ||
+      member.phoneNumber?.trim(),
+  );
+  return {
+    name: `${member.firstName} ${member.lastName}`,
+    firstName: member.firstName,
+    lastName: member.lastName,
+    emailAddress: isPlaceholderContactEmail(member.email) ? "" : member.email,
+    phones: hasAnyPhonePart
+      ? [
+          {
+            phoneType: Phone.PhoneTypeEnum.MOBILE,
+            phoneCountryCode: member.phoneCountryCode || "",
+            phoneAreaCode: member.phoneAreaCode || "",
+            phoneNumber: member.phoneNumber || "",
+          },
+        ]
+      : [],
+    addresses: buildXeroAddresses(member),
+  };
+}
+
 // ---------------------------------------------------------------------------
 // Internal helpers
 // ---------------------------------------------------------------------------
@@ -289,24 +491,29 @@ async function linkMatchedXeroContact(
     where: { id: input.memberId },
     data: { xeroContactId: input.contactId },
   });
-  await upsertXeroObjectLink({
-    localModel: "Member",
-    localId: input.memberId,
-    xeroObjectType: "CONTACT",
-    xeroObjectId: input.contactId,
-    xeroObjectUrl: buildXeroContactUrl(input.contactId),
-    role: "CONTACT",
-    metadata: {
-      linkedVia: input.linkedVia,
-      contactName: input.contactName?.trim() ? input.contactName.trim() : undefined,
-      repairedFromXeroContactId:
-        input.repairExistingLink &&
-        input.previousXeroContactId &&
-        input.previousXeroContactId !== input.contactId
-          ? input.previousXeroContactId
+  await upsertXeroObjectLink(
+    {
+      localModel: "Member",
+      localId: input.memberId,
+      xeroObjectType: "CONTACT",
+      xeroObjectId: input.contactId,
+      xeroObjectUrl: buildXeroContactUrl(input.contactId),
+      role: "CONTACT",
+      metadata: {
+        linkedVia: input.linkedVia,
+        contactName: input.contactName?.trim()
+          ? input.contactName.trim()
           : undefined,
+        repairedFromXeroContactId:
+          input.repairExistingLink &&
+          input.previousXeroContactId &&
+          input.previousXeroContactId !== input.contactId
+            ? input.previousXeroContactId
+            : undefined,
+      },
     },
-  });
+    { store: tx },
+  );
 }
 
 async function findExistingXeroContactByExactName(input: {
@@ -379,20 +586,31 @@ export async function findOrCreateXeroContact(
     where: { id: memberId },
   });
   if (!member) throw new Error(`Member not found: ${memberId}`);
+  assertMemberAvailableForXeroContactChange(member);
 
   // Trust the persisted contact link on steady-state write paths and avoid
   // a read-before-write. Retry/repair paths can opt in to relinking.
   if (member.xeroContactId && !options?.repairExistingLink) {
-    await upsertXeroObjectLink({
-      localModel: "Member",
-      localId: memberId,
-      xeroObjectType: "CONTACT",
-      xeroObjectId: member.xeroContactId,
-      xeroObjectUrl: buildXeroContactUrl(member.xeroContactId),
-      role: "CONTACT",
+    const xeroContactId = await prisma.$transaction(async (tx) => {
+      const fresh = await lockMemberForXeroContactLink(tx, memberId);
+      if (!fresh.xeroContactId) {
+        throw new XeroContactAlreadyLinkedError();
+      }
+      await upsertXeroObjectLink(
+        {
+          localModel: "Member",
+          localId: memberId,
+          xeroObjectType: "CONTACT",
+          xeroObjectId: fresh.xeroContactId,
+          xeroObjectUrl: buildXeroContactUrl(fresh.xeroContactId),
+          role: "CONTACT",
+        },
+        { store: tx },
+      );
+      return fresh.xeroContactId;
     });
-    await syncContactGroupsBestEffort(memberId, member.xeroContactId, options);
-    return member.xeroContactId;
+    await syncContactGroupsBestEffort(memberId, xeroContactId, options);
+    return xeroContactId;
   }
 
   // ── Phase 1: Xero resolution, OUTSIDE any transaction ──────────────
@@ -467,26 +685,6 @@ export async function findOrCreateXeroContact(
     // Xero idempotency key makes concurrent duplicate creates converge on
     // one contact, which is what previously justified holding the advisory
     // lock across this call.
-    const contact: Contact = {
-      name: `${member.firstName} ${member.lastName}`,
-      firstName: member.firstName,
-      lastName: member.lastName,
-      // A club-internal walk-in placeholder (#1935) must never be sent to Xero
-      // as a real address; send an empty email for those owners.
-      emailAddress: isPlaceholderContactEmail(member.email) ? "" : member.email,
-      phones: member.phoneNumber
-        ? [
-            {
-              phoneType: Phone.PhoneTypeEnum.MOBILE,
-              phoneCountryCode: member.phoneCountryCode || "",
-              phoneAreaCode: member.phoneAreaCode || "",
-              phoneNumber: member.phoneNumber,
-            },
-          ]
-        : [],
-      addresses: buildXeroAddresses(member),
-    };
-
     const idempotencyKey = buildXeroIdempotencyKey(
       "member",
       memberId,
@@ -494,16 +692,25 @@ export async function findOrCreateXeroContact(
       "find-or-create",
       "v1"
     );
-    const operation = await startXeroSyncOperation({
-      direction: "OUTBOUND",
-      entityType: "CONTACT",
-      operationType: "CREATE",
-      localModel: "Member",
-      localId: memberId,
-      idempotencyKey,
-      correlationKey: idempotencyKey,
-      requestPayload: { contacts: [contact] },
-      createdByMemberId: options?.createdByMemberId ?? null,
+    const {
+      operation,
+      value: { contact, lockedMember },
+    } = await reserveMemberContactCreateOperation(memberId, (locked) => {
+      const contact = buildMemberXeroContactCreatePayload(locked);
+      return {
+        input: {
+          direction: "OUTBOUND",
+          entityType: "CONTACT",
+          operationType: "CREATE",
+          localModel: "Member",
+          localId: memberId,
+          idempotencyKey,
+          correlationKey: idempotencyKey,
+          requestPayload: { contacts: [contact] },
+          createdByMemberId: options?.createdByMemberId ?? null,
+        },
+        value: { contact, lockedMember: locked },
+      };
     });
 
     try {
@@ -527,6 +734,11 @@ export async function findOrCreateXeroContact(
         throw new Error("Failed to create Xero contact");
       }
 
+      await persistProviderCreatedContactProofOrThrow(
+        operation.id,
+        createdContact.contactID,
+      );
+
       resolved = {
         kind: "created",
         contactId: createdContact.contactID,
@@ -549,12 +761,13 @@ export async function findOrCreateXeroContact(
         },
       };
     } catch (error) {
+      if (error instanceof XeroContactCreatePartialSuccessError) throw error;
       if (isDuplicateActiveXeroContactNameError(error)) {
         try {
           const matchedContact = await findExistingXeroContactByExactName({
             xero,
             tenantId,
-            fullName: buildMemberFullName(member),
+            fullName: buildMemberFullName(lockedMember),
             contextPrefix: "findOrCreateXeroContact duplicate-name recovery",
           });
 
@@ -619,12 +832,7 @@ export async function findOrCreateXeroContact(
   try {
     linkOutcome = await prisma.$transaction(async (tx) => {
       await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${memberId}))`;
-
-      const fresh = await tx.member.findUnique({
-        where: { id: memberId },
-        select: { xeroContactId: true },
-      });
-      if (!fresh) throw new Error(`Member not found: ${memberId}`);
+      const fresh = await lockMemberForXeroContactLink(tx, memberId);
 
       if (
         fresh.xeroContactId &&
@@ -657,6 +865,7 @@ export async function findOrCreateXeroContact(
         await failXeroSyncOperation(finalResolved.operationId, linkError, {
           phase: "local_link_after_xero_resolution",
           resolvedContactId: finalResolved.contactId,
+          providerContactCreated: finalResolved.kind === "created",
         });
       } catch (failErr) {
         logger.error(
@@ -728,6 +937,63 @@ async function syncContactGroupsBestEffort(
  * Unlike findOrCreateXeroContact, this does not try to match existing
  * contacts by email.
  */
+export type XeroContactCreatePartialSuccessPhase =
+  | "PROVIDER_CONTACT_CREATED"
+  | "LOCAL_MEMBER_LINK_COMMITTED";
+
+/**
+ * A fixed, typed boundary for irreversible Xero contact-create progress.
+ * `originalError` is server-only diagnostic context; routes must expose only
+ * the phase and contact id through the privacy-safe recovery contract.
+ */
+export class XeroContactCreatePartialSuccessError extends Error {
+  readonly phase: XeroContactCreatePartialSuccessPhase;
+  readonly xeroContactId: string;
+  readonly originalError: unknown;
+
+  constructor(
+    phase: XeroContactCreatePartialSuccessPhase,
+    xeroContactId: string,
+    originalError: unknown,
+  ) {
+    super("Xero contact creation completed only in part");
+    this.name = "XeroContactCreatePartialSuccessError";
+    this.phase = phase;
+    this.xeroContactId = xeroContactId;
+    this.originalError = originalError;
+  }
+}
+
+async function persistProviderCreatedContactProofOrThrow(
+  operationId: string,
+  resolvedContactId: string,
+): Promise<void> {
+  try {
+    await recordProviderCreatedContactPendingLocalLink({
+      operationId,
+      resolvedContactId,
+    });
+  } catch (proofError) {
+    try {
+      await failXeroSyncOperation(operationId, proofError, {
+        phase: "local_link_after_xero_resolution",
+        resolvedContactId,
+        providerContactCreated: true,
+      });
+    } catch (failError) {
+      logger.error(
+        { err: failError, operationId },
+        "Failed to preserve provider-created Xero contact recovery proof",
+      );
+    }
+    throw new XeroContactCreatePartialSuccessError(
+      "PROVIDER_CONTACT_CREATED",
+      resolvedContactId,
+      proofError,
+    );
+  }
+}
+
 export async function createXeroContactForMember(
   memberId: string,
   options?: { createdByMemberId?: string }
@@ -738,62 +1004,33 @@ export async function createXeroContactForMember(
   // transaction. This function's contract is create-and-overwrite (an admin
   // explicitly minting a fresh contact), so no first-writer re-check applies;
   // the member-scoped idempotency key bounds concurrent duplicates.
-  const member = await prisma.member.findUnique({ where: { id: memberId } });
-  if (!member) throw new Error(`Member not found: ${memberId}`);
-
-  const missingFields = getMissingFieldsForXeroContactCreate(member);
-  if (missingFields.length > 0) {
-    throw new XeroContactValidationError(missingFields);
-  }
-
-  const { xero, tenantId } = await getAuthenticatedXeroClient();
-
-    // Sparse-member payload hygiene (#2089): only send a phone block when at
-    // least one phone part is present. Sending a MOBILE entry with empty-string
-    // parts would create a blank phone on the Xero contact.
-    const hasAnyPhonePart = Boolean(
-      member.phoneCountryCode?.trim() ||
-        member.phoneAreaCode?.trim() ||
-        member.phoneNumber?.trim()
-    );
-    const contact: Contact = {
-      name: `${member.firstName} ${member.lastName}`,
-      firstName: member.firstName,
-      lastName: member.lastName,
-      // A club-internal walk-in placeholder (#1935) must never be sent to Xero
-      // as a real address; send an empty email for those owners.
-      emailAddress: isPlaceholderContactEmail(member.email) ? "" : member.email,
-      phones: hasAnyPhonePart
-        ? [
-            {
-              phoneType: Phone.PhoneTypeEnum.MOBILE,
-              phoneCountryCode: member.phoneCountryCode || "",
-              phoneAreaCode: member.phoneAreaCode || "",
-              phoneNumber: member.phoneNumber || "",
-            },
-          ]
-        : [],
-      addresses: buildXeroAddresses(member),
-    };
-
-    const idempotencyKey = buildXeroIdempotencyKey(
+  const idempotencyKey = buildXeroIdempotencyKey(
       "member",
       memberId,
       "contact",
       "create",
       "v1"
     );
-    const operation = await startXeroSyncOperation({
-      direction: "OUTBOUND",
-      entityType: "CONTACT",
-      operationType: "CREATE",
-      localModel: "Member",
-      localId: memberId,
-      idempotencyKey,
-      correlationKey: idempotencyKey,
-      requestPayload: { contacts: [contact] },
-      createdByMemberId: options?.createdByMemberId ?? null,
+  const { operation, value: contact } =
+    await reserveMemberContactCreateOperation(memberId, (locked) => {
+      const contact = buildMemberXeroContactCreatePayload(locked);
+      return {
+        input: {
+          direction: "OUTBOUND",
+          entityType: "CONTACT",
+          operationType: "CREATE",
+          localModel: "Member",
+          localId: memberId,
+          idempotencyKey,
+          correlationKey: idempotencyKey,
+          requestPayload: { contacts: [contact] },
+          createdByMemberId: options?.createdByMemberId ?? null,
+        },
+        value: contact,
+      };
     });
+
+  const { xero, tenantId } = await getAuthenticatedXeroClient();
 
   let createdContactId: string;
   let completionInput: Parameters<typeof completeXeroSyncOperation>[1];
@@ -818,6 +1055,10 @@ export async function createXeroContactForMember(
       throw new Error("Failed to create Xero contact");
     }
     createdContactId = createdContact.contactID;
+    await persistProviderCreatedContactProofOrThrow(
+      operation.id,
+      createdContactId,
+    );
     completionInput = {
       responsePayload: response.body,
       xeroObjectType: "CONTACT",
@@ -835,6 +1076,7 @@ export async function createXeroContactForMember(
       ],
     };
   } catch (error) {
+    if (error instanceof XeroContactCreatePartialSuccessError) throw error;
     await failXeroSyncOperation(operation.id, error);
     throw error;
   }
@@ -843,6 +1085,7 @@ export async function createXeroContactForMember(
   try {
     await prisma.$transaction(async (tx) => {
       await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${memberId}))`;
+      await lockMemberForXeroContactLink(tx, memberId);
       await tx.member.update({
         where: { id: memberId },
         data: { xeroContactId: createdContactId },
@@ -853,6 +1096,7 @@ export async function createXeroContactForMember(
       await failXeroSyncOperation(operation.id, linkError, {
         phase: "local_link_after_xero_resolution",
         resolvedContactId: createdContactId,
+        providerContactCreated: true,
       });
     } catch (failErr) {
       logger.error(
@@ -860,11 +1104,23 @@ export async function createXeroContactForMember(
         "Failed to record local-link failure on the contact operation"
       );
     }
-    throw linkError;
+    throw new XeroContactCreatePartialSuccessError(
+      "PROVIDER_CONTACT_CREATED",
+      createdContactId,
+      linkError,
+    );
   }
 
   // Post-commit op-log close (F7 task 3).
-  await completeXeroSyncOperation(operation.id, completionInput);
+  try {
+    await completeXeroSyncOperation(operation.id, completionInput);
+  } catch (completionError) {
+    throw new XeroContactCreatePartialSuccessError(
+      "LOCAL_MEMBER_LINK_COMMITTED",
+      createdContactId,
+      completionError,
+    );
+  }
 
   const xeroContactId = createdContactId;
   await syncContactGroupsBestEffort(memberId, xeroContactId, options);
@@ -1029,7 +1285,7 @@ export async function retryXeroWriteWithContactRepair<T>(
 
 export async function updateXeroContact(
   xeroContactId: string,
-  data: XeroContactUpdateData,
+  data: XeroContactUpdateData | undefined,
   options?: {
     localModel?: string;
     localId?: string;
@@ -1037,44 +1293,53 @@ export async function updateXeroContact(
     preserveXeroName?: boolean;
   }
 ): Promise<void> {
-  const { xero, tenantId } = await getAuthenticatedXeroClient();
-
-  const buildContact = (contactId: string): Contact => {
+  const buildContact = (
+    contactId: string,
+    contactData: XeroContactUpdateData,
+  ): Contact => {
     const contact: Contact = {
       contactID: contactId,
-      emailAddress: data.email,
-      phones: data.phoneNumber
+      emailAddress: contactData.email,
+      phones: contactData.phoneNumber
         ? [
             {
               phoneType: Phone.PhoneTypeEnum.MOBILE,
-              phoneCountryCode: data.phoneCountryCode || "",
-              phoneAreaCode: data.phoneAreaCode || "",
-              phoneNumber: data.phoneNumber,
+              phoneCountryCode: contactData.phoneCountryCode || "",
+              phoneAreaCode: contactData.phoneAreaCode || "",
+              phoneNumber: contactData.phoneNumber,
             },
           ]
         : [],
-      addresses: buildXeroAddresses(data),
+      addresses: buildXeroAddresses(contactData),
     };
 
     if (!options?.preserveXeroName) {
-      if (!data.firstName || !data.lastName) {
+      if (!contactData.firstName || !contactData.lastName) {
         throw new Error(
           "firstName and lastName are required when updating Xero contact names"
         );
       }
 
-      contact.name = `${data.firstName} ${data.lastName}`;
-      contact.firstName = data.firstName;
-      contact.lastName = data.lastName;
+      contact.name = `${contactData.firstName} ${contactData.lastName}`;
+      contact.firstName = contactData.firstName;
+      contact.lastName = contactData.lastName;
     }
 
     return contact;
   };
-  const buildRequestPayload = (contactId: string) => ({
-    contacts: [buildContact(contactId)],
+  const buildRequestPayload = (
+    contactId: string,
+    contactData: XeroContactUpdateData,
+  ) => ({
+    contacts: [buildContact(contactId, contactData)],
   });
-  const buildOperationKeys = (contactId: string) => {
-    const payloadHash = buildXeroPayloadHash(buildRequestPayload(contactId));
+  const buildOperationKeys = (
+    contactId: string,
+    contactData: XeroContactUpdateData,
+  ) => {
+    const payloadHash = buildXeroPayloadHash(
+      buildRequestPayload(contactId, contactData),
+    );
     const idempotencyKey = buildXeroIdempotencyKey(
       "contact",
       contactId,
@@ -1088,22 +1353,70 @@ export async function updateXeroContact(
       correlationKey: idempotencyKey,
     };
   };
+  const memberId =
+    options?.localModel === "Member" && options.localId
+      ? options.localId
+      : null;
+  const buildOperationInput = (
+    contactData: XeroContactUpdateData,
+  ): ContactUpdateOperationInput => {
+    const keys = buildOperationKeys(xeroContactId, contactData);
+    return {
+      direction: "OUTBOUND",
+      entityType: "CONTACT",
+      operationType: "UPDATE",
+      localModel: options?.localModel,
+      localId: options?.localId,
+      idempotencyKey: keys.idempotencyKey,
+      correlationKey: keys.correlationKey,
+      requestPayload: buildRequestPayload(xeroContactId, contactData),
+      createdByMemberId: options?.createdByMemberId ?? null,
+    };
+  };
 
-  const initialPayload = buildRequestPayload(xeroContactId);
-  const initialKeys = buildOperationKeys(xeroContactId);
-  const operation = await startXeroSyncOperation({
-    direction: "OUTBOUND",
-    entityType: "CONTACT",
-    operationType: "UPDATE",
-    localModel: options?.localModel,
-    localId: options?.localId,
-    idempotencyKey: initialKeys.idempotencyKey,
-    correlationKey: initialKeys.correlationKey,
-    requestPayload: initialPayload,
-    createdByMemberId: options?.createdByMemberId ?? null,
-  });
+  // A Member-scoped caller's argument is only an intent to synchronise. The
+  // payload that is reserved and sent is rebuilt from the authoritative Member
+  // row after the lifecycle-conflicting KEY SHARE lock has been obtained. If a
+  // merge won first, a surviving master therefore contributes its post-merge
+  // phone/address/email rather than the caller's pre-merge snapshot; a deleted
+  // loser/account never obtains a reservation.
+  let authoritativeData: XeroContactUpdateData;
+  let operation: Awaited<ReturnType<typeof startXeroSyncOperation>>;
+  if (memberId) {
+    const reservation = await reserveMemberContactUpdateOperation(
+      memberId,
+      xeroContactId,
+      (locked) => {
+        const currentData = buildXeroContactUpdatePayload(locked);
+        return {
+          input: buildOperationInput(currentData),
+          value: currentData,
+        };
+      },
+    );
+    if (!reservation) {
+      throw new Error("Member Xero contact update reservation was not created");
+    }
+    operation = reservation.operation;
+    authoritativeData = reservation.value;
+  } else {
+    if (!data) {
+      throw new Error("Xero contact update data is required outside Member scope");
+    }
+    authoritativeData = data;
+    operation = await startXeroSyncOperation(buildOperationInput(data));
+  }
+
+  const authoritativeRequestPayload = (contactId: string) =>
+    buildRequestPayload(contactId, authoritativeData);
+  const authoritativeOperationKeys = (contactId: string) =>
+    buildOperationKeys(contactId, authoritativeData);
 
   try {
+    // Authentication and every provider call remain outside both short Member
+    // transactions. The committed RUNNING reservation is their authority, and
+    // authentication failure closes it through the same failure path.
+    const { xero, tenantId } = await getAuthenticatedXeroClient();
     const response = await retryXeroWriteWithContactRepair({
       memberId:
         options?.localModel === "Member" && options.localId
@@ -1115,15 +1428,15 @@ export async function updateXeroContact(
       repairExistingLink:
         options?.localModel !== "Member" || !options.localId,
       createdByMemberId: options?.createdByMemberId,
-      buildRequestPayload,
-      buildOperationKeys,
+      buildRequestPayload: authoritativeRequestPayload,
+      buildOperationKeys: authoritativeOperationKeys,
       run: ({ contactId, idempotencyKey }) =>
         callXeroApi(
           () =>
             xero.accountingApi.updateContact(
               tenantId,
               contactId,
-              buildRequestPayload(contactId),
+              authoritativeRequestPayload(contactId),
               idempotencyKey ?? undefined
             ),
           {
@@ -1137,7 +1450,7 @@ export async function updateXeroContact(
     const completedContactId =
       response.body.contacts?.[0]?.contactID ?? xeroContactId;
 
-    await completeXeroSyncOperation(operation.id, {
+    const completion: Parameters<typeof completeXeroSyncOperation>[1] = {
       responsePayload: response.body,
       xeroObjectType: "CONTACT",
       xeroObjectId: completedContactId,
@@ -1155,7 +1468,17 @@ export async function updateXeroContact(
               },
             ]
           : [],
-    });
+    };
+    if (memberId) {
+      await completeMemberContactUpdateOperation(
+        memberId,
+        xeroContactId,
+        operation.id,
+        completion,
+      );
+    } else {
+      await completeXeroSyncOperation(operation.id, completion);
+    }
   } catch (error) {
     await failXeroSyncOperation(operation.id, error);
     throw error;

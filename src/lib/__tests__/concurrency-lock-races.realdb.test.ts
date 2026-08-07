@@ -37,6 +37,11 @@ import "./minimum-stay-policy-trigger.realdb.test";
 // import adds the over-budget race proof to the explicit CI race command without
 // making ordinary `npm test` depend on a database.
 import "./ai-diagnostics-budget-race.realdb.test";
+// #2597 reuses this suite's guarded PostgreSQL to force ordinary-queue/member-
+// merge winner orders, whole-transaction NOWAIT rollback, under-lock fan-out
+// drift, and the existing policy/config/merge lock order against production
+// seams. It remains a no-op unless RUN_CONCURRENCY_RACE_TESTS=1.
+import "./adult-member-hosting-queue-merge.realdb.test";
 // #2594 reuses this guarded disposable PostgreSQL to force the reviewed reset
 // apply path against the real move, explicit auto-allocation, lifecycle, and
 // cancellation writers. Its own describe stays skipped unless the shared race

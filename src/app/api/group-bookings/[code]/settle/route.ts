@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { hostingCoverageParticipantRetryResponse } from "@/lib/adult-member-hosting-retry-response";
 import { auth } from "@/lib/auth";
 import { requireActiveSessionUser } from "@/lib/session-guards";
 import { applyRateLimit, rateLimiters } from "@/lib/rate-limit";
@@ -74,6 +75,8 @@ export async function POST(
       reference: result.reference ?? null,
     });
   } catch (err) {
+    const hostingRetry = hostingCoverageParticipantRetryResponse(err);
+    if (hostingRetry) return hostingRetry;
     if (err instanceof GroupBookingError) {
       return NextResponse.json(
         { error: err.message, code: err.code, details: err.details },

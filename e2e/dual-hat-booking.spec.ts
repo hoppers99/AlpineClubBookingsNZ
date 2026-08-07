@@ -116,10 +116,20 @@ test("a booking officer completes an on-behalf booking draft", async ({
   await withBookingCreateClientIp(
     page,
     bookingCreateIsolation("dual-hat-officer-draft", testInfo.retry),
-    () => page.getByRole("button", { name: "Save as Draft" }).click(),
+    {
+      trigger: () => page.getByRole("button", { name: "Save as Draft" }).click(),
+      // Creation succeeded: the officer lands on the new booking's detail page
+      // (bookings:edit holders can view it per #1313). The destination has a
+      // loading boundary, so the URL commits on the skeleton while the detail
+      // RSC is still in flight — waiting on it alone would tear interception
+      // down inside the very window this helper exists to hold open. The
+      // server-rendered heading is the authoritative outcome.
+      waitForOutcome: async () => {
+        await expect(page).toHaveURL(/\/bookings\/[A-Za-z0-9-]+/);
+        await expect(
+          page.getByRole("heading", { name: "Booking Details" }),
+        ).toBeVisible();
+      },
+    },
   );
-
-  // Creation succeeded: the officer lands on the new booking's detail page
-  // (bookings:edit holders can view it per #1313).
-  await expect(page).toHaveURL(/\/bookings\/[A-Za-z0-9-]+/);
 });

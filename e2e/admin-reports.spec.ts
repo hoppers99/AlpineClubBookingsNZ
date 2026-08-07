@@ -46,7 +46,9 @@ test("reports overlapping stay nights and keeps booked revenue distinct from cas
     );
   });
   await page.getByLabel("From").fill(stay.checkIn);
-  await page.getByLabel("To").fill(stay.nights.at(-1) ?? stay.checkIn);
+  await page.getByRole("textbox", { name: "To", exact: true }).fill(
+    stay.nights.at(-1) ?? stay.checkIn,
+  );
   await refreshed;
 
   const bookedRevenueCard = page

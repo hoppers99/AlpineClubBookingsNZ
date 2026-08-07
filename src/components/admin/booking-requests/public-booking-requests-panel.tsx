@@ -37,6 +37,7 @@ import { buildHrefWithReturnTo } from "@/lib/internal-return-path";
 import { formatNZDate, formatNZDateTime } from "@/lib/nzst-date";
 import { countNightsDateOnly } from "@/lib/date-only";
 import { formatCents } from "@/lib/utils";
+import { FocusedActionError } from "@/components/focused-action-error";
 import {
   BookingRequestContactPicker,
   type OwnerContactChoice,
@@ -444,6 +445,18 @@ export function PublicBookingRequestsPanel({
     useState<PublicBookingRequestData | null>(null);
   const [declineDialogOpen, setDeclineDialogOpen] = useState(false);
   const [error, setError] = useState("");
+  const [errorAttentionVersion, setErrorAttentionVersion] = useState(0);
+  const [recoveryAttentionVersion, setRecoveryAttentionVersion] = useState(0);
+  const [declineRecovery, setDeclineRecovery] = useState<{
+    requestId: string;
+    heldBookingId: string | null;
+    message: string;
+  } | null>(null);
+
+  function showActionError(message: string) {
+    setError(message);
+    setErrorAttentionVersion((version) => version + 1);
+  }
 
   function ownerChoiceFor(requestId: string): OwnerContactChoice {
     return ownerChoices[requestId] ?? { mode: "create" };
@@ -488,8 +501,10 @@ export function PublicBookingRequestsPanel({
         throw new Error(data.error || "Failed to load booking requests");
       }
       setRequests(Array.isArray(data?.data) ? data.data : []);
+      return true;
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to load booking requests");
+      return false;
     } finally {
       setLoading(false);
     }
@@ -643,7 +658,7 @@ export function PublicBookingRequestsPanel({
       toast.success("Quote saved");
       await fetchRequests();
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to create quote");
+      showActionError(err instanceof Error ? err.message : "Failed to create quote");
     } finally {
       setActioningId(null);
     }
@@ -651,7 +666,7 @@ export function PublicBookingRequestsPanel({
 
   async function handleSendQuote(request: PublicBookingRequestData) {
     if (ownerChoiceNeedsContact(request)) {
-      setError(
+      showActionError(
         "Choose an existing contact to map to, or switch to 'Create a new contact'."
       );
       return;
@@ -675,16 +690,17 @@ export function PublicBookingRequestsPanel({
       if (!response.ok) {
         throw new Error(data.error || "Failed to send quote");
       }
-      if (data.emailDelivered === false) {
-        setError(
-          "The quote was saved and its link is active, but the email could not be delivered — the requester has not received it. Check the contact email address, then send again or reach them another way.",
-        );
-      } else {
+      const deliveryError =
+        data.emailDelivered === false
+          ? "The quote was saved and its link is active, but the email could not be delivered — the requester has not received it. Check the contact email address, then send again or reach them another way."
+          : "";
+      if (!deliveryError) {
         toast.success("Quote sent");
       }
       await fetchRequests();
+      if (deliveryError) showActionError(deliveryError);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to send quote");
+      showActionError(err instanceof Error ? err.message : "Failed to send quote");
     } finally {
       setActioningId(null);
     }
@@ -705,7 +721,7 @@ export function PublicBookingRequestsPanel({
       toast.success(`Attendee confirmation link sent to ${data.sentTo}`);
       await fetchRequests();
     } catch (err) {
-      setError(
+      showActionError(
         err instanceof Error ? err.message : "Failed to re-send the attendee link",
       );
     } finally {
@@ -715,7 +731,7 @@ export function PublicBookingRequestsPanel({
 
   async function handleHoldSlots(request: PublicBookingRequestData) {
     if (ownerChoiceNeedsContact(request)) {
-      setError(
+      showActionError(
         "Choose an existing contact to map to, or switch to 'Create a new contact'."
       );
       return;
@@ -745,7 +761,7 @@ export function PublicBookingRequestsPanel({
       toast.success(data.reused ? "Slots were already held" : "Slots held");
       await fetchRequests();
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to hold slots");
+      showActionError(err instanceof Error ? err.message : "Failed to hold slots");
     } finally {
       setActioningId(null);
     }
@@ -774,7 +790,7 @@ export function PublicBookingRequestsPanel({
       });
       await fetchRequests();
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to release hold");
+      showActionError(err instanceof Error ? err.message : "Failed to release hold");
     } finally {
       setActioningId(null);
     }
@@ -892,7 +908,7 @@ export function PublicBookingRequestsPanel({
 
   async function handleApprove(request: PublicBookingRequestData) {
     if (ownerChoiceNeedsContact(request)) {
-      setError(
+      showActionError(
         "Choose an existing contact to map to, or switch to 'Create a new contact'."
       );
       return;
@@ -1013,7 +1029,7 @@ export function PublicBookingRequestsPanel({
       }
       await fetchRequests();
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to approve request");
+      showActionError(err instanceof Error ? err.message : "Failed to approve request");
     } finally {
       setActioningId(null);
     }
@@ -1054,6 +1070,36 @@ export function PublicBookingRequestsPanel({
       });
       const data = await response.json().catch(() => ({}));
       if (!response.ok) {
+        if (data.requestDeclined === true) {
+          const recoveryBase = data.holdReleasePending === true
+            ? "The request was declined, but its capacity hold still needs to be released. Do not decline this request again."
+            : data.holdReleaseStatusUnconfirmed === true
+              ? "The request was declined, but its capacity hold status could not be confirmed. Do not decline this request again."
+              : "The request was declined, but the updated request could not be loaded. Do not decline this request again.";
+          setRequests((current) =>
+            current.filter((candidate) => candidate.id !== request.id),
+          );
+          setDeclineRecovery({
+            requestId: request.id,
+            heldBookingId: request.heldBookingId,
+            message: recoveryBase,
+          });
+          setRecoveryAttentionVersion((version) => version + 1);
+          const refreshed = await fetchRequests();
+          // The refresh outcome is folded into the durable recovery below; do
+          // not duplicate it in the ordinary action region or steal focus.
+          setError("");
+          const refreshResult = refreshed
+            ? " The latest request queue was loaded; open the held booking and check its cancellation status."
+            : " The request queue could not be refreshed. This warning remains active; open the held booking and check its cancellation status.";
+          setDeclineRecovery({
+            requestId: request.id,
+            heldBookingId: request.heldBookingId,
+            message: `${recoveryBase}${refreshResult}`,
+          });
+          setRecoveryAttentionVersion((version) => version + 1);
+          return;
+        }
         throw new Error(data.error || "Failed to decline request");
       }
       toast.success(
@@ -1062,7 +1108,7 @@ export function PublicBookingRequestsPanel({
       );
       await fetchRequests();
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to decline request");
+      showActionError(err instanceof Error ? err.message : "Failed to decline request");
     } finally {
       setActioningId(null);
     }
@@ -1098,14 +1144,38 @@ export function PublicBookingRequestsPanel({
         </div>
       ) : null}
 
-      {error && (
-        <div className="rounded-md bg-destructive/10 px-4 py-3 text-destructive">
-          {error}
-          <button onClick={() => setError("")} className="ml-2 underline">
-            Dismiss
-          </button>
-        </div>
-      )}
+      <FocusedActionError
+        id="public-booking-requests-recovery"
+        error={declineRecovery?.message ?? ""}
+        attentionKey={recoveryAttentionVersion}
+        heading={declineRecovery ? "Request declined - hold release pending" : undefined}
+        action={
+          declineRecovery?.heldBookingId ? (
+            <Button asChild variant="outline" size="sm">
+              <Link
+                href={buildHrefWithReturnTo(
+                  `/bookings/${encodeURIComponent(declineRecovery.heldBookingId)}`,
+                  currentPath,
+                )}
+              >
+                Open affected booking
+              </Link>
+            </Button>
+          ) : undefined
+        }
+      />
+      <FocusedActionError
+        id="public-booking-requests-error"
+        error={error}
+        attentionKey={errorAttentionVersion}
+        action={
+          error ? (
+            <Button type="button" variant="outline" size="sm" onClick={() => setError("")}>
+              Dismiss
+            </Button>
+          ) : undefined
+        }
+      />
 
 
       <div className="flex flex-wrap gap-2">

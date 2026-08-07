@@ -192,7 +192,7 @@ describe("adult-member hosting policy route (#2364)", () => {
     expect(mocks.create).not.toHaveBeenCalled();
   });
 
-  it("takes the policy-set lock before it reads anything", async () => {
+  it("takes the policy-set lock before every set read and reconciliation", async () => {
     mocks.findUnique.mockResolvedValue(null);
     mocks.create.mockResolvedValue({ ...stored, version: 1 });
     const order: string[] = [];
@@ -200,9 +200,17 @@ describe("adult-member hosting policy route (#2364)", () => {
       order.push("lock");
       return Promise.resolve(1);
     });
+    mocks.txFindMany.mockImplementation(() => {
+      order.push("policy-set-read");
+      return Promise.resolve([]);
+    });
     mocks.findUnique.mockImplementation(() => {
-      order.push("read");
+      order.push("row-read");
       return Promise.resolve(null);
+    });
+    mocks.enqueuePolicyReconciliation.mockImplementation(async () => {
+      order.push("reconcile");
+      return 0;
     });
 
     await PUT(put({ mode: "DISABLED", capacityMode: "NO_HOLD" }));
@@ -210,7 +218,14 @@ describe("adult-member hosting policy route (#2364)", () => {
     // from a FRESH resolution of both candidate rows, because a lodge saving
     // "inherit" has to be told what it is now inheriting. It happens AFTER the
     // transaction, so the lock-before-read ordering this test guards is unchanged.
-    expect(order).toEqual(["lock", "read", "read"]);
+    expect(order[0]).toBe("lock");
+    expect(order.indexOf("policy-set-read")).toBeGreaterThan(
+      order.indexOf("lock"),
+    );
+    expect(order.indexOf("row-read")).toBeGreaterThan(order.indexOf("lock"));
+    expect(order.indexOf("reconcile")).toBeGreaterThan(
+      order.indexOf("policy-set-read"),
+    );
   });
 
   it("creates a first row at version 1 when the editor knew of none", async () => {

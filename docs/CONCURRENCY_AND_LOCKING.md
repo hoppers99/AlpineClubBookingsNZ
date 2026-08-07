@@ -109,9 +109,9 @@ are the literal `1`.
 | **Global booking / money** | `1` (literal) | inline `tx.$executeRaw` | 2 | Booking-status + money side effects that must exclude across the whole booking regardless of lodge: cancel, capture/settle, hold-release, group-settlement reaper/settle/refund/organiser-cancel, refunds, credit restore; plus bed-allocation inventory/placement/move/range/auto/approval/removal writers that must serialize with lifecycle prune, and the member-merge partner-share reconciliation (#2595). |
 | **Per-lodge capacity** | `hashtextextended(<lodgeId>, 0)` | `acquireLodgeCapacityLock(tx, lodgeId)` (`lodge-capacity-lock.ts`, re-exported by `capacity.ts`) | 1 | Capacity claims/checks and bed-allocation mutations for one lodge; roster eligibility snapshots; and direct or config-transfer chore-template changes, which serialize active-template validation for that lodge. |
 | **Per-member night footprint** | `hashtext("booking-member-night"), hashtext(<memberId>)` | `lockBookingMemberNights(tx, guests)` (`booking-member-night-conflicts.ts`) | cross-lodge | Serialises the person-night guard ACROSS lodges (see below). |
-| **Per-owner hosting coverage** | `hashtext("hosting-coverage-owner"), hashtext(<Booking.memberId>)` | `lockHostingCoverageOwner` / `lockHostingCoverageOwners` (`adult-member-hosting-coverage-lock.ts`) | cross-booking | Serialises `SAME_BOOKING_OWNER` coverage (#2576 §9): one booking's compliance depends on another booking of the SAME owner, and per-lodge locks cannot serialise that because the cancel paths take only `lock(1)` while the create paths take only the lodge lock. Taken LAST among the application lock families a caller composes. Roster-aware modification paths take global → lodge → roster-date → any applicable member keys → coverage-owner; queued incident reconciliation takes hosting policy-set → sorted claimed member-lifecycle keys → sorted claimed `Member FOR KEY SHARE` rows → coverage-owner. Paths that do not use roster or member keys omit those tiers. Several owners are sorted, and the key is taken only when the lodge actually has the scope enabled. |
+| **Per-owner hosting coverage** | `hashtext("hosting-coverage-owner"), hashtext(<Booking.memberId>)` | `lockHostingCoverageOwner` / `lockHostingCoverageOwners` (`adult-member-hosting-coverage-lock.ts`) | cross-booking | Serialises `SAME_BOOKING_OWNER` coverage (#2576 §9): one booking's compliance depends on another booking of the SAME owner, so the key remains authoritative even though #2600 made allocation-participating confirmation and cancellation compose global → lodge. Taken LAST among the application lock families a caller composes. Roster-aware modification paths take global → lodge → roster-date → any applicable member keys → sorted queue-participant `Member FOR KEY SHARE NOWAIT` rows → coverage-owner; queued incident reconciliation takes hosting policy-set → sorted claimed member-lifecycle keys → sorted claimed `Member FOR KEY SHARE` rows → coverage-owner. Paths that do not use roster or member keys omit those tiers. Ordinary producers try sorted owner keys before re-entering the blocking helper, while merge takes its sorted owner keys only after its one sorted participant `FOR UPDATE` statement. The key is taken only when the lodge actually has the scope enabled. |
 | **Per-member credit ledger** | `hashtext("member-credit-ledger"), hashtext(<memberId>)` | `lockMemberCreditLedger(memberId, tx)` (`member-credit.ts`) | — | A member's credit-ledger balance operations (spend, negative-adjustment validation, orphan-restore repair, the Xero inbound applied-credit repair, and the F20 pre-payment-reduction applied-credit clamp `clampAppliedCreditToBookingPrice`, taken inside the modification transaction only when the booking carries applied credit, and the #2265 stored-election consumption `consumeStoredCreditElection`, taken inside the `create-payment-intent` pay transaction and the Internet Banking switch transaction only when the booking carries an outstanding election). |
-| **Member lifecycle** | `hashtext("member-lifecycle:<memberId>")` | inline (`member-lifecycle-actions.ts`, `nomination.ts` approval mapping, `admin-family-group-requests-service.ts`, `member-merge.ts`, `adult-member-hosting-coverage-drain.ts`) | — | Archive/delete of one member; overwrite of one member by application-approval mapping (E10, #1936); linking/removing one member into/from a family group on admin request review; **member merge** (dual-lock on master + loser, E11 #1937, see below — merge also takes the global cohort key and every affected lodge key BEFORE this tier, #2595); and the queue-drain handshake that prevents a claimed hosting item from using identities while merge re-points them. |
+| **Member lifecycle** | `hashtext("member-lifecycle:<memberId>")` | inline (`member-lifecycle-actions.ts`, `app/api/admin/deletion-requests/[id]/route.ts`, `nomination.ts` approval mapping, `admin-family-group-requests-service.ts`, `member-merge.ts`, `adult-member-hosting-coverage-drain.ts`) | — | Archive/delete of one member; account-deletion approval (the #1756 partner-share prefix — global cohort `lock(1)` + every affected lodge, sorted — and only then member lifecycle → shared standing-subject `Member FOR UPDATE NOWAIT` → exact queue-participant `Member FOR KEY SHARE NOWAIT` rows → coverage-owner before deactivation and guest unlink); overwrite of one member by application-approval mapping (E10, #1936); linking/removing one member into/from a family group on admin request review; **member merge** (dual-lock on master + loser, E11 #1937, see below — merge takes the same partner-share prefix, so the global cohort key and every affected lodge key are held BEFORE this tier, #2595); and the queue-drain handshake that prevents a claimed hosting item from using identities while merge re-points them. |
 | **Membership application** | `hashtext(<application key>)` | `membershipApplicationLockKey` (`nomination.ts`) | — | State transitions of one membership application. |
 | **Membership applicant** | `hashtext(<applicant-email key>)` | `membershipApplicationApplicantLockKey` (`nomination.ts`) | — | Per-email applicant dedup at submit time. |
 | **Roster-date writers** | `hashtext("roster:<date>")` | `lockRosterDate(tx, date)` / sorted `lockRosterDates(tx, dates)` (`roster-lock.ts`) | date | Serialises whole-roster save/regenerate/confirm/auto-suggest, kiosk confirm and complete/uncomplete, and booking/guest cleanup that can remove suggested rows for the same lodge night. |
@@ -421,13 +421,71 @@ no lifecycle, Member-row or coverage-owner lock, so no counterpart reverses this
 chain. The queue read is deliberately not a `FOR UPDATE`: no queue tuple lock is
 held while the member tiers are acquired, so there is no queue → Member inversion.
 
-This claim-side handshake does not claim to fence a new queue row inserted after
-member merge's relation sweep. Policy reconciliation now shares the policy-set lock
-with merge and is fully serialised, but ordinary booking/member producers still
-compose the real queue-owner FK, the FK-less actor, and repeated multi-owner
-fan-outs. Fixing those paths safely requires transaction-wide participant planning,
-not another lock in the drain. Public blocker #2597 owns that remaining repair and
-must land before the downstream Tokoroa deployment.
+Ordinary producers close the new-row side of that handshake at each high-level
+enqueue seam (#2597). Before any coverage-owner key they plan the exact source
+booking owners plus the non-null actor, sort and de-duplicate the ids, and lock those
+`Member` rows in one `FOR KEY SHARE NOWAIT` statement. They then verify typed Member
+existence and re-read each source booking's authoritative owner and lodge. A missing
+participant, `55P03`, changed source attribution, or final queue owner/actor outside
+the runtime-issued exact proof throws the fixed
+`HOSTING_COVERAGE_PARTICIPANT_RETRY` 409 and rolls the caller's complete outer
+transaction back. Interactive callers tell the operator to reload before retrying
+and to check payment status where applicable; automated callers retain their
+existing retry/redelivery boundary.
+
+The member-standing fan-out adds a subject fence before even its first candidate
+read or empty-fan-out return. `enqueueHostingCoverageReevaluationForMember` locks
+the member whose standing changed `FOR UPDATE NOWAIT`; `FOR NO KEY UPDATE` is
+deliberately insufficient because a `BookingGuest.memberId` FK check takes
+`KEY SHARE`. A contended or missing subject therefore raises the same fixed retry
+and rolls the complete outer standing mutation back. Centralising the fence in
+the shared fan-out covers deactivation, archive, cancellation, consent,
+subscription and account-deletion writers rather than relying on one route to
+remember it.
+
+The acquisition is deliberately per seam, not a transaction-wide pre-plan. A bulk
+transaction can call a fan-out more than once, so compatible Member key-share locks
+alone would still let two transactions hold different coverage-owner keys and wait
+on one another's later key. Each ordinary seam therefore also tries its sorted
+coverage-owner keys with `pg_try_advisory_xact_lock` before re-entering the blocking
+helper. A later conflict fails immediately and rolls back the earlier work too. This
+keeps the existing #2600 order: global → sorted lodge keys → sorted roster dates →
+applicable member keys → participant Member rows → coverage-owner. It does not add a
+late member-lifecycle key or source-Booking row lock, either of which would invert a
+counterpart writer.
+
+The lodge-only booking-request hold takes the other side of that row protocol. After
+its canonical lodge key it re-reads the transaction-current request link snapshot,
+locks the exact sorted and de-duplicated linked `Member` ids `FOR KEY SHARE`, and
+then re-reads those rows through Prisma while the locks are held. Every linked row
+must still exist, be active and be unarchived. The request's optimistic `version` is
+part of the later claim, so a link edit between the read and claim rolls the hold
+back instead of creating guests from a stale snapshot. Hold-first makes a concurrent
+standing fan-out's `NOWAIT` fail safely; after retry the newly committed guest is in
+the candidate set. Standing-first makes the hold wait at `KEY SHARE`, then observe
+the committed inactive/archive state and return the same safe 409 before any owner,
+booking or guest is created. That refusal is independent of the lodge's hosting
+consequence (`DISABLED`, `ADMIN_REVIEW_REQUIRED`, or `ENFORCED`), so review policy is
+not an identity-safety backstop. Account deletion inherits this shared protocol
+after its existing global → affected-lodge → member-lifecycle prefix. No late
+lifecycle or source-Booking lock is added; the hold order is lodge → sorted linked
+Member rows, and the standing order is its existing prefix → subject Member → queue
+participants → coverage-owner.
+
+Member merge owns the blocking counterpart. After its bounded relation moves it
+plans the survivor's attendance plus the captured loser-owned bookings, then takes
+one sorted `Member FOR UPDATE` statement over master, loser and every ancillary
+queue owner. It re-plans under those rows; a new guest, booking, owner or lodge that
+changes the participant fingerprint returns the merge's existing safe 409 rather
+than acquiring another row late. Only then does it take the sorted coverage-owner
+keys, sweep both live queue pointers (`memberId` and the FK-less `actorMemberId`),
+fold those late counts into the existing relation totals, enqueue actorless
+merge-generated `SYSTEM_CHANGE` work under the private exact proof, and delete the
+loser. `MEMBER_MERGED` remains the Full Admin attribution. If ordinary enqueue wins,
+merge waits at `FOR UPDATE` and the late sweep carries the committed row forward; if
+merge wins, the ordinary `NOWAIT` fails before writing. No obligation is cascaded
+away and an `OFFICER_OVERRIDE` cause/reason is never replaced by merge's generic
+fan-out.
 
 Concurrency inside the drain is handled by expiring, opaque-token claims rather than
 long-lived locks. Items are claimed **just in time, one at a time**, not leased as a
@@ -1053,9 +1111,140 @@ The hosting drain is the other multi-key participant: it may hold the claimed
 owner and actor keys, also sorted and de-duplicated, to exclude merge before
 relation moves begin for an already-existing queue row. It takes the hosting
 policy-set first; no other member-lifecycle participant takes that policy key, so
-this edge is one-way. Ordinary queue rows inserted after the move sweep are the
-separate #2597 producer-topology contract; policy reconciliation cannot do that
-because it shares the policy-set key with merge.
+this edge is one-way. Policy CRUD and configuration transfer share the policy-set
+key for their complete enumerate-and-enqueue transaction: policy first creates a
+complete loser-attributed row that merge moves, while merge first makes the policy
+writer wait and enumerate the survivor after commit. Configuration transfer keeps
+its wider fixed prefix — config-import → minimum-stay policy-set → hosting
+policy-set — and no provider call moves inside either transaction.
+
+Ordinary booking/member producers do not take the policy-set key. Their #2597
+handshake takes the standing subject `Member FOR UPDATE NOWAIT` before its first
+fan-out read, then one exact, sorted `Member FOR KEY SHARE NOWAIT` statement per
+high-level enqueue seam containing every planned source owner plus the non-null
+actor. The booking-request hold takes the matching lodge → exact sorted linked
+`Member FOR KEY SHARE` path and re-reads active/archive state before its versioned
+claim. Merge takes the blocking counterpart only after its relation moves: one
+sorted `Member FOR UPDATE` statement over master, loser and every ancillary owner
+in the bounded survivor-attendance/captured-booking plan. It then re-plans under
+those rows, takes sorted coverage-owner keys, runs the late owner and actor queue
+sweeps, emits actorless merge work under the exact participant proof, and deletes
+the loser. A plan mismatch returns 409; it never acquires a participant late.
+
+That gives both commit orders a safe result. An ordinary producer that already
+holds key share finishes its attributed queue write before merge's `FOR UPDATE`
+can proceed, so the late sweep moves it. A merge that owns `FOR UPDATE` makes the
+ordinary `NOWAIT` fail before any queue write, rolling back the complete caller
+transaction. Repeated bulk calls also try coverage-owner keys without waiting; a
+later conflict rolls back earlier calls instead of forming a hold-and-wait cycle.
+The composed merge order is **hosting policy-set → global cohort `lock(1)` +
+every affected lodge key in sorted order (#2595) → sorted member-lifecycle →
+relation moves → one sorted master/loser/ancillary Member FOR UPDATE → under-lock
+re-plan → sorted coverage-owner → unresolved Xero contact-create proof re-check →
+late owner+actor sweeps → unbacked shared-double reconciliation (#2595) →
+actorless enqueue → loser delete**. The one tier #2595 adds is at the TOP, before
+the member-lifecycle pair; see "Merge joins the bed-allocation cohort" below for
+why it cannot sit at its point of use.
+
+`XeroSyncOperation.localId` is deliberately FK-less, so each provider contact
+CREATE first commits one exact `RUNNING` reservation in a short transaction that
+holds the target Member row `FOR KEY SHARE`. Only after that transaction commits
+does the Xero provider call begin. Preview and execution block on that active
+reservation; execution repeats the query after the complete Member/coverage-owner
+lock set. If merge already owns `FOR UPDATE`, the reservation waits, then finds
+the deleted member and never reaches Xero. If reservation wins, merge sees it and
+rolls back. This closes the post-check provider race without putting Xero inside a
+transaction or adding an advisory-lock tier.
+
+Member-scoped contact UPDATE uses the same row protocol. Before authentication
+or provider work, a short transaction takes the exact target `Member FOR KEY
+SHARE`, re-reads the deleted marker, current `xeroContactId`, and complete
+contact payload, then builds and commits the `RUNNING` UPDATE operation from
+that locked snapshot. The request sent after commit is that same authoritative
+snapshot, never the caller's earlier closure. After Xero returns, a second short
+transaction takes that Member `FOR UPDATE`, re-checks the same contact id, and
+changes the operation to `SUCCEEDED` together with the canonical CONTACT ledger
+upsert. Merge and account deletion re-check every RUNNING member CONTACT UPDATE
+while holding their participant Member rows. Update-first therefore keeps the
+member alive until operation/link completion; lifecycle-first makes the waiting
+reservation observe a missing, anonymised or relinked member and call no
+provider. If merge first fills a surviving master's phone, address, or email,
+the waiting UPDATE sends those post-merge values. A Member UPDATE retry follows
+the same locked rebuild and must never fall back to the stored request payload,
+which can contain stale PII.
+
+Inbound webhook reconciliation, admin bulk contact sync/import, historical
+canonical-contact backfill, managed contact-group completion, and name-order
+repair share the same Member-row family. Every local PII fill,
+`Member.xeroContactId` write, and reconstructed/refreshed FK-less CONTACT link
+takes the exact Member `FOR UPDATE`, re-reads the deleted marker and current
+contact id (plus still-blank fields for PII), then commits the
+pointer/link/ledger work in one short transaction. Name repair uses the outbound
+UPDATE reservation above and is sent only after its reservation commits.
+Provider reads and writes remain outside those transactions.
+Inbound/backfill-first therefore commits before merge/deletion can
+continue, after which lifecycle teardown removes the loser's/deleted member's
+FK-less contact link and privacy fields; lifecycle-first makes the waiting
+inbound writer observe a deleted, anonymised, or relinked member and write
+nothing. A pre-lock contact/email match is only a candidate and is never
+authority to restore local PII.
+
+Manual Xero linking uses the symmetric member-row fence. Provider contact lookup
+and cache refresh remain outside transactions; the short local link transaction
+then takes the exact target `Member FOR UPDATE`, re-reads an ambiguous active
+contact-create reservation under that lock, and writes the member link only when
+none exists. The `Member.xeroContactId` write and canonical CONTACT
+`XeroObjectLink` upsert commit in that same transaction; the FK-less ledger row
+must never be written after releasing the Member lock because merge could delete
+the losing member in that gap. If create reserved first, Link returns the fixed
+privacy-safe 409 and writes nothing. If Link locked first, the create
+reservation's waiting `FOR KEY SHARE` resumes after the link commits, re-reads
+the authoritative `Member.xeroContactId`, and refuses before reserving or calling
+Xero. The same privacy transaction clears `Member.xeroContactId` and deactivates
+every active Member CONTACT ledger row, so a change that completed before
+deletion cannot leave an active identity link. An ambiguous
+`CREATE_IN_PROGRESS` member page therefore offers only authoritative refresh;
+the stronger `PROVIDER_CREATED_LINK_PENDING` state still offers Link as its
+recovery action while suppressing another Create.
+
+Account deletion composes the same fence with its existing lifecycle order. While
+holding the target `Member FOR UPDATE`, deletion re-checks the complete active,
+provider-created, or stale-unknown contact-create blocker before anonymising.
+Create-first therefore makes deletion return its safe recovery contract without
+changing the member. Deletion-first makes a waiting create reservation, manual
+Link, provider-returned local-link phase, or inbound contact writer re-read the
+canonical deleted marker and refuse before any new provider call or local
+attribution. Provider calls stay outside all of these transactions.
+Real-PostgreSQL races pin both winner orders for deletion/merge versus
+create/manual Link/inbound reconciliation/historical backfill, including no provider
+reservation/call/link when lifecycle wins and no dangling FK-less link when
+merge or deletion completes.
+
+Approve and reject of one `DeletionRequest` share a separate exact-row winner
+protocol: one `updateMany({ id, status: PENDING })` is the only authority for a
+final decision. Approval performs that guarded transition inside the privacy
+anonymisation transaction, before any privacy mutation; rejection performs the
+same guarded transition before audit or email. PostgreSQL serialises contenders
+on the request row, so the loser returns 409 and sends no contradictory email.
+If a later approval mutation fails, the claim and anonymisation roll back
+together to PENDING. Booking cancellations committed before the approval
+transaction remain truthful partial cleanup and are reported as such if a
+concurrent rejection won.
+
+After Xero returns a newly created contact, the operation is durably marked
+`provider_contact_created_local_link_pending` before the local link transaction.
+That marker remains authoritative recovery proof while `RUNNING` and after the
+stale-operation reset changes it to `FAILED`; resetting a row must not erase a
+known provider-created contact. If both attempts to record that proof fail, the
+exact unmarked `RUNNING` reservation remains an ambiguous create-in-progress
+fence. A stale reset preserves that uncertainty as exact `FAILED` +
+`ORPHANED_STALE_RUNNING`, without claiming that Xero created anything. Both
+states suppress another Create and block member merge. They clear only after the
+member is linked, the operation succeeds, or an operator explicitly resolves it;
+a terminal non-provider failure clears the ambiguous state. A failed local link
+also remains a blocker with the strict `FAILED` + local-link phase +
+`providerContactCreated: true` proof. Matched-existing contacts and unrelated
+failed or completed operations do not block.
 
 Inside the locks the merge re-reads both members, re-runs the full guard matrix,
 and re-verifies the HMAC preview token (which bakes in both `updatedAt` values)
@@ -1091,9 +1280,16 @@ lockAdultMemberHostingPolicySet(tx)                              policy config
         = pg_advisory_xact_lock(1)                               global cohort
         + acquireLodgeCapacityLock per affected lodge, sorted     per-lodge
   → member-lifecycle:<master> / member-lifecycle:<loser>, sorted  member
-  → (step 5) sorted `Member … FOR UPDATE`                         member rows
-  → sorted hosting-coverage-owner keys                            last
+  → steps 1-3: null self-cycles, resolve collisions, applyMoves
+  → one sorted master/loser/ancillary `Member … FOR UPDATE`        member rows
+  → under-lock hosting re-plan + sorted hosting-coverage-owner     last
+  → contact-create proof re-check + late owner/actor queue sweeps
+  → step 3b: sweepUnbackedFutureSharedDoublesWithLocksHeld
+  → steps 4-8: Xero teardown, field merge, audit, enqueue, delete
 ```
+
+That is the #2597 order with exactly one tier inserted, at the top. Nothing
+already in the sequence moved, and no new key is taken late.
 
 The lodge tier MUST be taken **before** the member-lifecycle pair, never after.
 Merge's own lock set is member-scoped and takes no lodge key today, so bolting
@@ -1116,9 +1312,37 @@ configuration transfer. Nothing else in the merge order moves.
 The sweep itself is `sweepUnbackedFutureSharedDoublesWithLocksHeld`, run as merge
 step 3b — after `applyMoves` (the guest rows now name the master) and after step
 2's `resolvePartnerLinks` (the surviving partnerships are final), before the Xero
-teardown. Its candidate rows are re-read under the locks; the removed rows are
-returned so the admin alert can be sent AFTER commit, alongside
-`settleHostingCoverageAfterCommit`.
+teardown. Inside that window it sits after the #2597 participant `FOR UPDATE`
+set, the under-lock re-plan and the coverage-owner keys, so it acquires nothing
+and runs only once every drift refusal has passed: no bed-night is judged against
+a state the merge is about to 409 on. Its candidate rows are re-read under the
+locks; the removed rows are returned so the admin alert can be sent AFTER commit,
+alongside `settleHostingCoverageAfterCommit`.
+
+Two consequences worth stating plainly, because neither is obvious from the code:
+
+- **Merge now holds `lock(1)` for its whole window.** Advisory xact locks release
+  only at commit, and merge runs with `timeout: 120s`. So a merge excludes every
+  cancel/capture/settle/refund and every bed-allocation writer for as long as it
+  runs. That is the price of repairing the invariant *atomically*: the prefix
+  cannot be taken later without inverting the lock order, and a post-commit
+  second transaction would leave a window (and a crash gap) where the invariant
+  is false. Merge is an admin-rare dedup operation, so the exposure is one rare
+  operation rather than a hot path — but it is a real widening of merge's
+  blast radius and is called out here rather than left to be discovered.
+- **The counterparts are not locked, and do not need to be.** Merge locks the
+  master and the loser, never the ex-partner P or the kept partner Q whose
+  eligibility the sweep reads. It does not have to: every event that can
+  invalidate a share — link dissolution, deactivation, an ADULT→minor
+  correction, a seasonal reassignment — runs the #1756 sweep behind the SAME
+  global cohort `lock(1)` and the same lodge keys. So such an event either
+  commits before this merge (and the sweep sees its result) or waits until after
+  it (and sweeps whatever the merge left), and no interleaving can leave an
+  unbacked share behind. `mayShareDoubleBedWith` reads only `Member.ageTier`,
+  `Member.active` and CONFIRMED links; the merge's own step-5 field patch touches
+  none of those three (`FILL_IF_BLANK_FIELDS`/`GROUP_FILL_SPECS` carry no
+  `ageTier` or `active`), which is why judging the bed-nights at step 3b gives
+  the same answer as judging them after the field merge.
 
 ## The disciplines, by writer class
 

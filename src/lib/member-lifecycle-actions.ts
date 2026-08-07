@@ -38,6 +38,7 @@ import {
   serializeDate,
   serializeMember,
 } from "@/lib/member-serialization";
+import { lockMemberForAccountDeletionXeroFence } from "@/lib/xero-contact-create-recovery";
 
 type LifecycleActionClient = Prisma.TransactionClient | typeof prisma;
 
@@ -1188,6 +1189,15 @@ export async function reviewMemberDeleteRequest({
     // or an orphaned SET NULL row. See docs/ARCHITECTURE.md for the
     // wider advisory-lock convention.
     await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${`member-lifecycle:${request.memberId}`}))`;
+
+    // Xero CONTACT CREATE/UPDATE reservations take this Member row KEY SHARE
+    // before committing their durable provider-work proof. Take the conflicting
+    // row lock and re-check the complete blocker set before eligibility, the
+    // review claim, or any destructive write. Reservation-first therefore
+    // refuses this delete; delete-first keeps the row locked until hard-delete
+    // commits, after which a waiting reservation observes a missing member and
+    // performs no provider call.
+    await lockMemberForAccountDeletionXeroFence(tx, request.memberId);
 
     const eligibility = await getMemberDeleteEligibility({
       memberId: request.memberId,

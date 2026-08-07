@@ -74,6 +74,48 @@ export type StayWindow = {
   nights: string[]; // occupied lodge nights: checkIn inclusive, checkOut exclusive
 };
 
+const PAST_RETRY_OFFSETS_DAYS = [-7, -11, -15] as const;
+
+/**
+ * Select a two-night past stay for a Playwright attempt.
+ *
+ * CI retries reuse the seeded database, so an attempt that persisted its
+ * booking before a later navigation failure must not retry against the same
+ * member nights. Each retry moves into a disjoint band while remaining inside
+ * the relative seeded Winter season. Callers provide booking windows owned by
+ * their chosen member; overlap fails closed rather than borrowing another
+ * attempt's window.
+ */
+export function pastStayWindowForAttempt(
+  retry: number,
+  blockedRanges: ReadonlyArray<readonly [string, string]> = [],
+): StayWindow {
+  if (!Number.isInteger(retry) || retry < 0 || retry > 2) {
+    throw new Error("retroactive retry must be an integer from 0 to 2");
+  }
+
+  const offsetDays = PAST_RETRY_OFFSETS_DAYS[retry];
+  if (offsetDays === undefined) {
+    throw new Error("retroactive retry must be an integer from 0 to 2");
+  }
+  const checkInDate = addDays(new Date(), offsetDays);
+  const checkOutDate = addDays(checkInDate, 2);
+  const checkIn = toDateOnly(checkInDate);
+  const checkOut = toDateOnly(checkOutDate);
+  const nights = [checkIn, toDateOnly(addDays(checkInDate, 1))];
+  const overlapsBlockedRange = blockedRanges.some(
+    ([start, end]) => checkIn < end && checkOut > start,
+  );
+
+  if (overlapsBlockedRange || !isWindowInSeededSeason(nights)) {
+    throw new Error(
+      `No conflict-free seeded past window for Playwright retry ${retry}`,
+    );
+  }
+
+  return { checkIn, checkOut, nights };
+}
+
 function toDateOnly(date: Date): string {
   const y = date.getFullYear();
   const m = String(date.getMonth() + 1).padStart(2, "0");

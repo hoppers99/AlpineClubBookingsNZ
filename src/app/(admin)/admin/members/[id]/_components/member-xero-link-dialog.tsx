@@ -9,6 +9,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog"
 import { Input } from "@/components/ui/input"
+import { FocusedActionError } from "@/components/focused-action-error"
 import { Search } from "lucide-react"
 import type { XeroSearchResult } from "@/components/admin/xero-suggested-contact-card"
 import type { MemberDetail } from "../_types"
@@ -70,7 +71,7 @@ export function MemberXeroLinkDialog({
             {searching ? "..." : "Search"}
           </Button>
         </div>
-        {error && <div className="rounded border border-danger/20 bg-danger-muted p-2 text-sm text-danger">{error}</div>}
+        <FocusedActionError id="member-xero-link-error" error={error} />
         <div className="max-h-64 overflow-y-auto space-y-2">
           {results.length === 0 && !searching && query.length >= 2 && (
             <p className="py-4 text-center text-sm text-muted-foreground">No contacts found</p>

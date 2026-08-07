@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { hostingCoverageParticipantRetryResponse } from "@/lib/adult-member-hosting-retry-response";
 import { BookingStatus } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { requireAdmin } from "@/lib/session-guards";
@@ -66,13 +67,15 @@ export async function POST(
     );
   }
 
-  const result = await cancelBooking(
-    request.heldBookingId,
-    session.user.id,
-    "ADMIN",
-    getClientIp(req),
-    "card",
-    {
+  let result;
+  try {
+    result = await cancelBooking(
+      request.heldBookingId,
+      session.user.id,
+      "ADMIN",
+      getClientIp(req),
+      "card",
+      {
       // #1255 RR-2: suppress the requester's "booking cancelled" email — this is
       // an admin releasing a hold to re-map, not the requester cancelling. The
       // detach/reconcile/audit in the shared cancel path still run.
@@ -83,9 +86,14 @@ export async function POST(
       // (409, no side effect) rather than clobbering a booking a concurrent
       // quote-accept flipped to PENDING between that read and cancelBooking's
       // own outer read.
-      requireRequestHold: true,
-    }
-  );
+        requireRequestHold: true,
+      },
+    );
+  } catch (err) {
+    const hostingRetry = hostingCoverageParticipantRetryResponse(err);
+    if (hostingRetry) return hostingRetry;
+    throw err;
+  }
 
   // A concurrent cancel/accept won the race (#1160 single-flight): surface the
   // 409 rather than a 500 — the hold is being/has been released either way.

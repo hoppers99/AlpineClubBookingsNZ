@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { hostingCoverageParticipantRetryResponse } from "@/lib/adult-member-hosting-retry-response";
 import { z } from "zod";
 
 import {
@@ -292,6 +293,8 @@ export async function PUT(
 
     return NextResponse.json(result);
   } catch (err) {
+    const hostingRetry = hostingCoverageParticipantRetryResponse(err);
+    if (hostingRetry) return hostingRetry;
     if (err instanceof OverCapacityConfirmationRequiredError) {
       return NextResponse.json(
         {

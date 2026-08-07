@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { hostingCoverageParticipantRetryResponse } from "@/lib/adult-member-hosting-retry-response";
 import {
   AdultMemberHostingRequiredError,
   buildAdultMemberHostingRefusalBody,
@@ -405,6 +406,8 @@ export async function DELETE(
       choreWarnings: result.choreWarnings,
     });
   } catch (err) {
+    const hostingRetry = hostingCoverageParticipantRetryResponse(err);
+    if (hostingRetry) return hostingRetry;
     if (err instanceof MembershipTypeBookingPolicyError) {
       // Finding 2 (privacy re-review of MG3 #2308). This route is a member-facing
       // surface that can now answer D-8's collapsed refusal, so it owes the same
