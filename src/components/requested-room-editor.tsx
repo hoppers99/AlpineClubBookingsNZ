@@ -10,6 +10,7 @@ import {
 } from "@/components/ui/select";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { unverifiedWriteMessage } from "@/lib/unverified-write-copy";
 
 interface RoomOption {
   id: string;
@@ -238,9 +239,24 @@ export function RequestedRoomEditor({
       setSaved(true);
       setTimeout(() => setSaved(false), 3000);
     } catch {
-      // Network failure: nothing reached the server, so the stored room stands
-      // and the staged pick stays put for a retry.
-      setError("Could not reach the server. Your room request was not saved.");
+      /*
+        #2668. This used to say "Your room request was not saved." `fetch`
+        rejects both when the request never reached the server AND when the
+        server processed it and the connection dropped before the response came
+        back, and this side of the wire cannot tell which happened. Claiming the
+        second one did not happen is the same lie as #2654's "Saved", with the
+        sign flipped: the member is sent back to redo something that may already
+        be stored. The staged pick stays put (a re-press sends the same PUT,
+        which is idempotent), and `savedRoom` is left alone rather than being
+        asserted as current — the message points at the page reload, which is
+        the only value here that comes from the server.
+      */
+      setError(
+        unverifiedWriteMessage(
+          "your room request was saved",
+          "Reload the page to see what the club's records hold before trying again.",
+        ),
+      );
     } finally {
       setSaving(false);
     }

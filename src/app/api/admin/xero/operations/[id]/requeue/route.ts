@@ -35,8 +35,11 @@ export async function POST(
 
     await logAudit({
       action: "XERO_OPERATION_REQUEUED",
+      category: "xero",
       memberId: session.user.id,
       targetId: id,
+      entityType: "XeroSyncOperation",
+      entityId: id,
       details: result.message,
     });
 

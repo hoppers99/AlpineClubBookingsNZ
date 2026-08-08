@@ -190,6 +190,7 @@ export async function PUT(req: NextRequest) {
 
   logAudit({
     action: "cancellation-policy.update",
+    category: "booking",
     memberId: session.user.id,
     details: `Updated to ${sortedRules.length} rules, holdEnabled=${nonMemberHoldEnabled ?? "unchanged"}, holdDays=${nonMemberHoldDays ?? "unchanged"}, waitlistOrder=${waitlistCrossLodgeOrder ?? "unchanged"}, lodge=${lodgeId ?? "club-wide"}`,
   })

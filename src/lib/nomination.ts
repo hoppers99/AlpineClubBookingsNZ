@@ -680,7 +680,10 @@ export async function createMemberApplication(input: CreateMemberApplicationInpu
 
   logAudit({
     action: "MEMBERSHIP_APPLICATION_CREATED",
+    category: "account",
     targetId: application.id,
+    entityType: "MemberApplication",
+    entityId: application.id,
     details: JSON.stringify({
       applicantEmail,
       nominator1Id: nominator1.id,
@@ -835,8 +838,11 @@ export async function confirmNomination(token: string, nominatorMemberId: string
 
   logAudit({
     action: "MEMBERSHIP_APPLICATION_NOMINATION_CONFIRMED",
+    category: "account",
     memberId: nominatorMemberId,
     targetId: result.application.id,
+    entityType: "MemberApplication",
+    entityId: result.application.id,
     details: JSON.stringify({ movedToAdmin: result.movedToAdmin }),
   });
 
@@ -2293,8 +2299,11 @@ export async function approveMemberApplication(
 
   logAudit({
     action: "MEMBERSHIP_APPLICATION_APPROVED",
+    category: "account",
     memberId: adminMemberId,
     targetId: applicationId,
+    entityType: "MemberApplication",
+    entityId: applicationId,
     details: JSON.stringify({
       applicantMemberId: approved.applicantMember.id,
       createdMemberCount: approved.createdMemberIds.length,
@@ -2402,8 +2411,11 @@ export async function rejectMemberApplication(
 
   logAudit({
     action: "MEMBERSHIP_APPLICATION_REJECTED",
+    category: "account",
     memberId: adminMemberId,
     targetId: applicationId,
+    entityType: "MemberApplication",
+    entityId: applicationId,
     details: JSON.stringify({
       applicantEmail: rejected.applicantEmail,
       ...notifyAuditFields,

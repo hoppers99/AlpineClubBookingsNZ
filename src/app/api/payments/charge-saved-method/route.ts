@@ -206,6 +206,9 @@ export async function POST(request: NextRequest) {
 
       logAudit({
         action: "booking.payment.confirmed",
+        category: "payment",
+        entityType: "Booking",
+        entityId: booking.id,
         memberId: isAdmin ? session?.user?.id : undefined,
         targetId: booking.id,
         details: JSON.stringify({
@@ -326,6 +329,7 @@ export async function POST(request: NextRequest) {
     if (!paymentSucceeded) {
       logAudit({
         action: "booking.payment.failed",
+        category: "payment",
         details: JSON.stringify({
           errorMessage:
             error instanceof Error

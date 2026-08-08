@@ -626,6 +626,9 @@ describe("Stripe webhook Xero alerting", () => {
     });
     expect(mockLogAudit).toHaveBeenCalledWith({
       action: "booking.modification.payment.canceled",
+      category: "payment",
+      entityType: "Booking",
+      entityId: "booking-4",
       targetId: "booking-4",
       details: JSON.stringify({
         paymentIntentId: "pi_additional_canceled",

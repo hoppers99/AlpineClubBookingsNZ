@@ -294,8 +294,11 @@ describe("Xero operation admin retry routes", () => {
     expect(mocks.processQueuedXeroOperationRetries).toHaveBeenCalledWith({ limit: 1 });
     expect(mocks.logAudit).toHaveBeenCalledWith({
       action: "XERO_OPERATION_RETRY",
+      category: "xero",
       memberId: "admin-1",
       targetId: "op_123",
+      entityType: "XeroSyncOperation",
+      entityId: "op_123",
       details: "Xero operation queued for background retry.",
     });
 
@@ -318,8 +321,11 @@ describe("Xero operation admin retry routes", () => {
     expect(mocks.processQueuedXeroOperationRetries).toHaveBeenCalledWith({ limit: 1 });
     expect(mocks.logAudit).toHaveBeenCalledWith({
       action: "XERO_OPERATION_REQUEUED",
+      category: "xero",
       memberId: "admin-1",
       targetId: "op_456",
+      entityType: "XeroSyncOperation",
+      entityId: "op_456",
       details: "Xero operation queued for background retry.",
     });
   });

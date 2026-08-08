@@ -153,6 +153,7 @@ export async function POST(request: Request) {
         });
         await createAuditLog({
           action: "membership-subscription-billing.settings.update",
+          category: "payment",
           memberId: guard.session.user.id,
           targetId: "default",
           details: JSON.stringify({
@@ -171,6 +172,9 @@ export async function POST(request: Request) {
       const result = await enqueueMembershipSubscriptionChargeOperation(parsed.data.chargeId, { createdByMemberId: guard.session.user.id });
       await createAuditLog({
         action: "membership-subscription-billing.retry",
+        category: "payment",
+        entityType: "MembershipSubscriptionCharge",
+        entityId: parsed.data.chargeId,
         memberId: guard.session.user.id,
         targetId: parsed.data.chargeId,
         details: JSON.stringify(result),
@@ -208,6 +212,9 @@ export async function POST(request: Request) {
       if (created) {
         await createAuditLog({
           action: "membership-subscription-billing.mark-family",
+          category: "payment",
+          entityType: "FamilyGroup",
+          entityId: familyGroupId,
           memberId: guard.session.user.id,
           targetId: familyGroupId,
           details: JSON.stringify({ seasonYear, note: trimmedNote }),
@@ -230,6 +237,9 @@ export async function POST(request: Request) {
       if (released.count > 0) {
         await createAuditLog({
           action: "membership-subscription-billing.unmark-family",
+          category: "payment",
+          entityType: "FamilyGroup",
+          entityId: familyGroupId,
           memberId: guard.session.user.id,
           targetId: familyGroupId,
           details: JSON.stringify({ seasonYear, released: released.count }),
@@ -253,6 +263,7 @@ export async function POST(request: Request) {
       if (reconciled.resolvedCount > 0) {
         await createAuditLog({
           action: "membership-subscription-billing.reconcile",
+          category: "payment",
           memberId: guard.session.user.id,
           targetId: String(seasonYear),
           details: JSON.stringify(reconciled),

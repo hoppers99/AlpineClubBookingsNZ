@@ -113,7 +113,7 @@ export async function PUT(
       },
     });
 
-    logAudit({ action: "booking-period.update", memberId: guard.session.user.id, targetId: id, details: JSON.stringify({ lodgeId: existing.lodgeId, before: existing, after: period }) });
+    logAudit({ action: "booking-period.update", category: "booking", memberId: guard.session.user.id, targetId: id, entityType: "BookingPeriod", entityId: id, details: JSON.stringify({ lodgeId: existing.lodgeId, before: existing, after: period }) });
 
     revalidatePublicPageContent();
     return NextResponse.json(period);
@@ -145,7 +145,7 @@ export async function DELETE(
     const existing = await prisma.bookingPeriod.findUnique({ where: { id } });
     if (!existing) return NextResponse.json({ error: "Period not found" }, { status: 404 });
     await prisma.bookingPeriod.delete({ where: { id } });
-    logAudit({ action: "booking-period.delete", memberId: guard.session.user.id, targetId: id, details: JSON.stringify({ lodgeId: existing.lodgeId, before: existing }) });
+    logAudit({ action: "booking-period.delete", category: "booking", memberId: guard.session.user.id, targetId: id, entityType: "BookingPeriod", entityId: id, details: JSON.stringify({ lodgeId: existing.lodgeId, before: existing }) });
     revalidatePublicPageContent();
     return NextResponse.json({ success: true });
   } catch {

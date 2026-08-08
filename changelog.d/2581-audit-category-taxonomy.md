@@ -37,8 +37,8 @@
   now sees their own sign-in bounce entries, the membership-application entries
   that concern them, and an administrator's change to their photo made on their
   behalf. Each of those entries is about the member reading it, and a member's
-  view has always shown the plain summary only — never the stored metadata, the
-  request ID or the IP address — so nothing new is disclosed about anybody else.
+  view has never shown the stored metadata, the request ID or the IP address — so
+  nothing new is disclosed about anybody else.
   Members already saw their own high-volume entries of this kind under Privacy.
 
   **Nothing changed about Admin → Audit Log.** It still shows every entry,

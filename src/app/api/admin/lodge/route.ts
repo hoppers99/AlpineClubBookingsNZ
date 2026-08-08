@@ -168,8 +168,17 @@ export async function GET() {
     });
     logAudit({
       action: "LODGE_ACCOUNT_CREATED",
+      category: "lodge",
       memberId: session.user.id,
       targetId: lodge.id,
+      // `Member`, NOT `Lodge` (#2581). The local is called `lodge` but it holds
+      // a kiosk `Member` row with `role: "LODGE"` — this route creates and
+      // edits kiosk LOGINS, not lodges. `entityType: "Lodge"` already has a
+      // meaning in this tree (`display/lodge-config` writes it with a real
+      // `Lodge` id), so putting a Member id behind it would poison entity
+      // correlation for both.
+      entityType: "Member",
+      entityId: lodge.id,
       details: "Auto-created lodge account",
     });
     accounts = await prisma.member.findMany({
@@ -315,8 +324,12 @@ export async function PUT(request: NextRequest) {
 
   logAudit({
     action: "LODGE_ACCOUNT_UPDATED",
+    category: "lodge",
     memberId: session.user.id,
     targetId: lodge.id,
+    // The kiosk Member row, as above — `lodge` is a Member, not a Lodge.
+    entityType: "Member",
+    entityId: lodge.id,
     details: changes.join("; "),
   });
 
@@ -422,8 +435,14 @@ export async function POST(request: NextRequest) {
 
   logAudit({
     action: "LODGE_ACCOUNT_CREATED",
+    category: "lodge",
     memberId: session.user.id,
     targetId: created.id,
+    // The kiosk Member row, as above. The optional `lodgeId` is the BINDING
+    // target rather than the subject of the event, and it is absent for an
+    // unbound kiosk, so it is not the entity.
+    entityType: "Member",
+    entityId: created.id,
     details: `Created kiosk account ${email}${parsed.data.lodgeId ? ` bound to lodge ${parsed.data.lodgeId}` : ""}`,
   });
 
