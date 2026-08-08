@@ -30,6 +30,20 @@ import {
   DIAGNOSTICS_USAGE_HEALTH_TOOL_ID,
 } from "../packs/support-system";
 import {
+  DIAGNOSTICS_FINANCE_AMOUNT_SEARCH_TOOL_ID,
+  DIAGNOSTICS_FINANCE_PAYMENT_SEARCH_TOOL_ID,
+} from "../packs/finance-search";
+import {
+  DIAGNOSTICS_FINANCE_AUDIT_HISTORY_TOOL_ID,
+  DIAGNOSTICS_FINANCE_WEBHOOK_TIMELINE_TOOL_ID,
+  DIAGNOSTICS_PAYMENT_ATTEMPT_LEDGER_TOOL_ID,
+  DIAGNOSTICS_PAYMENT_REFUND_STATE_TOOL_ID,
+  DIAGNOSTICS_PAYMENT_SUMMARY_TOOL_ID,
+  DIAGNOSTICS_XERO_CONTACT_LINKAGE_TOOL_ID,
+  DIAGNOSTICS_XERO_INVOICE_LINKAGE_TOOL_ID,
+} from "../packs/finance-records";
+import { DIAGNOSTICS_BOOKING_FINANCE_STATE_TOOL_ID } from "../packs/finance-state";
+import {
   DIAGNOSTICS_SUPPORT_CORRELATION_TOOLS,
 } from "../packs/support-correlation";
 import { renderToolResultEvidenceBlock } from "../render";
@@ -163,6 +177,178 @@ const EXAMPLE_RAW_ROWS: Record<string, Record<string, unknown>> = {
     cron_scheduling_enabled: true,
     registered_job_count: 34,
   },
+  // AID-6C (#2377). The open-ended-width rule applies to the internet-banking
+  // reference, which is whatever a payer typed into their own bank: the pack's
+  // projection caps it at 64 characters, so that is where it is measured. Every
+  // other field here is structurally fixed — a cuid, an ISO instant, a closed
+  // enum, a provider identifier — and is set to the widest REAL value.
+  ...Object.fromEntries(
+    [
+      DIAGNOSTICS_FINANCE_PAYMENT_SEARCH_TOOL_ID,
+      DIAGNOSTICS_FINANCE_AMOUNT_SEARCH_TOOL_ID,
+    ].map((id) => [
+      id,
+      {
+        payment_ref: "clz0000000abcdefghijklmno",
+        booking_id: "clz0000000abcdefghijklmno",
+        booking_reference: "CLZ00000",
+        payment_status: "PARTIALLY_REFUNDED",
+        payment_source: "INTERNET_BANKING",
+        amount_cents: 1_234_567,
+        refunded_amount_cents: 1_234_567,
+        credit_applied_cents: 1_234_567,
+        additional_amount_cents: 1_234_567,
+        additional_payment_status: "SUCCEEDED",
+        has_stripe_intent: true,
+        has_xero_invoice: true,
+        xero_invoice_number: "INV-0001234",
+        bank_reference: "b".repeat(64),
+        manually_marked_paid: true,
+        created_at_utc: "2026-08-08T09:00:00Z",
+        updated_at_utc: "2026-08-08T09:00:00Z",
+      },
+    ]),
+  ),
+  [DIAGNOSTICS_PAYMENT_SUMMARY_TOOL_ID]: {
+    payment_ref: "clz0000000abcdefghijklmno",
+    booking_id: "clz0000000abcdefghijklmno",
+    booking_reference: "CLZ00000",
+    payment_status: "PARTIALLY_REFUNDED",
+    payment_source: "INTERNET_BANKING",
+    amount_cents: 1_234_567,
+    refunded_amount_cents: 1_234_567,
+    change_fee_cents: 1_234_567,
+    additional_amount_cents: 1_234_567,
+    credit_applied_cents: 1_234_567,
+    additional_payment_status: "SUCCEEDED",
+    stripe_payment_intent_id: "pi_3QabcdefghijklmnopqrstuV",
+    additional_payment_intent_id: "pi_3QabcdefghijklmnopqrstuV",
+    xero_invoice_id: "00000000-0000-4000-8000-000000000000",
+    xero_invoice_number: "INV-0001234",
+    xero_refund_credit_note_id: "00000000-0000-4000-8000-000000000000",
+    bank_reference: "b".repeat(64),
+    internet_banking_hold_slots: true,
+    internet_banking_hold_until_utc: "2026-08-08T09:00:00Z",
+    internet_banking_hold_released_at_utc: "2026-08-08T09:00:00Z",
+    manually_marked_paid_at_utc: "2026-08-08T09:00:00Z",
+    created_at_utc: "2026-08-08T09:00:00Z",
+    updated_at_utc: "2026-08-08T09:00:00Z",
+  },
+  [DIAGNOSTICS_PAYMENT_ATTEMPT_LEDGER_TOOL_ID]: {
+    entry_kind: "recovery_operation",
+    entry_ref: "clz0000000abcdefghijklmno",
+    kind_code: "CREATE_ADDITIONAL_PAYMENT_INTENT",
+    source_code: "INTERNET_BANKING",
+    status_code: "PARTIALLY_REFUNDED",
+    amount_cents: 1_234_567,
+    refunded_amount_cents: 1_234_567,
+    provider_ref: "pi_3QabcdefghijklmnopqrstuV",
+    xero_invoice_number: "INV-0001234",
+    bank_reference: "b".repeat(64),
+    scenario_code: "capacity_claim_failed_refund",
+    attempt_count: 5,
+    settled_at_utc: "2026-08-08T09:00:00Z",
+    occurred_at_utc: "2026-08-08T09:00:00Z",
+    updated_at_utc: "2026-08-08T09:00:00Z",
+  },
+  [DIAGNOSTICS_PAYMENT_REFUND_STATE_TOOL_ID]: {
+    entry_kind: "manual_refund_task",
+    entry_ref: "clz0000000abcdefghijklmno",
+    status_code: "PARTIALLY_REFUNDED",
+    amount_cents: 1_234_567,
+    secondary_amount_cents: 1_234_567,
+    currency_code: "nzd",
+    provider_ref: "re_3QabcdefghijklmnopqrstuV",
+    secondary_provider_ref: "ch_3QabcdefghijklmnopqrstuV",
+    has_xero_credit_note: true,
+    scenario_code: "capacity_claim_failed_refund",
+    attempt_count: 5,
+    settled_at_utc: "2026-08-08T09:00:00Z",
+    occurred_at_utc: "2026-08-08T09:00:00Z",
+  },
+  [DIAGNOSTICS_FINANCE_WEBHOOK_TIMELINE_TOOL_ID]: {
+    entry_kind: "xero_inbound_event",
+    entry_ref: "clz0000000abcdefghijklmno",
+    provider_code: "stripe",
+    // Open-ended in practice: a provider names its own event types, and Stripe's
+    // longest today is around 40 characters. Measured at the stable-code cap.
+    event_type: "e".repeat(48),
+    event_ref: "evt_3QabcdefghijklmnopqrstuV",
+    status_code: "PROCESSING",
+    category_code: "INVOICE",
+    duration_ms: 123_456,
+    started_at_utc: "2026-08-08T09:00:00Z",
+    processed_at_utc: "2026-08-08T09:00:00Z",
+    occurred_at_utc: "2026-08-08T09:00:00Z",
+  },
+  ...Object.fromEntries(
+    [
+      DIAGNOSTICS_XERO_INVOICE_LINKAGE_TOOL_ID,
+      DIAGNOSTICS_XERO_CONTACT_LINKAGE_TOOL_ID,
+    ].map((id) => [
+      id,
+      {
+        entry_kind: "sync_operation",
+        entry_ref: "clz0000000abcdefghijklmno",
+        xero_object_type: "CreditNoteAllocation",
+        xero_object_id: "00000000-0000-4000-8000-000000000000",
+        xero_object_number: "INV-0001234",
+        role_code: "MEMBERSHIP_CANCELLATION_CREDIT",
+        is_active: true,
+        status_code: "WAITING_PAYMENT",
+        operation_type_code: "BOOKING_INVOICE_EDIT_SETTLEMENT",
+        direction_code: "OUTBOUND",
+        attempt_count: 12,
+        is_replayable: true,
+        // Open-ended: Xero names its own error codes. Measured at the cap.
+        last_error_code: "e".repeat(48),
+        manually_resolved: true,
+        started_at_utc: "2026-08-08T09:00:00Z",
+        completed_at_utc: "2026-08-08T09:00:00Z",
+        occurred_at_utc: "2026-08-08T09:00:00Z",
+        updated_at_utc: "2026-08-08T09:00:00Z",
+      },
+    ]),
+  ),
+  [DIAGNOSTICS_FINANCE_AUDIT_HISTORY_TOOL_ID]: {
+    event_ref: "clz0000000abcdefghijklmno",
+    // Open-ended, exactly as for the AID-6A correlation entries: real action codes
+    // already reach 60 characters and nothing bounds a new one.
+    action_code: "a".repeat(48),
+    category_code: "payment",
+    severity_code: "important",
+    outcome_code: "success",
+    entity_type: "ManualRefundTask",
+    occurred_at_utc: "2026-08-08T09:00:00Z",
+  },
+  [DIAGNOSTICS_BOOKING_FINANCE_STATE_TOOL_ID]: {
+    booking_id: "clz0000000abcdefghijklmno",
+    booking_reference: "CLZ00000",
+    booking_status: "WAITLIST_OFFERED",
+    payment_ref: "clz0000000abcdefghijklmno",
+    payment_status: "PARTIALLY_REFUNDED",
+    payment_source: "INTERNET_BANKING",
+    payment_display_label: "Partial Credit + Card Refund",
+    settlement_kind: "restoredCredit",
+    xero_state: "operationPending",
+    amount_due_cents: 1_234_567,
+    credit_applied_cents: 1_234_567,
+    amount_paid_cents: 1_234_567,
+    refunded_amount_cents: 1_234_567,
+    outstanding_cents: -1_234_567,
+    uncollected_additional_cents: 1_234_567,
+    remaining_refundable_cents: 1_234_567,
+    ledger_variance_cents: -1_234_567,
+    credit_ledger_variance_cents: -1_234_567,
+    member_credit_balance_cents: 1_234_567,
+    // The widest possible list: every declared blocker code at once.
+    blocker_codes:
+      "payment_record_missing,refund_execution_exhausted,refund_execution_pending,manual_refund_open,refund_appeal_pending,xero_operation_failed,xero_operation_partial,xero_operation_pending,xero_invoice_missing,additional_payment_outstanding,payment_failed,payment_processing,payment_pending,ledger_variance,credit_ledger_variance",
+    blocker_count: 15,
+    manually_marked_paid: true,
+    booking_lifecycle_terminal: true,
+    observed_at_utc: "2026-08-08T09:00:00.000Z",
+  },
   ...Object.fromEntries(
     DIAGNOSTICS_SUPPORT_CORRELATION_TOOLS.map((tool) => [
       tool.id,
@@ -207,6 +393,44 @@ const EXAMPLE_ARGS: Record<string, unknown> = {
       { window: "1h", requestId: "req-abc-123" },
     ]),
   ),
+  // AID-6C (#2377). Every finance entry REQUIRES an argument — there is no blank
+  // search and no per-record tool that takes nothing — so each one needs its own
+  // row here, and `{}` would not parse for any of them.
+  [DIAGNOSTICS_FINANCE_PAYMENT_SEARCH_TOOL_ID]: {
+    referenceKind: "booking_reference",
+    reference: "CLZ00000",
+  },
+  [DIAGNOSTICS_FINANCE_AMOUNT_SEARCH_TOOL_ID]: {
+    amountCents: 12345,
+    window: "30d",
+  },
+  [DIAGNOSTICS_PAYMENT_SUMMARY_TOOL_ID]: {
+    paymentId: "clz0000000abcdefghijklmno",
+  },
+  [DIAGNOSTICS_PAYMENT_ATTEMPT_LEDGER_TOOL_ID]: {
+    paymentId: "clz0000000abcdefghijklmno",
+  },
+  [DIAGNOSTICS_PAYMENT_REFUND_STATE_TOOL_ID]: {
+    paymentId: "clz0000000abcdefghijklmno",
+  },
+  [DIAGNOSTICS_FINANCE_WEBHOOK_TIMELINE_TOOL_ID]: {
+    provider: "stripe",
+    eventRef: "evt_3Qabcdefghijklmnopqrstu",
+  },
+  [DIAGNOSTICS_XERO_INVOICE_LINKAGE_TOOL_ID]: {
+    localModel: "Booking",
+    localId: "clz0000000abcdefghijklmno",
+  },
+  [DIAGNOSTICS_XERO_CONTACT_LINKAGE_TOOL_ID]: {
+    memberId: "clz0000000abcdefghijklmno",
+  },
+  [DIAGNOSTICS_FINANCE_AUDIT_HISTORY_TOOL_ID]: {
+    subject: "payment",
+    recordId: "clz0000000abcdefghijklmno",
+  },
+  [DIAGNOSTICS_BOOKING_FINANCE_STATE_TOOL_ID]: {
+    bookingId: "clz0000000abcdefghijklmno",
+  },
 };
 
 /**
@@ -870,6 +1094,11 @@ describe("the evidence modules are SERVER-ONLY (#2375)", () => {
     "authorize.ts",
     "database.ts",
     "invoke.ts",
+    "packs/finance-evidence.ts",
+    "packs/finance-records.ts",
+    "packs/finance-search.ts",
+    "packs/finance-shared.ts",
+    "packs/finance-state.ts",
     "packs/support-correlation.ts",
     "packs/support-evidence.ts",
     "packs/support-system.ts",

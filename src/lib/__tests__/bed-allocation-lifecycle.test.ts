@@ -3,11 +3,14 @@ import { describe, expect, it, vi } from "vitest";
 
 import {
   acquireFuturePartnerSharedAllocationLocks,
+  acquireMemberMergePartnerSharedLodgeLocks,
   BED_ALLOCATABLE_BOOKING_STATUSES,
+  describePartnerSharedSweepReason,
   partnerShareSweepCounterpartNames,
   partnerShareSweepNights,
   reconcileBedAllocationsForBookingWithLodgeLockHeld,
   sweepFuturePartnerSharedAllocationsWithLocksHeld,
+  sweepUnbackedFutureSharedDoublesWithLocksHeld,
 } from "@/lib/bed-allocation-lifecycle";
 import { acquireMemberLifecycleLocks } from "@/lib/member-lifecycle-lock";
 import { BED_ALLOCATION_PRIORITY_VOCABULARY } from "@/lib/bed-allocation-settings";
@@ -62,6 +65,132 @@ describe("partner-share lock prefix", () => {
       "member-lifecycle:member-1",
       "member-lifecycle:member-2",
     ]);
+  });
+});
+
+/**
+ * Member merge's own prefix (#2595). Two differences from the #1756 sibling
+ * above, and each is load-bearing:
+ *
+ *  - it does NOT take the global cohort `lock(1)`, because a merge holds its
+ *    locks for up to 120s and would reject every 5s-budget cohort writer in the
+ *    club, and
+ *  - it therefore derives the lodge set from the members' future GUEST-NIGHTS as
+ *    well as their existing future allocations, so a lodge where a placement
+ *    could still land — but no allocation exists yet — is covered.
+ *
+ * Delete the guest-night half and this describe fails on both counts.
+ */
+describe("member-merge partner-share lodge prefix (#2595)", () => {
+  function makeMergeLockTx(input: {
+    allocationLodgeIds: (string | null)[];
+    guestNightLodgeIds: (string | null)[];
+  }) {
+    const events: unknown[] = [];
+    const executeRaw = vi.fn(
+      async (_strings: TemplateStringsArray, ...values: unknown[]) => {
+        events.push(values[0] ?? "global");
+        return 1;
+      },
+    );
+    const bedAllocationFindMany = vi.fn(async () => {
+      events.push("discover-allocation-lodges");
+      return input.allocationLodgeIds.map((lodgeId) => ({ room: { lodgeId } }));
+    });
+    const bookingGuestFindMany = vi.fn(async () => {
+      events.push("discover-guest-night-lodges");
+      return input.guestNightLodgeIds.map((lodgeId) => ({
+        booking: { lodgeId },
+      }));
+    });
+    const tx = {
+      $executeRaw: executeRaw,
+      bedAllocation: { findMany: bedAllocationFindMany },
+      bookingGuest: { findMany: bookingGuestFindMany },
+    } as any;
+    return { tx, events, bedAllocationFindMany, bookingGuestFindMany };
+  }
+
+  it("takes only the sorted union of allocation and guest-night lodges, and no global key", async () => {
+    const { tx, events, bookingGuestFindMany } = makeMergeLockTx({
+      allocationLodgeIds: ["lodge-z", "lodge-a", "lodge-z", null],
+      // `lodge-m` exists ONLY as a future guest-night: no bed is allocated
+      // there yet, and a concurrent placement could still create one.
+      guestNightLodgeIds: ["lodge-m", "lodge-a", null],
+    });
+
+    const locked = await acquireMemberMergePartnerSharedLodgeLocks(tx, [
+      "member-2",
+      "member-1",
+      "member-2",
+    ]);
+    await acquireMemberLifecycleLocks(tx, ["member-2", "member-1"]);
+
+    expect(locked).toEqual(["lodge-a", "lodge-m", "lodge-z"]);
+    expect(events).toEqual([
+      "discover-allocation-lodges",
+      "discover-guest-night-lodges",
+      "lodge-a",
+      "lodge-m",
+      "lodge-z",
+      "member-lifecycle:member-1",
+      "member-lifecycle:member-2",
+    ]);
+    // The global cohort key is what the owner decision removed; assert its
+    // absence explicitly rather than relying on the array comparison above.
+    expect(events).not.toContain("global");
+
+    // Both members, and future nights only — the immutable request ids are the
+    // only input, and a past stay can hold no future placement.
+    //
+    // STRICT on `where`, deliberately, and this is load-bearing rather than
+    // fussy. `expect.objectContaining` ignores ADDED keys, so it would pass a
+    // query narrowed by `booking: { status: … }` — and narrowing on status is
+    // exactly the hole `futurePartnerShareGuestNightLodgeIds` documents itself as
+    // avoiding: booking-status transitions serialise on the global cohort key,
+    // which merge no longer holds, so a booking that is not allocatable when the
+    // set is derived can become allocatable while the merge runs. With the global
+    // key gone, that narrowing would silently reopen the coverage hole this whole
+    // derivation exists to close, and every other test in the tree would stay
+    // green. Compare the whole object so it cannot.
+    expect(bookingGuestFindMany).toHaveBeenCalledWith({
+      where: {
+        memberId: { in: ["member-2", "member-1"] },
+        OR: [
+          { stayEnd: { gte: expect.any(Date) } },
+          { nights: { some: { stayDate: { gte: expect.any(Date) } } } },
+        ],
+      },
+      select: { booking: { select: { lodgeId: true } } },
+    });
+  });
+
+  it("locks a guest-night-only lodge even when the members hold no allocation at all", async () => {
+    const { tx, events } = makeMergeLockTx({
+      allocationLodgeIds: [],
+      guestNightLodgeIds: ["lodge-future-only"],
+    });
+
+    const locked = await acquireMemberMergePartnerSharedLodgeLocks(tx, [
+      "member-1",
+    ]);
+
+    expect(locked).toEqual(["lodge-future-only"]);
+    expect(events).toEqual([
+      "discover-allocation-lodges",
+      "discover-guest-night-lodges",
+      "lodge-future-only",
+    ]);
+  });
+
+  it("takes nothing at all for an empty member set", async () => {
+    const { tx, events, bedAllocationFindMany, bookingGuestFindMany } =
+      makeMergeLockTx({ allocationLodgeIds: [], guestNightLodgeIds: [] });
+
+    expect(await acquireMemberMergePartnerSharedLodgeLocks(tx, [])).toEqual([]);
+    expect(events).toEqual([]);
+    expect(bedAllocationFindMany).not.toHaveBeenCalled();
+    expect(bookingGuestFindMany).not.toHaveBeenCalled();
   });
 });
 
@@ -1609,7 +1738,13 @@ describe("bed allocation first-claim displacement (issue #1387)", () => {
     expect(db.bedAllocation.updateMany).toHaveBeenCalledTimes(1);
     expect(db.bedAllocation.updateMany).toHaveBeenCalledWith({
       where: { bookingGuestId: "prov-g1", stayDate: NIGHT_UTC },
-      data: { bedId: "bed-b2", roomId: "room-b" },
+      data: {
+        bedId: "bed-b2",
+        roomId: "room-b",
+        // #2656: a relocated row lands alone on a bed free at plan start, so it
+        // is always the primary there — never a fresh orphaned second occupant.
+        isSecondOccupant: false,
+      },
     });
     // No UNALLOCATE: no displacement-shaped deleteMany (prune's is by bookingId).
     const unallocateCalls = db.bedAllocation.deleteMany.mock.calls.filter(
@@ -2439,11 +2574,23 @@ describe("bed allocation first-claim displacement (issue #1387)", () => {
     expect(db.bedAllocation.updateMany).toHaveBeenCalledTimes(2);
     expect(db.bedAllocation.updateMany).toHaveBeenCalledWith({
       where: { bookingGuestId: "prov-g1", stayDate: NIGHT_UTC },
-      data: { bedId: "bed-b2", roomId: "room-b" },
+      data: {
+        bedId: "bed-b2",
+        roomId: "room-b",
+        // #2656: a relocated row lands alone on a bed free at plan start, so it
+        // is always the primary there — never a fresh orphaned second occupant.
+        isSecondOccupant: false,
+      },
     });
     expect(db.bedAllocation.updateMany).toHaveBeenCalledWith({
       where: { bookingGuestId: "prov-g1", stayDate: night2Utc },
-      data: { bedId: "bed-b2", roomId: "room-b" },
+      data: {
+        bedId: "bed-b2",
+        roomId: "room-b",
+        // #2656: a relocated row lands alone on a bed free at plan start, so it
+        // is always the primary there — never a fresh orphaned second occupant.
+        isSecondOccupant: false,
+      },
     });
     const unallocateCalls = db.bedAllocation.deleteMany.mock.calls.filter(
       (call: any[]) => "bookingGuestId" in call[0].where,
@@ -3383,6 +3530,425 @@ describe("sweepFuturePartnerSharedAllocationsWithLocksHeld (#1756)", () => {
 });
 
 // ---------------------------------------------------------------------------
+// Unbacked shared-double reconciliation (#2595)
+//
+// The validity-driven sibling of the #1756 sweep, for member merge: it judges
+// each candidate bed-night's ACTUAL pair against the single source of truth
+// (`mayShareDoubleBedWith`) instead of trusting a named event, so a merge that
+// drops one CONFIRMED link removes exactly the share that link backed and leaves
+// the surviving member's own still-CONFIRMED share alone.
+// ---------------------------------------------------------------------------
+describe("sweepUnbackedFutureSharedDoublesWithLocksHeld (#2595)", () => {
+  const AUG1 = parseDateOnly("2026-08-01");
+  const AUG2 = parseDateOnly("2026-08-02");
+  // The lodge every fixture row sits in, and the one the caller says it locked.
+  // Merge holds no global cohort key, so the sweep refuses any candidate row
+  // outside this set rather than write bed inventory it has not serialised.
+  const SWEEP_LODGE_ID = "lodge-1";
+
+  /**
+   * `mayShareDoubleBedWith` reads `member` and `memberPartnerLink` off the same
+   * client, so the sweep's mock db has to answer those too. Members default to
+   * active adults; only the CONFIRMED link rows decide who may share.
+   */
+  function makeSweepDb(confirmedPairs: [string, string][] = []) {
+    return {
+      bedAllocation: {
+        findMany: vi.fn().mockResolvedValue([]),
+        deleteMany: vi.fn().mockResolvedValue({ count: 0 }),
+      },
+      member: {
+        findMany: vi.fn(async (args: any) => {
+          const ids: string[] = args?.where?.id?.in ?? [];
+          return ids.map((id) => ({ id, ageTier: "ADULT", active: true }));
+        }),
+      },
+      memberPartnerLink: {
+        findMany: vi.fn(async () =>
+          confirmedPairs.map(([a, b]) =>
+            a < b
+              ? { memberAId: a, memberBId: b }
+              : { memberAId: b, memberBId: a },
+          ),
+        ),
+      },
+      auditLog: { create: vi.fn().mockResolvedValue({}) },
+    };
+  }
+
+  function allocationRow(opts: {
+    id: string;
+    bookingId: string;
+    bookingGuestId: string;
+    bedId: string;
+    stayDate: Date;
+    memberId: string | null;
+    name?: [string, string];
+    lodgeId?: string;
+  }) {
+    const [firstName, lastName] = opts.name ?? ["Guest", opts.id];
+    return {
+      id: opts.id,
+      bookingId: opts.bookingId,
+      bookingGuestId: opts.bookingGuestId,
+      bedId: opts.bedId,
+      roomId: "room-1",
+      stayDate: opts.stayDate,
+      bookingGuest: { memberId: opts.memberId, firstName, lastName },
+      room: { lodgeId: opts.lodgeId ?? SWEEP_LODGE_ID },
+    };
+  }
+
+  it("sweeps the bed-night the merge unbacked and keeps the master's still-confirmed share", async () => {
+    // The #2595 scenario: the master (member-m, absorbed the duplicate's guest
+    // rows) is the PRIMARY on bed-d1 with the duplicate's ex-partner (member-p)
+    // beside them and no link, and the PRIMARY on bed-d2 with its own CONFIRMED
+    // partner (member-q).
+    const db = makeSweepDb([["member-m", "member-q"]]);
+    const unbackedSecond = allocationRow({
+      id: "alloc-unbacked",
+      bookingId: "booking-p",
+      bookingGuestId: "guest-p",
+      bedId: "bed-d1",
+      stayDate: AUG1,
+      memberId: "member-p",
+      name: ["Pat", "Pine"],
+    });
+    const backedSecond = allocationRow({
+      id: "alloc-backed",
+      bookingId: "booking-q",
+      bookingGuestId: "guest-q",
+      bedId: "bed-d2",
+      stayDate: AUG1,
+      memberId: "member-q",
+      name: ["Quin", "Quay"],
+    });
+    db.bedAllocation.findMany
+      // 1: second-occupant rows whose guest is in scope — none, the master holds
+      //    both primaries.
+      .mockResolvedValueOnce([])
+      // 2: the scope's own PRIMARY bed-nights.
+      .mockResolvedValueOnce([
+        { bedId: "bed-d1", stayDate: AUG1 },
+        { bedId: "bed-d2", stayDate: AUG1 },
+      ])
+      // 3: second occupants sitting on those bed-nights.
+      .mockResolvedValueOnce([unbackedSecond, backedSecond])
+      // 4: primaries on all candidate bed-nights.
+      .mockResolvedValueOnce([
+        allocationRow({
+          id: "alloc-primary-d1",
+          bookingId: "booking-loser",
+          bookingGuestId: "guest-loser",
+          bedId: "bed-d1",
+          stayDate: AUG1,
+          memberId: "member-m",
+          name: ["Mo", "Mane"],
+        }),
+        allocationRow({
+          id: "alloc-primary-d2",
+          bookingId: "booking-m",
+          bookingGuestId: "guest-m",
+          bedId: "bed-d2",
+          stayDate: AUG1,
+          memberId: "member-m",
+          name: ["Mo", "Mane"],
+        }),
+      ]);
+    db.bedAllocation.deleteMany.mockResolvedValue({ count: 1 });
+
+    const swept = await sweepUnbackedFutureSharedDoublesWithLocksHeld({
+      memberIds: ["member-m", "member-loser"],
+      lockedLodgeIds: [SWEEP_LODGE_ID],
+      reason: "members_merged",
+      db: db as any,
+    });
+
+    // Future-only, second-occupant-only candidate query on the scope.
+    expect(db.bedAllocation.findMany).toHaveBeenNthCalledWith(
+      1,
+      expect.objectContaining({
+        where: expect.objectContaining({
+          isSecondOccupant: true,
+          stayDate: { gte: expect.any(Date) },
+          bookingGuest: { memberId: { in: ["member-m", "member-loser"] } },
+        }),
+      }),
+    );
+    // The PRIMARY-side candidate query is future-only too, and this pin is the
+    // one that stops a whole class of damage. Query 3 derives its `(bedId,
+    // stayDate)` tuples from THIS query's rows and carries no date filter of its
+    // own, so dropping `stayDate: { gte: today }` here would pull historic
+    // bed-nights into the candidate set and the sweep would start DELETING past
+    // lodge occupancy — against "past lodge nights are history and stay
+    // untouched" (docs/DOMAIN_INVARIANTS.md). Every real-DB fixture in this
+    // area deliberately uses far-future 2099 nights so the frozen clock cannot
+    // make the window vacuous, which means only this assertion can catch it.
+    expect(db.bedAllocation.findMany).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({
+        where: expect.objectContaining({
+          isSecondOccupant: false,
+          stayDate: { gte: expect.any(Date) },
+          bookingGuest: { memberId: { in: ["member-m", "member-loser"] } },
+        }),
+      }),
+    );
+    // Query 3 reaches the counterparts ONLY through those bed-night tuples, so
+    // it inherits the future-only window rather than restating it. Pinned so a
+    // widening from tuples to, say, a bare `bookingGuest` filter cannot slip in.
+    expect(db.bedAllocation.findMany).toHaveBeenNthCalledWith(
+      3,
+      expect.objectContaining({
+        where: expect.objectContaining({
+          isSecondOccupant: true,
+          OR: [
+            { bedId: "bed-d1", stayDate: AUG1 },
+            { bedId: "bed-d2", stayDate: AUG1 },
+          ],
+        }),
+      }),
+    );
+    // One batched eligibility question per distinct primary member.
+    expect(db.memberPartnerLink.findMany).toHaveBeenCalledTimes(1);
+    // Only the unbacked bed-night is removed, and only its second-occupant row.
+    expect(db.bedAllocation.deleteMany).toHaveBeenCalledWith({
+      where: { id: { in: ["alloc-unbacked"] }, isSecondOccupant: true },
+    });
+    expect(swept).toEqual([
+      expect.objectContaining({
+        allocationId: "alloc-unbacked",
+        bookingId: "booking-p",
+        bedId: "bed-d1",
+        secondOccupantMemberId: "member-p",
+        secondOccupantName: "Pat Pine",
+        primaryBookingId: "booking-loser",
+        primaryMemberId: "member-m",
+        primaryName: "Mo Mane",
+      }),
+    ]);
+
+    // Audited against BOTH bookings, under the merge issue.
+    const auditedData = db.auditLog.create.mock.calls.map(
+      (call: any[]) => call[0].data,
+    );
+    expect(auditedData.map((data: any) => data.entityId).sort()).toEqual([
+      "booking-loser",
+      "booking-p",
+    ]);
+    for (const data of auditedData) {
+      expect(data.action).toBe("BED_ALLOCATION_PARTNER_SHARE_SWEPT");
+      expect(data.metadata).toMatchObject({
+        issue: 2595,
+        reason: "members_merged",
+        stayDates: ["2026-08-01"],
+      });
+    }
+    expect(partnerShareSweepNights(swept)).toEqual([AUG1]);
+    expect(partnerShareSweepCounterpartNames(swept, "member-m")).toBe("Pat Pine");
+  });
+
+  it("judges the scoped member on the SECOND-occupant side too", async () => {
+    const db = makeSweepDb([]);
+    db.bedAllocation.findMany
+      // 1: the scoped member IS the second occupant, with no confirmed link to
+      //    the primary sitting there.
+      .mockResolvedValueOnce([
+        allocationRow({
+          id: "alloc-own-2nd",
+          bookingId: "booking-m",
+          bookingGuestId: "guest-m",
+          bedId: "bed-d1",
+          stayDate: AUG2,
+          memberId: "member-m",
+          name: ["Mo", "Mane"],
+        }),
+      ])
+      // 2: no primary bed-nights in scope, so query 3 is skipped entirely.
+      .mockResolvedValueOnce([])
+      // 3 (as issued): primaries on the candidate bed-night.
+      .mockResolvedValueOnce([
+        allocationRow({
+          id: "alloc-primary",
+          bookingId: "booking-x",
+          bookingGuestId: "guest-x",
+          bedId: "bed-d1",
+          stayDate: AUG2,
+          memberId: "member-x",
+          name: ["Xena", "Xu"],
+        }),
+      ]);
+    db.bedAllocation.deleteMany.mockResolvedValue({ count: 1 });
+
+    const swept = await sweepUnbackedFutureSharedDoublesWithLocksHeld({
+      memberIds: ["member-m"],
+      lockedLodgeIds: [SWEEP_LODGE_ID],
+      reason: "members_merged",
+      db: db as any,
+    });
+
+    expect(db.bedAllocation.findMany).toHaveBeenCalledTimes(3);
+    expect(db.bedAllocation.deleteMany).toHaveBeenCalledWith({
+      where: { id: { in: ["alloc-own-2nd"] }, isSecondOccupant: true },
+    });
+    expect(swept).toHaveLength(1);
+    expect(swept[0]).toMatchObject({
+      allocationId: "alloc-own-2nd",
+      secondOccupantMemberId: "member-m",
+      primaryMemberId: "member-x",
+    });
+  });
+
+  it("treats a guest with no member on either side as unbacked without asking eligibility", async () => {
+    const db = makeSweepDb([]);
+    db.bedAllocation.findMany
+      .mockResolvedValueOnce([
+        allocationRow({
+          id: "alloc-nonmember-2nd",
+          bookingId: "booking-guest",
+          bookingGuestId: "guest-nonmember",
+          bedId: "bed-d1",
+          stayDate: AUG1,
+          memberId: null,
+          name: ["Non", "Member"],
+        }),
+      ])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([
+        allocationRow({
+          id: "alloc-primary",
+          bookingId: "booking-m",
+          bookingGuestId: "guest-m",
+          bedId: "bed-d1",
+          stayDate: AUG1,
+          memberId: "member-m",
+          name: ["Mo", "Mane"],
+        }),
+      ]);
+    db.bedAllocation.deleteMany.mockResolvedValue({ count: 1 });
+
+    const swept = await sweepUnbackedFutureSharedDoublesWithLocksHeld({
+      memberIds: ["member-m"],
+      lockedLodgeIds: [SWEEP_LODGE_ID],
+      reason: "members_merged",
+      db: db as any,
+    });
+
+    // No pair to ask about, so no eligibility round-trip is made at all.
+    expect(db.memberPartnerLink.findMany).not.toHaveBeenCalled();
+    expect(swept.map((row) => row.allocationId)).toEqual(["alloc-nonmember-2nd"]);
+  });
+
+  it("skips a candidate whose primary is missing (orphan) rather than guessing the pair", async () => {
+    const db = makeSweepDb([]);
+    db.bedAllocation.findMany
+      .mockResolvedValueOnce([
+        allocationRow({
+          id: "alloc-orphan",
+          bookingId: "booking-p",
+          bookingGuestId: "guest-p",
+          bedId: "bed-d1",
+          stayDate: AUG1,
+          memberId: "member-p",
+        }),
+      ])
+      .mockResolvedValueOnce([])
+      // No primary row on that bed-night: the #1743/#1750 promotion pass owns it.
+      .mockResolvedValueOnce([]);
+
+    const swept = await sweepUnbackedFutureSharedDoublesWithLocksHeld({
+      memberIds: ["member-m"],
+      lockedLodgeIds: [SWEEP_LODGE_ID],
+      reason: "members_merged",
+      db: db as any,
+    });
+
+    expect(swept).toEqual([]);
+    expect(db.bedAllocation.deleteMany).not.toHaveBeenCalled();
+    expect(db.auditLog.create).not.toHaveBeenCalled();
+  });
+
+  it("is a safe no-op on an empty scope and idempotent on a second pass", async () => {
+    const db = makeSweepDb([]);
+
+    const emptyScope = await sweepUnbackedFutureSharedDoublesWithLocksHeld({
+      memberIds: [],
+      lockedLodgeIds: [SWEEP_LODGE_ID],
+      reason: "members_merged",
+      db: db as any,
+    });
+    expect(emptyScope).toEqual([]);
+    expect(db.bedAllocation.findMany).not.toHaveBeenCalled();
+
+    const first = await sweepUnbackedFutureSharedDoublesWithLocksHeld({
+      memberIds: ["member-m"],
+      lockedLodgeIds: [SWEEP_LODGE_ID],
+      reason: "members_merged",
+      db: db as any,
+    });
+    const second = await sweepUnbackedFutureSharedDoublesWithLocksHeld({
+      memberIds: ["member-m"],
+      lockedLodgeIds: [SWEEP_LODGE_ID],
+      reason: "members_merged",
+      db: db as any,
+    });
+
+    expect(first).toEqual([]);
+    expect(second).toEqual([]);
+    expect(db.bedAllocation.deleteMany).not.toHaveBeenCalled();
+    expect(db.auditLog.create).not.toHaveBeenCalled();
+  });
+
+  it("keeps the #1756 reasons on their own audit issue number", async () => {
+    expect(describePartnerSharedSweepReason("members_merged")).toBe(
+      "Members merged with no confirmed partnership",
+    );
+    expect(describePartnerSharedSweepReason("partner_link_dissolved")).toBe(
+      "Partner link dissolved",
+    );
+  });
+
+  /**
+   * The safety net for dropping merge's global cohort key: the sweep serialises
+   * against the bed-allocation writers ONLY through the per-lodge capacity keys
+   * the caller holds, so a candidate row outside that set must roll the merge
+   * back — never be deleted under no lock. Reachable only if a lodge appeared
+   * for one of these members after the prefix derived its set.
+   */
+  it("refuses without writing when a candidate sits in an unlocked lodge", async () => {
+    const db = makeSweepDb([]);
+    db.bedAllocation.findMany
+      .mockResolvedValueOnce([
+        allocationRow({
+          id: "alloc-elsewhere",
+          bookingId: "booking-p",
+          bookingGuestId: "guest-p",
+          bedId: "bed-far",
+          stayDate: AUG1,
+          memberId: "member-p",
+          lodgeId: "lodge-appeared-late",
+        }),
+      ])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([]);
+
+    await expect(
+      sweepUnbackedFutureSharedDoublesWithLocksHeld({
+        memberIds: ["member-m"],
+        lockedLodgeIds: [SWEEP_LODGE_ID],
+        reason: "members_merged",
+        db: db as any,
+      }),
+    ).rejects.toThrow(/unlocked lodge\(s\): lodge-appeared-late/);
+
+    // Refused BEFORE any eligibility read, delete or audit.
+    expect(db.memberPartnerLink.findMany).not.toHaveBeenCalled();
+    expect(db.bedAllocation.deleteMany).not.toHaveBeenCalled();
+    expect(db.auditLog.create).not.toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Exclusive whole-lodge hold (ADR-001, #2285)
 //
 // A booking with `wholeLodgeHold: true` implicitly occupies EVERY bed, so the
@@ -3860,5 +4426,266 @@ describe("bed allocation member-guest consent exclusion (D-12, #2307)", () => {
     );
     expect(occupancyCall, "the planner's occupancy read should have run").toBeTruthy();
     expect(JSON.stringify(occupancyCall![0])).not.toContain("consentStatus");
+  });
+});
+
+/**
+ * Shared-double invariants on the LIFECYCLE APPLY path (#2656).
+ *
+ * The planner no longer drafts a plan that displaces one occupant of a shared
+ * double while the other stays. The apply path must still hold the invariants
+ * on its own, because it runs some way after the plan was read and, on the
+ * "already inside the caller's transaction" branch, takes no lock of its own —
+ * so an admin can add a second occupant to a bed-night between the read and the
+ * write. Every other removal path in the codebase promotes the survivor; this
+ * one did not.
+ */
+describe("shared double invariants on the apply path (#2656)", () => {
+  const HELD_GUEST = {
+    id: "hn-adult",
+    bookingId: "held-new",
+    ageTier: "ADULT",
+    stayStart: NIGHT,
+    stayEnd: NIGHT_END,
+    nights: [] as { stayDate: Date }[],
+  };
+
+  /**
+   * A reconcile in which the plan UNALLOCATEs `prov-g1` off bed-a2 so the held
+   * adult can claim it. `partner` is what the database reports as sitting on a
+   * bed-night as a SECOND occupant when the apply path looks — the state a
+   * concurrent admin partner placement leaves behind.
+   */
+  function displacementDb(options: {
+    displacedIsSecondOccupant?: boolean;
+    partner?: {
+      id: string;
+      bedId: string;
+      bookingId: string;
+      bookingGuestId: string;
+    } | null;
+    occupiedTargets?: Array<{ bedId: string; bookingGuestId: string }>;
+  }) {
+    const planned = [
+      existingAllocation({
+        bedId: "bed-a1",
+        roomId: "room-a",
+        bookingId: "held-existing",
+        bookingGuestId: "he-g1",
+        status: BookingStatus.PAID,
+      }),
+      existingAllocation({
+        bedId: "bed-a2",
+        roomId: "room-a",
+        bookingId: "prov-booking",
+        bookingGuestId: "prov-g1",
+        status: BookingStatus.PENDING,
+      }),
+    ];
+
+    const findMany = vi.fn(async (args: any) => {
+      // promoteOrphanedSecondOccupantsBatch's lookup.
+      if (args?.where?.isSecondOccupant === true) {
+        return options.partner
+          ? [
+              {
+                ...options.partner,
+                roomId: "room-a",
+                stayDate: NIGHT_UTC,
+                isSecondOccupant: true,
+              },
+            ]
+          : [];
+      }
+      // sweepAllocationsWithPromotion's "doomed primaries" capture, from the
+      // reconcile's own prune of the held booking's rows — a different
+      // mechanism, kept out of this fixture so the assertions below are about
+      // the displacement apply path alone.
+      if (args?.where?.isSecondOccupant === false) {
+        return [];
+      }
+      // The pre-write read of the rows the displacements are about to remove.
+      if (args?.select?.isSecondOccupant === true) {
+        return [
+          {
+            bookingGuestId: "prov-g1",
+            stayDate: NIGHT_UTC,
+            bedId: "bed-a2",
+            isSecondOccupant: options.displacedIsSecondOccupant === true,
+          },
+        ];
+      }
+      // The occupancy re-check immediately before the write: bed-night +
+      // occupant identity only, with none of the planner load's relations.
+      if (
+        args?.select?.bookingGuestId === true &&
+        args?.select?.bedId === true &&
+        args?.select?.booking === undefined
+      ) {
+        return (options.occupiedTargets ?? []).map((row) => ({
+          bedId: row.bedId,
+          stayDate: NIGHT_UTC,
+          bookingGuestId: row.bookingGuestId,
+        }));
+      }
+      // The planner's occupancy load.
+      return planned;
+    });
+
+    return makeDb({
+      bedAllocationSettings: {
+        findUnique: vi.fn().mockResolvedValue({ autoAllocationEnabled: true }),
+      },
+      lodgeRoom: {
+        findMany: vi.fn().mockResolvedValue([TWO_ROOMS_TWO_BEDS[0]]),
+      },
+      booking: {
+        findUnique: vi.fn().mockResolvedValue({
+          id: "held-new",
+          status: BookingStatus.PAID,
+          deletedAt: null,
+          checkIn: NIGHT,
+          checkOut: NIGHT_END,
+          guests: [HELD_GUEST],
+        }),
+        findMany: vi.fn().mockResolvedValue([
+          {
+            id: "held-new",
+            createdAt: new Date("2026-07-01T00:00:00.000Z"),
+            requestedRoomId: null,
+            status: BookingStatus.PAID,
+            originBookingRequest: null,
+            guests: [HELD_GUEST],
+          },
+        ]),
+      },
+      bedAllocation: {
+        deleteMany: vi.fn().mockResolvedValue({ count: 1 }),
+        findMany,
+        createMany: vi.fn().mockResolvedValue({ count: 1 }),
+        updateMany: vi.fn().mockResolvedValue({ count: 1 }),
+        update: vi.fn().mockResolvedValue({}),
+        delete: vi.fn().mockResolvedValue({}),
+      },
+    });
+  }
+
+  it("promotes the surviving second occupant when a displacement removes a shared double's primary", async () => {
+    const db = displacementDb({
+      partner: {
+        id: "alloc-partner",
+        bedId: "bed-a2",
+        bookingId: "partner-booking",
+        bookingGuestId: "partner-g1",
+      },
+    });
+
+    await reconcileBedAllocationsForBooking({
+      bookingId: "held-new",
+      db: db as any,
+    });
+
+    // The primary is gone...
+    expect(db.bedAllocation.deleteMany).toHaveBeenCalledWith({
+      where: { bookingGuestId: "prov-g1", stayDate: NIGHT_UTC },
+    });
+    // ...and the partner it would have stranded is promoted, on the same
+    // client, after the removal — never left as a dead-ended orphan.
+    expect(db.bedAllocation.updateMany).toHaveBeenCalledWith({
+      where: { id: { in: ["alloc-partner"] }, isSecondOccupant: true },
+      data: { isSecondOccupant: false },
+    });
+    const promotionAudits = db.auditLog.create.mock.calls.filter(
+      (call: any[]) => call[0]?.data?.action === "BED_ALLOCATION_PARTNER_PROMOTED",
+    );
+    expect(promotionAudits).toHaveLength(1);
+    // The promotion is audited against the PARTNER's own booking, which is not
+    // the booking whose displacement triggered it.
+    expect(promotionAudits[0][0].data.targetId).toBe("partner-booking");
+  });
+
+  it("promotes nothing when the displaced row was itself the SECOND occupant", async () => {
+    // Removing a second occupant leaves the primary in place: there is no
+    // orphan, and flipping anything here would collide with
+    // @@unique([bedId, stayDate, isSecondOccupant]).
+    const db = displacementDb({
+      displacedIsSecondOccupant: true,
+      partner: {
+        id: "alloc-partner",
+        bedId: "bed-a2",
+        bookingId: "partner-booking",
+        bookingGuestId: "partner-g1",
+      },
+    });
+
+    await reconcileBedAllocationsForBooking({
+      bookingId: "held-new",
+      db: db as any,
+    });
+
+    expect(db.bedAllocation.updateMany).not.toHaveBeenCalled();
+    for (const call of db.auditLog.create.mock.calls) {
+      expect(call[0]?.data?.action).not.toBe("BED_ALLOCATION_PARTNER_PROMOTED");
+    }
+  });
+
+  it("refuses to write a row onto a bed-night the database still shows as occupied", async () => {
+    // `createMany({ skipDuplicates: true })` is not a safety mechanism: against
+    // a surviving SECOND occupant there is no duplicate to skip, and the row
+    // would be created — an unrelated person in a double beside someone else's
+    // partner. The payload is filtered instead, on the writing client.
+    const db = displacementDb({
+      occupiedTargets: [{ bedId: "bed-a2", bookingGuestId: "stranger-g1" }],
+    });
+
+    const result = await reconcileBedAllocationsForBooking({
+      bookingId: "held-new",
+      db: db as any,
+    });
+
+    expect(db.bedAllocation.createMany).not.toHaveBeenCalled();
+    expect(result.createdCount).toBe(0);
+
+    // ...and NOTHING was displaced for that write (#2669 review F1). The filter
+    // runs BEFORE the displacements, so an emptied payload takes its
+    // displacements down with it. Applying them first would evict a real
+    // provisional booking, and audit it as displaced "so a capacity-holding
+    // booking could claim it", for a claim that then never happened — the exact
+    // state `justifiedDisplacements` exists to prevent.
+    for (const call of db.bedAllocation.deleteMany.mock.calls) {
+      expect(call[0]?.where?.bookingGuestId).toBeUndefined();
+    }
+    expect(db.bedAllocation.updateMany).not.toHaveBeenCalled();
+    for (const call of db.auditLog.create.mock.calls) {
+      expect(call[0]?.data?.action).not.toBe(
+        "bed_allocation.provisional_displaced",
+      );
+    }
+  });
+
+  it("still writes when the only occupant of the target bed-night is the row this apply just displaced", async () => {
+    // The paired control: the guard must not refuse the bed the plan itself
+    // freed, whatever read-your-own-writes semantics the caller's client has.
+    const db = displacementDb({
+      occupiedTargets: [{ bedId: "bed-a2", bookingGuestId: "prov-g1" }],
+    });
+
+    const result = await reconcileBedAllocationsForBooking({
+      bookingId: "held-new",
+      db: db as any,
+    });
+
+    const created = db.bedAllocation.createMany.mock.calls[0][0].data;
+    expect(created).toEqual([
+      {
+        bookingId: "held-new",
+        bookingGuestId: "hn-adult",
+        roomId: "room-a",
+        bedId: "bed-a2",
+        stayDate: NIGHT_UTC,
+        source: "AUTO",
+      },
+    ]);
+    expect(result.createdCount).toBe(1);
   });
 });

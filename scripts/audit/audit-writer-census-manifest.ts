@@ -97,7 +97,39 @@ export const AUDIT_CENSUS_TOTALS = {
    * #2352, #2623 and #2627, so the literals here come from running the census
    * after the merge rather than from adding the deltas up.)
    *
-   * 423 -> 424 (#2649): the admin repair for a stranded zero-dollar waitlist
+   * 421 -> 423 (#2595): the new `bed-allocation-move.ts` records the two things
+   * a reviewed move does — `BED_ALLOCATION_MOVE_APPLIED` for the move itself and
+   * `BED_ALLOCATION_PARTNERS_PROMOTED` for the partner rows it carries with it —
+   * each with the awaited `createAuditLog` inside the move's own transaction, so
+   * a rolled-back move records nothing. Both categorised `lodge` at the site, so
+   * neither joins `UNCATEGORISED_AUDIT_WRITERS` below.
+   *
+   * And the gate fired a THIRD time on the merge of #2637 into this branch.
+   * This branch measured 422 against a base holding #2623 and #2627 but not
+   * #2352's `PAGE_CONTENT_DELETED`; #2352 measured 421 against a base holding
+   * #2623 and #2627 but not the two move writes. Neither literal is the merged
+   * tree, and the two differed, so this one at least conflicted visibly rather
+   * than merging silently. Re-measured on the merged tree by RUNNING the census
+   * (`npx tsx scripts/audit/audit-writer-census.ts`), never by adding branch
+   * deltas: this figure and the ones below are what the tree reports.
+   *
+   * 423 -> 425 on the MERGE of #2621 into this branch, and this is the WORST
+   * shape the gate has caught yet — worse than the 420 collision above, because
+   * that one at least announced itself. #2595 measured 421 -> 423 against a base
+   * holding #2352/#2623/#2627 but not the arrival-time writers; #2621 measured
+   * 421 -> 423 against a base holding the same three but not the two move
+   * writes. Two different +2s, one identical literal: `423`. Git had no textual
+   * disagreement to report on the `writeSites` line at all, so it merged the
+   * VALUE silently and only these comments conflicted — and a merge that took
+   * either comment and kept the number would have shipped a pin two short with
+   * a green diff. The sub-figures below are what saved it: `logAudit` 239 -> 241
+   * and `createAuditLog` 102 -> 104 sit in different hunks and both survived the
+   * merge, so `bySink` already summed to 425 while the total still said 423.
+   * Re-measured on the merged tree by RUNNING the census, which reports 425.
+   * A byte-identical pin across two branches is not agreement; it is a
+   * collision that git cannot see.
+   *
+   * 425 -> 426 (#2649): the admin repair for a stranded zero-dollar waitlist
    * confirm writes `waitlist.returned_to_waitlist` with the awaited
    * `createAuditLog`, inside the claim's own transaction, because the row is the
    * other half of the `waitlist.confirm_offer_release_failed` trail #2648
@@ -105,24 +137,23 @@ export const AUDIT_CENSUS_TOTALS = {
    * are linked in both directions. Categorised `booking` at the site, so it does
    * not join `UNCATEGORISED_AUDIT_WRITERS` below.
    *
-   * THE GATE EARNED ITS KEEP A THIRD TIME HERE. This branch first pinned 422,
-   * measured against a base without #2621; #2621 reached main with 423. The two
-   * literals differed, so this one conflicted loudly rather than merging
-   * silently — but the honest number is neither, and it came from running
-   * `npm run audit:census` on the MERGED tree.
-   *
-   * AND A FOURTH TIME, ON THE ONE SHAPE THE TOTAL CANNOT SEE. The #2649 review
-   * moved #2648's `waitlist.confirm_offer_release_failed` write from `logAudit`
-   * to an awaited `createAuditLog` (see `bySink` below): that row is now the
-   * admin repair's ENTRY CONDITION, so it must not be lost to process teardown.
-   * `writeSites` did not move at all — 424 before and 424 after — because one
-   * sink lost a site and another gained one. A total-only pin would have merged
-   * that silently. The per-sink pins are what caught it, which is exactly why
-   * they exist. Re-measured by running `npm run audit:census` on the merged
-   * tree: 424 row-producing sites, `createAuditLog` 104, `logAudit` 240,
-   * `booking` 83, uncategorised 82.
+   * AND THE GATE FIRED AGAIN ON THIS MERGE, IN THE EXACT SHAPE THE PARAGRAPH
+   * ABOVE DESCRIBES — a second time in one window, on a different line. This
+   * branch pinned `createAuditLog: 104` (102 -> 103 for the repair route, 103 ->
+   * 104 for the `logAudit` conversion below); #2595 pinned `createAuditLog: 104`
+   * for its two reviewed-move writes. Two different +2s, one identical literal,
+   * so git had nothing textual to report on the `bySink.createAuditLog` line and
+   * merged the VALUE silently while only the comments above it collided. The
+   * merged tree holds all four writers, so the honest figure is 106 and neither
+   * side's literal was it. Nor was `writeSites` self-checking here: this branch's
+   * total moved 423 -> 424 (+1 net, because the `logAudit` conversion moves a
+   * site between sinks rather than adding one), main's moved 423 -> 425, and the
+   * merged truth is 426 — a number reachable from neither literal alone.
+   * Re-measured on the merged tree by RUNNING `npm run audit:census`, never by
+   * adding deltas: 426 row-producing sites, `logAudit` 240, `createAuditLog`
+   * 106, `booking` 83, uncategorised 82.
    */
-  writeSites: 424,
+  writeSites: 426,
   /** Of those, sites whose event object carries no `category` key. */
   uncategorised: 82,
   /** Per-sink totals, so a shift between forms cannot cancel out in the total. */
@@ -136,16 +167,19 @@ export const AUDIT_CENSUS_TOTALS = {
     // notification and wrong once a repair depended on it.
     logAudit: { total: 240, uncategorised: 69 },
     // 101 -> 102 (#2627): the deletion-approval release, above.
-    // 102 -> 103 (#2649): the return-to-waitlist repair, above.
-    // 103 -> 104 (#2649 review): `waitlist.confirm_offer_release_failed` in
+    // 102 -> 104 (#2595): the two reviewed-move writes, above.
+    // 104 -> 105 (#2649): the return-to-waitlist repair, above.
+    // 105 -> 106 (#2649 review): `waitlist.confirm_offer_release_failed` in
     // `waitlist-confirm/route.ts` converted from `logAudit` to an AWAITED
     // `createAuditLog` (still `.catch`-guarded, so a failed write logs and the
     // operator-door response is unchanged). The repair route refuses any booking
     // without an unresolved report — the free/`PAYMENT_PENDING`/no-payment shape
     // alone is reached by producers that were never on a waitlist — so a report
     // lost before it committed would leave a genuinely stranded member
-    // repairable only from a database session.
-    createAuditLog: { total: 104, uncategorised: 11 },
+    // repairable only from a database session. This is the line whose
+    // byte-identical collision with #2595 the `writeSites` note above describes:
+    // both sides said 104, the merged tree says 106.
+    createAuditLog: { total: 106, uncategorised: 11 },
     createStructuredAuditLog: { total: 8, uncategorised: 0 },
     // 71 -> 72 (#2352 MC-03D): the page-content deletion, above.
     "auditLog.create": { total: 72, uncategorised: 2 },
@@ -183,7 +217,12 @@ export const AUDIT_CENSUS_TOTALS = {
     // what the page-content create/update rows beside it already grant.
     admin: 118,
     security: 16,
-    lodge: 16,
+    // 16 -> 18 (#2595): the two reviewed-move writes, above. `lodge` is the
+    // category every other bed-allocation write already uses, and it is not one
+    // of the three (`admin`, `security`, `system`) readable with support:view
+    // alone — so the support-only population pinned below does not move, and no
+    // reader gains access it did not already have to the rows beside these.
+    lodge: 18,
     xero: 19,
     communication: 12,
     // 14 -> 15 (#2627): `member.deletion_approval_claim_released`. Still a

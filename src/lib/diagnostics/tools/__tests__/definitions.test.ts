@@ -52,12 +52,33 @@ describe("diagnostics tool definitions offered to the model (#2374, ADR-002 §2)
     (tool) => tool.requiredAreas.length > 1,
   ).map((tool) => tool.id);
 
-  it("offers the support-only tools to an admin holding support:view, and withholds the cross-area ones", () => {
+  /**
+   * Every registered tool a `support:view`-only administrator must NOT be offered.
+   *
+   * This used to be `CROSS_AREA_TOOL_IDS`, and that was only correct while every
+   * registered tool declared `support`. AID-6C (#2377) is the first pack whose
+   * entries declare a DOMAIN area alone — `finance:view`, with no `support` — which
+   * is exactly what #2375's owner decision requires of a domain pack, so the
+   * withheld set is now "everything that is not support-only" rather than "the
+   * multi-area ones". A support-only administrator is still offered nothing outside
+   * their own area either way; the old expression simply stopped enumerating it.
+   */
+  const NOT_SUPPORT_ONLY_TOOL_IDS = DIAGNOSTICS_TOOLS.filter(
+    (tool) => !SUPPORT_ONLY_TOOL_IDS.includes(tool.id),
+  ).map((tool) => tool.id);
+
+  /** Every registered tool whose declared areas are exactly `finance`. */
+  const FINANCE_ONLY_TOOL_IDS = DIAGNOSTICS_TOOLS.filter(
+    (tool) => tool.requiredAreas.length === 1 && tool.requiredAreas[0] === "finance",
+  ).map((tool) => tool.id);
+
+  it("offers the support-only tools to an admin holding support:view, and withholds everything else", () => {
     // AID-6A (#2375) is the first pack to register tools requiring MORE than
     // `support`: each domain correlation entry requires `support:view` AND the
     // affected domain's own area. So `support:view` alone must offer the system
     // evidence and the system correlation — and must NOT offer the booking,
-    // membership, finance or lodge correlations.
+    // membership, finance or lodge correlations, nor any of AID-6C's finance
+    // entries, which need `finance:view` instead.
     const support = matrix({ support: "view" });
     const offered = listDiagnosticsToolDefinitions(support).map(
       (definition) => definition.name,
@@ -67,7 +88,27 @@ describe("diagnostics tool definitions offered to the model (#2374, ADR-002 §2)
     expect(SUPPORT_ONLY_TOOL_IDS.length).toBeGreaterThan(1);
 
     expect(CROSS_AREA_TOOL_IDS.length).toBeGreaterThan(0);
-    expect(listWithheldDiagnosticsToolIds(support)).toEqual(CROSS_AREA_TOOL_IDS);
+    expect(listWithheldDiagnosticsToolIds(support)).toEqual(
+      NOT_SUPPORT_ONLY_TOOL_IDS,
+    );
+  });
+
+  it("offers the finance-only tools to an admin holding finance:view WITHOUT support:view", () => {
+    // #2377 acceptance criterion 1, at the courtesy layer: a Finance Officer must be
+    // able to investigate a payment without also holding a support permission. The
+    // executor's own check is pinned in the finance pack's permission-contract test;
+    // this pins that the model is OFFERED them, so the operator is not told the
+    // feature is unavailable when it is not.
+    const finance = matrix({ finance: "view" });
+    const offered = listDiagnosticsToolDefinitions(finance).map(
+      (definition) => definition.name,
+    );
+    expect(FINANCE_ONLY_TOOL_IDS.length).toBeGreaterThan(0);
+    expect(offered).toEqual(FINANCE_ONLY_TOOL_IDS);
+    // …and not the combined ones, which need a second area each.
+    expect(offered).not.toContain("diagnostics.booking_finance_state");
+    expect(offered).not.toContain("diagnostics.xero_contact_linkage");
+    expect(offered).not.toContain("diagnostics.finance_event_correlation");
   });
 
   it("offers them at `edit` too — `view` is a floor, not an exact level", () => {
@@ -110,9 +151,14 @@ describe("diagnostics tool definitions offered to the model (#2374, ADR-002 §2)
   });
 
   it("withholds every tool from an admin holding no relevant area", () => {
-    const finance = matrix({ finance: "edit" });
-    expect(listDiagnosticsToolDefinitions(finance)).toEqual([]);
-    expect(listWithheldDiagnosticsToolIds(finance)).toEqual(
+    // `lodge:edit` and nothing else. It was `finance:edit` until AID-6C (#2377)
+    // registered tools that `finance` alone satisfies — at which point the matrix
+    // stopped meaning "no relevant area" and the assertion would have been testing
+    // the opposite of its name. `lodge` is the remaining area no tool declares on
+    // its own: the lodge correlation entry needs `support:view` beside it.
+    const lodgeOnly = matrix({ lodge: "edit" });
+    expect(listDiagnosticsToolDefinitions(lodgeOnly)).toEqual([]);
+    expect(listWithheldDiagnosticsToolIds(lodgeOnly)).toEqual(
       DIAGNOSTICS_TOOLS.map((tool) => tool.id),
     );
   });
@@ -139,7 +185,9 @@ describe("diagnostics tool definitions offered to the model (#2374, ADR-002 §2)
     // when handed that matrix by the (stubbed) fresh reader. A filter that widened
     // relative to the authorizer — or an authorizer that widened relative to the
     // filter — fails this test.
-    const withholding = matrix({ finance: "edit" });
+    // `lodge:edit`, for the reason recorded above: no registered tool declares
+    // `lodge` alone, so this matrix really does withhold everything.
+    const withholding = matrix({ lodge: "edit" });
     vi.mocked(readFreshAdminPermissionMatrix).mockResolvedValue({
       ok: true,
       matrix: withholding,

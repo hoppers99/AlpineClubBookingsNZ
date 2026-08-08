@@ -117,6 +117,10 @@ const EXPECTED_ROUTE_AREAS: Record<string, AdminPermissionArea> = {
   "/api/admin/bed-allocation": "bookings",
   "/api/admin/bed-allocation/allocations": "bookings",
   "/api/admin/bed-allocation/allocations/bulk": "bookings",
+  // #2595's reviewed-move preview. `bookings` like every other allocation
+  // route: it reads the board's own rows and returns an authoritative preview,
+  // and the apply half stays on the plural `allocations` route above.
+  "/api/admin/bed-allocation/allocations/move": "bookings",
   "/api/admin/bed-allocation/allocations/range": "bookings",
   "/api/admin/bed-allocation/allocations/removal": "bookings",
   "/api/admin/bed-allocation/approve": "bookings",

@@ -87,6 +87,12 @@ admission, AND across cross-area tools, fail-closed) in
 | Booking & bed-allocation tools (AID-6B, #2376) | `bookings:view` |
 | Membership & induction tools (AID-6B, #2376) | `membership:view` |
 | Finance & Xero-linkage tools (AID-6C, #2377) | `finance:view` |
+| Member↔Xero contact linkage (AID-6C, #2377) | `finance:view` **and** `membership:view` |
+| Authoritative booking-finance state (AID-6C, #2377) | `finance:view` **and** `bookings:view` |
+
+AID-6C is delivered: see [tool-pack-finance.md](tool-pack-finance.md) for its ten
+entries, the twelve relation grants they argue for, and the finance questions this
+platform stores no evidence to answer.
 
 ## Architecture decision records
 

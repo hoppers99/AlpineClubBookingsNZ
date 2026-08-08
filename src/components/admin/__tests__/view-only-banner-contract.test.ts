@@ -322,7 +322,7 @@ const NOTICE = "AdminViewOnlyNotice";
 */
 const FIGURES = {
   /** Every `<ViewOnlyActionButton>` render site in the admin tree. */
-  callSites: 314,
+  callSites: 315,
   /** Those that hand their explanation to a banner, by either rule. */
   optOuts: 264,
   /** `describeReason={false}` — needs a banner in the SAME file. */
@@ -334,8 +334,8 @@ const FIGURES = {
   /** …of the vouched: proved through the wizard shell's channel (#2324). */
   shellVouchedOptOuts: 5,
   /** Controls that KEEP the per-button reason, and the files holding them. */
-  exceptions: 50,
-  exceptionFiles: 27,
+  exceptions: 51,
+  exceptionFiles: 28,
   /** The remainder bucket: neither a member detail card nor dialog-only. */
   leafControls: 37,
   leafFiles: 22,
@@ -1308,6 +1308,68 @@ describe("view-only section banner coverage (#2160)", () => {
                `vitest run view-only-banner-contract` and set to what the tree
                reports: 313 / 264 / 237. #2641 will measure 314 / 265 / 238 when
                it lands, and it must MEASURE that rather than read it here.
+          314  +1  #2595 adds the bed-allocation **Move** control to the
+               allocation board's row menu. It is an EXCEPTION, not an opt-out:
+               it keeps its own per-button reason because the menu it sits in is
+               popover content with no banner above it, which is the same
+               treatment every other control in that menu already has. So
+               callSites 313 -> 314 and exceptions 49 -> 50 across 26 -> 27
+               files, while optOuts and staticOptOuts do not move at all — the
+               one entry in this ledger where the opt-out figures stay still.
+
+               And that is where the entry above guessed wrong, which is the
+               ledger's own rule proving itself a third time. #2637 predicted
+               "#2641 will measure 314 / 265 / 238" by assuming every new
+               control is an opt-out under a banner. This one is not: it sits in
+               popover content, so it lands in the EXCEPTIONS bucket and the two
+               opt-out figures do not move. Measured on the merged tree with
+               `npx vitest run view-only-banner-contract`, the tree reports
+               314 / 264 / 237 — one more call site than 313, and the same
+               opt-out figures #2637 left behind. READ NOTHING FROM THIS
+               COLUMN; run the suite.
+
+               (The earlier hazard fired here too, in the other direction:
+               against its own base this branch measured `callSites: 312`, the
+               same literal #2637 wrote, so git merged the FIGURES value
+               silently and only this prose collided — exactly the shape the
+               entry above describes.)
+
+          314      Re-measured a second time after merging main at d8041b601
+               (#2352 ISR, #2621 arrival-time, #2654 requested-room Save). None
+               of those three adds a `<ViewOnlyActionButton>` render site, so
+               the tree still reports 314 / 264 / 237, exceptions 50 across 27
+               files, and this block is unchanged. Recorded anyway, because
+               "the figures did not move" is only worth anything when somebody
+               RAN the suite to find that out — the sibling audit-writer census
+               merged silently two short in this very same merge, off a
+               byte-identical literal, and the only reason that was caught is
+               that its per-sink figures were measured rather than assumed.
+
+          315  +1  #2649 adds **Return to waitlist** — the repair for a free
+               waitlist confirm stranded in `PAYMENT_PENDING`
+               (`admin-return-to-waitlist-controls.tsx`) — to the Admin tools
+               card. Like the `No emails` switch and the capacity/exclusive hold
+               controls it sits beside, it is a LEAF dropped into someone else's
+               layout with nothing local proving a banner renders above it, so
+               it keeps its own per-button reason: an EXCEPTION, not an opt-out.
+               leafControls 36 -> 37 across 21 -> 22 files, exceptions 50 -> 51
+               across 27 -> 28 files, and optOuts/staticOptOuts do not move.
+
+               AND THE COLLISION THIS LEDGER EXISTS FOR FIRED A THIRD TIME, on
+               three lines at once. #2595 (the `314 +1` entry above) and this
+               branch each measured `313 -> 314` against a base without the
+               other, and each wrote `callSites: 314`, `exceptions: 50`,
+               `exceptionFiles: 27` — byte-identical on all three, so git had no
+               textual disagreement to report and merged the VALUES silently
+               while only this prose collided. The merged tree holds BOTH new
+               controls, so the honest figures are 315 / 51 / 28 and neither
+               side's literals were them. The two that did NOT collide are what
+               makes the shape legible: `leafControls`/`leafFiles` moved on this
+               side only (#2595's control is popover content, mine is a leaf), so
+               they merged correctly to 37/22 — and 10 dialog + 37 leaf + 4
+               member-credit-card reconciles to 51, not 50. Re-measured with
+               `npx vitest run view-only-banner-contract`, which reports
+               315 / 264 / 237. READ NOTHING FROM THIS COLUMN; run the suite.
 
       */
       // #2259 adds the per-booking "No emails"
@@ -1359,6 +1421,7 @@ describe("view-only section banner coverage (#2160)", () => {
       "app/(admin)/admin/issue-reports/page.tsx",
       "app/(admin)/admin/member-applications/_components/approval-mapping-panel.tsx",
       "app/(admin)/admin/membership-types/page.tsx",
+      "components/admin/bed-allocation-move-dialog.tsx",
     ];
 
     const bucket = (names: string[]) =>
@@ -1388,7 +1451,7 @@ describe("view-only section banner coverage (#2160)", () => {
       // the wrong permission — and an admin with membership edit but finance
       // view-only would get no banner at all.
       memberDetailCards: { controls: 4, files: 1 },
-      separateA11yContainer: { controls: 9, files: 4 },
+      separateA11yContainer: { controls: 10, files: 5 },
       // +1 control / +1 file vs 20/11: the #2259 "No emails" switch; then
       // +4 controls / +1 file: the four #2249 display-wizard step controls,
       // which the shell's render-callback indirection put out of reach of both

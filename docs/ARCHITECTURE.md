@@ -752,7 +752,7 @@ Use these ownership boundaries when adding new code:
 | Route-private page UI | `src/app/(admin)/admin/xero/_components`, `src/app/(admin)/admin/xero/_hooks`, `src/app/(admin)/admin/members/**/_components`, `src/app/(admin)/admin/members/**/_hooks`, `src/app/(authenticated)/book/_components` | Large routes should be route shells plus local components/hooks before moving anything to shared UI. |
 | Shared UI | `src/components/` | Reusable view pieces live here; route-specific view state can stay beside the page until it is reused. |
 | Booking lifecycle | `src/lib/booking-create.ts`, `src/lib/booking-create-types.ts`, `src/lib/booking-create-promo.ts`, `src/lib/booking-create-guests.ts`, `src/lib/booking-modify.ts` (barrel over `booking-modify-validation` / `booking-modify-plan` / `booking-modify-settlement`), `src/lib/booking-payment-cleanup.ts`, `src/lib/payment-recovery.ts` | Keep route handlers thin; booking orchestration and durable payment recovery live behind these services. |
-| Bed allocation | `src/lib/bed-allocation.ts`, `src/lib/bed-allocation-lifecycle.ts`, `src/lib/admin-bed-allocation.ts`, `src/lib/bed-allocation-removal.ts` | Room/bed inventory, family-aware allocation planning, lifecycle reconciliation, manual admin allocation, reviewed removal, and approval state live behind focused services. Each `LodgeBed` carries a descriptive **bed type** (`SINGLE` / `BUNK_TOP` / `BUNK_BOTTOM` / `DOUBLE`) and an optional `bunkGroup` label; a group holds at most two beds — one top and one bottom — enforced in `admin-bed-allocation.ts` (serialised by a room-row lock, no partial index) and shown as an icon on the setup list and allocation board (#1675). Bed type is mostly descriptive, with one capacity exception (#1701): a **DOUBLE** bed may hold **two** occupants for a night when they are declared partners (two `ADULT` members holding a **CONFIRMED** `MemberPartnerLink` (#1742/#1744), the single-source `mayShareDoubleBed()` rule in `double-bed-sharing.ts`), added by an admin on the board onto a bed whose primary already holds capacity. Every other bed type stays one person per night. The bed-night uniqueness is `@@unique([bedId, stayDate, isSecondOccupant])` (≤1 primary + ≤1 second occupant) plus a raw-SQL partial unique index capping non-DOUBLE beds at exactly one (`WHERE "bedType" <> 'DOUBLE'`, in `prisma/partial-unique-indexes.tsv`); `BedAllocation.bedType` is a denormalized copy the partial index reads. The **base** capacity figure is unchanged — a shared double is still **one bed** of `activeBedCount` and each occupant is a full person-night — but each active DOUBLE adds one reserved, bounded **partner-shared admission slot** above it (#1745: `getLodgePartnerSharedCapacityStatus` + `checkCapacityForPartnerSharedAdmission`, admin-initiated only, never visible to public availability; see docs/CAPACITY_MODEL.md); auto-allocation never creates a second occupant. Beds may be pre-assigned on provisional statuses (`BED_ALLOCATABLE_BOOKING_STATUSES`) before a booking holds capacity, so the admin board tags each bed **Held** vs **Provisional** (#1251). The state is a server-computed flag from `bookingHoldsCapacity` (booking-status.ts) — not a per-row status check — because holding is no longer purely status-based: an accepted-but-unpaid quote is `PENDING` but holds (#1254). In the AUTOMATIC on-payment/confirmation reconcile (`bed-allocation-lifecycle.ts` → the planner's `prioritizeCapacityHolding` mode), **capacity-holding bookings get first claim**: they are allocated before provisional ones, and a held booking blocked only by a **Provisional** allocation moves that provisional aside (to a free bed) — or, if the night is otherwise full, unallocates it back to the awaiting-allocation queue — then takes the freed bed. A **Held** or admin-**approved** (#776 lock) allocation is never displaced, and displacement never strands a same-booking minor; each displacement is applied atomically and writes a `lodge` audit row on the displaced provisional booking (#1387). The planner enforces the cross-booking age-mix invariant on every placement path (#1768): a room-night holding one booking's minors never also holds another booking's adult (in either direction), minors may fill rooms of their own once the booking has an adult on-site that night (the adult count no longer caps the rooms a large group fills), a SCHOOL-request booking rooms its adults together and its students separately (`isSchoolGroup`), and persisted violations surface as `MINOR_ADULT_MIX` board warnings. That automatic reconcile auto-places **only the reconciled booking's own** guests on its current nights (#1686): editing, confirming, promoting, or cancelling one booking never opportunistically drafts *other* bookings' guests into idle or freed beds — a cancellation's freed beds stay in the awaiting-allocation queue rather than being auto-refilled. It still loads lodge-wide occupancy so it can seat that booking whole-stay and displace blocking provisionals to seat a held booking (#1387/#1677); opportunistic lodge-wide re-planning of *everyone* is exclusively the explicit board action below. The manual board **Run auto-allocation** button (`runAutoBedAllocation`) runs pure first-fit and does NOT displace — only the automatic reconcile does. One further occupancy class has **no `BedAllocation` row at all** (#2286): a `HutLeaderAssignment` carrying a `bedId` is a **custodian bed hold**, which takes that bed out of both the bookable and the allocatable pool for every night from `startDate` to `endDate` *inclusive*, with no `Booking`, no `BookingGuest` and no allocation row anywhere (`src/lib/custodian-occupancy.ts` read side, `src/lib/custodian-assignment.ts` write side). It is counted as an **occupant** rather than as a smaller lodge, so `occupiedBeds + availableBeds === lodgeCapacity` still holds; it is fed to the planner as a #1768 blocking, never-evictable unknown occupant; and because nothing in the database enforces it, every placing write re-reads the live holds on its own client immediately before writing, inside the per-lodge advisory lock where it owns the transaction. `custodian-write-path-contract.test.ts` scans the whole `src/` tree and fails CI when a `bedAllocation.create*` site appears undeclared. See docs/CAPACITY_MODEL.md and DOMAIN_INVARIANTS.md. |
+| Bed allocation | `src/lib/bed-allocation.ts`, `src/lib/bed-allocation-lifecycle.ts`, `src/lib/admin-bed-allocation.ts`, `src/lib/bed-allocation-removal.ts` | Room/bed inventory, family-aware allocation planning, lifecycle reconciliation, manual admin allocation, reviewed removal, and approval state live behind focused services. Each `LodgeBed` carries a descriptive **bed type** (`SINGLE` / `BUNK_TOP` / `BUNK_BOTTOM` / `DOUBLE`) and an optional `bunkGroup` label; a group holds at most two beds — one top and one bottom — enforced in `admin-bed-allocation.ts` (serialised by a room-row lock, no partial index) and shown as an icon on the setup list and allocation board (#1675). Bed type is mostly descriptive, with one capacity exception (#1701): a **DOUBLE** bed may hold **two** occupants for a night when they are declared partners (two `ADULT` members holding a **CONFIRMED** `MemberPartnerLink` (#1742/#1744), the single-source `mayShareDoubleBed()` rule in `double-bed-sharing.ts`), added by an admin on the board onto a bed whose primary already holds capacity. Every other bed type stays one person per night. The bed-night uniqueness is `@@unique([bedId, stayDate, isSecondOccupant])` (≤1 primary + ≤1 second occupant) plus a raw-SQL partial unique index capping non-DOUBLE beds at exactly one (`WHERE "bedType" <> 'DOUBLE'`, in `prisma/partial-unique-indexes.tsv`); `BedAllocation.bedType` is a denormalized copy the partial index reads. The **base** capacity figure is unchanged — a shared double is still **one bed** of `activeBedCount` and each occupant is a full person-night — but each active DOUBLE adds one reserved, bounded **partner-shared admission slot** above it (#1745: `getLodgePartnerSharedCapacityStatus` + `checkCapacityForPartnerSharedAdmission`, admin-initiated only, never visible to public availability; see docs/CAPACITY_MODEL.md); auto-allocation never creates a second occupant. Beds may be pre-assigned on provisional statuses (`BED_ALLOCATABLE_BOOKING_STATUSES`) before a booking holds capacity, so the admin board tags each bed **Held** vs **Provisional** (#1251). The state is a server-computed flag from `bookingHoldsCapacity` (booking-status.ts) — not a per-row status check — because holding is no longer purely status-based: an accepted-but-unpaid quote is `PENDING` but holds (#1254). In the AUTOMATIC on-payment/confirmation reconcile (`bed-allocation-lifecycle.ts` → the planner's `prioritizeCapacityHolding` mode), **capacity-holding bookings get first claim**: they are allocated before provisional ones, and a held booking blocked only by a **Provisional** allocation moves that provisional aside (to a free bed) — or, if the night is otherwise full, unallocates it back to the awaiting-allocation queue — then takes the freed bed. A **Held** or admin-**approved** (#776 lock) allocation is never displaced, and displacement never strands a same-booking minor; each displacement is applied atomically and writes a `lodge` audit row on the displaced provisional booking (#1387). The planner keeps bed-night **capacity** (`bedId:stayDate` — is this bed taken?) separate from occupant **identity** (`bedId:stayDate:bookingGuestId` — who is in it?), because a shared DOUBLE holds two occupant rows on one bed-night, possibly from two different bookings (#2656): an eviction releases the physical bed-night only when no occupant remains, displacement credit is counted in beds actually freed rather than rows or bookings displaced, a bed-night whose occupants span two bookings is never a *single-bed* displacement target (the whole-stay room path instead makes every occupant a candidate and gains the bed only once ALL of them are being evicted — so both bookings on a shared double go together or the room is not chosen; see docs/CAPACITY_MODEL.md rule 3), and the apply path promotes any second occupant its displacements orphan and refuses to write onto a bed-night the database still shows as occupied rather than relying on `skipDuplicates`. The planner enforces the cross-booking age-mix invariant on every placement path (#1768): a room-night holding one booking's minors never also holds another booking's adult (in either direction), minors may fill rooms of their own once the booking has an adult on-site that night (the adult count no longer caps the rooms a large group fills), a SCHOOL-request booking rooms its adults together and its students separately (`isSchoolGroup`), and persisted violations surface as `MINOR_ADULT_MIX` board warnings. That automatic reconcile auto-places **only the reconciled booking's own** guests on its current nights (#1686): editing, confirming, promoting, or cancelling one booking never opportunistically drafts *other* bookings' guests into idle or freed beds — a cancellation's freed beds stay in the awaiting-allocation queue rather than being auto-refilled. It still loads lodge-wide occupancy so it can seat that booking whole-stay and displace blocking provisionals to seat a held booking (#1387/#1677); opportunistic lodge-wide re-planning of *everyone* is exclusively the explicit board action below. The manual board **Run auto-allocation** button (`runAutoBedAllocation`) runs pure first-fit and does NOT displace — only the automatic reconcile does. One further occupancy class has **no `BedAllocation` row at all** (#2286): a `HutLeaderAssignment` carrying a `bedId` is a **custodian bed hold**, which takes that bed out of both the bookable and the allocatable pool for every night from `startDate` to `endDate` *inclusive*, with no `Booking`, no `BookingGuest` and no allocation row anywhere (`src/lib/custodian-occupancy.ts` read side, `src/lib/custodian-assignment.ts` write side). It is counted as an **occupant** rather than as a smaller lodge, so `occupiedBeds + availableBeds === lodgeCapacity` still holds; it is fed to the planner as a #1768 blocking, never-evictable unknown occupant; and because nothing in the database enforces it, every placing write re-reads the live holds on its own client immediately before writing, inside the per-lodge advisory lock where it owns the transaction. `custodian-write-path-contract.test.ts` scans the whole `src/` tree and fails CI when a `bedAllocation.create*` site appears undeclared. See docs/CAPACITY_MODEL.md and DOMAIN_INVARIANTS.md. |
 | Member-guest consent | `src/lib/member-guest-consent.ts`, `src/lib/member-guest-settings.ts`, `src/lib/booking-guests.ts` | Adding another club member as a guest ("+ Add Member Guest", epic #2305). `member-guest-consent.ts` is the pure model: the named widening predicate `MEMBER_GUEST_WIDENING_ENABLED`, the `FAMILY` / `BEYOND_FAMILY` boundary types, and the eight-shape consent sub-state table with its classifier. `booking-guests.ts` computes each prospective guest's boundary scope on **every** path — the admin `skipAuthorization` paths included — so no caller can end up persisting a consent-free cross-family row by default. Policy lives in the `MemberGuestSettings` singleton (`member-guest-settings.ts`, lazily created, read through the shared defaults in `src/config/club-settings-defaults.ts`) alongside the other club-settings singletons; its two open-search privacy toggles are excluded from config transfer. **The feature is live behind the `memberGuests` module** (MG2 #2307 turned MG1's dark constant into the per-club flag; MG3 #2308 added the finder; MG4 #2309 covered the edit path, admin parity and the booking-request pipeline). With the module off — the shipped default — a cross-family add is refused with the byte-for-byte pre-existing error and nothing writes a non-null `BookingGuest.consentStatus`, so a club that never opts in sees no change. Every persisting path plans its consent columns through the single writer in `member-guest-consent.ts` by way of `member-guest-add-policy.ts`, and every one of them dispatches its notifications AFTER the transaction commits. |
 | Policy rules | `src/lib/policies/` | Pricing, age-tier, cancellation, change-fee, minimum-stay, member-credit, and booking-route decisions live as testable policy helpers. |
 | Operational Xero | `src/lib/xero-*.ts`, `src/lib/xero.ts` | `src/lib/xero.ts` is a compatibility facade. New code should import from the focused module that owns the behavior, not from the facade. |
@@ -841,6 +841,46 @@ The board chip/pool drop, board **Reset allocations…**, and booking-detail
 **Remove** action all open the shared
 `src/components/admin/bed-allocation-removal-dialog.tsx`; none keeps an
 optimistic or per-night delete path.
+
+### Reviewed bed-allocation moves
+
+`src/lib/bed-allocation-move.ts` owns the #2595 move contract. Read-only
+`POST /api/admin/bed-allocation/allocations/move` requires `bookings:view` and
+returns an authoritative preview. `PATCH
+/api/admin/bed-allocation/allocations` accepts an exclusive union: the reviewed
+shape carries `anchorAllocationId`, `destinationBedId`, `scope`, and
+`previewDigest`; the unchanged legacy `{ allocationIds, bedId }` path remains
+available to older callers and remains capped at the 31-night board window.
+Reviewed apply requires `bookings:edit`.
+
+The reviewed scopes are exactly one existing allocation night or every
+existing row for the same booking guest (up to 366), including sparse and
+off-screen rows. They never create a missing guest-night or allocation. The
+preview separates changed and unchanged rows, shows approval-to-draft and
+shared-double promotion consequences, and reports every hard refusal without
+exposing counterpart guest identities. Its `v1:<sha256>` digest binds the
+scope, anchor, destination, complete selected and relevant occupant sets,
+exact guest nights, booking and consent state, active/member age facts,
+confirmed partner links, custodian and whole-lodge holds, promotions, and the
+derived conflict result.
+
+Apply takes global -> complete sorted lodge union -> sorted member-lifecycle ->
+sorted member-partner-link -> deterministic allocation-row locks, then rebuilds
+and compares that preview. It uses guarded updates and one transaction for
+every move, shared-double promotion, and bounded aggregate audit. Changed rows
+are applied by one guarded `UPDATE ... FROM (VALUES ...)` statement under an
+explicit 30-second transaction/10-second acquisition budget, and become
+unapproved `MANUAL` drafts while unchanged rows remain byte-for-byte
+untouched. An all-noop confirmation is successful and audit-free. Drift returns
+a refreshed 409 preview and requires a second confirmation; no planner runs.
+
+Every drag/drop destination and chip **Move to bed** item opens
+`src/components/admin/bed-allocation-move-dialog.tsx`. That is the only board
+move write seam: there is no optimistic or direct typed move. One pointer or
+keyboard interaction opens one dialog, the current bed remains selectable for
+person-scope consolidation/noop review, and closing or succeeding restores
+focus to the originating chip/menu control. The in-booking allocation panel
+does not expose these move scopes.
 
 The largest current files are historical consolidation points rather than a
 preferred style. When changing them, extract focused helpers around the code
@@ -937,7 +977,7 @@ tree** (#2160, extended by #2168 and #2324) — not a claim that nothing is left
 Measured
 on the current tree by `view-only-banner-contract.test.ts`, which asserts these
 figures rather than trusting a hand count: **84 components render a banner, and
-264 of the 314 `ViewOnlyActionButton` call sites opt out** of the per-button
+264 of the 315 `ViewOnlyActionButton` call sites opt out** of the per-button
 reason. (Earlier revisions of this page published 76/232/264/211 — those were
 upstream-historical and had drifted; the numbers here are the ones the contract
 test currently pins, which is the only authority.) Those 264 split by WHICH rule
@@ -947,13 +987,14 @@ pass `describeReason={!ancestorRendersViewOnlyBanner}` and are covered by a
 verified vouching parent — 22 by a parent's own JSX render site (#2168), 5 by the
 guided-setup shell (#2324); see *Vouching for a child's coverage* and *Vouching
 through the wizard shell* below. The
-remaining **50 controls across 27 files deliberately keep the per-button
+remaining **51 controls across 28 files deliberately keep the per-button
 default** (`describeReason` left at `true`), in three shapes:
 
 - **Controls inside a dialog, sheet, popover, or dropdown menu.** These live in
   a separate accessibility container — focus is trapped and the page behind is
   commonly inert — so a banner rendered in the page body does not reach them.
-  (9 controls across 4 files, which the test enumerates by name; three further
+  (10 controls across 5 files, including the confirmed bed-allocation move
+  dialog, which the test enumerates by name; three further
   controls of this shape live in files counted under the next bucket, see
   there.)
 - **Leaf components with no section of their own**, which a parent drops into
@@ -980,9 +1021,9 @@ default** (`describeReason` left at `true`), in three shapes:
   Payments page with no banner of its own. Read that
   bucket as the
   REMAINDER — everything that is neither a member detail card nor one of the
-  four dialog-only files — rather than as a claim that all 34 are leaves. Twelve
-  of the twenty files are (22 controls); six are the wizard step files just
-  described (9 controls); and the last two, `page-content-panel.tsx`
+  five dialog-only files — rather than as a claim that all 36 are leaves.
+  Thirteen of the twenty-one files are (24 controls); six are the wizard step
+  files just described (9 controls); and the last two, `page-content-panel.tsx`
   and `site-banners-panel.tsx`, are full banner-bearing panels whose last 3
   controls sit inside their own edit/create `Dialog`, so those 3 are really the
   first shape occurring inside a file that also has the third. Nothing is
@@ -1793,15 +1834,17 @@ same-owner cover, a separate urgent incident opens without changing
    explicit admin "Run auto-allocation" board action. Admins can also manually
    move, approve, or reviewed-remove allocations. Reviewed removal never invokes
    either planner, so its freed nights remain in the awaiting-allocation pool.
-   Existing-chip moves are bed-only operations: `PATCH
-   /api/admin/bed-allocation/allocations` carries allocation ids and the
-   destination bed, never a target date. The service takes global booking
-   `lock(1)` first and the destination-lodge capacity lock second, re-reads each
-   source row and its original NZ lodge night under both, then commits all
-   selected row moves, shared-double partner promotions and audit rows in one
-   transaction. Sharing cancellation's global key prevents a move from
-   resurrecting an allocation after cancellation pruned it. A conflict rolls a
-   grouped move back wholesale; bucket-to-board bulk placement retains its
+   Existing-chip moves are bed-only operations: the reviewed request carries an
+   anchor allocation, destination bed, night-or-person scope, and preview digest,
+   never a target date. Person scope resolves every existing row for that guest
+   on the booking, including sparse and off-screen nights, but creates none. The
+   service takes global booking `lock(1)` first, then the complete sorted lodge,
+   member-lifecycle, member-partner-link and allocation-row tiers before its
+   authoritative re-read. It commits all changed rows, shared-double partner
+   promotions and audit rows in one transaction; unchanged rows are digest-bound
+   noops. Sharing cancellation's global key prevents a move from resurrecting an
+   allocation after cancellation pruned it. A stale preview or conflict rolls a
+   reviewed move back wholesale; bucket-to-board bulk placement retains its
    separate per-night partial-conflict contract.
 
 In-progress member self-service edits are limited to future unused nights from

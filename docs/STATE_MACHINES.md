@@ -1659,26 +1659,33 @@ the reconcile range (`min(checkIn) .. max(checkOut)` union the range) so the
 planner sees whole stays, while the set of bookings planned stays restricted
 to those overlapping the original range (no cascade).
 
-On the admin allocation board, dragging or menu-moving the first visible
-allocated night for a guest reassigns that guest's visible allocated nights to
-the target bed while preserving each date-only lodge night. The hovered date
-column never changes an existing allocation's night: pointer preview and
-keyboard announcement name the destination bed plus the snapped original
-night(s). Later-night moves remain single-night adjustments, same-bed drops are
-no-ops with no request or audit, and cancel sends no request.
+On the admin allocation board, every existing-chip drag/drop and nested
+**Move to bed** choice opens one reviewed move dialog. The hovered date column
+never changes an existing allocation's night. Pointer and keyboard interactions
+name the destination and original night, then stop at confirmation; cancel sends
+no request and restores focus. The current bed stays selectable so the admin can
+review a person-wide consolidation or an all-noop outcome.
 
-The existing-allocation move endpoint accepts allocation ids plus a destination
-bed, never a target date. It resolves only the destination's immutable lodge key
-before the transaction, then takes global booking `lock(1)` followed by that
-lodge's capacity lock and re-reads the source rows, original dates,
-guest/booking state, active destination room/bed, custodian holds and sharing
-state under both. Cancellation prunes allocations under the same global key, so
-either the move finishes first or the post-cancel move sees no source row and
-cannot resurrect it. A first-chip multi-night move is all-or-nothing: one
-conflict rolls back every row, partner promotion and audit entry. Successful
-row changes, shared-double promotions and their causally attributed audit
-records commit in that same transaction. Bucket-to-board bulk placement keeps
-its older per-night conflict semantics.
+The dialog starts at `ALLOCATION_NIGHT` and may widen to `BOOKING_GUEST`, which
+resolves every existing row for that guest on the booking (including sparse and
+off-screen rows, up to 366) without creating any. Its read-only preview separates
+changed and unchanged rows, exact NZ nights, approval-to-draft consequences,
+shared-double promotions, and hard conflicts. Apply carries that scope plus the
+anchor, destination and digest — never a target date — and takes global booking
+`lock(1)`, the complete sorted lodge union, sorted member-lifecycle and
+member-partner-link families, then deterministic allocation-row locks before an
+authoritative re-preview. Cancellation uses the same global key, so a post-cancel
+move cannot resurrect a row.
+
+A matching apply writes every changed row with one guarded bulk statement,
+preserving dates and making approved rows unapproved `MANUAL` drafts. Partner
+promotions and their cross-booking causal audit attribution commit in that same
+transaction. Any conflict or stale fact refuses the whole move; digest drift
+returns a refreshed preview and requires a second confirmation. Unchanged rows
+are never re-drafted, promoted, written, or audited, and an all-noop confirmation
+succeeds audit-free. Bucket-to-board bulk placement keeps its older per-night
+conflict semantics. The legacy allocation-id/destination request remains capped
+at 31 rows for older callers but is no longer the board's existing-chip seam.
 
 The board's "Run Auto Allocation" uses the same whole-stay planner without
 displacement. Its displayed suggestions are only a preview: the action takes
@@ -1902,6 +1909,7 @@ either CONFIRMED partner removes the link -> row hard-deleted, other partner ema
 admin removes any link -> row hard-deleted, both partners emailed when it was CONFIRMED unless the admin chose not to notify (#1769a); a PENDING removal emails no one
 CONFIRMED link deleted (either dissolve path) -> pair's FUTURE shared double-bed second-occupant allocations swept back to the awaiting-allocation queue in the same transaction (#1756; both bookings audited, admins alerted post-commit)
 member deactivated / anonymised / re-tiered off ADULT -> same sweep, single-member scope (either side of the shared bed)
+CONFIRMED link DROPPED by a member merge (the master already had its one confirmed partner) -> the merge's own validity-driven reconciliation instead of the sweep above (#2595): every future shared bed-night involving the master or the duplicate is re-judged against mayShareDoubleBedWith and only the ones that no longer qualify are swept, so the master's own still-confirmed share survives
 ```
 
 To verify: canonical pair ordering (`memberAId < memberBId` CHECK), the
@@ -1909,8 +1917,8 @@ one-CONFIRMED-partner-per-member invariant (advisory locks + partial unique
 indexes), ADULT-only + no-self-partner guards, pending pruning on confirm,
 one outstanding outgoing request per member, the memberId-target
 shared-family-group guard on the member API, and the stale-share sweep
-invariant (#1756): no future `isSecondOccupant` allocation may outlive its
-partner link or the active-adult precondition (see
+invariant (#1756, extended to merge by #2595): no future `isSecondOccupant`
+allocation may outlive its partner link or the active-adult precondition (see
 docs/DOMAIN_INVARIANTS.md, "Double-bed shared occupancy").
 
 ## Member Guest Consent Lifecycle ("+ Add Member Guest", #2305 / MG2 #2307, MG4 #2309)

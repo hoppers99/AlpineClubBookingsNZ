@@ -19,7 +19,7 @@ the demo seed (`prisma/demo-seed.ts`).
 | `e2e/admin-roles.spec.ts` | Role boundaries (High) | One persona per bundled access role (ADMIN_READONLY, ADMIN_BOOKINGS, ADMIN_MEMBERSHIP, ADMIN_CONTENT, FINANCE_USER, FINANCE_ADMIN, LODGE). Each asserts an in-area page renders and an out-of-area page is blocked (redirect), per the authoritative matrix in `src/lib/admin-permissions.ts` and the `/finance` (finance-auth) and `/lodge` (kiosk) gates |
 | `e2e/waitlist.spec.ts` | Waitlist / force-confirm / offer (High) | Member is refused a seeded-full night and joins the waitlist (WAITLISTED); admin force-confirms it off the waitlist (overbook branch) through `/admin/waitlist`; member accepts a seeded, non-expired offer through the offer card; the admin waitlist surfaces offer + expiry state |
 | `e2e/double-bed-sharing.spec.ts` | Partner relationship and reviewed bed-allocation removal (#1742, #2594, High) | Partner declaration/admission and shared-double placement. S4 previews then applies removal through the production `POST`/`PUT /api/admin/bed-allocation/allocations/removal` boundary and proves the surviving second occupant is promoted to primary. This is the production-stack shared-double consequence proof; stale refresh and permission affordances remain in focused component/route suites. |
-| `e2e/bed-allocation.spec.ts` | Admin bed allocation, explicit moves, booking confirmation, and reviewed removal (#2252, #2366, #2594, High) | Approves and allocates the seeded Ken booking, preserves original lodge nights through pointer and keyboard moves, confirms from booking detail, and keeps the panel absent for members. The reviewed-removal journey opens the shared dialog from Reset, the chip menu, a pointer drop to the unallocated bucket, and booking detail; applies an approved person-wide removal with auto-allocation enabled; proves no replacement; and restores the exact guest-nights and approvals. Retry setup repairs a killed worker's approved/allocation state through product APIs. |
+| `e2e/bed-allocation.spec.ts` | Admin bed allocation, reviewed moves, booking confirmation, and reviewed removal (#2252, #2366, #2594, #2595, High) | Approves and allocates the seeded Ken booking, then proves every move entry point uses the reviewed confirmation seam. A pointer drop opens the dialog without writing, switches to **This person on this booking**, shows the exact changing/unchanged/total counts and approval consequence, and sends the typed scope plus preview digest only after confirmation while preserving the original lodge nights. A keyboard drop opens the same dialog, Cancel writes nothing and restores focus, and the chip menu can confirm a current-bed person-scope all-noop without changing placement or approval. The reviewed-removal journey opens the shared dialog from Reset, the chip menu, a pointer drop to the unallocated bucket, and booking detail; applies an approved person-wide removal with auto-allocation enabled; proves no replacement; and restores the exact guest-nights and approvals. Retry cleanup repairs a killed worker's placement and approval state through product APIs. |
 | `e2e/internet-banking.spec.ts` | Internet Banking settlement (Critical) | With Xero **absent**, a card PAYMENT_PENDING booking is switched to Internet Banking; the detail page shows the Internet Banking card with a `BOOKING-…` reference and does not crash (the Xero invoice is queued but never sent while disconnected). Toggles the Xero + Internet Banking modules on for its run and restores them |
 | `e2e/membership-application.spec.ts` | Membership application (High) | Public application submit; both nominators agree through the real `/nominations/<token>` pages; admin approves; the applicant then exists as a member |
 | `e2e/additional-payment-chase.spec.ts` | Outstanding additional payment (#2350, High) | The officer loop for money still owed after a booking change: the bookings list filtered to **Additional Payment: Still owing** marks the booking **Partly paid** with the amount due (its status chip still reading Paid); the booking page's **Additional payment outstanding** panel names the amount and reports nobody has been chased yet; **Resend payment request email** sends and the message is captured from mailpit; a second click inside the hour is refused instead of sending. The owing booking is **seeded** (`ADDITIONAL_OWED_BOOKING_ID`) rather than raised through an admin edit, because raising a real one mints a Stripe PaymentIntent and this journey must run whether or not Stripe test-mode keys are configured |
@@ -414,13 +414,15 @@ Four rules follow, and a new spec must satisfy all four:
   own admin API, so no spec needs direct database access and no test-only
   endpoint is added. A clean first attempt is a no-op.
 
-  `bed-allocation.spec.ts` now carries that repair in its serial setup (#2594):
+  `bed-allocation.spec.ts` now carries that repair in its serial setup (#2594,
+  #2595):
   the first journey approves or allocates only when the retry database still
   needs that step, so it restores Ken's approved full-stay placement after a
-  killed removal worker. The staged-removal journey also recreates and approves
-  the exact removed guest-nights in `finally`, and the settings teardown always
-  restores the demo seed's enabled default rather than trusting a dirty retry
-  snapshot.
+  killed removal or move worker. The reviewed-move journey restores Ken to the
+  original bed and re-approves exactly the allocations that were approved on
+  entry; the staged-removal journey recreates and approves the exact removed
+  guest-nights in `finally`. The settings teardown always restores the demo
+  seed's enabled default rather than trusting a dirty retry snapshot.
 
   **A per-member SLOT is state too.** A member may hold only one open
   booking-policy exception request at a time, so a leftover one is refused as a
@@ -615,25 +617,42 @@ Nothing in a spec may hardcode a calendar date. Stay windows come from
 `lodgeNightLabel` / `calendarDayLabel`. A hardcoded date produces an assertion
 that can only pass in the week it was written.
 
-### 4. Pointer geometry measured once, reused by a second drag
+### 4. A pointer drag that resolves one row off
 
-A drag-and-drop spec that drives two drags in a row must re-measure its bounding
-boxes before each one. `DndContext` resolves the drop with `closestCenter`
-against droppable rects it measures at drag start, and starting a drag changes
-the board's own layout: the hovered cell gains its "Drop here" content and
-reflows the rows beneath it. Coordinates captured before the first drag can
-therefore resolve a **different row** on the second, and the failure does not
-look like a geometry failure. The drag is live, the `DragOverlay` is up, and only
-its text is wrong, so a `hasText`-filtered locator matches nothing and times out.
+`DndContext` resolves the drop with `closestCenter`, and the rect it centres is
+**not** the dragged element's. When a `DragOverlay` is rendered, `@dnd-kit/core`
+uses the overlay's own measured child instead
+(`draggingNodeRect = dragOverlay.rect ?? activeNodeRect`) and keeps re-measuring
+it through a `ResizeObserver` for as long as the drag is live. A floating card
+that grows once it has something to say therefore *moves the drop target* mid-drag,
+downwards, by half of however much it grew.
 
-This is what `bed-allocation.spec.ts:127` did on run 30762167423: the second
-pointer drag was active with its card showing "No change for Ken King; the
-selected allocations already use Bunk Room A / A1", and the "Drop here" marker
-sat in the **source** row, one row above the destination.
+Measured on the bed board (issue #2595, 1280x720 Desktop Chrome): chip 104.6px
+tall, drag card 138px, target cell 57px. The card contributes
+`(138 - 104.6) / 2 = 16.7px` of downward bias and the spec's own one-pixel cursor
+clamp another 8.8px, against a 28.5px half-cell tolerance — 3px of margin. Any
+environment that renders the same sentence one line taller spends that margin and
+the drop lands on the row **below** the one the preview named. Forcing the card
+22px taller locally reproduced it exactly, one row every time; the hosted runner
+did the same on its own, dropping on `A3` while the spec aimed at `A2` on all
+three attempts of run 31196057937.
 
-- **Measure the handle, the dragged card and the target cell immediately before
+The failure does not look like a geometry failure. The drag is live, the overlay
+is up, and only the bed name in it is wrong, so a `hasText`-filtered locator
+matches nothing and times out.
+
+- **Keep the overlay's measured child the size of the dragged element.** On the
+  bed board the `DragOverlay` child is a `h-full w-full` frame — which
+  `DragOverlay` sizes from the chip's rect — and the readable card is absolutely
+  positioned inside it. Collisions then follow the chip, and the preview copy can
+  be any length. A spec that aims the dragged element's centre at a cell is only
+  correct while this holds.
+- **Never aim a pointer drag at a rect you did not measure.** If a spec computes a
+  grab offset from element A, `closestCenter` must be centring element A.
+- **Measure the handle, the dragged element and the target cell immediately before
   every drag.** Never hoist one measurement out of a loop or share it between two
-  scenarios in the same test.
+  scenarios in the same test — a restored placement between two drags re-renders
+  the rows.
 - **Wait for a cancelled drag to tear down before starting the next one.** The
   overlay is mounted only while a drag is live, so asserting it is hidden is both
   the honest check that the cancel worked and the settle point that leaves the
@@ -643,6 +662,9 @@ sat in the **source** row, one row above the destination.
   polls, so pure lag resolves itself well inside the timeout. A locator that
   never matches across the full 15s means the collision settled on the wrong
   droppable, which is a geometry bug.
+- **Assert the destination by name inside the preview filter.** `hasText` on the
+  room/bed label is what turns a one-row overshoot into a failure instead of a
+  pass on a neighbouring bed.
 
 ### 5. A bounded loop with an unbounded click in it is not bounded (issue #2626)
 
