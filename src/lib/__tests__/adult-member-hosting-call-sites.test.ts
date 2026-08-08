@@ -973,9 +973,25 @@ describe("the participant fence stays switched ON where a suite claims it (#2623
    * member data comes off the booking fixture's own guest rows, never a
    * `member.findMany` a double could intercept, so the fix was to complete each
    * fixture: `member` (a row via `hostingMemberRow`, or an explicit `null`),
-   * `consentStatus`, `nights` and the stay window. Measured after: 78 tests that
-   * took the T5 early return now traverse the fence, and none of the eight
-   * needed an assertion changed.
+   * `consentStatus`, `nights` and the stay window.
+   *
+   * MEASURED, TWICE, IN OPPOSITE DIRECTIONS — because "the fixture no longer
+   * takes the shortcut" and "the fixture now reaches the fence" are different
+   * claims and only the second one is coverage:
+   *
+   *  - a `throw` in the T5 early return (`adult-member-hosting-review.ts`, the
+   *    `!hostingModeIsActive(planned.mode)` branch of
+   *    `reconcileAdultMemberHostingReviewWithSiblings`) failed **77 of these
+   *    eight suites' 198 tests** before the fixture work — 39 / 11 / 7 / 6 / 5 /
+   *    3 / 3 / 3, in the order listed below — and fails **0 of 198** after it;
+   *  - a `throw` inside `acquireOrValidateQueueParticipantProof` itself fails
+   *    **exactly those same 77**, in exactly that per-suite split. The two
+   *    numbers matching is the point: every test that used to skip the fence now
+   *    executes it, rather than merely having stopped taking one branch.
+   *
+   * None of the eight needed an assertion changed. (77, not the 78 an earlier
+   * draft of this docstring carried — that figure was never reproduced and the
+   * issue's own probe table also says 77.)
    *
    * THE THREE THAT REMAIN ARE BLOCKED BY HOISTING, not by fixtures, and they
    * lose no coverage — measured, no test in them reaches the gate at all. Their

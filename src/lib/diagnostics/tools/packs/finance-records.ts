@@ -1047,9 +1047,15 @@ const FINANCE_AUDIT_ROW_LIMIT = 18;
  *
  * THE CATEGORY FILTER IS THE PERMISSION BOUNDARY, and it carries AID-6A's
  * disclosure with it: an audit row written with NO category is matched by nothing
- * here, and 82 production write sites still write that way — several of them
- * money-adjacent (subscription billing, member-credit adjustments, fee
- * configuration, Xero settings and retries). So an empty result here is not
+ * here. #2581's second child classified all 82 previously-uncategorised write
+ * sites at the source, so the census now reads 427 write sites and ZERO
+ * uncategorised (`scripts/audit/audit-writer-census-manifest.ts`, pinned by
+ * `src/lib/__tests__/audit-writer-census.test.ts`) and no NEW row is born
+ * invisible here. The gap has stopped growing, not closed: every row written
+ * before that runtime deployed still carries `category = NULL`, including
+ * money-adjacent ones (subscription billing, member-credit adjustments, fee
+ * configuration, Xero settings and retries), and the historical backfill is
+ * #2581's third child, outstanding. So an empty result here is still not
  * evidence that nothing happened, and the scope line says so in as many words.
  */
 const FINANCE_AUDIT_SQL = `SELECT

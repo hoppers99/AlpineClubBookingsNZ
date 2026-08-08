@@ -27,3 +27,9 @@
   request, exception request or arrival time is altered. If you have been relying
   on being able to raise a refund request after deleting a booking, raise it
   before deleting, or ask an admin to restore the record first.
+
+  Two further actions still work on a deleted booking and are deliberately left
+  alone for now, because each needs a decision rather than a guard: recording a
+  guest's consent answer, and recording a modification payment the card provider
+  has already taken. Three read-only screens will also still show the owner their
+  own deleted booking's details. All of these are being handled separately.

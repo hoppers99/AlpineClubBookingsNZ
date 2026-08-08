@@ -17,6 +17,12 @@
   yourself, and the club-wide view is still available that way. No allocation,
   hold or booking is altered.
 
+  One consequence to expect: while a booking is focused it now decides the
+  board's lodge, so if you switch the lodge selector to a different lodge the
+  board stops following that booking — the "Focused booking" tag disappears and
+  you get the lodge you asked for. The alternative would have been to keep
+  showing the booking's lodge while the selector claimed otherwise.
+
   One thing this does **not** yet fix, so it is worth knowing: if the list of
   lodges cannot be loaded, the board still falls back to showing the whole club,
   and the bed pickers are club-wide again in that state. Confirming a bed is

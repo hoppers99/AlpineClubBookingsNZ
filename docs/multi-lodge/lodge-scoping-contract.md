@@ -164,6 +164,23 @@ operational documents (which may carry door/emergency access details).
   was safe only because its single caller passes `booking.lodgeId`, a NOT NULL
   column; the nullable type invited a future caller to turn a booking-scoped bed
   picker into a club-wide one with nothing to catch it.
+  **The client half is load-bearing and is now pinned.** Server-side derivation
+  reaches the board only because the board names the booking on its own request
+  (`admin/bed-allocation/page.tsx`, `fetchDashboard`); delete that one line and
+  every server-side test still passes while the four pickers go club-wide again,
+  so `src/lib/__tests__/bed-allocation-board-booking-scope.test.tsx` asserts it
+  directly.
+  **A focused booking pins the lodge, so choosing another lodge drops the
+  focus.** Because the API ignores a `lodgeId` sent beside a `bookingId`, an
+  admin who arrived on the deep link and then picked a different lodge from the
+  board's own selector would have been served the *booking's* lodge under a
+  selector reading the lodge they chose. The board therefore clears the focused
+  booking when the admin replaces one non-null lodge with a different one — the
+  "Focused booking" badge goes with it, so the change is visible. `LodgeSelect`'s
+  own `onChange` calls are deliberately excluded: `onChange(null)` on an options
+  outage, and `onChange(lodges[0].id)` from a null value, are not the admin
+  browsing away, and the null case is precisely the state in which derivation
+  from `bookingId` is the only thing keeping the board off a club-wide read.
   **Still open:** the board can hold `lodgeId === null` without any booking being
   named — transiently on every mount before `/api/admin/lodges` resolves, and
   permanently if that endpoint fails, since `useLodgeOptions` then sets

@@ -237,7 +237,31 @@ export default function AdminBedAllocationPage() {
   const searchParams = useSearchParams();
   const requestedFrom = searchParams.get("from");
   const requestedTo = searchParams.get("to");
-  const highlightedBookingId = searchParams.get("bookingId") || "";
+  const linkedBookingId = searchParams.get("bookingId") || "";
+  /**
+   * #2678: a focused booking PINS the board's lodge, so choosing another lodge
+   * has to let the focus go.
+   *
+   * `GET /api/admin/bed-allocation` now derives its lodge from `bookingId` and
+   * ignores any `lodgeId` beside it, which is what stops the four bed pickers
+   * offering another lodge's beds for this booking's guests. The cost is that
+   * an admin who arrived on the deep link and then picked a different lodge
+   * from the selector would have been served the BOOKING's lodge under a
+   * selector reading the one they chose — a quieter lie than the one being
+   * fixed, but a lie. Dropping the focus on a deliberate lodge change keeps the
+   * two honest, and it is visible: the "Focused booking" badge goes with it.
+   *
+   * Only a deliberate change counts. `LodgeSelect` also calls `onChange` by
+   * itself — `onChange(null)` when `/api/admin/lodges` fails and it has no
+   * options left, and `onChange(lodges[0].id)` when nothing is selected yet —
+   * and neither is the admin browsing away. The null case matters most: it is
+   * exactly the outage state in which the server-side derivation from
+   * `bookingId` is the only thing keeping the board off a club-wide read, so
+   * the focus must survive it.
+   */
+  const [lodgeChosenAwayFromBooking, setLodgeChosenAwayFromBooking] =
+    useState(false);
+  const highlightedBookingId = lodgeChosenAwayFromBooking ? "" : linkedBookingId;
   const canEditBookings = useAdminAreaEditAccess("bookings");
   // Admin copy uses the club's own word for the hut-leader role (#2286 review
   // M8); only the lobby TV is pinned to the fixed word "Custodian".
@@ -1048,7 +1072,17 @@ export default function AdminBedAllocationPage() {
           <LodgeSelect
             lodges={lodges}
             value={lodgeId}
-            onChange={setLodgeId}
+            onChange={(next) => {
+              // #2678: see `lodgeChosenAwayFromBooking` above. Replacing one
+              // non-null lodge with a different non-null lodge is the admin
+              // choosing. The component's own calls are not: `onChange(null)`
+              // on an options outage, and `onChange(lodges[0].id)` from a null
+              // value when nothing is selected yet, both leave the focus alone.
+              if (next !== null && lodgeId !== null && next !== lodgeId) {
+                setLodgeChosenAwayFromBooking(true);
+              }
+              setLodgeId(next);
+            }}
             loading={lodgesLoading}
           />
           {/*

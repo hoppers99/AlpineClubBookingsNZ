@@ -5437,8 +5437,20 @@ is never cleared. Two consequences follow, and both are load-bearing:
 - **Most booking routes refuse a deleted booking only INCIDENTALLY**, through a
   status gate that excludes `CANCELLED` rather than through any deletion check.
   A sweep of all 27 exported methods under `src/app/api/bookings/[id]/**` (#2674)
-  found 4 consulting `deletedAt` directly, 15 write-capable methods refusing a
-  deleted booking via some other guard, and 4 genuinely reaching a write. So
+  found, **before** the guards added by that issue: **4** consulting `deletedAt`
+  directly (`additional-payment-secret` GET, `requested-room/options` GET,
+  `send-guest-payment-link` POST, `[id]` DELETE); **16** write-capable methods
+  refusing a deleted booking only via some other guard; **4** genuinely reaching a
+  write (`confirm-modification-payment` POST, `guests/[guestId]/consent` POST,
+  `exception-requests/[requestId]` PATCH, `refund-request` POST); and **3**
+  read-only GETs that check nothing and will serve a deleted booking's data to
+  its own owner (`cancel-preview`, `change-requests`, `refund-request`).
+  4 + 16 + 4 + 3 = 27; an earlier revision of this paragraph said 15 rather than
+  16 and omitted the three reads, so its figures summed to 23 and four methods
+  went unaccounted for. **After** the guards — `arrival-time` PUT and DELETE,
+  `refund-request` POST, and the `booking: { deletedAt: null }` relation filter
+  inside `cancelModificationExceptionRequest` — the split is 8 direct, 14
+  incidental, 2 still reaching a write, and the same 3 unguarded reads. So
   "this route is safe" is not the same claim as "this route checks", and a change
   to a status rule can uncover a write nobody meant to expose. Any NEW
   booking-scoped write should carry the guard explicitly rather than inherit the
@@ -5451,12 +5463,23 @@ surfaces like `bookings/[id]/page.tsx` and not to writes — and place the check
 **after** the authorisation check, so an unauthorised caller gets `403` either
 way rather than a deleted-or-live oracle.
 
-Two write paths are known to remain reachable on a soft-deleted booking and are
-tracked separately, because each needs a decision rather than a guard:
-`bookings/[id]/guests/[guestId]/consent` (whose DECLINE arm already records a
-response outside the transaction it rolls back) and
-`bookings/[id]/confirm-modification-payment` (where refusing to record a payment
-Stripe has already captured is not self-evidently safer than recording it).
+Two write paths are known to remain reachable on a soft-deleted booking, and are
+tracked separately because each needs a decision rather than a guard:
+
+- `bookings/[id]/guests/[guestId]/consent` — **both** arms, not just one. The
+  APPROVE arm is the more direct of the two: it takes the claim
+  (`member-guest-consent-service.ts:426-439`) having read neither `status` nor
+  `deletedAt` — the booking is loaded there only to pick a lodge lock — then
+  reconciles beds and emails the booking's owner about a record the club has
+  deleted. The DECLINE arm additionally records a response outside the
+  transaction it rolls back.
+- `bookings/[id]/confirm-modification-payment` — where refusing to record a
+  payment Stripe has already captured is not self-evidently safer than recording
+  it.
+
+The three unguarded read-only GETs above are tracked with them: each returns a
+deleted booking's own data to its own owner, which is a smaller problem than a
+write but is still a surface the booking page itself refuses.
 
 ## Analytics And Privacy
 
