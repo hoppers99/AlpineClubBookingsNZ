@@ -1732,6 +1732,66 @@ async function futurePartnerShareAllocationLodgeIds(
  *    the sweep only ever judges `stayDate >= today`, so a FUTURE placement
  *    implies a FUTURE guest-night.
  *
+ * WHAT THAT ARGUMENT DOES NOT COVER, stated plainly because the three bullets
+ * above are all about IMMUTABLE or FK-constrained columns and it would be easy
+ * to read them as closure. They are not. Every column this query FILTERS on is
+ * mutable: `BookingGuest.stayStart`, `BookingGuest.stayEnd` and the
+ * `BookingGuestNight` rows. The bullets prove "a future placement implies a
+ * future guest-night IN THE SAME LODGE"; they do not prove "the set of lodges
+ * holding a future guest-night cannot CHANGE while the merge runs". It can.
+ *
+ * Concretely, these writers rewrite a guest's dates while holding
+ * `pg_advisory_xact_lock(1)` plus that booking's own lodge key — and NO
+ * `member-lifecycle:` or `member-partner-link:` key, which are the only keys
+ * merge holds once it has dropped the global one. So merge cannot exclude them:
+ *
+ *  - `modifyBookingDates` and `adminShiftBookingDates`
+ *    (`booking-date-modification-service.ts`) under `adminOverride`, whose
+ *    documented purpose includes moving a fully-past booking's dates; and
+ *  - `modifyBookingBatch` via `buildInProgressGuestRangePlan`
+ *    (`booking-edit-guest-ranges.ts`), which needs NO override and no admin
+ *    role: extending an in-progress booking's check-out widens EVERY remaining
+ *    guest's `stayEnd` to the new check-out, including a partial-stay guest
+ *    whose own nights had already finished.
+ *
+ * Each is followed in its own transaction by
+ * `reconcileBedAllocationsForBookingWithLodgeLockHeld`, so it also creates the
+ * new `BedAllocation` rows on the newly-future nights.
+ *
+ * The consequence: a booking at lodge Y whose guest-nights are ALL in the past
+ * when this query runs is invisible to both reads, and can be shifted into the
+ * future during the merge, into a lodge the merge holds no key for. Nothing
+ * about `Booking.lodgeId` being immutable prevents that — the lodge does not
+ * move, the NIGHTS do.
+ *
+ * How far the enforcement below actually gets. This is not unguarded, and it is
+ * narrower than it first looks, but it is not closed:
+ *
+ *  - `sweepUnbackedFutureSharedDoublesWithLocksHeld` throws
+ *    {@link UnlockedPartnerShareLodgeError} for any candidate row in a lodge
+ *    outside the locked set, which rolls the whole merge back. That catches
+ *    every interleaving where the offending row is visible at the sweep's
+ *    CANDIDATE READ. A row committed after that read and before the merge
+ *    commits is not caught — the merge holds no key the other writer contends
+ *    on, so there is nothing to serialise them.
+ *  - For the escaped row to be an unbacked SHARED DOUBLE rather than a harmless
+ *    primary, something must write `isSecondOccupant: true` in that window.
+ *    Auto-allocation cannot: `autoAllocateMissingBedNights`' `createMany`
+ *    payload carries no `isSecondOccupant` at all and the planner
+ *    (`bed-allocation.ts`) has no concept of one. Only the manual admin
+ *    placement paths in `admin-bed-allocation.ts` write second occupants, and
+ *    they ask `mayShareDoubleBedWith`, which — before the merge commits — still
+ *    reads the CONFIRMED link the merge is about to drop and says yes.
+ *
+ * So the residual is a four-step interleaving (lodge Y outside the derived set
+ * → a concurrent guest-date write puts a merged member on a future night at Y →
+ * an admin hand-places a second occupant on it → both commit inside the sweep's
+ * own read-to-commit window), not a single racing writer. It is a real hole in
+ * the completeness claim and it is recorded rather than argued away. It is NOT
+ * a regression: `main` runs no sweep at all, so on `main` that same state is
+ * simply never reconciled. Closing it needs an owner decision about which
+ * Critical surface pays — see the residual-risk section of PR #2641.
+ *
  * Deliberately NOT filtered by `Booking.status`. Status transitions serialise on
  * the global cohort key, which merge no longer holds, so a booking that is not
  * allocatable when the set is derived could become allocatable while the merge
@@ -2147,11 +2207,18 @@ export async function sweepUnbackedFutureSharedDoublesWithLocksHeld(params: {
   // #2595 — the derivation check, enforced rather than trusted. Without the
   // global cohort key the ONLY thing serialising this sweep against the
   // bed-allocation writers is the per-lodge capacity key, so every row it is
-  // about to judge must sit in a lodge whose key the caller holds. It always
-  // does when the prefix derived the set from these members' future
-  // guest-nights (a placement can only exist for a guest row of a booking, in
-  // that booking's own lodge); a miss means a lodge appeared for one of them
-  // after the derivation, and the safe answer is to roll the merge back.
+  // about to judge must sit in a lodge whose key the caller holds. A miss means
+  // a lodge appeared for one of these members after the derivation, and the
+  // safe answer is to roll the merge back.
+  //
+  // This is a VISIBILITY check, not a fence, and it is worth being exact about
+  // which of the two it is. It is evaluated against the candidate rows read
+  // immediately above, so it fires for every offending row that had committed
+  // by then — but merge holds no key those writers contend on, so a row that
+  // commits after this read and before the merge's own commit is not seen here
+  // and cannot be. See `futurePartnerShareGuestNightLodgeIds` for the full
+  // statement of that residual and why the mutable guest-date columns are what
+  // makes it possible.
   const unlockedLodgeIds = [
     ...new Set(
       [...candidates.values()]

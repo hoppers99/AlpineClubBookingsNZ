@@ -1379,11 +1379,34 @@ describe("member-merge shared-double race DB safety guard (#2595)", () => {
 
         if (order === "AUTO_FIRST") {
           // Queued FIRST, so it is granted the lodge key before the merge and
-          // never waits on it: STRICT must-commit. This arm was the CI failure on
-          // `75b9582bc`, and the cause was the harness, not the merge — the
-          // holder could not release until the merge had queued, and the merge
-          // spent seconds of this writer's 5s budget building its preview. The
-          // preview now happens before the window opens.
+          // never waits on it: STRICT must-commit.
+          //
+          // This arm did NOT fail CI on `75b9582bc`, and an earlier version of
+          // this note said it did. Both red arms in that run
+          // (`Migration drift check`, job 92924429194) were in a DIFFERENT
+          // suite — `bed-allocation-removal-races.realdb.test.ts`, "serializes
+          // a reviewed person move and explicit auto-allocation when AUTO_FIRST
+          // is queued first" (:1173) and "…and lifecycle reconciliation when
+          // LIFECYCLE_FIRST is queued first" (:1290). Neither has a merge in it
+          // at all, so a harness explanation about the merge's preview window
+          // could not have applied to either. This arm PASSED in that same run,
+          // in 368ms. The real cause is the one recorded at
+          // NEIGHBOUR_ALLOCATION_WINDOW_NOTE above and fixed in
+          // `assertRoomNightAgeMixConsistent`: the age-mix self-check
+          // recomputed from `occupantByKey`, which collapses a shared double's
+          // two occupants into one entry, and those two fixtures seed a partner
+          // sharing a double.
+          //
+          // The two suites' arms share the name `AUTO_FIRST`, which is exactly
+          // how the misattribution got written and then repeated into the PR
+          // body — where it credited a harness change for a red REQUIRED check
+          // that was actually fixed by editing a Critical allocator file. When
+          // you cite a CI failure here, cite the job and the failing test's own
+          // suite, never the arm name alone.
+          //
+          // The preview IS built outside the queue window (see
+          // `queueableMergeWriter`), and that is still worth doing for this
+          // arm's determinism — it is just not a fix for anything that was red.
           expect(settledValueOrThrow(autoOutcome)).toEqual({ count: 1 });
           await expectNeighbourAllocated();
         } else {

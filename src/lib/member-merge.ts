@@ -2276,10 +2276,25 @@ export async function executeMemberMerge(params: {
     // narrow lodge-only prefix and pays for it with a WIDER lodge derivation:
     // `acquireMemberMergePartnerSharedLodgeLocks` unions the lodges of the two
     // members' future allocations with the lodges of their future GUEST-NIGHTS,
-    // so every lodge a concurrent placement could land in is covered even where
-    // no allocation exists yet. See docs/CONCURRENCY_AND_LOCKING.md -> "Merge
-    // joins the bed-allocation cohort" for the deadlock analysis of the
-    // resulting edges.
+    // so a lodge is covered even where no allocation exists there yet. See
+    // docs/CONCURRENCY_AND_LOCKING.md -> "Merge joins the bed-allocation
+    // cohort" for the deadlock analysis of the resulting edges.
+    //
+    // THAT IS COVERAGE, NOT CLOSURE, and this comment used to claim closure
+    // ("every lodge a concurrent placement could land in is covered"). It is
+    // not true. The derivation filters on `BookingGuest.stayStart`/`stayEnd`
+    // and `BookingGuestNight`, which are MUTABLE, and the writers that move
+    // them (admin date override, and the no-override in-progress check-out
+    // extension) hold lock(1) plus their own lodge key and no member key merge
+    // holds. So a lodge with only PAST guest-nights at derivation time can
+    // acquire future ones while the merge runs. Step 3b's
+    // `UnlockedPartnerShareLodgeError` catches every such row that is visible
+    // at its candidate read and 409s the whole merge; a row committed after
+    // that read is not caught. The full statement of the gap, including why the
+    // escaped row can only become an unbacked shared double via a hand
+    // placement rather than auto-allocation, is on
+    // `futurePartnerShareGuestNightLodgeIds` in bed-allocation-lifecycle.ts.
+    // It is narrower than `main`, which runs no sweep at all.
     //
     // Deriving the lodge set here also needs BOTH identities: the helper reads
     // the two members' own future allocations and guest-nights, so it must run

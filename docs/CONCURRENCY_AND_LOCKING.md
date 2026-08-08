@@ -1459,6 +1459,10 @@ lockAdultMemberHostingPolicySet(tx)                              policy config
            UNION the lodges of their future guest-nights)
         = NO pg_advisory_xact_lock(1)                             deliberately
   → member-lifecycle:<master> / member-lifecycle:<loser>, sorted  member
+  → member-partner-link:<master> / member-partner-link:<loser>,   member links
+        sorted (#2595 — the sweep READS confirmed links to decide
+        which shared doubles it deletes; same relative position as
+        the reviewed move's own lifecycle→partner-link pair)
   → steps 1-3: null self-cycles, resolve collisions, applyMoves
   → one sorted master/loser/ancillary `Member … FOR UPDATE`        member rows
   → under-lock hosting re-plan + sorted hosting-coverage-owner     last
@@ -1468,8 +1472,13 @@ lockAdultMemberHostingPolicySet(tx)                              policy config
   → steps 4-8: Xero teardown, field merge, audit, enqueue, delete
 ```
 
-That is the #2597 order with exactly one tier inserted, at the top. Nothing
-already in the sequence moved, and no new key is taken late.
+That is the #2597 order with **two** tiers inserted, both before any read that
+decides a write: the per-lodge prefix at the very top, and the
+`member-partner-link:` pair immediately after the member-lifecycle pair. Nothing
+already in the sequence moved, and no new key is taken late. (The composed order
+at "Member merge — dual member-lifecycle lock" above lists both; this diagram
+and the sentence under it used to name only the lodge tier, which made one
+section of this document contradict another and itself.)
 
 **Why the lodge tier is at the top.** It MUST be taken before the
 member-lifecycle pair, never after. Merge's own lock set was member-scoped and
@@ -1511,13 +1520,45 @@ It is the union of two reads:
   the global key that merge no longer holds, so a booking that is not allocatable
   when the set is derived could become allocatable while the merge runs).
 
-That is complete because a `BedAllocation` exists only for a `BookingGuest`
-(FK-constrained), every allocating writer picks its room from that booking's own
-lodge (`roomsForBooking`/`roomsAtLodge`, plus the explicit "Bed belongs to a
-different lodge than the booking" refusal on the manual paths and the reviewed
-move's `LODGE_MISMATCH`), both `Booking.lodgeId` and `LodgeRoom.lodgeId` are NOT
-NULL, and a placement is only written on one of that guest's own nights. So a
-future placement implies a future guest-night in the same lodge.
+A future placement implies a future guest-night **in the same lodge**, because a
+`BedAllocation` exists only for a `BookingGuest` (FK-constrained), every
+allocating writer picks its room from that booking's own lodge
+(`roomsForBooking`/`roomsAtLodge`, plus the explicit "Bed belongs to a different
+lodge than the booking" refusal on the manual paths and the reviewed move's
+`LODGE_MISMATCH`), both `Booking.lodgeId` and `LodgeRoom.lodgeId` are NOT NULL,
+and a placement is only written on one of that guest's own nights.
+
+**That is not the same as complete, and this section used to say it was.** Every
+column the derivation FILTERS on — `BookingGuest.stayStart`, `stayEnd`, and the
+`BookingGuestNight` rows — is **mutable**, and the writers that move them hold
+`lock(1)` plus their own booking's lodge key and **no** `member-lifecycle:` or
+`member-partner-link:` key. Those are the only keys merge still holds, so merge
+cannot exclude them:
+
+- `modifyBookingDates` / `adminShiftBookingDates`
+  (`booking-date-modification-service.ts`) under `adminOverride`, whose stated
+  purpose includes shifting a **fully-past** booking's dates; and
+- `modifyBookingBatch` through `buildInProgressGuestRangePlan`
+  (`booking-edit-guest-ranges.ts`), which needs **no override and no admin
+  role** — extending an in-progress booking's check-out widens every remaining
+  guest's `stayEnd` to the new check-out, including a partial-stay guest whose
+  own nights had already ended.
+
+Both then call `reconcileBedAllocationsForBookingWithLodgeLockHeld`, which
+auto-allocates on the newly-future nights. So a booking at lodge Y holding only
+PAST guest-nights when the set is derived is invisible to both reads and can
+acquire future ones mid-merge, in a lodge merge holds no key for. `Booking.lodgeId`
+being immutable does not help: the lodge does not move, the **nights** do.
+
+The residual is bounded but real, and is stated in full on
+`futurePartnerShareGuestNightLodgeIds` (`bed-allocation-lifecycle.ts`). In short:
+the 409 below catches every such row **visible at the sweep's candidate read**,
+and only a row committed after that read escapes; and for an escaped row to be an
+unbacked *shared double* rather than a harmless primary, an admin must hand-place
+a second occupant in the same window, because auto-allocation writes no
+`isSecondOccupant` at all. It is **narrower than `main`**, which runs no sweep and
+never reconciles that state in the first place, so it is not a regression — but
+it is not closed, and #2595 does not claim it is.
 
 **And it is enforced, not merely argued.**
 `acquireMemberMergePartnerSharedLodgeLocks` returns the exact lodge ids it locked
@@ -1525,15 +1566,24 @@ and step 3b is handed them: any candidate bed-night outside that set aborts the
 whole merge with a 409 (`partner_share_lodge_drift`, audited as a refused merge)
 instead of deleting a row in a lodge this transaction never serialised against.
 Only a lodge that appeared for one of these members *after* the derivation can
-trigger it — a guest row added to a booking in a new lodge by a concurrent
-writer — and a retry derives it. The residual cost of the owner decision is
-therefore a rare, safe, retryable refusal of the merge, in place of a guaranteed
-club-wide stall on every merge.
+trigger it — a guest row added to a booking in a new lodge, or a guest's dates
+moved into the future, by a concurrent writer — and a retry derives it. The
+residual cost of the owner decision is therefore a rare, safe, retryable refusal
+of the merge, in place of a guaranteed club-wide stall on every merge.
+
+**The 409 is a visibility check, not a fence.** It is evaluated against the
+candidate rows the sweep READS, so it fires only for a lodge that appeared before
+that read. A row committed between the sweep's candidate read and the merge's own
+commit is not caught by it, and cannot be — merge holds no key the writer that
+committed it contends on. "A retry derives it" is true for the refusals the check
+does raise; it is not a statement that every late arrival raises one. See the gap
+stated above under "What pays for dropping it".
 
 **Deadlock analysis, re-done for the new edge set.** The edges merge contributes
-are now `adult-member-hosting-policy-set` → per-lodge capacity, and per-lodge
-capacity → `member-lifecycle`. Both already exist elsewhere in the same
-direction, and neither reverse edge exists anywhere in the tree:
+are now **three**: `adult-member-hosting-policy-set` → per-lodge capacity,
+per-lodge capacity → `member-lifecycle`, and `member-lifecycle` →
+`member-partner-link`. All three already exist elsewhere in the same direction,
+and no reverse edge exists anywhere in the tree:
 
 - `policy-set → lodge` is also configuration transfer's order
   (`config-transfer/apply.ts`: config-import singleton → minimum-stay set →
@@ -1545,9 +1595,19 @@ direction, and neither reverse edge exists anywhere in the tree:
 - `lodge → member-lifecycle` is the order every partner-share caller and the
   reviewed bed-allocation move already use. No transaction takes a
   member-lifecycle key and then a lodge key, or the global key.
-- Every multi-key acquisition inside a family is sorted — lodge ids and
-  member-lifecycle ids here — so two merges, or a merge and any lodge writer,
-  cannot hold each other's next lodge key.
+- `member-lifecycle → member-partner-link` is the reviewed bed-allocation move's
+  own order (`bed-allocation-move.ts`), so merge adds a second HOLDER of an
+  existing edge rather than a new edge. The reverse cannot exist: the
+  partner-link service takes the `member-partner-link:` key and no other tier at
+  all, so no holder of it is ever waiting on a lodge, global or member-lifecycle
+  key that merge might hold. The full justification for taking this tier — the
+  per-side CONFIRMED partial uniques, and the *validating* confirm that was
+  serialised by nothing before #2595 — is at "Member merge — dual
+  member-lifecycle lock" above and at "The counterparts' member rows are not
+  locked" below.
+- Every multi-key acquisition inside a family is sorted — lodge ids,
+  member-lifecycle ids and member-partner-link ids here — so two merges, or a
+  merge and any lodge writer, cannot hold each other's next key in any family.
 - The edge that DISAPPEARS is `policy-set → lock(1)`. Merge is no longer a holder
   of the global key at all, so the bed-allocation and money writers that take
   `lock(1)` and then a lodge key can never queue behind a merge on the global

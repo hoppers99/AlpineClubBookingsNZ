@@ -2925,12 +2925,26 @@ function tryDisplaceForHeldGuestNight(
  * `LIFECYCLE_FIRST`), whose fixtures seed a partner sharing a double.
  *
  * This is a fix to the CHECK, not to the index: `roomNightAgeMix` was right and
- * the recomputation was wrong. The check is strictly stronger now — it still
- * catches every seed/allocate/evict/relocate/rollback asymmetry, and it no
- * longer goes blind to a second occupant. The lossiness of `occupantByKey`
- * ITSELF is a real planner blind spot on the eviction path and is deliberately
- * NOT changed here: that is production behaviour on a Critical surface and needs
- * its own scoping.
+ * the recomputation was wrong.
+ *
+ * IT IS NOT STRICTLY STRONGER, and an earlier version of this docblock claimed
+ * it was. The check is stronger where it matters — it no longer goes blind to
+ * the second occupant of a shared double, so it stops throwing on correct state
+ * and starts being able to see the asymmetries it exists for. But it now reads
+ * `occupantsByBooking` and NOTHING ELSE, so it no longer validates
+ * `occupantByKey` at all: an asymmetry confined to that one map — a
+ * `setOccupant` that writes `occupantsByBooking` and skips `occupantByKey`, or
+ * an `evictBooking` that clears one and not the other — is invisible to this
+ * check where the old form would have caught it. That is a real, if narrow,
+ * loss of coverage and is accepted deliberately, because the old form's
+ * "coverage" of `occupantByKey` was inseparable from a false failure on every
+ * plan seeded with an existing shared double. The two maps are written by the
+ * same `setOccupant` and cleared by the same `evictBooking`, so the untested
+ * window is one edit away in one function rather than spread across the planner.
+ *
+ * The lossiness of `occupantByKey` ITSELF is a real planner blind spot on the
+ * eviction path and is deliberately NOT changed here: that is production
+ * behaviour on a Critical surface and needs its own scoping (#2656).
  */
 function assertRoomNightAgeMixConsistent(
   state: PlannerState,
