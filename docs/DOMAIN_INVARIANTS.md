@@ -495,7 +495,7 @@ derivation).
   (`setHours(0,0,0,0)`) instant: under the `TZ=Pacific/Auckland` server pin the
   latter resolves to `(D-1)T12:00Z` and shifts the boundary by a day for the
   first ~13h of each NZ day (F8/F32, #1888).
-- **"Today" is an NZ calendar day, and there is one way to ask for it.**
+- **When a server asks for "today", it asks the club's calendar.**
   `todayDateOnlyForTimeZone()` returns it as a `yyyy-MM-dd` string and
   `getTodayDateOnly()` as a date-only `Date`; both live in
   `src/lib/date-only.ts` and both work on the server and in the browser. Never
@@ -505,9 +505,30 @@ derivation).
   that did this, including the `min` on two public lodge-night pickers and the
   default `asOfDate` cut-off on two finance windows;
   `src/lib/__tests__/nz-today-date-only.test.tsx` freezes the clock inside the
-  divergence window and fails the build if the pattern comes back. Truncating an
-  existing `@db.Date` value the same way is fine and is a different thing — those
-  are already pinned to UTC midnight.
+  divergence window and fails the build if the pattern comes back.
+
+  Two exact boundaries on that rule, because both are easy to get wrong:
+
+  - *Truncating an existing `@db.Date` value the same way is fine* — those are
+    already pinned to UTC midnight and encode a calendar day, not an instant.
+    **It is not fine for a `DateTime` column.** `createdAt`, `updatedAt` and
+    friends are real instants, so `booking.createdAt.toISOString().slice(0, 10)`
+    is the clock one hop removed and lands on the previous NZ day all morning.
+    #2684's lint rule is where that whole class gets caught; until then it is a
+    known trap, not a permitted pattern.
+  - *The member booking calendar and the admin kiosk deliberately derive today
+    from the BROWSER's calendar day* (`src/components/booking-calendar.tsx`,
+    `src/app/(admin)/admin/book/page.tsx`, #2474 — see the next invariant), so
+    "one way to ask" holds for server-side and club-facing derivations, not
+    literally everywhere. Any comparison the SERVER then makes is still the club
+    day.
+
+  A date-only value compared against the raw clock is the same mistake in
+  reverse: `parseDateOnly("<today NZ>")` is UTC midnight of that day, which is
+  still in the *future* of `new Date()` until midday NZ, so a guard written
+  `dob > new Date()` refuses today's NZ date — the very date its own picker
+  offers. Compare date-only against date-only (`> getTodayDateOnly()`), which is
+  what the date-of-birth guards do since #2682.
 - **Client-side, a selected lodge night is an NZ date-only `yyyy-MM-dd` string
   carried end-to-end.** The booking calendar (`src/components/booking-calendar.tsx`),
   the member booking wizard, and the admin "book on behalf" kiosk

@@ -176,8 +176,11 @@ dropped from it or if a seventh copy appears.
 
 ### Who counts what
 
-Terms 1-3 are always summed together — there is no surface that takes some and
-not others. What varies is only what each caller does with term 4:
+Every surface that goes through `computeNightOccupancy()` takes terms 1-3
+together — none of them takes some and not others. What varies among those
+surfaces is only what each does with term 4. (The admin utilisation report is
+the one occupancy-shaped surface that does *not* go through the calculation; it
+is listed last for exactly that reason.)
 
 | Surface | Terms 1-3 | Whole-lodge hold (term 4) | Why |
 |---|---|---|---|
@@ -186,7 +189,7 @@ not others. What varies is only what each caller does with term 4:
 | `checkCapacityForPartnerSharedAdmission` | **Yes** | `availableBeds` pinned to 0 and surfaced as a refusal `reason` | A hold is not bypassable by any admin override (decision 5) |
 | `getMonthAvailability` | **Yes** | Reported as a full lodge | A held-but-not-full night on the public calendar would otherwise leak the hold |
 | Capacity-warnings cron | **Yes** | Reported as a full lodge, so the warning fires | An exclusive hold leaves no bookable bed, however small the holding group is |
-| Custodian bed-hold write path (`validateCustodianBedHold`) | **Yes** | **Deliberately not pinned** | A whole-lodge hold reserves the *bookable* lodge and the custodian's bed sits outside that pool, so the two never contend (see "Whole-lodge holds never contend" below) |
+| Custodian bed-hold write path (`validateCustodianBedHold`) | **Yes** | **Deliberately not pinned** | Policy, not arithmetic: a hold and a custodian bed do not block each other in either direction (see "Whole-lodge holds and custodian beds do not block each other" below). Pinning would refuse a hut leader a bed the club intends them to occupy |
 | Admin reports `occupancyByDate` | **Term 1 only** | Not counted | Utilisation measures how much the lodge was *booked*; see the custodian table below |
 
 The nightly capacity-warnings cron is the surface this inventory exists for. It
@@ -300,10 +303,11 @@ two custodians handing over on the same night, on different beds, subtract two.
 | Custodian bed-hold write path (`validateCustodianBedHold`) | **Yes**, other custodians only | The hold being created or edited is excluded and added once as `+ 1`, so a handover never double-counts one bed |
 | Admin reports `occupancyByDate` | **No** | Utilisation measures *booked* usage, so the report reads slightly low during custodian season. Stated here so the gap is a decision, not a bug |
 
-Since #2681 the first six rows all get the term from the one
-`computeNightOccupancy()` calculation rather than each building the counter
-themselves, so "who counts the custodian" is a property of that function plus
-this table, not of six separate copies.
+Since #2681 the first three rows — six surfaces in all, since the first row
+lists four — get the term from the one `computeNightOccupancy()` calculation
+rather than each building the counter themselves, so "who counts the custodian"
+is a property of that function plus this table, not of six separate copies. Only
+the last row, the admin utilisation report, still reads the population directly.
 
 **Two accepted, deliberate imprecisions:**
 
@@ -320,13 +324,32 @@ this table, not of six separate copies.
    out of that room for the whole season. This is conservative and correct — an
    unrelated adult really does sleep there.
 
-**Whole-lodge holds never contend.** An exclusive whole-lodge hold reserves the
-*bookable* lodge; the custodian's bed sits outside that pool. Setting a hold
-never lists a custodian as a conflict, and a custodian hold can be created over
-held nights and vice versa. On a held night the ADR-001 pin still presents a
-full lodge; on the hold's own admission path the group's headcount is checked
-*with* the custodian counted, so an over-size group surfaces as over-capacity
-for explicit admin confirmation instead of silently displacing them.
+**Whole-lodge holds and custodian beds do not block each other.** This is a
+deliberate policy, and it is worth being exact about *why*, because the obvious
+explanation is wrong.
+
+The custodian's bed is **not** outside the held pool. `getLodgeCapacityStatus`
+resolves capacity from every active bed, the custodian's included — the whole
+#2286 design counts the custodian as an occupant of a capacity bed rather than
+as a smaller ceiling — and `wholeLodgeHoldOccupiedBedNightsForPlanner` (#2317)
+expands a hold across every active bed too, so on the planner the same bed-night
+carries both.
+
+What is true is that neither refuses the other. Setting a hold never lists a
+custodian as a conflict, and a custodian hold can be created over held nights
+and vice versa. On a held night the ADR-001 pin still presents a full lodge to
+every member-facing surface; on the hold's own admission path the group's
+headcount is checked *with* the custodian counted, so an over-size group
+surfaces as over-capacity for explicit admin confirmation instead of silently
+displacing them.
+
+**The gap that leaves, stated rather than implied:** creating a custodian bed
+hold over a night that is already exclusively held raises **no** warning, because
+`validateCustodianBedHold` compares `occupancy + 1` against capacity and the
+holding group's own headcount may be small. The officer is not told the lodge is
+exclusively held for those nights. #2681 did not introduce this and did not
+change it; whether that confirmation should mention held nights is an owner
+decision.
 
 ### With the bed-allocation module OFF (#2286 review M11)
 

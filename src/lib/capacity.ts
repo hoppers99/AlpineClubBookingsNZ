@@ -438,14 +438,16 @@ export interface NightOccupancy {
  * THE occupancy calculation (#2681). "How many beds are occupied at this lodge
  * on this night" is computed here and nowhere else.
  *
- * It used to be written out five times — four near-identical copies in this
- * file plus one in `cron-capacity-warnings.ts` — and the cron copy had silently
- * drifted **three terms** behind the others (#713 explicit guest nights, #2525
- * policy-exception reservations, and the ADR-001 whole-lodge hold), so it
- * under-reported occupancy and failed to warn on lodges that were genuinely
- * close to full. Every term now lives here exactly once, and
- * `src/lib/__tests__/night-occupancy-census.test.ts` fails the build if a sixth
- * copy appears or if any term is dropped from this function.
+ * It used to be written out SIX times — four near-identical copies in this
+ * file, one in `cron-capacity-warnings.ts`, and one in `validateCustodianBedHold`
+ * (`custodian-assignment.ts`). The cron copy had silently drifted **three
+ * terms** behind the others (#713 explicit guest nights, #2525 policy-exception
+ * reservations, and the ADR-001 whole-lodge hold) and the custodian copy one
+ * (#2525). Two of the cron's three misses made it under-report and stay silent
+ * about a lodge that was genuinely full; the #713 miss went the other way and
+ * made it over-report on a sparse stay's gap nights. Every term now lives here
+ * exactly once, and `src/lib/__tests__/night-occupancy-census.test.ts` fails the
+ * build if a seventh copy appears or if any term is dropped from this function.
  *
  * ## The terms, and the issue that added each
  *
@@ -469,9 +471,21 @@ export interface NightOccupancy {
  *
  * ## Lock topology is unchanged
  *
+ * No read moved OUT of a lock, which is the direction that could oversell.
  * Every read happens on the caller's `db`, which is the caller's transaction
- * client whenever it has one, so exactly the same reads happen inside exactly
- * the same `acquireLodgeCapacityLock` as before this was extracted.
+ * client whenever it has one, so the four engines make byte-for-byte the same
+ * reads on the same client inside the same `acquireLodgeCapacityLock` as
+ * before this was extracted. Two surfaces gain a read, both deliberately:
+ * `validateCustodianBedHold` gains the #2525 reservation read it was missing,
+ * INSIDE the same per-lodge lock it already held; the capacity-warnings cron
+ * gains the reservation read and the guest-night rows, unlocked on `prisma` as
+ * that cron has always run. `getMonthAvailability` is unchanged and has never
+ * held a lock.
+ *
+ * `db` is optional and falls back to `prisma`, so a transactional caller that
+ * FORGOT to pass it would read outside its lock. That is the one way to
+ * reintroduce the hazard, so `night-occupancy-census.test.ts` asserts that
+ * every caller which has a transaction client passes it.
  */
 export async function computeNightOccupancy(input: {
   lodgeId: string;

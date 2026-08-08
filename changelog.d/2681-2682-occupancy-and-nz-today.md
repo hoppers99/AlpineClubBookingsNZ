@@ -6,32 +6,25 @@
 
   It did not count beds a *held* policy-exception request has provisionally
   reserved, so a lodge could be close to full with nobody being told. It had no
-  idea about exclusive whole-lodge holds, so a lodge booked out entirely for one
-  group never produced a fullness warning at all. And for a guest staying
-  non-consecutive nights it fell back to their first and last night, counting
-  them as present on the nights in between when they are not there. The first two
-  made the alert stay quiet when it should have spoken; the third could make it
-  speak on a night that was actually free.
+  idea about exclusive whole-lodge holds, so a small group booking out an entire
+  lodge never triggered the alert — the lodge was unbookable and looked nearly
+  empty. And for a guest staying non-consecutive nights it fell back to their
+  first and last night, counting them as present on the nights in between when
+  they are not there, so the alert could also speak about a night that was free.
 
-  All of that is fixed, and fixed at the cause rather than the symptom. The bed
-  count is now written once, in one place, and every screen and job that needs it
-  — the four booking and calendar checks, the nightly alert, and the hut-leader
-  bed-hold form — asks that one calculation. A new test refuses to let a seventh
-  copy appear, or a term be dropped from the one that remains. Nothing an
-  administrator does changes: the booking screens, the calendars and the
-  over-capacity confirmations all behave exactly as before, and the alert now
-  fires in the situations it was always meant to.
-
+  Nothing an administrator does changes. The booking screens, the calendars, the
+  member availability and the over-capacity confirmations all behave exactly as
+  they did; only the nightly alert's numbers move, and only towards the truth.
   One smaller fix rides along: the confirmation shown when a hut-leader bed hold
   would push a lodge past its ceiling was also missing the held-request beds, so
-  it could stay silent when the hold really did tip the lodge over. It now uses
-  the same calculation as everything else.
+  it could stay silent when the hold really did tip the lodge over. It now
+  counts them.
 
 - **Dates on the public booking forms and the finance screens now follow the New
   Zealand day, not the UTC day (#2682).** New Zealand is twelve to thirteen hours
   ahead of UTC, so for roughly the first half of every New Zealand day, "today"
-  in UTC is still yesterday here. Fifteen places in the system worked today's
-  date out the UTC way.
+  in UTC is still yesterday here — and a number of places in the system worked
+  today's date out the UTC way.
 
   Four of them mattered. The public *Request to Book* and *School Booking* forms
   set the earliest selectable night from that date, so anyone filling one in
@@ -41,9 +34,12 @@
   problem, so a treasurer reconciling in the morning saw a different day's
   numbers than they would that afternoon, with nothing having changed in between.
 
-  The remaining eleven only stamped a date onto a downloaded file's name or a
-  date-of-birth field's upper limit, so the effect was cosmetic — but they are all
-  converted too, so there is now nothing in the system that asks for "today" the
-  wrong way. A test freezes the clock at nine in the morning New Zealand time —
-  inside the window where the two dates disagree — and fails the build if the old
-  pattern reappears.
+  The rest only stamped a date onto a downloaded file's name or a date-of-birth
+  field's upper limit, and they are converted too. The profile page's
+  date-of-birth limit brought a small companion fix with it: the club system used
+  to refuse today's New Zealand date as "in the future" all morning, so the date
+  the form offered was a date it would then reject. It is accepted now.
+
+  Treasurers pulling the legacy finance export on an automatic overnight schedule
+  will see its "as at" label step forward one day, once, on the day this ships.
+  That is the correction, not a new drift.

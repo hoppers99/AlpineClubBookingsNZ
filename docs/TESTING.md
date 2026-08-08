@@ -118,6 +118,18 @@ generalised.
    `vitest.config.ts` pins `sequence.hooks: "stack"` so the setup file's
    `afterAll` restore stays last. The `vi.mock("@/lib/date-only", …)` idiom (see
    `site-banners.test.ts`) also still works and is unaffected.
+
+   The worked example is `nz-today-date-only.test.tsx` (#2682), which pins
+   `2026-06-30T21:00:00.000Z` — 09:00 on 1 July 2026 in New Zealand, and the
+   *previous* UTC day. Its whole subject is that the two disagree, so it also
+   shows the two guards a suite like that needs: it asserts up front that the
+   UTC day and the club day really are different (a fixture that drifted out of
+   the divergence window would otherwise pass vacuously), and it asserts that
+   `APP_TIME_ZONE` is still `Pacific/Auckland`, so a contributor doing what rule
+   6 below describes gets one clear environment failure instead of five that
+   read like product bugs. A suite that keeps the DEFAULT instant but hard-codes
+   fixture dates against it should assert that too — `night-occupancy-parity.test.ts`
+   (#2681) pins `getTodayDateOnly()` to `2026-07-01` for that reason.
 4. **Do not hand the clock back to the real calendar.** If your suite pins its
    own instant and wants to undo that, `vi.useRealTimers()` in an `afterEach` is
    safe — the root `beforeEach` re-freezes before the next test — but never rely

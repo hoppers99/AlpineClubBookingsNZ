@@ -2456,11 +2456,18 @@ wiring, checked against the contract above:
   four capacity engines (`checkCapacity`, `checkCapacityForGuestRanges`,
   `checkCapacityForPartnerSharedAdmission`, `getMonthAvailability`), the
   capacity-warnings cron and the custodian bed-hold write path all read through.
-  The lock topology is unchanged: `computeNightOccupancy` reads on the caller's
-  transaction client, so the reservation is still read inside the same per-lodge
-  capacity lock the claim is written under. Before #2681 the cron and the
-  custodian write path had their own occupancy copies and neither counted this
-  term at all.
+  The lock topology is unchanged — no lock key, acquisition site or acquisition
+  order moved, and no read left a lock. Which of those six readers is *under* a
+  lock differs, and always did: the three admission engines
+  (`checkCapacity`, `checkCapacityForGuestRanges`,
+  `checkCapacityForPartnerSharedAdmission`) and the custodian bed-hold write path
+  read on the caller's transaction client, so the reservation is still read inside
+  the same per-lodge capacity lock the claim is written under;
+  `getMonthAvailability` and the capacity-warnings cron read unlocked on bare
+  `prisma`, exactly as both did before, because both only display or warn and
+  neither admits anyone. Before #2681 the cron and the custodian write path had
+  their own occupancy copies and neither counted this term at all — so the
+  custodian write path, which does hold the lock, gains one read inside it.
 - **Request-hold writer (#2524 service, wired in #2525's integration)** —
   `createModificationExceptionRequest`
   (`booking-exception-request-service.ts`) reserves the incremental hold for a

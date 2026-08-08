@@ -6,12 +6,12 @@ import { describe, expect, it } from "vitest";
  * Census: there is ONE night-occupancy calculation, and it counts every term
  * (#2681).
  *
- * "How many beds are occupied at this lodge on this night" was written five
- * separate times — four near-identical copies in `capacity.ts` plus one in the
- * capacity-warnings cron — and the cron copy had drifted three terms behind the
- * others. A sixth copy in the custodian write path had drifted one term behind.
- * Each term was added by remembering to edit every copy, and for #2525 that did
- * not happen.
+ * "How many beds are occupied at this lodge on this night" was written SIX
+ * separate times — four near-identical copies in `capacity.ts`, one in the
+ * capacity-warnings cron, and one in the custodian bed-hold write path. The
+ * cron copy had drifted three terms behind the others and the custodian copy
+ * one. Each term was added by remembering to edit every copy, and for #2525
+ * that did not happen.
  *
  * The root cause is not the miss; it is that the inventory of occupancy terms
  * and the inventory of occupancy surfaces both lived in reviewers' heads. This
@@ -20,13 +20,22 @@ import { describe, expect, it } from "vitest";
  *
  *  - every TERM must still be summed inside `computeNightOccupancy`, and each
  *    term is summed there exactly once;
- *  - every SURFACE that computes per-night bed occupancy must call it;
- *  - every file that reads the capacity-holding booking population at all is
- *    enumerated below with what it does, so a new one has to be classified
- *    rather than quietly becoming copy number seven.
+ *  - every SURFACE that computes per-night bed occupancy must call it, and
+ *    every caller holding a transaction client must pass it;
+ *  - every file that reads the capacity-holding booking population, or counts
+ *    active guests per night, is enumerated below with what it does, so a new
+ *    one has to be classified rather than quietly becoming copy number seven.
  *
- * Adding an occupancy term means editing `computeNightOccupancy` and this list.
- * There is no third place to forget.
+ * ## What this census does and does not guarantee
+ *
+ * It is a SOURCE-TEXT census over `src/`, so be honest about its reach. What it
+ * guarantees is: no copy that reuses the shared occupancy helpers, the shared
+ * capacity-holding population filter, or the shared per-night guest counter can
+ * appear without being declared here. A copy that inlines its own
+ * `status: { in: [...] }` filter, its own night loop and its own arithmetic —
+ * naming none of those symbols — is invisible to it, as is anything under
+ * `scripts/` or `prisma/`. That residue is smaller than the six-copy inventory
+ * this replaces, and it is stated rather than implied.
  */
 
 const CAPACITY_MODULE = "src/lib/capacity.ts";
@@ -166,6 +175,47 @@ const NON_OCCUPANCY_READERS: Array<{
   },
 ];
 
+/**
+ * Files that count ACTIVE GUESTS per night with `countActiveGuestsForNight`.
+ *
+ * These are not occupancy copies — none of them answers "how many beds are
+ * taken at this lodge tonight" — but the helper is the one primitive from which
+ * a hand-rolled seventh copy could be built without naming any symbol in
+ * `TERM_SYMBOLS`, so a new user of it has to be classified here. That is not
+ * hypothetical: `hut-leader-coverage.ts` already sums it ACROSS bookings for a
+ * whole lodge, which is the closest shape in the tree to an occupancy copy.
+ */
+const PER_NIGHT_GUEST_COUNTERS: Array<{ file: string; why: string }> = [
+  {
+    file: "src/lib/booking-guest-stay-ranges.ts",
+    why: "defines countActiveGuestsForNight itself",
+  },
+  {
+    file: CAPACITY_MODULE,
+    why: "counts the PROPOSAL being tested (checkCapacityForGuestRanges, checkCapacityForPartnerSharedAdmission) — existing occupancy comes from computeNightOccupancy",
+  },
+  {
+    file: "src/app/api/admin/bookings/route.ts",
+    why: "per-BOOKING peak party size for the admin calendar row label; no lodge-wide sum",
+  },
+  {
+    file: "src/lib/finance-booking-metrics.ts",
+    why: "per-BOOKING guest-nights for revenue attribution; no bed count",
+  },
+  {
+    file: "src/lib/policies/booking-route-decisions.ts",
+    why: "group-discount applicability for ONE booking's party (#1930)",
+  },
+  {
+    file: "src/lib/policies/pricing.ts",
+    why: "group-discount rate substitution for ONE booking's party (#1930)",
+  },
+  {
+    file: "src/lib/hut-leader-coverage.ts",
+    why: "lodge-wide guests-per-night for the hut-leader coverage report — a STAFFING figure, not a bed count, and it is not compared against capacity. It selects only stayStart/stayEnd, so a sparse stay falls back to the #713 envelope and its guest total reads slightly high on a gap night; recorded here as a known reporting imprecision rather than a capacity defect",
+  },
+];
+
 function listSourceFiles(dir: string): string[] {
   return fs.readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
     const entryPath = path.join(dir, entry.name);
@@ -184,6 +234,23 @@ function mentions(source: string, symbol: string): boolean {
   return new RegExp(`\\b${symbol}\\b`).test(source);
 }
 
+/**
+ * Source with block and line comments removed.
+ *
+ * Every assertion in this file that asks "is this term still summed?" runs over
+ * the stripped text. Otherwise a comment is enough to satisfy it: deleting
+ * `+ reservationCount(night)` from the sum while leaving
+ * `// reservationCount(night) is handled elsewhere now` would pass, which is
+ * precisely the "documented but not enforced" failure this census exists to
+ * stop. Stripping also frees the docblocks to name the helpers in prose without
+ * moving any count.
+ */
+function withoutComments(source: string): string {
+  return source
+    .replace(/\/\*[\s\S]*?\*\//g, "")
+    .replace(/(^|[^:])\/\/[^\n]*/g, "$1");
+}
+
 /** The body of `computeNightOccupancy`, up to the next top-level declaration. */
 function computeNightOccupancySource(): string {
   const source = readRepoFile(CAPACITY_MODULE);
@@ -197,7 +264,7 @@ function computeNightOccupancySource(): string {
     source.indexOf("\n/**", start + 1),
   ].filter((index) => index > -1);
   const end = candidates.length > 0 ? Math.min(...candidates) : source.length;
-  return source.slice(start, end);
+  return withoutComments(source.slice(start, end));
 }
 
 describe("#2681 night-occupancy census: one calculation, every term", () => {
@@ -215,19 +282,33 @@ describe("#2681 night-occupancy census: one calculation, every term", () => {
   );
 
   it("sums each term exactly once in capacity.ts, so the four engines cannot diverge again", () => {
-    const source = readRepoFile(CAPACITY_MODULE);
+    // Comments stripped, so a docblock is free to name any of these in prose
+    // without moving a count — and cannot satisfy one either.
+    const source = withoutComments(readRepoFile(CAPACITY_MODULE));
     const countOf = (needle: string) => source.split(needle).length - 1;
 
     // One call each. Before #2681 these read 4, 4 and 4: one per engine.
-    expect(countOf("buildLodgeCustodianNightCounter(")).toBe(1);
-    expect(countOf("buildLodgePolicyExceptionReservationCounter(")).toBe(1);
-    expect(countOf("getOccupiedBedsForNightFromIndex(night, occupancyIndex)")).toBe(1);
+    expect(
+      countOf("buildLodgeCustodianNightCounter("),
+      "the custodian term (#2286) must be summed in exactly one place — computeNightOccupancy",
+    ).toBe(1);
+    expect(
+      countOf("buildLodgePolicyExceptionReservationCounter("),
+      "the policy-exception reservation term (#2525) must be summed in exactly one place — computeNightOccupancy",
+    ).toBe(1);
+    expect(
+      countOf("getOccupiedBedsForNightFromIndex(night, occupancyIndex)"),
+      "the booked-guest-nights term (#713) must be summed in exactly one place — computeNightOccupancy",
+    ).toBe(1);
 
     // buildWholeLodgeHoldIndex has exactly two call sites: the shared
     // calculation, and getLodgeHeldNights, which reports WHICH nights are held
     // rather than how many beds are taken. Its own query is the hold-only
     // population, so it is not an occupancy sum.
-    expect(countOf("buildWholeLodgeHoldIndex(")).toBe(3); // 1 definition + 2 calls
+    expect(
+      countOf("buildWholeLodgeHoldIndex("),
+      "buildWholeLodgeHoldIndex must have exactly its definition plus two call sites: computeNightOccupancy (the occupancy term) and getLodgeHeldNights (which nights are held, not how many beds are taken). A third call site is a new occupancy copy.",
+    ).toBe(3); // 1 definition + 2 calls
   });
 
   it("keeps the four engines and the cron on the one calculation", () => {
@@ -256,6 +337,53 @@ describe("#2681 night-occupancy census: one calculation, every term", () => {
       ).toBe(true);
     }
   });
+
+  /**
+   * `computeNightOccupancy`'s `db` is optional and falls back to `prisma`, so a
+   * caller that HAS a transaction client and forgets to pass it reads outside
+   * its own per-lodge capacity lock — silently, with no type error. That is the
+   * single-token way to reintroduce the overbooking hazard #2681 was told not
+   * to touch, so it is pinned here rather than left to review.
+   *
+   * The two surfaces absent from this list are absent on purpose:
+   * `getMonthAvailability` and the capacity-warnings cron have no transaction
+   * client and have never held a lock — both only display or warn.
+   */
+  const TRANSACTIONAL_CALLERS: Array<{ file: string; caller: string }> = [
+    { file: CAPACITY_MODULE, caller: "export async function checkCapacity(" },
+    {
+      file: CAPACITY_MODULE,
+      caller: "export async function checkCapacityForGuestRanges(",
+    },
+    {
+      file: CAPACITY_MODULE,
+      caller: "export async function checkCapacityForPartnerSharedAdmission(",
+    },
+    {
+      file: "src/lib/custodian-assignment.ts",
+      caller: "export async function validateCustodianBedHold(",
+    },
+  ];
+
+  it.each(TRANSACTIONAL_CALLERS)(
+    "keeps $caller reading occupancy on its own transaction client",
+    ({ file, caller }) => {
+      const source = readRepoFile(file);
+      const start = source.indexOf(caller);
+      expect(start, `${caller} must exist in ${file}`).toBeGreaterThan(-1);
+      const callIndex = source.indexOf("await computeNightOccupancy({", start);
+      expect(
+        callIndex,
+        `${caller} must get its occupancy from computeNightOccupancy`,
+      ).toBeGreaterThan(-1);
+      const callEnd = source.indexOf("});", callIndex);
+      const call = source.slice(callIndex, callEnd);
+      expect(
+        /^\s*db,\s*$/m.test(call),
+        `${caller} holds a transaction client, so it must pass \`db\` to computeNightOccupancy. Without it the occupancy read falls back to the bare \`prisma\` client and happens OUTSIDE that caller's per-lodge capacity lock.`,
+      ).toBe(true);
+    },
+  );
 
   it("lets no surface outside the calculation name an occupancy term", () => {
     const allowedElsewhere = new Map<string, string[]>();
@@ -304,6 +432,28 @@ describe("#2681 night-occupancy census: one calculation, every term", () => {
       expect(
         fs.existsSync(path.resolve(process.cwd(), file)),
         `${file} is declared in the occupancy census but no longer exists`,
+      ).toBe(true);
+    }
+  });
+
+  it("enumerates every per-night active-guest counter", () => {
+    const declared = new Set(
+      PER_NIGHT_GUEST_COUNTERS.map((counter) => counter.file),
+    );
+
+    const counters = listSourceFiles(path.resolve(process.cwd(), "src")).filter(
+      (file) => mentions(readRepoFile(file), "countActiveGuestsForNight"),
+    );
+
+    expect(
+      counters.filter((file) => !declared.has(file)),
+      "A new file counts active guests per night. If it sums them across bookings and compares the result against lodge capacity, it is an occupancy calculation — call computeNightOccupancy instead. Otherwise declare it in PER_NIGHT_GUEST_COUNTERS with what it counts and why that is not a bed count.",
+    ).toEqual([]);
+
+    for (const counter of PER_NIGHT_GUEST_COUNTERS) {
+      expect(
+        counters.includes(counter.file),
+        `${counter.file} is declared as a per-night guest counter but no longer uses countActiveGuestsForNight — drop the entry`,
       ).toBe(true);
     }
   });

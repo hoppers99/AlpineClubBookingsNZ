@@ -227,10 +227,21 @@ export async function validateCustodianBedHold(input: {
   // reservations (#2525), so a bed a held request had reserved was invisible
   // and the admin was not warned that the hold tips the lodge over.
   //
-  // The whole-lodge hold flag is deliberately NOT pinned here: an exclusive
-  // whole-lodge hold reserves the BOOKABLE lodge and the custodian's bed sits
-  // outside that pool, so the two never contend (docs/CAPACITY_MODEL.md,
-  // "Whole-lodge holds never contend").
+  // The whole-lodge hold flag is deliberately NOT pinned here, and the reason
+  // is a POLICY, not an arithmetic fact: a hold and a custodian hold do not
+  // block each other in either direction (docs/CAPACITY_MODEL.md, "Whole-lodge
+  // holds and custodian beds do not block each other"). Pinning would turn this
+  // advisory count into a hard "lodge is full" on every held night and refuse a
+  // hut leader a bed the club fully intends them to occupy.
+  //
+  // Do NOT restate that as "the custodian's bed is outside the held pool" — it
+  // is not. `getLodgeCapacityStatus` counts every active bed, including the
+  // custodian's, and `wholeLodgeHoldOccupiedBedNightsForPlanner` (#2317)
+  // expands a hold across every active bed too. The consequence is a real gap,
+  // stated rather than hidden: creating a custodian hold over an exclusively
+  // held night raises no warning at all, because this loop compares against the
+  // holding group's own headcount. Whether it should is an owner decision, not
+  // something #2681 changed.
   const occupancy = await computeNightOccupancy({
     lodgeId,
     from: startDate,

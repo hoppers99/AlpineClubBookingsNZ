@@ -51,9 +51,13 @@ export async function checkCapacityWarnings(): Promise<{ alertedDays: number }> 
     // availability engines. Until #2681 this cron computed occupancy itself and
     // was three terms behind them — it missed policy-exception reservations
     // (#2525), whole-lodge holds (ADR-001 #118), and explicit guest nights
-    // (#713, because it loaded `guests: true` rather than the night rows). All
-    // three pushed the same way: the cron UNDER-reported occupancy and failed
-    // to warn about lodges that were genuinely close to full.
+    // (#713, because it loaded `guests: true` rather than the night rows).
+    //
+    // The first two made it UNDER-report and stay silent about a lodge that was
+    // genuinely close to full. The third went the OTHER way: with no night rows
+    // a sparse, non-contiguous stay fell back to its stayStart/stayEnd
+    // envelope, so the cron OVER-reported on the gap nights and could warn
+    // about a night that was free.
     //
     // Custodian occupancy (#2286) is one of the shared terms, so it IS counted
     // here: this cron's whole job is to warn about fullness, and a bed held for

@@ -60,6 +60,7 @@ import SchoolBookingRequestPage from "@/app/(public)/school-bookings/page";
 import { getFinanceBookingMetrics } from "@/lib/finance-booking-metrics";
 import { GET as getLegacyDashboardBookings } from "@/app/api/finance/legacy-dashboard/bookings/route";
 import { todayDateOnlyForTimeZone } from "@/lib/date-only";
+import { APP_TIME_ZONE } from "@/config/operational";
 
 function mockPublicSettingsFetch() {
   global.fetch = vi.fn(async (input: RequestInfo | URL) => {
@@ -89,6 +90,18 @@ afterEach(() => {
 });
 
 describe("#2682 the fixture really is inside the UTC/NZ divergence window", () => {
+  it("runs with the club time zone actually set to New Zealand", () => {
+    // docs/TESTING.md rule 6: setting TZ=UTC to imitate the CI runner ALSO
+    // moves APP_TIME_ZONE, because it is `process.env.TZ || NEXT_PUBLIC_TZ ||
+    // "Pacific/Auckland"`. This suite's entire premise is that the club day and
+    // the UTC day differ, so under TZ=UTC every assertion below goes red and
+    // reads like a product bug. Say what happened instead.
+    expect(
+      APP_TIME_ZONE,
+      "This suite exists to prove the club day and the UTC day differ, so it needs the club zone to be New Zealand. TZ (or NEXT_PUBLIC_TZ) is overriding APP_TIME_ZONE — see docs/TESTING.md rule 6.",
+    ).toBe("Pacific/Auckland");
+  });
+
   it("is a different calendar day in UTC than in New Zealand", () => {
     expect(new Date().toISOString().slice(0, 10)).toBe(UTC_DAY);
     expect(todayDateOnlyForTimeZone()).toBe(NZ_DAY);
@@ -178,12 +191,24 @@ describe("#2682 no surface derives today from UTC any more", () => {
     });
   }
 
-  it("leaves no `new Date().toISOString()` date-only slice in non-test src/", () => {
-    // All three truncations, not just the two the audit found: `.slice(0, 10)`,
-    // `.split("T")[0]` and `.substring(0, 10)` are the same mistake written
-    // three ways, and two of the fifteen sites used the third form.
-    const utcToday =
-      /new Date\(\)\s*\.toISOString\(\)\s*\.(slice\(\s*0\s*,\s*10\s*\)|substring\(\s*0\s*,\s*10\s*\)|split\(\s*"T"\s*\)\s*\[\s*0\s*\])/;
+  it("leaves no clock-read date-only truncation in non-test src/", () => {
+    // The same mistake has several spellings, and the audit's grep only knew
+    // two of them — which is why it reported thirteen sites when there were
+    // fifteen. The receiver forms (`new Date()`, `new Date(Date.now())`) and
+    // the truncations (`.slice(0, 10)`, `.substring(0, 10)`, `.substr(0, 10)`,
+    // `.split("T")[0]` in either quote style) are matched as an explicit
+    // cross-product, plus `.toJSON()` which is `.toISOString()` by another name.
+    //
+    // Bounded deliberately: this matches only a truncation applied DIRECTLY to
+    // a freshly constructed Date. Truncating an existing `@db.Date` value the
+    // same way is legitimate (~119 sites) and is the subject of #2684's lint
+    // rule, so it stays out of scope here. The gap that leaves — assigning the
+    // clock to a variable first, or truncating a `DateTime` column such as
+    // `createdAt` — is real and is why the lint rule in #2684 exists.
+    const clock = String.raw`new Date\(\s*(?:Date\.now\(\)\s*)?\)`;
+    const iso = String.raw`\.(?:toISOString|toJSON)\(\)`;
+    const truncation = String.raw`\.(?:slice|substring|substr)\(\s*0\s*,\s*10\s*\)|\.split\(\s*["']T["']\s*\)\s*\[\s*0\s*\]`;
+    const utcToday = new RegExp(`${clock}\\s*${iso}\\s*(?:${truncation})`);
 
     const offenders = listSourceFiles(SOURCE_ROOT).filter((file) =>
       utcToday.test(fs.readFileSync(path.resolve(process.cwd(), file), "utf8")),
@@ -203,14 +228,50 @@ describe("#2682 no surface derives today from UTC any more", () => {
       const source = fs.readFileSync(path.resolve(process.cwd(), page), "utf8");
       // The byte-identical private `todayDateOnly()` in both files is what made
       // this a copy-paste defect rather than a one-off; a third public form
-      // would have copied it again.
+      // would have copied it again. Arrow-function and `const` spellings count
+      // as "its own helper" too.
       expect(
-        /function\s+\w*[Tt]oday\w*\s*\(/.test(source),
+        /(?:function\s+\w*[Tt]oday\w*\s*\(|(?:const|let)\s+\w*[Tt]oday\w*\s*(?::[^=]+)?=\s*(?:\(|async|function))/.test(
+          source,
+        ),
         `${page} must not define its own "today" helper — import todayDateOnlyForTimeZone from @/lib/date-only`,
       ).toBe(false);
-      expect(source).toContain(
-        'import { todayDateOnlyForTimeZone } from "@/lib/date-only";',
-      );
+      // Imported from the canonical module, however the import is spelled — a
+      // second symbol added to the same statement must not red the build.
+      expect(
+        /import\s*\{[^}]*\btodayDateOnlyForTimeZone\b[^}]*\}\s*from\s*["']@\/lib\/date-only["']/.test(
+          source,
+        ),
+        `${page} must import todayDateOnlyForTimeZone from @/lib/date-only`,
+      ).toBe(true);
+    }
+  });
+
+  it("compares a date of birth against the NZ day, not the raw clock", () => {
+    // #2682 moved the profile form's date-of-birth `max` from the UTC day to
+    // the NZ day. `parseDateOnly("<NZ day>")` is UTC midnight of that day,
+    // which is still in the FUTURE of the raw clock until midday NZ — so a
+    // server guard written as `dob > new Date()` would refuse the very date its
+    // own picker offers, for the first half of every NZ day. Every guard must
+    // compare date-only against date-only.
+    const guards = [
+      "src/app/api/profile/route.ts",
+      "src/app/api/members/family/request-adult/route.ts",
+      "src/app/api/members/family/request-child/route.ts",
+      "src/app/api/members/family/create-group/route.ts",
+      "src/app/api/members/family/[memberId]/details/route.ts",
+    ];
+
+    for (const guard of guards) {
+      const source = fs.readFileSync(path.resolve(process.cwd(), guard), "utf8");
+      expect(
+        source.includes("Date of birth cannot be in the future"),
+        `${guard} is listed as a date-of-birth guard but no longer refuses a future date`,
+      ).toBe(true);
+      expect(
+        /\b(?:dob|dateOfBirth|childDob)\s*>\s*new Date\(\)/.test(source),
+        `${guard} compares a date-only date of birth against the raw clock. Use getTodayDateOnly() so today's NZ date — the date the form's own picker offers — is accepted (#2682).`,
+      ).toBe(false);
     }
   });
 });
