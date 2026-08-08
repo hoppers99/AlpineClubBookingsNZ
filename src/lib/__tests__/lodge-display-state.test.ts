@@ -1160,6 +1160,85 @@ describe("buildDisplayState expected arrival time (#2621)", () => {
     expect(state!.bookings[0].arrivalTime).toBe("17:30");
   });
 
+  it("withholds the time when the ROW starts mid-window but the BOOKING checked in earlier", async () => {
+    // The discriminating case, and the one an in-window test alone cannot see.
+    // The booking checked in on the 11th — before the board — but its only guest
+    // in view has their own later stayStart (#713 partial stay) on the 14th. The
+    // row therefore begins INSIDE the window, so an "is the row in the window"
+    // test passes, while the time the row would print describes an arrival that
+    // happened three days ago. There is one arrival time per BOOKING, so it may
+    // only ride the row that is actually the booking's arrival.
+    mockPrisma.booking.findMany.mockResolvedValue([
+      booking(
+        "b1",
+        ADULT_ORGANISER,
+        [guest("Jane", "Smith", "ADULT", { start: "2026-04-14", end: "2026-04-15" })],
+        { checkIn: "2026-04-11", checkOut: "2026-04-15" },
+        false,
+        "17:30"
+      ),
+    ]);
+    const { buildDisplayState } = await import("@/lib/lodge-display-state");
+    const state = await buildDisplayState("lodge-a");
+
+    const row = state!.bookings[0];
+    // Named, and starting inside the window, so neither the name gate nor the
+    // window check is what is stopping it.
+    expect(row.guests?.map((g) => g.label)).toEqual(["Jane S"]);
+    expect(row.stayStart).toBe("2026-04-14");
+    expect(row.arrivalTime).toBeNull();
+  });
+
+  it("shows the time on the arriving room row of a split booking, and on no other room row", async () => {
+    // Same booking, two rooms, one arrival time. Bed allocation splits it into
+    // one row per room; the room whose guest joins later in the stay begins
+    // mid-window, so the naive in-window check would print the booking's arrival
+    // time on both bars — the second one reading as "this room arrives at 5:30
+    // tonight" when that party arrived on the 13th.
+    mockFlags.mockResolvedValue({ bedAllocation: true, chores: false });
+    mockPrisma.lodgeRoom.findMany.mockResolvedValue([
+      { id: "room-1", name: "Kea" },
+      { id: "room-2", name: "Tui" },
+    ]);
+    mockPrisma.booking.findMany.mockResolvedValue([
+      booking(
+        "b1",
+        ADULT_ORGANISER,
+        [
+          guest(
+            "Jane",
+            "Smith",
+            "ADULT",
+            { start: "2026-04-13", end: "2026-04-16" },
+            "room-1"
+          ),
+          guest(
+            "Rewi",
+            "Parata",
+            "ADULT",
+            { start: "2026-04-15", end: "2026-04-16" },
+            "room-2"
+          ),
+        ],
+        { checkIn: "2026-04-13", checkOut: "2026-04-16" },
+        false,
+        "17:30"
+      ),
+    ]);
+    const { buildDisplayState } = await import("@/lib/lodge-display-state");
+    const state = await buildDisplayState("lodge-a");
+
+    const kea = state!.bookings.find((r) => r.roomId === "room-1")!;
+    const tui = state!.bookings.find((r) => r.roomId === "room-2")!;
+    expect(kea.stayStart).toBe("2026-04-13");
+    expect(kea.arrivalTime).toBe("17:30");
+    expect(tui.stayStart).toBe("2026-04-15");
+    // Named, in the window, same booking, same stored time — and still no time,
+    // because this row is not the booking's arrival.
+    expect(tui.guests?.map((g) => g.label)).toEqual(["Rewi P"]);
+    expect(tui.arrivalTime).toBeNull();
+  });
+
   it("drops a malformed legacy value rather than printing it on a public screen", async () => {
     mockPrisma.booking.findMany.mockResolvedValue([
       booking(

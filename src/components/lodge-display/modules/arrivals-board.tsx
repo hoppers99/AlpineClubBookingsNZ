@@ -223,17 +223,29 @@ export function ArrivalsBoard({
                       )}
                     </span>
                     {/* #2621: the expected arrival time, for tonight's (or a
-                        later window day's) arrivals. Rendered from the payload
-                        only — `lodge-display-state` has already decided
-                        whether this wall may show it at all, applying the SAME
-                        name gate that filled `guests`, so a row that shows no
-                        names carries no time to print. The extra
-                        `!startsBeforeWindow` here is the board's own local
+                        later window day's) arrivals. Three conditions, and this
+                        module enforces all three itself rather than trusting the
+                        payload for any of them.
+
+                        `!grouped` is the NAME GATE, restated here. `guests ===
+                        null` is exactly the state `lodge-display-state` puts a
+                        row into when the wall may not name the people on it (a
+                        minor in the party, an organisation organiser, a
+                        whole-lodge blockout, COUNTS_ONLY granularity), and this
+                        bar then prints "label · count" instead of names. A
+                        movement time beside that is the same disclosure the
+                        label was chosen to avoid, so it is refused HERE too —
+                        the state layer having refused it as well is defence in
+                        depth, not a reason for this component to skip the check.
+                        Deferring to the payload is what made the earlier guard
+                        vacuous.
+
+                        `!startsBeforeWindow` is the board's own local clip
                         guard: this module can be configured to show fewer days
-                        than the state window, and a bar clipped at the left
-                        edge must not sprout an arrival time for a day the
-                        viewer cannot see. */}
-                    {row.arrivalTime && !layout.startsBeforeWindow && (
+                        than the state window, and a bar clipped at the left edge
+                        must not sprout an arrival time for a day the viewer
+                        cannot see. */}
+                    {!grouped && row.arrivalTime && !layout.startsBeforeWindow && (
                       <span className="display-bar-arrival">
                         arr {formatArrivalTime(row.arrivalTime)}
                       </span>

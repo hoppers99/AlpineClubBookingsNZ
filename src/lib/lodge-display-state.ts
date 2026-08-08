@@ -579,8 +579,8 @@ export async function buildDisplayState(
       const stayStarts = guests.map((g) => getGuestStayStart(g, booking).getTime());
       const stayEnds = guests.map((g) => getGuestStayEnd(g, booking).getTime());
       const rowStayStart = Math.min(...stayStarts);
-      // #2621 — the expected arrival time, and the three things that must all
-      // be true before an unauthenticated wall may print it.
+      // #2621 — the expected arrival time, and the four things that must all be
+      // true before an unauthenticated wall may print it.
       //
       // 1. `namesAllowed`. Identical gate to `guests` below, deliberately
       //    re-used rather than re-derived: a row the wall may not name may not
@@ -588,10 +588,24 @@ export async function buildDisplayState(
       //    booking, an organisation organiser, a whole-lodge blockout or
       //    COUNTS_ONLY granularity each suppress it, exactly as they suppress
       //    the names.
-      // 2. The arrival is inside the window. A time-of-day printed against a
-      //    stay that started before the board's first day reads as tonight, and
-      //    would be wrong every day after the first.
-      // 3. The stored value matches the canonical shape. The wall is stricter
+      // 2. The row's own start is inside the window. A time-of-day printed
+      //    against a bar that begins before the board's first day reads as
+      //    tonight, and would be wrong every day after the first.
+      // 3. THE ROW STARTS AT THE BOOKING'S CHECK-IN. The stored value describes
+      //    when the BOOKING arrives, and nothing else — there is one time per
+      //    booking, no per-guest and no per-room time. A row's start can be
+      //    later than the booking's check-in in two ordinary ways: a guest with
+      //    their own later `stayStart` (a partial stay, #713), and a per-room
+      //    split where one room fills up later in the stay. In both cases
+      //    condition 2 is satisfied while the booking itself checked in days
+      //    earlier, and the bar would print `arr 5:30 PM` beside a mid-window
+      //    start as though that party were arriving tonight. So the time rides
+      //    only the row that really is the booking's arrival; every other row of
+      //    the same booking shows none. (`rowStayStart` is a date-only
+      //    millisecond value on both sides — `getGuestStayStart` falls back to
+      //    `booking.checkIn` itself — so the equality is exact, not a
+      //    same-day-ish comparison.)
+      // 4. The stored value matches the canonical shape. The wall is stricter
       //    than the kiosk here — this file is the single enforcement point for
       //    what a public screen may show, so it renders only values of the
       //    known form, and a malformed pre-#2621 row degrades to no time rather
@@ -604,6 +618,7 @@ export async function buildDisplayState(
         namesAllowed &&
         booking.expectedArrivalTime !== null &&
         rowStayStart >= startDate.getTime() &&
+        rowStayStart === booking.checkIn.getTime() &&
         isValidArrivalTime(booking.expectedArrivalTime)
           ? booking.expectedArrivalTime
           : null;

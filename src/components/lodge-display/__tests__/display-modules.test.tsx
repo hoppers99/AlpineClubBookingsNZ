@@ -228,11 +228,14 @@ describe("ArrivalsBoard", () => {
     expect(screen.getByText("+5")).toBeDefined();
   });
 
-  // #2621: the expected arrival time chip. The privacy decision is made in
-  // `lodge-display-state` — by the time a payload reaches this module, a row
-  // the wall may not name already carries `arrivalTime: null`. What is tested
-  // here is that the module prints what it is given, in the 12-hour form the
-  // kiosk and the booking page use, and that it stays quiet otherwise.
+  // #2621: the expected arrival time chip. `lodge-display-state` makes the same
+  // privacy decision upstream, but this module does NOT rely on that: the
+  // name-suppression case below hands it a payload with a time on a
+  // name-withheld row — the shape a mistake upstream, a hand-built payload or a
+  // future caller would produce — and requires the module to refuse it anyway.
+  // What is tested besides that is that the module prints what it is given, in
+  // the 12-hour form the kiosk and the booking page use, and stays quiet
+  // otherwise.
   it("shows the expected arrival time on a bar that starts inside the window", () => {
     const { container } = render(
       <ArrivalsBoard
@@ -276,10 +279,17 @@ describe("ArrivalsBoard", () => {
     expect(container.querySelector(".display-bar-arrival")).toBeNull();
   });
 
-  it("never shows a time on a row whose names are withheld", () => {
-    // Belt and braces against the payload: a grouped row renders "label ·
-    // count" instead of names, and must not grow a movement time beside it even
-    // if a caller hands one in.
+  it("PRIVACY: never shows a time on a row whose names are withheld, even when the payload carries one", () => {
+    // The guard that matters, exercised against the payload it is meant to
+    // survive. `guests: null` is what the wall serialiser produces for a row it
+    // may not name; such a row renders "label · count" instead of names, and a
+    // movement time beside that is the same disclosure the label exists to
+    // avoid. Both name-withheld shapes are covered: a whole-lodge blockout and
+    // an ordinary grouped row (a party containing a minor, or COUNTS_ONLY).
+    //
+    // The time is handed in DELIBERATELY. An earlier version of this test passed
+    // `arrivalTime: null` and so asserted nothing whatsoever — the module could
+    // have printed every suppressed row's time and stayed green.
     const { container } = render(
       <ArrivalsBoard
         state={state({
@@ -290,13 +300,28 @@ describe("ArrivalsBoard", () => {
               label: "Harakeke College",
               guests: null,
               guestCount: 14,
-              arrivalTime: null,
+              arrivalTime: "17:30",
+            }),
+            row({
+              key: "b",
+              wholeLodge: false,
+              label: "Smith family",
+              guests: null,
+              guestCount: 4,
+              arrivalTime: "09:00",
             }),
           ],
         })}
       />
     );
     expect(container.querySelector(".display-bar-arrival")).toBeNull();
+    expect(screen.queryByText(/^arr /)).toBeNull();
+    expect(container.textContent).not.toContain("5:30 PM");
+    expect(container.textContent).not.toContain("9:00 AM");
+    // The rows themselves did render — otherwise this would pass for the wrong
+    // reason.
+    expect(screen.getByText("Harakeke College · 14")).toBeDefined();
+    expect(screen.getByText("Smith family · 4")).toBeDefined();
   });
 });
 
