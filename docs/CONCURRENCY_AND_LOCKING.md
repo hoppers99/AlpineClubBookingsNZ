@@ -1656,8 +1656,9 @@ takes `pg_advisory_xact_lock(1)` as its **first** statement, and in this
 interleaving that key is already held — by the date writer's own partner-share
 reconcile, which took the global key and is itself queued on a lodge key the
 merge holds. Postgres' `log_lock_waits` names all three: the merge waiting on the
-sweep's row, the date writer's reconcile holding `[0,1]` and waiting 114s on the
-merge's lodge key, and the hand placement waiting 114s on `[0,1]` behind it. A
+sweep's row (the test's park, not a production wait), the date writer's reconcile
+holding `[0,1]` and waiting 114s on the merge's lodge key, and the hand placement
+waiting 114s on `[0,1]` behind it. A
 three-party convoy, no cycle, and the escape is fenced by the global key it does
 not itself take.
 
