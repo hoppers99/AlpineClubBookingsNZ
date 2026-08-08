@@ -40,6 +40,9 @@ function row(overrides: Partial<DisplayStateBooking>): DisplayStateBooking {
     guestCount: 1,
     stayStart: "2026-04-13",
     stayEnd: "2026-04-15",
+    // #2621: no expected arrival time is the ordinary case, so the base fixture
+    // has none; the cases that exercise the chip set it explicitly.
+    arrivalTime: null,
     ...overrides,
   };
 }
@@ -130,7 +133,17 @@ describe("CSS-hook stability contract", () => {
       Component: ArrivalsBoard,
       fixture: state({
         rooms,
-        bookings: [row({ key: "a", roomId: "r1", guests: overflowGuests, guestCount: 7 })],
+        bookings: [
+          row({
+            key: "a",
+            roomId: "r1",
+            guests: overflowGuests,
+            guestCount: 7,
+            // #2621: the fixture has to exercise every declared hook, and
+            // `display-bar-arrival` only renders for a row that carries a time.
+            arrivalTime: "17:30",
+          }),
+        ],
       }),
     },
     {

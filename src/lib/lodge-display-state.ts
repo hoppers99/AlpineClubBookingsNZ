@@ -1,4 +1,5 @@
 import type { AgeTier, DisplayNameGranularity } from "@prisma/client";
+import { isValidArrivalTime } from "./arrival-time";
 import {
   getGuestStayEnd,
   getGuestStayStart,
@@ -76,6 +77,31 @@ export interface DisplayStateBooking {
   guestCount: number;
   stayStart: string;
   stayEnd: string;
+  /**
+   * The booking's expected arrival time as stored, `"HH:mm"` — display-only
+   * information so the wall can say when tonight's arrivals are due (#2621,
+   * owner decision 8 Aug). Null far more often than not, and null is the
+   * ordinary case.
+   *
+   * IT RIDES THE NAME GATE, NOT ITS OWN. It is only ever non-null on a row that
+   * is ALREADY naming individuals — the same `namesAllowed` decision that fills
+   * `guests`. A row the wall may not name (a booking with a minor, an
+   * organisation, a whole-lodge blockout, or COUNTS_ONLY granularity) gets no
+   * time either, because "the group in room B arrives at 5:30" is a movement
+   * fact about identifiable people on an unauthenticated public screen, and the
+   * whole point of withholding the names was to not publish facts about who
+   * those people are and what they are doing.
+   *
+   * It is also only non-null when the arrival falls INSIDE the board window: a
+   * stay that began before the window shows no time, because a time-of-day with
+   * no visible day beside it reads as "arriving at 5:30 today" for a guest who
+   * arrived last Tuesday.
+   *
+   * This field CHANGES NO COUNT. It is not read by the occupancy buckets, the
+   * night counts, the whole-lodge heuristic or anything else in this builder —
+   * it is carried alongside them, unread.
+   */
+  arrivalTime: string | null;
 }
 
 /**
@@ -331,6 +357,11 @@ export async function buildDisplayState(
         id: true,
         checkIn: true,
         checkOut: true,
+        // #2621: display-only information for the wall's arrival rows. Selected
+        // here, gated by `namesAllowed` and the window in the row builder below,
+        // and read by NOTHING in the occupancy, night-count, whole-lodge or
+        // chore logic in this file.
+        expectedArrivalTime: true,
         // Authoritative whole-lodge treatment (#122 / epic #116, ADR-001
         // decision 4): an explicit exclusive hold drives the blockout board,
         // with the sole-occupancy heuristic as the fallback for un-flagged
@@ -547,6 +578,50 @@ export async function buildDisplayState(
     for (const [roomId, guests] of byRoom) {
       const stayStarts = guests.map((g) => getGuestStayStart(g, booking).getTime());
       const stayEnds = guests.map((g) => getGuestStayEnd(g, booking).getTime());
+      const rowStayStart = Math.min(...stayStarts);
+      // #2621 — the expected arrival time, and the four things that must all be
+      // true before an unauthenticated wall may print it.
+      //
+      // 1. `namesAllowed`. Identical gate to `guests` below, deliberately
+      //    re-used rather than re-derived: a row the wall may not name may not
+      //    carry a movement time for the people on it either. A minor in the
+      //    booking, an organisation organiser, a whole-lodge blockout or
+      //    COUNTS_ONLY granularity each suppress it, exactly as they suppress
+      //    the names.
+      // 2. The row's own start is inside the window. A time-of-day printed
+      //    against a bar that begins before the board's first day reads as
+      //    tonight, and would be wrong every day after the first.
+      // 3. THE ROW STARTS AT THE BOOKING'S CHECK-IN. The stored value describes
+      //    when the BOOKING arrives, and nothing else — there is one time per
+      //    booking, no per-guest and no per-room time. A row's start can be
+      //    later than the booking's check-in in two ordinary ways: a guest with
+      //    their own later `stayStart` (a partial stay, #713), and a per-room
+      //    split where one room fills up later in the stay. In both cases
+      //    condition 2 is satisfied while the booking itself checked in days
+      //    earlier, and the bar would print `arr 5:30 PM` beside a mid-window
+      //    start as though that party were arriving tonight. So the time rides
+      //    only the row that really is the booking's arrival; every other row of
+      //    the same booking shows none. (`rowStayStart` is a date-only
+      //    millisecond value on both sides — `getGuestStayStart` falls back to
+      //    `booking.checkIn` itself — so the equality is exact, not a
+      //    same-day-ish comparison.)
+      // 4. The stored value matches the canonical shape. The wall is stricter
+      //    than the kiosk here — this file is the single enforcement point for
+      //    what a public screen may show, so it renders only values of the
+      //    known form, and a malformed pre-#2621 row degrades to no time rather
+      //    than to arbitrary text on a lobby TV.
+      //
+      // Nothing above touches a count. `stayStarts`/`stayEnds` are the existing
+      // arrays; `rowStayStart` only replaces the `Math.min` that was already
+      // inlined into `stayStart` below, and produces the identical value.
+      const arrivalTime =
+        namesAllowed &&
+        booking.expectedArrivalTime !== null &&
+        rowStayStart >= startDate.getTime() &&
+        rowStayStart === booking.checkIn.getTime() &&
+        isValidArrivalTime(booking.expectedArrivalTime)
+          ? booking.expectedArrivalTime
+          : null;
       rows.push({
         key: `row-${rows.length + 1}-${rowIndex++}`,
         label,
@@ -577,8 +652,9 @@ export async function buildDisplayState(
             })
           : null,
         guestCount: guests.length,
-        stayStart: formatDateOnly(new Date(Math.min(...stayStarts))),
+        stayStart: formatDateOnly(new Date(rowStayStart)),
         stayEnd: formatDateOnly(new Date(Math.max(...stayEnds))),
+        arrivalTime,
       });
     }
   }

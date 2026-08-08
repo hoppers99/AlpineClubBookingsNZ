@@ -86,25 +86,42 @@ export const AUDIT_CENSUS_TOTALS = {
    * there by luck, and reading either side's literal would have shipped a pin
    * that was quietly one short.
    *
-   * 421 -> 422 (#2649): the admin repair for a stranded zero-dollar waitlist
+   * 421 -> 423 (#2621): the expected-arrival-time route recorded nothing at all,
+   * and a Booking Officer may set that field on ANY member's booking (#1313
+   * option A2) — so a member seeing a time they did not set had no way to learn
+   * who set it. Its PUT and its DELETE now each write one `logAudit` row
+   * (`booking.expected_arrival_time.set` / `.cleared`), categorised `booking` at
+   * the site, and both carry `entityType`/`entityId` so they correlate to the
+   * booking; neither joins `UNCATEGORISED_AUDIT_WRITERS` below. (Re-measured on merged
+   * tree, #2621: this branch's own pins were taken against a base that predated
+   * #2352, #2623 and #2627, so the literals here come from running the census
+   * after the merge rather than from adding the deltas up.)
+   *
+   * 423 -> 424 (#2649): the admin repair for a stranded zero-dollar waitlist
    * confirm writes `waitlist.returned_to_waitlist` with the awaited
-   * `createAuditLog`, inside the claim's own transaction, because the row is
-   * the other half of the `waitlist.confirm_offer_release_failed` trail #2648
+   * `createAuditLog`, inside the claim's own transaction, because the row is the
+   * other half of the `waitlist.confirm_offer_release_failed` trail #2648
    * opened — its metadata carries that row's id, so the strand and its repair
    * are linked in both directions. Categorised `booking` at the site, so it does
-   * not join `UNCATEGORISED_AUDIT_WRITERS` below. MEASURED with
-   * `npm run audit:census` on the merged tree, not derived from this comment
-   * chain: the census reports 422 row-producing sites, `createAuditLog` 103,
-   * `booking` 81.
+   * not join `UNCATEGORISED_AUDIT_WRITERS` below.
+   *
+   * THE GATE EARNED ITS KEEP A THIRD TIME HERE. This branch first pinned 422,
+   * measured against a base without #2621; #2621 reached main with 423. The two
+   * literals differed, so this one conflicted loudly rather than merging
+   * silently — but the honest number is neither, and it came from running
+   * `npm run audit:census` on the MERGED tree: 424 row-producing sites,
+   * `createAuditLog` 103, `logAudit` 241, `booking` 83.
    */
-  writeSites: 422,
+  writeSites: 424,
   /** Of those, sites whose event object carries no `category` key. */
   uncategorised: 82,
   /** Per-sink totals, so a shift between forms cannot cancel out in the total. */
   bySink: {
     // 238 -> 239 (#2623): the waitlist-confirm recovery marker, fire-and-forget
     // outside every transaction because its own failure must not mask the strand.
-    logAudit: { total: 239, uncategorised: 69 },
+    // 239 -> 241 (#2621): the two arrival-time writers, above (re-measured on
+    // merged tree, #2621).
+    logAudit: { total: 241, uncategorised: 69 },
     // 101 -> 102 (#2627): the deletion-approval release, above.
     // 102 -> 103 (#2649): the return-to-waitlist repair, above.
     createAuditLog: { total: 103, uncategorised: 11 },
@@ -119,19 +136,24 @@ export const AUDIT_CENSUS_TOTALS = {
    * (#2581 decisions 1 and 2), which is why `account` is 15 rather than 10 and
    * `security` is 16 rather than 15.
    *
-   * `booking` is 80 rather than 79 since #2623 (the stranded waitlist-confirm
-   * recovery marker above). Correlation reads of `booking` require `support` plus
+   * `booking` is 82 rather than 79: #2623 added the stranded waitlist-confirm
+   * recovery marker above, and #2621 the two arrival-time rows below.
+   * Correlation reads of `booking` require `support` plus
    * `bookings` (`AUDIT_CORRELATION_DOMAIN_AREAS`), which the lodge administrators
    * who have to act on that row already hold — so this adds no reader who could not
    * already see the booking the row names.
    */
   categoryValues: {
     account: 15,
-    // 80 -> 81 (#2649): `waitlist.returned_to_waitlist`. The same category the
-    // strand row it resolves already uses, readable with support:view +
-    // bookings:view — so it reaches exactly the administrators who can already
-    // see the booking it names, and nobody new.
-    booking: 81,
+    // 80 -> 82 (#2621): `booking.expected_arrival_time.set` and `.cleared`. Read
+    // with `support:view` plus `bookings:view`, like every other booking row
+    // beside them — and the booking officers who can set this field already hold
+    // both — so this widens nobody's access. (Re-measured on merged tree, #2621.)
+    // 82 -> 83 (#2649): `waitlist.returned_to_waitlist`. The same category the
+    // strand row it resolves already uses, and the same two reads — so it
+    // reaches exactly the administrators who can already see the booking it
+    // names, and nobody new.
+    booking: 83,
     payment: 16,
     family: 27,
     // 117 -> 118 (#2352 MC-03D): `PAGE_CONTENT_DELETED`. `admin` is the same

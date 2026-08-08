@@ -39,6 +39,8 @@ const WHOLE_LODGE_ROW = {
   guestCount: 14,
   stayStart: "2026-04-13",
   stayEnd: "2026-04-15",
+  // #2621: no expected arrival time in this fixture.
+  arrivalTime: null,
 } as const;
 
 describe("condition engine (namespaced registry — ADR-003 §3)", () => {
@@ -332,6 +334,8 @@ describe("rotation eligibility (AC4/AC5)", () => {
             guestCount: 14,
             stayStart: "2026-04-13",
             stayEnd: "2026-04-15",
+            // #2621: no expected arrival time in this fixture.
+            arrivalTime: null,
           },
         ],
       })

@@ -87,6 +87,11 @@ it covers, carrying its check-out date; bars wrap to show up to five names, then
 
 ![Everyday board — booking bars](mockups/screenshots/everyday-bar-board.png)
 
+This still was captured by hand before #2621 and so does not show the expected
+arrival time that a named, in-window arriving bar now carries. The HTML mockup,
+[`mockups/everyday-bar-board.html`](mockups/everyday-bar-board.html), is current
+and is the reference to work from.
+
 ### Whole-lodge bookings — blockout
 
 When a group books the entire lodge (no room assignment), the board shows the
