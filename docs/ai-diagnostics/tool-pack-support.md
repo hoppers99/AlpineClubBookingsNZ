@@ -160,7 +160,7 @@ sites, of which 82 passed no category**, when #2581 opened: 69 through `logAudit
 through `createAuditLog`, 2 hand-built Prisma writes, and none through
 `createStructuredAuditLog`.
 
-**All 82 have now been classified at the source.** The census reads **424 write sites and
+**All 82 have now been classified at the source.** The census reads **426 write sites and
 zero uncategorised**, so no *new* audit row is born invisible to these five entries. What
 each site was given is recorded site by site in `APPLIED_AUDIT_CATEGORIES`
 (`scripts/audit/audit-writer-census-manifest.ts`), and the contract test compares that

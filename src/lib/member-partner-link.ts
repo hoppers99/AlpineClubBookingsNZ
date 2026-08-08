@@ -17,6 +17,7 @@ import {
   sweepFuturePartnerSharedAllocationsWithLocksHeld,
   type SweptPartnerSharedAllocation,
 } from "@/lib/bed-allocation-lifecycle";
+import { acquireMemberPartnerLinkLocks } from "@/lib/member-partner-lock";
 
 // Declared Partner/Husband/Wife relationship between two ADULT members
 // (#1742). The row is a canonical ordered pair (memberAId < memberBId; DB
@@ -165,9 +166,7 @@ function notifyAdminsOfDissolveSweep(
  * deadlock; pg_advisory_xact_lock releases automatically at commit/rollback.
  */
 async function lockPartnerMembers(tx: TransactionClient, memberIds: string[]) {
-  for (const memberId of [...memberIds].sort()) {
-    await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${`member-partner-link:${memberId}`}))`;
-  }
+  await acquireMemberPartnerLinkLocks(tx, memberIds);
 }
 
 async function memberHasConfirmedPartner(

@@ -765,7 +765,45 @@ derivation).
   are exactly the dissolved pair; deactivation/tier change sweeps any future
   shared bed-night involving the member on either side. Past lodge nights are
   history and stay untouched, and the sweep is idempotent (a second run finds
-  nothing). Membership cancellation and archive need no sweep call: approval
+  nothing).
+
+  **Member merge is the fifth writer of this invariant, and needs its own,
+  validity-driven form (#2595).** Merge is not a pair-breaking event about one
+  pair — it COLLAPSES two identities. `planPartnerLinkMerge` keeps at most one
+  CONFIRMED partner for the surviving master, so merging a duplicate that
+  already had its own confirmed partner DROPS that link, and `applyMoves` then
+  re-points `BookingGuest.memberId` onto the master and leaves every bed
+  allocation exactly where it was — so the master and the duplicate's
+  ex-partner are left sharing a future DOUBLE with nothing behind it. Neither
+  #1756 scope fits: the pair scope knows only one pair (a merge can invalidate
+  several bed-nights against several counterparts), and the member scope would
+  also remove the master's OWN still-CONFIRMED share, which the merge did
+  nothing to invalidate. So merge runs
+  `sweepUnbackedFutureSharedDoublesWithLocksHeld`
+  (`bed-allocation-lifecycle.ts`) instead: for the `[master, loser]` scope it
+  re-derives each candidate future bed-night's actual two occupants and
+  re-asks the same single source of truth (`mayShareDoubleBedWith`, the
+  batched form of `mayShareDoubleBed`) whether they may still share, sweeping
+  ONLY the bed-nights that fail — again only the `isSecondOccupant` row, with
+  the same `BED_ALLOCATION_PARTNER_SHARE_SWEPT` audit against both bookings
+  (reason `members_merged`, `issue: 2595`) and the same post-commit admin
+  alert. A guest with no member on either side is unbacked by construction
+  (placement requires a member on both sides) and is swept without an
+  eligibility round-trip; a bed-night whose primary is missing is left to the
+  #1750 promotion pass rather than judged as a pair that does not exist. Being
+  validity-driven it is idempotent and vacuous on a merge that broke nothing.
+  Its lock prefix is DELIBERATELY narrower than its #1756 sibling's:
+  `acquireMemberMergePartnerSharedLodgeLocks` takes every affected lodge
+  capacity key in sorted order BEFORE any member-lifecycle key, and takes NO
+  global cohort `lock(1)` — a merge holds its keys for up to 120s and the global
+  key would reject every 5s-budget cohort writer in the club. What replaces it
+  is a wider lodge derivation (the members' future bed allocations UNION their
+  future guest-nights, so a lodge a placement could still land in is covered)
+  plus a run-time check: the sweep is handed the locked lodge set and refuses the
+  whole merge with a 409 rather than judge a bed-night outside it (see
+  docs/CONCURRENCY_AND_LOCKING.md -> "Merge joins the bed-allocation cohort").
+
+  Membership cancellation and archive need no sweep call: approval
   is blocked while ANY future booking or member guest appearance exists, so a
   cancellable member cannot occupy a future shared bed-night. Only an admin adds the second occupant on the board,
   and only onto a bed whose primary already **holds capacity** — so displacement
@@ -1038,27 +1076,41 @@ derivation).
   The same three paths (single-night/drag placements, `source: "AUTO"`
   suggestions, and move re-drafts) are why draft rows persist under #2251's
   auto-approve, and why a confirmation affordance stays meaningful.
-- **Existing allocation moves preserve their lodge nights and commit atomically
-  (#2366):** an existing-chip drag selects a destination bed only. The hovered
-  column is presentation input, never a target date; the server accepts
-  allocation ids and re-reads each persisted `stayDate` under global booking
-  `lock(1)` followed by the destination lodge's capacity lock. The shared
-  global key makes cancellation's allocation prune and the move mutually
-  exclusive, so a move can never resurrect a row after cancellation. A
-  first-visible chip proxies for that guest's currently
-  visible allocated nights, while a later chip represents only its own night.
-  Every selected row keeps its original NZ date. A same-bed normalized move is a
-  no-op at both client and service boundaries, with no request from the normal
-  client and no audit even if another client calls the route directly.
-  Multi-night existing-allocation moves are all-or-nothing: one destination
-  conflict, inactive bed/room, lodge mismatch, status/guest-date failure,
-  custodian hold or invalid double-bed share rolls back every row. The row
-  updates, any second-occupant promotions, and all corresponding audit entries
-  live in the same transaction. Each promotion audit identifies both the
-  promoted row/guest and the causal moved allocation/guest. This does not
-  change bucket-to-board placement,
-  whose existing bulk path continues to report and skip individual conflicting
-  nights while placing the rest.
+- **Existing allocation moves preserve their lodge nights, require review, and
+  commit atomically (#2366, #2595):** an existing-chip drag or **Move to bed**
+  menu choice selects a destination bed only. The hovered column is
+  presentation input, never a target date, and both pointer and keyboard paths
+  open the same confirmation dialog before any write. The reviewed request is
+  an exclusive typed shape: anchor allocation, destination bed,
+  `ALLOCATION_NIGHT` or `BOOKING_GUEST` scope, and `v1:<sha256>` preview digest.
+  The unchanged legacy `{ allocationIds, bedId }` request remains capped at the
+  31-night board limit for older callers; the board no longer uses it for an
+  existing-chip move.
+
+  Night scope resolves the anchor only. Person scope resolves every existing
+  row for that guest on that booking, including sparse/off-screen nights, up to
+  366; it creates no missing guest-night or allocation. Preview needs
+  `bookings:view`, writes nothing, and separates changed/noop rows while showing
+  approval re-draft, shared-double promotions, and every hard refusal. The
+  digest binds the full selected and relevant occupant sets plus booking,
+  guest-night, consent, member/age, partner-link, destination, custodian-hold,
+  whole-lodge-hold and derived feasibility state. Counterpart identities never
+  enter the response.
+
+  Apply needs `bookings:edit` and takes global `lock(1)` -> the complete sorted
+  source/destination/booking/occupant lodge union -> sorted member-lifecycle ->
+  sorted member-partner-link -> deterministic allocation-row locks. It re-reads
+  and re-digests before one guarded `UPDATE ... FROM (VALUES ...)` statement
+  (up to 366 rows, explicit 30-second transaction and 10-second acquisition
+  budgets). Cancellation uses the same global key, so a move can never resurrect
+  a pruned row. Changed rows keep their original NZ dates, become unapproved
+  `MANUAL` drafts, and commit with any partner promotions and bounded causal
+  audits. Unchanged rows are digest-bound but excluded from feasibility,
+  promotion, write, re-draft, and audit. An all-noop confirmation succeeds with
+  explicit feedback and no audit. Any stale fact, conflict, or guarded-count
+  mismatch returns/refuses atomically; a stale digest carries a refreshed
+  preview and requires confirmation again. Bucket-to-board placement keeps its
+  separate per-night partial-conflict contract.
 - **Destructive allocation removal is preview-bound and never replans
   (#2594):** every UI entry point uses
   `POST`/`PUT /api/admin/bed-allocation/allocations/removal`; the old direct
@@ -1123,8 +1175,8 @@ derivation).
   the board's READ window, not this write: lodge capacity is the active bed
   count and never reads `BedAllocation` rows. Placement paths nevertheless take
   the destination lodge's capacity lock because custodian holds share the bed
-  inventory (#2286); existing-allocation moves follow destination-key read →
-  lock → authoritative re-read. The separate write bound
+  inventory (#2286); reviewed existing-allocation moves take their complete
+  sorted lodge/member/row topology before an authoritative re-read. The separate write bound
   (`MAX_BED_ALLOCATION_ASSIGN_RANGE_NIGHTS`, 366) exists only to keep one
   transaction finite, and is **refused at, never silently truncated to** — as is
   every board window the admin types.
@@ -7014,7 +7066,8 @@ and is hard-deleted at the end. The merge is **additive and master-wins**:
   carries drift, and there is no drift field in the audit to read.
 - **Refused attempts are audited too (#2498).** Every refusal — self-merge,
   missing member, `merge_blocked`, wrong confirmation phrase, `preview_drift`,
-  and the `merge_drift_in_transaction` field/family-link arms — throws from
+  the #2595 `partner_share_lodge_drift` arm, and the
+  `merge_drift_in_transaction` field/family-link arms — throws from
   inside the transaction and rolls it (and the `MEMBER_MERGED` audit) back. A
   single boundary in `executeMemberMerge` then writes one best-effort
   `MEMBER_MERGE_REFUSED` audit (category `admin`, outcome `blocked`) on the base

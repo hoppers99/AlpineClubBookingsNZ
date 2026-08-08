@@ -151,7 +151,7 @@ more people, not fewer.
 
 `Category` is optional in the database, and **82 of the platform's places that
 record an audit entry used not to set one**. As of this release **none do**: all
-424 now record a category, measured on every build rather than estimated, and a
+426 now record a category, measured on every build rather than estimated, and a
 new one that forgot would fail the build by name.
 
 **Entries recorded before this release still have no category**, and there is no

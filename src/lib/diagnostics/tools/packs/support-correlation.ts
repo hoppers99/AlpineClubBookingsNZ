@@ -41,7 +41,7 @@
  * (`scripts/audit/audit-writer-census.ts`, pinned by
  * `src/lib/__tests__/audit-writer-census.test.ts`) counted 418 write sites and 82
  * uncategorised when #2581 opened. #2581's second child classified all 82 at the
- * source, so the census now reads 424 write sites and ZERO uncategorised: no NEW row
+ * source, so the census now reads 426 write sites and ZERO uncategorised: no NEW row
  * is born invisible to these five entries.
  *
  * THE GAP HAS NOT CLOSED, IT HAS STOPPED GROWING, and the distinction is the whole

@@ -57,10 +57,40 @@ describe("useScopedDashboard", () => {
     expect(result.current.value).toBeNull();
     expect(result.current.loading).toBe(false);
 
-    await act(async () => result.current.reload());
+    let refreshed = false;
+    await act(async () => {
+      refreshed = await result.current.reload();
+    });
+    expect(refreshed).toBe(true);
     expect(result.current.error).toBe("");
     expect(result.current.value).toBe("fresh-dashboard");
     expect(load).toHaveBeenCalledTimes(2);
+  });
+
+  it("fails closed and reports a failed refresh to its caller", async () => {
+    const refresh = deferred<string>();
+    const load = vi
+      .fn<(signal: AbortSignal) => Promise<string>>()
+      .mockResolvedValueOnce("current-dashboard")
+      .mockImplementationOnce(() => refresh.promise);
+    const { result } = renderHook(() =>
+      useScopedDashboard({ scopeKey: "A", load }),
+    );
+    await waitFor(() => expect(result.current.value).toBe("current-dashboard"));
+
+    let refreshResult: boolean | undefined;
+    act(() => {
+      void result.current.reload().then((value) => {
+        refreshResult = value;
+      });
+    });
+    await waitFor(() => expect(result.current.loading).toBe(true));
+    expect(result.current.value).toBeNull();
+
+    await act(async () => refresh.reject(new Error("refresh unavailable")));
+    await waitFor(() => expect(refreshResult).toBe(false));
+    expect(result.current.value).toBeNull();
+    expect(result.current.error).toBe("refresh unavailable");
   });
 
   it("ignores an A-bound optimistic rollback after B has loaded", async () => {

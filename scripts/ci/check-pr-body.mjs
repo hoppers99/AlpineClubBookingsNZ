@@ -25,6 +25,7 @@ import { execFileSync } from "node:child_process";
 
 import { validateConcurrencyDeclaration } from "./check-pr-concurrency-declaration.mjs";
 import { validateChangelogFragment } from "./check-pr-changelog-fragment.mjs";
+import { gitDiffChangedFiles, parseNameStatus } from "./pr-body.mjs";
 
 function parseArgs(argv) {
   const args = { file: null, base: "origin/main" };
@@ -38,16 +39,35 @@ function parseArgs(argv) {
   return args;
 }
 
-function changedFilesAgainst(base) {
+/**
+ * The diff, as `[{ status, path }]` records.
+ *
+ * This MUST go through the same `gitDiffChangedFiles` / `parseNameStatus` pair
+ * the CI gates use, for two reasons that both fail OPEN when it does not:
+ *
+ *  - `validateChangelogFragment` reads `change.path` off each element. Handing
+ *    it bare `--name-only` strings makes every path `undefined`, so
+ *    `isCodeBearing` sees nothing, the gate returns `not-code-bearing`, and it
+ *    reports PASS for any body at all — including one with no fragment and no
+ *    `changelog: none` marker. That is what this script did until #2664's
+ *    review caught it, which means every local PASS on that gate was hollow
+ *    while the CI gate went on failing the same PRs for real.
+ *  - `gitDiffChangedFiles` pins `core.quotePath=false`. Without it git escapes
+ *    non-ASCII paths, which anchor patterns like `^src/` and `^prisma/` then
+ *    fail to match — so a sensitive file stops being seen and a bare `N/A`
+ *    declaration is accepted.
+ *
+ * Status is also what distinguishes an ADDED fragment from the deletions a
+ * release-compile PR makes, so `--name-status` is required, not a nicety.
+ */
+function changesAgainst(base) {
   try {
     const mergeBase = execFileSync("git", ["merge-base", "HEAD", base], {
       encoding: "utf8",
     }).trim();
-    return execFileSync("git", ["diff", "--name-only", `${mergeBase}...HEAD`], {
-      encoding: "utf8",
-    })
-      .split(/\r?\n/)
-      .filter(Boolean);
+    return parseNameStatus(
+      gitDiffChangedFiles(mergeBase, "HEAD", { nameStatus: true }),
+    );
   } catch {
     console.warn(
       `! Could not diff against ${base}; checking the body shape only.\n` +
@@ -77,12 +97,16 @@ try {
   process.exit(2);
 }
 
-const changedFiles = changedFilesAgainst(base);
+const changes = changesAgainst(base);
+// The concurrency gate keys on paths alone; the changelog gate needs the status
+// as well. `parseNameStatus` expands a rename into its delete + add pair, so the
+// path list is deduped before the concurrency gate counts or matches it.
+const changedFiles = [...new Set(changes.map((change) => change.path))];
 const failures = [];
 
 for (const [label, run] of [
   ["Concurrency declaration", () => validateConcurrencyDeclaration(body, changedFiles)],
-  ["Changelog fragment", () => validateChangelogFragment(body, changedFiles)],
+  ["Changelog fragment", () => validateChangelogFragment(body, changes)],
 ]) {
   try {
     run();
