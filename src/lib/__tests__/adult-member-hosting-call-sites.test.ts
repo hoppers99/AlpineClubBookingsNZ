@@ -178,7 +178,6 @@ describe("combined member refusal and officer queue contracts", () => {
       const source = readRepoCode(file);
       expect(source, file).toContain(
         "enqueueHostingCoverageReevaluationForMember(",
-      "enqueueMemberMergeHostingCoveragePlan(",
       );
       expect(source, file).toContain("settleHostingCoverageAfterCommit(");
     }
@@ -551,11 +550,17 @@ describe("the same-owner refusal and the escalation seam (#2576 §6, §8, §9)",
     const ENQUEUE_SEAMS = [
       "enqueueOwnHostingCoverageReevaluation(",
       "enqueueHostingCoverageReevaluationForMember(",
+      "enqueueMemberMergeHostingCoveragePlan(",
       "reconcileAdultMemberHostingReviewWithSiblings(",
     ];
     const seamUsers = new Set<string>();
     for (const seam of ENQUEUE_SEAMS) {
-      for (const file of sourceFilesNaming(seam)) seamUsers.add(file);
+      const users = sourceFilesNaming(seam);
+      // A seam nobody calls contributes nothing, and a renamed seam left in this
+      // list would degrade the sweep to the hardcoded list it replaced without
+      // failing anything. Every entry has to be earning its place.
+      expect(users, seam).not.toEqual([]);
+      for (const file of users) seamUsers.add(file);
     }
     for (const file of [...seamUsers].sort()) {
       if (TX_SCOPED_HELPERS.includes(file)) continue;
