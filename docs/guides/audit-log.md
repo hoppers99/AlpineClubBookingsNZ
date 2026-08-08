@@ -136,9 +136,15 @@ administrator who made the change, so the only member timeline they reach is tha
 administrator's own. Two reach an ordinary member, and both are about that member:
 an **issue report** appears for the member who filed it, and a change to a
 member's **billing family** appears for the member it was made for. Neither shows
-the stored details, the request ID, the IP, or who the administrator was by name.
-Nothing that a member should not see about themselves became visible, and nothing
-stopped being visible.
+the stored details, the request ID, the IP or any drill-down link. **They do name
+who acted, unless that person is a Full Admin.** A member's view renders a Full
+Admin as "Club admin", but a scoped officer — a Finance Manager, say, who is not
+a Full Admin — is rendered by name. That is how every entry a member can already
+see has always worked; the billing-family entry is simply one more of them. If
+your club would rather scoped officers were anonymous on the member timeline,
+that is a change to the member view, not to these categories. Nothing that a
+member should not see about themselves became visible, and nothing stopped being
+visible.
 
 Two mismatches are worth remembering when you search, because they look like
 mistakes and are not. **Induction** entries are `lodge`, not membership. **Issue

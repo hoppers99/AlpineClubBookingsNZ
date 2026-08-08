@@ -48,6 +48,16 @@
   is removed sooner than seven years from now because of this, and entries already
   in the database are untouched.
 
+  **Twenty-six of those kinds now also appear on a member's own activity list**,
+  because that list is chosen by category too. Almost all of them are club-wide
+  rules recorded against the administrator who made the change, so the only list
+  they reach is that administrator's own. Two reach an ordinary member and both
+  are about that member: an issue report appears for whoever filed it, and a
+  change to a member's billing family appears for the member it was made for.
+  A member's view never shows the stored details, the request ID, the IP address
+  or any drill-down link; it does name who acted, unless that person is a Full
+  Admin, who is shown as "Club admin". Nothing stopped being visible.
+
   **Two entries were being recorded in a way that skipped the platform's own
   safeguards** — linking and unlinking a dependant wrote to the activity table
   directly, so those entries got no redaction of sensitive values and no retention

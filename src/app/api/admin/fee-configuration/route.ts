@@ -438,6 +438,29 @@ export async function POST(request: Request) {
         await tx.member.update({ where: { id: input.memberId }, data: { billingFamilyGroupId: input.billingFamilyGroupId } });
         targetId = input.memberId;
       }
+      // `payment` (#2581): fee configuration IS money configuration, and
+      // `payment` is `support` plus `finance` — the narrowest genuine gate for
+      // it. `admin`, the only alternative that would keep the row off the
+      // member timeline, reads with `support:view` ALONE, so it would widen the
+      // Diagnostics side to buy the member side.
+      //
+      // THE ONE PLACE IN #2581 CHILD 2 WHERE A CLASSIFICATION PUBLISHES A ROW
+      // TO SOMEBODY OTHER THAN THE ACTING ADMINISTRATOR. The
+      // `SET_MEMBER_BILLING_FAMILY` branch above sets `targetId =
+      // input.memberId`, and `buildMemberAuditLogWhere`'s `targetId` leg is what
+      // the member self-timeline matches on — so from here that member sees this
+      // row about their own billing-family selection. None of the other seven
+      // actions can: they write a membership-fee, joining-fee or family-group id.
+      //
+      // What the member gets, checked against `serializeAuditTimelineLog`:
+      // `details` is a JSON object, so it comes back `null` with `description:
+      // null`; `metadata`, `requestId`, `ipAddress`, `userAgent` and
+      // `retentionClass` are member-suppressed; `drilldowns` is empty. What they
+      // DO get is the actor — rendered "Club admin" only when that person's
+      // legacy `Member.role` is `ADMIN`; a scoped Finance Manager is rendered by
+      // name, exactly as on every row the member can already see. Accepted: the
+      // row is about the member's own billing arrangement, and the alternative
+      // costs more than it buys.
       await createAuditLog({
         action: `fee-configuration.${parsed.data.action.toLowerCase()}`,
         category: "payment",
