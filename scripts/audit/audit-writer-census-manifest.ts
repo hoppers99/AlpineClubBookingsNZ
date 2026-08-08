@@ -128,8 +128,32 @@ export const AUDIT_CENSUS_TOTALS = {
    * Re-measured on the merged tree by RUNNING the census, which reports 425.
    * A byte-identical pin across two branches is not agreement; it is a
    * collision that git cannot see.
+   *
+   * 425 -> 426 (#2649): the admin repair for a stranded zero-dollar waitlist
+   * confirm writes `waitlist.returned_to_waitlist` with the awaited
+   * `createAuditLog`, inside the claim's own transaction, because the row is the
+   * other half of the `waitlist.confirm_offer_release_failed` trail #2648
+   * opened — its metadata carries that row's id, so the strand and its repair
+   * are linked in both directions. Categorised `booking` at the site, so it does
+   * not join `UNCATEGORISED_AUDIT_WRITERS` below.
+   *
+   * AND THE GATE FIRED AGAIN ON THIS MERGE, IN THE EXACT SHAPE THE PARAGRAPH
+   * ABOVE DESCRIBES — a second time in one window, on a different line. This
+   * branch pinned `createAuditLog: 104` (102 -> 103 for the repair route, 103 ->
+   * 104 for the `logAudit` conversion below); #2595 pinned `createAuditLog: 104`
+   * for its two reviewed-move writes. Two different +2s, one identical literal,
+   * so git had nothing textual to report on the `bySink.createAuditLog` line and
+   * merged the VALUE silently while only the comments above it collided. The
+   * merged tree holds all four writers, so the honest figure is 106 and neither
+   * side's literal was it. Nor was `writeSites` self-checking here: this branch's
+   * total moved 423 -> 424 (+1 net, because the `logAudit` conversion moves a
+   * site between sinks rather than adding one), main's moved 423 -> 425, and the
+   * merged truth is 426 — a number reachable from neither literal alone.
+   * Re-measured on the merged tree by RUNNING `npm run audit:census`, never by
+   * adding deltas: 426 row-producing sites, `logAudit` 240, `createAuditLog`
+   * 106, `booking` 83, uncategorised 82.
    */
-  writeSites: 425,
+  writeSites: 426,
   /** Of those, sites whose event object carries no `category` key. */
   uncategorised: 82,
   /** Per-sink totals, so a shift between forms cannot cancel out in the total. */
@@ -138,10 +162,24 @@ export const AUDIT_CENSUS_TOTALS = {
     // outside every transaction because its own failure must not mask the strand.
     // 239 -> 241 (#2621): the two arrival-time writers, above (re-measured on
     // merged tree, #2621).
-    logAudit: { total: 241, uncategorised: 69 },
+    // 241 -> 240 (#2649 review): that same #2623 marker moved OUT of this sink —
+    // see `createAuditLog` below. Fire-and-forget was right while it was only a
+    // notification and wrong once a repair depended on it.
+    logAudit: { total: 240, uncategorised: 69 },
     // 101 -> 102 (#2627): the deletion-approval release, above.
     // 102 -> 104 (#2595): the two reviewed-move writes, above.
-    createAuditLog: { total: 104, uncategorised: 11 },
+    // 104 -> 105 (#2649): the return-to-waitlist repair, above.
+    // 105 -> 106 (#2649 review): `waitlist.confirm_offer_release_failed` in
+    // `waitlist-confirm/route.ts` converted from `logAudit` to an AWAITED
+    // `createAuditLog` (still `.catch`-guarded, so a failed write logs and the
+    // operator-door response is unchanged). The repair route refuses any booking
+    // without an unresolved report — the free/`PAYMENT_PENDING`/no-payment shape
+    // alone is reached by producers that were never on a waitlist — so a report
+    // lost before it committed would leave a genuinely stranded member
+    // repairable only from a database session. This is the line whose
+    // byte-identical collision with #2595 the `writeSites` note above describes:
+    // both sides said 104, the merged tree says 106.
+    createAuditLog: { total: 106, uncategorised: 11 },
     createStructuredAuditLog: { total: 8, uncategorised: 0 },
     // 71 -> 72 (#2352 MC-03D): the page-content deletion, above.
     "auditLog.create": { total: 72, uncategorised: 2 },
@@ -166,7 +204,11 @@ export const AUDIT_CENSUS_TOTALS = {
     // with `support:view` plus `bookings:view`, like every other booking row
     // beside them — and the booking officers who can set this field already hold
     // both — so this widens nobody's access. (Re-measured on merged tree, #2621.)
-    booking: 82,
+    // 82 -> 83 (#2649): `waitlist.returned_to_waitlist`. The same category the
+    // strand row it resolves already uses, and the same two reads — so it
+    // reaches exactly the administrators who can already see the booking it
+    // names, and nobody new.
+    booking: 83,
     payment: 16,
     family: 27,
     // 117 -> 118 (#2352 MC-03D): `PAGE_CONTENT_DELETED`. `admin` is the same
