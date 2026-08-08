@@ -9,6 +9,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
 
 interface RoomOption {
   id: string;
@@ -49,21 +50,47 @@ function selectionValue(room: RequestedRoom | null): string {
 }
 
 /**
- * What to show while the write is in flight. The picker offers active rooms
- * plus, when the booking already holds one, the inactive room it holds — which
- * is not in `roomOptions`, so fall back to what is already known about it.
+ * Turn a picked option value into the room the member is proposing. The picker
+ * offers active rooms plus, when the booking already holds an inactive room,
+ * the inactive room it holds — which is not in `roomOptions`, so fall back to
+ * what is already known about it.
  */
-function optimisticRoom(
+function stagedRoom(
   value: string,
   roomOptions: RoomOption[],
-  current: RequestedRoom | null,
+  saved: RequestedRoom | null,
 ): RequestedRoom | null {
   if (value === "none") return null;
   const selected = roomOptions.find((option) => option.id === value);
   if (selected) return { id: selected.id, name: selected.name, active: true };
-  return current?.id === value ? current : null;
+  return saved?.id === value ? saved : null;
 }
 
+/**
+ * #2654 — the requested room, staged and saved explicitly.
+ *
+ * WHAT THIS REPLACED, AND WHY IT MATTERED. The previous version wrote on every
+ * change of the picker and then rendered "Saved" **without ever looking at the
+ * response**. `fetch` only rejects on a network failure, so the 400 from the
+ * room validator, the 403 from the ownership check, and the 409 the writer
+ * raises once the lodge has allocated the beds all resolved normally and all
+ * printed "Saved" in green beside a room the server had refused. The member
+ * closed the page believing the lodge knew which room they wanted. On reload
+ * the old value came back, with no explanation of which of the two was true.
+ *
+ * The fix is the shape its sibling on this same page already uses
+ * (`arrival-time-editor.tsx`, #2621/#2657): stage the choice locally, save on
+ * an explicit press, check `response.ok`, and put the server's own message on
+ * screen when it says no. Auto-save is what made the dishonesty invisible here
+ * — a save the member did not ask for has no obvious place to report that it
+ * failed. Two editors sit on this one booking page, and a member now meets the
+ * same interaction model in both.
+ *
+ * "Saved" is now only ever rendered after a response the server called
+ * successful, and `savedRoom` (not the staged pick) is what the read-only
+ * summary and the inactive-room chip show, so the screen never claims a room
+ * is recorded that is not.
+ */
 export function RequestedRoomEditor({
   bookingId,
   initialRoom,
@@ -73,10 +100,10 @@ export function RequestedRoomEditor({
 }: RequestedRoomEditorProps) {
   const basePath =
     endpoint ?? `/api/admin/bookings/${bookingId}/requested-room`;
-  // `savedRoom` is what the SERVER holds. `room` is what is on screen. They
-  // only diverge while a save is in flight, so a refusal can put the control
-  // back to the room that is actually stored instead of leaving a rejected
-  // choice sitting there looking accepted.
+  // `savedRoom` is what the server last confirmed; `room` is what the member is
+  // currently proposing. Keeping them apart is the whole point: a failed save
+  // must leave the confirmed value untouched, and the Save button must know
+  // whether there is anything to send.
   const [savedRoom, setSavedRoom] = useState(initialRoom);
   const [room, setRoom] = useState(initialRoom);
   const [roomOptions, setRoomOptions] = useState<RoomOption[]>([]);
@@ -84,6 +111,8 @@ export function RequestedRoomEditor({
   const [saved, setSaved] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const statusId = useId();
+
+  const hasChanged = selectionValue(room) !== selectionValue(savedRoom);
 
   useEffect(() => {
     if (!canEdit) return;
@@ -93,22 +122,25 @@ export function RequestedRoomEditor({
       .catch(() => setRoomOptions([]));
   }, [canEdit]);
 
-  async function handleChange(value: string) {
-    // #2143 dirty gate. Re-picking the room that is already stored is not a
-    // change, and a pristine editor must never fire a write — every one of
-    // these is an audited booking mutation on the server.
-    if (value === selectionValue(savedRoom)) {
-      setRoom(savedRoom);
-      setError(null);
-      return;
-    }
+  function handleSelect(value: string) {
+    // Picking only STAGES. Nothing is written until the member presses Save.
+    setRoom(stagedRoom(value, roomOptions, savedRoom));
+    // A green "Saved" belongs to the room it was said about, so it is dropped
+    // the moment the member moves the picker somewhere else. The refusal
+    // message is deliberately NOT cleared here: the member is most likely
+    // picking a different room *because* of it, and it should stay readable
+    // until the next attempt actually replaces it.
+    setSaved(false);
+  }
 
-    const optimistic = optimisticRoom(value, roomOptions, savedRoom);
-
-    setRoom(optimistic);
+  async function handleSave() {
     setSaving(true);
     setSaved(false);
     setError(null);
+    // Snapshot what is being sent: the member can move the picker again while
+    // the request is in flight, and confirming the wrong room is exactly the
+    // class of lie this rewrite exists to remove.
+    const submitted = room;
 
     try {
       /*
@@ -120,20 +152,27 @@ export function RequestedRoomEditor({
         stored when the server had refused it. Check the response, and say what
         actually happened.
       */
-      const response = await (value === "none"
-        ? fetch(basePath, { method: "DELETE" })
-        : fetch(basePath, {
+      const response = submitted
+        ? await fetch(basePath, {
             method: "PUT",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ requestedRoomId: value }),
-          }));
+            body: JSON.stringify({ requestedRoomId: submitted.id }),
+          })
+        : // "No preference" means CLEAR the stored request, which is the
+          // routes' DELETE. In the staged model that can only ever be reached
+          // when there IS something to clear: with nothing saved yet, staging
+          // "No preference" is not a change, `hasChanged` is false, the Save
+          // button stays disabled, and no empty DELETE is sent. So DELETE keeps
+          // its plain meaning — remove the room this booking is holding —
+          // rather than doubling as a no-op write on a booking that never had
+          // a preference.
+          await fetch(basePath, { method: "DELETE" });
 
       if (!response.ok) {
         // Prefer the server's own words. It is the one that knows whether this
         // was an unknown room, a room in another lodge, a cancelled booking, a
         // booking whose beds are already allocated, or a missing permission.
-        let message =
-          "Could not save your room request. Please try again.";
+        let message = "Could not save your room request. Please try again.";
         try {
           const body: unknown = await response.json();
           if (
@@ -147,46 +186,56 @@ export function RequestedRoomEditor({
         } catch {
           // A non-JSON error body is not worth surfacing raw; keep the default.
         }
-        setRoom(savedRoom);
+        // The staged pick stays on screen so the member can retry or correct
+        // it; only `savedRoom` is authoritative, and it has not moved.
         setError(message);
         return;
       }
 
       // Take the stored room from the response rather than from the option we
       // sent, so an inactive room the server kept is shown as inactive.
-      let confirmed = optimistic;
+      let confirmed = submitted;
       try {
         const body = (await response.json()) as RequestedRoomWriteResult | null;
         if (body && typeof body === "object" && "requestedRoom" in body) {
           confirmed = body.requestedRoom ?? null;
         }
       } catch {
-        // Keep the optimistic value; the write itself succeeded.
+        // Keep what was submitted; the write itself succeeded.
       }
       setRoom(confirmed);
       setSavedRoom(confirmed);
       setSaved(true);
-      setTimeout(() => setSaved(false), 2000);
+      setTimeout(() => setSaved(false), 3000);
     } catch {
-      // Network failure: nothing reached the server, so the stored room stands.
-      setRoom(savedRoom);
+      // Network failure: nothing reached the server, so the stored room stands
+      // and the staged pick stays put for a retry.
       setError("Could not reach the server. Your room request was not saved.");
     } finally {
       setSaving(false);
     }
   }
 
-  const inactiveChip = room && !room.active ? (
-    <Badge variant="outline" className="border-warning-6 bg-warning-3 text-warning-11">
-      Room no longer active &mdash; treated as no preference
-    </Badge>
-  ) : null;
+  // The chip is a statement about what the club's records HOLD, so it follows
+  // `savedRoom` and never the staged pick: a member part-way through choosing a
+  // replacement is still on a booking whose stored room has been retired.
+  const inactiveChip =
+    savedRoom && !savedRoom.active ? (
+      <Badge
+        variant="outline"
+        className="border-warning-6 bg-warning-3 text-warning-11"
+      >
+        Room no longer active &mdash; treated as no preference
+      </Badge>
+    ) : null;
 
   if (!canEdit) {
     return (
       <div className="space-y-2">
         <div className="flex items-center gap-2">
-          <p className="text-sm text-muted-foreground">{room ? room.name : "No preference"}</p>
+          <p className="text-sm text-muted-foreground">
+            {savedRoom ? savedRoom.name : "No preference"}
+          </p>
           {inactiveChip}
         </div>
         {lockedNote ? (
@@ -196,11 +245,25 @@ export function RequestedRoomEditor({
     );
   }
 
+  // A stored inactive room is not in the active options list, so the picker
+  // would otherwise have nothing to bind its own value to and would render
+  // empty on a booking that does hold a room.
+  const storedInactiveOption =
+    savedRoom &&
+    !savedRoom.active &&
+    !roomOptions.some((option) => option.id === savedRoom.id)
+      ? savedRoom
+      : null;
+
   return (
-    <div className="flex flex-col gap-1">
-      <div className="flex items-center gap-3">
+    <div className="flex flex-col gap-2">
+      <div className="flex flex-wrap items-center gap-3">
         <div className="w-64">
-          <Select value={selectionValue(room)} onValueChange={handleChange} disabled={saving}>
+          <Select
+            value={selectionValue(room)}
+            onValueChange={handleSelect}
+            disabled={saving}
+          >
             <SelectTrigger
               aria-label="Preferred room"
               aria-describedby={error ? statusId : undefined}
@@ -209,31 +272,47 @@ export function RequestedRoomEditor({
             </SelectTrigger>
             <SelectContent>
               <SelectItem value="none">No preference</SelectItem>
-              {room && !room.active && (
-                <SelectItem value={room.id}>{room.name} (inactive)</SelectItem>
+              {storedInactiveOption && (
+                <SelectItem value={storedInactiveOption.id}>
+                  {storedInactiveOption.name} (inactive)
+                </SelectItem>
               )}
               {roomOptions.map((option) => (
                 <SelectItem key={option.id} value={option.id}>
-                  {option.name} ({option.bedCount} {option.bedCount === 1 ? "bed" : "beds"})
+                  {option.name} ({option.bedCount}{" "}
+                  {option.bedCount === 1 ? "bed" : "beds"})
                 </SelectItem>
               ))}
             </SelectContent>
           </Select>
         </div>
+        {/*
+          #2143 dirty gate, in the same place the sibling puts it: on the Save
+          button. Every one of these calls is an audited booking mutation, so a
+          pristine editor — or one re-picking the room already stored — must not
+          be able to fire one.
+        */}
+        <Button
+          size="sm"
+          onClick={handleSave}
+          disabled={saving || !hasChanged}
+        >
+          {saving ? "Saving..." : "Save preferred room"}
+        </Button>
         {inactiveChip}
-        {saving && <span className="text-xs text-muted-foreground">Saving...</span>}
-        {saved && <span className="text-xs text-success-11">Saved</span>}
       </div>
       {/*
-        `role="status"` rather than `role="alert"`: this is the outcome of the
-        member's own action on the control they just used, so it is announced
-        without stealing focus from it. Matches the arrival-time editor.
+        Permanently mounted rather than rendered only when there is something to
+        say: a polite live region injected already-populated is silently dropped
+        by some screen-reader/browser pairings. `role="status"` rather than
+        `role="alert"`: this is the outcome of the member's own press on the
+        button beside it, so it is announced without stealing focus from the
+        control. Matches the arrival-time editor's live region.
       */}
-      {error && (
-        <p id={statusId} role="status" className="text-xs text-destructive">
-          {error}
-        </p>
-      )}
+      <div id={statusId} role="status" className="min-h-4">
+        {error && <span className="text-xs text-destructive">{error}</span>}
+        {saved && <span className="text-xs text-success-11">Saved</span>}
+      </div>
     </div>
   );
 }

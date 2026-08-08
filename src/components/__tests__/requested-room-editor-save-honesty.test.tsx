@@ -1,18 +1,27 @@
 // @vitest-environment jsdom
 
-// #2654. The requested-room editor auto-saves on every change, so the only
-// thing standing between a member and a silent data loss is what it says after
-// the write. It used to say "Saved" without ever looking at the response.
+// #2654. The requested-room editor used to write on every change of the picker
+// and then say "Saved" without ever looking at the response.
 //
 // `fetch` rejects only on a network failure, so every refusal the server can
 // raise — 400 from the room validator, 403 from the ownership check, 409 when
 // the lodge has already allocated the beds — resolved normally and was reported
-// as a success. These tests pin the honest behaviour: the outcome shown matches
-// the outcome the server gave, in the server's own words, and the control ends
-// up showing the room that is actually stored.
+// as a success. It is now staged with an explicit Save, matching the
+// arrival-time editor beside it on the same booking page.
+//
+// These tests pin both halves of the honest behaviour: nothing is written until
+// the member presses Save, and the outcome shown afterwards matches the outcome
+// the server gave, in the server's own words — with the staged pick left on
+// screen for a retry when the server says no.
 
 import "@testing-library/jest-dom/vitest";
-import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import {
+  cleanup,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+} from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type React from "react";
 
@@ -90,10 +99,21 @@ function writeCalls() {
   );
 }
 
+function saveButton(): HTMLElement {
+  return screen.getByRole("button", { name: /save preferred room|saving/i });
+}
+
+/** Stage a choice. In the reworked editor this writes nothing by itself. */
 async function selectRoom(value: string) {
   const select = await screen.findByLabelText("Preferred room select");
-  const { fireEvent } = await import("@testing-library/react");
   fireEvent.change(select, { target: { value } });
+}
+
+/** Wait for the mount-time picker load, so the next call would be a write. */
+async function awaitRoomsLoad() {
+  await waitFor(() => {
+    expect(fetchMock).toHaveBeenCalledWith("/api/bookings/rooms");
+  });
 }
 
 beforeEach(() => {
@@ -108,6 +128,48 @@ afterEach(() => {
 });
 
 describe("RequestedRoomEditor save honesty (#2654)", () => {
+  it("stages the choice and writes nothing until Save is pressed", async () => {
+    // The whole point of the rework: the member's pick is a proposal, not a
+    // write. An auto-save has no obvious place to report that it failed, which
+    // is how "Saved" came to be printed over a refusal in the first place.
+    fetchMock
+      .mockResolvedValueOnce(roomsCall())
+      .mockResolvedValueOnce(
+        jsonResponse(200, {
+          id: "booking-1",
+          requestedRoomId: CEDAR.id,
+          requestedRoom: { ...CEDAR },
+        }),
+      );
+
+    render(
+      <RequestedRoomEditor
+        bookingId="booking-1"
+        initialRoom={ALPINE}
+        canEdit
+        endpoint="/api/bookings/booking-1/requested-room"
+      />,
+    );
+
+    await awaitRoomsLoad();
+    expect(saveButton()).toBeDisabled();
+
+    await selectRoom(CEDAR.id);
+
+    // Staged, and still not written.
+    expect(await screen.findByLabelText("Preferred room select")).toHaveValue(
+      CEDAR.id,
+    );
+    expect(writeCalls()).toHaveLength(0);
+    expect(screen.queryByText("Saved")).not.toBeInTheDocument();
+    expect(saveButton()).toBeEnabled();
+
+    fireEvent.click(saveButton());
+
+    expect(await screen.findByText("Saved")).toBeInTheDocument();
+    expect(writeCalls()).toHaveLength(1);
+  });
+
   it("never says Saved when the server refuses, and shows the server's own words", async () => {
     fetchMock
       .mockResolvedValueOnce(roomsCall())
@@ -127,15 +189,17 @@ describe("RequestedRoomEditor save honesty (#2654)", () => {
     );
 
     await selectRoom(CEDAR.id);
+    fireEvent.click(saveButton());
 
     await waitFor(() => {
       expect(screen.getByRole("status")).toHaveTextContent("Forbidden");
     });
     expect(screen.queryByText("Saved")).not.toBeInTheDocument();
-    // The control shows the room that is actually stored, not the refused one.
+    // The staged pick stays for the retry; only the stored room is unmoved.
     expect(await screen.findByLabelText("Preferred room select")).toHaveValue(
-      ALPINE.id,
+      CEDAR.id,
     );
+    expect(saveButton()).toBeEnabled();
     // The refusal is announced with the control it belongs to.
     expect(screen.getByTestId("select-trigger")).toHaveAttribute(
       "aria-describedby",
@@ -143,7 +207,7 @@ describe("RequestedRoomEditor save honesty (#2654)", () => {
     );
   });
 
-  it("surfaces the bed-allocation refusal verbatim rather than reporting success", async () => {
+  it("surfaces the bed-allocation refusal verbatim and keeps the staged room for retry", async () => {
     // The 409 `writeRequestedRoom` raises once the lodge has approved beds. It
     // is the refusal a member is most likely to meet, and the one where being
     // told "Saved" is most damaging — they would arrive expecting that room.
@@ -163,13 +227,17 @@ describe("RequestedRoomEditor save honesty (#2654)", () => {
     );
 
     await selectRoom(ALPINE.id);
+    fireEvent.click(saveButton());
 
     await waitFor(() => {
       expect(screen.getByRole("status")).toHaveTextContent(LOCKED);
     });
     expect(screen.queryByText("Saved")).not.toBeInTheDocument();
+    // #2654 acceptance criterion 1: the staged value survives for retry. The
+    // booking still holds no preference, but the member does not have to find
+    // their room again to try a second time.
     expect(await screen.findByLabelText("Preferred room select")).toHaveValue(
-      "none",
+      ALPINE.id,
     );
   });
 
@@ -192,6 +260,7 @@ describe("RequestedRoomEditor save honesty (#2654)", () => {
     );
 
     await selectRoom(ALPINE.id);
+    fireEvent.click(saveButton());
 
     await waitFor(() => {
       expect(screen.getByRole("status")).toHaveTextContent(
@@ -216,6 +285,7 @@ describe("RequestedRoomEditor save honesty (#2654)", () => {
     );
 
     await selectRoom("none");
+    fireEvent.click(saveButton());
 
     await waitFor(() => {
       expect(screen.getByRole("status")).toHaveTextContent(
@@ -223,8 +293,9 @@ describe("RequestedRoomEditor save honesty (#2654)", () => {
       );
     });
     expect(screen.queryByText("Saved")).not.toBeInTheDocument();
+    // Nothing reached the server, so the staged clear is still on offer.
     expect(await screen.findByLabelText("Preferred room select")).toHaveValue(
-      ALPINE.id,
+      "none",
     );
   });
 
@@ -250,14 +321,19 @@ describe("RequestedRoomEditor save honesty (#2654)", () => {
     );
 
     await selectRoom(CEDAR.id);
+    fireEvent.click(saveButton());
 
     expect(await screen.findByText("Saved")).toBeInTheDocument();
-    expect(screen.queryByRole("status")).not.toBeInTheDocument();
+    // The chip follows the server-confirmed room, so it can only appear because
+    // the answer said `active: false` — the option that was sent said active.
     expect(
       screen.getByText("Room no longer active — treated as no preference"),
     ).toBeInTheDocument();
     expect(writeCalls()).toHaveLength(1);
     expect(writeCalls()[0][1]).toMatchObject({ method: "PUT" });
+    // The confirmed value is now the staged value, so Save re-arms only on a
+    // fresh change.
+    expect(saveButton()).toBeDisabled();
   });
 
   it("clears the request with DELETE and reports the cleared answer", async () => {
@@ -279,13 +355,14 @@ describe("RequestedRoomEditor save honesty (#2654)", () => {
     );
 
     await selectRoom("none");
+    fireEvent.click(saveButton());
 
     expect(await screen.findByText("Saved")).toBeInTheDocument();
     expect(writeCalls()).toHaveLength(1);
     expect(writeCalls()[0][1]).toMatchObject({ method: "DELETE" });
   });
 
-  it("fires no write when the choice is the room already stored (#2143 dirty gate)", async () => {
+  it("cannot save when the choice is the room already stored (#2143 dirty gate)", async () => {
     fetchMock.mockResolvedValue(roomsCall());
 
     render(
@@ -297,19 +374,23 @@ describe("RequestedRoomEditor save honesty (#2654)", () => {
       />,
     );
 
-    // Wait for the picker load so the only remaining call would be a write.
-    await waitFor(() => {
-      expect(fetchMock).toHaveBeenCalledWith("/api/bookings/rooms");
-    });
+    await awaitRoomsLoad();
+    await selectRoom(CEDAR.id);
+    expect(saveButton()).toBeEnabled();
 
     await selectRoom(ALPINE.id);
 
+    expect(saveButton()).toBeDisabled();
+    fireEvent.click(saveButton());
     expect(writeCalls()).toHaveLength(0);
     expect(screen.queryByText("Saved")).not.toBeInTheDocument();
     expect(screen.queryByText("Saving...")).not.toBeInTheDocument();
   });
 
-  it("fires no write when a booking with no preference re-picks No preference", async () => {
+  it("cannot send an empty clear when the booking has no preference to begin with", async () => {
+    // What "clear" means with nothing saved yet: nothing. Staging "No
+    // preference" on a booking that already has none is not a change, so the
+    // DELETE that would write an audit entry asserting one is unreachable.
     fetchMock.mockResolvedValue(roomsCall());
 
     render(
@@ -321,12 +402,13 @@ describe("RequestedRoomEditor save honesty (#2654)", () => {
       />,
     );
 
-    await waitFor(() => {
-      expect(fetchMock).toHaveBeenCalledWith("/api/bookings/rooms");
-    });
+    await awaitRoomsLoad();
+    expect(saveButton()).toBeDisabled();
 
     await selectRoom("none");
 
+    expect(saveButton()).toBeDisabled();
+    fireEvent.click(saveButton());
     expect(writeCalls()).toHaveLength(0);
   });
 });
