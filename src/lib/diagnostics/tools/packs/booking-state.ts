@@ -295,6 +295,8 @@ const bookingCapacityByNight = defineDiagnosticsTool<BookingIdArgs>({
 
 WHY THE FIGURES EXCLUDE THIS BOOKING. occupiedBedsExcludingThisBooking and availableBedsExcludingThisBooking are computed with this booking taken out of the population, so availableBeds minus partyBedsThisNight is the honest answer to "does it fit". If you want the lodge's total occupancy INCLUDING this booking, add partyBedsThisNight back.
 
+ON A WHOLE-LODGE-HELD NIGHT occupiedBedsExcludingThisBooking IS ABSENT, and absent means "not reportable", never "zero" and never "empty". The capacity engine deliberately pins that figure to the lodge's full capacity on a held night so that a MEMBER reading the public availability payload cannot tell a held night from a genuinely full one. That is right for a member and wrong for you: an operator told "occupied 20 of 20" would conclude the lodge is full when in fact one booking has reserved sole occupancy and the beds are empty, and their next step — chase the other bookings, or over-capacity confirm — would be wrong twice, because an admin over-capacity override cannot punch into a held night at all. So the count is withheld rather than passed off as real, availableBeds is honestly 0, and wholeLodgeHeldByAnotherBooking is the fact that explains it. Say that the lodge is exclusively held, not that it is full.
+
 WHAT IS ALREADY COUNTED, and why a booking query would get it wrong: a custodian bed hold (a hut-leader assignment holding a specific bed for a season) takes a bed out of the pool with NO booking and NO bed-allocation row; a pending policy-exception request in HOLD mode reserves real bed-nights while it waits; and a whole-lodge exclusive hold pins available beds to zero regardless of headcount and cannot be punched through by an admin over-capacity override. All three are in these numbers.
 
 ALLOCATION IS NOT CAPACITY. allocatedBedNights counts the bed-allocation rows this booking has for that night. A booking can fit the lodge and have none — allocation is a separate, later step on the bed-allocation board — so a zero here is not evidence the lodge was full. A stay longer than ${AID6B_NIGHT_ROW_LIMIT} nights is REFUSED rather than clipped, because half a stay's capacity invites a conclusion about the half that was shown; the bed-allocation board answers it for a long stay. ${AID6B_SCOPE_TAIL} ${AID6B_UNTRUSTED_EVIDENCE_DISCLOSURE}`,
@@ -306,7 +308,12 @@ ALLOCATION IS NOT CAPACITY. allocatedBedNights counts the bed-allocation rows th
     bookingReference: recordRefOrNull(row.booking_reference) ?? "",
     lodgeRef: recordRefOrNull(row.lodge_ref) ?? "",
     night: dateOnlyOrNull(row.night) ?? "",
-    occupiedBedsExcludingThisBooking: countOf(
+    // `signedIntegerOrNull` and NOT `countOf`: this is `null` on a whole-lodge-held
+    // night, where the capacity engine deliberately pins the figure to the lodge's
+    // full capacity so a member cannot tell held from full. `countOf` would turn that
+    // honest "not reportable" into `0`, which reads as "the lodge is empty" — the
+    // opposite of the truth — and a number the engine did not mean as a count.
+    occupiedBedsExcludingThisBooking: signedIntegerOrNull(
       row.occupied_beds_excluding_this_booking,
     ),
     availableBedsExcludingThisBooking: countOf(

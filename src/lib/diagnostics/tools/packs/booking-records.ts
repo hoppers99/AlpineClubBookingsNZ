@@ -278,10 +278,17 @@
  * HONESTLY rather than hidden: `render.ts` drops whole rows from the tail and
  * relabels the header `rows (N of M listed — the rest did not fit this block, so
  * this listing is incomplete)`, and the evidence state becomes
- * `result_truncated`. No row is ever cut mid-field. Real bookings have three to
- * eight guests and one or two change requests, so the clip is a long-stay
- * whole-lodge phenomenon, and each affected scope line names the administration
- * screen that shows the whole set.
+ * `result_truncated`. No row is ever cut mid-field.
+ *
+ * Measured at typical widths, with each entry's own scope line in the block: the
+ * summary lists its 1 row in 4 092 characters, the audit history lists all 18 in
+ * 6 766, the allocation entry lists 23 of 60, the exception entry 7 of 18, and
+ * the party entry 6 of 30. The party entry is the worst because its scope carries
+ * the whole consent vocabulary, and that trade was made deliberately: a
+ * `consentSubState` code the model cannot interpret is worse than three more rows
+ * it can, and real parties are three to eight guests, so the clip is a
+ * whole-lodge school-group phenomenon rather than the normal case. Each affected
+ * scope line names the administration screen that shows the whole set.
  *
  * ------------------------------------------------------------------------------
  * TWO PLACES WHERE #2376's PLAN DISAGREED WITH THE SCHEMA

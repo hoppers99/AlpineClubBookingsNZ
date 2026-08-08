@@ -828,18 +828,40 @@ async function readBookingCapacity(
   return capacity.nightDetails.map((detail) => {
     const night = formatDateOnly(detail.date);
     const demand = demandByNight.get(night) ?? 0;
+    const wholeLodgeHeld = detail.wholeLodgeHeld === true;
     return {
       booking_id: booking.id,
       booking_reference: formatBookingReference(booking.id),
       lodge_ref: booking.lodgeId,
       night,
-      // Excluding THIS booking, which is what makes the spare figure answerable.
-      occupied_beds_excluding_this_booking: detail.occupiedBeds,
+      /**
+       * Excluding THIS booking, which is what makes the spare figure answerable —
+       * and `null` on a WHOLE-LODGE-HELD night, which is not a rounding of the
+       * engine's answer but a refusal to pass off a presentation pin as a count.
+       *
+       * `checkCapacity` deliberately PINS `occupiedBeds` to the lodge's full
+       * capacity on a held night (ADR-001 decision 6, #118) so that a member
+       * reading the public availability payload cannot distinguish a held night
+       * from a genuinely full one. That is right for a member and WRONG for a
+       * diagnostic: an operator handed "occupied 20 of 20" would conclude the lodge
+       * is full when in fact one booking has reserved sole occupancy and the beds
+       * are empty — and their next step (chase the other bookings, or over-capacity
+       * confirm) would be the wrong one twice over, because an admin override
+       * cannot punch into a held night at all.
+       *
+       * `availableBeds` is NOT pinned in the same way — it is honestly 0 on a held
+       * night, and 0 is the true answer to "how much room is there" — so it is
+       * reported as it stands, beside `wholeLodgeHeldByAnotherBooking`, which is
+       * the fact that explains it.
+       */
+      occupied_beds_excluding_this_booking: wholeLodgeHeld
+        ? null
+        : detail.occupiedBeds,
       available_beds_excluding_this_booking: detail.availableBeds,
       party_beds_this_night: demand,
       spare_beds_after_this_booking: detail.availableBeds - demand,
       fits_this_night: detail.availableBeds - demand >= 0,
-      whole_lodge_held_by_another_booking: detail.wholeLodgeHeld === true,
+      whole_lodge_held_by_another_booking: wholeLodgeHeld,
       this_booking_holds_whole_lodge: booking.wholeLodgeHold,
       capacity_overridden: booking.capacityOverriddenAt !== null,
       allocated_bed_nights: allocatedByNight.get(night) ?? 0,
