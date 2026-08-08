@@ -396,31 +396,81 @@ describe("AID-6C finance pack: the grant allowlist matches the SQL (#2377)", () 
     }
   });
 
-  it("declares the thirteen allowlist relations, and no more", () => {
-    // A census, not a threshold: a new relation appearing in the allowlist without
-    // this list moving is reach nobody reviewed.
-    expect([...grantedRelations].sort()).toEqual([
-      "AuditLog",
-      "ManualRefundTask",
-      "Member",
-      "Payment",
-      "PaymentRecoveryOperation",
-      "PaymentRefund",
-      "PaymentTransaction",
-      "ProcessedWebhookEvent",
-      "RefundRequest",
-      "WebhookLog",
-      "XeroInboundEvent",
-      "XeroObjectLink",
-      "XeroSyncOperation",
-    ]);
+  /**
+   * The relations AID-6C argues for. A census, not a threshold: a relation appearing
+   * in THIS list without the pack's own docblock and pack doc moving is reach nobody
+   * reviewed.
+   *
+   * It is the pack's OWN list rather than the whole allowlist, and it stopped being
+   * the whole allowlist when AID-6B (#2376) landed — the booking/membership pack adds
+   * its own relations under its own permission and privacy review, and a census here
+   * that enumerated them would make every future pack edit this file. The
+   * whole-allowlist properties that must hold for EVERY pack are asserted separately
+   * below (`grants every relation BY COLUMN`, the never-grant column census, and the
+   * credential-relation refusal).
+   */
+  const FINANCE_PACK_RELATIONS = [
+    "AuditLog",
+    "ManualRefundTask",
+    "Member",
+    "Payment",
+    "PaymentRecoveryOperation",
+    "PaymentRefund",
+    "PaymentTransaction",
+    "ProcessedWebhookEvent",
+    "RefundRequest",
+    "WebhookLog",
+    "XeroInboundEvent",
+    "XeroObjectLink",
+    "XeroSyncOperation",
+  ];
+
+  it("declares its thirteen relations on the allowlist", () => {
+    for (const relation of FINANCE_PACK_RELATIONS) {
+      expect(
+        grantedRelations.has(relation),
+        `SELECT_GRANTS no longer declares ${relation}, which this pack reads`,
+      ).toBe(true);
+    }
   });
 
-  it("grants EXACTLY two columns of Member, and neither identifies the person", () => {
-    // The narrowest and most sensitive grant in the file. As the diagnostics role,
-    // `SELECT "email" FROM "Member"` is refused by PostgreSQL itself.
-    const member = SELECT_GRANTS.find((grant) => grant.relation === "Member");
-    expect(member?.columns).toEqual(["id", "xeroContactId"]);
+  it("reads a relation ONLY if this pack argued for it", () => {
+    // The other direction of the census, and the one that catches a widening: every
+    // relation this pack's statements name has to be in the reviewed list above.
+    const read = new Set(sqlEntries.flatMap((tool) => relationsIn(tool.sql)));
+    for (const relation of read) {
+      expect(
+        FINANCE_PACK_RELATIONS.includes(relation),
+        `a finance statement reads public."${relation}", which this pack never argued for`,
+      ).toBe(true);
+    }
+  });
+
+  it("reads EXACTLY two columns of Member, and neither identifies the person", () => {
+    // The narrowest and most sensitive grant in the file, and AID-6C's own reach into
+    // it is unchanged: `xero_contact_linkage` names `Member."id"` and
+    // `Member."xeroContactId"` and nothing else.
+    //
+    // THIS WAS AN ASSERTION ON THE GRANT UNTIL AID-6B (#2376). The grant is now wider,
+    // because #2376's owner decision authorises a member's name and email address as
+    // evidence for an explicitly selected record under `membership:view` — and the
+    // narrow property AID-6C actually promised is about what the FINANCE pack reads,
+    // which is what is asserted here. The membership pack's own contract test pins its
+    // side, and `finance-pack.test.ts` still fails if a finance statement reaches for
+    // a member column it has no business with.
+    const naming = sqlEntries.filter((tool) =>
+      tool.sql.includes('public."Member"'),
+    );
+    expect(naming.map((tool) => tool.id)).toEqual([
+      DIAGNOSTICS_XERO_CONTACT_LINKAGE_TOOL_ID,
+    ]);
+    // `m` is the alias that statement binds to `public."Member"`; every other alias
+    // in it belongs to a Xero relation. Asserted on the alias rather than on the bare
+    // column names because a statement-wide column scan cannot tell the two apart.
+    const memberColumns = new Set(
+      [...naming[0].sql.matchAll(/\bm\."([A-Za-z]+)"/g)].map((match) => match[1]),
+    );
+    expect([...memberColumns].sort()).toEqual(["id", "xeroContactId"]);
   });
 
   it("grants every relation BY COLUMN — never a whole relation", () => {

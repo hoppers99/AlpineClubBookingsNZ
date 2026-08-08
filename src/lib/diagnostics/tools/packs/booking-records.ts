@@ -1,0 +1,1141 @@
+/**
+ * AI Diagnostics — AID-6B booking/membership pack, part 2: PER-BOOKING STORED
+ * EVIDENCE (#2376, epic #2369).
+ *
+ * FIVE ENTRIES, each taking the EXACT booking id that `booking-search.ts` had to
+ * produce first. There is no listing tool here, no window that returns "recent
+ * bookings", and no argument that widens a predicate — so this half of the pack
+ * has no shape that could be walked to extract a guest register.
+ *
+ *   diagnostics.booking_diagnostic_summary          bookings
+ *   diagnostics.booking_party_state                 bookings
+ *   diagnostics.booking_bed_allocation_state        bookings
+ *   diagnostics.booking_exception_request_state     bookings
+ *   diagnostics.booking_record_audit_history        bookings
+ *
+ * PERMISSION. `bookings:view` and nothing else, on all five. That is #2376's
+ * owner decision in as many words: a Booking Officer investigating a booking is
+ * doing their own job, not a support one, so no entry here also demands
+ * `support:view`. `requiredAreas` is fixed on the entry and `invoke.ts`
+ * authorizes BEFORE it parses arguments, so no argument can move a call between
+ * permission sets.
+ *
+ * A GUEST NAME IS RETURNED, AND THAT IS THE ONE REAL WIDENING IN THIS MODULE.
+ * `booking_party_state` projects each guest's given and family name, which #2376
+ * lists as approved evidence for an explicitly selected booking — the party of
+ * one booking an officer already has open, which is what the admin booking page
+ * shows the same officer. Every name goes out through `personNameOrNull`
+ * (control characters removed, quotes/`;`/`=` stripped, 60 characters, marked
+ * when clipped), and the four entries that project a person's identifier declare
+ * `surfacesPersonalData`.
+ *
+ * ADR-004's PER-INVOCATION OPT-IN IS DECLARED HERE, NOT IMPLEMENTED. Setting
+ * `surfacesPersonalData: true` records that a row can identify a person; the
+ * substrate does not yet gate such an entry behind an operator's per-invocation
+ * consent. That gate is a prerequisite recorded on #2378 and it must NOT be
+ * leaned on as a control while reading this module: today the only controls that
+ * actually run are the fixed `bookings:view` requirement, the exact-id argument
+ * shape, the column allowlist, the column GRANT, and the audit row.
+ *
+ * ------------------------------------------------------------------------------
+ * THE COLUMN GRANT — the exhaustive list, relation by relation
+ * ------------------------------------------------------------------------------
+ *
+ * An UNGRANTED column is a `42501` at runtime that passes every mock, so this
+ * list is the contract between this module and `SELECT_GRANTS`. "(predicate)"
+ * means the column is only ever compared, never projected.
+ *
+ * `public."Booking"` — booking_diagnostic_summary ONLY (entries 2-5 key off
+ * their own relation's `bookingId` and read no `Booking` column at all):
+ *   id (predicate + bookingRef + bookingReference), memberId, lodgeId, status,
+ *   checkIn, checkOut, totalPriceCents, discountCents, promoAdjustmentCents,
+ *   finalPriceCents, creditElectionCents, hasNonMembers, nonMemberHoldUntil,
+ *   parentBookingId, draftExpiresAt, adminReviewStatus,
+ *   adultMemberHostingReviewStatus, wholeLodgeHold, deletedAt, createdAt,
+ *   updatedAt.
+ *  NOT READ, NOT GRANTED, and each for its own reason: `notes`,
+ *  `adminReviewReason`, `adminReviewNotes`, `memberReviewJustification`,
+ *  `adultMemberHostingReviewReason` and `deletedReason` are member or officer
+ *  FREE TEXT; `adultMemberHostingReview` is a raw Json snapshot;
+ *  `createdById`, `deletedById`, `adminReviewedById`,
+ *  `adultMemberHostingReviewedById`, `adminCapacityHoldByMemberId`,
+ *  `capacityOverriddenByMemberId`, `wholeLodgeHoldByMemberId` and
+ *  `noEmailsByMemberId` NAME PEOPLE. See "the presence-boolean trap" below for
+ *  why no `hasNotes`-style boolean is projected either.
+ *
+ * `public."BookingGuest"`:
+ *   bookingId (predicate — booking_party_state and the guest count on
+ *     booking_diagnostic_summary),
+ *   id, firstName, lastName, ageTier, isMember, memberId, stayStart, stayEnd,
+ *   priceCents, consentStatus, consentRequestedAt, consentRespondedAt
+ *   — all booking_party_state.
+ *  `consentStatus`, `consentRequestedAt` and `consentRespondedAt` are READ BUT
+ *  NEVER PROJECTED: they are folded in SQL into the one `consentSubState` code
+ *  and the one `operationallyPresent` boolean (see below).
+ *  NOT READ, NOT GRANTED: `rateMembershipTypeId` (a pricing snapshot that is not
+ *  evidence about the guest), `consentRespondedByMemberId` (names a person),
+ *  `consentExpiresAt`, `arrivedAt`, `departedAt` and `createdAt` (dropped for the
+ *  byte ceiling, see below).
+ *
+ * `public."BookingGuestNight"` — booking_party_state:
+ *   bookingGuestId (predicate), stayDate.
+ *  NOT READ, NOT GRANTED: `id`, `priceCents`, `createdAt`. The per-night price
+ *  is not needed to answer any question this entry is for, and the booking's own
+ *  money is on the summary.
+ *
+ * `public."BedAllocation"` — booking_bed_allocation_state:
+ *   bookingId (predicate), id (ORDER BY tiebreak only), bookingGuestId, roomId
+ *   (predicate — the composite bed join), bedId (predicate), stayDate, bedType,
+ *   isSecondOccupant.
+ *  NOT READ, NOT GRANTED: `approvedByMemberId` (names the officer who approved
+ *  the placement), `source`, `approvedAt` and `createdAt` (dropped for the byte
+ *  ceiling), `updatedAt`.
+ *
+ * `public."LodgeRoom"` — booking_bed_allocation_state:
+ *   id (predicate), name.
+ *  NOT READ, NOT GRANTED: `notes` (officer free text), `sortOrder`, `active`,
+ *  `lodgeId`, `createdAt`, `updatedAt`.
+ *
+ * `public."LodgeBed"` — booking_bed_allocation_state:
+ *   id (predicate), roomId (predicate), name, bedType (compared, never
+ *   projected — the projected type is the allocation's own copy).
+ *  NOT READ, NOT GRANTED: `sortOrder`, `active` and `bunkGroup` (dropped for the
+ *  byte ceiling), `createdAt`, `updatedAt`.
+ *
+ * `public."BookingChangeRequest"` — booking_exception_request_state:
+ *   bookingId (predicate), id, kind, status, requestedByMemberId,
+ *   aggregateCapacityMode, attemptCount, conflictCount, lastConflictAt,
+ *   holdExpiresAt, reviewedAt, cancelledAt,
+ *   supersededByRequestId, linkedModificationId, createdAt, updatedAt.
+ *  NOT READ, NOT GRANTED: `reviewedByMemberId` — it names the OFFICER who
+ *  decided, and AID-6C's grant policy refuses every actor id on every relation it
+ *  reads for exactly that reason; `reviewedAt` already carries the fact that a
+ *  decision was made, which is the half an operator can act on, and the officer
+ *  queue shows who. Also `requestedChanges`, `proposalSnapshot` and
+ *  `frozenEvidence` (raw Json); `reason`, `adminNotes`, `internalNotes`,
+ *  `memberMessage` and `lastConflictReason` (member and officer free text —
+ *  `internalNotes` is the column the schema marks NEVER member-visible);
+ *  `proposalHash`, `openStateKey` and `version` (machine tokens no operator can
+ *  act on).
+ *
+ * `public."PolicyExceptionReservationNight"` — booking_exception_request_state:
+ *   changeRequestId (predicate; also what makes the `count(*)` legal).
+ *  NOT READ, NOT GRANTED: `id`, `lodgeId`, `night`, `beds`, `createdAt`. The
+ *  entry reports HOW MANY nights are held, never which or how many beds — the
+ *  lodge-wide picture is the capacity entry's job, under the same permission.
+ *
+ * `public."AuditLog"` — booking_record_audit_history:
+ *   entityType (predicate + projected), entityId (predicate), category
+ *   (predicate + projected), id, action, severity, outcome, createdAt.
+ *  NOT READ, NOT GRANTED: `memberId`, `actorMemberId`, `subjectMemberId`,
+ *  `targetId` (all name people), `summary`, `details` (free text), `metadata`
+ *  (arbitrary Json), `ipAddress`, `userAgent`, `requestId`, `retentionClass`,
+ *  `expiresAt`, `archivedAt`, `incidentPreserved`. Exactly AID-6A's eight
+ *  columns plus `entityId`, which AID-6C already added for the same purpose.
+ *
+ * THE PRESENCE-BOOLEAN TRAP, and it is the most important finding in this
+ * module. `notes IS NOT NULL` needs the SELECT privilege on `notes`:
+ * PostgreSQL's column privilege covers every reference to the column, not just a
+ * projected one. So a `hasNotes` boolean cannot be had without granting the
+ * SELECT-only role the ability to read every booking note in a `psql` session —
+ * which would break the property this pack states plainly, that the withheld
+ * columns "are not granted to the SELECT-only role at all, so PostgreSQL itself
+ * refuses them (42501)". A boolean is not worth trading that for, so five
+ * presence booleans that #2376's plan asked for are NOT projected here:
+ * `hasNotes`, `hasAdminReviewNotes`, `hasMemberReviewJustification`,
+ * `hasHostingReviewSnapshot` (entry 1), `hasLastConflictReason` and
+ * `hasProposalSnapshot` (entry 4). Almost nothing is lost: `conflictCount > 0`
+ * with `lastConflictAtUtc` already says a conflict happened, `requestKind =
+ * POLICY_EXCEPTION` already implies a frozen proposal, and each entry's scope
+ * line names the administration screen that shows the text itself.
+ *
+ * ------------------------------------------------------------------------------
+ * THE 24-FIELD CAP, AND WHAT IT COST
+ * ------------------------------------------------------------------------------
+ *
+ * `DIAGNOSTICS_TOOL_BOUNDS.maxFieldsPerRow` is 24 and it is ENFORCED, not
+ * advisory: `projectRows` in `invoke.ts` throws `ProjectionContractError` on the
+ * 25th field and the whole result is discarded as `redaction_failed`. `Booking`
+ * carries 49 columns worth reporting. So the summary is a CHOSEN 24, and the
+ * choice is written down here because a reader's first question will be why a
+ * field they expected is absent.
+ *
+ * WHAT THE SUMMARY KEEPS, and the rule it was chosen by: a field is in if
+ * leaving it out would let a model narrate something FALSE and ACTIONABLE about
+ * a healthy booking.
+ *   identity          bookingRef, bookingReference, ownerMemberRef, lodgeRef
+ *   lifecycle         bookingStatus, deletedAtUtc, createdAtUtc, updatedAtUtc
+ *   the nights        checkIn, checkOut, nightCount
+ *   the party         guestCount, hasNonMembers, nonMemberHoldUntilUtc
+ *   the money         totalPriceCents, discountCents, promoAdjustmentCents,
+ *                     finalPriceCents, creditElectionCents
+ *   the timers        draftExpiresAtUtc
+ *   the links         parentBookingRef
+ *   what blocks it    adminReviewStatus, hostingReviewStatus, wholeLodgeHold
+ *
+ * All five money columns stay TOGETHER on purpose. `total - discount - promo`
+ * is what makes `final` explicable, and a model shown three of the four narrates
+ * an unexplained gap as a defect. `wholeLodgeHold` stays because a booking with
+ * sole occupancy changes every capacity answer for its nights, and a model that
+ * cannot see it will confidently advise admitting somebody else.
+ *
+ * WHAT THE SUMMARY DROPPED, and where the evidence actually lives:
+ *   lodgeName, waitlistPosition, requiresAdminReview, adminCapacityHoldAt,
+ *   capacityOverriddenAt        → all on the `diagnostics.booking_search` row
+ *                                 for the same booking (`kind: "booking_id"`),
+ *                                 under the same `bookings:view` permission.
+ *                                 Dropping `lodgeName` is also what makes the
+ *                                 summary a PURE `Booking` read: no `Lodge`
+ *                                 join, no `Lodge` grant, a smaller blast
+ *                                 radius. It is the strongest reason of the set.
+ *   waitlistOfferedAt, waitlistOfferExpiresAt, waitlistOfferedLodgeId,
+ *   waitlistOfferedPriceCents   → dropped as a BLOCK, deliberately. A
+ *                                 cross-lodge waitlist offer is an offer of a
+ *                                 DIFFERENT lodge at a DIFFERENT price, so half
+ *                                 the block ("the offer expires at X") would
+ *                                 have a model describing an offer for the
+ *                                 booking's own lodge. Half of this is worse
+ *                                 than none of it; Admin > Waitlist is named in
+ *                                 the scope line.
+ *   expectedArrivalTime         → and the projection question is worth
+ *                                 recording, because the obvious answer is
+ *                                 wrong. It is a `VarChar(5)` like "18:30", and
+ *                                 `stableCodeOrNull` would SENTINEL it:
+ *                                 `PROJECTABLE_STABLE_CODE` is
+ *                                 `/^[A-Za-z][A-Za-z0-9_.-]{0,47}$/`, which
+ *                                 requires a leading LETTER. A colon is
+ *                                 admitted but a leading digit is not. Had the
+ *                                 field survived the cap it would have needed a
+ *                                 local `/^\d{2}:\d{2}$/` validator returning
+ *                                 the shared sentinel otherwise — never
+ *                                 `stableCodeOrNull`, and never a bare
+ *                                 pass-through, because the column is
+ *                                 member-supplied and reaches the `key=value`
+ *                                 evidence renderer.
+ *   cancelIfGuestsBumped, organiserSettled, noEmails, preArrivalReminderSentAt,
+ *   requestedRoomId, createdById → lowest-value flags and ids. Nothing else in
+ *                                 the pack reads a requested room or an
+ *                                 admin-creator, and the admin booking page
+ *                                 shows all six.
+ *   the five presence booleans  → see "the presence-boolean trap" above. Those
+ *                                 are dropped for a GRANT reason, not a cap
+ *                                 reason, and would stay dropped at any cap.
+ *
+ * A COMPOSED CODE LIST WAS CONSIDERED FOR THOSE FLAGS AND REJECTED, with the
+ * measurement rather than a preference. `codeListOrNull` exists and AID-6A uses
+ * one, so folding sixteen booleans into one comma-joined field was the obvious
+ * way to buy the cap back. Measured: those sixteen codes join to 365 characters,
+ * and `boundedScalar` in `invoke.ts` TRUNCATES a string over
+ * `fieldValueMaxChars` (200) with an ellipsis rather than refusing it. A
+ * truncated code list reads exactly like a complete one in which the missing
+ * codes are not set — a silently FALSE and directly actionable claim about a
+ * healthy booking, which is the failure this module is designed against. Every
+ * shorter catalogue that carried the same facts came out between 187 and 209
+ * characters, i.e. one added code away from the same defect. Named fields it is.
+ *
+ * ------------------------------------------------------------------------------
+ * THE BYTE AND BLOCK CEILINGS, measured
+ * ------------------------------------------------------------------------------
+ *
+ * Gate 9 REFUSES a result over the entry's `byteLimit`; it never trims one. The
+ * multi-row entries here carry the pack's shared 16 384, and their row limits
+ * are fixed in `booking-shared.ts`, so the only free variable is how WIDE a row
+ * is — which is why two of these entries carry fewer fields than #2376's plan
+ * asked for. THIS IS A MEASUREMENT, NOT AN ESTIMATE, and the measuring has to be
+ * done with `canonicalStringify`, which PRETTY-PRINTS with a two-space indent:
+ * every field costs its own line, so a field is worth about `key + value + 10`
+ * bytes rather than `key + value`. An estimate that forgot the indentation came
+ * out 30% low and would have shipped two entries whose full results gate 9
+ * refuses outright.
+ *
+ *   entry                            fields  typical    widest  ceiling
+ *   booking_diagnostic_summary        24 × 1    854 B         —   4 096
+ *   booking_party_state               15 × 30  14.9 kB   18.0 kB  16 384
+ *   booking_bed_allocation_state       7 × 60  13.7 kB   16.0 kB  16 384
+ *   booking_exception_request_state    17 × 18  11.5 kB       —   16 384
+ *   booking_record_audit_history        7 × 18   4.7 kB       —   16 384
+ *
+ * THE ALLOCATION ENTRY'S CEILING IS PROVABLE, not merely typical: seven fields
+ * at a 24-character label cap fit sixty rows for ANY data the schema can hold.
+ * That is why the room and bed labels go out through a local 24-character
+ * validator instead of `personNameOrNull`'s 60 — both columns are `VarChar(100)`,
+ * and nine fields at wider labels measured 19.4 kB, so gate 9 would have refused
+ * every result for an ordinary week-long family booking. A real bed label is
+ * "Bed 3".
+ *
+ * THE PARTY ENTRY'S CEILING IS TYPICAL WITH A STATED BOUNDARY, because a name is
+ * the evidence and capping a name the way a bed label is capped would be a worse
+ * trade. Fifteen fields leave about 51 bytes a row spare, i.e. up to roughly
+ * seventy characters of combined given-and-family name per guest across all
+ * thirty. A party that exceeds that is REFUSED as `result_too_large` — an honest
+ * refusal that names the booking page, never a silent clip — and this is why two
+ * instants the plan asked for (the consent deadline and the arrival instant) are
+ * not projected.
+ *
+ * THE RENDERED BLOCK IS A SEPARATE, SMALLER CEILING —
+ * `renderedBlockMaxChars` is 8 000 — and three of these entries cannot list a
+ * FULL result inside it. That is inherent to the row limits and it is handled
+ * HONESTLY rather than hidden: `render.ts` drops whole rows from the tail and
+ * relabels the header `rows (N of M listed — the rest did not fit this block, so
+ * this listing is incomplete)`, and the evidence state becomes
+ * `result_truncated`. No row is ever cut mid-field. Real bookings have three to
+ * eight guests and one or two change requests, so the clip is a long-stay
+ * whole-lodge phenomenon, and each affected scope line names the administration
+ * screen that shows the whole set.
+ *
+ * ------------------------------------------------------------------------------
+ * TWO PLACES WHERE #2376's PLAN DISAGREED WITH THE SCHEMA
+ * ------------------------------------------------------------------------------
+ *
+ *  1. MEMBER-GUEST CONSENT IS LIVE, NOT INERT. The plan for this module said the
+ *     consent columns are inert because `MEMBER_GUEST_WIDENING_ENABLED === false`
+ *     in `member-guest-consent.ts`, and that a NULL therefore always means "no
+ *     consent was ever needed". THAT CONSTANT NO LONGER EXISTS. MG2 (#2307)
+ *     landed: `member-guest-consent.ts` writes `consentStatus: "PENDING"` and
+ *     `"CONFIRMED"` through `buildMemberGuestConsentWrite`,
+ *     `member-guest-consent-service.ts` resolves them,
+ *     `admin-bookings-service.ts` filters an officer queue on `PENDING`, and
+ *     `cron-member-guest-consent-expiry.ts` sweeps the lapsed ones. Its own
+ *     `member-guest-widening.test.ts` records that MG1's assertion of the
+ *     constant "has done its job and is gone", and the widening is now a
+ *     per-club module read that FAILS CLOSED per call site. The scope line
+ *     therefore states the property that is actually true — NULL is the
+ *     DOMINANT value forever and means "no consent was ever needed" — and never
+ *     the stale claim that no row can carry a status. Writing the stale version
+ *     would have been the exact failure mode this module is designed against:
+ *     a confident, actionable falsehood about a healthy record. (The schema's
+ *     own comment on `BookingGuest.consentStatus` is stale in the same way.)
+ *
+ *  2. FOUR CONSENT COLUMNS ARE FOLDED INTO ONE CODE, and no information is lost.
+ *     The plan asked for `consentStatus` plus three consent instants. The
+ *     schema's `MEMBER_GUEST_CONSENT_SUB_STATES` table is the platform's own
+ *     source of truth for which combination means what, so the statement
+ *     evaluates that table in SQL and projects one `consentSubState` code from a
+ *     closed server-owned catalogue, interpolated into the scope line so the
+ *     vocabulary actually reaches the model. Alongside it goes
+ *     `operationallyPresent` — the platform's OWN predicate
+ *     (`OPERATIONALLY_PRESENT_GUEST_WHERE`) evaluated server-side, so a model
+ *     never has to build it and can never build it wrongly. Two fields instead
+ *     of four, the eight documented shapes distinguishable from seven codes, and
+ *     `consentRespondedByMemberId` — which would be needed to tell a target's
+ *     own approval from a delegate's — stays ungranted, which is why those two
+ *     shapes share one code and the catalogue says so.
+ *
+ * ------------------------------------------------------------------------------
+ * PROPERTIES, STATED AS PROPERTIES OF THE CODE
+ * ------------------------------------------------------------------------------
+ *
+ *  - EVERY ENTRY TAKES A REQUIRED EXACT BOOKING ID. `{}` does not parse for any
+ *    of the five: the schema is `z.object({ bookingId: RECORD_ID }).strict()`
+ *    with no optional member and no default.
+ *  - NO PATTERN LANGUAGE ANYWHERE. Every predicate is `=` or `= ANY(...)`.
+ *    There is no `LIKE`, no `ILIKE`, no `SIMILAR TO`, no regex operator and no
+ *    wildcard character in any statement in this module, so nothing a caller can
+ *    send has anything to mean beyond a literal.
+ *  - ONE FIXED STATEMENT PER ENTRY, no semicolon, `public."Relation"` qualified,
+ *    `pg_catalog.` functions, and `bind` returns EXACTLY the parameters the
+ *    statement references. The executor appends the row cap as `$N+1` and
+ *    refuses an arity mismatch before it opens a connection, because a short
+ *    `bind` would silently alias the row cap onto a predicate.
+ *  - TOTAL `ORDER BY` ON EVERY MULTI-ROW ENTRY, always ending in the row's own
+ *    id, so identical evidence hashes identically for the audit trail.
+ *  - NO JOIN CAN DROP A ROW. Every join to a lookup relation is a LEFT JOIN and
+ *    the one aggregate join is a `CROSS JOIN LATERAL` over an ungrouped
+ *    aggregate, which returns exactly one row for every left row. A booking's
+ *    guest whose bed row had a broken foreign key would still be listed, with
+ *    nulls, rather than vanishing from the answer — an omitted guest-night is
+ *    the falsehood that matters here.
+ *  - NULL, 0 AND ABSENT STAY DIFFERENT. `centsOrZero` is used only where the
+ *    schema says `@default(0)`; `centsOrNull` everywhere else, so an amount that
+ *    did not arrive as an integer is reported as unknown rather than as nothing
+ *    owed. Two booleans that can be genuinely UNKNOWN — a guest with no
+ *    per-night rows, and a bed row whose bed could not be read — go out through
+ *    `nullableBoolOf` and stay null rather than collapsing to `false`.
+ *
+ * The pack doc is `docs/ai-diagnostics/tool-pack-booking-membership.md`.
+ */
+
+import "server-only";
+
+import type {
+  BookingChangeRequestKind,
+  BookingChangeRequestStatus,
+} from "@prisma/client";
+import { z } from "zod";
+
+import { auditCategoriesForCorrelationDomain } from "@/lib/audit-categories";
+
+import { defineDiagnosticsTool, type DiagnosticsToolEntry } from "../define";
+import {
+  AID6B_ALLOCATION_ROW_LIMIT,
+  AID6B_BYTE_LIMIT,
+  AID6B_DESCRIPTION_TAIL,
+  AID6B_HISTORY_ROW_LIMIT,
+  AID6B_PARTY_ROW_LIMIT,
+  AID6B_SCOPE_TAIL,
+  AID6B_SINGLE_ROW_BYTE_LIMIT,
+  AID6B_UNTRUSTED_EVIDENCE_DISCLOSURE,
+  dateOnly,
+  dateOnlyOrNull,
+  personNameOrNull,
+} from "./booking-shared";
+import {
+  RECORD_ID,
+  boolOf,
+  centsOrNull,
+  centsOrZero,
+  countOf,
+  instantOrNull,
+  recordRefOrNull,
+  stableCodeOrNull,
+  utcInstant,
+} from "./finance-shared";
+
+export const DIAGNOSTICS_BOOKING_SUMMARY_TOOL_ID =
+  "diagnostics.booking_diagnostic_summary";
+export const DIAGNOSTICS_BOOKING_PARTY_TOOL_ID =
+  "diagnostics.booking_party_state";
+export const DIAGNOSTICS_BOOKING_BED_ALLOCATION_TOOL_ID =
+  "diagnostics.booking_bed_allocation_state";
+export const DIAGNOSTICS_BOOKING_EXCEPTION_REQUEST_TOOL_ID =
+  "diagnostics.booking_exception_request_state";
+export const DIAGNOSTICS_BOOKING_AUDIT_HISTORY_TOOL_ID =
+  "diagnostics.booking_record_audit_history";
+
+// ---------------------------------------------------------------------------
+// 0. The one argument shape, and the two projection helpers this module owns.
+// ---------------------------------------------------------------------------
+
+/**
+ * One booking id, and nothing else. The shape ALL FIVE entries take.
+ *
+ * `.strict()` so an unknown key is a rejection rather than something ignored,
+ * and `RECORD_ID` is required with no default, so `{}` does not parse for any
+ * entry in this module. There is no "recent bookings" arm to fall back to,
+ * which is what makes "an operator must select a record first" a property of the
+ * argument type rather than a promise about usage.
+ */
+const bookingIdArgsSchema = z.object({ bookingId: RECORD_ID }).strict();
+type BookingIdArgs = z.infer<typeof bookingIdArgsSchema>;
+
+const bookingIdInputSchema = {
+  type: "object" as const,
+  properties: {
+    bookingId: {
+      type: "string",
+      description:
+        "The EXACT booking record id, as returned by diagnostics.booking_search. NOT the eight-character booking reference a member reads off their confirmation, and not a member id.",
+    },
+  },
+  required: ["bookingId"],
+  additionalProperties: false as const,
+};
+
+/**
+ * A boolean that may be genuinely UNKNOWN.
+ *
+ * `boolOf` maps everything that is not exactly `true` to `false`, which is right
+ * for a NOT NULL column and WRONG for a comparison whose operands can be absent.
+ * Two such comparisons exist here — whether a guest's per-night rows form an
+ * unbroken run (unknowable when the guest has no per-night rows at all), and
+ * whether an allocation's denormalised bed type matches its bed (unknowable when
+ * the bed row could not be read) — and in both cases `false` is a specific,
+ * actionable and possibly untrue claim: "this stay has gaps", "this allocation
+ * is corrupt". Null says "this is not established", which is the honest answer
+ * and the one the scope lines explain.
+ */
+function nullableBoolOf(value: unknown): boolean | null {
+  if (value === null || value === undefined) return null;
+  return value === true;
+}
+
+/**
+ * The hard cap on a ROOM or BED label on the way out.
+ *
+ * 24 rather than `personNameOrNull`'s 60, and it is a MEASUREMENT rather than a
+ * preference — see the byte-ceiling note in the module docblock. Both columns
+ * are `VarChar(100)`; at the wider cap, sixty allocation rows can serialise past
+ * the entry's 16 384-byte ceiling and gate 9 refuses the WHOLE result for a long
+ * stay. At 24 the worst case the schema can produce still fits, so the ceiling
+ * is provable rather than typical. A real label is "Bunk Room" or "Bed 3".
+ */
+const LODGE_LABEL_MAX_CHARS = 24;
+
+/**
+ * Project a room or bed label: control characters removed, whitespace collapsed,
+ * quotes, angle brackets, `;` and `=` removed, hard-capped and marked when
+ * clipped.
+ *
+ * Stripped rather than sentinelled, on the same reasoning as `personNameOrNull`:
+ * this is authored text an administrator typed into the lodge configuration, so
+ * an unusual character is a naming choice rather than evidence the column holds
+ * the wrong kind of thing. The `;` and `=` strip matters because the evidence
+ * renderer's row format is `key=value` pairs joined by `"; "`, and because this
+ * value also reaches the audit `resultHash`, which no renderer touches.
+ *
+ * Returns null for an absent or blank label and never an empty string: "this
+ * allocation's bed row could not be read" and "the bed has a blank name" are
+ * both "there is no label here", and neither of them is a label.
+ */
+function lodgeLabelOrNull(value: unknown): string | null {
+  if (value === null || value === undefined) return null;
+  const cleaned = String(value)
+    // eslint-disable-next-line no-control-regex -- stripping control characters is the point
+    .replace(/[ -]/g, " ")
+    .replace(/["<>;=]/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (cleaned.length === 0) return null;
+  if (cleaned.length <= LODGE_LABEL_MAX_CHARS) return cleaned;
+  return `${cleaned.slice(0, LODGE_LABEL_MAX_CHARS - 1)}…`;
+}
+
+// ---------------------------------------------------------------------------
+// 1. The booking's own stored state.
+// ---------------------------------------------------------------------------
+
+/**
+ * ONE ROW: the twenty-four facts about one booking that were chosen over the
+ * other twenty-five. The choice, the rule it was made by, and where every
+ * dropped field's evidence lives are all in the module docblock, because a
+ * reader's first question about this entry is why a field they expected is not
+ * here.
+ *
+ * A PURE `Booking` READ, plus one scalar subquery for the party size. There is
+ * no `Lodge` join — `lodgeName` was dropped, and that is what keeps this
+ * statement's grant to a single relation.
+ *
+ * `nightCount` IS A DATE SUBTRACTION AND THAT IS EXACTLY RIGHT.
+ * `checkOut - checkIn` on two `date` columns is an `integer` number of days, and
+ * because `checkOut` is the departure day rather than a night, that integer IS
+ * the number of lodge nights: the 14th to the 17th is three nights. It is
+ * computed in SQL rather than in the projection for the reason this pack refuses
+ * to touch a lodge night in JavaScript at all — the moment a `@db.Date` becomes
+ * a `Date` object it acquires a timezone it did not have, and a night that
+ * shifts by twelve hours is a different night.
+ *
+ * `creditElectionCents` HAS THREE STATES AND KEEPS THEM. The schema is explicit:
+ * NULL means no election is outstanding (never made, or already consumed), 0
+ * means the member explicitly chose to use NONE, and a positive value is the
+ * amount they asked to apply. It goes out through `centsOrNull`, so a NULL never
+ * becomes a 0 — a model shown 0 says "none", which is a different and more
+ * confident claim than "nothing is recorded". It is NOT a record of credit
+ * already applied; the applied total lives in the `MemberCredit` ledger, which
+ * is finance evidence this pack cannot read, and the scope line says so.
+ *
+ * `totalPriceCents` and `finalPriceCents` use `centsOrNull` rather than
+ * `centsOrZero`, DELIBERATELY DIVERGING from `booking-search.ts`, which coerces
+ * `finalPriceCents` to zero. Both columns are `Int` NOT NULL with no `@default`,
+ * so an absent value is impossible and can only mean the projection read
+ * something it did not expect — and reporting a booking as costing nothing is
+ * worse in every direction than reporting that the amount is unknown.
+ */
+const BOOKING_SUMMARY_SQL = `SELECT
+  b."id" AS booking_ref,
+  pg_catalog.upper(pg_catalog.left(b."id", 8)) AS booking_reference,
+  b."memberId" AS owner_member_ref,
+  b."lodgeId" AS lodge_ref,
+  b."status"::text AS booking_status,
+  ${dateOnly('b."checkIn"')} AS check_in,
+  ${dateOnly('b."checkOut"')} AS check_out,
+  (b."checkOut" - b."checkIn")::int AS night_count,
+  (SELECT pg_catalog.count(*)::int FROM public."BookingGuest" g WHERE g."bookingId" = b."id") AS guest_count,
+  b."totalPriceCents" AS total_price_cents,
+  b."discountCents" AS discount_cents,
+  b."promoAdjustmentCents" AS promo_adjustment_cents,
+  b."finalPriceCents" AS final_price_cents,
+  b."creditElectionCents" AS credit_election_cents,
+  b."hasNonMembers" AS has_non_members,
+  ${utcInstant('b."nonMemberHoldUntil"')} AS non_member_hold_until_utc,
+  b."parentBookingId" AS parent_booking_ref,
+  ${utcInstant('b."draftExpiresAt"')} AS draft_expires_at_utc,
+  b."adminReviewStatus"::text AS admin_review_status,
+  b."adultMemberHostingReviewStatus"::text AS hosting_review_status,
+  b."wholeLodgeHold" AS whole_lodge_hold,
+  ${utcInstant('b."deletedAt"')} AS deleted_at_utc,
+  ${utcInstant('b."createdAt"')} AS created_at_utc,
+  ${utcInstant('b."updatedAt"')} AS updated_at_utc
+FROM public."Booking" b
+WHERE b."id" = $1::text`;
+
+const bookingSummary = defineDiagnosticsTool<BookingIdArgs>({
+  id: DIAGNOSTICS_BOOKING_SUMMARY_TOOL_ID,
+  source: "select_only_sql",
+  label: "Booking diagnostic summary",
+  description: `Returns the core stored state of ONE booking: its record id and the eight-character reference a member sees, the owner's member id, the lodge id, the status, the check-in and check-out New Zealand nights and how many nights that is, how many guests are on it, the prices in integer cents (total, discount, promotional adjustment, final) and the stored account-credit election, whether the party includes non-members and when their hold runs out, the parent booking id if it is a linked child, when a draft expires, the admin-review and adult-member-hosting-review statuses, whether it holds the whole lodge exclusively, and when it was deleted, created and last changed. Use it after finding a booking. It returns NO booking notes, no review notes, no member review justification, no hosting-review snapshot, no cancellation reason and no member names — the party names are on diagnostics.booking_party_state. For the waitlist position, the whole-lodge and capacity-hold flags and the lodge NAME, read the diagnostics.booking_search row for the same booking id. ${AID6B_DESCRIPTION_TAIL}`,
+  requiredAreas: ["bookings"],
+  evidenceScope: `The stored state of ONE booking record, as twenty-four fields chosen from the forty-nine the row carries — the substrate caps a row at twenty-four, so this is a deliberate subset and not everything known about the booking. nightCount is checkOut minus checkIn, which is the number of lodge NIGHTS because checkOut is the departure day. creditElectionCents has THREE meanings and they are different answers: null means no credit election is outstanding, 0 means the member explicitly chose to use none, and a positive value is the amount they asked to apply — it is NOT credit already applied, which lives in the member credit ledger and needs finance access. Not reported here, and not readable by any tool in this pack: the booking's notes, the admin-review notes and reason, the member's review justification, the hosting-review snapshot and the deletion reason — those are Admin > Booking detail. Not reported here but available under the same permission: the waitlist POSITION, the whole-lodge, admin-capacity-hold and capacity-override flags and the lodge name, all on the diagnostics.booking_search row for this same booking id. The waitlist OFFER detail — when it was made, when it expires, and whether it is an offer of a DIFFERENT lodge at a DIFFERENT price — is deliberately absent in full rather than in part, because half of it would have you describing an offer for this booking's own lodge; that is Admin > Waitlist. ${AID6B_SCOPE_TAIL} ${AID6B_UNTRUSTED_EVIDENCE_DISCLOSURE}`,
+  argsSchema: bookingIdArgsSchema,
+  inputSchema: bookingIdInputSchema,
+  sql: BOOKING_SUMMARY_SQL,
+  // ONE parameter, and the statement references exactly `$1`.
+  bind: (args) => [args.bookingId],
+  project: (row) => ({
+    bookingRef: recordRefOrNull(row.booking_ref) ?? "",
+    bookingReference: recordRefOrNull(row.booking_reference) ?? "",
+    ownerMemberRef: recordRefOrNull(row.owner_member_ref) ?? "",
+    lodgeRef: recordRefOrNull(row.lodge_ref) ?? "",
+    bookingStatus: stableCodeOrNull(row.booking_status),
+    checkIn: dateOnlyOrNull(row.check_in) ?? "",
+    checkOut: dateOnlyOrNull(row.check_out) ?? "",
+    nightCount: countOf(row.night_count),
+    guestCount: countOf(row.guest_count),
+    totalPriceCents: centsOrNull(row.total_price_cents),
+    discountCents: centsOrZero(row.discount_cents),
+    promoAdjustmentCents: centsOrZero(row.promo_adjustment_cents),
+    finalPriceCents: centsOrNull(row.final_price_cents),
+    creditElectionCents: centsOrNull(row.credit_election_cents),
+    hasNonMembers: boolOf(row.has_non_members),
+    nonMemberHoldUntilUtc: instantOrNull(row.non_member_hold_until_utc),
+    parentBookingRef: recordRefOrNull(row.parent_booking_ref),
+    draftExpiresAtUtc: instantOrNull(row.draft_expires_at_utc),
+    adminReviewStatus: stableCodeOrNull(row.admin_review_status),
+    hostingReviewStatus: stableCodeOrNull(row.hosting_review_status),
+    wholeLodgeHold: boolOf(row.whole_lodge_hold),
+    deletedAtUtc: instantOrNull(row.deleted_at_utc),
+    createdAtUtc: instantOrNull(row.created_at_utc) ?? "",
+    updatedAtUtc: instantOrNull(row.updated_at_utc) ?? "",
+  }),
+  rowLimit: 1,
+  byteLimit: AID6B_SINGLE_ROW_BYTE_LIMIT,
+  // No name is projected, but `ownerMemberRef` identifies a person to anyone who
+  // can resolve it. ADR-004's per-invocation opt-in is DECLARED by this flag and
+  // is not yet implemented (prerequisite on #2378), so it is not a control.
+  surfacesPersonalData: true,
+});
+
+// ---------------------------------------------------------------------------
+// 2. The party: who is on the booking, for which nights, and on what footing.
+// ---------------------------------------------------------------------------
+
+/**
+ * The closed, server-owned catalogue that turns a `BookingGuest`'s five consent
+ * columns into ONE stable code — and the sentences that tell a model what each
+ * code means, interpolated into the entry's own `evidenceScope` so the
+ * vocabulary actually reaches the consumer.
+ *
+ * AID-6C's review found a catalogue in the finance pack that existed and was
+ * read only by its own test. A code the model cannot interpret is worse than no
+ * code: it invites a guess. So this object is the single source of both the SQL
+ * literals and the model-facing explanation, and neither can drift from the
+ * other because the statement is built from these keys.
+ *
+ * THE SHAPES ARE THE PLATFORM'S OWN, NOT THIS MODULE'S INVENTION. The schema
+ * comment on `BookingGuest.consentStatus` carries an eight-row discriminator
+ * table generated from `MEMBER_GUEST_CONSENT_SUB_STATES` in
+ * `member-guest-consent.ts`, and `member-guest-consent.test.ts` fails unless the
+ * comment matches it verbatim. Seven codes cover the eight shapes: TARGET_APPROVED
+ * and DELEGATE_APPROVED are told apart only by whether `consentRespondedByMemberId`
+ * is the guest themself, that column names a person and is NOT granted, so the
+ * two share `approved_on_request` and this catalogue says so rather than picking
+ * one.
+ */
+export const BOOKING_GUEST_CONSENT_SUB_STATES = {
+  family_or_legacy:
+    'family_or_legacy: no consent was ever needed. The guest is inside the booker\'s family group, or is not a member, or the row predates the feature. This is the DOMINANT state and it is not an outstanding request — never describe it as "awaiting consent".',
+  awaiting_target:
+    "awaiting_target: the guest is a member outside the booker's family who has been asked and has not answered. The row holds a bed while it waits, and consentExpiresAtUtc is when that hold lapses.",
+  approved_on_request:
+    "approved_on_request: the guest was asked and the request was approved — either by the guest themself or by a delegate acting for them. Which of the two is not reported, because it would need a column that names a person.",
+  notify_only_auto_confirmed:
+    "notify_only_auto_confirmed: this club does not require approval for a member guest, so the guest was told rather than asked and the row was confirmed automatically. Nobody approved anything.",
+  admin_assigned:
+    "admin_assigned: an administrator (or the booking-request pipeline) placed this member guest and stood behind it, so no approval was solicited.",
+  declined:
+    "declined: the member refused to be a guest on this booking. The row is not an occupant and should not appear on an arrival list.",
+  consent_expired:
+    "consent_expired: nobody answered before the deadline and the expiry sweep closed the request. The row is not an occupant.",
+  unrecognised_consent_shape:
+    "unrecognised_consent_shape: the five consent columns are in a combination the platform's own discriminator table does not describe. Report it as a data defect and do not infer a state from it.",
+} as const;
+
+type BookingGuestConsentSubStateCode =
+  keyof typeof BOOKING_GUEST_CONSENT_SUB_STATES;
+
+/**
+ * A sub-state code as a SQL literal, typed so a code that is not in the
+ * catalogue is a compile error rather than a value the model cannot interpret.
+ */
+function consentSubStateLiteral(code: BookingGuestConsentSubStateCode): string {
+  return `'${code}'`;
+}
+
+/**
+ * ONE ROW PER GUEST on the booking, with the per-night facts that make the
+ * envelope explicable.
+ *
+ * `stayStart`/`stayEnd` ARE THE ENVELOPE AND `firstNight`/`lastNight` ARE THE
+ * FACTS, and both are projected because either alone is a trap. A guest may stay
+ * NON-CONTIGUOUS nights within one booking (issue #713): each included night is
+ * a `BookingGuestNight` row and the envelope is only the min/max of that set,
+ * kept in sync on every write. So the envelope alone would have a model
+ * narrating a gap-free stay over a gap. The per-night rows alone would be worse
+ * for the opposite reason: a guest with NO per-night rows would report
+ * `nightCount = 0` with null first and last nights, and a model would say the
+ * guest is staying no nights — while the envelope says the 14th to the 17th.
+ * Both, plus an explicit contiguity flag, is the only combination that cannot
+ * produce a confident falsehood.
+ *
+ * `nightsAreContiguous` IS THREE-VALUED, and it is computed from the per-night
+ * rows rather than from the envelope. True means the night count equals the span
+ * from first to last night inclusive, so there is no gap. False means there IS a
+ * gap. NULL means there are no per-night rows at all, so contiguity is not
+ * established — which is a different answer from "there are gaps", and a
+ * `false` there would be a specific and possibly untrue claim.
+ *
+ * `operationallyPresent` IS THE PLATFORM'S OWN PREDICATE, evaluated in SQL.
+ * `OPERATIONALLY_PRESENT_GUEST_WHERE` in `member-guest-consent.ts` is
+ * `consentStatus IS NULL OR consentStatus = 'CONFIRMED'`, and it is what the
+ * kiosk, the chore roster, bed allocation, the arrival emails and the lodge
+ * board all filter on. Precomputing it means a model never has to assemble it —
+ * and cannot assemble it wrongly. The wrong way is spelled out in the schema and
+ * in `member-guest-consent.ts` as a trap: `consentStatus <> 'PENDING'` is
+ * UNKNOWN for a NULL row, and NULL is the dominant value forever, so that filter
+ * silently drops every ordinary guest.
+ *
+ * The `CROSS JOIN LATERAL` cannot drop a guest: an aggregate query with no
+ * `GROUP BY` returns exactly one row, so the derived table is total over the
+ * left side even for a guest with no per-night rows.
+ */
+const BOOKING_PARTY_SQL = `SELECT
+  g."id" AS guest_ref,
+  g."firstName" AS first_name,
+  g."lastName" AS last_name,
+  g."ageTier"::text AS age_tier,
+  g."isMember" AS is_member,
+  g."memberId" AS guest_member_ref,
+  ${dateOnly('g."stayStart"')} AS stay_start,
+  ${dateOnly('g."stayEnd"')} AS stay_end,
+  n."night_count" AS night_count,
+  CASE
+    WHEN n."night_count" = 0 THEN NULL::boolean
+    ELSE (n."night_count" = (n."last_night" - n."first_night" + 1))
+  END AS nights_are_contiguous,
+  ${dateOnly('n."first_night"')} AS first_night,
+  ${dateOnly('n."last_night"')} AS last_night,
+  g."priceCents" AS price_cents,
+  (g."consentStatus" IS NULL OR g."consentStatus" = 'CONFIRMED') AS operationally_present,
+  CASE
+    WHEN g."consentStatus" IS NULL THEN ${consentSubStateLiteral("family_or_legacy")}
+    WHEN g."consentStatus" = 'PENDING' THEN ${consentSubStateLiteral("awaiting_target")}
+    WHEN g."consentStatus" = 'DECLINED' THEN ${consentSubStateLiteral("declined")}
+    WHEN g."consentStatus" = 'EXPIRED' THEN ${consentSubStateLiteral("consent_expired")}
+    WHEN g."consentStatus" = 'CONFIRMED'
+      AND g."consentRequestedAt" IS NOT NULL
+      AND g."consentRespondedAt" IS NOT NULL
+      THEN ${consentSubStateLiteral("approved_on_request")}
+    WHEN g."consentStatus" = 'CONFIRMED'
+      AND g."consentRequestedAt" IS NULL
+      AND g."consentRespondedAt" IS NULL
+      THEN ${consentSubStateLiteral("notify_only_auto_confirmed")}
+    WHEN g."consentStatus" = 'CONFIRMED'
+      AND g."consentRequestedAt" IS NULL
+      AND g."consentRespondedAt" IS NOT NULL
+      THEN ${consentSubStateLiteral("admin_assigned")}
+    ELSE ${consentSubStateLiteral("unrecognised_consent_shape")}
+  END AS consent_sub_state
+FROM public."BookingGuest" g
+CROSS JOIN LATERAL (
+  SELECT
+    pg_catalog.count(*)::int AS night_count,
+    pg_catalog.min(gn."stayDate") AS first_night,
+    pg_catalog.max(gn."stayDate") AS last_night
+  FROM public."BookingGuestNight" gn
+  WHERE gn."bookingGuestId" = g."id"
+) n
+WHERE g."bookingId" = $1::text
+ORDER BY g."stayStart" ASC, g."lastName" ASC, g."id" ASC`;
+
+/** The consent vocabulary as one paragraph, for the entry's scope line. */
+const CONSENT_SUB_STATE_SENTENCES = Object.values(
+  BOOKING_GUEST_CONSENT_SUB_STATES,
+).join(" ");
+
+const bookingPartyState = defineDiagnosticsTool<BookingIdArgs>({
+  id: DIAGNOSTICS_BOOKING_PARTY_TOOL_ID,
+  source: "select_only_sql",
+  label: "Booking party state",
+  description: `Lists the guests on ONE booking, at most ${AID6B_PARTY_ROW_LIMIT}, earliest stay first then family name. Each row carries the guest record id, the given and family name, the age tier, whether they are a member and their member id if so, the stay envelope (first and last night), how many nights they actually have per-night records for, whether those nights are CONTIGUOUS, the earliest and latest of those nights, that guest's price in integer cents, whether the platform treats them as operationally present, and a single code for their member-guest consent shape. A guest whose nights are NOT contiguous has GAPS — the envelope is not the stay, so never describe the range between first and last night as nights they are here. It returns no date of birth, no contact details, no per-night prices, no arrival or departure instants, no consent deadline and no record of who approved a consent. ${AID6B_DESCRIPTION_TAIL}`,
+  requiredAreas: ["bookings"],
+  evidenceScope: `The guests on ONE booking with their per-night stay facts, at most ${AID6B_PARTY_ROW_LIMIT} rows. THE ENVELOPE IS NOT THE STAY: stayStart and stayEnd are only the minimum and maximum of the guest's per-night records, a guest may stay NON-CONTIGUOUS nights within one booking, and nightsAreContiguous is what settles it — true means no gap, false means there IS a gap, and null means the guest has NO per-night records at all, so contiguity is not established and the envelope is the only evidence there is. firstNight and lastNight are the authoritative per-night facts; the envelope is derived from them. MEMBER-GUEST CONSENT IS LIVE IN THIS RELEASE, and the shape of the columns is reported as one consentSubState code: ${CONSENT_SUB_STATE_SENTENCES} A NULL consent status is the DOMINANT value and always will be — every non-member guest, every family-scope guest and every row written before the feature existed carries one — so it means "no consent was ever needed" and NEVER "consent is outstanding". Never reason with "consentStatus is not PENDING": in SQL that test is UNKNOWN for a NULL row, so it silently drops every ordinary guest, which is why the platform's own predicate is "consentStatus IS NULL OR consentStatus = CONFIRMED" and why this tool precomputes it as operationallyPresent. A guest who is not operationally present may still be holding a bed while their request is pending; WHEN that hold lapses is not reported here — Admin > Booking detail shows the deadline. Who approved a consent is not reported and is not readable by any tool here. Nor is whether the guest arrived or left: kiosk arrival is lodge-operations evidence rather than booking-record evidence, and it is on the kiosk and lodge board. ${AID6B_SCOPE_TAIL} ${AID6B_UNTRUSTED_EVIDENCE_DISCLOSURE}`,
+  argsSchema: bookingIdArgsSchema,
+  inputSchema: bookingIdInputSchema,
+  sql: BOOKING_PARTY_SQL,
+  // ONE parameter, and the statement references exactly `$1`.
+  bind: (args) => [args.bookingId],
+  project: (row) => ({
+    guestRef: recordRefOrNull(row.guest_ref) ?? "",
+    firstName: personNameOrNull(row.first_name),
+    lastName: personNameOrNull(row.last_name),
+    ageTier: stableCodeOrNull(row.age_tier),
+    isMember: boolOf(row.is_member),
+    guestMemberRef: recordRefOrNull(row.guest_member_ref),
+    stayStart: dateOnlyOrNull(row.stay_start) ?? "",
+    stayEnd: dateOnlyOrNull(row.stay_end) ?? "",
+    nightCount: countOf(row.night_count),
+    nightsAreContiguous: nullableBoolOf(row.nights_are_contiguous),
+    firstNight: dateOnlyOrNull(row.first_night),
+    lastNight: dateOnlyOrNull(row.last_night),
+    priceCents: centsOrNull(row.price_cents),
+    operationallyPresent: boolOf(row.operationally_present),
+    consentSubState: stableCodeOrNull(row.consent_sub_state),
+  }),
+  rowLimit: AID6B_PARTY_ROW_LIMIT,
+  byteLimit: AID6B_BYTE_LIMIT,
+  // Every row carries a person's given and family name, and a member guest's
+  // row carries their member id. ADR-004's per-invocation opt-in is DECLARED by
+  // this flag and is not yet implemented (prerequisite on #2378), so it is not a
+  // control — the controls that run are the `bookings:view` requirement, the
+  // exact booking id, the column allowlist and the column grant.
+  surfacesPersonalData: true,
+});
+
+// ---------------------------------------------------------------------------
+// 3. Bed allocation: which guest is in which bed on which night.
+// ---------------------------------------------------------------------------
+
+/**
+ * ONE ROW PER `BedAllocation` — one guest, one bed, one night — for THIS booking
+ * only.
+ *
+ * SEVEN FIELDS, AND THE NARROWNESS IS THE POINT — it is the arithmetic in the
+ * module docblock, not a style. A guest-night is a row, so this is a party times
+ * a stay: six guests over ten nights is sixty rows, which is the entry's whole
+ * limit, and seven fields at 24-character labels is exactly what makes sixty rows
+ * fit the 16 384-byte ceiling for ANY data the schema can hold. Measured: nine
+ * fields came to 17.1 kB at typical widths and 19.4 kB at the widest, so gate 9
+ * would have refused every result for an ordinary week-long family booking.
+ * Dropped to get here, in the order they were given up: the allocation's own id
+ * (the row has a natural key — see below), the room and bed ids, the live bed
+ * type (the comparison carries it), the bunk group, the approval instant, the
+ * created instant, the allocation source and the bed's active flag. Each is named
+ * in the scope line with the board that shows it.
+ *
+ * NO EVIDENCE REFERENCE IS PROJECTED, AND IT IS NOT NEEDED. Every other
+ * per-record entry in both packs projects the row's own id, and dropping it here
+ * bought forty bytes a row on the tightest entry in the pack. It costs nothing
+ * because the row has a NATURAL key that IS projected: the schema's
+ * `@@unique([bookingGuestId, stayDate])` means one guest has at most one
+ * allocation per night, so guest plus night identifies the row exactly. The id
+ * is still the final `ORDER BY` term, so the ordering stays total and the audit
+ * `resultHash` stays stable.
+ *
+ * BOTH BED TYPES ARE COMPARED AND ONE IS REPORTED, which is the resolution of a
+ * real conflict. `BedAllocation."bedType"` is a DENORMALISED copy of
+ * `LodgeBed."bedType"`, taken at allocation time, and it is the copy the
+ * partial unique index actually enforces on: the index predicate cannot join to
+ * `LodgeBed`, so the "non-double beds are capped at one occupant a night" guard
+ * reads the row's own column. A mismatch between the two is therefore a real
+ * defect with real consequences, and reporting only one of them would hide it.
+ * `bedType` is the denormalised copy — the one the guard uses — and
+ * `bedTypeMatchesBed` is the comparison. The live type is not projected
+ * separately: when they match it is the same value, and when they do not, the
+ * finding is the mismatch and the bed-allocation board is where an officer sees
+ * the current definition. The comparison is NULL when the bed row could not be
+ * read at all, which is a third state and not a mismatch.
+ *
+ * EVERY JOIN IS A LEFT JOIN so a broken foreign key cannot silently remove a
+ * guest-night from the answer. The room and bed relations are `Restrict` with
+ * NOT NULL columns, so a null room or bed label is itself a finding rather than
+ * an ordinary absence — and an inner join would have turned that finding into a
+ * missing row, which is the falsehood that matters here. The bed join uses BOTH
+ * columns of the composite foreign key (`[bedId, roomId]` → `[id, roomId]`),
+ * exactly as the schema declares it.
+ *
+ * `bedType` IS STILL PROJECTED EVEN THOUGH THE BED IS ONLY REACHED FOR ITS NAME
+ * AND THE COMPARISON, and that is not redundancy: the projected value is the
+ * ALLOCATION's own copy, which is the one the guard reads, so it is the value
+ * that explains why a second occupant was accepted or refused.
+ */
+const BOOKING_BED_ALLOCATION_SQL = `SELECT
+  ${dateOnly('a."stayDate"')} AS stay_date,
+  a."bookingGuestId" AS guest_ref,
+  r."name" AS room_name,
+  bd."name" AS bed_name,
+  a."bedType"::text AS bed_type,
+  (a."bedType" = bd."bedType") AS bed_type_matches_bed,
+  a."isSecondOccupant" AS is_second_occupant
+FROM public."BedAllocation" a
+LEFT JOIN public."LodgeRoom" r ON r."id" = a."roomId"
+LEFT JOIN public."LodgeBed" bd ON bd."id" = a."bedId" AND bd."roomId" = a."roomId"
+WHERE a."bookingId" = $1::text
+ORDER BY a."stayDate" ASC, r."name" ASC, bd."name" ASC, a."id" ASC`;
+
+const bookingBedAllocationState = defineDiagnosticsTool<BookingIdArgs>({
+  id: DIAGNOSTICS_BOOKING_BED_ALLOCATION_TOOL_ID,
+  source: "select_only_sql",
+  label: "Booking bed allocation state",
+  description: `Lists the bed allocations THIS booking holds, one row per guest per night, at most ${AID6B_ALLOCATION_ROW_LIMIT}, earliest night first then room then bed. Each row carries the night, the booking-guest record id, the room and bed names, the bed type recorded on the allocation, whether that type still matches the bed's own definition, and whether the guest is the SECOND occupant of a double. A guest and a night identify a row exactly — one guest has at most one allocation per night. A DOUBLE bed may hold two occupants for a night; every other bed type holds exactly one. This is THIS booking's allocation only, never the lodge's whole board, so it cannot tell you whether the lodge was full. It returns no approver identity, no room notes, and neither whether a placement was automatic or by hand nor whether the bed is still active — both are on the bed-allocation board. ${AID6B_DESCRIPTION_TAIL}`,
+  requiredAreas: ["bookings"],
+  evidenceScope: `The bed allocations belonging to ONE booking, one row per guest per night, at most ${AID6B_ALLOCATION_ROW_LIMIT} rows. A DOUBLE bed may hold TWO occupants for a night — one primary and one marked isSecondOccupant — and every other bed type is capped at exactly one occupant a night; that cap is enforced on the bed type stored on the ALLOCATION row, which is a copy taken when the allocation was made, so bedTypeMatchesBed being false is a real data defect worth reporting and null means the bed row could not be read at all. AN UNALLOCATED GUEST-NIGHT IS NOT PROOF THE LODGE WAS FULL. A bed held for a season by a custodian (a hut-leader assignment with a bed) is out of the allocatable pool entirely, with NO allocation row and NO booking anywhere, so it simply does not appear in any tool's evidence; and a guest-night can be unallocated because nobody has placed it yet. Either way the question needs the bed-allocation board, which is Admin > Bed Allocation. THIS TOOL REPORTS ONE BOOKING'S OWN ALLOCATION AND NEVER THE WHOLE BOARD: it cannot see another booking's beds, the custodian holds, or how many beds the lodge has, so never conclude anything about lodge occupancy or availability from it. Seven fields a row is what makes sixty rows fit this tool's size ceiling for any data the schema can hold, so four further facts are deliberately absent and all four are on the same board: whether the placement was made automatically or by an officer, whether the bed is still active, when a manual placement was approved, and the bed's bunk-pairing label. Who approved an allocation and any room notes are not reported and are not readable by any tool here. ${AID6B_SCOPE_TAIL} ${AID6B_UNTRUSTED_EVIDENCE_DISCLOSURE}`,
+  argsSchema: bookingIdArgsSchema,
+  inputSchema: bookingIdInputSchema,
+  sql: BOOKING_BED_ALLOCATION_SQL,
+  // ONE parameter, and the statement references exactly `$1`.
+  bind: (args) => [args.bookingId],
+  project: (row) => ({
+    stayDate: dateOnlyOrNull(row.stay_date) ?? "",
+    guestRef: recordRefOrNull(row.guest_ref) ?? "",
+    roomName: lodgeLabelOrNull(row.room_name),
+    bedName: lodgeLabelOrNull(row.bed_name),
+    bedType: stableCodeOrNull(row.bed_type),
+    bedTypeMatchesBed: nullableBoolOf(row.bed_type_matches_bed),
+    isSecondOccupant: boolOf(row.is_second_occupant),
+  }),
+  rowLimit: AID6B_ALLOCATION_ROW_LIMIT,
+  byteLimit: AID6B_BYTE_LIMIT,
+  // No name and no member id — but a booking-guest id resolves to a named person
+  // through `booking_party_state`, under this same permission, so the flag is
+  // set conservatively. ADR-004's per-invocation opt-in is DECLARED by it and is
+  // not yet implemented (prerequisite on #2378), so it is not a control.
+  surfacesPersonalData: true,
+});
+
+// ---------------------------------------------------------------------------
+// 4. Exception and locked-period change requests raised on the booking.
+// ---------------------------------------------------------------------------
+
+/**
+ * What each `BookingChangeRequestStatus` MEANS to an operator, as a server-owned
+ * catalogue interpolated into the entry's `evidenceScope`.
+ *
+ * TYPED AGAINST THE PRISMA ENUM on purpose: a value added to
+ * `BookingChangeRequestStatus` fails to compile until it is explained here, so
+ * the vocabulary cannot fall behind the schema. And it is INTERPOLATED, not
+ * merely declared — AID-6C's review found a catalogue in the finance pack that
+ * existed and was read only by its own test, which is a catalogue that never
+ * reaches the model and therefore does no work.
+ *
+ * The three #2365 outcomes are spelled out rather than paraphrased because each
+ * one is a different answer to "so did the member get their exception?", and
+ * three of them look like a refusal without being one. CANCELLED is the member
+ * withdrawing. SUPERSEDED is a newer proposal replacing this one. EXPIRED is the
+ * hold reaper releasing the beds because nobody decided in time. A model that
+ * flattens those three into "rejected" tells a Booking Officer that a decision
+ * was made against a member when none was.
+ */
+export const BOOKING_CHANGE_REQUEST_STATUS_MEANINGS: Record<
+  BookingChangeRequestStatus,
+  string
+> = {
+  REQUESTED:
+    "REQUESTED is the ONLY non-terminal status: nobody has decided yet and the request is still live.",
+  APPROVED:
+    "APPROVED means an officer allowed the change. Terminal. It does not by itself prove the change was executed.",
+  REJECTED: "REJECTED means an officer refused the change. Terminal.",
+  CANCELLED:
+    "CANCELLED means the MEMBER withdrew the request before anyone decided. Terminal, and nobody refused anything — do not report it as a refusal.",
+  SUPERSEDED:
+    "SUPERSEDED means a newer proposal replaced this one. Terminal, and the newer request is the live one — look for it in this same result.",
+  EXPIRED:
+    "EXPIRED means the hold reaper released the beds and closed the request because nobody decided before its deadline. Terminal, and no officer refused it.",
+};
+
+/**
+ * What each `BookingChangeRequestKind` means. Same typing and the same reason:
+ * the two kinds share a table and a queue but never the evidence columns, and
+ * they are different member experiences.
+ */
+export const BOOKING_CHANGE_REQUEST_KIND_MEANINGS: Record<
+  BookingChangeRequestKind,
+  string
+> = {
+  LOCKED_PERIOD:
+    "LOCKED_PERIOD is a change to a night that is today or already past, which the member cannot apply themselves and needs an officer's hands for.",
+  POLICY_EXCEPTION:
+    "POLICY_EXCEPTION is a member asking an officer to allow a soft booking-policy failure — a minimum stay, or adult-member hosting — on a proposal frozen at the moment they submitted it.",
+};
+
+/**
+ * The change requests raised on ONE booking, newest first.
+ *
+ * `heldNightCount` IS THE ONLY RELIABLE TEST OF WHETHER BEDS ARE HELD, and the
+ * obvious alternative is a documented trap. `PolicyExceptionReservationNight`
+ * rows exist IFF the request is CURRENTLY holding that night's beds — there is
+ * deliberately no "active" flag, because every terminal transition and every
+ * successful approval DELETES the rows in the same transaction that writes the
+ * outcome, so the canonical capacity calculation counts held reservations simply
+ * by summing the rows that still exist. `holdExpiresAt IS NOT NULL` is NOT a
+ * safe proxy, and the schema says so in as many words: "NULL is NOT a safe proxy
+ * for 'holds no capacity': never filter a capacity question on `holdExpiresAt IS
+ * NOT NULL`; the PolicyExceptionReservationNight rows are the only reliable
+ * test." A row written before that column existed was deliberately not
+ * backfilled, so it can be holding beds with a NULL deadline; the reaper handles
+ * that population by deriving the deadline from `createdAt` and the first held
+ * night. Both fields are projected, and the scope line says which one to
+ * believe.
+ *
+ * SEVENTEEN FIELDS. Three of the plan's fields are absent for a GRANT reason
+ * rather than a cap reason: `hasLastConflictReason` and `hasProposalSnapshot`
+ * would each need the SELECT privilege on a free-text or raw-Json column just to
+ * test it for null (see the module docblock), and `proposalHash` is a 64-hex
+ * drift token no operator can act on which cost eighty bytes on every row.
+ * `version` is an optimistic-concurrency token and is likewise absent.
+ */
+const BOOKING_EXCEPTION_REQUEST_SQL = `SELECT
+  r."id" AS request_ref,
+  r."kind"::text AS request_kind,
+  r."status"::text AS request_status,
+  r."requestedByMemberId" AS requested_by_member_ref,
+  r."aggregateCapacityMode"::text AS aggregate_capacity_mode,
+  r."attemptCount" AS attempt_count,
+  r."conflictCount" AS conflict_count,
+  ${utcInstant('r."lastConflictAt"')} AS last_conflict_at_utc,
+  (SELECT pg_catalog.count(*)::int FROM public."PolicyExceptionReservationNight" n WHERE n."changeRequestId" = r."id") AS held_night_count,
+  ${utcInstant('r."holdExpiresAt"')} AS hold_expires_at_utc,
+  ${utcInstant('r."reviewedAt"')} AS reviewed_at_utc,
+  ${utcInstant('r."cancelledAt"')} AS cancelled_at_utc,
+  r."supersededByRequestId" AS superseded_by_request_ref,
+  r."linkedModificationId" AS linked_modification_ref,
+  ${utcInstant('r."createdAt"')} AS created_at_utc,
+  ${utcInstant('r."updatedAt"')} AS updated_at_utc
+FROM public."BookingChangeRequest" r
+WHERE r."bookingId" = $1::text
+ORDER BY r."createdAt" DESC, r."id" ASC`;
+
+/** The two catalogues as one paragraph, for the entry's scope line. */
+const CHANGE_REQUEST_VOCABULARY = [
+  ...Object.values(BOOKING_CHANGE_REQUEST_KIND_MEANINGS),
+  ...Object.values(BOOKING_CHANGE_REQUEST_STATUS_MEANINGS),
+].join(" ");
+
+const bookingExceptionRequestState = defineDiagnosticsTool<BookingIdArgs>({
+  id: DIAGNOSTICS_BOOKING_EXCEPTION_REQUEST_TOOL_ID,
+  source: "select_only_sql",
+  label: "Booking change and exception requests",
+  description: `Lists the change requests raised on ONE booking — locked-period edits and policy-exception requests alike — newest first, at most ${AID6B_HISTORY_ROW_LIMIT}. Each row carries the request id, its kind and status, the member who asked, the capacity mode of the frozen policy evidence, how many times it has been submitted and how many capacity conflicts it has hit and when the last one was, HOW MANY NIGHTS OF BEDS IT IS HOLDING RIGHT NOW, when any hold runs out, when and by whom it was reviewed, when the member cancelled it, which newer request superseded it, which booking modification it produced, and when it was created and last changed. heldNightCount above zero is the only reliable sign that beds are currently held — a null hold deadline does NOT mean no beds are held. It returns no requested changes, no member message, no reason, no admin notes, no internal notes and no frozen proposal or evidence. ${AID6B_DESCRIPTION_TAIL}`,
+  requiredAreas: ["bookings"],
+  evidenceScope: `The change requests recorded against ONE booking, at most ${AID6B_HISTORY_ROW_LIMIT}, newest first. ${CHANGE_REQUEST_VOCABULARY} WHETHER BEDS ARE HELD IS ANSWERED BY heldNightCount AND BY NOTHING ELSE. A per-night reservation row exists if and only if the request is holding that night's beds right now — there is deliberately no active flag, because approving, rejecting, cancelling or superseding a request deletes those rows in the same transaction that records the outcome. holdExpiresAtUtc is NOT a safe proxy: the schema warns that a null deadline is two different populations, one of which is a row written before the column existed that IS holding beds, so never answer a capacity question from the deadline. A NEW-BOOKING policy-exception request is NOT in this result at all: it lives in a separate table because it has no booking id until it is converted, so an empty result here does not mean the member never asked for an exception — Admin > Exception Requests lists both kinds together. What a member wrote, what an officer wrote back, the officer's private internal notes, the requested changes, the frozen proposal and the frozen policy evidence are all outside this pack and not readable by any tool in it; Admin > Exception Requests shows them. ${AID6B_SCOPE_TAIL} ${AID6B_UNTRUSTED_EVIDENCE_DISCLOSURE}`,
+  argsSchema: bookingIdArgsSchema,
+  inputSchema: bookingIdInputSchema,
+  sql: BOOKING_EXCEPTION_REQUEST_SQL,
+  // ONE parameter, and the statement references exactly `$1`.
+  bind: (args) => [args.bookingId],
+  project: (row) => ({
+    requestRef: recordRefOrNull(row.request_ref) ?? "",
+    requestKind: stableCodeOrNull(row.request_kind),
+    requestStatus: stableCodeOrNull(row.request_status),
+    requestedByMemberRef: recordRefOrNull(row.requested_by_member_ref) ?? "",
+    aggregateCapacityMode: stableCodeOrNull(row.aggregate_capacity_mode),
+    attemptCount: countOf(row.attempt_count),
+    conflictCount: countOf(row.conflict_count),
+    lastConflictAtUtc: instantOrNull(row.last_conflict_at_utc),
+    heldNightCount: countOf(row.held_night_count),
+    holdExpiresAtUtc: instantOrNull(row.hold_expires_at_utc),
+    reviewedAtUtc: instantOrNull(row.reviewed_at_utc),
+    cancelledAtUtc: instantOrNull(row.cancelled_at_utc),
+    supersededByRequestRef: recordRefOrNull(row.superseded_by_request_ref),
+    linkedModificationRef: recordRefOrNull(row.linked_modification_ref),
+    createdAtUtc: instantOrNull(row.created_at_utc) ?? "",
+    updatedAtUtc: instantOrNull(row.updated_at_utc) ?? "",
+  }),
+  rowLimit: AID6B_HISTORY_ROW_LIMIT,
+  byteLimit: AID6B_BYTE_LIMIT,
+  // Two member ids per row — who asked and who decided. ADR-004's per-invocation
+  // opt-in is DECLARED by this flag and is not yet implemented (prerequisite on
+  // #2378), so it is not a control.
+  surfacesPersonalData: true,
+});
+
+// ---------------------------------------------------------------------------
+// 5. The platform's own audit events for the booking record.
+// ---------------------------------------------------------------------------
+
+/**
+ * The entity type this entry may read. A module constant closed over by `bind`,
+ * never an argument, so the predicate is fixed at review time.
+ *
+ * `Booking` AND NOTHING ELSE, which is a real limit rather than a formality. An
+ * event recorded against the booking's PAYMENT, its bed allocation or its change
+ * request carries that record's own `entityType` and `entityId`, so it is not in
+ * this result — and the scope line says so, because "no audit event touched this
+ * booking" and "no audit event was recorded against the booking ROW" are
+ * different claims and only the second one is true here.
+ */
+export const BOOKING_AUDIT_ENTITY_TYPES = ["Booking"] as const;
+
+/**
+ * The audit categories this entry may read — DERIVED from `audit-categories.ts`
+ * rather than written out, exactly as AID-6A's correlation entries and AID-6C's
+ * audit entry derive theirs.
+ *
+ * That keeps the tool in lockstep with #2581's canonical taxonomy: if a category
+ * is reclassified into or out of the booking domain the tool follows without an
+ * edit, and it can never read a category the booking domain does not own.
+ */
+const BOOKING_AUDIT_CATEGORIES =
+  auditCategoriesForCorrelationDomain("booking");
+
+/**
+ * Modelled on `financeAuditHistory` deliberately, down to the predicate shape,
+ * so a consumer reads ONE convention for "the platform's own recorded events
+ * for this record, newest first, stable codes only".
+ *
+ * `entityId` is used as a PREDICATE against an id the caller already supplied
+ * and is never projected: the row carries the audit row's own id as its evidence
+ * reference, and echoing the caller's own argument back on every row would only
+ * spend the entry's byte ceiling. The three member-identifying columns, the free
+ * text, the arbitrary metadata Json and the network fields all stay ungranted,
+ * so this entry can say that an event of this kind occurred on this booking at
+ * this instant with this outcome — and cannot say who did it, from where, or
+ * what they typed. That is why it is the one entry here that does not surface
+ * personal data.
+ */
+const BOOKING_AUDIT_SQL = `SELECT
+  a."id" AS event_ref,
+  a."action" AS action_code,
+  a."category" AS category_code,
+  a."severity" AS severity_code,
+  a."outcome" AS outcome_code,
+  a."entityType" AS entity_type,
+  ${utcInstant('a."createdAt"')} AS occurred_at_utc
+FROM public."AuditLog" a
+WHERE a."entityType" = ANY ($1::text[])
+  AND a."entityId" = $2::text
+  AND a."category" = ANY ($3::text[])
+ORDER BY a."createdAt" DESC, a."id" ASC`;
+
+const bookingRecordAuditHistory = defineDiagnosticsTool<BookingIdArgs>({
+  id: DIAGNOSTICS_BOOKING_AUDIT_HISTORY_TOOL_ID,
+  source: "select_only_sql",
+  label: "Booking audit history for a record",
+  description: `Returns the platform's own booking audit events for ONE booking, newest first, at most ${AID6B_HISTORY_ROW_LIMIT}. Each row carries only stable codes and an instant: the event reference, the action code, the audit category, severity and outcome, the kind of record it concerned, and when it happened in UTC. Use it to see what the platform recorded happening to this booking and in what order. It searches ONLY the booking audit categories (${BOOKING_AUDIT_CATEGORIES.join(", ")}) and only events recorded against the BOOKING record itself — a payment, bed-allocation or change-request event is recorded against that record instead. It never returns who did it, event descriptions, stored metadata, IP addresses or error text. ${AID6B_DESCRIPTION_TAIL}`,
+  requiredAreas: ["bookings"],
+  evidenceScope: `Audit events recorded against ONE booking record, in the booking categories ${BOOKING_AUDIT_CATEGORIES.join(" and ")} only, at most ${AID6B_HISTORY_ROW_LIMIT}, newest first. AN EMPTY RESULT IS NOT EVIDENCE THAT NOTHING HAPPENED, and there are two structural reasons rather than one. First, the audit category is OPTIONAL, and a row recorded with no category at all is matched by no diagnostics tool anywhere — a number of production write paths still record that way and another change is actively reclassifying them, so treat the gap as real and current rather than as a fixed list. Second, "Booking" is the ONLY entity type read here: an event recorded against this booking's PAYMENT, its bed allocation, its change request or the member is filed under that record's own type and id, and is not in this result. Never report that something did not happen on the strength of an empty result; say that no categorised booking audit event matched the booking record, and point at Admin > Audit Log, which lists uncategorised rows and every entity type as well. ${AID6B_SCOPE_TAIL} ${AID6B_UNTRUSTED_EVIDENCE_DISCLOSURE}`,
+  argsSchema: bookingIdArgsSchema,
+  inputSchema: bookingIdInputSchema,
+  sql: BOOKING_AUDIT_SQL,
+  // THREE parameters, always, and the statement references exactly `$1..$3`: the
+  // entity types this entry covers (a module constant closed over here, never an
+  // argument), the booking id, and the booking categories (derived from the
+  // canonical taxonomy, never an argument).
+  bind: (args) => [
+    [...BOOKING_AUDIT_ENTITY_TYPES],
+    args.bookingId,
+    [...BOOKING_AUDIT_CATEGORIES],
+  ],
+  project: (row) => ({
+    eventRef: recordRefOrNull(row.event_ref) ?? "",
+    action: stableCodeOrNull(row.action_code),
+    categoryCode: stableCodeOrNull(row.category_code),
+    severityCode: stableCodeOrNull(row.severity_code),
+    outcomeCode: stableCodeOrNull(row.outcome_code),
+    entityType: stableCodeOrNull(row.entity_type),
+    occurredAtUtc: instantOrNull(row.occurred_at_utc) ?? "",
+  }),
+  rowLimit: AID6B_HISTORY_ROW_LIMIT,
+  byteLimit: AID6B_BYTE_LIMIT,
+  // Stable codes and an instant. No person, no free text, no identifier beyond
+  // the audit row's own — the caller's booking id is a predicate, not a column.
+  surfacesPersonalData: false,
+});
+
+/** The AID-6B per-booking half, in presentation order. */
+export const DIAGNOSTICS_AID6B_BOOKING_RECORD_TOOLS: readonly DiagnosticsToolEntry[] =
+  [
+    bookingSummary,
+    bookingPartyState,
+    bookingBedAllocationState,
+    bookingExceptionRequestState,
+    bookingRecordAuditHistory,
+  ];
