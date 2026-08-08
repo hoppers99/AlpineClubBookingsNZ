@@ -44,6 +44,24 @@
 export const ARRIVAL_TIME_PATTERN = /^([01]\d|2[0-3]):(00|30)$/;
 
 /**
+ * The minute values the pattern above admits, as strings, in order.
+ *
+ * `TimePicker` builds its option list from THIS rather than from a private
+ * `[0, 30]` literal, so the control's offered set is derived from the shared rule
+ * instead of merely agreeing with it today. That is the difference between the
+ * two staying in step and the two happening to match — and happening to match is
+ * exactly what this field did before #2621, in the API's favour, for six minute
+ * values.
+ *
+ * Kept beside `ARRIVAL_TIME_PATTERN` rather than parsed out of it: a regex is the
+ * clearer statement of the accepted STRING, a list is the clearer statement of
+ * the offered SET, and `time-picker-arrival-contract.test.tsx` puts every option
+ * the real control renders back through `isValidArrivalTime`, so the two cannot
+ * drift apart without a named failure.
+ */
+export const ARRIVAL_TIME_MINUTES = ["00", "30"] as const;
+
+/**
  * The message a member sees when the value is refused. It must describe the
  * pattern above ACCURATELY — the previous text promised "30-minute increments"
  * over a pattern that accepted six other minute values, so the API's contract

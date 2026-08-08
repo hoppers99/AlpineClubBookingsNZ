@@ -158,14 +158,23 @@ export async function PUT(
 
   // #2621: this route wrote to a booking and recorded nothing. It is reachable
   // by a Booking Officer on ANY member's booking (#1313 option A2), so a member
-  // seeing a time they did not set had no way to find out who set it. `memberId`
-  // is the actor, `subjectMemberId` the booking owner, so an officer edit and a
-  // self-edit are distinguishable at a glance. `previous` may be null — that is
-  // the first-ever set, and it is a fact worth recording. Written after the
-  // transaction commits, deliberately: `logAudit` is fire-and-forget, and a
-  // durable "changed" claim must never be able to survive a rolled-back write.
+  // seeing a time they did not set had no way to find out who set it.
+  //
+  // ACTOR VERSUS SUBJECT. `memberId` is who pressed the button; `subjectMemberId`
+  // is the booking's OWNER, which is the member the row is about and the one an
+  // operator filtering by "Subject" is looking for. `onBehalf` then names the
+  // AUTHORITY used, because the two ids alone do not distinguish "the owner
+  // edited their own booking" from "an officer edited it for them" without the
+  // reader comparing them — the same modelling `members/[id]/photo` already uses
+  // for the identical owner-or-admin pair, so this is the house form rather than
+  // a new one. `previous` may be null: that is the first-ever set, and it is a
+  // fact worth recording.
+  //
+  // Written after the transaction commits, deliberately: `logAudit` is
+  // fire-and-forget, and a durable "changed" claim must never be able to survive
+  // a rolled-back write.
   logAudit({
-    action: "booking.arrival-time.set",
+    action: "booking.expected_arrival_time.set",
     memberId: session.user.id,
     targetId: id,
     subjectMemberId: booking.memberId,
@@ -177,9 +186,9 @@ export async function PUT(
     details: `${previous ?? "(not set)"} → ${updated.expectedArrivalTime}`,
     metadata: {
       bookingId: id,
-      previousArrivalTime: previous,
-      newArrivalTime: updated.expectedArrivalTime,
-      byOwner: booking.memberId === session.user.id,
+      previousExpectedArrivalTime: previous,
+      newExpectedArrivalTime: updated.expectedArrivalTime,
+      onBehalf: booking.memberId !== session.user.id,
     },
     ipAddress: getClientIp(req),
   });
@@ -264,10 +273,17 @@ export async function DELETE(
   });
 
   // #2621: a clear is recorded on the same terms as a set — the same action
-  // family, so one query over `booking.arrival-time.*` returns the whole history
-  // of the field on a booking rather than only the halves that added a value.
+  // family and the same metadata keys, so one query over
+  // `booking.expected_arrival_time.*` returns the whole history of the field on a
+  // booking rather than only the halves that added a value.
+  //
+  // The clear is the more consequential of the two, because it DESTROYS the
+  // previous value: after this commits, `previousExpectedArrivalTime` on this row
+  // is the only surviving record that a time was ever set, and the only place to
+  // learn what it was. That is why the value is captured transactionally rather
+  // than from the guard read above — see the header note.
   logAudit({
-    action: "booking.arrival-time.clear",
+    action: "booking.expected_arrival_time.cleared",
     memberId: session.user.id,
     targetId: id,
     subjectMemberId: booking.memberId,
@@ -279,9 +295,9 @@ export async function DELETE(
     details: `${previous ?? "(not set)"} → (not set)`,
     metadata: {
       bookingId: id,
-      previousArrivalTime: previous,
-      newArrivalTime: null,
-      byOwner: booking.memberId === session.user.id,
+      previousExpectedArrivalTime: previous,
+      newExpectedArrivalTime: null,
+      onBehalf: booking.memberId !== session.user.id,
     },
     ipAddress: getClientIp(req),
   });

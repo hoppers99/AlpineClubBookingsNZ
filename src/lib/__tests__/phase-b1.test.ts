@@ -469,6 +469,8 @@ describe("#31: Expected Arrival Time", () => {
         user: authUser("admin-1", "ADMIN"),
       });
       mockSessionMemberRoles("admin-1", "ADMIN");
+      // An officer editing SOMEBODY ELSE'S booking — the case #1313 option A2
+      // created and the reason this row has to distinguish actor from subject.
       mockPrisma.booking.findUnique.mockResolvedValue({
         memberId: "member-1",
         checkIn: futureCheckIn,
@@ -494,13 +496,64 @@ describe("#31: Expected Arrival Time", () => {
 
       expect(mockPrisma.auditLog.create).toHaveBeenCalledTimes(1);
       const entry = mockPrisma.auditLog.create.mock.calls[0][0].data;
-      expect(entry.action).toBe("booking.arrival-time.set");
-      // The actor is the admin, the subject is the booking's owner.
+      expect(entry.action).toBe("booking.expected_arrival_time.set");
+      // The actor is the admin, the subject is the booking's owner — asserted for
+      // CONTENT, not presence: a row that named the officer as the affected member
+      // would be worse than no row, because it would answer "who is this about"
+      // wrongly for anyone filtering by Subject.
       expect(entry.memberId).toBe("admin-1");
+      expect(entry.subjectMemberId).toBe("member-1");
       expect(entry.targetId).toBe("booking-1");
+      expect(entry.entityType).toBe("Booking");
+      expect(entry.entityId).toBe("booking-1");
+      expect(entry.category).toBe("booking");
+      // The authority used, named rather than left to be inferred by comparing
+      // two ids: this was an officer acting for the owner.
+      expect(entry.metadata.onBehalf).toBe(true);
       // The old->new pair is the reason the entry exists.
       expect(entry.details).toContain("09:30");
       expect(entry.details).toContain("17:00");
+      expect(entry.metadata.previousExpectedArrivalTime).toBe("09:30");
+      expect(entry.metadata.newExpectedArrivalTime).toBe("17:00");
+    });
+
+    // #2621: the same row for the OTHER author. Owner and officer are different
+    // facts about one field, and `onBehalf` is the only thing on the row that
+    // separates them without the reader comparing ids by eye.
+    it("marks the owner's own set as not on-behalf, with the owner as subject", async () => {
+      mockAuth.mockResolvedValue({ user: authUser("member-1", "USER") });
+      mockSessionMemberRoles("member-1", "USER");
+      mockPrisma.booking.findUnique.mockResolvedValue({
+        memberId: "member-1",
+        checkIn: futureCheckIn,
+        status: "CONFIRMED",
+        expectedArrivalTime: null,
+      });
+      mockPrisma.booking.update.mockResolvedValue({
+        id: "booking-1",
+        expectedArrivalTime: "17:30",
+      });
+
+      const { NextRequest } = await import("next/server");
+      const { PUT } = await import(
+        "@/app/api/bookings/[id]/arrival-time/route"
+      );
+      const req = new NextRequest("http://localhost/api/bookings/booking-1/arrival-time", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ expectedArrivalTime: "17:30" }),
+      });
+      const res = await PUT(req, { params: Promise.resolve({ id: "booking-1" }) });
+      expect(res.status).toBe(200);
+
+      const entry = mockPrisma.auditLog.create.mock.calls[0][0].data;
+      expect(entry.memberId).toBe("member-1");
+      expect(entry.subjectMemberId).toBe("member-1");
+      expect(entry.metadata.onBehalf).toBe(false);
+      // The first-ever set: there is no previous value, and that is recorded as
+      // a fact rather than as a missing key.
+      expect(entry.metadata.previousExpectedArrivalTime).toBeNull();
+      expect(entry.details).toBe("(not set) → 17:30");
     });
 
     // #2621: the old value is read INSIDE the write. Read outside it, two admins
@@ -544,7 +597,7 @@ describe("#31: Expected Arrival Time", () => {
       const entry = mockPrisma.auditLog.create.mock.calls[0][0].data;
       expect(entry.details).toBe("12:00 → 17:00");
       expect(entry.details).not.toContain("09:30");
-      expect(entry.metadata.previousArrivalTime).toBe("12:00");
+      expect(entry.metadata.previousExpectedArrivalTime).toBe("12:00");
     });
 
     it("records the clear as its own audit entry", async () => {
@@ -575,8 +628,50 @@ describe("#31: Expected Arrival Time", () => {
 
       expect(mockPrisma.auditLog.create).toHaveBeenCalledTimes(1);
       const entry = mockPrisma.auditLog.create.mock.calls[0][0].data;
-      expect(entry.action).toBe("booking.arrival-time.clear");
+      expect(entry.action).toBe("booking.expected_arrival_time.cleared");
       expect(entry.details).toContain("17:00");
+      // #2621: the clear DESTROYS the value, so this row is the only surviving
+      // record of what the booking's arrival time used to say. It has to carry it.
+      expect(entry.metadata.previousExpectedArrivalTime).toBe("17:00");
+      expect(entry.metadata.newExpectedArrivalTime).toBeNull();
+      expect(entry.metadata.onBehalf).toBe(false);
+      expect(entry.subjectMemberId).toBe("member-1");
+    });
+
+    // #2621: the worst combination of the two — an officer clearing somebody
+    // else's time. Nothing else in the system will ever say what was removed or
+    // who removed it, so both have to be on this one row.
+    it("records an officer's clear as on-behalf, carrying the value it destroyed", async () => {
+      mockAuth.mockResolvedValue({ user: authUser("admin-1", "ADMIN") });
+      mockSessionMemberRoles("admin-1", "ADMIN");
+      mockPrisma.booking.findUnique.mockResolvedValue({
+        memberId: "member-1",
+        checkIn: futureCheckIn,
+        status: "CONFIRMED",
+        expectedArrivalTime: "18:00",
+      });
+      mockPrisma.booking.update.mockResolvedValue({
+        id: "booking-1",
+        expectedArrivalTime: null,
+      });
+
+      const { NextRequest } = await import("next/server");
+      const { DELETE } = await import(
+        "@/app/api/bookings/[id]/arrival-time/route"
+      );
+      const req = new NextRequest("http://localhost/api/bookings/booking-1/arrival-time", {
+        method: "DELETE",
+      });
+      const res = await DELETE(req, { params: Promise.resolve({ id: "booking-1" }) });
+      expect(res.status).toBe(200);
+
+      const entry = mockPrisma.auditLog.create.mock.calls[0][0].data;
+      expect(entry.action).toBe("booking.expected_arrival_time.cleared");
+      expect(entry.memberId).toBe("admin-1");
+      expect(entry.subjectMemberId).toBe("member-1");
+      expect(entry.metadata.onBehalf).toBe(true);
+      expect(entry.metadata.previousExpectedArrivalTime).toBe("18:00");
+      expect(entry.details).toBe("18:00 → (not set)");
     });
 
     // #2621: the minute values the old `[0-5]0` pattern let through. Each of
@@ -693,6 +788,11 @@ describe("#31: Expected Arrival Time", () => {
       });
       const res = await PUT(req, { params: Promise.resolve({ id: "booking-1" }) });
       expect(res.status).toBe(403);
+      // #2621: a refused caller writes nothing at all. The audit row is evidence
+      // of a change, so a permission refusal must not leave one behind claiming
+      // the field moved.
+      expect(mockPrisma.booking.update).not.toHaveBeenCalled();
+      expect(mockPrisma.auditLog.create).not.toHaveBeenCalled();
     });
 
     it("allows admin to update any booking", async () => {

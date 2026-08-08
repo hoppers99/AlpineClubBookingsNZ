@@ -183,6 +183,43 @@ rather than as a mystery. And the guarantee is a property of the admin screens,
 not of the write routes — a script or integration calling the API directly with
 `bookings:edit` can still submit an unchanged body and get an entry.
 
+### Expected arrival time entries (#2621)
+
+From this release, setting or clearing a booking's **expected arrival time**
+records an entry — `booking.expected_arrival_time.set` or
+`booking.expected_arrival_time.cleared`, both in the **Booking** category, so
+filtering the action on `booking.expected_arrival_time` returns the field's whole
+history on a booking rather than only the changes that added a value. Before this
+release neither wrote anything at all, so **there is no history for changes made
+earlier**: no entries on an older booking means the field was never audited, not
+that nobody touched it.
+
+Three things the entry tells you that the field itself cannot.
+
+- **Who it is about is the booking's owner, not whoever pressed the button.** A
+  Full Administrator or Booking Officer may set the time on any member's booking,
+  so the member you search for under **Member Scope → Subject** is the owner; the
+  actor column names the person who made the change. The metadata also carries
+  `onBehalf`, which is `true` when an officer changed it for the member and
+  `false` when the member changed their own — the same flag member-photo entries
+  use for the same owner-or-admin pair, so you read it the same way.
+- **What it changed from.** Both entries show `old → new` in **Details**, using
+  the stored 24-hour form — a first-ever set reads `(not set) → 17:30`, and a
+  clear reads `17:30 → (not set)` — with the same pair in metadata as
+  `previousExpectedArrivalTime` and
+  `newExpectedArrivalTime`. The **cleared** entry is the important one: clearing
+  overwrites the only copy of the time, so that entry is the only way to find out
+  what a booking's arrival time used to say.
+- **That the pair is trustworthy under concurrent edits.** The old value is read
+  inside the same database transaction as the write, so if two people save at the
+  same moment the two entries chain honestly (`A → B`, then `B → C`) instead of
+  both claiming to have replaced `A`.
+
+Entries are written only after the change is saved, so a refused change records
+nothing at all — a time outside the allowed values (the field takes the hour or
+the half hour), a booking already past its check-in date, a cancelled or
+completed booking, or a caller without permission.
+
 ### Member-guest entries (#2308 / #2388)
 
 The "+ Add Member Guest" feature writes four `privacy`-category actions. Two of

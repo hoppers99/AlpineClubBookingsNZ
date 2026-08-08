@@ -1,6 +1,6 @@
 "use client";
 
-import { formatArrivalTime } from "@/lib/arrival-time";
+import { ARRIVAL_TIME_MINUTES, formatArrivalTime } from "@/lib/arrival-time";
 
 interface TimePickerProps {
   value: string | null;
@@ -35,9 +35,13 @@ function generateTimeOptions(): { value: string; label: string }[] {
   // arriving at the lodge, while the API stays honest about the genuinely
   // after-midnight arrival. See src/lib/arrival-time.ts.
   for (let h = 6; h <= 23; h++) {
-    for (const m of [0, 30]) {
-      if (h === 23 && m === 30) continue;
-      const value = `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}`;
+    // #2621: the MINUTES come from the shared rule, not from a private `[0, 30]`.
+    // The hour window is this control's own product decision (above); the minute
+    // set is the validator's, and deriving it here is what stops the option list
+    // and the accepted set from drifting the way they already had.
+    for (const m of ARRIVAL_TIME_MINUTES) {
+      if (h === 23 && m === "30") continue;
+      const value = `${String(h).padStart(2, "0")}:${m}`;
       // #2621: labelled by the SHARED formatter, not a private copy of the same
       // arithmetic. This component held the fourth hand-rolled 12-hour renderer
       // in the codebase, so the option a member picks and the value their booking

@@ -90,8 +90,9 @@ export const AUDIT_CENSUS_TOTALS = {
    * and a Booking Officer may set that field on ANY member's booking (#1313
    * option A2) — so a member seeing a time they did not set had no way to learn
    * who set it. Its PUT and its DELETE now each write one `logAudit` row
-   * (`booking.arrival-time.set` / `.clear`), categorised `booking` at the site,
-   * so neither joins `UNCATEGORISED_AUDIT_WRITERS` below. (Re-measured on merged
+   * (`booking.expected_arrival_time.set` / `.cleared`), categorised `booking` at
+   * the site, and both carry `entityType`/`entityId` so they correlate to the
+   * booking; neither joins `UNCATEGORISED_AUDIT_WRITERS` below. (Re-measured on merged
    * tree, #2621: this branch's own pins were taken against a base that predated
    * #2352, #2623 and #2627, so the literals here come from running the census
    * after the merge rather than from adding the deltas up.)
@@ -128,9 +129,10 @@ export const AUDIT_CENSUS_TOTALS = {
    */
   categoryValues: {
     account: 15,
-    // 80 -> 82 (#2621): `booking.arrival-time.set` and `.clear`. Read with
-    // `support:view` plus `bookings:view`, like every other booking row beside
-    // them, so this widens nobody's access. (Re-measured on merged tree, #2621.)
+    // 80 -> 82 (#2621): `booking.expected_arrival_time.set` and `.cleared`. Read
+    // with `support:view` plus `bookings:view`, like every other booking row
+    // beside them — and the booking officers who can set this field already hold
+    // both — so this widens nobody's access. (Re-measured on merged tree, #2621.)
     booking: 82,
     payment: 16,
     family: 27,
