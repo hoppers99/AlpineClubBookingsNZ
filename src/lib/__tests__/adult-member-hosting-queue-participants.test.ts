@@ -15,6 +15,7 @@ import {
   lockActiveBookingRequestLinkedMembers,
   lockHostingCoverageMemberLifecycleTarget,
   lockMemberMergeHostingCoverageParticipants,
+  MEMBER_MERGE_PARTICIPANT_LOCK_TIMEOUT_MS,
   type HostingCoverageQueueParticipantProof,
 } from "@/lib/adult-member-hosting-queue-participants";
 
@@ -369,6 +370,84 @@ describe("hosting coverage queue participant fence (#2597)", () => {
         ownerMemberIds: ["owner-1"],
       }),
     ).rejects.toBeInstanceOf(HostingCoverageParticipantRetryError);
+  });
+
+  it("bounds the merge participant wait and restores the timeout after it (#2623 T6)", async () => {
+    const db = {
+      $executeRaw: vi.fn().mockResolvedValue(0),
+      member: {
+        findMany: vi
+          .fn()
+          .mockResolvedValue([{ id: "loser-1" }, { id: "master-1" }, { id: "owner-1" }]),
+      },
+    };
+
+    await expect(
+      lockMemberMergeHostingCoverageParticipants(db as never, {
+        masterId: "master-1",
+        loserId: "loser-1",
+        ownerMemberIds: ["owner-1"],
+      }),
+    ).resolves.toEqual(["loser-1", "master-1", "owner-1"]);
+
+    const statements = db.$executeRaw.mock.calls.map(
+      (call) =>
+        (call[0] as { strings?: readonly string[]; values?: readonly unknown[] }),
+    );
+    expect(statements).toHaveLength(3);
+    // Bound, lock, release — in that order, and the lock is still BLOCKING.
+    // `member-merge.ts` documents the wait as deliberate: NOWAIT would fail an
+    // irreversible admin operation far more often than the hazard justifies.
+    expect(statements[0].strings?.join("?")).toContain(
+      "set_config('lock_timeout', ?, true)",
+    );
+    expect(statements[0].values).toEqual([
+      String(MEMBER_MERGE_PARTICIPANT_LOCK_TIMEOUT_MS),
+    ]);
+    expect(statements[1].strings?.join("?")).toMatch(/FOR UPDATE\s*$/);
+    expect(statements[1].strings?.join("?")).not.toContain("NOWAIT");
+    // Released rather than left in force: the rest of the merge transaction takes
+    // further locks whose failures are NOT mapped onto the participant retry.
+    //
+    // To DEFAULT, not to a hardcoded `0` (#2623 F4). `0` means "wait forever",
+    // not "whatever it was", so on a deployment carrying
+    // `ALTER DATABASE … SET lock_timeout` the old form DELETED the operator's
+    // bound for merge's remaining locks. `SET LOCAL` rather than `RESET` because
+    // `RESET` is session-scoped and survives the commit on a pooled connection,
+    // destroying a caller's own session setting. Both measured on real
+    // PostgreSQL — see `clearTransactionLockTimeout`.
+    expect(statements[2].strings?.join("?")).toContain(
+      "SET LOCAL lock_timeout TO DEFAULT",
+    );
+    expect(statements[2].strings?.join("?")).not.toContain("set_config");
+    expect(statements[2].values).toEqual([]);
+  });
+
+  it("maps a merge participant lock_timeout onto the stable retry (#2623 T6)", async () => {
+    // PostgreSQL raises a `lock_timeout` cancellation as SQLSTATE 55P03, the same
+    // code NOWAIT raises, so the bounded wait lands on the error member merge
+    // already converts into its clean "nothing was saved" 409.
+    const db = {
+      $executeRaw: vi
+        .fn()
+        .mockResolvedValueOnce(0)
+        .mockRejectedValueOnce({
+          driverAdapterError: { cause: { originalCode: "55P03" } },
+        }),
+      member: { findMany: vi.fn() },
+    };
+
+    await expect(
+      lockMemberMergeHostingCoverageParticipants(db as never, {
+        masterId: "master-1",
+        loserId: "loser-1",
+        ownerMemberIds: [],
+      }),
+    ).rejects.toBeInstanceOf(HostingCoverageParticipantRetryError);
+    // No typed read, and no attempt to run a third statement in a transaction the
+    // cancelled one has already aborted.
+    expect(db.member.findMany).not.toHaveBeenCalled();
+    expect(db.$executeRaw).toHaveBeenCalledTimes(2);
   });
 
   it("refuses source owner or lodge drift after the participant lock", async () => {

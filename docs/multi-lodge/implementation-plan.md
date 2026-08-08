@@ -290,7 +290,9 @@ The member `/book` flow (and the admin book-on-behalf flow) starts with a
 member never sees lodges they cannot book — and threads the chosen
 `lodgeId` through the calendar (`/api/availability`), range check
 (`/api/availability/check`), minimum-stay check
-(`/api/booking-policies/check`), room preferences (`/api/bookings/rooms`),
+(`/api/booking-policies/check`), room preferences (`/api/bookings/rooms` —
+the CREATE flow only; editing an existing booking's requested room reads the
+booking-scoped `/api/bookings/[id]/requested-room/options` instead, #2664),
 quote, promo validation (`/api/promo-codes/validate`), and booking
 create/draft/waitlist calls. `POST /api/bookings` accepts a validated
 optional `lodgeId`; the create services (`createDraftBooking`,

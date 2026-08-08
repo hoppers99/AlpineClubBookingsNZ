@@ -153,6 +153,42 @@ describe("requested room authoritative write", () => {
     );
   });
 
+  it.each([
+    ["member", false, "Member" as const],
+    ["admin", true, "Admin" as const],
+  ])(
+    "refuses a cross-lodge room under the lock for an authorised %s (defence in depth, #2664)",
+    async (_who, actorIsAdmin, auditActorLabel) => {
+      // #2664 narrowed the OPTIONS READ to the booking's own lodge so the picker
+      // can no longer offer a room the writer would refuse. That is UX
+      // correctness and nothing more: the writer is still the authority, and it
+      // still re-reads the room under the booking lock and refuses one from
+      // another lodge — for the admin path as well as the member path, because
+      // a hand-built request bypasses the picker entirely.
+      prismaMock.lodgeRoom.findUnique.mockResolvedValueOnce({
+        id: "room-other-lodge",
+        name: "Cedar",
+        lodgeId: "lodge-2",
+      });
+
+      await expect(
+        writeRequestedRoom({
+          bookingId: "booking-1",
+          actorMemberId: actorIsAdmin ? "admin-1" : "owner-1",
+          actorIsAdmin,
+          requestedRoomId: "room-other-lodge",
+          auditActorLabel,
+        }),
+      ).rejects.toMatchObject({
+        status: 400,
+        message: "Requested room belongs to a different lodge than the booking",
+      });
+
+      expect(prismaMock.booking.updateMany).not.toHaveBeenCalled();
+      expect(auditMock).not.toHaveBeenCalled();
+    },
+  );
+
   it("refuses a member write after an approved allocation appears", async () => {
     prismaMock.booking.findUnique.mockReset();
     prismaMock.booking.findUnique

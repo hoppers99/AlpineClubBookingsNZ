@@ -39,10 +39,12 @@
  * only when a caller supplies one — so a row with NO category is possible, and it was
  * common. The executable census of this repository's production audit writes
  * (`scripts/audit/audit-writer-census.ts`, pinned by
- * `src/lib/__tests__/audit-writer-census.test.ts`) counted 418 write sites and 82
- * uncategorised when #2581 opened. #2581's second child classified all 82 at the
- * source, so the census now reads 426 write sites and ZERO uncategorised: no NEW row
- * is born invisible to these five entries.
+ * `src/lib/__tests__/audit-writer-census.test.ts`) counted 82 uncategorised write
+ * sites when #2581 opened — 69 `logAudit`, 11 `createAuditLog`, 2 hand-built Prisma
+ * writes, none through `createStructuredAuditLog` — and `main` still measured those
+ * same 82 immediately before this change, out of 425 write sites in total. #2581's
+ * second child classified all 82 at the source, so the census now reads 426 write
+ * sites and ZERO uncategorised: no NEW row is born invisible to these five entries.
  *
  * THE GAP HAS NOT CLOSED, IT HAS STOPPED GROWING, and the distinction is the whole
  * reason the declarations below stay. Every row written BEFORE that runtime deployed
