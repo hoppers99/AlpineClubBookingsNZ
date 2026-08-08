@@ -243,12 +243,13 @@ The script also does not create the database, the app role, or any view.
 
 The allowlist lives in `SELECT_GRANTS` (`src/lib/diagnostics/tools/provision-role.ts`),
 in public code, so "which relations — and which columns of them — can Diagnostics
-read" is answerable by reading one file. As of AID-6C (#2377) it names **thirteen**
-relations, and **every one of them is granted by column, never wholesale**:
+read" is answerable by reading one file. As of AID-6B (#2376) it names
+**twenty-five** relations and **248 columns**, and **every one of them is granted by
+column, never wholesale**:
 
 | Relation | Granted | Read by |
 | --- | --- | --- |
-| `public."AuditLog"` | **columns only**: `id`, `action`, `category`, `severity`, `outcome`, `entityType`, `entityId`, `requestId`, `createdAt` | the five audit-correlation tools ([tool-pack-support.md](tool-pack-support.md)) and the finance audit-history tool ([tool-pack-finance.md](tool-pack-finance.md)) |
+| `public."AuditLog"` | **9 columns**: `id`, `action`, `category`, `severity`, `outcome`, `entityType`, `entityId`, `requestId`, `createdAt` | the five audit-correlation tools ([tool-pack-support.md](tool-pack-support.md)), the finance audit-history tool ([tool-pack-finance.md](tool-pack-finance.md)), and the booking and membership audit-history tools ([tool-pack-booking-membership.md](tool-pack-booking-membership.md)) |
 | `public."Payment"` | 22 columns | the finance searches, the payment summary, the refund state ([tool-pack-finance.md](tool-pack-finance.md)) |
 | `public."PaymentTransaction"` | 13 columns | the reference search, the attempt ledger |
 | `public."PaymentRefund"` | 12 columns | the reference search, the refund state |
@@ -260,24 +261,48 @@ relations, and **every one of them is granted by column, never wholesale**:
 | `public."XeroInboundEvent"` | 10 columns | the webhook timeline |
 | `public."XeroObjectLink"` | 10 columns | the Xero invoice and contact linkage tools |
 | `public."XeroSyncOperation"` | 18 columns | the Xero invoice and contact linkage tools |
-| `public."Member"` | **two columns**: `id`, `xeroContactId` | the Xero contact linkage tool only |
+| `public."Member"` | **22 columns** — widened by AID-6B from the two AID-6C granted. `email` is projected by one entry and is a search predicate; `phoneAreaCode` and `phoneNumber` are predicates only and are projected by nothing | the Xero contact linkage tool, the member search, the member summary, the family relationships ([tool-pack-booking-membership.md](tool-pack-booking-membership.md)) |
+| `public."Booking"` | 25 columns | the booking search, the booking summary, a member's booking involvement ([tool-pack-booking-membership.md](tool-pack-booking-membership.md)) |
+| `public."Lodge"` | **2 columns**: `id`, `name` | the booking search, a member's booking involvement |
+| `public."BookingGuest"` | 15 columns (a guest's given and family name included — booking evidence under `bookings:view`) | the booking party state, the guest counts, the guest leg of a member's booking involvement |
+| `public."BookingGuestNight"` | **2 columns**: `bookingGuestId`, `stayDate` | the booking party state's per-night footprint |
+| `public."BedAllocation"` | 9 columns (`approvedByMemberId` is deliberately not granted) | the bed allocation state |
+| `public."LodgeRoom"` | **2 columns**: `id`, `name` (`notes` is not granted) | the bed allocation state |
+| `public."LodgeBed"` | 5 columns | the bed allocation state |
+| `public."BookingChangeRequest"` | 16 columns (no free text, no raw JSON, no reviewing officer) | the booking change and exception request state |
+| `public."PolicyExceptionReservationNight"` | **1 column**: `changeRequestId` — the narrowest grant in the file | the booking change and exception request state |
+| `public."MemberSubscription"` | 11 columns (`manualPaymentNote` is **not** granted) | the member subscription state |
+| `public."FamilyGroupMember"` | **4 columns** — the whole relation, which has no `role` column | the member family relationships |
+| `public."FamilyGroup"` | **2 columns**: `id`, `name` | the member family relationships |
 
 Every other relation in the schema is unreadable — including `IntegrationCredential`
-(encrypted provider secrets) and `XeroToken`, which stores **plaintext** Xero OAuth
-access and refresh tokens. Both are permanently out of scope under ADR-007 §1 and no
-tool pack may grant them.
+(encrypted provider secrets), `XeroToken`, which stores **plaintext** Xero OAuth
+access and refresh tokens, and `FamilyGroupJoinRequest`, which carries requester
+free text and children's dates of birth. The first two are permanently out of scope
+under ADR-007 §1 and no tool pack may grant them.
 
-So is every other **column** of the thirteen. The grants are by column, so as the
-diagnostics role `SELECT "ipAddress" FROM "AuditLog"`, `SELECT "email" FROM "Member"`,
+So is every other **column** of the twenty-five. The grants are by column, so as the
+diagnostics role `SELECT "ipAddress" FROM "AuditLog"`,
+`SELECT "dateOfBirth" FROM "Member"`, `SELECT "notes" FROM "Booking"`,
+`SELECT "internalNotes" FROM "BookingChangeRequest"`,
 `SELECT "payload" FROM "XeroInboundEvent"` and `SELECT *` from any of them are all
-refused by PostgreSQL with `42501`. The operator CLI prints the declared grants,
-columns and all, on every run and on `--dry-run`.
+refused by PostgreSQL with `42501`. That is also why **no presence boolean is
+projected over an ungranted column**: a column privilege covers every reference to
+the column, `notes IS NOT NULL` included, so a `hasNotes` flag would have made every
+booking note readable in a `psql` session opened with this credential.
 
-**Upgrading to the AID-6C release is a two-step operation: deploy, then re-run
-`npm run diagnostics:provision-role`.** Until it is re-run, readiness reports
-`over_privileged` — because the *previous* release's grants no longer match the
-declared allowlist — and every SQL-backed tool refuses. That is ADR-007's deliberate
-friction, and it is the same step AID-6A required.
+The operator CLI prints the declared grants, columns and all, on every run and on
+`--dry-run`.
+
+**Upgrading to the AID-6B release is a two-step operation: deploy, then re-run
+`npm run diagnostics:provision-role`.** This release adds twelve relations and
+widens `Member` from two columns to twenty-two, so until it is re-run readiness
+reports `over_privileged` — the *previous* release's grants no longer match the
+declared allowlist — and **every SQL-backed tool refuses, by design**. That is
+ADR-007's deliberate friction, and it is the same step AID-6A and AID-6C each
+required. The three `server_owned` entries in AID-6B do not read through this
+credential and are unaffected, so a deployment that has not been re-provisioned can
+still be misread as partly working: check readiness rather than a single tool.
 
 ### Adding a relation grant later
 
