@@ -761,8 +761,9 @@ behavioural test as well — see the "Client honesty" row of
 Allowlist entries are scoped to **one branch, not a file**. The single entry is
 the display setup wizard's module-settings GET, whose "nothing was changed" is a
 fact about the client's own control flow because the function returns before its
-PUT is built; the three write fetches in that same file — device create, board
-bind, pairing arm — are walked like anything else.
+PUT is built; the five write fetches in that same file — the module-settings
+PUT, the lodge-config PUT, the device create, the board bind and the pairing
+arm — are walked like anything else.
 
 ## Module Boundaries
 

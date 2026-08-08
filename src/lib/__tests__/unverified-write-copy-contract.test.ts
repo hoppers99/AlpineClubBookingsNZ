@@ -125,8 +125,9 @@ const RECORD_UNCHANGED_CLAIMS: Array<{ label: string; pattern: RegExp }> = [
  *
  * An entry exempts ONE BRANCH, not a file. `display-wizard-steps.tsx` is the
  * reason that distinction is written into the shape of this list: the honest
- * claim there is in the module-settings GET, and the same file holds four write
- * fetches — the device create, the board bind and the pairing arm. A file-scoped
+ * claim there is in the module-settings GET, and the same file holds five write
+ * fetches — the module-settings PUT, the lodge-config PUT, the device create,
+ * the board bind and the pairing arm. A file-scoped
  * exemption (which is what an earlier draft of this test had) would have
  * permanently excused all of them on the strength of a reason that is only true
  * of the read.
