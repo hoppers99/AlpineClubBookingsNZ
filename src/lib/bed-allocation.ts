@@ -313,7 +313,7 @@ function guestStayNights(guest: BedAllocationGuest): string[] {
   return eachDateOnlyInRange(guest.stayStart, guest.stayEnd).map(formatDateOnly);
 }
 
-function isAdultAgeTier(ageTier?: BedAllocationAgeTier | null): boolean {
+export function isAdultAgeTier(ageTier?: BedAllocationAgeTier | null): boolean {
   return !ageTier || ageTier === "ADULT";
 }
 
@@ -2906,6 +2906,45 @@ function tryDisplaceForHeldGuestNight(
  * allocations) and throws when the incrementally-maintained index disagrees —
  * the composition guards are only as sound as the index's symmetry across
  * seed/allocate/evict/relocate/rollback, so every planner test exercises this.
+ *
+ * The live occupant rows are read from `occupantsByBooking`, NOT `occupantByKey`
+ * (#2595). Both are written by `setOccupant`, but they are keyed differently and
+ * only one of them is complete:
+ *
+ *   - `occupantByKey` is keyed `bedId:stayDate`, so the two occupants of a
+ *     SHARED DOUBLE on one night collapse to a single entry — the second write
+ *     overwrites the first.
+ *   - `occupantsByBooking` is keyed `bookingGuestId:stayDate` within each
+ *     booking, so both occupants survive.
+ *
+ * `roomNightAgeMix` is incremented once per seeded row, so it counts both. Read
+ * from `occupantByKey` this check therefore recomputed one adult short on every
+ * plan seeded with an existing shared double and threw on correct state — which
+ * is exactly what it did to the two reviewed-move race arms in
+ * `bed-allocation-removal-races.realdb.test.ts` (`AUTO_FIRST` and
+ * `LIFECYCLE_FIRST`), whose fixtures seed a partner sharing a double.
+ *
+ * This is a fix to the CHECK, not to the index: `roomNightAgeMix` was right and
+ * the recomputation was wrong.
+ *
+ * IT IS NOT STRICTLY STRONGER, and an earlier version of this docblock claimed
+ * it was. The check is stronger where it matters — it no longer goes blind to
+ * the second occupant of a shared double, so it stops throwing on correct state
+ * and starts being able to see the asymmetries it exists for. But it now reads
+ * `occupantsByBooking` and NOTHING ELSE, so it no longer validates
+ * `occupantByKey` at all: an asymmetry confined to that one map — a
+ * `setOccupant` that writes `occupantsByBooking` and skips `occupantByKey`, or
+ * an `evictBooking` that clears one and not the other — is invisible to this
+ * check where the old form would have caught it. That is a real, if narrow,
+ * loss of coverage and is accepted deliberately, because the old form's
+ * "coverage" of `occupantByKey` was inseparable from a false failure on every
+ * plan seeded with an existing shared double. The two maps are written by the
+ * same `setOccupant` and cleared by the same `evictBooking`, so the untested
+ * window is one edit away in one function rather than spread across the planner.
+ *
+ * The lossiness of `occupantByKey` ITSELF is a real planner blind spot on the
+ * eviction path and is deliberately NOT changed here: that is production
+ * behaviour on a Critical surface and needs its own scoping (#2656).
  */
 function assertRoomNightAgeMixConsistent(
   state: PlannerState,
@@ -2937,8 +2976,10 @@ function assertRoomNightAgeMixConsistent(
   for (const row of state.unknownRoomNightRows) {
     add(row.roomId, row.stayDate, "", row.isAdult);
   }
-  for (const row of state.occupantByKey.values()) {
-    add(row.roomId, row.stayDate, row.bookingId, isAdultAgeTier(row.ageTier));
+  for (const rows of state.occupantsByBooking.values()) {
+    for (const row of rows.values()) {
+      add(row.roomId, row.stayDate, row.bookingId, isAdultAgeTier(row.ageTier));
+    }
   }
   for (const allocation of state.allocations) {
     add(

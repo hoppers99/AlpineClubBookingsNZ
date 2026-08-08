@@ -262,7 +262,19 @@ describe("the per-owner coverage lock (#2576 §9)", () => {
     const body = source.slice(executeStart, executeStart + 50_000);
     const markers = [
       "await lockAdultMemberHostingPolicySet(tx)",
+      // #2595: the partner-share prefix (every affected lodge capacity key,
+      // sorted — and deliberately NOT the global cohort key) sits BETWEEN the
+      // policy-set key and the member-lifecycle pair. Pinned by position, because
+      // taking it any later would invert the documented lodge -> member order.
+      "await acquireMemberMergePartnerSharedLodgeLocks(",
       "member-lifecycle:${lockA}",
+      // #2595: merge writes partner links (step 2) and READS them to decide a
+      // destructive bed write (step 3b), so it takes the canonical
+      // member-partner-link keys too — LAST, matching the reviewed move's
+      // member-lifecycle -> member-partner-link order so no new wait-graph edge
+      // is created. Pinned by position: taking it before the lifecycle pair
+      // would invert that order against `bed-allocation-move.ts`.
+      "await acquireMemberPartnerLinkLocks(tx, [masterId, loserId])",
       "const relationMoves = await applyMoves(",
       "const hostingPlan = await buildMemberMergeHostingCoveragePlan(",
       "await lockMemberMergeHostingCoverageParticipants(tx,",
@@ -273,9 +285,13 @@ describe("the per-owner coverage lock (#2576 §9)", () => {
       "const residualLoserGuestRows = await tx.bookingGuest.findMany(",
       "await lockHostingCoverageOwners(",
       "await applyLateHostingCoverageMoves(",
+      // #2595 step 3b: after the moves and every drift refusal, before the Xero
+      // teardown, and its alert strictly after the transaction commits.
+      "sweptShares = await sweepUnbackedFutureSharedDoublesWithLocksHeld({",
       "await enqueueMemberMergeHostingCoveragePlan(",
       "await tx.member.delete({ where: { id: loserId } })",
       "await settleHostingCoverageAfterCommit({ limit: 50 }, client)",
+      "sendAdminPartnerShareSweptAlert({",
     ];
     const positions = markers.map((marker) => body.indexOf(marker));
     expect(positions.every((position) => position >= 0), markers.join(" -> ")).toBe(
