@@ -190,7 +190,7 @@ describe("reduceName / bookingLabel / clamp / config (pure rules)", () => {
         "wifi-code": "alpine1234",
         "Bad Key!": "x",
         numeric: 42,
-        sneaky: "a bc",
+        sneaky: "a\u0000b\u001Fc",
         long: "x".repeat(600),
       })
     ).toEqual({
