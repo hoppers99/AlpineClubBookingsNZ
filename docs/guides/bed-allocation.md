@@ -163,7 +163,7 @@ are taken, never by whom.
 
 6. To free a bed, drag the chip back to the pool or use **Remove allocation**.
    Either action opens the reviewed-removal dialog for that one original night;
-   dropping the first visible proxy never silently includes its other nights.
+   a drop never silently includes the guest's other nights.
    Nothing is removed until you preview the exact rows and choose **Remove
    reviewed allocations**. Pressing **Escape** during a pointer or keyboard
    drag cancels it without sending a request.

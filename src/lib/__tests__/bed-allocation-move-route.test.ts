@@ -14,8 +14,13 @@ const {
   mockCreateAuditLog: vi.fn(),
 }));
 
+// Arguments are FORWARDED, not dropped: the permission descriptor the route
+// asks for is the only observable difference between the read guard and the
+// write guard, so a mock that swallowed it would let `requireBedAllocationRead`
+// be substituted for `requireBedAllocationWrite` on the apply route with every
+// test still green.
 vi.mock("@/lib/session-guards", () => ({
-  requireAdmin: () => mockRequireAdmin(),
+  requireAdmin: (...args: unknown[]) => mockRequireAdmin(...args),
 }));
 vi.mock("@/lib/admin-modules", () => ({
   isEffectiveModuleEnabled: () => mockModuleEnabled(),
@@ -119,6 +124,28 @@ describe("PATCH /api/admin/bed-allocation/allocations (#2366)", () => {
     expect(mockCreateAuditLog).not.toHaveBeenCalled();
   });
 
+  it("enforces bookings:edit on both apply shapes", async () => {
+    const typed = await patch({
+      anchorAllocationId: "allocation-1",
+      destinationBedId: "bed-2",
+      scope: "BOOKING_GUEST",
+      previewDigest: `v1:${"a".repeat(64)}`,
+    });
+    expect(typed.status).toBe(200);
+    expect(mockRequireAdmin).toHaveBeenNthCalledWith(1, {
+      permission: { area: "bookings", level: "edit" },
+    });
+
+    const legacy = await patch({
+      allocationIds: ["allocation-1"],
+      bedId: "bed-2",
+    });
+    expect(legacy.status).toBe(200);
+    expect(mockRequireAdmin).toHaveBeenNthCalledWith(2, {
+      permission: { area: "bookings", level: "edit" },
+    });
+  });
+
   it("rejects any client-supplied target date before the service runs", async () => {
     const response = await patch({
       allocationIds: ["allocation-1"],
@@ -176,6 +203,17 @@ describe("PATCH /api/admin/bed-allocation/allocations (#2366)", () => {
       allocationIds: ["allocation-1"],
       bedId: "bed-2",
       destinationBedId: "bed-2",
+    },
+    // The branch's headline invariant on the typed shape: a scope, an anchor, a
+    // destination and a digest — never a target date. The typed schema is
+    // `.strict()`, so a `stayDate` alongside an otherwise valid typed body must
+    // be refused rather than quietly ignored.
+    {
+      anchorAllocationId: "allocation-1",
+      destinationBedId: "bed-2",
+      scope: "BOOKING_GUEST",
+      previewDigest: `v1:${"a".repeat(64)}`,
+      stayDate: "2026-07-09",
     },
   ])("rejects incomplete or mixed typed/legacy shapes", async (body) => {
     const response = await patch(body);

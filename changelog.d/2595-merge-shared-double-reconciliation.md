@@ -38,3 +38,11 @@
   booking at a lodge the merge had not already accounted for, while the merge is
   running, the merge stops and reports that a booking changed and nothing was
   merged; trying again picks the new booking up.
+
+  A merge also now holds the partner records of the two people it is merging for
+  as long as it runs. Merging already rewrote those partner records, and it now
+  reads them to decide which bed sharing is still valid — so somebody confirming
+  a partner request for the same person at the same moment could previously slip
+  past both checks and leave that person recorded with two partners, which the
+  club never allows. Confirming a partner request for either of the two records
+  now simply waits for the merge to finish.

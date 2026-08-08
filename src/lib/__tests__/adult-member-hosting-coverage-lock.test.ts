@@ -232,6 +232,13 @@ describe("the per-owner coverage lock (#2576 §9)", () => {
       // taking it any later would invert the documented lodge -> member order.
       "await acquireMemberMergePartnerSharedLodgeLocks(",
       "member-lifecycle:${lockA}",
+      // #2595: merge writes partner links (step 2) and READS them to decide a
+      // destructive bed write (step 3b), so it takes the canonical
+      // member-partner-link keys too — LAST, matching the reviewed move's
+      // member-lifecycle -> member-partner-link order so no new wait-graph edge
+      // is created. Pinned by position: taking it before the lifecycle pair
+      // would invert that order against `bed-allocation-move.ts`.
+      "await acquireMemberPartnerLinkLocks(tx, [masterId, loserId])",
       "const relationMoves = await applyMoves(",
       "const hostingPlan = await buildMemberMergeHostingCoveragePlan(",
       "await lockMemberMergeHostingCoverageParticipants(tx,",

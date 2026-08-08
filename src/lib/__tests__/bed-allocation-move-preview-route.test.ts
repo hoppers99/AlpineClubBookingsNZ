@@ -1,14 +1,22 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-const { previewMock, readGuardMock } = vi.hoisted(() => ({
+const { previewMock, moduleEnabledMock, requireAdminMock } = vi.hoisted(() => ({
   previewMock: vi.fn(),
-  readGuardMock: vi.fn(),
+  moduleEnabledMock: vi.fn(),
+  requireAdminMock: vi.fn(),
 }));
 
-vi.mock("@/lib/admin-bed-allocation-routes", () => ({
-  requireBedAllocationRead: () => readGuardMock(),
-  bedAllocationErrorResponse: () =>
-    Response.json({ error: "Bed allocation request failed" }, { status: 500 }),
+// `@/lib/admin-bed-allocation-routes` is deliberately NOT mocked: stubbing the
+// helper would hide the only thing worth asserting here, which is the
+// permission LEVEL the read helper asks `requireAdmin` for. Mocking one layer
+// lower — the session guard itself — runs the real `requireBedAllocationRead`
+// and makes `{ area: "bookings", level: "view" }` observable, so swapping it
+// for the write helper (or the write route for the read one) fails a test.
+vi.mock("@/lib/session-guards", () => ({
+  requireAdmin: (...args: unknown[]) => requireAdminMock(...args),
+}));
+vi.mock("@/lib/admin-modules", () => ({
+  isEffectiveModuleEnabled: (...args: unknown[]) => moduleEnabledMock(...args),
 }));
 vi.mock("@/lib/bed-allocation-move", async () => {
   const actual = await vi.importActual<typeof import("@/lib/bed-allocation-move")>(
@@ -37,10 +45,11 @@ function post(body: unknown) {
 describe("POST /api/admin/bed-allocation/allocations/move", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    readGuardMock.mockResolvedValue({
+    requireAdminMock.mockResolvedValue({
       ok: true,
       session: { user: { id: "viewer-1" } },
     });
+    moduleEnabledMock.mockResolvedValue(true);
     previewMock.mockResolvedValue({
       digestVersion: "v1",
       digest: `v1:${"a".repeat(64)}`,
@@ -76,6 +85,21 @@ describe("POST /api/admin/bed-allocation/allocations/move", () => {
 
     expect(response.status).toBe(200);
     expect(previewMock).toHaveBeenCalledWith(body);
+    expect(requireAdminMock).toHaveBeenNthCalledWith(1, {
+      permission: { area: "bookings", level: "view" },
+    });
+  });
+
+  it("returns 404 when the bed-allocation module is off", async () => {
+    moduleEnabledMock.mockResolvedValue(false);
+    const response = await post({
+      anchorAllocationId: "allocation-1",
+      destinationBedId: "bed-2",
+      scope: "ALLOCATION_NIGHT",
+    });
+
+    expect(response.status).toBe(404);
+    expect(previewMock).not.toHaveBeenCalled();
   });
 
   it.each([
@@ -101,7 +125,7 @@ describe("POST /api/admin/bed-allocation/allocations/move", () => {
   });
 
   it("returns the bookings:view guard response before previewing", async () => {
-    readGuardMock.mockResolvedValue({
+    requireAdminMock.mockResolvedValue({
       ok: false,
       response: Response.json({ error: "Forbidden" }, { status: 403 }),
     });

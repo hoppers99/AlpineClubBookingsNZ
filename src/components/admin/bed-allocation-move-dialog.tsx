@@ -471,7 +471,9 @@ export function BedAllocationMoveDialog({
           ))}
         </fieldset>
 
-        {loading ? <p className="text-sm">Loading authoritative preview…</p> : null}
+        {loading ? (
+          <p className="text-sm">Checking which nights will change…</p>
+        ) : null}
 
         {preview ? (
           <div className="space-y-3 rounded-md border p-3 text-sm">

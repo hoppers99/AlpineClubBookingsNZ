@@ -142,18 +142,27 @@ describe("member-merge partner-share lodge prefix (#2595)", () => {
 
     // Both members, and future nights only — the immutable request ids are the
     // only input, and a past stay can hold no future placement.
-    expect(bookingGuestFindMany).toHaveBeenCalledWith(
-      expect.objectContaining({
-        where: expect.objectContaining({
-          memberId: { in: ["member-2", "member-1"] },
-          OR: [
-            { stayEnd: { gte: expect.any(Date) } },
-            { nights: { some: { stayDate: { gte: expect.any(Date) } } } },
-          ],
-        }),
-        select: { booking: { select: { lodgeId: true } } },
-      }),
-    );
+    //
+    // STRICT on `where`, deliberately, and this is load-bearing rather than
+    // fussy. `expect.objectContaining` ignores ADDED keys, so it would pass a
+    // query narrowed by `booking: { status: … }` — and narrowing on status is
+    // exactly the hole `futurePartnerShareGuestNightLodgeIds` documents itself as
+    // avoiding: booking-status transitions serialise on the global cohort key,
+    // which merge no longer holds, so a booking that is not allocatable when the
+    // set is derived can become allocatable while the merge runs. With the global
+    // key gone, that narrowing would silently reopen the coverage hole this whole
+    // derivation exists to close, and every other test in the tree would stay
+    // green. Compare the whole object so it cannot.
+    expect(bookingGuestFindMany).toHaveBeenCalledWith({
+      where: {
+        memberId: { in: ["member-2", "member-1"] },
+        OR: [
+          { stayEnd: { gte: expect.any(Date) } },
+          { nights: { some: { stayDate: { gte: expect.any(Date) } } } },
+        ],
+      },
+      select: { booking: { select: { lodgeId: true } } },
+    });
   });
 
   it("locks a guest-night-only lodge even when the members hold no allocation at all", async () => {
@@ -3645,6 +3654,40 @@ describe("sweepUnbackedFutureSharedDoublesWithLocksHeld (#2595)", () => {
           isSecondOccupant: true,
           stayDate: { gte: expect.any(Date) },
           bookingGuest: { memberId: { in: ["member-m", "member-loser"] } },
+        }),
+      }),
+    );
+    // The PRIMARY-side candidate query is future-only too, and this pin is the
+    // one that stops a whole class of damage. Query 3 derives its `(bedId,
+    // stayDate)` tuples from THIS query's rows and carries no date filter of its
+    // own, so dropping `stayDate: { gte: today }` here would pull historic
+    // bed-nights into the candidate set and the sweep would start DELETING past
+    // lodge occupancy — against "past lodge nights are history and stay
+    // untouched" (docs/DOMAIN_INVARIANTS.md). Every real-DB fixture in this
+    // area deliberately uses far-future 2099 nights so the frozen clock cannot
+    // make the window vacuous, which means only this assertion can catch it.
+    expect(db.bedAllocation.findMany).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({
+        where: expect.objectContaining({
+          isSecondOccupant: false,
+          stayDate: { gte: expect.any(Date) },
+          bookingGuest: { memberId: { in: ["member-m", "member-loser"] } },
+        }),
+      }),
+    );
+    // Query 3 reaches the counterparts ONLY through those bed-night tuples, so
+    // it inherits the future-only window rather than restating it. Pinned so a
+    // widening from tuples to, say, a bare `bookingGuest` filter cannot slip in.
+    expect(db.bedAllocation.findMany).toHaveBeenNthCalledWith(
+      3,
+      expect.objectContaining({
+        where: expect.objectContaining({
+          isSecondOccupant: true,
+          OR: [
+            { bedId: "bed-d1", stayDate: AUG1 },
+            { bedId: "bed-d2", stayDate: AUG1 },
+          ],
         }),
       }),
     );

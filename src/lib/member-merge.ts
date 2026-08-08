@@ -42,6 +42,7 @@ import {
 } from "@/lib/bed-allocation-lifecycle";
 import { sendAdminPartnerShareSweptAlert } from "@/lib/email";
 import logger from "@/lib/logger";
+import { acquireMemberPartnerLinkLocks } from "@/lib/member-partner-lock";
 
 /**
  * E11 (#1937) — additive, master-wins member profile merge.
@@ -51,8 +52,10 @@ import logger from "@/lib/logger";
  * shared-double bed placements it invalidates — every affected lodge capacity
  * key in sorted order (and deliberately NOT the global cohort `lock(1)`, whose
  * cost over a 120s merge is why the lodge set is derived from future
- * guest-nights instead), and only then the dual `member-lifecycle:{id}` advisory
- * lock, so the fixed lodge -> member order holds
+ * guest-nights instead), then the dual `member-lifecycle:{id}` advisory lock, so
+ * the fixed lodge -> member order holds, and finally the two
+ * `member-partner-link:{id}` keys — because merge both re-points partner links
+ * and reads them to decide which future shared doubles to delete
  * (see docs/CONCURRENCY_AND_LOCKING.md).
  * The hosting drain takes the same sorted keys for its claimed owner and actor,
  * then refreshes the exact queue payload. For a queue row that already exists,
@@ -2295,6 +2298,33 @@ export async function executeMemberMerge(params: {
     const [lockA, lockB] = [masterId, loserId].sort();
     await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${`member-lifecycle:${lockA}`}))`;
     await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${`member-lifecycle:${lockB}`}))`;
+
+    // #2595 — merge is a partner-link WRITER (step 2 re-points the duplicate's
+    // links onto the master) and, since this change, a partner-link READER whose
+    // read decides a destructive bed write (step 3b asks `mayShareDoubleBedWith`
+    // which future shared doubles to delete). Both need this key, and merge did
+    // not take it.
+    //
+    // The database cannot supply the invariant on its own: the CONFIRMED partial
+    // uniques are PER SIDE (`MemberPartnerLink_memberA_confirmed_unique` on
+    // `memberAId`, `..._memberB_...` on `memberBId`, see
+    // `prisma/partial-unique-indexes.tsv`), so one member may hold one CONFIRMED
+    // link as A and another as B without violating either index. Only this
+    // advisory key enforces "at most one confirmed partner". Without it a
+    // concurrent confirm of a pending request (`member-partner-link.ts`, which
+    // takes this key and nothing else) can commit alongside merge's re-point:
+    // each transaction reads the other's link as absent, both pass their own
+    // one-confirmed-partner check, and the master ends with two. Step 3b would
+    // then KEEP a share the invariant forbids — or, on the mirror interleaving,
+    // delete a bed-night for a couple who are confirmed at commit time.
+    //
+    // Taken here, LAST, exactly as the reviewed move takes it
+    // (`bed-allocation-move.ts` -> `acquireMemberLifecycleLocks` then
+    // `acquireMemberPartnerLinkLocks`), so this adds no new EDGE to the wait
+    // graph — only a second holder of one that already exists. It cannot cycle:
+    // the partner-link service takes this key and no other tier, so a holder of
+    // it never waits on anything merge holds. Sorted inside the helper.
+    await acquireMemberPartnerLinkLocks(tx, [masterId, loserId]);
 
     const [masterFull, loserFull] = await Promise.all([
       tx.member.findUnique({ where: { id: masterId } }),

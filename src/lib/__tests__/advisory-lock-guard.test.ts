@@ -273,13 +273,18 @@ const SCOPED_ADVISORY_LOCK_INVENTORY: Record<string, number> = {
   // #1937/#2596: executeMemberMerge first calls the shared hosting policy-set
   // helper, then — since #2595 — the merge-only partner-share prefix helper
   // (`acquireMemberMergePartnerSharedLodgeLocks`: every affected lodge capacity
-  // key, sorted, and NO global cohort key), and only then takes the two raw
-  // member-lifecycle:{id} keys in sorted order. The count stays 2 because both
-  // added tiers come from helpers that own their own raw sites
+  // key, sorted, and NO global cohort key), then takes the two raw
+  // member-lifecycle:{id} keys in sorted order, and finally the canonical
+  // member-partner-link keys through `member-partner-lock.ts` — because merge
+  // re-points partner links AND reads them to decide which future shared
+  // doubles step 3b deletes. The count stays 2 because all three added tiers
+  // come from helpers that own their own raw sites
   // (adult-member-hosting-policy-set.ts, bed-allocation-lifecycle.ts +
-  // lodge-capacity-lock.ts) — merge mints no new key of its own. This order
-  // serialises policy enumeration before relation moves, keeps the fixed
-  // lodge -> member order for the #2595 shared-double reconciliation, and
+  // lodge-capacity-lock.ts, member-partner-lock.ts) — merge mints no new key of
+  // its own. This order serialises policy enumeration before relation moves,
+  // keeps the fixed lodge -> member order for the #2595 shared-double
+  // reconciliation, matches the reviewed move's member-lifecycle ->
+  // member-partner-link order so no new wait-graph edge appears, and
   // excludes every delete/archive/merge touching either member. Merge is
   // deliberately absent from GLOBAL_BOOKING_MONEY_LOCK_INVENTORY above:
   // `member-merge-execute.test.ts` pins that it takes no `lock(1)` at all.

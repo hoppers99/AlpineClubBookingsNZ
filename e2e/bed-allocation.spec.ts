@@ -450,6 +450,11 @@ test("pointer, keyboard and menu moves share reviewed scopes and preserve origin
       destinationBedId: destination!.id,
       scope: "BOOKING_GUEST",
     });
+    // The headline invariant: Apply carries the scope, anchor, destination and
+    // digest — NEVER a target date. `toMatchObject` above permits extra
+    // properties, so this is the assertion that would fail if the hovered date
+    // column ever leaked back into the payload.
+    expect(moveRequests[0]).not.toHaveProperty("stayDate");
     expect(allocationIds).toContain(moveRequests[0].anchorAllocationId);
     expect(moveRequests[0].previewDigest).toMatch(/^v1:[0-9a-f]{64}$/);
 
@@ -600,6 +605,7 @@ test("pointer, keyboard and menu moves share reviewed scopes and preserve origin
       destinationBedId: originalBedId,
       scope: "BOOKING_GUEST",
     });
+    expect(moveRequests[1]).not.toHaveProperty("stayDate");
     await expect(manageAllocation).toBeFocused();
 
   } catch (error) {

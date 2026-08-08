@@ -1021,9 +1021,9 @@ default** (`describeReason` left at `true`), in three shapes:
   Payments page with no banner of its own. Read that
   bucket as the
   REMAINDER — everything that is neither a member detail card nor one of the
-  five dialog-only files — rather than as a claim that all 36 are leaves. Twelve
-  of the twenty files are (22 controls); six are the wizard step files just
-  described (9 controls); and the last two, `page-content-panel.tsx`
+  five dialog-only files — rather than as a claim that all 36 are leaves.
+  Thirteen of the twenty-one files are (24 controls); six are the wizard step
+  files just described (9 controls); and the last two, `page-content-panel.tsx`
   and `site-banners-panel.tsx`, are full banner-bearing panels whose last 3
   controls sit inside their own edit/create `Dialog`, so those 3 are really the
   first shape occurring inside a file that also has the third. Nothing is

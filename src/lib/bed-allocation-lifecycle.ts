@@ -1551,12 +1551,26 @@ async function recordPartnerShareSweepAudits(
   // and the primary's booking when they differ (a couple sharing within one
   // booking gets a single row) — grouped so a multi-night sweep records a
   // nights list rather than a row per night.
+  //
+  // #2595 — the row must be enough to RESTORE what was removed. `allocationIds`
+  // alone are not: they name rows that no longer exist. So the group also
+  // carries the bed, room, booking-guest and occupant name for each swept
+  // bed-night, in the same order as `stayDates`, which is everything an
+  // operator needs to put the person back on that bed from the audit trail
+  // alone. This matters more for merge than for the #1756 lifecycle events:
+  // arm (b) of the merge sweep can remove a row on a THIRD party's booking (see
+  // `sweepUnbackedFutureSharedDoublesWithLocksHeld`), whose owner had no part in
+  // the merge and no other record of what happened.
   interface SweepAuditGroup {
     bookingId: string;
     role: "second_occupant" | "primary";
     counterpartBookingId: string | null;
     stayDates: string[];
     allocationIds: string[];
+    bedIds: string[];
+    roomIds: string[];
+    bookingGuestIds: string[];
+    secondOccupantNames: string[];
   }
   const groups = new Map<string, SweepAuditGroup>();
   const add = (
@@ -1568,9 +1582,23 @@ async function recordPartnerShareSweepAudits(
     const key = `${bookingId}:${role}:${counterpartBookingId ?? "none"}`;
     const group =
       groups.get(key) ??
-      { bookingId, role, counterpartBookingId, stayDates: [], allocationIds: [] };
+      {
+        bookingId,
+        role,
+        counterpartBookingId,
+        stayDates: [],
+        allocationIds: [],
+        bedIds: [],
+        roomIds: [],
+        bookingGuestIds: [],
+        secondOccupantNames: [],
+      };
     group.stayDates.push(formatDateOnly(row.stayDate));
     group.allocationIds.push(row.allocationId);
+    group.bedIds.push(row.bedId);
+    group.roomIds.push(row.roomId);
+    group.bookingGuestIds.push(row.bookingGuestId);
+    group.secondOccupantNames.push(row.secondOccupantName);
     groups.set(key, group);
   };
   for (const row of swept) {
@@ -1581,11 +1609,29 @@ async function recordPartnerShareSweepAudits(
   }
 
   const reasonLabel = describePartnerSharedSweepReason(reason).toLowerCase();
+  // #2595 — the merge caller is the one that must NOT swallow an audit failure,
+  // and the difference is the promise each caller makes.
+  //
+  // The #1756 lifecycle callers commit their sweep and then fire a best-effort
+  // admin email; a lost audit row there costs a nudge on a short transaction the
+  // operator just performed and can see the result of. Merge's justification for
+  // the same fire-and-forget email is explicitly "the evidence is already
+  // committed" — so if the evidence is what failed, the promise is void. Merge
+  // also deletes rows on bookings whose owners were not party to the merge, and
+  // the audit row is their ONLY record of it.
+  //
+  // A Postgres-level failure would abort merge's transaction anyway. What this
+  // catches is the JS/Prisma-level failure inside `createAuditLog`, which the
+  // shared catch below would otherwise swallow with the transaction still
+  // healthy — committing a bed deletion whose only trace is a log line. Rolling
+  // the merge back instead is safe and retryable: nothing has left the database.
+  const auditFailureIsFatal = reason === "members_merged";
   for (const group of groups.values()) {
-    // Best-effort, mirroring recordPartnerPromotionAudit: an audit-write
-    // failure must never roll back a committed sweep. There is no acting
-    // member — the removal is a system consequence of the pair breaking — so
-    // this is a "lodge" system event recorded against each affected booking.
+    // Best-effort for the #1756 lifecycle events, mirroring
+    // recordPartnerPromotionAudit: an audit-write failure must never roll back a
+    // committed sweep. There is no acting member — the removal is a system
+    // consequence of the pair breaking — so this is a "lodge" system event
+    // recorded against each affected booking.
     try {
       await createAuditLog(
         {
@@ -1609,6 +1655,10 @@ async function recordPartnerShareSweepAudits(
             counterpartBookingId: group.counterpartBookingId,
             stayDates: group.stayDates,
             allocationIds: group.allocationIds,
+            bedIds: group.bedIds,
+            roomIds: group.roomIds,
+            bookingGuestIds: group.bookingGuestIds,
+            secondOccupantNames: group.secondOccupantNames,
           },
         },
         db,
@@ -1618,6 +1668,7 @@ async function recordPartnerShareSweepAudits(
         { err, group, reason },
         "Failed to record partner share sweep audit",
       );
+      if (auditFailureIsFatal) throw err;
     }
   }
 }
@@ -2141,10 +2192,26 @@ export async function sweepUnbackedFutureSharedDoublesWithLocksHeld(params: {
   for (const row of candidates.values()) {
     const primary =
       primaryByBedNight.get(sweepBedNightKey(row.bedId, row.stayDate)) ?? null;
-    // No primary on the bed-night: a transient #1743/#1750 orphan, whose
-    // canonical repair is PROMOTION to primary, not removal. Judging a pair
-    // that does not exist would delete a row the promotion pass is about to
-    // keep, so leave it to that pass — the same choice the #1756 sweep makes.
+    // No primary on the bed-night: a #1743/#1750 orphan. Judging a PAIR that
+    // does not exist would delete a row on the strength of a partnership
+    // question nobody asked, so it is skipped — but be precise about what that
+    // defers to, because the obvious reading is wrong twice over.
+    //
+    // There is no standing promotion pass. `promoteOrphanedSecondOccupants`
+    // runs only from `deleteAllocationsWithPartnerPromotion`, the reconcile
+    // prune, and `promoteVacatedOldBedNight` — i.e. only when some OTHER
+    // operation removes or moves a primary on that exact bed-night. A
+    // pre-existing orphan therefore stays put, possibly indefinitely. Nor is
+    // this "the same choice the #1756 sweep makes": #1756's PAIR scope skips
+    // orphans, but its single-member scope sweeps them and records
+    // `primaryBookingId: null`.
+    //
+    // Skipping is still right here. A lone second occupant is not an unbacked
+    // SHARE — there is only one person on the bed — and the row makes
+    // `resolveSecondOccupant` refuse the bed-night outright ("This double bed
+    // already has two occupants") rather than pair a new arrival with it. So
+    // the #2595 invariant holds either way, and the failure mode is a blocked
+    // bed rather than a bad share.
     if (!primary) continue;
     const primaryMemberId = primary.bookingGuest.memberId;
     const secondMemberId = row.bookingGuest.memberId;
