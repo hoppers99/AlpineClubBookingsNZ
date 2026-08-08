@@ -155,20 +155,27 @@ covers it: the column is optional.
 
 `AuditLog.category` is `String?` with no default, and the audit writer sets it only when
 the caller supplies one. The **executable census** — `npm run audit:census`, pinned by
-`src/lib/__tests__/audit-writer-census.test.ts` — counts **419 production audit write
-sites, of which 82 pass no category**: 69 through `logAudit`, 11 through
-`createAuditLog`, 2 hand-built Prisma writes, and none through
-`createStructuredAuditLog`. Some are money-adjacent: subscription-billing settings, retry,
-mark/unmark family, reconcile; the subscription charge confirm; all three member-credit
-adjustment steps; fee configuration; the saved-card charge results. Others are ordinary
-but relevant: booking-policy, season and promotional-code edits; Xero settings and
-retries; lodge display configuration; family-group, login-holder and dependent changes;
-membership applications; bulk communications; deletion-request decisions.
+`src/lib/__tests__/audit-writer-census.test.ts` — counted **418 production audit write
+sites, of which 82 passed no category**, when #2581 opened: 69 through `logAudit`, 11
+through `createAuditLog`, 2 hand-built Prisma writes, and none through
+`createStructuredAuditLog`.
+
+**All 82 have now been classified at the source.** The census reads **424 write sites and
+zero uncategorised**, so no *new* audit row is born invisible to these five entries. What
+each site was given is recorded site by site in `APPLIED_AUDIT_CATEGORIES`
+(`scripts/audit/audit-writer-census-manifest.ts`), and the contract test compares that
+table against the measured tree on every run, so a later reclassification is a named
+failure rather than a silent change of readership.
+
+**The gap has stopped growing; it has not closed.** Every row written before that runtime
+deployed still carries no category, and those rows are still invisible to every
+correlation entry. Giving them one is a separate, independently reviewable data change
+(#2581's third child) that has not run, so the disclosure below stays exactly as it is.
 
 Those figures used to be quoted here as "81 of about 350", which was a hand count and was
 stale. They are measured on every CI run now, and a **new** uncategorised audit writer
-fails the census contract with its own symbol named — the mechanism that stops this
-population growing again while it is being drained.
+fails the census contract with its own symbol named — and because the pinned set is now
+empty, the *first* such writer fails it, with no backlog left to hide in.
 
 The census covers all four TypeScript writer forms (`logAudit`, `createAuditLog`,
 `createStructuredAuditLog`, and a direct `auditLog.create`), the fourteen wrapper helpers
@@ -180,11 +187,14 @@ rows without naming `"category"` fails the same contract. It parses rather than 
 sink named inside a comment is not counted — the phantom `createStructuredAuditLog`
 omission preserved in the issue's own title was exactly that.
 
-One consequence worth stating because it is not obvious: all 82 also pass no `severity`
+One consequence worth stating because it is not obvious: all 82 also passed no `severity`
 and no `retentionClass`, and the writer derives a retention class only when one of those
-three is present. So every one of those rows is stored today with **no expiry at all** —
-never archived, never pruned. Giving them a category is therefore also a retention change,
-not a metadata tidy-up.
+three is present. So every one of those rows was stored with **no expiry at all** — never
+archived, never pruned. Giving them a category was therefore also a retention change, not
+a metadata tidy-up: all 82 write paths now classify `critical`, which is a **seven-year**
+expiry measured from the event. Rows already written keep their `NULL` retention class
+until #2581's third child decides what to do about them, so nothing that exists today
+becomes deletable because of this change.
 
 The shared statement filters on `"category" = ANY (…)`, which is NULL — not true — for a
 row with no category, so **such a row is returned by none of the five entries.** It is not
@@ -207,15 +217,15 @@ still nullable.
 
 **The alternative was put to the owner and refused.** The system entry could take the
 null case explicitly (`"category" IS NULL OR "category" = ANY (…)`), which would keep the
-five sets disjoint and make the evidence complete. But it routes those 82 call sites'
-rows — booking policy, communications, deletion decisions — into an entry that needs
+five sets disjoint and make the evidence complete. But it routes every historical null
+row — booking policy, communications, deletion decisions — into an entry that needs
 `support:view` alone, and it needs a fresh look at the `(category, createdAt)` index
 against the 5-second statement timeout. On #2581 the owner ruled it out: Diagnostics stays
 strictly category-filtered and permission-scoped, and the rows get a category **at the
 source** instead. The canonical taxonomy, the permission map above and the census contract
-are the first part of that work; the sweep that gives each of the 82 sites its category is
-the second; the exact-action backfill of the historical null rows is the third. Until the
-second lands, the disclosure above is the honest answer and stays.
+were the first part of that work; the sweep that gave each of the 82 sites its category is
+the second and has landed; the exact-action backfill of the historical null rows is the
+third and has not. Until it does, the disclosure above is the honest answer and stays.
 
 ## Evidence sources
 

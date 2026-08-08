@@ -97,8 +97,14 @@ export async function POST(request: NextRequest) {
 
     logAudit({
       action: "member.deletion_requested",
+      category: "privacy",
       memberId: session.user.id,
       targetId: request_.id,
+      // The request row, not the member: `targetId` already carries this id, so
+      // naming `DeletionRequest` leaves the Admin timeline's subject resolution
+      // exactly where it is while telling a correlation reader what the id is.
+      entityType: "DeletionRequest",
+      entityId: request_.id,
       details: body.reason ? `Reason: ${body.reason}` : "No reason provided",
       ipAddress: getClientIp(request),
     });

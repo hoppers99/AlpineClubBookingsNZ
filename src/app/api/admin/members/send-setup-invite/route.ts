@@ -109,8 +109,14 @@ export async function POST(req: NextRequest) {
             // traceable.
             logAudit({
               action: "member.setup-invite-sent",
+              // `security` for the same reason as `member.password-reset-sent`
+              // (#2581 decision 3): a setup invite IS a credential-issuing
+              // event, whatever channel carries it.
+              category: "security",
               memberId: adminId,
               targetId: member.id,
+              entityType: "Member",
+              entityId: member.id,
               details: JSON.stringify({
                 recipientEmail: member.email,
                 recipientName: name,

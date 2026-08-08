@@ -177,6 +177,13 @@ export async function POST(request: Request) {
 
   logAudit({
     action: "BULK_COMMUNICATION_SENT",
+    // Safe here only BECAUSE Child 1 moved `communication` out of the
+    // support-only system correlation entry into the membership one (#2581
+    // decision 7). Under the previous map this would have put bulk-email
+    // evidence behind `support:view` alone. No entity identifier: the send
+    // targets a recipient FILTER, not one record, and `details` already names
+    // the filter and the counts.
+    category: "communication",
     memberId: session.user.id,
     details: JSON.stringify({
       subject,

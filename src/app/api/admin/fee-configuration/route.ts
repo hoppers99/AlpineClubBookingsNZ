@@ -440,6 +440,7 @@ export async function POST(request: Request) {
       }
       await createAuditLog({
         action: `fee-configuration.${parsed.data.action.toLowerCase()}`,
+        category: "payment",
         memberId: guard.session.user.id,
         targetId,
         details: JSON.stringify(parsed.data),

@@ -17,14 +17,20 @@
  * this area move constantly: PR #2618 alone moved the deletion-request writers
  * from lines 131/403 to 293/649 without touching a single audit argument. An
  * identity is `<repo-relative path>::<enclosing symbol chain>#<ordinal among
- * sites sharing that symbol>`, which survives a reformat and a rebase.
+ * sites sharing that symbol>`, which survives a reformat and a rebase. It does
+ * NOT survive a new writer earlier in the same symbol, which renumbers the
+ * ordinals after it — so the honest way to move this file is to run the census
+ * and land what it reports, never to compute a delta by hand.
  *
- * WHAT `proposedCategory` IS AND IS NOT. It is this child's reviewed
- * recommendation, carried here so the classification decisions are recorded and
- * reversible rather than rediscovered. It is NOT applied: the sweep that puts a
- * category at each of these call sites is #2581's second child, because each one
- * also changes the row's RETENTION (see the note on `UNCATEGORISED_AUDIT_WRITERS`)
- * and needs its transaction and failure semantics reviewed per writer family.
+ * WHAT CHILD 1 RECORDED AND CHILD 2 APPLIED. Child 1 measured 82 uncategorised
+ * writers and carried a reviewed `proposedCategory` for each, deliberately
+ * changing none of them: a recommendation cannot widen anybody's access, and
+ * each site also changed the row's RETENTION, so each needed its transaction
+ * and failure semantics reviewed per writer family. Child 2 did that review and
+ * applied all 82. `UNCATEGORISED_AUDIT_WRITERS` is therefore empty and stays
+ * pinned empty; the answers it used to carry now live in
+ * `APPLIED_AUDIT_CATEGORIES`, which pins the per-site classification so a
+ * SWAP between two categories cannot hide inside an unchanged distribution.
  */
 
 /** A canonical audit category, as a plain string so this file needs no `src/` import. */
@@ -96,22 +102,49 @@ export const AUDIT_CENSUS_TOTALS = {
    * tree, #2621: this branch's own pins were taken against a base that predated
    * #2352, #2623 and #2627, so the literals here come from running the census
    * after the merge rather than from adding the deltas up.)
+   *
+   * 423 -> 424 (#2581 child 2): the member bulk-update writer became TWO
+   * writers. It was one call site emitting `member.bulk-${action}` over a
+   * three-value enum whose members affect DIFFERENT domains — `set-role` is a
+   * permissions change, `deactivate`/`reactivate` are account changes — so
+   * decision 6 splits it. Written as two calls with LITERAL categories rather
+   * than one conditional, because the "chooses no category by WHO ACTED" pin
+   * allows no conditional at all and the honest way to satisfy it is to let
+   * each branch state its own answer where a reader and the scanner can both
+   * see it.
    */
-  writeSites: 423,
-  /** Of those, sites whose event object carries no `category` key. */
-  uncategorised: 82,
+  writeSites: 424,
+  /**
+   * Of those, sites whose event object carries no `category` key.
+   *
+   * 82 -> 0 (#2581 child 2). This is the number the issue exists for and it is
+   * now closed: every production audit write records a canonical category, so
+   * no new row is born selectable by no correlation tool and expiring never.
+   * A new entry in `UNCATEGORISED_AUDIT_WRITERS` below is therefore no longer a
+   * backlog item to be worked off — it is a regression.
+   */
+  uncategorised: 0,
   /** Per-sink totals, so a shift between forms cannot cancel out in the total. */
   bySink: {
     // 238 -> 239 (#2623): the waitlist-confirm recovery marker, fire-and-forget
     // outside every transaction because its own failure must not mask the strand.
     // 239 -> 241 (#2621): the two arrival-time writers, above (re-measured on
     // merged tree, #2621).
-    logAudit: { total: 241, uncategorised: 69 },
+    // 241 -> 242 (#2581 child 2): the bulk-update split, above.
+    logAudit: { total: 242, uncategorised: 0 },
     // 101 -> 102 (#2627): the deletion-approval release, above.
-    createAuditLog: { total: 102, uncategorised: 11 },
+    // 102 -> 104 (#2581 child 2): the two hand-built dependants writes moved
+    // OFF `tx.auditLog.create` and onto `createAuditLog(params, tx)`. They kept
+    // their transaction — the `tx` client is still passed — but they now go
+    // through `buildAuditLogCreateData`, so they finally get metadata
+    // sanitisation and a derived retention class. The total is unchanged; only
+    // the FORM moved, which is exactly the shift this per-sink pin exists to
+    // make visible.
+    createAuditLog: { total: 104, uncategorised: 0 },
     createStructuredAuditLog: { total: 8, uncategorised: 0 },
     // 71 -> 72 (#2352 MC-03D): the page-content deletion, above.
-    "auditLog.create": { total: 72, uncategorised: 2 },
+    // 72 -> 70 (#2581 child 2): the two dependants writes, above.
+    "auditLog.create": { total: 70, uncategorised: 0 },
   },
   /**
    * Literal category values written, and by how many sites. The three `membership`
@@ -126,450 +159,348 @@ export const AUDIT_CENSUS_TOTALS = {
    * `bookings` (`AUDIT_CORRELATION_DOMAIN_AREAS`), which the lodge administrators
    * who have to act on that row already hold — so this adds no reader who could not
    * already see the booking the row names.
+   *
+   * #2581 CHILD 2 MOVES NINE OF THESE ELEVEN, because it is the change that
+   * classifies the 82. Every delta below is a deliberate readership decision
+   * and each one is named at its own writer; `APPLIED_AUDIT_CATEGORIES` records
+   * which site got which answer, so any single classification can be reversed
+   * without re-deriving the set.
+   *
+   * The two that do NOT move are the ones that matter most for "did this widen
+   * anybody's access": `admin` and `system` are unchanged at 118 and 4. Not one
+   * of the 82 was classified into the platform's catch-all, and the only
+   * additions to the support-only gate are the three `security` credential and
+   * role-change writers below.
    */
   categoryValues: {
-    account: 15,
+    // 15 -> 20 (#2581 child 2): the four membership-application writers in
+    // `nomination.ts`, plus the `member.bulk-deactivate`/`-reactivate` branch.
+    // All five already reached the member self-timeline through the legacy
+    // action inference for null-category rows, so none of them becomes visible
+    // to a member who could not already see it.
+    account: 20,
     // 80 -> 82 (#2621): `booking.expected_arrival_time.set` and `.cleared`. Read
     // with `support:view` plus `bookings:view`, like every other booking row
     // beside them — and the booking officers who can set this field already hold
     // both — so this widens nobody's access. (Re-measured on merged tree, #2621.)
-    booking: 82,
-    payment: 16,
-    family: 27,
+    // 82 -> 100 (#2581 child 2): the ten booking-policy/booking-period/age-tier
+    // writers and the eight season and promotional-code writers (decision 4).
+    booking: 100,
+    // 16 -> 33 (#2581 child 2): the seventeen money writers — subscription
+    // billing, member credit, fee configuration, saved-card charges and the five
+    // Stripe webhook outcomes. `payment` is `support` plus `finance`, the
+    // narrowest genuine gate for money evidence.
+    payment: 33,
+    // 27 -> 34 (#2581 child 2): the five family-group writers and the two
+    // dependants writers. Both dependants writers also moved off a hand-built
+    // Prisma literal and onto the audit boundary in the same change.
+    family: 34,
     // 117 -> 118 (#2352 MC-03D): `PAGE_CONTENT_DELETED`. `admin` is the same
     // category the three sibling page-content writes already use, and it is
     // readable with support:view alone — so this widens nobody's access beyond
     // what the page-content create/update rows beside it already grant.
+    // UNCHANGED by #2581 child 2, deliberately: `admin` is the platform's
+    // catch-all and is read with `support:view` alone, so classifying anything
+    // into it needed a written justification and none of the 82 earned one.
     admin: 118,
-    security: 16,
-    lodge: 16,
-    xero: 19,
-    communication: 12,
+    // 16 -> 19 (#2581 child 2): `member.password-reset-sent` and
+    // `member.setup-invite-sent` (decision 3 — the affected domain is the
+    // CREDENTIAL, not the mailing), plus the `member.bulk-set-role` branch
+    // (decision 6). These three are the ONLY additions to the support-only
+    // correlation gate in this change. Each is already readable by the same
+    // operator in Admin > Audit Log, and the correlation projection returns no
+    // `details` and no `metadata`, so the recipient addresses those rows carry
+    // do not travel with them.
+    security: 19,
+    // 16 -> 28 (#2581 child 2): the nine lodge-display writers and the three
+    // kiosk-account writers. This NARROWS nothing and widens only within the
+    // lodge gate (`support` plus `lodge`).
+    lodge: 28,
+    // 19 -> 34 (#2581 child 2): the fifteen Xero settings, mapping, replay and
+    // retry writers. `xero` is `support` plus `finance`.
+    xero: 34,
+    // 12 -> 14 (#2581 child 2): `BULK_COMMUNICATION_SENT` and
+    // `EMAIL_SUPPRESSION_CLEARED`. Safe only BECAUSE child 1 moved
+    // `communication` out of the support-only system entry into the membership
+    // one (decision 7); under the old map this would have put bulk-email
+    // evidence behind `support:view` alone.
+    communication: 14,
     // 14 -> 15 (#2627): `member.deletion_approval_claim_released`. Still a
     // membership+support read, like every other deletion-decision row beside it,
     // so this widens nobody's access.
-    privacy: 15,
+    // 15 -> 19 (#2581 child 2): `member.deletion_rejected`,
+    // `member.deletion_approved`, `member.deletion_requested` and
+    // `issue.reported`. The issue report stays `privacy` rather than matching
+    // its `/admin/issue-reports` support surface (decision 5) — moving it to
+    // `admin` would have WIDENED a member's own report to `support:view` alone.
+    privacy: 19,
+    // UNCHANGED by #2581 child 2. `system` is for genuine platform events with
+    // no narrower business domain, and none of the 82 was one.
     system: 4,
   },
 } as const;
 
 /**
- * Every production audit write that records NO category, with the category this
- * child recommends for it.
+ * Every production audit write that records NO category.
  *
- * THE RETENTION CONSEQUENCE, measured rather than assumed, because it is the
- * reason this is not a metadata-only sweep. All of these also pass no `severity`
- * and no `retentionClass`, and `buildAuditLogCreateData` derives retention only
- * when one of category/severity/retentionClass is present — so every one of these
- * rows is written today with `retentionClass = NULL` and `expiresAt = NULL`, i.e.
- * kept forever and never archived. Adding a category makes
- * `classifyAuditRetention` run, and it falls through to `critical` for all of
- * these actions, which is a seven-year expiry. One site changes class depending on
- * the answer: `family-group.login-holder-swapped` normalises to a string
- * containing "login", so classifying it `security` or `admin` would make it
- * `sensitive_access` at 24 months instead. It is proposed `family`, so it does
- * not.
+ * EMPTY, AND THAT IS THE POINT (#2581 child 2). It held 82 entries when child 1
+ * measured the tree — every one of them a row written with `category = NULL`,
+ * selectable by no Diagnostics correlation tool, and (because
+ * `buildAuditLogCreateData` derives retention only when a category, severity or
+ * retention class is present) written with `retentionClass = NULL` and
+ * `expiresAt = NULL` as well, i.e. kept forever. Child 2 classified all 82 at
+ * the source. `APPLIED_AUDIT_CATEGORIES` below records which answer each site
+ * got.
  *
- * THE ENTITY-IDENTIFIER CONSEQUENCE. Only the nine lodge-display sites pass an
- * `entityType` or `entityId`; the other 73 pass neither, so a categorised row from
- * them still cannot be correlated to a specific record. That is the "missing
- * entity identifiers that prevent bounded correlation" case the owner named as
- * in-scope, and it belongs to the sweep rather than to this manifest.
+ * THE LIST STAYS, AND STAYS PINNED, because the contract test compares it for
+ * SET EQUALITY against the measured census. An empty pin means a new
+ * uncategorised writer fails CI by name rather than being tolerated under a
+ * ceiling — and it means nobody can quietly re-open the backlog by adding an
+ * entry here instead of a category at the site. An addition to this object is
+ * now a regression under review, not a to-do.
+ *
+ * THE RETENTION CONSEQUENCE OF EMPTYING IT, measured rather than assumed,
+ * because it is the reason this was not a metadata-only sweep. Adding a category
+ * makes `classifyAuditRetention` run, and it falls through to `critical` for
+ * every one of these actions — a seven-year expiry. So 82 write paths moved from
+ * "no retention class, no expiry, kept forever" to "critical, expires seven
+ * years after the event". `family-group.login-holder-swapped` was the one site
+ * whose class depended on the answer: its action normalises to a string
+ * containing "login", so `security` or `admin` would have made it
+ * `sensitive_access` at 24 months. It was classified `family`, so it keeps the
+ * seven years a membership dispute needs.
  */
 export const UNCATEGORISED_AUDIT_WRITERS: Readonly<
   Record<string, { action: string; proposedCategory: ProposedCategory }>
-> = {
+> = {};
+
+/**
+ * The category #2581's second child applied at each of the sites child 1 found
+ * uncategorised, plus the one site the split created.
+ *
+ * WHY THIS EXISTS ON TOP OF `categoryValues`. The distribution pin catches a
+ * category gaining or losing sites. It does NOT catch a SWAP: moving one writer
+ * from `booking` to `payment` and another from `payment` to `booking` leaves
+ * every count identical while changing who can read both rows. This pins the
+ * per-site answer, so a reclassification of any one of these 83 writers is a
+ * named diff in this file rather than an invisible one in a route.
+ *
+ * IT IS ALSO THE REVERSAL RECORD. Each entry is one decision, reversible on its
+ * own: change the literal at the site, change it here, and the changelog entry
+ * for #2581 names what the row's readership and retention were before.
+ *
+ * SCOPE, deliberately narrow: only the sites this child classified. The other
+ * ~340 writers were categorised at the time they were written and are covered by
+ * `categoryValues` plus the canonical-value gate; pinning all of them would make
+ * every new feature that records something edit a 400-line literal.
+ */
+export const APPLIED_AUDIT_CATEGORIES: Readonly<Record<string, string>> = {
   // ─── Booking policy, booking periods and age tiers → `booking` ──────────────
-  // Booking-eligibility and booking-price rules. `booking` is read with
+  // Booking-eligibility and booking-price RULES, so they follow the booking
+  // domain rather than the admin surface that edits them. Read with
   // `support:view` plus `bookings:view`.
-  "src/app/api/admin/age-tier-settings/route.ts::PUT#0": {
-    action: "AGE_TIER_SETTINGS_UPDATED",
-    proposedCategory: "booking",
-  },
-  "src/app/api/admin/booking-policies/adult-member-hosting/route.ts::PUT#0": {
-    action: "adult-member-hosting-policy.update",
-    proposedCategory: "booking",
-  },
-  "src/app/api/admin/booking-policies/cancellation/route.ts::PUT#0": {
-    action: "cancellation-policy.update",
-    proposedCategory: "booking",
-  },
-  "src/app/api/admin/booking-policies/group-discount/route.ts::PUT#0": {
-    action: "group-discount.update",
-    proposedCategory: "booking",
-  },
-  "src/app/api/admin/booking-policies/minimum-stay/[id]/route.ts::DELETE#0": {
-    action: "minimum-stay-policy.delete",
-    proposedCategory: "booking",
-  },
-  "src/app/api/admin/booking-policies/minimum-stay/[id]/route.ts::PUT#0": {
-    action: "minimum-stay-policy.update",
-    proposedCategory: "booking",
-  },
-  "src/app/api/admin/booking-policies/minimum-stay/route.ts::POST#0": {
-    action: "minimum-stay-policy.create",
-    proposedCategory: "booking",
-  },
-  "src/app/api/admin/booking-policies/periods/[id]/route.ts::DELETE#0": {
-    action: "booking-period.delete",
-    proposedCategory: "booking",
-  },
-  "src/app/api/admin/booking-policies/periods/[id]/route.ts::PUT#0": {
-    action: "booking-period.update",
-    proposedCategory: "booking",
-  },
-  "src/app/api/admin/booking-policies/periods/route.ts::POST#0": {
-    action: "booking-period.create",
-    proposedCategory: "booking",
-  },
+  "src/app/api/admin/age-tier-settings/route.ts::PUT#0": "booking",
+  "src/app/api/admin/booking-policies/adult-member-hosting/route.ts::PUT#0": "booking",
+  "src/app/api/admin/booking-policies/cancellation/route.ts::PUT#0": "booking",
+  "src/app/api/admin/booking-policies/group-discount/route.ts::PUT#0": "booking",
+  "src/app/api/admin/booking-policies/minimum-stay/[id]/route.ts::DELETE#0": "booking",
+  "src/app/api/admin/booking-policies/minimum-stay/[id]/route.ts::PUT#0": "booking",
+  "src/app/api/admin/booking-policies/minimum-stay/route.ts::POST#0": "booking",
+  "src/app/api/admin/booking-policies/periods/[id]/route.ts::DELETE#0": "booking",
+  "src/app/api/admin/booking-policies/periods/[id]/route.ts::PUT#0": "booking",
+  "src/app/api/admin/booking-policies/periods/route.ts::POST#0": "booking",
 
   // ─── Seasons and promotional codes → `booking` (#2581 decision 4) ───────────
-  // A season and a promotional code are booking-eligibility rules, so they follow
-  // the booking domain. The trade-off recorded on the decision: a promotional code
-  // carries a discount amount, so price-affecting evidence sits behind
-  // `bookings:view` rather than `finance:view`.
-  "src/app/api/admin/seasons/[id]/route.ts::DELETE#0": {
-    action: "season.delete",
-    proposedCategory: "booking",
-  },
-  "src/app/api/admin/seasons/[id]/route.ts::PUT#0": {
-    action: "season.update",
-    proposedCategory: "booking",
-  },
-  "src/app/api/admin/seasons/route.ts::POST#0": {
-    action: "season.create",
-    proposedCategory: "booking",
-  },
-  "src/app/api/admin/promo-codes/[id]/route.ts::DELETE#0": {
-    action: "promo.archive",
-    proposedCategory: "booking",
-  },
-  "src/app/api/admin/promo-codes/[id]/route.ts::DELETE#1": {
-    action: "promo.delete",
-    proposedCategory: "booking",
-  },
-  "src/app/api/admin/promo-codes/[id]/route.ts::PATCH#0": {
-    action: "promo.restore",
-    proposedCategory: "booking",
-  },
-  "src/app/api/admin/promo-codes/[id]/route.ts::PUT#0": {
-    action: "promo.update",
-    proposedCategory: "booking",
-  },
-  "src/app/api/admin/promo-codes/route.ts::POST#0": {
-    action: "promo.create",
-    proposedCategory: "booking",
-  },
+  // The recorded trade-off: a promotional code carries a discount amount, so
+  // price-affecting evidence sits behind `bookings:view` rather than
+  // `finance:view`. Taken anyway, because the OBJECT is a booking-eligibility
+  // rule; the rejected alternative was `payment`, which would have hidden the
+  // rule from the booking officers who administer it.
+  "src/app/api/admin/promo-codes/[id]/route.ts::DELETE#0": "booking",
+  "src/app/api/admin/promo-codes/[id]/route.ts::DELETE#1": "booking",
+  "src/app/api/admin/promo-codes/[id]/route.ts::PATCH#0": "booking",
+  "src/app/api/admin/promo-codes/[id]/route.ts::PUT#0": "booking",
+  "src/app/api/admin/promo-codes/route.ts::POST#0": "booking",
+  "src/app/api/admin/seasons/[id]/route.ts::DELETE#0": "booking",
+  "src/app/api/admin/seasons/[id]/route.ts::PUT#0": "booking",
+  "src/app/api/admin/seasons/route.ts::POST#0": "booking",
 
-  // ─── Money: subscription billing, member credit, fees, card payments → `payment`
-  // Charges, credits, fees and card results. `payment` is read with `support:view`
-  // plus `finance:view`, which is the narrowest genuine gate for money evidence.
-  "src/app/api/admin/subscription-billing/route.ts::POST#0": {
-    action: "membership-subscription-billing.settings.update",
-    proposedCategory: "payment",
-  },
-  "src/app/api/admin/subscription-billing/route.ts::POST#1": {
-    action: "membership-subscription-billing.retry",
-    proposedCategory: "payment",
-  },
-  "src/app/api/admin/subscription-billing/route.ts::POST#2": {
-    action: "membership-subscription-billing.mark-family",
-    proposedCategory: "payment",
-  },
-  "src/app/api/admin/subscription-billing/route.ts::POST#3": {
-    action: "membership-subscription-billing.unmark-family",
-    proposedCategory: "payment",
-  },
-  "src/app/api/admin/subscription-billing/route.ts::POST#4": {
-    action: "membership-subscription-billing.reconcile",
-    proposedCategory: "payment",
-  },
-  "src/lib/membership-subscription-billing.ts::confirmSubscriptionBillingPreview#0": {
-    action: "membership-subscription-billing.confirm",
-    proposedCategory: "payment",
-  },
-  "src/lib/member-credit.ts::createAdminAdjustmentRequest.request#0": {
-    action: "member.credit.adjustment.request",
-    proposedCategory: "payment",
-  },
-  "src/lib/member-credit.ts::reviewAdminAdjustmentRequest.result#0": {
-    action: "member.credit.adjustment.reject",
-    proposedCategory: "payment",
-  },
-  "src/lib/member-credit.ts::reviewAdminAdjustmentRequest.result#1": {
-    action: "member.credit.adjustment.approve",
-    proposedCategory: "payment",
-  },
-  "src/app/api/admin/fee-configuration/route.ts::POST#0": {
-    action: "fee-configuration.${action} (dynamic, bounded by the route's enum)",
-    proposedCategory: "payment",
-  },
-  "src/app/api/payments/charge-saved-method/route.ts::POST#0": {
-    action: "booking.payment.confirmed",
-    proposedCategory: "payment",
-  },
-  "src/app/api/payments/charge-saved-method/route.ts::POST#1": {
-    action: "booking.payment.failed",
-    proposedCategory: "payment",
-  },
-  "src/lib/stripe-webhook-service.ts::handleCancelledBookingPaymentSucceeded#0": {
-    action: "booking.payment.refunded_after_cancellation",
-    proposedCategory: "payment",
-  },
-  "src/lib/stripe-webhook-service.ts::handleCancelledBookingAdditionalPaymentSucceeded#0": {
-    action: "booking.payment.refunded_after_cancellation",
-    proposedCategory: "payment",
-  },
-  "src/lib/stripe-webhook-service.ts::handlePaymentIntentCanceled#0": {
-    action: "booking(.modification)?.payment.canceled (dynamic, two literals)",
-    proposedCategory: "payment",
-  },
-  "src/lib/stripe-webhook-service.ts::handlePaymentIntentFailed#0": {
-    action: "booking(.modification)?.payment.failed (dynamic, two literals)",
-    proposedCategory: "payment",
-  },
-  "src/lib/stripe-webhook-service.ts::refundSupersededGroupSettlementIntent#0": {
-    action: "group.settlement.superseded_intent_refunded",
-    proposedCategory: "payment",
-  },
+  // ─── Money → `payment` ─────────────────────────────────────────────────────
+  // Charges, credits, fees and card results, read with `support:view` plus
+  // `finance:view`. The five `booking.payment.*` actions are payment OUTCOMES on
+  // a booking, not booking-lifecycle events, so they follow the money.
+  "src/app/api/admin/fee-configuration/route.ts::POST#0": "payment",
+  "src/app/api/admin/subscription-billing/route.ts::POST#0": "payment",
+  "src/app/api/admin/subscription-billing/route.ts::POST#1": "payment",
+  "src/app/api/admin/subscription-billing/route.ts::POST#2": "payment",
+  "src/app/api/admin/subscription-billing/route.ts::POST#3": "payment",
+  "src/app/api/admin/subscription-billing/route.ts::POST#4": "payment",
+  "src/app/api/payments/charge-saved-method/route.ts::POST#0": "payment",
+  "src/app/api/payments/charge-saved-method/route.ts::POST#1": "payment",
+  "src/lib/member-credit.ts::createAdminAdjustmentRequest.request#0": "payment",
+  "src/lib/member-credit.ts::reviewAdminAdjustmentRequest.result#0": "payment",
+  "src/lib/member-credit.ts::reviewAdminAdjustmentRequest.result#1": "payment",
+  "src/lib/membership-subscription-billing.ts::confirmSubscriptionBillingPreview#0": "payment",
+  "src/lib/stripe-webhook-service.ts::handleCancelledBookingAdditionalPaymentSucceeded#0": "payment",
+  "src/lib/stripe-webhook-service.ts::handleCancelledBookingPaymentSucceeded#0": "payment",
+  "src/lib/stripe-webhook-service.ts::handlePaymentIntentCanceled#0": "payment",
+  "src/lib/stripe-webhook-service.ts::handlePaymentIntentFailed#0": "payment",
+  "src/lib/stripe-webhook-service.ts::refundSupersededGroupSettlementIntent#0": "payment",
 
-  // ─── Xero settings, mappings, retry/replay and maintenance → `xero` ─────────
-  "src/app/api/admin/xero/account-mappings/route.ts::PUT#0": {
-    action: "xero_account_mappings_updated",
-    proposedCategory: "xero",
-  },
-  "src/app/api/admin/xero/item-code-mappings/route.ts::PUT#0": {
-    action: "xero_item_code_mappings_updated",
-    proposedCategory: "xero",
-  },
-  "src/app/api/admin/xero/link-maintenance/route.ts::POST#0": {
-    action: "XERO_LINK_LEDGER_MAINTENANCE",
-    proposedCategory: "xero",
-  },
-  "src/app/api/admin/xero/inbound-events/[id]/replay/route.ts::POST#0": {
-    action: "XERO_INBOUND_EVENT_REPLAY",
-    proposedCategory: "xero",
-  },
-  "src/app/api/admin/xero/member-grouping/route.ts::POST#0": {
-    action: "XERO_GROUPING_MODE_UPDATED",
-    proposedCategory: "xero",
-  },
-  "src/app/api/admin/xero/member-grouping/route.ts::POST#1": {
-    action: "XERO_GROUPING_RULE_CREATED",
-    proposedCategory: "xero",
-  },
-  "src/app/api/admin/xero/member-grouping/route.ts::POST#2": {
-    action: "XERO_GROUPING_RULE_UPDATED",
-    proposedCategory: "xero",
-  },
-  "src/app/api/admin/xero/member-grouping/route.ts::POST#3": {
-    action: "XERO_GROUPING_RULE_TOGGLED",
-    proposedCategory: "xero",
-  },
-  "src/app/api/admin/xero/member-grouping/route.ts::POST#4": {
-    action: "XERO_GROUPING_RULE_DELETED",
-    proposedCategory: "xero",
-  },
-  "src/app/api/admin/xero/member-grouping/route.ts::POST#5": {
-    action: "XERO_GROUPING_BULK_RESYNC_REJECTED",
-    proposedCategory: "xero",
-  },
-  "src/app/api/admin/xero/member-grouping/route.ts::POST#6": {
-    action: "XERO_GROUPING_BULK_RESYNC",
-    proposedCategory: "xero",
-  },
-  "src/app/api/admin/xero/operations/[id]/requeue/route.ts::POST#0": {
-    action: "XERO_OPERATION_REQUEUED",
-    proposedCategory: "xero",
-  },
-  "src/app/api/admin/xero/operations/[id]/retry/route.ts::POST#0": {
-    action: "XERO_OPERATION_RETRY",
-    proposedCategory: "xero",
-  },
-  "src/app/api/admin/xero/operations/reset-stale-running/route.ts::POST#0": {
-    action: "XERO_OPERATIONS_RESET_STALE_RUNNING",
-    proposedCategory: "xero",
-  },
-  "src/app/api/admin/xero/operations/retry-all/route.ts::POST#0": {
-    action: "XERO_OPERATION_RETRY_ALL",
-    proposedCategory: "xero",
-  },
+  // ─── Xero settings, mappings, replay, retry and maintenance → `xero` ───────
+  "src/app/api/admin/xero/account-mappings/route.ts::PUT#0": "xero",
+  "src/app/api/admin/xero/inbound-events/[id]/replay/route.ts::POST#0": "xero",
+  "src/app/api/admin/xero/item-code-mappings/route.ts::PUT#0": "xero",
+  "src/app/api/admin/xero/link-maintenance/route.ts::POST#0": "xero",
+  "src/app/api/admin/xero/member-grouping/route.ts::POST#0": "xero",
+  "src/app/api/admin/xero/member-grouping/route.ts::POST#1": "xero",
+  "src/app/api/admin/xero/member-grouping/route.ts::POST#2": "xero",
+  "src/app/api/admin/xero/member-grouping/route.ts::POST#3": "xero",
+  "src/app/api/admin/xero/member-grouping/route.ts::POST#4": "xero",
+  "src/app/api/admin/xero/member-grouping/route.ts::POST#5": "xero",
+  "src/app/api/admin/xero/member-grouping/route.ts::POST#6": "xero",
+  "src/app/api/admin/xero/operations/[id]/requeue/route.ts::POST#0": "xero",
+  "src/app/api/admin/xero/operations/[id]/retry/route.ts::POST#0": "xero",
+  "src/app/api/admin/xero/operations/reset-stale-running/route.ts::POST#0": "xero",
+  "src/app/api/admin/xero/operations/retry-all/route.ts::POST#0": "xero",
 
-  // ─── Lodge display configuration and lodge accounts → `lodge` ───────────────
-  // The nine display sites are the only members of the 82 that already pass an
-  // entity identifier, so they are the cheapest group for the sweep to finish.
-  "src/app/api/admin/display/devices/[id]/revoke/route.ts::POST#0": {
-    action: "LODGE_DISPLAY_DEVICE_REVOKED",
-    proposedCategory: "lodge",
-  },
-  "src/app/api/admin/display/devices/[id]/route.ts::PATCH#0": {
-    action: "DISPLAY_DEVICE_TEMPLATE_ASSIGNED",
-    proposedCategory: "lodge",
-  },
-  "src/app/api/admin/display/devices/[id]/route.ts::PATCH#1": {
-    action: "DISPLAY_DEVICE_POLL_INTERVAL_SET",
-    proposedCategory: "lodge",
-  },
-  "src/app/api/admin/display/layouts/[id]/route.ts::DELETE#0": {
-    action: "DISPLAY_LAYOUT_DELETED",
-    proposedCategory: "lodge",
-  },
-  "src/app/api/admin/display/layouts/[id]/route.ts::PUT#0": {
-    action: "DISPLAY_LAYOUT_UPDATED",
-    proposedCategory: "lodge",
-  },
-  "src/app/api/admin/display/layouts/route.ts::POST#0": {
-    action: "DISPLAY_LAYOUT_CREATED",
-    proposedCategory: "lodge",
-  },
-  "src/app/api/admin/display/templates/[id]/route.ts::DELETE#0": {
-    action: "DISPLAY_TEMPLATE_DELETED",
-    proposedCategory: "lodge",
-  },
-  "src/app/api/admin/display/templates/[id]/route.ts::PUT#0": {
-    action: "DISPLAY_TEMPLATE_UPDATED",
-    proposedCategory: "lodge",
-  },
-  "src/app/api/admin/display/templates/route.ts::POST#0": {
-    action: "DISPLAY_TEMPLATE_CREATED",
-    proposedCategory: "lodge",
-  },
-  "src/app/api/admin/lodge/route.ts::GET#0": {
-    action: "LODGE_ACCOUNT_CREATED",
-    proposedCategory: "lodge",
-  },
-  "src/app/api/admin/lodge/route.ts::POST#0": {
-    action: "LODGE_ACCOUNT_CREATED",
-    proposedCategory: "lodge",
-  },
-  "src/app/api/admin/lodge/route.ts::PUT#0": {
-    action: "LODGE_ACCOUNT_UPDATED",
-    proposedCategory: "lodge",
-  },
+  // ─── Lodge display configuration and kiosk accounts → `lodge` ──────────────
+  // The three `admin/lodge/route.ts` writers manage kiosk `Member` rows with
+  // `role: "LODGE"`, not `Lodge` rows — the local variable is called `lodge` but
+  // holds a Member. They carry `entityType: "Member"` for that reason;
+  // `entityType: "Lodge"` already means a real Lodge id elsewhere in the tree.
+  "src/app/api/admin/display/devices/[id]/revoke/route.ts::POST#0": "lodge",
+  "src/app/api/admin/display/devices/[id]/route.ts::PATCH#0": "lodge",
+  "src/app/api/admin/display/devices/[id]/route.ts::PATCH#1": "lodge",
+  "src/app/api/admin/display/layouts/[id]/route.ts::DELETE#0": "lodge",
+  "src/app/api/admin/display/layouts/[id]/route.ts::PUT#0": "lodge",
+  "src/app/api/admin/display/layouts/route.ts::POST#0": "lodge",
+  "src/app/api/admin/display/templates/[id]/route.ts::DELETE#0": "lodge",
+  "src/app/api/admin/display/templates/[id]/route.ts::PUT#0": "lodge",
+  "src/app/api/admin/display/templates/route.ts::POST#0": "lodge",
+  "src/app/api/admin/lodge/route.ts::GET#0": "lodge",
+  "src/app/api/admin/lodge/route.ts::POST#0": "lodge",
+  "src/app/api/admin/lodge/route.ts::PUT#0": "lodge",
 
-  // ─── Family groups, login holder and dependents → `family` ─────────────────
-  // `family` becomes readable through the membership correlation entry in this
-  // change, so these land in a set that exists rather than in one that does not.
-  // The two dependents writers are hand-built Prisma `data` literals that bypass
-  // `buildAuditLogCreateData` entirely, so they get no sanitisation and no
-  // retention derivation; the sweep has to route them through the boundary rather
-  // than just adding a key.
-  "src/app/api/admin/family-groups/route.ts::POST#0": {
-    action: "FAMILY_GROUP_CREATED",
-    proposedCategory: "family",
-  },
-  "src/app/api/admin/family-groups/[id]/route.ts::PUT#0": {
-    action: "FAMILY_GROUP_UPDATED",
-    proposedCategory: "family",
-  },
-  "src/app/api/admin/family-groups/[id]/route.ts::DELETE#0": {
-    action: "FAMILY_GROUP_DELETED",
-    proposedCategory: "family",
-  },
-  "src/app/api/admin/family-groups/[id]/login-holder/route.ts::POST.result#0": {
-    action: "family-group.login-holder-swapped",
-    proposedCategory: "family",
-  },
-  "src/app/api/admin/family-suggestions/route.ts::POST#0": {
-    action: "FAMILY_GROUP_CREATED_FROM_SUGGESTION",
-    proposedCategory: "family",
-  },
-  "src/app/api/admin/members/[id]/dependents/[dependentId]/route.ts::DELETE.result#0": {
-    action: "member.dependent.unlink",
-    proposedCategory: "family",
-  },
-  "src/app/api/admin/members/[id]/dependents/link/route.ts::POST.linkedMember#0": {
-    action: "member.dependent.link",
-    proposedCategory: "family",
-  },
+  // ─── Family groups, login holder and dependants → `family` ─────────────────
+  // The two dependants writers were hand-built `tx.auditLog.create` literals
+  // that bypassed `buildAuditLogCreateData` entirely. They now go through
+  // `createAuditLog(params, tx)`, so they keep their transaction and gain the
+  // sanitisation and retention derivation a category alone would not have given
+  // them.
+  "src/app/api/admin/family-groups/[id]/login-holder/route.ts::POST.result#0": "family",
+  "src/app/api/admin/family-groups/[id]/route.ts::DELETE#0": "family",
+  "src/app/api/admin/family-groups/[id]/route.ts::PUT#0": "family",
+  "src/app/api/admin/family-groups/route.ts::POST#0": "family",
+  "src/app/api/admin/family-suggestions/route.ts::POST#0": "family",
+  "src/app/api/admin/members/[id]/dependents/[dependentId]/route.ts::DELETE.result#0": "family",
+  "src/app/api/admin/members/[id]/dependents/link/route.ts::POST.linkedMember#0": "family",
 
-  // ─── Membership applications and nomination → `account` ────────────────────
-  // Same destination as the three nomination writers this change corrects off the
-  // invented `membership` value, so the whole family ends up consistent.
-  "src/lib/nomination.ts::createMemberApplication#0": {
-    action: "MEMBERSHIP_APPLICATION_CREATED",
-    proposedCategory: "account",
-  },
-  "src/lib/nomination.ts::confirmNomination#0": {
-    action: "MEMBERSHIP_APPLICATION_NOMINATION_CONFIRMED",
-    proposedCategory: "account",
-  },
-  "src/lib/nomination.ts::approveMemberApplication#2": {
-    action: "MEMBERSHIP_APPLICATION_APPROVED",
-    proposedCategory: "account",
-  },
-  "src/lib/nomination.ts::rejectMemberApplication#0": {
-    action: "MEMBERSHIP_APPLICATION_REJECTED",
-    proposedCategory: "account",
-  },
+  // ─── Membership applications → `account` ───────────────────────────────────
+  // The same destination child 1 gave the three nomination writers it corrected
+  // off the invented `membership` value, so the whole family is consistent.
+  "src/lib/nomination.ts::approveMemberApplication#2": "account",
+  "src/lib/nomination.ts::confirmNomination#0": "account",
+  "src/lib/nomination.ts::createMemberApplication#0": "account",
+  "src/lib/nomination.ts::rejectMemberApplication#0": "account",
 
   // ─── Credential delivery → `security` (#2581 decision 3) ───────────────────
-  // The affected domain is the CREDENTIAL, not the mailing: these two actions
-  // hand somebody a way to take over an account. `security` is read with
-  // `support:view` alone, which is the same gate Admin > Audit Log already needs
-  // for these rows, so it is not a weakening — but it is the wider of the two
-  // readings and the reason this was a decision rather than an inference.
-  "src/app/api/admin/members/send-password-reset/route.ts::POST#0": {
-    action: "member.password-reset-sent",
-    proposedCategory: "security",
-  },
-  "src/app/api/admin/members/send-setup-invite/route.ts::POST.batchResults#0": {
-    action: "member.setup-invite-sent",
-    proposedCategory: "security",
-  },
+  // The affected domain is the CREDENTIAL, not the mailing: both actions hand
+  // somebody a way to take over an account. Rejected alternative:
+  // `communication`, which would have filed a credential issue under bulk email.
+  // The trade-off taken: `security` reads with `support:view` alone, the wider
+  // of the two — but it is the same gate Admin > Audit Log already needs for
+  // these rows, and the correlation projection carries no `details`, which is
+  // where the recipient address lives.
+  "src/app/api/admin/members/send-password-reset/route.ts::POST#0": "security",
+  "src/app/api/admin/members/send-setup-invite/route.ts::POST.batchResults#0": "security",
 
   // ─── Member bulk lifecycle → SPLIT by action (#2581 decision 6) ────────────
-  // One call site, several affected domains: `member.bulk-${action}` where the
-  // action decides. `security` for role changes, `account` for activate and
-  // deactivate. The sweep has to declare this as a dynamic action family rather
-  // than pick one category for the site.
-  "src/app/api/admin/members/bulk-update/route.ts::POST#0": {
-    action: "member.bulk-${action} (dynamic family)",
-    proposedCategory: "split",
-  },
+  // One call site, several affected domains, so it became two sites: `set-role`
+  // changes what a member may do (`security`), `deactivate`/`reactivate` change
+  // the account (`account`). The route's zod enum bounds the family to exactly
+  // those three, so the split is exhaustive. Both destinations are member-
+  // visible, and the null-category rows already were through the legacy `member.`
+  // inference, so no row moves across the member self-timeline boundary.
+  "src/app/api/admin/members/bulk-update/route.ts::POST#0": "security",
+  "src/app/api/admin/members/bulk-update/route.ts::POST#1": "account",
 
-  // ─── Privacy decisions → `privacy` ─────────────────────────────────────────
-  // Ordinals moved by one (#2627): the categorised release writer is now the
-  // first audit site in this `POST`, so the rejection is #1 and the approval #4.
-  // Exactly the ordinal drift this manifest's header warns about — the identity
-  // survives a reformat, not a new site earlier in the same symbol.
-  "src/app/api/admin/deletion-requests/[id]/route.ts::POST#1": {
-    action: "member.deletion_rejected",
-    proposedCategory: "privacy",
-  },
-  "src/app/api/admin/deletion-requests/[id]/route.ts::POST#4": {
-    action: "member.deletion_approved",
-    proposedCategory: "privacy",
-  },
-  "src/app/api/member/request-deletion/route.ts::POST#0": {
-    action: "member.deletion_requested",
-    proposedCategory: "privacy",
-  },
-
-  // ─── Issue reports → `privacy`, deliberately NOT `admin` (#2581 decision 5) ─
-  // `/admin/issue-reports` is a `support` surface and the sibling admin
-  // issue-report events are already `privacy`, so matching the surface would mean
-  // moving them to `admin` — which would WIDEN them from `support` plus
-  // `membership` to `support` alone. The mismatch stays, and it is disclosed.
-  "src/app/api/issue-reports/route.ts::POST#0": {
-    action: "issue.reported",
-    proposedCategory: "privacy",
-  },
+  // ─── Privacy decisions and issue reports → `privacy` ───────────────────────
+  // `issue.reported` stays `privacy` despite `/admin/issue-reports` being a
+  // `support` surface (#2581 decision 5). Matching the surface would have meant
+  // `admin`, which reads with `support:view` alone — a widening of a member's own
+  // report, and it was refused. The accepted cost: a support-only operator
+  // correlates issue reports in Admin > Audit Log rather than in Diagnostics.
+  "src/app/api/admin/deletion-requests/[id]/route.ts::POST#1": "privacy",
+  "src/app/api/admin/deletion-requests/[id]/route.ts::POST#4": "privacy",
+  "src/app/api/issue-reports/route.ts::POST#0": "privacy",
+  "src/app/api/member/request-deletion/route.ts::POST#0": "privacy",
 
   // ─── Communication → `communication` ───────────────────────────────────────
-  // Safe to place here only BECAUSE this change moves `communication` out of the
-  // support-only system correlation entry into the membership one (#2581 decision
-  // 7). Under the old map, `BULK_COMMUNICATION_SENT` would have put bulk-email
-  // evidence — whose sibling payloads carry recipient addresses — behind
-  // `support:view` alone.
-  "src/app/api/admin/communications/send/route.ts::POST#0": {
-    action: "BULK_COMMUNICATION_SENT",
-    proposedCategory: "communication",
-  },
-  "src/app/api/admin/email-suppressions/[id]/clear/route.ts::POST#0": {
-    action: "EMAIL_SUPPRESSION_CLEARED",
-    proposedCategory: "communication",
-  },
+  // Safe only BECAUSE child 1 moved `communication` out of the support-only
+  // system correlation entry into the membership one (#2581 decision 7). Under
+  // the previous map, `BULK_COMMUNICATION_SENT` would have put bulk-email
+  // evidence behind `support:view` alone.
+  "src/app/api/admin/communications/send/route.ts::POST#0": "communication",
+  "src/app/api/admin/email-suppressions/[id]/clear/route.ts::POST#0": "communication",
+};
+
+/**
+ * Sites among `APPLIED_AUDIT_CATEGORIES` that still carry NO entity identifier,
+ * with the reason.
+ *
+ * WHY AN ALLOWLIST RATHER THAN A COUNT. Child 1 measured that only 9 of the 82
+ * passed an `entityType` or `entityId`, which is the "missing entity identifiers
+ * that prevent bounded correlation" case the owner named as in-scope. Child 2
+ * added them at 67 of the 83 sites. The remaining 16 are not oversights: each one
+ * affects a COLLECTION rather than a record, or has no record id in scope, and
+ * inventing an id — or reaching for the acting administrator's member id, which
+ * is the tempting wrong answer — would put a false reference into the club's
+ * audit trail. Recording them by name is what stops the next site being added
+ * quietly.
+ *
+ * ONE OF THE 16 IS A CARRY-FORWARD RATHER THAN A JUDGEMENT:
+ * `charge-saved-method`'s failure writer sits in an outer `catch` where the
+ * booking and its id are block-scoped inside the `try`. Giving it an identifier
+ * means hoisting a mutable binding across the boundary of a payment path, which
+ * is more than a classification change should do; it is recorded here and in the
+ * pull request rather than improvised.
+ */
+export const AUDIT_WRITERS_WITHOUT_ENTITY_IDENTIFIER: Readonly<
+  Record<string, string>
+> = {
+  "src/app/api/admin/age-tier-settings/route.ts::PUT#0":
+    "Upserts every AgeTierSetting row and deletes the removed tiers in one transaction; no single affected row, and the upserts discard their ids.",
+  "src/app/api/admin/booking-policies/cancellation/route.ts::PUT#0":
+    "deleteMany + createMany replace of a whole CancellationPolicy partition; the created rows' ids never reach the site.",
+  "src/app/api/admin/communications/send/route.ts::POST#0":
+    "A bulk send targets a recipient FILTER, not a record. `details` already carries the filter and the counts.",
+  "src/app/api/admin/fee-configuration/route.ts::POST#0":
+    "One writer serving eight actions whose target is a different model each time (MembershipAnnualFee, JoiningFee, FamilyGroup, Member), chosen by a branch above the call.",
+  "src/app/api/admin/subscription-billing/route.ts::POST#0":
+    "Upserts the singleton MembershipSubscriptionBillingSettings row; a club-wide settings write, not a record in the money domain.",
+  "src/app/api/admin/subscription-billing/route.ts::POST#4":
+    "A whole-season reconciliation sweep across many exception rows.",
+  "src/app/api/admin/xero/account-mappings/route.ts::PUT#0":
+    "Upserts an arbitrary subset of XeroAccountMapping keyed by mapping key, not by row id.",
+  "src/app/api/admin/xero/item-code-mappings/route.ts::PUT#0":
+    "The same shape across XeroItemCodeMapping hut-fee and joining-fee rows.",
+  "src/app/api/admin/xero/link-maintenance/route.ts::POST#0":
+    "Backfills and deactivates many XeroObjectLink rows in one run.",
+  "src/app/api/admin/xero/member-grouping/route.ts::POST#0":
+    "The singleton XeroGroupingSettings row is id `default`, a constant rather than a record identifier.",
+  "src/app/api/admin/xero/member-grouping/route.ts::POST#5":
+    "A bulk resync spanning many members; the dry-run id stays in `details`.",
+  "src/app/api/admin/xero/member-grouping/route.ts::POST#6":
+    "The same bulk resync, on the accepted path.",
+  "src/app/api/admin/xero/operations/reset-stale-running/route.ts::POST#0":
+    "An updateMany over every stale RUNNING operation.",
+  "src/app/api/admin/xero/operations/retry-all/route.ts::POST#0":
+    "Enqueues retries for up to 200 operations.",
+  "src/app/api/payments/charge-saved-method/route.ts::POST#1":
+    "The failure writer lives in the outer catch, where the booking, its id and the parsed body are all block-scoped inside the try. Capturing one would mean adding a mutable binding across the boundary, which is more than this change should do to a payment path — carried forward rather than improvised.",
+  "src/lib/membership-subscription-billing.ts::confirmSubscriptionBillingPreview#0":
+    "The confirm creates N charges for a season; `targetId` is the season year and no single record id exists.",
 };
 
 /**

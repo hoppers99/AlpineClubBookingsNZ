@@ -729,6 +729,9 @@ export async function createAdminAdjustmentRequest(
       await createAuditLog(
         {
           action: "member.credit.adjustment.request",
+          category: "payment",
+          entityType: "AdminCreditAdjustmentRequest",
+          entityId: createdRequest.id,
           memberId: adminId,
           targetId: memberId,
           details: `Requested admin credit adjustment ${createdRequest.id}: ${formatAdjustmentAmount(amountCents)}. Reason: ${description}`,
@@ -851,6 +854,9 @@ export async function reviewAdminAdjustmentRequest(
       await createAuditLog(
         {
           action: "member.credit.adjustment.reject",
+          category: "payment",
+          entityType: "AdminCreditAdjustmentRequest",
+          entityId: request.id,
           memberId: adminId,
           targetId: memberId,
           details: `Rejected admin credit adjustment ${request.id}: ${formatAdjustmentAmount(request.amountCents)}. Requested by ${request.requestedById}. Reason: ${request.description}`,
@@ -881,6 +887,9 @@ export async function reviewAdminAdjustmentRequest(
     await createAuditLog(
       {
         action: "member.credit.adjustment.approve",
+        category: "payment",
+        entityType: "AdminCreditAdjustmentRequest",
+        entityId: request.id,
         memberId: adminId,
         targetId: memberId,
         details: `Approved admin credit adjustment ${request.id} as credit ${credit.id}: ${formatAdjustmentAmount(request.amountCents)}. Requested by ${request.requestedById}. Reason: ${request.description}`,

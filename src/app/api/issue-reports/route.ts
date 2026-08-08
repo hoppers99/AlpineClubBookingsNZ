@@ -191,8 +191,18 @@ export async function POST(request: NextRequest) {
 
     logAudit({
       action: "issue.reported",
+      // `privacy`, deliberately NOT `admin` (#2581 decision 5). `/admin/
+      // issue-reports` is a `support` surface and the sibling admin
+      // issue-report events are already `privacy`, so matching the SURFACE
+      // would mean moving this to `admin` — which reads with `support:view`
+      // alone and would widen a member's own report. The mismatch stays and is
+      // disclosed: a support-only operator correlates issue reports in
+      // Admin > Audit Log rather than in Diagnostics.
+      category: "privacy",
       memberId: member.id,
       targetId: issueReport.id,
+      entityType: "IssueReport",
+      entityId: issueReport.id,
       details: JSON.stringify({
         pageUrl,
         pageTitle,

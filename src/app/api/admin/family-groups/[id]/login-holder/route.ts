@@ -298,8 +298,20 @@ export async function POST(
         await createAuditLog(
           {
             action: "family-group.login-holder-swapped",
+            // `family`, not `security`, and the choice is load-bearing twice
+            // over (#2581). Readership: `family` evidence needs `support:view`
+            // plus `membership:view`, where `security` would put a login
+            // transfer behind `support:view` alone. Retention: the action
+            // normalises to a string containing "login", so classifying it
+            // `security` or `admin` would make `classifyAuditRetention` return
+            // `sensitive_access` — a 24-month expiry on the only record of who
+            // held a shared family login. `family` keeps it `critical` at seven
+            // years, which is what a membership dispute needs.
+            category: "family",
             memberId: session.user.id,
             targetId: touchedMember.id,
+            entityType: "Member",
+            entityId: touchedMember.id,
             details: JSON.stringify({
               ...auditDetailsBase,
               memberId: touchedMember.id,

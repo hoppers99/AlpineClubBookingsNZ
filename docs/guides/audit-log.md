@@ -70,17 +70,17 @@ There are eleven, and each one belongs to exactly one AI Diagnostics area:
 
 | Category | What records there | Who can correlate it in AI Diagnostics |
 | --- | --- | --- |
-| `admin` | The **catch-all for anything an administrator did**, in every domain — member merges, lifecycle decisions, imports, seasonal assignments, and settings changes for payments, bookings, chores, lockers, rooms, beds and the lodge. The largest category by a long way | Support only |
-| `security` | Credentials, password and magic-link policy, PIN login, sign-in problems, AI Diagnostics use itself | Support only |
+| `admin` | The **catch-all for anything an administrator did** that has no narrower home — member merges, lifecycle decisions, imports, seasonal assignments, booking message wording, internet-banking settings, and settings for chores, lockers, rooms, beds, lodges and lodge instructions. Still the largest category by a long way | Support only |
+| `security` | Credentials, password and magic-link policy, PIN login, sign-in problems, AI Diagnostics use itself, **sending a member a password reset or a setup invite**, and **bulk role changes** | Support only |
 | `system` | Setup, backups, platform-level events | Support only |
-| `booking` | Member-facing and automatic booking events. **Not** booking *settings* — those are `admin` | Support **+ Bookings** |
-| `payment` | Charges, refunds, credits, settlements | Support **+ Finance** |
-| `xero` | Xero sync, mappings, reconciliation | Support **+ Finance** |
-| `lodge` | Rosters, guest arrival and departure, bed-allocation lifecycle, displays, and **induction** (even though Induction sits under Membership) | Support **+ Lodge** |
-| `account` | A member's own record: profile edits, notification preferences, membership cancellation, photos, membership applications | Support **+ Membership** |
-| `family` | Family groups, partner links, login-holder changes, dependents | Support **+ Membership** |
-| `communication` | Bulk email, member notices, delivery suppressions, credential-email reissues | Support **+ Membership** |
-| `privacy` | Deletion requests, member exports, member-guest lookups, **issue reports** (even though Issue Reports sits under Support) | Support **+ Membership** |
+| `booking` | Member-facing and automatic booking events, **and the booking rules themselves** — booking policies, booking periods, age tiers, seasons and promotional codes | Support **+ Bookings** |
+| `payment` | Charges, refunds, credits, settlements, **subscription billing, member credit adjustments and fee configuration** | Support **+ Finance** |
+| `xero` | Xero sync, mappings, reconciliation, **settings, replays and retries** | Support **+ Finance** |
+| `lodge` | Rosters, guest arrival and departure, bed-allocation lifecycle, **display layouts, templates and devices, lodge kiosk accounts**, and **induction** (even though Induction sits under Membership) | Support **+ Lodge** |
+| `account` | A member's own record: profile edits, notification preferences, membership cancellation, photos, **membership applications and nominations**, and **bulk activate/deactivate** | Support **+ Membership** |
+| `family` | Family groups, partner links, login-holder changes, **dependant links and unlinks** | Support **+ Membership** |
+| `communication` | Bulk email, member notices, **delivery-suppression clearances**, credential-email reissues | Support **+ Membership** |
+| `privacy` | **Deletion requests and the decisions on them**, member exports, member-guest lookups, **issue reports** (even though Issue Reports sits under Support) | Support **+ Membership** |
 
 **Two of those rows changed in this release, and both change who can see what.**
 
@@ -98,6 +98,25 @@ Neither change affects this screen. **Admin → Audit Log shows every entry to
 anyone with Support access**, exactly as before — the categories above only
 govern the AI Diagnostics tools, which are deliberately narrower.
 
+**A larger set of entries moved in this release**, because 82 kinds of entry that
+had never carried a category were given one. The bold items in the table above are
+the new arrivals. Three things are worth an operator's attention:
+
+- **Booking rules are now under Bookings.** A booking-policy, booking-period,
+  age-tier, season or promotional-code change correlates through the Bookings
+  tool. Nobody loses anything: these entries had no category at all before, so no
+  AI Diagnostics tool could find them, whoever you were.
+- **Money settings are now under Finance.** Subscription-billing changes, member
+  credit adjustments and fee configuration correlate through the Finance tool, on
+  the same "nobody loses anything" footing.
+- **Only three kinds of entry joined the Support-only categories**: sending a
+  member a password reset, sending a setup invite, and a bulk role change. All
+  three are about a *credential or a permission*, which is why they are `security`
+  rather than `communication` or `account`. AI Diagnostics never returns the
+  stored details of an entry — only the action, category, severity, outcome, what
+  kind of record it concerned and when — so the recipient's email address in those
+  entries does not travel with them.
+
 **One thing to expect on the member side.** Members see a slice of their own
 activity on their profile page, and that slice is also chosen by category —
 Account, Bookings, Payments, Family, Security, Communication and Privacy, never
@@ -109,6 +128,18 @@ appear. Each entry concerns the member reading it, and a member's view shows the
 summary only — never the stored metadata, request ID, IP address or drill-down
 links. If a member asks why sign-in entries have started appearing, that is why.
 
+**A second thing on the member side, from this release.** Twenty-six of the kinds
+of entry that gained a category are now inside the member-visible slice when they
+were not before. Almost all of them are club-wide rules — booking policies,
+seasons, promotional codes, subscription-billing settings — recorded against the
+administrator who made the change, so the only member timeline they reach is that
+administrator's own. Two reach an ordinary member, and both are about that member:
+an **issue report** appears for the member who filed it, and a change to a
+member's **billing family** appears for the member it was made for. Neither shows
+the stored details, the request ID, the IP, or who the administrator was by name.
+Nothing that a member should not see about themselves became visible, and nothing
+stopped being visible.
+
 Two mismatches are worth remembering when you search, because they look like
 mistakes and are not. **Induction** entries are `lodge`, not membership. **Issue
 report** entries are `privacy`, not admin. Both follow the *information* in the
@@ -118,12 +149,15 @@ more people, not fewer.
 
 ### Some entries have no category at all
 
-`Category` is optional, and **82 of the platform's 419 places that record an
-audit entry do not set one** — measured on every build, not estimated. Among
-them: subscription billing, member credit adjustments, fee configuration,
-booking-policy, season and promotional-code edits, Xero settings and retries,
-lodge display configuration, family-group and dependent changes, membership
-applications, bulk communications, and deletion-request decisions.
+`Category` is optional in the database, and **82 of the platform's places that
+record an audit entry used not to set one**. As of this release **none do**: all
+424 now record a category, measured on every build rather than estimated, and a
+new one that forgot would fail the build by name.
+
+**Entries recorded before this release still have no category**, and there is no
+way to tell from the entry itself. Filling those in is a separate change, done
+once and reviewed on its own, and it has not happened yet — so everything below
+still applies to your older history.
 
 **On this screen every one of those entries is still listed**, and the Category
 filter tries to place them: when you pick a category it also matches
@@ -142,17 +176,23 @@ says nothing matched, that is not evidence it did not happen — it means no
 *categorised* entry matched. The assistant is told to say so and to point you
 here. **Always confirm on this screen before concluding an event did not occur.**
 
-This is being fixed at the source, over three changes: the categories and the
-automated count are in place now, giving each of those 82 places a category is
-next, and filling in the historical entries is last. Until the second one lands,
-treat an empty AI Diagnostics result as "look in Admin → Audit Log", never as
-"it did not happen".
+This has been fixed at the source, over three changes: the categories and the
+automated count landed first, giving each of those 82 places a category landed in
+this release, and filling in the historical entries is last and still to come.
+Until it does, treat an empty AI Diagnostics result as "look in Admin → Audit
+Log", never as "it did not happen".
 
-One side effect operators should know about: an entry recorded with no category
-also gets **no retention class and no expiry**, so those entries are currently
-kept indefinitely rather than aging out. Giving them a category will also start
-them aging out on the normal schedule — that is a real change to how long some
-history is kept, and the release that makes it will say so.
+**The retention change this release makes, stated plainly because it is real.**
+An entry recorded with no category also got no retention class and no expiry, so
+those entries were kept indefinitely rather than aging out. Now that all 82 kinds
+record a category, **new** entries of those kinds are classified `critical` and
+carry a **seven-year** expiry from the day they are recorded — the longest class
+the platform has, and the same one a booking or payment entry already gets. Two
+things follow: nothing is deleted sooner than seven years from now because of
+this, and **entries already in the database are untouched** — they keep their
+missing retention class until the historical change decides what to do about
+them. If your club needs some of these kept beyond seven years, say so before
+that horizon; it is a setting, not a law.
 
 ### Booking-policy entries
 

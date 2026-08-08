@@ -586,8 +586,16 @@ export async function POST(
 
       logAudit({
         action: "member.deletion_rejected",
+        // `privacy`, matching the four categorised deletion writers already in
+        // this route (#2581). Read with `support:view` plus `membership:view`.
+        // `entityId` deliberately repeats `targetId`, so the subject the Admin
+        // timeline resolves is byte-identical to today — the entity fields add
+        // a type to the correlation projection, they do not move the row.
+        category: "privacy",
         memberId: session.user.id,
         targetId: member.id,
+        entityType: "Member",
+        entityId: member.id,
         details: body.note ? `Note: ${body.note}` : "No note",
         ipAddress: ip,
         ...(Object.keys(rejectAuditMetadata).length > 0
@@ -1032,8 +1040,16 @@ export async function POST(
 
     logAudit({
       action: "member.deletion_approved",
+      // `privacy`, as above. This is the single most consequential row the
+      // platform writes about a person — it is the only surviving record of an
+      // anonymisation — and its retention moves from "no expiry at all" to
+      // `critical`, a seven-year expiry, in this change. That is the longest
+      // class available and the deliberate answer for a deletion decision.
+      category: "privacy",
       memberId: session.user.id,
       targetId: member.id,
+      entityType: "Member",
+      entityId: member.id,
       details: `Account anonymised. Cancelled ${cancelledBookingIds.length} future bookings.${body.note ? ` Note: ${body.note}` : ""}`,
       ipAddress: ip,
       metadata: {
