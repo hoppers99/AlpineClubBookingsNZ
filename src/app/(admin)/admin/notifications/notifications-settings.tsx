@@ -18,6 +18,7 @@ import {
   type AdminNotificationPreferenceKey,
   type AdminNotificationPreferences,
 } from "@/lib/admin-notification-preferences";
+import { unverifiedWriteMessage } from "@/lib/unverified-write-copy";
 
 interface AdminNotificationUser {
   id: string;
@@ -35,6 +36,11 @@ interface AdminNotificationUser {
 }
 
 const DEFAULT_SAVE_ERROR = "Failed to update notification preferences";
+/** #2668 — the browser never read an answer, so it claims no outcome. */
+const UNVERIFIED_SAVE_ERROR = unverifiedWriteMessage(
+  "these notification preferences were saved",
+  "Reload the page to see the current settings before saving again.",
+);
 
 /** Per-admin save outcome, so one card's failure never reverts another's. */
 type SaveSuccess = {
@@ -42,7 +48,18 @@ type SaveSuccess = {
   ok: true;
   preferences: AdminNotificationPreferences;
 };
-type SaveFailure = { memberId: string; ok: false; error: string };
+type SaveFailure = {
+  memberId: string;
+  ok: false;
+  error: string;
+  /**
+   * #2668 — the request's outcome was never read, so this is NOT a refusal.
+   * A refusal is something the server said; this is the absence of an answer,
+   * and the preferences may well be stored. Cards marked this way are neither
+   * rolled back nor re-baselined, and the toast does not call them "Not saved".
+   */
+  unverified?: true;
+};
 type SaveOutcome = SaveSuccess | SaveFailure;
 
 export function AdminNotificationSettings({
@@ -149,7 +166,15 @@ export function AdminNotificationSettings({
               preferences: data.preferences as AdminNotificationPreferences,
             };
           } catch {
-            return { memberId, ok: false, error: DEFAULT_SAVE_ERROR };
+            // #2668: `fetch` rejects both when the PUT never arrived and when it
+            // arrived, ran, and lost its answer. Never read is not the same as
+            // never happened, and this card is treated accordingly below.
+            return {
+              memberId,
+              ok: false,
+              unverified: true,
+              error: UNVERIFIED_SAVE_ERROR,
+            };
           }
         })
       );
@@ -157,15 +182,30 @@ export function AdminNotificationSettings({
       const failures = results.filter(
         (result): result is SaveFailure => !result.ok
       );
+      const outcomeFor = (memberId: string) =>
+        results.find((result) => result.memberId === memberId);
 
-      // Saved cards take the server's effective values; failed cards go back to
-      // what the server last confirmed. Cards outside this save are left alone,
-      // and the checkboxes are disabled while the save is in flight, so no
-      // in-flight edit can be silently overwritten by this re-baseline.
+      /*
+        Saved cards take the server's effective values, and a card the server
+        REFUSED goes back to what the server last confirmed.
+
+        #2668: a card whose outcome was never read is left exactly as the
+        operator left it, baseline included. Rolling it back would put a value
+        on screen the server may no longer hold, and re-baselining it would
+        record a guess as the club's record — the screen-versus-row drift this
+        panel's per-card outcomes exist to prevent, reintroduced on the one path
+        with the least information. Leaving it dirty keeps Save live, and the
+        PUT is a plain preference set, so pressing it again is harmless.
+
+        Cards outside this save are left alone, and the checkboxes are disabled
+        while the save is in flight, so no in-flight edit can be silently
+        overwritten by this re-baseline.
+      */
       const updatedAdmins = admins.map((admin) => {
-        const result = results.find((r) => r.memberId === admin.id);
+        const result = outcomeFor(admin.id);
         if (!result) return admin;
         if (result.ok) return { ...admin, preferences: result.preferences };
+        if (result.unverified) return admin;
         const saved = savedAdmins.find((s) => s.id === admin.id);
         return saved
           ? { ...admin, preferences: { ...saved.preferences } }
@@ -173,7 +213,13 @@ export function AdminNotificationSettings({
       });
       setAdmins(updatedAdmins);
       setSavedAdmins(
-        updatedAdmins.map((a) => ({ ...a, preferences: { ...a.preferences } }))
+        updatedAdmins.map((a) => {
+          const result = outcomeFor(a.id);
+          if (result && !result.ok && result.unverified) {
+            return savedAdmins.find((saved) => saved.id === a.id) ?? a;
+          }
+          return { ...a, preferences: { ...a.preferences } };
+        })
       );
 
       if (failures.length === 0) {
@@ -181,9 +227,10 @@ export function AdminNotificationSettings({
         return;
       }
 
-      // Stay in edit mode. The refused card has rolled back to its last saved
-      // values, so the operator redoes that card's ticks and saves again; the
-      // toast below names exactly which card needs it.
+      // Stay in edit mode. A refused card has rolled back to its last saved
+      // values, so the operator redoes that card's ticks and saves again; an
+      // unverified one still holds their ticks. The toast below names exactly
+      // which card needs attention either way.
       const detail = failures
         .map((failure) => {
           const name =
@@ -192,10 +239,18 @@ export function AdminNotificationSettings({
           return `${name}: ${failure.error}`;
         })
         .join("; ");
+      // #2668: "Not saved" is a claim about the stored row, so it is only made
+      // when EVERY failure in this batch is one the server itself reported. One
+      // unverified card in the set and the summary reports the saves it can
+      // vouch for and leaves the rest to their own sentences.
+      const allRefused = failures.every((failure) => !failure.unverified);
+      const savedCount = changes.length - failures.length;
       toast.error(
         failures.length === changes.length
           ? detail
-          : `Saved ${changes.length - failures.length} of ${changes.length} admins. Not saved — ${detail}`
+          : allRefused
+            ? `Saved ${savedCount} of ${changes.length} admins. Not saved — ${detail}`
+            : `Saved ${savedCount} of ${changes.length} admins. ${detail}`
       );
     } finally {
       setSaving(false);

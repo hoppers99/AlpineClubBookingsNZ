@@ -19,6 +19,7 @@ import { BookingNoEmailsNotice } from "@/components/booking-no-emails-notice";
 import { ViewOnlyActionButton } from "@/components/admin/view-only-action";
 import { useAdminAreaEditAccess } from "@/hooks/use-admin-area-edit-access";
 import { formatCents } from "@/lib/utils";
+import { unverifiedWriteMessage } from "@/lib/unverified-write-copy";
 
 // Mirrors MANUAL_PAYMENT_NOTE_MAX in src/lib/manual-subscription-payment.ts,
 // which cannot be imported here: that module is `server-only`.
@@ -208,7 +209,20 @@ export function BookingManualPaymentControls({
       setDialog(null);
       router.refresh();
     } catch {
-      toast.error("Could not reach the server. Nothing was recorded.");
+      /*
+        #2668. This used to say "Nothing was recorded." It is the worst place in
+        the app to guess that: `fetch` also rejects when the POST reached the
+        server and the connection dropped before the answer came back, in which
+        case the cash payment IS on the booking — and an admin told nothing
+        happened records it a second time. Say what is actually known and send
+        them at the booking, which is where the truth is.
+      */
+      toast.error(
+        unverifiedWriteMessage(
+          "this payment was recorded",
+          "Reload the booking and check before recording it again.",
+        ),
+      );
     } finally {
       setSubmitting(false);
     }

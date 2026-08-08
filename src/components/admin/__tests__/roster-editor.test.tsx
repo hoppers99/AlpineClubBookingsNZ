@@ -4,6 +4,18 @@ import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-li
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { RosterEditor, type RosterData } from "@/components/admin/roster-editor"
 import { expectRecoveryAlertToHoldFocus } from "@/lib/__tests__/helpers/focus"
+import { unverifiedWriteMessage } from "@/lib/unverified-write-copy"
+
+/**
+ * #2668 — what the editor says when it never read an answer, as opposed to what
+ * it says when the SERVER told it the save was refused. Built from the shared
+ * helper rather than pasted, so a change to the wording has one place to happen
+ * and this suite follows it.
+ */
+const UNVERIFIED = unverifiedWriteMessage(
+  "the roster was saved",
+  "Your draft is still here. Reload the roster to see what it holds before saving again.",
+)
 
 const BASE: RosterData = {
   date: "2026-08-10",
@@ -189,6 +201,16 @@ describe("RosterEditor staged whole-roster editing", () => {
     expect(first.getAttribute("aria-describedby")).toBeTruthy()
   })
 
+  /**
+   * #2668. The three attempts here are deliberately three DIFFERENT kinds of
+   * failure, and the editor no longer collapses them into one sentence:
+   *
+   * - 403: the server refused, and said so. It may claim "Roster not saved".
+   * - 500 `ROSTER_SERVICE_UNAVAILABLE`: also the server's own answer, so the
+   *   same confident copy stands.
+   * - a rejected `fetch`: NO answer was read. The request may have arrived and
+   *   committed, so the browser claims nothing about the stored roster.
+   */
   it("uses exact permission and network save copy while preserving the draft", async () => {
     const permission = "Roster not saved. Your account no longer has Lodge edit access. Ask a full admin to update it."
     const network = "Roster not saved because the service could not be reached. Your draft is still here; try Save again."
@@ -214,18 +236,22 @@ describe("RosterEditor staged whole-roster editing", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Save roster" }))
     await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(3))
-    // Both waits are needed. `save()` clears the message synchronously before it
-    // fetches (use-section-edit-state.ts), so the third attempt empties the alert
-    // and the fetch-count wait above resolves while it is still empty — the copy
-    // this attempt re-raises happens to be the same sentence attempt two left, so
-    // there is nothing else to distinguish it. Query the text under `waitFor` and
-    // it retries across that window.
-    await waitFor(() => expect(screen.getByText(network)).toBeTruthy())
-    await expectRecoveryAlertToHoldFocus(screen.getByText(network))
+    // #2668: the third attempt is the rejected `fetch`, and it says something
+    // different from the two the server answered — the browser read no answer,
+    // so it makes no claim about the roster row.
+    await waitFor(() => expect(screen.getByText(UNVERIFIED)).toBeTruthy())
+    await expectRecoveryAlertToHoldFocus(screen.getByText(UNVERIFIED))
+    expect(screen.queryByText(network)).toBeNull()
     expect(first.value).toBe("younger")
   })
 
-  it("treats a malformed successful response as a service failure and retains the draft", async () => {
+  /**
+   * #2668. The server answered `200 OK`. Whatever it did, it has already done —
+   * and it called the save a success. Telling the operator "Roster not saved"
+   * here contradicted the only party that knew, which is why this case no
+   * longer shares its copy with the genuinely-unreachable service.
+   */
+  it("treats a malformed successful response as an unread outcome and retains the draft", async () => {
     const network = "Roster not saved because the service could not be reached. Your draft is still here; try Save again."
     const fetchMock = vi.fn<typeof fetch>(async () => new Response("{}", { status: 200 }))
     vi.stubGlobal("fetch", fetchMock)
@@ -234,14 +260,15 @@ describe("RosterEditor staged whole-roster editing", () => {
     const first = screen.getByRole("combobox", { name: "Person for Kitchen, assignment 1" }) as HTMLSelectElement
     fireEvent.change(first, { target: { value: "younger" } })
     fireEvent.click(screen.getByRole("button", { name: "Save roster" }))
-    await waitFor(() => expect(screen.getByText(network)).toBeTruthy())
-    await expectRecoveryAlertToHoldFocus(screen.getByText(network))
+    await waitFor(() => expect(screen.getByText(UNVERIFIED)).toBeTruthy())
+    await expectRecoveryAlertToHoldFocus(screen.getByText(UNVERIFIED))
+    expect(screen.queryByText(network)).toBeNull()
     expect(first.value).toBe("younger")
     expect(onRosterUpdate).not.toHaveBeenCalled()
   })
 
   it("clears failed-draft feedback on Cancel and saved feedback on the next Edit", async () => {
-    const network = "Roster not saved because the service could not be reached. Your draft is still here; try Save again."
+    const network = UNVERIFIED
     const authoritative = {
       ...BASE,
       revision: "revision-2",

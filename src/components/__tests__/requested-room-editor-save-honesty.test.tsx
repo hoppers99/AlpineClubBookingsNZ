@@ -270,7 +270,16 @@ describe("RequestedRoomEditor save honesty (#2654)", () => {
     expect(screen.queryByText("Saved")).not.toBeInTheDocument();
   });
 
-  it("says nothing was saved when the request never reaches the server", async () => {
+  /**
+   * #2668. This used to assert the editor said "Your room request was not
+   * saved." It cannot know that. `fetch` rejects both when the request never
+   * arrived AND when the server processed it and the connection dropped before
+   * the answer came back — and in the second case the DELETE has committed, so
+   * telling the member nothing happened sends them back to redo a change the
+   * club's records already hold. The wording is pinned here so the confident
+   * phrasing cannot come back.
+   */
+  it("claims no outcome it could not read when the response never arrives", async () => {
     fetchMock
       .mockResolvedValueOnce(roomsCall())
       .mockRejectedValueOnce(new Error("network down"));
@@ -289,11 +298,15 @@ describe("RequestedRoomEditor save honesty (#2654)", () => {
 
     await waitFor(() => {
       expect(screen.getByRole("status")).toHaveTextContent(
-        "Could not reach the server. Your room request was not saved.",
+        "The service response could not be read, so we could not verify whether your room request was saved. Reload the page to see what the club's records hold before trying again.",
       );
     });
+    // The specific claim the client is not entitled to make.
+    expect(screen.getByRole("status")).not.toHaveTextContent("was not saved");
     expect(screen.queryByText("Saved")).not.toBeInTheDocument();
-    // Nothing reached the server, so the staged clear is still on offer.
+    // The staged clear stays put: a re-press re-sends the same idempotent call,
+    // and reverting the picker would put a value on screen the database may no
+    // longer hold — the drift #2658 removed from this component.
     expect(await screen.findByLabelText("Preferred room select")).toHaveValue(
       "none",
     );

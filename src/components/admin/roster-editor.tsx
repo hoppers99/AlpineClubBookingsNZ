@@ -7,6 +7,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import { ViewOnlyActionButton } from "@/components/admin/view-only-action"
 import { useSectionEditState } from "@/hooks/use-section-edit-state"
+import { unverifiedWriteMessage } from "@/lib/unverified-write-copy"
 
 export interface RosterGuest {
   id: string
@@ -72,8 +73,30 @@ type RosterDraft = { assignments: DraftAssignment[] }
 
 const PERMISSION_COPY =
   "Roster not saved. Your account no longer has Lodge edit access. Ask a full admin to update it."
+/**
+ * The SERVER's own words for "the roster service could not be reached", which
+ * it returns as `ROSTER_SERVICE_UNAVAILABLE` (see
+ * `src/app/api/admin/roster/[date]/route.ts`). It is entitled to say the roster
+ * was not saved, because it is the side that knows.
+ */
 const NETWORK_COPY =
   "Roster not saved because the service could not be reached. Your draft is still here; try Save again."
+/**
+ * #2668 — what the BROWSER may say when it never read an answer.
+ *
+ * `NETWORK_COPY` used to cover this too, so a save whose request landed and
+ * whose response was lost — and a save the server answered `200 OK` with a body
+ * this client could not parse — both told the operator "Roster not saved". The
+ * second of those is flatly wrong: the server had already committed and said
+ * so. The draft is retained in every branch either way, so a re-save is still
+ * one press; it is now a press made knowing the first one may have taken.
+ * Retrying is safe: the PUT carries `baseRevision`, so a save that did land is
+ * refused as stale rather than applied twice.
+ */
+const UNVERIFIED_COPY = unverifiedWriteMessage(
+  "the roster was saved",
+  "Your draft is still here. Reload the roster to see what it holds before saving again.",
+)
 
 function draftFromRoster(roster: RosterData): RosterDraft {
   return {
@@ -226,14 +249,17 @@ export function RosterEditor({
           }),
         })
       } catch {
-        throw new Error(NETWORK_COPY)
+        // #2668: the request may or may not have arrived. Only the server knows.
+        throw new Error(UNVERIFIED_COPY)
       }
 
       let body: unknown
       try {
         body = await response.json()
       } catch {
-        throw new Error(NETWORK_COPY)
+        // #2668: the server ANSWERED — it just answered with something this
+        // client could not read. Whatever it did, it has already done.
+        throw new Error(UNVERIFIED_COPY)
       }
       const errorBody = isRecord(body) ? body : {}
       const details = isRecord(errorBody.details) ? errorBody.details : {}
@@ -252,7 +278,10 @@ export function RosterEditor({
         }
         throw new Error(message)
       }
-      if (!isRosterData(body)) throw new Error(NETWORK_COPY)
+      // #2668: a 2xx whose body is not the roster. The server called the save a
+      // success; this client simply cannot show the result. Telling the
+      // operator it was "not saved" contradicts the only party that knows.
+      if (!isRosterData(body)) throw new Error(UNVERIFIED_COPY)
       const authoritative = body
       onRosterUpdate(authoritative)
       setAcknowledgeCompletedReset(false)

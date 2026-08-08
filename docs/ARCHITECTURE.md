@@ -688,6 +688,50 @@ the components gained the names to make that possible — including a per-device
 name on the display pairing box and a named group per guest card, both of which
 also keep the selector unambiguous once a second row exists.
 
+### What a browser may say about a write it never saw an answer to (#2668)
+
+`fetch` rejects for two situations a client cannot tell apart: the request never
+reached the server, and the request reached the server, was processed, and the
+connection dropped before the response came back. A message that states the
+first one as fact — "your room request was not saved", "nothing was recorded" —
+is therefore a guess about the database made by the one party that cannot see
+it, and on a flaky mobile connection it is wrong often enough to send someone
+back to redo a write that already happened. For a non-idempotent write (cash
+recorded by hand, a refund task closed) that invites a duplicate. The same
+applies to a response that ARRIVES and cannot be read: the server has already
+done whatever it was going to do.
+
+**The line is between the attempt and the record.** Reporting that the attempt
+failed is honest and stays as it is — `arrival-time-editor.tsx`'s "Failed to
+save arrival time" claims nothing about the stored row. Reporting that the
+record did not move is the claim a client is not entitled to make. A refusal the
+SERVER reported (403, 409, a validation 400) is unaffected: there the server is
+making the claim, and it knows.
+
+The wording is built by `unverifiedWriteMessage()`
+(`src/lib/unverified-write-copy.ts`), which produces the sentence the waitlist
+offer card shipped first (#2623 T8): *"The service response could not be read,
+so we could not verify whether …"* plus a second sentence routing the person at
+the server's own value rather than at the screen in front of them. Six surfaces
+were converted with it in #2668 — the requested-room and roster editors, the
+manual cash-payment control, the manual-refund queue, the reviewed
+bed-allocation removal dialog, and the built-in-board restore — and the waitlist
+card now reads its copy from the same place.
+
+Two behaviours follow from the copy rather than merely accompanying it. An
+unread outcome must **not revert a control** to a value the server may no longer
+hold (that is screen-versus-row drift reintroduced on the path with the least
+information), and it must not be **re-baselined** as though it were confirmed:
+the admin notification panel keeps such a card exactly as the operator left it
+and leaves Save live, while a card the server actually refused still rolls back.
+
+Enforced on the current tree by
+`src/lib/__tests__/unverified-write-copy-contract.test.ts`, which walks `src/`,
+finds every `catch` and every falsy-guard on a `fetch` result in a client
+component, and fails if any of them asserts the stored record did not move. One
+allowlist entry exists, with its reason: the display setup wizard's claim is
+about a GET that precedes its own PUT, so no write was attempted.
+
 ## Module Boundaries
 
 This application is intentionally still a single Next.js monolith. The

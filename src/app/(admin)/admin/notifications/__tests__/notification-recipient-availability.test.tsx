@@ -243,6 +243,73 @@ describe("Recipients grid availability (#2548)", () => {
       expect(checkbox(container, "admin-a", "adminNewBooking")).not.toBeChecked();
       expect(checkbox(container, "admin-b", "adminNewBooking")).not.toBeChecked();
     });
+
+    /**
+     * #2668. A refusal is something the SERVER said. A rejected `fetch` is the
+     * absence of an answer — the PUT may have arrived and stored the
+     * preferences — so the two cannot be treated as the same outcome.
+     *
+     * Rolling an unread card back to its last confirmed values would put on
+     * screen a state the server may no longer hold, and re-baselining it would
+     * record that guess as the club's own record. Both are the screen-versus-row
+     * drift this panel's per-card outcomes exist to prevent.
+     */
+    it("neither reverts nor calls 'Not saved' a card whose answer was never read", async () => {
+      const allOnExceptNewBooking = {
+        ...resolveEffectiveAdminNotificationPreferences(fullAdmin, null),
+        adminNewBooking: false,
+      };
+      const fetchMock = vi.fn(async (_url: string, init?: RequestInit) => {
+        const body = JSON.parse(String(init?.body)) as { memberId: string };
+        if (body.memberId === "admin-b") throw new TypeError("Failed to fetch");
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            memberId: body.memberId,
+            preferences: allOnExceptNewBooking,
+          }),
+        } as unknown as Response;
+      });
+      vi.stubGlobal("fetch", fetchMock);
+
+      const { container } = render(
+        <AdminNotificationSettings
+          initialAdmins={[
+            fullAdminCard("admin-a", "Ada Admin"),
+            fullAdminCard("admin-b", "Bob Admin"),
+          ]}
+        />,
+      );
+
+      fireEvent.click(screen.getByRole("button", { name: /^Edit$/i }));
+      fireEvent.click(checkbox(container, "admin-a", "adminNewBooking"));
+      fireEvent.click(checkbox(container, "admin-b", "adminNewBooking"));
+      fireEvent.click(screen.getByRole("button", { name: /Save Changes/i }));
+
+      await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
+
+      // Ada's card took the server's answer.
+      await waitFor(() =>
+        expect(
+          checkbox(container, "admin-a", "adminNewBooking"),
+        ).not.toBeChecked(),
+      );
+      // Bob's untick STAYS. Compare with the refusal case above, where the same
+      // card is put back to its last confirmed value — there the server said no.
+      expect(
+        checkbox(container, "admin-b", "adminNewBooking"),
+      ).not.toBeChecked();
+
+      const message = String(vi.mocked(toast.error).mock.calls[0]?.[0]);
+      expect(message).toContain("Bob Admin");
+      expect(message).toContain("Saved 1 of 2 admins");
+      expect(message).toContain(
+        "we could not verify whether these notification preferences were saved",
+      );
+      // The claim about the stored row that this batch is not entitled to make.
+      expect(message).not.toContain("Not saved");
+    });
   });
 
   it("leaves a Full Admin card fully editable", () => {

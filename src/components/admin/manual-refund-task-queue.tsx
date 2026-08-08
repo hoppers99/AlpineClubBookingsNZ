@@ -20,6 +20,7 @@ import { ViewOnlyActionButton } from "@/components/admin/view-only-action";
 import { useAdminAreaEditAccess } from "@/hooks/use-admin-area-edit-access";
 import { formatCents } from "@/lib/utils";
 import { formatNZDate } from "@/lib/nzst-date";
+import { unverifiedWriteMessage } from "@/lib/unverified-write-copy";
 
 const NOTE_MAX_LENGTH = 500;
 
@@ -108,7 +109,21 @@ export function ManualRefundTaskQueue() {
       setNote("");
       await load();
     } catch {
-      toast.error("Could not reach the server. Nothing was changed.");
+      /*
+        #2668. This used to say "Nothing was changed." A rejected `fetch` also
+        covers the case where the POST landed, the refund allocation and the
+        REFUNDED booking event were written, and only the answer was lost — so
+        "nothing was changed" can be a statement about the ledger that is
+        exactly backwards. The queue is deliberately NOT reloaded from here: a
+        failed read blanks the card (see `load`), which would take the evidence
+        off screen at the moment it is needed.
+      */
+      toast.error(
+        unverifiedWriteMessage(
+          "this refund task was closed",
+          "Reload the page and check the queue before trying again.",
+        ),
+      );
     } finally {
       setSubmitting(false);
     }

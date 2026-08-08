@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import { fireEvent, render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("next/navigation", () => ({
@@ -18,10 +18,12 @@ vi.mock("@/hooks/use-admin-area-edit-access", async (importOriginal) => ({
   useAdminAreaEditAccess: () => true,
 }));
 
+import { toast } from "sonner";
 import {
   BookingManualPaymentControls,
   type BookingManualPaymentState,
 } from "@/components/admin/booking-manual-payment-controls";
+import { unverifiedWriteMessage } from "@/lib/unverified-write-copy";
 
 function settledState(
   overrides: Partial<BookingManualPaymentState> = {}
@@ -300,5 +302,62 @@ describe("BookingManualPaymentControls — the outstanding-extra question (#2397
     await Promise.resolve();
 
     expect(requestBody(fetchMock)).not.toHaveProperty("additionalCoverage");
+  });
+});
+
+/**
+ * #2668 — the browser is not entitled to say the ledger did not move.
+ *
+ * This control used to answer a rejected `fetch` with "Could not reach the
+ * server. Nothing was recorded." `fetch` rejects both when the POST never
+ * arrived and when it arrived, wrote the manual payment and the booking event,
+ * and lost only its answer. Of everywhere in the app that made this guess, this
+ * is the one where being wrong costs the most: an admin told nothing happened
+ * records the same cash a second time.
+ */
+describe("BookingManualPaymentControls — an outcome the browser never read (#2668)", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.mocked(toast.error).mockClear();
+  });
+
+  it("reports what it could not verify instead of claiming nothing was recorded", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => {
+        throw new TypeError("Failed to fetch");
+      })
+    );
+    openMarkPaidDialog(
+      {
+        amountOwingCents: 12000,
+        storedCreditElectionCents: null,
+        outstandingAdditionalCents: 0,
+        canMarkPaid: true,
+        markPaidBlockedReason: null,
+        manuallyMarkedPaidAt: null,
+        manuallyMarkedPaidByName: null,
+        manualPaymentNote: null,
+        canReverse: false,
+        reverseBlockedReason: null,
+      }
+    );
+
+    fireEvent.click(
+      screen.getByRole("button", { name: "Record and email member" })
+    );
+    await waitFor(() => expect(toast.error).toHaveBeenCalled());
+
+    const message = vi.mocked(toast.error).mock.calls.at(-1)?.[0];
+    expect(message).toBe(
+      unverifiedWriteMessage(
+        "this payment was recorded",
+        "Reload the booking and check before recording it again."
+      )
+    );
+    // The specific claim about the ledger the client cannot make, and the
+    // instruction that keeps a duplicate cash entry from being the next step.
+    expect(message).not.toContain("Nothing was recorded");
+    expect(message).toContain("check before recording it again");
   });
 });
