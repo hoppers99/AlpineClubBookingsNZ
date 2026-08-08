@@ -64,16 +64,39 @@ type WaitlistStrandAuditReader = Prisma.TransactionClient | PrismaClient;
  * The waitlist PROVENANCE test, and the reason this repair is safe to offer.
  *
  * `PAYMENT_PENDING` + `finalPriceCents === 0` + no `Payment` row is NOT "the
- * stranded shape". It is a shape at least nine other producers reach, none of
- * them a waitlist confirmation — the `20260511113000` backfill migration (no
- * price predicate and no "has a payment row" predicate, so legacy free
- * comp/promo bookings confirmed before 2026-05-11 are sitting on it in
- * production right now), a date change that reprices to zero with no credit
- * applied (`booking-date-modification-service.ts`, whose sibling
- * `booking-modify-settlement.ts` settles the same case to `PAID`), an admin
- * shift releasing a free `PENDING` hold, an admin review approval or a guest
- * add/remove releasing a free `AWAITING_REVIEW` booking, and the group
- * settlement reaper reverting a never-billed `ORGANISER_PAYS` child.
+ * stranded shape". It is a shape SIX other producers reach, none of them a
+ * waitlist confirmation:
+ *
+ *  1. the `20260511113000` backfill migration — `CONFIRMED -> PAYMENT_PENDING`
+ *     wherever no `SUCCEEDED` payment exists, with no price predicate and no
+ *     "has a payment row at all" predicate, and its companion promote migration
+ *     only touches rows that DO have one, so nothing cleans the residue up;
+ *  2. `modifyBookingDates` (`booking-date-modification-service.ts`) — its $0
+ *     auto-settle is nested inside `if (appliedBeforeClamp > 0)`, so a date
+ *     change that reprices to zero with NO credit applied never reaches the
+ *     payment upsert. Its sibling `booking-modify-settlement.ts` computes
+ *     `effectivePriceCents` OUTSIDE the credit gate and settles the same case
+ *     to `PAID`, which is what makes this one a defect rather than a policy;
+ *  3. `adminShiftBookingDates` (same file) — no $0 settle at all, and it
+ *     releases a free `PENDING` non-member hold with every price field left as
+ *     booked;
+ *  4. `admin/bookings/[id]/review/route.ts` — an `AWAITING_REVIEW` approval
+ *     with no price check, and `booking-create.ts` deliberately skips the $0
+ *     auto-`PAID` settle under `review.blockForReview`, so the booking it
+ *     releases provably has no payment row;
+ *  5. `cron-group-settlement-reaper.ts` — a price-blind `CONFIRMED ->
+ *     PAYMENT_PENDING` revert of an `ORGANISER_PAYS` group child, which is
+ *     never billed and never gets a payment row of its own;
+ *  6. `bookings/[id]/guests/route.ts` — a guest ADD releasing a free `PENDING`
+ *     non-member hold once the hold window elapses; the file mints no payment.
+ *
+ * Two near-misses are deliberately NOT on that list, because both were checked
+ * and refuted: guest REMOVAL settles the same case to `PAID`
+ * (`booking-guest-removal-service.ts` reaches the un-nested settle, since no
+ * caller can supply the `ADMIN` actor role its skip arm needs), and the guest-add
+ * route's own `AWAITING_REVIEW -> PAYMENT_PENDING` arm is unreachable — an
+ * earlier status gate in the same handler admits only
+ * `PENDING`/`PAYMENT_PENDING`/`CONFIRMED`/`PAID`.
  *
  * On any of those, returning the booking to `WAITLISTED` would un-confirm a
  * booking that was never on a waitlist, prune its bed allocations and email its

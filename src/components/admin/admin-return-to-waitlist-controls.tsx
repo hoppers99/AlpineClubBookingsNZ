@@ -22,7 +22,7 @@ interface AdminReturnToWaitlistControlsProps {
  * The card only renders this when the audit log PROVES a waitlist confirmation
  * stranded this booking — an unresolved `waitlist.confirm_offer_release_failed`
  * report — on top of the free / `PAYMENT_PENDING` / no-payment-record shape.
- * That shape alone is reached by at least nine other producers, so the banner
+ * That shape alone is reached by six other producers, so the banner
  * below would otherwise assert a diagnosis about an ordinary booking that
  * nothing had verified. The route re-derives all four facts under its locks, so
  * this gate is about what to OFFER, never about what is allowed.

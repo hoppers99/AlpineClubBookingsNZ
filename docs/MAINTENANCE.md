@@ -226,11 +226,15 @@ booking from Admin -> Bookings and pick the outcome:
   **The button appears only where the audit log proves a waitlist confirmation
   stranded the booking** — an unresolved `waitlist.confirm_offer_release_failed`
   report — on top of `PAYMENT_PENDING`, free, and no payment record. Those last
-  three are deliberately not enough: several ordinary paths leave a free booking
-  in Payment pending with no payment row (a date change that reprices to zero, an
-  admin review approval, a guest change releasing a booking from review, an old
-  free booking touched by the May 2026 status backfill), and returning one of
-  those to the waitlist would un-confirm a member who was never in a queue. The
+  three are deliberately not enough: **six** ordinary paths leave a free booking
+  in Payment pending with no payment row — a date change that reprices to
+  nothing, an admin date shift or a guest being added that releases a free
+  booking's non-member hold, an admin approving a booking that was waiting on
+  review, the group settlement reaper reverting a never-billed group member, and
+  a free booking created between April and May 2026 that the May status backfill
+  moved. None of those members was ever in a queue, so returning one of them to
+  the waitlist would un-confirm a booking that was simply waiting to be paid.
+  The
   route re-checks every condition under its locks, so a booking that someone else
   confirms or cancels in the same moment is refused in plain words rather than
   clobbered. If it reports that something else is holding the booking, nothing

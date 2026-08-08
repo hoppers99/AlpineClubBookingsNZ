@@ -289,10 +289,11 @@ describe("POST /api/admin/bookings/[id]/return-to-waitlist (#2649)", () => {
 
   it("refuses a free PAYMENT_PENDING booking that was never on a waitlist", async () => {
     // #2649 review BLOCKER. `PAYMENT_PENDING` + $0 + no payment row is NOT the
-    // stranded shape: the 20260511113000 backfill migration left legacy free
-    // bookings on it in production, and a date change that reprices to zero
-    // with no credit applied, an admin review approval, a guest add/remove and
-    // the group settlement reaper all reach it too. On any of those, this button
+    // stranded shape: SIX other producers reach it — the 20260511113000 backfill
+    // migration, a date change that reprices to zero with no credit applied, an
+    // admin date shift or a guest ADD releasing a free PENDING non-member hold,
+    // an admin review approval, and the group settlement reaper reverting a
+    // never-billed ORGANISER_PAYS child. On any of those, this button
     // would un-confirm a booking that was never on a waitlist, prune its
     // allocations and email its member.
     mocks.tx.auditLog.findFirst.mockResolvedValue(null);

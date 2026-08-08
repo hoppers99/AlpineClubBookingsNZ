@@ -24,10 +24,11 @@
 
   The button appears only where the audit log shows this exact failure on that
   booking and it has not already been repaired. Free, awaiting payment and no
-  payment record is deliberately not enough on its own: several ordinary things
+  payment record is deliberately not enough on its own: six ordinary things
   leave a booking looking like that — a date change that reprices to nothing, an
-  admin approving a booking that was waiting on review, a guest being added or
-  removed — and none of those members were ever in a queue to be returned to. It
+  admin approving a booking that was waiting on review, a guest being added to a
+  booking that was holding a place for a non-member, and others — and none of
+  those members were ever in a queue to be returned to. It
   is not a general "un-confirm" tool, and it will not act on a booking that has a
   balance to pay. If someone else confirms or cancels the booking at the same
   moment, the action says so plainly and changes nothing. If the booking is busy

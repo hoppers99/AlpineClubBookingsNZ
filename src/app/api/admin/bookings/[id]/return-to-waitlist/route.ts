@@ -63,10 +63,10 @@ const RETURN_TO_WAITLIST_TIMEOUT_MS = 30_000;
  *  1. an unresolved `waitlist.confirm_offer_release_failed` report on this
  *     booking (`findUnresolvedWaitlistStrandReport`), which is the ONLY
  *     evidence that a waitlist confirmation is what stranded it. The three
- *     conditions below are a shape at least nine other producers reach — see
- *     that function's note, which names them — so without this the button would
- *     un-confirm ordinary free bookings, including legacy rows the
- *     `20260511113000` backfill migration left in this shape in production;
+ *     conditions below are a shape SIX other producers reach — see that
+ *     function's note, which names all six and refutes two near-misses — so
+ *     without this the button would un-confirm ordinary free bookings,
+ *     including any the `20260511113000` backfill migration left in this shape;
  *  2. `status === PAYMENT_PENDING`;
  *  3. `finalPriceCents === 0` — a priced booking has a payment path and is none
  *     of this tool's business;

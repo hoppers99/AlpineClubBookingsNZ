@@ -1280,9 +1280,9 @@ export default async function BookingDetailPage({
     #2649: the stranded zero-dollar waitlist confirm.
 
     The three cheap conditions — free, `PAYMENT_PENDING`, no payment record — are
-    NOT the stranded shape on their own. At least nine other producers reach
-    them, none of them a waitlist confirmation, and the `20260511113000` backfill
-    migration left legacy free bookings sitting on them in production. So the
+    NOT the stranded shape on their own. Six other producers reach them, none of
+    them a waitlist confirmation, including the `20260511113000` backfill
+    migration, which has no price predicate at all. So the
     button is offered only where the route will accept it: on an unresolved
     `waitlist.confirm_offer_release_failed` report, the same provenance test the
     route re-runs under its locks (`findUnresolvedWaitlistStrandReport`). Without

@@ -2193,15 +2193,45 @@ different episode's admin and date the moment the booking was re-offered and
 confirmed back — with an exclusive hold, re-blocking the whole lodge.
 
 **The guard is provenance, not shape.** `PAYMENT_PENDING` + `finalPriceCents: 0`
-+ no `Payment` row is NOT "the stranded shape": at least nine other producers
-reach it, none of them a waitlist confirmation — the `20260511113000` backfill
-migration (no price predicate and no "has a payment row" predicate, so legacy
-free bookings are sitting on it in production, and the companion promote
-migration only touches rows that DO have a `SUCCEEDED` payment), a date change
-that reprices to zero with no credit applied, an admin date shift releasing a
-free `PENDING` hold, an admin review approval, a guest add or removal releasing a
-free `AWAITING_REVIEW` booking, and the group settlement reaper reverting a
-never-billed `ORGANISER_PAYS` child. So the route requires an UNRESOLVED
++ no `Payment` row is NOT "the stranded shape": **six** other producers reach it,
+none of them a waitlist confirmation.
+
+1. The `20260511113000` backfill migration — no price predicate and no "has a
+   payment row at all" predicate, and the companion promote migration only
+   touches rows that DO have a `SUCCEEDED` payment, so nothing cleans the
+   residue up. Its production yield is bounded, though, and the bound is worth
+   stating rather than overclaiming: `20260408070000_fix_zero_dollar_confirmed_bookings`
+   had already, a month earlier, minted a $0 `SUCCEEDED` payment for every
+   `CONFIRMED` free booking that lacked one and promoted it to `PAID`. So the
+   rows this backfill can have left in the shape are those created in the window
+   between the two migrations — a real class, not a hypothetical one, but not
+   "every legacy free booking" either.
+2. `modifyBookingDates` — its $0 auto-settle is nested inside
+   `if (appliedBeforeClamp > 0)`, so a date change that reprices to zero with NO
+   credit applied never reaches the payment upsert. Its sibling
+   `booking-modify-settlement.ts` computes `effectivePriceCents` OUTSIDE the
+   credit gate and settles the same case to `PAID`, which is what makes this a
+   defect rather than a policy.
+3. `adminShiftBookingDates` — no $0 settle at all, releasing a free `PENDING`
+   non-member hold with every price field left as booked.
+4. An admin review approval (`admin/bookings/[id]/review/route.ts`) — no price
+   check, and `booking-create.ts` deliberately skips the $0 auto-`PAID` settle
+   under `review.blockForReview`, so the booking it releases provably has no
+   payment row.
+5. The group settlement reaper — a price-blind `CONFIRMED -> PAYMENT_PENDING`
+   revert of a never-billed `ORGANISER_PAYS` child.
+6. A guest ADD releasing a free `PENDING` non-member hold
+   (`bookings/[id]/guests/route.ts`), which mints no payment.
+
+Two near-misses were checked and **refuted**, and are named so the next reader
+does not re-add them: guest REMOVAL settles the same case to `PAID` (it reaches
+the un-nested settle, because no caller can supply the `ADMIN` actor role its
+skip arm needs), and the guest-add route's own
+`AWAITING_REVIEW -> PAYMENT_PENDING` arm is unreachable, because an earlier
+status gate in the same handler admits only
+`PENDING`/`PAYMENT_PENDING`/`CONFIRMED`/`PAID`.
+
+So the route requires an UNRESOLVED
 `waitlist.confirm_offer_release_failed` report on the booking
 (`findUnresolvedWaitlistStrandReport` in `waitlist-return-contract.ts`), read
 under the locks and above the claim, and refuses in plain words when there is
