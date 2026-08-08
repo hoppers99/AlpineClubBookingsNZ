@@ -23,8 +23,11 @@
   awaiting payment, and with no payment record. It is not a general "un-confirm"
   tool, and it will not act on a booking that has a balance to pay. If someone
   else confirms or cancels the booking at the same moment, the action says so
-  plainly and changes nothing. It needs the same booking-edit access that Force
-  Confirm needs, and the waitlist feature must be switched on.
+  plainly and changes nothing. If the booking is busy — something else is part
+  way through changing it — it says that too and asks you to try again in a
+  moment, rather than reporting a failure that sounds like the repair itself is
+  broken. It needs the same booking-edit access that Force Confirm needs, and
+  the waitlist feature must be switched on.
 
   Cancelling the booking and asking the member to rejoin is still available and
   is still the right choice when the nights are no longer wanted. The operator

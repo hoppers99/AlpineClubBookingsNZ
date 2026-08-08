@@ -961,7 +961,7 @@ default** (`describeReason` left at `true`), in three shapes:
   the booking capacity/exclusive hold controls, the family-group login-holder
   and request-review sub-sections, and the non-member contact form). Nothing
   local proves an ancestor renders a banner above them, so the reason stays on
-  the control. (37 controls across 22 files.) Nine of those 36 sit inside a
+  the control. (37 controls across 22 files.) Nine of those 37 sit inside a
   setup wizard and are **scope** exceptions rather than indirection ones: each is
   gated on a permission NARROWER than the banner its shell renders, so an admin
   who has the wizard's area but not that narrower one meets no banner at all.

@@ -1727,7 +1727,30 @@ un-confirm of a priced booking. A lost claim `return`s above the allocation
 reconcile and above the audit row, and the post-commit block runs on the success
 shape only, so the member email and `processWaitlistForDates` cannot fire on a
 claim that wrote nothing. It writes `waitlist.returned_to_waitlist` carrying the
-id of the `waitlist.confirm_offer_release_failed` row it resolves. It does no
+id of the `waitlist.confirm_offer_release_failed` row it resolves, plus a
+snapshot of the four offer columns the claim nulls (`waitlistOfferedAt`,
+`waitlistOfferExpiresAt`, `waitlistOfferedLodgeId`, `waitlistOfferedPriceCents`):
+the strand row records none of them, so without that snapshot a successful
+repair destroys the only live copy of what the member was actually offered.
+
+The post-commit sweep is keyed on `Booking.lodgeId`, **not**
+`waitlistOfferedLodgeId`, and this is where it deliberately differs from
+`expireStaleOffers`. That path's entry is still `WAITLIST_OFFERED` and holds a
+bed at the OFFERED lodge, so the offered lodge is what its revert frees. Here the
+booking is `PAYMENT_PENDING` — a capacity-holding status at `Booking.lodgeId` —
+so the lodge key held above, the allocations the reconcile prunes, and the beds
+the release frees are all that one lodge. Sweeping the offered lodge instead
+would process a queue this repair freed nothing at while leaving the beds it did
+free unoffered. (`confirmWaitlistOffer` routes every offer carrying
+`waitlistOfferedLodgeId` down the cross-lodge path, which replaces the entry
+rather than parking it in `PAYMENT_PENDING`, so the field is null on every
+reachable stranded booking; the rule is written from where the beds are, not
+from that reachability.)
+
+Its own contention maps to 503 with a retry sentence, not to an opaque 500 — the
+same P2028/P2034 set and the same reasoning as the compensation it finishes.
+A repair that exists because a lock wait was exhausted must not report its own
+exhausted lock wait as "the repair is broken". It does no
 adult-member-hosting-coverage work, matching the two releases above it exactly;
 whether any of the three should is tracked as its own decision rather than
 answered differently for one of them.

@@ -11,9 +11,11 @@ import { WAITLIST_CONFIRM_OFFER_RELEASE_FAILED_AUDIT_ACTION } from "@/lib/waitli
 import {
   RETURN_TO_WAITLIST_AUDIT_ACTION,
   RETURN_TO_WAITLIST_CLAIM_LOST_MESSAGE,
+  RETURN_TO_WAITLIST_CONTENDED_MESSAGE,
   RETURN_TO_WAITLIST_PAYMENT_PRESENT_MESSAGE,
   RETURN_TO_WAITLIST_PRICED_MESSAGE,
   RETURN_TO_WAITLIST_STATUS_MESSAGE,
+  isReturnToWaitlistTransactionContention,
 } from "@/lib/waitlist-return-contract";
 import { processWaitlistForDates } from "@/lib/waitlist";
 
@@ -99,7 +101,17 @@ export async function POST(
           finalPriceCents: true,
           checkIn: true,
           checkOut: true,
+          // The consumed offer. Read not because the repair needs it — the
+          // claim below nulls all four unconditionally — but because the claim
+          // DESTROYS the only live copy: #2648's
+          // `waitlist.confirm_offer_release_failed` row records the lodge,
+          // dates, price and error codes and none of these. Without a snapshot
+          // in the repair's own audit row there is afterwards no way to answer
+          // "what was this member actually offered, and when did it expire?"
+          waitlistOfferedAt: true,
+          waitlistOfferExpiresAt: true,
           waitlistOfferedLodgeId: true,
+          waitlistOfferedPriceCents: true,
           member: { select: { email: true, firstName: true } },
           payment: { select: { id: true } },
         },
@@ -207,6 +219,16 @@ export async function POST(
             previousStatus: BookingStatus.PAYMENT_PENDING,
             nextStatus: BookingStatus.WAITLISTED,
             waitlistPosition,
+            // The offer this repair consumed, as it stood immediately before
+            // the claim nulled it. Nothing else retains it.
+            clearedOffer: {
+              waitlistOfferedAt:
+                booking.waitlistOfferedAt?.toISOString() ?? null,
+              waitlistOfferExpiresAt:
+                booking.waitlistOfferExpiresAt?.toISOString() ?? null,
+              waitlistOfferedLodgeId: booking.waitlistOfferedLodgeId,
+              waitlistOfferedPriceCents: booking.waitlistOfferedPriceCents,
+            },
             // Null when the strand was recorded before #2648 shipped the row,
             // or when the audit entry has since been retention-pruned.
             resolvesAuditLogId: strandedRow?.id ?? null,
@@ -223,11 +245,6 @@ export async function POST(
         success: true as const,
         memberId: key.memberId,
         lodgeId: key.lodgeId,
-        // The freed place belongs to the lodge whose bed was being offered.
-        // Read from the pre-revert snapshot: the claim above nulled the field
-        // in the database, not on this object (same reasoning as
-        // `expireStaleOffers`).
-        freedLodgeId: booking.waitlistOfferedLodgeId ?? key.lodgeId,
         email: booking.member.email,
         firstName: booking.member.firstName,
         checkIn: booking.checkIn,
@@ -267,10 +284,24 @@ export async function POST(
     // them the way every other release does (`expireStaleOffers`, every cancel
     // path): after commit, never inside the locks, and never allowed to turn a
     // completed repair into a failure.
+    //
+    // The lodge is the BOOKING's own, never `waitlistOfferedLodgeId`. This is
+    // where `expireStaleOffers` deliberately differs and must: there the entry
+    // is still WAITLIST_OFFERED, holding a bed at the OFFERED lodge, so that is
+    // what its revert frees. Here the booking is PAYMENT_PENDING — a
+    // capacity-holding status at `Booking.lodgeId` — so its allocations, the
+    // lodge key held above, and the reconcile that just pruned them are all
+    // keyed on `lodgeId`. Sweeping any other lodge would process a queue whose
+    // beds this repair did not free and leave the ones it did free unoffered.
+    // (`confirmWaitlistOffer` sends every offer carrying
+    // `waitlistOfferedLodgeId` down the cross-lodge path, which replaces the
+    // entry rather than parking it in PAYMENT_PENDING, so the field is null on
+    // every reachable stranded booking today. The rule is written from where
+    // the beds are, not from that reachability.)
     processWaitlistForDates({
       checkIn: result.checkIn,
       checkOut: result.checkOut,
-      lodgeId: result.freedLodgeId,
+      lodgeId: result.lodgeId,
     }).catch((err) =>
       logger.error(
         { err, bookingId },
@@ -288,6 +319,17 @@ export async function POST(
       { err, bookingId },
       "Failed to return a stranded zero-dollar waitlist confirm to the waitlist",
     );
+    // Contention is not a fault. Nothing was committed either way — the claim,
+    // the reconcile and the audit row share one transaction — so the only
+    // question is what the operator should do next, and for an exhausted lock
+    // wait that is "again shortly", not "escalate". 503 for the same reason
+    // `waitlist-confirm/route.ts` uses it on the release this repair finishes.
+    if (isReturnToWaitlistTransactionContention(err)) {
+      return NextResponse.json(
+        { error: RETURN_TO_WAITLIST_CONTENDED_MESSAGE },
+        { status: 503 },
+      );
+    }
     return NextResponse.json(
       { error: "Failed to return the booking to the waitlist" },
       { status: 500 },

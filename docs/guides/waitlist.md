@@ -88,7 +88,9 @@ audited, and the entry names the failure it resolves.
 
 The button appears only on that exact shape (free, awaiting payment, no payment
 record). If the booking has a balance, or someone else has already confirmed or
-cancelled it, the action says so and changes nothing. The alternative — cancel
+cancelled it, the action says so and changes nothing. If it says something else
+is holding the booking right now, nothing was changed either — wait a moment and
+press it again. The alternative — cancel
 the booking and ask the member to rejoin — is still available and is the right
 call when the nights are no longer wanted. `docs/MAINTENANCE.md` has the full
 runbook.

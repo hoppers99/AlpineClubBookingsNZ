@@ -87,7 +87,7 @@ interface ViewOnlyActionButtonProps extends ButtonProps {
    *    non-member contact form), where
    *    nothing local proves an ancestor renders a banner. (`docs/ARCHITECTURE.md`
    *    counts 37 controls here, but that bucket is the arithmetic remainder,
-   *    not a pure shape: 3 of the 34 are the FIRST shape — dialog contents
+   *    not a pure shape: 3 of the 37 are the FIRST shape — dialog contents
    *    inside `page-content-panel.tsx` and `site-banners-panel.tsx`, which are
    *    themselves banner-bearing panels; and 9 are the #2324 SCOPE exceptions
    *    below, sitting inside setup wizards that do render a banner); and

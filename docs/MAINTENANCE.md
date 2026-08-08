@@ -214,13 +214,16 @@ booking from Admin -> Bookings and pick the outcome:
   in which case the send is withheld and listed on the booking for you to relay.
   It records a `waitlist.returned_to_waitlist` audit row whose metadata names
   the `waitlist.confirm_offer_release_failed` row it resolves, so the trail
-  closes at both ends.
+  closes at both ends. That metadata also keeps a `clearedOffer` snapshot of the
+  four offer fields the repair nulls — nothing else retains them, so this is the
+  only surviving record of what the member was offered and when it expired.
 
   The button appears only on the stranded shape — `PAYMENT_PENDING`, free, and
   with no payment record — and the route re-checks all three under its locks, so
   a booking that someone else confirms or cancels in the same moment is refused
-  in plain words rather than clobbered. There is no longer any reason to open a
-  database session for this.
+  in plain words rather than clobbered. If it reports that something else is
+  holding the booking, nothing was changed — wait a moment and press it again.
+  There is no longer any reason to open a database session for this.
 - **Cancel and have them rejoin** — reachable entirely from the admin UI, and the
   right choice when nobody can safely touch the database. Cancel the booking from
   Admin -> Bookings and ask the member to rejoin the waitlist for those nights.

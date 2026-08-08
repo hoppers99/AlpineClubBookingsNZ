@@ -68,6 +68,7 @@ import { WAITLIST_CONFIRM_OFFER_RELEASE_FAILED_AUDIT_ACTION } from "@/lib/waitli
 import {
   RETURN_TO_WAITLIST_AUDIT_ACTION,
   RETURN_TO_WAITLIST_CLAIM_LOST_MESSAGE,
+  RETURN_TO_WAITLIST_CONTENDED_MESSAGE,
   RETURN_TO_WAITLIST_PAYMENT_PRESENT_MESSAGE,
   RETURN_TO_WAITLIST_PRICED_MESSAGE,
   RETURN_TO_WAITLIST_STATUS_MESSAGE,
@@ -75,6 +76,8 @@ import {
 
 const CHECK_IN = new Date("2026-07-01T00:00:00.000Z");
 const CHECK_OUT = new Date("2026-07-03T00:00:00.000Z");
+const OFFERED_AT = new Date("2026-06-18T09:00:00.000Z");
+const OFFER_EXPIRES_AT = new Date("2026-06-20T09:00:00.000Z");
 
 function returnRequest() {
   return new NextRequest(
@@ -110,7 +113,10 @@ function strandedRow(overrides: Record<string, unknown> = {}) {
     finalPriceCents: 0,
     checkIn: CHECK_IN,
     checkOut: CHECK_OUT,
+    waitlistOfferedAt: OFFERED_AT,
+    waitlistOfferExpiresAt: OFFER_EXPIRES_AT,
     waitlistOfferedLodgeId: null,
+    waitlistOfferedPriceCents: 0,
     member: { email: "member@example.com", firstName: "Alex" },
     payment: null,
     ...overrides,
@@ -244,6 +250,34 @@ describe("POST /api/admin/bookings/[id]/return-to-waitlist (#2649)", () => {
     });
   });
 
+  it("keeps the only surviving copy of the offer it destroys", async () => {
+    // The claim nulls all four offer columns and #2648's strand row records
+    // none of them, so if this row does not carry them nothing does — and
+    // "what was this member offered, and when did it expire?" becomes
+    // unanswerable the moment the repair succeeds.
+    bookingReads(
+      strandedRow({
+        waitlistOfferedLodgeId: "lodge-2",
+        waitlistOfferedPriceCents: 4500,
+      }),
+    );
+
+    await POST(returnRequest(), routeParams());
+
+    expect(mocks.tx.auditLog.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        metadata: expect.objectContaining({
+          clearedOffer: {
+            waitlistOfferedAt: OFFERED_AT.toISOString(),
+            waitlistOfferExpiresAt: OFFER_EXPIRES_AT.toISOString(),
+            waitlistOfferedLodgeId: "lodge-2",
+            waitlistOfferedPriceCents: 4500,
+          },
+        }),
+      }),
+    });
+  });
+
   it("still repairs a booking whose strand row has been pruned", async () => {
     mocks.tx.auditLog.findFirst.mockResolvedValue(null);
 
@@ -279,14 +313,22 @@ describe("POST /api/admin/bookings/[id]/return-to-waitlist (#2649)", () => {
     });
   });
 
-  it("re-offers at the lodge whose bed was offered on a cross-lodge offer", async () => {
+  it("re-offers at the lodge whose beds it actually freed, not the offered one", async () => {
+    // A PAYMENT_PENDING booking holds its capacity at `Booking.lodgeId`: that
+    // is the lock this route takes, the allocations the reconcile prunes, and
+    // therefore the queue the freed beds belong to. `expireStaleOffers` reads
+    // `waitlistOfferedLodgeId` because ITS entry is still WAITLIST_OFFERED and
+    // holds a bed at the offered lodge — copying that rule here would sweep a
+    // lodge this repair freed nothing at and leave the freed beds unoffered.
     bookingReads(strandedRow({ waitlistOfferedLodgeId: "lodge-2" }));
 
     await POST(returnRequest(), routeParams());
 
-    expect(mocks.processWaitlistForDates).toHaveBeenCalledWith(
-      expect.objectContaining({ lodgeId: "lodge-2" }),
-    );
+    expect(mocks.processWaitlistForDates).toHaveBeenCalledWith({
+      checkIn: CHECK_IN,
+      checkOut: CHECK_OUT,
+      lodgeId: "lodge-1",
+    });
     // The member's own lodge still brands their email.
     expect(mocks.sendWaitlistOfferExpiredEmail).toHaveBeenCalledWith(
       expect.anything(),
@@ -384,6 +426,25 @@ describe("POST /api/admin/bookings/[id]/return-to-waitlist (#2649)", () => {
 
     expect(response.status).toBe(403);
     expect(mocks.transaction).not.toHaveBeenCalled();
+  });
+
+  it("maps an exhausted lock wait to a retryable 503, not an opaque 500", async () => {
+    // This route exists BECAUSE lock contention broke the confirm's own
+    // compensating release (#2623 T4). Its own contention must therefore read
+    // as "something else holds this booking, try again", not as "the repair is
+    // broken" — nothing was committed either way.
+    const contended = Object.assign(new Error("transaction timeout"), {
+      code: "P2028",
+    });
+    mocks.transaction.mockRejectedValue(contended);
+
+    const response = await POST(returnRequest(), routeParams());
+    const body = await response.json();
+
+    expect(response.status).toBe(503);
+    expect(body).toEqual({ error: RETURN_TO_WAITLIST_CONTENDED_MESSAGE });
+    expect(mocks.sendWaitlistOfferExpiredEmail).not.toHaveBeenCalled();
+    expect(mocks.processWaitlistForDates).not.toHaveBeenCalled();
   });
 
   it("maps an unexpected failure to a 500 without claiming the repair happened", async () => {
