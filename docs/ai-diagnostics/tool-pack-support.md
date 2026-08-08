@@ -155,12 +155,17 @@ covers it: the column is optional.
 
 `AuditLog.category` is `String?` with no default, and the audit writer sets it only when
 the caller supplies one. The **executable census** — `npm run audit:census`, pinned by
-`src/lib/__tests__/audit-writer-census.test.ts` — counts **421 production audit write
+`src/lib/__tests__/audit-writer-census.test.ts` — counts **425 production audit write
 sites, of which 82 pass no category**: 69 through `logAudit`, 11 through
 `createAuditLog`, 2 hand-built Prisma writes, and none through
-`createStructuredAuditLog`. (The figure quoted here was 419 and was stale by two:
-the census and its reviewed manifest both report 421 on this commit, and this page
-is re-measured rather than carried forward.) Some are money-adjacent: subscription-billing settings, retry,
+`createStructuredAuditLog`. (This page has now been stale twice. It said 419 when
+the tree held 421; it then said 421 while #2621's two arrival-time writers and
+#2595's two reviewed-move writers took the tree to 425. The manifest pin and the
+census agree at 425 — `AUDIT_CENSUS_TOTALS.writeSites`, and `npm run audit:census`
+prints `row-producing sites: 425` — so it is only this prose that drifted, because
+it is the one copy of the number no test reads. Re-measured by RUNNING the census
+on this commit, never by adding branch deltas up: that is exactly how the pin
+itself caught two silent merges at 420 and again at 423.) Some are money-adjacent: subscription-billing settings, retry,
 mark/unmark family, reconcile; the subscription charge confirm; all three member-credit
 adjustment steps; fee configuration; the saved-card charge results. Others are ordinary
 but relevant: booking-policy, season and promotional-code edits; Xero settings and

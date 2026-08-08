@@ -628,21 +628,56 @@ export function useBookingWizard() {
       .catch(() => setMemberGuestConfig(MEMBER_GUEST_CONFIG_OFF));
   }, []);
 
+  // "Preferred room (optional)" must only ever offer rooms from the lodge this
+  // wizard is booking. `booking-create.ts:167` refuses any other choice outright
+  // ("Requested room belongs to a different lodge"), so offering one can only
+  // produce a create the member is not allowed to make — the create-side sibling
+  // of the defect #2664 fixed in the requested-room editor.
+  //
+  // Two things together made a cross-lodge list reachable and, worse, sticky:
+  //
+  //  - `lodgeId` starts null, and the no-`lodgeId` mode of `/api/bookings/rooms`
+  //    lists active rooms across EVERY lodge the member may book. So the first
+  //    request of every mount was the cross-lodge one, before `LodgeSelect` had
+  //    normalised a selection.
+  //  - The effect had no cancellation guard. Whichever response landed last won,
+  //    so a slow cross-lodge reply arriving after the lodge-scoped reply that
+  //    superseded it left other lodges' rooms in `roomOptions` for the rest of
+  //    the session — nothing refetches until the member switches lodge again.
+  //
+  // The fix is to stop asking the cross-lodge question from here at all. This
+  // wizard always knows which lodge it is booking: `LodgeSelect` normalises even
+  // a single-lodge club to a concrete id on the dates step (the wizard's opening
+  // step), so a null `lodgeId` means "not resolved yet", never "any lodge". And
+  // the `cancelled` guard — the same one the subscription effect below already
+  // uses — means a superseded reply can no longer overwrite the current lodge's
+  // list. A switch between two lodges also sends the member back to the dates
+  // step with `requestedRoomId` cleared (`handleLodgeChange`), so the previous
+  // lodge's options are never on screen while the replacement is in flight.
   useEffect(() => {
-    fetch(
-      lodgeId
-        ? `/api/bookings/rooms?lodgeId=${encodeURIComponent(lodgeId)}`
-        : "/api/bookings/rooms"
-    )
+    if (!lodgeId) {
+      // No lodge resolved yet, or a club with no bookable lodge at all. Offer
+      // nothing rather than everything.
+      setRoomRequestEnabled(false);
+      setRoomOptions([]);
+      return;
+    }
+    let cancelled = false;
+    fetch(`/api/bookings/rooms?lodgeId=${encodeURIComponent(lodgeId)}`)
       .then((res) => res.ok ? res.json() : null)
       .then((data) => {
+        if (cancelled) return;
         setRoomRequestEnabled(Boolean(data?.enabled));
         setRoomOptions(data?.rooms ?? []);
       })
       .catch(() => {
+        if (cancelled) return;
         setRoomRequestEnabled(false);
         setRoomOptions([]);
       });
+    return () => {
+      cancelled = true;
+    };
   }, [lodgeId]);
 
   // Fetch subscription status for the current season

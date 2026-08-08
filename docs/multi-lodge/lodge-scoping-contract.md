@@ -75,7 +75,18 @@ operational documents (which may carry door/emergency access details).
   (which `isMemberEligibleToBookLodge` also derives from), so the two are the
   same eligibility set by construction. Those two modes serve **discovery**:
   a member choosing where to book. They are not the right shape once a booking
-  exists — see the booking-scoped read below. Admin on-behalf bookings and quotes
+  exists — see the booking-scoped read below. **No production surface asks the
+  no-`lodgeId` mode any more** (#2664, create side): the booking wizard always
+  names the lodge it is booking, because `LodgeSelect` normalises even a
+  single-lodge club to a concrete id on the wizard's opening step, so a null
+  selection there means "not resolved yet" rather than "any lodge". It used to
+  fire the unscoped request on every mount while waiting for that
+  normalisation, and — with no cancellation guard on the effect — a slow
+  cross-lodge reply landing after the lodge-scoped one that superseded it left
+  other lodges' rooms in the "Preferred room (optional)" picker for the rest of
+  the session, where `createBooking`'s same-lodge check would then refuse the
+  choice. The unscoped mode is retained as an eligibility-filtered discovery
+  contract, not because a client needs it. Admin on-behalf bookings and quotes
   bypass it as the audited override path. `STAFF` rows bind a kiosk account to its lodge;
   exactly one grant binds, zero grants fall back to the default lodge, and
   **two or more grants are ambiguous and denied** (`getStaffLodgeBinding`
