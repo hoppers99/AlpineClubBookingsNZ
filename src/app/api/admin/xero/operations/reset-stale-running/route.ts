@@ -28,6 +28,7 @@ export async function POST() {
     if (result.count > 0) {
       logAudit({
         action: "XERO_OPERATIONS_RESET_STALE_RUNNING",
+        category: "xero",
         memberId: session.user.id,
         details: `Reset ${result.count} stale RUNNING Xero operation${result.count === 1 ? "" : "s"} to FAILED`,
       });

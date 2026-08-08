@@ -145,8 +145,11 @@ export async function PUT(
 
   logAudit({
     action: "season.update",
+    category: "booking",
     memberId: session.user.id,
     targetId: id,
+    entityType: "Season",
+    entityId: id,
     details: `Updated season: ${existing.name}`,
   })
 
@@ -172,8 +175,11 @@ export async function DELETE(
 
   logAudit({
     action: "season.delete",
+    category: "booking",
     memberId: session.user.id,
     targetId: id,
+    entityType: "Season",
+    entityId: id,
     details: `Deleted season: ${existing.name}`,
   })
 

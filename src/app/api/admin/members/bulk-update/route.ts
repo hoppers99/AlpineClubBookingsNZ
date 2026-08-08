@@ -593,15 +593,45 @@ export async function POST(req: NextRequest) {
       await settleHostingCoverageAfterCommit({ limit: 50 });
     }
 
-    // Audit log for each affected member
+    // Audit log for each affected member.
+    //
+    // #2581 decision 6: this is ONE call site standing for several affected
+    // domains. `member.bulk-set-role` changes what a member is permitted to do,
+    // which is `security`; `member.bulk-deactivate` and `member.bulk-reactivate`
+    // change the account itself, which is `account`. The route's zod enum bounds
+    // the family to exactly those three, so the split below is exhaustive.
+    //
+    // Written as two calls with LITERAL categories rather than one call with a
+    // conditional, deliberately. The census contract pins that no production
+    // writer picks its category with a conditional expression, because the one
+    // that used to do so picked by WHO ACTED (`actor.onBehalf ? "admin" :
+    // "account"`) — the exact thing the owner rule forbids. Splitting keeps the
+    // rule "one literal category per site" intact while still letting the
+    // affected domain decide, and both branches remain member-visible, so no
+    // row moves across the member self-timeline boundary.
     for (const member of existingMembers) {
       if (idsToUpdate.includes(member.id)) {
-        logAudit({
-          action: `member.bulk-${action}`,
-          memberId: currentUserId,
-          targetId: member.id,
-          details: `Bulk ${action}: ${member.firstName} ${member.lastName} (${member.email})${action === "set-role" ? ` -> ${accessRoles?.join(", ") ?? role}` : ""}`,
-        });
+        if (action === "set-role") {
+          logAudit({
+            action: `member.bulk-${action}`,
+            category: "security",
+            memberId: currentUserId,
+            targetId: member.id,
+            entityType: "Member",
+            entityId: member.id,
+            details: `Bulk ${action}: ${member.firstName} ${member.lastName} (${member.email}) -> ${accessRoles?.join(", ") ?? role}`,
+          });
+        } else {
+          logAudit({
+            action: `member.bulk-${action}`,
+            category: "account",
+            memberId: currentUserId,
+            targetId: member.id,
+            entityType: "Member",
+            entityId: member.id,
+            details: `Bulk ${action}: ${member.firstName} ${member.lastName} (${member.email})`,
+          });
+        }
       }
     }
 

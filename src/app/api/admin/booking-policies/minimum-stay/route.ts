@@ -111,8 +111,11 @@ export async function POST(request: NextRequest) {
 
     logAudit({
       action: "minimum-stay-policy.create",
+      category: "booking",
       memberId: session.user.id,
       targetId: policy.id,
+      entityType: "MinimumStayPolicy",
+      entityId: policy.id,
       details: JSON.stringify({ lodgeId: policy.lodgeId, after: policy }),
     })
 
