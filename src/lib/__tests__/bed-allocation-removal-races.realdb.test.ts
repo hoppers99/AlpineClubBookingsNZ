@@ -1,8 +1,9 @@
 /**
  * Real-PostgreSQL serialization proofs for reviewed bed-allocation removal
- * (#2594). Ordinary Vitest runs skip the production-path races. The explicit
- * concurrency job imports this file from concurrency-lock-races.realdb.test.ts
- * after migrating a disposable, loopback-only database.
+ * (#2594) and reviewed moves (#2595). Ordinary Vitest runs skip the production-
+ * path races. The explicit concurrency job imports this file from
+ * concurrency-lock-races.realdb.test.ts after migrating a disposable,
+ * loopback-only database.
  *
  * A third connection holds the exact production global booking lock while the
  * two real writers reach PostgreSQL. The test observes their waiters in
@@ -51,6 +52,7 @@ const SECOND_NIGHT = new Date("2099-04-02T00:00:00.000Z");
 const CHECK_OUT = new Date("2099-04-03T00:00:00.000Z");
 const FIRST_NIGHT_DATE_ONLY = "2099-04-01";
 const SECOND_NIGHT_DATE_ONLY = "2099-04-02";
+const TARGET_APPROVED_AT = new Date("2099-03-01T00:00:00.000Z");
 
 const REMOVAL_AUDIT_ACTIONS = [
   "BED_ALLOCATION_REMOVAL_APPLIED",
@@ -64,6 +66,8 @@ const REQUESTED_ROOM_AUDIT_ACTIONS = [
   "booking.requested_room.updated",
   "booking.requested_room.cleared",
 ] as const;
+const MOVE_366_DELAY_TRIGGER = "race_2595_move_statement_delay_trigger";
+const MOVE_366_DELAY_FUNCTION = "race_2595_move_statement_delay_fn";
 
 type RemovalRollbackFailureStage = "delete" | "promotion" | "audit";
 
@@ -88,6 +92,8 @@ const ROLLBACK_FAILURE_OBJECTS = {
 let prisma: typeof import("@/lib/prisma")["prisma"];
 let previewBedAllocationRemoval: typeof import("@/lib/bed-allocation-removal")["previewBedAllocationRemoval"];
 let applyBedAllocationRemoval: typeof import("@/lib/bed-allocation-removal")["applyBedAllocationRemoval"];
+let previewBedAllocationMove: typeof import("@/lib/bed-allocation-move")["previewBedAllocationMove"];
+let applyBedAllocationMove: typeof import("@/lib/bed-allocation-move")["applyBedAllocationMove"];
 let moveBedAllocationsSameDate: typeof import("@/lib/admin-bed-allocation")["moveBedAllocationsSameDate"];
 let runAutoBedAllocation: typeof import("@/lib/admin-bed-allocation")["runAutoBedAllocation"];
 let deleteBedAllocationRoom: typeof import("@/lib/admin-bed-allocation")["deleteBedAllocationRoom"];
@@ -163,7 +169,37 @@ async function waitForGlobalLockWaiters(expected: number): Promise<void> {
  * lock(1). PostgreSQL grants advisory waiters in queue order; observing each
  * waiter before starting the next makes the expected serialized outcome
  * deterministic and mutation-sensitive.
+ *
+ * ONE PROPERTY OF THIS DEVICE THAT ITS FAILURES DO NOT ADVERTISE: the second
+ * writer's ARRIVAL time is spent inside the FIRST writer's transaction budget.
+ * The holder cannot release until both are queued, and the first writer has
+ * already opened its own transaction (Prisma's default 5s) to reach lock(1). So a
+ * second writer that does any real work before its first `pg_advisory_xact_lock`
+ * rejects the first writer with `P2028` for reasons that have nothing to do with
+ * the lock protocol under test. `member-merge-shared-double-races` documents the
+ * same hazard on its lodge-key device and requires a pre-built preview for that
+ * reason. Assert with `settledValueOrThrow` rather than `toMatchObject` on the
+ * settled result, so when it does happen the error says which it was instead of
+ * a bare "rejected".
  */
+/**
+ * Surface a losing writer's real error instead of a bare "rejected".
+ *
+ * `expect(outcome).toMatchObject({ status: "fulfilled", ... })` prints only
+ * `{ status: "rejected" }` and omits `reason` from the diff, so a CI-only failure
+ * here says nothing about WHY — which cost a full cycle on #2641 before the cause
+ * could even be named. Throwing the reason puts the real error, and its Prisma
+ * code, in the test output.
+ */
+function settledValueOrThrow(outcome: PromiseSettledResult<unknown>): unknown {
+  // Deliberately not generic. These call sites destructure a two-writer tuple
+  // whose element type is a union of both writers' results, so a generic
+  // `PromiseSettledResult<T>` cannot narrow and TypeScript rejects the call.
+  // `unknown` is enough: the value only ever reaches a runtime `toMatchObject`.
+  if (outcome.status === "rejected") throw outcome.reason;
+  return outcome.value;
+}
+
 async function runWritersInGlobalQueueOrder<A, B>(
   firstWriter: () => Promise<A>,
   secondWriter: () => Promise<B>,
@@ -394,6 +430,25 @@ async function reviewedTargetRemoval(stayDate: string) {
   };
 }
 
+async function reviewedTargetMove(
+  scope: "ALLOCATION_NIGHT" | "BOOKING_GUEST" = "ALLOCATION_NIGHT",
+) {
+  const request = {
+    anchorAllocationId: TARGET_ALLOCATION_ID,
+    destinationBedId: DESTINATION_BED_ID,
+    scope,
+  };
+  const preview = await previewBedAllocationMove(request);
+  return {
+    preview,
+    apply: () =>
+      applyBedAllocationMove({
+        actorMemberId: ACTOR_ID,
+        request: { ...request, previewDigest: preview.digest },
+      }),
+  };
+}
+
 async function actionCount(actions: readonly string[]): Promise<number> {
   return prisma.auditLog.count({
     where: { memberId: ACTOR_ID, action: { in: [...actions] } },
@@ -439,6 +494,36 @@ async function dropRemovalRollbackFailureInjection(): Promise<void> {
       `DROP FUNCTION IF EXISTS ${object.function}()`,
     );
   }
+}
+
+async function dropMove366StatementDelay(): Promise<void> {
+  await prisma.$executeRawUnsafe(
+    `DROP TRIGGER IF EXISTS ${MOVE_366_DELAY_TRIGGER} ON "BedAllocation"`,
+  );
+  await prisma.$executeRawUnsafe(
+    `DROP FUNCTION IF EXISTS ${MOVE_366_DELAY_FUNCTION}()`,
+  );
+}
+
+async function installMove366StatementDelay(): Promise<void> {
+  await dropMove366StatementDelay();
+  await prisma.$executeRawUnsafe(`
+    CREATE FUNCTION ${MOVE_366_DELAY_FUNCTION}()
+    RETURNS trigger
+    LANGUAGE plpgsql
+    AS $race2595$
+    BEGIN
+      PERFORM pg_sleep(0.02);
+      RETURN NULL;
+    END;
+    $race2595$
+  `);
+  await prisma.$executeRawUnsafe(`
+    CREATE TRIGGER ${MOVE_366_DELAY_TRIGGER}
+    BEFORE UPDATE ON "BedAllocation"
+    FOR EACH STATEMENT
+    EXECUTE FUNCTION ${MOVE_366_DELAY_FUNCTION}()
+  `);
 }
 
 async function installRemovalRollbackFailureInjection(
@@ -601,7 +686,7 @@ describe("bed-allocation removal race DB safety guard (#2594)", () => {
 });
 
 (RUN ? describe : describe.skip)(
-  "reviewed bed-allocation removal races - real PostgreSQL (#2594)",
+  "reviewed bed-allocation removal and move races - real PostgreSQL (#2594, #2595)",
   { timeout: RACE_TEST_TIMEOUT_MS },
   () => {
     let previousBedAllocationModuleEnabled: boolean | null = null;
@@ -613,6 +698,9 @@ describe("bed-allocation removal race DB safety guard (#2594)", () => {
       ({ prisma } = await import("@/lib/prisma"));
       ({ previewBedAllocationRemoval, applyBedAllocationRemoval } = await import(
         "@/lib/bed-allocation-removal"
+      ));
+      ({ previewBedAllocationMove, applyBedAllocationMove } = await import(
+        "@/lib/bed-allocation-move"
       ));
       ({
         deleteBedAllocationRoom,
@@ -731,6 +819,7 @@ describe("bed-allocation removal race DB safety guard (#2594)", () => {
 
     beforeEach(async () => {
       await dropRemovalRollbackFailureInjection();
+      await dropMove366StatementDelay();
       await clearBookingFixtures();
       await recreateRequestedRoomRaceFixture();
     });
@@ -739,6 +828,11 @@ describe("bed-allocation removal race DB safety guard (#2594)", () => {
       const cleanupErrors: unknown[] = [];
       try {
         await dropRemovalRollbackFailureInjection();
+      } catch (error) {
+        cleanupErrors.push(error);
+      }
+      try {
+        await dropMove366StatementDelay();
       } catch (error) {
         cleanupErrors.push(error);
       }
@@ -771,6 +865,7 @@ describe("bed-allocation removal race DB safety guard (#2594)", () => {
       };
       if (typeof prisma !== "undefined") {
         await attempt(dropRemovalRollbackFailureInjection);
+        await attempt(dropMove366StatementDelay);
         await attempt(clearBookingFixtures);
         await attempt(() =>
           prisma.bedAllocationSettings.deleteMany({ where: { id: LODGE_ID } }),
@@ -1002,6 +1097,402 @@ describe("bed-allocation removal race DB safety guard (#2594)", () => {
       },
     );
 
+    it.each(["MOVE_FIRST", "REMOVAL_FIRST"] as const)(
+      "serializes reviewed move and reviewed removal when %s is queued first",
+      async (order) => {
+        await seedBookings();
+        await seedTargetWithPartner();
+        const move = await reviewedTargetMove();
+        const removal = await reviewedTargetRemoval(FIRST_NIGHT_DATE_ONLY);
+
+        const outcomes =
+          order === "MOVE_FIRST"
+            ? await runWritersInGlobalQueueOrder(move.apply, removal.apply)
+            : await runWritersInGlobalQueueOrder(removal.apply, move.apply);
+        const [moveOutcome, removalOutcome] =
+          order === "MOVE_FIRST"
+            ? outcomes
+            : [outcomes[1], outcomes[0]];
+
+        const [target, partner, reviewedMoveAudits, removalAudits] =
+          await Promise.all([
+            prisma.bedAllocation.findUnique({
+              where: { id: TARGET_ALLOCATION_ID },
+              select: { bedId: true, source: true, approvedAt: true },
+            }),
+            prisma.bedAllocation.findUniqueOrThrow({
+              where: { id: PARTNER_ALLOCATION_ID },
+              select: { isSecondOccupant: true },
+            }),
+            actionCount(["BED_ALLOCATION_MOVE_APPLIED"]),
+            actionCount(["BED_ALLOCATION_REMOVAL_APPLIED"]),
+          ]);
+
+        expect(partner.isSecondOccupant).toBe(false);
+        if (order === "MOVE_FIRST") {
+          expect(moveOutcome.status).toBe("fulfilled");
+          expect(rejectionStatus(removalOutcome)).toBe(409);
+          expect(target).toEqual({
+            bedId: DESTINATION_BED_ID,
+            source: "MANUAL",
+            approvedAt: null,
+          });
+          expect(reviewedMoveAudits).toBe(1);
+          expect(removalAudits).toBe(0);
+        } else {
+          expect(removalOutcome.status).toBe("fulfilled");
+          expect(rejectionStatus(moveOutcome)).toBe(409);
+          if (moveOutcome.status === "rejected") {
+            expect(moveOutcome.reason).toMatchObject({
+              refreshedPreview: expect.objectContaining({
+                conflicts: [
+                  expect.objectContaining({ code: "ALLOCATION_UNAVAILABLE" }),
+                ],
+              }),
+            });
+          }
+          expect(target).toBeNull();
+          expect(reviewedMoveAudits).toBe(0);
+          expect(removalAudits).toBe(1);
+        }
+      },
+    );
+
+    it.each(["MOVE_FIRST", "AUTO_FIRST"] as const)(
+      "serializes a reviewed person move and explicit auto-allocation when %s is queued first",
+      async (order) => {
+        await seedBookings();
+        await seedTargetWithPartner();
+        await prisma.bedAllocation.update({
+          where: { id: TARGET_ALLOCATION_ID },
+          data: {
+            approvedAt: TARGET_APPROVED_AT,
+            approvedByMemberId: ACTOR_ID,
+          },
+        });
+        const move = await reviewedTargetMove("BOOKING_GUEST");
+        expect(move.preview).toMatchObject({
+          resolvedRowCount: 1,
+          changedRowCount: 1,
+          unchangedRowCount: 0,
+          approvedToDraftCount: 1,
+          promotions: [{ stayDate: FIRST_NIGHT_DATE_ONLY }],
+          conflicts: [],
+        });
+        const range = {
+          from: FIRST_NIGHT,
+          to: CHECK_OUT,
+          fromDate: FIRST_NIGHT_DATE_ONLY,
+          toDate: "2099-04-03",
+        };
+
+        const outcomes =
+          order === "MOVE_FIRST"
+            ? await runWritersInGlobalQueueOrder(move.apply, () =>
+                runAutoBedAllocation({ range, lodgeId: LODGE_ID }),
+              )
+            : await runWritersInGlobalQueueOrder(
+                () => runAutoBedAllocation({ range, lodgeId: LODGE_ID }),
+                move.apply,
+              );
+        const [moveOutcome, autoOutcome] =
+          order === "MOVE_FIRST"
+            ? outcomes
+            : [outcomes[1], outcomes[0]];
+
+        expect(settledValueOrThrow(autoOutcome)).toMatchObject({ count: 2 });
+        const [targetRows, partner, moveAuditCount, promotionAuditCount] =
+          await Promise.all([
+            prisma.bedAllocation.findMany({
+              where: {
+                bookingId: BOOKING_ID,
+                bookingGuestId: GUEST_ID,
+              },
+              select: {
+                id: true,
+                stayDate: true,
+                bedId: true,
+                source: true,
+                approvedAt: true,
+                approvedByMemberId: true,
+              },
+              orderBy: { stayDate: "asc" },
+            }),
+            prisma.bedAllocation.findUniqueOrThrow({
+              where: { id: PARTNER_ALLOCATION_ID },
+              select: { isSecondOccupant: true },
+            }),
+            actionCount(["BED_ALLOCATION_MOVE_APPLIED"]),
+            actionCount(["BED_ALLOCATION_PARTNERS_PROMOTED"]),
+          ]);
+        expect(targetRows).toHaveLength(2);
+        expect(targetRows[1]).toMatchObject({
+          stayDate: SECOND_NIGHT,
+          source: "AUTO",
+          approvedAt: null,
+          approvedByMemberId: null,
+        });
+
+        if (order === "MOVE_FIRST") {
+          expect(settledValueOrThrow(moveOutcome)).toMatchObject({
+            noop: false,
+            movedRowCount: 1,
+            promotedRowCount: 1,
+            affectedNights: [FIRST_NIGHT_DATE_ONLY],
+          });
+          expect(targetRows[0]).toEqual({
+            id: TARGET_ALLOCATION_ID,
+            stayDate: FIRST_NIGHT,
+            bedId: DESTINATION_BED_ID,
+            source: "MANUAL",
+            approvedAt: null,
+            approvedByMemberId: null,
+          });
+          expect(partner.isSecondOccupant).toBe(false);
+          expect(moveAuditCount).toBe(1);
+          expect(promotionAuditCount).toBe(1);
+          return;
+        }
+
+        expect(rejectionStatus(moveOutcome)).toBe(409);
+        if (moveOutcome.status === "rejected") {
+          expect(moveOutcome.reason).toMatchObject({
+            code: "STALE_PREVIEW",
+            refreshedPreview: expect.objectContaining({
+              scope: "BOOKING_GUEST",
+              resolvedRowCount: 2,
+            }),
+          });
+        }
+        expect(targetRows[0]).toEqual({
+          id: TARGET_ALLOCATION_ID,
+          stayDate: FIRST_NIGHT,
+          bedId: OLD_DOUBLE_BED_ID,
+          source: "MANUAL",
+          approvedAt: TARGET_APPROVED_AT,
+          approvedByMemberId: ACTOR_ID,
+        });
+        expect(partner.isSecondOccupant).toBe(true);
+        expect(moveAuditCount).toBe(0);
+        expect(promotionAuditCount).toBe(0);
+      },
+    );
+
+    it.each(["MOVE_FIRST", "LIFECYCLE_FIRST"] as const)(
+      "serializes a reviewed person move and lifecycle reconciliation when %s is queued first",
+      async (order) => {
+        await seedBookings();
+        await seedTargetWithPartner();
+        await prisma.bedAllocation.update({
+          where: { id: TARGET_ALLOCATION_ID },
+          data: {
+            approvedAt: TARGET_APPROVED_AT,
+            approvedByMemberId: ACTOR_ID,
+          },
+        });
+        const move = await reviewedTargetMove("BOOKING_GUEST");
+        expect(move.preview).toMatchObject({
+          resolvedRowCount: 1,
+          changedRowCount: 1,
+          unchangedRowCount: 0,
+          approvedToDraftCount: 1,
+          promotions: [{ stayDate: FIRST_NIGHT_DATE_ONLY }],
+          conflicts: [],
+        });
+        const reconcile = () =>
+          reconcileBedAllocationsForBooking({ bookingId: BOOKING_ID });
+
+        const outcomes =
+          order === "MOVE_FIRST"
+            ? await runWritersInGlobalQueueOrder(move.apply, reconcile)
+            : await runWritersInGlobalQueueOrder(reconcile, move.apply);
+        const [moveOutcome, lifecycleOutcome] =
+          order === "MOVE_FIRST"
+            ? outcomes
+            : [outcomes[1], outcomes[0]];
+
+        expect(settledValueOrThrow(lifecycleOutcome)).toMatchObject({
+          enabled: true,
+          deletedCount: 0,
+          createdCount: 1,
+          promotedCount: 0,
+        });
+        const [targetRows, partner, moveAuditCount, promotionAuditCount] =
+          await Promise.all([
+            prisma.bedAllocation.findMany({
+              where: {
+                bookingId: BOOKING_ID,
+                bookingGuestId: GUEST_ID,
+              },
+              select: {
+                id: true,
+                stayDate: true,
+                bedId: true,
+                source: true,
+                approvedAt: true,
+                approvedByMemberId: true,
+              },
+              orderBy: { stayDate: "asc" },
+            }),
+            prisma.bedAllocation.findUniqueOrThrow({
+              where: { id: PARTNER_ALLOCATION_ID },
+              select: { isSecondOccupant: true },
+            }),
+            actionCount(["BED_ALLOCATION_MOVE_APPLIED"]),
+            actionCount(["BED_ALLOCATION_PARTNERS_PROMOTED"]),
+          ]);
+        expect(targetRows).toHaveLength(2);
+        expect(targetRows[1]).toMatchObject({
+          stayDate: SECOND_NIGHT,
+          source: "AUTO",
+          approvedAt: null,
+          approvedByMemberId: null,
+        });
+
+        if (order === "MOVE_FIRST") {
+          expect(settledValueOrThrow(moveOutcome)).toMatchObject({
+            noop: false,
+            movedRowCount: 1,
+            promotedRowCount: 1,
+            affectedNights: [FIRST_NIGHT_DATE_ONLY],
+          });
+          expect(targetRows[0]).toEqual({
+            id: TARGET_ALLOCATION_ID,
+            stayDate: FIRST_NIGHT,
+            bedId: DESTINATION_BED_ID,
+            source: "MANUAL",
+            approvedAt: null,
+            approvedByMemberId: null,
+          });
+          expect(partner.isSecondOccupant).toBe(false);
+          expect(moveAuditCount).toBe(1);
+          expect(promotionAuditCount).toBe(1);
+          return;
+        }
+
+        expect(rejectionStatus(moveOutcome)).toBe(409);
+        if (moveOutcome.status === "rejected") {
+          expect(moveOutcome.reason).toMatchObject({
+            code: "STALE_PREVIEW",
+            refreshedPreview: expect.objectContaining({
+              scope: "BOOKING_GUEST",
+              resolvedRowCount: 2,
+            }),
+          });
+        }
+        expect(targetRows[0]).toEqual({
+          id: TARGET_ALLOCATION_ID,
+          stayDate: FIRST_NIGHT,
+          bedId: OLD_DOUBLE_BED_ID,
+          source: "MANUAL",
+          approvedAt: TARGET_APPROVED_AT,
+          approvedByMemberId: ACTOR_ID,
+        });
+        expect(partner.isSecondOccupant).toBe(true);
+        expect(moveAuditCount).toBe(0);
+        expect(promotionAuditCount).toBe(0);
+      },
+    );
+
+    it("applies all 366 person rows in one guarded statement beyond the old default transaction shape", async () => {
+      const nights = Array.from(
+        { length: 366 },
+        (_, index) => new Date(Date.UTC(2099, 3, 1 + index)),
+      );
+      const checkOut = new Date(Date.UTC(2099, 3, 1 + nights.length));
+      const allocationIds = nights.map(
+        (_, index) => `race-2595-bulk-${String(index).padStart(3, "0")}`,
+      );
+      await seedBookings("CONFIRMED", false);
+      await prisma.booking.update({
+        where: { id: BOOKING_ID },
+        data: { checkOut },
+      });
+      await prisma.bookingGuest.update({
+        where: { id: GUEST_ID },
+        data: { stayEnd: checkOut },
+      });
+      await prisma.bookingGuestNight.deleteMany({
+        where: { bookingGuestId: GUEST_ID },
+      });
+      await prisma.bookingGuestNight.createMany({
+        data: nights.map((stayDate) => ({
+          bookingGuestId: GUEST_ID,
+          stayDate,
+          priceCents: 100,
+        })),
+      });
+      await prisma.bedAllocation.createMany({
+        data: nights.map((stayDate, index) => ({
+          id: allocationIds[index],
+          bookingId: BOOKING_ID,
+          bookingGuestId: GUEST_ID,
+          roomId: ROOM_ID,
+          bedId: OLD_DOUBLE_BED_ID,
+          bedType: "DOUBLE" as const,
+          stayDate,
+          source: "AUTO" as const,
+        })),
+      });
+
+      await installMove366StatementDelay();
+      const oldShapeStartedAt = process.hrtime.bigint();
+      await expect(
+        prisma.$transaction(async (tx) => {
+          for (const id of allocationIds) {
+            await tx.bedAllocation.updateMany({
+              where: { id },
+              data: { source: "MANUAL" },
+            });
+          }
+        }),
+      ).rejects.toMatchObject({ code: "P2028" });
+      expect(realElapsedMs(oldShapeStartedAt)).toBeGreaterThanOrEqual(4_500);
+      expect(
+        await prisma.bedAllocation.count({
+          where: {
+            id: { in: allocationIds },
+            source: "AUTO",
+            bedId: OLD_DOUBLE_BED_ID,
+          },
+        }),
+      ).toBe(366);
+
+      const request = {
+        anchorAllocationId: allocationIds[0],
+        destinationBedId: DESTINATION_BED_ID,
+        scope: "BOOKING_GUEST" as const,
+      };
+      const preview = await previewBedAllocationMove(request);
+      expect(preview).toMatchObject({
+        resolvedRowCount: 366,
+        changedRowCount: 366,
+        unchangedRowCount: 0,
+        conflicts: [],
+      });
+
+      const result = await applyBedAllocationMove({
+        actorMemberId: ACTOR_ID,
+        request: { ...request, previewDigest: preview.digest },
+      });
+      expect(result).toMatchObject({
+        noop: false,
+        movedRowCount: 366,
+        promotedRowCount: 0,
+      });
+      expect(
+        await prisma.bedAllocation.count({
+          where: {
+            id: { in: allocationIds },
+            source: "MANUAL",
+            bedId: DESTINATION_BED_ID,
+            approvedAt: null,
+          },
+        }),
+      ).toBe(366);
+      expect(await actionCount(["BED_ALLOCATION_MOVE_APPLIED"])).toBe(1);
+    });
+
     it("serializes an explicit auto run before reset, records no reset-triggered planning, and permits a later explicit rebuild", async () => {
       await seedBookings("CONFIRMED", false);
       await prisma.bedAllocation.create({
@@ -1180,6 +1671,48 @@ describe("bed-allocation removal race DB safety guard (#2594)", () => {
       expect(target).toBeNull();
       expect(partner.isSecondOccupant).toBe(false);
       expect(removalAudits).toBe(0);
+    });
+
+    it("returns an unavailable refreshed move preview after production cancellation wins", async () => {
+      await seedBookings("AWAITING_REVIEW");
+      await seedTargetWithPartner();
+      const move = await reviewedTargetMove();
+
+      const [cancelOutcome, moveOutcome] = await runWritersInGlobalQueueOrder(
+        () =>
+          cancelBooking(
+            BOOKING_ID,
+            ACTOR_ID,
+            "ADMIN",
+            "127.0.0.1",
+            "card",
+            {
+              suppressCustomerNotification: true,
+              notifyMember: false,
+            },
+          ),
+        move.apply,
+      );
+
+      expect(cancelOutcome.status).toBe("fulfilled");
+      expect(rejectionStatus(moveOutcome)).toBe(409);
+      if (moveOutcome.status === "rejected") {
+        expect(moveOutcome.reason).toMatchObject({
+          code: "STALE_PREVIEW",
+          refreshedPreview: expect.objectContaining({
+            conflicts: [
+              expect.objectContaining({ code: "ALLOCATION_UNAVAILABLE" }),
+            ],
+          }),
+        });
+      }
+      await waitForAuditAction("booking.cancel");
+      expect(
+        await prisma.bedAllocation.findUnique({
+          where: { id: TARGET_ALLOCATION_ID },
+        }),
+      ).toBeNull();
+      expect(await actionCount(["BED_ALLOCATION_MOVE_APPLIED"])).toBe(0);
     });
   },
 );

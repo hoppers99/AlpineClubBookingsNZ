@@ -39,8 +39,10 @@ export function useScopedDashboard<T>({
   const [loading, setLoading] = useState(enabled);
   const [error, setError] = useState("");
 
-  const runLoad = useCallback(async (requestedScopeKey: string) => {
-    if (scopeRef.current !== requestedScopeKey) return;
+  const runLoad = useCallback(async (
+    requestedScopeKey: string,
+  ): Promise<boolean> => {
+    if (scopeRef.current !== requestedScopeKey) return false;
 
     requestRef.current?.controller.abort();
     const controller = new AbortController();
@@ -57,21 +59,23 @@ export function useScopedDashboard<T>({
         requestRef.current?.sequence !== sequence ||
         scopeRef.current !== requestedScopeKey
       ) {
-        return;
+        return false;
       }
       setState({ scopeKey: requestedScopeKey, value });
       callbacksRef.current.onLoaded?.(value);
+      return true;
     } catch (loadError) {
-      if (controller.signal.aborted) return;
+      if (controller.signal.aborted) return false;
       if (
         requestRef.current?.sequence !== sequence ||
         scopeRef.current !== requestedScopeKey
       ) {
-        return;
+        return false;
       }
       setError(
         loadError instanceof Error ? loadError.message : "Unknown error",
       );
+      return false;
     } finally {
       if (
         requestRef.current?.sequence === sequence &&
@@ -95,8 +99,8 @@ export function useScopedDashboard<T>({
   }, [enabled, runLoad, scopeKey]);
 
   const reload = useCallback(async () => {
-    if (!enabled) return;
-    await runLoad(scopeRef.current);
+    if (!enabled) return false;
+    return runLoad(scopeRef.current);
   }, [enabled, runLoad]);
 
   const setValue = useCallback(
