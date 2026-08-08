@@ -452,6 +452,15 @@ function isTestFile(relPath: string): boolean {
  * could reconcile against the file, and would fail the census when somebody
  * reworded a sentence. Every raw statement in this repository is written as a
  * BACKTICK template, so backticks are deliberately left alone.
+ *
+ * BUT ONLY PROSE, NOT SQL (#2623 F7). Blanking every double-quoted literal opened
+ * the same hole T9(d) exists to close, one level down: `$executeRawUnsafe` takes a
+ * plain string, so `const SQL = "SELECT … FOR UPDATE"; await tx.$executeRawUnsafe(SQL)`
+ * would score ZERO and drop out of the census silently. A literal containing
+ * `SELECT` is therefore left intact and counted — prose about the protocol does not
+ * contain it (the one live case, quoted above, does not), and a raw statement always
+ * does. The narrower rule keeps the false positive suppressed while refusing to
+ * suppress a real statement.
  */
 function countCodeOccurrences(source: string, needle: string | RegExp): number {
   let count = 0;
@@ -460,7 +469,9 @@ function countCodeOccurrences(source: string, needle: string | RegExp): number {
     if (trimmed.startsWith("//") || trimmed.startsWith("*") || trimmed.startsWith("/*")) {
       continue;
     }
-    const line = rawLine.replace(/"(?:[^"\\]|\\.)*"/g, '""');
+    const line = rawLine.replace(/"(?:[^"\\]|\\.)*"/g, (literal) =>
+      /SELECT/i.test(literal) ? literal : '""',
+    );
     if (typeof needle !== "string") {
       count += (line.match(needle) ?? []).length;
       continue;
