@@ -39,11 +39,19 @@
  * only when a caller supplies one — so a row with NO category exists and is common. The
  * executable census of this repository's production audit writes
  * (`scripts/audit/audit-writer-census.ts`, pinned by
- * `src/lib/__tests__/audit-writer-census.test.ts`) counts 421 write sites, of which
+ * `src/lib/__tests__/audit-writer-census.test.ts`) counts 426 write sites, of which
  * 82 pass no category: 69 `logAudit`, 11 `createAuditLog`, 2 hand-built Prisma
- * writes, and none through `createStructuredAuditLog`. (This comment said 418 and
- * the pack doc said 419; both were stale, and both are re-measured against the tree
- * rather than carried forward — the uncategorised figure is unchanged.) They include money-adjacent
+ * writes, and none through `createStructuredAuditLog`. (This comment has now been
+ * stale three times: 418, then 421, then 425 — the last of those on the #2677
+ * merge, where the tree said 426 and this line merged CLEANLY at 425 because
+ * `main` (#2649) had corrected only one of the total's three prose copies. A
+ * clean merge of a measured figure is not agreement; it is the same collision
+ * the manifest's `bySink.createAuditLog` note describes, minus the luck of a
+ * conflict. Re-measured by RUNNING `npm run audit:census` on the merged tree,
+ * alongside `docs/ai-diagnostics/tool-pack-support.md` and
+ * `docs/guides/audit-log.md`. All three drift because none is read by a test,
+ * unlike `AUDIT_CENSUS_TOTALS`, which was right throughout. The uncategorised
+ * figures never drifted and are unchanged.) They include money-adjacent
  * ones — subscription-billing settings/retry/mark-family/unmark-family/reconcile, the
  * subscription charge confirm, all three member-credit adjustment steps, fee
  * configuration and the family login-holder change — plus booking-policy edits, bulk

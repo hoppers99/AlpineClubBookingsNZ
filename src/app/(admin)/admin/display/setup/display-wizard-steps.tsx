@@ -18,6 +18,7 @@ import {
 } from "@/components/admin/view-only-action";
 import { useAdminAreaEditAccess } from "@/hooks/use-admin-area-edit-access";
 import { formatNZDateTime, formatNZTime } from "@/lib/nzst-date";
+import { unverifiedWriteMessage } from "@/lib/unverified-write-copy";
 import { useRestoreBuiltInBoards } from "../templates/restore-built-ins";
 import {
   DISPLAY_TERM_BOARD,
@@ -1038,11 +1039,25 @@ export function PairStep({
             ? `${ADMIN_FORBIDDEN_SAVE_REASON} The screen was not set to show ${
                 chosen?.name ?? "the board you picked"
               }.`
-            : `${
-                body?.error ?? "The board could not be assigned to this screen."
-              } Pairing carried on, so the screen will come up on ${
-                pending?.templateName ?? "the club default board"
-              } — set the board on the Devices page.`,
+            : bindResponse === null
+              ? /*
+                  #2668. A rejected `fetch` is not a refusal: the PATCH may have
+                  bound the board and lost only its answer. The old wording went
+                  straight on to say the screen "will come up on the club
+                  default board", which is a statement about the stored binding
+                  this side cannot make — and it is wrong precisely when the
+                  bind DID land. Say what is unknown, and send them to the page
+                  that holds the answer. Setting the board there again is safe.
+                */
+                `${unverifiedWriteMessage(
+                  `this screen was set to show ${chosen?.name ?? "the board you picked"}`,
+                  "Pairing carried on either way.",
+                )} Check the screen's board on the Devices page.`
+              : `${
+                  body?.error ?? "The board could not be assigned to this screen."
+                } Pairing carried on, so the screen will come up on ${
+                  pending?.templateName ?? "the club default board"
+                } — set the board on the Devices page.`,
         );
       }
     }

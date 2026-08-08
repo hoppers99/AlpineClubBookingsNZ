@@ -283,6 +283,11 @@ describe("feature route map", () => {
         "/api/admin/bookings/booking-1/force-confirm.json",
       ),
     ).toEqual(["waitlist"]);
+    expect(
+      getRequiredFeaturesForPath(
+        "/api/admin/bookings/booking-1/return-to-waitlist/",
+      ),
+    ).toEqual(["waitlist"]);
     for (const action of ["link", "push", "unlink"]) {
       expect(
         getRequiredFeaturesForPath(

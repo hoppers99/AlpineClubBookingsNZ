@@ -75,7 +75,28 @@ operational documents (which may carry door/emergency access details).
   (which `isMemberEligibleToBookLodge` also derives from), so the two are the
   same eligibility set by construction. Those two modes serve **discovery**:
   a member choosing where to book. They are not the right shape once a booking
-  exists — see the booking-scoped read below. Admin on-behalf bookings and quotes
+  exists — see the booking-scoped read below. **No production surface asks the
+  no-`lodgeId` mode any more** (#2664, create side): the booking wizard always
+  names the lodge it is booking, because `LodgeSelect` normalises even a
+  single-lodge club to a concrete id on the wizard's opening step. It used to
+  fire the unscoped request on every mount while waiting for that
+  normalisation, and — with no cancellation guard on the effect — a reply
+  landing after the one that superseded it left the wrong lodge's rooms in the
+  "Preferred room (optional)" picker for the rest of the session, where
+  `resolveBookingLodgeId` (`booking-create.ts:153-174`) would then refuse the
+  choice. Two consequences are worth stating rather than leaving implicit.
+  First, that mode's filter is `Room.active` and the member's booking
+  restrictions — **not** the lodge's own `active` flag — so an unrestricted
+  member's cross-lodge listing included archived lodges' rooms, which is why it
+  was never safe to describe as "the lodges this member may book". Second, the
+  wizard now offers **nothing** while its selection is null, and that null is
+  permanent when `/api/lodges` is down or a club's only lodge is inactive (that
+  route filters `active: true`, while `getDefaultLodgeId` deliberately falls
+  through to a lodge of any state). Offering nothing there is the deliberate
+  choice: a client that cannot know which lodge the server will stamp on the
+  booking must not guess at an optional preference. The unscoped mode is
+  retained as an eligibility-filtered discovery contract, not because a client
+  needs it. Admin on-behalf bookings and quotes
   bypass it as the audited override path. `STAFF` rows bind a kiosk account to its lodge;
   exactly one grant binds, zero grants fall back to the default lodge, and
   **two or more grants are ambiguous and denied** (`getStaffLodgeBinding`

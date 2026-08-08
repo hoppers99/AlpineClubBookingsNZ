@@ -105,7 +105,7 @@ correctly, and for anyone extending the taxonomy in AID-6B or AID-6C.
 | Category | Correlation entry | Reader needs | What actually records there |
 | --- | --- | --- | --- |
 | `system`, `security` | System | `support:view` | Setup, credentials, password/magic-link policy, backups, auth events and auth bounces, PIN login |
-| `admin` | System | `support:view` | **The cross-domain catch-all** — the largest category in the codebase (117 write sites). Member merge, member-lifecycle delete/archive, member import, lodge-access changes, seasonal membership assignments, internet-banking **payment settings**, booking-request **settings**, chores, lockers, rooms, bed allocation, lodge settings, access roles, modules |
+| `admin` | System | `support:view` | **The cross-domain catch-all** — the largest category in the codebase (118 write sites). Member merge, member-lifecycle delete/archive, member import, lodge-access changes, seasonal membership assignments, internet-banking **payment settings**, booking-request **settings**, chores, lockers, rooms, bed allocation, lodge settings, access roles, modules |
 | `booking` | Booking | `support:view` + `bookings:view` | Member-facing and system booking events. Not booking *settings* — those are `admin` |
 | `account` | Membership | `support:view` + `membership:view` | Member self-service: profile edits, notification preferences, post-login landing, membership cancellation, member photos, membership applications and nomination |
 | `family` | Membership | `support:view` + `membership:view` | Family groups, partner links, login-holder changes, dependents |
@@ -155,12 +155,37 @@ covers it: the column is optional.
 
 `AuditLog.category` is `String?` with no default, and the audit writer sets it only when
 the caller supplies one. The **executable census** — `npm run audit:census`, pinned by
-`src/lib/__tests__/audit-writer-census.test.ts` — counts **421 production audit write
+`src/lib/__tests__/audit-writer-census.test.ts` — counts **426 production audit write
 sites, of which 82 pass no category**: 69 through `logAudit`, 11 through
 `createAuditLog`, 2 hand-built Prisma writes, and none through
-`createStructuredAuditLog`. (The figure quoted here was 419 and was stale by two:
-the census and its reviewed manifest both report 421 on this commit, and this page
-is re-measured rather than carried forward.) Some are money-adjacent: subscription-billing settings, retry,
+`createStructuredAuditLog`.
+
+(This page has now been stale three times, and the third time is the one worth
+recording, because it is the PROSE half of the collision shape the manifest pin
+keeps catching. This page said 419 when the tree held 421; then 421 while #2621's
+two arrival-time writers and #2595's two reviewed-move writers took it to 425.
+There are **three** prose copies of this total, not one — this page, the
+`support-correlation.ts` docblock, and `docs/guides/audit-log.md` — and **none of
+the three is read by a test**, unlike `AUDIT_CENSUS_TOTALS`, which a test does
+read and which was right throughout.
+
+On the #2677 merge all three said **425** and the merged tree said **426**: #2649
+had landed on `main` and corrected only THIS copy to 426, leaving the other two
+untouched, so git conflicted here — where both sides had edited — and merged the
+other two **silently at the wrong number**. That is the same shape as the
+byte-identical `bySink.createAuditLog` merge the manifest describes, inverted: a
+conflict is the lucky case, and the two files that merged cleanly are the ones
+that would have shipped wrong. The lesson the manifest states applies to prose
+too: a clean merge of a measured figure is not agreement.
+
+All three were re-measured together by RUNNING `npm run audit:census` on the
+merged tree — never by adding branch deltas up — which prints
+`row-producing sites: 426`. #2677 itself adds no audit writer, so the total it
+lands is `main`'s truth, not a figure of its own. The uncategorised figures below
+never drifted, so they are carried forward unchanged and re-verified rather than
+rewritten.)
+
+Some are money-adjacent: subscription-billing settings, retry,
 mark/unmark family, reconcile; the subscription charge confirm; all three member-credit
 adjustment steps; fee configuration; the saved-card charge results. Others are ordinary
 but relevant: booking-policy, season and promotional-code edits; Xero settings and
