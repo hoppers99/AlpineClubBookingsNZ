@@ -16,9 +16,11 @@ import { FieldHint, useFieldHint } from "@/components/ui/field-hint";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { BookingNoEmailsNotice } from "@/components/booking-no-emails-notice";
+import { FocusedActionError } from "@/components/focused-action-error";
 import { ViewOnlyActionButton } from "@/components/admin/view-only-action";
 import { useAdminAreaEditAccess } from "@/hooks/use-admin-area-edit-access";
 import { formatCents } from "@/lib/utils";
+import { unverifiedWriteMessage } from "@/lib/unverified-write-copy";
 
 // Mirrors MANUAL_PAYMENT_NOTE_MAX in src/lib/manual-subscription-payment.ts,
 // which cannot be imported here: that module is `server-only`.
@@ -95,6 +97,26 @@ export function BookingManualPaymentControls({
   const [dialog, setDialog] = useState<null | "paid" | "unpaid">(null);
   const [note, setNote] = useState("");
   const [submitting, setSubmitting] = useState(false);
+  /**
+   * #2668 review SF-5: the sentence for an outcome that was never read, held on
+   * screen rather than thrown as a toast.
+   *
+   * A toast is the wrong carrier for this one message. The dialog stays open on
+   * a failure and the confirm button re-arms in `finally`, so the operator's
+   * likeliest next act — a second press — happens while the toast is still
+   * fading in, and this is the surface where a second press costs the most. The
+   * notice sits inside the dialog, above the buttons it disarms, until they act
+   * on it. The server's own refusals keep their toast: those say what happened.
+   */
+  const [unverified, setUnverified] = useState<string | null>(null);
+  /**
+   * Bumped with each unread outcome so the recovery alert takes focus again on a
+   * repeat. It has to take focus at all because this branch DISABLES the button
+   * that was just pressed, and a control disabled in the same turn cannot hold
+   * focus — it would fall to `<body>` and leave a keyboard user with no place
+   * and no explanation, which is the failure `FocusedActionError` exists for.
+   */
+  const [unverifiedAttention, setUnverifiedAttention] = useState(0);
   /*
     #2264: the "e.g. …" specimens used to sit in each note box as a placeholder.
     Grey example text INSIDE a control reads as a value the form already holds,
@@ -141,7 +163,18 @@ export function BookingManualPaymentControls({
   function openDialog(direction: "paid" | "unpaid") {
     setNote("");
     setAdditionalCovered(null);
+    setUnverified(null);
     setDialog(direction);
+  }
+
+  /**
+   * Closing the dialog also clears the notice — it belongs to the attempt that
+   * produced it, and a stale one over a fresh dialog would read as an outcome
+   * of the press that has not happened yet.
+   */
+  function closeDialog() {
+    setDialog(null);
+    setUnverified(null);
   }
 
   /**
@@ -165,6 +198,7 @@ export function BookingManualPaymentControls({
 
   async function submit(direction: "paid" | "unpaid", notifyMember?: boolean) {
     setSubmitting(true);
+    setUnverified(null);
     try {
       const response = await fetch(`/api/admin/bookings/${bookingId}/mark-paid`, {
         method: "POST",
@@ -208,11 +242,53 @@ export function BookingManualPaymentControls({
       setDialog(null);
       router.refresh();
     } catch {
-      toast.error("Could not reach the server. Nothing was recorded.");
+      /*
+        #2668. This used to say "Nothing was recorded." It is the worst place in
+        the app to guess that: `fetch` also rejects when the POST reached the
+        server and the connection dropped before the answer came back, in which
+        case the cash payment IS on the booking — and an admin told nothing
+        happened records it a second time. Say what is actually known and send
+        them at the booking, which is where the truth is.
+
+        Review SF-5: on this surface the message is also DELIVERED differently
+        from a refusal. It is held in the dialog and the recording buttons stay
+        disarmed behind it, because the operator's next press is the act the
+        message exists to prevent and a toast is gone before it is read. The
+        server does refuse a second manual settlement on an already-settled
+        booking, so no money moves either way — but "check first" is the
+        instruction, and the screen now behaves like it means it.
+      */
+      setUnverified(
+        unverifiedWriteMessage(
+          "this payment was recorded",
+          "Reload the booking and check before recording it again.",
+        ),
+      );
+      setUnverifiedAttention((value) => value + 1);
     } finally {
       setSubmitting(false);
     }
   }
+
+  /*
+    #2668 SF-5. The house recovery alert (`focused-action-error.tsx`, #2597 /
+    #2635): permanently mounted so the live region is registered in the
+    accessibility tree before it has anything to say — one injected
+    already-populated is silently dropped by some screen-reader/browser pairings
+    — assertive, and it TAKES FOCUS when the message arrives. Focus matters more
+    here than on the surfaces that component was written for: this branch
+    disables the button that was just pressed, so without it focus would fall to
+    `<body>` and a keyboard operator would be left with neither a place nor the
+    explanation. Its focus timing is a passive effect on purpose; assert it with
+    `expectRecoveryAlertToHoldFocus`, never a synchronous `activeElement` check.
+  */
+  const unverifiedNotice = (
+    <FocusedActionError
+      id="manual-payment-unverified-notice"
+      error={unverified ?? ""}
+      attentionKey={unverifiedAttention}
+    />
+  );
 
   return (
     <div
@@ -277,7 +353,7 @@ export function BookingManualPaymentControls({
       <Dialog
         open={dialog !== null}
         onOpenChange={(open) => {
-          if (!open) setDialog(null);
+          if (!open) closeDialog();
         }}
       >
         <DialogContent>
@@ -422,26 +498,36 @@ export function BookingManualPaymentControls({
                   recorded in the audit log.
                 </p>
               )}
+              {unverifiedNotice}
               <DialogFooter className="gap-2 sm:gap-2">
+                {/*
+                  After an unread outcome "Cancel" would itself be a claim —
+                  there may be nothing left to cancel — so the way out is named
+                  for what it does.
+                */}
                 <Button
                   variant="ghost"
-                  onClick={() => setDialog(null)}
+                  onClick={closeDialog}
                   disabled={submitting}
                 >
-                  Cancel
+                  {unverified ? "Close and check" : "Cancel"}
                 </Button>
                 {!noEmails ? (
                   <>
                     <Button
                       variant="outline"
                       onClick={() => submit("paid", false)}
-                      disabled={submitting || !additionalAnswered}
+                      disabled={
+                        submitting || !additionalAnswered || unverified !== null
+                      }
                     >
                       Record without emailing
                     </Button>
                     <Button
                       onClick={() => submit("paid", true)}
-                      disabled={submitting || !additionalAnswered}
+                      disabled={
+                        submitting || !additionalAnswered || unverified !== null
+                      }
                     >
                       Record and email member
                     </Button>
@@ -449,7 +535,9 @@ export function BookingManualPaymentControls({
                 ) : (
                   <Button
                     onClick={confirmSilenced}
-                    disabled={submitting || !additionalAnswered}
+                    disabled={
+                      submitting || !additionalAnswered || unverified !== null
+                    }
                   >
                     Record payment
                   </Button>
@@ -489,15 +577,19 @@ export function BookingManualPaymentControls({
                   e.g. recorded against the wrong booking
                 </FieldHint>
               </div>
+              {unverifiedNotice}
               <DialogFooter className="gap-2 sm:gap-2">
                 <Button
                   variant="ghost"
-                  onClick={() => setDialog(null)}
+                  onClick={closeDialog}
                   disabled={submitting}
                 >
-                  Cancel
+                  {unverified ? "Close and check" : "Cancel"}
                 </Button>
-                <Button onClick={() => submit("unpaid")} disabled={submitting}>
+                <Button
+                  onClick={() => submit("unpaid")}
+                  disabled={submitting || unverified !== null}
+                >
                   Reverse payment
                 </Button>
               </DialogFooter>

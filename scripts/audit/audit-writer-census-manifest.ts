@@ -152,6 +152,28 @@ export const AUDIT_CENSUS_TOTALS = {
    * Re-measured on the merged tree by RUNNING `npm run audit:census`, never by
    * adding deltas: 426 row-producing sites, `logAudit` 240, `createAuditLog`
    * 106, `booking` 83, uncategorised 82.
+   *
+   * 426 -> 426 (#2677). Recorded even though nothing moved, for the same reason
+   * the view-only ledger records its no-op merges: "the figures did not move" is
+   * worth something only when somebody RAN the census to find that out. #2677
+   * adds no audit writer, and the census on its merged tree reports 426 /
+   * `logAudit` 240 / `createAuditLog` 106 / `auditLog.create` 72 /
+   * `createStructuredAuditLog` 8 / uncategorised 82 — every pin below unchanged.
+   *
+   * But the collision fired anyway, on the PROSE half, which this manifest has
+   * never covered. The total has THREE prose copies and no test reads any of
+   * them: `docs/ai-diagnostics/tool-pack-support.md`,
+   * `docs/guides/audit-log.md`, and the `support-correlation.ts` docblock.
+   * #2677's branch had set all three to 425; #2649 on `main` corrected only the
+   * first. So the merge conflicted on the one file both sides had edited — the
+   * lucky case — and merged the other two CLEANLY at 425 against a tree that
+   * says 426. Same shape as the byte-identical `bySink.createAuditLog` merge
+   * above, minus the luck: there, two equal literals hid a real disagreement;
+   * here, two unedited-on-`main` copies hid a real correction. All three were
+   * re-measured together by running the census. The durable lesson is the one
+   * this manifest already exists to teach, extended one file class outward: a
+   * figure that no test reads WILL drift, and a clean merge of a measured figure
+   * is not agreement.
    */
   writeSites: 426,
   /** Of those, sites whose event object carries no `category` key. */

@@ -29,6 +29,7 @@ import { bookingStatusClass, bookingStatusLabel } from "@/lib/status-colors";
 import { formatNZDateTime } from "@/lib/nzst-date";
 import { buildHrefWithReturnTo, buildPathWithSearch } from "@/lib/internal-return-path";
 import { FocusedActionError } from "@/components/focused-action-error";
+import { unverifiedWriteMessage } from "@/lib/unverified-write-copy";
 
 const PAGE_SIZE_OPTIONS = [10, 25, 50, 100] as const;
 
@@ -467,9 +468,19 @@ export default function AdminWaitlistPage() {
         setErrorAttention((value) => value + 1);
       }
     } catch {
+      /*
+        #2668: this sentence used to be typed out here by hand. Force-confirm is
+        a CAPACITY write — it can place a booking over a lodge's beds — so a
+        surface that says "we could not verify" and then drifts out of step with
+        the wording every other unverified write uses is the one that matters
+        most to keep in the shared builder.
+      */
       setForceConfirmReport(null);
       setError(
-        "The service response could not be read, so we could not verify whether this booking was force-confirmed. Reload the waitlist and check the booking before trying again.",
+        unverifiedWriteMessage(
+          "this booking was force-confirmed",
+          "Reload the waitlist and check the booking before trying again.",
+        ),
       );
       setErrorAttention((value) => value + 1);
     } finally {
