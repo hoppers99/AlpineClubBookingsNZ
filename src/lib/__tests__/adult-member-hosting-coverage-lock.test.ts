@@ -55,9 +55,17 @@ function readRepoFile(relativePath: string): string {
 function topLevelFunctionBody(source: string, name: string): string | null {
   const start = source.indexOf(`function ${name}(`);
   if (start === -1) return null;
-  const closing = /\n\}(?=\n|$)/.exec(source.slice(start));
-  if (!closing) return source.slice(start);
-  return source.slice(start, start + closing.index + 2);
+  // `\r?\n` on both sides, and NULL rather than a fall back to the rest of the
+  // file, are the same guard twice. `*.ts` is pinned `eol=lf` in `.gitattributes`
+  // precisely because a Windows checkout otherwise materialises CRLF — and if
+  // that pin ever lapsed, an LF-only pattern would find no closing brace, a
+  // rest-of-file fallback would then contain every OTHER holder's lock call, and
+  // all four assertions would pass vacuously on Windows while still meaning
+  // something on Linux CI. That is the #2399 failure mode exactly, so it fails
+  // loudly instead.
+  const closing = /\r?\n\}(?=\r?\n|$)/.exec(source.slice(start));
+  if (!closing) return null;
+  return source.slice(start, start + closing.index + closing[0].length);
 }
 
 /** A client that records the tagged-template SQL it was handed. */
