@@ -45,9 +45,9 @@ import "server-only";
 import { z } from "zod";
 
 /**
- * The default number of rows a SEARCH may return, and the absolute maximum #2377
- * sets. Ten is the issue's recommended default; twenty is its hard ceiling, and
- * nothing in this pack asks for more.
+ * The number of rows a SEARCH may return. Ten is #2377's recommended default; its
+ * absolute ceiling is twenty, and nothing in this pack asks for more — the pack's
+ * own contract test pins both the ten and the fact that it is under the twenty.
  *
  * A search is deliberately the NARROWEST tool in the pack. Its job is to let an
  * operator pick the right record, not to be a report: it returns enough to
@@ -55,7 +55,6 @@ import { z } from "zod";
  * that would make a harvested list worth having.
  */
 export const FINANCE_SEARCH_ROW_LIMIT = 10;
-export const FINANCE_SEARCH_ROW_MAXIMUM = 20;
 
 /**
  * The byte ceiling every multi-row finance entry declares — half the substrate's
@@ -206,13 +205,6 @@ const PROJECTABLE_PROVIDER_REF = /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,95}$/;
  * of being reported as though it were a classification.
  */
 const PROJECTABLE_STABLE_CODE = /^[A-Za-z][A-Za-z0-9_.-]{0,47}$/;
-
-/** A string value, or null. Never `undefined` — the executor refuses that. */
-export function textOrNull(value: unknown): string | null {
-  if (value === null || value === undefined) return null;
-  const text = String(value);
-  return text.length > 0 ? text : null;
-}
 
 /**
  * A RECORD IDENTIFIER on the way out — a cuid primary key, a booking reference,
