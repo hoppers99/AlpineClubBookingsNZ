@@ -1522,6 +1522,27 @@ beside `createMany` as defence in depth. The planner's per-lodge priority order
 changes candidate choice but introduces no lock key and never weakens these
 hard predicates.
 
+Two write-path rules on the lifecycle apply come from #2656 and are about
+occupancy, not locks. **An eviction releases a bed-night only when no occupant
+remains on it**, which matters because a DOUBLE may hold two rows from two
+different bookings (#1701): displacing one of them frees nothing, so the planner
+never drafts a row for that bed and the apply never writes one. And
+**`createMany({ skipDuplicates: true })` is not the safety mechanism.** Against
+a surviving PRIMARY it silently swallows the row — a displacement applied and
+audited for a placement that never happened — and against a surviving SECOND
+occupant there is no duplicate to skip at all, so the row is created and an
+unrelated person lands in a double beside someone else's partner. Both payload
+writes therefore re-read the live occupancy of their target bed-nights on the
+writing client, AFTER the displacements have been applied so a bed this plan
+legitimately freed still reads as free, and drop any row whose bed-night is
+still occupied — logging the disagreement at error level, since the corrected
+planner should never produce one. The same apply also promotes any second
+occupant its displacements orphan, on the same client, so the shared-double
+invariant in DOMAIN_INVARIANTS.md holds on this path like every other.
+`existingAllocations` is ordered `(stayDate, bedId, id)` for the same family of
+reasons: the planner is pure and deterministic, so its input must be too, and
+an unordered read returned a shared double's two rows in either order.
+
 Cron/waitlist counterpart writers keep their guarded claims inside that same
 topology. Completion and past-waitlist cancellation re-read each candidate
 under global → lodge before the status claim and reconciliation. Cross-lodge

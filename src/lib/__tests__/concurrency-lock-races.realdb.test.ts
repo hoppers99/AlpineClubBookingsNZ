@@ -47,6 +47,13 @@ import "./adult-member-hosting-queue-merge.realdb.test";
 // cancellation writers. Its own describe stays skipped unless the shared race
 // flag is set, and its uniquely-namespaced fixtures are cleaned independently.
 import "./bed-allocation-removal-races.realdb.test";
+// #2656 reuses the same guarded PostgreSQL to prove the shared-DOUBLE
+// invariants against the real indexes: the two dangerous write outcomes are
+// both properties of `@@unique([bedId, stayDate, isSecondOccupant])` and of the
+// partial index behind it, which no mock can establish. Its describe stays
+// skipped unless RUN_CONCURRENCY_RACE_TESTS=1 and its fixtures are namespaced
+// and cleaned independently.
+import "./bed-allocation-shared-double.realdb.test";
 // #2622 reuses the same guarded PostgreSQL to force both winner orders of a
 // booking date change against roster Save/Regenerate/Confirm now that a chore
 // row can legitimately sit on a booking's CHECK-OUT date. Its describe stays
