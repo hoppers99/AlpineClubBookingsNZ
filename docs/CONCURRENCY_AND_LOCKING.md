@@ -2040,7 +2040,8 @@ so a stale child snapshot can never overwrite a terminal transition.
 ### Writer doing both → `lock(1)` first, then per-lodge
 
 The Stripe capture (`markBookingPaymentSucceeded`), the confirm-pending-guests
-zero-dollar and charge branches, the waitlist-confirm $0 PAID claim, the
+zero-dollar and charge branches, the waitlist-confirm $0 PAID claim, the admin
+return-to-waitlist repair (#2649), the
 switch-to-internet-banking hold, the quote-accept conversion
 (`approveBookingRequest`), and every booking modification service
 (batch/date/guest-removal) take **`lock(1)` first, then the per-lodge lock**.
@@ -2146,6 +2147,132 @@ severity in Admin -> Audit log, carrying the lodge, the stay, and both error
 codes) plus a `logger.error` for Sentry, and member copy that names the state
 instead of inviting a retry. Swallowing it would have been the worse failure:
 silent, unsearchable, and indistinguishable from a booking the member abandoned.
+
+That row is written with an AWAITED `createAuditLog` rather than fire-and-forget
+`logAudit`, since #2649 made it the admin repair's entry condition: the repair
+refuses any booking without an unresolved report, so a report lost to process
+teardown would leave a genuinely stranded member repairable only from a database
+session — the thing #2649 exists to remove. The `.catch` guard keeps the previous
+failure semantics exactly (a failed write is logged, and the operator-door
+response is still returned), and the census manifest records the sink move: this
+is the case where `writeSites` does not change at all because one sink loses a
+site and another gains one, which is why the per-sink pins exist.
+
+Since #2649 that operator door is a button rather than a database session.
+`POST /api/admin/bookings/[id]/return-to-waitlist` (`bookings: edit`, `waitlist`
+module) is a fourth `PAYMENT_PENDING -> WAITLISTED` writer and takes the same
+protocol as the three that precede it: global `lock(1)`, then the booking's own
+immutable lodge capacity key, then a re-read of everything mutable, then a
+status-guarded `updateMany` that re-asserts BOTH `status: PAYMENT_PENDING` and
+`finalPriceCents: 0` — so a concurrent re-price cannot turn a repair into an
+un-confirm of a priced booking. A lost claim `return`s above the allocation
+reconcile and above the audit row, and the post-commit block runs on the success
+shape only, so the member email and `processWaitlistForDates` cannot fire on a
+claim that wrote nothing.
+
+**Why this writer needs the lodge tier at all, since `PAYMENT_PENDING` does not
+hold capacity.** It is not a capacity release. `PAYMENT_PENDING` is
+BED-ALLOCATABLE (`bed-allocation-lifecycle.ts`) and `WAITLISTED` is not, so the
+transition prunes real `BedAllocation` rows through the lock-held lifecycle seam
+and must serialise against every per-lodge allocation writer. Capacity is a
+separate question, and `booking-status.ts` is the authority on it: a
+`PAYMENT_PENDING` booking holds capacity only while `adminCapacityHoldAt` is set
+(#1764). Say "bed-allocatable, not capacity-holding" when reasoning about whether
+a writer on this status needs the lodge key — the answer is yes either way, but
+for the allocation reason, not a capacity one.
+
+That admin hold is itself part of the transition. An officer may set one on any
+`PAYMENT_PENDING` booking from the same Admin tools card
+(`capacity-hold/route.ts`), so "hold the nights, then repair" is a plausible
+order; the claim therefore spreads `RELEASE_ADMIN_CAPACITY_HOLD_UPDATE` and
+`RELEASE_WHOLE_LODGE_HOLD_UPDATE` like every other release in the tree and names
+what it released in its audit metadata, with the confirmation dialog stating the
+consequence before the press. Left in place the flag would be inert at
+`WAITLISTED` (enforcement is status-scoped) and then silently RE-ARM under a
+different episode's admin and date the moment the booking was re-offered and
+confirmed back — with an exclusive hold, re-blocking the whole lodge.
+
+**The guard is provenance, not shape.** `PAYMENT_PENDING` + `finalPriceCents: 0`
++ no `Payment` row is NOT "the stranded shape": **six** other producers reach it,
+none of them a waitlist confirmation.
+
+1. The `20260511113000` backfill migration — no price predicate and no "has a
+   payment row at all" predicate, and the companion promote migration only
+   touches rows that DO have a `SUCCEEDED` payment, so nothing cleans the
+   residue up. Its production yield is bounded, though, and the bound is worth
+   stating rather than overclaiming: `20260408070000_fix_zero_dollar_confirmed_bookings`
+   had already, a month earlier, minted a $0 `SUCCEEDED` payment for every
+   `CONFIRMED` free booking that lacked one and promoted it to `PAID`. So the
+   rows this backfill can have left in the shape are those created in the window
+   between the two migrations — a real class, not a hypothetical one, but not
+   "every legacy free booking" either.
+2. `modifyBookingDates` — its $0 auto-settle is nested inside
+   `if (appliedBeforeClamp > 0)`, so a date change that reprices to zero with NO
+   credit applied never reaches the payment upsert. Its sibling
+   `booking-modify-settlement.ts` computes `effectivePriceCents` OUTSIDE the
+   credit gate and settles the same case to `PAID`, which is what makes this a
+   defect rather than a policy.
+3. `adminShiftBookingDates` — no $0 settle at all, releasing a free `PENDING`
+   non-member hold with every price field left as booked.
+4. An admin review approval (`admin/bookings/[id]/review/route.ts`) — no price
+   check, and `booking-create.ts` deliberately skips the $0 auto-`PAID` settle
+   under `review.blockForReview`, so the booking it releases provably has no
+   payment row.
+5. The group settlement reaper — a price-blind `CONFIRMED -> PAYMENT_PENDING`
+   revert of a never-billed `ORGANISER_PAYS` child.
+6. A guest ADD releasing a free `PENDING` non-member hold
+   (`bookings/[id]/guests/route.ts`), which mints no payment.
+
+Two near-misses were checked and **refuted**, and are named so the next reader
+does not re-add them: guest REMOVAL settles the same case to `PAID` (it reaches
+the un-nested settle, because no caller can supply the `ADMIN` actor role its
+skip arm needs), and the guest-add route's own
+`AWAITING_REVIEW -> PAYMENT_PENDING` arm is unreachable, because an earlier
+status gate in the same handler admits only
+`PENDING`/`PAYMENT_PENDING`/`CONFIRMED`/`PAID`.
+
+So the route requires an UNRESOLVED
+`waitlist.confirm_offer_release_failed` report on the booking
+(`findUnresolvedWaitlistStrandReport` in `waitlist-return-contract.ts`), read
+under the locks and above the claim, and refuses in plain words when there is
+none. "Unresolved" means the newest of that action and
+`waitlist.returned_to_waitlist` is the strand rather than the repair: a strand
+report is permanent, so without the resolution test a booking that was stranded,
+repaired, successfully re-confirmed and later repriced to zero would look
+eligible again on a closed incident. The booking row itself carries no waitlist
+provenance to read — `confirmWaitlistOffer`'s phase-one claim nulls
+`waitlistPosition`, `waitlistOfferedAt` and `waitlistOfferExpiresAt` before a
+strand can exist, and `waitlistOfferedLodgeId`/`waitlistOfferedPriceCents` are
+set only on the cross-lodge path, which never parks in `PAYMENT_PENDING`.
+
+`waitlist.returned_to_waitlist` therefore carries the id and timestamp of the
+strand report it resolves — the row that PROVED eligibility, and which already
+holds the lodge, the stay, the price and both error codes — rather than a
+snapshot of the four offer columns the claim nulls. Those four are already null
+on every reachable strand, for the reason just given, so snapshotting them
+recorded four nulls and presented them as evidence.
+
+The post-commit sweep is keyed on `Booking.lodgeId`, **not**
+`waitlistOfferedLodgeId`, and this is where it deliberately differs from
+`expireStaleOffers`. That path's entry is still `WAITLIST_OFFERED` and holds a
+bed at the OFFERED lodge, so the offered lodge is what its revert frees. Here the
+lodge key held above, the allocations the reconcile prunes, and any admin hold
+released are all `Booking.lodgeId`. Sweeping the offered lodge instead would
+process a queue this repair freed nothing at while leaving the nights it did free
+unoffered. (The mutable re-read no longer selects `waitlistOfferedLodgeId` at
+all, so there is nothing to key off by mistake.)
+
+Its own contention maps to 503 with a retry sentence, not to an opaque 500 — the
+same P2028/P2034 set and the same reasoning as the compensation it finishes.
+A repair that exists because a lock wait was exhausted must not report its own
+exhausted lock wait as "the repair is broken". For the same reason it does not
+run on Prisma's 2s/5s defaults, against which the advisory wait counts: it takes
+the ADMIN precedent, `{ maxWait: 10_000, timeout: 30_000 }`, matching
+`assignBedRange` — the longest-lived holder of `lock(1)` in the tree — rather
+than the tighter member budget the compensation uses because a member is watching
+that request. It does no adult-member-hosting-coverage work, matching the two
+releases above it exactly; whether any of the three should is tracked as its own
+decision rather than answered differently for one of them.
 
 One residual window is accepted deliberately: the post-phase-one
 `booking.findUnique` that decides whether the $0 branch applies is not itself

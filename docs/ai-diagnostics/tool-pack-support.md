@@ -105,7 +105,7 @@ correctly, and for anyone extending the taxonomy in AID-6B or AID-6C.
 | Category | Correlation entry | Reader needs | What actually records there |
 | --- | --- | --- | --- |
 | `system`, `security` | System | `support:view` | Setup, credentials, password/magic-link policy, backups, auth events and auth bounces, PIN login |
-| `admin` | System | `support:view` | **The cross-domain catch-all** — the largest category in the codebase (117 write sites). Member merge, member-lifecycle delete/archive, member import, lodge-access changes, seasonal membership assignments, internet-banking **payment settings**, booking-request **settings**, chores, lockers, rooms, bed allocation, lodge settings, access roles, modules |
+| `admin` | System | `support:view` | **The cross-domain catch-all** — the largest category in the codebase (118 write sites). Member merge, member-lifecycle delete/archive, member import, lodge-access changes, seasonal membership assignments, internet-banking **payment settings**, booking-request **settings**, chores, lockers, rooms, bed allocation, lodge settings, access roles, modules |
 | `booking` | Booking | `support:view` + `bookings:view` | Member-facing and system booking events. Not booking *settings* — those are `admin` |
 | `account` | Membership | `support:view` + `membership:view` | Member self-service: profile edits, notification preferences, post-login landing, membership cancellation, member photos, membership applications and nomination |
 | `family` | Membership | `support:view` + `membership:view` | Family groups, partner links, login-holder changes, dependents |
@@ -159,9 +159,9 @@ the caller supplies one. The **executable census** — `npm run audit:census`, p
 sites that passed no category** when #2581 opened: 69 through `logAudit`, 11 through
 `createAuditLog`, 2 hand-built Prisma writes, and none through
 `createStructuredAuditLog`. Those same 82 were still uncategorised on `main`
-immediately before this change, out of **425** write sites in total.
+immediately before this change, out of **426** write sites in total.
 
-**All 82 have now been classified at the source.** The census reads **426 write sites and
+**All 82 have now been classified at the source.** The census reads **427 write sites and
 zero uncategorised**, so no *new* audit row is born invisible to these five entries. What
 each site was given is recorded site by site in `APPLIED_AUDIT_CATEGORIES`
 (`scripts/audit/audit-writer-census-manifest.ts`), and the contract test compares that

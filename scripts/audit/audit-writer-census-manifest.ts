@@ -135,7 +135,29 @@ export const AUDIT_CENSUS_TOTALS = {
    * A byte-identical pin across two branches is not agreement; it is a
    * collision that git cannot see.
    *
-   * 425 -> 426 (#2581 child 2): the member bulk-update writer became TWO
+   * 425 -> 426 (#2649): the admin repair for a stranded zero-dollar waitlist
+   * confirm writes `waitlist.returned_to_waitlist` with the awaited
+   * `createAuditLog`, inside the claim's own transaction, because the row is the
+   * other half of the `waitlist.confirm_offer_release_failed` trail #2648
+   * opened — its metadata carries that row's id, so the strand and its repair
+   * are linked in both directions. Categorised `booking` at the site, so it does
+   * not join `UNCATEGORISED_AUDIT_WRITERS` below.
+   *
+   * AND THE GATE FIRED AGAIN ON #2649'S OWN MERGE, IN THE EXACT SHAPE THE
+   * PARAGRAPH ABOVE DESCRIBES — a second time in one window, on a different
+   * line. That branch pinned `createAuditLog: 104` (102 -> 103 for the repair
+   * route, 103 -> 104 for the `logAudit` conversion below); #2595 pinned
+   * `createAuditLog: 104` for its two reviewed-move writes. Two different +2s,
+   * one identical literal, so git had nothing textual to report on the
+   * `bySink.createAuditLog` line and merged the VALUE silently while only the
+   * comments above it collided. That merged tree held all four writers, so the
+   * honest figure was 106 and neither side's literal was it. Nor was
+   * `writeSites` self-checking there: #2649's total moved 423 -> 424 (+1 net,
+   * because the `logAudit` conversion moves a site between sinks rather than
+   * adding one), main's moved 423 -> 425, and that merged truth was 426 — a
+   * number reachable from neither literal alone.
+   *
+   * 426 -> 427 (#2581 child 2): the member bulk-update writer became TWO
    * writers. It was one call site emitting `member.bulk-${action}` over a
    * three-value enum whose members affect DIFFERENT domains — `set-role` is a
    * permissions change, `deactivate`/`reactivate` are account changes — so
@@ -144,8 +166,24 @@ export const AUDIT_CENSUS_TOTALS = {
    * allows no conditional at all and the honest way to satisfy it is to let
    * each branch state its own answer where a reader and the scanner can both
    * see it.
+   *
+   * AND IT FIRED ON THIS MERGE TOO, ON THE `writeSites` LINE ITSELF — the third
+   * silent one, and recorded here rather than just corrected so the next lane
+   * can see how routine this has become. #2649 measured 425 -> 426 against a
+   * base without the bulk-update split. This branch measured 425 -> 426 against
+   * a base without #2649's repair writer. Two different +1s, one identical
+   * literal: `426`. Git had no textual disagreement to report on the
+   * `writeSites` line, so it merged the VALUE silently and only these comments
+   * collided — exactly the 420 and 423 shape above. The merged tree holds both
+   * writers, so the honest number is one neither side stated. Both `bySink`
+   * lines collided the same way (`createAuditLog: 106` on both sides from two
+   * different +2s) and survived only because their `uncategorised` halves
+   * differed, which is a property of THIS pair of branches and not a safeguard.
+   * Re-measured on the merged tree by RUNNING `npm run audit:census`, never by
+   * adding deltas: 427 row-producing sites, `logAudit` 241, `createAuditLog`
+   * 108, `auditLog.create` 70, `booking` 101, uncategorised 0.
    */
-  writeSites: 426,
+  writeSites: 427,
   /**
    * Of those, sites whose event object carries no `category` key.
    *
@@ -162,18 +200,39 @@ export const AUDIT_CENSUS_TOTALS = {
     // outside every transaction because its own failure must not mask the strand.
     // 239 -> 241 (#2621): the two arrival-time writers, above (re-measured on
     // merged tree, #2621).
-    // 241 -> 242 (#2581 child 2): the bulk-update split, above.
-    logAudit: { total: 242, uncategorised: 0 },
+    // 241 -> 240 (#2649 review): that same #2623 marker moved OUT of this sink —
+    // see `createAuditLog` below. Fire-and-forget was right while it was only a
+    // notification and wrong once a repair depended on it.
+    // 240 -> 241 (#2581 child 2): the bulk-update split, above.
+    logAudit: { total: 241, uncategorised: 0 },
     // 101 -> 102 (#2627): the deletion-approval release, above.
     // 102 -> 104 (#2595): the two reviewed-move writes, above.
-    // 104 -> 106 (#2581 child 2): the two hand-built dependants writes moved
+    // 104 -> 105 (#2649): the return-to-waitlist repair, above.
+    // 105 -> 106 (#2649 review): `waitlist.confirm_offer_release_failed` in
+    // `waitlist-confirm/route.ts` converted from `logAudit` to an AWAITED
+    // `createAuditLog` (still `.catch`-guarded, so a failed write logs and the
+    // operator-door response is unchanged). The repair route refuses any booking
+    // without an unresolved report — the free/`PAYMENT_PENDING`/no-payment shape
+    // alone is reached by producers that were never on a waitlist — so a report
+    // lost before it committed would leave a genuinely stranded member
+    // repairable only from a database session. This is the line whose
+    // byte-identical collision with #2595 the `writeSites` note above describes:
+    // both sides said 104, that merged tree said 106.
+    // 106 -> 108 (#2581 child 2): the two hand-built dependants writes moved
     // OFF `tx.auditLog.create` and onto `createAuditLog(params, tx)`. They kept
     // their transaction — the `tx` client is still passed — but they now go
     // through `buildAuditLogCreateData`, so they finally get metadata
     // sanitisation and a derived retention class. The row COUNT is unchanged;
     // only the FORM moved, which is exactly the shift this per-sink pin exists
     // to make visible.
-    createAuditLog: { total: 106, uncategorised: 0 },
+    //
+    // AND THIS LINE COLLIDED BYTE-IDENTICALLY TOO, on the merge that produced
+    // the number above: #2649 pinned `106` from its repair-plus-conversion +2,
+    // this branch pinned `106` from its two dependants writes. Git surfaced it
+    // only because the `uncategorised` half of the same line differed (11 vs 0).
+    // Had this change been a pure re-form with no category attached, the total
+    // would have merged silently two short. The merged truth is 108, measured.
+    createAuditLog: { total: 108, uncategorised: 0 },
     createStructuredAuditLog: { total: 8, uncategorised: 0 },
     // 71 -> 72 (#2352 MC-03D): the page-content deletion, above.
     // 72 -> 70 (#2581 child 2): the two dependants writes, above.
@@ -216,9 +275,13 @@ export const AUDIT_CENSUS_TOTALS = {
     // with `support:view` plus `bookings:view`, like every other booking row
     // beside them — and the booking officers who can set this field already hold
     // both — so this widens nobody's access. (Re-measured on merged tree, #2621.)
-    // 82 -> 100 (#2581 child 2): the ten booking-policy/booking-period/age-tier
+    // 82 -> 83 (#2649): `waitlist.returned_to_waitlist`. The same category the
+    // strand row it resolves already uses, and the same two reads — so it
+    // reaches exactly the administrators who can already see the booking it
+    // names, and nobody new.
+    // 83 -> 101 (#2581 child 2): the ten booking-policy/booking-period/age-tier
     // writers and the eight season and promotional-code writers (decision 4).
-    booking: 100,
+    booking: 101,
     // 16 -> 33 (#2581 child 2): the seventeen money writers — subscription
     // billing, member credit, fee configuration, saved-card charges and the five
     // Stripe webhook outcomes. `payment` is `support` plus `finance`, the

@@ -18,10 +18,16 @@ vi.mock("@/lib/prisma", () => ({ prisma: {} }));
 // Stripe/email pull in provider SDKs at import; stub them so the route modules
 // load in the jsdom-free node test without provider env.
 vi.mock("@/lib/stripe", () => ({ chargePaymentMethod: vi.fn() }));
-vi.mock("@/lib/email", () => ({ sendBookingConfirmedEmail: vi.fn() }));
+vi.mock("@/lib/email", () => ({
+  sendBookingConfirmedEmail: vi.fn(),
+  // #2649's repair tells the member their waitlist place is back through the
+  // existing offer-expired mailer, so its module needs the same stub.
+  sendWaitlistOfferExpiredEmail: vi.fn(),
+}));
 
 import { PATCH as reviewPatch } from "@/app/api/admin/bookings/[id]/review/route";
 import { POST as forceConfirmPost } from "@/app/api/admin/bookings/[id]/force-confirm/route";
+import { POST as returnToWaitlistPost } from "@/app/api/admin/bookings/[id]/return-to-waitlist/route";
 import {
   POST as capacityHoldPost,
   DELETE as capacityHoldDelete,
@@ -67,6 +73,14 @@ describe("booking action route guards (#1997)", () => {
 
   it("force-confirm POST requires bookings:edit", async () => {
     const res = await forceConfirmPost(req("POST"), { params });
+    expect(res.status).toBe(403);
+    expect(mocks.requireAdmin).toHaveBeenCalledWith({
+      permission: BOOKINGS_EDIT,
+    });
+  });
+
+  it("return-to-waitlist POST requires bookings:edit", async () => {
+    const res = await returnToWaitlistPost(req("POST"), { params });
     expect(res.status).toBe(403);
     expect(mocks.requireAdmin).toHaveBeenCalledWith({
       permission: BOOKINGS_EDIT,

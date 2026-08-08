@@ -648,6 +648,10 @@ describe("CSP proxy", () => {
       ["/api/admin/bookings/bkg-1/force-confirm"],
     ],
     [
+      String(/^\/api\/admin\/bookings\/[^/]+\/return-to-waitlist$/),
+      ["/api/admin/bookings/bkg-1/return-to-waitlist"],
+    ],
+    [
       String(/^\/api\/admin\/members\/[^/]+\/xero-(link|push|unlink)$/),
       [
         "/api/admin/members/mem-1/xero-link",

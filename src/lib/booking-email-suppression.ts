@@ -103,6 +103,12 @@ export const ALWAYS_BOOKING_SCOPED_TEMPLATE_NAMES: ReadonlySet<string> =
     "waitlist-confirmation",
     "waitlist-offer",
     "waitlist-offer-expired",
+    // #2649: the restored-place notice an admin's stranded-confirm repair sends.
+    // Same sender module, same `{ bookingId, recipientMemberId }` context as its
+    // three siblings — a waitlist entry IS a booking row — so the per-booking
+    // "No emails" switch withholds it and the retry cron refuses to replay a
+    // legacy NULL-bookingId row under this name.
+    "waitlist-place-restored",
     // src/lib/email/chores.ts — ChoreAssignment.bookingId is NOT NULL
     "chore-roster",
     // Union-typed wrappers whose every call site passes a real booking id
