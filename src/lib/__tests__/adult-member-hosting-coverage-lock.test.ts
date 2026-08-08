@@ -31,6 +31,35 @@ function readRepoFile(relativePath: string): string {
   return readFileSync(path.resolve(process.cwd(), relativePath), "utf8");
 }
 
+/**
+ * The whole body of a top-level function, from its declaration to its own closing
+ * brace — not a fixed number of characters from the declaration.
+ *
+ * A CHARACTER WINDOW IS NOT THE CONSTRUCT THESE ASSERTIONS MEAN TO PIN, and #2623
+ * proved it: a comment added inside `enqueueHostingCoverageReevaluationForMember`
+ * explaining WHY a neighbouring lock is deliberately ungated pushed the
+ * `lockHostingCoverageOwner` call past `start + 4000`, and the test failed on a
+ * change that moved no code at all. The failure mode in the other direction is
+ * worse and silent: shrink a function and the window spills into the NEXT one, so
+ * the assertion passes on a call that has been hoisted out of the guarded path
+ * entirely — exactly the mutation this file exists to catch.
+ *
+ * Every source file here is prettier-formatted, so a top-level function ends at
+ * the first line that is exactly `}` in column 0 after its declaration; nothing
+ * inside the body is unindented. That makes the boundary exact without a parser.
+ * The "line that is exactly `}`" part is load-bearing rather than pedantic:
+ * `evaluateBookingAdultMemberHosting` returns a multi-line inline object type
+ * whose own brace closes in column 0 as `}>`, so a bare search for a column-0 `}`
+ * would end the body inside the signature and never reach a single statement.
+ */
+function topLevelFunctionBody(source: string, name: string): string | null {
+  const start = source.indexOf(`function ${name}(`);
+  if (start === -1) return null;
+  const closing = /\n\}(?=\n|$)/.exec(source.slice(start));
+  if (!closing) return source.slice(start);
+  return source.slice(start, start + closing.index + 2);
+}
+
 /** A client that records the tagged-template SQL it was handed. */
 function recordingClient() {
   const calls: Array<{ sql: string; values: unknown[] }> = [];
@@ -115,13 +144,12 @@ describe("the per-owner coverage lock (#2576 §9)", () => {
       "enqueueOwnHostingCoverageReevaluation",
       "enqueueHostingCoverageReevaluationForMember",
     ]) {
-      const start = review.indexOf(`function ${holder}(`);
-      expect(start, holder).toBeGreaterThan(-1);
-      // The lock must appear inside the function body, before the next top-level
-      // declaration. A generous window rather than a parser: the point is that the
-      // call has not been deleted or hoisted out of the guarded path.
-      const body = review.slice(start, start + 4000);
-      expect(body, holder).toContain("lockHostingCoverageOwner");
+      // The lock must appear inside the function's OWN body — the point is that
+      // the call has not been deleted or hoisted out of the guarded path, so the
+      // slice has to end where the function does rather than a fixed distance in.
+      const body = topLevelFunctionBody(review, holder);
+      expect(body, holder).not.toBeNull();
+      expect(body ?? "", holder).toContain("lockHostingCoverageOwner");
     }
   });
 
