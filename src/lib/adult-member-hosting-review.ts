@@ -1139,12 +1139,22 @@ export async function reconcileAdultMemberHostingReview(
  * refusal produced entirely by a switched-off feature guarding a queue row that
  * would never be written.
  *
- * The mode is therefore read FIRST, exactly as the sibling seam
- * `enqueueOwnHostingCoverageReevaluation` reads it, and an inactive mode returns
+ * The mode is therefore read FIRST, as the sibling seam
+ * `enqueueOwnHostingCoverageReevaluation` also does, and an inactive mode returns
  * through the plain single-booking reconciler — which is what the fenced path did
  * anyway once `outcome.mode` came back inactive, minus the lock. The single-id
  * reconciler still runs, because clearing a snapshot left behind by a lodge that
  * has since switched the rule off is exactly its job.
+ *
+ * THE THRESHOLD IS NOT THE SIBLING'S, and the difference is deliberate rather than
+ * drift (#2623 F5). That seam gates on `resolved.mode !== "ENFORCED"`, because all
+ * it does is enqueue queue work that only an ENFORCED lodge can ever act on. This
+ * one gates on `hostingModeIsActive` — ENFORCED *or* ADMIN_REVIEW_REQUIRED —
+ * because under review-only the dependants still have to be re-read and a review
+ * snapshot still has to be written, so the fence is genuinely owed. Narrowing this
+ * to the sibling's test skips the fence at a review-only lodge that needs it, and
+ * the `ADMIN_REVIEW_REQUIRED` case in `adult-member-hosting-same-owner.test.ts`
+ * fails if you try it.
  *
  * SKIPPING THE FENCE HERE IS SAFE, not merely cheap: with the mode inactive
  * `evaluateBookingAdultMemberHosting` takes no coverage-owner advisory key, so
