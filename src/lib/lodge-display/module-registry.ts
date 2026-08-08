@@ -134,7 +134,8 @@ const DISPLAY_MODULE_METADATA: DisplayModuleMetadata[] = [
     label: "Arrivals board",
     description:
       "The everyday bar board: one bar per booking across the nights it " +
-      "covers, with guest names and check-out day. With bed allocation on it " +
+      "covers, with guest names, expected arrival time and check-out day. " +
+      "With bed allocation on it " +
       "groups bars into room rows; with it off it degrades to per-booking rows " +
       "(no room lanes).",
     dependencies: ["bedAllocation"],
@@ -151,6 +152,9 @@ const DISPLAY_MODULE_METADATA: DisplayModuleMetadata[] = [
       "display-bar",
       "display-bar-names",
       "display-bar-overflow",
+      // #2621: the expected arrival time on a bar that starts inside the
+      // window. Themable like every other bar hook so a club can tone it down.
+      "display-bar-arrival",
       "display-bar-out",
     ],
     contributes: [],
