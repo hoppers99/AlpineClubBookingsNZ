@@ -153,10 +153,11 @@ beforeEach(() => {
   vi.clearAllMocks();
   mockRequireActiveSessionUser.mockResolvedValue(null);
   mockLoadEffectiveModuleFlags.mockResolvedValue({ bedAllocation: true });
-  // The booking under edit lives at lodge A and belongs to owner-1.
+  // The booking under edit lives at lodge A, belongs to owner-1, and is live.
   mockBookingFindUnique.mockResolvedValue({
     memberId: "owner-1",
     lodgeId: "lodge-a",
+    deletedAt: null,
   });
   mockLodgeRoomFindMany.mockImplementation(
     async (args: { where: Parameters<typeof roomsMatching>[0] }) =>
@@ -193,7 +194,7 @@ describe("GET /api/bookings/[id]/requested-room/options (#2664)", () => {
     // Derived from the booking row, never from the request.
     expect(mockBookingFindUnique).toHaveBeenCalledWith({
       where: { id: "booking-a" },
-      select: { memberId: true, lodgeId: true },
+      select: { memberId: true, lodgeId: true, deletedAt: true },
     });
     expect(mockMemberLodgeAccessFindMany).not.toHaveBeenCalled();
   });
@@ -291,6 +292,48 @@ describe("GET /api/bookings/[id]/requested-room/options (#2664)", () => {
       "room-attic",
     );
     expect(mockLodgeRoomFindMany.mock.calls[0][0].where.active).toBe(true);
+  });
+
+  // A soft-deleted booking is not found here for ANY role. The picker is
+  // hard-disabled on a deleted booking (`canEditRequestedRoom` is
+  // `isDeleted ? false : ...`), so no caller of any role can act on the answer.
+  // The page's own Full-Admin exemption is deliberately NOT copied: the page is
+  // a record-viewing surface, this route is not.
+  it.each([
+    ["the owner", OWNER],
+    ["a Booking Officer", BOOKING_OFFICER],
+    ["a Full Admin", FULL_ADMIN],
+  ])("returns 404 on a soft-deleted booking for %s", async (_who, session) => {
+    mockAuth.mockResolvedValue(session);
+    mockBookingFindUnique.mockResolvedValue({
+      memberId: "owner-1",
+      lodgeId: "lodge-a",
+      deletedAt: new Date("2026-06-01T00:00:00.000Z"),
+    });
+
+    const res = await callRoute();
+
+    expect(res.status).toBe(404);
+    expect(await res.json()).toEqual({ error: "Booking not found" });
+    expect(mockLodgeRoomFindMany).not.toHaveBeenCalled();
+  });
+
+  it("still answers 403, not 404, to a stranger on a soft-deleted booking", async () => {
+    // The deletion check sits AFTER the authority check on purpose. Checking it
+    // first would answer 404 for a deleted booking and 403 for a live one,
+    // handing an unauthorised caller a deleted-or-live oracle on a booking they
+    // have no claim to.
+    mockAuth.mockResolvedValue(STRANGER);
+    mockBookingFindUnique.mockResolvedValue({
+      memberId: "owner-1",
+      lodgeId: "lodge-a",
+      deletedAt: new Date("2026-06-01T00:00:00.000Z"),
+    });
+
+    const res = await callRoute();
+
+    expect(res.status).toBe(403);
+    expect(mockLodgeRoomFindMany).not.toHaveBeenCalled();
   });
 
   it("returns 404 for a booking that does not exist, before any room read", async () => {

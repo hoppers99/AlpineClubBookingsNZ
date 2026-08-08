@@ -84,6 +84,20 @@ const LODGE_A_OPTIONS = {
   rooms: [{ id: "room-alpine", name: "Alpine", bedCount: 4 }],
 };
 
+// What the OLD unscoped read answered, kept live in the fetch stub below. This
+// is the defect itself, reproducible: a member eligible for both lodges got
+// lodge B's Cedar back from `/api/bookings/rooms`, and the picker offered it.
+// Serving it from that URL is what makes "no Cedar in the picker" an assertion
+// that can actually fail — a component that regressed to the old URL gets Cedar
+// and lights the test up, rather than passing because no fixture contains it.
+const UNSCOPED_EVERY_LODGE = {
+  enabled: true,
+  rooms: [
+    { id: "room-alpine", name: "Alpine", bedCount: 4 },
+    { id: "room-cedar", name: "Cedar", bedCount: 2 },
+  ],
+};
+
 function jsonResponse(status: number, body: unknown): Response {
   return {
     ok: status >= 200 && status < 300,
@@ -101,8 +115,32 @@ function optionValues(): string[] {
     .map((option) => (option as HTMLOptionElement).value);
 }
 
+/**
+ * Every call the component made to the old unscoped endpoint, matched on PREFIX
+ * rather than on the exact string. A regression that reached for
+ * `/api/bookings/rooms?lodgeId=...` is the same defect with a query string on
+ * it, and an exact-equality negative would wave it through.
+ */
+function unscopedRoomCalls(): string[] {
+  return fetchMock.mock.calls
+    .map((call) => String(call[0]))
+    .filter((url) => url.startsWith("/api/bookings/rooms"));
+}
+
 beforeEach(() => {
-  fetchMock = vi.fn().mockResolvedValue(jsonResponse(200, LODGE_A_OPTIONS));
+  // The stub answers BOTH endpoints, so which one the component asks decides
+  // what it gets. That is what turns these tests into a reproduction of the
+  // defect rather than a restatement of the fixture.
+  fetchMock = vi.fn((input: RequestInfo | URL) => {
+    const url = String(input);
+    if (url === OPTIONS_URL) {
+      return Promise.resolve(jsonResponse(200, LODGE_A_OPTIONS));
+    }
+    if (url.startsWith("/api/bookings/rooms")) {
+      return Promise.resolve(jsonResponse(200, UNSCOPED_EVERY_LODGE));
+    }
+    return Promise.resolve(jsonResponse(404, { error: "Not found" }));
+  });
   vi.stubGlobal("fetch", fetchMock);
 });
 
@@ -127,10 +165,9 @@ describe("RequestedRoomEditor room-options scope (#2664)", () => {
       expect(fetchMock).toHaveBeenCalledWith(OPTIONS_URL);
     });
     // The old call, in the form that caused the defect. It must be gone: any
-    // request without the booking in it cannot be lodge-scoped by the server.
-    expect(
-      fetchMock.mock.calls.map((call) => String(call[0])),
-    ).not.toContain("/api/bookings/rooms");
+    // request without the booking in it cannot be lodge-scoped by the server,
+    // with or without a `lodgeId` on the query string.
+    expect(unscopedRoomCalls()).toEqual([]);
   });
 
   it("asks the same booking-scoped read on the staff path", async () => {
@@ -149,15 +186,14 @@ describe("RequestedRoomEditor room-options scope (#2664)", () => {
     await waitFor(() => {
       expect(fetchMock).toHaveBeenCalledWith(OPTIONS_URL);
     });
-    expect(
-      fetchMock.mock.calls.map((call) => String(call[0])),
-    ).not.toContain("/api/bookings/rooms");
+    expect(unscopedRoomCalls()).toEqual([]);
   });
 
-  it("offers no room the booking-scoped read did not return", async () => {
-    // The member is eligible for both lodges — the situation in which the old
-    // unscoped read handed over Cedar. The editor now has exactly one source of
-    // selectable rooms, so a lodge B room cannot reach the picker.
+  it("offers no lodge B room on a lodge A booking, to a member eligible for both", async () => {
+    // The headline case, reproduced end to end at the component: the stub is
+    // still serving Cedar on `/api/bookings/rooms`, exactly as the real endpoint
+    // did for a member with no booking restrictions. The only thing keeping
+    // Cedar out of this picker is which URL the component asks.
     render(
       <RequestedRoomEditor
         bookingId={LODGE_A_BOOKING}

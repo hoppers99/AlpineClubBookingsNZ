@@ -102,6 +102,16 @@ operational documents (which may carry door/emergency access details).
   own booking restrictions even though their write runs under `bookings:edit`.
   The writer's same-lodge validation stays authoritative regardless: the scoped
   read is UX correctness, not a substitute for the write guard.
+  One consequence is deliberate and worth stating plainly: a member who owns a
+  booking at a lodge they are **later** restricted away from can still read that
+  booking's room names through this route, where the discovery endpoint would
+  now filter them out. That is correct. `writeRequestedRoom()` never consults
+  `assertMemberMayBookLodge`, so the member can still change the requested room
+  on the booking they already hold — and refusing the read while permitting the
+  write would recreate the exact broken control this contract exists to remove.
+  A booking restriction governs making NEW bookings, not operating one the club
+  already accepted. Any future read added under this rule inherits the same
+  reasoning: match the read to the write it feeds, not to the discovery gate.
 
 ## Club-Wide Models (No Lodge Dimension)
 

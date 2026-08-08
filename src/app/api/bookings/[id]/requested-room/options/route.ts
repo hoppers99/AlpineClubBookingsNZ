@@ -74,7 +74,7 @@ export async function GET(
   // Nothing about rooms is read until both have been established.
   const booking = await prisma.booking.findUnique({
     where: { id },
-    select: { memberId: true, lodgeId: true },
+    select: { memberId: true, lodgeId: true, deletedAt: true },
   });
   if (!booking) {
     return NextResponse.json({ error: "Booking not found" }, { status: 404 });
@@ -86,6 +86,29 @@ export async function GET(
     !hasAdminAreaAccess(session.user, { area: "bookings", level: "edit" })
   ) {
     return NextResponse.json({ error: "Forbidden" }, { status: 403 });
+  }
+
+  // A soft-deleted booking is NOT FOUND here, for every caller — no Full Admin
+  // exemption. Three reasons it is shaped this way:
+  //
+  //  - It is the pattern its own neighbours already use. `send-guest-payment-link`
+  //    and `additional-payment-secret` both select `deletedAt` beside the
+  //    authority fields and answer 404 on a deleted booking regardless of role.
+  //  - It deliberately does NOT copy `bookings/[id]/page.tsx`'s
+  //    `if (booking.deletedAt && !isAdmin) notFound()`. That exemption exists
+  //    because the PAGE is a record-viewing surface, and an admin has a real
+  //    reason to look at a booking that was deleted. This route is not a
+  //    viewing surface: it exists solely to populate the requested-room picker,
+  //    and that picker is hard-disabled on a deleted booking for every role
+  //    (`canEditRequestedRoom` is `isDeleted ? false : ...`). Nobody of any role
+  //    can act on this answer, so nobody of any role should receive it.
+  //  - It sits AFTER the authority check, not before it. Checking deletion first
+  //    would answer 404 for a deleted booking and 403 for a live one, handing an
+  //    unauthorised caller a deleted-or-live oracle on a booking they have no
+  //    claim to. This way an unauthorised caller gets 403 either way, and only
+  //    someone entitled to the booking learns its state.
+  if (booking.deletedAt) {
+    return NextResponse.json({ error: "Booking not found" }, { status: 404 });
   }
 
   const modules = await loadEffectiveModuleFlags();
