@@ -2758,6 +2758,18 @@ and `DEPLOYMENT.md`.
 - `src/lib/__tests__/isr-page-cache-behaviour.test.ts` — executes Next's own cache
   to observe that a store which cannot be written degrades to a warning and a
   re-render rather than a 500.
+- `src/lib/__tests__/public-content-revalidation.test.ts` — the BODY of the
+  canonical invalidator: `revalidatePublicSite()` issues `revalidatePath("/",
+  "layout")` and the older `revalidatePublicPageContent()` name is still the same
+  call rather than a weaker one. Its neighbour
+  `public-content-invalidation-contract.test.ts` pins the 39 call SITES and says
+  nothing about what the helper then does, and that gap was measured rather than
+  supposed: deleting the full-route line left the whole Vitest tier green, with the
+  real-server unpublish case in `e2e/static-cms-pages.spec.ts` the only thing
+  failing. That line is the entire mechanism behind "an admin edit appears
+  immediately" — the tagged data caches clear nothing a visitor sees while the page
+  itself is served from the store — so it now fails in seconds rather than only in
+  Playwright.
 
 ## Follow-Up Mapping
 

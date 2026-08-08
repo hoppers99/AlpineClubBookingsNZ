@@ -42,6 +42,14 @@ import {
  * the stored copy, since a data-cache clear would leave the 200 answering for up to
  * the 300-second backstop.
  *
+ * That case needs a real server and a real database, and for a while it was the ONLY
+ * thing holding the line below. Measured, not supposed: deleting
+ * `revalidatePath("/", "layout")` from this function left the entire Vitest tier
+ * green — the 39-call-site contract test next door pins who reaches this helper, not
+ * what it then does. `src/lib/__tests__/public-content-revalidation.test.ts` now
+ * pins the body, so the refactor that drops the line fails in seconds instead of
+ * waiting for Playwright.
+ *
  * The COMPLETE-SETUP transition that F3 also asked for is covered at the unit level
  * only (`site-style-api.test.ts` asserts the PUT issues the call). There is no
  * end-to-end case for it: `e2e/pre-setup/setup-gate.spec.ts` flips the state by
