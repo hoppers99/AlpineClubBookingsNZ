@@ -428,6 +428,35 @@ describe("BedAllocationRemovalDialog", () => {
     expect(screen.getByRole("alert")).toBeEmptyDOMElement();
   });
 
+  /**
+   * #2668. The apply used to answer a rejected `fetch` with "Removal failed;
+   * nothing was removed." A rejected `fetch` covers the PUT that ran and lost
+   * its answer as well as the PUT that never arrived, so that sentence could be
+   * the exact opposite of what the board now holds. The two 409 branches keep
+   * their confident wording, because there the SERVER reported the removal was
+   * not applied — the difference between the two is the whole point.
+   */
+  it("claims no outcome for an apply whose response never arrives", async () => {
+    fetchMock
+      .mockResolvedValueOnce(response(preview()))
+      .mockRejectedValueOnce(new TypeError("Failed to fetch"));
+    renderDialog();
+
+    fireEvent.click(screen.getByRole("button", { name: "Preview removal" }));
+    await screen.findByText(/matching allocation/);
+    fireEvent.click(
+      screen.getByRole("button", { name: "Remove reviewed allocations" }),
+    );
+
+    const alert = await screen.findByRole("alert");
+    await waitFor(() =>
+      expect(alert).toHaveTextContent(
+        "The service response could not be read, so we could not verify whether the removal was applied. Reload the board to see the current allocations before trying again.",
+      ),
+    );
+    expect(alert).not.toHaveTextContent("nothing was removed");
+  });
+
   it("returns focus to the shared entry trigger after cancel", async () => {
     function Harness() {
       const [applied] = useState(vi.fn());

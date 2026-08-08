@@ -10,6 +10,7 @@ import {
   isWaitlistConfirmAwaitingOperator,
   isWaitlistOfferRevoked,
 } from "@/lib/waitlist-confirm-recovery-contract";
+import { unverifiedWriteMessage } from "@/lib/unverified-write-copy";
 
 interface WaitlistOfferCardProps {
   bookingId: string;
@@ -156,8 +157,14 @@ export function WaitlistOfferCard({
   }
 
   function showUnconfirmedStatus() {
+    // #2668: this sentence was written here first (#2623 T8) and is now the
+    // shared wording every unverified write in the app uses. Byte-for-byte the
+    // same string it always was — it just no longer lives in one component.
     setError(
-      "The service response could not be read, so we could not verify whether this offer was confirmed. Reload the booking and check its current status before trying again.",
+      unverifiedWriteMessage(
+        "this offer was confirmed",
+        "Reload the booking and check its current status before trying again.",
+      ),
     );
     setConfirmSuppressed("status-unverified");
     setConfirming(false);

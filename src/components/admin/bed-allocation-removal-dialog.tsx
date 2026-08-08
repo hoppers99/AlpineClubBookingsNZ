@@ -26,6 +26,7 @@ import type {
   BedAllocationRemovalPreview,
   BedAllocationRemovalScope,
 } from "@/lib/bed-allocation-removal";
+import { unverifiedWriteMessage } from "@/lib/unverified-write-copy";
 
 const CATEGORY_OPTIONS: Array<{
   value: BedAllocationRemovalCategory;
@@ -407,7 +408,22 @@ export function BedAllocationRemovalDialog({
       }
     } catch {
       if (generation !== requestGenerationRef.current || !open) return;
-      setError("Removal failed; nothing was removed.");
+      /*
+        #2668. This used to say "nothing was removed", which is the same claim
+        the `onApplied` catch a few lines above already refuses to make: a
+        rejected `fetch` covers the PUT that ran and lost its answer as well as
+        the PUT that never arrived. The two 409 paths above keep their confident
+        wording because there the SERVER said nothing was removed. Retrying is
+        safe either way — the apply is digest-guarded, so a preview the server
+        has already consumed is refused rather than replayed — but the board on
+        screen may now be stale, so send the admin at it.
+      */
+      setError(
+        unverifiedWriteMessage(
+          "the removal was applied",
+          "Reload the board to see the current allocations before trying again.",
+        ),
+      );
       setStatus("");
     } finally {
       applyInFlightRef.current = false;

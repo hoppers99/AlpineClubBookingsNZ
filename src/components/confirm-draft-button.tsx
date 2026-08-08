@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { FocusedActionError } from "@/components/focused-action-error";
+import { unverifiedWriteMessage } from "@/lib/unverified-write-copy";
 
 interface ConfirmDraftButtonProps {
   bookingId: string;
@@ -33,8 +34,14 @@ export function ConfirmDraftButton({ bookingId }: ConfirmDraftButtonProps) {
       setError(data.error || "Failed to confirm booking");
       setErrorAttention((value) => value + 1);
     } catch {
+      // #2668: one wording, built in one place. This sentence used to be typed
+      // out here by hand — byte-identical to the others by luck rather than by
+      // construction, and the first surface a future rewording would miss.
       setError(
-        "The service response could not be read, so we could not verify whether this draft was confirmed. Reload the booking and check its status before trying again.",
+        unverifiedWriteMessage(
+          "this draft was confirmed",
+          "Reload the booking and check its status before trying again.",
+        ),
       );
       setErrorAttention((value) => value + 1);
     } finally {
