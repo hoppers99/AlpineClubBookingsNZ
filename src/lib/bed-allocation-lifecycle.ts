@@ -1531,6 +1531,7 @@ export function partnerShareSweepCounterpartNames(
   memberId: string,
 ): string {
   const names = new Set<string>();
+  let sawSelfPair = false;
   for (const row of swept) {
     if (row.secondOccupantMemberId !== memberId && row.secondOccupantName) {
       names.add(row.secondOccupantName);
@@ -1538,8 +1539,21 @@ export function partnerShareSweepCounterpartNames(
     if (row.primaryMemberId !== memberId && row.primaryName) {
       names.add(row.primaryName);
     }
+    if (
+      row.secondOccupantMemberId === memberId &&
+      row.primaryMemberId === memberId
+    ) {
+      sawSelfPair = true;
+    }
   }
-  return [...names].join(", ") || "Unknown member";
+  if (names.size > 0) return [...names].join(", ");
+  // #2595 — the merge of two records that were each other's confirmed partners
+  // and shared a bed. Both guest rows collapse onto the master, so BOTH sides
+  // filter out here and the old fall-back told an officer the counterpart was
+  // "Unknown member" — which reads like missing data rather than the truth,
+  // which is that there is no longer a second person at all.
+  if (sawSelfPair) return "the same member (a merged duplicate of themselves)";
+  return "Unknown member";
 }
 
 async function recordPartnerShareSweepAudits(
