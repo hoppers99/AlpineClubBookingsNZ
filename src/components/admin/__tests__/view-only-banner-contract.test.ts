@@ -322,7 +322,7 @@ const NOTICE = "AdminViewOnlyNotice";
 */
 const FIGURES = {
   /** Every `<ViewOnlyActionButton>` render site in the admin tree. */
-  callSites: 314,
+  callSites: 315,
   /** Those that hand their explanation to a banner, by either rule. */
   optOuts: 264,
   /** `describeReason={false}` — needs a banner in the SAME file. */
@@ -334,11 +334,11 @@ const FIGURES = {
   /** …of the vouched: proved through the wizard shell's channel (#2324). */
   shellVouchedOptOuts: 5,
   /** Controls that KEEP the per-button reason, and the files holding them. */
-  exceptions: 50,
-  exceptionFiles: 27,
+  exceptions: 51,
+  exceptionFiles: 28,
   /** The remainder bucket: neither a member detail card nor dialog-only. */
-  leafControls: 36,
-  leafFiles: 21,
+  leafControls: 37,
+  leafFiles: 22,
   /** Components that render an `AdminViewOnlySectionBanner`. */
   bannerComponents: 84,
 } as const;
@@ -1344,6 +1344,32 @@ describe("view-only section banner coverage (#2160)", () => {
                merged silently two short in this very same merge, off a
                byte-identical literal, and the only reason that was caught is
                that its per-sink figures were measured rather than assumed.
+
+          315  +1  #2649 adds **Return to waitlist** — the repair for a free
+               waitlist confirm stranded in `PAYMENT_PENDING`
+               (`admin-return-to-waitlist-controls.tsx`) — to the Admin tools
+               card. Like the `No emails` switch and the capacity/exclusive hold
+               controls it sits beside, it is a LEAF dropped into someone else's
+               layout with nothing local proving a banner renders above it, so
+               it keeps its own per-button reason: an EXCEPTION, not an opt-out.
+               leafControls 36 -> 37 across 21 -> 22 files, exceptions 50 -> 51
+               across 27 -> 28 files, and optOuts/staticOptOuts do not move.
+
+               AND THE COLLISION THIS LEDGER EXISTS FOR FIRED A THIRD TIME, on
+               three lines at once. #2595 (the `314 +1` entry above) and this
+               branch each measured `313 -> 314` against a base without the
+               other, and each wrote `callSites: 314`, `exceptions: 50`,
+               `exceptionFiles: 27` — byte-identical on all three, so git had no
+               textual disagreement to report and merged the VALUES silently
+               while only this prose collided. The merged tree holds BOTH new
+               controls, so the honest figures are 315 / 51 / 28 and neither
+               side's literals were them. The two that did NOT collide are what
+               makes the shape legible: `leafControls`/`leafFiles` moved on this
+               side only (#2595's control is popover content, mine is a leaf), so
+               they merged correctly to 37/22 — and 10 dialog + 37 leaf + 4
+               member-credit-card reconciles to 51, not 50. Re-measured with
+               `npx vitest run view-only-banner-contract`, which reports
+               315 / 264 / 237. READ NOTHING FROM THIS COLUMN; run the suite.
 
       */
       // #2259 adds the per-booking "No emails"

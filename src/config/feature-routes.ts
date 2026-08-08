@@ -55,6 +55,9 @@ export const FEATURE_ROUTE_RULES: FeatureRouteRule[] = [
     patterns: [
       /^\/api\/bookings\/[^/]+\/waitlist-confirm$/,
       /^\/api\/admin\/bookings\/[^/]+\/force-confirm$/,
+      // #2649: the stranded-confirm repair puts a booking back ON the waitlist,
+      // so it is as waitlist-gated as force-confirm is.
+      /^\/api\/admin\/bookings\/[^/]+\/return-to-waitlist$/,
     ],
   },
   {

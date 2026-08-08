@@ -19,12 +19,12 @@ const mocks = vi.hoisted(() => ({
   sendPending: vi.fn(),
   enqueueXero: vi.fn(),
   kickXero: vi.fn(),
-  logAudit: vi.fn(),
+  createAuditLog: vi.fn().mockResolvedValue(undefined),
   loggerError: vi.fn(),
 }));
 
 vi.mock("@/lib/auth", () => ({ auth: mocks.auth }));
-vi.mock("@/lib/audit", () => ({ logAudit: mocks.logAudit }));
+vi.mock("@/lib/audit", () => ({ createAuditLog: mocks.createAuditLog }));
 vi.mock("@/lib/session-guards", () => ({
   requireActiveSessionUser: mocks.requireActiveSessionUser,
 }));
@@ -193,7 +193,7 @@ describe("zero-dollar waitlist participant contention (#2597)", () => {
     expect(mocks.settleHosting).not.toHaveBeenCalled();
     expect(mocks.sendConfirmed).not.toHaveBeenCalled();
     expect(mocks.enqueueXero).not.toHaveBeenCalled();
-    expect(mocks.logAudit).not.toHaveBeenCalled();
+    expect(mocks.createAuditLog).not.toHaveBeenCalled();
   });
 
   it("retries a contended compensation once and still answers the fixed 409 (#2623 T4)", async () => {
@@ -219,7 +219,7 @@ describe("zero-dollar waitlist participant contention (#2597)", () => {
       offerRevoked: true,
       waitlistPlaceRestored: true,
     });
-    expect(mocks.logAudit).not.toHaveBeenCalled();
+    expect(mocks.createAuditLog).not.toHaveBeenCalled();
   });
 
   it("never lets a failed compensation become a 500, and raises it for operator recovery (#2623 T4)", async () => {
@@ -247,7 +247,7 @@ describe("zero-dollar waitlist participant contention (#2597)", () => {
       HOSTING_COVERAGE_RETRY_MESSAGE,
     );
 
-    expect(mocks.logAudit).toHaveBeenCalledWith(
+    expect(mocks.createAuditLog).toHaveBeenCalledWith(
       expect.objectContaining({
         action: WAITLIST_CONFIRM_OFFER_RELEASE_FAILED_AUDIT_ACTION,
         entityType: "Booking",
@@ -269,6 +269,66 @@ describe("zero-dollar waitlist participant contention (#2597)", () => {
     expect(mocks.settleHosting).not.toHaveBeenCalled();
     expect(mocks.sendConfirmed).not.toHaveBeenCalled();
     expect(mocks.enqueueXero).not.toHaveBeenCalled();
+  });
+
+  it("waits for the strand report to commit, and still answers if that write fails (#2649 review)", async () => {
+    // The report is no longer only a notification: `return-to-waitlist` refuses
+    // any booking without an unresolved one, because the
+    // free/PAYMENT_PENDING/no-payment shape is reached by producers that were
+    // never on a waitlist. So the write is AWAITED rather than fire-and-forget —
+    // a report lost to process teardown leaves a genuinely stranded member
+    // repairable only from a database session. Its failure semantics are
+    // unchanged: logged, and the operator-door body still returned.
+    // Resolve on a MACROtask, not a microtask: `void createAuditLog(...)` would
+    // let the response leave with the insert still in flight, and only a timer
+    // separates the two. This is the difference the change is about.
+    let auditSettled = false;
+    mocks.createAuditLog.mockImplementation(
+      () =>
+        new Promise<void>((resolve) =>
+          setTimeout(() => {
+            auditSettled = true;
+            resolve();
+          }, 5),
+        ),
+    );
+    let transactionCall = 0;
+    mocks.transaction.mockImplementation(
+      async (callback: (client: unknown) => Promise<unknown>) => {
+        transactionCall += 1;
+        if (transactionCall >= 2) throw contentionError("P2028");
+        return callback(txDouble());
+      },
+    );
+
+    const response = await post();
+
+    expect(auditSettled).toBe(true);
+    expect(response.status).toBe(503);
+  });
+
+  it("still answers the operator door when the strand report itself cannot be written (#2649 review)", async () => {
+    // Failure semantics are deliberately unchanged from the fire-and-forget
+    // form: the write is logged and the member still gets the operator-door
+    // answer, never a 500.
+    mocks.createAuditLog.mockReset();
+    mocks.createAuditLog.mockRejectedValue(new Error("audit insert failed"));
+    let transactionCall = 0;
+    mocks.transaction.mockImplementation(
+      async (callback: (client: unknown) => Promise<unknown>) => {
+        transactionCall += 1;
+        if (transactionCall >= 2) throw contentionError("P2028");
+        return callback(txDouble());
+      },
+    );
+
+    const response = await post();
+
+    expect(response.status).toBe(503);
+    await expect(response.json()).resolves.toEqual({
+      ...WAITLIST_CONFIRM_AWAITING_OPERATOR_BODY,
+    });
+    expect(mocks.loggerError).toHaveBeenCalled();
   });
 
   it("maps a non-participant phase-two failure instead of throwing it (#2623 T4)", async () => {

@@ -912,6 +912,18 @@ const TEMPLATE_TRIGGER_METADATA: Partial<
     frequency:
       "Once per lapsed request, sent AFTER the release has committed so a mail failure can never roll back or repeat a capacity release. Not gated on a personal notification preference — it reports something the club's own job did to the member's request, and the member has no other signal that it happened; still withheld by the per-booking 'No emails' switch",
   },
+  // #2649. Declared rather than left to the generic fallback because this
+  // template's trigger is the one thing an admin cannot guess from its name: it
+  // is NOT the ordinary waitlist lifecycle. Its sibling `waitlist-offer-expired`
+  // needs no entry — its name states its trigger — but an admin editing this one
+  // has to know it only ever goes out on a repair, or they will write it as
+  // routine copy.
+  "waitlist-place-restored": {
+    triggerSummary:
+      "An admin used the stranded-confirm repair (#2649) to return a booking to the waitlist after the member's FREE waitlist confirmation was left in PAYMENT_PENDING by a failure in our own code. The member's offer did NOT expire — they confirmed in time — so this is deliberately a separate template from waitlist-offer-expired, whose wording would tell them the opposite of what happened",
+    frequency:
+      "Rare — once per repair, and only when an admin runs one. Not gated on a personal notification preference (it reports something the club did to the member's booking, and #2648 has already told them their confirmation was stuck); still withheld by the per-booking 'No emails' switch",
+  },
 };
 
 function titleCaseTemplateKey(key: string): string {
