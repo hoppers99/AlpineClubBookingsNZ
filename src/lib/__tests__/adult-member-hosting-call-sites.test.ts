@@ -60,18 +60,26 @@ function readRepoFile(relativePath: string): string {
  * was run alone: a timeout that only appears under load is the worst kind, because
  * CI may or may not catch it. Keyed by repo-relative path; the tree does not
  * change mid-run.
+ *
+ * The key is NORMALISED to forward slashes (#2623 F8). `sourceFilesNaming` builds
+ * its paths with `path.relative`, which yields backslashes on Windows, while every
+ * direct call site here passes a forward-slash literal — so the same file cached
+ * under two keys and was read and stripped twice. Harmless but pointless, and
+ * invisible on Linux CI, which is exactly the kind of divergence that makes a
+ * local timing measurement disagree with CI's.
  */
 const repoCodeCache = new Map<string, string>();
 
 function readRepoCode(relativePath: string): string {
-  const cached = repoCodeCache.get(relativePath);
+  const key = relativePath.split(path.sep).join("/");
+  const cached = repoCodeCache.get(key);
   if (cached !== undefined) return cached;
   const code = readRepoFile(relativePath)
     .replace(/\/\*[\s\S]*?\*\//g, "")
     .split("\n")
     .filter((line) => !/^\s*(\/\/|\*)/.test(line))
     .join("\n");
-  repoCodeCache.set(relativePath, code);
+  repoCodeCache.set(key, code);
   return code;
 }
 
@@ -576,7 +584,27 @@ describe("the same-owner refusal and the escalation seam (#2576 §6, §8, §9)",
       // A seam nobody calls contributes nothing, and a renamed seam left in this
       // list would degrade the sweep to the hardcoded list it replaced without
       // failing anything. Every entry has to be earning its place.
-      expect(users, seam).not.toEqual([]);
+      //
+      // NON-EMPTINESS IS TOO WEAK, and #2623 F3 found exactly where.
+      // `sourceFilesNaming` matches any non-test file NAMING the identifier —
+      // including the file that DECLARES it. Three of these four seams are
+      // declared in `adult-member-hosting-review.ts`, which is also in
+      // `TX_SCOPED_HELPERS` and so is skipped by the sweep below. So for
+      // `enqueueMemberMergeHostingCoveragePlan(`, whose only real caller is
+      // `member-merge.ts`, losing that caller would leave `users` as just the
+      // declaration: non-empty, guard green, and `member-merge.ts` silently out
+      // of the sweep — the exact regression this entry was added to prevent.
+      // Discount the declaration and require a real CALLER. The declaring file
+      // is found rather than hardcoded, so moving a seam to another module does
+      // not quietly turn this back into the weaker check.
+      const declaresSeam = `function ${seam.slice(0, -1)}(`;
+      const callers = users.filter(
+        (file) => !readRepoCode(file).includes(declaresSeam),
+      );
+      expect(
+        callers,
+        `${seam} has no caller outside its own declaration`,
+      ).not.toEqual([]);
       for (const file of users) seamUsers.add(file);
     }
     for (const file of [...seamUsers].sort()) {
@@ -918,5 +946,83 @@ describe("no policy read inside a booking transaction (#2569 §7)", () => {
     expect(readRepoCode("src/lib/booking-exception-approval.ts")).toContain(
       "approvedExceptionAdultMemberHostingDecision:",
     );
+  });
+});
+
+describe("the participant fence stays switched ON where a suite claims it (#2623 F1)", () => {
+  /**
+   * Suites that wire the #2619 fence doubles but leave the lodge's hosting mode
+   * at the resolver's `DISABLED` default, so after #2623 T5's mode gate their
+   * seam returns before the fence and the doubles beside it exercise nothing.
+   *
+   * THIS LIST IS THE POINT. The fence doubles' own docstring names "exercised
+   * their seams with the fence effectively switched off" as the state to avoid,
+   * and T5 silently put eight suites back into it — silently, because a double
+   * that is never reached looks exactly like a double that passes. An exact
+   * `toEqual` turns that into an enumerated, reviewable list: a NEW suite that
+   * wires the doubles without an active policy fails here, and fixing one of
+   * these means deleting its line.
+   *
+   * NONE of them is a one-line fix, which is why they are listed rather than
+   * corrected. Two distinct blockers, both measured:
+   *
+   *   * FIXTURE DEPTH (the first eight, 77 tests). Supplying an active mode runs
+   *     the hosting EVALUATOR, and these suites' booking fixtures are not
+   *     hosting-evaluable: guest rows carry `isMember: true` with no `memberId`
+   *     and no nested member, so `memberIsInGoodStanding` reads
+   *     `undefined.active` and the seam throws. The participant's member data
+   *     comes off the booking fixture's own guest rows, not a `member.findMany`
+   *     a double could intercept, so restoring coverage means reshaping each
+   *     suite's booking fixtures.
+   *   * HOISTING (the last three, 0 tests). Their policy double lives inside a
+   *     `vi.mock` factory, which vitest hoists above the imports, so referencing
+   *     `fenceHostingPolicyFindMany` there is a `ReferenceError: Cannot access
+   *     '__vi_import_N__' before initialization`. Those three lose no coverage —
+   *     measured, no test in them reaches the gate — but they cannot take the
+   *     change in this shape either.
+   */
+  const FENCE_DOUBLES_WITHOUT_AN_ACTIVE_POLICY = [
+    "src/lib/__tests__/booking-guest-consent-authority.test.ts",
+    "src/lib/__tests__/booking-request-quotes.test.ts",
+    "src/lib/__tests__/booking-request.test.ts",
+    "src/lib/__tests__/fix-mod-payment.test.ts",
+    "src/lib/__tests__/guest-removal-minors-alert-route.test.ts",
+    "src/lib/__tests__/guests-add-notify-choice.test.ts",
+    "src/lib/__tests__/partial-stay-edit-pricing.test.ts",
+    "src/lib/__tests__/phase8b-booking-mods.test.ts",
+    "src/lib/__tests__/school-booking-request.test.ts",
+    "src/lib/__tests__/waitlist-confirm-minimum-stay.test.ts",
+    "src/lib/__tests__/waitlist.test.ts",
+  ];
+
+  it("lists every suite whose fence doubles the mode gate now bypasses", () => {
+    const root = path.resolve(process.cwd(), "src");
+    const wired: string[] = [];
+    const walk = (dir: string) => {
+      for (const entry of readdirSync(dir, { withFileTypes: true })) {
+        const full = path.join(dir, entry.name);
+        if (entry.isDirectory()) {
+          walk(full);
+          continue;
+        }
+        if (!/\.test\.tsx?$/.test(entry.name)) continue;
+        const rel = path.relative(process.cwd(), full).split(path.sep).join("/");
+        const source = readRepoFile(rel);
+        if (!source.includes("hosting-participant-fence-double")) continue;
+        // The suite that DEFINES the hosting behaviour sets its own policies per
+        // test rather than through the shared double, so it is not in scope.
+        if (rel === "src/lib/__tests__/adult-member-hosting-review.test.ts") continue;
+        if (source.includes("fenceHostingPolicyFindMany")) continue;
+        wired.push(rel);
+      }
+    };
+    walk(root);
+    expect(
+      wired.sort(),
+      "A suite wiring the #2619 fence doubles without an ACTIVE hosting policy " +
+        "reaches none of them: T5's mode gate returns first. Either give its tx " +
+        "double `fenceHostingPolicyFindMany()` (and make its booking fixtures " +
+        "hosting-evaluable), or add it here with a reason.",
+    ).toEqual(FENCE_DOUBLES_WITHOUT_AN_ACTIVE_POLICY);
   });
 });
