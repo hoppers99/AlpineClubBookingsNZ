@@ -54,9 +54,11 @@
   they reach is that administrator's own. Two reach an ordinary member and both
   are about that member: an issue report appears for whoever filed it, and a
   change to a member's billing family appears for the member it was made for.
-  A member's view never shows the stored details, the request ID, the IP address
-  or any drill-down link; it does name who acted, unless that person is a Full
-  Admin, who is shown as "Club admin". Nothing stopped being visible.
+  Neither of those two shows the stored details: both record their payload as
+  structured data, and a member's view drops that entirely. A member's view never
+  shows the request ID, the IP address or any drill-down link for any entry. It
+  does name who acted, unless that person is a Full Admin, who is shown as
+  "Club admin". Nothing stopped being visible.
 
   **Two entries were being recorded in a way that skipped the platform's own
   safeguards** — linking and unlinking a dependant wrote to the activity table

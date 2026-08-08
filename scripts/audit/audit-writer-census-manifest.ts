@@ -704,7 +704,15 @@ export const APPROVED_NON_PRODUCING_AUDIT_DML: Readonly<Record<string, string>> 
   "src/lib/audit-retention.ts::archiveEligibleAuditLogs#0":
     "Retention archive: stamps `archivedAt` on rows past their archive threshold.",
   "src/lib/audit-retention.ts::pruneExpiredAuditLogs#0":
-    "Retention prune: deletes rows past `expiresAt` that are not incident-preserved.",
+    // Corrected in #2581 child 2, because this change is what makes it matter:
+    // `incidentPreserved` is NOT in the prune predicate. It guards only
+    // `anonymizeExpiredAuditRequestData` and the archive's request-data copy, so
+    // there is no per-row exemption from deletion. Every one of the 83 sites this
+    // change classifies lands in `critical`, whose branch is `createdAt < cutoff`
+    // AND `expiresAt < now` — unconditional at seven years.
+    "Retention prune: deletes rows past `expiresAt` (for `critical`, also past " +
+      "the seven-year `createdAt` cutoff). There is no incident-preservation " +
+      "exemption from this statement.",
   "src/lib/audit-retention.ts::anonymizeExpiredAuditRequestData#0":
     "Retention anonymisation: clears `ipAddress`/`userAgent` on rows past the request-data window.",
 };

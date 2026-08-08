@@ -1045,6 +1045,16 @@ export async function POST(
       // anonymisation — and its retention moves from "no expiry at all" to
       // `critical`, a seven-year expiry, in this change. That is the longest
       // class available and the deliberate answer for a deletion decision.
+      //
+      // Stated because it is the half that is easy to miss: `critical` is NOT in
+      // `ARCHIVABLE_RETENTION_CLASSES`, so this row is never copied to the audit
+      // archive. At seven years `pruneExpiredAuditLogs` deletes it outright and
+      // there is no second copy. `buildAuditLogCreateData` accepts an explicit
+      // `expiresAt: null` alongside a category, which would keep the row forever
+      // while still making it readable by Diagnostics — deliberately NOT used
+      // here, because "keep one class of row about a person forever" is the
+      // club's retention decision to make, not this change's. #2581 child 3
+      // carries it.
       category: "privacy",
       memberId: session.user.id,
       targetId: member.id,

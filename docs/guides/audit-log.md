@@ -200,6 +200,17 @@ missing retention class until the historical change decides what to do about
 them. If your club needs some of these kept beyond seven years, say so before
 that horizon; it is a setting, not a law.
 
+**What "expires" means for these entries: deletion, not filing.** The archive
+only takes the two shorter-lived classes, so a `critical` entry is never copied
+anywhere — at seven years it is deleted outright and there is no second copy to
+go back to. That is already true of every booking and payment entry, so it is not
+new; it is worth knowing here because it now also covers the record of a
+**deletion decision**, which is the only surviving evidence that the club
+approved an erasure, who approved it and what it cancelled. Seven years is a long
+time and nothing goes before 2033, but if the club wants that particular record
+kept permanently, it is a one-line change at the writer and it should be made
+deliberately rather than discovered in 2033.
+
 ### Booking-policy entries
 
 From this release, a `group-discount.update`, `cancellation-policy.update`,
