@@ -181,6 +181,8 @@ describe("issue #2047 pack — built-in boards", () => {
           guestCount: 1,
           stayStart: "2026-04-13",
           stayEnd: "2026-04-15",
+          // #2621: no expected arrival time in this fixture.
+          arrivalTime: null,
         },
       ],
       occupancy: [
@@ -215,6 +217,8 @@ describe("issue #2047 pack — built-in boards", () => {
           guestCount: 1,
           stayStart: "2026-04-13",
           stayEnd: "2026-04-15",
+          // #2621: no expected arrival time in this fixture.
+          arrivalTime: null,
         },
       ],
       occupancy: [
@@ -254,6 +258,8 @@ describe("issue #2047 pack — built-in boards", () => {
           guestCount: 1,
           stayStart: "2026-04-13",
           stayEnd: "2026-04-15",
+          // #2621: no expected arrival time in this fixture.
+          arrivalTime: null,
         },
       ],
       chores: [
@@ -284,6 +290,8 @@ describe("issue #2047 pack — built-in boards", () => {
           guestCount: 1,
           stayStart: "2026-04-13",
           stayEnd: "2026-04-15",
+          // #2621: no expected arrival time in this fixture.
+          arrivalTime: null,
         },
       ],
       chores: [],
@@ -317,6 +325,8 @@ describe("issue #2047 pack — built-in boards", () => {
           guestCount: 20,
           stayStart: "2026-04-13",
           stayEnd: "2026-04-15",
+          // #2621: no expected arrival time in this fixture.
+          arrivalTime: null,
         },
         {
           key: "ind",
@@ -327,6 +337,8 @@ describe("issue #2047 pack — built-in boards", () => {
           guestCount: 1,
           stayStart: "2026-04-13",
           stayEnd: "2026-04-14",
+          // #2621: no expected arrival time in this fixture.
+          arrivalTime: null,
         },
       ],
       rules: [{ title: "House rules", html: "<p>Boots off at the door.</p>" }],
@@ -377,6 +389,8 @@ describe("issue #2047 pack — built-in boards", () => {
           guestCount: 4,
           stayStart: "2026-04-13",
           stayEnd: "2026-04-15",
+          // #2621: no expected arrival time in this fixture.
+          arrivalTime: null,
         },
       ],
       rules: [{ title: "House rules", html: "<p>Boots off at the door.</p>" }],
@@ -470,6 +484,8 @@ describe("issue #2047 pack — extras bundle boards (from the committed zip)", (
           guestCount: 20,
           stayStart: "2026-04-13",
           stayEnd: "2026-04-15",
+          // #2621: no expected arrival time in this fixture.
+          arrivalTime: null,
         },
       ],
       occupancy: [
@@ -509,6 +525,8 @@ describe("issue #2047 pack — extras bundle boards (from the committed zip)", (
           guestCount: 1,
           stayStart: "2026-04-13",
           stayEnd: "2026-04-14",
+          // #2621: no expected arrival time in this fixture.
+          arrivalTime: null,
         },
       ],
       occupancy: [
@@ -549,6 +567,8 @@ describe("issue #2047 pack — extras bundle boards (from the committed zip)", (
           guestCount: 2,
           stayStart: "2026-04-13",
           stayEnd: "2026-04-14",
+          // #2621: no expected arrival time in this fixture.
+          arrivalTime: null,
         },
       ],
       occupancy: [

@@ -21,6 +21,7 @@ import {
   splitGuestPortionCancelledTemplate,
   bookingPolicyExceptionRefusedTemplate,
 } from "../email-templates";
+import { checkoutDayChoreNote } from "../email-message-notes";
 import { getAppBaseUrl } from "../app-url";
 import { formatNZDateTime } from "../nzst-date";
 import {
@@ -397,6 +398,62 @@ describe("email-templates", () => {
       expect(html).toContain("Door code");
       expect(html).toContain("9876");
       expect(html).toContain("16:30");
+    });
+
+    it("renders the checkout-day chore sentence it is handed", () => {
+      // #2621 (owner decision D-M5). The sentence is handed IN, composed by
+      // `checkoutDayChoreNote` at the send site from the club's chores module
+      // flag, so this HTML and the admin-editable body's {{checkoutChoreNote}}
+      // cannot say different things.
+      const html = preArrivalReminderTemplate({
+        firstName: "Alice",
+        checkIn,
+        checkOut,
+        guestCount: 2,
+        lodgeTravelNote: "Park below the lodge and walk up.",
+        doorCode: null,
+        checkoutChoreNote: checkoutDayChoreNote(true),
+      });
+
+      expect(html).toContain("chore roster on the morning you check out");
+      // The arrival information is unaffected — the field stays, as
+      // display-only information (owner decision, 8 Aug).
+      expect(
+        preArrivalReminderTemplate({
+          firstName: "Alice",
+          checkIn,
+          checkOut,
+          guestCount: 2,
+          expectedArrivalTime: "16:30",
+          lodgeTravelNote: "Park below the lodge and walk up.",
+          doorCode: null,
+          checkoutChoreNote: checkoutDayChoreNote(true),
+        })
+      ).toContain("Expected arrival");
+    });
+
+    it("says nothing about chores for a club with no chore roster", () => {
+      // The chores module DEFAULTS OFF, so this is the ordinary case, and an
+      // unconditional sentence would tell those clubs' members to talk to a hut
+      // leader about a roster that does not exist. Omitting the field reads the
+      // same way as an explicit empty value — the fail-quiet direction for a
+      // caller that has not been updated.
+      for (const params of [{ checkoutChoreNote: checkoutDayChoreNote(false) }, {}]) {
+        const html = preArrivalReminderTemplate({
+          firstName: "Alice",
+          checkIn,
+          checkOut,
+          guestCount: 2,
+          lodgeTravelNote: "Park below the lodge and walk up.",
+          doorCode: null,
+          ...params,
+        });
+
+        expect(html).not.toMatch(/chore/i);
+        expect(html).not.toMatch(/hut leader/i);
+        // And no empty paragraph left where the sentence would have been.
+        expect(html).not.toMatch(/<p[^>]*>\s*<\/p>/);
+      }
     });
 
     it("omits the door-code field when no code is set", () => {
