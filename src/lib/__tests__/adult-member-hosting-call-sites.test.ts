@@ -550,7 +550,7 @@ describe("the same-owner refusal and the escalation seam (#2576 §6, §8, §9)",
     const ENQUEUE_SEAMS = [
       "enqueueOwnHostingCoverageReevaluation(",
       "enqueueHostingCoverageReevaluationForMember(",
-      "enqueueMemberMergeHostingCoveragePlan(",
+      "enqueueMemberMergeHostingCoveragePlanRenamed(",
       "reconcileAdultMemberHostingReviewWithSiblings(",
     ];
     const seamUsers = new Set<string>();

@@ -24,6 +24,50 @@ import { vi } from "vitest";
  */
 
 /**
+ * `adultMemberHostingPolicy.findMany` for the mode gate that now stands IN FRONT
+ * of the fence (#2623 T5).
+ *
+ * `reconcileAdultMemberHostingReviewWithSiblings` reads the lodge's resolved
+ * hosting mode before acquiring a participant proof, so a club with the rule off
+ * pays no row lock on an ordinary booking write. That read is not new to those
+ * paths: `evaluateBookingAdultMemberHosting` has always loaded the same policy
+ * for the same lodge through the same client, one call deeper. A double reaches
+ * it now only because the seams above bail out at
+ * `if (!Array.isArray(booking.guests))` before the evaluation ever runs — an
+ * artifact of narrow booking fixtures, not of production, where the reconciler's
+ * select always hydrates the relation.
+ *
+ * THE ROW IS DELIBERATELY AN *ACTIVE* MODE. A double that answered `DISABLED`
+ * (or `[]`, which resolves to `DISABLED`) would take the new gate's early return
+ * and switch the participant fence off in exactly the suites #2619 added it to,
+ * re-creating the "exercised their seams with the fence effectively switched
+ * off" state described above — silently, and with the fence doubles beside it
+ * still looking like coverage. `ENFORCED` keeps the fence on the path, so these
+ * suites behave exactly as they did before the gate existed.
+ *
+ * The scope set is the narrowest one that is still a decided set: `sameBooking`
+ * only. `sameBookingOwner` would pull the coverage-owner advisory key and the
+ * same-owner settle step into suites that never modelled either.
+ */
+export function fenceHostingPolicyFindMany(
+  overrides: Record<string, unknown> = {},
+) {
+  return vi.fn(async () => [
+    {
+      id: "fence-double-club-policy",
+      scopeKey: "club-wide",
+      lodgeId: null,
+      mode: "ENFORCED",
+      capacityMode: "NO_HOLD",
+      version: 1,
+      hostScopeSameBooking: true,
+      hostScopeSameBookingOwner: false,
+      ...overrides,
+    },
+  ]);
+}
+
+/**
  * A source booking as the fence re-reads it.
  *
  * `lodgeId` is `string`, not `string | null`, deliberately: `Booking.lodgeId` is
