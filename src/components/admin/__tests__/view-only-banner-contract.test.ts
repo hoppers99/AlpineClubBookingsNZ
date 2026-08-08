@@ -322,11 +322,11 @@ const NOTICE = "AdminViewOnlyNotice";
 */
 const FIGURES = {
   /** Every `<ViewOnlyActionButton>` render site in the admin tree. */
-  callSites: 313,
+  callSites: 314,
   /** Those that hand their explanation to a banner, by either rule. */
-  optOuts: 263,
+  optOuts: 264,
   /** `describeReason={false}` — needs a banner in the SAME file. */
-  staticOptOuts: 236,
+  staticOptOuts: 237,
   /** `describeReason={!ancestorRendersViewOnlyBanner}` — needs a vouch. */
   vouchedOptOuts: 27,
   /** …of the vouched: proved at a parent's own JSX render site (#2168). */
@@ -1262,20 +1262,20 @@ describe("view-only section banner coverage (#2160)", () => {
                removed site was a same-file static opt-out, so static opt-outs
                move 235 -> 234 and total opt-outs move 262 -> 261. Banner,
                vouch and per-button-explanation counts are unchanged.
-          311  +1  #2597's "Resume approval" control on the deletion-request
-               queue, a real extra call site and a static opt-out under that
-               page's existing banner, so static opt-outs move 234 -> 235 and
-               total opt-outs move 261 -> 262. Recorded here because the
-               commit that re-measured it (969b88943) moved the figures
-               without adding its ledger line.
-          312  +1  #2595 adds the confirmed bed-move dialog's local-reason
-               control. Exceptions move 49 -> 50 and exception files 26 -> 27;
-               the control is inside a separate modal accessibility container,
-               so it must not inherit the board page's banner. Opt-outs,
-               vouches and banner components are untouched. Re-measured on the
-               INTEGRATED tree rather than added to either side's figure:
-               #2602's -1, #2597's +1 and this +1 all landed in the same
-               window, so 311 -> 310 -> 311 -> 312.
+          311  +1  Unrecorded when it landed, reconstructed here from the
+               commit rather than left as a hole in the chain: #2597 ADDED a
+               control — the "Resume approval" button, which finishes a deletion
+               approval that started and did not finish, in
+               `app/(admin)/admin/deletion-requests/deletion-requests-client.tsx`.
+               It is a `describeReason={false}` static opt-out in the same file
+               as that page's own unconditional banner, so callSites
+               310 -> 311, optOuts 261 -> 262 and staticOptOuts 234 -> 235,
+               and nothing else moves. Commit 969b88943
+               re-measured the figures to 311/262/235 and updated every place
+               that publishes them, but added no ledger line: the entry above
+               it reads 310, the figures read 311, and the gap was exactly
+               this. Noticed while measuring the entry below, whose own numbers
+               would otherwise have looked like +2.
           312  +1  #2627 adds "Release approval" to the deletion queue's
                self-service rows — the Full-Admin way out of an approval left
                mid-flight, beside the existing "Resume approval". A static
@@ -1291,22 +1291,49 @@ describe("view-only section banner coverage (#2160)", () => {
                trails the measured total by one; #2637 supplies the correct
                reconstruction of that gap and this note deliberately does not
                guess at it.)
-          313  +1  #2595 adds the bed-allocation **Move** control to the
+          313  +1  #2352 MC-03D adds the per-page Delete control to the Page
+               Content cards, beside the Hide/Publish toggle it sits with and
+               under the banner that file already renders. Static opt-outs move
+               236 -> 237 and total opt-outs 263 -> 264; the vouched split,
+               the exceptions and the banner count are untouched, because the
+               control is gated on the same content area the banner states.
+          313      THE COLLISION THIS LEDGER EXISTS FOR, and it fired. This
+               entry was first written as `312`, measured against main at
+               54b282b61 when #2352 was the first of three open PRs off that
+               base — and #2636 (the entry above) reached main first with its own
+               `callSites: 312`. The two literals were byte-identical, so the
+               merge produced no conflict in the FIGURES block at all: only the
+               prose ledger conflicted, and the numbers it guards merged
+               silently wrong. Re-measured on the merged tree at f9bd34bd1 with
+               `vitest run view-only-banner-contract` and set to what the tree
+               reports: 313 / 264 / 237. #2641 will measure 314 / 265 / 238 when
+               it lands, and it must MEASURE that rather than read it here.
+          314  +1  #2595 adds the bed-allocation **Move** control to the
                allocation board's row menu. It is an EXCEPTION, not an opt-out:
                it keeps its own per-button reason because the menu it sits in is
                popover content with no banner above it, which is the same
                treatment every other control in that menu already has. So
-               callSites 312 -> 313 and exceptions 49 -> 50 across 26 -> 27
+               callSites 313 -> 314 and exceptions 49 -> 50 across 26 -> 27
                files, while optOuts and staticOptOuts do not move at all — the
                one entry in this ledger where the opt-out figures stay still.
 
-               Re-measured on the MERGED tree rather than by adding this
-               branch's +1 to the base it was written against. That distinction
-               bit here: this branch and #2637 each add one independent control,
-               both sides' literals happened to read 312, and git resolves a
-               byte-identical literal silently — so the only trustworthy number
-               is the one the census reports after the merge, and whichever of
-               the two lands second has to run it again.
+               And that is where the entry above guessed wrong, which is the
+               ledger's own rule proving itself a third time. #2637 predicted
+               "#2641 will measure 314 / 265 / 238" by assuming every new
+               control is an opt-out under a banner. This one is not: it sits in
+               popover content, so it lands in the EXCEPTIONS bucket and the two
+               opt-out figures do not move. Measured on the merged tree with
+               `npx vitest run view-only-banner-contract`, the tree reports
+               314 / 264 / 237 — one more call site than 313, and the same
+               opt-out figures #2637 left behind. READ NOTHING FROM THIS
+               COLUMN; run the suite.
+
+               (The earlier hazard fired here too, in the other direction:
+               against its own base this branch measured `callSites: 312`, the
+               same literal #2637 wrote, so git merged the FIGURES value
+               silently and only this prose collided — exactly the shape the
+               entry above describes.)
+
       */
       // #2259 adds the per-booking "No emails"
       // switch (`booking-no-emails-controls.tsx`), a leaf control dropped into

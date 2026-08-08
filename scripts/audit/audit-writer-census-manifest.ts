@@ -69,17 +69,40 @@ export const AUDIT_CENSUS_TOTALS = {
    * both claimed 419; the pin has to count BOTH, which is exactly what this file
    * exists to catch.)
    *
-   * 420 -> 422 (#2595): the new `bed-allocation-move.ts` records the two things
+   * 419 -> 420 (#2352 MC-03D): deleting a page-content page writes
+   * `PAGE_CONTENT_DELETED` inside the delete's own transaction, because the row
+   * carries the deleted page's whole `before` snapshot and is the only record of
+   * what was removed. Written with `buildStructuredAuditLogCreateArgs` through
+   * `tx.auditLog.create`, matching the three sibling writes already in that
+   * route rather than introducing a fourth form; categorised `admin` at the
+   * site, so it does not join `UNCATEGORISED_AUDIT_WRITERS` below.
+   *
+   * 420 -> 421 on the MERGE, and this is the gate earning its keep for the second
+   * time in one window. #2623 and this change each measured 419 -> 420 against a
+   * base without the other, so both literals read `420` — byte-identical, which
+   * means git resolved the VALUE silently and only the comments above collided.
+   * The merged tree has both writers, so the honest number is 421. It came from
+   * running the census after the merge; adding the two deltas up would have got
+   * there by luck, and reading either side's literal would have shipped a pin
+   * that was quietly one short.
+   *
+   * 421 -> 423 (#2595): the new `bed-allocation-move.ts` records the two things
    * a reviewed move does — `BED_ALLOCATION_MOVE_APPLIED` for the move itself and
    * `BED_ALLOCATION_PARTNERS_PROMOTED` for the partner rows it carries with it —
    * each with the awaited `createAuditLog` inside the move's own transaction, so
    * a rolled-back move records nothing. Both categorised `lodge` at the site, so
    * neither joins `UNCATEGORISED_AUDIT_WRITERS` below.
    *
-   * Measured on the merged tree, never by adding branch deltas: this figure and
-   * the ones below came from running the census after merging `origin/main`.
+   * And the gate fired a THIRD time on the merge of #2637 into this branch.
+   * This branch measured 422 against a base holding #2623 and #2627 but not
+   * #2352's `PAGE_CONTENT_DELETED`; #2352 measured 421 against a base holding
+   * #2623 and #2627 but not the two move writes. Neither literal is the merged
+   * tree, and the two differed, so this one at least conflicted visibly rather
+   * than merging silently. Re-measured on the merged tree by RUNNING the census
+   * (`npx tsx scripts/audit/audit-writer-census.ts`), never by adding branch
+   * deltas: this figure and the ones below are what the tree reports.
    */
-  writeSites: 422,
+  writeSites: 423,
   /** Of those, sites whose event object carries no `category` key. */
   uncategorised: 82,
   /** Per-sink totals, so a shift between forms cannot cancel out in the total. */
@@ -91,7 +114,8 @@ export const AUDIT_CENSUS_TOTALS = {
     // 102 -> 104 (#2595): the two reviewed-move writes, above.
     createAuditLog: { total: 104, uncategorised: 11 },
     createStructuredAuditLog: { total: 8, uncategorised: 0 },
-    "auditLog.create": { total: 71, uncategorised: 2 },
+    // 71 -> 72 (#2352 MC-03D): the page-content deletion, above.
+    "auditLog.create": { total: 72, uncategorised: 2 },
   },
   /**
    * Literal category values written, and by how many sites. The three `membership`
@@ -111,7 +135,11 @@ export const AUDIT_CENSUS_TOTALS = {
     booking: 80,
     payment: 16,
     family: 27,
-    admin: 117,
+    // 117 -> 118 (#2352 MC-03D): `PAGE_CONTENT_DELETED`. `admin` is the same
+    // category the three sibling page-content writes already use, and it is
+    // readable with support:view alone — so this widens nobody's access beyond
+    // what the page-content create/update rows beside it already grant.
+    admin: 118,
     security: 16,
     // 16 -> 18 (#2595): the two reviewed-move writes, above. `lodge` is the
     // category every other bed-allocation write already uses, and it is not one
