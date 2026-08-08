@@ -52,10 +52,7 @@ import {
   type BedRangeAssignResult,
   type BedRangeAssignTarget,
 } from "@/components/admin/bed-range-assign-dialog";
-import {
-  applyOptimisticAllocationBedMove,
-  planAllocationMove,
-} from "./_components/allocation-move";
+import { useBedAllocationMoveDialog } from "@/components/admin/bed-allocation-move-dialog";
 import {
   MAX_RANGE_NIGHTS,
   boardNights,
@@ -345,6 +342,24 @@ export default function AdminBedAllocationPage() {
         `${removedRowCount} reviewed allocation${removedRowCount === 1 ? "" : "s"} removed; no automatic allocation was run`,
       );
       await loadDashboard();
+    },
+  });
+  const moveDialog = useBedAllocationMoveDialog({
+    canEdit: canEditBookings,
+    onApplied: async ({ movedRowCount, noop }) => {
+      if (noop) {
+        toast.info("No allocation nights needed to move");
+      } else {
+        toast.success(
+          `${movedRowCount} allocation night${movedRowCount === 1 ? "" : "s"} moved`,
+        );
+      }
+      const refreshed = await loadDashboard();
+      if (!refreshed) {
+        throw new Error(
+          "The allocation moved, but the board could not be refreshed. Try Refresh before making another change.",
+        );
+      }
     },
   });
 
@@ -703,86 +718,25 @@ export default function AdminBedAllocationPage() {
     });
   }
 
-  async function moveAllocation(
+  function openAllocationMoveDialog(
     allocation: DashboardAllocation,
-    target: { bedId: string; roomId: string; stayDate: string },
+    destinationBedId: string,
+    focusOrigin?: HTMLElement | null,
   ) {
-    if (!canEditBookings) return;
-
-    if (!payload) return;
-    const bed = bedById.get(target.bedId);
+    if (canEditBookings === undefined) return;
+    const bed = bedById.get(destinationBedId);
     if (!bed) return;
-
-    const movePlan = planAllocationMove({
-      allocation,
-      target,
-      visibleAllocations: payload.allocations,
-      visibleNights: nights,
-    });
-
-    if (movePlan.type === "noop") {
-      return;
-    }
-
-    const snapshot = payload;
-    const allocationIds =
-      movePlan.type === "bulk"
-        ? movePlan.allocationIds
-        : [movePlan.allocationId];
-    setPayload(
-      applyOptimisticAllocationBedMove({
-        payload,
-        allocationIds,
-        bed,
-      }),
-    );
-
-    await withPending(
-      allocationIds.map((id) => `allocation:${id}`),
-      async () => {
-        try {
-          const response = await fetch(
-            "/api/admin/bed-allocation/allocations",
-            {
-              method: "PATCH",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({
-                allocationIds,
-                bedId: target.bedId,
-              }),
-            },
-          );
-
-          if (!response.ok) {
-            setPayload(snapshot);
-            if (response.status === 409) {
-              toast.warning(
-                await readApiError(
-                  response,
-                  "No allocations were moved because the destination bed is unavailable on an original lodge night",
-                ),
-              );
-            } else {
-              toast.error(
-                await readApiError(response, "Failed to move allocation"),
-              );
-            }
-            await loadDashboard();
-            return;
-          }
-
-          toast.success(
-            movePlan.type === "bulk"
-              ? "Visible guest nights moved"
-              : "Allocation moved",
-          );
-          await loadDashboard();
-        } catch {
-          setPayload(snapshot);
-          toast.error("Failed to move allocation");
-          await loadDashboard();
-        }
+    moveDialog.openMoveDialog(
+      {
+        allocationId: allocation.id,
+        guestName: allocation.guestName,
+        stayDate: allocation.stayDate,
       },
+      {
+        destinationBedId: bed.id,
+        destinationLabel: bed.label,
+      },
+      focusOrigin,
     );
   }
 
@@ -960,11 +914,7 @@ export default function AdminBedAllocationPage() {
       if (overData.type === "bucket") {
         removeAllocation(allocation);
       } else if (overData.type === "cell") {
-        void moveAllocation(allocation, {
-          bedId: overData.bedId,
-          roomId: overData.roomId,
-          stayDate: overData.stayDate,
-        });
+        openAllocationMoveDialog(allocation, overData.bedId);
       }
     }
   }
@@ -1466,13 +1416,7 @@ export default function AdminBedAllocationPage() {
                   allocationByBedAndDate={allocationByBedAndDate}
                   bedOptions={bedOptions}
                   bedOptionGroups={bedOptionGroups}
-                  onReassignBed={(allocation, bedId) =>
-                    void moveAllocation(allocation, {
-                      bedId,
-                      roomId: bedById.get(bedId)?.roomId ?? allocation.roomId,
-                      stayDate: allocation.stayDate,
-                    })
-                  }
+                  onReassignBed={openAllocationMoveDialog}
                   onRemove={removeAllocation}
                   onAssignRange={openRangeForAllocation}
                   rangeTint={rangeTint}
@@ -1489,16 +1433,31 @@ export default function AdminBedAllocationPage() {
 
           <DragOverlay>
             {activeDragLabel ? (
-              <div
-                data-testid="bed-allocation-drag-feedback"
-                className="rounded-md border bg-card px-3 py-2 text-sm font-medium text-card-foreground shadow-lg"
-              >
-                <div>{activeDragLabel}</div>
-                {activeDropPreview ? (
-                  <div className="mt-1 text-xs font-normal text-muted-foreground">
-                    {activeDropPreview}
-                  </div>
-                ) : null}
+              // The drop target must follow the dragged CHIP, never the size of
+              // this floating card. dnd-kit measures the DragOverlay's own child
+              // and uses that rect — not the draggable's — for closestCenter
+              // (`draggingNodeRect = dragOverlay.rect ?? activeNodeRect`,
+              // @dnd-kit/core), re-measuring it through a ResizeObserver while
+              // the drag is live. The card grows the moment `activeDropPreview`
+              // appears, so if the card were the measured child its centre would
+              // sink below the cursor's cell mid-drag and the drop would land on
+              // the row BELOW the one the preview just named — a full lodge night
+              // on the wrong bed. This frame is the element DragOverlay sizes
+              // from the chip's own rect, so keeping it as the measured child
+              // pins collisions to the chip; the card is taken out of flow and
+              // may be any height without moving the target.
+              <div className="relative h-full w-full">
+                <div
+                  data-testid="bed-allocation-drag-feedback"
+                  className="absolute left-0 top-0 w-full rounded-md border bg-card px-3 py-2 text-sm font-medium text-card-foreground shadow-lg"
+                >
+                  <div>{activeDragLabel}</div>
+                  {activeDropPreview ? (
+                    <div className="mt-1 text-xs font-normal text-muted-foreground">
+                      {activeDropPreview}
+                    </div>
+                  ) : null}
+                </div>
               </div>
             ) : null}
           </DragOverlay>
@@ -1514,6 +1473,7 @@ export default function AdminBedAllocationPage() {
         onAssigned={handleRangeAssigned}
       />
       {removalDialog.dialog}
+      {moveDialog.dialog}
       </div>
     </div>
   );

@@ -168,7 +168,7 @@ function renderChip({
 }: {
   allocation?: DashboardAllocation;
   canEdit?: boolean;
-  onReassignBed?: (bedId: string) => void;
+  onReassignBed?: (bedId: string, focusOrigin?: HTMLElement | null) => void;
   onRemove?: () => void;
   options?: BedOption[];
   groups?: BedOptionGroup[];
@@ -294,11 +294,13 @@ describe("AllocationChip held vs provisional state (#1251)", () => {
     }
   });
 
-  it("keeps removal preview reachable while disabling view-only move writes", () => {
+  it("keeps move and removal previews reachable while disabling view-only writes", () => {
     const onRemove = vi.fn();
+    const onReassignBed = vi.fn();
     renderChip({
       canEdit: false,
       onRemove,
+      onReassignBed,
       options: bedOptions,
       groups: bedOptionGroups,
     });
@@ -315,12 +317,16 @@ describe("AllocationChip held vs provisional state (#1251)", () => {
       screen.getByRole("button", {
         name: "Move Example Guest to a bed in Room One",
       }),
-    ).toBeDisabled();
+    ).toBeEnabled();
+    fireEvent.click(
+      screen.getByRole("menuitem", { name: /Room One \/ Bed Two/i }),
+    );
+    expect(onReassignBed).toHaveBeenCalledWith("bed-2", expect.any(HTMLElement));
     fireEvent.click(screen.getByRole("menuitem", { name: "Remove allocation" }));
     expect(onRemove).toHaveBeenCalledOnce();
   });
 
-  it("groups move targets by room and omits the current bed", () => {
+  it("groups move targets by room and keeps the current bed selectable", () => {
     renderChip({ options: bedOptions, groups: bedOptionGroups });
 
     const menu = screen.getByRole("menu");
@@ -338,7 +344,7 @@ describe("AllocationChip held vs provisional state (#1251)", () => {
         name: "Move Example Guest to a bed in Room Two",
       }),
     ).toBeInTheDocument();
-    expect(screen.queryByText("Bed One")).not.toBeInTheDocument();
+    expect(screen.getByText("Bed One")).toBeInTheDocument();
     expect(screen.getByText("Bed Two")).toBeInTheDocument();
     expect(screen.getByText("Bed Three")).toBeInTheDocument();
 
@@ -348,7 +354,7 @@ describe("AllocationChip held vs provisional state (#1251)", () => {
     expect(submenus[0]).toHaveAttribute("data-collision-padding", "8");
   });
 
-  it("omits rooms with no remaining move targets", () => {
+  it("keeps a room whose only move target is the anchor's current bed", () => {
     renderChip({
       allocation: buildAllocation({ bedId: "bed-3" }),
       options: bedOptions,
@@ -356,10 +362,10 @@ describe("AllocationChip held vs provisional state (#1251)", () => {
     });
 
     expect(
-      screen.queryByRole("button", {
+      screen.getByRole("button", {
         name: "Move Example Guest to a bed in Room Two",
       }),
-    ).not.toBeInTheDocument();
+    ).toBeInTheDocument();
     expect(screen.getByText("Room One")).toBeInTheDocument();
   });
 
@@ -374,7 +380,7 @@ describe("AllocationChip held vs provisional state (#1251)", () => {
     });
 
     fireEvent.click(screen.getByRole("menuitem", { name: /Room One \/ Bed Two/i }));
-    expect(onReassignBed).toHaveBeenCalledWith("bed-2");
+    expect(onReassignBed).toHaveBeenCalledWith("bed-2", expect.any(HTMLElement));
 
     fireEvent.click(screen.getByRole("menuitem", { name: "Remove allocation" }));
     expect(onRemove).toHaveBeenCalledTimes(1);

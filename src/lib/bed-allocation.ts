@@ -355,7 +355,7 @@ function guestStayNights(guest: BedAllocationGuest): string[] {
   return eachDateOnlyInRange(guest.stayStart, guest.stayEnd).map(formatDateOnly);
 }
 
-function isAdultAgeTier(ageTier?: BedAllocationAgeTier | null): boolean {
+export function isAdultAgeTier(ageTier?: BedAllocationAgeTier | null): boolean {
   return !ageTier || ageTier === "ADULT";
 }
 
@@ -3129,6 +3129,16 @@ function tryDisplaceForHeldGuestNight(
  * one under each occupant's own booking key. Sharing a bed grants no
  * composition exemption, so de-duplicating per bed-night here would silently
  * under-count the room and re-open the very hole the guard exists to close.
+ *
+ * It reads {@link PlannerState.occupantBySlot}, and that is deliberate: it is
+ * the ONLY recount of that map and of its reverse index
+ * `occupantSlotsByBedNight`, the two structures every capacity decision in this
+ * file now rests on. #2595 had briefly rerouted this loop through
+ * `occupantsByBooking` to work around the old `occupantByKey` losing one
+ * occupant of a shared double; that workaround is superseded here, because the
+ * identity map is keyed per occupant slot and is no longer lossy. Rerouting it
+ * again would leave the slot index and its reverse with no consistency check at
+ * all.
  */
 function describeRoomNightAgeMixDivergence(
   state: PlannerState,

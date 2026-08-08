@@ -96,8 +96,40 @@ export const AUDIT_CENSUS_TOTALS = {
    * tree, #2621: this branch's own pins were taken against a base that predated
    * #2352, #2623 and #2627, so the literals here come from running the census
    * after the merge rather than from adding the deltas up.)
+   *
+   * 421 -> 423 (#2595): the new `bed-allocation-move.ts` records the two things
+   * a reviewed move does — `BED_ALLOCATION_MOVE_APPLIED` for the move itself and
+   * `BED_ALLOCATION_PARTNERS_PROMOTED` for the partner rows it carries with it —
+   * each with the awaited `createAuditLog` inside the move's own transaction, so
+   * a rolled-back move records nothing. Both categorised `lodge` at the site, so
+   * neither joins `UNCATEGORISED_AUDIT_WRITERS` below.
+   *
+   * And the gate fired a THIRD time on the merge of #2637 into this branch.
+   * This branch measured 422 against a base holding #2623 and #2627 but not
+   * #2352's `PAGE_CONTENT_DELETED`; #2352 measured 421 against a base holding
+   * #2623 and #2627 but not the two move writes. Neither literal is the merged
+   * tree, and the two differed, so this one at least conflicted visibly rather
+   * than merging silently. Re-measured on the merged tree by RUNNING the census
+   * (`npx tsx scripts/audit/audit-writer-census.ts`), never by adding branch
+   * deltas: this figure and the ones below are what the tree reports.
+   *
+   * 423 -> 425 on the MERGE of #2621 into this branch, and this is the WORST
+   * shape the gate has caught yet — worse than the 420 collision above, because
+   * that one at least announced itself. #2595 measured 421 -> 423 against a base
+   * holding #2352/#2623/#2627 but not the arrival-time writers; #2621 measured
+   * 421 -> 423 against a base holding the same three but not the two move
+   * writes. Two different +2s, one identical literal: `423`. Git had no textual
+   * disagreement to report on the `writeSites` line at all, so it merged the
+   * VALUE silently and only these comments conflicted — and a merge that took
+   * either comment and kept the number would have shipped a pin two short with
+   * a green diff. The sub-figures below are what saved it: `logAudit` 239 -> 241
+   * and `createAuditLog` 102 -> 104 sit in different hunks and both survived the
+   * merge, so `bySink` already summed to 425 while the total still said 423.
+   * Re-measured on the merged tree by RUNNING the census, which reports 425.
+   * A byte-identical pin across two branches is not agreement; it is a
+   * collision that git cannot see.
    */
-  writeSites: 423,
+  writeSites: 425,
   /** Of those, sites whose event object carries no `category` key. */
   uncategorised: 82,
   /** Per-sink totals, so a shift between forms cannot cancel out in the total. */
@@ -108,7 +140,8 @@ export const AUDIT_CENSUS_TOTALS = {
     // merged tree, #2621).
     logAudit: { total: 241, uncategorised: 69 },
     // 101 -> 102 (#2627): the deletion-approval release, above.
-    createAuditLog: { total: 102, uncategorised: 11 },
+    // 102 -> 104 (#2595): the two reviewed-move writes, above.
+    createAuditLog: { total: 104, uncategorised: 11 },
     createStructuredAuditLog: { total: 8, uncategorised: 0 },
     // 71 -> 72 (#2352 MC-03D): the page-content deletion, above.
     "auditLog.create": { total: 72, uncategorised: 2 },
@@ -142,7 +175,12 @@ export const AUDIT_CENSUS_TOTALS = {
     // what the page-content create/update rows beside it already grant.
     admin: 118,
     security: 16,
-    lodge: 16,
+    // 16 -> 18 (#2595): the two reviewed-move writes, above. `lodge` is the
+    // category every other bed-allocation write already uses, and it is not one
+    // of the three (`admin`, `security`, `system`) readable with support:view
+    // alone — so the support-only population pinned below does not move, and no
+    // reader gains access it did not already have to the rows beside these.
+    lodge: 18,
     xero: 19,
     communication: 12,
     // 14 -> 15 (#2627): `member.deletion_approval_claim_released`. Still a

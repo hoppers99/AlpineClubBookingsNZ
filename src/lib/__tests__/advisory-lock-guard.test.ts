@@ -72,6 +72,10 @@ const GLOBAL_BOOKING_MONEY_LOCK_INVENTORY: Record<string, number> = {
   // explicitly selected lodge capacity lock, and delegates to a narrow
   // lock-held implementation; auto-allocation also rebuilds its plan there.
   "src/lib/admin-bed-allocation.ts": 11,
+  // #2595: reviewed night/person moves serialize with cancellation and every
+  // allocation counterpart before taking the complete sorted lodge union,
+  // member lifecycle/link families, and deterministic allocation row locks.
+  "src/lib/bed-allocation-move.ts": 1,
   // #2594: removal applies a reviewed digest under global -> sorted immutable
   // lodge -> sorted allocation-row locks. Requested-room editing shares the
   // global cohort and locks/re-reads the booking before its guarded write so it
@@ -267,12 +271,27 @@ const SCOPED_ADVISORY_LOCK_INVENTORY: Record<string, number> = {
   // first, then this key; live CRUD takes only this key.
   "src/lib/minimum-stay-policy-set.ts": 1,
   // #1937/#2596: executeMemberMerge first calls the shared hosting policy-set
-  // helper, then takes the two raw member-lifecycle:{id} keys in sorted order.
-  // Only the raw locks are counted here; the helper owns its single raw site in
-  // adult-member-hosting-policy-set.ts. This order serialises policy enumeration
-  // before relation moves and every delete/archive/merge touching either member.
+  // helper, then — since #2595 — the merge-only partner-share prefix helper
+  // (`acquireMemberMergePartnerSharedLodgeLocks`: every affected lodge capacity
+  // key, sorted, and NO global cohort key), then takes the two raw
+  // member-lifecycle:{id} keys in sorted order, and finally the canonical
+  // member-partner-link keys through `member-partner-lock.ts` — because merge
+  // re-points partner links AND reads them to decide which future shared
+  // doubles step 3b deletes. The count stays 2 because all three added tiers
+  // come from helpers that own their own raw sites
+  // (adult-member-hosting-policy-set.ts, bed-allocation-lifecycle.ts +
+  // lodge-capacity-lock.ts, member-partner-lock.ts) — merge mints no new key of
+  // its own. This order serialises policy enumeration before relation moves,
+  // keeps the fixed lodge -> member order for the #2595 shared-double
+  // reconciliation, matches the reviewed move's member-lifecycle ->
+  // member-partner-link order so no new wait-graph edge appears, and
+  // excludes every delete/archive/merge touching either member. Merge is
+  // deliberately absent from GLOBAL_BOOKING_MONEY_LOCK_INVENTORY above:
+  // `member-merge-execute.test.ts` pins that it takes no `lock(1)` at all.
   "src/lib/member-merge.ts": 2,
-  "src/lib/member-partner-link.ts": 1,
+  // #2595: the partner-link service and reviewed move service share this one
+  // canonical sorted member-partner-link lock mint.
+  "src/lib/member-partner-lock.ts": 1,
   // #2148: reconcileSubscriptionBillingExceptions takes the SAME
   // membership-subscription-billing:{seasonYear} key as
   // confirmSubscriptionBillingPreview (no new key), so refresh-reconciliation
@@ -300,6 +319,9 @@ const ROW_LOCK_SITE_INVENTORY: Record<string, number> = {
   // and requested-room editing locks the booking before its authoritative
   // approval check and guarded update.
   "src/lib/admin-bed-allocation.ts": 2,
+  // #2595 reviewed moves lock every selected/destination/old-bed counterpart
+  // tuple after the advisory tiers and before their authoritative re-read.
+  "src/lib/bed-allocation-move.ts": 1,
   "src/lib/bed-allocation-removal.ts": 1,
   "src/lib/requested-room-write.ts": 1,
   "src/lib/booking-create-promo.ts": 1,

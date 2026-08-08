@@ -2482,7 +2482,7 @@ const ADMIN_HELP_QUESTIONS: Record<string, HelpQuestion[]> = {
     },
     {
       q: "Can I move an allocated guest to another night?",
-      a: "No. Dragging an existing allocation chooses another bed only and keeps its original NZ lodge night, even when you hover over a different date column. The first visible chip moves that guest's visible allocated nights together; a later chip moves only its own night. A drop is a no-op only when every represented night already uses that bed.",
+      a: "No. Dragging an existing allocation chooses another bed only and keeps its original NZ lodge night, even when you hover over a different date column. Before anything moves, choose this allocation night or every existing allocation night for this person on the booking, including off-screen nights, then review the exact changed and unchanged rows. If nothing would change, confirming writes no approval or audit record.",
     },
     {
       q: "Can automatic allocation displace a guest?",

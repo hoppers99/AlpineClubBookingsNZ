@@ -48,7 +48,11 @@ interface BoardCellProps {
   allocations: DashboardAllocation[];
   bedOptions: BedOption[];
   bedOptionGroups?: BedOptionGroup[];
-  onReassignBed: (allocation: DashboardAllocation, bedId: string) => void;
+  onReassignBed: (
+    allocation: DashboardAllocation,
+    bedId: string,
+    focusOrigin?: HTMLElement | null,
+  ) => void;
   onRemove: (allocation: DashboardAllocation) => void;
   onAssignRange: (allocation: DashboardAllocation) => void;
   // #2251 decision 3: the outcome of the last range operation on THIS bed —
@@ -180,7 +184,9 @@ export function BoardCell({
                 allocation={allocation}
                 bedOptions={bedOptions}
                 bedOptionGroups={bedOptionGroups}
-                onReassignBed={(targetBedId) => onReassignBed(allocation, targetBedId)}
+                onReassignBed={(targetBedId, focusOrigin) =>
+                  onReassignBed(allocation, targetBedId, focusOrigin)
+                }
                 onRemove={() => onRemove(allocation)}
                 onAssignRange={() => onAssignRange(allocation)}
                 pending={pendingAllocationIds.has(allocation.id)}

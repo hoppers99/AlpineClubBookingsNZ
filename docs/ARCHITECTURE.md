@@ -842,6 +842,46 @@ The board chip/pool drop, board **Reset allocations…**, and booking-detail
 `src/components/admin/bed-allocation-removal-dialog.tsx`; none keeps an
 optimistic or per-night delete path.
 
+### Reviewed bed-allocation moves
+
+`src/lib/bed-allocation-move.ts` owns the #2595 move contract. Read-only
+`POST /api/admin/bed-allocation/allocations/move` requires `bookings:view` and
+returns an authoritative preview. `PATCH
+/api/admin/bed-allocation/allocations` accepts an exclusive union: the reviewed
+shape carries `anchorAllocationId`, `destinationBedId`, `scope`, and
+`previewDigest`; the unchanged legacy `{ allocationIds, bedId }` path remains
+available to older callers and remains capped at the 31-night board window.
+Reviewed apply requires `bookings:edit`.
+
+The reviewed scopes are exactly one existing allocation night or every
+existing row for the same booking guest (up to 366), including sparse and
+off-screen rows. They never create a missing guest-night or allocation. The
+preview separates changed and unchanged rows, shows approval-to-draft and
+shared-double promotion consequences, and reports every hard refusal without
+exposing counterpart guest identities. Its `v1:<sha256>` digest binds the
+scope, anchor, destination, complete selected and relevant occupant sets,
+exact guest nights, booking and consent state, active/member age facts,
+confirmed partner links, custodian and whole-lodge holds, promotions, and the
+derived conflict result.
+
+Apply takes global -> complete sorted lodge union -> sorted member-lifecycle ->
+sorted member-partner-link -> deterministic allocation-row locks, then rebuilds
+and compares that preview. It uses guarded updates and one transaction for
+every move, shared-double promotion, and bounded aggregate audit. Changed rows
+are applied by one guarded `UPDATE ... FROM (VALUES ...)` statement under an
+explicit 30-second transaction/10-second acquisition budget, and become
+unapproved `MANUAL` drafts while unchanged rows remain byte-for-byte
+untouched. An all-noop confirmation is successful and audit-free. Drift returns
+a refreshed 409 preview and requires a second confirmation; no planner runs.
+
+Every drag/drop destination and chip **Move to bed** item opens
+`src/components/admin/bed-allocation-move-dialog.tsx`. That is the only board
+move write seam: there is no optimistic or direct typed move. One pointer or
+keyboard interaction opens one dialog, the current bed remains selectable for
+person-scope consolidation/noop review, and closing or succeeding restores
+focus to the originating chip/menu control. The in-booking allocation panel
+does not expose these move scopes.
+
 The largest current files are historical consolidation points rather than a
 preferred style. When changing them, extract focused helpers around the code
 being touched and keep tests close to the extracted domain helper so public
@@ -937,7 +977,7 @@ tree** (#2160, extended by #2168 and #2324) — not a claim that nothing is left
 Measured
 on the current tree by `view-only-banner-contract.test.ts`, which asserts these
 figures rather than trusting a hand count: **84 components render a banner, and
-264 of the 313 `ViewOnlyActionButton` call sites opt out** of the per-button
+264 of the 314 `ViewOnlyActionButton` call sites opt out** of the per-button
 reason. (Earlier revisions of this page published 76/232/264/211 — those were
 upstream-historical and had drifted; the numbers here are the ones the contract
 test currently pins, which is the only authority.) Those 264 split by WHICH rule
@@ -947,13 +987,14 @@ pass `describeReason={!ancestorRendersViewOnlyBanner}` and are covered by a
 verified vouching parent — 22 by a parent's own JSX render site (#2168), 5 by the
 guided-setup shell (#2324); see *Vouching for a child's coverage* and *Vouching
 through the wizard shell* below. The
-remaining **49 controls across 26 files deliberately keep the per-button
+remaining **50 controls across 27 files deliberately keep the per-button
 default** (`describeReason` left at `true`), in three shapes:
 
 - **Controls inside a dialog, sheet, popover, or dropdown menu.** These live in
   a separate accessibility container — focus is trapped and the page behind is
   commonly inert — so a banner rendered in the page body does not reach them.
-  (9 controls across 4 files, which the test enumerates by name; three further
+  (10 controls across 5 files, including the confirmed bed-allocation move
+  dialog, which the test enumerates by name; three further
   controls of this shape live in files counted under the next bucket, see
   there.)
 - **Leaf components with no section of their own**, which a parent drops into
@@ -980,9 +1021,9 @@ default** (`describeReason` left at `true`), in three shapes:
   Payments page with no banner of its own. Read that
   bucket as the
   REMAINDER — everything that is neither a member detail card nor one of the
-  four dialog-only files — rather than as a claim that all 34 are leaves. Twelve
-  of the twenty files are (22 controls); six are the wizard step files just
-  described (9 controls); and the last two, `page-content-panel.tsx`
+  five dialog-only files — rather than as a claim that all 36 are leaves.
+  Thirteen of the twenty-one files are (24 controls); six are the wizard step
+  files just described (9 controls); and the last two, `page-content-panel.tsx`
   and `site-banners-panel.tsx`, are full banner-bearing panels whose last 3
   controls sit inside their own edit/create `Dialog`, so those 3 are really the
   first shape occurring inside a file that also has the third. Nothing is
@@ -1793,15 +1834,17 @@ same-owner cover, a separate urgent incident opens without changing
    explicit admin "Run auto-allocation" board action. Admins can also manually
    move, approve, or reviewed-remove allocations. Reviewed removal never invokes
    either planner, so its freed nights remain in the awaiting-allocation pool.
-   Existing-chip moves are bed-only operations: `PATCH
-   /api/admin/bed-allocation/allocations` carries allocation ids and the
-   destination bed, never a target date. The service takes global booking
-   `lock(1)` first and the destination-lodge capacity lock second, re-reads each
-   source row and its original NZ lodge night under both, then commits all
-   selected row moves, shared-double partner promotions and audit rows in one
-   transaction. Sharing cancellation's global key prevents a move from
-   resurrecting an allocation after cancellation pruned it. A conflict rolls a
-   grouped move back wholesale; bucket-to-board bulk placement retains its
+   Existing-chip moves are bed-only operations: the reviewed request carries an
+   anchor allocation, destination bed, night-or-person scope, and preview digest,
+   never a target date. Person scope resolves every existing row for that guest
+   on the booking, including sparse and off-screen nights, but creates none. The
+   service takes global booking `lock(1)` first, then the complete sorted lodge,
+   member-lifecycle, member-partner-link and allocation-row tiers before its
+   authoritative re-read. It commits all changed rows, shared-double partner
+   promotions and audit rows in one transaction; unchanged rows are digest-bound
+   noops. Sharing cancellation's global key prevents a move from resurrecting an
+   allocation after cancellation pruned it. A stale preview or conflict rolls a
+   reviewed move back wholesale; bucket-to-board bulk placement retains its
    separate per-night partial-conflict contract.
 
 In-progress member self-service edits are limited to future unused nights from

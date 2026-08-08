@@ -49,7 +49,9 @@ function Harness({
         lodgeId="lodge-1"
         canEdit
         renderViewOnlyBanner={false}
-        onSaved={async () => dashboard.reload()}
+        onSaved={async () => {
+          await dashboard.reload();
+        }}
       />
     </>
   );
