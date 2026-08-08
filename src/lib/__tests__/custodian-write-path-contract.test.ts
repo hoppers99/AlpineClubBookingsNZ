@@ -110,7 +110,8 @@ const GUARDED_WRITE_SITES: Array<{
     statement: "bedAllocation.updateMany",
     mechanism:
       "The displacement MOVE writes `bedId: displacement.toBedId`, and every displacement comes from the same planner run that was fed the custodian holds as never-evictable unknown occupants — so a MOVE can never target a held bed-night either.",
-    evidence: "data: { bedId: displacement.toBedId, roomId: displacement.toRoomId }",
+    evidence:
+      "bedId: displacement.toBedId,\n            roomId: displacement.toRoomId,",
   },
   {
     file: "prisma/demo-seed.ts",

@@ -1609,7 +1609,13 @@ describe("bed allocation first-claim displacement (issue #1387)", () => {
     expect(db.bedAllocation.updateMany).toHaveBeenCalledTimes(1);
     expect(db.bedAllocation.updateMany).toHaveBeenCalledWith({
       where: { bookingGuestId: "prov-g1", stayDate: NIGHT_UTC },
-      data: { bedId: "bed-b2", roomId: "room-b" },
+      data: {
+        bedId: "bed-b2",
+        roomId: "room-b",
+        // #2656: a relocated row lands alone on a bed free at plan start, so it
+        // is always the primary there — never a fresh orphaned second occupant.
+        isSecondOccupant: false,
+      },
     });
     // No UNALLOCATE: no displacement-shaped deleteMany (prune's is by bookingId).
     const unallocateCalls = db.bedAllocation.deleteMany.mock.calls.filter(
@@ -2439,11 +2445,23 @@ describe("bed allocation first-claim displacement (issue #1387)", () => {
     expect(db.bedAllocation.updateMany).toHaveBeenCalledTimes(2);
     expect(db.bedAllocation.updateMany).toHaveBeenCalledWith({
       where: { bookingGuestId: "prov-g1", stayDate: NIGHT_UTC },
-      data: { bedId: "bed-b2", roomId: "room-b" },
+      data: {
+        bedId: "bed-b2",
+        roomId: "room-b",
+        // #2656: a relocated row lands alone on a bed free at plan start, so it
+        // is always the primary there — never a fresh orphaned second occupant.
+        isSecondOccupant: false,
+      },
     });
     expect(db.bedAllocation.updateMany).toHaveBeenCalledWith({
       where: { bookingGuestId: "prov-g1", stayDate: night2Utc },
-      data: { bedId: "bed-b2", roomId: "room-b" },
+      data: {
+        bedId: "bed-b2",
+        roomId: "room-b",
+        // #2656: a relocated row lands alone on a bed free at plan start, so it
+        // is always the primary there — never a fresh orphaned second occupant.
+        isSecondOccupant: false,
+      },
     });
     const unallocateCalls = db.bedAllocation.deleteMany.mock.calls.filter(
       (call: any[]) => "bookingGuestId" in call[0].where,

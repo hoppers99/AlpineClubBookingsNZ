@@ -27,6 +27,7 @@ import {
   type BedAllocationRoom,
   type UnallocatedGuestNight,
 } from "@/lib/bed-allocation";
+import { reportBedAllocationInvariantViolation } from "@/lib/bed-allocation-diagnostics";
 import {
   BED_ALLOCATABLE_BOOKING_STATUSES,
   dropAllocationRowsForUnallocatableBookings,
@@ -2158,6 +2159,14 @@ export async function getBedAllocationDashboard(input: {
   const plan = settings.autoAllocationEnabled
     ? buildFirstFitBedAllocationPlan({
         enabled: true,
+        // #2656: the planner is pure, so it hands a detected bookkeeping
+        // divergence back rather than logging it itself. Test runs still throw;
+        // a live board render logs and breadcrumbs instead of staying silent.
+        onInvariantViolation: (message) =>
+          reportBedAllocationInvariantViolation(message, {
+            lodgeId: input.lodgeId ?? null,
+            source: "getBedAllocationDashboard",
+          }),
         allocationPriorityOrder: settings.allocationPriorityOrder,
         rooms: plannerRooms,
         bookings: plannerBookings,
