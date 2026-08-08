@@ -73,7 +73,9 @@ operational documents (which may carry door/emergency access details).
   `403` — a listing omits what the member cannot see. Both the named-lodge
   gate and the listing filter derive from `getEligibleLodgeIdsForMember`
   (which `isMemberEligibleToBookLodge` also derives from), so the two are the
-  same eligibility set by construction. Admin on-behalf bookings and quotes
+  same eligibility set by construction. Those two modes serve **discovery**:
+  a member choosing where to book. They are not the right shape once a booking
+  exists — see the booking-scoped read below. Admin on-behalf bookings and quotes
   bypass it as the audited override path. `STAFF` rows bind a kiosk account to its lodge;
   exactly one grant binds, zero grants fall back to the default lodge, and
   **two or more grants are ambiguous and denied** (`getStaffLodgeBinding`
@@ -84,6 +86,32 @@ operational documents (which may carry door/emergency access details).
   Hut-leader assignments carry their own `lodgeId` and PINs match only at
   the bound lodge's kiosk. `ADMIN` access is club-wide and never
   lodge-filtered.
+- **Editing a booking that already exists is scoped by that booking, not by
+  the editor's own eligibility** (#2664). A booking already has a lodge and the
+  server owns it, so a read that feeds an editor on that booking derives its
+  lodge from `Booking.lodgeId` server-side and authorises on the booking's own
+  boundary — never from a client-supplied `lodgeId`, and never from the caller's
+  personal `isMemberEligibleToBookLodge` result. The requested-room picker is
+  the worked example: `GET /api/bookings/[id]/requested-room/options` resolves
+  the booking, refuses anyone who is not its owner, a Full Admin, or a
+  `bookings:edit` Booking Officer, and returns only **that lodge's active
+  rooms**. Reusing the discovery-shaped eligibility here got it wrong in both
+  directions — it offered another lodge's rooms to a member eligible for both (a
+  choice `writeRequestedRoom()` then refused under its lock, so the control
+  looked broken), and it filtered a Booking Officer's choices by that officer's
+  own booking restrictions even though their write runs under `bookings:edit`.
+  The writer's same-lodge validation stays authoritative regardless: the scoped
+  read is UX correctness, not a substitute for the write guard.
+  One consequence is deliberate and worth stating plainly: a member who owns a
+  booking at a lodge they are **later** restricted away from can still read that
+  booking's room names through this route, where the discovery endpoint would
+  now filter them out. That is correct. `writeRequestedRoom()` never consults
+  `assertMemberMayBookLodge`, so the member can still change the requested room
+  on the booking they already hold — and refusing the read while permitting the
+  write would recreate the exact broken control this contract exists to remove.
+  A booking restriction governs making NEW bookings, not operating one the club
+  already accepted. Any future read added under this rule inherits the same
+  reasoning: match the read to the write it feeds, not to the discovery gate.
 
 ## Club-Wide Models (No Lodge Dimension)
 

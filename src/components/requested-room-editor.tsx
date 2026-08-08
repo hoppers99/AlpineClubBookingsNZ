@@ -114,13 +114,43 @@ export function RequestedRoomEditor({
 
   const hasChanged = selectionValue(room) !== selectionValue(savedRoom);
 
+  /*
+    #2664. This used to load its choices from `/api/bookings/rooms` with no
+    scope at all. That endpoint's no-`lodgeId` mode lists active rooms across
+    EVERY lodge the caller is personally eligible to book, which broke the
+    picker in two directions on a multi-lodge club: it offered lodge B's rooms
+    while editing a lodge A booking (a choice `writeRequestedRoom()` then
+    correctly refused under its lock, so the control simply did not work), and
+    it filtered a Booking Officer's choices by that officer's OWN member booking
+    eligibility even though their write is authorised through the booking/admin
+    path.
+
+    The booking-scoped read fixes both at once, and it does so without the
+    client ever naming a lodge: the server resolves this booking, takes its
+    `lodgeId` from the row, and answers with that lodge's active rooms — under
+    the booking's own authority (owner, Full Admin, or `bookings:edit`
+    officer). So this component asks a question it is entitled to ask ("what may
+    THIS booking request?") rather than one it cannot scope ("what rooms exist?").
+  */
   useEffect(() => {
     if (!canEdit) return;
-    fetch("/api/bookings/rooms")
+    // The booking id is now part of the request, so a re-render onto a
+    // different booking must not be able to keep the previous booking's list.
+    let cancelled = false;
+    fetch(
+      `/api/bookings/${encodeURIComponent(bookingId)}/requested-room/options`,
+    )
       .then((res) => (res.ok ? res.json() : null))
-      .then((data) => setRoomOptions(data?.rooms ?? []))
-      .catch(() => setRoomOptions([]));
-  }, [canEdit]);
+      .then((data) => {
+        if (!cancelled) setRoomOptions(data?.rooms ?? []);
+      })
+      .catch(() => {
+        if (!cancelled) setRoomOptions([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [canEdit, bookingId]);
 
   function handleSelect(value: string) {
     // Picking only STAGES. Nothing is written until the member presses Save.
