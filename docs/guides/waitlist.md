@@ -70,30 +70,41 @@ which by definition that booking is not. See
 
 Very rarely, confirming a **free** waitlist offer gets half-way: the offer is
 used up and the booking moves to payment-pending, but the final step cannot
-finish and cannot undo itself. The booking then owes nothing, holds no bed, and
-has no offer for the member to retry, so it will not clear on its own. The
-member is told exactly that at the time, and Admin → Audit log lists it under
-`waitlist.confirm_offer_release_failed`.
+finish and cannot undo itself. The booking then owes nothing, blocks nobody
+else's nights, and has no offer for the member to retry, so it will not clear on
+its own. The member is told exactly that at the time, and Admin → Audit log
+lists it under `waitlist.confirm_offer_release_failed`.
 
 1. Open the booking from **Admin → Bookings**. The waitlist queue will not show
    it — it is no longer waitlisted.
 2. In the **Admin tools** card, press **Return to waitlist** and confirm.
 
 The booking goes back on the waitlist for the same nights, its beds are freed
-and offered to whoever is next, and the member is emailed that they are back at
-position N — unless the booking has **No emails** on
+and offered to whoever is next, and the member is emailed that their waitlist
+place is back at position N — unless the booking has **No emails** on
 ([Bookings](bookings.md#turn-off-all-emails-for-one-booking)), in which case the
-message is withheld and listed on the booking for you to pass on. The action is
-audited, and the entry names the failure it resolves.
+message is withheld and listed on the booking for you to pass on. That email is
+its own message, not the offer-expiry one: it says plainly that their offer did
+not run out and that they need do nothing. The action is audited, and the entry
+names the failure it resolves.
 
-The button appears only on that exact shape (free, awaiting payment, no payment
-record). If the booking has a balance, or someone else has already confirmed or
-cancelled it, the action says so and changes nothing. If it says something else
-is holding the booking right now, nothing was changed either — wait a moment and
-press it again. The alternative — cancel
-the booking and ask the member to rejoin — is still available and is the right
-call when the nights are no longer wanted. `docs/MAINTENANCE.md` has the full
-runbook.
+The button appears only where the audit log shows this failure on that booking
+and it has not already been repaired — free, awaiting payment and no payment
+record is not enough on its own, because several ordinary paths leave a booking
+looking like that without it ever having been on a waitlist. If the booking has a
+balance, or someone else has already confirmed or cancelled it, the action says
+so and changes nothing. If it says something else is holding the booking right
+now, nothing was changed either — wait a moment and press it again.
+
+If the booking also has an admin hold on its nights, the confirmation dialog
+says so: returning it to the waitlist releases that hold and the nights become
+available to other members straight away. Set the hold again afterwards if you
+still need it.
+
+The alternative — cancel the booking and ask the member to rejoin — is still
+available and is the right call when the nights are no longer wanted.
+`docs/MAINTENANCE.md` has the full runbook, including how to find outstanding
+cases in the audit log.
 
 ## Settings reference
 

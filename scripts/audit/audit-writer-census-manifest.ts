@@ -109,8 +109,18 @@ export const AUDIT_CENSUS_TOTALS = {
    * measured against a base without #2621; #2621 reached main with 423. The two
    * literals differed, so this one conflicted loudly rather than merging
    * silently — but the honest number is neither, and it came from running
-   * `npm run audit:census` on the MERGED tree: 424 row-producing sites,
-   * `createAuditLog` 103, `logAudit` 241, `booking` 83.
+   * `npm run audit:census` on the MERGED tree.
+   *
+   * AND A FOURTH TIME, ON THE ONE SHAPE THE TOTAL CANNOT SEE. The #2649 review
+   * moved #2648's `waitlist.confirm_offer_release_failed` write from `logAudit`
+   * to an awaited `createAuditLog` (see `bySink` below): that row is now the
+   * admin repair's ENTRY CONDITION, so it must not be lost to process teardown.
+   * `writeSites` did not move at all — 424 before and 424 after — because one
+   * sink lost a site and another gained one. A total-only pin would have merged
+   * that silently. The per-sink pins are what caught it, which is exactly why
+   * they exist. Re-measured by running `npm run audit:census` on the merged
+   * tree: 424 row-producing sites, `createAuditLog` 104, `logAudit` 240,
+   * `booking` 83, uncategorised 82.
    */
   writeSites: 424,
   /** Of those, sites whose event object carries no `category` key. */
@@ -121,10 +131,21 @@ export const AUDIT_CENSUS_TOTALS = {
     // outside every transaction because its own failure must not mask the strand.
     // 239 -> 241 (#2621): the two arrival-time writers, above (re-measured on
     // merged tree, #2621).
-    logAudit: { total: 241, uncategorised: 69 },
+    // 241 -> 240 (#2649 review): that same #2623 marker moved OUT of this sink —
+    // see `createAuditLog` below. Fire-and-forget was right while it was only a
+    // notification and wrong once a repair depended on it.
+    logAudit: { total: 240, uncategorised: 69 },
     // 101 -> 102 (#2627): the deletion-approval release, above.
     // 102 -> 103 (#2649): the return-to-waitlist repair, above.
-    createAuditLog: { total: 103, uncategorised: 11 },
+    // 103 -> 104 (#2649 review): `waitlist.confirm_offer_release_failed` in
+    // `waitlist-confirm/route.ts` converted from `logAudit` to an AWAITED
+    // `createAuditLog` (still `.catch`-guarded, so a failed write logs and the
+    // operator-door response is unchanged). The repair route refuses any booking
+    // without an unresolved report — the free/`PAYMENT_PENDING`/no-payment shape
+    // alone is reached by producers that were never on a waitlist — so a report
+    // lost before it committed would leave a genuinely stranded member
+    // repairable only from a database session.
+    createAuditLog: { total: 104, uncategorised: 11 },
     createStructuredAuditLog: { total: 8, uncategorised: 0 },
     // 71 -> 72 (#2352 MC-03D): the page-content deletion, above.
     "auditLog.create": { total: 72, uncategorised: 2 },

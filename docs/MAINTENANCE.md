@@ -208,22 +208,43 @@ booking from Admin -> Bookings and pick the outcome:
   In one locked transaction it sets the booking back to `WAITLISTED`, clears the
   consumed offer (`waitlistOfferedAt`, `waitlistOfferExpiresAt`,
   `waitlistOfferedLodgeId`, `waitlistOfferedPriceCents`) and the stale queue
-  position, and reconciles the bed allocations. Afterwards it hands the freed
-  nights back to the ordinary offer worker and tells the member they are back on
-  the waitlist at position N — unless the booking's **No emails** switch is on,
+  position, releases any admin capacity hold or exclusive whole-lodge hold on the
+  booking, and reconciles the bed allocations. Afterwards it hands the freed
+  nights back to the ordinary offer worker and tells the member their waitlist
+  place is back at position N — unless the booking's **No emails** switch is on,
   in which case the send is withheld and listed on the booking for you to relay.
+  The member's email says their place was restored and that their offer did
+  **not** run out; it is a separate message from the offer-expiry one, because
+  they confirmed in time and it was our system that failed.
   It records a `waitlist.returned_to_waitlist` audit row whose metadata names
-  the `waitlist.confirm_offer_release_failed` row it resolves, so the trail
-  closes at both ends. That metadata also keeps a `clearedOffer` snapshot of the
-  four offer fields the repair nulls — nothing else retains them, so this is the
-  only surviving record of what the member was offered and when it expired.
+  the `waitlist.confirm_offer_release_failed` row it resolves — closing the trail
+  at both ends — plus anything it released (`releasedAdminCapacityHold`,
+  `releasedWholeLodgeHold`), so freed nights are never a silent side effect.
+  If the booking carried a hold, the confirmation dialog says so before you
+  press: set the hold again afterwards if you still need it.
 
-  The button appears only on the stranded shape — `PAYMENT_PENDING`, free, and
-  with no payment record — and the route re-checks all three under its locks, so
-  a booking that someone else confirms or cancels in the same moment is refused
-  in plain words rather than clobbered. If it reports that something else is
-  holding the booking, nothing was changed — wait a moment and press it again.
-  There is no longer any reason to open a database session for this.
+  **The button appears only where the audit log proves a waitlist confirmation
+  stranded the booking** — an unresolved `waitlist.confirm_offer_release_failed`
+  report — on top of `PAYMENT_PENDING`, free, and no payment record. Those last
+  three are deliberately not enough: several ordinary paths leave a free booking
+  in Payment pending with no payment row (a date change that reprices to zero, an
+  admin review approval, a guest change releasing a booking from review, an old
+  free booking touched by the May 2026 status backfill), and returning one of
+  those to the waitlist would un-confirm a member who was never in a queue. The
+  route re-checks every condition under its locks, so a booking that someone else
+  confirms or cancels in the same moment is refused in plain words rather than
+  clobbered. If it reports that something else is holding the booking, nothing
+  was changed — wait a moment and press it again.
+
+  **Finding them.** There is no dashboard card for this state; it is rare enough
+  that the audit log is the queue. Filter Admin -> Audit log to action
+  `waitlist.confirm_offer_release_failed`, and treat any entry with no later
+  `waitlist.returned_to_waitlist` on the same booking as outstanding. A booking
+  stranded before #2648 shipped has no report and so no button — that one still
+  needs a database session, and is the only remaining case that does. (The report
+  is written and awaited inside the failing request, so a live strand cannot
+  lose it to process teardown; if the write itself fails, the server log carries
+  "the admin repair button will not appear for this booking".)
 - **Cancel and have them rejoin** — reachable entirely from the admin UI, and the
   right choice when nobody can safely touch the database. Cancel the booking from
   Admin -> Bookings and ask the member to rejoin the waitlist for those nights.

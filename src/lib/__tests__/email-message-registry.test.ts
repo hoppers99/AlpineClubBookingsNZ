@@ -670,6 +670,70 @@ describe("#2320 review — per-template preview samples match the real sends", (
     ).toBe(true);
   });
 
+  it("registers the #2649 restored-place notice as a withholdable member template", () => {
+    // The stranded-confirm repair puts a member back on the waitlist after our
+    // own code failed to finish their FREE confirmation, so the notice is
+    // member-audience and the per-booking "No emails" switch must be able to
+    // withhold it — same classification as its three waitlist siblings, and for
+    // the same reasons (the retry cron leans on the set membership to refuse
+    // replaying a NULL-bookingId row under this name).
+    const definition = getEmailTemplateDefinition("waitlist-place-restored");
+    if (!definition) throw new Error("missing waitlist-place-restored");
+
+    expect(definition.audience).toBe("member");
+    expect(isAdminSystemTemplate("waitlist-place-restored")).toBe(false);
+    expect(isBookingSuppressibleTemplate("waitlist-place-restored")).toBe(true);
+    expect(
+      ALWAYS_BOOKING_SCOPED_TEMPLATE_NAMES.has("waitlist-place-restored"),
+    ).toBe(true);
+    // Not delivery-editable (that control is for admin alerts), and always sent:
+    // a member whose confirmation the club broke has no other signal that their
+    // place was put back.
+    expect(definition.deliveryEditable).toBe(false);
+    expect(getDefaultDeliveryMode("waitlist-place-restored")).toBe("always");
+
+    // A true sibling of the expiry notice: same four supplied tokens, so an
+    // admin editing either has the same facts available.
+    const expiry = getEmailTemplateDefinition("waitlist-offer-expired");
+    if (!expiry) throw new Error("missing waitlist-offer-expired");
+    expect(definition.allowedTokens).toEqual(expiry.allowedTokens);
+  });
+
+  it("keeps the restored-place notice's reassurance in the shipped default, and the expiry wording out of it", () => {
+    const definition = getEmailTemplateDefinition("waitlist-place-restored");
+    if (!definition) throw new Error("missing waitlist-place-restored");
+
+    const rendered = renderTemplateString(
+      definition.defaultBody,
+      definition.sampleData,
+    );
+
+    // The three things the member has to be told, in the shipped default itself.
+    expect(rendered).toContain("put you back on the waitlist");
+    expect(rendered).toContain("This was not something you did wrong");
+    expect(rendered).toContain("your offer did not run out");
+    expect(rendered).toContain("You do not need to do anything");
+    expect(rendered).toContain("New Position: #");
+
+    // And never the expiry template's story — that is the defect this template
+    // exists to fix, in the subject as well as the body.
+    expect(definition.defaultSubject.toLowerCase()).not.toContain("expir");
+    expect(rendered.toLowerCase()).not.toContain("expir");
+
+    // No token survives unrendered and no line is left dangling on a label.
+    expect(rendered).not.toContain("{{");
+    for (const line of rendered.split("\n")) {
+      expect(line.trimEnd()).not.toMatch(/[-:–—]$/);
+    }
+    expect(
+      validateEmailTemplateContent({
+        templateName: "waitlist-place-restored",
+        subject: definition.defaultSubject,
+        bodyText: definition.defaultBody,
+      }).valid,
+    ).toBe(true);
+  });
+
   it("previews the labels the booking-review senders really compose", () => {
     // src/lib/email/booking.ts composes "Note from admin:" on approval and
     // "Reason from admin:" on rejection; the refund-appeal templates keep the

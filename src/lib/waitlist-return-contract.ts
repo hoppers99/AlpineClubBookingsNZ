@@ -12,8 +12,12 @@
  *
  * This module holds the strings that repair shares with its tests, its runbook
  * entry in `docs/MAINTENANCE.md` and the audit-writer census, so there is one
- * spelling of each rather than four.
+ * spelling of each rather than four — plus the provenance test that decides
+ * whether a booking IS the strand at all.
  */
+
+import type { Prisma, PrismaClient } from "@prisma/client";
+import { WAITLIST_CONFIRM_OFFER_RELEASE_FAILED_AUDIT_ACTION } from "@/lib/waitlist-confirm-recovery-contract";
 
 /**
  * The audit action the repair writes. Its metadata carries the id of the
@@ -44,6 +48,81 @@ export const RETURN_TO_WAITLIST_PRICED_MESSAGE =
  */
 export const RETURN_TO_WAITLIST_PAYMENT_PRESENT_MESSAGE =
   "This booking already has a payment record, so its confirmation completed and it is not stranded. Nothing was changed.";
+
+/**
+ * Refused because nothing on this booking says a waitlist confirmation stranded
+ * it. See {@link findUnresolvedWaitlistStrandReport} for why the shape alone is
+ * not evidence.
+ */
+export const RETURN_TO_WAITLIST_NO_STRAND_EVIDENCE_MESSAGE =
+  "Nothing on this booking records a waitlist confirmation that got stuck, so this is not the failure this repair fixes — a free booking can sit in Payment pending for several ordinary reasons. Nothing was changed. Check Admin -> Audit log for a 'waitlist.confirm_offer_release_failed' entry on this booking before using any other tool.";
+
+/** Db handle for {@link findUnresolvedWaitlistStrandReport}: the live client or a transaction. */
+type WaitlistStrandAuditReader = Prisma.TransactionClient | PrismaClient;
+
+/**
+ * The waitlist PROVENANCE test, and the reason this repair is safe to offer.
+ *
+ * `PAYMENT_PENDING` + `finalPriceCents === 0` + no `Payment` row is NOT "the
+ * stranded shape". It is a shape at least nine other producers reach, none of
+ * them a waitlist confirmation — the `20260511113000` backfill migration (no
+ * price predicate and no "has a payment row" predicate, so legacy free
+ * comp/promo bookings confirmed before 2026-05-11 are sitting on it in
+ * production right now), a date change that reprices to zero with no credit
+ * applied (`booking-date-modification-service.ts`, whose sibling
+ * `booking-modify-settlement.ts` settles the same case to `PAID`), an admin
+ * shift releasing a free `PENDING` hold, an admin review approval or a guest
+ * add/remove releasing a free `AWAITING_REVIEW` booking, and the group
+ * settlement reaper reverting a never-billed `ORGANISER_PAYS` child.
+ *
+ * On any of those, returning the booking to `WAITLISTED` would un-confirm a
+ * booking that was never on a waitlist, prune its bed allocations and email its
+ * member. So the shape is necessary and nowhere near sufficient, and the guard
+ * asks for the one piece of positive evidence that exists: #2648's
+ * `waitlist.confirm_offer_release_failed` audit row, written by exactly the code
+ * path that strands a confirm, naming this booking, at `critical` severity
+ * (seven-year retention). `confirmWaitlistOffer`'s phase-one claim nulls
+ * `waitlistPosition`, `waitlistOfferedAt` and `waitlistOfferExpiresAt` before a
+ * strand can exist, and `waitlistOfferedLodgeId`/`waitlistOfferedPriceCents` are
+ * cross-lodge-only (a path that never parks in `PAYMENT_PENDING`), so the
+ * booking row itself retains no waitlist provenance at all.
+ *
+ * "Unresolved" is load-bearing, not decoration. A strand report is permanent, so
+ * a booking repaired once carries one forever; without the resolution test, a
+ * booking that was stranded, repaired, successfully re-confirmed and later
+ * repriced to zero by one of the producers above would look eligible again on
+ * the strength of a closed incident. The newest of the two actions therefore has
+ * to be the strand rather than the repair, which is one indexed read.
+ *
+ * Returns the strand row to record in the repair's own audit metadata, or null
+ * when there is no unresolved report — which the route and the booking page both
+ * treat as "not this tool's business".
+ */
+export async function findUnresolvedWaitlistStrandReport(
+  db: WaitlistStrandAuditReader,
+  bookingId: string,
+): Promise<{ id: string; createdAt: Date } | null> {
+  const latest = await db.auditLog.findFirst({
+    where: {
+      targetId: bookingId,
+      action: {
+        in: [
+          WAITLIST_CONFIRM_OFFER_RELEASE_FAILED_AUDIT_ACTION,
+          RETURN_TO_WAITLIST_AUDIT_ACTION,
+        ],
+      },
+    },
+    orderBy: { createdAt: "desc" },
+    select: { id: true, action: true, createdAt: true },
+  });
+
+  if (
+    latest?.action !== WAITLIST_CONFIRM_OFFER_RELEASE_FAILED_AUDIT_ACTION
+  ) {
+    return null;
+  }
+  return { id: latest.id, createdAt: latest.createdAt };
+}
 
 /**
  * The status-guarded claim matched no row: another writer moved the booking

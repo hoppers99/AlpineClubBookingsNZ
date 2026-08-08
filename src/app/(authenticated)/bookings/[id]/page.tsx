@@ -47,6 +47,7 @@ import {
 import { loadCancellationPolicy } from "@/lib/cancellation";
 import { describeCancellationSchedule } from "@/lib/cancellation-schedule";
 import { WAITLIST_OFFER_HOURS } from "@/lib/waitlist";
+import { findUnresolvedWaitlistStrandReport } from "@/lib/waitlist-return-contract";
 import {
   getCancellationSettlementBreakdown,
   getPaymentDisplayStatus,
@@ -1275,6 +1276,34 @@ export default async function BookingDetailPage({
       ? await getBookingManualPaymentState(booking.id)
       : null;
 
+  /*
+    #2649: the stranded zero-dollar waitlist confirm.
+
+    The three cheap conditions — free, `PAYMENT_PENDING`, no payment record — are
+    NOT the stranded shape on their own. At least nine other producers reach
+    them, none of them a waitlist confirmation, and the `20260511113000` backfill
+    migration left legacy free bookings sitting on them in production. So the
+    button is offered only where the route will accept it: on an unresolved
+    `waitlist.confirm_offer_release_failed` report, the same provenance test the
+    route re-runs under its locks (`findUnresolvedWaitlistStrandReport`). Without
+    this the banner would state as fact — about an ordinary confirmed booking —
+    that "the waitlist offer that created it has been used up".
+
+    The audit read runs only when the cheap shape matches, which is rare, so an
+    ordinary booking page issues no extra query. Admin-gated like every other
+    tools-card input above.
+  */
+  const strandedWaitlistConfirmShape =
+    canSeeAdminTools &&
+    !isDeleted &&
+    modules.waitlist &&
+    booking.status === "PAYMENT_PENDING" &&
+    booking.finalPriceCents === 0 &&
+    !booking.payment;
+  const showReturnToWaitlist = strandedWaitlistConfirmShape
+    ? Boolean(await findUnresolvedWaitlistStrandReport(prisma, booking.id))
+    : false;
+
   // Admin conflict surfacing (ADR-001 decision 1, issue #119): when this
   // booking exclusively holds the whole lodge, list the existing
   // capacity-holding bookings overlapping its nights so the officer can resolve
@@ -1410,17 +1439,16 @@ export default async function BookingDetailPage({
           }}
           noEmails={isDeleted ? undefined : (noEmailsState ?? undefined)}
           manualPayment={manualPaymentState ?? undefined}
-          // #2649: the stranded zero-dollar waitlist confirm. A free booking
-          // parked in PAYMENT_PENDING with no payment row owes nothing, holds
-          // no bed and has no offer to replay, so it needs an operator. Offer
-          // the repair on exactly that shape and nowhere else; the route
-          // re-checks all of it under its locks.
-          showReturnToWaitlist={Boolean(
-            !isDeleted &&
-              modules.waitlist &&
-              booking.status === "PAYMENT_PENDING" &&
-              booking.finalPriceCents === 0 &&
-              !booking.payment,
+          // #2649: the stranded zero-dollar waitlist confirm. Derived above,
+          // where the provenance check that makes the banner's claim true can
+          // be awaited; the route re-checks every condition under its locks.
+          showReturnToWaitlist={showReturnToWaitlist}
+          // #2649 review S3: the repair releases any admin capacity hold with
+          // the transition, so the dialog has to say so before the officer
+          // presses it rather than leave it to the audit row afterwards.
+          returnToWaitlistReleasesHold={Boolean(
+            showReturnToWaitlist &&
+              (booking.adminCapacityHoldAt || booking.wholeLodgeHold),
           )}
         />
       )}

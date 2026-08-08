@@ -9,21 +9,30 @@ import { useAdminAreaEditAccess } from "@/hooks/use-admin-area-edit-access";
 
 interface AdminReturnToWaitlistControlsProps {
   bookingId: string;
+  /**
+   * #2649 review S3: the booking carries an admin capacity hold or an exclusive
+   * whole-lodge hold that this repair releases along with the status.
+   */
+  releasesHold?: boolean;
 }
 
 /**
  * "Return to waitlist" for a stranded zero-dollar waitlist confirm (#2649).
  *
- * The card only renders this when the booking is exactly that shape — free,
- * `PAYMENT_PENDING`, no payment record — so an operator never meets a button
- * that can only refuse. The route re-derives every one of those facts under its
- * locks, so this gate is about what to OFFER, never about what is allowed.
+ * The card only renders this when the audit log PROVES a waitlist confirmation
+ * stranded this booking — an unresolved `waitlist.confirm_offer_release_failed`
+ * report — on top of the free / `PAYMENT_PENDING` / no-payment-record shape.
+ * That shape alone is reached by at least nine other producers, so the banner
+ * below would otherwise assert a diagnosis about an ordinary booking that
+ * nothing had verified. The route re-derives all four facts under its locks, so
+ * this gate is about what to OFFER, never about what is allowed.
  *
  * Writes `/api/admin/bookings/[id]/return-to-waitlist` (bookings area), so a
  * view-only bookings admin sees it disabled (#1997).
  */
 export function AdminReturnToWaitlistControls({
   bookingId,
+  releasesHold = false,
 }: AdminReturnToWaitlistControlsProps) {
   const router = useRouter();
   const canEdit = useAdminAreaEditAccess("bookings");
@@ -35,7 +44,10 @@ export function AdminReturnToWaitlistControls({
     const confirmed = await confirm({
       title: "Put this booking back on the waitlist?",
       description:
-        "The booking's confirmation got half-way and could not undo itself: the offer was used up, nothing is owed, and there is nothing for the member to retry. This puts them back in the queue for these nights and frees the beds again. They keep their booking; they lose the used-up offer, and take their place by the ordinary rule. They are emailed unless this booking has \"No emails\" set.",
+        "The booking's confirmation got half-way and could not undo itself: the offer was used up, nothing is owed, and there is nothing for the member to retry. This puts them back in the queue for these nights and frees the beds again. They keep their booking; they lose the used-up offer, and take their place by the ordinary rule. They are emailed unless this booking has \"No emails\" set." +
+        (releasesHold
+          ? " This booking also carries an admin hold on its nights. Returning it to the waitlist releases that hold, so those nights become available to other members straight away — set the hold again if you still need it."
+          : ""),
       confirmLabel: "Return to waitlist",
     });
     if (!confirmed) return;
@@ -81,8 +93,9 @@ export function AdminReturnToWaitlistControls({
       <div className="rounded-md border border-warning-6 bg-warning-3 px-3 py-2 text-sm text-warning-11">
         <p className="font-medium">Waitlist confirmation did not finish</p>
         <p>
-          This free booking is waiting on payment it does not owe, and the
-          waitlist offer that created it has been used up. Return it to the
+          The audit log records a waitlist confirmation on this booking that got
+          stuck and could not undo itself: the offer was used up, and the
+          booking is now waiting on payment it does not owe. Return it to the
           waitlist to give the member their place back, or cancel it and ask
           them to rejoin.
         </p>

@@ -581,8 +581,13 @@ The admin `PAYMENT_PENDING -> WAITLISTED` repair (#2649) is recorded the same
 way: `waitlist.returned_to_waitlist`, `booking` category, written with the
 booking status change in one transaction, and carrying the id of the
 `waitlist.confirm_offer_release_failed` row it resolves so the strand and its
-repair link in both directions. It is offered only for a free booking with no
-payment record, and re-asserts both of those facts inside its guarded claim.
+repair link in both directions. It is offered only where that row exists and is
+unresolved — the booking's own columns retain no waitlist provenance, and the
+free / `PAYMENT_PENDING` / no-payment-record shape is reached by several
+ordinary paths that were never on a waitlist. Of the four conditions, the two
+scalar ones (`status: PAYMENT_PENDING` and `finalPriceCents: 0`) are re-asserted
+inside the guarded `updateMany`; the absence of a `Payment` row and the strand
+report are read under the same two locks immediately above it.
 
 ## Booking Modification Lifecycle
 

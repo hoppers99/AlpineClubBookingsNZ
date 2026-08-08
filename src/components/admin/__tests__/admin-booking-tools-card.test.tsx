@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 
 import type { ComponentProps } from "react";
-import { render, screen } from "@testing-library/react";
+import { fireEvent, render, screen } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import { MODULE_KEYS } from "@/config/modules";
 import type { FeatureFlags } from "@/config/schema";
@@ -107,6 +107,37 @@ describe("AdminBookingToolsCard", () => {
       ).toBeNull();
       expect(
         screen.queryByText("Waitlist confirmation did not finish"),
+      ).toBeNull();
+    });
+
+    it("states the consequence for an admin-held booking before the officer presses", async () => {
+      // #2649 review S3. The repair releases an admin capacity hold or an
+      // exclusive whole-lodge hold along with the status, freeing those nights
+      // to the next member. That has to be said in the dialog, not discovered
+      // in the audit log afterwards.
+      renderCard(allFeaturesOn, {
+        showReturnToWaitlist: true,
+        returnToWaitlistReleasesHold: true,
+      });
+
+      fireEvent.click(screen.getByRole("button", { name: "Return to waitlist" }));
+
+      expect(
+        await screen.findByText(/also carries an admin hold on its nights/),
+      ).toBeTruthy();
+    });
+
+    it("says nothing about a hold when the booking has none", async () => {
+      renderCard(allFeaturesOn, { showReturnToWaitlist: true });
+
+      fireEvent.click(screen.getByRole("button", { name: "Return to waitlist" }));
+
+      // The dialog opens either way; only the hold sentence is conditional.
+      expect(
+        await screen.findByText(/Put this booking back on the waitlist\?/),
+      ).toBeTruthy();
+      expect(
+        screen.queryByText(/also carries an admin hold on its nights/),
       ).toBeNull();
     });
   });

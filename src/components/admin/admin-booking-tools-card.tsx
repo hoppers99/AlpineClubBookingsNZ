@@ -44,6 +44,7 @@ export function AdminBookingToolsCard({
   noEmails,
   manualPayment,
   showReturnToWaitlist = false,
+  returnToWaitlistReleasesHold = false,
 }: {
   bookingId: string;
   memberId: string;
@@ -102,12 +103,22 @@ export function AdminBookingToolsCard({
   manualPayment?: BookingManualPaymentState;
   /**
    * #2649: offer the stranded-zero-dollar-waitlist-confirm repair. The page
-   * sets this only for the exact stranded shape — `waitlist` module on, not
-   * deleted, `PAYMENT_PENDING`, `finalPriceCents === 0`, no `Payment` row — so
-   * an operator never meets a button that can only refuse. Advisory: the route
-   * re-derives every one of those facts under its own locks.
+   * sets this only for a booking the audit log PROVES was stranded by a waitlist
+   * confirmation — an unresolved `waitlist.confirm_offer_release_failed` report
+   * — on top of the `waitlist` module, not deleted, `PAYMENT_PENDING`,
+   * `finalPriceCents === 0` and no `Payment` row. Those last four are a shape
+   * ordinary bookings reach, so provenance is what keeps an operator from
+   * meeting a button that can only refuse. Advisory: the route re-derives every
+   * one of these facts under its own locks.
    */
   showReturnToWaitlist?: boolean;
+  /**
+   * #2649 review S3: this booking also carries an admin capacity hold or an
+   * exclusive whole-lodge hold, which the repair releases with the transition.
+   * Surfaced in the confirmation dialog so freeing those nights is a stated
+   * consequence rather than something the officer reads in the audit log later.
+   */
+  returnToWaitlistReleasesHold?: boolean;
 }) {
   const returnTo = `/bookings/${bookingId}`;
   const bedAllocationParams = new URLSearchParams({
@@ -195,7 +206,10 @@ export function AdminBookingToolsCard({
               waitlist queue, because a stranded booking is no longer waitlisted
               and so never appears there. */}
           {showReturnToWaitlist && (
-            <AdminReturnToWaitlistControls bookingId={bookingId} />
+            <AdminReturnToWaitlistControls
+              bookingId={bookingId}
+              releasesHold={returnToWaitlistReleasesHold}
+            />
           )}
           {!isDeleted && (
             <CopyBookingButton
