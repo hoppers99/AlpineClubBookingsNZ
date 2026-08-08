@@ -252,7 +252,7 @@
  *   booking_diagnostic_summary        24 × 1    854 B         —   4 096
  *   booking_party_state               15 × 30  14.9 kB   18.0 kB  16 384
  *   booking_bed_allocation_state       7 × 60  13.7 kB   16.0 kB  16 384
- *   booking_exception_request_state    17 × 18  11.5 kB       —   16 384
+ *   booking_exception_request_state    16 × 18  11.0 kB       —   16 384
  *   booking_record_audit_history        7 × 18   4.7 kB       —   16 384
  *
  * THE ALLOCATION ENTRY'S CEILING IS PROVABLE, not merely typical: seven fields
@@ -306,20 +306,23 @@
  *     a confident, actionable falsehood about a healthy record. (The schema's
  *     own comment on `BookingGuest.consentStatus` is stale in the same way.)
  *
- *  2. FOUR CONSENT COLUMNS ARE FOLDED INTO ONE CODE, and no information is lost.
- *     The plan asked for `consentStatus` plus three consent instants. The
- *     schema's `MEMBER_GUEST_CONSENT_SUB_STATES` table is the platform's own
- *     source of truth for which combination means what, so the statement
- *     evaluates that table in SQL and projects one `consentSubState` code from a
- *     closed server-owned catalogue, interpolated into the scope line so the
- *     vocabulary actually reaches the model. Alongside it goes
+ *  2. THREE CONSENT COLUMNS ARE FOLDED INTO TWO DERIVED FIELDS, and no
+ *     information is lost. The plan asked for `consentStatus` plus three consent
+ *     instants. The schema's `MEMBER_GUEST_CONSENT_SUB_STATES` table is the
+ *     platform's own source of truth for which combination means what, so the
+ *     statement evaluates that table in SQL and projects one `consentSubState`
+ *     code from a closed server-owned catalogue, interpolated into the scope line
+ *     so the vocabulary actually reaches the model. Alongside it goes
  *     `operationallyPresent` — the platform's OWN predicate
  *     (`OPERATIONALLY_PRESENT_GUEST_WHERE`) evaluated server-side, so a model
  *     never has to build it and can never build it wrongly. Two fields instead
  *     of four, the eight documented shapes distinguishable from seven codes, and
  *     `consentRespondedByMemberId` — which would be needed to tell a target's
  *     own approval from a delegate's — stays ungranted, which is why those two
- *     shapes share one code and the catalogue says so.
+ *     shapes share one code and the catalogue says so. The raw `consentStatus` is
+ *     not projected alongside the code deliberately: the code NAMES the null case
+ *     (`family_or_legacy`), so the dominant value a model is most likely to
+ *     misread as "consent outstanding" is no longer a null it has to interpret.
  *
  * ------------------------------------------------------------------------------
  * PROPERTIES, STATED AS PROPERTIES OF THE CODE
@@ -480,7 +483,9 @@ const LODGE_LABEL_MAX_CHARS = 24;
 function lodgeLabelOrNull(value: unknown): string | null {
   if (value === null || value === undefined) return null;
   const cleaned = String(value)
-    // eslint-disable-next-line no-control-regex -- stripping control characters is the point
+    // Stripping control characters is the point: nothing here is source code, so
+    // the strip costs no fidelity, and a control character in a durable audit hash
+    // input is worth removing at the source.
     .replace(/[ -]/g, " ")
     .replace(/["<>;=]/g, "")
     .replace(/\s+/g, " ")
@@ -696,6 +701,14 @@ function consentSubStateLiteral(code: BookingGuestConsentSubStateCode): string {
  * The `CROSS JOIN LATERAL` cannot drop a guest: an aggregate query with no
  * `GROUP BY` returns exactly one row, so the derived table is total over the
  * left side even for a guest with no per-night rows.
+ *
+ * FIFTEEN FIELDS, and the two that #2376's plan asked for and did not get are the
+ * consent deadline and the arrival instant — both instants, both about 45 bytes a
+ * row, and together the difference between a full party of thirty fitting the
+ * entry's byte ceiling and gate 9 refusing the whole result. The arithmetic is in
+ * the module docblock. The consent deadline is one hop away on the booking page,
+ * and kiosk arrival is lodge-operations evidence rather than booking-record
+ * evidence; the scope line says both.
  */
 const BOOKING_PARTY_SQL = `SELECT
   g."id" AS guest_ref,
@@ -965,12 +978,16 @@ export const BOOKING_CHANGE_REQUEST_KIND_MEANINGS: Record<
  * night. Both fields are projected, and the scope line says which one to
  * believe.
  *
- * SEVENTEEN FIELDS. Three of the plan's fields are absent for a GRANT reason
- * rather than a cap reason: `hasLastConflictReason` and `hasProposalSnapshot`
- * would each need the SELECT privilege on a free-text or raw-Json column just to
- * test it for null (see the module docblock), and `proposalHash` is a 64-hex
- * drift token no operator can act on which cost eighty bytes on every row.
- * `version` is an optimistic-concurrency token and is likewise absent.
+ * SIXTEEN FIELDS, and four of #2376's plan are absent for a GRANT reason rather
+ * than a size one. `hasLastConflictReason` and `hasProposalSnapshot` would each
+ * need the SELECT privilege on a free-text or raw-Json column just to test it for
+ * null (see "the presence-boolean trap" in the module docblock);
+ * `reviewedByMemberRef` names the OFFICER who decided, and no actor id on any
+ * relation is granted anywhere in this pack. `reviewedAtUtc` carries the half an
+ * operator can act on — that a decision was made, and when — and the officer
+ * queue shows who made it. `proposalHash` is a 64-hex drift token no operator can
+ * act on which cost eighty bytes on every row, and `version` is an
+ * optimistic-concurrency token; both are likewise absent.
  */
 const BOOKING_EXCEPTION_REQUEST_SQL = `SELECT
   r."id" AS request_ref,
@@ -1003,7 +1020,7 @@ const bookingExceptionRequestState = defineDiagnosticsTool<BookingIdArgs>({
   id: DIAGNOSTICS_BOOKING_EXCEPTION_REQUEST_TOOL_ID,
   source: "select_only_sql",
   label: "Booking change and exception requests",
-  description: `Lists the change requests raised on ONE booking — locked-period edits and policy-exception requests alike — newest first, at most ${AID6B_HISTORY_ROW_LIMIT}. Each row carries the request id, its kind and status, the member who asked, the capacity mode of the frozen policy evidence, how many times it has been submitted and how many capacity conflicts it has hit and when the last one was, HOW MANY NIGHTS OF BEDS IT IS HOLDING RIGHT NOW, when any hold runs out, when and by whom it was reviewed, when the member cancelled it, which newer request superseded it, which booking modification it produced, and when it was created and last changed. heldNightCount above zero is the only reliable sign that beds are currently held — a null hold deadline does NOT mean no beds are held. It returns no requested changes, no member message, no reason, no admin notes, no internal notes and no frozen proposal or evidence. ${AID6B_DESCRIPTION_TAIL}`,
+  description: `Lists the change requests raised on ONE booking — locked-period edits and policy-exception requests alike — newest first, at most ${AID6B_HISTORY_ROW_LIMIT}. Each row carries the request id, its kind and status, the member who asked, the capacity mode of the frozen policy evidence, how many times it has been submitted and how many capacity conflicts it has hit and when the last one was, HOW MANY NIGHTS OF BEDS IT IS HOLDING RIGHT NOW, when any hold runs out, when it was reviewed (never by whom — that is the officer queue), when the member cancelled it, which newer request superseded it, which booking modification it produced, and when it was created and last changed. heldNightCount above zero is the only reliable sign that beds are currently held — a null hold deadline does NOT mean no beds are held. It returns no requested changes, no member message, no reason, no admin notes, no internal notes and no frozen proposal or evidence. ${AID6B_DESCRIPTION_TAIL}`,
   requiredAreas: ["bookings"],
   evidenceScope: `The change requests recorded against ONE booking, at most ${AID6B_HISTORY_ROW_LIMIT}, newest first. ${CHANGE_REQUEST_VOCABULARY} WHETHER BEDS ARE HELD IS ANSWERED BY heldNightCount AND BY NOTHING ELSE. A per-night reservation row exists if and only if the request is holding that night's beds right now — there is deliberately no active flag, because approving, rejecting, cancelling or superseding a request deletes those rows in the same transaction that records the outcome. holdExpiresAtUtc is NOT a safe proxy: the schema warns that a null deadline is two different populations, one of which is a row written before the column existed that IS holding beds, so never answer a capacity question from the deadline. A NEW-BOOKING policy-exception request is NOT in this result at all: it lives in a separate table because it has no booking id until it is converted, so an empty result here does not mean the member never asked for an exception — Admin > Exception Requests lists both kinds together. What a member wrote, what an officer wrote back, the officer's private internal notes, the requested changes, the frozen proposal and the frozen policy evidence are all outside this pack and not readable by any tool in it; Admin > Exception Requests shows them. ${AID6B_SCOPE_TAIL} ${AID6B_UNTRUSTED_EVIDENCE_DISCLOSURE}`,
   argsSchema: bookingIdArgsSchema,

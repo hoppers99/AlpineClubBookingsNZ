@@ -4,7 +4,7 @@
  * built from (#2376, epic #2369).
  *
  * This module holds no registry entry and reads nothing. It exists for the same
- * reason `finance-shared.ts` does: this pack registers eighteen entries across
+ * reason `finance-shared.ts` does: this pack registers fifteen entries across
  * four modules, and several properties have to be identical in every one of them,
  * where a divergence is a security defect rather than an inconsistency.
  *
@@ -310,7 +310,9 @@ export const PERSON_NAME_MAX_CHARS = 60;
 export function personNameOrNull(value: unknown): string | null {
   if (value === null || value === undefined) return null;
   const cleaned = String(value)
-    // eslint-disable-next-line no-control-regex -- stripping control characters is the point
+    // Stripping control characters is the point: nothing here is source code, so
+    // the strip costs no fidelity, and a control character in a durable audit hash
+    // input is worth removing at the source.
     .replace(/[ -]/g, " ")
     .replace(/["<>;=]/g, "")
     .replace(/\s+/g, " ")

@@ -358,11 +358,6 @@ describe("AID-6C finance pack: the grant allowlist matches the SQL (#2377)", () 
   const grantedRelations = new Set(
     SELECT_GRANTS.map((grant) => grant.relation),
   );
-  const grantedColumns = new Set(
-    SELECT_GRANTS.flatMap((grant) =>
-      (grant.columns ?? []).map((column) => `${grant.relation}.${column}`),
-    ),
-  );
 
   it.each(sqlEntries.map((tool) => [tool.id, tool] as const))(
     "%s reads only relations the allowlist declares",
