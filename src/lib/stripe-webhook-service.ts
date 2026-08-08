@@ -616,6 +616,9 @@ async function handlePaymentIntentFailed(
     action: isAdditionalPayment
       ? "booking.modification.payment.failed"
       : "booking.payment.failed",
+    category: "payment",
+    entityType: "Booking",
+    entityId: bookingId ?? undefined,
     targetId: bookingId ?? undefined,
     details: JSON.stringify({
       paymentIntentId: paymentIntent.id,
@@ -696,6 +699,9 @@ async function handlePaymentIntentCanceled(
     action: isAdditionalPayment
       ? "booking.modification.payment.canceled"
       : "booking.payment.canceled",
+    category: "payment",
+    entityType: "Booking",
+    entityId: bookingId ?? undefined,
     targetId: bookingId ?? undefined,
     details: JSON.stringify({
       paymentIntentId: paymentIntent.id,
@@ -1116,6 +1122,9 @@ async function refundSupersededGroupSettlementIntent(
 
   logAudit({
     action: "group.settlement.superseded_intent_refunded",
+    category: "payment",
+    entityType: "GroupBooking",
+    entityId: groupBookingId ?? undefined,
     targetId: groupBookingId ?? paymentIntent.id,
     details: JSON.stringify({
       paymentIntentId: paymentIntent.id,
@@ -1247,6 +1256,9 @@ async function handleCancelledBookingAdditionalPaymentSucceeded(
 
   logAudit({
     action: "booking.payment.refunded_after_cancellation",
+    category: "payment",
+    entityType: "Booking",
+    entityId: booking.id,
     targetId: booking.id,
     details: JSON.stringify({
       paymentIntentId: paymentIntent.id,
@@ -1357,6 +1369,9 @@ async function handleCancelledBookingPaymentSucceeded(
 
   logAudit({
     action: "booking.payment.refunded_after_cancellation",
+    category: "payment",
+    entityType: "Booking",
+    entityId: booking.id,
     targetId: booking.id,
     details: JSON.stringify({
       paymentIntentId: paymentIntent.id,

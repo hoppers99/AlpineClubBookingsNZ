@@ -216,6 +216,7 @@ export async function POST(request: NextRequest) {
         });
         await logAudit({
           action: "XERO_GROUPING_MODE_UPDATED",
+          category: "xero",
           memberId: session.user.id,
           details: JSON.stringify({ mode: data.mode }),
         });
@@ -228,7 +229,10 @@ export async function POST(request: NextRequest) {
         const created = await prisma.xeroContactGroupRule.create({ data: rule });
         await logAudit({
           action: "XERO_GROUPING_RULE_CREATED",
+          category: "xero",
           memberId: session.user.id,
+          entityType: "XeroContactGroupRule",
+          entityId: created.id,
           details: JSON.stringify({ id: created.id, ...rule }),
         });
         return NextResponse.json(await loadConfig());
@@ -243,7 +247,10 @@ export async function POST(request: NextRequest) {
         });
         await logAudit({
           action: "XERO_GROUPING_RULE_UPDATED",
+          category: "xero",
           memberId: session.user.id,
+          entityType: "XeroContactGroupRule",
+          entityId: data.id,
           details: JSON.stringify({ id: data.id, ...rule }),
         });
         return NextResponse.json(await loadConfig());
@@ -256,7 +263,10 @@ export async function POST(request: NextRequest) {
         });
         await logAudit({
           action: "XERO_GROUPING_RULE_TOGGLED",
+          category: "xero",
           memberId: session.user.id,
+          entityType: "XeroContactGroupRule",
+          entityId: data.id,
           details: JSON.stringify({ id: data.id, isActive: data.isActive }),
         });
         return NextResponse.json(await loadConfig());
@@ -266,7 +276,10 @@ export async function POST(request: NextRequest) {
         await prisma.xeroContactGroupRule.delete({ where: { id: data.id } });
         await logAudit({
           action: "XERO_GROUPING_RULE_DELETED",
+          category: "xero",
           memberId: session.user.id,
+          entityType: "XeroContactGroupRule",
+          entityId: data.id,
           details: JSON.stringify({ id: data.id }),
         });
         return NextResponse.json(await loadConfig());
@@ -315,6 +328,7 @@ export async function POST(request: NextRequest) {
             try {
               await logAudit({
                 action: "XERO_GROUPING_BULK_RESYNC_REJECTED",
+                category: "xero",
                 memberId: session.user.id,
                 details: JSON.stringify({
                   dryRunId: data.dryRunId,
@@ -337,6 +351,7 @@ export async function POST(request: NextRequest) {
         }
         await logAudit({
           action: "XERO_GROUPING_BULK_RESYNC",
+          category: "xero",
           memberId: session.user.id,
           details: JSON.stringify({
             dryRunId: data.dryRunId,

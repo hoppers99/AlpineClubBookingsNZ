@@ -41,11 +41,13 @@ import {
   type AuditWriteSite,
 } from "../../../scripts/audit/audit-writer-census";
 import {
+  APPLIED_AUDIT_CATEGORIES,
   APPROVED_FORWARDED_CATEGORY_SITES,
   APPROVED_MIGRATION_AUDIT_SQL,
   APPROVED_NON_PRODUCING_AUDIT_DML,
   AUDIT_CENSUS_TOTALS,
   AUDIT_WRITER_WRAPPERS,
+  AUDIT_WRITERS_WITHOUT_ENTITY_IDENTIFIER,
   UNCATEGORISED_AUDIT_WRITERS,
 } from "../../../scripts/audit/audit-writer-census-manifest";
 
@@ -98,16 +100,13 @@ describe("audit writer census (#2581)", { timeout: 180_000 }, () => {
 
   it("has exactly the reviewed set of UNCATEGORISED writers, and no others", () => {
     /*
-      The gate. A new audit writer that passes no category lands here by name.
+      The gate, and as of #2581's second child the pinned set is EMPTY: all 82
+      writers child 1 found have been classified at the source.
 
-      Fixing one is the other direction and equally pinned: give the site a
-      category and delete its entry from UNCATEGORISED_AUDIT_WRITERS in the same
-      diff. That is deliberate — a set-equality assertion is the only shape that
-      cannot be satisfied by fixing one writer and adding another.
-
-      Every entry carries the category this child recommends for it, so the sweep
-      that closes them (#2581's second child) starts from a reviewed answer rather
-      than from a fresh judgement call per site.
+      That makes this assertion stricter than it was, not weaker. A set-equality
+      pin against an empty manifest means the FIRST new uncategorised writer
+      fails CI by name — there is no backlog left for it to hide in, and nobody
+      can re-open one by adding an entry here instead of a category at the site.
     */
     expect(
       ids(census().uncategorised),
@@ -119,6 +118,107 @@ describe("audit writer census (#2581)", { timeout: 180_000 }, () => {
         "the site, or, if it genuinely belongs to the #2581 backlog, add it to " +
         "UNCATEGORISED_AUDIT_WRITERS with the category you propose for it.",
     ).toEqual(Object.keys(UNCATEGORISED_AUDIT_WRITERS).sort());
+  });
+
+  it("keeps every classification #2581 applied exactly where it was reviewed", () => {
+    /*
+      The SWAP gate, and the reason this exists on top of `categoryValues`.
+
+      A distribution pin catches a category gaining or losing sites. It does not
+      catch a swap: move one writer from `booking` to `payment` and another the
+      other way, and every count is identical while BOTH rows changed who can
+      read them — `booking` needs `bookings:view`, `payment` needs
+      `finance:view`. This pins the per-site answer, so any single
+      reclassification among the 83 sites child 2 touched is a named diff.
+    */
+    const measured = Object.fromEntries(
+      census()
+        .sites.filter((site) => site.id in APPLIED_AUDIT_CATEGORIES)
+        .map((site) => [site.id, describeCategory(site.category)]),
+    );
+
+    expect(
+      measured,
+      "A writer classified by #2581 now records a different category, or has " +
+        "moved and taken its identity with it. Category decides which admin " +
+        "areas a Diagnostics reader must hold AND whether a member sees the row " +
+        "in their own timeline, so this is a readership change: update " +
+        "APPLIED_AUDIT_CATEGORIES and say what moved in the changelog.",
+    ).toEqual(APPLIED_AUDIT_CATEGORIES);
+  });
+
+  it("pins which classified writers a MEMBER can now see about themselves", () => {
+    /*
+      The member-facing half of the same question, stated as a number rather than
+      left to be inferred from the table above.
+
+      The member self-timeline filters on category (`buildMemberVisibleAuditLogWhere`),
+      so classifying a previously null-category writer INTO a member-visible
+      category can publish it on a member-facing surface. Of the 83 sites child 2
+      classified, the ones landing in `lodge` and `xero` are the ones members
+      never see; everything else is member-visible. Both halves are pinned, so
+      moving a writer ACROSS the boundary in either direction fails here with the
+      direction named.
+
+      What made the 56 safe to publish, checked per family rather than assumed:
+      every one of those rows is about the member who can now see it or about a
+      club-wide rule they are subject to, the member projection returns no
+      metadata, no request id, no IP and no drill-downs, and each row's `details`
+      is either a JSON object (which the member projection suppresses entirely)
+      or a sentence the member already knows.
+    */
+    // MEASURED from the tree, not read back out of the manifest, deliberately.
+    // A pin that reads its own table only bites when somebody edits the table;
+    // this one bites when somebody edits a ROUTE, which is where the crossing
+    // actually happens.
+    const memberVisible = new Set<string>(
+      MEMBER_AUDIT_TIMELINE_CATEGORY_OPTIONS.map((option) => option.value),
+    );
+    const classified = census()
+      .sites.filter((site) => site.id in APPLIED_AUDIT_CATEGORIES)
+      .map((site) => describeCategory(site.category));
+    const visible = classified.filter((category) => memberVisible.has(category));
+    const hidden = classified.filter((category) => !memberVisible.has(category));
+
+    expect(
+      visible.length,
+      "A writer #2581 classified crossed the MEMBER SELF-TIMELINE boundary. " +
+        "That publishes an event on a member-facing surface, or withdraws one " +
+        "from it — never a side effect of a refactor. Say which way it moved and " +
+        "why the row is safe for the member it is about.",
+    ).toBe(56);
+    expect([...new Set(hidden)].sort()).toEqual(["lodge", "xero"]);
+    expect(hidden).toHaveLength(27);
+  });
+
+  it("names every classified writer that still carries NO entity identifier", () => {
+    /*
+      Child 1 measured that only 9 of the 82 passed an `entityType` or `entityId`,
+      which is the "missing entity identifiers that prevent bounded correlation"
+      case the owner named as in-scope. Child 2 added them at 67 of the 83.
+
+      The remaining 16 are pinned by NAME rather than by a count, because the
+      tempting wrong answer is available at every one of them: the acting
+      administrator's member id is always in scope, and writing it as the entity
+      would put a false reference into the club's audit trail that reads as
+      correlation. Each entry records why the site genuinely has no record to
+      name.
+    */
+    const missing = census()
+      .sites.filter(
+        (site) => site.id in APPLIED_AUDIT_CATEGORIES && !site.hasEntityIdentifier,
+      )
+      .map((site) => site.id)
+      .sort();
+
+    expect(
+      missing,
+      "A writer classified by #2581 carries no entityType or entityId, so a " +
+        "categorised row from it still cannot be correlated to a record. Add " +
+        "the identifier at the site, or — if the event genuinely affects a " +
+        "collection rather than a row — record why in " +
+        "AUDIT_WRITERS_WITHOUT_ENTITY_IDENTIFIER.",
+    ).toEqual(Object.keys(AUDIT_WRITERS_WITHOUT_ENTITY_IDENTIFIER).sort());
   });
 
   it("pins the uncategorised count the issue and the docs quote", () => {

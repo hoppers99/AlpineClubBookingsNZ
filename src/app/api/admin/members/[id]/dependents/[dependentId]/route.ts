@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { createAuditLog } from "@/lib/audit";
 import { requireAdmin } from "@/lib/session-guards";
 import { prisma } from "@/lib/prisma";
 import { resolveInheritedEmailSourceId } from "@/lib/member-parent-links";
@@ -140,11 +141,21 @@ export async function DELETE(
         },
       });
 
-      await tx.auditLog.create({
-        data: {
+      // Through `createAuditLog` rather than `tx.auditLog.create` (#2581).
+      // A hand-built `data` literal skips `buildAuditLogCreateData` entirely,
+      // so this row used to get no metadata sanitisation and — because
+      // retention is derived only when a category, severity or retention class
+      // is present — no `retentionClass` and no `expiresAt` either, i.e. kept
+      // forever. The `tx` client is still passed, so the row is still written
+      // inside the unlink's own transaction and still rolls back with it.
+      await createAuditLog(
+        {
           action: "member.dependent.unlink",
+          category: "family",
           memberId: session.user.id,
           targetId: dependent.id,
+          entityType: "Member",
+          entityId: dependent.id,
           details: JSON.stringify({
             parentMemberId: parent.id,
             linkType: isPrimaryParent ? "PRIMARY" : "SECONDARY",
@@ -153,7 +164,8 @@ export async function DELETE(
             nextEmailSourceId,
           }),
         },
-      });
+        tx
+      );
 
       return {
         updated,

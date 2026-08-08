@@ -82,6 +82,7 @@ export async function POST() {
 
     logAudit({
       action: "XERO_OPERATION_RETRY_ALL",
+      category: "xero",
       memberId: session.user.id,
       details: `Queued ${queued} active Xero retries (${skipped} skipped, ${failedOperationOverview.legacyFailedCount} legacy hidden)`,
     });
