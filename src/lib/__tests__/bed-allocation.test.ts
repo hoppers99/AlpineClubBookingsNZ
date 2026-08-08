@@ -4588,6 +4588,7 @@ describe("bed allocation first-claim displacement (issue #1387)", () => {
 describe("shared double beds (#2656)", () => {
   const NIGHT = "2026-07-01";
   const NEXT = "2026-07-02";
+  const AFTER_NEXT = "2026-07-03";
 
   function sharedRoom(id: string, sortOrder: number, bedIds: string[]) {
     return {
@@ -4625,7 +4626,12 @@ describe("shared double beds (#2656)", () => {
   function party(
     id: string,
     guests: Array<{ id: string; ageTier?: BedAllocationAgeTier }>,
-    options: { holdsCapacity?: boolean; createdAt?: string } = {},
+    options: {
+      holdsCapacity?: boolean;
+      createdAt?: string;
+      /** Exclusive check-out; defaults to a single night on NIGHT. */
+      stayEnd?: string;
+    } = {},
   ): BedAllocationBooking {
     return {
       id,
@@ -4637,9 +4643,54 @@ describe("shared double beds (#2656)", () => {
         bookingId: id,
         ageTier: guest.ageTier ?? ("ADULT" as BedAllocationAgeTier),
         stayStart: parseDateOnly(NIGHT),
-        stayEnd: parseDateOnly(NEXT),
+        stayEnd: parseDateOnly(options.stayEnd ?? NEXT),
       })),
     };
+  }
+
+  /**
+   * The output invariant the #2669 adversarial review fuzzed for, kept as a
+   * reusable assertion: once a plan's OWN displacements are applied, no
+   * allocation it drafted may sit on a bed-night that still has an occupant.
+   * That is the defect this whole change removes, stated directly rather than
+   * inferred from an expected bed list.
+   */
+  function expectNoAllocationOntoOccupiedBedNight(
+    plan: ReturnType<typeof buildFirstFitBedAllocationPlan>,
+    seeded: ReturnType<typeof occupant>[],
+  ) {
+    // Where each displaced row ends up: a new bed for a MOVE, nowhere for an
+    // UNALLOCATE.
+    const destinationByGuestNight = new Map<string, string>();
+    for (const displacement of plan.displacements ?? []) {
+      destinationByGuestNight.set(
+        `${displacement.bookingGuestId}:${displacement.stayDate}`,
+        displacement.type === "MOVE"
+          ? (displacement.toBedId ?? displacement.fromBedId)
+          : "",
+      );
+    }
+    const occupiedAfterPlan = new Set<string>();
+    for (const row of seeded) {
+      const guestNight = `${row.bookingGuestId}:${row.stayDate}`;
+      const bedId = destinationByGuestNight.has(guestNight)
+        ? destinationByGuestNight.get(guestNight)
+        : row.bedId;
+      if (bedId) occupiedAfterPlan.add(`${bedId}:${row.stayDate}`);
+    }
+    for (const allocation of plan.allocations) {
+      expect({
+        allocation: `${allocation.bookingGuestId}@${allocation.bedId}`,
+        stayDate: allocation.stayDate,
+        landsOnOccupiedBedNight: occupiedAfterPlan.has(
+          `${allocation.bedId}:${allocation.stayDate}`,
+        ),
+      }).toEqual({
+        allocation: `${allocation.bookingGuestId}@${allocation.bedId}`,
+        stayDate: allocation.stayDate,
+        landsOnOccupiedBedNight: false,
+      });
+    }
   }
 
   // -- The occupant view ---------------------------------------------------
@@ -5090,22 +5141,203 @@ describe("shared double beds (#2656)", () => {
     expect(onInvariantViolation).not.toHaveBeenCalled();
   });
 
-  it("deep-clones the bed-night occupant index when a planning trial is cloned", () => {
-    // A source contract, deliberately, and the honest reason is stated here:
-    // no behavioural fixture reachable from this entry point distinguishes a
-    // shallow `new Map(...)` here. Every strategy trial is cloned from the same
-    // parent state, so sharing the inner Sets lets a trial the planner DISCARDS
-    // delete occupant slots the winning trial still needs — a silent cross-trial
-    // leak whose first visible symptom would be a bed-night that reads as empty
-    // while its occupant's row is still in the database, i.e. exactly the defect
-    // this whole change removes. It is cheap to keep, so it is pinned directly.
-    const source = readRepoFile("src/lib/bed-allocation.ts");
-    const squashed = source.replace(/\s+/g, "");
-    expect(squashed).toContain(
-      "occupantSlotsByBedNight:newMap([...state.occupantSlotsByBedNight].map(([bedNight,slots])=>[bedNight,newSet(slots),]),),",
-    );
-    expect(squashed).not.toContain(
-      "occupantSlotsByBedNight:newMap(state.occupantSlotsByBedNight)",
-    );
+  it("reports a held guest-night the room could not seat, rather than losing it (#2669 F2)", () => {
+    // The per-bed-night dedupe in the displacement credit is load-bearing, and
+    // this is the shape that proves it — a shared double across TWO bookings,
+    // not the same-booking double its docstring used to cite.
+    //
+    // Without the dedupe, `remainingAfter` credits bed-1-1 twice, so room-1
+    // reads as feasible for two guests when evicting both its occupants frees
+    // exactly one bed. `placePartyInRoom` then seats one,
+    // `tryWholeStayWithDisplacement` returns true regardless, phase 2
+    // `continue`s, and the third guest-night — already stripped from
+    // `unallocatedGuestNights` by the partial-free-space adoption — is neither
+    // allocated nor reported. A paid member's night simply disappears.
+    const seeded = [
+      occupant({
+        bedId: "bed-1-1",
+        roomId: "room-1",
+        bookingId: "occ-c",
+        bookingGuestId: "g4",
+      }),
+      occupant({
+        bedId: "bed-1-1",
+        roomId: "room-1",
+        bookingId: "occ-b",
+        bookingGuestId: "g5",
+      }),
+    ];
+    const plan = buildFirstFitBedAllocationPlan({
+      enabled: true,
+      prioritizeCapacityHolding: true,
+      rooms: [
+        sharedRoom("room-0", 1, ["bed-0-1"]),
+        sharedRoom("room-1", 2, ["bed-1-1"]),
+      ],
+      bookings: [
+        party("booking-h", [{ id: "h0" }, { id: "h1" }, { id: "h2" }]),
+      ],
+      occupiedBedNights: seeded,
+    });
+
+    expect(
+      plan.allocations.map((row) => `${row.bookingGuestId}@${row.bedId}`),
+    ).toEqual(["h0@bed-0-1"]);
+    // Every demanded guest-night is accounted for: one placed, two reported.
+    expect(
+      plan.unallocatedGuestNights
+        .map((row) => `${row.bookingGuestId}:${row.reason}`)
+        .sort(),
+    ).toEqual(["h1:NO_BED_AVAILABLE", "h2:NO_BED_AVAILABLE"]);
+    expect(plan.displacements).toBeUndefined();
+    expectNoAllocationOntoOccupiedBedNight(plan, seeded);
+  });
+
+  it("does not displace a booking whose eviction frees nothing (#2669 F3)", () => {
+    // The prune pass, which had no coverage. `helps` is deliberately loose —
+    // one occupant of a shared double must be able to enter the eviction set
+    // BEFORE the occupant that makes it pay off — so without the prune, occ-d
+    // stays in the set it never earned: unallocated, and audited as displaced
+    // "so a capacity-holding booking could claim it", having freed no bed.
+    const seeded = [
+      occupant({
+        bedId: "bed-0-0",
+        roomId: "room-0",
+        bookingId: "occ-b",
+        bookingGuestId: "g1",
+      }),
+      occupant({
+        bedId: "bed-0-1",
+        roomId: "room-0",
+        bookingId: "occ-c",
+        bookingGuestId: "g5",
+      }),
+      occupant({
+        bedId: "bed-0-1",
+        roomId: "room-0",
+        bookingId: "occ-d",
+        bookingGuestId: "g6",
+      }),
+      occupant({
+        bedId: "bed-0-2",
+        roomId: "room-0",
+        bookingId: "occ-c",
+        bookingGuestId: "g9",
+      }),
+    ];
+    const plan = buildFirstFitBedAllocationPlan({
+      enabled: true,
+      prioritizeCapacityHolding: true,
+      rooms: [sharedRoom("room-0", 1, ["bed-0-0", "bed-0-1", "bed-0-2"])],
+      bookings: [
+        party("booking-h", [{ id: "h0" }], { stayEnd: AFTER_NEXT }),
+      ],
+      occupiedBedNights: seeded,
+    });
+
+    expect(
+      plan.allocations.map(
+        (row) => `${row.bookingGuestId}@${row.bedId}:${row.stayDate}`,
+      ),
+    ).toEqual([`h0@bed-0-2:${NIGHT}`, `h0@bed-0-2:${NEXT}`]);
+    // occ-d shares bed-0-1 with occ-c; displacing it on its own frees nothing,
+    // so it is never displaced.
+    expect(
+      [...new Set((plan.displacements ?? []).map((row) => row.bookingId))],
+    ).toEqual(["occ-c"]);
+    expectNoAllocationOntoOccupiedBedNight(plan, seeded);
+  });
+
+  it("does not leak a discarded planning trial's evictions into the plan that wins (#2669 F4)", () => {
+    // The deep clone of `occupantSlotsByBedNight`, pinned behaviourally.
+    //
+    // Every candidate room's displacement trial is cloned from the same parent
+    // state. With a shallow `new Map(...)` the inner Sets are shared, so a
+    // trial the planner DISCARDS still deletes occupant slots from the state
+    // the winning trial reads — and a bed-night whose slots were emptied by a
+    // trial that never happened reads as free. Here that puts a held guest on
+    // bed-1-2 on the second night while occ-c's g13 is still in it: the exact
+    // capacity hole this change closes, reintroduced through the clone.
+    const seeded = [
+      occupant({
+        bedId: "bed-0-0",
+        roomId: "room-0",
+        bookingId: "occ-d",
+        bookingGuestId: "g1",
+      }),
+      occupant({
+        bedId: "bed-0-0",
+        roomId: "room-0",
+        bookingId: "occ-c",
+        bookingGuestId: "g3",
+        stayDate: NEXT,
+      }),
+      occupant({
+        bedId: "bed-0-1",
+        roomId: "room-0",
+        bookingId: "occ-a",
+        bookingGuestId: "g5",
+        stayDate: NEXT,
+      }),
+      occupant({
+        bedId: "bed-1-0",
+        roomId: "room-1",
+        bookingId: "occ-d",
+        bookingGuestId: "g8",
+      }),
+      occupant({
+        bedId: "bed-1-1",
+        roomId: "room-1",
+        bookingId: "occ-a",
+        bookingGuestId: "g11",
+        stayDate: NEXT,
+      }),
+      // The shared double across two bookings, on the second night.
+      occupant({
+        bedId: "bed-1-2",
+        roomId: "room-1",
+        bookingId: "occ-a",
+        bookingGuestId: "g12",
+        stayDate: NEXT,
+      }),
+      occupant({
+        bedId: "bed-1-2",
+        roomId: "room-1",
+        bookingId: "occ-c",
+        bookingGuestId: "g13",
+        stayDate: NEXT,
+      }),
+    ];
+    const plan = buildFirstFitBedAllocationPlan({
+      enabled: true,
+      prioritizeCapacityHolding: true,
+      rooms: [
+        sharedRoom("room-0", 1, ["bed-0-0", "bed-0-1", "bed-0-2"]),
+        sharedRoom("room-1", 2, ["bed-1-0", "bed-1-1", "bed-1-2"]),
+      ],
+      bookings: [
+        party("booking-h", [{ id: "h0" }, { id: "h1" }], {
+          stayEnd: AFTER_NEXT,
+        }),
+      ],
+      occupiedBedNights: seeded,
+    });
+
+    // The invariant first — this is what the leak breaks, and it holds however
+    // the scorer breaks ties.
+    expectNoAllocationOntoOccupiedBedNight(plan, seeded);
+    expect(
+      plan.allocations.map(
+        (row) => `${row.bookingGuestId}@${row.bedId}:${row.stayDate}`,
+      ),
+    ).toEqual([
+      `h0@bed-0-2:${NIGHT}`,
+      `h1@bed-0-1:${NIGHT}`,
+      `h0@bed-0-2:${NEXT}`,
+      `h1@bed-0-0:${NEXT}`,
+    ]);
+    expect(
+      [...new Set((plan.displacements ?? []).map((row) => row.bookingId))],
+    ).toEqual(["occ-c"]);
   });
 });

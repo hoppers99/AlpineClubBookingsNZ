@@ -2855,6 +2855,15 @@ function planEvictionsForRoom(
    * double leaving credits nothing while the other stays (whether the survivor
    * belongs to another booking or to the same one), and a double emptied of
    * both its occupants credits exactly ONE bed, not two.
+   *
+   * Both halves are load-bearing, and the per-bed-night half matters most for
+   * the CROSS-BOOKING double this issue is about, not only for one booking's
+   * two guests (#2669 review F2). Counting a shared double once per row makes a
+   * room read as feasible for two when emptying it frees one bed;
+   * `placePartyInRoom` then seats one, `tryWholeStayWithDisplacement` returns
+   * true regardless, and the caller has already taken those guest-nights out of
+   * the unallocated list — so a held guest-night is neither placed nor
+   * reported. It simply disappears.
    */
   const remainingAfter = (evictionIds: string[]): Map<string, number> => {
     const evicting = new Set(evictionIds);
@@ -2993,6 +3002,37 @@ function tryWholeStayWithDisplacement(
 
     const snapshots = evictionBookingIds.map((id) => evictBooking(state, id));
     placePartyInRoom(state, booking, room, demand);
+
+    // Defence in depth (#2669 review). `placePartyInRoom` seats whoever fits
+    // and this function returns true either way, while the caller has ALREADY
+    // removed this booking's demanded guest-nights from
+    // `unallocatedGuestNights` and will `continue` on a true return. So any
+    // arithmetic slip in `planEvictionsForRoom` — over-crediting a shared bed,
+    // a future feasibility rule that does not match what the bed assignment can
+    // actually do — turns a held guest-night into a VANISHED one rather than a
+    // reported `NO_BED_AVAILABLE`. Re-report anything the room did not seat, so
+    // the worst such a slip can cost is a placement, never the record of it.
+    // Costs nothing when the room did seat everyone, which is every shape the
+    // suite covers.
+    const reported = new Set(
+      state.unallocatedGuestNights.map((row) =>
+        guestNightKey(row.bookingGuestId, row.stayDate),
+      ),
+    );
+    for (const guest of demand.guests) {
+      for (const night of guest.nights) {
+        const key = guestNightKey(guest.id, night);
+        if (state.allocatedGuestNights.has(key) || reported.has(key)) continue;
+        reported.add(key);
+        state.unallocatedGuestNights.push({
+          bookingId: booking.id,
+          bookingGuestId: guest.id,
+          stayDate: night,
+          reason: allocationReasonForNoBed(state.allBeds),
+        });
+      }
+    }
+
     for (const snapshot of snapshots) {
       relocateOrUnallocateBooking(state, snapshot, booking.id, room.id);
     }
