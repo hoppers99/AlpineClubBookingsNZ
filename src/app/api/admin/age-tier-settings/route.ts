@@ -246,6 +246,7 @@ export async function PUT(request: NextRequest) {
 
   await logAudit({
     action: "AGE_TIER_SETTINGS_UPDATED",
+    category: "booking",
     memberId: session.user.id,
     details: JSON.stringify({ settings: normalizedSettings, removedTiers }),
   });

@@ -287,8 +287,11 @@ export async function POST(req: NextRequest) {
 
   logAudit({
     action: "promo.create",
+    category: "booking",
     memberId: session.user.id,
     targetId: promoCode!.id,
+    entityType: "PromoCode",
+    entityId: promoCode!.id,
     details: `Created promo code: ${data.code}${data.assignedMemberIds?.length ? ` (assigned to ${data.assignedMemberIds.length} member(s))` : ""}${requestedLodgeIds.length ? ` (restricted to ${requestedLodgeIds.length} lodge(s))` : ""}`,
   });
 

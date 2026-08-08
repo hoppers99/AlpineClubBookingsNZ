@@ -17,6 +17,7 @@ export async function POST() {
 
     await logAudit({
       action: "XERO_LINK_LEDGER_MAINTENANCE",
+      category: "xero",
       memberId: session.user.id,
       details: `Backfilled ${backfill.totals.createdLinks} canonical Xero links and deactivated ${cleanup.deactivatedLinks} stale canonical links`,
     });

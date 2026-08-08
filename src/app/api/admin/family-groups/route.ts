@@ -158,8 +158,11 @@ export async function POST(req: NextRequest) {
 
   logAudit({
     action: "FAMILY_GROUP_CREATED",
+    category: "family",
     memberId: session.user.id,
     targetId: group?.id,
+    entityType: "FamilyGroup",
+    entityId: group?.id,
     details: JSON.stringify({ name, memberIds: uniqueIds }),
   });
 

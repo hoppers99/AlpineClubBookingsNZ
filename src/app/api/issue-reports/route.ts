@@ -191,8 +191,32 @@ export async function POST(request: NextRequest) {
 
     logAudit({
       action: "issue.reported",
+      // `privacy`, deliberately NOT `admin` (#2581 decision 5). `/admin/
+      // issue-reports` is a `support` surface and the sibling admin
+      // issue-report events are already `privacy`, so matching the SURFACE
+      // would mean moving this to `admin` — which reads with `support:view`
+      // alone and would widen a member's own report. The mismatch stays and is
+      // disclosed: a support-only operator correlates issue reports in
+      // Admin > Audit Log rather than in Diagnostics.
+      //
+      // `privacy` is member-visible, and this row is written with
+      // `memberId: member.id`, so the REPORTER sees it on their own timeline.
+      // The usual reassurance — "`details` is a JSON object, so the member
+      // projection returns `null`" — is true by SHAPE but not by SIZE here.
+      // `sanitizeAuditDetails` clips anything over 1000 characters to
+      // `<first 1000>...[TRUNCATED]`; a clipped object no longer parses, so
+      // `parseJsonObject` returns null and `serializeAuditTimelineLog` hands
+      // the clipped string back as `details`/`description`. This payload CAN
+      // exceed 1000: `pageUrl` is capped at 2048 and `pageTitle` at 300 by the
+      // schema above, and `normalizeInternalAppUrl` keeps the query string. The
+      // exposure is nil — it is the reporter's own page URL and title on their
+      // own report — but the shape argument alone would be wrong here, so both
+      // halves are stated, in `docs/guides/audit-log.md` as well.
+      category: "privacy",
       memberId: member.id,
       targetId: issueReport.id,
+      entityType: "IssueReport",
+      entityId: issueReport.id,
       details: JSON.stringify({
         pageUrl,
         pageTitle,

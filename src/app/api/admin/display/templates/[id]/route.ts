@@ -166,6 +166,7 @@ export async function PUT(
 
   logAudit({
     action: "DISPLAY_TEMPLATE_UPDATED",
+    category: "lodge",
     entityType: "DisplayTemplate",
     entityId: template.id,
     targetId: template.id,
@@ -235,6 +236,7 @@ export async function DELETE(
 
   logAudit({
     action: "DISPLAY_TEMPLATE_DELETED",
+    category: "lodge",
     entityType: "DisplayTemplate",
     entityId: template.id,
     targetId: template.id,

@@ -315,6 +315,7 @@ describe("Xero admin bulk routes", () => {
     expect(mocks.processQueuedXeroOperationRetries).toHaveBeenCalledWith({ limit: 1 });
     expect(mocks.logAudit).toHaveBeenCalledWith({
       action: "XERO_OPERATION_RETRY_ALL",
+      category: "xero",
       memberId: "admin-1",
       details: "Queued 1 active Xero retries (1 skipped, 5 legacy hidden)",
     });
@@ -343,6 +344,7 @@ describe("Xero admin bulk routes", () => {
     expect(mocks.cleanupStaleCanonicalXeroObjectLinks).toHaveBeenCalled();
     expect(mocks.logAudit).toHaveBeenCalledWith({
       action: "XERO_LINK_LEDGER_MAINTENANCE",
+      category: "xero",
       memberId: "admin-1",
       details: "Backfilled 1 canonical Xero links and deactivated 2 stale canonical links",
     });

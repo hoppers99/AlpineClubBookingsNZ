@@ -360,8 +360,11 @@ export async function PUT(request: NextRequest) {
 
     logAudit({
       action: "adult-member-hosting-policy.update",
+      category: "booking",
       memberId: session.user.id,
       targetId: policy.id,
+      entityType: "AdultMemberHostingPolicy",
+      entityId: policy.id,
       details: JSON.stringify({
         scopeKey,
         lodgeId,

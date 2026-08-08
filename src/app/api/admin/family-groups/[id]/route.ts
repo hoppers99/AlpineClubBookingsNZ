@@ -224,8 +224,11 @@ export async function PUT(
 
   logAudit({
     action: "FAMILY_GROUP_UPDATED",
+    category: "family",
     memberId: session.user.id,
     targetId: id,
+    entityType: "FamilyGroup",
+    entityId: id,
     details: JSON.stringify(parsed.data),
   });
 
@@ -278,8 +281,11 @@ export async function DELETE(
 
   logAudit({
     action: "FAMILY_GROUP_DELETED",
+    category: "family",
     memberId: session.user.id,
     targetId: id,
+    entityType: "FamilyGroup",
+    entityId: id,
   });
 
   logger.info({ groupId: id }, "Family group deleted");

@@ -339,8 +339,11 @@ export async function PUT(
 
   logAudit({
     action: "promo.update",
+    category: "booking",
     memberId: session.user.id,
     targetId: id,
+    entityType: "PromoCode",
+    entityId: id,
     details: `Updated promo code: ${existing.code}${requestedLodgeIds !== undefined ? ` (lodge restriction: ${requestedLodgeIds.length ? `${requestedLodgeIds.length} lodge(s)` : "cleared"})` : ""}`,
   });
 
@@ -380,8 +383,11 @@ export async function DELETE(
 
     logAudit({
       action: "promo.archive",
+      category: "booking",
       memberId: session.user.id,
       targetId: id,
+      entityType: "PromoCode",
+      entityId: id,
       details: `Archived promo code: ${existing.code} (${existing._count.redemptions} redemption(s))`,
     });
 
@@ -392,8 +398,11 @@ export async function DELETE(
 
   logAudit({
     action: "promo.delete",
+    category: "booking",
     memberId: session.user.id,
     targetId: id,
+    entityType: "PromoCode",
+    entityId: id,
     details: `Deleted promo code: ${existing.code}`,
   });
 
@@ -426,8 +435,11 @@ export async function PATCH(
 
   logAudit({
     action: "promo.restore",
+    category: "booking",
     memberId: session.user.id,
     targetId: id,
+    entityType: "PromoCode",
+    entityId: id,
     details: `Restored archived promo code: ${existing.code}`,
   });
 

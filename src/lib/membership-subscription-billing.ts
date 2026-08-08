@@ -1358,6 +1358,7 @@ export async function confirmSubscriptionBillingPreview(input: {
     if (input.confirmedByMemberId) {
       await createAuditLog({
         action: "membership-subscription-billing.confirm",
+        category: "payment",
         memberId: input.confirmedByMemberId,
         targetId: String(preview.seasonYear),
         details: JSON.stringify({

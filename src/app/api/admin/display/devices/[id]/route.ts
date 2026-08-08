@@ -113,6 +113,7 @@ export async function PATCH(
         : "club default";
     logAudit({
       action: "DISPLAY_DEVICE_TEMPLATE_ASSIGNED",
+      category: "lodge",
       entityType: "LodgeDisplayDevice",
       entityId: updated.id,
       targetId: updated.id,
@@ -124,6 +125,7 @@ export async function PATCH(
   if (body.pollSeconds !== undefined) {
     logAudit({
       action: "DISPLAY_DEVICE_POLL_INTERVAL_SET",
+      category: "lodge",
       entityType: "LodgeDisplayDevice",
       entityId: updated.id,
       targetId: updated.id,
