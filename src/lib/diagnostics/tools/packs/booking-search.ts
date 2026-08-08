@@ -500,6 +500,31 @@ const MEMBER_SEARCH_COLUMNS = `m."id" AS member_ref,
  * as entered, and an officer typing a surname in lower case is the normal case, not
  * the exception.
  */
+/**
+ * THE MOBILE ARM USES `pg_catalog.concat` AND NOT `coalesce`, AND THE REASON IS A
+ * REAL DATABASE REFUSING THE OTHER ONE.
+ *
+ * This statement first read
+ * `pg_catalog.coalesce(m."phoneAreaCode", '') || pg_catalog.coalesce(...)`, and on
+ * PostgreSQL 16 that fails to plan with SQLSTATE 42883, undefined_function.
+ * `COALESCE` is not a catalogued function at all: the grammar parses it into a
+ * `CoalesceExpr` node, so there is no `pg_catalog.coalesce` to qualify and asking
+ * for one is asking for a function that does not exist. Every mock in the
+ * repository accepted it; the opt-in real-PostgreSQL suite is what refused it, on
+ * the first run in which an AID-6B statement was ever executed against a server.
+ *
+ * `concat` IS a catalogued function, it lives in `pg_catalog`, and it treats NULL
+ * as the empty string — which is the whole of what the `coalesce` calls were doing
+ * — so the three predicates keep their exact meaning. It also removes the two `||`
+ * operators, and an operator is resolved through `search_path` just as a function
+ * is, so the arm is now schema-pinned end to end rather than pinned for its
+ * functions and open for its concatenation.
+ *
+ * The lesson generalises past this statement: "qualify every function with
+ * `pg_catalog.`" is right for functions and wrong for SQL constructs that only
+ * LOOK like functions. `COALESCE`, `NULLIF`, `GREATEST`, `LEAST`, `CAST`, `EXTRACT`
+ * and the `SUBSTRING(x FROM y)` form are all grammar, not `pg_proc` rows.
+ */
 const MEMBER_SEARCH_SQL = `SELECT
   ${MEMBER_SEARCH_COLUMNS}
 FROM public."Member" m
@@ -511,9 +536,9 @@ WHERE (
     OR pg_catalog.starts_with(pg_catalog.lower(m."firstName"), pg_catalog.lower($4::text))
   ))
   OR ($1::text = 'mobile' AND (
-    pg_catalog.coalesce(m."phoneNumber", '') = $5::text
-    OR pg_catalog.coalesce(m."phoneAreaCode", '') || pg_catalog.coalesce(m."phoneNumber", '') = $5::text
-    OR '0' || pg_catalog.coalesce(m."phoneAreaCode", '') || pg_catalog.coalesce(m."phoneNumber", '') = $5::text
+    pg_catalog.concat(m."phoneNumber") = $5::text
+    OR pg_catalog.concat(m."phoneAreaCode", m."phoneNumber") = $5::text
+    OR pg_catalog.concat('0', m."phoneAreaCode", m."phoneNumber") = $5::text
   ))
 )
 ORDER BY m."lastName" ASC, m."firstName" ASC, m."id" ASC`;

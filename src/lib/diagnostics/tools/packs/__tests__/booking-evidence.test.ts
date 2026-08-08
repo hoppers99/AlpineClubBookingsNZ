@@ -1,0 +1,2581 @@
+/**
+ * AID-6B's three authoritative booking/membership calculations (#2376).
+ *
+ * `booking-evidence.ts` owns the only `server_owned` sources in the booking pack:
+ * `readBookingBlockStateEvidence`, `readBookingCapacityEvidence` and
+ * `readMemberEligibilityEvidence`. The other entries return stored rows and a
+ * contract test is enough for them. These three COMPOSE — a lifecycle test, a
+ * policy evaluator, the capacity engine, a person-night guard, an edit-window
+ * classifier, an erasure predicate, a settlement rule and a lockout mode — so what
+ * has to be proved is the composition: which inputs are read, which are
+ * SUPPRESSED, which classification wins when several are true at once, and which
+ * facts are deliberately withheld rather than guessed.
+ *
+ * ## THE PRISMA DOUBLE HONOURS `where`, AND THAT IS THE POINT OF IT
+ *
+ * AID-6C's consistency suite (`finance-authoritative-consistency.test.ts`) stubs
+ * `prisma.*` with `mockResolvedValue`, so every read returns the same fixture rows
+ * whatever `where` it was handed. That is survivable for a source whose reads are
+ * all `findUnique({ where: { id } })`, and it is NOT survivable here: this module's
+ * reads are FILTERS. `bookingGuest.findMany({ where: { bookingId } })`,
+ * `bookingChangeRequest.findMany({ where: { bookingId, status: "REQUESTED" } })`,
+ * `bedAllocation.groupBy({ where: { bookingId } })` and — the sharpest one —
+ * `member.count({ where: { id, passwordHash: DELETED_ACCOUNT_PASSWORD_HASH } })`
+ * all mean something only because of their predicate. Under a `where`-blind mock a
+ * predicate that selected the WRONG rows would return the right ones anyway, and
+ * the entire suite would be blind to it. An erasure test that dropped `id` from
+ * its `where` would report every ordinary member as ERASED, and a suite built on
+ * `mockResolvedValue` would go green.
+ *
+ * So this file builds a small in-memory store — Booking, BookingGuest,
+ * BookingGuestNight, BookingChangeRequest, PolicyExceptionReservationNight,
+ * BedAllocation, Member, MemberSubscription, MemberInduction — and implements
+ * `findUnique`, `findFirst`, `findMany`, `count` and `groupBy` doubles that
+ * actually APPLY the `where` they are given. Unsupported operators and unknown
+ * field names THROW rather than being ignored, because a filter the double
+ * silently drops is worse than no double at all.
+ *
+ * Every scenario also seeds a DECOY: a second booking with its own guests, its own
+ * open change requests and its own bed allocations, and a second member who
+ * carries both erasure markers, an unpaid subscription and an incomplete
+ * induction. Nothing under test may ever see them. The decoy is permanent rather
+ * than confined to one test so that dropping any `bookingId` or `memberId` filter
+ * fails most of this file at once — mutation proofs for that are in the report.
+ *
+ * ## IT ALSO HONOURS `select`
+ *
+ * A named `select` returns ONLY the named fields. AID-6C's blocker #1 was a
+ * projection reading a column its `select` did not name — which in a
+ * `mockResolvedValue` world reads back fine and in production reads `undefined`.
+ * Here it reads `undefined` in the test too. `select` is strict (an unknown field
+ * name throws); `include` is lenient (unknown relations resolve to `null`), because
+ * `getInductionForMember`'s `include` names five relations this module never
+ * looks at and materialising them would test Prisma rather than this source.
+ *
+ * ## WHAT IS MOCKED, AND WHY EXACTLY THAT LINE
+ *
+ * The AUTHORITIES this module delegates to run FOR REAL, because reusing them
+ * instead of re-deriving their rules is the whole argument for these being
+ * `server_owned` entries, and stubbing one would test a copy of the thing under
+ * test: `isDeletedAccountRecord`, `getLifecycleStatusConfig`,
+ * `bookingReviewReasonCodes`, `isCheckinBlockedByPendingReview`,
+ * `getBookingEditPolicy`, `resolveMemberSubscriptionSettlement`,
+ * `subscriptionIsUnpaid`, `participantQualifiesAsHost`, `formatBookingReference`
+ * and every `date-only` helper.
+ *
+ * The INPUTS are stubbed, because each is a whole subsystem (the capacity engine
+ * takes advisory-lock-adjacent reads across four tables; the policy evaluator
+ * composes three more) and because several assertions here are about a call NOT
+ * HAPPENING, which can only be observed on a spy: `checkCapacity`,
+ * `evaluateProposalPartyViolations`, `findBookingMemberNightConflicts`,
+ * `resolveMembershipTypePolicyForMember`, `getAgeTierSettings` and
+ * `peekSubscriptionLockoutMode`. `getInductionForMember` is deliberately NOT
+ * stubbed — it is a one-line `findFirst` and letting it run proves its
+ * `where: { memberId }` against the decoy.
+ *
+ * ## THE CLOCK
+ *
+ * The repo-wide frozen clock (#2481) pins "now" at 2026-07-01T00:00:00Z, which is
+ * midday 1 July 2026 in the club's zone, so NZ and UTC agree on the calendar day.
+ * `currentSeasonYear()` is therefore 2026 and `getTodayDateOnly()` is 2026-07-01.
+ * Every fixture date below is written relative to that and nothing here reads the
+ * real calendar.
+ */
+import { beforeEach, describe, expect, it, vi } from "vitest";
+
+import { DELETED_ACCOUNT_PASSWORD_HASH } from "@/lib/deleted-account";
+
+// ---------------------------------------------------------------------------
+// The doubles. Created in a hoisted block so the `vi.mock` factories below can
+// close over them; their implementations are wired in `beforeEach`, which runs
+// long after this module has finished evaluating.
+// ---------------------------------------------------------------------------
+
+const {
+  prismaMock,
+  checkCapacityMock,
+  evaluateProposalPartyViolationsMock,
+  findBookingMemberNightConflictsMock,
+  resolveMembershipTypePolicyForMemberMock,
+  getAgeTierSettingsMock,
+  peekSubscriptionLockoutModeMock,
+} = vi.hoisted(() => ({
+  prismaMock: {
+    booking: { findUnique: vi.fn() },
+    bookingGuest: { findMany: vi.fn() },
+    bookingChangeRequest: { findMany: vi.fn() },
+    bedAllocation: { groupBy: vi.fn() },
+    member: { findUnique: vi.fn(), count: vi.fn() },
+    memberSubscription: { findUnique: vi.fn() },
+    memberInduction: { findFirst: vi.fn() },
+  },
+  checkCapacityMock: vi.fn(),
+  evaluateProposalPartyViolationsMock: vi.fn(),
+  findBookingMemberNightConflictsMock: vi.fn(),
+  resolveMembershipTypePolicyForMemberMock: vi.fn(),
+  getAgeTierSettingsMock: vi.fn(),
+  peekSubscriptionLockoutModeMock: vi.fn(),
+}));
+
+vi.mock("@/lib/prisma", () => ({ prisma: prismaMock }));
+vi.mock("@/lib/capacity", () => ({ checkCapacity: checkCapacityMock }));
+vi.mock("@/lib/booking-exception-request-service", () => ({
+  evaluateProposalPartyViolations: evaluateProposalPartyViolationsMock,
+}));
+vi.mock("@/lib/booking-member-night-conflicts", () => ({
+  findBookingMemberNightConflicts: findBookingMemberNightConflictsMock,
+}));
+vi.mock("@/lib/membership-type-policy", () => ({
+  resolveMembershipTypePolicyForMember: resolveMembershipTypePolicyForMemberMock,
+}));
+// PARTIAL mocks: both modules are imported by real code left running here
+// (`subscription-lockout-facts` reads `getAgeTierSettings`), so only the one
+// export each is replaced and the rest of the module stays genuine.
+vi.mock("@/lib/age-tier", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/age-tier")>()),
+  getAgeTierSettings: getAgeTierSettingsMock,
+}));
+vi.mock("@/lib/member-subscription-eligibility", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/member-subscription-eligibility")>()),
+  peekSubscriptionLockoutMode: peekSubscriptionLockoutModeMock,
+}));
+
+import {
+  AID6B_CAPACITY_NIGHT_CEILING,
+  BOOKING_BLOCKER_CODES,
+  MEMBER_ELIGIBILITY_CODES,
+  readBookingBlockStateEvidence,
+  readBookingCapacityEvidence,
+  readMemberEligibilityEvidence,
+} from "../booking-evidence";
+
+// ---------------------------------------------------------------------------
+// The in-memory store.
+// ---------------------------------------------------------------------------
+
+type Row = Record<string, unknown>;
+
+interface Store {
+  booking: Row[];
+  bookingGuest: Row[];
+  bookingGuestNight: Row[];
+  bookingChangeRequest: Row[];
+  policyExceptionReservationNight: Row[];
+  bedAllocation: Row[];
+  member: Row[];
+  memberSubscription: Row[];
+  memberInduction: Row[];
+}
+
+type ModelName = keyof Store;
+
+interface ModelSpec {
+  /**
+   * Every column the double will answer for. A `select` naming anything else
+   * throws: that is the AID-6C blocker-#1 guard, so a projection reading a field
+   * the source did not select fails HERE rather than reading `undefined` in
+   * production.
+   */
+  columns: readonly string[];
+  relations?: Record<string, (row: Row, store: Store) => Row[] | Row | null>;
+  counts?: Record<string, (row: Row, store: Store) => number>;
+}
+
+const MODELS: Record<ModelName, ModelSpec> = {
+  booking: {
+    columns: [
+      "id",
+      "memberId",
+      "lodgeId",
+      "status",
+      "checkIn",
+      "checkOut",
+      "deletedAt",
+      "requiresAdminReview",
+      "adminReviewStatus",
+      "adminReviewedAt",
+      "adultMemberHostingReviewStatus",
+      "adultMemberHostingReviewedAt",
+      "waitlistPosition",
+      "waitlistOfferExpiresAt",
+      "wholeLodgeHold",
+      "adminCapacityHoldAt",
+      "capacityOverriddenAt",
+      "parentBookingId",
+      "draftExpiresAt",
+      // Present on the model and NEVER selectable without this test noticing:
+      // the pack doc names these as the columns that sit one `select` away.
+      "notes",
+      "adminReviewNotes",
+      "deletedReason",
+    ],
+  },
+  bookingGuest: {
+    columns: [
+      "id",
+      "bookingId",
+      "firstName",
+      "lastName",
+      "ageTier",
+      "isMember",
+      "memberId",
+      "stayStart",
+      "stayEnd",
+      "consentStatus",
+    ],
+    relations: {
+      nights: (row, store) =>
+        store.bookingGuestNight.filter(
+          (night) => night.bookingGuestId === row.id,
+        ),
+    },
+  },
+  bookingGuestNight: {
+    columns: ["id", "bookingGuestId", "stayDate"],
+  },
+  bookingChangeRequest: {
+    columns: [
+      "id",
+      "bookingId",
+      "requestedByMemberId",
+      "status",
+      "kind",
+      "holdExpiresAt",
+      "createdAt",
+      "internalNotes",
+    ],
+    counts: {
+      reservationNights: (row, store) =>
+        store.policyExceptionReservationNight.filter(
+          (night) => night.requestId === row.id,
+        ).length,
+    },
+  },
+  policyExceptionReservationNight: {
+    columns: ["id", "requestId", "stayDate"],
+  },
+  bedAllocation: {
+    columns: ["id", "bookingId", "bedId", "stayDate"],
+  },
+  member: {
+    columns: [
+      "id",
+      "email",
+      // A real column, deliberately declared so `member.count`'s predicate can
+      // be applied against it — and so a `select` that named it would be
+      // visible to the test that forbids exactly that.
+      "passwordHash",
+      "ageTier",
+      "active",
+      "canLogin",
+      "cancelledAt",
+      "archivedAt",
+      "requiresInduction",
+      "hutLeaderEligible",
+      "joinedDate",
+      "firstName",
+      "lastName",
+    ],
+  },
+  memberSubscription: {
+    columns: [
+      "memberId",
+      "seasonYear",
+      "status",
+      "paidAt",
+      "manuallyMarkedPaidAt",
+    ],
+  },
+  memberInduction: {
+    columns: ["id", "memberId", "status", "createdAt"],
+  },
+};
+
+let store: Store;
+
+function emptyStore(): Store {
+  return {
+    booking: [],
+    bookingGuest: [],
+    bookingGuestNight: [],
+    bookingChangeRequest: [],
+    policyExceptionReservationNight: [],
+    bedAllocation: [],
+    member: [],
+    memberSubscription: [],
+    memberInduction: [],
+  };
+}
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    !Array.isArray(value) &&
+    !(value instanceof Date)
+  );
+}
+
+function comparable(value: unknown): unknown {
+  return value instanceof Date ? value.getTime() : value;
+}
+
+/**
+ * Apply one scalar condition. Every operator the sources could reach is handled
+ * explicitly and everything else THROWS — a double that ignored an operator it
+ * did not recognise would quietly return unfiltered rows, which is the exact
+ * failure this whole design exists to prevent.
+ */
+function matchScalar(actual: unknown, condition: unknown, where: string): boolean {
+  if (condition === null) return actual === null || actual === undefined;
+  if (condition instanceof Date) return comparable(actual) === condition.getTime();
+  if (isPlainObject(condition)) {
+    for (const [operator, operand] of Object.entries(condition)) {
+      switch (operator) {
+        case "equals":
+          if (!matchScalar(actual, operand, where)) return false;
+          break;
+        case "not":
+          if (matchScalar(actual, operand, where)) return false;
+          break;
+        case "in":
+          if (!(operand as unknown[]).some((v) => matchScalar(actual, v, where)))
+            return false;
+          break;
+        case "notIn":
+          if ((operand as unknown[]).some((v) => matchScalar(actual, v, where)))
+            return false;
+          break;
+        case "lt":
+          if (!((comparable(actual) as number) < (comparable(operand) as number)))
+            return false;
+          break;
+        case "lte":
+          if (!((comparable(actual) as number) <= (comparable(operand) as number)))
+            return false;
+          break;
+        case "gt":
+          if (!((comparable(actual) as number) > (comparable(operand) as number)))
+            return false;
+          break;
+        case "gte":
+          if (!((comparable(actual) as number) >= (comparable(operand) as number)))
+            return false;
+          break;
+        default:
+          throw new Error(
+            `booking-evidence test double: unsupported filter operator "${operator}" at ${where}. ` +
+              "Teach the double the operator rather than letting it match everything.",
+          );
+      }
+    }
+    return true;
+  }
+  return actual === condition;
+}
+
+function matchesWhere(
+  model: ModelName,
+  row: Row,
+  where: Row | undefined,
+): boolean {
+  if (!where) return true;
+  const spec = MODELS[model];
+  for (const [key, condition] of Object.entries(where)) {
+    if (condition === undefined) continue;
+    if (key === "AND") {
+      const clauses = Array.isArray(condition) ? condition : [condition];
+      if (!clauses.every((clause) => matchesWhere(model, row, clause as Row)))
+        return false;
+      continue;
+    }
+    if (key === "OR") {
+      const clauses = (condition as Row[]) ?? [];
+      if (!clauses.some((clause) => matchesWhere(model, row, clause))) return false;
+      continue;
+    }
+    if (key === "NOT") {
+      const clauses = Array.isArray(condition) ? condition : [condition];
+      if (clauses.some((clause) => matchesWhere(model, row, clause as Row)))
+        return false;
+      continue;
+    }
+    if (spec.columns.includes(key)) {
+      if (!matchScalar(row[key], condition, `${model}.${key}`)) return false;
+      continue;
+    }
+    const relation = spec.relations?.[key];
+    if (relation) {
+      const related = relation(row, store);
+      const rows = Array.isArray(related) ? related : related ? [related] : [];
+      const filter = condition as Record<string, Row>;
+      // Only the relation predicates the sources could reach; anything else
+      // throws below rather than silently passing.
+      if (filter.some !== undefined) {
+        if (!rows.some((candidate) => matchesWhere(model, candidate, filter.some)))
+          return false;
+        continue;
+      }
+      if (filter.none !== undefined) {
+        if (rows.some((candidate) => matchesWhere(model, candidate, filter.none)))
+          return false;
+        continue;
+      }
+      throw new Error(
+        `booking-evidence test double: unsupported relation filter on ${model}.${key}`,
+      );
+    }
+    // A compound unique key, e.g. `memberId_seasonYear: { memberId, seasonYear }`.
+    if (
+      isPlainObject(condition) &&
+      Object.keys(condition).length > 0 &&
+      Object.keys(condition).every((part) => spec.columns.includes(part))
+    ) {
+      if (!matchesWhere(model, row, condition)) return false;
+      continue;
+    }
+    throw new Error(
+      `booking-evidence test double: unknown filter field "${model}.${key}". ` +
+        "Add it to the model spec — do not let an unrecognised predicate match every row.",
+    );
+  }
+  return true;
+}
+
+function shapeRow(
+  model: ModelName,
+  row: Row,
+  args: { select?: Row; include?: Row } | undefined,
+): Row {
+  const spec = MODELS[model];
+  if (args?.select) {
+    const out: Row = {};
+    for (const [key, want] of Object.entries(args.select)) {
+      if (want === false || want === undefined) continue;
+      if (key === "_count") {
+        const counts: Row = {};
+        const requested = (want as { select?: Record<string, boolean> }).select ?? {};
+        for (const [name, wanted] of Object.entries(requested)) {
+          if (!wanted) continue;
+          const counter = spec.counts?.[name];
+          if (!counter) {
+            throw new Error(
+              `booking-evidence test double: ${model} has no countable relation "${name}"`,
+            );
+          }
+          counts[name] = counter(row, store);
+        }
+        out._count = counts;
+        continue;
+      }
+      if (spec.columns.includes(key)) {
+        // ONLY the named fields. A projection reading a column this `select`
+        // did not name gets `undefined` here, exactly as it would in Postgres.
+        out[key] = row[key] === undefined ? null : row[key];
+        continue;
+      }
+      const relation = spec.relations?.[key];
+      if (relation) {
+        const related = relation(row, store);
+        const nested = want as { select?: Row; include?: Row };
+        out[key] = Array.isArray(related)
+          ? related.map((candidate) =>
+              shapeRow(relationModel(model, key), candidate, nested),
+            )
+          : related
+            ? shapeRow(relationModel(model, key), related, nested)
+            : null;
+        continue;
+      }
+      throw new Error(
+        `booking-evidence test double: unknown field "${model}.${key}" in select`,
+      );
+    }
+    return out;
+  }
+
+  const out: Row = {};
+  for (const column of spec.columns) {
+    out[column] = row[column] === undefined ? null : row[column];
+  }
+  if (args?.include) {
+    // LENIENT on purpose: `getInductionForMember`'s include names five relations
+    // this module never reads. Resolving the ones the store models and nulling
+    // the rest keeps the test about `booking-evidence.ts`, not about Prisma.
+    for (const key of Object.keys(args.include)) {
+      const relation = spec.relations?.[key];
+      out[key] = relation ? relation(row, store) : null;
+    }
+  }
+  return out;
+}
+
+function relationModel(model: ModelName, relation: string): ModelName {
+  if (model === "bookingGuest" && relation === "nights") return "bookingGuestNight";
+  throw new Error(
+    `booking-evidence test double: no model registered for ${model}.${relation}`,
+  );
+}
+
+function compareValues(left: unknown, right: unknown): number {
+  const a = comparable(left);
+  const b = comparable(right);
+  if (a === null || a === undefined) return b === null || b === undefined ? 0 : -1;
+  if (b === null || b === undefined) return 1;
+  if (typeof a === "number" && typeof b === "number") return a - b;
+  return String(a) < String(b) ? -1 : String(a) > String(b) ? 1 : 0;
+}
+
+function applyOrderBy(rows: Row[], orderBy: unknown): Row[] {
+  if (!orderBy) return rows;
+  const clauses = (Array.isArray(orderBy) ? orderBy : [orderBy]) as Record<
+    string,
+    "asc" | "desc"
+  >[];
+  return [...rows].sort((left, right) => {
+    for (const clause of clauses) {
+      for (const [field, direction] of Object.entries(clause)) {
+        const delta = compareValues(left[field], right[field]);
+        if (delta !== 0) return direction === "desc" ? -delta : delta;
+      }
+    }
+    return 0;
+  });
+}
+
+interface QueryArgs {
+  where?: Row;
+  select?: Row;
+  include?: Row;
+  orderBy?: unknown;
+  take?: number;
+  by?: string[];
+  _count?: Row;
+}
+
+function findMany(model: ModelName, args: QueryArgs = {}): Row[] {
+  const matched = store[model].filter((row) => matchesWhere(model, row, args.where));
+  const ordered = applyOrderBy(matched, args.orderBy);
+  const limited = args.take === undefined ? ordered : ordered.slice(0, args.take);
+  return limited.map((row) => shapeRow(model, row, args));
+}
+
+function findFirst(model: ModelName, args: QueryArgs = {}): Row | null {
+  return findMany(model, { ...args, take: 1 })[0] ?? null;
+}
+
+function findUnique(model: ModelName, args: QueryArgs = {}): Row | null {
+  const matched = store[model].filter((row) => matchesWhere(model, row, args.where));
+  if (matched.length > 1) {
+    throw new Error(
+      `booking-evidence test double: findUnique on ${model} matched ${matched.length} rows`,
+    );
+  }
+  return matched[0] ? shapeRow(model, matched[0], args) : null;
+}
+
+function count(model: ModelName, args: QueryArgs = {}): number {
+  return store[model].filter((row) => matchesWhere(model, row, args.where)).length;
+}
+
+function groupBy(model: ModelName, args: QueryArgs): Row[] {
+  const by = args.by ?? [];
+  const matched = store[model].filter((row) => matchesWhere(model, row, args.where));
+  const groups = new Map<string, { key: Row; rows: Row[] }>();
+  for (const row of matched) {
+    const key: Row = {};
+    for (const field of by) key[field] = row[field];
+    const signature = by.map((field) => String(comparable(row[field]))).join("|");
+    const existing = groups.get(signature);
+    if (existing) existing.rows.push(row);
+    else groups.set(signature, { key, rows: [row] });
+  }
+  return [...groups.values()].map((group) => ({
+    ...group.key,
+    _count: { _all: group.rows.length },
+  }));
+}
+
+function wirePrisma(): void {
+  prismaMock.booking.findUnique.mockImplementation(
+    async (args: QueryArgs) => findUnique("booking", args),
+  );
+  prismaMock.bookingGuest.findMany.mockImplementation(
+    async (args: QueryArgs) => findMany("bookingGuest", args),
+  );
+  prismaMock.bookingChangeRequest.findMany.mockImplementation(
+    async (args: QueryArgs) => findMany("bookingChangeRequest", args),
+  );
+  prismaMock.bedAllocation.groupBy.mockImplementation(
+    async (args: QueryArgs) => groupBy("bedAllocation", args),
+  );
+  prismaMock.member.findUnique.mockImplementation(
+    async (args: QueryArgs) => findUnique("member", args),
+  );
+  prismaMock.member.count.mockImplementation(
+    async (args: QueryArgs) => count("member", args),
+  );
+  prismaMock.memberSubscription.findUnique.mockImplementation(
+    async (args: QueryArgs) => findUnique("memberSubscription", args),
+  );
+  prismaMock.memberInduction.findFirst.mockImplementation(
+    async (args: QueryArgs) => findFirst("memberInduction", args),
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Fixture identities and dates.
+// ---------------------------------------------------------------------------
+
+const LODGE_ID = "clzlodge000000000000000001";
+const BOOKING_ID = "clzbooking0000000000000001";
+const DECOY_BOOKING_ID = "clzbooking0000000000000002";
+const MEMBER_ID = "clzmember00000000000000001";
+const DECOY_MEMBER_ID = "clzmember00000000000000002";
+
+/** The frozen clock's own calendar day, as `getTodayDateOnly()` resolves it. */
+const TODAY = "2026-07-01";
+const CHECK_IN = "2026-07-10";
+const CHECK_OUT = "2026-07-12";
+const NIGHT_ONE = "2026-07-10";
+const NIGHT_TWO = "2026-07-11";
+
+function day(dateOnly: string): Date {
+  return new Date(`${dateOnly}T00:00:00.000Z`);
+}
+
+function nightsBetween(checkIn: string, checkOut: string): string[] {
+  const nights: string[] = [];
+  for (
+    let cursor = day(checkIn);
+    cursor < day(checkOut);
+    cursor.setUTCDate(cursor.getUTCDate() + 1)
+  ) {
+    nights.push(cursor.toISOString().slice(0, 10));
+  }
+  return nights;
+}
+
+/**
+ * Age-tier settings: ADULT and YOUTH owe a paid subscription, CHILD and INFANT do
+ * not. Constant across the file, because every subscription scenario below varies
+ * the membership TYPE behaviour and the season row instead — which is exactly the
+ * pair `resolveMemberSubscriptionSettlement` reads.
+ *
+ * YOUTH owing one is a deliberate choice and not a convenience. `not_adult_age_tier`
+ * and `subscription_unpaid` are otherwise mutually exclusive under a settings row
+ * that exempts every non-adult tier, so the combined-ranking fixtures below could
+ * not raise both — and the ranking between them would be untested. A club charging
+ * youth subscriptions is an ordinary configuration of `subscriptionRequiredForBooking`,
+ * and CHILD keeps the exempt case honest for the BASED_ON_AGE_TIER test.
+ */
+const AGE_TIER_SETTINGS = [
+  { tier: "INFANT", subscriptionRequiredForBooking: false },
+  { tier: "CHILD", subscriptionRequiredForBooking: false },
+  { tier: "YOUTH", subscriptionRequiredForBooking: true },
+  { tier: "ADULT", subscriptionRequiredForBooking: true },
+];
+
+// ---------------------------------------------------------------------------
+// Scenario builders.
+// ---------------------------------------------------------------------------
+
+interface NightSpec {
+  night: string;
+  occupied?: number;
+  available?: number;
+  held?: boolean;
+}
+
+interface GuestSpec {
+  id?: string;
+  memberId?: string | null;
+  ageTier?: string;
+  isMember?: boolean;
+  firstName?: string;
+  lastName?: string;
+  /** Explicit `BookingGuestNight` rows. Omit to exercise the envelope arm. */
+  nights?: string[];
+  stayStart?: string;
+  stayEnd?: string;
+}
+
+interface RequestSpec {
+  id?: string;
+  status?: string;
+  kind?: string;
+  holdExpiresAt?: Date | null;
+  createdAt?: Date;
+  /** How many `PolicyExceptionReservationNight` rows the request really holds. */
+  reservationNights?: number;
+}
+
+interface BookingScenario {
+  status?: string;
+  checkIn?: string;
+  checkOut?: string;
+  deletedAt?: Date | null;
+  requiresAdminReview?: boolean;
+  adminReviewStatus?: string | null;
+  adultMemberHostingReviewStatus?: string | null;
+  wholeLodgeHold?: boolean;
+  capacityOverriddenAt?: Date | null;
+  guests?: GuestSpec[];
+  requests?: RequestSpec[];
+  /** Nights this booking has bed allocations on, one allocation per entry. */
+  allocatedNights?: string[];
+  capacityNights?: NightSpec[];
+  violations?: { reasonCode: string; capacityMode?: "HOLD" | "NO_HOLD" }[];
+  conflicts?: Row[];
+  /** Booking row absent altogether. */
+  missing?: boolean;
+}
+
+interface MemberScenario {
+  email?: string;
+  passwordHash?: string;
+  ageTier?: string;
+  active?: boolean;
+  canLogin?: boolean;
+  cancelledAt?: Date | null;
+  archivedAt?: Date | null;
+  requiresInduction?: boolean;
+  hutLeaderEligible?: boolean;
+  joinedDate?: Date | null;
+  bookingBehavior?: string;
+  subscriptionBehavior?: string;
+  /** `null` means NO season row at all, which is a different fact from a status. */
+  subscription?: {
+    status: string;
+    paidAt?: Date | null;
+    manuallyMarkedPaidAt?: Date | null;
+  } | null;
+  inductionStatus?: string | null;
+  lockoutMode?: string;
+  /** Member row absent altogether. */
+  missing?: boolean;
+  /** No membership type resolves for the season. */
+  noTypePolicy?: boolean;
+}
+
+/**
+ * The DECOY rows. Seeded for every scenario, never legitimately visible to
+ * anything under test, and the reason most tests in this file double as a proof
+ * that the source's `where` clauses are applied.
+ */
+function seedDecoys(): void {
+  store.booking.push({
+    id: DECOY_BOOKING_ID,
+    memberId: DECOY_MEMBER_ID,
+    lodgeId: LODGE_ID,
+    status: "PAID",
+    checkIn: day(CHECK_IN),
+    checkOut: day(CHECK_OUT),
+    deletedAt: null,
+    requiresAdminReview: true,
+    adminReviewStatus: "PENDING",
+    adminReviewedAt: null,
+    adultMemberHostingReviewStatus: "PENDING",
+    adultMemberHostingReviewedAt: null,
+    waitlistPosition: null,
+    waitlistOfferExpiresAt: null,
+    wholeLodgeHold: true,
+    adminCapacityHoldAt: null,
+    capacityOverriddenAt: day(CHECK_IN),
+    parentBookingId: null,
+    draftExpiresAt: null,
+    notes: "DECOY NOTES — never projectable",
+    adminReviewNotes: "DECOY REVIEW NOTES",
+    deletedReason: "DECOY REASON",
+  });
+  for (let index = 0; index < 3; index += 1) {
+    const guestId = `decoy-guest-${index}`;
+    store.bookingGuest.push({
+      id: guestId,
+      bookingId: DECOY_BOOKING_ID,
+      firstName: "Decoy",
+      lastName: `Guest${index}`,
+      ageTier: "ADULT",
+      isMember: true,
+      memberId: DECOY_MEMBER_ID,
+      stayStart: day(NIGHT_ONE),
+      stayEnd: day(CHECK_OUT),
+      consentStatus: "ACCEPTED",
+    });
+    store.bookingGuestNight.push({
+      id: `${guestId}-n1`,
+      bookingGuestId: guestId,
+      stayDate: day(NIGHT_ONE),
+    });
+  }
+  for (let index = 0; index < 2; index += 1) {
+    const requestId = `decoy-request-${index}`;
+    store.bookingChangeRequest.push({
+      id: requestId,
+      bookingId: DECOY_BOOKING_ID,
+      requestedByMemberId: DECOY_MEMBER_ID,
+      status: "REQUESTED",
+      kind: "POLICY_EXCEPTION",
+      holdExpiresAt: new Date("2026-07-02T00:00:00.000Z"),
+      createdAt: new Date("2026-06-01T00:00:00.000Z"),
+      internalNotes: "DECOY INTERNAL NOTES",
+    });
+    store.policyExceptionReservationNight.push(
+      { id: `${requestId}-a`, requestId, stayDate: day(NIGHT_ONE) },
+      { id: `${requestId}-b`, requestId, stayDate: day(NIGHT_TWO) },
+    );
+  }
+  for (const night of [NIGHT_ONE, NIGHT_TWO]) {
+    for (let index = 0; index < 2; index += 1) {
+      store.bedAllocation.push({
+        id: `decoy-alloc-${night}-${index}`,
+        bookingId: DECOY_BOOKING_ID,
+        bedId: `bed-${index}`,
+        stayDate: day(night),
+      });
+    }
+  }
+
+  // The decoy MEMBER carries BOTH erasure markers, an unpaid season row and an
+  // incomplete induction. A member-eligibility read that lost its `id` filter
+  // would report the ordinary member under test as erased, unpaid and
+  // un-inducted — three findings, none of them true.
+  store.member.push({
+    id: DECOY_MEMBER_ID,
+    email: "deleted-aaaabbbb@deleted.invalid",
+    passwordHash: DELETED_ACCOUNT_PASSWORD_HASH,
+    ageTier: "YOUTH",
+    active: false,
+    canLogin: false,
+    cancelledAt: day("2026-01-01"),
+    archivedAt: day("2026-02-01"),
+    requiresInduction: true,
+    hutLeaderEligible: false,
+    joinedDate: day("2019-03-04"),
+    firstName: "Decoy",
+    lastName: "Member",
+  });
+  store.memberSubscription.push({
+    memberId: DECOY_MEMBER_ID,
+    seasonYear: 2026,
+    status: "UNPAID",
+    paidAt: null,
+    manuallyMarkedPaidAt: null,
+  });
+  store.memberInduction.push({
+    id: "decoy-induction",
+    memberId: DECOY_MEMBER_ID,
+    status: "IN_PROGRESS",
+    createdAt: new Date("2026-05-01T00:00:00.000Z"),
+  });
+}
+
+function seedBooking(scenario: BookingScenario = {}): void {
+  const checkIn = scenario.checkIn ?? CHECK_IN;
+  const checkOut = scenario.checkOut ?? CHECK_OUT;
+  const stayNights = nightsBetween(checkIn, checkOut);
+
+  if (!scenario.missing) {
+    store.booking.push({
+      id: BOOKING_ID,
+      memberId: MEMBER_ID,
+      lodgeId: LODGE_ID,
+      status: scenario.status ?? "CONFIRMED",
+      checkIn: day(checkIn),
+      checkOut: day(checkOut),
+      deletedAt: scenario.deletedAt ?? null,
+      requiresAdminReview: scenario.requiresAdminReview ?? false,
+      adminReviewStatus: scenario.adminReviewStatus ?? null,
+      adminReviewedAt: null,
+      adultMemberHostingReviewStatus:
+        scenario.adultMemberHostingReviewStatus ?? null,
+      adultMemberHostingReviewedAt: null,
+      waitlistPosition: null,
+      waitlistOfferExpiresAt: null,
+      wholeLodgeHold: scenario.wholeLodgeHold ?? false,
+      adminCapacityHoldAt: null,
+      capacityOverriddenAt: scenario.capacityOverriddenAt ?? null,
+      parentBookingId: null,
+      draftExpiresAt: null,
+      notes: "PRIVATE booking notes about Jane Tramper",
+      adminReviewNotes: "PRIVATE officer note",
+      deletedReason: "PRIVATE deletion reason",
+    });
+  }
+
+  const guests: GuestSpec[] = scenario.guests ?? [
+    { id: "guest-1", memberId: MEMBER_ID, nights: stayNights },
+    { id: "guest-2", memberId: null, isMember: false, nights: stayNights },
+  ];
+  guests.forEach((guest, index) => {
+    const guestId = guest.id ?? `guest-${index + 1}`;
+    const explicit = guest.nights;
+    store.bookingGuest.push({
+      id: guestId,
+      bookingId: BOOKING_ID,
+      firstName: guest.firstName ?? `Guest${index + 1}`,
+      lastName: guest.lastName ?? "Under-Test",
+      ageTier: guest.ageTier ?? "ADULT",
+      isMember: guest.isMember ?? true,
+      memberId: guest.memberId ?? null,
+      stayStart: day(guest.stayStart ?? explicit?.[0] ?? checkIn),
+      stayEnd: day(guest.stayEnd ?? checkOut),
+      consentStatus: "ACCEPTED",
+    });
+    (explicit ?? []).forEach((night, nightIndex) => {
+      store.bookingGuestNight.push({
+        id: `${guestId}-night-${nightIndex}`,
+        bookingGuestId: guestId,
+        stayDate: day(night),
+      });
+    });
+  });
+
+  (scenario.requests ?? []).forEach((request, index) => {
+    const requestId = request.id ?? `request-${index + 1}`;
+    store.bookingChangeRequest.push({
+      id: requestId,
+      bookingId: BOOKING_ID,
+      requestedByMemberId: MEMBER_ID,
+      status: request.status ?? "REQUESTED",
+      kind: request.kind ?? "POLICY_EXCEPTION",
+      holdExpiresAt: request.holdExpiresAt ?? null,
+      createdAt: request.createdAt ?? new Date("2026-06-15T00:00:00.000Z"),
+      internalNotes: "PRIVATE officer commentary",
+    });
+    for (let night = 0; night < (request.reservationNights ?? 0); night += 1) {
+      store.policyExceptionReservationNight.push({
+        id: `${requestId}-reservation-${night}`,
+        requestId,
+        stayDate: day(stayNights[night % stayNights.length] ?? NIGHT_ONE),
+      });
+    }
+  });
+
+  (scenario.allocatedNights ?? []).forEach((night, index) => {
+    store.bedAllocation.push({
+      id: `alloc-${index}`,
+      bookingId: BOOKING_ID,
+      bedId: `bed-${index}`,
+      stayDate: day(night),
+    });
+  });
+
+  const capacityNights: NightSpec[] =
+    scenario.capacityNights ?? stayNights.map((night) => ({ night }));
+  checkCapacityMock.mockImplementation(async () => ({
+    available: true,
+    minAvailable: 8,
+    nightDetails: capacityNights.map((spec) => ({
+      date: day(spec.night),
+      occupiedBeds: spec.occupied ?? 4,
+      availableBeds: spec.available ?? 8,
+      wholeLodgeHeld: spec.held ?? false,
+    })),
+  }));
+  evaluateProposalPartyViolationsMock.mockImplementation(async () =>
+    (scenario.violations ?? []).map((violation) => ({
+      reasonCode: violation.reasonCode,
+      capacityMode: violation.capacityMode ?? "NO_HOLD",
+      policyId: "policy-1",
+      policyVersion: 1,
+    })),
+  );
+  findBookingMemberNightConflictsMock.mockImplementation(
+    async () => scenario.conflicts ?? [],
+  );
+}
+
+function seedMember(scenario: MemberScenario = {}): void {
+  if (!scenario.missing) {
+    store.member.push({
+      id: MEMBER_ID,
+      email: scenario.email ?? "ordinary.member@example.test",
+      passwordHash: scenario.passwordHash ?? "$2b$12$anOrdinaryBcryptHashValue",
+      ageTier: scenario.ageTier ?? "ADULT",
+      active: scenario.active ?? true,
+      canLogin: scenario.canLogin ?? true,
+      cancelledAt: scenario.cancelledAt ?? null,
+      archivedAt: scenario.archivedAt ?? null,
+      requiresInduction: scenario.requiresInduction ?? false,
+      hutLeaderEligible: scenario.hutLeaderEligible ?? false,
+      // `in` and not `??`: an explicit `null` is a member with no recorded joining
+      // date, which is a case the projection has to answer for, and `??` would
+      // quietly hand it the default instead.
+      joinedDate: "joinedDate" in scenario ? scenario.joinedDate : day("2020-01-15"),
+      firstName: "Ordinary",
+      lastName: "Member",
+    });
+  }
+  if (scenario.subscription) {
+    store.memberSubscription.push({
+      memberId: MEMBER_ID,
+      seasonYear: 2026,
+      status: scenario.subscription.status,
+      paidAt: scenario.subscription.paidAt ?? null,
+      manuallyMarkedPaidAt: scenario.subscription.manuallyMarkedPaidAt ?? null,
+    });
+  }
+  if (scenario.inductionStatus) {
+    store.memberInduction.push({
+      id: "induction-1",
+      memberId: MEMBER_ID,
+      status: scenario.inductionStatus,
+      createdAt: new Date("2026-06-01T00:00:00.000Z"),
+    });
+  }
+  resolveMembershipTypePolicyForMemberMock.mockImplementation(async () =>
+    scenario.noTypePolicy
+      ? null
+      : {
+          memberId: MEMBER_ID,
+          memberName: "Ordinary Member",
+          memberRole: "USER",
+          memberAgeTier: scenario.ageTier ?? "ADULT",
+          seasonYear: 2026,
+          source: "SEASONAL_ASSIGNMENT",
+          membershipType: { key: "FULL", name: "Full Member" },
+          bookingBehavior: scenario.bookingBehavior ?? "MEMBER_RATE",
+          subscriptionBehavior: scenario.subscriptionBehavior ?? "NOT_REQUIRED",
+        },
+  );
+  peekSubscriptionLockoutModeMock.mockImplementation(
+    async () => scenario.lockoutMode ?? "NO_BLOCK",
+  );
+}
+
+async function blockStateRow(): Promise<Row> {
+  const rows = await readBookingBlockStateEvidence({ bookingId: BOOKING_ID });
+  expect(rows).toHaveLength(1);
+  return rows[0] as unknown as Row;
+}
+
+async function eligibilityRow(): Promise<Row> {
+  const rows = await readMemberEligibilityEvidence({ memberId: MEMBER_ID });
+  expect(rows).toHaveLength(1);
+  return rows[0] as unknown as Row;
+}
+
+/** `blocker_codes` is `null` when nothing is raised — not the string "none". */
+function blockers(row: Row): string[] {
+  return row.blocker_codes === null ? [] : String(row.blocker_codes).split(",");
+}
+
+function eligibilityCodes(row: Row): string[] {
+  return row.eligibility_codes === null
+    ? []
+    : String(row.eligibility_codes).split(",");
+}
+
+beforeEach(() => {
+  vi.clearAllMocks();
+  store = emptyStore();
+  seedDecoys();
+  wirePrisma();
+  getAgeTierSettingsMock.mockImplementation(async () => AGE_TIER_SETTINGS);
+});
+
+// ---------------------------------------------------------------------------
+// 0. The double itself.
+// ---------------------------------------------------------------------------
+
+describe("the Prisma double actually applies its filters (#2376)", () => {
+  it("hides a SECOND booking's guests, open requests and bed allocations", async () => {
+    // THE TEST THAT ONLY PASSES IF THE `where` IS APPLIED. The decoy booking
+    // carries three guests, two open REQUESTED change requests holding four
+    // reservation nights between them, and four bed allocations — every one of
+    // them on the same lodge and the same nights. Under AID-6C's own
+    // `mockResolvedValue` style of stub this booking would report five guests and
+    // two open exception requests it does not have, and an officer would be sent
+    // to an exception queue that has nothing of theirs in it.
+    seedBooking({ guests: [{ id: "guest-1", nights: [NIGHT_ONE, NIGHT_TWO] }] });
+    const row = await blockStateRow();
+    expect(row.guest_count).toBe(1);
+    expect(row.open_exception_request_count).toBe(0);
+    expect(row.exception_held_night_count).toBe(0);
+    expect(row.booking_id).toBe(BOOKING_ID);
+  });
+
+  it("does not count a request whose status is not REQUESTED as open", async () => {
+    // `status: "REQUESTED"` is half of that `where`, and it is the half a
+    // filter-blind double cannot see: an APPROVED and a REJECTED request are
+    // finished business. Counting them would tell an operator the ball is still
+    // with an officer on a booking nobody is holding up.
+    seedBooking({
+      requests: [
+        { id: "approved", status: "APPROVED", reservationNights: 2 },
+        { id: "rejected", status: "REJECTED", reservationNights: 2 },
+        { id: "cancelled", status: "CANCELLED", reservationNights: 2 },
+      ],
+    });
+    const row = await blockStateRow();
+    expect(row.open_exception_request_count).toBe(0);
+    expect(row.exception_held_night_count).toBe(0);
+    expect(blockers(row)).not.toContain("exception_request_open");
+  });
+
+  it("returns ONLY the selected columns, so an unselected one reads undefined", async () => {
+    // The other half of the design, and AID-6C's blocker #1: a projection that
+    // reads a column its `select` did not name reads `undefined` in production
+    // and `undefined` here. The fixtures deliberately carry `notes`,
+    // `adminReviewNotes` and `deletedReason` — the three columns the pack doc
+    // says must never be one typo away from a projected row — so if the source
+    // ever widened its select this assertion is where it surfaces.
+    seedBooking();
+    await blockStateRow();
+    const select = prismaMock.booking.findUnique.mock.calls[0]?.[0]?.select as Row;
+    expect(select).toBeDefined();
+    for (const forbidden of [
+      "notes",
+      "adminReviewNotes",
+      "memberReviewJustification",
+      "deletedReason",
+      "adultMemberHostingReview",
+    ]) {
+      expect(Object.keys(select)).not.toContain(forbidden);
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 1. booking_block_state — absence, suppression, lifecycle.
+// ---------------------------------------------------------------------------
+
+describe("booking block state: absence and refusal (#2376)", () => {
+  it("returns NO rows for a booking that does not exist", async () => {
+    // Zero rows is the executor's `not_found` — "we looked and there is nothing"
+    // — which is a different answer from a row full of zeroes, and a different
+    // answer again from the rejection the next test asserts.
+    seedBooking({ missing: true });
+    await expect(
+      readBookingBlockStateEvidence({ bookingId: BOOKING_ID }),
+    ).resolves.toEqual([]);
+  });
+
+  it.each([
+    ["the booking read", () => prismaMock.booking.findUnique],
+    ["the guest read", () => prismaMock.bookingGuest.findMany],
+    ["the open-request read", () => prismaMock.bookingChangeRequest.findMany],
+  ])("REJECTS rather than returning a partial row when %s fails", async (
+    _label,
+    pick,
+  ) => {
+    // THE ROW IS ALL-OR-NOTHING. The executor turns a rejection into
+    // `evidence_unavailable`; an operator told "the evidence could not be
+    // gathered" is strictly better served than one told "no policy violations"
+    // by a calculation that never ran. Each input is failed on its own so that a
+    // future `try/catch` around any single one of them fails here.
+    seedBooking();
+    pick().mockRejectedValueOnce(new Error("database unreachable"));
+    await expect(
+      readBookingBlockStateEvidence({ bookingId: BOOKING_ID }),
+    ).rejects.toThrow();
+  });
+
+  it.each([
+    ["the policy evaluation", () => evaluateProposalPartyViolationsMock],
+    ["the capacity engine", () => checkCapacityMock],
+    ["the person-night conflict scan", () => findBookingMemberNightConflictsMock],
+  ])("REJECTS rather than returning a partial row when %s fails", async (
+    _label,
+    pick,
+  ) => {
+    // The three that run inside one `Promise.all`. A row that reported "no policy
+    // violations" because the evaluator threw would be the exact fabricated
+    // answer this pack is designed against, and the `Promise.all` is what makes
+    // the refusal structural rather than a habit.
+    seedBooking();
+    pick().mockRejectedValueOnce(new Error("evaluator unavailable"));
+    await expect(
+      readBookingBlockStateEvidence({ bookingId: BOOKING_ID }),
+    ).rejects.toThrow();
+  });
+});
+
+describe("booking block state: terminal and deleted suppression (#2376)", () => {
+  it.each(["CANCELLED", "BUMPED"])(
+    "runs NO policy evaluation, NO capacity read and NO conflict scan on a %s booking",
+    async (status) => {
+      // Asserted on the COLLABORATORS, not on the output. A source that ran all
+      // three and then dropped their findings would produce an identical row and
+      // would still be wrong: evaluating a cancelled booking's party produces
+      // violations that are true of the rows and false of the world, and the
+      // suppression below would then be the only thing standing between those
+      // violations and an officer. It also costs the capacity engine's fan-out on
+      // a booking that cannot use the answer.
+      seedBooking({
+        status,
+        violations: [{ reasonCode: "MINIMUM_STAY" }],
+        conflicts: [{ memberId: MEMBER_ID }],
+        capacityNights: [
+          { night: NIGHT_ONE, available: 0, held: true },
+          { night: NIGHT_TWO, available: 0 },
+        ],
+      });
+      const row = await blockStateRow();
+
+      expect(evaluateProposalPartyViolationsMock).not.toHaveBeenCalled();
+      expect(checkCapacityMock).not.toHaveBeenCalled();
+      expect(findBookingMemberNightConflictsMock).not.toHaveBeenCalled();
+
+      expect(blockers(row)).toEqual(["booking_lifecycle_terminal"]);
+      expect(row.booking_lifecycle_state).toBe("terminal");
+      expect(row.policy_violation_codes).toBeNull();
+      expect(row.policy_capacity_mode).toBeNull();
+    },
+  );
+
+  it("runs none of the three on a SOFT-DELETED booking either", async () => {
+    seedBooking({
+      status: "PAID",
+      deletedAt: new Date("2026-06-20T00:00:00.000Z"),
+      violations: [{ reasonCode: "MINIMUM_STAY" }],
+      conflicts: [{ memberId: MEMBER_ID }],
+    });
+    const row = await blockStateRow();
+    expect(evaluateProposalPartyViolationsMock).not.toHaveBeenCalled();
+    expect(checkCapacityMock).not.toHaveBeenCalled();
+    expect(findBookingMemberNightConflictsMock).not.toHaveBeenCalled();
+    expect(blockers(row)).toEqual(["booking_deleted"]);
+  });
+
+  it("reports tightest_spare_beds as ABSENT, never as zero, when capacity did not run", async () => {
+    // "Not measured" and "no spare beds" are different claims, and the second one
+    // sends an officer to fix a booking that is simply over. A zero here would
+    // read as "it fits exactly" about a booking that no longer exists — and it is
+    // the one field on this row that is null-guarded for that reason.
+    seedBooking({ status: "CANCELLED" });
+    const row = await blockStateRow();
+    expect(row.tightest_spare_beds).toBeNull();
+    expect(row.tightest_spare_beds).not.toBe(0);
+  });
+
+  it("suppresses EVERY downstream blocker while keeping the facts that were still read", async () => {
+    // The catalogue's `TERMINAL_SURVIVING_BLOCKERS` is empty, and this is the end
+    // to end proof: a cancelled booking carrying an open exception request whose
+    // hold is about to expire, and a locked edit window, reports NEITHER as a
+    // blocker. AID-6C kept its bookkeeping blockers alive on a terminal booking
+    // because money outlives the booking; nothing in this pack does.
+    //
+    // The open-request FACTS survive, because that read is not suppressed — the
+    // count and the held-night count are still true statements about rows that
+    // exist. Only the actionable classification is withheld.
+    seedBooking({
+      status: "CANCELLED",
+      checkIn: "2026-06-01",
+      checkOut: "2026-06-03",
+      requiresAdminReview: true,
+      adminReviewStatus: "PENDING",
+      adultMemberHostingReviewStatus: "PENDING",
+      requests: [
+        {
+          id: "open-1",
+          reservationNights: 2,
+          holdExpiresAt: new Date("2026-07-05T09:00:00.000Z"),
+        },
+      ],
+    });
+    const row = await blockStateRow();
+    expect(blockers(row)).toEqual(["booking_lifecycle_terminal"]);
+    expect(row.open_exception_request_count).toBe(1);
+    expect(row.exception_held_night_count).toBe(2);
+    expect(row.exception_hold_expires_at_utc).toBe("2026-07-05T09:00:00.000Z");
+    expect(row.member_can_modify).toBe(false);
+  });
+
+  it("says DELETED, not terminal, for a soft-deleted booking whose status is still PAID", async () => {
+    // The case the source's own docblock calls out. `booking_lifecycle_state` is
+    // ONE field with three values rather than two booleans precisely because
+    // `terminal: false` beside a deliberately emptied blocker list is the
+    // healthiest-looking row this pack can emit about a booking the member can no
+    // longer see. `deleted` wins because the operator's next step differs: a
+    // cancelled booking has a cancellation record, a deleted one is in the
+    // deleted-bookings view.
+    seedBooking({ status: "PAID", deletedAt: new Date("2026-06-20T00:00:00.000Z") });
+    const row = await blockStateRow();
+    expect(row.booking_lifecycle_state).toBe("deleted");
+    expect(row.booking_status).toBe("PAID");
+    expect(blockers(row)).toEqual(["booking_deleted"]);
+  });
+
+  it("ranks deleted ABOVE terminal when a cancelled booking is also soft-deleted", async () => {
+    seedBooking({
+      status: "CANCELLED",
+      deletedAt: new Date("2026-06-20T00:00:00.000Z"),
+    });
+    const row = await blockStateRow();
+    expect(row.booking_lifecycle_state).toBe("deleted");
+    expect(blockers(row)).toEqual([
+      "booking_deleted",
+      "booking_lifecycle_terminal",
+    ]);
+  });
+
+  it("says LIVE for an ordinary booking and raises nothing", async () => {
+    seedBooking();
+    const row = await blockStateRow();
+    expect(row.booking_lifecycle_state).toBe("live");
+    expect(blockers(row)).toEqual([]);
+    expect(row.blocker_codes).toBeNull();
+    expect(row.blocker_count).toBe(0);
+    expect(row.tightest_spare_beds).toBe(6);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 2. booking_block_state — the blocker catalogue, code by code.
+// ---------------------------------------------------------------------------
+
+/**
+ * ONE FIXTURE PER BLOCKER CODE, and the assertion is the WHOLE emitted list
+ * rather than "contains".
+ *
+ * AID-6C's blocker #2 was a predicate keyed on a booking's lifecycle status while
+ * the comment justifying it was about one payment method — so an ordinary record
+ * reported the wrong PRIMARY problem, and the suite passed because it only ever
+ * asserted the motivating case. Asserting the entire list for every code closes
+ * that: a predicate that fires on the wrong input shows up as an extra code in
+ * some other row's list, not as a silent mis-ranking.
+ *
+ * Two codes cannot be raised alone, and the expectations say so rather than
+ * pretending otherwise:
+ *
+ *  - `exception_hold_expiring` needs an OPEN request to hold the beds, so
+ *    `exception_request_open` is always raised with it. The pair's ORDER is the
+ *    real assertion: the reason they asked comes before the deadline.
+ *  - `booking_waitlisted` drags `edit_window_locked`, because WAITLISTED is not a
+ *    member-editable status. That is a true second fact about the booking, not
+ *    noise, and it is asserted rather than filtered out.
+ */
+const BLOCKER_FIXTURES: [string, BookingScenario, string[]][] = [
+  [
+    "booking_deleted",
+    { deletedAt: new Date("2026-06-20T00:00:00.000Z") },
+    ["booking_deleted"],
+  ],
+  ["booking_lifecycle_terminal", { status: "CANCELLED" }, ["booking_lifecycle_terminal"]],
+  [
+    "booking_waitlisted",
+    { status: "WAITLISTED" },
+    ["booking_waitlisted", "edit_window_locked"],
+  ],
+  [
+    "member_night_conflict",
+    { conflicts: [{ memberId: MEMBER_ID, conflictingNights: [NIGHT_ONE] }] },
+    ["member_night_conflict"],
+  ],
+  [
+    "capacity_exceeded",
+    {
+      capacityNights: [
+        { night: NIGHT_ONE, occupied: 19, available: 1 },
+        { night: NIGHT_TWO },
+      ],
+    },
+    ["capacity_exceeded"],
+  ],
+  [
+    "whole_lodge_held",
+    {
+      // The party stays only the SECOND night, so the held first night creates no
+      // shortfall of its own. That is the realistic shape: nobody has guests on a
+      // night another booking holds exclusively, which is exactly why the hold has
+      // to be reported as its own fact rather than inferred from a shortfall.
+      guests: [{ id: "guest-1", nights: [NIGHT_TWO], stayStart: NIGHT_TWO }],
+      capacityNights: [
+        { night: NIGHT_ONE, occupied: 20, available: 0, held: true },
+        { night: NIGHT_TWO },
+      ],
+    },
+    ["whole_lodge_held"],
+  ],
+  [
+    "admin_review_pending",
+    { requiresAdminReview: true, adminReviewStatus: "PENDING" },
+    ["admin_review_pending"],
+  ],
+  [
+    "hosting_review_pending",
+    { adultMemberHostingReviewStatus: "PENDING" },
+    ["hosting_review_pending"],
+  ],
+  [
+    "policy_minimum_stay",
+    { violations: [{ reasonCode: "MINIMUM_STAY" }] },
+    ["policy_minimum_stay"],
+  ],
+  [
+    "policy_adult_member_hosting",
+    { violations: [{ reasonCode: "ADULT_MEMBER_HOSTING_REQUIRED" }] },
+    ["policy_adult_member_hosting"],
+  ],
+  [
+    "policy_paid_up_adult_member",
+    { violations: [{ reasonCode: "PAID_UP_ADULT_MEMBER_REQUIRED" }] },
+    ["policy_paid_up_adult_member"],
+  ],
+  [
+    "exception_request_open",
+    { requests: [{ id: "open-1", reservationNights: 0 }] },
+    ["exception_request_open"],
+  ],
+  [
+    "exception_hold_expiring",
+    {
+      requests: [
+        {
+          id: "open-1",
+          reservationNights: 2,
+          holdExpiresAt: new Date("2026-07-05T09:00:00.000Z"),
+        },
+      ],
+    },
+    ["exception_request_open", "exception_hold_expiring"],
+  ],
+  [
+    "edit_window_locked",
+    // A finished stay: check-out is before the frozen "today", so the member has
+    // no future night left to change and `getBookingEditPolicy` refuses.
+    { status: "PAID", checkIn: "2026-06-01", checkOut: "2026-06-03" },
+    ["edit_window_locked"],
+  ],
+];
+
+describe("booking block state: every blocker code, ranked (#2376)", () => {
+  it("has a fixture for every code in the catalogue", () => {
+    // The table above is only a ranking proof if it is COMPLETE. A code added to
+    // `BOOKING_BLOCKER_CODES` without a fixture would otherwise slip in ranked by
+    // nothing but the order somebody typed it.
+    expect(BLOCKER_FIXTURES.map(([code]) => code)).toEqual([
+      ...BOOKING_BLOCKER_CODES,
+    ]);
+  });
+
+  it.each(BLOCKER_FIXTURES)(
+    "raises %s as the PRIMARY blocker, and emits exactly the expected list",
+    async (code, scenario, expected) => {
+      seedBooking(scenario);
+      const row = await blockStateRow();
+      expect(blockers(row)).toEqual(expected);
+      expect(blockers(row)[0]).toBe(expected[0]);
+      expect(blockers(row)).toContain(code);
+      expect(row.blocker_count).toBe(expected.length);
+    },
+  );
+
+  it("emits ELEVEN simultaneous blockers in the declared priority order", async () => {
+    // THE ORDER IS THE PRODUCT. Several of these are true at once on a real
+    // booking, and telling an officer the edit window is locked when a member is
+    // double-booked on a night sends them to the wrong screen. The emitting code
+    // FILTERS the catalogue rather than sorting a list, so the order is
+    // structural — this drives it end to end on a booking carrying eleven at once.
+    //
+    // `AWAITING_REVIEW` is the status because it is neither terminal nor
+    // waitlisted (so nothing is suppressed) and is not member-editable (so the
+    // edit-window blocker is genuinely raised rather than staged).
+    seedBooking({
+      status: "AWAITING_REVIEW",
+      requiresAdminReview: true,
+      adminReviewStatus: "PENDING",
+      adultMemberHostingReviewStatus: "PENDING",
+      guests: [{ id: "guest-1", nights: [NIGHT_TWO], stayStart: NIGHT_TWO }],
+      capacityNights: [
+        { night: NIGHT_ONE, occupied: 20, available: 0, held: true },
+        { night: NIGHT_TWO, occupied: 20, available: 0 },
+      ],
+      conflicts: [{ memberId: MEMBER_ID, conflictingNights: [NIGHT_TWO] }],
+      violations: [
+        { reasonCode: "PAID_UP_ADULT_MEMBER_REQUIRED" },
+        { reasonCode: "MINIMUM_STAY" },
+        { reasonCode: "ADULT_MEMBER_HOSTING_REQUIRED", capacityMode: "HOLD" },
+      ],
+      requests: [
+        {
+          id: "open-1",
+          reservationNights: 2,
+          holdExpiresAt: new Date("2026-07-05T09:00:00.000Z"),
+        },
+      ],
+    });
+    const row = await blockStateRow();
+    expect(blockers(row)).toEqual([
+      "member_night_conflict",
+      "capacity_exceeded",
+      "whole_lodge_held",
+      "admin_review_pending",
+      "hosting_review_pending",
+      "policy_minimum_stay",
+      "policy_adult_member_hosting",
+      "policy_paid_up_adult_member",
+      "exception_request_open",
+      "exception_hold_expiring",
+      "edit_window_locked",
+    ]);
+    expect(row.blocker_count).toBe(11);
+    // The violation reason codes are reported as their own field, DEDUPLICATED
+    // and sorted — a different question from the ranked blocker list.
+    expect(row.policy_violation_codes).toBe(
+      "ADULT_MEMBER_HOSTING_REQUIRED,MINIMUM_STAY,PAID_UP_ADULT_MEMBER_REQUIRED",
+    );
+    // HOLD-if-any-HOLD: one holding violation among three decides the aggregate,
+    // because that is the difference between a member keeping their place while
+    // an officer decides and losing it.
+    expect(row.policy_capacity_mode).toBe("HOLD");
+  });
+
+  it("suppresses all eleven on the same booking once it is deleted and cancelled", async () => {
+    seedBooking({
+      status: "CANCELLED",
+      deletedAt: new Date("2026-06-20T00:00:00.000Z"),
+      requiresAdminReview: true,
+      adminReviewStatus: "PENDING",
+      adultMemberHostingReviewStatus: "PENDING",
+      capacityNights: [
+        { night: NIGHT_ONE, occupied: 20, available: 0, held: true },
+        { night: NIGHT_TWO, occupied: 20, available: 0 },
+      ],
+      conflicts: [{ memberId: MEMBER_ID }],
+      violations: [{ reasonCode: "MINIMUM_STAY" }],
+      requests: [{ id: "open-1", reservationNights: 2 }],
+    });
+    const row = await blockStateRow();
+    expect(blockers(row)).toEqual([
+      "booking_deleted",
+      "booking_lifecycle_terminal",
+    ]);
+    // ALL FOUR MEASUREMENTS ARE ABSENT, not zero, and this assertion is the
+    // reason the suite was written before the pack was reviewed. It read
+    // `member_night_conflict_count === 0` when this file was first written, which
+    // is what the source emitted: a cancelled booking reporting "0 member-night
+    // conflicts, 0 nights short" from a conflict scan and a capacity read that
+    // were both deliberately skipped two hundred lines earlier. `tightest_spare_beds`
+    // already refused that conflation and the three counts beside it did not.
+    // `null` is "not measured"; `0` is "measured, and there are none".
+    expect(row.member_night_conflict_count).toBeNull();
+    expect(row.shortfall_night_count).toBeNull();
+    expect(row.whole_lodge_held_night_count).toBeNull();
+    expect(row.tightest_spare_beds).toBeNull();
+    // The counts whose calculation DID run on a suppressed booking stay numbers:
+    // the open-request query is not suppressed, so a zero here is a measurement.
+    expect(row.open_exception_request_count).toBe(1);
+    expect(row.exception_held_night_count).toBe(2);
+  });
+
+  it("reports NO_HOLD when violations exist but none of them holds beds", async () => {
+    seedBooking({
+      violations: [
+        { reasonCode: "MINIMUM_STAY", capacityMode: "NO_HOLD" },
+        { reasonCode: "PAID_UP_ADULT_MEMBER_REQUIRED", capacityMode: "NO_HOLD" },
+      ],
+    });
+    const row = await blockStateRow();
+    expect(row.policy_capacity_mode).toBe("NO_HOLD");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 3. booking_block_state — the waitlist carve-out and the held-bed test.
+// ---------------------------------------------------------------------------
+
+describe("booking block state: waitlist, holds and the edit window (#2376)", () => {
+  it.each(["WAITLISTED", "WAITLIST_OFFERED"])(
+    "reports the shortfall on a %s booking as a FACT and never as capacity_exceeded",
+    async (status) => {
+      // A waitlisted booking does not fit BY DEFINITION, so reporting
+      // `capacity_exceeded` as its problem would outrank the status that explains
+      // it. The scope text says the shortfall is reported as a supporting fact and
+      // the waitlist status as the reason, and the code agrees: `shortfallNights`
+      // is still computed and still projected, only the BLOCKER is withheld.
+      seedBooking({
+        status,
+        capacityNights: [
+          { night: NIGHT_ONE, occupied: 20, available: 0 },
+          { night: NIGHT_TWO, occupied: 20, available: 0 },
+        ],
+      });
+      const row = await blockStateRow();
+      expect(blockers(row)).toContain("booking_waitlisted");
+      expect(blockers(row)).not.toContain("capacity_exceeded");
+      // The fact survives, in full: two nights short and two spare beds in
+      // deficit. Withholding it would leave an officer unable to see how far off
+      // the booking is.
+      expect(row.shortfall_night_count).toBe(2);
+      expect(row.tightest_spare_beds).toBe(-2);
+      expect(blockers(row).indexOf("booking_waitlisted")).toBe(0);
+    },
+  );
+
+  it("still reports capacity_exceeded on a non-waitlisted booking with the same shortfall", async () => {
+    // The control for the carve-out above: identical capacity, ordinary status.
+    // Without this the waitlist assertion would also pass for an implementation
+    // that never raised `capacity_exceeded` at all.
+    seedBooking({
+      status: "CONFIRMED",
+      capacityNights: [
+        { night: NIGHT_ONE, occupied: 20, available: 0 },
+        { night: NIGHT_TWO, occupied: 20, available: 0 },
+      ],
+    });
+    const row = await blockStateRow();
+    expect(blockers(row)).toContain("capacity_exceeded");
+    expect(row.shortfall_night_count).toBe(2);
+  });
+
+  it("counts held beds from the RESERVATION NIGHTS, not from holdExpiresAt", async () => {
+    // The schema states the trap in as many words: a row written before the
+    // `holdExpiresAt` column existed can be holding beds with a NULL deadline. A
+    // capacity question filtered on the deadline would report "no beds held" about
+    // beds that are held, and the member's place would be given away by an officer
+    // who believed nothing was reserved.
+    seedBooking({
+      requests: [{ id: "legacy-hold", reservationNights: 2, holdExpiresAt: null }],
+    });
+    const row = await blockStateRow();
+    expect(row.exception_held_night_count).toBe(2);
+    expect(row.exception_hold_expires_at_utc).toBeNull();
+    expect(blockers(row)).toContain("exception_request_open");
+    // No deadline to report, so no expiring-hold blocker — the beds are held
+    // indefinitely, which is a different problem from a hold about to lapse.
+    expect(blockers(row)).not.toContain("exception_hold_expiring");
+  });
+
+  it("does NOT treat a deadline with zero reservation nights as beds held", async () => {
+    // The exact inverse inference, and the reason `exception_held_night_count` is
+    // the only reliable test: a request can carry a hold deadline and reserve
+    // nothing. Reporting it as holding beds would have an officer chasing a
+    // reservation that does not exist.
+    seedBooking({
+      requests: [
+        {
+          id: "deadline-only",
+          reservationNights: 0,
+          holdExpiresAt: new Date("2026-07-03T00:00:00.000Z"),
+        },
+      ],
+    });
+    const row = await blockStateRow();
+    expect(row.exception_held_night_count).toBe(0);
+    expect(row.exception_hold_expires_at_utc).toBeNull();
+    expect(blockers(row)).not.toContain("exception_hold_expiring");
+  });
+
+  it("takes the earliest deadline among the requests that ACTUALLY hold beds", async () => {
+    // Two open requests. The EARLIER deadline belongs to a request holding
+    // nothing; the later one is holding the member's beds. A naive `min` over
+    // every `holdExpiresAt` reports the earlier date and sends an officer to
+    // rescue beds three days before they are at risk — or, worse, tells them the
+    // deadline has already passed.
+    seedBooking({
+      requests: [
+        {
+          id: "empty-early",
+          reservationNights: 0,
+          holdExpiresAt: new Date("2026-07-02T00:00:00.000Z"),
+          createdAt: new Date("2026-06-01T00:00:00.000Z"),
+        },
+        {
+          id: "holding-late",
+          reservationNights: 3,
+          holdExpiresAt: new Date("2026-07-08T00:00:00.000Z"),
+          createdAt: new Date("2026-06-02T00:00:00.000Z"),
+        },
+      ],
+    });
+    const row = await blockStateRow();
+    expect(row.open_exception_request_count).toBe(2);
+    expect(row.exception_held_night_count).toBe(3);
+    expect(row.exception_hold_expires_at_utc).toBe("2026-07-08T00:00:00.000Z");
+  });
+
+  it("answers the edit window for the BOOKING OWNER, not for the administrator", async () => {
+    // `member_can_modify` answers "can the member fix this themselves, or does it
+    // need an officer" — one of the two next-step questions #2376 asks for. The
+    // admin answer is always yes-with-an-override, which would tell an operator
+    // nothing, so the classifier is called with `role: "USER"`.
+    seedBooking({ status: "CONFIRMED" });
+    const future = await blockStateRow();
+    expect(future.member_can_modify).toBe(true);
+    expect(future.edit_window_mode).toBe("future");
+
+    // WAITLISTED is admin-editable and member-locked, so it is the status that
+    // distinguishes the two roles. An implementation passing `"ADMIN"` here would
+    // report `canModify: true` and this assertion is what catches it.
+    store = emptyStore();
+    seedDecoys();
+    seedBooking({ status: "WAITLISTED" });
+    const waitlisted = await blockStateRow();
+    expect(waitlisted.member_can_modify).toBe(false);
+    expect(waitlisted.edit_window_mode).toBeNull();
+  });
+
+  it("classifies an in-progress stay as in-progress rather than locked", async () => {
+    // `checkIn <= today <= checkOut` with a PAID booking: the party is at the
+    // lodge and may still extend. Reporting it as locked would send an officer to
+    // make a change the member can make themselves.
+    seedBooking({ status: "PAID", checkIn: TODAY, checkOut: "2026-07-03" });
+    const row = await blockStateRow();
+    expect(row.edit_window_mode).toBe("in-progress");
+    expect(row.member_can_modify).toBe(true);
+    expect(blockers(row)).not.toContain("edit_window_locked");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 4. booking_block_state — the review gate, the party footprint, and privacy.
+// ---------------------------------------------------------------------------
+
+describe("booking block state: reviews and the party footprint (#2376)", () => {
+  it("does not call an APPROVED admin review pending", async () => {
+    // `requiresAdminReview === true` with `adminReviewStatus === "APPROVED"` is a
+    // booking an officer has already cleared. Reporting it as blocked is AID-6C's
+    // "predicate reading the wrong one of two columns that usually agree" in its
+    // exact shape, and the platform's own `isCheckinBlockedByPendingReview` is the
+    // conjunction — so this pins the delegation as well as the answer.
+    seedBooking({ requiresAdminReview: true, adminReviewStatus: "APPROVED" });
+    const row = await blockStateRow();
+    expect(row.admin_review_pending).toBe(false);
+    expect(blockers(row)).not.toContain("admin_review_pending");
+    // The REASON codes are a different question and still report the supervision
+    // hazard: the booking required review, it just is not blocked by it.
+    expect(row.review_reason_codes).toBe("ADULT_SUPERVISION");
+  });
+
+  it("keeps the hosting review OUT of the check-in gate", async () => {
+    // A pending ADULT-MEMBER HOSTING review deliberately does not turn a party
+    // away at the door — the fix is an adult member joining the booking, which
+    // nobody at the door can do. The two review states are reported separately for
+    // that reason, and collapsing them would refuse arrival for a membership rule.
+    seedBooking({ adultMemberHostingReviewStatus: "PENDING" });
+    const row = await blockStateRow();
+    expect(row.hosting_review_pending).toBe(true);
+    expect(row.admin_review_pending).toBe(false);
+    expect(row.review_reason_codes).toBe("ADULT_MEMBER_HOSTING_REQUIRED");
+    expect(blockers(row)).toEqual(["hosting_review_pending"]);
+  });
+
+  it("uses each guest's EXPLICIT nights and never expands their envelope over them", async () => {
+    // A guest may occupy NON-CONTIGUOUS nights inside one booking, in which case
+    // `stayStart`/`stayEnd` are only the derived min/max envelope. Expanding them
+    // would invent a night the guest is not staying, which is then reported as
+    // capacity demand that does not exist — and on a tight night that manufactures
+    // a shortfall out of nothing.
+    seedBooking({
+      checkIn: "2026-07-10",
+      checkOut: "2026-07-13",
+      guests: [
+        {
+          id: "guest-1",
+          nights: ["2026-07-10", "2026-07-12"],
+          stayStart: "2026-07-10",
+          stayEnd: "2026-07-13",
+        },
+      ],
+      capacityNights: [
+        { night: "2026-07-10", available: 1 },
+        { night: "2026-07-11", available: 0 },
+        { night: "2026-07-12", available: 1 },
+      ],
+    });
+    const row = await blockStateRow();
+    // The middle night has zero beds free and the guest is not on it, so nothing
+    // is short. An envelope expansion would report one bed short on 07-11.
+    expect(row.shortfall_night_count).toBe(0);
+    expect(row.tightest_spare_beds).toBe(0);
+    expect(blockers(row)).not.toContain("capacity_exceeded");
+  });
+
+  it("falls back to the envelope for a guest with NO night rows at all", async () => {
+    // A booking written before the per-guest night rows existed has an envelope
+    // and nothing else. Refusing to expand it would report a party of zero nights
+    // — a booking that demands no beds, fits everywhere, and blocks nothing.
+    seedBooking({
+      guests: [{ id: "legacy-guest", stayStart: CHECK_IN, stayEnd: CHECK_OUT }],
+      capacityNights: [
+        { night: NIGHT_ONE, available: 0 },
+        { night: NIGHT_TWO, available: 0 },
+      ],
+    });
+    const row = await blockStateRow();
+    expect(row.guest_count).toBe(1);
+    expect(row.shortfall_night_count).toBe(2);
+    expect(blockers(row)).toContain("capacity_exceeded");
+  });
+
+  it("still counts a guest whose envelope is a single inclusive day", async () => {
+    // `stayStart === stayEnd` makes the half-open loop produce nothing. Without
+    // the one-night fallback the guest silently disappears from every calculation
+    // below — demand, hosting coverage and the conflict scan alike.
+    seedBooking({
+      guests: [{ id: "single-night", stayStart: NIGHT_ONE, stayEnd: NIGHT_ONE }],
+      capacityNights: [
+        { night: NIGHT_ONE, available: 0 },
+        { night: NIGHT_TWO, available: 8 },
+      ],
+    });
+    const row = await blockStateRow();
+    expect(row.shortfall_night_count).toBe(1);
+    expect(row.tightest_spare_beds).toBe(-1);
+  });
+
+  it("calls the capacity engine with a guest count of ZERO and this booking excluded", async () => {
+    // `nightDetails` is what the tool reports, and with the booking excluded each
+    // night's figures are the room the REST of the lodge leaves for it. Passing the
+    // party's headcount instead would double-count the booking against itself and
+    // report a shortfall on a booking that fits perfectly; passing no exclusion
+    // would count its own beds as somebody else's occupancy.
+    seedBooking();
+    await blockStateRow();
+    expect(checkCapacityMock).toHaveBeenCalledWith(
+      LODGE_ID,
+      day(CHECK_IN),
+      day(CHECK_OUT),
+      0,
+      BOOKING_ID,
+    );
+  });
+});
+
+describe("booking block state: the person-night guard is called least-privileged (#2376)", () => {
+  it("acts as the booking's OWN owner with actorRole USER, never as an administrator", async () => {
+    // LOAD-BEARING, and the reason this caller is classified EXEMPT from the
+    // cross-family marking contract in `review-findings-contracts.test.ts`. The
+    // guard's privileged fields — the counterpart booking id, its owner's name,
+    // its status and dates — are gated on the ACTOR's role. Passing the
+    // administrator running the diagnostic would have the guard attach another
+    // member's booking to a refusal payload this tool then projects. `"USER"` is
+    // the least-privileged answer that still returns a conflict, and the exemption
+    // reason is written against exactly this call shape, so a change here has to
+    // fail somewhere: this is that somewhere.
+    seedBooking({ conflicts: [{ memberId: MEMBER_ID }] });
+    await blockStateRow();
+    const call = findBookingMemberNightConflictsMock.mock.calls[0]?.[1] as Row;
+    expect(call.actorMemberId).toBe(MEMBER_ID);
+    expect(call.actorRole).toBe("USER");
+    expect(call.excludeBookingId).toBe(BOOKING_ID);
+    expect(call.checkIn).toEqual(day(CHECK_IN));
+    expect(call.checkOut).toEqual(day(CHECK_OUT));
+  });
+
+  it("projects a COUNT and no conflict detail whatsoever", async () => {
+    // The third leg of the exemption: nothing the cross-family marker protects is
+    // projected. The guard's row carries `memberName`, `conflictingNights` and the
+    // counterpart booking; this source reads `conflicts.length` and nothing else.
+    // The fixture below stuffs every one of those into the guard's answer and the
+    // assertion sweeps the whole emitted row for them, so a future edit that
+    // "helpfully" surfaced the clash detail fails here rather than in an audit.
+    seedBooking({
+      conflicts: [
+        {
+          memberId: DECOY_MEMBER_ID,
+          memberName: "Nosy Neighbour",
+          conflictingNights: ["2099-01-05"],
+          bookingId: "clzsecret000000000000000009",
+          bookingOwnerName: "Someone Else Entirely",
+          bookingCheckIn: "2099-01-05",
+        },
+        { memberId: MEMBER_ID, memberName: "Ordinary Member" },
+      ],
+    });
+    const row = await blockStateRow();
+    expect(row.member_night_conflict_count).toBe(2);
+    expect(blockers(row)).toContain("member_night_conflict");
+    for (const value of Object.values(row)) {
+      if (typeof value !== "string") continue;
+      expect(value).not.toContain("Nosy Neighbour");
+      expect(value).not.toContain("Someone Else Entirely");
+      expect(value).not.toContain("2099-01-05");
+      expect(value).not.toContain("clzsecret");
+    }
+  });
+
+  it("never projects a private booking column even though the rows carry one", async () => {
+    // The pack doc names `notes`, `adminReviewNotes` and `deletedReason` as
+    // columns that sit one `select` away from a projected row. The fixtures carry
+    // recognisable values in all three; the double would happily return them if
+    // the source asked, so this asserts on the OUTPUT that it never does.
+    seedBooking({
+      requests: [{ id: "open-1", reservationNights: 1 }],
+    });
+    const row = await blockStateRow();
+    for (const value of Object.values(row)) {
+      if (typeof value !== "string") continue;
+      expect(value).not.toContain("PRIVATE");
+      expect(value).not.toContain("Jane Tramper");
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 5. booking_capacity_by_night.
+// ---------------------------------------------------------------------------
+
+describe("booking capacity by night (#2376)", () => {
+  it("returns NO rows for a booking that does not exist", async () => {
+    seedBooking({ missing: true });
+    await expect(
+      readBookingCapacityEvidence({ bookingId: BOOKING_ID }),
+    ).resolves.toEqual([]);
+  });
+
+  it("WITHHOLDS the occupancy count on a whole-lodge-held night", async () => {
+    // `checkCapacity` deliberately PINS `occupiedBeds` to the lodge's full
+    // capacity on a held night (ADR-001 decision 6, #118) so a member reading the
+    // public availability payload cannot tell a held night from a genuinely full
+    // one. That is right for a member and WRONG for a diagnostic: an operator
+    // handed "occupied 20 of 20" concludes the lodge is full when in fact one
+    // booking has reserved sole occupancy and the beds are empty — and both of
+    // their next steps (chase the other bookings, or over-capacity confirm) are
+    // wrong, because an admin override cannot punch into a held night at all.
+    //
+    // So the count is ABSENT. Not zero — which would read as an empty lodge with
+    // no beds available, a contradiction — and not the pin, which would be a
+    // presentation artefact passed off as a measurement.
+    seedBooking({
+      capacityNights: [
+        { night: NIGHT_ONE, occupied: 20, available: 0, held: true },
+        { night: NIGHT_TWO, occupied: 6, available: 14 },
+      ],
+    });
+    const rows = (await readBookingCapacityEvidence({
+      bookingId: BOOKING_ID,
+    })) as unknown as Row[];
+    expect(rows).toHaveLength(2);
+
+    const held = rows[0];
+    expect(held.night).toBe(NIGHT_ONE);
+    expect(held.occupied_beds_excluding_this_booking).toBeNull();
+    expect(held.occupied_beds_excluding_this_booking).not.toBe(0);
+    expect(held.occupied_beds_excluding_this_booking).not.toBe(20);
+    // `availableBeds` is NOT pinned in the same way — it is honestly 0 on a held
+    // night, and 0 is the true answer to "how much room is there" — so it is
+    // reported as it stands, beside the fact that explains it.
+    expect(held.available_beds_excluding_this_booking).toBe(0);
+    expect(held.whole_lodge_held_by_another_booking).toBe(true);
+    expect(held.fits_this_night).toBe(false);
+
+    // And on an ordinary night the count is reported in full: the withholding is
+    // narrow, not a blanket refusal to answer.
+    const ordinary = rows[1];
+    expect(ordinary.occupied_beds_excluding_this_booking).toBe(6);
+    expect(ordinary.whole_lodge_held_by_another_booking).toBe(false);
+    expect(ordinary.fits_this_night).toBe(true);
+  });
+
+  it("keeps 'another booking holds the lodge' apart from 'this booking holds it'", async () => {
+    // Two different facts about the same night, and merging them would tell an
+    // officer somebody else has the lodge when in fact this very booking does.
+    seedBooking({
+      wholeLodgeHold: true,
+      capacityNights: [{ night: NIGHT_ONE }, { night: NIGHT_TWO }],
+    });
+    const rows = (await readBookingCapacityEvidence({
+      bookingId: BOOKING_ID,
+    })) as unknown as Row[];
+    expect(rows[0].this_booking_holds_whole_lodge).toBe(true);
+    expect(rows[0].whole_lodge_held_by_another_booking).toBe(false);
+    expect(rows[0].occupied_beds_excluding_this_booking).toBe(4);
+  });
+
+  it("REFUSES a stay longer than the night ceiling rather than clipping it", async () => {
+    // A per-night capacity answer that stops in the middle of a stay invites "the
+    // lodge has room" about the half that was shown. Truncation would be reported
+    // honestly by the substrate and would still be the wrong shape of answer here,
+    // so this is a refusal and the entry's scope line names the bed-allocation
+    // board as the surface that can answer it.
+    const nights = nightsBetween("2026-07-10", "2026-08-12");
+    expect(nights.length).toBe(AID6B_CAPACITY_NIGHT_CEILING + 2);
+    seedBooking({
+      checkIn: "2026-07-10",
+      checkOut: "2026-08-12",
+      guests: [{ id: "guest-1", nights: [NIGHT_ONE] }],
+      capacityNights: nights.map((night) => ({ night })),
+    });
+    await expect(
+      readBookingCapacityEvidence({ bookingId: BOOKING_ID }),
+    ).rejects.toThrow(/ceiling/);
+  });
+
+  it("accepts a stay EXACTLY at the ceiling", async () => {
+    // The off-by-one that would silently halve an answer: `>` versus `>=` on the
+    // ceiling comparison. A 31-night stay is inside the limit and must return all
+    // 31 rows, so both sides of the boundary are pinned.
+    const nights = nightsBetween("2026-07-10", "2026-08-10");
+    expect(nights.length).toBe(AID6B_CAPACITY_NIGHT_CEILING);
+    seedBooking({
+      checkIn: "2026-07-10",
+      checkOut: "2026-08-10",
+      guests: [{ id: "guest-1", nights: [NIGHT_ONE] }],
+      capacityNights: nights.map((night) => ({ night })),
+    });
+    const rows = await readBookingCapacityEvidence({ bookingId: BOOKING_ID });
+    expect(rows).toHaveLength(AID6B_CAPACITY_NIGHT_CEILING);
+  });
+
+  it("reports allocation and capacity as SEPARATE facts", async () => {
+    // `allocated_bed_nights` is what the bed-allocation board has assigned, not
+    // what the lodge can hold. A booking that fits with zero allocations is
+    // completely ordinary — beds are assigned later — and reading a zero here as
+    // "no room" would invert the answer. The first night has two allocations, the
+    // second none, and both nights fit.
+    seedBooking({
+      allocatedNights: [NIGHT_ONE, NIGHT_ONE],
+      capacityNights: [{ night: NIGHT_ONE }, { night: NIGHT_TWO }],
+    });
+    const rows = (await readBookingCapacityEvidence({
+      bookingId: BOOKING_ID,
+    })) as unknown as Row[];
+    expect(rows[0].allocated_bed_nights).toBe(2);
+    expect(rows[1].allocated_bed_nights).toBe(0);
+    for (const row of rows) {
+      expect(row.fits_this_night).toBe(true);
+      expect(row.available_beds_excluding_this_booking).toBe(8);
+      expect(row.party_beds_this_night).toBe(2);
+      expect(row.spare_beds_after_this_booking).toBe(6);
+    }
+    // And the decoy booking's four allocations, on these same two nights, are not
+    // in either figure.
+    expect(store.bedAllocation.filter((row) => row.bookingId === DECOY_BOOKING_ID))
+      .toHaveLength(4);
+  });
+
+  it("reports the admin over-capacity override as its own fact", async () => {
+    seedBooking({ capacityOverriddenAt: new Date("2026-06-30T00:00:00.000Z") });
+    const rows = (await readBookingCapacityEvidence({
+      bookingId: BOOKING_ID,
+    })) as unknown as Row[];
+    expect(rows[0].capacity_overridden).toBe(true);
+  });
+
+  it("emits nights as NZ date-only lodge nights, never as instants", async () => {
+    seedBooking();
+    const rows = (await readBookingCapacityEvidence({
+      bookingId: BOOKING_ID,
+    })) as unknown as Row[];
+    expect(rows.map((row) => row.night)).toEqual([NIGHT_ONE, NIGHT_TWO]);
+    for (const row of rows) {
+      expect(String(row.night)).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 6. member_eligibility_state — the erasure test.
+// ---------------------------------------------------------------------------
+
+describe("member eligibility: the erasure disjunction (#2376)", () => {
+  it("detects a member matching ONLY the anonymised-email half", async () => {
+    // An approved deletion anonymises the member IN PLACE: `active` goes false and
+    // NEITHER `cancelledAt` NOR `archivedAt` is stamped. A three-column lifecycle
+    // read therefore reports an ERASED member as merely "Inactive" — and an
+    // officer told a member is inactive will try to reactivate them, handing the
+    // erased person their session and their retained roles back.
+    seedMember({
+      email: "deleted-12ab34cd@deleted.invalid",
+      passwordHash: "$2b$12$aStillOrdinaryHash",
+      active: false,
+    });
+    const row = await eligibilityRow();
+    expect(row.member_erased).toBe(true);
+    expect(row.lifecycle_label).toBe("Deleted");
+    // `member_inactive` is deliberately NOT also raised: it fires only when
+    // nothing more specific explains the inactivity, so the list reads as one
+    // problem rather than two.
+    expect(eligibilityCodes(row)).toEqual(["member_erased"]);
+  });
+
+  it("detects a member matching ONLY the sentinel-password-hash half", async () => {
+    // The other arm, and the one that cannot be reached by reading columns into
+    // JavaScript. An account erased BEFORE the address rewrite carries the
+    // sentinel hash and an ordinary-looking address; an email-only test is
+    // silently incomplete for it and reports the account as a live member.
+    seedMember({
+      email: "ordinary.member@example.test",
+      passwordHash: DELETED_ACCOUNT_PASSWORD_HASH,
+      active: false,
+    });
+    const row = await eligibilityRow();
+    expect(row.member_erased).toBe(true);
+    expect(row.lifecycle_label).toBe("Deleted");
+    expect(eligibilityCodes(row)).toEqual(["member_erased"]);
+  });
+
+  it("does not call an ORDINARY member erased", async () => {
+    // The decoy member carries BOTH markers. If the `count` predicate lost its
+    // `id` — a one-word edit — this ordinary member would be reported as erased,
+    // and an officer would be told a live member's account had been deleted.
+    seedMember({});
+    const row = await eligibilityRow();
+    expect(row.member_erased).toBe(false);
+    expect(row.lifecycle_label).toBe("Active");
+    expect(eligibilityCodes(row)).toEqual([]);
+  });
+
+  it("runs the hash comparison INSIDE Postgres and never selects passwordHash", async () => {
+    // The one place in either tool pack where a credential column is used as a
+    // PREDICATE rather than a projection. Only a boolean crosses the boundary: no
+    // member's real hash is loaded, logged, hashed into an audit row or projected.
+    // Asserted on the arguments the double was handed, because that is the only
+    // place the distinction is visible — a `select` that named `passwordHash`
+    // would produce an identical-looking row.
+    seedMember({ passwordHash: DELETED_ACCOUNT_PASSWORD_HASH, active: false });
+    const row = await eligibilityRow();
+
+    const select = prismaMock.member.findUnique.mock.calls[0]?.[0]?.select as Row;
+    expect(select).toBeDefined();
+    expect(Object.keys(select)).not.toContain("passwordHash");
+    expect(Object.keys(select)).not.toContain("totpSecret");
+    expect(Object.keys(select)).not.toContain("dateOfBirth");
+    expect(Object.keys(select)).not.toContain("comments");
+
+    // The count is scoped to THIS member and compares against the sentinel the
+    // server itself writes — not against anything read out of a row.
+    const countArgs = prismaMock.member.count.mock.calls[0]?.[0] as {
+      where?: Row;
+      select?: Row;
+    };
+    expect(countArgs.where).toEqual({
+      id: MEMBER_ID,
+      passwordHash: DELETED_ACCOUNT_PASSWORD_HASH,
+    });
+    expect(countArgs.select).toBeUndefined();
+
+    // And nothing resembling a credential, or the email that was read as an
+    // input, reaches the emitted row.
+    for (const value of Object.values(row)) {
+      if (typeof value !== "string") continue;
+      expect(value).not.toContain(DELETED_ACCOUNT_PASSWORD_HASH);
+      expect(value).not.toContain("@");
+    }
+  });
+
+  it("returns NO rows for a member that does not exist", async () => {
+    seedMember({ missing: true });
+    await expect(
+      readMemberEligibilityEvidence({ memberId: MEMBER_ID }),
+    ).resolves.toEqual([]);
+  });
+
+  it("REJECTS rather than returning a partial row when the lockout mode read fails", async () => {
+    seedMember({});
+    peekSubscriptionLockoutModeMock.mockRejectedValueOnce(
+      new Error("settings unavailable"),
+    );
+    await expect(
+      readMemberEligibilityEvidence({ memberId: MEMBER_ID }),
+    ).rejects.toThrow();
+  });
+
+  it("REJECTS rather than returning a partial row when the erasure count fails", async () => {
+    seedMember({});
+    prismaMock.member.count.mockRejectedValueOnce(new Error("database unreachable"));
+    await expect(
+      readMemberEligibilityEvidence({ memberId: MEMBER_ID }),
+    ).rejects.toThrow();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 7. member_eligibility_state — the code catalogue.
+// ---------------------------------------------------------------------------
+
+/**
+ * ONE FIXTURE PER ELIGIBILITY CODE, same discipline as the blocker table.
+ *
+ * The lifecycle fixtures are written the way anonymisation and archival really
+ * write them — `active: false` alongside the outer marker — which is also what
+ * makes them a test of the `member_inactive` carve-out: it fires only when
+ * nothing more specific explains the inactivity, so the list reads as one problem
+ * rather than two.
+ */
+const ELIGIBILITY_FIXTURES: [string, MemberScenario, string[]][] = [
+  [
+    "member_erased",
+    { email: "deleted-99887766@deleted.invalid", active: false },
+    ["member_erased"],
+  ],
+  ["member_archived", { archivedAt: day("2026-03-01"), active: false }, ["member_archived"]],
+  ["member_cancelled", { cancelledAt: day("2026-04-01"), active: false }, ["member_cancelled"]],
+  ["member_inactive", { active: false }, ["member_inactive"]],
+  [
+    "membership_type_blocks_booking",
+    { bookingBehavior: "BLOCK_BOOKING" },
+    ["membership_type_blocks_booking"],
+  ],
+  [
+    "subscription_unpaid",
+    { subscriptionBehavior: "REQUIRED", subscription: { status: "UNPAID" } },
+    ["subscription_unpaid"],
+  ],
+  ["not_adult_age_tier", { ageTier: "YOUTH" }, ["not_adult_age_tier"]],
+  ["cannot_log_in", { canLogin: false }, ["cannot_log_in"]],
+  [
+    "induction_outstanding",
+    { requiresInduction: true, inductionStatus: "IN_PROGRESS" },
+    ["induction_outstanding"],
+  ],
+];
+
+describe("member eligibility: every code, ranked (#2376)", () => {
+  it("has a fixture for every code in the catalogue", () => {
+    expect(ELIGIBILITY_FIXTURES.map(([code]) => code)).toEqual([
+      ...MEMBER_ELIGIBILITY_CODES,
+    ]);
+  });
+
+  it.each(ELIGIBILITY_FIXTURES)(
+    "raises %s as the PRIMARY code, and emits exactly the expected list",
+    async (code, scenario, expected) => {
+      seedMember(scenario);
+      const row = await eligibilityRow();
+      expect(eligibilityCodes(row)).toEqual(expected);
+      expect(eligibilityCodes(row)[0]).toBe(expected[0]);
+      expect(eligibilityCodes(row)).toContain(code);
+      expect(row.eligibility_code_count).toBe(expected.length);
+    },
+  );
+
+  it("ranks archived ABOVE cancelled, matching the lifecycle badge an officer sees", async () => {
+    // The order matches `getLifecycleStatusConfig`'s own precedence exactly,
+    // because a diagnostic that ranked them differently from the badge on the
+    // screen would be describing a different member.
+    seedMember({
+      archivedAt: day("2026-03-01"),
+      cancelledAt: day("2026-04-01"),
+      active: false,
+    });
+    const row = await eligibilityRow();
+    expect(eligibilityCodes(row)).toEqual(["member_archived", "member_cancelled"]);
+    expect(row.lifecycle_label).toBe("Archived");
+  });
+
+  it("emits eight simultaneous codes in the declared priority order", async () => {
+    // Every code except `member_inactive`, which is structurally excluded here:
+    // it fires only when nothing more specific explains the inactivity, and this
+    // member is erased, archived and cancelled at once. The exclusion is the
+    // point — a list reading "erased, archived, cancelled, inactive" would present
+    // four problems where there is one account.
+    seedMember({
+      email: "deleted-55443322@deleted.invalid",
+      archivedAt: day("2026-03-01"),
+      cancelledAt: day("2026-04-01"),
+      active: false,
+      canLogin: false,
+      ageTier: "YOUTH",
+      bookingBehavior: "BLOCK_BOOKING",
+      subscriptionBehavior: "REQUIRED",
+      subscription: { status: "UNPAID" },
+      requiresInduction: true,
+      inductionStatus: "IN_PROGRESS",
+    });
+    const row = await eligibilityRow();
+    expect(eligibilityCodes(row)).toEqual([
+      "member_erased",
+      "member_archived",
+      "member_cancelled",
+      "membership_type_blocks_booking",
+      "subscription_unpaid",
+      "not_adult_age_tier",
+      "cannot_log_in",
+      "induction_outstanding",
+    ]);
+    expect(row.eligibility_code_count).toBe(8);
+  });
+
+  it("emits the inactive variant in order when nothing outranks it", async () => {
+    // The complement of the fixture above: the same six trailing codes with
+    // `member_inactive` in fourth place, which is where the catalogue puts it.
+    seedMember({
+      active: false,
+      canLogin: false,
+      ageTier: "YOUTH",
+      bookingBehavior: "BLOCK_BOOKING",
+      subscriptionBehavior: "REQUIRED",
+      subscription: { status: "UNPAID" },
+      requiresInduction: true,
+    });
+    const row = await eligibilityRow();
+    expect(eligibilityCodes(row)).toEqual([
+      "member_inactive",
+      "membership_type_blocks_booking",
+      "subscription_unpaid",
+      "not_adult_age_tier",
+      "cannot_log_in",
+      "induction_outstanding",
+    ]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 8. member_eligibility_state — subscriptions, induction and the host predicate.
+// ---------------------------------------------------------------------------
+
+describe("member eligibility: three different subscription facts (#2376)", () => {
+  it("distinguishes NO season row from a row nobody billed from a row that is owed", async () => {
+    // `null`, `NOT_INVOICED` and `UNPAID` are three different states and the
+    // operator's next step differs for each: raise the invoice, chase the invoice,
+    // or take the payment. Collapsing "no row" into `NOT_INVOICED` — the natural
+    // shortcut, since both mean nobody has been billed — would hide the club's own
+    // failure to issue the invoice behind a stored state that says it decided not
+    // to. The CONSEQUENCE is the same for all three, which is exactly why the
+    // fact has to be reported separately from it.
+    const seen: (string | null)[] = [];
+    for (const subscription of [
+      null,
+      { status: "NOT_INVOICED" },
+      { status: "UNPAID" },
+    ] as const) {
+      store = emptyStore();
+      seedDecoys();
+      seedMember({ subscriptionBehavior: "REQUIRED", subscription });
+      const row = await eligibilityRow();
+      seen.push(row.subscription_status as string | null);
+      expect(row.subscription_required, String(subscription?.status)).toBe(true);
+      expect(row.subscription_paid, String(subscription?.status)).toBe(false);
+      expect(row.subscription_unpaid, String(subscription?.status)).toBe(true);
+    }
+    expect(seen).toEqual([null, "NOT_INVOICED", "UNPAID"]);
+    // The decoy member's own UNPAID 2026 row is never one of these — the compound
+    // `memberId_seasonYear` unique is applied, not just the season.
+    expect(seen[0]).toBeNull();
+  });
+
+  it("reads the settlement from the membership TYPE, not from the season row", async () => {
+    // `subscription_required` comes from the membership type's subscription
+    // behaviour and the age-tier rule; the row only ever answers "was it paid".
+    // A `NOT_REQUIRED` type owes nothing even with an UNPAID row sitting there —
+    // and reading the row instead would dun a life member for a subscription the
+    // club has already decided they do not pay.
+    seedMember({
+      subscriptionBehavior: "NOT_REQUIRED",
+      subscription: { status: "UNPAID" },
+    });
+    const row = await eligibilityRow();
+    expect(row.membership_subscription_behavior).toBe("NOT_REQUIRED");
+    expect(row.subscription_status).toBe("UNPAID");
+    expect(row.subscription_required).toBe(false);
+    expect(row.subscription_unpaid).toBe(false);
+    expect(eligibilityCodes(row)).toEqual([]);
+  });
+
+  it("honours the age-tier rule for a BASED_ON_AGE_TIER type", async () => {
+    // The age-tier settings say ADULT owes and CHILD does not, so the same
+    // membership type produces two different answers for two members. This is the
+    // half of the rule that is NOT on the type row, and reading only the type
+    // would charge a child member a subscription they are exempt from.
+    seedMember({
+      subscriptionBehavior: "BASED_ON_AGE_TIER",
+      ageTier: "ADULT",
+      subscription: { status: "UNPAID" },
+    });
+    const adult = await eligibilityRow();
+    expect(adult.subscription_required).toBe(true);
+    expect(adult.subscription_unpaid).toBe(true);
+
+    store = emptyStore();
+    seedDecoys();
+    seedMember({
+      subscriptionBehavior: "BASED_ON_AGE_TIER",
+      ageTier: "CHILD",
+      subscription: { status: "UNPAID" },
+    });
+    const child = await eligibilityRow();
+    expect(child.subscription_required).toBe(false);
+    expect(child.subscription_unpaid).toBe(false);
+    expect(eligibilityCodes(child)).toEqual(["not_adult_age_tier"]);
+  });
+
+  it("lets a NOT_REQUIRED season row dominate a mid-season age promotion", async () => {
+    // #2041 decision Q4, scoped to BASED_ON_AGE_TIER: the row is authoritative for
+    // a tier-exempt member and survives their promotion to ADULT mid-season.
+    // Re-deriving this from the age tier alone would invoice a member the club has
+    // already decided is exempt for the year.
+    seedMember({
+      subscriptionBehavior: "BASED_ON_AGE_TIER",
+      ageTier: "ADULT",
+      subscription: { status: "NOT_REQUIRED" },
+    });
+    const row = await eligibilityRow();
+    expect(row.subscription_status).toBe("NOT_REQUIRED");
+    expect(row.subscription_required).toBe(false);
+    expect(row.subscription_unpaid).toBe(false);
+    expect(eligibilityCodes(row)).toEqual([]);
+  });
+
+  it("reports a PAID row as paid, with the payment facts beside it", async () => {
+    seedMember({
+      subscriptionBehavior: "REQUIRED",
+      subscription: {
+        status: "PAID",
+        paidAt: new Date("2026-02-14T03:04:05.000Z"),
+        manuallyMarkedPaidAt: new Date("2026-02-14T03:04:05.000Z"),
+      },
+    });
+    const row = await eligibilityRow();
+    expect(row.subscription_required).toBe(true);
+    expect(row.subscription_paid).toBe(true);
+    expect(row.subscription_unpaid).toBe(false);
+    expect(row.subscription_paid_at_utc).toBe("2026-02-14T03:04:05.000Z");
+    expect(row.subscription_manually_marked_paid).toBe(true);
+    expect(eligibilityCodes(row)).toEqual([]);
+  });
+
+  it("reports the club's LOCKOUT MODE beside the unpaid fact, never instead of it", async () => {
+    // The fact and the policy are deliberately separate: the same unpaid row
+    // hard-blocks at one club and merely reprices at the next. A diagnostic that
+    // reported only the consequence would be unusable at the other club.
+    for (const mode of ["HARD_BLOCK", "NON_MEMBER_PRICING", "NO_BLOCK"] as const) {
+      store = emptyStore();
+      seedDecoys();
+      seedMember({
+        subscriptionBehavior: "REQUIRED",
+        subscription: { status: "UNPAID" },
+        lockoutMode: mode,
+      });
+      const row = await eligibilityRow();
+      expect(row.subscription_lockout_mode, mode).toBe(mode);
+      expect(row.subscription_unpaid, mode).toBe(true);
+      expect(eligibilityCodes(row), mode).toEqual(["subscription_unpaid"]);
+    }
+  });
+
+  it("treats an unresolved membership type as null rather than guessing one", async () => {
+    seedMember({ noTypePolicy: true });
+    const row = await eligibilityRow();
+    expect(row.membership_type_key).toBeNull();
+    expect(row.membership_type_source).toBeNull();
+    expect(row.membership_booking_behavior).toBeNull();
+    expect(row.membership_subscription_behavior).toBeNull();
+    // With no behaviour resolved the age-tier rule decides, and this ADULT owes.
+    expect(row.subscription_required).toBe(true);
+    expect(eligibilityCodes(row)).toEqual(["subscription_unpaid"]);
+  });
+
+  it("resolves the membership type for the CURRENT season year", async () => {
+    seedMember({});
+    const row = await eligibilityRow();
+    expect(row.season_year).toBe(2026);
+    expect(resolveMembershipTypePolicyForMemberMock).toHaveBeenCalledWith(
+      expect.anything(),
+      { memberId: MEMBER_ID, seasonYear: 2026 },
+    );
+    const subscriptionArgs = prismaMock.memberSubscription.findUnique.mock
+      .calls[0]?.[0] as { where?: Row };
+    expect(subscriptionArgs.where).toEqual({
+      memberId_seasonYear: { memberId: MEMBER_ID, seasonYear: 2026 },
+    });
+  });
+});
+
+describe("member eligibility: induction does NOT gate a booking (#2376)", () => {
+  it("says so on the row itself, even when the induction is the only finding", async () => {
+    // THE MOST USEFUL SENTENCE THIS TOOL CARRIES. #2376 lists induction among the
+    // conditions that block a booking. It does not: `MemberInduction` is read by
+    // the nomination gate, the member dashboard card and the sign-off surfaces,
+    // and no booking-create, booking-modify or capacity path reads it at all.
+    // `Member."requiresInduction"` is an administrator's flag, not an enforcement.
+    //
+    // The code raises `induction_outstanding` and it can be the ONLY code raised,
+    // which is precisely why the constant field matters: it is the only thing
+    // standing between "the one thing wrong with this member" and a model
+    // reporting it as why a booking failed. Reported as it is rather than as one
+    // might wish it were — a suppression would hide a real membership warning.
+    seedMember({ requiresInduction: true, inductionStatus: "IN_PROGRESS" });
+    const row = await eligibilityRow();
+    expect(eligibilityCodes(row)).toEqual(["induction_outstanding"]);
+    expect(row.induction_gates_booking).toBe(false);
+    expect(row.requires_induction).toBe(true);
+    expect(row.induction_status).toBe("IN_PROGRESS");
+    expect(row.induction_complete).toBe(false);
+  });
+
+  it("keeps it LAST in the catalogue, behind every real membership problem", async () => {
+    // Ranked ninth of nine. Even where it is raised beside a genuine blocker it
+    // can never be the primary one, so the first code an operator reads is always
+    // something that actually stops the member.
+    seedMember({
+      requiresInduction: true,
+      inductionStatus: "DRAFT",
+      canLogin: false,
+      bookingBehavior: "BLOCK_BOOKING",
+    });
+    const row = await eligibilityRow();
+    const codes = eligibilityCodes(row);
+    expect(codes[codes.length - 1]).toBe("induction_outstanding");
+    expect(codes[0]).toBe("membership_type_blocks_booking");
+    expect(row.induction_gates_booking).toBe(false);
+  });
+
+  it("says induction_gates_booking is false even for a member with no induction at all", async () => {
+    seedMember({});
+    const row = await eligibilityRow();
+    expect(row.induction_gates_booking).toBe(false);
+    expect(row.induction_status).toBeNull();
+    expect(row.induction_complete).toBe(false);
+    expect(eligibilityCodes(row)).toEqual([]);
+  });
+
+  it("reads THIS member's induction and not the decoy's", async () => {
+    // `getInductionForMember` runs for real over the store, so its
+    // `where: { memberId }` is under test here too. The decoy member has an
+    // IN_PROGRESS induction; if the filter were dropped, this member would be
+    // reported as mid-induction and — with `requiresInduction` true — as having an
+    // outstanding one.
+    seedMember({ requiresInduction: true, inductionStatus: "COMPLETED" });
+    const row = await eligibilityRow();
+    expect(row.induction_status).toBe("COMPLETED");
+    expect(row.induction_complete).toBe(true);
+    expect(eligibilityCodes(row)).toEqual([]);
+  });
+});
+
+describe("member eligibility: the adult-member-host predicate (#2376)", () => {
+  it("answers with the hosting policy's own predicate, unpaid subscription included", async () => {
+    // `operationallyPresent` and `subscriptionSettled` are both `!== false` tests
+    // inside the predicate, so leaving them undefined silently answers "present
+    // and settled" for a member whose subscription is unpaid — the false-positive
+    // shape this pack exists to avoid. Supplying them explicitly is what makes
+    // this assertion able to fail.
+    seedMember({
+      subscriptionBehavior: "REQUIRED",
+      subscription: { status: "UNPAID" },
+    });
+    const unpaid = await eligibilityRow();
+    expect(unpaid.subscription_unpaid).toBe(true);
+    expect(unpaid.qualifies_as_adult_member_host).toBe(false);
+
+    store = emptyStore();
+    seedDecoys();
+    seedMember({
+      subscriptionBehavior: "REQUIRED",
+      subscription: { status: "PAID" },
+    });
+    const paid = await eligibilityRow();
+    expect(paid.subscription_unpaid).toBe(false);
+    expect(paid.qualifies_as_adult_member_host).toBe(true);
+  });
+
+  it.each([
+    ["a YOUTH", { ageTier: "YOUTH" }],
+    ["an organisation account", { ageTier: "NOT_APPLICABLE" }],
+    ["a cancelled member", { cancelledAt: day("2026-04-01"), active: false }],
+    ["an archived member", { archivedAt: day("2026-03-01"), active: false }],
+    ["an inactive member", { active: false }],
+  ])("does not let %s qualify as an adult member host", async (_label, scenario) => {
+    seedMember(scenario);
+    const row = await eligibilityRow();
+    expect(row.qualifies_as_adult_member_host).toBe(false);
+  });
+
+  it("emits the member's joined date as an NZ date-only value", async () => {
+    seedMember({ joinedDate: day("2020-01-15") });
+    const row = await eligibilityRow();
+    expect(row.joined_date).toBe("2020-01-15");
+    expect(String(row.joined_date)).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+  });
+
+  it("reports a null joined date rather than inventing one", async () => {
+    seedMember({ joinedDate: null });
+    const row = await eligibilityRow();
+    expect(row.joined_date).toBeNull();
+  });
+});

@@ -395,6 +395,33 @@ export function signedIntegerOrNull(value: unknown): number | null {
 }
 
 /**
+ * Project a NON-NEGATIVE count, or `null` when the count was never taken.
+ *
+ * It exists for the same reason `signedIntegerOrNull` does, one step further on.
+ * `countOf` maps an absent value to `0`, which is right for a `count(*)` that
+ * genuinely returned no rows and WRONG for a calculation that never ran: a model
+ * shown `0` is being told "none", and "none" is a different claim from "unknown".
+ *
+ * The case that forced it: `booking_block_state` suppresses every downstream check
+ * on a terminal or deleted booking — no policy evaluation, no capacity read, no
+ * member-night conflict scan. Those three counts were emitted as `0` anyway, so a
+ * cancelled booking reported "0 nights short, 0 member-night conflicts" — an
+ * affirmative measurement of a calculation that was skipped, two lines above the
+ * field that already refused exactly that conflation for `tightestSpareBeds`.
+ *
+ * `signedIntegerOrNull` would have been accurate arithmetic under a name that says
+ * the value can be negative. A count cannot, and a NEGATIVE one is evidence the
+ * value did not come from where the projection thinks it did, so it is refused as
+ * `null` rather than clamped to zero — clamping is what turns a wrong number into
+ * a plausible one.
+ */
+export function countOrNull(value: unknown): number | null {
+  const numeric = signedIntegerOrNull(value);
+  if (numeric === null || numeric < 0) return null;
+  return numeric;
+}
+
+/**
  * The SQL fragment that formats a `@db.Date` column as a New Zealand calendar day.
  *
  * TIMEZONE-INDEPENDENT BY CONSTRUCTION, which is the point. `to_char` applied to a

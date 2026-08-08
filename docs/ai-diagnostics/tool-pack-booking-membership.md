@@ -255,7 +255,16 @@ same residual AID-6A records for its four server-owned entries and AID-6C for it
 one.
 
 Nothing leaks today. Every read uses a named `select` clause rather than a bare
-`findUnique`, and every raw row is built field by field. But these columns sit one
+`findUnique`, and every raw row is built field by field — and the `select` is now
+also as narrow as the projection, which it was not. Nine columns
+(`adminReviewedAt`, `adultMemberHostingReviewedAt`, `waitlistPosition`,
+`waitlistOfferExpiresAt`, `wholeLodgeHold`, `adminCapacityHoldAt`,
+`capacityOverriddenAt`, `parentBookingId` and `draftExpiresAt`) were selected by
+`booking_block_state` and read by nothing. On a SQL entry an unused column is a
+grant somebody has to argue for; here there is no grant, so it is the same defect
+with none of the friction — nine fields one typo away from a projection whose only
+boundary is the projection. They are gone, and every column that remains has a
+named consumer. But these columns sit one
 `select` away and must never be added: `Booking."notes"`, `"adminReviewNotes"`,
 `"memberReviewJustification"`, `"deletedReason"`, `"adultMemberHostingReview"` (a
 frozen policy JSON snapshot), `Member."comments"`, `"dateOfBirth"`,
@@ -711,9 +720,22 @@ Two fields say why a suppressed row is not a healthy one.
 `deleted`) rather than two booleans, because a soft-deleted booking whose status
 is still `PAID` would carry `terminal: false` beside a deliberately empty blocker
 list, and "not terminal, no blockers" is the healthiest-looking row this pack can
-emit about a booking the member can no longer see. And `tightestSpareBeds` is
-**null** rather than 0 when no capacity read happened: null means "not measured",
-where 0 would read as "it fits".
+emit about a booking the member can no longer see.
+
+And **four figures are absent rather than 0 when the calculation behind them did
+not run**: `tightestSpareBeds`, `memberNightConflictCount`, `shortfallNightCount`
+and `wholeLodgeHeldNightCount`. Null means "not measured"; 0 means "measured, and
+there are none". Only the first of the four had that treatment when the pack was
+first written, so a cancelled booking reported "0 nights short, 0 member-night
+conflicts" from a conflict scan and a capacity read the same function had
+deliberately skipped — an affirmative measurement of something never measured,
+three lines above the field that already refused exactly that. `countOrNull`
+exists for it: `countOf` maps an absent value to 0, so the source and the
+projection both had to change or the fix would have held on one side only.
+
+`openExceptionRequestCount` and `exceptionHeldNightCount` are **not** in that set,
+deliberately. Their query runs on every booking including a cancelled one, so a 0
+there is a real measurement and reporting it as absent would lose information.
 
 Two more fields are worth reading carefully. `exceptionHeldNightCount` is the
 **only** reliable test of whether an open request is holding beds — never infer it
@@ -797,7 +819,7 @@ are the only two entries in the pack that declare `surfacesPersonalData: false`.
 | Search window | Closed enum: `1d`, `7d` (default), `30d` |
 | Party rows | 30 — a whole-lodge school group, so a truncation means something |
 | Bed-allocation rows | 60 — a guest-night is a row, so six guests over ten nights is the whole limit |
-| Capacity nights | 31 — a longer stay is **refused**, never clipped |
+| Capacity nights | 31 — a longer stay is **refused**, never clipped. Every night row carries `bookingLifecycleState`, because this entry does **not** suppress on a cancelled booking (what room there was is a fair question about one) and `fitsThisNight: true` with nothing saying the booking is over reads as an invitation to confirm it |
 | Exception-request, audit-history and member-booking rows | 18 each, newest first, truncation reported |
 | Subscription rows | 6 seasons (a row **is** a season, by unique constraint) |
 | Family-relationship rows | 20, across all five union arms |

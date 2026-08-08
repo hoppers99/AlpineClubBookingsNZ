@@ -644,6 +644,52 @@ describe("the SELECT-only grant allowlist matches what the statements read", () 
    * the two documents in the same commit, which is the only mechanism that has ever
    * kept them together.
    */
+  /**
+   * NO STATEMENT MAY QUALIFY A SQL CONSTRUCT AS IF IT WERE A FUNCTION.
+   *
+   * Over EVERY registered statement, not just one pack's, because the mistake is a
+   * property of the "qualify everything with `pg_catalog.`" rule rather than of any
+   * pack that follows it.
+   *
+   * The rule is right and load-bearing — `database.ts` pins `search_path` so that
+   * the statements deciding which records an operator can reach cannot depend on
+   * schema-resolution order — but it is a rule about FUNCTIONS. The names below are
+   * grammar: PostgreSQL's parser turns them into expression nodes and there is no
+   * `pg_proc` row to qualify, so `pg_catalog.coalesce(a, b)` is a request for a
+   * function that does not exist and fails to plan with SQLSTATE 42883.
+   *
+   * AID-6B shipped exactly that in the member search's mobile arm. It passed every
+   * unit test in this repository, because a mock never plans anything; the opt-in
+   * real-PostgreSQL suite caught it on the first run in which an AID-6B statement
+   * was executed against a server. This assertion is the cheap version of that
+   * proof, and it runs on every pull request rather than only where a database is
+   * available.
+   */
+  const SQL_CONSTRUCTS_THAT_LOOK_LIKE_FUNCTIONS = [
+    "coalesce",
+    "nullif",
+    "greatest",
+    "least",
+    "cast",
+    "extract",
+    "overlay",
+    "position",
+    "trim",
+    "collation",
+  ];
+
+  it.each(SQL_CONSTRUCTS_THAT_LOOK_LIKE_FUNCTIONS)(
+    "never writes pg_catalog.%s — it is grammar, not a catalogued function",
+    (construct) => {
+      for (const entry of sqlEntries) {
+        expect(
+          entry.sql.toLowerCase().includes(`pg_catalog.${construct}(`),
+          `${entry.id} qualifies ${construct.toUpperCase()} as a function; PostgreSQL refuses that with 42883`,
+        ).toBe(false);
+      }
+    },
+  );
+
   it("grants exactly the census the deployment and pack documents quote", () => {
     expect(SELECT_GRANTS.length).toBe(25);
     expect(

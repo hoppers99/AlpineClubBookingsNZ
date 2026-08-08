@@ -346,17 +346,31 @@ const BLOCK_STATE_BOOKING_SELECT = {
   deletedAt: true,
   requiresAdminReview: true,
   adminReviewStatus: true,
-  adminReviewedAt: true,
   adultMemberHostingReviewStatus: true,
-  adultMemberHostingReviewedAt: true,
-  waitlistPosition: true,
-  waitlistOfferExpiresAt: true,
-  wholeLodgeHold: true,
-  adminCapacityHoldAt: true,
-  capacityOverriddenAt: true,
-  parentBookingId: true,
-  draftExpiresAt: true,
 } as const;
+
+/**
+ * NINE COLUMNS WERE REMOVED FROM THE SELECT ABOVE, and the reason is the docblock
+ * two paragraphs up rather than tidiness. `adminReviewedAt`,
+ * `adultMemberHostingReviewedAt`, `waitlistPosition`, `waitlistOfferExpiresAt`,
+ * `wholeLodgeHold`, `adminCapacityHoldAt`, `capacityOverriddenAt`,
+ * `parentBookingId` and `draftExpiresAt` were selected and read by nothing.
+ *
+ * On a `select_only_sql` entry an unused column is a grant somebody has to argue
+ * for. Here there is no grant: this source runs on the application's own
+ * full-privilege connection, and the named `select` IS the boundary. So an unused
+ * column is the same defect with none of the friction — nine fields one typo away
+ * from a projection, in a file whose header says the select is the only thing
+ * standing between this tool and `notes`, `adminReviewNotes`,
+ * `memberReviewJustification`, `deletedReason` and the frozen hosting-review JSON.
+ *
+ * Every remaining column has a named consumer: `id`, `memberId` and `lodgeId` are
+ * the projection and the three subsystem calls; `status` and `deletedAt` decide
+ * suppression; `checkIn`/`checkOut` are the capacity window and the edit policy;
+ * and `requiresAdminReview`, `adminReviewStatus` and
+ * `adultMemberHostingReviewStatus` are the three fields the platform's own review
+ * predicates are called with, field by field.
+ */
 
 /**
  * THE authoritative answer to "what is actually blocking this booking".
@@ -697,9 +711,24 @@ async function readBookingBlockState(
         : violations.length > 0
           ? "NO_HOLD"
           : null,
-      member_night_conflict_count: conflicts.length,
-      shortfall_night_count: shortfallNights,
-      whole_lodge_held_night_count: wholeLodgeHeldNights,
+      /**
+       * THE THREE COUNTS THAT ARE ONLY A NUMBER IF THE CALCULATION RAN.
+       *
+       * On a terminal or deleted booking this source suppresses the conflict scan
+       * and the capacity read entirely, so there is no count to report — and a `0`
+       * is not the honest way to say so. `0 member-night conflicts` and
+       * `0 nights short` read as measurements, and an operator acting on them
+       * concludes the booking is fine when nothing was ever measured. That is the
+       * same conflation `tightestSpareBeds` already refused on the line below, and
+       * the earlier revision of this row refused it for ONE field out of four.
+       *
+       * `null` here means "not measured", exactly as it does two lines down, and
+       * the entry's scope line says so in as many words.
+       */
+      member_night_conflict_count: deleted || terminal ? null : conflicts.length,
+      shortfall_night_count: capacity === null ? null : shortfallNights,
+      whole_lodge_held_night_count:
+        capacity === null ? null : wholeLodgeHeldNights,
       // `null` and not `0` when the capacity engine did not run: on a terminal or
       // deleted booking there is no shortfall to report, and a zero would read as
       // "it fits", which is a claim about a booking that no longer exists.
@@ -825,6 +854,30 @@ async function readBookingCapacity(
   }
 
   const observedAt = new Date().toISOString();
+  /**
+   * THE BOOKING'S OWN LIFECYCLE, ON EVERY NIGHT ROW.
+   *
+   * `status` and `deletedAt` were selected here and read by nothing, and the
+   * consequence was not a dead read. This entry has no lifecycle suppression — the
+   * capacity engine's answer about the LODGE is true whether or not this booking
+   * is still live — so a CANCELLED or soft-deleted booking produced perfectly
+   * healthy-looking rows saying `fitsThisNight: true`, with nothing anywhere on the
+   * row to say the booking is over. An operator reading "it fits" about a booking
+   * whose next step is a confirmation has been told the opposite of what matters.
+   *
+   * Suppressing the rows would be the wrong fix: "what room was there on those
+   * nights" is a legitimate and answerable question about a cancelled booking, and
+   * it is one an officer asks precisely BECAUSE the booking is cancelled. So the
+   * figures stand and the row carries the fact that qualifies them, in the same
+   * three-valued shape and with the same precedence (`deleted` beats `terminal`)
+   * that `booking_block_state` uses, so a consumer learns one vocabulary.
+   */
+  const lifecycleState =
+    booking.deletedAt !== null
+      ? "deleted"
+      : TERMINAL_BOOKING_STATUSES.includes(booking.status)
+        ? "terminal"
+        : "live";
   return capacity.nightDetails.map((detail) => {
     const night = formatDateOnly(detail.date);
     const demand = demandByNight.get(night) ?? 0;
@@ -833,6 +886,7 @@ async function readBookingCapacity(
       booking_id: booking.id,
       booking_reference: formatBookingReference(booking.id),
       lodge_ref: booking.lodgeId,
+      booking_lifecycle_state: lifecycleState,
       night,
       /**
        * Excluding THIS booking, which is what makes the spare figure answerable —

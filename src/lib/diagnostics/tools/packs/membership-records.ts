@@ -485,7 +485,7 @@ const memberSubscriptionState = defineDiagnosticsTool<MemberIdArgs>({
   id: DIAGNOSTICS_MEMBER_SUBSCRIPTION_STATE_TOOL_ID,
   source: "select_only_sql",
   label: "Member subscription rows by season",
-  description: `Returns ONE member's stored membership-subscription rows, newest season first, at most ${MEMBER_SUBSCRIPTION_ROW_LIMIT}. Each row carries the subscription record id, the season year, the stored status (NOT_INVOICED, NOT_REQUIRED, UNPAID, PAID or OVERDUE), the Xero invoice NUMBER, whether a Xero invoice is linked at all, when it was paid, when it was manually marked paid, whether an operator left a manual-payment note (the note itself is never returned), the void generation, and when the row was created and last changed. This is the STORED ROW and not the platform's verdict on whether the member owes a subscription: use diagnostics.member_eligibility_state for that. NOT_INVOICED means nobody has billed them yet, which is NOT the same as unpaid; NOT_REQUIRED and PAID both mean settled but for entirely different reasons. It returns no online invoice link, no manual-payment note text and nobody's name. ${AID6B_DESCRIPTION_TAIL}`,
+  description: `Returns ONE member's stored membership-subscription rows, newest season first, at most ${MEMBER_SUBSCRIPTION_ROW_LIMIT}. Each row carries the subscription record id, the season year, the stored status (NOT_INVOICED, NOT_REQUIRED, UNPAID, PAID or OVERDUE), the Xero invoice NUMBER, whether a Xero invoice is linked at all, when it was paid, when it was manually marked paid, the void generation, and when the row was created and last changed. This is the STORED ROW and not the platform's verdict on whether the member owes a subscription: use diagnostics.member_eligibility_state for that. NOT_INVOICED means nobody has billed them yet, which is NOT the same as unpaid; NOT_REQUIRED and PAID both mean settled but for entirely different reasons. It returns no online invoice link, no manual-payment note text and nobody's name. ${AID6B_DESCRIPTION_TAIL}`,
   requiredAreas: ["membership"],
   evidenceScope: `The STORED subscription rows for ONE member, at most ${MEMBER_SUBSCRIPTION_ROW_LIMIT} seasons, newest first. This is NOT the authoritative answer to "does this member owe a subscription". That answer is a conjunction of three things: this row's status, the member's membership TYPE for that season (SeasonalMembershipAssignment resolving to MembershipType.subscriptionBehavior, which can make a subscription REQUIRED, NOT_REQUIRED or covered by a family) and the age-tier rule (AgeTierSetting.subscriptionRequiredForBooking) — and diagnostics.member_eligibility_state returns the platform's own computed verdict over all three. Report this row as the stored record and defer the verdict to that tool. The status values are not interchangeable: NOT_INVOICED means nobody has billed this member for that season yet, which is NOT unpaid and NOT a debt; NOT_REQUIRED and PAID both mean "settled", but one means "the rule never asked" and the other means "money arrived", and telling an officer the wrong one sends them to the wrong screen. A subscription with manuallyMarkedPaidAtUtc set was settled OUTSIDE the Xero pipeline — cash, or a bank transfer reconciled by hand — so it has no Xero payment to look up and nothing to reverse in Xero. Whether an operator wrote down WHY is not reported: the note is operator free text and the diagnostics credential cannot read it. A non-zero voidGeneration means this season's Xero invoice was voided or deleted at least once and the coverage claim released, which is the usual explanation for an apparent double invoice. A member with no rows at all has never had a subscription record created, which is a different fact from having an unpaid one. Subscription MONEY — invoices, payments, credit — is finance evidence and needs the finance tools. ${AID6B_SCOPE_TAIL} ${AID6B_UNTRUSTED_EVIDENCE_DISCLOSURE}`,
   argsSchema: memberIdArgsSchema,
@@ -509,7 +509,7 @@ const memberSubscriptionState = defineDiagnosticsTool<MemberIdArgs>({
   }),
   rowLimit: MEMBER_SUBSCRIPTION_ROW_LIMIT,
   byteLimit: AID6B_BYTE_LIMIT,
-  // Eleven fields. No name, no email address, no operator identity and no free
+  // TEN fields. No name, no email address, no operator identity and no free
   // text — but the entry is keyed on a member id the caller supplied, and a
   // subscription row is a fact about a person's membership standing, so the
   // declaration is true and the opt-in applies (DECLARED, not yet implemented,
@@ -744,7 +744,7 @@ const memberFamilyState = defineDiagnosticsTool<MemberIdArgs>({
  * NOTHING FROM `BookingGuest` IS PROJECTED. Its two granted columns are read as
  * predicates only. A guest's name is booking-pack evidence under `bookings:view`,
  * and returning the party here would make this entry a second, drifting answer to
- * the party question `booking_guest_manifest` owns.
+ * the party question `diagnostics.booking_party_state` owns.
  */
 const MEMBER_BOOKING_SUMMARY_SQL = `SELECT
   b."id" AS booking_ref,

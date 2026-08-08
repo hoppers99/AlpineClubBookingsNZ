@@ -536,9 +536,35 @@ describe("diagnostics privilege proof DB safety guard (#2374)", () => {
             WHERE n.nspname = $2 AND c.relname = $3`,
           [TEST_ROLE, grant.schema, grant.relation],
         );
-        // A real relation with more columns than the allowlist names, so neither half
-        // of the assertion below is vacuous.
-        expect(columns.rows.length).toBeGreaterThan(declared.size);
+        // A real relation, and one the allowlist does not name in full — so the
+        // per-column loop below has at least one WITHHELD column to prove the
+        // boundary on rather than passing vacuously.
+        //
+        // ONE RELATION IS LEGITIMATELY GRANTED IN FULL, and it is named here rather
+        // than allowed for by relaxing the comparison. `FamilyGroupMember` has
+        // exactly four columns — `id`, `familyGroupId`, `memberId`, `joinedAt` — and
+        // AID-6B grants all four, because there is no fifth: notably the relation
+        // has NO `role` column, so "who is in this family group and since when" is
+        // the whole of what it can say. Granting it in full is therefore not a
+        // widening, it is the relation being that small; but it does mean the loop
+        // below proves nothing for it, and a census that quietly tolerated that
+        // would also tolerate the next relation whose withheld columns were dropped
+        // one at a time.
+        //
+        // So: relations granted in full are enumerated, and every other relation
+        // must still have something withheld.
+        const GRANTED_IN_FULL = new Set(["FamilyGroupMember"]);
+        if (GRANTED_IN_FULL.has(grant.relation)) {
+          expect(
+            columns.rows.length,
+            `${grant.relation} is declared granted-in-full and is not`,
+          ).toBe(declared.size);
+        } else {
+          expect(
+            columns.rows.length,
+            `${grant.relation} is granted in full — add it to GRANTED_IN_FULL with the argument, or withhold a column`,
+          ).toBeGreaterThan(declared.size);
+        }
         for (const row of columns.rows) {
           expect(
             row.readable,

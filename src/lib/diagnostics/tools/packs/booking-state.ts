@@ -68,6 +68,7 @@ import {
   AID6B_SINGLE_ROW_BYTE_LIMIT,
   AID6B_UNTRUSTED_EVIDENCE_DISCLOSURE,
   AID6B_WIDE_BYTE_LIMIT,
+  countOrNull,
   dateOnlyOrNull,
   signedIntegerOrNull,
 } from "./booking-shared";
@@ -226,7 +227,7 @@ const bookingBlockState = defineDiagnosticsTool<BookingIdArgs>({
 
 WHAT EACH FIELD MEANS WHERE IT IS NOT OBVIOUS. bookingLifecycleState is "live", "terminal" (CANCELLED or BUMPED) or "deleted" (soft-deleted). ON A TERMINAL OR DELETED BOOKING EVERY OTHER CHECK IS SUPPRESSED — no policy is evaluated, no capacity is read, no conflict is scanned, and blockerCodes carries only the lifecycle code. That is deliberate: a cancelled booking cannot break a minimum stay or exceed capacity, and reporting that it does would be a false and actionable finding about a booking that is simply over. Such a booking's MONEY may still need attention and this tool cannot see it — that needs finance access and the finance diagnostics tools.
 
-tightestSpareBeds is the WORST night's beds remaining AFTER this booking's own party is counted, with this booking excluded from the occupancy figure; a negative value is a shortfall. It is null on a terminal or deleted booking, where no capacity read was performed — null means "not measured", never "it fits". shortfallNightCount is 0 on a WAITLISTED or WAITLIST_OFFERED booking's blocker list by design: a waitlisted booking does not fit by definition, so the waitlist status is reported as the reason and the shortfall as a supporting fact rather than as a separate fault.
+tightestSpareBeds is the WORST night's beds remaining AFTER this booking's own party is counted, with this booking excluded from the occupancy figure; a negative value is a shortfall. It is null on a terminal or deleted booking, where no capacity read was performed — null means "not measured", never "it fits". The same is true of memberNightConflictCount, shortfallNightCount and wholeLodgeHeldNightCount: all four are ABSENT rather than 0 whenever the calculation behind them did not run, so a 0 in any of them is a measurement and an absence is not. openExceptionRequestCount and exceptionHeldNightCount are read on every booking including a cancelled one, so a 0 there IS a measurement. shortfallNightCount is 0 on a WAITLISTED or WAITLIST_OFFERED booking's blocker list by design: a waitlisted booking does not fit by definition, so the waitlist status is reported as the reason and the shortfall as a supporting fact rather than as a separate fault.
 
 exceptionHeldNightCount is the ONLY reliable test of whether an open request is holding real beds. Never infer it from exceptionHoldExpiresAtUtc being present: a request written before that column existed can be holding beds with no deadline recorded, and the platform's own schema warns against exactly that inference. memberCanModify answers whether the MEMBER could change this booking themselves, not whether an administrator could — an administrator always can, with an override.
 
@@ -267,9 +268,14 @@ WHAT THIS DOES NOT COVER. A NEW-BOOKING policy-exception request lives in a diff
       ? null
       : codeListOrNull(String(row.policy_violation_codes).toLowerCase()),
     policyCapacityMode: stableCodeOrNull(row.policy_capacity_mode),
-    memberNightConflictCount: countOf(row.member_night_conflict_count),
-    shortfallNightCount: countOf(row.shortfall_night_count),
-    wholeLodgeHeldNightCount: countOf(row.whole_lodge_held_night_count),
+    // `countOrNull` and NOT `countOf` on all three. The source emits `null` when
+    // the conflict scan or the capacity read did not run — which it does on every
+    // terminal or deleted booking — and `countOf` maps `null` to `0`, turning "not
+    // measured" back into an affirmative "none" at the last step. The helper and
+    // the source have to agree or the fix only holds on one side.
+    memberNightConflictCount: countOrNull(row.member_night_conflict_count),
+    shortfallNightCount: countOrNull(row.shortfall_night_count),
+    wholeLodgeHeldNightCount: countOrNull(row.whole_lodge_held_night_count),
     // `signedIntegerOrNull` and NOT `countOf`: this is a SIGNED integer that is
     // negative on a shortfall and NULL when no capacity read happened. `countOf`
     // clamps at zero, which would turn "three beds short" into "exactly full" and
@@ -305,7 +311,7 @@ const bookingCapacityByNight = defineDiagnosticsTool<BookingIdArgs>({
   id: DIAGNOSTICS_BOOKING_CAPACITY_TOOL_ID,
   source: "server_owned",
   label: "Booking capacity by night",
-  description: `Returns ONE row per New Zealand lodge night of a booking's stay, computed by the SAME capacity engine every booking path checks against — not a count of bookings. For each night it gives the beds the rest of the lodge occupies and the beds left (both with THIS booking excluded, so the figures answer "what room is there for it"), how many beds this booking's own party needs that night, the spare beds that would remain, whether it fits, whether another booking holds sole occupancy of the lodge that night, whether this booking itself holds the whole lodge, whether it carries a deliberate admin over-capacity override, and how many bed-nights are actually allocated to it. The occupancy figure already includes custodian bed holds and beds held by pending policy-exception requests, neither of which has a booking to show for it. At most ${AID6B_NIGHT_ROW_LIMIT} nights. ${AID6B_DESCRIPTION_TAIL}`,
+  description: `Returns ONE row per New Zealand lodge night of a booking's stay, computed by the SAME capacity engine every booking path checks against — not a count of bookings. For each night it gives the beds the rest of the lodge occupies and the beds left (both with THIS booking excluded, so the figures answer "what room is there for it"), how many beds this booking's own party needs that night, the spare beds that would remain, whether it fits, whether another booking holds sole occupancy of the lodge that night, whether this booking itself holds the whole lodge, whether it carries a deliberate admin over-capacity override, how many bed-nights are actually allocated to it, and whether the booking itself is still live, terminal or deleted. The occupancy figure already includes custodian bed holds and beds held by pending policy-exception requests, neither of which has a booking to show for it. At most ${AID6B_NIGHT_ROW_LIMIT} nights. ${AID6B_DESCRIPTION_TAIL}`,
   requiredAreas: ["bookings"],
   evidenceScope: `Per-night capacity for ONE booking's own nights, from the platform's own capacity engine, true as at its own observed instant.
 
@@ -315,6 +321,8 @@ ON A WHOLE-LODGE-HELD NIGHT occupiedBedsExcludingThisBooking IS ABSENT, and abse
 
 WHAT IS ALREADY COUNTED, and why a booking query would get it wrong: a custodian bed hold (a hut-leader assignment holding a specific bed for a season) takes a bed out of the pool with NO booking and NO bed-allocation row; a pending policy-exception request in HOLD mode reserves real bed-nights while it waits; and a whole-lodge exclusive hold pins available beds to zero regardless of headcount and cannot be punched through by an admin over-capacity override. All three are in these numbers.
 
+THIS ENTRY DOES NOT SUPPRESS ON A CANCELLED OR DELETED BOOKING, and bookingLifecycleState on every row is why it does not have to. "What room was there on those nights" is a fair and answerable question about a booking that is over — it is often the question an officer is asking BECAUSE it is over — so the figures stand and the row carries the fact that qualifies them. When bookingLifecycleState is "terminal" or "deleted", fitsThisNight is a statement about the LODGE and not an invitation to confirm anything; say the booking is cancelled or deleted first. diagnostics.booking_block_state is the entry that suppresses, and it uses the same three values with the same precedence.
+
 ALLOCATION IS NOT CAPACITY. allocatedBedNights counts the bed-allocation rows this booking has for that night. A booking can fit the lodge and have none — allocation is a separate, later step on the bed-allocation board — so a zero here is not evidence the lodge was full. A stay longer than ${AID6B_NIGHT_ROW_LIMIT} nights is REFUSED rather than clipped, because half a stay's capacity invites a conclusion about the half that was shown; the bed-allocation board answers it for a long stay. ${AID6B_SCOPE_TAIL} ${AID6B_UNTRUSTED_EVIDENCE_DISCLOSURE}`,
   argsSchema: bookingIdArgsSchema,
   inputSchema: bookingIdInputSchema,
@@ -323,6 +331,12 @@ ALLOCATION IS NOT CAPACITY. allocatedBedNights counts the bed-allocation rows th
     bookingId: recordRefOrNull(row.booking_id) ?? "",
     bookingReference: recordRefOrNull(row.booking_reference) ?? "",
     lodgeRef: recordRefOrNull(row.lodge_ref) ?? "",
+    // "live", "terminal" or "deleted", on EVERY night row. This entry does not
+    // suppress on a terminal booking — "what room was there on those nights" is a
+    // fair question about a cancelled one — so the qualifier has to travel with
+    // the figures instead. Without it the row said `fitsThisNight: true` about a
+    // booking that is over, which is the opposite of what the operator needs.
+    bookingLifecycleState: stableCodeOrNull(row.booking_lifecycle_state),
     night: dateOnlyOrNull(row.night) ?? "",
     // `signedIntegerOrNull` and NOT `countOf`: this is `null` on a whole-lodge-held
     // night, where the capacity engine deliberately pins the figure to the lodge's

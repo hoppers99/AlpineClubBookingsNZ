@@ -685,6 +685,7 @@ const EXAMPLE_RAW_ROWS: Record<string, Record<string, unknown>> = {
     booking_id: WIDEST_RECORD_ID,
     booking_reference: "CLZ00000",
     lodge_ref: WIDEST_RECORD_ID,
+    booking_lifecycle_state: "terminal",
     night: "2026-08-08",
     occupied_beds_excluding_this_booking: 999,
     available_beds_excluding_this_booking: 999,
