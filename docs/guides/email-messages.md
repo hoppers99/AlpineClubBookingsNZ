@@ -66,7 +66,8 @@ at all** — so a line you write as `Door code: {{doorCode}}` prints a bare
 That is why several tokens are **pre-composed whole lines** rather than bare
 values: `{{doorCodeNote}}`, `{{reasonNote}}`, `{{adminNoteLine}}`,
 `{{reviewNoteLine}}`, `{{committeeNote}}`, `{{amountRecordedNote}}`,
-`{{promoSummary}}`, `{{creditNote}}`, `{{provisionalGuestsNote}}` and their
+`{{promoSummary}}`, `{{creditNote}}`, `{{checkoutChoreNote}}`,
+`{{provisionalGuestsNote}}` and their
 siblings each render the **entire** line — label, value and the blank line after
 it — or nothing whatsoever. Put one of those tokens on its own, with no label of
 your own in front of it, and the email reads correctly whether or not the value
@@ -242,6 +243,18 @@ Two consequences worth knowing before you edit one:
   how each guest's line is laid out, because the editor has no way to repeat a
   row. If a club needs a different per-guest layout, that is a change to the
   template engine, not something an override can do.
+- **The pre-arrival reminder's chore sentence only appears for clubs that run a
+  roster.** `{{checkoutChoreNote}}` on **Pre-arrival Information** produces the
+  whole sentence — that guests are on the chore roster on the morning they check
+  out, and should talk to the hut leader beforehand if they plan to leave early —
+  when the **Chores** module is switched on under **Admin → Setup → Modules**, and
+  **nothing at all** when it is off. That is deliberate: the chores module starts
+  off, and a club that keeps no roster must not tell its members to go and find a
+  hut leader about one. Put it on a line of its own and never type a label in
+  front of it. Its neighbour `{{expectedArrivalNote}}` works per booking rather
+  than per club: it prints the member's expected arrival time as a whole line when
+  they recorded one, and nothing when they did not. That time is information for
+  the hut leader only — it changes no date, no charge and nobody's chore.
 - **Never type a currency sign in front of a money token.** Tokens such as
   `{{consequenceNote}}` already contain the formatted amount, so a `$` in front
   of one prints `$$48.00`. For the same reason, never type a `-` or `+` in front

@@ -991,7 +991,13 @@ export default function AdminBookPage() {
               )}
               <div className="space-y-2">
                 <Label htmlFor="arrival-time">Expected Arrival Time (optional)</Label>
-                <TimePicker value={expectedArrivalTime} onChange={setExpectedArrivalTime} />
+                {/* #2621: `id` matches the `htmlFor` above, which pointed at
+                    nothing — the label neither named nor focused the control. */}
+                <TimePicker
+                  id="arrival-time"
+                  value={expectedArrivalTime}
+                  onChange={setExpectedArrivalTime}
+                />
               </div>
               <PromoCodeInput
                 checkIn={checkIn!}

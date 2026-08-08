@@ -23,6 +23,9 @@ function row(overrides: Partial<DisplayStateBooking>): DisplayStateBooking {
     guestCount: 1,
     stayStart: "2026-04-13",
     stayEnd: "2026-04-15",
+    // #2621: no expected arrival time is the ordinary case, so the base fixture
+    // has none; the cases that exercise the chip set it explicitly.
+    arrivalTime: null,
     ...overrides,
   };
 }
