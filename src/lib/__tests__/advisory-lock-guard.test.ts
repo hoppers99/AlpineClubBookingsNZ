@@ -342,9 +342,36 @@ const ROW_LOCK_SITE_INVENTORY: Record<string, number> = {
   // fan-out. Ordinary seams use the separate sorted `FOR KEY SHARE NOWAIT`
   // protocol in this helper. It issues the runtime exact-participant proofs
   // consumed by queue writes.
+  // FOUR since #2623 T9(d) counted every strength, not two: the two `FOR UPDATE`
+  // statements above plus the two `FOR KEY SHARE` ones that were inventoried
+  // nowhere — the ordinary seams' sorted NOWAIT acquisition, and the
+  // booking-request hold's blocking lock over its exact linked-member snapshot.
+  // The merge `FOR UPDATE` now runs under a 5s `lock_timeout` and restores it,
+  // so a wait-while-holding-the-policy-key is bounded and lands on the same
+  // stable retry (#2623 T6).
   // See docs/CONCURRENCY_AND_LOCKING.md → "Adult-member-hosting queue
   // participant fencing" and "Member merge".
-  "src/lib/adult-member-hosting-queue-participants.ts": 2,
+  "src/lib/adult-member-hosting-queue-participants.ts": 4,
+  // The hosting coverage drain locks the claimed owner and FK-less actor
+  // `FOR KEY SHARE` after their sorted member-lifecycle keys and before the exact
+  // typed queue refresh, so merge cannot re-point an identity between the claim
+  // snapshot and the work. One statement, executed once per claimed id.
+  // See docs/CONCURRENCY_AND_LOCKING.md → "Adult-member-hosting queue
+  // participant fencing".
+  "src/lib/adult-member-hosting-coverage-drain.ts": 1,
+  // Incident promotion locks the reconciliation's actor `FOR KEY SHARE` so a
+  // present actor cannot be hard-deleted between the existence check and the
+  // incident FK write; a zero-match degrades to anonymous officer attribution
+  // rather than failing a poison item. Order: policy-set → this row.
+  "src/lib/adult-member-hosting-review.ts": 1,
+  // The Xero member-scoped CREATE and UPDATE reservations each take the target
+  // `Member FOR KEY SHARE` in a short transaction, read the payload back through
+  // Prisma under it, and commit the `RUNNING` operation before any provider call.
+  // Merge and account deletion take the conflicting `FOR UPDATE` on the same row
+  // and re-check the reservation, so one side always loses cleanly and Xero never
+  // sits inside a long transaction.
+  // See docs/CONCURRENCY_AND_LOCKING.md -> "Xero contact writers".
+  "src/lib/xero-contacts.ts": 2,
   // Member-scoped Xero contact writes (#2597) share one `FOR UPDATE` protocol
   // for canonical CONTACT-link completion. Account deletion and member merge
   // take the same Member row before teardown, while CREATE/UPDATE reservations
@@ -391,12 +418,29 @@ function isTestFile(relPath: string): boolean {
   );
 }
 
-/** Count non-comment source lines in `source` matching `needle`. */
-function countCodeOccurrences(source: string, needle: string): number {
+/**
+ * Count occurrences of `needle` in `source`, ignoring whole-line comments and
+ * the contents of double-quoted string literals.
+ *
+ * DOUBLE-QUOTED LITERALS ARE NOT CODE for this purpose, and #2623 T9(d) is where
+ * that started to matter: `adult-member-hosting-queue-participants.ts` names its
+ * own protocol inside an error message ("… must never be issued without its FOR
+ * KEY SHARE NOWAIT lock"), which is prose about a statement, not a statement. A
+ * counter that scored it would put a number in the inventory below that no reader
+ * could reconcile against the file, and would fail the census when somebody
+ * reworded a sentence. Every raw statement in this repository is written as a
+ * BACKTICK template, so backticks are deliberately left alone.
+ */
+function countCodeOccurrences(source: string, needle: string | RegExp): number {
   let count = 0;
-  for (const line of source.split("\n")) {
-    const trimmed = line.trim();
+  for (const rawLine of source.split("\n")) {
+    const trimmed = rawLine.trim();
     if (trimmed.startsWith("//") || trimmed.startsWith("*") || trimmed.startsWith("/*")) {
+      continue;
+    }
+    const line = rawLine.replace(/"(?:[^"\\]|\\.)*"/g, '""');
+    if (typeof needle !== "string") {
+      count += (line.match(needle) ?? []).length;
       continue;
     }
     let idx = line.indexOf(needle);
@@ -407,6 +451,25 @@ function countCodeOccurrences(source: string, needle: string): number {
   }
   return count;
 }
+
+/**
+ * Every row-lock strength PostgreSQL offers, not just `FOR UPDATE` (#2623 T9(d)).
+ *
+ * The inventory used to match the literal `FOR UPDATE`, so the six non-test
+ * `FOR KEY SHARE` statements this repository ships — the hosting queue
+ * participant fence, the booking-request linked-member hold, the coverage drain's
+ * claimed-identity lock, the hosting actor lock and the two Xero contact
+ * reservations — appeared in NO counted inventory at all. They were exempt from
+ * the "lock raw, read typed" rule in `raw-sql-shape-guard.test.ts` for the same
+ * reason until that rule was widened. Nothing escaped: all six select a constant
+ * through `$executeRaw`. But a seventh written as `$queryRaw` projecting columns
+ * would have passed every gate — the exact #2289 failure mode.
+ *
+ * The two weaker modes are listed even though nothing uses them today, because
+ * the point of a census is that a NEW site has to be classified rather than
+ * merely written.
+ */
+const ROW_LOCK_STRENGTHS = /FOR (?:UPDATE|KEY SHARE|NO KEY UPDATE|SHARE)/g;
 
 describe("advisory lock guard (#182 / H1 regression class)", () => {
   const sources = walk(SRC_DIR)
@@ -451,17 +514,19 @@ describe("advisory lock guard (#182 / H1 regression class)", () => {
     ).toEqual(SCOPED_ADVISORY_LOCK_INVENTORY);
   });
 
-  it("keeps every SELECT FOR UPDATE protocol inside the reviewed inventory", () => {
+  it("keeps every SELECT row-lock protocol inside the reviewed inventory", () => {
     const found: Record<string, number> = {};
     for (const { rel, text } of sources) {
-      const count = countCodeOccurrences(text, "FOR UPDATE");
+      const count = countCodeOccurrences(text, ROW_LOCK_STRENGTHS);
       if (count > 0) found[rel] = count;
     }
 
     expect(
       found,
-      "Row-lock sites changed. Inventory their counterpart writers and order " +
-        "against advisory and row locks in docs/CONCURRENCY_AND_LOCKING.md.",
+      "Row-lock sites changed. Every strength counts (#2623 T9(d)): FOR " +
+        "UPDATE, FOR NO KEY UPDATE, FOR SHARE and FOR KEY SHARE. Inventory " +
+        "their counterpart writers and order against advisory and row locks " +
+        "in docs/CONCURRENCY_AND_LOCKING.md.",
     ).toEqual(ROW_LOCK_SITE_INVENTORY);
   });
 

@@ -178,6 +178,7 @@ describe("combined member refusal and officer queue contracts", () => {
       const source = readRepoCode(file);
       expect(source, file).toContain(
         "enqueueHostingCoverageReevaluationForMember(",
+      "enqueueMemberMergeHostingCoveragePlan(",
       );
       expect(source, file).toContain("settleHostingCoverageAfterCommit(");
     }
@@ -542,6 +543,11 @@ describe("the same-owner refusal and the escalation seam (#2576 §6, §8, §9)",
     // `dependentCoverage` defaults to ESCALATE — sat outside the assertion entirely:
     // waitlist.ts, booking-request.ts, booking-request-quotes.ts, group-booking.ts
     // and school-booking-request.ts. The sweep below finds them by what they CALL.
+    // #2623 T9(a): the merge plan seam belongs here too. Nothing escaped without
+    // it — `member-merge.ts` is its only caller and is pinned separately above,
+    // and it does drain — but the whole point of finding seam users by what they
+    // CALL is that the NEXT caller is covered without anybody remembering to add
+    // it to a list.
     const ENQUEUE_SEAMS = [
       "enqueueOwnHostingCoverageReevaluation(",
       "enqueueHostingCoverageReevaluationForMember(",
@@ -681,6 +687,95 @@ describe("the same-owner refusal and the escalation seam (#2576 §6, §8, §9)",
     ].map((marker) => xeroPaid.indexOf(marker));
     expect(xeroOrder.every((index) => index >= 0)).toBe(true);
     expect(xeroOrder).toEqual([...xeroOrder].sort((a, b) => a - b));
+  });
+});
+
+describe("the participant fence is gated on the hosting policy (#2623 T5)", () => {
+  const REVIEW_SERVICE = "src/lib/adult-member-hosting-review.ts";
+
+  function functionStartsIn(service: string): number[] {
+    return [...service.matchAll(/\n(?:export )?(?:async )?function \w+/g)].map(
+      (match) => match.index ?? 0,
+    );
+  }
+
+  it("reads the lodge's mode before every queue-participant acquisition", () => {
+    // WHY STRUCTURAL. The behavioural proof lives in
+    // `adult-member-hosting-same-owner.test.ts`, and it can only assert the sites
+    // it happens to reach. This is the claim about the SET: a fourth seam added
+    // later, or a gate quietly hoisted out of one of these three, is invisible to
+    // every behavioural test that does not already exercise that seam — and the
+    // consequence is a `FOR KEY SHARE NOWAIT` taken on an ordinary booking write
+    // at a club with the rule switched off, which surfaces to the member as the
+    // fixed payment-flavoured retry 409 and nothing else.
+    //
+    // `await` is part of the pattern so the declaration of
+    // `acquireOrValidateQueueParticipantProof` in this same file is not read as a
+    // call site.
+    const service = readRepoCode(REVIEW_SERVICE);
+    const functionStarts = functionStartsIn(service);
+    const sites = [
+      ...service.matchAll(/await acquireOrValidateQueueParticipantProof\(/g),
+    ].map((match) => match.index ?? 0);
+    // The three enqueue seams. A change to this number is a new fence: gate it,
+    // then say so here.
+    expect(sites).toHaveLength(3);
+
+    for (const site of sites) {
+      const enclosing = Math.max(
+        ...functionStarts.filter((start) => start < site),
+        -1,
+      );
+      const gate = service.lastIndexOf("loadAdultMemberHostingPolicy(", site);
+      expect(
+        gate,
+        `a hosting fence at offset ${site} is acquired before its own function ` +
+          "reads the policy mode: " +
+          service.slice(site, site + 80).split("\n")[0],
+      ).toBeGreaterThan(enclosing);
+    }
+  });
+
+  it("leaves the shared standing-subject barrier deliberately mode-independent", () => {
+    // THE OTHER HALF, AND IT IS THE ONE THAT COSTS SOMETHING TO GET WRONG.
+    // `lockHostingCoverageMemberLifecycleTarget` looks like a fourth ungated
+    // fence and is not one: every standing writer — deactivation, archive,
+    // membership cancellation, consent decline, the Xero lapse sync, account
+    // deletion — reaches it through this one function, and it is what makes a
+    // concurrent booking-request linked-member hold and a deactivation mutually
+    // exclusive. `docs/CONCURRENCY_AND_LOCKING.md` states the contract: the
+    // hold's refusal "is independent of the lodge's hosting consequence
+    // (DISABLED, ADMIN_REVIEW_REQUIRED, or ENFORCED), so review policy is not an
+    // identity-safety backstop."
+    //
+    // A club-wide `ENFORCED` gate was written above it while implementing T5 and
+    // real PostgreSQL refuted it: six interleavings in
+    // `adult-member-hosting-queue-merge.realdb.test.ts` failed for DISABLED and
+    // ADMIN_REVIEW_REQUIRED, because a deletion could then deactivate the member
+    // and unlink the guest underneath a hold that had already read them active.
+    // So this asserts the ABSENCE of a gate, with the reason, rather than letting
+    // the next reader "finish the job".
+    const service = readRepoCode(REVIEW_SERVICE);
+    const barrier = service.indexOf(
+      "await lockHostingCoverageMemberLifecycleTarget(",
+    );
+    expect(barrier).toBeGreaterThan(-1);
+    const enclosing = Math.max(
+      ...functionStartsIn(service).filter((start) => start < barrier),
+      -1,
+    );
+    expect(
+      service.slice(enclosing, barrier),
+      "The standing-subject barrier now has a hosting-policy read above it in " +
+        "its own function. That makes identity safety depend on review policy, " +
+        "which docs/CONCURRENCY_AND_LOCKING.md forbids by name.",
+    ).not.toContain("loadAdultMemberHostingPolicy(");
+    // And it is still the FIRST thing that function does, so nothing — not even
+    // an empty-fan-out early return — can commit before the subject is frozen.
+    expect(
+      service.slice(enclosing, barrier),
+      "Work moved above the standing-subject barrier.",
+    ).not.toContain("loadHostingCoverageMemberFanoutCandidates(");
   });
 });
 
