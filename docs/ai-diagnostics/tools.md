@@ -470,6 +470,16 @@ The checklist a reviewer should hold you to:
    `not_found` — "there is no evidence of this to report" — which is a claim about the
    whole domain rather than about the slice the entry read. The scope sentence is
    server-owned, comes from the registry, and renders above the rows.
+
+   **The scope COMPETES WITH THE ROWS for the block's 8,000 characters**, so it is
+   the wrong home for anything identical on every result. AID-6B put a
+   3,101-character code catalogue in one entry's scope and the empty block came to
+   7,545 of 8,000 — not enough room for the entry's own single row, so the renderer
+   dropped the evidence under a header still claiming one row. Static text belongs
+   in the `description`, which reaches the model once with the tool definition and
+   stays in context; the scope carries what has to be adjacent to *these* rows. The
+   "stays honest about its rows" contract in `registry.test.ts` is what catches the
+   mistake.
 10. Measure `rowLimit` and `byteLimit`; do not estimate them. Add the entry's widest
     realistic **raw row** to `EXAMPLE_RAW_ROWS` in `registry.test.ts`, which then
     serialises `rowLimit` rows of your own projected shape and fails if your
