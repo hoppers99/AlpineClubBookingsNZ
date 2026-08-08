@@ -132,6 +132,68 @@ export interface AiDiagnosticsSelectGrant {
  * and background-job health — need NO grant: they read fixed first-party
  * calculations the application already owns (`packs/support-evidence.ts`), which is
  * also the only way readiness can report on the diagnostics credential itself.
+ *
+ * AID-6C (#2377) adds ELEVEN relations, all BY COLUMN, and one column to
+ * `AuditLog`. Every one of them is argued in
+ * `docs/ai-diagnostics/tool-pack-finance.md` with the exact tool that needs it and
+ * the exact fields it projects; the short version, and the four classes of column
+ * that are deliberately absent from ALL of them, are below.
+ *
+ * WHAT IS NEVER GRANTED, and therefore refused by PostgreSQL itself (42501) rather
+ * than merely unprojected:
+ *
+ *  - RAW PROVIDER PAYLOADS: `XeroInboundEvent."payload"` (the only raw webhook body
+ *    in this schema), `XeroSyncOperation."requestPayload"`/`"responsePayload"`.
+ *  - RAW ERROR TEXT: `PaymentRecoveryOperation."lastError"`,
+ *    `XeroSyncOperation."lastErrorMessage"`, `XeroInboundEvent."errorMessage"`,
+ *    `WebhookLog."error"`.
+ *  - FREE TEXT: `Payment."manualPaymentNote"`, `PaymentTransaction."reason"`,
+ *    `PaymentRefund."reason"`, `ManualRefundTask."reason"`/`"note"`,
+ *    `RefundRequest."reason"`/`"adminNotes"`,
+ *    `XeroSyncOperation."manuallyResolvedReason"`, `XeroObjectLink."metadata"`.
+ *  - PEOPLE AND INSTRUMENTS: every `*MemberId`/`*ById` column on these relations,
+ *    `RefundRequest."memberId"`, `Payment."stripeCustomerId"`,
+ *    `"stripePaymentMethodId"`, `"stripeSetupIntentId"`,
+ *    `PaymentTransaction."paymentMethodId"`, and — on the two relations that carry
+ *    them — every column of `Member` except the two named below.
+ *
+ * The credential-bearing relations stay permanently out of scope (ADR-007 §1) and
+ * are named here so a future reader can see they were considered:
+ * `IntegrationCredential` (encrypted provider secrets) and `XeroToken` (PLAINTEXT
+ * OAuth access and refresh tokens) are not granted, not readable, and not
+ * grantable by any tool pack.
+ *
+ * The eleven, and the tool that argues for each:
+ *
+ *  - `Payment` — the pack's spine. Searched by `finance_payment_search` and
+ *    `finance_payment_amount_search`, returned in full by
+ *    `payment_diagnostic_summary`, and joined by `payment_refund_state`.
+ *  - `PaymentTransaction` — charge attempts (`payment_attempt_ledger`), and the
+ *    INDEXED internet-banking reference the reference search uses.
+ *  - `PaymentRefund` — refunds Stripe actually made (`payment_refund_state`), and
+ *    the Stripe charge/refund ids the reference search accepts.
+ *  - `PaymentRecoveryOperation` — the platform's own queued refund/cancel debt
+ *    (`payment_attempt_ledger`, `payment_refund_state`). `"idempotencyKey"` is
+ *    granted so the STATEMENT can classify the refund scenario from its prefix;
+ *    the key itself is never projected.
+ *  - `ManualRefundTask`, `RefundRequest` — the two non-Stripe refund records
+ *    (`payment_refund_state`).
+ *  - `ProcessedWebhookEvent`, `WebhookLog`, `XeroInboundEvent` — webhook receipt,
+ *    delivery and Xero inbound evidence (`finance_webhook_timeline`).
+ *  - `XeroObjectLink`, `XeroSyncOperation` — Xero linkage and sync state
+ *    (`xero_invoice_linkage`, `xero_contact_linkage`).
+ *  - `Member` — TWO columns, `"id"` and `"xeroContactId"`, and nothing else, for
+ *    `xero_contact_linkage` (which requires `finance:view` AND `membership:view`).
+ *    As the diagnostics role, `SELECT "email" FROM "Member"` and `SELECT *` are
+ *    both refused. This is the narrowest grant in the file and the one to scrutinise
+ *    hardest on any future edit.
+ *
+ * And one column added to an existing entry: `AuditLog."entityId"`, for
+ * `finance_record_audit_history`. AID-6A withheld it explicitly and recorded that
+ * per-record evidence was AID-6B/6C work "under their own area permission and their
+ * own privacy review". This is that review: `entityId` is used as a PREDICATE
+ * against an id the caller already holds, is never projected, and the three
+ * member-identifying columns beside it stay ungranted.
  */
 export const SELECT_GRANTS: readonly AiDiagnosticsSelectGrant[] = [
   {
@@ -144,9 +206,203 @@ export const SELECT_GRANTS: readonly AiDiagnosticsSelectGrant[] = [
       "severity",
       "outcome",
       "entityType",
+      // AID-6C (#2377): the predicate for per-record finance audit history. Never
+      // projected — the row's own `id` is the evidence reference.
+      "entityId",
       "requestId",
       "createdAt",
     ],
+  },
+  {
+    schema: "public",
+    relation: "Payment",
+    columns: [
+      "id",
+      "bookingId",
+      "status",
+      "source",
+      "amountCents",
+      "refundedAmountCents",
+      "changeFeeCents",
+      "additionalAmountCents",
+      "creditAppliedCents",
+      "additionalPaymentStatus",
+      "reference",
+      "stripePaymentIntentId",
+      "additionalPaymentIntentId",
+      "xeroInvoiceId",
+      "xeroInvoiceNumber",
+      "xeroRefundCreditNoteId",
+      "internetBankingHoldSlots",
+      "internetBankingHoldUntil",
+      "internetBankingHoldReleasedAt",
+      "manuallyMarkedPaidAt",
+      "createdAt",
+      "updatedAt",
+    ],
+  },
+  {
+    schema: "public",
+    relation: "PaymentTransaction",
+    columns: [
+      "id",
+      "paymentId",
+      "kind",
+      "source",
+      "status",
+      "amountCents",
+      "refundedAmountCents",
+      "reference",
+      "stripePaymentIntentId",
+      "xeroInvoiceId",
+      "xeroInvoiceNumber",
+      "createdAt",
+      "updatedAt",
+    ],
+  },
+  {
+    schema: "public",
+    relation: "PaymentRefund",
+    columns: [
+      "id",
+      "paymentId",
+      "paymentTransactionId",
+      "status",
+      "amountCents",
+      "currency",
+      "stripeRefundId",
+      "stripeChargeId",
+      "stripePaymentIntentId",
+      "xeroRefundCreditNoteId",
+      "stripeCreatedAt",
+      "createdAt",
+    ],
+  },
+  {
+    schema: "public",
+    relation: "PaymentRecoveryOperation",
+    columns: [
+      "id",
+      "type",
+      "status",
+      "bookingId",
+      "paymentId",
+      "amountCents",
+      "attempts",
+      // The scenario marker. Classified in SQL against a closed list of
+      // server-written prefixes; the value itself never reaches a projected row.
+      "idempotencyKey",
+      "succeededAt",
+      "createdAt",
+      "updatedAt",
+    ],
+  },
+  {
+    schema: "public",
+    relation: "ManualRefundTask",
+    columns: [
+      "id",
+      "bookingId",
+      "paymentId",
+      "amountCents",
+      "status",
+      "completedAt",
+      "createdAt",
+    ],
+  },
+  {
+    schema: "public",
+    relation: "RefundRequest",
+    columns: [
+      "id",
+      "bookingId",
+      "status",
+      "requestedAmountCents",
+      "approvedAmountCents",
+      "reviewedAt",
+      "createdAt",
+    ],
+  },
+  {
+    schema: "public",
+    relation: "ProcessedWebhookEvent",
+    columns: [
+      "id",
+      "eventId",
+      "source",
+      "eventType",
+      "status",
+      "processingStartedAt",
+      "processedAt",
+    ],
+  },
+  {
+    schema: "public",
+    relation: "WebhookLog",
+    columns: ["id", "source", "eventType", "eventId", "status", "durationMs", "createdAt"],
+  },
+  {
+    schema: "public",
+    relation: "XeroInboundEvent",
+    columns: [
+      "id",
+      "source",
+      "eventCategory",
+      "eventType",
+      "resourceId",
+      "correlationKey",
+      "status",
+      "eventCreatedAt",
+      "processedAt",
+      "createdAt",
+    ],
+  },
+  {
+    schema: "public",
+    relation: "XeroObjectLink",
+    columns: [
+      "id",
+      "localModel",
+      "localId",
+      "xeroObjectType",
+      "xeroObjectId",
+      "xeroObjectNumber",
+      "role",
+      "active",
+      "createdAt",
+      "updatedAt",
+    ],
+  },
+  {
+    schema: "public",
+    relation: "XeroSyncOperation",
+    columns: [
+      "id",
+      "direction",
+      "entityType",
+      "operationType",
+      "localModel",
+      "localId",
+      "status",
+      "attemptCount",
+      "replayable",
+      "lastErrorCode",
+      "xeroObjectType",
+      "xeroObjectId",
+      "xeroObjectNumber",
+      "manuallyResolvedAt",
+      "startedAt",
+      "completedAt",
+      "createdAt",
+      "updatedAt",
+    ],
+  },
+  {
+    schema: "public",
+    relation: "Member",
+    // TWO columns. Every other column of `Member` — name, email, phone, address,
+    // date of birth, membership state, credentials — stays refused by the server.
+    columns: ["id", "xeroContactId"],
   },
 ];
 

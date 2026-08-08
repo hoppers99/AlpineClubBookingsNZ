@@ -46,6 +46,28 @@ export const DIAGNOSTICS_EVIDENCE_STATES = [
   "stale",
   /** The evidence exists but cannot be classified either way. */
   "indeterminate",
+  /**
+   * Stored evidence was retrieved, and settling the question needs a LIVE provider
+   * check that Diagnostics deliberately cannot make (AID-6C, #2377).
+   *
+   * It is its own state rather than a flavour of `indeterminate` because the
+   * operator's next move is specific and nothing else in this vocabulary implies
+   * it: open Stripe's or Xero's own console. #2377's first release reads only what
+   * this platform already wrote down, so a stored `SUCCEEDED` is the last state
+   * recorded and not a live answer, and a model that cannot say so will present
+   * one as the other.
+   *
+   * WHO PRODUCES IT. Not `evidenceStateForToolResult` — the executor cannot know
+   * whether a given question turns on live provider truth, and inventing a
+   * heuristic there would be exactly the guessing this vocabulary exists to
+   * prevent. It is raised by the surface that assembles a `DiagnosticCase` (AID-7,
+   * #2378) when the finance pack's own scope disclosure applies to the question
+   * being answered, and folded in with `worstEvidenceState`, which is why it sits
+   * here rather than in the pack. Live provider reads themselves remain out of
+   * scope until an owner-approved issue designs their security, rate-limit,
+   * credential and audit story.
+   */
+  "provider_check_required",
   /** The caller lacks `view` on an area this evidence needs. NEVER inferred around. */
   "permission_denied",
   /** The acting admin account is locked out of the admin surface entirely. */
@@ -94,6 +116,8 @@ export const DIAGNOSTICS_EVIDENCE_STATE_DESCRIPTIONS: Record<
     "The evidence was read earlier and may have changed since; treat it as of its observed-at time.",
   indeterminate:
     "The evidence was retrieved but does not settle the question either way.",
+  provider_check_required:
+    "This is what the platform last recorded, not a live answer from the provider. Settling it needs a check in Stripe's or Xero's own console, which Diagnostics deliberately cannot make.",
   permission_denied:
     "Your admin access does not include the area this evidence comes from, so it was not retrieved and was not inferred from anywhere else.",
   actor_blocked:

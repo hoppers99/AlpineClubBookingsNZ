@@ -63,15 +63,27 @@ readiness evidence behind `support:view`, and bounded sanitized audit correlatio
 behind `support:view` **and** the affected domain's own `area:view`. Full reference:
 [tool-pack-support.md](tool-pack-support.md).
 
-The remaining domain tools arrive in their own children so each gets its own
-permission review and its own table grant: AID-6B (#2376,
-booking/membership/induction/bed allocation) and AID-6C (#2377, finance/Xero).
+AID-6C (#2377) has added the **finance and Xero pack**: two bounded record searches
+and seven per-record evidence tools behind `finance:view`, a member's Xero contact
+linkage behind `finance:view` **and** `membership:view`, and the application's own
+authoritative booking-finance calculation behind `finance:view` **and**
+`bookings:view`. It reads **stored evidence only** — no tool in it contacts Stripe,
+Xero or a bank. Full reference: [tool-pack-finance.md](tool-pack-finance.md).
 
-The `SELECT` grant allowlist therefore names **one** relation today —
-`public."AuditLog"`, and only eight of its columns (see the pack doc for why each
-one). Everything else in the schema, including `IntegrationCredential`, is unreadable
-by the diagnostics role, and so is every other column of `AuditLog`: the grant is by
-column, so `SELECT "ipAddress" FROM "AuditLog"` is refused by PostgreSQL itself.
+The remaining domain tools arrive in their own child so they get their own
+permission review and their own table grants: AID-6B (#2376,
+booking/membership/induction/bed allocation).
+
+The `SELECT` grant allowlist therefore names **twelve** relations today, and every
+one of them is granted **by column, never wholesale**: `public."AuditLog"` (nine
+columns) plus the eleven finance relations AID-6C argues for one at a time, of which
+`public."Member"` is the narrowest — `id` and `xeroContactId`, and nothing else.
+Everything else in the schema is unreadable by the diagnostics role, including
+`IntegrationCredential` (encrypted provider secrets) and `XeroToken` (**plaintext**
+OAuth access and refresh tokens), both permanently out of scope under ADR-007 §1.
+And so is every other column of the twelve: the grants are by column, so
+`SELECT "ipAddress" FROM "AuditLog"`, `SELECT "email" FROM "Member"` and
+`SELECT "payload" FROM "XeroInboundEvent"` are each refused by PostgreSQL itself.
 
 ## Two evidence sources, one gate chain
 
@@ -299,7 +311,16 @@ not permitted, and nothing inferred it from elsewhere) · `not_configured` (this
 deployment has not set it up) · `evidence_unavailable` (the source could not be
 reached). `result_truncated`, `ambiguous`, `stale`, `indeterminate`,
 `limit_exceeded`, `actor_blocked`, `unsupported`, `not_ready`,
-`temporarily_unavailable` and `tool_failed` complete the list.
+`temporarily_unavailable`, `provider_check_required` and `tool_failed` complete the
+list.
+
+`provider_check_required` is AID-6C's (#2377), and the executor does not produce it:
+it means the stored evidence was retrieved and settling the question needs a **live**
+provider check that Diagnostics deliberately cannot make. The finance pack reads only
+what the application already wrote down, so a stored `SUCCEEDED` is the last state
+recorded and not a live answer from Stripe — and the operator's next move for it
+(open the provider's own console) is specific enough that folding it into
+`indeterminate` would lose it.
 
 `src/lib/diagnostics/case/` also holds the shared **diagnostic-case** contract the
 later packs contribute to, so one conversation can combine booking, membership and
@@ -523,6 +544,10 @@ failing.
 - [Support tool pack (AID-6A)](tool-pack-support.md) — the registered
   deployment/configuration/readiness and audit-correlation tools, their permissions,
   their projections, and the one table grant they argue for.
+- [Finance and Xero tool pack (AID-6C)](tool-pack-finance.md) — bounded record
+  selection, per-record payment/refund/webhook/Xero evidence, the authoritative
+  booking-finance calculation, the eleven relation grants, and the questions this
+  platform stores no evidence for.
 - [Deployment and operator guide](deployment.md) — provisioning the role, rotating
   the password, and what readiness reports.
 - [Page context](page-context.md) — the other evidence channel (AID-4).

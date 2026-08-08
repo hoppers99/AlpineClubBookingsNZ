@@ -17,10 +17,16 @@
  *    `packs/support-correlation.ts`): deployment/configuration/readiness evidence
  *    behind `support:view`, and sanitized audit correlation behind `support:view`
  *    AND the affected domain's own `area:view`.
+ *  - the AID-6C finance pack (`packs/finance-search.ts`, `packs/finance-records.ts`,
+ *    `packs/finance-state.ts`): bounded record selection and per-record payment,
+ *    refund, webhook and Xero evidence behind `finance:view`; a member's Xero
+ *    contact linkage behind `finance:view` AND `membership:view`; and the
+ *    authoritative booking-finance calculation behind `finance:view` AND
+ *    `bookings:view`. It reads only STORED evidence — no tool in it contacts
+ *    Stripe, Xero or a bank.
  *
- * Still to come in their own children, each with its own permission review and its
- * own table grant: AID-6B (#2376, booking/membership/induction/bed allocation) and
- * AID-6C (#2377, finance/Xero).
+ * Still to come in its own child, with its own permission review and its own table
+ * grant: AID-6B (#2376, booking/membership/induction/bed allocation).
  *
  * ADDING A TOOL (the checklist a reviewer should hold you to):
  *  1. `requiredAreas` names the area(s) that already govern this data in the
@@ -55,6 +61,9 @@
 import { z } from "zod";
 
 import { defineDiagnosticsTool, type DiagnosticsToolEntry } from "./define";
+import { DIAGNOSTICS_FINANCE_RECORD_TOOLS } from "./packs/finance-records";
+import { DIAGNOSTICS_FINANCE_SEARCH_TOOLS } from "./packs/finance-search";
+import { DIAGNOSTICS_FINANCE_STATE_TOOLS } from "./packs/finance-state";
 import { DIAGNOSTICS_SUPPORT_CORRELATION_TOOLS } from "./packs/support-correlation";
 import { DIAGNOSTICS_SUPPORT_SYSTEM_TOOLS } from "./packs/support-system";
 
@@ -131,6 +140,9 @@ export const DIAGNOSTICS_TOOLS: readonly DiagnosticsToolEntry[] = [
   substrateProbe,
   ...DIAGNOSTICS_SUPPORT_SYSTEM_TOOLS,
   ...DIAGNOSTICS_SUPPORT_CORRELATION_TOOLS,
+  ...DIAGNOSTICS_FINANCE_SEARCH_TOOLS,
+  ...DIAGNOSTICS_FINANCE_RECORD_TOOLS,
+  ...DIAGNOSTICS_FINANCE_STATE_TOOLS,
 ];
 
 /** Lookup by id. Returns `undefined` for an unknown key — never a default tool. */

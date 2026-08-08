@@ -1332,6 +1332,52 @@ describe("diagnostics privilege proof DB safety guard (#2374)", () => {
       });
     });
 
+    /**
+     * Representative arguments for the registered entries that REQUIRE some.
+     *
+     * The ids are not imported from the pack modules on purpose: those modules are
+     * `server-only`, this suite loads the registry dynamically after setting the
+     * environment, and a literal key here fails loudly (the entry's `parseArgs`
+     * refuses `{}`) if an entry is ever renamed. The values are shaped to parse and
+     * to match nothing on a freshly migrated schema — the assertion below is that
+     * the statement RUNS as the least-privilege role with the grants the allowlist
+     * declares, not that it finds anything.
+     */
+    const REALDB_ENTRY_ARGS: Record<string, unknown> = {
+      "diagnostics.finance_payment_search": {
+        referenceKind: "booking_reference",
+        reference: "CLZ00000",
+      },
+      "diagnostics.finance_payment_amount_search": {
+        amountCents: 12345,
+        window: "30d",
+      },
+      "diagnostics.payment_diagnostic_summary": {
+        paymentId: "clz0000000abcdefghijklmno",
+      },
+      "diagnostics.payment_attempt_ledger": {
+        paymentId: "clz0000000abcdefghijklmno",
+      },
+      "diagnostics.payment_refund_state": {
+        paymentId: "clz0000000abcdefghijklmno",
+      },
+      "diagnostics.finance_webhook_timeline": {
+        provider: "stripe",
+        eventRef: "evt_3Qabcdefghijklmnopqrstu",
+      },
+      "diagnostics.xero_invoice_linkage": {
+        localModel: "Booking",
+        localId: "clz0000000abcdefghijklmno",
+      },
+      "diagnostics.xero_contact_linkage": {
+        memberId: "clz0000000abcdefghijklmno",
+      },
+      "diagnostics.finance_record_audit_history": {
+        subject: "payment",
+        recordId: "clz0000000abcdefghijklmno",
+      },
+    };
+
     it("runs EVERY registered SELECT-only entry, with its real parameters and grants", async () => {
       // The proof a unit test cannot give, and the one AID-6A (#2375) most needs: each
       // registered statement is executed as the least-privilege role against the
@@ -1348,13 +1394,19 @@ describe("diagnostics privilege proof DB safety guard (#2374)", () => {
         const sqlEntries = DIAGNOSTICS_TOOLS.filter(
           (entry) => entry.source === "select_only_sql",
         );
-        // The probe plus AID-6A's five correlation entries, so this is not vacuous.
+        // The probe, AID-6A's five correlation entries and AID-6C's nine finance
+        // entries, so this is not vacuous.
         expect(sqlEntries.length).toBeGreaterThan(1);
 
         for (const entry of sqlEntries) {
           if (entry.source !== "select_only_sql") continue;
-          // Bare arguments: every registered entry either takes none or defaults them.
-          const binding = entry.parseArgs({});
+          // Arguments the entry itself accepts. `{}` was enough while every entry
+          // either took none or defaulted them; AID-6C (#2377) ends that, and it
+          // ends it deliberately — a finance search that accepted `{}` would be the
+          // blank, unbounded search #2377 forbids. So an entry that needs arguments
+          // supplies them here, and an entry with no row falls back to `{}` and
+          // still has to parse, which keeps this a census rather than a skip.
+          const binding = entry.parseArgs(REALDB_ENTRY_ARGS[entry.id] ?? {});
           expect(binding.ok, entry.id).toBe(true);
           if (!binding.ok || binding.source !== "select_only_sql") continue;
 
