@@ -732,7 +732,17 @@ derivation).
   not in the same room), so a large group's minors overflow into rooms of
   their own instead of being capped at one room per adult. SCHOOL-request
   bookings (`isSchoolGroup`, from the origin/held `BookingRequest.type`)
-  prefer adults together and students separate. The planner never rewrites
+  prefer adults together and students separate. **A shared DOUBLE bed grants no
+  composition exemption (#2656, owner-set):** each of its two occupants counts
+  toward the room-night composition under that occupant's OWN booking key, so a
+  double holding an adult of booking A and an adult of booking B blocks a third
+  booking's minor from that room-night exactly as one adult alone would. The
+  index behind the guard was already correct for this shape — it is maintained
+  per `bookingGuestId:stayDate`, which is lossless, and no composition predicate
+  reads the occupant view — and the #2656 occupant-view fix deliberately did not
+  change it; the behaviour is now pinned by paired regression tests, including
+  the positive control that the same minor IS placed with no unrelated adult
+  present. The planner never rewrites
   persisted violations (manual/legacy rows) — the board surfaces them as
   `MINOR_ADULT_MIX` warnings; the manual board itself is warned, not blocked,
   **by design** (owner decision, 2026-07-11, closing the deferral from
@@ -806,8 +816,21 @@ derivation).
   Membership cancellation and archive need no sweep call: approval
   is blocked while ANY future booking or member guest appearance exists, so a
   cancellable member cannot occupy a future shared bed-night. Only an admin adds the second occupant on the board,
-  and only onto a bed whose primary already **holds capacity** — so displacement
-  can never move the primary out from under the partner. Auto-allocation never
+  and only onto a bed whose primary already **holds capacity**. That check is
+  made at PLACEMENT time only and is not maintained afterwards, so it is a
+  strong default rather than a guarantee: `BED_ALLOCATABLE_BOOKING_STATUSES` is
+  a deliberate superset of the capacity-holding statuses, so a primary can later
+  stop holding capacity while keeping its rows, and displacement can then reach
+  it. Since #2656 the planner **represents** a shared double rather than
+  collapsing it — occupant identity is keyed `bedId:stayDate:bookingGuestId`,
+  distinct from the `bedId:stayDate` capacity key — so it never frees a
+  bed-night one of the pair still occupies, never treats a bed-night whose
+  occupants span two bookings as a SINGLE-BED displacement target, and counts an
+  emptied double as one freed bed. (The whole-stay room path is deliberately
+  different: it makes every occupant of a bed-night an eviction candidate and
+  gains the bed only once ALL of them are in the eviction set, so both bookings
+  on a shared double are displaced together or the room is not chosen — see
+  docs/CAPACITY_MODEL.md rule 3.) Auto-allocation never
   creates a second occupant; every other bed type stays exactly one occupant per
   night. DB-enforced without CHECK constraints:
   `@@unique([bedId, stayDate, isSecondOccupant])` caps a bed-night at ≤2 rows and
@@ -840,7 +863,15 @@ derivation).
   bed-night atomically with the removal on transactional paths. Single-row paths
   write one `BED_ALLOCATION_PARTNER_PROMOTED` audit per promotion because the
   partner may belong to a different booking (sharing eligibility is
-  member-level). Two bulk paths batch that audit: **range assignment** (#2251),
+  member-level). **The lifecycle displacement apply path (#1387/#1677) promotes
+  too, since #2656** — it was the one removal path that did not, so displacing
+  the primary of a shared double left exactly the orphan this list says never
+  survives. It reads the rows it is about to move or delete BEFORE the write,
+  promotes the survivor on every bed-night that lost its primary, and clears
+  `isSecondOccupant` on a MOVE (a relocated row lands alone on a bed that was
+  free at plan start, so it is the primary there and must not carry a fresh
+  orphan to its destination). Two bulk paths batch that audit:
+  **range assignment** (#2251),
   which can vacate up to 366
   bed-nights, and **reviewed removal** (#2594), which can span a booking or the
   board's 31-night lodge window. Each records **one batched

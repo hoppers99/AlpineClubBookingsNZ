@@ -7,6 +7,7 @@ import {
   type BedAllocationRoom,
 } from "@/lib/bed-allocation";
 import { createAuditLog } from "@/lib/audit";
+import { reportBedAllocationInvariantViolation } from "@/lib/bed-allocation-diagnostics";
 import { bookingHoldsCapacity } from "@/lib/booking-status";
 import {
   addDaysDateOnly,
@@ -419,6 +420,92 @@ async function resolveLodgeIdsForRooms(
  * ("every placing write re-checks the live holds immediately before writing")
  * true for the lifecycle planner rather than only for `runAutoBedAllocation`.
  */
+/**
+ * Drop any payload row that would land on a bed-night the database still shows
+ * as occupied (#2656).
+ *
+ * `createMany({ skipDuplicates: true })` is NOT a safety mechanism here. On a
+ * shared DOUBLE (#1701) it silently swallows a row that collides with a
+ * surviving PRIMARY — the guest-night is then neither placed nor reported — and
+ * it does not collide at all when the survivor is the SECOND occupant, so the
+ * row is created and an unrelated person is written into a double beside
+ * someone else's partner, with no `MemberPartnerLink`. The corrected planner
+ * never drafts either row; this is the write-layer proof of that rather than a
+ * reliance on the unique index to notice.
+ *
+ * Runs BEFORE the displacements are applied (#2669 review F1). It can, because
+ * the caller's exclusion set names the SOURCE bed of every planned
+ * displacement, so a bed the plan is about to free already reads as free here
+ * without depending on the write having happened. Anything still occupied,
+ * after that exclusion, is a genuine disagreement
+ * between the plan and the database (a concurrent writer, or a planner
+ * regression), and refusing the row leaves the guest-night in the
+ * awaiting-allocation queue for the next reconcile — the same posture as the
+ * custodian and whole-lodge re-filters.
+ */
+async function dropRowsOnOccupiedBedNights<
+  TRow extends { bedId: string; stayDate: Date },
+>(
+  db: BedAllocationLifecycleDb,
+  rows: TRow[],
+  context: {
+    bookingId: string;
+    /**
+     * The occupant slots this apply has already vacated, keyed
+     * `sourceBedId:bookingGuestId:stayDate` — the bed each displaced row was on
+     * BEFORE the displacement ran.
+     *
+     * The source bed has to be part of the key (#2669 review). This read runs
+     * after the displacements on the same client, so a DELETEd row is already
+     * gone and this exclusion is only belt-and-braces for it; but a MOVEd row
+     * still exists, at its NEW bed. Keyed by guest-night alone the exclusion
+     * would strike that row out too, and the MOVE's DESTINATION bed-night would
+     * read as free — admitting a payload row onto an occupied bed, which is the
+     * one outcome this whole function exists to prevent. Keyed by source bed the
+     * exclusion only ever forgives an occupant found where it used to be.
+     */
+    vacatedOccupantSlots?: Set<string>;
+  },
+): Promise<TRow[]> {
+  if (rows.length === 0) return rows;
+
+  const occupants = await db.bedAllocation.findMany({
+    where: {
+      OR: rows.map((row) => ({ bedId: row.bedId, stayDate: row.stayDate })),
+    },
+    select: { bedId: true, stayDate: true, bookingGuestId: true },
+  });
+  if (occupants.length === 0) return rows;
+
+  const vacated = context.vacatedOccupantSlots;
+  const takenKeys = new Set(
+    occupants
+      .filter(
+        (occupant) =>
+          !vacated?.has(
+            `${occupant.bedId}:${occupant.bookingGuestId}:${formatDateOnly(occupant.stayDate)}`,
+          ),
+      )
+      .map(
+        (occupant) => `${occupant.bedId}:${formatDateOnly(occupant.stayDate)}`,
+      ),
+  );
+  const writable = rows.filter(
+    (row) => !takenKeys.has(`${row.bedId}:${formatDateOnly(row.stayDate)}`),
+  );
+  if (writable.length < rows.length) {
+    logger.error(
+      {
+        bookingId: context.bookingId,
+        droppedCount: rows.length - writable.length,
+        issue: 2656,
+      },
+      "Bed allocation write-time re-check dropped rows targeting bed-nights that are still occupied — the plan and the database disagree",
+    );
+  }
+  return writable;
+}
+
 async function dropRowsOnCustodianHeldBedNights<
   TRow extends { bedId: string; stayDate: Date },
 >(
@@ -814,6 +901,18 @@ async function autoAllocateMissingBedNights({
       },
       ...(lodgeId ? { room: lodgeNullTolerantScope(lodgeId) } : {}),
     },
+    // Determinism (#2656). The planner is pure and deterministic for a given
+    // input, so its input must be deterministic too: without an ORDER BY,
+    // PostgreSQL may return the two rows of a shared DOUBLE — or any two rows —
+    // in either order between runs, and seeding order reaches per-booking row
+    // iteration and bed-stability preferences.
+    //
+    // `(bedId, stayDate)` is NOT unique, and that is this issue's whole premise:
+    // a shared DOUBLE puts TWO rows on one bed-night. So `id` is not a formal
+    // tie-break here — it is the real discriminator, in exactly the case this
+    // ordering was added for. `(bookingGuestId, stayDate)` IS unique, so the
+    // three columns together are a total order over the result set.
+    orderBy: [{ stayDate: "asc" }, { bedId: "asc" }, { id: "asc" }],
     select: {
       bedId: true,
       bookingId: true,
@@ -994,6 +1093,15 @@ async function autoAllocateMissingBedNights({
     // allocation is moved aside or unallocated so a held booking always gets a
     // bed the availability math already admitted it to.
     prioritizeCapacityHolding: true,
+    // #2656: the planner is pure, so it cannot log or breadcrumb a bookkeeping
+    // divergence itself. The hard assertion stays test-only; in production a
+    // live lodge hitting one becomes visible here instead of silent.
+    onInvariantViolation: (message) =>
+      reportBedAllocationInvariantViolation(message, {
+        bookingId,
+        lodgeId: lodgeId ?? null,
+        source: "reconcileBedAllocationsForBooking",
+      }),
     allocationPriorityOrder: settings.allocationPriorityOrder,
     rooms: plannerRooms,
     bookings: plannerBookings,
@@ -1155,7 +1263,13 @@ async function autoAllocateMissingBedNights({
   // Common case (no displacement): a plain createMany, unchanged apart from the
   // re-checked payload.
   if (displacements.length === 0) {
-    const data = await recheckPayload(db);
+    const rechecked = await recheckPayload(db);
+    if (rechecked.length === 0) return 0;
+    // Nothing was freed on this path, so any occupied target bed-night is a
+    // straight disagreement with the plan — refuse the row rather than letting
+    // `skipDuplicates` swallow it or (beside a second occupant) let it through
+    // (#2656).
+    const data = await dropRowsOnOccupiedBedNights(db, rechecked, { bookingId });
     if (data.length === 0) return 0;
     const created = await db.bedAllocation.createMany({
       ...createManyArgs,
@@ -1192,11 +1306,47 @@ async function autoAllocateMissingBedNights({
       return { count: 0, applied: false, appliedDisplacements: [] };
     }
 
+    // Never write onto a bed-night that is still occupied — see
+    // dropRowsOnOccupiedBedNights.
+    //
+    // This runs BEFORE the displacements are applied (#2669 review F1), not
+    // after. It can afford to, because its exclusion set is asserted in JS
+    // against the SOURCE bed of each planned displacement rather than read out
+    // of the database, so a bed this plan is about to free already reads as
+    // free here. Running it afterwards meant an emptied payload left the
+    // displacements committed and audited: a provisional booking evicted, and
+    // an audit saying its bed was returned "so a capacity-holding booking could
+    // claim it", for an allocation that was then never written.
+    //
+    // The exclusion set is the FULL planned list rather than the justified
+    // subset, which is not yet known — and that is sound in the only direction
+    // that matters. A displacement is dropped as unjustified precisely when NO
+    // surviving payload row claims a bed-night its booking frees, so forgiving
+    // its occupant here can never admit a row onto a bed that stays occupied.
+    const writable = await dropRowsOnOccupiedBedNights(client, data, {
+      bookingId,
+      // Keyed by the SOURCE bed, so a MOVE's destination is never forgiven —
+      // see the parameter's docblock. `fromBedId` is the planner's view; where
+      // the database disagreed, the row simply is not excluded and its
+      // bed-night reads as taken, which is the conservative direction.
+      vacatedOccupantSlots: new Set(
+        displacements.map(
+          (displacement) =>
+            `${displacement.fromBedId}:${displacement.bookingGuestId}:${displacement.stayDate}`,
+        ),
+      ),
+    });
+    if (writable.length === 0) {
+      // Nothing will be written, so nothing may be displaced for it.
+      return { count: 0, applied: false, appliedDisplacements: [] };
+    }
+
     // Only the displacements the re-checked payload still needs (see
-    // `justifiedDisplacements`). A row dropped by a write-time re-filter takes
-    // its displacement down with it rather than leaving a provisional booking
-    // evicted for a bed nobody ends up in.
-    const applicable = justifiedDisplacements(data);
+    // `justifiedDisplacements`). A row dropped by a write-time re-filter — the
+    // unallocatable-booking re-check, either hold re-filter, or the occupancy
+    // filter above — takes its displacement down with it rather than leaving a
+    // provisional booking evicted for a bed nobody ends up in.
+    const applicable = justifiedDisplacements(writable);
     if (applicable.length < displacements.length) {
       logger.info(
         {
@@ -1208,11 +1358,48 @@ async function autoAllocateMissingBedNights({
       );
     }
 
+    // The rows the displacements are about to move or delete, read BEFORE the
+    // write (#2656): `updateMany`/`deleteMany` return only a count, and the
+    // shared-double repairs below need to know which of the two occupant slots
+    // each row held. Keyed by guest-night, which is unique
+    // (@@unique([bookingGuestId, stayDate])).
+    const displacedRows =
+      applicable.length === 0
+        ? []
+        : await client.bedAllocation.findMany({
+            where: {
+              OR: applicable.map((displacement) => ({
+                bookingGuestId: displacement.bookingGuestId,
+                stayDate: new Date(`${displacement.stayDate}T00:00:00.000Z`),
+              })),
+            },
+            select: {
+              bookingGuestId: true,
+              stayDate: true,
+              bedId: true,
+              isSecondOccupant: true,
+            },
+          });
+    const displacedByGuestNight = new Map(
+      displacedRows.map((row) => [
+        `${row.bookingGuestId}:${formatDateOnly(row.stayDate)}`,
+        row,
+      ]),
+    );
+    // Bed-nights this apply strips of their PRIMARY occupant. Only a departing
+    // primary can strand a partner (#1750), so a departing second occupant
+    // contributes nothing here.
+    const vacatedPrimaryBedNights: OrphanedBedNight[] = [];
+
     for (const displacement of applicable) {
+      const stayDate = new Date(`${displacement.stayDate}T00:00:00.000Z`);
       const where = {
         bookingGuestId: displacement.bookingGuestId,
-        stayDate: new Date(`${displacement.stayDate}T00:00:00.000Z`),
+        stayDate,
       };
+      const previous = displacedByGuestNight.get(
+        `${displacement.bookingGuestId}:${displacement.stayDate}`,
+      );
       if (
         displacement.type === "MOVE" &&
         displacement.toBedId &&
@@ -1220,15 +1407,56 @@ async function autoAllocateMissingBedNights({
       ) {
         await client.bedAllocation.updateMany({
           where,
-          data: { bedId: displacement.toBedId, roomId: displacement.toRoomId },
+          data: {
+            bedId: displacement.toBedId,
+            roomId: displacement.toRoomId,
+            // A MOVE destination was free in the database at plan start and no
+            // other row in this plan may target it, so the moved row arrives
+            // ALONE — it must be the primary there. Without this, relocating
+            // the second occupant of a shared double would plant a fresh
+            // orphaned `isSecondOccupant=true` row on the destination and
+            // dead-end that bed-night behind the `resolveSecondOccupant` orphan
+            // guard (#2656). A no-op for a row that was already primary.
+            //
+            // The denormalized `bedType` is deliberately NOT rewritten here: it
+            // is only ever read by the non-DOUBLE partial unique index, whose
+            // stale values err toward under-occupancy, and manual placement
+            // reads the LIVE `LodgeBed.bedType` instead (#1749).
+            isSecondOccupant: false,
+          },
         });
+        if (previous && !previous.isSecondOccupant) {
+          if (previous.bedId !== displacement.toBedId) {
+            vacatedPrimaryBedNights.push({ bedId: previous.bedId, stayDate });
+          }
+        }
       } else {
         await client.bedAllocation.deleteMany({ where });
+        if (previous && !previous.isSecondOccupant) {
+          vacatedPrimaryBedNights.push({ bedId: previous.bedId, stayDate });
+        }
       }
     }
+
+    // Promote the survivor on every shared double this apply just took the
+    // primary off (#2656 / #1750 invariant). Every other removal path already
+    // does this; the displacement apply path was the one that did not, so it
+    // could leave the orphaned `isSecondOccupant=true` row that
+    // `docs/DOMAIN_INVARIANTS.md` says is never left behind. Runs after the
+    // removals, so the flip to `isSecondOccupant=false` cannot collide with
+    // @@unique([bedId, stayDate, isSecondOccupant]), and on the same client so
+    // it commits or rolls back with them.
+    const promotedPartners = await promoteOrphanedSecondOccupantsBatch(
+      client,
+      vacatedPrimaryBedNights,
+    );
+    for (const partner of promotedPartners) {
+      await recordPartnerPromotionAudit(client, partner);
+    }
+
     const created = await client.bedAllocation.createMany({
       ...createManyArgs,
-      data,
+      data: writable,
     });
     return {
       count: created.count,
