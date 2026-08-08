@@ -408,10 +408,19 @@ describe("hosting coverage queue participant fence (#2597)", () => {
     expect(statements[1].strings?.join("?")).not.toContain("NOWAIT");
     // Released rather than left in force: the rest of the merge transaction takes
     // further locks whose failures are NOT mapped onto the participant retry.
+    //
+    // To DEFAULT, not to a hardcoded `0` (#2623 F4). `0` means "wait forever",
+    // not "whatever it was", so on a deployment carrying
+    // `ALTER DATABASE … SET lock_timeout` the old form DELETED the operator's
+    // bound for merge's remaining locks. `SET LOCAL` rather than `RESET` because
+    // `RESET` is session-scoped and survives the commit on a pooled connection,
+    // destroying a caller's own session setting. Both measured on real
+    // PostgreSQL — see `clearTransactionLockTimeout`.
     expect(statements[2].strings?.join("?")).toContain(
-      "set_config('lock_timeout', ?, true)",
+      "SET LOCAL lock_timeout TO DEFAULT",
     );
-    expect(statements[2].values).toEqual(["0"]);
+    expect(statements[2].strings?.join("?")).not.toContain("set_config");
+    expect(statements[2].values).toEqual([]);
   });
 
   it("maps a merge participant lock_timeout onto the stable retry (#2623 T6)", async () => {

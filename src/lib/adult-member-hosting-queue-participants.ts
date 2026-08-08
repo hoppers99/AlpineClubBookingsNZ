@@ -345,6 +345,9 @@ export const MEMBER_MERGE_PARTICIPANT_LOCK_TIMEOUT_MS = 10_000;
  * no placeholders. It runs through `$executeRaw` for the same reason every other
  * raw statement in this module does: nothing reads the returned row, only that
  * the statement succeeded.
+ *
+ * See `clearTransactionLockTimeout` for why the UNDO is not this function with a
+ * zero.
  */
 async function setTransactionLockTimeout(
   db: Pick<PrismaClient, "$executeRaw">,
@@ -353,6 +356,44 @@ async function setTransactionLockTimeout(
   await db.$executeRaw(
     Prisma.sql`SELECT set_config('lock_timeout', ${String(milliseconds)}, true)`,
   );
+}
+
+/**
+ * Undo the bound above, restoring whatever `lock_timeout` this deployment
+ * actually configures (#2623 F4).
+ *
+ * NOT `set_config('lock_timeout', '0', true)`, which is what this did first. `0`
+ * is not "the previous value", it is "wait forever" — so on a deployment that
+ * sets `lock_timeout` at the database or role level, restoring `0` REMOVED that
+ * operator's bound for the rest of the merge transaction: the sorted
+ * coverage-owner keys and the loser `member.delete` with its FK checks. That is
+ * the exact opposite of the intent stated below, which is to hand the remaining
+ * statements back their ordinary failure semantics.
+ *
+ * Measured on real PostgreSQL against a database carrying
+ * `ALTER DATABASE … SET lock_timeout = '3s'`:
+ *
+ *   set_config('lock_timeout','0',true)   -> 0    (operator's bound destroyed)
+ *   RESET lock_timeout                    -> 3s   (restored, but see below)
+ *   SET LOCAL lock_timeout TO DEFAULT     -> 3s   (restored)
+ *
+ * `SET LOCAL` rather than `RESET` because `RESET` is SESSION-scoped: it survives
+ * the commit on a pooled connection. Measured on the same database, a session
+ * holding `SET lock_timeout = '7s'` came out of a transaction containing `RESET`
+ * at `3s` — the caller's own session setting silently destroyed for every later
+ * statement that connection serves. `SET LOCAL` left it at `7s`.
+ *
+ * No parameter is interpolated, so the reason `set_config` was needed above —
+ * `SET` takes no placeholders — does not apply here.
+ *
+ * On this repository's current configuration nothing sets `lock_timeout` at any
+ * level, so `DEFAULT` resolves to `0` and this is byte-for-byte the old
+ * behaviour. It is hardening against a deployment that adds one, not a live bug.
+ */
+async function clearTransactionLockTimeout(
+  db: Pick<PrismaClient, "$executeRaw">,
+): Promise<void> {
+  await db.$executeRaw(Prisma.sql`SET LOCAL lock_timeout TO DEFAULT`);
 }
 
 /**
@@ -383,11 +424,14 @@ async function setTransactionLockTimeout(
  * `HostingCoverageParticipantRetryError` that merge already converts into its
  * clean "participants changed, nothing was saved, re-run the preview" 409.
  *
- * The timeout is restored to `0` after a successful acquisition rather than left
- * in force: the rest of the merge transaction takes further locks — sorted
- * coverage-owner keys, the loser delete — whose failures are NOT mapped onto that
- * retry, and turning them into unmapped `55P03`s would trade a bounded wait for an
- * opaque error. There is no restore on the failure path because a cancelled
+ * The timeout is restored to this deployment's own DEFAULT after a successful
+ * acquisition rather than left in force: the rest of the merge transaction takes
+ * further locks — sorted coverage-owner keys, the loser delete — whose failures
+ * are NOT mapped onto that retry, and turning them into unmapped `55P03`s would
+ * trade a bounded wait for an opaque error. Restoring the DEFAULT rather than a
+ * hardcoded `0` is what keeps that true on a deployment whose operator sets
+ * `lock_timeout` at the database or role level — see
+ * `clearTransactionLockTimeout`. There is no restore on the failure path because a cancelled
  * statement leaves the transaction aborted, so a second statement there could only
  * replace the retry error with `25P02`.
  */
@@ -419,7 +463,7 @@ export async function lockMemberMergeHostingCoverageParticipants(
     }
     throw error;
   }
-  await setTransactionLockTimeout(db, 0);
+  await clearTransactionLockTimeout(db);
   const locked = await db.member.findMany({
     where: { id: { in: ids } },
     orderBy: { id: "asc" },
