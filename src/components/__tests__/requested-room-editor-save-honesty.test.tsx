@@ -70,6 +70,12 @@ vi.mock("@/components/ui/select", () => ({
 const ALPINE = { id: "room-alpine", name: "Alpine", active: true };
 const CEDAR = { id: "room-cedar", name: "Cedar", active: true };
 
+// #2664: the picker's options now come from a BOOKING-SCOPED read, so the
+// server derives the lodge (and the authority) from the booking being edited
+// rather than listing every lodge the caller happens to be eligible to book.
+// Every render below is on `booking-1`, so this is the URL the mount fires.
+const OPTIONS_URL = "/api/bookings/booking-1/requested-room/options";
+
 const ROOMS_RESPONSE = {
   rooms: [
     { id: ALPINE.id, name: ALPINE.name, bedCount: 4 },
@@ -95,7 +101,7 @@ let fetchMock: ReturnType<typeof vi.fn>;
 /** Every write call — i.e. everything that is not the picker's own room load. */
 function writeCalls() {
   return fetchMock.mock.calls.filter(
-    (call) => String(call[0]) !== "/api/bookings/rooms",
+    (call) => String(call[0]) !== OPTIONS_URL,
   );
 }
 
@@ -112,7 +118,7 @@ async function selectRoom(value: string) {
 /** Wait for the mount-time picker load, so the next call would be a write. */
 async function awaitRoomsLoad() {
   await waitFor(() => {
-    expect(fetchMock).toHaveBeenCalledWith("/api/bookings/rooms");
+    expect(fetchMock).toHaveBeenCalledWith(OPTIONS_URL);
   });
 }
 
