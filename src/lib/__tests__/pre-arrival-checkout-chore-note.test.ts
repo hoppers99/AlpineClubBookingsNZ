@@ -67,7 +67,10 @@ import {
   OPTIONAL_TEMPLATE_TOKENS,
 } from "../email-message-token-contract";
 import { renderTemplateString } from "../email-message-renderer";
-import { checkoutDayChoreNote } from "../email-message-notes";
+import {
+  checkoutDayChoreNote,
+  composeOptionalEmailLine,
+} from "../email-message-notes";
 import { plainTextEmailTemplate } from "../email-templates";
 // Imported statically rather than with `await import(...)` inside the test.
 // `vi.mock` above is hoisted, so the mocks are in place either way — but this
@@ -83,12 +86,40 @@ const RENDER_DATA = {
   checkIn: "15 Jul 2026",
   checkOut: "18 Jul 2026",
   guestCount: 2,
-  expectedArrivalNote: "",
+  expectedArrivalNote: "Expected arrival: 16:30\n",
   outstandingAdditionalNote: "",
   CLUB_LODGE_TRAVEL_NOTE: "Take the Bruce Road.",
   doorCodeNote: "",
   BASE_URL: "https://bookings.example.org",
 };
+
+const SENTENCE =
+  "You are on the chore roster on the morning you check out, so please talk to the hut leader beforehand if you plan to leave early.";
+
+const OUTSTANDING =
+  "There is still $123.45 to pay on this booking after a change to your stay. Please pay it from your booking page before you arrive.";
+
+/**
+ * What the SENDER puts in `templateData.checkoutChoreNote`: the sentence with
+ * its own trailing blank line, or nothing at all. The separator rides the value
+ * rather than the default body, so a club with no chore roster — the default —
+ * receives the message unchanged in every byte.
+ */
+const choreToken = (choresEnabled: boolean) =>
+  composeOptionalEmailLine(null, checkoutDayChoreNote(choresEnabled), {
+    trailing: "\n\n",
+  });
+
+/**
+ * The pre-#2621 body, byte for byte: the shipped body with the token taken out
+ * and nothing else touched. Only possible because the token carries no
+ * surrounding newlines of its own — which is the property the byte-equality
+ * cases below exist to hold in place.
+ */
+const BODY_WITHOUT_THE_LINE = defaults.defaultBody.replace(
+  "{{checkoutChoreNote}}",
+  ""
+);
 
 describe("#2621 the shipped pre-arrival default carries the chore sentence as a token", () => {
   it("has {{checkoutChoreNote}} in the body, declared in the table for a token that IS in the default", () => {
@@ -118,37 +149,60 @@ describe("#2621 the shipped pre-arrival default carries the chore sentence as a 
   it("renders the D-M5 sentence, verbatim, for a club that runs chore rosters", () => {
     const rendered = renderTemplateString(defaults.defaultBody, {
       ...RENDER_DATA,
-      checkoutChoreNote: checkoutDayChoreNote(true),
+      checkoutChoreNote: choreToken(true),
     });
 
     // The owner's wording, unparaphrased.
-    expect(rendered).toContain(
-      "You are on the chore roster on the morning you check out, so please talk to the hut leader beforehand if you plan to leave early."
-    );
+    expect(rendered).toContain(SENTENCE);
   });
 
-  it("says nothing about chores, and leaves no artefact, for a club with no chore roster", () => {
+  // BOTH outstanding-balance cases. The empty one is the ordinary send; the
+  // non-empty one is the case that actually moves, because that sentence sits
+  // immediately after this token — any newline this change adds to the body
+  // lands between the two and re-shapes a message about money for every
+  // chore-free club, which is most of them.
+  it.each([
+    ["nothing else outstanding", ""],
+    ["an outstanding balance to pay", OUTSTANDING],
+  ])(
+    "renders byte-identically to the pre-#2621 message for a club with no chore roster (%s)",
+    (_case, outstandingAdditionalNote) => {
+      const data = { ...RENDER_DATA, outstandingAdditionalNote };
+      const withToken = renderTemplateString(defaults.defaultBody, {
+        ...data,
+        checkoutChoreNote: choreToken(false),
+      });
+      const withoutTheLine = renderTemplateString(BODY_WITHOUT_THE_LINE, data);
+
+      expect(withToken).not.toMatch(/chore/i);
+      expect(withToken).not.toMatch(/hut leader/i);
+      // Byte-identical BEFORE the paragraph splitter runs, not merely after it.
+      // The earlier shape survived only the second of these: it added blank
+      // lines that `plainTextEmailTemplate` happened to collapse, which is a
+      // property of that one renderer rather than of the message.
+      expect(withToken).toBe(withoutTheLine);
+      expect(plainTextEmailTemplate(withToken)).toBe(
+        plainTextEmailTemplate(withoutTheLine)
+      );
+    }
+  );
+
+  it("gives the sentence a paragraph of its own in the flat body when chores are ON", () => {
     const rendered = renderTemplateString(defaults.defaultBody, {
       ...RENDER_DATA,
-      checkoutChoreNote: checkoutDayChoreNote(false),
+      outstandingAdditionalNote: OUTSTANDING,
+      checkoutChoreNote: choreToken(true),
     });
-    expect(rendered).not.toMatch(/chore/i);
-    expect(rendered).not.toMatch(/hut leader/i);
 
-    // NO BLANK-LINE ARTEFACT, proved by equivalence rather than by eyeballing a
-    // gap: the delivered body with the token rendered empty is byte-identical to
-    // the delivered body of a default that never carried the line at all.
-    // `plainTextEmailTemplate` splits on blank lines, trims each block and drops
-    // the empty ones, which is what makes that true (the
-    // {{outstandingAdditionalNote}} convention in the same body).
-    const deliveredWithEmptyToken = plainTextEmailTemplate(rendered);
-    const deliveredWithoutTheLine = plainTextEmailTemplate(
-      renderTemplateString(
-        defaults.defaultBody.replace("{{checkoutChoreNote}}\n\n", ""),
-        RENDER_DATA
-      )
-    );
-    expect(deliveredWithEmptyToken).toBe(deliveredWithoutTheLine);
+    // `plainTextEmailTemplate` splits on blank lines; the sentence has to be a
+    // whole block, not glued onto the check-in details above it or onto the
+    // money sentence below it.
+    const blocks = rendered
+      .split(/\n{2,}/)
+      .map((block) => block.trim())
+      .filter(Boolean);
+    expect(blocks).toContain(SENTENCE);
+    expect(blocks).toContain(OUTSTANDING);
   });
 });
 
@@ -178,9 +232,17 @@ describe("#2621 sendPreArrivalReminderEmail composes the sentence once for both 
     // Both paths, from the same composed value, so an admin override and the
     // built-in message cannot say different things.
     expect(call.html).toContain("chore roster on the morning you check out");
-    expect(call.templateData.checkoutChoreNote).toBe(
-      "You are on the chore roster on the morning you check out, so please talk to the hut leader beforehand if you plan to leave early."
+    // ...and it is a PARAGRAPH in the HTML, not a clause appended to the details
+    // table or to the money sentence. The flat body's own paragraph break is the
+    // trailing blank line on the token below; this is the HTML half of the same
+    // promise.
+    expect(call.html).toMatch(
+      new RegExp(`<p[^>]*>${SENTENCE.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}</p>`)
     );
+    // The token carries the sentence plus its own trailing blank line — the
+    // separator rides the value, so the default body needs none around it and a
+    // chores-OFF club's message is unchanged.
+    expect(call.templateData.checkoutChoreNote).toBe(`${SENTENCE}\n\n`);
     // And the arrival information the owner kept is still there.
     expect(call.html).toContain("Expected arrival");
     expect(call.templateData.expectedArrivalTime).toBe("16:30");

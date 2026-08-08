@@ -1031,7 +1031,10 @@ export async function sendPreArrivalReminderEmail(params: {
   // reminder sentence, whereas failing open would tell a club with no chore
   // roster to go and talk to a hut leader about one.
   const modules = await loadEffectiveModuleFlags();
-  const checkoutChoreNote = checkoutDayChoreNote(modules.chores);
+  // The bare sentence (or ""). The HTML wraps it in its own paragraph; the flat
+  // body needs it to bring its own paragraph break, which is the composition
+  // below rather than newlines in the default body — see the note there.
+  const checkoutChoreSentence = checkoutDayChoreNote(modules.chores);
   await sendEmail({
     to: params.email,
     subject: `Pre-arrival Information - ${EMAIL_DEFAULT_LODGE_NAME}`,
@@ -1039,7 +1042,7 @@ export async function sendPreArrivalReminderEmail(params: {
       ...params,
       lodgeTravelNote: settings.lodgeTravelNote,
       doorCode: settings.doorCode,
-      checkoutChoreNote,
+      checkoutChoreNote: checkoutChoreSentence,
     }),
     bookingContext: bookingOwnerEmailContext(params.bookingId, params.recipientMemberId),
     templateName: "pre-arrival-reminder",
@@ -1059,12 +1062,21 @@ export async function sendPreArrivalReminderEmail(params: {
         params.expectedArrivalTime,
         { trailing: "\n" },
       ),
-      // #2621 (D-M5): the sentence, or "" for a club with no chore roster. On
-      // its own line between blank lines in the default body, so an empty value
-      // leaves no blank-line artefact — `plainTextEmailTemplate` drops a block
-      // that trims to nothing (the {{outstandingAdditionalNote}} convention
-      // below).
-      checkoutChoreNote,
+      // #2621 (D-M5): the sentence with its OWN trailing blank line, or the
+      // empty string for a club with no chore roster.
+      //
+      // The separator rides the VALUE, not the default body — the
+      // `{{adminNoteLine}}` / `{{promoSummary}}` convention (see
+      // `composeOptionalEmailLine`). Newlines around the token in the body would
+      // be emitted whether or not the club runs chores, which changes the shape
+      // of every chore-free club's reminder (they are the default) for a
+      // sentence they never receive. This way the body reads
+      // `{{checkoutChoreNote}}{{outstandingAdditionalNote}}` and a chores-OFF
+      // send renders byte-for-byte what it rendered before #2621, while a
+      // chores-ON send gets a real paragraph of its own.
+      checkoutChoreNote: composeOptionalEmailLine(null, checkoutChoreSentence, {
+        trailing: "\n\n",
+      }),
       // #2268: identical shape to the booking-confirmed line above — a bare
       // "Door code: 1234", or nothing at all for a lodge with no code.
       doorCodeNote: composeOptionalEmailLine("Door code", settings.doorCode, {

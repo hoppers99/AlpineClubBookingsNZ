@@ -312,10 +312,19 @@ export function splitGuestPortionOwnBookingLine(
  * in `OPTIONAL_TEMPLATE_TOKENS["pre-arrival-reminder"]` — it is in the shipped
  * default body, which is what makes that the correct table rather than
  * `EMPTYABLE_OVERRIDE_TOKENS` — and guard 4 proves the default body renders
- * cleanly without it. The token sits on a line of its own between blank lines, so
- * `plainTextEmailTemplate` drops the whole block when it is empty and leaves no
- * blank-line artefact; the value therefore carries no trailing newlines of its
- * own (the `{{outstandingAdditionalNote}}` convention in the same body).
+ * cleanly without it.
+ *
+ * THE SEPARATOR RIDES THE VALUE, NOT THE BODY. This function returns the bare
+ * sentence; the SENDER wraps it with `composeOptionalEmailLine(null, …,
+ * { trailing: "\n\n" })` for the flat token, and the HTML template puts the same
+ * bare sentence in its own `<p>`. So the default body carries
+ * `{{checkoutChoreNote}}{{outstandingAdditionalNote}}` with no newlines of its
+ * own around the token — the `{{adminNoteLine}}` / `{{promoSummary}}`
+ * convention. Newlines in the BODY would be emitted for every club whether or
+ * not it runs chores, which would change the shape of the reminder that
+ * chore-free clubs (the default) receive, for a sentence they never get. As
+ * written, a chores-OFF send is byte-identical to the pre-#2621 message and a
+ * chores-ON send gets a paragraph of its own in both the flat body and the HTML.
  *
  * The wording is the owner's, verbatim, and may not be paraphrased here.
  */

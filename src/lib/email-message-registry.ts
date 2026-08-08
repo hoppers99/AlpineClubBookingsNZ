@@ -1192,8 +1192,10 @@ export function sampleValue(token: string): string {
   // CHORES-ENABLED wording, not the empty one: an admin previewing this body
   // needs to see the sentence they are laying out around, and guard 4 already
   // proves the body reads correctly when the club has no chore roster and the
-  // sender supplies "".
-  if (token === "checkoutChoreNote") return checkoutDayChoreNote(true);
+  // sender supplies "". The trailing blank line mirrors what the sender
+  // composes (the {{expectedArrivalNote}} treatment above), so the preview shows
+  // the paragraph break a real send produces rather than inventing one.
+  if (token === "checkoutChoreNote") return `${checkoutDayChoreNote(true)}\n\n`;
   // #2444: the internet-banking reference an unpaid member must quote. It fell
   // through to the literal word "paymentReference", which contradicted the
   // composed paragraph above (and previewed the admin manual-invoice alert's
