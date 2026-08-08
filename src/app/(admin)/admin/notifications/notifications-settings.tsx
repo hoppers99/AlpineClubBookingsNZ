@@ -80,6 +80,16 @@ export function AdminNotificationSettings({
   }
 
   function handleCancel() {
+    /*
+      Cancel is an explicit discard, so it puts every card back to the last
+      baseline this panel holds — including a card whose save outcome was never
+      read (#2668), whose baseline may be older than what the server now holds.
+      That is deliberate: the operator asked to throw their edits away, and the
+      alternative (keeping an unverified card dirty through a Cancel) would give
+      Cancel two meanings. What is on screen afterwards is only ever a claim
+      about what the club's records held when the page loaded; reloading the
+      page is what settles it, which is what the unverified message says.
+    */
     setAdmins(savedAdmins.map((a) => ({ ...a, preferences: { ...a.preferences } })));
     setEditing(false);
   }
@@ -212,6 +222,15 @@ export function AdminNotificationSettings({
           : admin;
       });
       setAdmins(updatedAdmins);
+      /*
+        The baseline half of the same rule, and the half that fails silently if
+        it is dropped: re-baselining an unverified card would make it CLEAN, the
+        next Save would find no changes and return at the guard above without
+        sending anything, and the panel would leave edit mode as though the
+        guess had been confirmed. Pinned behaviourally in
+        `notification-recipient-availability.test.tsx` — after an unread
+        outcome, pressing Save again must send a second PUT.
+      */
       setSavedAdmins(
         updatedAdmins.map((a) => {
           const result = outcomeFor(a.id);
@@ -243,6 +262,12 @@ export function AdminNotificationSettings({
       // when EVERY failure in this batch is one the server itself reported. One
       // unverified card in the set and the summary reports the saves it can
       // vouch for and leaves the rest to their own sentences.
+      //
+      // The COUNT carries the same claim in numeric form: "Saved 1 of 2" says
+      // the other one was not, which is exactly what an unread outcome does not
+      // know. With an unverified card in the batch the number is reported as
+      // what it actually is — the saves that came back confirmed — and the
+      // sentences that follow say what is unknown about the rest.
       const allRefused = failures.every((failure) => !failure.unverified);
       const savedCount = changes.length - failures.length;
       toast.error(
@@ -250,7 +275,7 @@ export function AdminNotificationSettings({
           ? detail
           : allRefused
             ? `Saved ${savedCount} of ${changes.length} admins. Not saved — ${detail}`
-            : `Saved ${savedCount} of ${changes.length} admins. ${detail}`
+            : `Confirmed saved for ${savedCount} of ${changes.length} admins. ${detail}`
       );
     } finally {
       setSaving(false);

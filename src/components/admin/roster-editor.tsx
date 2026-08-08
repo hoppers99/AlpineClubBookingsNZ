@@ -82,6 +82,18 @@ const PERMISSION_COPY =
 const NETWORK_COPY =
   "Roster not saved because the service could not be reached. Your draft is still here; try Save again."
 /**
+ * A refusal the server ANSWERED but gave no reason for — a 4xx whose body
+ * carries no `error` field.
+ *
+ * "Not saved" is honest here: the route refuses before it writes. What was not
+ * honest was the fallback this replaced. `NETWORK_COPY` was used for it, so a
+ * reason-less 400 or 404 told the operator the service could not be reached
+ * when it had just answered — the wrong reason attached to a real refusal,
+ * which sends them to check their connection instead of their draft.
+ */
+const REFUSED_COPY =
+  "Roster not saved. The server refused the save and did not say why. Your draft is still here; reload the roster to see what it holds, then try again."
+/**
  * #2668 — what the BROWSER may say when it never read an answer.
  *
  * `NETWORK_COPY` used to cover this too, so a save whose request landed and
@@ -268,7 +280,7 @@ export function RosterEditor({
           ? PERMISSION_COPY
           : response.status >= 500
             ? NETWORK_COPY
-            : (typeof errorBody.error === "string" ? errorBody.error : NETWORK_COPY)
+            : (typeof errorBody.error === "string" ? errorBody.error : REFUSED_COPY)
         if (typeof details.rowKey === "string") {
           const rowKey = details.rowKey
           setRowErrors({ [rowKey]: message })

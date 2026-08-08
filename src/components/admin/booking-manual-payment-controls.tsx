@@ -96,6 +96,18 @@ export function BookingManualPaymentControls({
   const [dialog, setDialog] = useState<null | "paid" | "unpaid">(null);
   const [note, setNote] = useState("");
   const [submitting, setSubmitting] = useState(false);
+  /**
+   * #2668 review SF-5: the sentence for an outcome that was never read, held on
+   * screen rather than thrown as a toast.
+   *
+   * A toast is the wrong carrier for this one message. The dialog stays open on
+   * a failure and the confirm button re-arms in `finally`, so the operator's
+   * likeliest next act — a second press — happens while the toast is still
+   * fading in, and this is the surface where a second press costs the most. The
+   * notice sits inside the dialog, above the buttons it disarms, until they act
+   * on it. The server's own refusals keep their toast: those say what happened.
+   */
+  const [unverified, setUnverified] = useState<string | null>(null);
   /*
     #2264: the "e.g. …" specimens used to sit in each note box as a placeholder.
     Grey example text INSIDE a control reads as a value the form already holds,
@@ -142,7 +154,18 @@ export function BookingManualPaymentControls({
   function openDialog(direction: "paid" | "unpaid") {
     setNote("");
     setAdditionalCovered(null);
+    setUnverified(null);
     setDialog(direction);
+  }
+
+  /**
+   * Closing the dialog also clears the notice — it belongs to the attempt that
+   * produced it, and a stale one over a fresh dialog would read as an outcome
+   * of the press that has not happened yet.
+   */
+  function closeDialog() {
+    setDialog(null);
+    setUnverified(null);
   }
 
   /**
@@ -166,6 +189,7 @@ export function BookingManualPaymentControls({
 
   async function submit(direction: "paid" | "unpaid", notifyMember?: boolean) {
     setSubmitting(true);
+    setUnverified(null);
     try {
       const response = await fetch(`/api/admin/bookings/${bookingId}/mark-paid`, {
         method: "POST",
@@ -216,8 +240,16 @@ export function BookingManualPaymentControls({
         case the cash payment IS on the booking — and an admin told nothing
         happened records it a second time. Say what is actually known and send
         them at the booking, which is where the truth is.
+
+        Review SF-5: on this surface the message is also DELIVERED differently
+        from a refusal. It is held in the dialog and the recording buttons stay
+        disarmed behind it, because the operator's next press is the act the
+        message exists to prevent and a toast is gone before it is read. The
+        server does refuse a second manual settlement on an already-settled
+        booking, so no money moves either way — but "check first" is the
+        instruction, and the screen now behaves like it means it.
       */
-      toast.error(
+      setUnverified(
         unverifiedWriteMessage(
           "this payment was recorded",
           "Reload the booking and check before recording it again.",
@@ -227,6 +259,27 @@ export function BookingManualPaymentControls({
       setSubmitting(false);
     }
   }
+
+  /*
+    #2668 SF-5. Permanently mounted so the live region is registered in the
+    accessibility tree before it has anything to say — a region injected
+    already-populated is silently dropped by some screen-reader/browser
+    pairings. `role="alert"` rather than `role="status"`: this one interrupts,
+    because the press it exists to stop is the operator's very next move. Same
+    shape as the reviewed bed-allocation removal dialog's region.
+  */
+  const unverifiedNotice = (
+    <div role="alert" aria-live="assertive" className="min-h-0">
+      {unverified ? (
+        <p
+          className="rounded-md border border-warning-6 bg-warning-3 px-3 py-2 text-sm text-warning-11"
+          data-testid="manual-payment-unverified-notice"
+        >
+          {unverified}
+        </p>
+      ) : null}
+    </div>
+  );
 
   return (
     <div
@@ -291,7 +344,7 @@ export function BookingManualPaymentControls({
       <Dialog
         open={dialog !== null}
         onOpenChange={(open) => {
-          if (!open) setDialog(null);
+          if (!open) closeDialog();
         }}
       >
         <DialogContent>
@@ -436,26 +489,36 @@ export function BookingManualPaymentControls({
                   recorded in the audit log.
                 </p>
               )}
+              {unverifiedNotice}
               <DialogFooter className="gap-2 sm:gap-2">
+                {/*
+                  After an unread outcome "Cancel" would itself be a claim —
+                  there may be nothing left to cancel — so the way out is named
+                  for what it does.
+                */}
                 <Button
                   variant="ghost"
-                  onClick={() => setDialog(null)}
+                  onClick={closeDialog}
                   disabled={submitting}
                 >
-                  Cancel
+                  {unverified ? "Close and check" : "Cancel"}
                 </Button>
                 {!noEmails ? (
                   <>
                     <Button
                       variant="outline"
                       onClick={() => submit("paid", false)}
-                      disabled={submitting || !additionalAnswered}
+                      disabled={
+                        submitting || !additionalAnswered || unverified !== null
+                      }
                     >
                       Record without emailing
                     </Button>
                     <Button
                       onClick={() => submit("paid", true)}
-                      disabled={submitting || !additionalAnswered}
+                      disabled={
+                        submitting || !additionalAnswered || unverified !== null
+                      }
                     >
                       Record and email member
                     </Button>
@@ -463,7 +526,9 @@ export function BookingManualPaymentControls({
                 ) : (
                   <Button
                     onClick={confirmSilenced}
-                    disabled={submitting || !additionalAnswered}
+                    disabled={
+                      submitting || !additionalAnswered || unverified !== null
+                    }
                   >
                     Record payment
                   </Button>
@@ -503,15 +568,19 @@ export function BookingManualPaymentControls({
                   e.g. recorded against the wrong booking
                 </FieldHint>
               </div>
+              {unverifiedNotice}
               <DialogFooter className="gap-2 sm:gap-2">
                 <Button
                   variant="ghost"
-                  onClick={() => setDialog(null)}
+                  onClick={closeDialog}
                   disabled={submitting}
                 >
-                  Cancel
+                  {unverified ? "Close and check" : "Cancel"}
                 </Button>
-                <Button onClick={() => submit("unpaid")} disabled={submitting}>
+                <Button
+                  onClick={() => submit("unpaid")}
+                  disabled={submitting || unverified !== null}
+                >
                   Reverse payment
                 </Button>
               </DialogFooter>

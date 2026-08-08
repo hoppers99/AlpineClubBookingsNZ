@@ -10,17 +10,29 @@
   removed", and the restore-built-in-boards action said "Nothing was changed".
 
   On a phone at a lodge, or on patchy lodge wifi, that is an ordinary thing to
-  happen — and about half the time the message was simply wrong. It sent a member
-  back to redo a change the club's records already held, and it told an officer
-  who had just recorded a cash payment that nothing had been recorded, which
-  invites recording the same cash twice.
+  happen, and there is no way to tell the two cases apart from the phone's side.
+  It sent a member back to redo a change the club's records already held, and it
+  told an officer who had just recorded a cash payment that nothing had been
+  recorded — so the natural next step was to record it again. The system does
+  refuse that second attempt, so the money was never recorded twice; what the
+  officer was left with was the wrong idea of whether the club had been paid.
 
   All six now say what is actually known — "we could not verify whether X was
   saved" — and tell you where to look: reload the page, or the booking, or the
   board, and check before trying again. Where the system itself gives an answer,
   nothing has changed: "your beds have been allocated by the lodge and can no
   longer be changed here" and every other refusal still reads exactly as it did,
-  because there the system is the one that knows.
+  because there the system is the one that knows. One refusal reads better: a
+  roster save the server turned down without saying why used to be reported as
+  the service being unreachable, which sent you to check your connection instead
+  of your draft.
+
+  On the two places where money is involved — recording a cash payment, and
+  closing a refund to be paid back by hand — the message now stays on the
+  confirmation box instead of appearing briefly and fading. The button that
+  records it is switched off while the message is up, and the way out reads
+  **Close and check**, because the one thing worth doing next is looking at the
+  booking before pressing anything again.
 
   The roster editor had a sharper version of the same problem: if the save
   succeeded but the reply came back in an unexpected shape, it announced "Roster

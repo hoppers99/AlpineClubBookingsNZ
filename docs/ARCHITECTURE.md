@@ -715,22 +715,54 @@ so we could not verify whether …"* plus a second sentence routing the person a
 the server's own value rather than at the screen in front of them. Six surfaces
 were converted with it in #2668 — the requested-room and roster editors, the
 manual cash-payment control, the manual-refund queue, the reviewed
-bed-allocation removal dialog, and the built-in-board restore — and the waitlist
-card now reads its copy from the same place.
+bed-allocation removal dialog, and the built-in-board restore. Every other
+surface that speaks this sentence reads it from the same builder rather than
+typing it out: the waitlist offer card, the waitlist force-confirm action, the
+draft-confirm button, and the display wizard's board bind. Nine in all, and
+membership is pinned, because "one wording" that four files happen to agree on
+is a coincidence waiting to be broken by the first re-wording.
 
-Two behaviours follow from the copy rather than merely accompanying it. An
+Three behaviours follow from the copy rather than merely accompanying it. An
 unread outcome must **not revert a control** to a value the server may no longer
 hold (that is screen-versus-row drift reintroduced on the path with the least
 information), and it must not be **re-baselined** as though it were confirmed:
 the admin notification panel keeps such a card exactly as the operator left it
 and leaves Save live, while a card the server actually refused still rolls back.
+Re-baselining is the half that fails silently — a re-baselined card is clean, so
+the next Save sends nothing and the panel leaves edit mode as though the guess
+were confirmed — so it is pinned behaviourally: after an unread outcome, pressing
+Save again must send a second request. And on the **two money surfaces** (the
+manual cash-payment control and the manual-refund queue) the sentence is *held*
+in the open dialog with the confirming button disarmed behind it, rather than
+thrown as a transient toast: the operator's likeliest next act is a second press
+on a still-armed button, which is the act the message exists to prevent. The
+server refuses the duplicate in both cases, so the ledger is safe either way; the
+delivery is about the operator doing the right thing rather than about the ledger.
 
 Enforced on the current tree by
 `src/lib/__tests__/unverified-write-copy-contract.test.ts`, which walks `src/`,
-finds every `catch` and every falsy-guard on a `fetch` result in a client
-component, and fails if any of them asserts the stored record did not move. One
-allowlist entry exists, with its reason: the display setup wizard's claim is
-about a GET that precedes its own PUT, so no write was attempted.
+bounds every `catch` body and every falsy guard on a name bound to a `fetch`
+result in a `"use client"` file, resolves module-scope constants (the house style
+for this copy — two of the converted surfaces hold their sentence in one), and
+fails if any of those branches asserts the stored record did not move. A guard
+must be on the binding (`if (!res)`) or through an optional chain
+(`if (!res?.ok)`) to count: `if (!res.ok)` means a response is in hand, so the
+server answered, and its refusals keep their confident wording.
+
+It is a **floor, not a proof**, and the gaps are known and deliberate rather than
+undiscovered: a claim rendered from error state in JSX rather than written in the
+branch, a `fetch` behind an imported helper module, a message assembled at run
+time, and browser code in a file carrying no `"use client"` marker of its own
+(`src/lib/admin-member-xero-actions.ts` is one; its copy is honest today, and the
+walk is not what keeps it so) all pass. That is why every converted surface has a
+behavioural test as well — see the "Client honesty" row of
+`docs/END_TO_END_TEST_MATRIX.md`.
+
+Allowlist entries are scoped to **one branch, not a file**. The single entry is
+the display setup wizard's module-settings GET, whose "nothing was changed" is a
+fact about the client's own control flow because the function returns before its
+PUT is built; the three write fetches in that same file — device create, board
+bind, pairing arm — are walked like anything else.
 
 ## Module Boundaries
 

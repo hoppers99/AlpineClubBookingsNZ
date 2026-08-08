@@ -303,12 +303,106 @@ describe("Recipients grid availability (#2548)", () => {
 
       const message = String(vi.mocked(toast.error).mock.calls[0]?.[0]);
       expect(message).toContain("Bob Admin");
-      expect(message).toContain("Saved 1 of 2 admins");
+      expect(message).toContain("Confirmed saved for 1 of 2 admins");
       expect(message).toContain(
         "we could not verify whether these notification preferences were saved",
       );
       // The claim about the stored row that this batch is not entitled to make.
       expect(message).not.toContain("Not saved");
+
+      /*
+        The OTHER half of the same fix, and the half that fails silently.
+
+        Leaving the card's ticks on screen is only half the promise: its BASELINE
+        (`savedAdmins`) must be left alone too. Re-baselining it from the guess
+        makes the card clean, so the next Save computes no changes at all and
+        returns without sending anything — the operator presses Save, the panel
+        quietly leaves edit mode, and an unconfirmed guess has become the club's
+        record. Nothing on screen says so.
+
+        So the pin is behavioural, not visual: press Save again and a second PUT
+        must go out for the card whose answer was never read.
+      */
+      fireEvent.click(screen.getByRole("button", { name: /Save Changes/i }));
+      await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(3));
+      const retried = JSON.parse(
+        String(fetchMock.mock.calls[2]?.[1]?.body),
+      ) as { memberId: string; preferences: Record<string, boolean> };
+      expect(retried.memberId).toBe("admin-b");
+      expect(retried.preferences).toEqual({ adminNewBooking: false });
+    });
+
+    /**
+     * #2668. A batch can hold BOTH kinds of failure at once, and they are not
+     * the same outcome: the card the server refused rolls back to what the
+     * server last confirmed, the card whose answer was never read keeps the
+     * operator's ticks, and one unverified card in the set is enough for the
+     * summary to stop saying "Not saved" about any of them.
+     */
+    it("rolls back only the refused card when a batch holds both failures", async () => {
+      const fetchMock = vi.fn(async (_url: string, init?: RequestInit) => {
+        const body = JSON.parse(String(init?.body)) as { memberId: string };
+        if (body.memberId === "admin-b") {
+          return {
+            ok: false,
+            status: 400,
+            json: async () => ({ error: "Stale page: reload and try again." }),
+          } as unknown as Response;
+        }
+        if (body.memberId === "admin-c") throw new TypeError("Failed to fetch");
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            memberId: body.memberId,
+            preferences: {
+              ...resolveEffectiveAdminNotificationPreferences(fullAdmin, null),
+              adminNewBooking: false,
+            },
+          }),
+        } as unknown as Response;
+      });
+      vi.stubGlobal("fetch", fetchMock);
+
+      const { container } = render(
+        <AdminNotificationSettings
+          initialAdmins={[
+            fullAdminCard("admin-a", "Ada Admin"),
+            fullAdminCard("admin-b", "Bob Admin"),
+            fullAdminCard("admin-c", "Cy Admin"),
+          ]}
+        />,
+      );
+
+      fireEvent.click(screen.getByRole("button", { name: /^Edit$/i }));
+      for (const id of ["admin-a", "admin-b", "admin-c"]) {
+        fireEvent.click(checkbox(container, id, "adminNewBooking"));
+      }
+      fireEvent.click(screen.getByRole("button", { name: /Save Changes/i }));
+
+      await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(3));
+
+      await waitFor(() =>
+        expect(
+          checkbox(container, "admin-a", "adminNewBooking"),
+        ).not.toBeChecked(),
+      );
+      // Refused: back to the server's last confirmed value.
+      expect(checkbox(container, "admin-b", "adminNewBooking")).toBeChecked();
+      // Never answered: the operator's untick stays.
+      expect(
+        checkbox(container, "admin-c", "adminNewBooking"),
+      ).not.toBeChecked();
+
+      const message = String(vi.mocked(toast.error).mock.calls[0]?.[0]);
+      expect(message).toContain("Bob Admin: Stale page");
+      expect(message).toContain(
+        "we could not verify whether these notification preferences were saved",
+      );
+      // One unread outcome in the batch and the summary may not call ANY of it
+      // "Not saved" — the refused card's own sentence still says what happened.
+      expect(message).not.toContain("Not saved");
+      expect(message).toContain("Confirmed saved for 1 of 3 admins");
     });
   });
 

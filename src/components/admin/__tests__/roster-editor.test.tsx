@@ -246,6 +246,31 @@ describe("RosterEditor staged whole-roster editing", () => {
   })
 
   /**
+   * #2668 review. A 4xx with no `error` field IS a refusal — the route rejects
+   * before it writes — so "Roster not saved" stands. What it is not is a
+   * connection problem, and the fallback used to say it was, sending the
+   * operator to check their network after the server had just answered them.
+   */
+  it("names a reason-less refusal as a refusal, not as an unreachable service", async () => {
+    const network = "Roster not saved because the service could not be reached. Your draft is still here; try Save again."
+    const fetchMock = vi.fn<typeof fetch>(async () => new Response("{}", { status: 400 }))
+    vi.stubGlobal("fetch", fetchMock)
+    renderEditor()
+    fireEvent.click(screen.getByRole("button", { name: "Edit roster" }))
+    const first = screen.getAllByRole("combobox")[0] as HTMLSelectElement
+    fireEvent.change(first, { target: { value: "younger" } })
+    fireEvent.click(screen.getByRole("button", { name: "Save roster" }))
+
+    const refused = await screen.findByText(/The server refused the save and did not say why/)
+    await expectRecoveryAlertToHoldFocus(refused)
+    expect(screen.queryByText(network)).toBeNull()
+    // Not the unverified copy either: the server answered, so the roster row
+    // genuinely did not move.
+    expect(screen.queryByText(UNVERIFIED)).toBeNull()
+    expect(first.value).toBe("younger")
+  })
+
+  /**
    * #2668. The server answered `200 OK`. Whatever it did, it has already done —
    * and it called the save a success. Telling the operator "Roster not saved"
    * here contradicted the only party that knew, which is why this case no

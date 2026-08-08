@@ -43,7 +43,13 @@ afterEach(() => {
  * nothing changed closes the task again, or worse, hands the money over twice.
  */
 describe("ManualRefundTaskQueue — an outcome the browser never read (#2668)", () => {
-  it("says what it could not verify rather than that nothing changed", async () => {
+  const UNVERIFIED = unverifiedWriteMessage(
+    "this refund task was closed",
+    "Reload the page and check the queue before trying again.",
+  );
+
+  /** Loads the queue, opens "Mark paid back", and loses the POST's answer. */
+  async function failTheClose() {
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       // The queue's own initial load, which must succeed for there to be a task
       // to close in the first place.
@@ -65,15 +71,68 @@ describe("ManualRefundTaskQueue — an outcome the browser never read (#2668)", 
     fireEvent.click(
       await screen.findByRole("button", { name: "Record as paid back" }),
     );
+    return fetchMock;
+  }
 
-    await waitFor(() => expect(toast.error).toHaveBeenCalled());
-    const message = String(vi.mocked(toast.error).mock.calls.at(-1)?.[0]);
-    expect(message).toBe(
-      unverifiedWriteMessage(
-        "this refund task was closed",
-        "Reload the page and check the queue before trying again.",
-      ),
+  it("says what it could not verify rather than that nothing changed", async () => {
+    await failTheClose();
+
+    const notice = await screen.findByTestId("manual-refund-unverified-notice");
+    expect(notice.textContent).toBe(UNVERIFIED);
+    expect(notice.textContent).not.toContain("Nothing was changed");
+  });
+
+  /**
+   * Review SF-5. A toast fades; the operator's next press does not wait for it,
+   * and on this queue that press is either a second refund allocation attempt or
+   * the dismissal of a task that may already be closed. So the sentence is HELD
+   * in the open dialog with the action disarmed behind it, and the way out is
+   * named "Close" — after an unread outcome there may be nothing to cancel.
+   */
+  it("holds the message in the dialog and disarms the close action behind it", async () => {
+    const fetchMock = await failTheClose();
+
+    await screen.findByTestId("manual-refund-unverified-notice");
+
+    expect(toast.error).not.toHaveBeenCalled();
+    expect(screen.getByRole("alert").textContent).toBe(UNVERIFIED);
+    // The dialog is still open, over the amount it was about.
+    expect(
+      screen.getByText(/Record \$120\.00 as paid back to Ada Lovelace\?/),
+    ).toBeInTheDocument();
+
+    const confirm = screen.getByRole("button", { name: "Record as paid back" });
+    expect(confirm).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Close and check" })).toBeInTheDocument();
+
+    // The POST count is the load plus exactly one attempt: a reflexive second
+    // press cannot put a second refund allocation on the ledger from here.
+    const posts = fetchMock.mock.calls.filter(
+      ([, init]) => (init as RequestInit | undefined)?.method === "POST",
     );
-    expect(message).not.toContain("Nothing was changed");
+    expect(posts).toHaveLength(1);
+    fireEvent.click(confirm);
+    await Promise.resolve();
+    expect(
+      fetchMock.mock.calls.filter(
+        ([, init]) => (init as RequestInit | undefined)?.method === "POST",
+      ),
+    ).toHaveLength(1);
+  });
+
+  it("clears the notice when the dialog is closed and another task is opened", async () => {
+    await failTheClose();
+    await screen.findByTestId("manual-refund-unverified-notice");
+
+    fireEvent.click(screen.getByRole("button", { name: "Close and check" }));
+    await waitFor(() =>
+      expect(
+        screen.queryByTestId("manual-refund-unverified-notice"),
+      ).toBeNull(),
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Dismiss" }));
+    // A stale notice over the next task would read as that task's outcome.
+    expect(screen.queryByTestId("manual-refund-unverified-notice")).toBeNull();
   });
 });

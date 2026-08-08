@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
 
+import "@testing-library/jest-dom/vitest";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
@@ -321,43 +322,103 @@ describe("BookingManualPaymentControls — an outcome the browser never read (#2
     vi.mocked(toast.error).mockClear();
   });
 
-  it("reports what it could not verify instead of claiming nothing was recorded", async () => {
-    vi.stubGlobal(
-      "fetch",
-      vi.fn(async () => {
-        throw new TypeError("Failed to fetch");
-      })
-    );
-    openMarkPaidDialog(
-      {
-        amountOwingCents: 12000,
-        storedCreditElectionCents: null,
-        outstandingAdditionalCents: 0,
-        canMarkPaid: true,
-        markPaidBlockedReason: null,
-        manuallyMarkedPaidAt: null,
-        manuallyMarkedPaidByName: null,
-        manualPaymentNote: null,
-        canReverse: false,
-        reverseBlockedReason: null,
-      }
-    );
+  const UNVERIFIED = unverifiedWriteMessage(
+    "this payment was recorded",
+    "Reload the booking and check before recording it again."
+  );
 
+  function openAndFailTheRecording() {
+    const fetchMock = vi.fn(async () => {
+      throw new TypeError("Failed to fetch");
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    openMarkPaidDialog({
+      amountOwingCents: 12000,
+      storedCreditElectionCents: null,
+      outstandingAdditionalCents: 0,
+      canMarkPaid: true,
+      markPaidBlockedReason: null,
+      manuallyMarkedPaidAt: null,
+      manuallyMarkedPaidByName: null,
+      manualPaymentNote: null,
+      canReverse: false,
+      reverseBlockedReason: null,
+    });
     fireEvent.click(
       screen.getByRole("button", { name: "Record and email member" })
     );
-    await waitFor(() => expect(toast.error).toHaveBeenCalled());
+    return fetchMock;
+  }
 
-    const message = vi.mocked(toast.error).mock.calls.at(-1)?.[0];
-    expect(message).toBe(
-      unverifiedWriteMessage(
-        "this payment was recorded",
-        "Reload the booking and check before recording it again."
-      )
+  it("reports what it could not verify instead of claiming nothing was recorded", async () => {
+    openAndFailTheRecording();
+
+    const notice = await screen.findByTestId(
+      "manual-payment-unverified-notice"
     );
+    expect(notice.textContent).toBe(UNVERIFIED);
     // The specific claim about the ledger the client cannot make, and the
     // instruction that keeps a duplicate cash entry from being the next step.
-    expect(message).not.toContain("Nothing was recorded");
-    expect(message).toContain("check before recording it again");
+    expect(notice.textContent).not.toContain("Nothing was recorded");
+    expect(notice.textContent).toContain("check before recording it again");
+  });
+
+  /**
+   * Review SF-5. The message being right is only half of it: on this surface the
+   * operator's likeliest next act is a second press on the same button, and a
+   * toast that has already faded cannot stop it. So the sentence is HELD in the
+   * open dialog, the recording buttons are disarmed behind it, and the way out
+   * is named "Close" rather than "Cancel" — there may be nothing left to cancel.
+   */
+  it("holds the message in the dialog and disarms the recording buttons behind it", async () => {
+    const fetchMock = openAndFailTheRecording();
+
+    await screen.findByTestId("manual-payment-unverified-notice");
+
+    // Not a toast: the region is `role="alert"` and stays on screen.
+    expect(toast.error).not.toHaveBeenCalled();
+    expect(screen.getByRole("alert").textContent).toBe(UNVERIFIED);
+    // The dialog did not close out from under the message.
+    expect(
+      screen.getByText(/Record \$120\.00 as paid for Ada Lovelace\?/)
+    ).toBeTruthy();
+
+    const record = screen.getByRole("button", {
+      name: "Record and email member",
+    });
+    expect(record).toBeDisabled();
+    expect(
+      screen.getByRole("button", { name: "Record without emailing" })
+    ).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Close and check" })).toBeTruthy();
+
+    // A reflexive second press sends nothing — the one attempt is all that was
+    // made, so the booking cannot collect a duplicate cash record from here.
+    fireEvent.click(record);
+    await Promise.resolve();
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("clears the notice when the dialog is reopened", async () => {
+    openAndFailTheRecording();
+    await screen.findByTestId("manual-payment-unverified-notice");
+
+    fireEvent.click(screen.getByRole("button", { name: "Close and check" }));
+    await waitFor(() =>
+      expect(
+        screen.queryByTestId("manual-payment-unverified-notice")
+      ).toBeNull()
+    );
+
+    fireEvent.click(
+      screen.getByRole("button", { name: /Record manual payment/i })
+    );
+    // A stale notice over a fresh dialog would read as this press's outcome.
+    expect(
+      screen.queryByTestId("manual-payment-unverified-notice")
+    ).toBeNull();
+    expect(
+      screen.getByRole("button", { name: "Record and email member" })
+    ).toBeEnabled();
   });
 });
