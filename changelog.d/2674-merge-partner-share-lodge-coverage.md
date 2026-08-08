@@ -10,9 +10,14 @@
   finished booking's dates forward, or extending an in-progress booking's
   check-out, could pull one of the two people onto a future night at a lodge the
   merge had already written off as irrelevant — and the merge held nothing there
-  to stop a bed being handed out. In the worst case the merge could finish with
-  two people sharing a double bed at that lodge with no partnership behind it.
-  We reproduced that end to end against a real database before fixing it.
+  to stop a bed being handed out. Against a real database we confirmed that half:
+  an officer's date change on a finished booking slipped past a running merge
+  with nothing making it wait. The further step — someone then being hand-placed
+  into a double bed beside a partner the merge is about to take away — we could
+  not make happen, because that hand placement queues behind a club-wide bed key
+  the date change is already holding. So this is a gap in what the merge covers
+  rather than a fault anyone has been able to trigger, and we have closed it as
+  the former.
 
   The merge now asks a question that cannot go stale: *which lodges has either
   person ever had a booking at?* Dates no longer come into it, so a date change

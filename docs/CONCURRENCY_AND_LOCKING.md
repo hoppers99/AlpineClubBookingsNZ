@@ -1633,12 +1633,40 @@ Both then call `reconcileBedAllocationsForBookingWithLodgeLockHeld`, which
 auto-allocates on the newly-future nights. So a booking at lodge Y holding only
 PAST guest-nights when the set was derived was invisible to both reads and could
 acquire future ones mid-merge, in a lodge merge held no key for. `Booking.lodgeId`
-being immutable never helped: the lodge does not move, the **nights** do. That
-escape was demonstrated end to end against real PostgreSQL — an admin date shift
-of a fully-past booking, followed by a hand-placed second occupant, committing
-inside merge's own read-to-commit window and surviving the merge as an unbacked
-shared double — and the same case is now the regression test for the fix
-(`member-merge-shared-double-races.realdb.test.ts`).
+being immutable never helped: the lodge does not move, the **nights** do.
+
+**What was actually demonstrated against real PostgreSQL, and what was not.** Be
+exact here, because an earlier draft of this section claimed more than the
+evidence supports. What reproduces, reliably, on the pre-#2672 derivation: with a
+merge running and holding its derived prefix, a real `adminShiftBookingDates`
+translates a fully-past booking at lodge Y onto a future night **with zero
+waiters on lodge Y's capacity key**, and commits. The merge simply never held
+that key. That is the defect, and it is now the regression test
+(`member-merge-shared-double-races.realdb.test.ts`, "takes the capacity key of a
+lodge known only from a guest row whose stay is entirely in the past" and "fences
+the admin date shift that used to walk a past stay into an unlocked lodge").
+
+What did **not** reproduce is the *last* step of the four-step interleaving —
+the hand-placed second occupant committing inside merge's own read-to-commit
+window, leaving a surviving unbacked shared double. It was driven end to end,
+with the merge parked deterministically inside the sweep (a row lock on the
+allocation the sweep is about to delete, so the candidate read has provably
+already happened), and the hand placement never got in. `manuallyAllocateBed`
+takes `pg_advisory_xact_lock(1)` as its **first** statement, and in this
+interleaving that key is already held — by the date writer's own partner-share
+reconcile, which took the global key and is itself queued on a lodge key the
+merge holds. Postgres' `log_lock_waits` names all three: the merge waiting on the
+sweep's row, the date writer's reconcile holding `[0,1]` and waiting 114s on the
+merge's lodge key, and the hand placement waiting 114s on `[0,1]` behind it. A
+three-party convoy, no cycle, and the escape is fenced by the global key it does
+not itself take.
+
+So the honest statement of the pre-fix residual is **narrower than #2641's own
+residual note claimed**: the lodge-coverage gap is real and reproducible, but the
+step that would turn it into an unbacked shared double is transitively fenced by
+`lock(1)` for as long as a guest-date writer is the thing that opened the gap.
+The fix below is justified by the coverage gap being real and by refusing rather
+than by a demonstrated surviving share, and nothing here claims otherwise.
 
 Filtering on the guest ROW instead of the guest's DATES removes the class: no
 date write can make a guest row stop being a guest row at that lodge. **What it
@@ -1768,6 +1796,14 @@ asserting:
   caller's own budget. It is still not a cycle, for the same single reason it
   never was: merge waits for the global key nowhere, so the wait graph
   terminates.
+- **That convoy was observed, not just reasoned about (#2672).** Driving the
+  interleaving under `log_lock_waits` produced exactly the predicted three-party
+  chain and no cycle: the merge holding its lodge keys; the guest-date writer's
+  partner-share reconcile holding `lock(1)` and waiting ~114s on one of merge's
+  lodge keys; and an admin hand placement waiting ~114s on `lock(1)` behind it.
+  Every waiter is bounded by its own transaction budget and expires with `P2028`
+  having written nothing. Merge is a **sink** in that graph — it waits on no key
+  either of them holds — which is the property the whole design rests on.
 
 `member-merge-execute.test.ts` pins that `executeMemberMerge` issues no
 `pg_advisory_xact_lock(1)` at all, and
@@ -1776,10 +1812,11 @@ real PostgreSQL by running a whole merge while another session holds `lock(1)`,
 plus the converse — that the merge still queues on the affected lodge key, on the
 key of a lodge known only from a future guest-night, and (#2672) on the key of a
 lodge known only from a guest row whose stay is entirely in the **past**. The
-same suite drives the escape that filter used to allow, end to end and in both
-directions: a real `adminShiftBookingDates` moving a fully-past booking forward
-mid-merge, followed by a real hand-placed second occupant, is fenced by the lodge
-key now and produced a surviving unbacked shared double before.
+same suite drives the writer that filter used to let through: a real
+`adminShiftBookingDates` moving a fully-past booking forward mid-merge now queues
+on that lodge's capacity key, where before it committed with no waiter at all.
+It does **not** claim the full four-step escape ever completed — see "What was
+actually demonstrated against real PostgreSQL, and what was not" above.
 
 The sweep itself is `sweepUnbackedFutureSharedDoublesWithLocksHeld`, run as merge
 step 3b — after `applyMoves` (the guest rows now name the master) and after step
