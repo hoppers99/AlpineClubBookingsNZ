@@ -309,6 +309,29 @@ allowlist against **every registered statement in both directions**, with
 `alias -> relation` resolved per statement, and pins the census (twenty-five
 relations, 237 columns) so this page and the pack pages cannot drift from it again.
 
+**And the same property is now proved a second time against PostgreSQL itself.**
+The real-database suite
+(`src/lib/__tests__/ai-diagnostics-select-only-role.realdb.test.ts`, run by the
+Migration drift check) asks the server, column by column, whether the provisioned
+role may read it, and requires that answer to match *both* the allowlist *and* the
+statements: **this credential may read a column if and only if a registered
+statement reads that column.** The forward half is what a missing grant breaks at
+runtime with `42501`; the reverse half is the one that catches reach nobody argued
+for. Both suites share one `alias -> relation` resolver
+(`src/lib/__tests__/helpers/diagnostics-statement-reads.ts`) so the declaration-side
+and server-side halves cannot drift into answering different questions.
+
+One consequence is worth stating because it replaced a weaker check. The suite used
+to require that every granted relation withhold at least one column — a *proxy* for
+"granted by column, not wholesale". That proxy is wrong for a relation that is
+simply small: `FamilyGroupMember` has four columns and the family-relationships
+statement reads all four, so there is nothing left to withhold and narrowing the
+grant would break the tool. Relations in that state are now **enumerated** in the
+suite with the argument for each, and the enumeration is asserted as an exact set —
+so a *second* relation becoming fully granted fails by name, while the
+if-and-only-if check above independently proves that every column of a fully granted
+relation is one a shipped statement actually reads.
+
 The operator CLI prints the declared grants, columns and all, on every run and on
 `--dry-run`.
 

@@ -50,4 +50,6 @@
   booking tables readable. The check that should have found them had been written but
   never wired up to anything, so it could not fail; it is wired up now, and it
   reconciles what the credential may read against what the queries actually read in
-  both directions.
+  both directions. PostgreSQL is asked the same question independently, on a real
+  database, against the role the shipped provisioning creates: this credential may
+  read a column **if and only if** one of the product's own queries reads it.

@@ -24,6 +24,9 @@
  * deleting its manifest entry in the same diff, and adding one means adding an
  * entry a reviewer will see.
  */
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
+
 import { describe, expect, it } from "vitest";
 
 import {
@@ -118,6 +121,79 @@ describe("audit writer census (#2581)", { timeout: 180_000 }, () => {
         "the site, or, if it genuinely belongs to the #2581 backlog, add it to " +
         "UNCATEGORISED_AUDIT_WRITERS with the category you propose for it.",
     ).toEqual(Object.keys(UNCATEGORISED_AUDIT_WRITERS).sort());
+  });
+
+  it("keeps every DOCUMENT that quotes the census quoting the measured figure", () => {
+    /*
+      THE PROSE COPIES, PINNED — because the census's own numbers have already
+      merged at two different values at once.
+
+      The write-site total and the uncategorised count are quoted as present-tense
+      fact in four documents, and until now no test read any of them. That is not a
+      theoretical gap: #2676 re-measured the census, corrected the figures in
+      `tool-pack-support.md` and `guides/audit-log.md`, and merged cleanly while
+      `tool-pack-booking-membership.md` and `tool-pack-finance.md` went on saying
+      426 write sites and 82 uncategorised. A reader has no way to tell which page
+      is the stale one, and each of these sentences is a claim about what a
+      diagnostics tool can SEE — an operator who believes the wrong one is told a
+      correlation gap exists that does not, or misses one that does.
+
+      The fragments are generated from the manifest and compared against the
+      document with whitespace collapsed, so markdown re-wrapping is not a failure
+      and a changed number is. Historical statements ("82 were still uncategorised
+      when #2581 opened") are deliberately NOT pinned: they are past tense and stay
+      true, and pinning them would force a rewrite of the narrative every time the
+      present-tense figure moved.
+    */
+    const spell = (count: number) => (count === 0 ? "zero" : String(count));
+    const totals = AUDIT_CENSUS_TOTALS;
+    const claims: readonly { file: string; fragments: readonly string[] }[] = [
+      {
+        file: "docs/ai-diagnostics/tool-pack-booking-membership.md",
+        fragments: [
+          `**${totals.writeSites} row-producing production audit write sites**`,
+          `**${spell(totals.uncategorised)}** of them record no category`,
+        ],
+      },
+      {
+        file: "docs/ai-diagnostics/tool-pack-finance.md",
+        fragments: [
+          `the census now reads **${totals.writeSites} write sites and ${spell(totals.uncategorised)} uncategorised**`,
+        ],
+      },
+      {
+        file: "docs/ai-diagnostics/tool-pack-support.md",
+        fragments: [
+          `The census reads **${totals.writeSites} write sites and ${spell(totals.uncategorised)} uncategorised**`,
+        ],
+      },
+      {
+        file: "docs/guides/audit-log.md",
+        fragments: [`all\n${totals.writeSites} now record a category`],
+      },
+    ];
+
+    const collapse = (text: string) => text.replace(/\s+/g, " ").trim();
+    const missing: string[] = [];
+    for (const claim of claims) {
+      // Test helper: a fixed, test-controlled repo path under process.cwd().
+      const contents = collapse(
+        readFileSync(resolve(process.cwd(), claim.file), "utf8"),
+      );
+      for (const fragment of claim.fragments) {
+        if (!contents.includes(collapse(fragment))) {
+          missing.push(`${claim.file}: ${collapse(fragment)}`);
+        }
+      }
+    }
+
+    expect(
+      missing.sort(),
+      "A document quotes the audit-writer census at a figure the census no " +
+        "longer measures. Re-run `npm run audit:census` and correct EVERY page " +
+        "listed here in the same commit — the numbers below are what the tree " +
+        "actually reports.",
+    ).toEqual([]);
   });
 
   it("keeps every classification #2581 applied exactly where it was reviewed", () => {

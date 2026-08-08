@@ -45,6 +45,7 @@
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 
 import { realElapsedMs } from "./helpers/clock";
+import { collectStatementColumnReads } from "./helpers/diagnostics-statement-reads";
 
 const RUN = process.env.RUN_CONCURRENCY_RACE_TESTS === "1";
 const RACE_DB_URL = process.env.CONCURRENCY_RACE_DATABASE_URL ?? "";
@@ -523,28 +524,74 @@ describe("diagnostics privilege proof DB safety guard (#2374)", () => {
       // holds. The tools project none of them, and as this role PostgreSQL itself
       // refuses to return them.
       /**
-       * The relations the allowlist names IN FULL, enumerated rather than allowed
-       * for by relaxing a comparison.
+       * WHAT THIS ASSERTION IS REALLY FOR, restated because it was nearly weakened
+       * into a formality.
        *
-       * `FamilyGroupMember` has exactly four columns — `id`, `familyGroupId`,
-       * `memberId`, `joinedAt` — and AID-6B grants all four, because there is no
-       * fifth: the relation notably has NO `role` column, so "who is in this family
-       * group and since when" is the whole of what it can say. Granting it in full
-       * is the relation being that small, not a widening.
+       * It used to require that EVERY column-granted relation withhold at least one
+       * column. That was never the property; it was a PROXY for "the grant is
+       * column-scoped rather than whole-table", chosen because a relation with
+       * something withheld gives the 42501 loop below something to prove. The proxy
+       * breaks on a relation that is simply small: `FamilyGroupMember` has exactly
+       * four columns — `id`, `familyGroupId`, `memberId`, `joinedAt` — and
+       * `member_family_state` reads all four (the join key, the co-member key, the
+       * evidence reference and the joined-at instant). There is no fifth to withhold;
+       * notably the relation has NO `role` column, one having been physically dropped
+       * by `20260803030000_contract_drop_family_group_member_role`. Narrowing that
+       * grant would break the statement, so the proxy — not the grant — is what was
+       * wrong, and it is REPLACED here rather than relaxed.
        *
-       * But it does mean the withheld-column proof below has nothing to prove for
-       * it, and `SELECT *` legitimately SUCCEEDS. Both are asserted explicitly for
-       * this relation instead of being skipped, so "the census expected zero
-       * withheld columns" and "the census silently found zero" stay different
-       * outcomes — which is the same failure mode as the hard-coded column list
-       * this loop already replaced once.
+       * WHAT REPLACES IT IS THE PROPERTY ITSELF, IN BOTH DIRECTIONS, asserted against
+       * PostgreSQL's own answer and the SHIPPED statements:
+       *
+       *   this role may read a column  IF AND ONLY IF  some registered
+       *   `select_only_sql` statement reads that column.
+       *
+       * The forward half ("every column a statement reads is granted") is the one a
+       * missing grant breaks at runtime with 42501. The reverse half ("every granted
+       * column is read by some statement") is the one that was PROMISED by AID-6C's
+       * docblock and never implemented — `finance-pack.test.ts` built the set and
+       * never asserted on it — behind which the seven granted-but-unread columns
+       * named in `provision-role.ts` survived two releases, two of which stopped
+       * being harmless the moment AID-6B granted `Booking`.
+       * `provision-role.test.ts` asserts both against the DECLARATION
+       * on every pull request; this asserts both against the SERVER, so neither half
+       * of the claim rests on the other file having run. Both use one shared resolver
+       * (`./helpers/diagnostics-statement-reads`) so they cannot drift into answering
+       * different questions.
+       *
+       * That makes "granted in full" self-justifying rather than exempt: a relation
+       * can only reach zero withheld columns if a statement reads every one of them.
+       * The enumeration below is still required, and is asserted as an exact SET
+       * EQUALITY after the loop — so a SECOND relation becoming fully granted fails
+       * by name and has to have its argument written down, and an enumerated relation
+       * that grows a withheld column fails too. "The census expected zero withheld
+       * columns" and "the census silently found zero" stay different outcomes, which
+       * is the failure mode the hard-coded column list this loop already replaced
+       * once had, and the one an exemption list would quietly re-introduce.
        */
-      const GRANTED_IN_FULL = new Set(["FamilyGroupMember"]);
+      const GRANTED_IN_FULL = ["FamilyGroupMember"];
+
+      /**
+       * Every `Relation.column` any registered SELECT-only statement reads. Taken
+       * from the REGISTRY loaded in `beforeAll`, not from a fixture: the credential
+       * is one credential, so the union across every pack is the only set a
+       * per-column grant can be justified against.
+       */
+      const statementReads = collectStatementColumnReads(
+        DIAGNOSTICS_TOOLS.flatMap((entry) =>
+          entry.source === "select_only_sql" ? [entry.sql] : [],
+        ),
+      );
+      // Non-vacuous: an empty or tiny read set would make the reverse direction
+      // below pass by finding nothing rather than by the grant being justified.
+      expect(statementReads.size).toBeGreaterThan(100);
+
+      /** Relations PostgreSQL reports as having nothing withheld, as measured. */
+      const measuredGrantedInFull: string[] = [];
 
       for (const grant of SELECT_GRANTS) {
         if (grant.columns === undefined) continue;
         const declared = new Set<string>(grant.columns);
-        const grantedInFull = GRANTED_IN_FULL.has(grant.relation);
 
         const columns = await admin.query(
           `SELECT a.attname::text AS name,
@@ -556,39 +603,47 @@ describe("diagnostics privilege proof DB safety guard (#2374)", () => {
             WHERE n.nspname = $2 AND c.relname = $3`,
           [TEST_ROLE, grant.schema, grant.relation],
         );
-        // A real relation, and one the allowlist does not name in full — so the
-        // per-column loop below has at least one WITHHELD column to prove the
-        // boundary on rather than passing vacuously.
+        // The relation is real and the query found its attributes. Without this a
+        // renamed relation returns zero rows and every per-column assertion below
+        // iterates nothing — the exact shape of vacuous pass this test exists to
+        // refuse.
+        expect(
+          columns.rows.length,
+          `${grant.relation} has no attributes — is it still in the schema?`,
+        ).toBeGreaterThan(0);
+
+        // Every DECLARED column exists on the relation. A typo in the allowlist
+        // grants nothing, so the tool that needs it fails with 42703 in front of an
+        // operator; here it is a named failure instead.
+        const attributes = new Set(
+          columns.rows.map((row) => String(row.name)),
+        );
+        expect(
+          [...declared].filter((column) => !attributes.has(column)).sort(),
+          `${grant.relation} declares columns that do not exist on it`,
+        ).toEqual([]);
+
+        // THE BOTH-DIRECTIONS PROPERTY, column by column, as the SERVER answers it.
         //
-        // ONE RELATION IS LEGITIMATELY GRANTED IN FULL, and it is named here rather
-        // than allowed for by relaxing the comparison. `FamilyGroupMember` has
-        // exactly four columns — `id`, `familyGroupId`, `memberId`, `joinedAt` — and
-        // AID-6B grants all four, because there is no fifth: notably the relation
-        // has NO `role` column, so "who is in this family group and since when" is
-        // the whole of what it can say. Granting it in full is therefore not a
-        // widening, it is the relation being that small; but it does mean the loop
-        // below proves nothing for it, and a census that quietly tolerated that
-        // would also tolerate the next relation whose withheld columns were dropped
-        // one at a time.
-        //
-        // So: relations granted in full are enumerated, and every other relation
-        // must still have something withheld.
-        if (grantedInFull) {
-          expect(
-            columns.rows.length,
-            `${grant.relation} is declared granted-in-full and is not`,
-          ).toBe(declared.size);
-        } else {
-          expect(
-            columns.rows.length,
-            `${grant.relation} is granted in full — add it to GRANTED_IN_FULL with the argument, or withhold a column`,
-          ).toBeGreaterThan(declared.size);
-        }
+        // Two independent equalities per column, not one: PostgreSQL agrees with the
+        // ALLOWLIST (so provisioning did what it declared), and PostgreSQL agrees
+        // with the STATEMENTS (so the allowlist has no reach nobody argued for).
+        // Asserting only the first would make this a test of `buildAiDiagnosticsRoleSql`
+        // against its own input; asserting only the second would not catch a grant
+        // that drifted from the declaration it is reviewed as.
         for (const row of columns.rows) {
+          const name = String(row.name);
+          const pair = `${grant.relation}.${name}`;
           expect(
             row.readable,
-            `${grant.relation}.${row.name} readable=${row.readable}`,
-          ).toBe(declared.has(String(row.name)));
+            `${pair} readable=${row.readable}, declared=${declared.has(name)}`,
+          ).toBe(declared.has(name));
+          expect(
+            row.readable,
+            row.readable
+              ? `${pair} is readable by the diagnostics role and NO registered statement reads it — reach nobody argued for`
+              : `${pair} is read by a registered statement and the role may not read it — that statement fails with 42501 in production`,
+          ).toBe(statementReads.has(pair));
         }
 
         // Table-level SELECT is ABSENT, which is exactly why the runtime self-check
@@ -626,16 +681,8 @@ describe("diagnostics privilege proof DB safety guard (#2374)", () => {
         const withheldColumns = columns.rows
           .map((row) => String(row.name))
           .filter((name) => !declared.has(name));
-        if (grantedInFull) {
-          expect(
-            withheldColumns,
-            `${grant.relation} is declared granted-in-full and withholds a column`,
-          ).toEqual([]);
-        } else {
-          expect(
-            withheldColumns.length,
-            `${grant.relation} declares every column — add it to GRANTED_IN_FULL with the argument, or withhold a column`,
-          ).toBeGreaterThan(0);
+        if (withheldColumns.length === 0) {
+          measuredGrantedInFull.push(grant.relation);
         }
         for (const withheld of withheldColumns) {
           expect(
@@ -647,18 +694,43 @@ describe("diagnostics privilege proof DB safety guard (#2374)", () => {
         }
         // `SELECT *` is refused too — it expands to every column, including the
         // withheld ones, so a tool that lost its projection could not fall back to
-        // it. On a relation granted IN FULL there is nothing for the expansion to
-        // reach, so it succeeds; asserted as the positive it is, because an
-        // unconditional 42501 here would be asserting a boundary that does not
-        // exist and would fail for the right reason at the wrong relation.
+        // it. On a relation with nothing withheld there is nothing for the expansion
+        // to reach, so it succeeds; the polarity is taken from what the server just
+        // reported rather than from the enumeration, because an unconditional 42501
+        // here would be asserting a boundary that does not exist and would fail for
+        // the right reason at the wrong relation. Which relations may legitimately be
+        // in that state is what the set equality after the loop decides.
         expect(
           await sqlStateAsRole(
             `SELECT * FROM ${grant.schema}."${grant.relation}" LIMIT 1`,
           ),
           `${grant.relation}: SELECT *`,
-        ).toBe(grantedInFull ? null : "42501");
+        ).toBe(withheldColumns.length === 0 ? null : "42501");
       }
-    });
+
+      // THE ENUMERATION, AS AN EXACT SET EQUALITY — the tripwire that stops
+      // "granted in full" becoming a quiet exemption one relation at a time.
+      //
+      // A relation newly granted in full fails here by name, and the only way to
+      // make it pass is to add it above with the argument for why the relation has
+      // no column left to withhold. An enumerated relation that GAINS a withheld
+      // column fails too, which is the right signal: a new column appeared on a
+      // relation this credential holds entirely, and somebody has to decide whether
+      // it should be granted. Neither direction can be satisfied by loosening a
+      // comparison, and the per-column equality above has already proved that every
+      // column of a fully granted relation is one a shipped statement reads.
+      expect(
+        measuredGrantedInFull.sort(),
+        "a relation is granted in FULL: add it to GRANTED_IN_FULL with the argument for why it has no column left to withhold, or withhold one",
+      ).toEqual([...GRANTED_IN_FULL].sort());
+      // The timeout is EXPLICIT because this test's cost is proportional to the
+      // schema, not to the code: it opens a fresh connection as the restricted role
+      // for every withheld column of every granted relation — hundreds of round
+      // trips, and one more every time a migration adds a column to a relation the
+      // allowlist names. Vitest's 5s default was already marginal before AID-6B
+      // added twelve relations, which makes it a flake waiting for a slow runner
+      // rather than a bound anybody chose.
+    }, 120_000);
 
     it("re-provisioning REVOKES a hand-widened column grant", async () => {
       // The narrowing direction. PostgreSQL's REVOKE reference states that revoking a
@@ -1043,7 +1115,10 @@ describe("diagnostics privilege proof DB safety guard (#2374)", () => {
           ).toBe(INSUFFICIENT_PRIVILEGE);
         }
       }
-    });
+      // Explicit for the same reason as the derived loop above: fifteen relations
+      // times a connection per named column is ~80 round trips, which the 5s
+      // default only just covers on a fast runner.
+    }, 120_000);
 
     it("cannot read a table created after provisioning (no default privileges)", async () => {
       const code = await sqlStateAsRole(

@@ -336,6 +336,27 @@ Twenty-five relations, 237 granted columns, and every omitted column is a
 decision. The operator CLI prints the declared grants, columns and all, on every
 run and on `--dry-run`.
 
+**Both directions of that claim are tested, and one of them against PostgreSQL
+itself.** `provision-role.test.ts` reconciles the allowlist against every
+registered statement on each pull request — every column a statement reads must be
+granted, and **every granted column must be read by some statement**, with
+`alias -> relation` resolved per statement. The real-database suite then asks the
+server the same question column by column, against the role the shipped
+provisioning actually creates: **this credential may read a column if and only if a
+registered statement reads it.** Both use one shared resolver
+(`src/lib/__tests__/helpers/diagnostics-statement-reads.ts`), so the declaration
+side and the server side cannot drift into answering different questions.
+
+`FamilyGroupMember` is the one relation granted **in full**, and that case is
+enumerated in the real-database suite with its argument rather than allowed for by
+loosening a comparison. The relation has four columns and the family-relationships
+statement reads all four, so there is nothing left to withhold; narrowing the grant
+would break the tool. The enumeration is asserted as an exact set, so a **second**
+relation reaching that state fails by name and has to have its own argument
+written down — and the if-and-only-if check independently proves the argument is
+true, because a relation can only reach zero withheld columns if a shipped
+statement reads every one of them.
+
 ### The presence-boolean finding
 
 This is the finding from this pack that every future pack should inherit.
@@ -556,10 +577,16 @@ model reads as "there is no problem" — is the failure mode the whole
   nothing happened.** A row recorded with no category at all is matched by no
   diagnostics tool anywhere. Re-measured by RUNNING the census on the merged tree
   (`npm run audit:census`, pinned by `src/lib/__tests__/audit-writer-census.test.ts`),
-  it counts **426 row-producing production audit write sites, of which 82 pass no
-  category**. This page said 425 before the merge with `main` that brought #2661
-  in; the figure is re-measured on every merge rather than carried forward,
-  because a stale count here is a claim about what a diagnostic can see. On top of that, `booking_record_audit_history` reads the entity type
+  it counts **427 row-producing production audit write sites**, and **zero** of
+  them record no category. That zero is new and it is narrower than it sounds. This page said
+  425, then 426-of-which-82, and the merge with `main` that brought #2676 in
+  classified all 82 remaining sites at the source — so **no new audit row is born
+  uncategorised**, but **every row written before that runtime deployed still
+  carries no category** and is still invisible to every entry in this pack. Back-
+  filling those rows is a separate, independently reviewable data change that has
+  not run, so the caveat stands for historical events and only for those. The
+  figure is re-measured on every merge rather than carried forward, because a stale
+  count here is a claim about what a diagnostic can see. On top of that, `booking_record_audit_history` reads the entity type
   `Booking` only — an event on the booking's payment, its bed allocation or its
   change request is filed under that record's own type and id — and both
   audit entries read only their own domain's categories. The honest answer to an

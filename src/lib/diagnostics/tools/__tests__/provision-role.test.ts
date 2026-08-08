@@ -8,6 +8,8 @@
  */
 import { describe, expect, it } from "vitest";
 
+import { statementColumnReads } from "@/lib/__tests__/helpers/diagnostics-statement-reads";
+
 import {
   buildAiDiagnosticsRoleSql,
   DEFAULT_AI_DIAGNOSTICS_ROLE_NAME,
@@ -509,60 +511,15 @@ describe("the SELECT-only grant allowlist matches what the statements read", () 
   );
 
   /**
-   * The aliases a statement binds to a BASE relation.
-   *
-   * Per statement, and that is load-bearing rather than tidy: `r` is `LodgeRoom`
-   * in the bed-allocation statement, `BookingChangeRequest` in the exception
-   * statement and `PaymentRefund` in the refund statement; `m` is `Member` in the
-   * member search and `ManualRefundTask` in the refund state; `l` is `Lodge` in
-   * two statements and `WebhookLog` in a third. One global alias map would
-   * mis-attribute a column to a relation that never carried it — in both
-   * directions at once.
+   * The resolver is SHARED with the real-PostgreSQL proof
+   * (`src/lib/__tests__/helpers/diagnostics-statement-reads.ts`) rather than
+   * declared here, because that suite now asserts the same property from the
+   * server's side — a column is readable by the provisioned role if and only if a
+   * registered statement reads it. Two copies of this parser would let the
+   * declaration-side and server-side halves of that property drift apart while
+   * both stayed green.
    */
-  function baseRelationAliases(sql: string): Map<string, string> {
-    const aliases = new Map<string, string>();
-    for (const match of sql.matchAll(
-      /\b(?:FROM|JOIN)\s+public\."([A-Za-z]+)"(?:\s+(?:AS\s+)?([A-Za-z_][A-Za-z_0-9]*))?/g,
-    )) {
-      const relation = match[1];
-      // An un-aliased `FROM public."X"` is referenced as `X."col"`, so bind the
-      // relation name to itself rather than skipping the clause.
-      aliases.set(match[2] ?? relation, relation);
-    }
-    return aliases;
-  }
-
-  /**
-   * Every `alias."column"` reference a statement makes, as `Relation.column`.
-   *
-   * `[A-Za-z_][A-Za-z_0-9]*` on BOTH sides, not `[A-Za-z]+`: `Booking."checkIn"`
-   * and `BookingGuestNight."stayDate"` are fine either way, but a column carrying
-   * a digit or an underscore would be invisible to the narrower pattern, and
-   * invisible in the forward direction means an ungranted column that fails with
-   * 42501 on a real database and passes every mock.
-   */
-  function columnReads(sql: string): {
-    reads: Set<string>;
-    unattributed: Set<string>;
-  } {
-    const aliases = baseRelationAliases(sql);
-    const reads = new Set<string>();
-    const unattributed = new Set<string>();
-    for (const match of sql.matchAll(
-      /\b([A-Za-z_][A-Za-z_0-9]*)\."([A-Za-z_][A-Za-z_0-9]*)"/g,
-    )) {
-      const [, alias, column] = match;
-      // `public."Relation"` matches the same shape; it is a relation, not a read.
-      if (alias === "public") continue;
-      const relation = aliases.get(alias);
-      if (relation === undefined) {
-        unattributed.add(`${alias}."${column}"`);
-        continue;
-      }
-      reads.add(`${relation}.${column}`);
-    }
-    return { reads, unattributed };
-  }
+  const columnReads = statementColumnReads;
 
   /**
    * The ONLY references allowed to resolve to no base relation: output labels of a
