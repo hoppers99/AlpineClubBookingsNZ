@@ -494,7 +494,7 @@ function lodgeLabelOrNull(value: unknown): string | null {
     // Stripping control characters is the point: nothing here is source code, so
     // the strip costs no fidelity, and a control character in a durable audit hash
     // input is worth removing at the source.
-    .replace(/[ -]/g, " ")
+    .replace(/[\u0000-\u001f\u007f]/g, " ")
     .replace(/["<>;=]/g, "")
     .replace(/\s+/g, " ")
     .trim();
