@@ -1202,17 +1202,25 @@ describe("member-merge shared-double race DB safety guard (#2595)", () => {
     // race.
     //
     // `assertRoomNightAgeMixConsistent` (`bed-allocation.ts`; test-only — it
-    // runs under `NODE_ENV === "test"`) throws whenever the planner is seeded
-    // with an EXISTING shared DOUBLE. Seeding calls `trackRoomNightOccupant`
-    // once per `occupiedBedNights` row, but `setOccupant` keys `occupantByKey`
-    // by `occupiedKey(bedId, stayDate)`, so a double's second row overwrites its
-    // primary and the assertion's recomputation loses one adult. Two of THIS
-    // branch's own race cases already fail on it at `acd0a435a`
-    // (`bed-allocation-removal-races.realdb.test.ts`, the `AUTO_FIRST` and
-    // `LIFECYCLE_FIRST` orders), so it predates this work and is out of scope
-    // here. Widening either writer's planner window onto the contested night —
-    // directly, or via the dashboard's continuity-context expansion for a
-    // booking whose envelope starts earlier — reproduces it every time.
+    // runs under `NODE_ENV === "test"`) used to throw whenever the planner was
+    // seeded with an EXISTING shared DOUBLE, because its recomputation read
+    // `occupantByKey` — keyed `bedId:stayDate`, so a double's two occupants
+    // collapse to one entry — while `roomNightAgeMix` counts both. That is
+    // FIXED (the check now recomputes from `occupantsByBooking`), and the two
+    // race arms this note used to call out as unowned pre-existing failures
+    // (`bed-allocation-removal-races.realdb.test.ts`, `AUTO_FIRST` and
+    // `LIFECYCLE_FIRST`) are green. They were this branch's own tests and were
+    // failing hosted CI's required "Migration drift check"; "predates this work
+    // and is out of scope" was true about the mechanism and wrong about who
+    // owned the red check.
+    //
+    // The neighbouring-night targeting below is KEPT anyway, and now on its own
+    // merits rather than as a work-around. Pointing the racing writer at the
+    // contested night would put both writers on the same bed-night, which tests
+    // bed-level contention; what these two cases exist to prove is that the
+    // merge reconciliation joins the per-LODGE tier. Keeping the writers on
+    // adjacent nights isolates the lodge key as the only thing that can
+    // serialise them, which is the stronger form of the claim.
     //
     // What these cases do still prove, which is what this issue needs: the
     // merge reconciliation JOINS the per-lodge tier, so PostgreSQL grants it and
