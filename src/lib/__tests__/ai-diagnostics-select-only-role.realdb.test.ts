@@ -522,9 +522,29 @@ describe("diagnostics privilege proof DB safety guard (#2374)", () => {
       // instruments and — on `Member` — every piece of member PII this platform
       // holds. The tools project none of them, and as this role PostgreSQL itself
       // refuses to return them.
+      /**
+       * The relations the allowlist names IN FULL, enumerated rather than allowed
+       * for by relaxing a comparison.
+       *
+       * `FamilyGroupMember` has exactly four columns — `id`, `familyGroupId`,
+       * `memberId`, `joinedAt` — and AID-6B grants all four, because there is no
+       * fifth: the relation notably has NO `role` column, so "who is in this family
+       * group and since when" is the whole of what it can say. Granting it in full
+       * is the relation being that small, not a widening.
+       *
+       * But it does mean the withheld-column proof below has nothing to prove for
+       * it, and `SELECT *` legitimately SUCCEEDS. Both are asserted explicitly for
+       * this relation instead of being skipped, so "the census expected zero
+       * withheld columns" and "the census silently found zero" stay different
+       * outcomes — which is the same failure mode as the hard-coded column list
+       * this loop already replaced once.
+       */
+      const GRANTED_IN_FULL = new Set(["FamilyGroupMember"]);
+
       for (const grant of SELECT_GRANTS) {
         if (grant.columns === undefined) continue;
         const declared = new Set<string>(grant.columns);
+        const grantedInFull = GRANTED_IN_FULL.has(grant.relation);
 
         const columns = await admin.query(
           `SELECT a.attname::text AS name,
@@ -553,8 +573,7 @@ describe("diagnostics privilege proof DB safety guard (#2374)", () => {
         //
         // So: relations granted in full are enumerated, and every other relation
         // must still have something withheld.
-        const GRANTED_IN_FULL = new Set(["FamilyGroupMember"]);
-        if (GRANTED_IN_FULL.has(grant.relation)) {
+        if (grantedInFull) {
           expect(
             columns.rows.length,
             `${grant.relation} is declared granted-in-full and is not`,
@@ -607,10 +626,17 @@ describe("diagnostics privilege proof DB safety guard (#2374)", () => {
         const withheldColumns = columns.rows
           .map((row) => String(row.name))
           .filter((name) => !declared.has(name));
-        expect(
-          withheldColumns.length,
-          `${grant.relation} declares every column, so this proves nothing`,
-        ).toBeGreaterThan(0);
+        if (grantedInFull) {
+          expect(
+            withheldColumns,
+            `${grant.relation} is declared granted-in-full and withholds a column`,
+          ).toEqual([]);
+        } else {
+          expect(
+            withheldColumns.length,
+            `${grant.relation} declares every column — add it to GRANTED_IN_FULL with the argument, or withhold a column`,
+          ).toBeGreaterThan(0);
+        }
         for (const withheld of withheldColumns) {
           expect(
             await sqlStateAsRole(
@@ -620,12 +646,17 @@ describe("diagnostics privilege proof DB safety guard (#2374)", () => {
           ).toBe("42501");
         }
         // `SELECT *` is refused too — it expands to every column, including the
-        // withheld ones, so a tool that lost its projection could not fall back to it.
+        // withheld ones, so a tool that lost its projection could not fall back to
+        // it. On a relation granted IN FULL there is nothing for the expansion to
+        // reach, so it succeeds; asserted as the positive it is, because an
+        // unconditional 42501 here would be asserting a boundary that does not
+        // exist and would fail for the right reason at the wrong relation.
         expect(
           await sqlStateAsRole(
             `SELECT * FROM ${grant.schema}."${grant.relation}" LIMIT 1`,
           ),
-        ).toBe("42501");
+          `${grant.relation}: SELECT *`,
+        ).toBe(grantedInFull ? null : "42501");
       }
     });
 
