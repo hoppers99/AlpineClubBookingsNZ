@@ -162,10 +162,15 @@ sites, of which 82 pass no category**: 69 through `logAudit`, 11 through
 the tree held 421; it then said 421 while #2621's two arrival-time writers and
 #2595's two reviewed-move writers took the tree to 425. The manifest pin and the
 census agree at 425 — `AUDIT_CENSUS_TOTALS.writeSites`, and `npm run audit:census`
-prints `row-producing sites: 425` — so it is only this prose that drifted, because
-it is the one copy of the number no test reads. Re-measured by RUNNING the census
-on this commit, never by adding branch deltas up: that is exactly how the pin
-itself caught two silent merges at 420 and again at 423.) Some are money-adjacent: subscription-billing settings, retry,
+prints `row-producing sites: 425` — so it is only the PROSE copies that drifted,
+and there are **three** of them, not one: this page, the
+`support-correlation.ts` docblock, and `docs/guides/audit-log.md`. All three said
+a different wrong number, because none of them is read by a test — the pin is, and
+the pin was right. They were corrected together in #2677 by RUNNING the census on
+that commit, never by adding branch deltas up: that is exactly how the pin itself
+caught two silent merges, at 420 and again at 423. The uncategorised figures below
+never drifted, so they are carried forward unchanged and re-verified rather than
+rewritten.) Some are money-adjacent: subscription-billing settings, retry,
 mark/unmark family, reconcile; the subscription charge confirm; all three member-credit
 adjustment steps; fee configuration; the saved-card charge results. Others are ordinary
 but relevant: booking-policy, season and promotional-code edits; Xero settings and

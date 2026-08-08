@@ -118,8 +118,12 @@ more people, not fewer.
 
 ### Some entries have no category at all
 
-`Category` is optional, and **82 of the platform's 419 places that record an
-audit entry do not set one** — measured on every build, not estimated. Among
+`Category` is optional, and **82 of the platform's 425 places that record an
+audit entry do not set one** — measured on every build, not estimated. (The
+total said 419 and had drifted by six; the *measured* part was always true of
+`AUDIT_CENSUS_TOTALS`, which a test reads, rather than of this sentence, which
+none does. Re-measured by running `npm run audit:census` in #2677, along with the
+two other prose copies that had each drifted to a different wrong number.) Among
 them: subscription billing, member credit adjustments, fee configuration,
 booking-policy, season and promotional-code edits, Xero settings and retries,
 lodge display configuration, family-group and dependent changes, membership

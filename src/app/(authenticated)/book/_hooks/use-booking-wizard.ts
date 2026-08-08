@@ -637,27 +637,47 @@ export function useBookingWizard() {
   // Two things together made a cross-lodge list reachable and, worse, sticky:
   //
   //  - `lodgeId` starts null, and the no-`lodgeId` mode of `/api/bookings/rooms`
-  //    lists active rooms across EVERY lodge the member may book. So the first
-  //    request of every mount was the cross-lodge one, before `LodgeSelect` had
-  //    normalised a selection.
+  //    lists every ACTIVE ROOM the member's booking restrictions do not exclude
+  //    (`rooms/route.ts:41-66`). Note what is NOT in that filter: the lodge's own
+  //    `active` flag. An unrestricted member therefore gets rooms from every
+  //    lodge, archived ones included — so this was never merely "the lodges you
+  //    may book". The first request of every mount asked it, before `LodgeSelect`
+  //    had normalised a selection.
   //  - The effect had no cancellation guard. Whichever response landed last won,
   //    so a slow cross-lodge reply arriving after the lodge-scoped reply that
   //    superseded it left other lodges' rooms in `roomOptions` for the rest of
   //    the session — nothing refetches until the member switches lodge again.
   //
-  // The fix is to stop asking the cross-lodge question from here at all. This
-  // wizard always knows which lodge it is booking: `LodgeSelect` normalises even
-  // a single-lodge club to a concrete id on the dates step (the wizard's opening
-  // step), so a null `lodgeId` means "not resolved yet", never "any lodge". And
-  // the `cancelled` guard — the same one the subscription effect below already
-  // uses — means a superseded reply can no longer overwrite the current lodge's
-  // list. A switch between two lodges also sends the member back to the dates
-  // step with `requestedRoomId` cleared (`handleLodgeChange`), so the previous
-  // lodge's options are never on screen while the replacement is in flight.
+  // The fix is to stop asking the cross-lodge question from here at all, so a
+  // null `lodgeId` never means "any lodge". `LodgeSelect` normalises even a
+  // single-lodge club to a concrete id — its effect runs before the early return
+  // that makes it render nothing (`lodge-select.tsx:44-54`) — and it lives on the
+  // dates step, which is where this wizard opens. And the `cancelled` guard, the
+  // same one the subscription effect below already uses, means a superseded reply
+  // can no longer overwrite the current lodge's list. A switch between two lodges
+  // also sends the member back to the dates step with `requestedRoomId` cleared
+  // (`handleLodgeChange`), so the previous lodge's options are never on screen
+  // while the replacement is in flight.
   useEffect(() => {
     if (!lodgeId) {
-      // No lodge resolved yet, or a club with no bookable lodge at all. Offer
-      // nothing rather than everything.
+      // Two different states reach here, and the answer is the same for both.
+      //
+      // Usually it is "not resolved yet" — the mount window before the lodge list
+      // lands. But it can also be permanent: `/api/lodges` filters `active: true`,
+      // so an outage, or a club whose only Lodge row is inactive, yields an empty
+      // list, and `LodgeSelect` then leaves the selection null (`lodge-select.ts
+      // :45-46` calls nothing when the sole id and the current value are both
+      // null). Every other lodge-dependent read in this wizard passes `lodgeId ??
+      // undefined` and lets the server resolve its default lodge — but there is no
+      // such mode here, because the no-`lodgeId` mode is cross-lodge rather than
+      // default-lodge.
+      //
+      // So this offers nothing rather than everything, and that is a deliberate,
+      // disclosed behaviour change: before this fix the wizard answered the empty
+      // state with the cross-lodge list, which happened to be right for a
+      // one-lodge club and wrong for every other. A client that cannot know which
+      // lodge the server will stamp on the booking must not guess at an optional
+      // preference; the picker is simply absent until a lodge is known.
       setRoomRequestEnabled(false);
       setRoomOptions([]);
       return;

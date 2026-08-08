@@ -39,11 +39,16 @@
  * only when a caller supplies one — so a row with NO category exists and is common. The
  * executable census of this repository's production audit writes
  * (`scripts/audit/audit-writer-census.ts`, pinned by
- * `src/lib/__tests__/audit-writer-census.test.ts`) counts 421 write sites, of which
+ * `src/lib/__tests__/audit-writer-census.test.ts`) counts 425 write sites, of which
  * 82 pass no category: 69 `logAudit`, 11 `createAuditLog`, 2 hand-built Prisma
- * writes, and none through `createStructuredAuditLog`. (This comment said 418 and
- * the pack doc said 419; both were stale, and both are re-measured against the tree
- * rather than carried forward — the uncategorised figure is unchanged.) They include money-adjacent
+ * writes, and none through `createStructuredAuditLog`. (This comment has now been
+ * stale twice: it said 418, then 421 while #2621's two arrival-time writers and
+ * #2595's two reviewed-move writers took the tree to 425. Corrected in #2677 by
+ * RUNNING the census, alongside the two doc copies that had each drifted to a
+ * DIFFERENT wrong number — `docs/ai-diagnostics/tool-pack-support.md` and
+ * `docs/guides/audit-log.md`. All three drifted because none is read by a test,
+ * unlike `AUDIT_CENSUS_TOTALS`, which was right throughout. The uncategorised
+ * figures never drifted and are unchanged.) They include money-adjacent
  * ones — subscription-billing settings/retry/mark-family/unmark-family/reconcile, the
  * subscription charge confirm, all three member-credit adjustment steps, fee
  * configuration and the family login-holder change — plus booking-policy edits, bulk
