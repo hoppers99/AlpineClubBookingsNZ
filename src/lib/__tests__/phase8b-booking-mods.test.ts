@@ -170,7 +170,9 @@ vi.mock("@/lib/booking-batch-modification-service", () => ({
 }));
 
 import {
+  fenceHostingPolicyFindMany,
   fenceMemberFindMany,
+  hostingMemberRow,
   recordingBookingDouble,
 } from "@/lib/__tests__/support/hosting-participant-fence-double";
 import { auth } from "@/lib/auth";
@@ -218,9 +220,60 @@ afterEach(() => {
   vi.useRealTimers();
 });
 
+/**
+ * Complete a fixture's guest rows into the shape the hosting review actually
+ * loads (#2675).
+ *
+ * Beyond the name and id these fixtures already carry, `BOOKING_HOSTING_SELECT`
+ * (adult-member-hosting-review.ts) hydrates five more facts off every booking
+ * guest — `stayStart`, `stayEnd`, `nights`, `consentStatus` and the live `member`
+ * relation — and `toHostingParticipants` reads all five the moment the lodge's
+ * mode is active. No fixture in this file carried any of them, because with the
+ * tx double answering `adultMemberHostingPolicy.findMany -> []` the resolved mode
+ * was DISABLED, the reconciler took its early return, and the evaluator never
+ * ran. Two of the five do NOT degrade gracefully:
+ *
+ *  - `nights` is dereferenced as `guest.nights.length`, so `undefined` throws a
+ *    TypeError. `[]` is legitimate — it is the pre-#713 row shape — and falls
+ *    back to the guest's own `stayStart`..`stayEnd` envelope.
+ *  - `member` is tested with `member !== null && member.active === true`
+ *    (`memberIsInGoodStanding`), and `undefined !== null` is TRUE, so a MISSING
+ *    key reads `undefined.active` and throws rather than treating the guest as a
+ *    non-member.
+ *
+ * `member` is derived from `memberId` and never from the `isMember` snapshot
+ * beside it, because that is the only pairing production can emit: the relation
+ * IS the foreign key. A guest with a `memberId` therefore gets an adult member
+ * row in good standing — the shape that qualifies as a host, so a fixture whose
+ * party is member-linked raises no hosting hazard and behaves exactly as it did
+ * with the rule off — and a guest without one gets an explicit `null`.
+ *
+ * The guest's own values always win: a fixture that states its stay window or
+ * its per-night rows keeps them, and only the absent facts are filled in.
+ */
+function completeHostingGuestRows<T extends { memberId?: string | null }>(
+  guests: readonly T[],
+  checkIn: Date,
+  checkOut: Date,
+) {
+  return guests.map((guest) => ({
+    // A guest with no stay window of its own stays the whole booking, which is
+    // what every route in this file assumes when it reprices the full party.
+    stayStart: checkIn,
+    stayEnd: checkOut,
+    nights: [] as Array<{ stayDate: Date }>,
+    // `null` = no consent was ever needed, which is operationally present (D-12)
+    // and the right default for an ordinary guest row.
+    consentStatus: null as string | null,
+    ...guest,
+    member:
+      typeof guest.memberId === "string" ? hostingMemberRow(guest.memberId) : null,
+  }));
+}
+
 // Helper to make a booking object
 function makeBooking(overrides: Record<string, unknown> = {}) {
-  return {
+  const booking = {
     id: "bk1",
     memberId: "m1",
     // Booking.lodgeId is NOT NULL in the schema, so a real row always carries
@@ -245,6 +298,17 @@ function makeBooking(overrides: Record<string, unknown> = {}) {
     promoRedemption: null,
     ...overrides,
   };
+  // #2675: applied AFTER the overrides, so a scenario that supplies its own
+  // guest list is completed too — otherwise the fixtures that override `guests`
+  // (most of the interesting ones) would still crash the evaluator.
+  return {
+    ...booking,
+    guests: completeHostingGuestRows(
+      booking.guests,
+      booking.checkIn,
+      booking.checkOut,
+    ),
+  };
 }
 
 // Create a mock tx that behaves like prisma inside a transaction
@@ -267,7 +331,19 @@ function makeTx(booking: ReturnType<typeof makeBooking>) {
     lodgeSettings: { findUnique: async () => ({ capacity: 29 }) },
     // #2364: the hosting review is reconciled inside the booking write, so
     // every prisma/tx double a booking path runs against needs this client.
-    adultMemberHostingPolicy: { findMany: vi.fn().mockResolvedValue([]) },
+    // #2623 T5 / #2675: an ACTIVE mode, because the gate now standing in front
+    // of the participant fence returns early on an inactive one. `[]` resolved
+    // to DISABLED, so every booking write in this file took that early return
+    // and the #2619 fence doubles beside it exercised nothing.
+    //
+    // ADMIN_REVIEW_REQUIRED rather than the helper's ENFORCED default: under
+    // ENFORCED a hosting hazard REFUSES the booking write by throwing, which
+    // would change what these scenarios assert; under review-only the hazard is
+    // recorded and the write proceeds, and the fence is owed either way (see
+    // `hostingModeIsActive` at the gate).
+    adultMemberHostingPolicy: {
+      findMany: fenceHostingPolicyFindMany({ mode: "ADMIN_REVIEW_REQUIRED" }),
+    },
     booking: {
       findUnique: fenceBooking.findUnique,
       findMany: fenceBooking.findMany,

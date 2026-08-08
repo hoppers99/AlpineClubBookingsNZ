@@ -133,6 +133,45 @@ operational documents (which may carry door/emergency access details).
   A booking restriction governs making NEW bookings, not operating one the club
   already accepted. Any future read added under this rule inherits the same
   reasoning: match the read to the write it feeds, not to the discovery gate.
+- **The admin bed-allocation board obeys the same rule when a booking is named**
+  (#2678). `GET /api/admin/bed-allocation` still supports a genuine club-wide
+  mode — `ADMIN` access is club-wide and never lodge-filtered, so an omitted
+  `lodgeId` legitimately means "the whole club" and that is unchanged. But when
+  the request names a `bookingId`, the lodge now comes from that booking's
+  `Booking.lodgeId` server-side and **any `lodgeId` on the query string is
+  ignored**, exactly as `requested-room/options` does. This was the last
+  booking-scoped read still taking its lodge from the caller, after #2673 (the
+  requested-room picker) and #2677 (the booking wizard).
+  The path that made it worth fixing was not a hand-crafted request. Because
+  `ADMIN` is club-wide, a caller pairing booking A with lodge B learned nothing
+  they could not have asked for outright, and every cross-lodge write was
+  already refused (`assertGuestAndBedForAllocation`, and `LODGE_MISMATCH` in
+  `bed-allocation-move.ts`). The reachable problem was that
+  `AdminBookingToolsCard` deep-linked the board with `bookingId` and **no**
+  `lodgeId`, so an admin two clicks from a booking page landed on a club-wide
+  board focused on that booking, whose four bed pickers — the bucket "Select
+  bed", the allocation chip's "Move to bed", drag-and-drop onto a cell, and
+  `BedRangeAssignDialog` — all offered every lodge's beds for that booking's
+  guests. Offer-then-refuse is the same broken control #2664 is about.
+  Two details are deliberate. The booking lookup does **not** filter on status:
+  the lodge is a fact about the row whatever its status, and a cancelled
+  booking's board still has to be readable, while `focusedBooking` keeps its own
+  stricter allocatable/non-deleted filter for the window it snaps onto. And an
+  unresolvable `bookingId` changes nothing — the caller's own scope still
+  applies, because a stale deep link must not turn a valid board load into an
+  error.
+  `BookingBedAllocationPanel.lodgeId` is now `string`, not `string | null`. It
+  was safe only because its single caller passes `booking.lodgeId`, a NOT NULL
+  column; the nullable type invited a future caller to turn a booking-scoped bed
+  picker into a club-wide one with nothing to catch it.
+  **Still open:** the board can hold `lodgeId === null` without any booking being
+  named — transiently on every mount before `/api/admin/lodges` resolves, and
+  permanently if that endpoint fails, since `useLodgeOptions` then sets
+  `lodges = []` and `LodgeSelect` reports `null`. In that state the same four
+  pickers are club-wide again, and writes are **not** disabled for them (only
+  Run Auto Allocation, Reset allocations and the preferences section gate on
+  `lodgeId`). That is tracked separately because it needs a decision about what
+  a club-wide board should offer, not just where the lodge comes from.
 
 ## Club-Wide Models (No Lodge Dimension)
 

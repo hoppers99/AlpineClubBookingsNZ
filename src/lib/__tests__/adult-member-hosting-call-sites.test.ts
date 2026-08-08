@@ -957,42 +957,45 @@ describe("the participant fence stays switched ON where a suite claims it (#2623
    *
    * THIS LIST IS THE POINT. The fence doubles' own docstring names "exercised
    * their seams with the fence effectively switched off" as the state to avoid,
-   * and T5 silently put eight suites back into it — silently, because a double
-   * that is never reached looks exactly like a double that passes. An exact
-   * `toEqual` turns that into an enumerated, reviewable list: a NEW suite that
-   * wires the doubles without an active policy fails here, and fixing one of
-   * these means deleting its line.
+   * and T5 silently put eleven suites into it — silently, because a double that
+   * is never reached looks exactly like a double that passes. An exact `toEqual`
+   * turns that into an enumerated, reviewable list: a NEW suite that wires the
+   * doubles without an active policy fails here, and fixing one means deleting
+   * its line.
    *
-   * NONE of them is a one-line fix, which is why they are listed rather than
-   * corrected. Two distinct blockers, both measured:
+   * EIGHT OF THE ELEVEN HAVE NOW BEEN FIXED (#2675) and their lines deleted.
+   * They were the FIXTURE-DEPTH group: supplying an active mode does not merely
+   * re-enable the fence, it runs the hosting EVALUATOR, and their booking
+   * fixtures were not hosting-evaluable. Guest rows carried `isMember: true`
+   * with no nested `member`, and because `memberIsInGoodStanding` tests
+   * `member !== null` — which `undefined` satisfies — the seam did not degrade
+   * to "not a member", it read `undefined.active` and threw. The participant's
+   * member data comes off the booking fixture's own guest rows, never a
+   * `member.findMany` a double could intercept, so the fix was to complete each
+   * fixture: `member` (a row via `hostingMemberRow`, or an explicit `null`),
+   * `consentStatus`, `nights` and the stay window. Measured after: 78 tests that
+   * took the T5 early return now traverse the fence, and none of the eight
+   * needed an assertion changed.
    *
-   *   * FIXTURE DEPTH (the first eight, 77 tests). Supplying an active mode runs
-   *     the hosting EVALUATOR, and these suites' booking fixtures are not
-   *     hosting-evaluable: guest rows carry `isMember: true` with no `memberId`
-   *     and no nested member, so `memberIsInGoodStanding` reads
-   *     `undefined.active` and the seam throws. The participant's member data
-   *     comes off the booking fixture's own guest rows, not a `member.findMany`
-   *     a double could intercept, so restoring coverage means reshaping each
-   *     suite's booking fixtures.
-   *   * HOISTING (the last three, 0 tests). Their policy double lives inside a
-   *     `vi.mock` factory, which vitest hoists above the imports, so referencing
-   *     `fenceHostingPolicyFindMany` there is a `ReferenceError: Cannot access
-   *     '__vi_import_N__' before initialization`. Those three lose no coverage —
-   *     measured, no test in them reaches the gate — but they cannot take the
-   *     change in this shape either.
+   * THE THREE THAT REMAIN ARE BLOCKED BY HOISTING, not by fixtures, and they
+   * lose no coverage — measured, no test in them reaches the gate at all. Their
+   * policy double lives inside a `vi.mock` factory, which vitest hoists above
+   * the imports, so referencing `fenceHostingPolicyFindMany` there is a
+   * `ReferenceError: Cannot access '__vi_import_N__' before initialization`.
+   * They are recorded here permanently with that reason rather than left to look
+   * like unfinished work.
+   *
+   * A note for whoever fixes the next one: several of the eight ALSO keep a
+   * second, hoisted policy double inside their own `vi.mock("@/lib/prisma")`
+   * factory, and those were deliberately left alone. They are dead weight —
+   * every `reconcileAdultMemberHostingReviewWithSiblings` call site in `src/`
+   * passes `tx`, never the singleton — which was confirmed by making one throw
+   * and observing the suite stay green.
    */
   const FENCE_DOUBLES_WITHOUT_AN_ACTIVE_POLICY = [
-    "src/lib/__tests__/booking-guest-consent-authority.test.ts",
     "src/lib/__tests__/booking-request-quotes.test.ts",
     "src/lib/__tests__/booking-request.test.ts",
-    "src/lib/__tests__/fix-mod-payment.test.ts",
-    "src/lib/__tests__/guest-removal-minors-alert-route.test.ts",
-    "src/lib/__tests__/guests-add-notify-choice.test.ts",
-    "src/lib/__tests__/partial-stay-edit-pricing.test.ts",
-    "src/lib/__tests__/phase8b-booking-mods.test.ts",
     "src/lib/__tests__/school-booking-request.test.ts",
-    "src/lib/__tests__/waitlist-confirm-minimum-stay.test.ts",
-    "src/lib/__tests__/waitlist.test.ts",
   ];
 
   it("lists every suite whose fence doubles the mode gate now bypasses", () => {

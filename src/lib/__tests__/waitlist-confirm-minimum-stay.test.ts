@@ -28,6 +28,13 @@ const h = vi.hoisted(() => ({
   // so the requirement does not apply and every case in this file is unchanged.
   prismaBookingGuestFindMany: vi.fn(async () => []),
   resolveSubscriptionLockoutMode: vi.fn(async () => "NON_MEMBER_PRICING"),
+  // #2675: the SAME club mode, read by the SAME policy row in production —
+  // `resolveSubscriptionLockoutMode` and `peekSubscriptionLockoutMode` are two
+  // readers of `readSubscriptionLockoutPolicy`, so a double that answers one and
+  // not the other is not a narrower club, it is an impossible one. The hosting
+  // evaluator's #2543 bridge (`withSubscriptionSettlement`) reads it, which is
+  // why it only became reachable once the mode gate stopped short-circuiting.
+  peekSubscriptionLockoutMode: vi.fn(async () => "NON_MEMBER_PRICING"),
   evaluateNonMemberPricingRequirements: vi.fn(async () => null),
 }));
 
@@ -38,12 +45,65 @@ const fenceBooking = recordingBookingDouble((args) =>
   h.txBookingFindUnique(args),
 );
 
+/** The ids a batch read asked for, however it keyed them. */
+function memberIdsRequested(args: unknown): string[] {
+  const where = (args as { where?: { id?: { in?: string[] }; memberId?: { in?: string[] } } })
+    ?.where;
+  return where?.id?.in ?? where?.memberId?.in ?? [];
+}
+
 const txClient = {
   $executeRaw: vi.fn(),
-  member: { findMany: fenceMemberFindMany() },
+  /**
+   * The offer owner as the club's own records hold him (#2675).
+   *
+   * This suite declares a `NON_MEMBER_PRICING` club (see the eligibility mock),
+   * so the hosting evaluator's #2543 bridge asks whether each member participant
+   * has SETTLED their season subscription before letting them count as a host —
+   * and it asks THIS client, not the stubbed
+   * `evaluateNonMemberPricingRequirements`. Answering nothing is not a narrower
+   * fixture, it is a member the club has no row for, which
+   * `resolveMemberSubscriptionSettlement` (rightly) reads as owing one. That
+   * would strip the party of its only adult host and turn every case in this
+   * file into an unrelated hosting-review scenario.
+   *
+   * So state the truth `hostingMemberRow` already asserts on the guest row: an
+   * adult member, subscription PAID.
+   *
+   * The fence's id-only re-read is still answered by the helper (which sorts, as
+   * the fence requires); every OTHER `member.findMany` — the membership-type
+   * policy resolver's and the settlement loader's — gets these live rows.
+   */
+  member: {
+    findMany: fenceMemberFindMany([], async (args: unknown) =>
+      memberIdsRequested(args).map((id) => ({
+        id,
+        firstName: "Offer",
+        lastName: "Owner",
+        email: `${id}@test.com`,
+        role: "MEMBER",
+        ageTier: "ADULT",
+      })),
+    ),
+  },
+  memberSubscription: {
+    findMany: vi.fn(async (args: unknown) =>
+      memberIdsRequested(args).map((id) => ({ memberId: id, status: "PAID" })),
+    ),
+  },
   // #2364: the hosting review is reconciled inside the booking write, so
   // every prisma/tx double a booking path runs against needs this client.
-  adultMemberHostingPolicy: { findMany: vi.fn().mockResolvedValue([]) },
+  // #2623 T5 / #2675: an ACTIVE mode, so the gate in front of the participant
+  // fence lets the claim reach it. `[]` resolved to DISABLED and took the gate's
+  // early return, so the three cases here that actually claim the offer never
+  // touched the fence the doubles above model. ADMIN_REVIEW_REQUIRED rather than
+  // the helper's ENFORCED default: ENFORCED turns a hosting violation into a
+  // refusal (a different `result`, and a different `code`, from the ones these
+  // cases pin) and drags `settleSameOwnerDependentCoverage` into coverage-queue
+  // writes this client models nothing of; review-only just records a snapshot.
+  adultMemberHostingPolicy: {
+    findMany: fenceHostingPolicyFindMany({ mode: "ADMIN_REVIEW_REQUIRED" }),
+  },
   booking: {
     findUnique: fenceBooking.findUnique,
     findMany: fenceBooking.findMany,
@@ -65,6 +125,7 @@ vi.mock("@/lib/booking-policies", () => ({
 }));
 vi.mock("@/lib/member-subscription-eligibility", () => ({
   resolveSubscriptionLockoutMode: h.resolveSubscriptionLockoutMode,
+  peekSubscriptionLockoutMode: h.peekSubscriptionLockoutMode,
 }));
 // #2543: the evaluator is stubbed, but the two helpers that shape the REFUSAL are
 // the real ones — the point of the case below is that this path answers with the
@@ -111,7 +172,9 @@ vi.mock("@/lib/logger", () => ({
 }));
 
 import {
+  fenceHostingPolicyFindMany,
   fenceMemberFindMany,
+  hostingMemberRow,
   recordingBookingDouble,
 } from "@/lib/__tests__/support/hosting-participant-fence-double";
 import { confirmWaitlistOffer } from "@/lib/waitlist";
@@ -160,7 +223,33 @@ function offer(overrides: Record<string, unknown> = {}) {
     waitlistOfferExpiresAt: new Date(Date.now() + 86_400_000),
     checkIn: CHECK_IN,
     checkOut: CHECK_OUT,
-    guests: [{ id: "g1", isMember: true, nights: [] }],
+    // #2675: the party as the hosting EVALUATOR reads it. With the active mode
+    // above, the claim's reconciliation genuinely builds participants from these
+    // rows rather than bailing at the mode gate, and `BOOKING_HOSTING_SELECT` is
+    // the authority on their shape: names, the stay envelope, the night set, the
+    // D-12 consent status (`null` = no consent was ever needed, i.e.
+    // operationally present) and — the crux — the LIVE `member` relation.
+    //
+    // `isMember: true` with no `member` row is a shape production cannot emit,
+    // and it does not fail softly: `undefined !== null` is true, so
+    // `memberIsInGoodStanding` reads `undefined.active` and the claim throws.
+    // The owner is an adult member in good standing staying the whole offer, so
+    // the party has a host, no violation is raised, and every answer below is
+    // the one this file already pinned — with the fence in front now really run.
+    guests: [
+      {
+        id: "g1",
+        firstName: "Offer",
+        lastName: "Owner",
+        isMember: true,
+        memberId: "member-1",
+        member: hostingMemberRow("member-1"),
+        consentStatus: null,
+        stayStart: CHECK_IN,
+        stayEnd: CHECK_OUT,
+        nights: [],
+      },
+    ],
     ...overrides,
   };
 }

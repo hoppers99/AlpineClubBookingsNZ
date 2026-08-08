@@ -1383,6 +1383,7 @@ export default async function BookingDetailPage({
           bookingId={booking.id}
           memberId={booking.memberId}
           memberName={`${booking.member.firstName} ${booking.member.lastName}`}
+          lodgeId={booking.lodgeId}
           checkIn={booking.checkIn}
           checkOut={booking.checkOut}
           copyProps={{

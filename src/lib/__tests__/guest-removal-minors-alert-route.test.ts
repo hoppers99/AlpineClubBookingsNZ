@@ -102,7 +102,9 @@ vi.mock("@/lib/logger", () => ({
 }));
 
 import {
+  fenceHostingPolicyFindMany,
   fenceMemberFindMany,
+  hostingMemberRow,
   recordingBookingDouble,
 } from "@/lib/__tests__/support/hosting-participant-fence-double";
 import { DELETE } from "@/app/api/bookings/[id]/guests/[guestId]/route";
@@ -163,8 +165,28 @@ function preEditBooking(guests: Guest[]) {
       ...g,
       stayStart: CHECK_IN,
       stayEnd: CHECK_OUT,
+      // An array, not absent: `toHostingParticipants` reads `.length`. Empty is
+      // the honest value here — this fixture persists no BookingGuestNight rows,
+      // so the evaluator falls back to the stayStart..stayEnd envelope above.
       nights: [],
       priceCents: 4000,
+      // No consent was ever asked for on this booking, which is one of the two
+      // values `isOperationallyPresentConsent` counts as present (D-12).
+      consentStatus: null,
+      /*
+        #2675: the LIVE Member relation, which is what the hosting evaluator
+        reads — never the `isMember` snapshot beside it. The adult IS a member
+        (an ADULT in good standing, so they qualify as a host); the child is not,
+        and gets an EXPLICIT null rather than a missing key. The difference is
+        load-bearing: `memberIsInGoodStanding` tests `member !== null`, and
+        `undefined !== null` is TRUE, so an absent key is not read as "not a
+        member" — the predicate reads `undefined.active` and throws.
+
+        Together they describe exactly the party these tests are about: one
+        non-member minor, covered on both nights by the adult member beside them,
+        so removing the adult is a MINORS-ONLY question and not a hosting one.
+      */
+      member: g.memberId ? hostingMemberRow(g.memberId) : null,
     })),
     payment: null,
     member: {
@@ -203,7 +225,22 @@ function buildTx(
     $executeRaw: vi.fn().mockResolvedValue(undefined),
     // #2364: the hosting review is reconciled inside the booking write, so
     // every prisma/tx double a booking path runs against needs this client.
-    adultMemberHostingPolicy: { findMany: vi.fn().mockResolvedValue([]) },
+    // #2623 T5 / #2675: an ACTIVE mode. `[]` resolves to DISABLED, and the mode
+    // gate that now stands in front of the participant fence would take its
+    // early return — switching the #2619 fence off in all five removals this
+    // file runs a transaction for, while the fence doubles beside it still
+    // looked like coverage.
+    //
+    // ADMIN_REVIEW_REQUIRED rather than the helper's ENFORCED default: this
+    // fixture deliberately carries a non-member child, so it is exactly the
+    // shape a hosting violation could arise on. Under ENFORCED a violation
+    // THROWS and rolls the removal back — a 500 in place of the 200 these tests
+    // assert, for a reason unrelated to the minors alert they exist to pin.
+    // Under review-only the worst case is a review row. (Neither fires here: the
+    // adult member covers the child on every night of the stay.)
+    adultMemberHostingPolicy: {
+      findMany: fenceHostingPolicyFindMany({ mode: "ADMIN_REVIEW_REQUIRED" }),
+    },
     booking: {
       findUnique: fenceBooking.findUnique,
       findMany: fenceBooking.findMany,

@@ -50,6 +50,7 @@ function renderCard(features: FeatureFlags, overrides: CardProps = {}) {
       memberName="Aroha Ngata"
       checkIn={new Date("2026-07-01T00:00:00.000Z")}
       checkOut={new Date("2026-07-03T00:00:00.000Z")}
+      lodgeId="lodge-1"
       copyProps={{
         sourceCheckIn: "2026-07-01",
         sourceCheckOut: "2026-07-03",
@@ -151,6 +152,12 @@ describe("AdminBookingToolsCard", () => {
     expect(link.getAttribute("href")).toContain("bookingId=booking-1");
     expect(link.getAttribute("href")).toContain("from=2026-07-01");
     expect(link.getAttribute("href")).toContain("to=2026-07-03");
+    // #2678: without the lodge this link opened the board CLUB-WIDE with the
+    // booking focused, so its bed pickers offered every lodge's beds for this
+    // booking's guests — a choice the writer then refused. The API derives the
+    // same lodge from `bookingId`; this keeps the board's own lodge selector
+    // agreeing with the scope it was served instead of claiming "all lodges".
+    expect(link.getAttribute("href")).toContain("lodgeId=lodge-1");
   });
 
   it("hides the bed allocation link when the module is disabled", () => {

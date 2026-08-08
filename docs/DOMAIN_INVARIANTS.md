@@ -5425,6 +5425,39 @@ preserves the booking row and no external money/Xero history needs to remain
 operator-visible by default. Balanced internal modification deltas that net to
 zero are not external financial history by themselves.
 
+**A soft-deleted booking is always `CANCELLED`, and stays that way** (#2674).
+`Booking.deletedAt` has exactly one writer — `softDeleteCancelledBooking` in
+`src/lib/booking-delete.ts`, which refuses any status other than `CANCELLED` —
+nothing anywhere transitions a booking back out of `CANCELLED`, and `deletedAt`
+is never cleared. Two consequences follow, and both are load-bearing:
+
+- **A fixture carrying `deletedAt` beside a live status models a shape
+  production cannot emit.** Deletion is not an orthogonal "archived" flag layered
+  over any status, which is what the schema shape alone would suggest.
+- **Most booking routes refuse a deleted booking only INCIDENTALLY**, through a
+  status gate that excludes `CANCELLED` rather than through any deletion check.
+  A sweep of all 27 exported methods under `src/app/api/bookings/[id]/**` (#2674)
+  found 4 consulting `deletedAt` directly, 15 write-capable methods refusing a
+  deleted booking via some other guard, and 4 genuinely reaching a write. So
+  "this route is safe" is not the same claim as "this route checks", and a change
+  to a status rule can uncover a write nobody meant to expose. Any NEW
+  booking-scoped write should carry the guard explicitly rather than inherit the
+  coincidence.
+
+The house shape for the guard is `requested-room/options` (#2673): select
+`deletedAt` beside the authority fields, return **404 uniformly for every role**
+— no Full Admin exemption, because that exemption belongs to record-*viewing*
+surfaces like `bookings/[id]/page.tsx` and not to writes — and place the check
+**after** the authorisation check, so an unauthorised caller gets `403` either
+way rather than a deleted-or-live oracle.
+
+Two write paths are known to remain reachable on a soft-deleted booking and are
+tracked separately, because each needs a decision rather than a guard:
+`bookings/[id]/guests/[guestId]/consent` (whose DECLINE arm already records a
+response outside the transaction it rolls back) and
+`bookings/[id]/confirm-modification-payment` (where refusing to record a payment
+Stripe has already captured is not self-evidently safer than recording it).
+
 ## Analytics And Privacy
 
 Google Analytics must not load unless ALL of the following hold (#2573):
