@@ -1040,21 +1040,41 @@ export async function POST(
 
     logAudit({
       action: "member.deletion_approved",
-      // `privacy`, as above. This is the single most consequential row the
-      // platform writes about a person — it is the only surviving record of an
-      // anonymisation — and its retention moves from "no expiry at all" to
+      // `privacy`, as above. Its retention moves from "no expiry at all" to
       // `critical`, a seven-year expiry, in this change. That is the longest
       // class available and the deliberate answer for a deletion decision.
       //
       // Stated because it is the half that is easy to miss: `critical` is NOT in
       // `ARCHIVABLE_RETENTION_CLASSES`, so this row is never copied to the audit
       // archive. At seven years `pruneExpiredAuditLogs` deletes it outright and
-      // there is no second copy. `buildAuditLogCreateData` accepts an explicit
-      // `expiresAt: null` alongside a category, which would keep the row forever
-      // while still making it readable by Diagnostics — deliberately NOT used
-      // here, because "keep one class of row about a person forever" is the
-      // club's retention decision to make, not this change's. #2581 child 3
-      // carries it.
+      // there is no second copy.
+      //
+      // WHAT THAT PRUNE ACTUALLY DESTROYS, scoped — this row is NOT the only
+      // surviving evidence of the erasure, and treating it as such overstates
+      // the case. The `DeletionRequest` survives: approval anonymises the
+      // `Member` IN PLACE (see the transaction above) and never deletes it, so
+      // the relation's `onDelete: Cascade` never fires here; no production path
+      // deletes a `DeletionRequest`; and the row carries no expiry of its own.
+      // So `memberId`, `status: APPROVED`, `createdAt` and `reviewedAt` — that
+      // an erasure was approved, against whom, and when — outlive this audit
+      // row. What only this row holds is the acting administrator's IP address,
+      // the number of future bookings the erasure cancelled, and the
+      // `detachedEmailInheritorIds`/`dependantIds` in `metadata` below.
+      //
+      // Add WHO approved it whenever the approval took no durable claim: with
+      // nothing to cancel (#2627) the finalisation runs from `PENDING`, and
+      // `claimDeletionRequestDecision`'s APPROVED branch writes only `status`
+      // and `reviewedAt` — `DeletionRequest.reviewedBy` and `adminNote` stay as
+      // they were, which on a never-claimed request is NULL. In that case this
+      // row is the only attribution. (A later member hard delete would cascade
+      // the request row away as well, but that is a separate act with its own
+      // audit entry.)
+      //
+      // `buildAuditLogCreateData` accepts an explicit `expiresAt: null`
+      // alongside a category, which would keep the row forever while still
+      // making it readable by Diagnostics — deliberately NOT used here, because
+      // "keep one class of row about a person forever" is the club's retention
+      // decision to make, not this change's. #2581 child 3 carries it.
       category: "privacy",
       memberId: session.user.id,
       targetId: member.id,

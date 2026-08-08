@@ -100,7 +100,7 @@ govern the AI Diagnostics tools, which are deliberately narrower.
 
 **A larger set of entries moved in this release**, because 82 kinds of entry that
 had never carried a category were given one. The bold items in the table above are
-the new arrivals. Three things are worth an operator's attention:
+the new arrivals. Four things are worth an operator's attention:
 
 - **Booking rules are now under Bookings.** A booking-policy, booking-period,
   age-tier, season or promotional-code change correlates through the Bookings
@@ -116,6 +116,23 @@ the new arrivals. Three things are worth an operator's attention:
   stored details of an entry — only the action, category, severity, outcome, what
   kind of record it concerned and when — so the recipient's email address in those
   entries does not travel with them.
+- **A few kinds of entry also change which Category filter finds them, so this is
+  not purely a list of arrivals.** An entry with no category is placed by
+  guesswork on its action name, and that guess can file one entry under *several*
+  filters at once; an entry that carries a category is returned by that category
+  and by **All**, and by nothing else. So: card payment results on a booking move
+  out of **Bookings** into **Payments**; password resets, setup invites and bulk
+  role changes move out of **Account** into **Security**; clearing a delivery
+  suppression moves out of **Account** into **Communication**; credit
+  adjustments, dependant links and unlinks, and deletion requests and the
+  decisions on them stop doubling up under **Account** and now appear only under
+  **Payments**, **Family** and **Privacy** respectively; and a login-holder swap
+  stops doubling up under **Security** and appears only under **Family**. Nothing
+  became unreadable — every one of these is still returned by **All** and by its
+  own category — but the practical effect is worth knowing: on one member's
+  timeline the Bookings filter will show their *older* payment results and not
+  their newer ones, which is the same kind of event filed correctly rather than
+  an entry going missing.
 
 **One thing to expect on the member side.** Members see a slice of their own
 activity on their profile page, and that slice is also chosen by category —
@@ -124,9 +141,16 @@ Admin, Lodge, Xero or System. Three sets of entries were recorded under category
 names that did not exist (`membership` on membership applications, `auth` on
 sign-in bounces) or under `admin` (an administrator changing a member's photo for
 them), so members could not see them; corrected to real categories, they now
-appear. Each entry concerns the member reading it, and a member's view shows the
-summary only — never the stored metadata, request ID, IP address or drill-down
-links. If a member asks why sign-in entries have started appearing, that is why.
+appear. Each entry concerns the member reading it, and a member's view never
+shows the stored metadata, the request ID, the IP address, the user agent, the
+retention class or any drill-down link. It **does** show the entry's own
+free-text line where it has one: that line is dropped only when what the entry
+recorded is structured data rather than a sentence, which is a property of the
+entry and not of who is reading it. (One size caveat, because it is easy to
+miss: structured data long enough to be clipped at the platform's
+1000-character limit stops reading as structured, so a very long payload comes
+back as the clipped text.) If a member asks why sign-in entries have started
+appearing, that is why.
 
 **A second thing on the member side, from this release.** Twenty-six of the kinds
 of entry that gained a category are now inside the member-visible slice when they
@@ -136,15 +160,24 @@ administrator who made the change, so the only member timeline they reach is tha
 administrator's own. Two reach an ordinary member, and both are about that member:
 an **issue report** appears for the member who filed it, and a change to a
 member's **billing family** appears for the member it was made for. Neither shows
-the stored details, the request ID, the IP or any drill-down link. **They do name
-who acted, unless that person is a Full Admin.** A member's view renders a Full
+the request ID, the IP or any drill-down link, and neither normally shows the
+stored details either — both record structured data rather than a sentence, which
+a member's view drops. The one exception is size: an issue report records the
+page address and title the member was on, and a page address long enough to push
+that past the 1000-character clip stops reading as structured, so the clipped
+text is shown. What that shows the member is their own page address and title, so
+nothing travels that should not; the billing-family entry is nowhere near the
+limit. **They do name who acted, unless that person is a Full Admin.** A member's
+view renders a Full
 Admin as "Club admin", but a scoped officer — a Finance Manager, say, who is not
 a Full Admin — is rendered by name. That is how every entry a member can already
 see has always worked; the billing-family entry is simply one more of them. If
 your club would rather scoped officers were anonymous on the member timeline,
 that is a change to the member view, not to these categories. Nothing that a
 member should not see about themselves became visible, and nothing stopped being
-visible.
+visible to anybody. What *did* change for some entries is which Category filter
+returns them — the fourth bullet above lists the moves, and they apply on a
+member's own timeline too.
 
 Two mismatches are worth remembering when you search, because they look like
 mistakes and are not. **Induction** entries are `lodge`, not membership. **Issue
@@ -205,11 +238,20 @@ only takes the two shorter-lived classes, so a `critical` entry is never copied
 anywhere — at seven years it is deleted outright and there is no second copy to
 go back to. That is already true of every booking and payment entry, so it is not
 new; it is worth knowing here because it now also covers the record of a
-**deletion decision**, which is the only surviving evidence that the club
-approved an erasure, who approved it and what it cancelled. Seven years is a long
-time and nothing goes before 2033, but if the club wants that particular record
-kept permanently, it is a one-line change at the writer and it should be made
-deliberately rather than discovered in 2033.
+**deletion decision**.
+
+**What that does and does not put at risk**, because it is easy to overstate.
+The deletion *request* itself survives: approving one anonymises the member's own
+record in place rather than deleting it, so the request stays on file — which
+member asked, that the club approved it, and when — with no expiry of its own.
+What only the activity entry holds is the administrator's IP address, how many
+future bookings the erasure cancelled, and which family links it detached. Add
+*who* approved it whenever the approval had no bookings to cancel: that case is
+finalised in one step and records the outcome on the request without stamping the
+reviewer on it, so the activity entry is the only attribution. Seven years is a
+long time and nothing goes before 2033, but if the club wants that particular
+record kept permanently, it is a one-line change at the writer and it should be
+made deliberately rather than discovered in 2033.
 
 ### Booking-policy entries
 
