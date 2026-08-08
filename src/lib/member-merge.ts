@@ -16,7 +16,7 @@ import { OPEN_DELETION_REQUEST_STATUSES } from "@/lib/deletion-request-decision"
 import { deleteOwnedMemberPhotoBlobs } from "@/lib/member-photo";
 import { memberDisplayName } from "@/lib/member-serialization";
 import { prisma } from "@/lib/prisma";
-import { hasMemberContactChangeMergeBlocker } from "@/lib/xero-contact-create-recovery";
+import { findMemberContactChangeMergeBlocker } from "@/lib/xero-contact-create-recovery";
 import { settleHostingCoverageAfterCommit } from "@/lib/adult-member-hosting-coverage-drain";
 import { lockAdultMemberHostingPolicySet } from "@/lib/adult-member-hosting-policy-set";
 import { lockHostingCoverageOwners } from "@/lib/adult-member-hosting-coverage-lock";
@@ -1369,22 +1369,25 @@ async function evaluateContactCreateRecoveryBlockers(
   loserId: string,
 ): Promise<MergeBlocker[]> {
   const [masterPending, loserPending] = await Promise.all([
-    hasMemberContactChangeMergeBlocker(masterId, db),
-    hasMemberContactChangeMergeBlocker(loserId, db),
+    findMemberContactChangeMergeBlocker(masterId, db),
+    findMemberContactChangeMergeBlocker(loserId, db),
   ]);
   const blockers: MergeBlocker[] = [];
+  // #2623 T7: name the exact operation and the screen that clears it. A member
+  // whose link has since been repaired reads as clean everywhere else, so an
+  // unexplained refusal left the operator with nothing to search for.
+  const remedy = (operationId: string) =>
+    `Wait for it to finish, or resolve the failed Xero operation (${operationId}) under Admin → Xero → Operations, before merging.`;
   if (masterPending) {
     blockers.push({
       code: "master_xero_contact_create_recovery_pending",
-      label:
-        "The master has a Xero contact change in progress or awaiting local-link recovery. Wait for it to finish, or resolve the failed Xero operation, before merging.",
+      label: `The master has a Xero contact change in progress or awaiting local-link recovery. ${remedy(masterPending.operationId)}`,
     });
   }
   if (loserPending) {
     blockers.push({
       code: "loser_xero_contact_create_recovery_pending",
-      label:
-        "The duplicate has a Xero contact change in progress or awaiting local-link recovery. Wait for it to finish, or resolve the failed Xero operation, before merging.",
+      label: `The duplicate has a Xero contact change in progress or awaiting local-link recovery. ${remedy(loserPending.operationId)}`,
     });
   }
   return blockers;

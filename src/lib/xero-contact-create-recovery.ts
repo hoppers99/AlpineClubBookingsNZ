@@ -1,7 +1,7 @@
 import type { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { DELETED_CONTACT_EMAIL_DOMAIN } from "@/lib/placeholder-contact-email";
-import { buildXeroContactUrl } from "@/lib/xero-links";
+import { buildXeroContactUrl, stripXeroOrgShortCode } from "@/lib/xero-links";
 import {
   completeXeroSyncOperation,
   upsertXeroObjectLink,
@@ -50,6 +50,14 @@ export const XERO_CONTACT_CREATE_LOCAL_LINK_FAILURE_PHASE =
   "local_link_after_xero_resolution";
 export const XERO_CONTACT_CREATE_PROVIDER_CREATED_PENDING_LINK_PHASE =
   "provider_contact_created_local_link_pending";
+/**
+ * Terminal phase for a provider-created create whose local link later landed on
+ * that very contact. It deliberately keeps `providerContactCreated: true` — the
+ * provider fact is preserved — while no longer matching
+ * `isProviderCreatedLocalLinkFailurePayload`, so the row stops blocking.
+ */
+export const XERO_CONTACT_CREATE_LINK_COMPLETED_AFTER_RECOVERY_PHASE =
+  "local_link_committed_after_provider_created_recovery";
 export const XERO_CONTACT_CREATE_STALE_RUNNING_ERROR_CODE =
   "ORPHANED_STALE_RUNNING";
 export const XERO_CONTACT_CREATE_IN_PROGRESS_CODE =
@@ -65,7 +73,9 @@ export const XERO_CONTACT_LINK_CHANGED_MESSAGE =
 export const XERO_CONTACT_CREATE_BLOCKS_DELETION_CODE =
   "XERO_CONTACT_CREATE_BLOCKS_DELETION";
 export const XERO_CONTACT_CREATE_BLOCKS_DELETION_MESSAGE =
-  "Member deletion was not completed because a Xero contact change is still in progress or awaiting recovery. Resolve that Xero operation, then retry the remaining deletion cleanup.";
+  "Member deletion was not completed because a Xero contact change is still in progress or awaiting recovery. Resolve that Xero operation under Admin → Xero → Operations, then retry the remaining deletion cleanup.";
+export const XERO_CONTACT_OPERATION_RESOLVE_REMEDY =
+  "Open Admin → Xero → Operations, find the member's open CONTACT operation, and either wait for it to finish or use “Resolve (fixed in Xero)” once the contact is correct in Xero.";
 export const DELETED_ACCOUNT_PASSWORD_HASH = "DELETED_ACCOUNT";
 
 export class XeroContactCreateInProgressError extends Error {
@@ -111,16 +121,43 @@ export class XeroContactLinkChangedError extends Error {
 export class XeroContactCreateBlocksDeletionError extends Error {
   readonly code = XERO_CONTACT_CREATE_BLOCKS_DELETION_CODE;
   readonly statusCode = 409;
+  /**
+   * The exact operation the refusal is about, so the caller can name it instead
+   * of leaving the operator to guess which screen holds the remedy (#2623 T7).
+   * Optional only so older/mocked construction sites keep compiling.
+   */
+  readonly operationId?: string;
 
-  constructor() {
+  constructor(operationId?: string) {
     super(XERO_CONTACT_CREATE_BLOCKS_DELETION_MESSAGE);
     this.name = "XeroContactCreateBlocksDeletionError";
+    if (operationId) this.operationId = operationId;
   }
 }
 
 export type MemberContactCreateRecoveryState =
   | "CREATE_IN_PROGRESS"
   | "PROVIDER_CREATED_LINK_PENDING";
+
+/**
+ * The exact operation a member CONTACT lifecycle refusal is about, so merge,
+ * deletion and the member detail page can all name the same row (#2623 T7).
+ */
+export type MemberContactChangeBlocker = {
+  operationId: string;
+  operationType: string;
+  status: string;
+  /** The contact Xero created, when the row proves one, else its object id. */
+  providerContactId: string | null;
+};
+
+/**
+ * How many FAILED member CONTACT creates the close-on-link scan reads. A member
+ * accumulates these only through repeated failed repairs, so the realistic count
+ * is 0-1; the cap keeps the read bounded inside a locked transaction rather than
+ * trusting that.
+ */
+const CONTACT_CREATE_RECOVERY_CLOSE_SCAN_LIMIT = 20;
 
 const contactCreateIdentityWhere = (memberId: string) => ({
   direction: "OUTBOUND",
@@ -385,6 +422,18 @@ export async function applyInboundMemberContactPatch(
       { store: tx },
     );
 
+    // #2623 T7: an inbound reconciliation that lands the canonical link on the
+    // very contact a failed create already made in Xero has completed that
+    // create's outstanding work, so close it under this same Member fence
+    // instead of leaving it blocking merge and deletion.
+    if (linked || lockedLink.xeroContactId === input.xeroContactId) {
+      await closeProviderCreatedContactRecoveryForLinkedContact(
+        tx,
+        input.memberId,
+        input.xeroContactId,
+      );
+    }
+
     return { appliedFields, linked };
   });
 }
@@ -493,6 +542,14 @@ export function memberContactChangeMergeBlockerWhere(
   };
 }
 
+function readResolvedContactId(payload: unknown): string | null {
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
+    return null;
+  }
+  const value = (payload as Record<string, unknown>).resolvedContactId;
+  return typeof value === "string" && value.length > 0 ? value : null;
+}
+
 export function isProviderCreatedLocalLinkFailurePayload(
   payload: unknown,
 ): boolean {
@@ -574,15 +631,125 @@ export async function hasMemberContactCreateMergeBlocker(
   );
 }
 
+/**
+ * The single reader behind every consumer of the member CONTACT lifecycle
+ * blocker: merge preview/execute, account deletion, and the admin member detail
+ * display (#2623 T7).
+ *
+ * Before this existed the display asked a different question from the blocker —
+ * it short-circuited to "clean" as soon as `Member.xeroContactId` was set, while
+ * the blocker predicate never consults the link at all. A member could
+ * therefore look fully reconciled on their own page and still be refused for
+ * merge and deletion with nothing on screen explaining why. Everything now
+ * reads this one function, so display and refusal cannot disagree.
+ */
+export async function findMemberContactChangeMergeBlocker(
+  memberId: string,
+  db: ContactCreateRecoveryDb = prisma,
+): Promise<MemberContactChangeBlocker | null> {
+  const operation = await db.xeroSyncOperation.findFirst({
+    where: memberContactChangeMergeBlockerWhere(memberId),
+    select: {
+      id: true,
+      operationType: true,
+      status: true,
+      xeroObjectId: true,
+      responsePayload: true,
+    },
+  });
+  if (!operation) return null;
+  return {
+    operationId: operation.id,
+    operationType: operation.operationType,
+    status: operation.status,
+    providerContactId:
+      readResolvedContactId(operation.responsePayload) ??
+      operation.xeroObjectId ??
+      null,
+  };
+}
+
 export async function hasMemberContactChangeMergeBlocker(
   memberId: string,
   db: ContactCreateRecoveryDb = prisma,
 ): Promise<boolean> {
-  const operation = await db.xeroSyncOperation.findFirst({
-    where: memberContactChangeMergeBlockerWhere(memberId),
-    select: { id: true },
+  return (await findMemberContactChangeMergeBlocker(memberId, db)) !== null;
+}
+
+/**
+ * Close a provider-created CREATE recovery whose OWN contact has since become
+ * this member's canonical link (#2623 T7).
+ *
+ * The operation was only ever waiting for one thing: the local link to the
+ * contact Xero already created. Once that exact contact is the member's link,
+ * the create genuinely succeeded — late — so SUCCEEDED is the honest terminal
+ * state, and the row stops blocking merge and account deletion at source.
+ *
+ * Deliberately narrow, because an open create is a real unreconciled provider
+ * fact and must not be waved away:
+ * - only `FAILED` rows; a `RUNNING` reservation is still live provider work,
+ * - only rows that prove provider creation (`providerContactCreated: true` in
+ *   one of the two recovery phases),
+ * - only rows whose recorded `resolvedContactId` EQUALS the contact just linked.
+ *   A different contact id means Xero holds a second contact for this member,
+ *   which is exactly the duplicate an operator must still adjudicate, so that
+ *   row stays open,
+ * - `manuallyResolvedAt: null` plus a status-guarded claim, so a concurrent
+ *   admin resolve simply wins and this writes nothing.
+ *
+ * Idempotent: after the first close the rows are `SUCCEEDED`, so a replay
+ * matches nothing. Callers must already hold the target Member row fence.
+ */
+export async function closeProviderCreatedContactRecoveryForLinkedContact(
+  db: ContactCreateRecoveryDb,
+  memberId: string,
+  xeroContactId: string,
+): Promise<{ operationIds: string[]; closedCount: number }> {
+  const candidates = await db.xeroSyncOperation.findMany({
+    where: {
+      ...contactCreateIdentityWhere(memberId),
+      status: "FAILED",
+    },
+    select: { id: true, responsePayload: true },
+    take: CONTACT_CREATE_RECOVERY_CLOSE_SCAN_LIMIT,
   });
-  return operation !== null;
+  const operationIds = candidates
+    .filter(
+      (candidate) =>
+        isProviderCreatedLocalLinkFailurePayload(candidate.responsePayload) &&
+        readResolvedContactId(candidate.responsePayload) === xeroContactId,
+    )
+    .map((candidate) => candidate.id);
+  if (operationIds.length === 0) {
+    return { operationIds: [], closedCount: 0 };
+  }
+
+  const closed = await db.xeroSyncOperation.updateMany({
+    where: {
+      id: { in: operationIds },
+      status: "FAILED",
+      manuallyResolvedAt: null,
+    },
+    data: {
+      status: "SUCCEEDED",
+      lastErrorCode: null,
+      lastErrorMessage: null,
+      completedAt: new Date(),
+      xeroObjectType: "CONTACT",
+      xeroObjectId: xeroContactId,
+      // #2314: stored organisation-agnostic. This is a status-guarded claim
+      // rather than a plain completion, so it cannot go through
+      // `completeXeroSyncOperation`'s funnel and strips the short code itself.
+      xeroObjectUrl: stripXeroOrgShortCode(buildXeroContactUrl(xeroContactId)),
+      responsePayload: {
+        phase: XERO_CONTACT_CREATE_LINK_COMPLETED_AFTER_RECOVERY_PHASE,
+        providerContactCreated: true,
+        resolvedContactId: xeroContactId,
+        linkedContactId: xeroContactId,
+      },
+    },
+  });
+  return { operationIds, closedCount: closed.count };
 }
 
 /**
@@ -605,8 +772,9 @@ export async function assertNoMemberContactChangeBlockerForDeletion(
   memberId: string,
   db: ContactCreateRecoveryDb,
 ): Promise<void> {
-  if (await hasMemberContactChangeMergeBlocker(memberId, db)) {
-    throw new XeroContactCreateBlocksDeletionError();
+  const blocker = await findMemberContactChangeMergeBlocker(memberId, db);
+  if (blocker) {
+    throw new XeroContactCreateBlocksDeletionError(blocker.operationId);
   }
 }
 

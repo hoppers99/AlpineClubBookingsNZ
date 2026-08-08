@@ -216,6 +216,10 @@ import {
 } from "@/lib/school-booking-request";
 
 import { sendMemberGuestAddNotifications } from "@/lib/member-guest-consent-notifications";
+import {
+  fenceMemberFindMany,
+  recordingBookingDouble,
+} from "@/lib/__tests__/support/hosting-participant-fence-double";
 
 const mockedMemberGuestAddNotifications = vi.mocked(
   sendMemberGuestAddNotifications,
@@ -243,6 +247,58 @@ const mockedKickOutbox = vi.mocked(kickQueuedXeroOutboxOperationsIfConnected);
 const mockedSendOwnerSubstitution = vi.mocked(sendAdminOwnerSubstitutionAlert);
 const mockedAssertNoConflicts = vi.mocked(assertNoBookingMemberNightConflicts);
 const mockedLogAudit = vi.mocked(logAudit);
+
+/*
+ * The #2619 hosting participant fence.
+ *
+ * Every approval path reconciles the hosting review inside its own transaction,
+ * and that reconciliation locks the source booking's owner Member row
+ * `FOR KEY SHARE NOWAIT` before re-reading, UNDER the lock, both the Member rows
+ * and each source booking's owner and lodge. The approval PLANS its participants
+ * from `booking.findUnique`, so the same transaction's `booking.findMany` has to
+ * replay exactly what that read served or the fence sees drift that never
+ * happened. `recordingBookingDouble` does the replay, which is why a test states
+ * the booking a transaction serves through `serveBooking` instead of re-stubbing
+ * `prisma.booking.findUnique`: re-stubbing would replace the recording wrapper
+ * and the fence would find no source booking at all.
+ *
+ * The default is `null` — the "booking not found" branch the mocked client
+ * documents above, which writes nothing. It is re-armed per test, because
+ * `vi.clearAllMocks()` clears CALLS but not implementations and a booking row
+ * left behind by an earlier test is a database state that never existed.
+ */
+let servedBooking: (args: unknown) => unknown = async () => null;
+
+/** State the booking row this test's transaction serves, or a per-query function. */
+function serveBooking(row: unknown | ((args: unknown) => unknown)): void {
+  servedBooking =
+    typeof row === "function"
+      ? (row as (args: unknown) => unknown)
+      : async () => row;
+}
+
+/**
+ * A `member.findMany` that answers the fence's ids-only re-read itself and hands
+ * every other query to `existing`, so adding it cannot change what a test that
+ * stubs the delegate for its own reasons already asserts.
+ */
+function armMemberFindMany(existing?: (args: unknown) => unknown): void {
+  const findMany = fenceMemberFindMany([], existing);
+  vi.mocked(prisma.member.findMany).mockImplementation((async (args: unknown) =>
+    findMany(args as never)) as never);
+}
+
+/** Wire both fence reads onto the shared prisma double for one test. */
+function armParticipantFence(): void {
+  servedBooking = async () => null;
+  const fenceBooking = recordingBookingDouble((args) => servedBooking(args));
+  vi.mocked(prisma.booking.findUnique).mockImplementation((async (
+    args: unknown,
+  ) => fenceBooking.findUnique(args)) as never);
+  vi.mocked(prisma.booking.findMany).mockImplementation((async (args: unknown) =>
+    fenceBooking.findMany(args)) as never);
+  armMemberFindMany();
+}
 
 function memberNightConflictError() {
   return new BookingMemberNightConflictError([
@@ -349,7 +405,7 @@ function armHostingPolicy(bookingId: string, memberId: string) {
       version: 2,
     },
   ] as never);
-  vi.mocked(prisma.booking.findUnique).mockResolvedValue({
+  serveBooking({
     id: bookingId,
     memberId,
     parentBookingId: null,
@@ -373,7 +429,7 @@ function armHostingPolicy(bookingId: string, memberId: string) {
         member: null,
       },
     ],
-  } as never);
+  });
 }
 
 /** The `booking.update` this reconciliation wrote, or a failure if it did not. */
@@ -590,6 +646,7 @@ describe("createSchoolBookingRequest", () => {
 describe("approveSchoolBookingRequest", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    armParticipantFence();
     mockedTransaction.mockImplementation(
       async (fn: (tx: typeof prisma) => Promise<unknown>) => fn(prisma)
     );
@@ -637,7 +694,7 @@ describe("approveSchoolBookingRequest", () => {
         linkedGuestMembers: [{ guestIndex: 0, memberId: "m-tana" }],
       }) as never,
     );
-    vi.mocked(prisma.member.findMany).mockResolvedValue([
+    armMemberFindMany(async () => [
       {
         id: "m-tana",
         firstName: "Tana",
@@ -647,7 +704,7 @@ describe("approveSchoolBookingRequest", () => {
         canLogin: true,
         archivedAt: null,
       },
-    ] as never);
+    ]);
     // The create selects its guest rows back, which is how the pipeline matches
     // its notification plan to ids that only exist after the write.
     vi.mocked(prisma.booking.create).mockResolvedValue({
@@ -883,11 +940,11 @@ describe("approveSchoolBookingRequest", () => {
       order.push("lodge-lock");
     });
     let heldReads = 0;
-    vi.mocked(prisma.booking.findUnique).mockImplementation((async () => {
+    serveBooking(async () => {
       heldReads += 1;
       if (heldReads === 1) {
         order.push("held-lodge-locator");
-        return { lodgeId: "lodge-1" } as never;
+        return { lodgeId: "lodge-1" };
       }
       order.push("held-reread");
       return {
@@ -895,8 +952,8 @@ describe("approveSchoolBookingRequest", () => {
         lodgeId: "lodge-1",
         memberId: "school-owner",
         status: BookingStatus.AWAITING_REVIEW,
-      } as never;
-    }) as never);
+      };
+    });
     // Model cancellation committing after the approval's fresh read but before
     // its guarded transition. The CAS sees count=0 and approval must abort.
     vi.mocked(prisma.booking.updateMany).mockImplementation((async () => {
@@ -981,9 +1038,7 @@ describe("approveSchoolBookingRequest", () => {
     });
     // Only the pre-transaction held-lodge locator read happens; the post-lock
     // held re-read must never be reached because the fence throws first.
-    vi.mocked(prisma.booking.findUnique).mockResolvedValue({
-      lodgeId: "lodge-1",
-    } as never);
+    serveBooking({ lodgeId: "lodge-1" });
 
     await expect(
       approveSchoolBookingRequest({
@@ -1370,9 +1425,7 @@ describe("approveSchoolBookingRequest", () => {
     // The old held pointer supplies the immutable lock key. Because the full
     // locked request exposes durable converted ids, replay returns before the
     // stale version/pointer fence or a mutable held-booking re-read.
-    vi.mocked(prisma.booking.findUnique).mockResolvedValue({
-      lodgeId: "lodge-1",
-    } as never);
+    serveBooking({ lodgeId: "lodge-1" });
 
     const result = await approveSchoolBookingRequest({
       requestId: "req-school",
@@ -1457,12 +1510,12 @@ describe("approveSchoolBookingRequest", () => {
     mockedFindUnique.mockResolvedValue(
       schoolRequest({ heldBookingId: "held-1" }) as never
     );
-    vi.mocked(prisma.booking.findUnique).mockResolvedValue({
+    serveBooking({
       id: "held-1",
       lodgeId: "lodge-1",
       memberId: "held-invalid-school",
       status: BookingStatus.AWAITING_REVIEW,
-    } as never);
+    });
     // The held school owner became login-capable → re-validation rejects it.
     vi.mocked(prisma.member.findUnique).mockResolvedValue({
       id: "held-invalid-school",
@@ -1543,12 +1596,12 @@ describe("approveSchoolBookingRequest", () => {
         heldBookingId: "held-1",
       }) as never
     );
-    vi.mocked(prisma.booking.findUnique).mockResolvedValue({
+    serveBooking({
       id: "held-1",
       lodgeId: "lodge-1",
       memberId: "held-school-owner",
       status: BookingStatus.AWAITING_REVIEW,
-    } as never);
+    });
     // Owner re-validation passes: a valid non-login SCHOOL contact.
     vi.mocked(prisma.member.findUnique).mockResolvedValue({
       id: "held-school-owner",
@@ -1602,12 +1655,12 @@ describe("approveSchoolBookingRequest", () => {
         heldBookingId: "held-1",
       }) as never
     );
-    vi.mocked(prisma.booking.findUnique).mockResolvedValue({
+    serveBooking({
       id: "held-1",
       lodgeId: "lodge-1",
       memberId: "held-school-owner",
       status: BookingStatus.AWAITING_REVIEW,
-    } as never);
+    });
     vi.mocked(prisma.member.findUnique).mockResolvedValue({
       id: "held-school-owner",
       canLogin: false,
@@ -1647,12 +1700,12 @@ describe("approveSchoolBookingRequest", () => {
     );
     // The hold was created at lodge-old. The club default now resolves to
     // lodge-1 in beforeEach, but held reuse must never consult that default.
-    vi.mocked(prisma.booking.findUnique).mockResolvedValue({
+    serveBooking({
       id: "held-1",
       lodgeId: "lodge-old",
       memberId: "held-school-owner",
       status: BookingStatus.AWAITING_REVIEW,
-    } as never);
+    });
     vi.mocked(prisma.member.findUnique).mockResolvedValue({
       id: "held-school-owner",
       canLogin: false,
@@ -1854,6 +1907,7 @@ function memberWholeLodgeRequest(overrides: Partial<Record<string, unknown>> = {
 describe("approveMemberWholeLodgeRequest (#2263)", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    armParticipantFence();
     mockedTransaction.mockImplementation(
       async (fn: (tx: typeof prisma) => Promise<unknown>) => fn(prisma)
     );
@@ -1872,7 +1926,7 @@ describe("approveMemberWholeLodgeRequest (#2263)", () => {
     vi.mocked(getLodgeCapacity).mockResolvedValue(40 as never);
     vi.mocked(getDefaultLodgeCapacity).mockResolvedValue(40 as never);
     mockedModuleEnabled.mockResolvedValue(true as never);
-    vi.mocked(prisma.booking.findUnique).mockResolvedValue(null as never);
+    serveBooking(null);
     vi.mocked(prisma.lodge.findFirst).mockResolvedValue({ id: "lodge-1" } as never);
     // The owner is the requesting LOGIN member — looked up, never created. The
     // post-commit confirmation also reads their LIVE email/first name here, so
@@ -2540,10 +2594,10 @@ describe("approveMemberWholeLodgeRequest (#2263)", () => {
         convertedMemberId: "member-9",
       }) as never
     );
-    vi.mocked(prisma.booking.findUnique).mockResolvedValue({
+    serveBooking({
       finalPriceCents: 30000,
       _count: { guests: 6 },
-    } as never);
+    });
 
     const result = await approveMemberWholeLodgeRequest({
       requestId: "req-member",
@@ -2622,11 +2676,11 @@ describe("approveMemberWholeLodgeRequest (#2263)", () => {
         status: BookingRequestStatus.CONVERTED,
       } as never);
     // What the FIRST approval actually wrote: 4 guests at $123.45 total.
-    vi.mocked(prisma.booking.findUnique).mockResolvedValue({
+    serveBooking({
       finalPriceCents: 12345,
       payment: { reference: "IB-COMMITTED" },
       _count: { guests: 4 },
-    } as never);
+    });
 
     const result = await approveMemberWholeLodgeRequest({
       requestId: "req-member",

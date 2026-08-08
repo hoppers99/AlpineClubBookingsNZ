@@ -8,6 +8,7 @@ import {
   HOSTING_COVERAGE_RETRY_CODE,
   HOSTING_COVERAGE_RETRY_BODY,
   HOSTING_COVERAGE_RETRY_MESSAGE,
+  HostingCoverageParticipantFenceUnavailableError,
   HostingCoverageParticipantRetryError,
   isPostgresLockNotAvailable,
   isHostingCoverageParticipantRetry,
@@ -465,5 +466,92 @@ describe("hosting coverage queue participant fence (#2597)", () => {
       cause: "SYSTEM_CHANGE",
       actorMemberId: null,
     });
+  });
+});
+
+/**
+ * A2 (#2618 review): the fence must be impossible to disable by passing a
+ * client that cannot lock. An issued proof is a capability — it enters the
+ * module's WeakSet and therefore satisfies
+ * assertHostingCoverageQueueParticipantsLocked at every downstream call site —
+ * so issuing one without the lock would not merely skip a check here, it would
+ * silently switch the check off everywhere the proof travels.
+ */
+describe("participant proof cannot exist without its lock", () => {
+  it("refuses a client that cannot take the row lock instead of issuing a proof", async () => {
+    const db = makeDb();
+    const { $executeRaw: _omitted, ...withoutRawLock } = db;
+
+    await expect(
+      acquireHostingCoverageQueueParticipantProof(
+        { sources: [SOURCE], actorMemberId: "actor-1" },
+        withoutRawLock as never,
+      ),
+    ).rejects.toBeInstanceOf(HostingCoverageParticipantFenceUnavailableError);
+  });
+
+  it("does not dress the wiring fault as retryable contention", async () => {
+    // A 409 retry contract here would invite an endless client retry loop: no
+    // amount of retrying grows the client a $executeRaw method.
+    const db = makeDb();
+    const { $executeRaw: _omitted, ...withoutRawLock } = db;
+
+    const error = await acquireHostingCoverageQueueParticipantProof(
+      { sources: [SOURCE], actorMemberId: "actor-1" },
+      withoutRawLock as never,
+    ).catch((err: unknown) => err);
+
+    // It must have thrown at all — a returned proof here would mean the fence
+    // was bypassed, which is the failure this whole describe block exists for.
+    expect(error).toBeInstanceOf(Error);
+    expect(error).not.toBeInstanceOf(HostingCoverageParticipantRetryError);
+    expect(isHostingCoverageParticipantRetry(error)).toBe(false);
+  });
+
+  it("takes FOR KEY SHARE NOWAIT over the exact sorted participant set", async () => {
+    const db = makeDb();
+
+    await acquireHostingCoverageQueueParticipantProof(
+      { sources: [SOURCE], actorMemberId: "actor-1" },
+      db as never,
+    );
+
+    expect(db.$executeRaw).toHaveBeenCalledTimes(1);
+    const sql = JSON.stringify(db.$executeRaw.mock.calls[0][0]);
+    expect(sql).toContain("FOR KEY SHARE NOWAIT");
+    // Sorted and deduplicated, so concurrent acquirers cannot deadlock.
+    expect(db.member.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { id: { in: ["actor-1", "owner-1"] } },
+        orderBy: { id: "asc" },
+      }),
+    );
+  });
+
+  it("refuses when a locked participant row has vanished", async () => {
+    // The lock proves nothing if the row set it protected is not the row set
+    // that comes back.
+    const db = makeDb(["owner-1"]);
+
+    await expect(
+      acquireHostingCoverageQueueParticipantProof(
+        { sources: [SOURCE], actorMemberId: "actor-1" },
+        db as never,
+      ),
+    ).rejects.toBeInstanceOf(HostingCoverageParticipantRetryError);
+  });
+
+  it("refuses when the source booking's owner drifted under the lock", async () => {
+    const db = makeDb();
+    db.booking.findMany.mockResolvedValue([
+      { id: SOURCE.bookingId, memberId: "someone-else", lodgeId: SOURCE.lodgeId },
+    ]);
+
+    await expect(
+      acquireHostingCoverageQueueParticipantProof(
+        { sources: [SOURCE], actorMemberId: "actor-1" },
+        db as never,
+      ),
+    ).rejects.toBeInstanceOf(HostingCoverageParticipantRetryError);
   });
 });

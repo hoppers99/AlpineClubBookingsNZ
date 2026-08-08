@@ -1464,6 +1464,37 @@ derivation).
   had left `DRAFT` and could never be paid. The settlement clears the Payment's
   card-intent pointers but keeps `stripePaymentMethodId`, which a split
   parent's deferred non-member guest charge falls back to.
+- **A $0 waitlist confirm always ends in a state the member or a worker can
+  move** (#2623). `POST /api/bookings/[id]/waitlist-confirm` is two-phase:
+  phase one commits `WAITLIST_OFFERED -> PAYMENT_PENDING` and, in doing so,
+  **consumes the offer** (`waitlistOfferedAt`, `waitlistOfferExpiresAt` and
+  `waitlistPosition` are all nulled). A $0 booking sitting in `PAYMENT_PENDING`
+  therefore holds no capacity, has no payment path and has no offer to replay,
+  so every way phase two (the `PAYMENT_PENDING -> PAID` claim) can fail must
+  either return the booking to `WAITLISTED` for the ordinary offer worker or say
+  plainly that it could not. There are exactly four end states, and each one is a
+  distinct coded response carrying `offerRevoked: true`
+  (`src/lib/waitlist-confirm-recovery-contract.ts`):
+  - capacity was lost under the locks — restored to `WAITLISTED` inside the same
+    transaction, `WAITLIST_OFFER_RELEASED_CAPACITY` (409);
+  - the booking moved under another writer — nothing written,
+    `WAITLIST_CONFIRM_STATUS_MOVED` (409) with `bookingStatusUnconfirmed`, never
+    a "capacity is gone" claim it cannot support;
+  - phase two threw and the compensating release succeeded — the participant
+    fence's frozen 409 (or `WAITLIST_CONFIRM_RELEASED_UNAVAILABLE`, 503 for
+    contention) with `waitlistPlaceRestored: true`;
+  - the compensating release itself failed — `WAITLIST_CONFIRM_AWAITING_OPERATOR`
+    (503 for contention, else 500) with `awaitingOperatorRecovery: true`, plus a
+    `critical` audit row (`waitlist.confirm_offer_release_failed`) so the
+    operator-only state is searchable rather than silent.
+  `WaitlistOfferCard` keys on `offerRevoked` — **not** on the error code, because
+  a *phase-one* refusal shares `HOSTING_COVERAGE_PARTICIPANT_RETRY` with a
+  phase-two one while leaving the offer intact — and withdraws the CTA in favour
+  of "Reload booking status" whenever the flag is present. Money stays in integer
+  cents throughout: the $0 `SUCCEEDED` Payment row is written only after the
+  `PAID` claim succeeds, because a lost claim `return`s (and therefore commits),
+  and `Payment.bookingId` is unique, so a row written before the claim would read
+  as paid and block the booking's real payment row forever.
 - No SETTLED booking carries a stored credit election (#2265, #2319). Once the
   money has been taken for the amount the intent or the invoice was raised at,
   the election can no longer be honoured: "applying" it then would debit the
@@ -3068,6 +3099,22 @@ compliant indefinitely.
   so member merge cannot leave a ledger row naming a deleted losing identity.
   Account deletion deactivates that CONTACT ledger in the same anonymisation
   transaction that clears the Member pointer.
+  A canonical link commit also CLOSES the provider-created create it just
+  completed, in that same transaction: a `FAILED` member CONTACT create that
+  proves Xero made contact X, where X is now the member's link, becomes
+  `SUCCEEDED` through a status-guarded claim. Nothing else is touched — a
+  `RUNNING` reservation is live provider work, and a create that made a
+  *different* contact stays open because Xero then holds a duplicate for this
+  member that an operator must adjudicate. Without this the blocker predicates,
+  which never consult `Member.xeroContactId`, kept refusing member merge and
+  account deletion for a member who had already been recovered. Merge, deletion
+  and the member detail display read that blocker through one predicate, so a
+  refused member can never render as reconciled, and each refusal names the
+  blocking operation and the Admin → Xero → Operations screen that clears it.
+  Only an explicit `repairExistingLink` may reserve a CREATE for an
+  already-linked member, and repair re-resolves by exact non-archived name
+  before creating, so a live same-named contact is re-linked rather than
+  duplicated.
 - **Every confirming path re-reads the facts at confirmation, and the census proves
   it two ways** (§9). Most reconcile inside their own transaction, which REFUSES an
   uncovered booking at an enforcing club. Those that cannot — capacity claimed, money

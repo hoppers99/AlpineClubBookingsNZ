@@ -11,6 +11,10 @@ const mocks = vi.hoisted(() => {
     },
     xeroSyncOperation: {
       findFirst: vi.fn(),
+      // #2623 T7: the phase-2 link transaction closes any provider-created
+      // recovery whose own contact is the one it just linked.
+      findMany: vi.fn(),
+      updateMany: vi.fn(),
     },
   };
 
@@ -190,6 +194,8 @@ describe("findOrCreateXeroContact", () => {
     );
     mocks.tx.member.findFirst.mockResolvedValue(null);
     mocks.tx.xeroSyncOperation.findFirst.mockResolvedValue(null);
+    mocks.tx.xeroSyncOperation.findMany.mockResolvedValue([]);
+    mocks.tx.xeroSyncOperation.updateMany.mockResolvedValue({ count: 0 });
     mocks.tx.member.update.mockResolvedValue({ id: "mem_1", xeroContactId: "xero_new" });
     mocks.prisma.xeroToken.findFirst.mockResolvedValue(null);
     mocks.startXeroSyncOperation.mockResolvedValue({ id: "op_1" });
@@ -303,6 +309,130 @@ describe("findOrCreateXeroContact", () => {
     const createPayload =
       mocks.xeroClientInstance.accountingApi.createContacts.mock.calls[0][1];
     expect(createPayload.contacts[0].emailAddress).toBe("");
+  });
+
+  // #2623 T2. A walk-in placeholder owner is the DETERMINISTIC case: the Xero
+  // email search is skipped by design, so nothing can produce a matched-existing
+  // resolution, and the repair therefore reaches the create reservation on every
+  // single attempt. That reservation used to throw XERO_CONTACT_ALREADY_LINKED
+  // unconditionally whenever the member had a link, so Admin → Force sync →
+  // Contact 409'd forever with nothing able to clear it.
+  describe("repairing an existing link (#2623 T2)", () => {
+    const walkInOwner = {
+      id: "mem_walkin",
+      firstName: "Walk",
+      lastName: "In",
+      email: "walk-in-abc123@no-email.invalid",
+      xeroContactId: "xero_stale_walkin",
+      phoneNumber: null,
+    };
+
+    async function connectXero() {
+      mocks.prisma.xeroToken.findFirst.mockResolvedValue({
+        id: "token_1",
+        accessToken: await encryptToken("access"),
+        refreshToken: await encryptToken("refresh"),
+        expiresAt: new Date(Date.now() + 60 * 60 * 1000),
+        tenantId: "tenant_1",
+      });
+    }
+
+    it("repairs a walk-in placeholder owner's link instead of 409ing forever", async () => {
+      mocks.tx.member.findUnique.mockResolvedValue(walkInOwner);
+      await connectXero();
+      // No live contact carries this member's name, so creation is the honest
+      // outcome and the reservation must be allowed to make it.
+      mocks.xeroClientInstance.accountingApi.getContacts.mockResolvedValue({
+        body: { contacts: [] },
+      });
+      mocks.xeroClientInstance.accountingApi.createContacts.mockResolvedValue({
+        body: { contacts: [{ contactID: "xero_repaired_walkin" }] },
+      });
+
+      await expect(
+        findOrCreateXeroContact("mem_walkin", { repairExistingLink: true }),
+      ).resolves.toBe("xero_repaired_walkin");
+
+      // The placeholder is still never used to search Xero by email.
+      for (const call of mocks.xeroClientInstance.accountingApi.getContacts.mock
+        .calls) {
+        expect(String(call[2] ?? "")).not.toContain("EmailAddress");
+      }
+      expect(mocks.tx.member.update).toHaveBeenCalledWith({
+        where: { id: "mem_walkin" },
+        data: { xeroContactId: "xero_repaired_walkin" },
+      });
+      expect(mocks.failXeroSyncOperation).not.toHaveBeenCalled();
+    });
+
+    it("re-links a live same-named contact rather than minting a duplicate", async () => {
+      mocks.tx.member.findUnique.mockResolvedValue(walkInOwner);
+      await connectXero();
+      mocks.xeroClientInstance.accountingApi.getContacts.mockResolvedValue({
+        body: {
+          contacts: [{ contactID: "xero_live_walkin", name: "Walk In" }],
+        },
+      });
+
+      await expect(
+        findOrCreateXeroContact("mem_walkin", { repairExistingLink: true }),
+      ).resolves.toBe("xero_live_walkin");
+
+      // Archived contacts are excluded from that search, so a genuinely dead
+      // link still falls through to creation (previous test) — but a live one
+      // must never become a second contact in the club's books.
+      expect(
+        mocks.xeroClientInstance.accountingApi.getContacts,
+      ).toHaveBeenCalledWith(
+        "tenant_1",
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        1,
+        false,
+        true,
+        "Walk In",
+        20,
+      );
+      expect(
+        mocks.xeroClientInstance.accountingApi.createContacts,
+      ).not.toHaveBeenCalled();
+      expect(mocks.startXeroSyncOperation).not.toHaveBeenCalled();
+      expect(mocks.upsertXeroObjectLink).toHaveBeenCalledWith(
+        expect.objectContaining({
+          xeroObjectId: "xero_live_walkin",
+          metadata: expect.objectContaining({
+            linkedVia: "name_match_repair",
+            repairedFromXeroContactId: "xero_stale_walkin",
+          }),
+        }),
+        { store: mocks.tx },
+      );
+    });
+
+    it("still refuses a create reservation for an already-linked member with no repair intent", async () => {
+      mocks.tx.member.findUnique.mockResolvedValue({
+        ...walkInOwner,
+        xeroContactId: null,
+      });
+      await connectXero();
+      mocks.xeroClientInstance.accountingApi.createContacts.mockResolvedValue({
+        body: { contacts: [{ contactID: "xero_first" }] },
+      });
+      // The reservation re-reads the member under its own KEY SHARE lock: a
+      // link that appeared in between must still refuse an ordinary create.
+      mocks.tx.member.findUnique
+        .mockResolvedValueOnce({ ...walkInOwner, xeroContactId: null })
+        .mockResolvedValue(walkInOwner);
+
+      await expect(findOrCreateXeroContact("mem_walkin")).rejects.toMatchObject({
+        code: "XERO_CONTACT_ALREADY_LINKED",
+      });
+      expect(
+        mocks.xeroClientInstance.accountingApi.createContacts,
+      ).not.toHaveBeenCalled();
+    });
   });
 
   it("links an exact Xero name match when createContacts fails with a duplicate-name validation error", async () => {

@@ -19,9 +19,12 @@ const mocks = vi.hoisted(() => ({
   sendPending: vi.fn(),
   enqueueXero: vi.fn(),
   kickXero: vi.fn(),
+  logAudit: vi.fn(),
+  loggerError: vi.fn(),
 }));
 
 vi.mock("@/lib/auth", () => ({ auth: mocks.auth }));
+vi.mock("@/lib/audit", () => ({ logAudit: mocks.logAudit }));
 vi.mock("@/lib/session-guards", () => ({
   requireActiveSessionUser: mocks.requireActiveSessionUser,
 }));
@@ -56,7 +59,12 @@ vi.mock("@/lib/xero-operation-outbox", () => ({
   kickQueuedXeroOutboxOperationsIfConnected: mocks.kickXero,
 }));
 vi.mock("@/lib/logger", () => ({
-  default: { error: vi.fn(), warn: vi.fn(), info: vi.fn(), debug: vi.fn() },
+  default: {
+    error: mocks.loggerError,
+    warn: vi.fn(),
+    info: vi.fn(),
+    debug: vi.fn(),
+  },
 }));
 
 import { POST } from "@/app/api/bookings/[id]/waitlist-confirm/route";
@@ -65,6 +73,62 @@ import {
   HOSTING_COVERAGE_RETRY_MESSAGE,
   HostingCoverageParticipantRetryError,
 } from "@/lib/adult-member-hosting-queue-participants";
+import {
+  WAITLIST_CONFIRM_AWAITING_OPERATOR_BODY,
+  WAITLIST_CONFIRM_OFFER_RELEASE_FAILED_AUDIT_ACTION,
+  WAITLIST_CONFIRM_STATUS_MOVED_BODY,
+  WAITLIST_OFFER_RELEASED_CAPACITY_BODY,
+} from "@/lib/waitlist-confirm-recovery-contract";
+
+/** A Prisma transaction-contention rejection, exactly as the client throws it. */
+function contentionError(code: "P2028" | "P2034") {
+  return Object.assign(
+    new Error(
+      code === "P2028"
+        ? "Transaction not found. Transaction ID is invalid, refers to an old closed transaction Prisma doesn't have information about anymore, or was obtained before disconnecting."
+        : "Write conflict or deadlock detected. Please retry your transaction.",
+    ),
+    { code },
+  );
+}
+
+function post() {
+  return POST(
+    new NextRequest("http://localhost/api/bookings/booking-1/waitlist-confirm", {
+      method: "POST",
+    }),
+    { params: Promise.resolve({ id: "booking-1" }) },
+  );
+}
+
+function booking() {
+  return {
+    id: "booking-1",
+    memberId: "member-1",
+    lodgeId: "lodge-1",
+    status: "PAYMENT_PENDING",
+    finalPriceCents: 0,
+    discountCents: 0,
+    promoAdjustmentCents: 0,
+    checkIn: new Date("2026-08-20T00:00:00.000Z"),
+    checkOut: new Date("2026-08-22T00:00:00.000Z"),
+    nonMemberHoldUntil: null,
+    member: { email: "member@example.test", firstName: "Member" },
+    guests: [{ id: "guest-1", nights: [] }],
+    promoRedemption: null,
+  };
+}
+
+function txDouble() {
+  return {
+    $executeRaw: mocks.executeRaw,
+    booking: {
+      findUnique: mocks.bookingFindUnique,
+      updateMany: mocks.bookingUpdateMany,
+    },
+    payment: { create: mocks.paymentCreate },
+  };
+}
 
 describe("zero-dollar waitlist participant contention (#2597)", () => {
   beforeEach(() => {
@@ -75,22 +139,7 @@ describe("zero-dollar waitlist participant contention (#2597)", () => {
       success: true,
       newStatus: "PAYMENT_PENDING",
     });
-    const booking = {
-      id: "booking-1",
-      memberId: "member-1",
-      lodgeId: "lodge-1",
-      status: "PAYMENT_PENDING",
-      finalPriceCents: 0,
-      discountCents: 0,
-      promoAdjustmentCents: 0,
-      checkIn: new Date("2026-08-20T00:00:00.000Z"),
-      checkOut: new Date("2026-08-22T00:00:00.000Z"),
-      nonMemberHoldUntil: null,
-      member: { email: "member@example.test", firstName: "Member" },
-      guests: [{ id: "guest-1", nights: [] }],
-      promoRedemption: null,
-    };
-    mocks.bookingFindUnique.mockResolvedValue(booking);
+    mocks.bookingFindUnique.mockResolvedValue(booking());
     mocks.bookingUpdateMany.mockResolvedValue({ count: 1 });
     mocks.paymentCreate.mockResolvedValue({ id: "payment-1" });
     mocks.executeRaw.mockResolvedValue(1);
@@ -100,32 +149,24 @@ describe("zero-dollar waitlist participant contention (#2597)", () => {
     mocks.enqueueHosting.mockRejectedValueOnce(
       new HostingCoverageParticipantRetryError(),
     );
-    const tx = {
-      $executeRaw: mocks.executeRaw,
-      booking: {
-        findUnique: mocks.bookingFindUnique,
-        updateMany: mocks.bookingUpdateMany,
-      },
-      payment: { create: mocks.paymentCreate },
-    };
     mocks.transaction.mockImplementation(
-      async (callback: (client: typeof tx) => Promise<unknown>) => callback(tx),
+      async (callback: (client: ReturnType<typeof txDouble>) => Promise<unknown>) =>
+        callback(txDouble()),
     );
   });
 
   it("restores WAITLISTED after phase two rolls back and returns the fixed 409", async () => {
-    const response = await POST(
-      new NextRequest(
-        "http://localhost/api/bookings/booking-1/waitlist-confirm",
-        { method: "POST" },
-      ),
-      { params: Promise.resolve({ id: "booking-1" }) },
-    );
+    const response = await post();
 
     expect(response.status).toBe(409);
+    // The frozen retry sentence and code are unchanged, and now carry the honest
+    // end state: the offer this card was showing is gone, and the waitlist place
+    // is back (#2623 T8).
     await expect(response.json()).resolves.toEqual({
       error: HOSTING_COVERAGE_RETRY_MESSAGE,
       code: HOSTING_COVERAGE_RETRY_CODE,
+      offerRevoked: true,
+      waitlistPlaceRestored: true,
     });
     expect(mocks.transaction).toHaveBeenCalledTimes(2);
     expect(mocks.bookingUpdateMany).toHaveBeenLastCalledWith({
@@ -138,11 +179,169 @@ describe("zero-dollar waitlist participant contention (#2597)", () => {
         waitlistOfferedPriceCents: null,
       },
     });
+    // The compensation runs on explicit budgets rather than Prisma's 2s/5s
+    // defaults, because it runs under exactly the contention that triggered it —
+    // but tighter than the admin precedents, because two attempts must not keep a
+    // member waiting much past 30s (#2623).
+    expect(mocks.transaction.mock.calls[1]?.[1]).toEqual({
+      maxWait: 5_000,
+      timeout: 10_000,
+    });
     expect(mocks.reconcileBeds).toHaveBeenCalledWith(
       expect.objectContaining({ bookingId: "booking-1" }),
     );
     expect(mocks.settleHosting).not.toHaveBeenCalled();
     expect(mocks.sendConfirmed).not.toHaveBeenCalled();
     expect(mocks.enqueueXero).not.toHaveBeenCalled();
+    expect(mocks.logAudit).not.toHaveBeenCalled();
+  });
+
+  it("retries a contended compensation once and still answers the fixed 409 (#2623 T4)", async () => {
+    let transactionCall = 0;
+    mocks.transaction.mockImplementation(
+      async (callback: (client: unknown) => Promise<unknown>) => {
+        transactionCall += 1;
+        // 1 = phase two (throws the participant retry via enqueueHosting).
+        // 2 = the first compensation attempt, contended.
+        // 3 = the retry, which succeeds.
+        if (transactionCall === 2) throw contentionError("P2034");
+        return callback(txDouble());
+      },
+    );
+
+    const response = await post();
+
+    expect(transactionCall).toBe(3);
+    expect(response.status).toBe(409);
+    await expect(response.json()).resolves.toEqual({
+      error: HOSTING_COVERAGE_RETRY_MESSAGE,
+      code: HOSTING_COVERAGE_RETRY_CODE,
+      offerRevoked: true,
+      waitlistPlaceRestored: true,
+    });
+    expect(mocks.logAudit).not.toHaveBeenCalled();
+  });
+
+  it("never lets a failed compensation become a 500, and raises it for operator recovery (#2623 T4)", async () => {
+    let transactionCall = 0;
+    mocks.transaction.mockImplementation(
+      async (callback: (client: unknown) => Promise<unknown>) => {
+        transactionCall += 1;
+        // Phase two throws the participant retry; both compensation attempts
+        // then lose their own lock waits — the exact case that used to escape as
+        // an unhandled 500 with a $0 booking parked in PAYMENT_PENDING.
+        if (transactionCall >= 2) throw contentionError("P2028");
+        return callback(txDouble());
+      },
+    );
+
+    const response = await post();
+
+    expect(transactionCall).toBe(3);
+    expect(response.status).toBe(503);
+    // Not retry-shaped: there is nothing to retry, and the copy says so.
+    await expect(response.json()).resolves.toEqual({
+      ...WAITLIST_CONFIRM_AWAITING_OPERATOR_BODY,
+    });
+    expect(WAITLIST_CONFIRM_AWAITING_OPERATOR_BODY.error).not.toBe(
+      HOSTING_COVERAGE_RETRY_MESSAGE,
+    );
+
+    expect(mocks.logAudit).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: WAITLIST_CONFIRM_OFFER_RELEASE_FAILED_AUDIT_ACTION,
+        entityType: "Booking",
+        entityId: "booking-1",
+        category: "booking",
+        severity: "critical",
+        outcome: "failure",
+        subjectMemberId: "member-1",
+        // Both causes are recorded so an operator can tell a participant-fence
+        // strand from a plain lock-wait strand without reading logs.
+        metadata: expect.objectContaining({
+          lodgeId: "lodge-1",
+          finalPriceCents: 0,
+          claimErrorCode: HOSTING_COVERAGE_RETRY_CODE,
+          releaseErrorCode: "P2028",
+        }),
+      }),
+    );
+    expect(mocks.settleHosting).not.toHaveBeenCalled();
+    expect(mocks.sendConfirmed).not.toHaveBeenCalled();
+    expect(mocks.enqueueXero).not.toHaveBeenCalled();
+  });
+
+  it("maps a non-participant phase-two failure instead of throwing it (#2623 T4)", async () => {
+    mocks.enqueueHosting.mockReset();
+    mocks.enqueueHosting.mockRejectedValueOnce(contentionError("P2028"));
+
+    const response = await post();
+
+    // Nothing about this failure is the member's to act on, and phase one had
+    // already consumed the offer: it is released rather than rethrown as a 500
+    // that strands the booking.
+    expect(response.status).toBe(503);
+    await expect(response.json()).resolves.toEqual({
+      code: "WAITLIST_CONFIRM_RELEASED_UNAVAILABLE",
+      error: expect.stringContaining("your place on the waitlist was restored"),
+      offerRevoked: true,
+      waitlistPlaceRestored: true,
+    });
+    expect(mocks.bookingUpdateMany).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({ status: "WAITLISTED" }),
+      }),
+    );
+  });
+
+  it("tells the member the offer is gone when capacity was lost (#2623 T8)", async () => {
+    mocks.enqueueHosting.mockReset();
+    mocks.enqueueHosting.mockResolvedValue(undefined);
+    mocks.checkCapacity.mockResolvedValue({ available: false });
+
+    const response = await post();
+
+    expect(response.status).toBe(409);
+    await expect(response.json()).resolves.toEqual({
+      ...WAITLIST_OFFER_RELEASED_CAPACITY_BODY,
+    });
+    expect(mocks.paymentCreate).not.toHaveBeenCalled();
+    // One transaction only: the flip restored WAITLISTED under its own locks.
+    expect(mocks.transaction).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not report lost capacity when the booking simply moved on (#2623 T8)", async () => {
+    mocks.enqueueHosting.mockReset();
+    mocks.enqueueHosting.mockResolvedValue(undefined);
+    mocks.bookingFindUnique.mockResolvedValueOnce(booking()).mockResolvedValue({
+      ...booking(),
+      status: "PAID",
+    });
+
+    const response = await post();
+
+    expect(response.status).toBe(409);
+    await expect(response.json()).resolves.toEqual({
+      ...WAITLIST_CONFIRM_STATUS_MOVED_BODY,
+    });
+    expect(mocks.bookingUpdateMany).not.toHaveBeenCalled();
+    expect(mocks.paymentCreate).not.toHaveBeenCalled();
+  });
+
+  it("writes no $0 payment row when the PAID claim is lost under the locks (#2623)", async () => {
+    mocks.enqueueHosting.mockReset();
+    mocks.enqueueHosting.mockResolvedValue(undefined);
+    mocks.bookingUpdateMany.mockResolvedValue({ count: 0 });
+
+    const response = await post();
+
+    expect(response.status).toBe(409);
+    await expect(response.json()).resolves.toEqual({
+      ...WAITLIST_CONFIRM_STATUS_MOVED_BODY,
+    });
+    // A lost claim RETURNS, which commits the transaction. `Payment.bookingId`
+    // is unique, so a SUCCEEDED $0 row written before the claim would have
+    // survived that commit and blocked the booking's real payment row forever.
+    expect(mocks.paymentCreate).not.toHaveBeenCalled();
   });
 });

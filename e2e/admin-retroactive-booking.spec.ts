@@ -10,15 +10,22 @@ import {
   postBookingCreate,
   withBookingCreateClientIp,
 } from "./helpers/booking-create-client-ip";
+import { completeMemberDetailsGateIfShown } from "./helpers/booking";
 import { personas } from "./helpers/personas";
 import {
   DEMO_BOOKING_WINDOWS,
   E2E_ADMIN,
   WAITLIST_FULL_WINDOW,
 } from "./helpers/fixtures";
-import { calendarMonthDirection } from "./helpers/calendar-navigation";
+import {
+  CALENDAR_CLICK_TIMEOUT_MS,
+  calendarMonthDirection,
+  walkCalendarToMonth,
+} from "./helpers/calendar-navigation";
+import { cancelMemberBookingsOnDate } from "./helpers/reset";
 import {
   calendarDayLabel,
+  pastStayLeftoverCheckIns,
   pastStayWindowForAttempt,
 } from "./helpers/stay-dates";
 
@@ -54,8 +61,9 @@ function isoDay(offsetDays: number): string {
 // Seeded windows the sliding past window must dodge (prisma/e2e-fixtures.ts,
 // now RELATIVE — issue #2117). The retroactive create would otherwise fail:
 // - Alice's own DRAFT booking counts for the member-night conflict check
-//   (aliceDraft sits deep in the past, well clear of the -7..-15 sweep, but is
-//   listed so the dodge stays honest if its offset ever changes).
+//   (aliceDraft sits deep in the past at -25 days, well clear of both the -7..-15
+//   attempt band and the -16..-6 leftover sweep below, but is listed so the dodge
+//   stays honest if its offset ever changes).
 // - The waitlist fixture window is seeded full to lodge capacity, which would
 //   trigger the over-capacity confirm dialog this happy-path spec does not
 //   drive (it is a future Monday, so it never overlaps a past window anyway).
@@ -64,55 +72,40 @@ const SEEDED_BLOCKED_RANGES: ReadonlyArray<readonly [string, string]> = [
   [WAITLIST_FULL_WINDOW.checkIn, WAITLIST_FULL_WINDOW.checkOut],
 ];
 
+// A retroactive stay can cross a month boundary in EITHER direction: the walk to
+// the past check-in goes BACK from the run date's month, and the check-out two
+// nights later can then be in the NEXT month. Both are at most one hop, since the
+// -7…-15 band never spans more than one month boundary — this is the inherited
+// bound, kept as head-room. What is new is that exhausting it fails naming the
+// month it could not reach (#2626) instead of walking on to click a day button
+// that is not rendered.
+//
+// 14 for a one-hop worst case is looser than `walkCalendarToMonth`'s own "keep it
+// tight" instruction asks for; it is kept as inherited because the slack costs
+// nothing — the walk breaks on arrival, and each unnecessary hop is now bounded.
+const MAX_PAST_MONTH_HOPS = 14;
+
 // Navigate from the month the calendar currently displays to the month holding
-// dateOnly, then click the day. A retroactive stay can cross a month boundary:
-// after its past check-in is selected, its check-out can be in the NEXT month.
+// dateOnly, then click the day.
 async function selectPastCalendarDay(
   page: Page,
   dateOnly: string,
   displayedDateOnly: string,
 ): Promise<void> {
-  const [y, m] = dateOnly.split("-").map(Number);
-  const monthHeading = new Date(y, m - 1).toLocaleDateString("en-NZ", {
-    month: "long",
-    year: "numeric",
+  await walkCalendarToMonth(page, {
+    target: dateOnly,
+    direction: calendarMonthDirection(displayedDateOnly, dateOnly),
+    maxHops: MAX_PAST_MONTH_HOPS,
+    context: `retroactive stay day ${dateOnly}, from the month showing ${displayedDateOnly}`,
   });
-  const direction = calendarMonthDirection(displayedDateOnly, dateOnly);
-  const navigationButton = direction === "previous" ? /Prev/ : /Next/;
-  const heading = page.getByRole("heading", { name: monthHeading });
-  for (let hops = 0; hops < 14; hops += 1) {
-    if (await heading.isVisible().catch(() => false)) {
-      break;
-    }
-    await page.getByRole("button", { name: navigationButton }).click();
-  }
-  await expect(
-    heading,
-    `calendar never reached ${monthHeading} while moving ${direction} from ` +
-      `${displayedDateOnly} to ${dateOnly}`,
-  ).toBeVisible();
-  await page.getByRole("button", { name: calendarDayLabel(dateOnly) }).click();
-}
-
-// The member details confirmation gate can appear on the first /book visit.
-async function dismissDetailsGateIfShown(page: Page): Promise<void> {
-  const dialogTitle = page.getByText("Confirm member details");
-  try {
-    await dialogTitle.waitFor({ state: "visible", timeout: 5_000 });
-  } catch {
-    return;
-  }
-  const dialog = page.getByRole("dialog");
-  const confirmCorrect = dialog.getByRole("button", {
-    name: "Confirm details are correct",
-  });
-  if (await confirmCorrect.isVisible().catch(() => false)) {
-    await confirmCorrect.click();
-  }
-  const finish = dialog.getByRole("button", { name: "Confirm and finish" });
-  if (await finish.isVisible().catch(() => false)) {
-    await finish.click();
-  }
+  // Bounded with the walk's own per-click budget. Every day here is in the PAST,
+  // so this is the click most exposed to a day that resolves but is not
+  // actionable — the calendar disables past days unless "Record a past stay" has
+  // taken effect. Unbounded, that waits out the 90 s test budget and reports
+  // `Target page, context or browser has been closed` (#2302, #2626).
+  await page
+    .getByRole("button", { name: calendarDayLabel(dateOnly) })
+    .click({ timeout: CALENDAR_CLICK_TIMEOUT_MS });
 }
 
 test.beforeAll(async ({ browser }) => {
@@ -126,6 +119,27 @@ test.beforeAll(async ({ browser }) => {
   // per-spec login (#1779).
   adminContext = await browser.newContext({
     storageState: storageStatePath(E2E_ADMIN.email),
+  });
+
+  // RETRY AND RE-RUN IDEMPOTENCY (#2625). The first test creates a real PENDING
+  // booking through the create route and nothing removed it, so this spec was
+  // the one date-based spec that could not run twice against one seeded database:
+  // the second run met its own leftover on attempt 0's past nights and failed
+  // with BOOKING_MEMBER_NIGHT_CONFLICT. `pastStayWindowForAttempt` gives each
+  // ATTEMPT its own band, which is why a hosted retry survives, but it cannot
+  // help a re-RUN (attempt 0 again) or the next DAY's run (the bands slide with
+  // the run date while the leftover does not) — so the reset is the tool, in the
+  // group `beforeAll` that re-runs on every attempt. A clean first run cancels
+  // nothing.
+  //
+  // Full admin matters twice over: opting out of the cancellation email is
+  // booking-management-admin only, and every date here is in the past, so the
+  // started-stay block (#2029) has to be waived — which it is for ADMIN only.
+  // Matched against the booker as OWNER, and the sweep covers every check-in
+  // that can hold one of this run's nights, not just attempt 0's.
+  await cancelMemberBookingsOnDate(adminContext.request, {
+    memberName: `${personas.booker.firstName} ${personas.booker.lastName}`,
+    checkIn: pastStayLeftoverCheckIns(),
   });
 
   // A retroactive (cross-month) create can trigger the reconcile sweep to
@@ -251,28 +265,37 @@ test("an admin records a past stay on behalf of a member without emailing them",
 test("a member's own /book calendar keeps past days disabled", async () => {
   const page = await memberContext.newPage();
   await page.goto("/book");
-  await dismissDetailsGateIfShown(page);
+  // The shared gate helper, not a local copy (#2626). This test used to carry its
+  // own two-branch version that only knew the "Confirm details are correct" and
+  // "Confirm and finish" steps, and sampled them in the same tick the dialog
+  // title appeared. Alice's demo-seed profile is missing a date of birth and a
+  // postal address, so the gate actually opens on its PROFILE step — "Save and
+  // continue", which the copy had no branch for — and it sat there open with the
+  // whole page behind the modal overlay and out of the accessibility tree. Then
+  // the walk below could not find the calendar at all and hung on a click.
+  //
+  // It passed in hosted CI only because the full suite runs
+  // `admin-override-dates.spec.ts` first, and that spec's `bookSelfToReviewStep`
+  // completes Alice's onboarding through this same shared helper. Run this spec on
+  // its own — which is exactly how it is run while working on it — and the gate is
+  // still outstanding.
+  await completeMemberDetailsGateIfShown(page);
   await expect(page.getByText("Select Your Dates")).toBeVisible();
 
-  // Step back one month; every day there is in the past and must be disabled for
-  // a member (no retroactive flag on the member calendar).
+  // Step back to a month whose every day is in the past, and which must therefore
+  // be entirely disabled for a member (no retroactive flag on the member
+  // calendar). isoDay(-32) is one or two months back depending on the run date,
+  // so three hops is the bound — and, unlike before, running out of them now
+  // fails on the month it could not reach instead of silently walking on to
+  // assert against a day button that is not rendered.
   const lastMonth = isoDay(-32);
-  const [y, m] = lastMonth.split("-").map(Number);
-  const monthHeading = new Date(y, m - 1).toLocaleDateString("en-NZ", {
-    month: "long",
-    year: "numeric",
+  await walkCalendarToMonth(page, {
+    target: lastMonth,
+    direction: "previous",
+    maxHops: 3,
+    context: `the fully-past month holding ${lastMonth}`,
   });
-  for (let hops = 0; hops < 3; hops += 1) {
-    if (
-      await page
-        .getByRole("heading", { name: monthHeading })
-        .isVisible()
-        .catch(() => false)
-    ) {
-      break;
-    }
-    await page.getByRole("button", { name: /Prev/ }).click();
-  }
+
   const pastDay = page.getByRole("button", { name: calendarDayLabel(lastMonth) });
   await expect(pastDay).toBeDisabled();
   await page.close();

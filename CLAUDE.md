@@ -171,4 +171,20 @@ typecheck-clean PR can still fail on them:
   read-only change.
 
 Both parse the PR body, so **editing the body alone does not re-run Actions** —
-push an empty commit after fixing one.
+push an empty commit after fixing one. That makes a wrong body expensive: each
+attempt costs a full CI cycle and each gate reports only its FIRST failure, so a
+body with three format problems takes three cycles to discover them.
+
+**Write the body to a file and check it before you open the PR:**
+
+```bash
+npm run pr:check -- /path/to/body.md      # runs BOTH gates offline, in ~1s
+gh pr create --body-file /path/to/body.md # same file, once it passes
+```
+
+It calls the same exported validators the `verify` job runs, reports both gates
+rather than stopping at the first, and needs no network or PR to exist. Two rules
+cause nearly every failure: the headings and field labels are matched **exactly**
+(copy them from `.github/pull_request_template.md`, do not reword), and each
+field's value must sit on the **same line as its label** — a value wrapped onto
+the next line reads as empty.

@@ -60,24 +60,57 @@ export const AUDIT_CENSUS_TOTALS = {
    * record of who held the claim the transition destroys. Categorised `privacy`
    * at the site, so it does not join `UNCATEGORISED_AUDIT_WRITERS` below.
    *
-   * 419 -> 421 (#2621): the expected-arrival-time route recorded nothing at all,
+   * 419 -> 420 (#2623): the waitlist-confirm route records
+   * `waitlist.confirm_offer_release_failed` when its compensating offer release
+   * cannot run, because that state is operator-only — no cron sweeps it and the
+   * member has nothing to retry — so the audit row IS the recovery surface. It is
+   * categorised `booking`, `critical` severity, and carries `entityType`/`entityId`
+   * so it correlates to the booking. (#2627 and #2623 landed in the same window and
+   * both claimed 419; the pin has to count BOTH, which is exactly what this file
+   * exists to catch.)
+   *
+   * 419 -> 420 (#2352 MC-03D): deleting a page-content page writes
+   * `PAGE_CONTENT_DELETED` inside the delete's own transaction, because the row
+   * carries the deleted page's whole `before` snapshot and is the only record of
+   * what was removed. Written with `buildStructuredAuditLogCreateArgs` through
+   * `tx.auditLog.create`, matching the three sibling writes already in that
+   * route rather than introducing a fourth form; categorised `admin` at the
+   * site, so it does not join `UNCATEGORISED_AUDIT_WRITERS` below.
+   *
+   * 420 -> 421 on the MERGE, and this is the gate earning its keep for the second
+   * time in one window. #2623 and this change each measured 419 -> 420 against a
+   * base without the other, so both literals read `420` — byte-identical, which
+   * means git resolved the VALUE silently and only the comments above collided.
+   * The merged tree has both writers, so the honest number is 421. It came from
+   * running the census after the merge; adding the two deltas up would have got
+   * there by luck, and reading either side's literal would have shipped a pin
+   * that was quietly one short.
+   *
+   * 421 -> 423 (#2621): the expected-arrival-time route recorded nothing at all,
    * and a Booking Officer may set that field on ANY member's booking (#1313
    * option A2) — so a member seeing a time they did not set had no way to learn
    * who set it. Its PUT and its DELETE now each write one `logAudit` row
    * (`booking.arrival-time.set` / `.clear`), categorised `booking` at the site,
-   * so neither joins `UNCATEGORISED_AUDIT_WRITERS` below.
+   * so neither joins `UNCATEGORISED_AUDIT_WRITERS` below. (Re-measured on merged
+   * tree, #2621: this branch's own pins were taken against a base that predated
+   * #2352, #2623 and #2627, so the literals here come from running the census
+   * after the merge rather than from adding the deltas up.)
    */
-  writeSites: 421,
+  writeSites: 423,
   /** Of those, sites whose event object carries no `category` key. */
   uncategorised: 82,
   /** Per-sink totals, so a shift between forms cannot cancel out in the total. */
   bySink: {
-    // 238 -> 240 (#2621): the two arrival-time writers, above.
-    logAudit: { total: 240, uncategorised: 69 },
+    // 238 -> 239 (#2623): the waitlist-confirm recovery marker, fire-and-forget
+    // outside every transaction because its own failure must not mask the strand.
+    // 239 -> 241 (#2621): the two arrival-time writers, above (re-measured on
+    // merged tree, #2621).
+    logAudit: { total: 241, uncategorised: 69 },
     // 101 -> 102 (#2627): the deletion-approval release, above.
     createAuditLog: { total: 102, uncategorised: 11 },
     createStructuredAuditLog: { total: 8, uncategorised: 0 },
-    "auditLog.create": { total: 71, uncategorised: 2 },
+    // 71 -> 72 (#2352 MC-03D): the page-content deletion, above.
+    "auditLog.create": { total: 72, uncategorised: 2 },
   },
   /**
    * Literal category values written, and by how many sites. The three `membership`
@@ -85,16 +118,27 @@ export const AUDIT_CENSUS_TOTALS = {
    * taxonomy, selectable by no reader — and are corrected in this change
    * (#2581 decisions 1 and 2), which is why `account` is 15 rather than 10 and
    * `security` is 16 rather than 15.
+   *
+   * `booking` is 82 rather than 79: #2623 added the stranded waitlist-confirm
+   * recovery marker above, and #2621 the two arrival-time rows below.
+   * Correlation reads of `booking` require `support` plus
+   * `bookings` (`AUDIT_CORRELATION_DOMAIN_AREAS`), which the lodge administrators
+   * who have to act on that row already hold — so this adds no reader who could not
+   * already see the booking the row names.
    */
   categoryValues: {
     account: 15,
-    // 79 -> 81 (#2621): `booking.arrival-time.set` and `.clear`. Read with
+    // 80 -> 82 (#2621): `booking.arrival-time.set` and `.clear`. Read with
     // `support:view` plus `bookings:view`, like every other booking row beside
-    // them, so this widens nobody's access.
-    booking: 81,
+    // them, so this widens nobody's access. (Re-measured on merged tree, #2621.)
+    booking: 82,
     payment: 16,
     family: 27,
-    admin: 117,
+    // 117 -> 118 (#2352 MC-03D): `PAGE_CONTENT_DELETED`. `admin` is the same
+    // category the three sibling page-content writes already use, and it is
+    // readable with support:view alone — so this widens nobody's access beyond
+    // what the page-content create/update rows beside it already grant.
+    admin: 118,
     security: 16,
     lodge: 16,
     xero: 19,

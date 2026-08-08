@@ -100,6 +100,10 @@ import { auth } from "@/lib/auth";
 import { checkCapacity, checkCapacityForGuestRanges } from "@/lib/capacity";
 import { logAudit } from "@/lib/audit";
 import { sendBookingModifiedEmail } from "@/lib/email";
+import {
+  fenceMemberFindMany,
+  recordingBookingDouble,
+} from "@/lib/__tests__/support/hosting-participant-fence-double";
 
 const mockedAuth = vi.mocked(auth);
 const mockedCheckCapacity = vi.mocked(checkCapacity);
@@ -139,6 +143,10 @@ function makeBooking(overrides: Record<string, unknown> = {}) {
   return {
     id: "bk1",
     memberId: "m1",
+    // Booking.lodgeId is NOT NULL in the schema, so a real row always carries
+    // one. Omitting it here let the hosting participant fence compare
+    // "bk1:m1:undefined" on both sides and pass vacuously (#2619).
+    lodgeId: "lodge-1",
     checkIn: CHECK_IN,
     checkOut: CHECK_OUT,
     status: "PAID",
@@ -197,15 +205,19 @@ const CURRENT_SEASON = [{
 }];
 
 function makeTx(booking: ReturnType<typeof makeBooking>) {
+  const fenceBooking = recordingBookingDouble(async () => booking);
   return {
     $executeRawUnsafe: vi.fn().mockResolvedValue(undefined),
     $executeRaw: vi.fn().mockResolvedValue(undefined),
     // #2364: the hosting review is reconciled inside the booking write, so
     // every prisma/tx double a booking path runs against needs this client.
     adultMemberHostingPolicy: { findMany: vi.fn().mockResolvedValue([]) },
+    // #2619: the participant fence re-reads the locked Member rows and each
+    // source booking's owner/lodge under the lock. An empty booking.findMany
+    // made it report drift on data that never changed.
     booking: {
-      findUnique: vi.fn().mockResolvedValue(booking),
-      findMany: vi.fn().mockResolvedValue([]),
+      findUnique: fenceBooking.findUnique,
+      findMany: fenceBooking.findMany,
       update: vi.fn().mockImplementation(({ data }) =>
         Promise.resolve({ ...booking, ...data, guests: booking.guests, payment: booking.payment })),
     },
@@ -237,8 +249,13 @@ function makeTx(booking: ReturnType<typeof makeBooking>) {
     // FULL type (role default) -> member rate; the built-in NON_MEMBER type
     // backs true non-members.
     member: {
-      findMany: vi.fn().mockImplementation(async (args: { where?: { id?: { in?: string[] } } }) =>
-        (args?.where?.id?.in ?? []).map((id) => ({
+      // #2619: the participant fence's id-only re-read is answered by the
+      // helper (which sorts, as the fence requires); every other member read —
+      // the rate resolver's — keeps the rows it always served. Merged into this
+      // one delegate deliberately: a second `member:` key in this literal would
+      // be silently overridden by whichever came last.
+      findMany: fenceMemberFindMany([], async (args: unknown) =>
+        ((args as { where?: { id?: { in?: string[] } } })?.where?.id?.in ?? []).map((id) => ({
           id,
           firstName: "Member",
           lastName: "Test",

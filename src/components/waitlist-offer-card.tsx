@@ -4,6 +4,12 @@ import { useState, useEffect } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { FocusedActionError } from "@/components/focused-action-error";
+import {
+  WAITLIST_CONFIRM_AWAITING_OPERATOR_MESSAGE,
+  WAITLIST_CONFIRM_RELEASED_UNAVAILABLE_MESSAGE,
+  isWaitlistConfirmAwaitingOperator,
+  isWaitlistOfferRevoked,
+} from "@/lib/waitlist-confirm-recovery-contract";
 
 interface WaitlistOfferCardProps {
   bookingId: string;
@@ -28,8 +34,16 @@ export function WaitlistOfferCard({
 }: WaitlistOfferCardProps) {
   const [confirming, setConfirming] = useState(false);
   const [error, setError] = useState("");
-  const [confirmationStatusUnconfirmed, setConfirmationStatusUnconfirmed] =
-    useState(false);
+  // Why the CTA is gone. `status-unverified` = we could not read the outcome, so
+  // another confirm might duplicate a write. `offer-consumed` = the server told
+  // us the offer no longer exists, so another confirm is guaranteed to fail with
+  // "Booking is not in WAITLIST_OFFERED status" (#2623 T8). Both hide the CTA and
+  // both offer the reload; only the heading and the copy differ, because the two
+  // situations are not the same thing and were previously conflated (the second
+  // one simply left the button live).
+  const [confirmSuppressed, setConfirmSuppressed] = useState<
+    "status-unverified" | "offer-consumed" | null
+  >(null);
   const [timeLeft, setTimeLeft] = useState("");
   // Refreshed quote after an OFFER_PRICE_CHANGED rejection; the member
   // re-confirms at this figure.
@@ -73,6 +87,11 @@ export function WaitlistOfferCard({
         code?: string;
         error?: string;
         updatedPriceCents?: number;
+        // #2623 T8 — the server's positive statement that the offer this card is
+        // showing has already been consumed.
+        offerRevoked?: boolean;
+        waitlistPlaceRestored?: boolean;
+        awaitingOperatorRecovery?: boolean;
       };
       try {
         data = (await res.json()) as typeof data;
@@ -106,6 +125,23 @@ export function WaitlistOfferCard({
         return;
       }
 
+      // #2623 T8 — BEFORE the generic refusal handler, and keyed on the flag
+      // rather than the code. `HOSTING_COVERAGE_PARTICIPANT_RETRY` arrives from
+      // two places: a phase-one refusal (the claim rolled back, the offer is
+      // still live, and keeping the CTA enabled is right) and a phase-two
+      // failure (the offer was already consumed). Only the flag distinguishes
+      // them, and without it this card invited a second click that could only
+      // ever answer "Booking is not in WAITLIST_OFFERED status".
+      if (isWaitlistOfferRevoked(data)) {
+        showOfferConsumedStatus(
+          data.error ||
+            (isWaitlistConfirmAwaitingOperator(data)
+              ? WAITLIST_CONFIRM_AWAITING_OPERATOR_MESSAGE
+              : WAITLIST_CONFIRM_RELEASED_UNAVAILABLE_MESSAGE),
+        );
+        return;
+      }
+
       if (
         data.code === "OFFER_PRICE_CHANGED" &&
         typeof data.updatedPriceCents === "number"
@@ -123,7 +159,13 @@ export function WaitlistOfferCard({
     setError(
       "The service response could not be read, so we could not verify whether this offer was confirmed. Reload the booking and check its current status before trying again.",
     );
-    setConfirmationStatusUnconfirmed(true);
+    setConfirmSuppressed("status-unverified");
+    setConfirming(false);
+  }
+
+  function showOfferConsumedStatus(message: string) {
+    setError(message);
+    setConfirmSuppressed("offer-consumed");
     setConfirming(false);
   }
 
@@ -177,12 +219,14 @@ export function WaitlistOfferCard({
           id="waitlist-confirm-error"
           error={error}
           heading={
-            confirmationStatusUnconfirmed
+            confirmSuppressed === "status-unverified"
               ? "Confirmation status could not be verified"
-              : undefined
+              : confirmSuppressed === "offer-consumed"
+                ? "This offer is no longer open"
+                : undefined
           }
           action={
-            confirmationStatusUnconfirmed ? (
+            confirmSuppressed !== null ? (
               <Button
                 type="button"
                 variant="outline"
@@ -196,7 +240,7 @@ export function WaitlistOfferCard({
         />
 
         <div className="flex gap-3">
-          {!confirmationStatusUnconfirmed ? (
+          {confirmSuppressed === null ? (
             <Button
               onClick={handleConfirm}
               disabled={confirming || isExpired}

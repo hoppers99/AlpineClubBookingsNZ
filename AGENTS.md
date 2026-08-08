@@ -227,8 +227,8 @@ before changing Next.js APIs or conventions.
   itself a load, it unmounts the very `PolicyScopeSelect` the admin just used,
   dropping keyboard focus to `<body>` mid-interaction. Started in the five
   Booking Policies sections (#2142) and rolled across most of the admin tree
-  (#2160, extended by #2168 and #2324): 263 of 312 `ViewOnlyActionButton` call
-  sites now opt out — 236 covered by a banner in the SAME file, 27 by a verified
+  (#2160, extended by #2168 and #2324): 264 of 313 `ViewOnlyActionButton` call
+  sites now opt out — 237 covered by a banner in the SAME file, 27 by a verified
   vouching parent (22 at a JSX render site, 5 through the guided-setup shell) —
   and 49 keep the per-button reason: dialog/popover contents, leaf toolbars,
   `member-credit-card.tsx`, whose finance scope differs from the member detail
@@ -366,6 +366,12 @@ an orchestrator with subagents, not a single agent doing everything inline:
 At the successful end of a meaningful piece of work:
 
 1. Push the branch and open a PR using `.github/pull_request_template.md`.
+   Write the body to a file and run `npm run pr:check -- <body-file>` FIRST: two
+   `verify` gates parse the body, each reports only its first failure, and a body
+   edit does not re-run Actions — so every format mistake costs a full CI cycle.
+   The check runs both gates offline in about a second. Copy the headings and
+   field labels verbatim (they are matched exactly) and keep each field's value
+   on the same line as its label.
 2. Monitor CI to green. Fix any failure (lint, typecheck, the `npm run knip`
    dead-code gate, `npm test`, build, migration-drift, and the
    dependency/secret/static scans) and push fixes until every required check
