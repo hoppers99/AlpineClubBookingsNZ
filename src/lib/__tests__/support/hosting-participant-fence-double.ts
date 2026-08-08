@@ -68,6 +68,49 @@ export function fenceHostingPolicyFindMany(
 }
 
 /**
+ * The live `Member` row the hosting EVALUATOR reads off a booking guest (#2675).
+ *
+ * `BOOKING_HOSTING_SELECT` hydrates `guests.member` with exactly these five
+ * columns, and `memberIsInGoodStanding` reads three of them. A guest fixture
+ * that carries `isMember: true` with no `member` relation is therefore a shape
+ * production cannot emit, and it does not fail honestly: `member !== null` is
+ * TRUE for `undefined`, so the predicate goes on to read `undefined.active` and
+ * the seam throws a `TypeError` instead of treating the guest as a non-member.
+ *
+ * That never showed while the fence doubles left the lodge's hosting mode at the
+ * resolver's `DISABLED` default, because `evaluateBookingAdultMemberHosting`
+ * builds no participants at all unless the mode is active. Pairing
+ * `fenceHostingPolicyFindMany` with a fixture whose guests carry this row is
+ * what makes a suite genuinely hosting-evaluable.
+ *
+ * ADULT AND IN GOOD STANDING by default, because that is the shape that keeps an
+ * existing suite's assertions intact: an adult member participant qualifies as a
+ * host, so a fixture whose guests are all members raises no hosting violation
+ * and the seam behaves exactly as it did with the rule off — while the fence in
+ * front of it is now genuinely exercised. Pass `overrides` to model a lapsed,
+ * archived or non-adult member deliberately, and `null` (not a partial row) to
+ * model a true non-member guest.
+ */
+export function hostingMemberRow(
+  id: string,
+  overrides: Partial<{
+    ageTier: string;
+    active: boolean;
+    cancelledAt: Date | null;
+    archivedAt: Date | null;
+  }> = {},
+) {
+  return {
+    id,
+    ageTier: "ADULT",
+    active: true,
+    cancelledAt: null,
+    archivedAt: null,
+    ...overrides,
+  };
+}
+
+/**
  * A source booking as the fence re-reads it.
  *
  * `lodgeId` is `string`, not `string | null`, deliberately: `Booking.lodgeId` is

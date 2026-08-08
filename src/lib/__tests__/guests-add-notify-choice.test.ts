@@ -101,7 +101,9 @@ import { checkCapacity, checkCapacityForGuestRanges } from "@/lib/capacity";
 import { logAudit } from "@/lib/audit";
 import { sendBookingModifiedEmail } from "@/lib/email";
 import {
+  fenceHostingPolicyFindMany,
   fenceMemberFindMany,
+  hostingMemberRow,
   recordingBookingDouble,
 } from "@/lib/__tests__/support/hosting-participant-fence-double";
 
@@ -166,6 +168,14 @@ function makeBooking(overrides: Record<string, unknown> = {}) {
         ageTier: "ADULT",
         isMember: true,
         memberId: "m1",
+        // #2675: the hosting evaluator reads the LIVE Member row off this
+        // relation, never the `isMember` snapshot beside it. A guest row that
+        // claims membership without one is a shape production cannot emit — the
+        // review's select always hydrates `member` — and it made
+        // `memberIsInGoodStanding` read `undefined.active` the moment an active
+        // hosting mode let the evaluator run.
+        consentStatus: null,
+        member: hostingMemberRow("m1"),
         priceCents: 20000,
         stayStart: CHECK_IN,
         stayEnd: CHECK_OUT,
@@ -211,7 +221,12 @@ function makeTx(booking: ReturnType<typeof makeBooking>) {
     $executeRaw: vi.fn().mockResolvedValue(undefined),
     // #2364: the hosting review is reconciled inside the booking write, so
     // every prisma/tx double a booking path runs against needs this client.
-    adultMemberHostingPolicy: { findMany: vi.fn().mockResolvedValue([]) },
+    // #2623 T5 / #2675: an ACTIVE mode, so the gate in front of the participant
+    // fence lets this seam reach it. `[]` here resolved to DISABLED and switched
+    // the fence off in the one suite that covers the guest-add route.
+    adultMemberHostingPolicy: {
+      findMany: fenceHostingPolicyFindMany({ mode: "ADMIN_REVIEW_REQUIRED" }),
+    },
     // #2619: the participant fence re-reads the locked Member rows and each
     // source booking's owner/lodge under the lock. An empty booking.findMany
     // made it report drift on data that never changed.
