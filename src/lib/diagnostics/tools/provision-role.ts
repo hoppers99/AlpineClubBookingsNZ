@@ -326,8 +326,12 @@ export const SELECT_GRANTS: readonly AiDiagnosticsSelectGrant[] = [
   {
     schema: "public",
     relation: "ProcessedWebhookEvent",
+    // Its surrogate `"id"` is deliberately NOT granted. The lease row's identity is
+    // `(source, eventId)` — a unique constraint — which is what the webhook timeline
+    // projects as its entry reference, so the surrogate key adds nothing a diagnostic
+    // needs and every column-granted relation in this allowlist stays strictly
+    // narrower than its table.
     columns: [
-      "id",
       "eventId",
       "source",
       "eventType",

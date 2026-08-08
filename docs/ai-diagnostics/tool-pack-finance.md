@@ -164,7 +164,7 @@ column** to `AuditLog`. Every one is granted **by column**.
 | `PaymentRecoveryOperation` | The platform's own queued refund/cancel debt and its attempt count. | `payment_attempt_ledger`, `payment_refund_state` |
 | `ManualRefundTask` | Money a person must hand back — no card to refund. | `payment_refund_state` |
 | `RefundRequest` | The member's own refund appeal and its decision. | `payment_refund_state` |
-| `ProcessedWebhookEvent` | The idempotency lease: was the webhook claimed, and did the handler finish? | `finance_webhook_timeline` |
+| `ProcessedWebhookEvent` | The idempotency lease: was the webhook claimed, and did the handler finish? Its surrogate `id` is **not** granted — the row's identity is its `(source, eventId)` unique constraint, and leaving the key out keeps every grant strictly narrower than its table. | `finance_webhook_timeline` |
 | `WebhookLog` | One row per delivery attempt — several for one event id is a redelivery. | `finance_webhook_timeline` |
 | `XeroInboundEvent` | Xero's own inbound ledger, matched on resource id or correlation key. | `finance_webhook_timeline` |
 | `XeroObjectLink` | What is linked in Xero, including links that were unlinked. | `xero_invoice_linkage`, `xero_contact_linkage` |

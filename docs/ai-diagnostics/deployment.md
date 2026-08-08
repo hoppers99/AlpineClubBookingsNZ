@@ -255,7 +255,7 @@ relations, and **every one of them is granted by column, never wholesale**:
 | `public."PaymentRecoveryOperation"` | 11 columns | the attempt ledger, the refund state |
 | `public."ManualRefundTask"` | 7 columns | the refund state |
 | `public."RefundRequest"` | 7 columns | the refund state |
-| `public."ProcessedWebhookEvent"` | 7 columns | the webhook timeline |
+| `public."ProcessedWebhookEvent"` | 6 columns (its surrogate `id` is deliberately not granted) | the webhook timeline |
 | `public."WebhookLog"` | 7 columns | the webhook timeline |
 | `public."XeroInboundEvent"` | 10 columns | the webhook timeline |
 | `public."XeroObjectLink"` | 10 columns | the Xero invoice and contact linkage tools |

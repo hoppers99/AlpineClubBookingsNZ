@@ -563,10 +563,18 @@ const WEBHOOK_TIMELINE_ROW_LIMIT = 14;
  * that reference at all, which — for a payment that Stripe says succeeded — is
  * the finding, not a failure of the tool. The scope line says so, because
  * `not_found` alone would read as "there is nothing to report".
+ *
+ * THE LEASE ARM'S ENTRY REFERENCE IS ITS EVENT ID, NOT ITS SURROGATE KEY.
+ * `ProcessedWebhookEvent."id"` is not granted: the row's identity is its
+ * `(source, eventId)` unique constraint, both halves of which this statement
+ * filters to one value, so the arm contributes at most one row and the ordering
+ * stays total without it. Leaving the surrogate ungranted also keeps every
+ * column-granted relation in the allowlist strictly narrower than its table,
+ * which is the property the real-PostgreSQL proof asserts relation by relation.
  */
 const WEBHOOK_TIMELINE_SQL = `SELECT
   'processing_lease' AS entry_kind,
-  w."id" AS entry_ref,
+  w."eventId" AS entry_ref,
   w."source" AS provider_code,
   w."eventType" AS event_type,
   w."eventId" AS event_ref,
