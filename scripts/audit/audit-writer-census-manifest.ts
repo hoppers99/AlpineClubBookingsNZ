@@ -182,6 +182,38 @@ export const AUDIT_CENSUS_TOTALS = {
    * Re-measured on the merged tree by RUNNING `npm run audit:census`, never by
    * adding deltas: 427 row-producing sites, `logAudit` 241, `createAuditLog`
    * 108, `auditLog.create` 70, `booking` 101, uncategorised 0.
+   *
+   * 426 -> 426 (#2677), on `main`, and kept here because the lesson is this
+   * manifest's and not that PR's. Recorded even though nothing moved, for the
+   * same reason the view-only ledger records its no-op merges: "the figures did
+   * not move" is worth something only when somebody RAN the census to find that
+   * out. #2677 adds no audit writer, and the census on ITS merged tree reported
+   * 426 / `logAudit` 240 / `createAuditLog` 106 / `auditLog.create` 72 /
+   * `createStructuredAuditLog` 8 / uncategorised 82 — every pin unchanged there.
+   *
+   * But the collision fired anyway, on the PROSE half, which this manifest had
+   * never covered. The total has THREE prose copies and no test reads any of
+   * them: `docs/ai-diagnostics/tool-pack-support.md`,
+   * `docs/guides/audit-log.md`, and the `support-correlation.ts` docblock.
+   * #2677's branch had set all three to 425; #2649 on `main` corrected only the
+   * first. So that merge conflicted on the one file both sides had edited — the
+   * lucky case — and merged the other two CLEANLY at 425 against a tree that
+   * said 426. Same shape as the byte-identical `bySink.createAuditLog` merge
+   * above, minus the luck: there, two equal literals hid a real disagreement;
+   * here, two unedited-on-`main` copies hid a real correction. The durable
+   * lesson is the one this manifest already exists to teach, extended one file
+   * class outward: a figure that no test reads WILL drift, and a clean merge of
+   * a measured figure is not agreement.
+   *
+   * 427 -> 427 (#2677 merged into this branch). All three prose copies plus this
+   * ledger conflicted on that merge — the lucky case in every file, because this
+   * branch had rewritten each of them for the 82 -> 0 sweep while #2677 was
+   * correcting the same sentences. Every conflict was resolved to this branch's
+   * text, which already reads 427 / 0, and the result was re-measured by RUNNING
+   * `npm run audit:census`: 427 row-producing sites, `logAudit` 241,
+   * `createAuditLog` 108, `auditLog.create` 70, `createStructuredAuditLog` 8,
+   * uncategorised 0 — unchanged, because #2670 and #2677 add no audit writer
+   * between them. `filesScanned` moved 1894 -> 1895 for #2670's new module.
    */
   writeSites: 427,
   /**
