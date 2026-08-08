@@ -433,8 +433,11 @@ async function resolveLodgeIdsForRooms(
  * never drafts either row; this is the write-layer proof of that rather than a
  * reliance on the unique index to notice.
  *
- * Runs AFTER the displacements are applied, so a bed the plan legitimately
- * freed reads as free here. Anything still occupied is a genuine disagreement
+ * Runs BEFORE the displacements are applied (#2669 review F1). It can, because
+ * the caller's exclusion set names the SOURCE bed of every planned
+ * displacement, so a bed the plan is about to free already reads as free here
+ * without depending on the write having happened. Anything still occupied,
+ * after that exclusion, is a genuine disagreement
  * between the plan and the database (a concurrent writer, or a planner
  * regression), and refusing the row leaves the guest-night in the
  * awaiting-allocation queue for the next reconcile — the same posture as the
@@ -448,13 +451,20 @@ async function dropRowsOnOccupiedBedNights<
   context: {
     bookingId: string;
     /**
-     * Guest-nights (`bookingGuestId:stayDate`) this apply has already moved off
-     * or deleted. Their rows are gone from the bed-nights they were occupying,
-     * so an occupancy read must not count them — and this is asserted in JS
-     * rather than assumed from read-your-own-writes, so the filter is correct
-     * on a caller's client whatever its visibility semantics.
+     * The occupant slots this apply has already vacated, keyed
+     * `sourceBedId:bookingGuestId:stayDate` — the bed each displaced row was on
+     * BEFORE the displacement ran.
+     *
+     * The source bed has to be part of the key (#2669 review). This read runs
+     * after the displacements on the same client, so a DELETEd row is already
+     * gone and this exclusion is only belt-and-braces for it; but a MOVEd row
+     * still exists, at its NEW bed. Keyed by guest-night alone the exclusion
+     * would strike that row out too, and the MOVE's DESTINATION bed-night would
+     * read as free — admitting a payload row onto an occupied bed, which is the
+     * one outcome this whole function exists to prevent. Keyed by source bed the
+     * exclusion only ever forgives an occupant found where it used to be.
      */
-    displacedGuestNights?: Set<string>;
+    vacatedOccupantSlots?: Set<string>;
   },
 ): Promise<TRow[]> {
   if (rows.length === 0) return rows;
@@ -467,13 +477,13 @@ async function dropRowsOnOccupiedBedNights<
   });
   if (occupants.length === 0) return rows;
 
-  const displaced = context.displacedGuestNights;
+  const vacated = context.vacatedOccupantSlots;
   const takenKeys = new Set(
     occupants
       .filter(
         (occupant) =>
-          !displaced?.has(
-            `${occupant.bookingGuestId}:${formatDateOnly(occupant.stayDate)}`,
+          !vacated?.has(
+            `${occupant.bedId}:${occupant.bookingGuestId}:${formatDateOnly(occupant.stayDate)}`,
           ),
       )
       .map(
@@ -895,8 +905,13 @@ async function autoAllocateMissingBedNights({
     // input, so its input must be deterministic too: without an ORDER BY,
     // PostgreSQL may return the two rows of a shared DOUBLE — or any two rows —
     // in either order between runs, and seeding order reaches per-booking row
-    // iteration and bed-stability preferences. `(bookingGuestId, stayDate)` is
-    // unique, so `id` is only a formal tie-break that can never actually fire.
+    // iteration and bed-stability preferences.
+    //
+    // `(bedId, stayDate)` is NOT unique, and that is this issue's whole premise:
+    // a shared DOUBLE puts TWO rows on one bed-night. So `id` is not a formal
+    // tie-break here — it is the real discriminator, in exactly the case this
+    // ordering was added for. `(bookingGuestId, stayDate)` IS unique, so the
+    // three columns together are a total order over the result set.
     orderBy: [{ stayDate: "asc" }, { bedId: "asc" }, { id: "asc" }],
     select: {
       bedId: true,
@@ -1291,11 +1306,47 @@ async function autoAllocateMissingBedNights({
       return { count: 0, applied: false, appliedDisplacements: [] };
     }
 
+    // Never write onto a bed-night that is still occupied — see
+    // dropRowsOnOccupiedBedNights.
+    //
+    // This runs BEFORE the displacements are applied (#2669 review F1), not
+    // after. It can afford to, because its exclusion set is asserted in JS
+    // against the SOURCE bed of each planned displacement rather than read out
+    // of the database, so a bed this plan is about to free already reads as
+    // free here. Running it afterwards meant an emptied payload left the
+    // displacements committed and audited: a provisional booking evicted, and
+    // an audit saying its bed was returned "so a capacity-holding booking could
+    // claim it", for an allocation that was then never written.
+    //
+    // The exclusion set is the FULL planned list rather than the justified
+    // subset, which is not yet known — and that is sound in the only direction
+    // that matters. A displacement is dropped as unjustified precisely when NO
+    // surviving payload row claims a bed-night its booking frees, so forgiving
+    // its occupant here can never admit a row onto a bed that stays occupied.
+    const writable = await dropRowsOnOccupiedBedNights(client, data, {
+      bookingId,
+      // Keyed by the SOURCE bed, so a MOVE's destination is never forgiven —
+      // see the parameter's docblock. `fromBedId` is the planner's view; where
+      // the database disagreed, the row simply is not excluded and its
+      // bed-night reads as taken, which is the conservative direction.
+      vacatedOccupantSlots: new Set(
+        displacements.map(
+          (displacement) =>
+            `${displacement.fromBedId}:${displacement.bookingGuestId}:${displacement.stayDate}`,
+        ),
+      ),
+    });
+    if (writable.length === 0) {
+      // Nothing will be written, so nothing may be displaced for it.
+      return { count: 0, applied: false, appliedDisplacements: [] };
+    }
+
     // Only the displacements the re-checked payload still needs (see
-    // `justifiedDisplacements`). A row dropped by a write-time re-filter takes
-    // its displacement down with it rather than leaving a provisional booking
-    // evicted for a bed nobody ends up in.
-    const applicable = justifiedDisplacements(data);
+    // `justifiedDisplacements`). A row dropped by a write-time re-filter — the
+    // unallocatable-booking re-check, either hold re-filter, or the occupancy
+    // filter above — takes its displacement down with it rather than leaving a
+    // provisional booking evicted for a bed nobody ends up in.
+    const applicable = justifiedDisplacements(writable);
     if (applicable.length < displacements.length) {
       logger.info(
         {
@@ -1403,25 +1454,6 @@ async function autoAllocateMissingBedNights({
       await recordPartnerPromotionAudit(client, partner);
     }
 
-    // Never write onto a bed-night that is still occupied — see
-    // dropRowsOnOccupiedBedNights. Deliberately AFTER the displacements, so a
-    // bed this plan legitimately freed reads as free.
-    const writable = await dropRowsOnOccupiedBedNights(client, data, {
-      bookingId,
-      displacedGuestNights: new Set(
-        applicable.map(
-          (displacement) =>
-            `${displacement.bookingGuestId}:${displacement.stayDate}`,
-        ),
-      ),
-    });
-    if (writable.length === 0) {
-      return {
-        count: 0,
-        applied: true,
-        appliedDisplacements: applicable,
-      };
-    }
     const created = await client.bedAllocation.createMany({
       ...createManyArgs,
       data: writable,

@@ -164,7 +164,11 @@ const WHOLE_LODGE_GUARDED_WRITE_SITES: Array<{
     statement: "bedAllocation.updateMany",
     mechanism:
       "The displacement MOVE writes `bedId: displacement.toBedId`, and a displacement is applied only when the RE-CHECKED payload still claims the bed-night it frees — so a MOVE cannot survive the re-filter that dropped the row it was clearing the way for.",
-    evidence: "const applicable = justifiedDisplacements(data);",
+    // #2669 review F1: the justification is now computed from `writable` — the
+    // payload AFTER the occupancy filter, not just after the hold re-filters —
+    // so a row dropped by any write-time re-check takes its displacement with
+    // it. Strictly stronger than the `data` it replaced; same mechanism.
+    evidence: "const applicable = justifiedDisplacements(writable);",
   },
 ];
 

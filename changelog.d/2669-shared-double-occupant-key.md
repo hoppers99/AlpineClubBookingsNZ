@@ -17,16 +17,23 @@
   A bed only becomes free when the last person in it leaves; moving one occupant
   of a shared double aside frees no beds and no longer counts toward making a
   room look big enough; a double counts as one freed bed once both occupants
-  have gone; and a bed shared between two different bookings is never chosen as
-  somewhere to move a booking out of. A confirmed guest who genuinely cannot be
-  seated is now reported as awaiting allocation instead of disappearing.
+  have gone; and when a single bed is wanted, a bed shared between two different
+  bookings is never chosen as somewhere to move a booking out of, because moving
+  one of the two would not free it. (Clearing a whole room is different by
+  design: there both bookings on the shared double are moved together, or the
+  room is left alone.) A confirmed guest who genuinely cannot be seated is now
+  reported as awaiting allocation instead of disappearing.
 
   Two related repairs ship with it. If automatic allocation moves or removes the
   first occupant of a shared double, the remaining partner is promoted to the
   main place on that bed, as already happens everywhere else a shared double
   loses its primary — previously this one path left the bed stuck. And the write
   step now refuses outright to place a guest on a bed the database still shows
-  as occupied, rather than relying on a database constraint to notice.
+  as occupied, rather than relying on a database constraint to notice. That
+  refusal is checked before anything is moved, so when it does refuse, no
+  booking is moved aside for it: an officer can no longer find a booking's bed
+  taken away, with a note saying it was needed for a confirmed booking, when no
+  such booking was ever placed there.
 
   Nothing about how beds are counted, priced, or shown has changed, and no
   existing allocation is rewritten. Where the planner used to make a wrong

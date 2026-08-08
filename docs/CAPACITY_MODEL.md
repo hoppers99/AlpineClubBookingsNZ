@@ -506,9 +506,26 @@ still without creating a single row.
      rows or bookings displaced.
   2. The double counts as **one** freed bed once BOTH occupant slots are gone —
      one bed, not two, even when both occupants belong to the same booking.
-  3. A bed-night whose occupants span more than one booking is never a
-     displacement target at all, and an eviction that turns out to free nothing
-     is dropped from the plan rather than displacing a booking for nothing.
+  3. On the **single-bed claim path** — `tryDisplaceForHeldGuestNight`, which
+     claims ONE bed-night by evicting exactly ONE booking — a bed-night whose
+     occupants span more than one booking is never a displacement target at
+     all. Only one of the two would go, so the bed would not actually be freed,
+     and taking it anyway is how a stranger ends up written in beside someone
+     else's second occupant.
+
+     The **whole-stay room path** — `planEvictionsForRoom` — deliberately does
+     the opposite, and rules 1 and 2 are what make that safe. It clears a whole
+     room by evicting a SET of bookings, so it makes EVERY occupant of a
+     candidate bed-night an eviction candidate, including both occupants of a
+     shared double held by two different bookings. It never gains the bed
+     until all of them are in the set, because credit is counted in beds freed
+     (rule 1): either both bookings on that double are displaced together, or
+     the room is never chosen. So a shared double CAN be vacated across two
+     bookings — by the path that takes both — and can never be half-vacated by
+     either path.
+
+     Either way, an eviction that turns out to free nothing is dropped from the
+     plan rather than displacing a booking for nothing.
 
   `permanentlyOccupied` is still needed for the hold case above: an occupancy
   with no row behind it cannot be represented as an occupant slot.

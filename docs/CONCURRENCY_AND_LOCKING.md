@@ -1848,12 +1848,27 @@ audited for a placement that never happened — and against a surviving SECOND
 occupant there is no duplicate to skip at all, so the row is created and an
 unrelated person lands in a double beside someone else's partner. Both payload
 writes therefore re-read the live occupancy of their target bed-nights on the
-writing client, AFTER the displacements have been applied so a bed this plan
-legitimately freed still reads as free, and drop any row whose bed-night is
-still occupied — logging the disagreement at error level, since the corrected
-planner should never produce one. The same apply also promotes any second
-occupant its displacements orphan, on the same client, so the shared-double
-invariant in DOMAIN_INVARIANTS.md holds on this path like every other.
+writing client and drop any row whose bed-night is still occupied — logging the
+disagreement at error level, since the corrected planner should never produce
+one.
+
+That occupancy filter runs **before** the displacements are applied, and it
+must. Its exclusion set is asserted in JS against the SOURCE bed of each
+planned displacement rather than read back out of the database, so a bed the
+plan is about to free already reads as free to it; running it afterwards left
+the displacements committed when the filter then emptied the payload, so a
+provisional booking was evicted, and audited as displaced "so a capacity-holding
+booking could claim it", for an allocation that was never written. The
+justification pass (`justifiedDisplacements`) therefore consumes the FILTERED
+payload: a row dropped by ANY write-time re-check — unallocatable booking,
+custodian hold, whole-lodge hold, or still-occupied bed-night — takes its
+displacement down with it. The exclusion is keyed
+`sourceBedId:bookingGuestId:stayDate` rather than by guest-night alone, because
+a MOVEd row still exists at its NEW bed and a guest-night-only key would forgive
+it there, making the MOVE's destination read as free. The same apply also
+promotes any second occupant its displacements orphan, on the same client, so
+the shared-double invariant in DOMAIN_INVARIANTS.md holds on this path like
+every other.
 `existingAllocations` is ordered `(stayDate, bedId, id)` for the same family of
 reasons: the planner is pure and deterministic, so its input must be too, and
 an unordered read returned a shared double's two rows in either order.

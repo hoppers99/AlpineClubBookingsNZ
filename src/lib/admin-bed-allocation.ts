@@ -3576,6 +3576,14 @@ async function classifyBedTakenNights(input: {
       stayDate: { in: input.candidateNights.map(parseDateOnly) },
       bookingGuestId: { not: input.guest.id },
     },
+    // The PRIMARY of a shared DOUBLE must sort first, deterministically (#2669
+    // review). `byNight` below preserves this order and the `BED_TAKEN` refusal
+    // names `occupants[0]`; without an ORDER BY, `(bedId, stayDate)` is not
+    // unique on a shared double (#1701/#2656) so PostgreSQL could return the
+    // SECOND occupant first and the refusal would name the partner rather than
+    // the guest who actually holds the bed. `false` sorts before `true`, and
+    // `bookingGuestId` is a total order within a bed-night.
+    orderBy: [{ isSecondOccupant: "asc" }, { bookingGuestId: "asc" }],
     select: {
       stayDate: true,
       isSecondOccupant: true,

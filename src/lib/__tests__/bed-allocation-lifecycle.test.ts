@@ -4633,8 +4633,7 @@ describe("shared double invariants on the apply path (#2656)", () => {
     // `createMany({ skipDuplicates: true })` is not a safety mechanism: against
     // a surviving SECOND occupant there is no duplicate to skip, and the row
     // would be created — an unrelated person in a double beside someone else's
-    // partner. The payload is filtered instead, on the writing client, after
-    // the displacements have been applied.
+    // partner. The payload is filtered instead, on the writing client.
     const db = displacementDb({
       occupiedTargets: [{ bedId: "bed-a2", bookingGuestId: "stranger-g1" }],
     });
@@ -4646,6 +4645,22 @@ describe("shared double invariants on the apply path (#2656)", () => {
 
     expect(db.bedAllocation.createMany).not.toHaveBeenCalled();
     expect(result.createdCount).toBe(0);
+
+    // ...and NOTHING was displaced for that write (#2669 review F1). The filter
+    // runs BEFORE the displacements, so an emptied payload takes its
+    // displacements down with it. Applying them first would evict a real
+    // provisional booking, and audit it as displaced "so a capacity-holding
+    // booking could claim it", for a claim that then never happened — the exact
+    // state `justifiedDisplacements` exists to prevent.
+    for (const call of db.bedAllocation.deleteMany.mock.calls) {
+      expect(call[0]?.where?.bookingGuestId).toBeUndefined();
+    }
+    expect(db.bedAllocation.updateMany).not.toHaveBeenCalled();
+    for (const call of db.auditLog.create.mock.calls) {
+      expect(call[0]?.data?.action).not.toBe(
+        "bed_allocation.provisional_displaced",
+      );
+    }
   });
 
   it("still writes when the only occupant of the target bed-night is the row this apply just displaced", async () => {

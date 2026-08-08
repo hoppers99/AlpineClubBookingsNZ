@@ -825,8 +825,12 @@ derivation).
   collapsing it — occupant identity is keyed `bedId:stayDate:bookingGuestId`,
   distinct from the `bedId:stayDate` capacity key — so it never frees a
   bed-night one of the pair still occupies, never treats a bed-night whose
-  occupants span two bookings as a displacement target, and counts an emptied
-  double as one freed bed (see docs/CAPACITY_MODEL.md). Auto-allocation never
+  occupants span two bookings as a SINGLE-BED displacement target, and counts an
+  emptied double as one freed bed. (The whole-stay room path is deliberately
+  different: it makes every occupant of a bed-night an eviction candidate and
+  gains the bed only once ALL of them are in the eviction set, so both bookings
+  on a shared double are displaced together or the room is not chosen — see
+  docs/CAPACITY_MODEL.md rule 3.) Auto-allocation never
   creates a second occupant; every other bed type stays exactly one occupant per
   night. DB-enforced without CHECK constraints:
   `@@unique([bedId, stayDate, isSecondOccupant])` caps a bed-night at ≤2 rows and
