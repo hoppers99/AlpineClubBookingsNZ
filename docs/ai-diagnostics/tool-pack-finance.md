@@ -7,7 +7,7 @@ application's own authoritative booking-finance calculation. Delivered under iss
 
 Read [tools.md](tools.md) first, and [tool-pack-support.md](tool-pack-support.md)
 for the substrate's first pack. This page covers only what this pack adds — its
-permissions, its evidence sources, its projections, its bounds, the eleven
+permissions, its evidence sources, its projections, its bounds, the twelve
 relations it argues for, and the questions it deliberately **cannot** answer.
 
 ## What an administrator can ask it
@@ -153,8 +153,9 @@ of its inputs would be a fabricated answer, not an absent one.
 
 ## The relation grants
 
-This pack adds **eleven** relations to the `SELECT_GRANTS` allowlist and **one
-column** to `AuditLog`. Every one is granted **by column**.
+This pack adds **twelve** relations to the `SELECT_GRANTS` allowlist — taking it
+from one relation to thirteen — and **one column** to `AuditLog`. Every entry,
+including the one AID-6A already had, is granted **by column**.
 
 | Relation | Why | The tool that needs it |
 | --- | --- | --- |
@@ -429,7 +430,7 @@ extend the test.
 
 | Symptom | Likely cause | What to do |
 | --- | --- | --- |
-| Every finance tool fails; readiness says `over_privileged` | This release added eleven relation grants and provisioning has not been re-run | `npm run diagnostics:provision-role`, then re-check readiness |
+| Every finance tool fails; readiness says `over_privileged` | This release added twelve relation grants and provisioning has not been re-run | `npm run diagnostics:provision-role`, then re-check readiness |
 | A Finance Officer is told no diagnostics tool is available | Their access role has `finance` but the module or the diagnostics credential is not set up | `diagnostics.readiness` (needs `support:view`) reports the blocker |
 | `booking_finance_state` is refused but the other finance tools work | The caller lacks `bookings:view` | The denial names the missing area; the per-payment tools still answer |
 | `xero_contact_linkage` is refused | The caller lacks `membership:view` | Same — it is the only member-keyed entry |

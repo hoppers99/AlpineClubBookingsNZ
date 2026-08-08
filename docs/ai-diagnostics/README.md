@@ -91,7 +91,7 @@ admission, AND across cross-area tools, fail-closed) in
 | Authoritative booking-finance state (AID-6C, #2377) | `finance:view` **and** `bookings:view` |
 
 AID-6C is delivered: see [tool-pack-finance.md](tool-pack-finance.md) for its ten
-entries, the eleven relation grants they argue for, and the finance questions this
+entries, the twelve relation grants they argue for, and the finance questions this
 platform stores no evidence to answer.
 
 ## Architecture decision records

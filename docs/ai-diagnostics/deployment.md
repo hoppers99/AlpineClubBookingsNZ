@@ -243,7 +243,7 @@ The script also does not create the database, the app role, or any view.
 
 The allowlist lives in `SELECT_GRANTS` (`src/lib/diagnostics/tools/provision-role.ts`),
 in public code, so "which relations — and which columns of them — can Diagnostics
-read" is answerable by reading one file. As of AID-6C (#2377) it names **twelve**
+read" is answerable by reading one file. As of AID-6C (#2377) it names **thirteen**
 relations, and **every one of them is granted by column, never wholesale**:
 
 | Relation | Granted | Read by |
@@ -267,7 +267,7 @@ Every other relation in the schema is unreadable — including `IntegrationCrede
 access and refresh tokens. Both are permanently out of scope under ADR-007 §1 and no
 tool pack may grant them.
 
-So is every other **column** of the twelve. The grants are by column, so as the
+So is every other **column** of the thirteen. The grants are by column, so as the
 diagnostics role `SELECT "ipAddress" FROM "AuditLog"`, `SELECT "email" FROM "Member"`,
 `SELECT "payload" FROM "XeroInboundEvent"` and `SELECT *` from any of them are all
 refused by PostgreSQL with `42501`. The operator CLI prints the declared grants,

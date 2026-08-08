@@ -133,7 +133,7 @@ export interface AiDiagnosticsSelectGrant {
  * calculations the application already owns (`packs/support-evidence.ts`), which is
  * also the only way readiness can report on the diagnostics credential itself.
  *
- * AID-6C (#2377) adds ELEVEN relations, all BY COLUMN, and one column to
+ * AID-6C (#2377) adds TWELVE relations, all BY COLUMN, and one column to
  * `AuditLog`. Every one of them is argued in
  * `docs/ai-diagnostics/tool-pack-finance.md` with the exact tool that needs it and
  * the exact fields it projects; the short version, and the four classes of column
@@ -163,7 +163,7 @@ export interface AiDiagnosticsSelectGrant {
  * OAuth access and refresh tokens) are not granted, not readable, and not
  * grantable by any tool pack.
  *
- * The eleven, and the tool that argues for each:
+ * The twelve, and the tool that argues for each:
  *
  *  - `Payment` — the pack's spine. Searched by `finance_payment_search` and
  *    `finance_payment_amount_search`, returned in full by

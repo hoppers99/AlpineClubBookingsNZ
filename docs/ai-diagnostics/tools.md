@@ -74,14 +74,14 @@ The remaining domain tools arrive in their own child so they get their own
 permission review and their own table grants: AID-6B (#2376,
 booking/membership/induction/bed allocation).
 
-The `SELECT` grant allowlist therefore names **twelve** relations today, and every
+The `SELECT` grant allowlist therefore names **thirteen** relations today, and every
 one of them is granted **by column, never wholesale**: `public."AuditLog"` (nine
-columns) plus the eleven finance relations AID-6C argues for one at a time, of which
+columns) plus the twelve finance relations AID-6C argues for one at a time, of which
 `public."Member"` is the narrowest — `id` and `xeroContactId`, and nothing else.
 Everything else in the schema is unreadable by the diagnostics role, including
 `IntegrationCredential` (encrypted provider secrets) and `XeroToken` (**plaintext**
 OAuth access and refresh tokens), both permanently out of scope under ADR-007 §1.
-And so is every other column of the twelve: the grants are by column, so
+And so is every other column of the thirteen: the grants are by column, so
 `SELECT "ipAddress" FROM "AuditLog"`, `SELECT "email" FROM "Member"` and
 `SELECT "payload" FROM "XeroInboundEvent"` are each refused by PostgreSQL itself.
 
@@ -546,7 +546,7 @@ failing.
   their projections, and the one table grant they argue for.
 - [Finance and Xero tool pack (AID-6C)](tool-pack-finance.md) — bounded record
   selection, per-record payment/refund/webhook/Xero evidence, the authoritative
-  booking-finance calculation, the eleven relation grants, and the questions this
+  booking-finance calculation, the twelve relation grants, and the questions this
   platform stores no evidence for.
 - [Deployment and operator guide](deployment.md) — provisioning the role, rotating
   the password, and what readiness reports.

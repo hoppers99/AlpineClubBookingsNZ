@@ -354,7 +354,7 @@ describe("AID-6C finance pack: the grant allowlist matches the SQL (#2377)", () 
     }
   });
 
-  it("declares the eleven relations AID-6C argued for, and no more", () => {
+  it("declares the thirteen allowlist relations, and no more", () => {
     // A census, not a threshold: a new relation appearing in the allowlist without
     // this list moving is reach nobody reviewed.
     expect([...grantedRelations].sort()).toEqual([
