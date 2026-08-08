@@ -114,7 +114,7 @@ export async function POST(request: NextRequest) {
       },
     });
 
-    logAudit({ action: "booking-period.create", memberId: guard.session.user.id, targetId: period.id, details: JSON.stringify({ lodgeId: period.lodgeId, after: period }) });
+    logAudit({ action: "booking-period.create", category: "booking", memberId: guard.session.user.id, targetId: period.id, entityType: "BookingPeriod", entityId: period.id, details: JSON.stringify({ lodgeId: period.lodgeId, after: period }) });
 
     revalidatePublicPageContent();
     return NextResponse.json(period, { status: 201 });

@@ -67,8 +67,11 @@ export async function POST(req: NextRequest) {
 
     logAudit({
       action: "FAMILY_GROUP_CREATED_FROM_SUGGESTION",
+      category: "family",
       memberId: session.user.id,
       targetId: result.groupId,
+      entityType: "FamilyGroup",
+      entityId: result.groupId,
       details: JSON.stringify({ name, memberCount: result.memberCount, memberIds }),
     });
 

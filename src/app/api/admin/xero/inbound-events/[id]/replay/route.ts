@@ -24,8 +24,11 @@ export async function POST(
 
     await logAudit({
       action: "XERO_INBOUND_EVENT_REPLAY",
+      category: "xero",
       memberId: session.user.id,
       targetId: id,
+      entityType: "XeroInboundEvent",
+      entityId: id,
       details: `status=${replay.event.status}`,
     });
 

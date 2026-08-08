@@ -329,13 +329,14 @@ describe("AID-6A correlation category sets (#2375)", () => {
 
   it("NAMES the ABSENT category as a gap, in every scope line and every description", () => {
     // The symmetric counterpart of the MISMATCH class above, and the one no entry covers
-    // at all. `AuditLog.category` is optional, `audit.ts` writes the column only when a
-    // caller supplies one, and 82 production call sites do not (measured by
-    // `audit-writer-census.test.ts`, which pins the set) — including
-    // subscription-billing settings/retry/mark-family/unmark-family/reconcile, the
-    // subscription charge confirm, all three member-credit adjustment steps, fee
-    // configuration, the family login-holder change, booking-policy edits, bulk
-    // communications and deletion-request decisions.
+    // at all. `AuditLog.category` is optional and `audit.ts` writes the column only when
+    // a caller supplies one. 82 production call sites did not; #2581's second child
+    // classified all 82, so no NEW row is born without one and
+    // `audit-writer-census.test.ts` now pins that set EMPTY. Every row written before
+    // that runtime deployed still has no category, and giving those a category is a
+    // separate, independently reviewable data change that has not run — so this
+    // declaration is not stale, and it must not be removed on the strength of the
+    // writers being fixed.
     //
     // `WHERE "category" = ANY ($1)` is NULL for such a row, so it is returned by NONE of
     // the five entries. Untreated, a Finance Officer asking "what did the platform record

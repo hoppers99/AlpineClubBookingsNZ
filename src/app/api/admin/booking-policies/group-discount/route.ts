@@ -94,7 +94,10 @@ export async function PUT(req: NextRequest) {
 
   logAudit({
     action: "group-discount.update",
+    category: "booking",
     memberId: session.user.id,
+    entityType: "GroupDiscountSetting",
+    entityId: result.id,
     details: `Group discount: minSize=${parsed.data.minGroupSize}, summerOnly=${parsed.data.summerOnly}, enabled=${parsed.data.enabled}`,
   });
 

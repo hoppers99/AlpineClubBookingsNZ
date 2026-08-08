@@ -138,6 +138,7 @@ export async function POST(req: NextRequest) {
 
     logAudit({
       action: "DISPLAY_LAYOUT_CREATED",
+      category: "lodge",
       entityType: "DisplayLayout",
       entityId: layout.id,
       targetId: layout.id,

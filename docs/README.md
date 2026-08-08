@@ -326,8 +326,12 @@ module boundaries, data model, integrations, cron jobs, and the mermaid maps.
   an operator needs before Diagnostics will return the event. `npm run audit:census`
   inventories every production audit writer, and
   `src/lib/__tests__/audit-writer-census.test.ts` pins the result so a new
-  uncategorised writer fails CI by name. The operator-facing half is in
-  [Audit Log](guides/audit-log.md).
+  uncategorised writer fails CI by name. Every production writer now carries a
+  category — the 82 that did not are classified site by site in
+  `scripts/audit/audit-writer-census-manifest.ts`, and the same contract pins
+  which of them a member can see in their own timeline. Audit records created
+  before that change still have none; filling those in is separate and
+  outstanding. The operator-facing half is in [Audit Log](guides/audit-log.md).
 - [`ai-diagnostics/deployment.md`](ai-diagnostics/deployment.md) — the operator
   guide for AI Diagnostics: setup order, provisioning and rotating the dedicated
   non-superuser SELECT-only database role, what the role may read, and how to read the

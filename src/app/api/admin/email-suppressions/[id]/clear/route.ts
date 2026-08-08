@@ -41,8 +41,11 @@ export async function POST(
 
   logAudit({
     action: "EMAIL_SUPPRESSION_CLEARED",
+    category: "communication",
     memberId: session.user.id,
     targetId: suppression.id,
+    entityType: "EmailSuppression",
+    entityId: suppression.id,
     details: JSON.stringify({
       email: suppression.email,
       reason: parsed.data.reason ?? null,

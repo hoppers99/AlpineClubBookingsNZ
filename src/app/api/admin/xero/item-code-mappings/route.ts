@@ -358,6 +358,7 @@ export async function PUT(request: NextRequest) {
 
     await logAudit({
       action: "xero_item_code_mappings_updated",
+      category: "xero",
       memberId: session.user.id,
       details: JSON.stringify({ hutFees, entranceFees }),
     });
