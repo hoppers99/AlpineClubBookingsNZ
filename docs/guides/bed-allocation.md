@@ -159,7 +159,7 @@ are taken, never by whom.
    asks you to confirm again. If every selected row already uses the destination
    bed, confirmation reports **No change** and writes no audit entry.
 
-   ![Bed Allocation Move allocation dialog showing the exact scope, destination, changing and unchanged night counts, and approval consequences](../images/admin/admin-bed-allocation-snap-preview.png)
+   ![Bed Allocation Move allocation dialog showing the exact scope, the destination bed, the changing and unchanged night counts, and each night being moved](../images/admin/admin-bed-allocation-snap-preview.png)
 
 6. To free a bed, drag the chip back to the pool or use **Remove allocation**.
    Either action opens the reviewed-removal dialog for that one original night;
