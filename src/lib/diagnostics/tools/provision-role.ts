@@ -583,7 +583,16 @@ export const SELECT_GRANTS: readonly AiDiagnosticsSelectGrant[] = [
      * NOT GRANTED: `consentRespondedByMemberId` (names the person who approved, and
      * its absence is why a target's own approval and a delegate's share one code),
      * `rateMembershipTypeId` (a pricing snapshot, not evidence about the guest),
-     * `departedAt`, `createdAt`.
+     * `consentExpiresAt`, `arrivedAt`, `departedAt` and `createdAt`.
+     *
+     * THREE OF THOSE WERE GRANTED IN AN EARLIER REVISION AND ARE NOT NOW, and the
+     * reason is worth recording because it is a property of this allowlist rather
+     * than an oversight: `consentExpiresAt` and `arrivedAt` here, `BedAllocation.`
+     * `"source"` and `LodgeBed."active"` on their own entries, were dropped from the
+     * projections when their entries' byte ceilings were measured against the real
+     * serialiser — and a grant whose column no statement reads is reach nobody
+     * reviewed. The pack's contract test asserts the allowlist in BOTH directions for
+     * exactly this, so a projection trim that leaves its grant behind fails.
      */
     columns: [
       "id",
@@ -599,8 +608,6 @@ export const SELECT_GRANTS: readonly AiDiagnosticsSelectGrant[] = [
       "consentStatus",
       "consentRequestedAt",
       "consentRespondedAt",
-      "consentExpiresAt",
-      "arrivedAt",
     ],
   },
   {
@@ -617,9 +624,10 @@ export const SELECT_GRANTS: readonly AiDiagnosticsSelectGrant[] = [
     schema: "public",
     relation: "BedAllocation",
     // `booking_bed_allocation_state`. `bedType` is the DENORMALISED copy the partial
-    // unique index actually enforces on, and it is projected beside `LodgeBed`'s live
-    // one precisely so a divergence between them is visible rather than hidden.
-    // `approvedByMemberId` names the officer who placed the guest and is not granted.
+    // unique index actually enforces on, and it is COMPARED against `LodgeBed`'s live
+    // one so a divergence between the two is visible rather than hidden.
+    // `approvedByMemberId` names the officer who placed the guest and is not granted;
+    // `source`, `approvedAt`, `createdAt` and `updatedAt` are not read.
     columns: [
       "id",
       "bookingId",
@@ -627,7 +635,6 @@ export const SELECT_GRANTS: readonly AiDiagnosticsSelectGrant[] = [
       "roomId",
       "bedId",
       "stayDate",
-      "source",
       "bedType",
       "isSecondOccupant",
     ],
@@ -642,10 +649,11 @@ export const SELECT_GRANTS: readonly AiDiagnosticsSelectGrant[] = [
   {
     schema: "public",
     relation: "LodgeBed",
-    // The bed label, its live type and whether it is still active — enough to say
-    // "Bunk 3, a DOUBLE, deactivated" about an allocation. `bunkGroup` is a free
-    // label and is not granted.
-    columns: ["id", "roomId", "name", "bedType", "active"],
+    // The bed label and its live type — enough to say "Bunk 3, a DOUBLE" about an
+    // allocation, and enough to compare the live type against the denormalised copy
+    // on the allocation row. `bunkGroup` is a free label, `active` is not read, and
+    // neither is granted.
+    columns: ["id", "roomId", "name", "bedType"],
   },
   {
     schema: "public",

@@ -70,20 +70,38 @@ authoritative booking-finance calculation behind `finance:view` **and**
 `bookings:view`. It reads **stored evidence only** — no tool in it contacts Stripe,
 Xero or a bank. Full reference: [tool-pack-finance.md](tool-pack-finance.md).
 
-The remaining domain tools arrive in their own child so they get their own
-permission review and their own table grants: AID-6B (#2376,
-booking/membership/induction/bed allocation).
+AID-6B (#2376) has added the **booking and membership pack**: two bounded record
+searches and five per-booking evidence tools behind `bookings:view`, five
+per-member evidence tools behind `membership:view` (one of which also needs
+`bookings:view`, because it reads a member's bookings), and three `server_owned`
+entries returning the application's own authoritative answers — why a booking is
+blocked (`bookings:view` **and** `membership:view`), per-night capacity
+(`bookings:view`), and a member's eligibility standing (`membership:view`). **No
+entry in it requires `support:view`.** Full reference:
+[tool-pack-booking-membership.md](tool-pack-booking-membership.md).
 
-The `SELECT` grant allowlist therefore names **thirteen** relations today, and every
-one of them is granted **by column, never wholesale**: `public."AuditLog"` (nine
-columns) plus the twelve finance relations AID-6C argues for one at a time, of which
-`public."Member"` is the narrowest — `id` and `xeroContactId`, and nothing else.
-Everything else in the schema is unreadable by the diagnostics role, including
-`IntegrationCredential` (encrypted provider secrets) and `XeroToken` (**plaintext**
-OAuth access and refresh tokens), both permanently out of scope under ADR-007 §1.
-And so is every other column of the thirteen: the grants are by column, so
-`SELECT "ipAddress" FROM "AuditLog"`, `SELECT "email" FROM "Member"` and
+The `SELECT` grant allowlist therefore names **twenty-five** relations today, and
+every one of them is granted **by column, never wholesale**: `public."AuditLog"`
+(nine columns), the twelve finance relations AID-6C argues for one at a time, and
+the twelve booking and membership relations AID-6B argues for one at a time — of
+which `public."PolicyExceptionReservationNight"` is now the narrowest, at a single
+column. `public."Member"` is the one entry two packs share: AID-6C granted `id` and
+`xeroContactId` for the Xero contact linkage, and AID-6B **widens** it to
+twenty-two columns of identity and membership lifecycle, argued column by column on
+the grant itself and in the pack doc. Everything else in the schema is unreadable
+by the diagnostics role, including `IntegrationCredential` (encrypted provider
+secrets) and `XeroToken` (**plaintext** OAuth access and refresh tokens), both
+permanently out of scope under ADR-007 §1. And so is every other column of the
+twenty-five: the grants are by column, so `SELECT "ipAddress" FROM "AuditLog"`,
+`SELECT "dateOfBirth" FROM "Member"`, `SELECT "notes" FROM "Booking"` and
 `SELECT "payload" FROM "XeroInboundEvent"` are each refused by PostgreSQL itself.
+
+**A presence boolean is not a cheaper grant, and that is the finding from AID-6B
+every later pack inherits.** PostgreSQL's column privilege covers *every* reference
+to a column, `notes IS NOT NULL` included, so a `hasNotes` flag costs exactly the
+same grant as returning the note — which would break the property this allowlist
+exists to state. Six presence booleans and one predicate-only grant were dropped
+from AID-6B for that reason alone.
 
 ## Two evidence sources, one gate chain
 
@@ -548,6 +566,11 @@ failing.
   selection, per-record payment/refund/webhook/Xero evidence, the authoritative
   booking-finance calculation, the twelve relation grants, and the questions this
   platform stores no evidence for.
+- [Booking and membership tool pack (AID-6B)](tool-pack-booking-membership.md) —
+  bounded booking and member selection, per-record party/bed/exception/subscription/
+  family evidence, the authoritative block-state, capacity and eligibility
+  calculations, the twelve further relation grants plus the widened `Member`, the
+  presence-boolean finding, and the questions this schema cannot answer.
 - [Deployment and operator guide](deployment.md) — provisioning the role, rotating
   the password, and what readiness reports.
 - [Page context](page-context.md) — the other evidence channel (AID-4).
