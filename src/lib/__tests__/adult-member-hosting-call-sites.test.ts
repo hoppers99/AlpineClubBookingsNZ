@@ -50,12 +50,29 @@ function readRepoFile(relativePath: string): string {
  * Block comments and whole-line `//` comments only: a trailing comment on a line of
  * code is left alone rather than risking a `//` inside a string literal.
  */
+/**
+ * Memoised, because the sweeps below are quadratic without it. `sourceFilesNaming`
+ * walks every non-test source file under `src/` for ONE identifier, and each seam
+ * or catcher inventory is its own walk — so without a cache a file is read and
+ * comment-stripped once per sweep rather than once per run. Adding the fourth
+ * `ENQUEUE_SEAMS` entry took the drain assertion from ~830 ms to over 9 s under
+ * parallel load and blew vitest's 5 s default, while still passing when this file
+ * was run alone: a timeout that only appears under load is the worst kind, because
+ * CI may or may not catch it. Keyed by repo-relative path; the tree does not
+ * change mid-run.
+ */
+const repoCodeCache = new Map<string, string>();
+
 function readRepoCode(relativePath: string): string {
-  return readRepoFile(relativePath)
+  const cached = repoCodeCache.get(relativePath);
+  if (cached !== undefined) return cached;
+  const code = readRepoFile(relativePath)
     .replace(/\/\*[\s\S]*?\*\//g, "")
     .split("\n")
     .filter((line) => !/^\s*(\/\/|\*)/.test(line))
     .join("\n");
+  repoCodeCache.set(relativePath, code);
+  return code;
 }
 
 /**
@@ -550,7 +567,7 @@ describe("the same-owner refusal and the escalation seam (#2576 §6, §8, §9)",
     const ENQUEUE_SEAMS = [
       "enqueueOwnHostingCoverageReevaluation(",
       "enqueueHostingCoverageReevaluationForMember(",
-      "enqueueMemberMergeHostingCoveragePlanRenamed(",
+      "enqueueMemberMergeHostingCoveragePlan(",
       "reconcileAdultMemberHostingReviewWithSiblings(",
     ];
     const seamUsers = new Set<string>();
