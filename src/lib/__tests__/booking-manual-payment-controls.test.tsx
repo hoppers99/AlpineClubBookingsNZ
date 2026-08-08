@@ -25,6 +25,7 @@ import {
   type BookingManualPaymentState,
 } from "@/components/admin/booking-manual-payment-controls";
 import { unverifiedWriteMessage } from "@/lib/unverified-write-copy";
+import { expectRecoveryAlertToHoldFocus } from "@/lib/__tests__/helpers/focus";
 
 function settledState(
   overrides: Partial<BookingManualPaymentState> = {}
@@ -353,9 +354,7 @@ describe("BookingManualPaymentControls — an outcome the browser never read (#2
   it("reports what it could not verify instead of claiming nothing was recorded", async () => {
     openAndFailTheRecording();
 
-    const notice = await screen.findByTestId(
-      "manual-payment-unverified-notice"
-    );
+    const notice = await screen.findByText(UNVERIFIED);
     expect(notice.textContent).toBe(UNVERIFIED);
     // The specific claim about the ledger the client cannot make, and the
     // instruction that keeps a duplicate cash entry from being the next step.
@@ -373,11 +372,15 @@ describe("BookingManualPaymentControls — an outcome the browser never read (#2
   it("holds the message in the dialog and disarms the recording buttons behind it", async () => {
     const fetchMock = openAndFailTheRecording();
 
-    await screen.findByTestId("manual-payment-unverified-notice");
+    const notice = await screen.findByText(UNVERIFIED);
 
-    // Not a toast: the region is `role="alert"` and stays on screen.
+    // Not a toast: the region is the house recovery alert, it stays on screen,
+    // and it TAKES FOCUS — the button just pressed is disabled behind it, and a
+    // control disabled in the same turn cannot hold focus, so without this the
+    // operator would be dropped to <body> with no explanation in reach.
     expect(toast.error).not.toHaveBeenCalled();
     expect(screen.getByRole("alert").textContent).toBe(UNVERIFIED);
+    await expectRecoveryAlertToHoldFocus(notice);
     // The dialog did not close out from under the message.
     expect(
       screen.getByText(/Record \$120\.00 as paid for Ada Lovelace\?/)
@@ -401,22 +404,16 @@ describe("BookingManualPaymentControls — an outcome the browser never read (#2
 
   it("clears the notice when the dialog is reopened", async () => {
     openAndFailTheRecording();
-    await screen.findByTestId("manual-payment-unverified-notice");
+    await screen.findByText(UNVERIFIED);
 
     fireEvent.click(screen.getByRole("button", { name: "Close and check" }));
-    await waitFor(() =>
-      expect(
-        screen.queryByTestId("manual-payment-unverified-notice")
-      ).toBeNull()
-    );
+    await waitFor(() => expect(screen.queryByText(UNVERIFIED)).toBeNull());
 
     fireEvent.click(
       screen.getByRole("button", { name: /Record manual payment/i })
     );
     // A stale notice over a fresh dialog would read as this press's outcome.
-    expect(
-      screen.queryByTestId("manual-payment-unverified-notice")
-    ).toBeNull();
+    expect(screen.queryByText(UNVERIFIED)).toBeNull();
     expect(
       screen.getByRole("button", { name: "Record and email member" })
     ).toBeEnabled();

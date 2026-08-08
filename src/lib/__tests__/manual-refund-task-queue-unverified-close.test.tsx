@@ -14,6 +14,7 @@ vi.mock("@/hooks/use-admin-area-edit-access", async (importOriginal) => ({
 import { toast } from "sonner";
 import { ManualRefundTaskQueue } from "@/components/admin/manual-refund-task-queue";
 import { unverifiedWriteMessage } from "@/lib/unverified-write-copy";
+import { expectRecoveryAlertToHoldFocus } from "@/lib/__tests__/helpers/focus";
 
 const TASK = {
   id: "task-1",
@@ -77,7 +78,7 @@ describe("ManualRefundTaskQueue — an outcome the browser never read (#2668)", 
   it("says what it could not verify rather than that nothing changed", async () => {
     await failTheClose();
 
-    const notice = await screen.findByTestId("manual-refund-unverified-notice");
+    const notice = await screen.findByText(UNVERIFIED);
     expect(notice.textContent).toBe(UNVERIFIED);
     expect(notice.textContent).not.toContain("Nothing was changed");
   });
@@ -92,10 +93,15 @@ describe("ManualRefundTaskQueue — an outcome the browser never read (#2668)", 
   it("holds the message in the dialog and disarms the close action behind it", async () => {
     const fetchMock = await failTheClose();
 
-    await screen.findByTestId("manual-refund-unverified-notice");
+    const notice = await screen.findByText(UNVERIFIED);
 
+    // The house recovery alert rather than a toast: it stays, and it takes focus
+    // — the button just pressed is disabled behind it, and a control disabled in
+    // the same turn cannot hold focus, so the operator would otherwise be
+    // dropped to <body> with the explanation out of reach.
     expect(toast.error).not.toHaveBeenCalled();
     expect(screen.getByRole("alert").textContent).toBe(UNVERIFIED);
+    await expectRecoveryAlertToHoldFocus(notice);
     // The dialog is still open, over the amount it was about.
     expect(
       screen.getByText(/Record \$120\.00 as paid back to Ada Lovelace\?/),
@@ -122,17 +128,13 @@ describe("ManualRefundTaskQueue — an outcome the browser never read (#2668)", 
 
   it("clears the notice when the dialog is closed and another task is opened", async () => {
     await failTheClose();
-    await screen.findByTestId("manual-refund-unverified-notice");
+    await screen.findByText(UNVERIFIED);
 
     fireEvent.click(screen.getByRole("button", { name: "Close and check" }));
-    await waitFor(() =>
-      expect(
-        screen.queryByTestId("manual-refund-unverified-notice"),
-      ).toBeNull(),
-    );
+    await waitFor(() => expect(screen.queryByText(UNVERIFIED)).toBeNull());
 
     fireEvent.click(screen.getByRole("button", { name: "Dismiss" }));
     // A stale notice over the next task would read as that task's outcome.
-    expect(screen.queryByTestId("manual-refund-unverified-notice")).toBeNull();
+    expect(screen.queryByText(UNVERIFIED)).toBeNull();
   });
 });

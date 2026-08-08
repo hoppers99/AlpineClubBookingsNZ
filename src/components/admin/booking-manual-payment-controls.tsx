@@ -16,6 +16,7 @@ import { FieldHint, useFieldHint } from "@/components/ui/field-hint";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { BookingNoEmailsNotice } from "@/components/booking-no-emails-notice";
+import { FocusedActionError } from "@/components/focused-action-error";
 import { ViewOnlyActionButton } from "@/components/admin/view-only-action";
 import { useAdminAreaEditAccess } from "@/hooks/use-admin-area-edit-access";
 import { formatCents } from "@/lib/utils";
@@ -108,6 +109,14 @@ export function BookingManualPaymentControls({
    * on it. The server's own refusals keep their toast: those say what happened.
    */
   const [unverified, setUnverified] = useState<string | null>(null);
+  /**
+   * Bumped with each unread outcome so the recovery alert takes focus again on a
+   * repeat. It has to take focus at all because this branch DISABLES the button
+   * that was just pressed, and a control disabled in the same turn cannot hold
+   * focus — it would fall to `<body>` and leave a keyboard user with no place
+   * and no explanation, which is the failure `FocusedActionError` exists for.
+   */
+  const [unverifiedAttention, setUnverifiedAttention] = useState(0);
   /*
     #2264: the "e.g. …" specimens used to sit in each note box as a placeholder.
     Grey example text INSIDE a control reads as a value the form already holds,
@@ -255,30 +264,30 @@ export function BookingManualPaymentControls({
           "Reload the booking and check before recording it again.",
         ),
       );
+      setUnverifiedAttention((value) => value + 1);
     } finally {
       setSubmitting(false);
     }
   }
 
   /*
-    #2668 SF-5. Permanently mounted so the live region is registered in the
-    accessibility tree before it has anything to say — a region injected
-    already-populated is silently dropped by some screen-reader/browser
-    pairings. `role="alert"` rather than `role="status"`: this one interrupts,
-    because the press it exists to stop is the operator's very next move. Same
-    shape as the reviewed bed-allocation removal dialog's region.
+    #2668 SF-5. The house recovery alert (`focused-action-error.tsx`, #2597 /
+    #2635): permanently mounted so the live region is registered in the
+    accessibility tree before it has anything to say — one injected
+    already-populated is silently dropped by some screen-reader/browser pairings
+    — assertive, and it TAKES FOCUS when the message arrives. Focus matters more
+    here than on the surfaces that component was written for: this branch
+    disables the button that was just pressed, so without it focus would fall to
+    `<body>` and a keyboard operator would be left with neither a place nor the
+    explanation. Its focus timing is a passive effect on purpose; assert it with
+    `expectRecoveryAlertToHoldFocus`, never a synchronous `activeElement` check.
   */
   const unverifiedNotice = (
-    <div role="alert" aria-live="assertive" className="min-h-0">
-      {unverified ? (
-        <p
-          className="rounded-md border border-warning-6 bg-warning-3 px-3 py-2 text-sm text-warning-11"
-          data-testid="manual-payment-unverified-notice"
-        >
-          {unverified}
-        </p>
-      ) : null}
-    </div>
+    <FocusedActionError
+      id="manual-payment-unverified-notice"
+      error={unverified ?? ""}
+      attentionKey={unverifiedAttention}
+    />
   );
 
   return (

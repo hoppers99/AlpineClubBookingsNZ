@@ -16,6 +16,7 @@ import {
 import { FieldHint, useFieldHint } from "@/components/ui/field-hint";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
+import { FocusedActionError } from "@/components/focused-action-error";
 import { ViewOnlyActionButton } from "@/components/admin/view-only-action";
 import { useAdminAreaEditAccess } from "@/hooks/use-admin-area-edit-access";
 import { formatCents } from "@/lib/utils";
@@ -64,6 +65,13 @@ export function ManualRefundTaskQueue() {
    * their toast: those say what actually happened.
    */
   const [unverified, setUnverified] = useState<string | null>(null);
+  /**
+   * Bumped with each unread outcome so the recovery alert takes focus again on a
+   * repeat. Focus is not decoration here: this branch disables the button that
+   * was just pressed, and a control disabled in the same turn cannot hold focus,
+   * so without the alert taking it the operator would be dropped to `<body>`.
+   */
+  const [unverifiedAttention, setUnverifiedAttention] = useState(0);
   /*
     #2264: the worked example for the note used to be its placeholder, which
     reads as a value already typed and disappears on the first keystroke. It is
@@ -144,6 +152,7 @@ export function ManualRefundTaskQueue() {
           "Reload the page and check the queue before trying again.",
         ),
       );
+      setUnverifiedAttention((value) => value + 1);
     } finally {
       setSubmitting(false);
     }
@@ -268,22 +277,19 @@ export function ManualRefundTaskQueue() {
                 </FieldHint>
               </div>
               {/*
-                #2668 SF-5. Permanently mounted so the live region exists before
-                it has anything to say — one injected already-populated is
-                silently dropped by some screen-reader/browser pairings.
-                `role="alert"`, because the press it exists to stop is the
-                operator's next move.
+                #2668 SF-5. The house recovery alert (`focused-action-error.tsx`,
+                #2597 / #2635): permanently mounted so the live region exists
+                before it has anything to say — one injected already-populated is
+                silently dropped by some screen-reader/browser pairings —
+                assertive, and it takes focus when the message arrives, which is
+                what keeps the operator from being dropped to `<body>` as the
+                button they just pressed is disabled behind it.
               */}
-              <div role="alert" aria-live="assertive" className="min-h-0">
-                {unverified ? (
-                  <p
-                    className="rounded-md border border-warning-6 bg-warning-3 px-3 py-2 text-sm text-warning-11"
-                    data-testid="manual-refund-unverified-notice"
-                  >
-                    {unverified}
-                  </p>
-                ) : null}
-              </div>
+              <FocusedActionError
+                id="manual-refund-unverified-notice"
+                error={unverified ?? ""}
+                attentionKey={unverifiedAttention}
+              />
               <DialogFooter className="gap-2 sm:gap-2">
                 {/*
                   After an unread outcome "Cancel" would itself be a claim —
