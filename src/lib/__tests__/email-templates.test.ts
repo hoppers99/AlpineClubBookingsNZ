@@ -16,6 +16,8 @@ import {
   adminDuplicateCaptureRefundTemplate,
   preArrivalReminderTemplate,
   waitlistOfferTemplate,
+  waitlistOfferExpiredTemplate,
+  waitlistPlaceRestoredTemplate,
   adminSplitSettlementUnpaidTemplate,
   adminSplitSettlementCancelledTemplate,
   splitGuestPortionCancelledTemplate,
@@ -691,6 +693,77 @@ describe("email-templates", () => {
       );
 
       expect(html).toContain(formatNZDateTime(expiresAt));
+    });
+  });
+
+  // #2649 — the stranded-confirm repair's member notice.
+  //
+  // The repair returns a booking to the waitlist after the member's FREE
+  // waitlist confirmation was left in PAYMENT_PENDING by a failure in our own
+  // code. Reusing `waitlist-offer-expired` for that told the member the one
+  // thing that was demonstrably false — that their offer had expired — and
+  // contradicted the #2648 message they had already been sent saying their
+  // confirmation was stuck and not to retry. So this template is a true sibling
+  // in shape and a deliberate opposite in wording, and both halves are pinned
+  // here.
+  describe("waitlistPlaceRestoredTemplate", () => {
+    const render = () =>
+      waitlistPlaceRestoredTemplate(
+        "Mike",
+        new Date("2026-07-01"),
+        new Date("2026-07-03"),
+        3,
+      );
+
+    it("states the restored place, the reassurance, and the same three rows as the expiry notice", () => {
+      const html = render();
+
+      expect(html).toContain("Your Waitlist Place Is Back");
+      expect(html).toContain("Mike");
+
+      // Same facts, same rows, same order as waitlistOfferExpiredTemplate — the
+      // member still needs to know which nights and where they now sit.
+      expect(html).toContain("Check-in");
+      expect(html).toContain("Check-out");
+      expect(html).toContain("New Position");
+      expect(html).toContain("#3");
+
+      // The reassurance is the entire reason this template exists: the club's
+      // code failed, not the member, and their offer never ran out.
+      expect(html).toContain("This was not something you did wrong");
+      expect(html).toContain("your offer did not run out");
+      expect(html).toContain("you confirmed in time");
+      expect(html).toContain("our system could not complete it");
+
+      // And the close tells them to do nothing, which is what #2648 already
+      // asked of them — the two messages must not disagree.
+      expect(html).toContain("You do not need to do anything");
+      expect(html).toContain(
+        "We will email you again as soon as a spot opens up for these nights",
+      );
+
+      // Same call to action as its sibling.
+      expect(html).toContain("View Booking");
+      expect(html).toContain("/bookings");
+    });
+
+    it("never says the offer expired, in any casing, anywhere in the message", () => {
+      const html = render().toLowerCase();
+
+      expect(html).not.toContain("has expired");
+      expect(html).not.toContain("expired");
+      // Nothing weaker either — no "expires", no "expiry".
+      expect(html).not.toContain("expir");
+
+      // The guard is only meaningful because the template it replaces DOES say
+      // it; without this the assertions above could pass on an empty string.
+      const expiryHtml = waitlistOfferExpiredTemplate(
+        "Mike",
+        new Date("2026-07-01"),
+        new Date("2026-07-03"),
+        3,
+      ).toLowerCase();
+      expect(expiryHtml).toContain("has expired");
     });
   });
 

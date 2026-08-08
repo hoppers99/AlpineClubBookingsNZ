@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { hostingCoverageParticipantRetryResponse } from "@/lib/adult-member-hosting-retry-response";
 import { HOSTING_COVERAGE_RETRY_CODE } from "@/lib/adult-member-hosting-queue-participants";
 import { auth } from "@/lib/auth";
-import { logAudit } from "@/lib/audit";
+import { createAuditLog } from "@/lib/audit";
 import { prisma } from "@/lib/prisma";
 import { BookingStatus } from "@prisma/client";
 import { confirmWaitlistOffer } from "@/lib/waitlist";
@@ -414,7 +414,17 @@ export async function POST(
           },
           "Zero-dollar waitlist confirm is stranded in PAYMENT_PENDING: the consumed offer could not be released and needs operator recovery",
         );
-        logAudit({
+        // AWAITED, not fire-and-forget (#2649 review). `logAudit` is
+        // `void createAuditLog(...).catch(log)`, which was fine while this row
+        // was only a notification. It is now the ADMIN REPAIR'S ENTRY
+        // CONDITION: `return-to-waitlist` refuses any booking without an
+        // unresolved report, because the shape alone is reached by producers
+        // that were never on a waitlist. A report lost to process teardown
+        // would leave a genuinely stranded member repairable only from a
+        // database session — the thing #2649 exists to remove. The `.catch`
+        // keeps the previous failure semantics exactly: a failed write is
+        // logged and the operator-door response below is still returned.
+        await createAuditLog({
           action: WAITLIST_CONFIRM_OFFER_RELEASE_FAILED_AUDIT_ACTION,
           memberId: session.user.id,
           targetId: bookingId,
@@ -426,7 +436,7 @@ export async function POST(
           outcome: "failure",
           summary: "Zero-dollar waitlist confirm stranded in PAYMENT_PENDING",
           details:
-            "The waitlist offer was consumed and the booking committed to PAYMENT_PENDING, then the zero-dollar PAID claim failed and the compensating release back to WAITLISTED could not run. The booking holds no capacity, has no payment path and has no offer to replay: set it back to WAITLISTED (or confirm it) manually.",
+            "The waitlist offer was consumed and the booking committed to PAYMENT_PENDING, then the zero-dollar PAID claim failed and the compensating release back to WAITLISTED could not run. The booking holds no capacity, has no payment path and has no offer to replay: open it from Admin -> Bookings and press Return to waitlist in the Admin tools card (#2649), or cancel it and ask the member to rejoin.",
           metadata: {
             lodgeId: booking.lodgeId,
             checkIn: booking.checkIn.toISOString(),
@@ -435,7 +445,12 @@ export async function POST(
             claimErrorCode: transactionErrorCode(err),
             releaseErrorCode: transactionErrorCode(release.cause),
           },
-        });
+        }).catch((auditErr) =>
+          logger.error(
+            { err: auditErr, bookingId },
+            "Failed to record the stranded zero-dollar waitlist confirm; the admin repair button will not appear for this booking",
+          ),
+        );
         return NextResponse.json(WAITLIST_CONFIRM_AWAITING_OPERATOR_BODY, {
           status: contendedStatus(release.cause),
         });

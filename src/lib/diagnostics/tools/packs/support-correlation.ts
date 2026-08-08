@@ -39,14 +39,17 @@
  * only when a caller supplies one — so a row with NO category exists and is common. The
  * executable census of this repository's production audit writes
  * (`scripts/audit/audit-writer-census.ts`, pinned by
- * `src/lib/__tests__/audit-writer-census.test.ts`) counts 425 write sites, of which
+ * `src/lib/__tests__/audit-writer-census.test.ts`) counts 426 write sites, of which
  * 82 pass no category: 69 `logAudit`, 11 `createAuditLog`, 2 hand-built Prisma
  * writes, and none through `createStructuredAuditLog`. (This comment has now been
- * stale twice: it said 418, then 421 while #2621's two arrival-time writers and
- * #2595's two reviewed-move writers took the tree to 425. Corrected in #2677 by
- * RUNNING the census, alongside the two doc copies that had each drifted to a
- * DIFFERENT wrong number — `docs/ai-diagnostics/tool-pack-support.md` and
- * `docs/guides/audit-log.md`. All three drifted because none is read by a test,
+ * stale three times: 418, then 421, then 425 — the last of those on the #2677
+ * merge, where the tree said 426 and this line merged CLEANLY at 425 because
+ * `main` (#2649) had corrected only one of the total's three prose copies. A
+ * clean merge of a measured figure is not agreement; it is the same collision
+ * the manifest's `bySink.createAuditLog` note describes, minus the luck of a
+ * conflict. Re-measured by RUNNING `npm run audit:census` on the merged tree,
+ * alongside `docs/ai-diagnostics/tool-pack-support.md` and
+ * `docs/guides/audit-log.md`. All three drift because none is read by a test,
  * unlike `AUDIT_CENSUS_TOTALS`, which was right throughout. The uncategorised
  * figures never drifted and are unchanged.) They include money-adjacent
  * ones — subscription-billing settings/retry/mark-family/unmark-family/reconcile, the
