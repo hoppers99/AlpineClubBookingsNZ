@@ -42,3 +42,12 @@
   deploy.** It adds relation grants for the booking and membership tables, and until
   provisioning is re-run the diagnostics readiness check reports the credential as
   over-privileged and every database-backed diagnostics tool refuses by design.
+- **Seven columns were also removed from what the diagnostics database credential can
+  read**, tightening a boundary this release did not widen. All seven belong to the
+  earlier finance release and no diagnostic query ever read one; two of them — a link
+  from a refund task to its booking, and the same link on a payment recovery record —
+  were harmless only while booking tables were unreadable, and this release makes
+  booking tables readable. The check that should have found them had been written but
+  never wired up to anything, so it could not fail; it is wired up now, and it
+  reconciles what the credential may read against what the queries actually read in
+  both directions.

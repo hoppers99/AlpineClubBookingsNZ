@@ -312,18 +312,18 @@ column**, never wholesale.
 | `Member` | 22 columns | AID-6C (2), **widened by AID-6B** | Identity and membership lifecycle for a selected member; the name on a family row; the search predicates. Argued below. |
 | `Booking` | 25 columns | **AID-6B** | The pack's booking spine: searched by `booking_search`, returned by `booking_diagnostic_summary`, and the two legs of `member_booking_summary`. |
 | `Lodge` | 2 columns (`id`, `name`) | **AID-6B** | The lodge **name** beside a booking. Nothing else about a lodge — its capacity numbers, settings, instructions or door codes — is a question this pack has. |
-| `BookingGuest` | 15 columns | **AID-6B** | The party, the guest count on two summaries, and the GUEST leg of `member_booking_summary`. Argued below. |
+| `BookingGuest` | 13 columns | **AID-6B** | The party, the guest count on two summaries, and the GUEST leg of `member_booking_summary`. Argued below. |
 | `BookingGuestNight` | 2 columns (`bookingGuestId`, `stayDate`) | **AID-6B** | The authoritative per-night footprint. A guest may stay **non-contiguous** nights inside one booking, so these rows and not the envelope are the presence. |
-| `BedAllocation` | 9 columns | **AID-6B** | Which guest is in which bed on which night, plus the denormalised bed type the occupancy guard actually enforces on. `approvedByMemberId` names the officer and is not granted. |
+| `BedAllocation` | 8 columns | **AID-6B** | Which guest is in which bed on which night, plus the denormalised bed type the occupancy guard actually enforces on. `approvedByMemberId` names the officer and is not granted. |
 | `LodgeRoom` | 2 columns (`id`, `name`) | **AID-6B** | The room label on an allocation row. `notes` is officer free text and is not granted. |
-| `LodgeBed` | 5 columns | **AID-6B** | The bed label and its live type, so a divergence from the allocation's copy is visible. `bunkGroup` is a free label and is not granted. |
+| `LodgeBed` | 4 columns | **AID-6B** | The bed label and its live type, so a divergence from the allocation's copy is visible. `bunkGroup` is a free label and is not granted. |
 | `BookingChangeRequest` | 16 columns | **AID-6B** | Locked-period and policy-exception requests on one booking. The relation with the most free text in the pack. Argued below. |
 | `PolicyExceptionReservationNight` | 1 column (`changeRequestId`) | **AID-6B** | The narrowest grant in the pack, and the only reliable test of whether an open request is holding beds. `night` and `beds` are not granted: the entry reports how many nights are held, never which or how many beds. |
 | `MemberSubscription` | 11 columns | **AID-6B** | One row per season. `xeroInvoiceId` is a presence test only; `manualPaymentNote`, `xeroOnlineInvoiceUrl` and `manuallyMarkedPaidByMemberId` are not granted. |
 | `FamilyGroupMember` | 4 columns — **the whole relation** | **AID-6B** | The authoritative family-group membership join. It is the whole relation because the relation has only four columns, and that is worth recording: it has **no `role` column**. |
 | `FamilyGroup` | 2 columns (`id`, `name`) | **AID-6B** | The group's name beside a co-member. Member-supplied text, stripped and bounded on the way out. Nothing on `FamilyGroupJoinRequest` is granted at all — it carries requester free text and children's dates of birth. |
 
-Twenty-five relations, 248 granted columns, and every omitted column is a
+Twenty-five relations, 237 granted columns, and every omitted column is a
 decision. The operator CLI prints the declared grants, columns and all, on every
 run and on `--dry-run`.
 
@@ -545,9 +545,12 @@ model reads as "there is no problem" — is the failure mode the whole
   lodge occupancy may be concluded from it.
 - **The audit category is optional, so an empty audit result is not evidence that
   nothing happened.** A row recorded with no category at all is matched by no
-  diagnostics tool anywhere. Measured on this tree, the audit-writer census counts
-  **425 row-producing production audit write sites, of which 82 pass no
-  category**. On top of that, `booking_record_audit_history` reads the entity type
+  diagnostics tool anywhere. Re-measured by RUNNING the census on the merged tree
+  (`npm run audit:census`, pinned by `src/lib/__tests__/audit-writer-census.test.ts`),
+  it counts **426 row-producing production audit write sites, of which 82 pass no
+  category**. This page said 425 before the merge with `main` that brought #2661
+  in; the figure is re-measured on every merge rather than carried forward,
+  because a stale count here is a claim about what a diagnostic can see. On top of that, `booking_record_audit_history` reads the entity type
   `Booking` only — an event on the booking's payment, its bed allocation or its
   change request is filed under that record's own type and id — and both
   audit entries read only their own domain's categories. The honest answer to an
@@ -651,8 +654,21 @@ Both are **filtered, never sorted**: the emitting code walks the declared
 catalogue and keeps the codes that are true, so priority is structural rather than
 a comparator somebody can drop in a later edit. Every code carries a server-owned
 operator sentence, and **the whole code-to-sentence catalogue is interpolated into
-the entry's `evidenceScope`**, so it travels to the model with every result rather
-than living only in a test. AID-6C's review found a catalogue in the finance pack
+the entry's `description`**, so it travels to the model rather than living only in
+a test.
+
+It is the `description` and not the `evidenceScope`, and that is a measurement
+rather than a preference. The renderer puts the scope inside **every** result block
+and clips that block at 8 000 characters by dropping whole rows from the tail.
+`booking_block_state`'s scope with the 3 101-character blocker catalogue inside it
+rendered an empty block of **7 545** of the 8 000 available — not enough room for
+the entry's own single row — so the renderer dropped the evidence and left a header
+claiming one row above a listing of none. The registry contract's "stays honest
+about its rows" assertion caught it. A catalogue is identical for every result, so
+the per-result block is the wrong place to spend on it: the description reaches the
+model once with the tool definition and stays in context for every call, and the
+block's budget goes to the evidence. Both catalogues moved for that one rule rather
+than one of them moving for one measurement. AID-6C's review found a catalogue in the finance pack
 whose only consumer was its own test and called it a high finding for the right
 reason: a code the model cannot interpret invites a guess. `exception_request_open`
 handed over bare reads as "the member has an exception", which sounds like
@@ -787,7 +803,7 @@ are the only two entries in the pack that declare `surfacesPersonalData: false`.
 | Family-relationship rows | 20, across all five union arms |
 | Single-row entries | `booking_diagnostic_summary`, `member_diagnostic_summary`, `booking_block_state`, `member_eligibility_state` |
 | Fields a row | 24, the substrate's hard ceiling — gate 8 refuses a wider row rather than trimming one. `booking_diagnostic_summary`, `booking_block_state` and `member_eligibility_state` sit **exactly** at it, so adding a field to any of them means removing one |
-| Bytes, multi-row entries | 16 384 |
+| Bytes, multi-row entries | 16 384, except the two measured at 24 576 below |
 | Bytes, single-row entries | 4 096 |
 | Person's name on the way out | 60 characters, clipping marked |
 | Room and bed label on the way out | 24 characters, clipping marked |
@@ -803,6 +819,18 @@ cent low and would have shipped two entries whose full results gate 9 refuses
 outright. A registry contract test serialises every entry's own projected shape at
 its own row limit, at the widest values its projection can emit, and fails if the
 ceiling is unachievable.
+
+**Two entries carry a wider ceiling because their own widest result does not fit
+under 16 384, and gate 9 REFUSES rather than trims.** `booking_party_state` at its
+30-row limit, every guest carrying a given *and* a family name at the 60-character
+cap, serialises to **18 123** bytes; `booking_capacity_by_night` at its 31-night
+limit, every night carrying four-figure bed counts and a full instant, serialises
+to **16 929**. Leaving them at 16 384 would not have shortened either result — it
+would have refused the whole thing with `result_too_large` and told the operator to
+narrow a question whose only argument is a booking id. Both take
+`AID6B_WIDE_BYTE_LIMIT` (24 576), still well under the substrate's hard 32 768, and
+the model reads no more either way because the rendered block is still clipped at
+8 000 characters with an honest count of how many of how many rows it listed.
 
 Two of the ceilings cost the pack fields #2376's plan asked for, and it is worth
 knowing which:
@@ -928,9 +956,11 @@ apply here, and a reviewer should hold the next author to all six.
    night arithmetic is a date subtraction. No `Date` object, no timezone, no
    comparison against `now()`.
 5. **A new stable code needs a sentence, and the sentence has to travel.** Add it
-   to the catalogue, interpolate the catalogue into the entry's `evidenceScope`,
-   and let the test that pins every code against its sentence fail until you do. A
-   catalogue read only by its own test does no work.
+   to the catalogue, interpolate the catalogue into the entry's `description`, and
+   let the test that pins every code against its sentence fail until you do. The
+   test asserts the code and its sentence appear in the entry's model-facing text —
+   description *or* scope — so it survives that placement decision instead of
+   pinning one field. A catalogue read only by its own test does no work.
 6. **If an argument would change which permissions apply, it is a second entry.**
    `requiredAreas` is fixed on the entry and authorisation runs before argument
    parsing, so there is no way to make one entry serve two permission sets

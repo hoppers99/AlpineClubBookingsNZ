@@ -630,6 +630,28 @@ describe("the SELECT-only grant allowlist matches what the statements read", () 
     expect(unread).toEqual([]);
   });
 
+  /**
+   * THE SIZE OF THE ALLOWLIST, PINNED.
+   *
+   * Not a ceiling and not a preference — a census, in the same spirit as
+   * `AUDIT_CENSUS_TOTALS`. Two documents quote these figures as the reach of the
+   * credential (`docs/ai-diagnostics/deployment.md` and
+   * `docs/ai-diagnostics/tool-pack-booking-membership.md`), and both were stale by
+   * four before #2376 re-measured them: an earlier revision of AID-6B trimmed four
+   * granted-but-unread columns and the prose kept saying 248.
+   *
+   * A pull request that widens or narrows the grant has to change this number and
+   * the two documents in the same commit, which is the only mechanism that has ever
+   * kept them together.
+   */
+  it("grants exactly the census the deployment and pack documents quote", () => {
+    expect(SELECT_GRANTS.length).toBe(25);
+    expect(
+      SELECT_GRANTS.reduce((total, grant) => total + (grant.columns?.length ?? 0), 0),
+      "update docs/ai-diagnostics/deployment.md and tool-pack-booking-membership.md in the same commit",
+    ).toBe(237);
+  });
+
   it("grants no relation that no statement reads, and reads none it does not grant", () => {
     const grantedRelations = new Set(SELECT_GRANTS.map((grant) => grant.relation));
     const readRelations = new Set(
