@@ -161,6 +161,14 @@ export const MAX_SEARCH_AMOUNT_CENTS = 100_000_000;
  * interesting record — a fully credit-covered booking settles as one — and
  * refusing it would hide exactly the case an operator is most likely to be
  * confused by.
+ *
+ * PERMITTING IT PUTS THE BURDEN ON THE PREDICATE, and that is where it belongs.
+ * `Payment."additionalAmountCents"` is `Int @default(0)` NOT NULL, so an
+ * unguarded `additionalAmountCents = $1` matched essentially the whole relation
+ * on a zero term and turned this search into the blank "recent payments" listing
+ * #2377 forbids. The amount search's own SQL guards that leg with `$1::int > 0`;
+ * see `AMOUNT_SEARCH_SQL` in `finance-search.ts`. Do not relax this bound
+ * without re-reading that guard — the two are one control.
  */
 export const AMOUNT_CENTS = z.int().min(0).max(MAX_SEARCH_AMOUNT_CENTS);
 
