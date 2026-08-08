@@ -1334,6 +1334,17 @@ describe("view-only section banner coverage (#2160)", () => {
                silently and only this prose collided — exactly the shape the
                entry above describes.)
 
+          314      Re-measured a second time after merging main at d8041b601
+               (#2352 ISR, #2621 arrival-time, #2654 requested-room Save). None
+               of those three adds a `<ViewOnlyActionButton>` render site, so
+               the tree still reports 314 / 264 / 237, exceptions 50 across 27
+               files, and this block is unchanged. Recorded anyway, because
+               "the figures did not move" is only worth anything when somebody
+               RAN the suite to find that out — the sibling audit-writer census
+               merged silently two short in this very same merge, off a
+               byte-identical literal, and the only reason that was caught is
+               that its per-sink figures were measured rather than assumed.
+
       */
       // #2259 adds the per-booking "No emails"
       // switch (`booking-no-emails-controls.tsx`), a leaf control dropped into

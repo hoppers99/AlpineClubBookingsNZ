@@ -1391,6 +1391,15 @@ export function preArrivalReminderTemplate(params: {
   // stay is about to start and it has not been collected. Zero/absent for the
   // ordinary case, which renders exactly as before.
   outstandingAdditionalAmountCents?: number;
+  // #2621 (owner decision D-M5): the checkout-day chore sentence, composed by
+  // the sender with `checkoutDayChoreNote` and EMPTY for a club that does not
+  // run a chore roster — the chores module defaults OFF. Handed in rather than
+  // written here so this HTML and the admin-editable body's
+  // {{checkoutChoreNote}} cannot say different things (the
+  // {{namingUrgencyNote}} convention). Omitted reads as empty, which is the
+  // fail-quiet direction: a member never sees a roster instruction the club may
+  // not mean.
+  checkoutChoreNote?: string;
 }): string {
   const rows: Array<{ label: string; value: string }> = [
     { label: "Check-in", value: formatNZDate(params.checkIn) },
@@ -1409,6 +1418,7 @@ export function preArrivalReminderTemplate(params: {
     ${heading("Upcoming Lodge Stay")}
     ${paragraph("Hi " + escapeHtml(params.firstName) + ", your lodge stay is coming up.")}
     ${infoTable(rows)}
+    ${params.checkoutChoreNote ? paragraph(escapeHtml(params.checkoutChoreNote)) : ""}
     ${outstandingAdditionalPaymentNote(params.outstandingAdditionalAmountCents)}
     ${arrivalInstructionsSection({
       travelNote: params.lodgeTravelNote,

@@ -368,7 +368,12 @@ derivation).
   is no configurable boundary, and no time-of-day value participates in the
   stay boundary or in presence. (The kiosk arrive/depart stamps
   `BookingGuest.arrivedAt` / `departedAt` are action audit timestamps, never
-  presence inputs.)
+  presence inputs. `Booking.expectedArrivalTime` is not one either: since #2621
+  it is display-only information for the hut leader — shown on the kiosk and on
+  the lobby wall's arrivals board, inside the wall's name-privacy gate — and it
+  is read by no boundary, no presence decision and no chore assignment. A member
+  who wants to leave before their check-out morning chore talks to the hut
+  leader; the system records no departure time and infers none.)
 - **Stay.** A stay is the half-open date range `[checkIn, checkOut)` expanded
   to nights — the motel rule: a guest is in the lodge from midday NZ on their
   check-in date to midday NZ on their check-out date. The check-out date is a

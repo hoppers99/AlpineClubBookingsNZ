@@ -15,6 +15,7 @@ const mocks = vi.hoisted(() => ({
   bookingFindUnique: vi.fn(),
   bookingUpdate: vi.fn(),
   modifyBookingBatch: vi.fn(),
+  logAudit: vi.fn(),
 }));
 
 vi.mock("@/lib/auth", () => ({ auth: mocks.auth }));
@@ -24,13 +25,30 @@ vi.mock("@/lib/session-guards", () => ({
     mocks.requireActiveSessionUser(...args),
 }));
 
-vi.mock("@/lib/prisma", () => ({
-  prisma: {
-    booking: {
-      findUnique: (...args: unknown[]) => mocks.bookingFindUnique(...args),
-      update: (...args: unknown[]) => mocks.bookingUpdate(...args),
+vi.mock("@/lib/prisma", () => {
+  const booking = {
+    findUnique: (...args: unknown[]) => mocks.bookingFindUnique(...args),
+    update: (...args: unknown[]) => mocks.bookingUpdate(...args),
+  };
+  return {
+    prisma: {
+      booking,
+      // #2621: the arrival-time route re-reads the value it is about to replace
+      // INSIDE the write, so the audit row names what this request really
+      // changed rather than what some concurrent request saw. This double runs
+      // the callback against the same delegate — the authorization outcomes this
+      // file is about do not depend on transaction semantics, only on the route
+      // being able to run to completion.
+      $transaction: async (fn: (tx: unknown) => unknown) => fn({ booking }),
     },
-  },
+  };
+});
+
+// The same route records an audit row on success. This file asserts
+// authorization, not audit content (`phase-b1.test.ts` covers the row), but the
+// writer has to exist or the 200 paths throw on a bare prisma double.
+vi.mock("@/lib/audit", () => ({
+  logAudit: (...args: unknown[]) => mocks.logAudit(...args),
 }));
 
 vi.mock("@/lib/booking-batch-modification-service", () => ({

@@ -86,6 +86,17 @@ export const AUDIT_CENSUS_TOTALS = {
    * there by luck, and reading either side's literal would have shipped a pin
    * that was quietly one short.
    *
+   * 421 -> 423 (#2621): the expected-arrival-time route recorded nothing at all,
+   * and a Booking Officer may set that field on ANY member's booking (#1313
+   * option A2) — so a member seeing a time they did not set had no way to learn
+   * who set it. Its PUT and its DELETE now each write one `logAudit` row
+   * (`booking.expected_arrival_time.set` / `.cleared`), categorised `booking` at
+   * the site, and both carry `entityType`/`entityId` so they correlate to the
+   * booking; neither joins `UNCATEGORISED_AUDIT_WRITERS` below. (Re-measured on merged
+   * tree, #2621: this branch's own pins were taken against a base that predated
+   * #2352, #2623 and #2627, so the literals here come from running the census
+   * after the merge rather than from adding the deltas up.)
+   *
    * 421 -> 423 (#2595): the new `bed-allocation-move.ts` records the two things
    * a reviewed move does — `BED_ALLOCATION_MOVE_APPLIED` for the move itself and
    * `BED_ALLOCATION_PARTNERS_PROMOTED` for the partner rows it carries with it —
@@ -101,15 +112,33 @@ export const AUDIT_CENSUS_TOTALS = {
    * than merging silently. Re-measured on the merged tree by RUNNING the census
    * (`npx tsx scripts/audit/audit-writer-census.ts`), never by adding branch
    * deltas: this figure and the ones below are what the tree reports.
+   *
+   * 423 -> 425 on the MERGE of #2621 into this branch, and this is the WORST
+   * shape the gate has caught yet — worse than the 420 collision above, because
+   * that one at least announced itself. #2595 measured 421 -> 423 against a base
+   * holding #2352/#2623/#2627 but not the arrival-time writers; #2621 measured
+   * 421 -> 423 against a base holding the same three but not the two move
+   * writes. Two different +2s, one identical literal: `423`. Git had no textual
+   * disagreement to report on the `writeSites` line at all, so it merged the
+   * VALUE silently and only these comments conflicted — and a merge that took
+   * either comment and kept the number would have shipped a pin two short with
+   * a green diff. The sub-figures below are what saved it: `logAudit` 239 -> 241
+   * and `createAuditLog` 102 -> 104 sit in different hunks and both survived the
+   * merge, so `bySink` already summed to 425 while the total still said 423.
+   * Re-measured on the merged tree by RUNNING the census, which reports 425.
+   * A byte-identical pin across two branches is not agreement; it is a
+   * collision that git cannot see.
    */
-  writeSites: 423,
+  writeSites: 425,
   /** Of those, sites whose event object carries no `category` key. */
   uncategorised: 82,
   /** Per-sink totals, so a shift between forms cannot cancel out in the total. */
   bySink: {
     // 238 -> 239 (#2623): the waitlist-confirm recovery marker, fire-and-forget
     // outside every transaction because its own failure must not mask the strand.
-    logAudit: { total: 239, uncategorised: 69 },
+    // 239 -> 241 (#2621): the two arrival-time writers, above (re-measured on
+    // merged tree, #2621).
+    logAudit: { total: 241, uncategorised: 69 },
     // 101 -> 102 (#2627): the deletion-approval release, above.
     // 102 -> 104 (#2595): the two reviewed-move writes, above.
     createAuditLog: { total: 104, uncategorised: 11 },
@@ -124,15 +153,20 @@ export const AUDIT_CENSUS_TOTALS = {
    * (#2581 decisions 1 and 2), which is why `account` is 15 rather than 10 and
    * `security` is 16 rather than 15.
    *
-   * `booking` is 80 rather than 79 since #2623 (the stranded waitlist-confirm
-   * recovery marker above). Correlation reads of `booking` require `support` plus
+   * `booking` is 82 rather than 79: #2623 added the stranded waitlist-confirm
+   * recovery marker above, and #2621 the two arrival-time rows below.
+   * Correlation reads of `booking` require `support` plus
    * `bookings` (`AUDIT_CORRELATION_DOMAIN_AREAS`), which the lodge administrators
    * who have to act on that row already hold — so this adds no reader who could not
    * already see the booking the row names.
    */
   categoryValues: {
     account: 15,
-    booking: 80,
+    // 80 -> 82 (#2621): `booking.expected_arrival_time.set` and `.cleared`. Read
+    // with `support:view` plus `bookings:view`, like every other booking row
+    // beside them — and the booking officers who can set this field already hold
+    // both — so this widens nobody's access. (Re-measured on merged tree, #2621.)
+    booking: 82,
     payment: 16,
     family: 27,
     // 117 -> 118 (#2352 MC-03D): `PAGE_CONTENT_DELETED`. `admin` is the same

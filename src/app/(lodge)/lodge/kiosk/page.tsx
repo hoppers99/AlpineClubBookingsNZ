@@ -7,6 +7,10 @@ import { useClubIdentity } from "@/components/club-identity-provider";
 import type { KioskTier } from "@/lib/kiosk-access";
 import { APP_LOCALE, APP_TIME_ZONE } from "@/config/operational";
 import { parseDateOnly, todayDateOnlyForTimeZone } from "@/lib/date-only";
+// #2621: one 12-hour rendering of the expected arrival time, shared with the
+// booking page editor and the lobby wall. Three private copies of the same six
+// lines is how three surfaces end up disagreeing about midnight.
+import { formatArrivalTime } from "@/lib/arrival-time";
 import {
   addDaysToDateKey,
   getWeekStartDateKey,
@@ -132,13 +136,6 @@ function displayDate(dateStr: string): string {
   // the club-time formatter cannot roll it back a day for a viewer outside
   // New Zealand.
   return LONG_WEEKDAY_DATE.format(parseDateOnly(dateStr));
-}
-
-function formatArrivalTime(time: string): string {
-  const [hours, minutes] = time.split(":").map(Number);
-  const suffix = hours >= 12 ? "PM" : "AM";
-  const displayHour = hours === 0 ? 12 : hours > 12 ? hours - 12 : hours;
-  return `${displayHour}:${String(minutes).padStart(2, "0")} ${suffix}`;
 }
 
 export default function KioskPage() {

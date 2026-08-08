@@ -12,6 +12,7 @@ import {
   type DisplayPanelOptions,
 } from "./module-options";
 import { DISPLAY_SHORT_WEEKDAY } from "./status-helpers";
+import { formatArrivalTime } from "@/lib/arrival-time";
 
 // The everyday bar board (fork issues #30/#56; visual reference:
 // docs/lobby-display/mockups/everyday-bar-board.html). Pure function of the
@@ -221,6 +222,34 @@ export function ArrivalsBoard({
                         <span className="display-bar-overflow"> +{overflow}</span>
                       )}
                     </span>
+                    {/* #2621: the expected arrival time, for tonight's (or a
+                        later window day's) arrivals. Three conditions, and this
+                        module enforces all three itself rather than trusting the
+                        payload for any of them.
+
+                        `!grouped` is the NAME GATE, restated here. `guests ===
+                        null` is exactly the state `lodge-display-state` puts a
+                        row into when the wall may not name the people on it (a
+                        minor in the party, an organisation organiser, a
+                        whole-lodge blockout, COUNTS_ONLY granularity), and this
+                        bar then prints "label · count" instead of names. A
+                        movement time beside that is the same disclosure the
+                        label was chosen to avoid, so it is refused HERE too —
+                        the state layer having refused it as well is defence in
+                        depth, not a reason for this component to skip the check.
+                        Deferring to the payload is what made the earlier guard
+                        vacuous.
+
+                        `!startsBeforeWindow` is the board's own local clip
+                        guard: this module can be configured to show fewer days
+                        than the state window, and a bar clipped at the left edge
+                        must not sprout an arrival time for a day the viewer
+                        cannot see. */}
+                    {!grouped && row.arrivalTime && !layout.startsBeforeWindow && (
+                      <span className="display-bar-arrival">
+                        arr {formatArrivalTime(row.arrivalTime)}
+                      </span>
+                    )}
                     <span className="display-bar-out">{barMeta(row, layout)}</span>
                   </div>
                 );

@@ -36,6 +36,9 @@ function row(overrides: Partial<DisplayStateBooking>): DisplayStateBooking {
     guestCount: 1,
     stayStart: "2026-04-13",
     stayEnd: "2026-04-15",
+    // #2621: no expected arrival time is the ordinary case, so the base fixture
+    // has none; the cases that exercise the chip set it explicitly.
+    arrivalTime: null,
     ...overrides,
   };
 }
@@ -223,6 +226,102 @@ describe("ArrivalsBoard", () => {
     );
     // max-names clamps to 1 → 5 overflow
     expect(screen.getByText("+5")).toBeDefined();
+  });
+
+  // #2621: the expected arrival time chip. `lodge-display-state` makes the same
+  // privacy decision upstream, but this module does NOT rely on that: the
+  // name-suppression case below hands it a payload with a time on a
+  // name-withheld row — the shape a mistake upstream, a hand-built payload or a
+  // future caller would produce — and requires the module to refuse it anyway.
+  // What is tested besides that is that the module prints what it is given, in
+  // the 12-hour form the kiosk and the booking page use, and stays quiet
+  // otherwise.
+  it("shows the expected arrival time on a bar that starts inside the window", () => {
+    const { container } = render(
+      <ArrivalsBoard
+        state={state({
+          bookings: [row({ key: "a", arrivalTime: "17:30" })],
+        })}
+      />
+    );
+    expect(screen.getByText("arr 5:30 PM")).toBeDefined();
+    expect(container.querySelector(".display-bar-arrival")).not.toBeNull();
+  });
+
+  it("shows nothing when the row carries no time — the ordinary case", () => {
+    const { container } = render(
+      <ArrivalsBoard
+        state={state({ bookings: [row({ key: "a", arrivalTime: null })] })}
+      />
+    );
+    expect(container.querySelector(".display-bar-arrival")).toBeNull();
+    expect(screen.queryByText(/^arr /)).toBeNull();
+  });
+
+  it("shows no time on a bar clipped at the left edge — the arrival day is off the board", () => {
+    // The module can be configured to show fewer days than the state window, so
+    // it guards this itself rather than trusting the payload alone. A time with
+    // no visible arrival day beside it reads as tonight.
+    const { container } = render(
+      <ArrivalsBoard
+        state={state({
+          bookings: [
+            row({
+              key: "a",
+              stayStart: "2026-04-11",
+              stayEnd: "2026-04-15",
+              arrivalTime: "17:30",
+            }),
+          ],
+        })}
+      />
+    );
+    expect(container.querySelector(".display-bar-arrival")).toBeNull();
+  });
+
+  it("PRIVACY: never shows a time on a row whose names are withheld, even when the payload carries one", () => {
+    // The guard that matters, exercised against the payload it is meant to
+    // survive. `guests: null` is what the wall serialiser produces for a row it
+    // may not name; such a row renders "label · count" instead of names, and a
+    // movement time beside that is the same disclosure the label exists to
+    // avoid. Both name-withheld shapes are covered: a whole-lodge blockout and
+    // an ordinary grouped row (a party containing a minor, or COUNTS_ONLY).
+    //
+    // The time is handed in DELIBERATELY. An earlier version of this test passed
+    // `arrivalTime: null` and so asserted nothing whatsoever — the module could
+    // have printed every suppressed row's time and stayed green.
+    const { container } = render(
+      <ArrivalsBoard
+        state={state({
+          bookings: [
+            row({
+              key: "a",
+              wholeLodge: true,
+              label: "Harakeke College",
+              guests: null,
+              guestCount: 14,
+              arrivalTime: "17:30",
+            }),
+            row({
+              key: "b",
+              wholeLodge: false,
+              label: "Smith family",
+              guests: null,
+              guestCount: 4,
+              arrivalTime: "09:00",
+            }),
+          ],
+        })}
+      />
+    );
+    expect(container.querySelector(".display-bar-arrival")).toBeNull();
+    expect(screen.queryByText(/^arr /)).toBeNull();
+    expect(container.textContent).not.toContain("5:30 PM");
+    expect(container.textContent).not.toContain("9:00 AM");
+    // The rows themselves did render — otherwise this would pass for the wrong
+    // reason.
+    expect(screen.getByText("Harakeke College · 14")).toBeDefined();
+    expect(screen.getByText("Smith family · 4")).toBeDefined();
   });
 });
 
