@@ -176,6 +176,36 @@ describe("ArrivalTimeEditor (#2621)", () => {
     );
   });
 
+  it("names a stored value the dropdown cannot show, instead of rendering nothing", () => {
+    // A legacy `"14:10"` (the old `[0-5]0` pattern accepted it, and so did
+    // hand-run SQL) matches no option in the half-hour picker, so the control
+    // selected nothing and the member could not tell "no time recorded" from
+    // "a time this control cannot display".
+    renderEditor("14:10");
+
+    const select = screen.getByLabelText("Expected arrival time") as HTMLSelectElement;
+    expect(select.value).toBe("");
+    // The value is stated beside the control, in the same 12-hour form the
+    // booking page, kiosk and wall use.
+    expect(screen.getByText("Currently: 2:10 PM")).toBeDefined();
+    // ...and announced with the control, not merely visible next to it.
+    const describedBy = select.getAttribute("aria-describedby") ?? "";
+    const described = describedBy
+      .split(" ")
+      .map((id) => document.getElementById(id)?.textContent ?? "")
+      .join(" ");
+    expect(described).toContain("2:10 PM");
+    expect(described).toContain("hut leader");
+  });
+
+  it("says nothing extra when the stored value is one the dropdown offers", () => {
+    renderEditor("17:30");
+    expect(screen.queryByText(/^Currently:/)).toBeNull();
+    expect(
+      (screen.getByLabelText("Expected arrival time") as HTMLSelectElement).value
+    ).toBe("17:30");
+  });
+
   it("read-only mode shows the 12-hour form, or 'Not set'", () => {
     // Two separate mounts, not a rerender: `initialTime` seeds `useState`, so a
     // rerender with a different prop would keep the first value and prove

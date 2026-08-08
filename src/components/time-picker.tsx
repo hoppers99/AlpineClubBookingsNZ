@@ -1,5 +1,7 @@
 "use client";
 
+import { formatArrivalTime } from "@/lib/arrival-time";
+
 interface TimePickerProps {
   value: string | null;
   onChange: (value: string | null) => void;
@@ -24,12 +26,6 @@ interface TimePickerProps {
    * announcement of the field read the whole sentence again.
    */
   describedBy?: string;
-  /**
-   * Last-resort accessible name for a caller with no visible label to point at.
-   * Prefer `id` + a real `<label>`: a visible label helps everyone, and an
-   * `aria-label` that drifts from nearby visible text is worse than none.
-   */
-  ariaLabel?: string;
 }
 
 function generateTimeOptions(): { value: string; label: string }[] {
@@ -42,10 +38,13 @@ function generateTimeOptions(): { value: string; label: string }[] {
     for (const m of [0, 30]) {
       if (h === 23 && m === 30) continue;
       const value = `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}`;
-      const suffix = h >= 12 ? "PM" : "AM";
-      const displayHour = h === 0 ? 12 : h > 12 ? h - 12 : h;
-      const label = `${displayHour}:${String(m).padStart(2, "0")} ${suffix}`;
-      options.push({ value, label });
+      // #2621: labelled by the SHARED formatter, not a private copy of the same
+      // arithmetic. This component held the fourth hand-rolled 12-hour renderer
+      // in the codebase, so the option a member picks and the value their booking
+      // page, the kiosk and the lobby wall read back could drift apart one edit
+      // at a time. `@/lib/arrival-time` imports nothing, so using it here pulls
+      // no extra weight into this client bundle.
+      options.push({ value, label: formatArrivalTime(value) });
     }
   }
   return options;
@@ -59,13 +58,11 @@ export function TimePicker({
   disabled,
   id,
   describedBy,
-  ariaLabel,
 }: TimePickerProps) {
   return (
     <select
       id={id}
       aria-describedby={describedBy}
-      aria-label={ariaLabel}
       value={value ?? ""}
       onChange={(e) => onChange(e.target.value || null)}
       disabled={disabled}

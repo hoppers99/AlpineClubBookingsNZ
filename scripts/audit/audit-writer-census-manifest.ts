@@ -59,13 +59,21 @@ export const AUDIT_CENSUS_TOTALS = {
    * inside the release's own transaction, because that row is the only surviving
    * record of who held the claim the transition destroys. Categorised `privacy`
    * at the site, so it does not join `UNCATEGORISED_AUDIT_WRITERS` below.
+   *
+   * 419 -> 421 (#2621): the expected-arrival-time route recorded nothing at all,
+   * and a Booking Officer may set that field on ANY member's booking (#1313
+   * option A2) — so a member seeing a time they did not set had no way to learn
+   * who set it. Its PUT and its DELETE now each write one `logAudit` row
+   * (`booking.arrival-time.set` / `.clear`), categorised `booking` at the site,
+   * so neither joins `UNCATEGORISED_AUDIT_WRITERS` below.
    */
-  writeSites: 419,
+  writeSites: 421,
   /** Of those, sites whose event object carries no `category` key. */
   uncategorised: 82,
   /** Per-sink totals, so a shift between forms cannot cancel out in the total. */
   bySink: {
-    logAudit: { total: 238, uncategorised: 69 },
+    // 238 -> 240 (#2621): the two arrival-time writers, above.
+    logAudit: { total: 240, uncategorised: 69 },
     // 101 -> 102 (#2627): the deletion-approval release, above.
     createAuditLog: { total: 102, uncategorised: 11 },
     createStructuredAuditLog: { total: 8, uncategorised: 0 },
@@ -80,7 +88,10 @@ export const AUDIT_CENSUS_TOTALS = {
    */
   categoryValues: {
     account: 15,
-    booking: 79,
+    // 79 -> 81 (#2621): `booking.arrival-time.set` and `.clear`. Read with
+    // `support:view` plus `bookings:view`, like every other booking row beside
+    // them, so this widens nobody's access.
+    booking: 81,
     payment: 16,
     family: 27,
     admin: 117,

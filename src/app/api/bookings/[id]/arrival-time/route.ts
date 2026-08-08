@@ -29,6 +29,18 @@ import { getClientIp } from "@/lib/rate-limit";
 // tolerable for the same reason: the worst outcome of losing that race is an
 // arrival time recorded on a booking that was cancelled a millisecond ago,
 // which displays nowhere because every reader filters on status.
+//
+// WHAT IS ATOMIC, AND WHY THAT IS ENOUGH. The AUDIT PAIR is. The row this route
+// writes says "X → Y", and the only way to be sure X is the value Y actually
+// replaced is to read it in the same transaction as the write — otherwise two
+// admins saving at the same instant both read the pre-existing value and both
+// record it as the "old", so the audit log claims a change that never happened
+// and loses one that did. So the previous value is re-read inside a short
+// interactive `$transaction` alongside the update. That is a row-level ordering
+// on ONE row for the duration of one scalar write, not the booking's advisory
+// lock: it cannot block a payment or a modification, and last-write-wins on the
+// field itself is unchanged — the two admins still end with one of the two
+// times, and now the audit trail says truthfully which order they landed in.
 
 // #2621: the accepted-value rule is `ARRIVAL_TIME_PATTERN`, imported rather
 // than re-spelled here. The literal that used to live on this line read
@@ -62,14 +74,14 @@ export async function PUT(
 
   const booking = await prisma.booking.findUnique({
     where: { id },
-    // #2621: `expectedArrivalTime` is selected only so the audit entry can
-    // record the old→new pair. An audit row that says "changed" without saying
-    // what it changed from cannot answer the question it exists for.
+    // The permission and eligibility guards only. The value being replaced is
+    // NOT read here: an audit row that says "changed" has to say what it changed
+    // from, and the only reading of that which cannot go stale is the one taken
+    // inside the write below.
     select: {
       memberId: true,
       checkIn: true,
       status: true,
-      expectedArrivalTime: true,
     },
   });
 
@@ -113,16 +125,35 @@ export async function PUT(
 
   const parsed = arrivalTimeSchema.safeParse(body);
   if (!parsed.success) {
-    return NextResponse.json(
-      { error: "Invalid input", details: parsed.error.flatten() },
-      { status: 400 }
-    );
+    // #2621: this used to answer a refused time with the bare word "Invalid
+    // input" and bury `ARRIVAL_TIME_ERROR_MESSAGE` in `details`, which no caller
+    // reads — and the editor renders `error` verbatim, so a member who typed a
+    // time on the quarter hour was told "Invalid input" and never learned that
+    // the field takes the hour or half hour. The schema already carries the
+    // truthful sentence; surface it. A malformed or missing field falls back to
+    // zod's own message for that shape rather than to a time-format sentence
+    // that would not describe the real problem.
+    const flattened = parsed.error.flatten();
+    const message =
+      flattened.fieldErrors.expectedArrivalTime?.[0] ??
+      flattened.formErrors[0] ??
+      ARRIVAL_TIME_ERROR_MESSAGE;
+    return NextResponse.json({ error: message, details: flattened }, { status: 400 });
   }
 
-  const updated = await prisma.booking.update({
-    where: { id },
-    data: { expectedArrivalTime: parsed.data.expectedArrivalTime },
-    select: { id: true, expectedArrivalTime: true },
+  // The audit pair, read where it cannot go stale — see the transaction note in
+  // the header comment. `previous` is what this write really replaced.
+  const { previous, updated } = await prisma.$transaction(async (tx) => {
+    const current = await tx.booking.findUnique({
+      where: { id },
+      select: { expectedArrivalTime: true },
+    });
+    const written = await tx.booking.update({
+      where: { id },
+      data: { expectedArrivalTime: parsed.data.expectedArrivalTime },
+      select: { id: true, expectedArrivalTime: true },
+    });
+    return { previous: current?.expectedArrivalTime ?? null, updated: written };
   });
 
   // #2621: this route wrote to a booking and recorded nothing. It is reachable
@@ -130,7 +161,9 @@ export async function PUT(
   // seeing a time they did not set had no way to find out who set it. `memberId`
   // is the actor, `subjectMemberId` the booking owner, so an officer edit and a
   // self-edit are distinguishable at a glance. `previous` may be null — that is
-  // the first-ever set, and it is a fact worth recording.
+  // the first-ever set, and it is a fact worth recording. Written after the
+  // transaction commits, deliberately: `logAudit` is fire-and-forget, and a
+  // durable "changed" claim must never be able to survive a rolled-back write.
   logAudit({
     action: "booking.arrival-time.set",
     memberId: session.user.id,
@@ -141,10 +174,10 @@ export async function PUT(
     category: "booking",
     outcome: "success",
     summary: "Expected arrival time set",
-    details: `${booking.expectedArrivalTime ?? "(not set)"} → ${updated.expectedArrivalTime}`,
+    details: `${previous ?? "(not set)"} → ${updated.expectedArrivalTime}`,
     metadata: {
       bookingId: id,
-      previousArrivalTime: booking.expectedArrivalTime,
+      previousArrivalTime: previous,
       newArrivalTime: updated.expectedArrivalTime,
       byOwner: booking.memberId === session.user.id,
     },
@@ -176,12 +209,12 @@ export async function DELETE(
 
   const booking = await prisma.booking.findUnique({
     where: { id },
-    // #2621: the cleared value, so the audit entry can say what was removed.
+    // Guards only; the cleared value is read inside the write, so the audit row
+    // names the value this request really removed.
     select: {
       memberId: true,
       checkIn: true,
       status: true,
-      expectedArrivalTime: true,
     },
   });
 
@@ -214,10 +247,20 @@ export async function DELETE(
     );
   }
 
-  const updated = await prisma.booking.update({
-    where: { id },
-    data: { expectedArrivalTime: null },
-    select: { id: true, expectedArrivalTime: true },
+  // Same reasoning as the set: the value being cleared is read inside the write
+  // so the recorded "old" is the one this clear really removed, not whatever a
+  // concurrent request saw a moment earlier.
+  const { previous, updated } = await prisma.$transaction(async (tx) => {
+    const current = await tx.booking.findUnique({
+      where: { id },
+      select: { expectedArrivalTime: true },
+    });
+    const written = await tx.booking.update({
+      where: { id },
+      data: { expectedArrivalTime: null },
+      select: { id: true, expectedArrivalTime: true },
+    });
+    return { previous: current?.expectedArrivalTime ?? null, updated: written };
   });
 
   // #2621: a clear is recorded on the same terms as a set — the same action
@@ -233,10 +276,10 @@ export async function DELETE(
     category: "booking",
     outcome: "success",
     summary: "Expected arrival time cleared",
-    details: `${booking.expectedArrivalTime ?? "(not set)"} → (not set)`,
+    details: `${previous ?? "(not set)"} → (not set)`,
     metadata: {
       bookingId: id,
-      previousArrivalTime: booking.expectedArrivalTime,
+      previousArrivalTime: previous,
       newArrivalTime: null,
       byOwner: booking.memberId === session.user.id,
     },

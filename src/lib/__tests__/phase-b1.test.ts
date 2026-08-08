@@ -36,7 +36,20 @@ const mockPrisma = {
     findFirst: vi.fn(),
     findUnique: vi.fn(),
   },
+  // #2621: the arrival-time route re-reads the value it is about to replace
+  // INSIDE the write, so the audited old→new pair cannot be made stale by a
+  // concurrent save.
+  $transaction: vi.fn(),
 };
+
+// The interactive-transaction double hands the callback this SAME object, so a
+// test can tell the two reads apart with `mockResolvedValueOnce` while every
+// existing `mockPrisma.booking.update` assertion keeps working unchanged.
+// `vi.clearAllMocks()` clears calls but not implementations, so this survives
+// each suite's `beforeEach`.
+mockPrisma.$transaction.mockImplementation(
+  async (fn: (tx: typeof mockPrisma) => unknown) => await fn(mockPrisma)
+);
 
 vi.mock("@/lib/prisma", () => ({ prisma: mockPrisma }));
 vi.mock("@/lib/logger", () => ({
@@ -490,6 +503,50 @@ describe("#31: Expected Arrival Time", () => {
       expect(entry.details).toContain("17:00");
     });
 
+    // #2621: the old value is read INSIDE the write. Read outside it, two admins
+    // saving at the same instant both see the pre-existing value, both record it
+    // as the "old", and the audit log describes a change that never happened
+    // while losing one that did.
+    it("takes the audited old value from a read inside the write, not from the guard read", async () => {
+      mockAuth.mockResolvedValue({ user: authUser("member-1", "USER") });
+      mockSessionMemberRoles("member-1", "USER");
+      // First read is the permission/eligibility guard; the second is the one
+      // inside the transaction. They disagree here on purpose — that is what a
+      // concurrent writer looks like from in here — and only the transactional
+      // one may reach the audit row.
+      mockPrisma.booking.findUnique
+        .mockResolvedValueOnce({
+          memberId: "member-1",
+          checkIn: futureCheckIn,
+          status: "CONFIRMED",
+          expectedArrivalTime: "09:30",
+        })
+        .mockResolvedValueOnce({ expectedArrivalTime: "12:00" });
+      mockPrisma.booking.update.mockResolvedValue({
+        id: "booking-1",
+        expectedArrivalTime: "17:00",
+      });
+
+      const { NextRequest } = await import("next/server");
+      const { PUT } = await import(
+        "@/app/api/bookings/[id]/arrival-time/route"
+      );
+      const req = new NextRequest("http://localhost/api/bookings/booking-1/arrival-time", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ expectedArrivalTime: "17:00" }),
+      });
+      const res = await PUT(req, { params: Promise.resolve({ id: "booking-1" }) });
+      expect(res.status).toBe(200);
+
+      // The write really did run in one transaction.
+      expect(mockPrisma.$transaction).toHaveBeenCalledTimes(1);
+      const entry = mockPrisma.auditLog.create.mock.calls[0][0].data;
+      expect(entry.details).toBe("12:00 → 17:00");
+      expect(entry.details).not.toContain("09:30");
+      expect(entry.metadata.previousArrivalTime).toBe("12:00");
+    });
+
     it("records the clear as its own audit entry", async () => {
       mockAuth.mockResolvedValue({
         user: authUser("member-1", "USER"),
@@ -554,7 +611,39 @@ describe("#31: Expected Arrival Time", () => {
       }
     );
 
-    it("rejects invalid time format", async () => {
+    it("rejects invalid time format, and SAYS WHAT THE RULE IS", async () => {
+      mockAuth.mockResolvedValue({
+        user: authUser("member-1", "USER"),
+      });
+      mockPrisma.booking.findUnique.mockResolvedValue({
+        memberId: "member-1",
+        checkIn: futureCheckIn,
+        status: "CONFIRMED",
+      });
+
+      const { NextRequest } = await import("next/server");
+      const { PUT } = await import(
+        "@/app/api/bookings/[id]/arrival-time/route"
+      );
+      const { ARRIVAL_TIME_ERROR_MESSAGE } = await import("@/lib/arrival-time");
+      const req = new NextRequest("http://localhost/api/bookings/booking-1/arrival-time", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ expectedArrivalTime: "14:15" }), // not 30-min increment
+      });
+      const res = await PUT(req, { params: Promise.resolve({ id: "booking-1" }) });
+      expect(res.status).toBe(400);
+      // #2621: the response used to say the bare words "Invalid input" and bury
+      // the real rule in `details`, which nothing reads — and the editor renders
+      // `error` verbatim, so the member was told nothing at all about the hour or
+      // half hour. `error` is the field the UI shows, so the truthful sentence
+      // has to be there.
+      const body = await res.json();
+      expect(body.error).toBe(ARRIVAL_TIME_ERROR_MESSAGE);
+      expect(body.error).not.toBe("Invalid input");
+    });
+
+    it("says the same truthful thing for a missing field, without pretending it was a time", async () => {
       mockAuth.mockResolvedValue({
         user: authUser("member-1", "USER"),
       });
@@ -571,10 +660,16 @@ describe("#31: Expected Arrival Time", () => {
       const req = new NextRequest("http://localhost/api/bookings/booking-1/arrival-time", {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ expectedArrivalTime: "14:15" }), // not 30-min increment
+        body: JSON.stringify({}),
       });
       const res = await PUT(req, { params: Promise.resolve({ id: "booking-1" }) });
       expect(res.status).toBe(400);
+      const body = await res.json();
+      // Some message about the field, from the validator itself — not the
+      // time-format sentence, which would not describe this problem.
+      expect(typeof body.error).toBe("string");
+      expect(body.error.length).toBeGreaterThan(0);
+      expect(mockPrisma.booking.update).not.toHaveBeenCalled();
     });
 
     it("rejects non-owner non-admin", async () => {
@@ -903,7 +998,7 @@ describe("#31: Booking creation schema accepts expectedArrivalTime", () => {
     expect(ARRIVAL_TIME_PATTERN.source).toContain("(00|30)");
   });
 
-  it("renders a stored time as a 12-hour clock, and leaves a malformed legacy value alone", async () => {
+  it("renders a stored time as a 12-hour clock, including a legacy off-half-hour value", async () => {
     const { formatArrivalTime } = await import("@/lib/arrival-time");
     expect(formatArrivalTime("00:00")).toBe("12:00 AM");
     expect(formatArrivalTime("00:30")).toBe("12:30 AM");
@@ -911,9 +1006,19 @@ describe("#31: Booking creation schema accepts expectedArrivalTime", () => {
     expect(formatArrivalTime("12:00")).toBe("12:00 PM");
     expect(formatArrivalTime("17:30")).toBe("5:30 PM");
     expect(formatArrivalTime("23:00")).toBe("11:00 PM");
-    // A row written before the pattern was tightened must not render as
-    // "NaN:NaN" on a member's booking page.
-    expect(formatArrivalTime("14:10")).toBe("14:10");
+    // A row written before the minute rule was tightened is still a perfectly
+    // readable time, and the per-surface formatters this module replaced always
+    // showed it in 12-hour form. Rendering it raw would show one member a
+    // 24-hour string beside everyone else's 12-hour one — a regression, not
+    // caution. The DISPLAY rule is therefore wider than the STORAGE rule.
+    expect(formatArrivalTime("14:10")).toBe("2:10 PM");
+    expect(formatArrivalTime("00:07")).toBe("12:07 AM");
+    expect(formatArrivalTime("23:59")).toBe("11:59 PM");
+    // Genuinely unparseable text is the only thing returned unchanged: a corrupt
+    // row shows as itself rather than as a confidently wrong time.
+    for (const junk of ["", "tea time", "24:00", "1400", "14:60", "14:00:00"]) {
+      expect(formatArrivalTime(junk)).toBe(junk);
+    }
   });
 });
 

@@ -58,19 +58,44 @@ export function isValidArrivalTime(value: string): boolean {
 }
 
 /**
+ * Any 24-hour wall-clock time, to ANY minute — `00:00` through `23:59`.
+ *
+ * Deliberately wider than `ARRIVAL_TIME_PATTERN`, and used only by the
+ * formatter. What may be STORED from today on is the canonical half-hour set;
+ * what may have to be DISPLAYED includes every `:10`/`:15`/`:47` value the old
+ * `[0-5]0` pattern (and hand-written SQL before it) let through. Those rows
+ * exist, they are perfectly readable times, and a member looking at one is
+ * entitled to see it in the same 12-hour form as everyone else.
+ */
+const DISPLAYABLE_TIME_PATTERN = /^([01]\d|2[0-3]):[0-5]\d$/;
+
+/**
  * `"17:30"` → `"5:30 PM"`. The one 12-hour rendering of the field, shared by
- * the booking page editor, the lodge kiosk and the lobby wall so three surfaces
- * cannot describe one stored value three ways.
+ * the booking page editor, the lodge kiosk, the picker's own option labels and
+ * the lobby wall, so four surfaces cannot describe one stored value four ways.
  *
  * No time zone is involved and none may be introduced: the stored value is a
  * bare wall-clock time at the lodge, not an instant, so it is never parsed into
- * a `Date` (which would attach the viewer's zone to it and shift it). A value
- * that does not match `ARRIVAL_TIME_PATTERN` is returned unchanged rather than
- * rendered as `NaN:NaN` — legacy rows written before the pattern was tightened
- * still have to show as something a human can read.
+ * a `Date` (which would attach the viewer's zone to it and shift it).
+ *
+ * WHAT IT ACCEPTS, AND WHY IT IS WIDER THAN THE VALIDATOR. Every real
+ * `HH:mm` — any minute, not just `:00`/`:30`. A legacy `"14:10"` renders
+ * `"2:10 PM"`, exactly as the per-surface formatters this module replaced always
+ * did; returning it raw would have been a REGRESSION dressed as caution, showing
+ * one member a 24-hour string beside everyone else's 12-hour one. The minutes
+ * are numeric by construction, so there was never a `NaN:NaN` to fear here —
+ * only unparseable non-time text, and that alone is returned unchanged (a
+ * corrupt row shows as itself rather than as a confidently wrong time).
+ *
+ * Note that the LOBBY WALL is stricter still: `lodge-display-state` refuses to
+ * put a non-canonical value into the public payload at all, so this tolerance
+ * never widens what an unauthenticated screen prints. That filter is deliberate
+ * and documented there; this formatter's tolerance is about the member's own
+ * booking page and the hut leader's kiosk, where the row's real stored value is
+ * the truth being shown.
  */
 export function formatArrivalTime(time: string): string {
-  if (!isValidArrivalTime(time)) return time;
+  if (!DISPLAYABLE_TIME_PATTERN.test(time)) return time;
   const [hours, minutes] = time.split(":");
   const hour = Number(hours);
   const suffix = hour >= 12 ? "PM" : "AM";

@@ -10,8 +10,13 @@ import type { GuestData } from "@/components/guest-form";
 import { sumDeferredGuestPortionCents } from "@/lib/deferred-guest-portion";
 import { formatMissingPaidUpAdultRefusal } from "@/lib/policies/subscription-lockout-pricing";
 
+// #2621: the stub forwards `id` so the label association is observable here.
+// A stub that swallowed it would make "does this page's <Label htmlFor> reach a
+// real control" untestable — which is exactly how the missing id survived.
 vi.mock("@/components/time-picker", () => ({
-  TimePicker: () => <div data-testid="time-picker" />,
+  TimePicker: ({ id }: { id?: string }) => (
+    <select id={id} data-testid="time-picker" />
+  ),
 }));
 vi.mock("@/components/promo-code-input", () => ({
   PromoCodeInput: () => <div data-testid="promo-code-input" />,
@@ -609,5 +614,19 @@ describe("ReviewStep — the exception-request card (#2562 review)", () => {
     expect(card).toHaveTextContent(/your note to the club/);
     // These do not move the price, so the figure keeps its plain label.
     expect(card).toHaveTextContent("Total for this stay:");
+  });
+});
+
+// #2621 — the arrival-time field's label has to reach its control.
+describe("ReviewStep expected arrival time (#2621)", () => {
+  it("associates the visible label with the picker", () => {
+    renderReview([memberGuest]);
+
+    // `getByLabelText` resolves <Label htmlFor="arrival-time"> to the control
+    // carrying that id, and throws if nothing does. Before the fix the label
+    // pointed at no element at all: the field announced as a bare combo box and
+    // clicking its label did nothing.
+    const picker = screen.getByLabelText("Expected Arrival Time (optional)");
+    expect(picker).toBe(screen.getByTestId("time-picker"));
   });
 });

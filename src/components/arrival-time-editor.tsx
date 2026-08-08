@@ -3,7 +3,7 @@
 import { useId, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { TimePicker } from "./time-picker";
-import { formatArrivalTime } from "@/lib/arrival-time";
+import { formatArrivalTime, isValidArrivalTime } from "@/lib/arrival-time";
 
 interface ArrivalTimeEditorProps {
   bookingId: string;
@@ -50,7 +50,26 @@ export function ArrivalTimeEditor({
 
   const fieldId = useId();
   const hintId = `${fieldId}-hint`;
+  const storedId = `${fieldId}-stored`;
   const hasChanged = time !== savedTime;
+
+  // #2621 — a stored value the dropdown has no option for.
+  //
+  // The picker offers the canonical half-hour set only, so a booking holding a
+  // legacy `"14:10"` (the old `[0-5]0` pattern accepted it, and so did hand-run
+  // SQL) selects nothing: the member saw an EMPTY control on a booking that does
+  // have a time recorded, with no way to tell "not set" from "set to something
+  // this control cannot show". The value is named beside the control instead, in
+  // the same 12-hour form every other surface uses, and the id joins the
+  // control's description so it is announced rather than merely visible.
+  //
+  // Deliberately NOT offered as an extra option: the member's next save has to
+  // land on a value the club's own rule accepts, and quietly re-saving a
+  // non-canonical time would keep it alive for ever.
+  const unselectableStoredLabel =
+    savedTime !== null && !isValidArrivalTime(savedTime)
+      ? formatArrivalTime(savedTime)
+      : null;
 
   async function handleSave() {
     setSaving(true);
@@ -108,12 +127,19 @@ export function ArrivalTimeEditor({
         <div className="w-48">
           <TimePicker
             id={fieldId}
-            describedBy={hintId}
+            describedBy={
+              unselectableStoredLabel ? `${storedId} ${hintId}` : hintId
+            }
             value={time}
             onChange={setTime}
             disabled={saving}
           />
         </div>
+        {unselectableStoredLabel && (
+          <span id={storedId} className="text-xs text-muted-foreground">
+            Currently: {unselectableStoredLabel}
+          </span>
+        )}
         <Button size="sm" onClick={handleSave} disabled={saving || !hasChanged}>
           {saving ? "Saving..." : "Save arrival time"}
         </Button>
