@@ -243,17 +243,41 @@ The script also does not create the database, the app role, or any view.
 
 The allowlist lives in `SELECT_GRANTS` (`src/lib/diagnostics/tools/provision-role.ts`),
 in public code, so "which relations — and which columns of them — can Diagnostics
-read" is answerable by reading one file. As of AID-6A (#2375) it names one relation:
+read" is answerable by reading one file. As of AID-6C (#2377) it names **thirteen**
+relations, and **every one of them is granted by column, never wholesale**:
 
 | Relation | Granted | Read by |
 | --- | --- | --- |
-| `public."AuditLog"` | **columns only**: `id`, `action`, `category`, `severity`, `outcome`, `entityType`, `requestId`, `createdAt` | the five audit-correlation tools ([tool-pack-support.md](tool-pack-support.md)) |
+| `public."AuditLog"` | **columns only**: `id`, `action`, `category`, `severity`, `outcome`, `entityType`, `entityId`, `requestId`, `createdAt` | the five audit-correlation tools ([tool-pack-support.md](tool-pack-support.md)) and the finance audit-history tool ([tool-pack-finance.md](tool-pack-finance.md)) |
+| `public."Payment"` | 22 columns | the finance searches, the payment summary, the refund state ([tool-pack-finance.md](tool-pack-finance.md)) |
+| `public."PaymentTransaction"` | 13 columns | the reference search, the attempt ledger |
+| `public."PaymentRefund"` | 12 columns | the reference search, the refund state |
+| `public."PaymentRecoveryOperation"` | 11 columns | the attempt ledger, the refund state |
+| `public."ManualRefundTask"` | 7 columns | the refund state |
+| `public."RefundRequest"` | 7 columns | the refund state |
+| `public."ProcessedWebhookEvent"` | 6 columns (its surrogate `id` is deliberately not granted) | the webhook timeline |
+| `public."WebhookLog"` | 7 columns | the webhook timeline |
+| `public."XeroInboundEvent"` | 10 columns | the webhook timeline |
+| `public."XeroObjectLink"` | 10 columns | the Xero invoice and contact linkage tools |
+| `public."XeroSyncOperation"` | 18 columns | the Xero invoice and contact linkage tools |
+| `public."Member"` | **two columns**: `id`, `xeroContactId` | the Xero contact linkage tool only |
 
-Every other relation in the schema, including `IntegrationCredential`, is unreadable.
-So is every other **column** of `AuditLog`: the grant is by column, so as the
-diagnostics role `SELECT "ipAddress" FROM "AuditLog"` and `SELECT *` are both refused
-by PostgreSQL with `42501`. The operator CLI prints the declared grants, columns and
-all, on every run and on `--dry-run`.
+Every other relation in the schema is unreadable — including `IntegrationCredential`
+(encrypted provider secrets) and `XeroToken`, which stores **plaintext** Xero OAuth
+access and refresh tokens. Both are permanently out of scope under ADR-007 §1 and no
+tool pack may grant them.
+
+So is every other **column** of the thirteen. The grants are by column, so as the
+diagnostics role `SELECT "ipAddress" FROM "AuditLog"`, `SELECT "email" FROM "Member"`,
+`SELECT "payload" FROM "XeroInboundEvent"` and `SELECT *` from any of them are all
+refused by PostgreSQL with `42501`. The operator CLI prints the declared grants,
+columns and all, on every run and on `--dry-run`.
+
+**Upgrading to the AID-6C release is a two-step operation: deploy, then re-run
+`npm run diagnostics:provision-role`.** Until it is re-run, readiness reports
+`over_privileged` — because the *previous* release's grants no longer match the
+declared allowlist — and every SQL-backed tool refuses. That is ADR-007's deliberate
+friction, and it is the same step AID-6A required.
 
 ### Adding a relation grant later
 

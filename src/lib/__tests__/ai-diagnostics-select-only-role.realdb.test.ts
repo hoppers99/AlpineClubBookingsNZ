@@ -513,11 +513,15 @@ describe("diagnostics privilege proof DB safety guard (#2374)", () => {
     });
 
     it("reads ONLY the declared columns of a column-granted relation", async () => {
-      // The AID-6A grant is by COLUMN, and this is the assertion that makes that a
+      // Every grant is by COLUMN, and this is the assertion that makes that a
       // server-enforced boundary rather than an application one. `AuditLog` carries
       // `ipAddress`, `userAgent`, `summary`, `details`, `metadata` and three
-      // member-identifying columns; the tools project none of them, and as this role
-      // PostgreSQL itself refuses to return them.
+      // member-identifying columns; AID-6C's twelve relations carry raw provider
+      // payloads (`XeroInboundEvent."payload"`), raw error text
+      // (`PaymentRecoveryOperation."lastError"`), operator free text, payment
+      // instruments and — on `Member` — every piece of member PII this platform
+      // holds. The tools project none of them, and as this role PostgreSQL itself
+      // refuses to return them.
       for (const grant of SELECT_GRANTS) {
         if (grant.columns === undefined) continue;
         const declared = new Set<string>(grant.columns);
@@ -561,8 +565,27 @@ describe("diagnostics privilege proof DB safety guard (#2374)", () => {
             `SELECT "${allowed}" FROM ${grant.schema}."${grant.relation}" LIMIT 1`,
           ),
         ).toBeNull();
-        for (const withheld of ["ipAddress", "userAgent", "summary", "metadata"]) {
-          if (declared.has(withheld)) continue;
+        // EVERY un-declared column of THIS relation is refused, derived from the
+        // schema rather than from a hard-coded list.
+        //
+        // The list used to be `["ipAddress", "userAgent", "summary", "metadata"]`,
+        // which was AuditLog's shape and only AuditLog's. The moment AID-6C (#2377)
+        // granted eleven more relations by column, those names did not exist on any
+        // of them and PostgreSQL answered `42703` (undefined column) instead of
+        // `42501` — a green-looking assertion that had stopped testing anything on
+        // the new relations while failing on the old expectation. Driving it from
+        // `pg_attribute` makes it total: `Member."email"`,
+        // `XeroInboundEvent."payload"`, `PaymentRecoveryOperation."lastError"` and
+        // every other withheld column are each proved refused, and a relation added
+        // later inherits the proof.
+        const withheldColumns = columns.rows
+          .map((row) => String(row.name))
+          .filter((name) => !declared.has(name));
+        expect(
+          withheldColumns.length,
+          `${grant.relation} declares every column, so this proves nothing`,
+        ).toBeGreaterThan(0);
+        for (const withheld of withheldColumns) {
           expect(
             await sqlStateAsRole(
               `SELECT "${withheld}" FROM ${grant.schema}."${grant.relation}" LIMIT 1`,
@@ -751,53 +774,111 @@ describe("diagnostics privilege proof DB safety guard (#2374)", () => {
     // 3. The allowlist is closed, and the credential store is out of reach
     // ---------------------------------------------------------------------
 
-    it("cannot read the encrypted credential store", async () => {
-      const code = await sqlStateAsRole(
-        `SELECT * FROM public."IntegrationCredential" LIMIT 1`,
-      );
+    it.each([
+      // The two credential surfaces, named individually because they are the ones
+      // ADR-007 §1 puts permanently out of scope. `IntegrationCredential` holds
+      // encrypted provider secrets; `XeroToken` holds PLAINTEXT Xero OAuth access
+      // and refresh tokens. No tool pack may ever grant either.
+      ["IntegrationCredential", `SELECT * FROM public."IntegrationCredential" LIMIT 1`],
+      ["XeroToken", `SELECT * FROM public."XeroToken" LIMIT 1`],
+    ])("cannot read the credential store %s", async (_label, sql) => {
+      const code = await sqlStateAsRole(sql);
       expect(code).toBe(INSUFFICIENT_PRIVILEGE);
     });
 
     it.each([
-      ["Member", `SELECT count(*) FROM public."Member"`],
+      // Relations that carry the domain's own personal and free-text data and that
+      // NO tool pack has argued for. `Member` and `Payment` used to be on this list
+      // and legitimately left it in AID-6C (#2377) — but by COLUMN, so they are
+      // covered by the column-level case below rather than dropped. `Booking` and
+      // `MemberCredit` are the finance-adjacent relations AID-6C deliberately did
+      // NOT grant: the booking's own money is read through a `server_owned` entry
+      // and the credit ledger through the authoritative credit helpers, so the
+      // SELECT-only role never needs either.
       ["Booking", `SELECT count(*) FROM public."Booking"`],
-      ["Payment", `SELECT count(*) FROM public."Payment"`],
+      ["MemberCredit", `SELECT count(*) FROM public."MemberCredit"`],
+      ["BookingGuest", `SELECT count(*) FROM public."BookingGuest"`],
     ])("cannot read the un-granted table %s", async (_label, sql) => {
       const code = await sqlStateAsRole(sql);
       expect(code).toBe(INSUFFICIENT_PRIVILEGE);
     });
 
-    it("counts rows on the column-granted AuditLog, but reads no withheld column", async () => {
+    it("counts rows on a column-granted relation, but reads no withheld column", async () => {
       // `AuditLog` left the un-granted list when AID-6A (#2375) granted the
-      // audit-correlation tools eight of its columns, and the distinction is worth
-      // pinning rather than deleting a case for: PostgreSQL permits `count(*)` for a
-      // role holding SELECT on ANY column of the relation, so a table-shaped assertion
-      // would now pass for the wrong reason. The boundary that matters is per COLUMN,
-      // and it is the server's own.
-      expect(
-        await sqlStateAsRole(`SELECT count(*) FROM public."AuditLog"`),
-      ).toBeNull();
-      expect(
-        await sqlStateAsRole(`SELECT "action" FROM public."AuditLog" LIMIT 1`),
-      ).toBeNull();
-      for (const withheld of [
-        "entityId",
-        "memberId",
-        "actorMemberId",
-        "subjectMemberId",
-        "targetId",
-        "summary",
-        "details",
-        "metadata",
-        "ipAddress",
-        "userAgent",
-      ]) {
+      // audit-correlation tools eight of its columns, and `Member` and `Payment`
+      // followed in AID-6C (#2377). The distinction is worth pinning rather than
+      // deleting a case for: PostgreSQL permits `count(*)` for a role holding SELECT
+      // on ANY column of the relation, so a table-shaped assertion would now pass for
+      // the wrong reason. The boundary that matters is per COLUMN, and it is the
+      // server's own.
+      //
+      // The withheld names below are spelled out rather than derived — the loop over
+      // every relation's every un-declared column lives in "reads ONLY the declared
+      // columns" above — because THESE are the ones a reviewer should be able to
+      // find by name: the three member references and the free text on `AuditLog`,
+      // the member PII on `Member`, the raw payload on `XeroInboundEvent`, and the
+      // raw error text on `PaymentRecoveryOperation`.
+      //
+      // `AuditLog."entityId"` is deliberately NOT here any more. AID-6A withheld it
+      // and recorded that per-record evidence was AID-6B/6C work under its own
+      // permission and privacy review; AID-6C granted it for
+      // `diagnostics.finance_record_audit_history`, which uses it as a PREDICATE
+      // against an id the caller already supplied and never projects it.
+      for (const [relation, readable, withheldColumns] of [
+        [
+          "AuditLog",
+          "action",
+          [
+            "memberId",
+            "actorMemberId",
+            "subjectMemberId",
+            "targetId",
+            "summary",
+            "details",
+            "metadata",
+            "ipAddress",
+            "userAgent",
+          ],
+        ],
+        ["Member", "xeroContactId", ["email", "firstName", "lastName", "phoneNumber"]],
+        [
+          "Payment",
+          "status",
+          [
+            "manualPaymentNote",
+            "stripeCustomerId",
+            "stripePaymentMethodId",
+            "manuallyMarkedPaidByMemberId",
+          ],
+        ],
+        ["XeroInboundEvent", "status", ["payload", "errorMessage"]],
+        [
+          "XeroSyncOperation",
+          "lastErrorCode",
+          ["requestPayload", "responsePayload", "lastErrorMessage"],
+        ],
+        ["PaymentRecoveryOperation", "attempts", ["lastError", "allocationPlan"]],
+        ["RefundRequest", "status", ["memberId", "reason", "adminNotes"]],
+        ["WebhookLog", "status", ["error"]],
+      ] as const) {
+        expect(
+          await sqlStateAsRole(`SELECT count(*) FROM public."${relation}"`),
+          `${relation} count(*)`,
+        ).toBeNull();
         expect(
           await sqlStateAsRole(
-            `SELECT "${withheld}" FROM public."AuditLog" LIMIT 1`,
+            `SELECT "${readable}" FROM public."${relation}" LIMIT 1`,
           ),
-          `AuditLog.${withheld} must be refused`,
-        ).toBe(INSUFFICIENT_PRIVILEGE);
+          `${relation}.${readable} must be readable`,
+        ).toBeNull();
+        for (const withheld of withheldColumns) {
+          expect(
+            await sqlStateAsRole(
+              `SELECT "${withheld}" FROM public."${relation}" LIMIT 1`,
+            ),
+            `${relation}.${withheld} must be refused`,
+          ).toBe(INSUFFICIENT_PRIVILEGE);
+        }
       }
     });
 
@@ -1332,6 +1413,57 @@ describe("diagnostics privilege proof DB safety guard (#2374)", () => {
       });
     });
 
+    /**
+     * Representative arguments for the registered entries that REQUIRE some.
+     *
+     * The ids are not imported from the pack modules on purpose: those modules are
+     * `server-only`, this suite loads the registry dynamically after setting the
+     * environment, and a literal key here fails loudly (the entry's `parseArgs`
+     * refuses `{}`) if an entry is ever renamed. The values are shaped to parse and
+     * to match nothing on a freshly migrated schema — the assertion below is that
+     * the statement RUNS as the least-privilege role with the grants the allowlist
+     * declares, not that it finds anything.
+     */
+    const REALDB_ENTRY_ARGS: Record<string, unknown> = {
+      "diagnostics.finance_payment_search": {
+        referenceKind: "booking_reference",
+        reference: "CLZ00000",
+      },
+      // Deliberately ZERO, and it is the interesting value rather than a lazy one.
+      // `Payment."additionalAmountCents"` is `Int @default(0)` NOT NULL, so the
+      // guard that stops a zero search matching the whole relation
+      // (`$1::int > 0 AND …`) is a real SQL construct that has to PARSE and run on
+      // PostgreSQL with the declared grants, not just read correctly.
+      "diagnostics.finance_payment_amount_search": {
+        amountCents: 0,
+        window: "30d",
+      },
+      "diagnostics.payment_diagnostic_summary": {
+        paymentId: "clz0000000abcdefghijklmno",
+      },
+      "diagnostics.payment_attempt_ledger": {
+        paymentId: "clz0000000abcdefghijklmno",
+      },
+      "diagnostics.payment_refund_state": {
+        paymentId: "clz0000000abcdefghijklmno",
+      },
+      "diagnostics.finance_webhook_timeline": {
+        provider: "stripe",
+        eventRef: "evt_3Qabcdefghijklmnopqrstu",
+      },
+      "diagnostics.xero_invoice_linkage": {
+        localModel: "Booking",
+        localId: "clz0000000abcdefghijklmno",
+      },
+      "diagnostics.xero_contact_linkage": {
+        memberId: "clz0000000abcdefghijklmno",
+      },
+      "diagnostics.finance_record_audit_history": {
+        subject: "payment",
+        recordId: "clz0000000abcdefghijklmno",
+      },
+    };
+
     it("runs EVERY registered SELECT-only entry, with its real parameters and grants", async () => {
       // The proof a unit test cannot give, and the one AID-6A (#2375) most needs: each
       // registered statement is executed as the least-privilege role against the
@@ -1348,13 +1480,19 @@ describe("diagnostics privilege proof DB safety guard (#2374)", () => {
         const sqlEntries = DIAGNOSTICS_TOOLS.filter(
           (entry) => entry.source === "select_only_sql",
         );
-        // The probe plus AID-6A's five correlation entries, so this is not vacuous.
+        // The probe, AID-6A's five correlation entries and AID-6C's nine finance
+        // entries, so this is not vacuous.
         expect(sqlEntries.length).toBeGreaterThan(1);
 
         for (const entry of sqlEntries) {
           if (entry.source !== "select_only_sql") continue;
-          // Bare arguments: every registered entry either takes none or defaults them.
-          const binding = entry.parseArgs({});
+          // Arguments the entry itself accepts. `{}` was enough while every entry
+          // either took none or defaulted them; AID-6C (#2377) ends that, and it
+          // ends it deliberately — a finance search that accepted `{}` would be the
+          // blank, unbounded search #2377 forbids. So an entry that needs arguments
+          // supplies them here, and an entry with no row falls back to `{}` and
+          // still has to parse, which keeps this a census rather than a skip.
+          const binding = entry.parseArgs(REALDB_ENTRY_ARGS[entry.id] ?? {});
           expect(binding.ok, entry.id).toBe(true);
           if (!binding.ok || binding.source !== "select_only_sql") continue;
 
