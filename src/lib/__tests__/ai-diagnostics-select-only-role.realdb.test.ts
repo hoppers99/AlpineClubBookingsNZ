@@ -1429,8 +1429,13 @@ describe("diagnostics privilege proof DB safety guard (#2374)", () => {
         referenceKind: "booking_reference",
         reference: "CLZ00000",
       },
+      // Deliberately ZERO, and it is the interesting value rather than a lazy one.
+      // `Payment."additionalAmountCents"` is `Int @default(0)` NOT NULL, so the
+      // guard that stops a zero search matching the whole relation
+      // (`$1::int > 0 AND …`) is a real SQL construct that has to PARSE and run on
+      // PostgreSQL with the declared grants, not just read correctly.
       "diagnostics.finance_payment_amount_search": {
-        amountCents: 12345,
+        amountCents: 0,
         window: "30d",
       },
       "diagnostics.payment_diagnostic_summary": {

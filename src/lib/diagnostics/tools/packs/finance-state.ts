@@ -110,13 +110,40 @@ export const FINANCE_BLOCKER_DESCRIPTIONS: Record<
     "The credit recorded on the payment disagrees with the member credit ledger. One of the two is wrong and a person has to decide which.",
 };
 
+/**
+ * The catalogue as ONE server-owned block of text, interpolated into this
+ * entry's `evidenceScope` so it actually reaches the model.
+ *
+ * IT WAS NOT REACHING IT BEFORE, and that is the defect this fixes (#2377
+ * review). The projected row carried bare codes and nothing else; the sentences
+ * above existed and were read only by their own test. A model handed
+ * `manual_refund_open` with no catalogue will read it as "a refund is in
+ * progress", which is the OPPOSITE of what it means — money has to be handed
+ * back by a person, and nothing automatic will move it. #2377 asks in as many
+ * words for a stable code mapped through a server-owned catalogue rather than a
+ * paraphrase.
+ *
+ * Server-owned text, never caller input, and `render.ts` neutralises the scope
+ * line anyway. A test pins that every code in `FINANCE_BLOCKER_CODES` appears
+ * here, so a code can never ship without its sentence.
+ */
+const FINANCE_BLOCKER_CATALOGUE_TEXT = FINANCE_BLOCKER_CODES.map(
+  (code) => `${code} = ${FINANCE_BLOCKER_DESCRIPTIONS[code]}`,
+).join(" ");
+
 const bookingFinanceState = defineDiagnosticsTool<BookingFinanceArgs>({
   id: DIAGNOSTICS_BOOKING_FINANCE_STATE_TOOL_ID,
   source: "server_owned",
   label: "Authoritative booking finance state",
-  description: `Returns this platform's OWN authoritative answer for ONE booking's money — the same figures and classifications Admin > Payments shows, not a second calculation. It gives the amount due, the account credit applied (from the credit LEDGER, not the copy stored on the payment), the amount actually captured, the amount refunded, what is outstanding, any uncollected additional payment, how much is still refundable, the member's credit balance, the payment display status, the settlement kind, the Xero state, and stable blocker codes in the order they should be acted on. Two fields are signed variances that are ZERO on a healthy booking: ledgerVarianceCents (the stored amounts do not add up to the final price) and creditLedgerVarianceCents (the payment's credit column disagrees with the credit ledger). A non-zero variance is a real discrepancy no screen surfaces. Needs BOTH finance and bookings access. All amounts are integer cents. ${FINANCE_DESCRIPTION_TAIL}`,
+  description: `Returns this platform's OWN authoritative answer for ONE booking's money — the same figures and classifications Admin > Payments shows, not a second calculation. It gives the amount due, the account credit applied (from the credit LEDGER, not the copy stored on the payment), the amount actually captured, the amount refunded, what is outstanding NET of refunds, any uncollected additional payment that is still worth collecting, how much is still refundable, the member's credit balance, the payment display status, the settlement kind, the Xero state, whether the booking has reached a terminal status, and stable blocker codes in the order they should be acted on. Two fields are signed variances that are ZERO on a healthy booking: ledgerVarianceCents (the stored amounts do not add up to the final price) and creditLedgerVarianceCents (the payment's credit column disagrees with the credit ledger). A non-zero variance is a real discrepancy no screen surfaces. Needs BOTH finance and bookings access. All amounts are integer cents. ${FINANCE_DESCRIPTION_TAIL}`,
   requiredAreas: ["finance", "bookings"],
-  evidenceScope: `The authoritative finance state of ONE booking, computed by the same code the admin payments screen uses. blockerCodes is in PRIORITY order — report the first one as the primary problem, and mention the rest as also true. "none" means nothing is blocking. It covers the booking's OWN payment only: a group booking settled by an organiser, a membership subscription charge and an entrance-fee invoice are separate records this tool does not read. ${STORED_EVIDENCE_DISCLOSURE}`,
+  evidenceScope: `The authoritative finance state of ONE booking, computed by the same code the admin payments screen uses. It covers the booking's OWN payment only: a group booking settled by an organiser, a membership subscription charge and an entrance-fee invoice are separate records this tool does not read.
+
+WHAT EACH FIELD MEANS WHERE IT IS NOT OBVIOUS. xeroState is exactly the classification Admin > Payments shows for this payment, from the same operation scope and the same test of whether an invoice is linked (the payment's stored invoice id OR an active primary-invoice link — either alone is a wrong answer). outstandingCents is NET of refunds and is FORCED TO ZERO when bookingLifecycleTerminal is true. bookingLifecycleTerminal means the booking is CANCELLED or BUMPED: nothing more can be collected against it, the payment row's money columns are frozen where the cancellation left them, and no payment-progress blocker is reported for it — so do not describe such a booking as owing money, whatever the raw columns would suggest. uncollectedAdditionalCents is what is still worth collecting, using the platform's own owed test, so it is zero on a terminal booking even when the payment row still carries a delta.
+
+BLOCKER CODES. blockerCodes is in PRIORITY order — report the first one as the primary problem and mention the rest as also true. "none" means nothing is blocking. Use these exact meanings and do not paraphrase them: ${FINANCE_BLOCKER_CATALOGUE_TEXT}
+
+The xero_invoice_missing blocker is deliberately WIDER than xeroState: it asks whether the BOOKING's lifecycle expects an invoice (which includes PAYMENT_PENDING, where an internet-banking invoice is how the member is meant to pay), while xeroState asks the payment-status question the admin screen asks. They can therefore differ on an unpaid internet-banking booking, and both are correct answers to their own question. ledger_variance is suppressed when the booking was repriced downward after money was captured — a refund was recorded or a booking-modification credit was issued — because the write-time identity legitimately no longer describes such a row. ${STORED_EVIDENCE_DISCLOSURE}`,
   argsSchema: bookingFinanceArgsSchema,
   inputSchema: {
     type: "object",
@@ -159,6 +186,9 @@ const bookingFinanceState = defineDiagnosticsTool<BookingFinanceArgs>({
     blockerCodes: codeListOrNull(row.blocker_codes) ?? "none",
     blockerCount: countOf(row.blocker_count),
     manuallyMarkedPaid: boolOf(row.manually_marked_paid),
+    // CANCELLED or BUMPED. It is what makes a zero `outstandingCents` readable:
+    // without it, "outstanding 0" on a cancelled booking reads as "settled".
+    bookingLifecycleTerminal: boolOf(row.booking_lifecycle_terminal),
     observedAtUtc: instantOrNull(row.observed_at_utc) ?? "",
   }),
   rowLimit: 1,

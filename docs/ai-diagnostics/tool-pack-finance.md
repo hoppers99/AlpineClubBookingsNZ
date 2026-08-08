@@ -91,6 +91,17 @@ class refused all of them while the tool's own description advertised them. The
 registry contract test caught it. It is safe because `_` is only a wildcard inside a
 `LIKE` pattern and there is no `LIKE` in this pack.
 
+**A zero-amount search matches the PRIMARY amount only**, and the guard that makes
+that true is a bounds control rather than a nicety.
+`Payment."additionalAmountCents"` is `Int @default(0)` and **not null**, so
+`additionalAmountCents = 0` is true of essentially the whole relation: an unguarded
+`amountCents = $1 OR additionalAmountCents = $1` turned `{amountCents: 0}` into "the
+ten most recent payments in the club" for a caller who had identified no record at
+all — the blank, wildcard-equivalent, bulk-extraction search #2377 forbids by name.
+The additional leg now carries `$1::int > 0`. A zero-amount search still works and
+still finds a fully credit-covered booking, through the primary amount, which is the
+record an operator asking that question wants.
+
 **Ambiguity is reported, not resolved.** A booking reference is the uppercase first
 eight characters of a cuid (`formatBookingReference`) and is **not unique**, so a
 search on one can legitimately match several bookings. The tool returns them all up
@@ -125,13 +136,56 @@ entry comes from a function this codebase already has:
 | The member's credit balance | `getMemberCreditBalance` | `member-credit.ts` |
 | Whether money actually moved | `hasCapturedPayment` | `booking-payment-state.ts` |
 | How much can still be refunded | `getRemainingRefundableCents` | `booking-payment-state.ts` |
-| Whether an invoice is expected | `isSettledBookingStatus` | `booking-payment-state.ts` |
+| Whether an upward change is still owing | `isAdditionalPaymentOwed` | `additional-payment-chase.ts` |
+| Whether the **screen** expects an invoice | `isXeroInvoiceExpectedPaymentStatus` | `admin-operational-state.ts` |
+| Whether the **booking lifecycle** expects one | `isSettledBookingStatus` | `booking-payment-state.ts` |
 | The payment's display status | `getPaymentDisplayStatus` | `payment-status-display.ts` |
 | How a cancellation was settled | `deriveSettlementKind` | `admin-operational-state.ts` |
+| Xero sync activity for a record | `buildXeroActivityByRecord` | `admin-operational-state.ts` |
 | The Xero linkage classification | `deriveXeroState` | `admin-operational-state.ts` |
 
 Re-deriving any of those in SQL would let a diagnostic answer drift from the screen
 the operator opens next.
+
+**And the agreement is asserted, not asserted-in-prose.**
+`finance-authoritative-consistency.test.ts` drives the real `listAdminPayments` —
+Admin > Payments' own service — and `readBookingFinanceStateEvidence` over the same
+fixture rows through one Prisma mock, and requires the two to return the same
+`xeroState` and `settlementKind`. Neither expected value is written down in the
+test; the assertion is equality between two independent pieces of production code.
+It covers the `XERO_LINK_MISMATCH` shape specifically (see below), which is the
+divergence a hand-written expectation had missed.
+
+### "Is there an invoice?" is an OR, and it has to be
+
+`Payment."xeroInvoiceId"` and the active `PRIMARY_INVOICE` `XeroObjectLink` row are
+written by **separate steps** of the invoice mint (`xero-booking-invoices.ts`), so a
+booking can legitimately hold the link and not the column. This platform names that
+state `XERO_LINK_MISMATCH` and ships an auto-applicable backfill for it
+(`xero-booking-repair-classify.ts`). Every surface that decides whether an invoice
+exists ORs the two — the admin payments screen, the manual-settle read guard
+(`manual-booking-payment-state.ts`) and the manual-settle write fence
+(`payment-reconciliation.ts`) — and so does this pack. Reading the column alone
+reported `xero_invoice_missing` for a booking that **has** an invoice, and the next
+step an operator takes from that is to raise a second one.
+
+### Two invoice expectations, deliberately
+
+- **`xeroState`** uses the **screen's** predicate,
+  `isXeroInvoiceExpectedPaymentStatus` (a payment status of `SUCCEEDED`,
+  `REFUNDED` or `PARTIALLY_REFUNDED`), and the screen's operation scope
+  (`Payment:{id}`). The field carries the same name and the same closed vocabulary
+  the `/admin/payments` filter uses, so the two must not be able to disagree about
+  one payment.
+- **The `xero_invoice_missing` blocker** uses the **booking lifecycle**,
+  `isSettledBookingStatus`, which is one status wider: it includes
+  `PAYMENT_PENDING`, where an internet-banking invoice is *how the member pays*. A
+  booking waiting on a bank transfer with no invoice is a real, actionable problem
+  the screen's payment-status test cannot see.
+
+Both go through `deriveXeroState`, so the precedence (a failed or pending sync
+outranks "missing") is identical. The entry's `evidenceScope` states the difference
+in the words the model reads.
 
 ### The residual that source carries, stated plainly
 
@@ -288,6 +342,50 @@ result the model reads as "there is no problem" — is the failure mode the whol
   days — so an old event legitimately has a lease and no delivery attempts, and the
   scope line says that too.
 
+Four more limits are worth stating in the same breath, because each is a place a
+model could otherwise narrate an absence as an answer:
+
+- **An empty per-record result cannot tell "no such record" from "no evidence".**
+  A booking id and a payment id are both 25-character cuids, so the argument shape
+  accepts either and a payment-keyed tool handed a booking id returns nothing. Every
+  entry that can hit this — `payment_attempt_ledger`, `payment_refund_state`,
+  `xero_invoice_linkage`, `xero_contact_linkage` — now says so in its own scope line
+  and tells the model to confirm the id first.
+- **"Linked" means only that this platform holds the identifier.** No diagnostics
+  tool can tell you whether the Xero contact has since been archived or the invoice
+  voided *in Xero*. An **active** `object_link` beside a `member_contact` row with no
+  `xeroObjectId` is not stale history either: it is the documented partial-unlink
+  state (see [../xero/ARCHITECTURE.md](../xero/ARCHITECTURE.md)), where the member's
+  pointer was cleared and the ledger rows were left active, and it needs an
+  administrator rather than a re-read.
+- **`updatedAtUtc` is when any column last changed** — it is *not* when the provider
+  status was last confirmed, and this schema stores no such instant anywhere. The
+  `payment_diagnostic_summary` scope line forbids presenting it as provider
+  freshness.
+- **There is no Xero-object audit subject.** `finance_record_audit_history` takes a
+  *this-platform* record id: a payment, booking, manual refund task or membership
+  subscription. An earlier revision also offered `xero_invoice`, `xero_contact` and
+  `xero_allocation`, mapped to the uppercase `entityType` values `INVOICE`,
+  `CONTACT` and `ALLOCATION` — but every uppercase value of that shape in this
+  codebase is a `XeroSyncOperation."entityType"`, written by
+  `startXeroSyncOperation`, and that is a different relation this entry does not
+  query. All three could only ever have returned zero rows, from a tool whose scope
+  line says "nothing in **those categories** matched". They are gone, along with the
+  dead `"PAYMENT"`/`"SUBSCRIPTION"` aliases beside the real PascalCase values. Xero
+  work lives in `xero_invoice_linkage` and `xero_contact_linkage`, which read
+  `XeroSyncOperation` directly with status, attempt count and a stable error code.
+
+### The one thing `stale` is not
+
+`stale` is in the shared evidence vocabulary because #2377 requires it, and
+**nothing in the tool substrate raises it** — deliberately. Every tool read runs at
+invocation time and is stamped with its own `observedAt`, so a retrieval is never
+itself stale; its producer is the case layer (AID-7, #2378), which re-shows evidence
+gathered earlier in a conversation. It is **not** the code for an old provider state:
+with no "provider status last confirmed at" column anywhere in this schema, a
+staleness rule over stored provider evidence could only be invented, and
+`provider_check_required` is the honest answer instead.
+
 ## Integer cents, everywhere
 
 Every monetary value is an `Int` column or a sum of them. There is no division, no
@@ -313,12 +411,54 @@ neither is visible on any screen:
 
 - **`ledgerVarianceCents`** — the write-time identity
   `amountCents + creditAppliedCents + uncollectedAdditionalCents = finalPriceCents`
-  (asserted by `prepareManualSettlement`) does not hold. One of the stored numbers
-  is wrong.
+  (constructed by `prepareManualSettlement`) does not hold. One of the stored
+  numbers is wrong. The uncollected term here keeps the **money half only**
+  (`isAdditionalAmountUncollected`), because the identity is a property of what was
+  *written* and a cancellation does not rewrite it.
 - **`creditLedgerVarianceCents`** — the denormalised `Payment."creditAppliedCents"`
   disagrees with the `MemberCredit` ledger. `outstandingCents` is netted against the
   **ledger**, so a booking whose payment column overstates the credit is correctly
   reported as still owing.
+
+**The `ledger_variance` blocker is suppressed on a booking repriced downward after
+capture**, and that is a correctness fix rather than a softening.
+`Payment."amountCents"` is *gross captured* and is never reduced by a refund, while
+a downward guest, date or batch modification **does** rewrite
+`Booking."finalPriceCents"` and settles the difference as a refund or a
+`BOOKING_MODIFICATION_REFUND` credit. The row is then permanently and legitimately
+`amountCents > finalPriceCents`, and no writer re-establishes the identity
+afterwards — `payment-reconciliation.ts` is explicit that it *constructs* the
+identity rather than asserting it. So a `refundedAmountCents > 0`, or any
+`BOOKING_MODIFICATION_REFUND` credit for the booking, suppresses the code. The
+signed `ledgerVarianceCents` figure is still reported; only the finding is withheld.
+
+**`outstandingCents` is net of refunds** for the same reason: a paid $120 booking
+that loses a guest has `finalPriceCents` 8 000, `amountCents` 12 000 and
+`refundedAmountCents` 4 000. Gross arithmetic reported `-4 000`, which reads as a $40
+overpayment on a healthy row — and the next thing a Finance Officer does about an
+overpayment is refund it a second time.
+
+### The booking lifecycle is part of the answer
+
+`bookingLifecycleTerminal` is true for a `CANCELLED` or `BUMPED` booking. Cancelling
+leaves the payment's money columns **exactly as they were** — nothing zeroes
+`additionalAmountCents`, and a `PENDING` payment row stays `PENDING` — so a
+column-only reading reports a cancelled booking as still owing the whole price. On a
+terminal booking:
+
+- `outstandingCents` is forced to **zero**, and `bookingLifecycleTerminal` says why,
+  so the zero cannot be misread as "settled";
+- `uncollectedAdditionalCents` is zero, through `isAdditionalPaymentOwed` — the same
+  conjunction of a lifecycle half and a money half that stops the chase email dunning
+  a member for money they do not owe;
+- no `payment_pending`, `payment_processing`, `payment_failed` or
+  `additional_payment_outstanding` blocker is emitted. The tool used to report
+  `payment_pending` beside the authoritative display label "Cancelled Before
+  Payment", contradicting itself in one row.
+
+**Bookkeeping blockers are not suppressed.** A cancelled booking can still owe a
+refund and can still be wrong in Xero, and those are the states an operator most
+often opens a cancelled booking to investigate.
 
 ## Blockers, in priority order
 
@@ -347,6 +487,14 @@ Every code carries a server-owned operator sentence
 is a code the model will paraphrase — and a paraphrased blocker is how "a refund is
 queued" becomes "a refund has been issued".
 
+**The catalogue is interpolated into the entry's `evidenceScope`**, so the whole
+code→sentence mapping travels to the model with every result rather than living only
+in a test. That is #2377's "map the stable code through a server-owned catalogue" in
+the literal sense: a model handed `manual_refund_open` and no catalogue reads it as
+"a refund is in progress", which is the opposite of what it means (money has to be
+handed back by a person, and nothing automatic will move it). A test asserts that
+every declared code **and its sentence** appear in the shipped scope text.
+
 **Four refund records are kept apart and never merged**, because an operator will
 call all four "the refund": `refund_appeal` (the member asked), `refund_execution`
 (queued, money has *not* moved), `stripe_refund` (Stripe actually did it) and
@@ -371,11 +519,14 @@ result is never evidence that nothing happened; the honest answer is that no
 categorised finance audit event matched, and Admin > Audit Log lists the
 uncategorised rows too.
 
-The `entityType` argument is a **normalised domain word**, not a column value,
-because this platform's audit writers use both `"Payment"` and `"PAYMENT"` and both
-`"MemberSubscription"` and `"SUBSCRIPTION"`. `bind` closes over the server-owned
-array of column values each word covers, so the model cannot name a column value at
-all and a search cannot silently return half the history.
+The `subject` argument is a **normalised domain word**, not a column value: `bind`
+closes over the server-owned array of `AuditLog."entityType"` values each word
+covers, so the model cannot name a column value at all and the mapping stays
+reviewable in one place. Four subjects are offered — `payment`, `booking`,
+`manual_refund_task` and `membership_subscription` — and the real column values
+behind them are all PascalCase. There is deliberately **no Xero-object subject**;
+see "What this pack CANNOT answer" above for why the three that were offered could
+never have matched a row.
 
 ## Bounds
 

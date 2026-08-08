@@ -212,7 +212,7 @@ const paymentSummary = defineDiagnosticsTool<PaymentIdArgs>({
   label: "Payment diagnostic summary",
   description: `Returns everything this platform has stored about ONE booking payment: its status and source (Stripe or internet banking), the amounts in integer cents (charged, refunded, change fee, additional payment, account credit applied), the additional-payment status, the stored Stripe PaymentIntent ids, the stored Xero invoice id, invoice number and refund credit-note id, the internet-banking reference and bed-hold state, whether it was settled by hand, and when it was created and last changed. Use it after finding a payment. It returns no Stripe customer or payment method id, no card data, no operator notes and no member name or email. ${FINANCE_DESCRIPTION_TAIL}`,
   requiredAreas: ["finance"],
-  evidenceScope: `The stored state of ONE payment record. Amounts are integer cents; this platform records no currency on a payment because it is single-currency NZD, so do not report a currency for these figures. It does NOT include the payment's attempts, refunds, webhook history or Xero sync operations — those are separate tools, and a question about "what went wrong" usually needs them. A payment with manuallyMarkedPaidAtUtc set was settled BY HAND (cash or an off-Xero transfer) and has no Stripe leg to refund. ${STORED_EVIDENCE_DISCLOSURE}`,
+  evidenceScope: `The stored state of ONE payment record. Amounts are integer cents; this platform records no currency on a payment because it is single-currency NZD, so do not report a currency for these figures. It does NOT include the payment's attempts, refunds, webhook history or Xero sync operations — those are separate tools, and a question about "what went wrong" usually needs them. A payment with manuallyMarkedPaidAtUtc set was settled BY HAND (cash or an off-Xero transfer) and has no Stripe leg to refund. updatedAtUtc is when ANY column on this row last changed — it is NOT when the provider status was last confirmed, and this platform stores no such instant, so never present updatedAtUtc as the freshness of the Stripe or Xero state. ${STORED_EVIDENCE_DISCLOSURE}`,
   argsSchema: paymentIdArgsSchema,
   inputSchema: paymentIdInputSchema,
   sql: PAYMENT_SUMMARY_SQL,
@@ -361,7 +361,7 @@ const attemptLedger = defineDiagnosticsTool<PaymentIdArgs>({
   label: "Payment attempts and recovery queue",
   description: `Returns ONE payment's charge attempts and the platform's own pending recovery work, newest first. Two kinds of row: "transaction" is a charge attempt (primary or additional) with its own Stripe PaymentIntent, Xero invoice number, internet-banking reference and amount in cents; "recovery_operation" is a cancel or refund this platform has undertaken to execute at Stripe, with the number of attempts made and a scenario code saying WHY it was queued. A recovery operation with status FAILED and attemptCount 5 is EXHAUSTED — it will not retry on its own and needs an administrator. Use it to see duplicate or failed attempts, an unfinished refund, or an uncollected additional payment. It returns no error text, no Stripe idempotency keys and no operator notes. ${FINANCE_DESCRIPTION_TAIL}`,
   requiredAreas: ["finance"],
-  evidenceScope: `The charge attempts and queued recovery operations for ONE payment, at most ${ATTEMPT_LEDGER_ROW_LIMIT} of them, newest first. A recovery operation's scenarioCode comes from the platform's own queue key: several very different situations share the operation type REFUND_BOOKING_MODIFICATION, so report the scenarioCode and NOT the type when you say why a refund is pending. attemptCount is the recovery queue's own counter; a transaction row always shows 0 because charge attempts are not retried by a counter. The maximum recovery attempt count is 5, after which a FAILED operation is exhausted and will never retry. ${STORED_EVIDENCE_DISCLOSURE}`,
+  evidenceScope: `The charge attempts and queued recovery operations for ONE payment, at most ${ATTEMPT_LEDGER_ROW_LIMIT} of them, newest first. A recovery operation's scenarioCode comes from the platform's own queue key: several very different situations share the operation type REFUND_BOOKING_MODIFICATION, so report the scenarioCode and NOT the type when you say why a refund is pending. attemptCount is the recovery queue's own counter; a transaction row always shows 0 because charge attempts are not retried by a counter. The maximum recovery attempt count is 5, after which a FAILED operation is exhausted and will never retry. An empty result means EITHER that no payment with that id exists OR that the payment exists and has no attempts or recovery work recorded — this tool cannot tell those apart, and a booking id looks exactly like a payment id, so confirm the id with the payment search or the payment summary before reporting an absence. ${STORED_EVIDENCE_DISCLOSURE}`,
   argsSchema: paymentIdArgsSchema,
   inputSchema: paymentIdInputSchema,
   sql: ATTEMPT_LEDGER_SQL,
@@ -497,7 +497,7 @@ const refundState = defineDiagnosticsTool<PaymentIdArgs>({
   label: "Refund state for a payment",
   description: `Returns every refund record attached to ONE payment, newest first, keeping FOUR different things apart that people all call "the refund". refund_appeal is the member ASKING (PENDING means undecided; approving it does not itself move money). refund_execution is this platform's queued undertaking to refund at Stripe (PENDING or PROCESSING means the money has NOT moved; FAILED at 5 attempts is exhausted and needs an administrator). stripe_refund is a refund Stripe actually performed, with its own id, amount, currency and Stripe status. manual_refund_task is money a HUMAN must hand back because there is no card to refund — OPEN means somebody still owes the member. Never merge these four or report one as another. It returns no refund reasons, no admin notes and no member name. ${FINANCE_DESCRIPTION_TAIL}`,
   requiredAreas: ["finance"],
-  evidenceScope: `Refund records for ONE payment, at most ${REFUND_STATE_ROW_LIMIT}, newest first. amountCents means the refunded amount on a stripe_refund, the queued amount on a refund_execution, the amount owed on a manual_refund_task, and the amount REQUESTED on a refund_appeal — where secondaryAmountCents is the amount approved. currencyCode is stored only on a Stripe refund; a null there means the platform recorded none, not that it is not NZD. A booking whose payment was settled by hand has no Stripe leg, so its refund appears as a manual_refund_task and NOT as a stripe_refund. ${STORED_EVIDENCE_DISCLOSURE}`,
+  evidenceScope: `Refund records for ONE payment, at most ${REFUND_STATE_ROW_LIMIT}, newest first. amountCents means the refunded amount on a stripe_refund, the queued amount on a refund_execution, the amount owed on a manual_refund_task, and the amount REQUESTED on a refund_appeal — where secondaryAmountCents is the amount approved. currencyCode is stored only on a Stripe refund; a null there means the platform recorded none, not that it is not NZD. A booking whose payment was settled by hand has no Stripe leg, so its refund appears as a manual_refund_task and NOT as a stripe_refund. An empty result means EITHER that no payment with that id exists OR that the payment exists and no refund of any of the four kinds was ever recorded against it — this tool cannot tell those apart, and a booking id looks exactly like a payment id, so confirm the id with the payment search or the payment summary before reporting that no refund happened. ${STORED_EVIDENCE_DISCLOSURE}`,
   argsSchema: paymentIdArgsSchema,
   inputSchema: paymentIdInputSchema,
   sql: REFUND_STATE_SQL,
@@ -783,13 +783,13 @@ function projectXeroLinkageRow(row: Record<string, unknown>) {
 }
 
 const XERO_LINKAGE_SCOPE_TAIL =
-  "An object_link row is WHAT IS LINKED in Xero; a sync_operation row is WHAT THIS PLATFORM TRIED. Inactive links are included on purpose — a link that was active and is not any more is the evidence that something was unlinked. A sync operation carries a stable lastErrorCode only; Xero's own error message is never retrieved. A manually resolved operation was closed by an administrator who fixed it directly in Xero, so it is deliberately excluded from the platform's own failure counts.";
+  "An object_link row is WHAT IS LINKED in Xero; a sync_operation row is WHAT THIS PLATFORM TRIED. Inactive links are included on purpose — a link that was active and is not any more is the evidence that something was unlinked. An ACTIVE object_link is NOT history: an active link sitting beside a member_contact row that carries no xeroObjectId is this platform's documented partial-unlink state (see the Xero architecture notes), where the member record was unlinked and the object links were not, and it needs an administrator rather than a re-read. A sync operation carries a stable lastErrorCode only; Xero's own error message is never retrieved. A manually resolved operation was closed by an administrator who fixed it directly in Xero, so it is deliberately excluded from the platform's own failure counts. \"Linked\" here means only that THIS PLATFORM holds the identifier: it cannot tell you whether the Xero contact has since been archived or the invoice voided in Xero, and neither can any other diagnostics tool. An empty result means EITHER that no record with that id exists OR that the record exists and has never been linked to Xero or had a sync run for it — this tool cannot tell those apart, so confirm the id first.";
 
 const xeroInvoiceLinkage = defineDiagnosticsTool<XeroLinkageArgs>({
   id: DIAGNOSTICS_XERO_INVOICE_LINKAGE_TOOL_ID,
   source: "select_only_sql",
   label: "Xero invoice and sync state for a record",
-  description: `Returns what this platform has linked to Xero for ONE local record (a booking, payment, transaction, member credit, credit allocation, subscription charge or group settlement), and every Xero sync operation it ran for that record, newest first. "object_link" rows carry the Xero object type, id, number, the role it plays and whether the link is still active. "sync_operation" rows carry the operation's status, type, direction, attempt count, whether it can be replayed, a stable error code, and whether an administrator resolved it by hand in Xero. Use it to answer why an invoice, credit note or allocation has not appeared in Xero. Member-to-Xero-contact linkage is a DIFFERENT tool that also needs membership access. It returns no Xero payloads, no Xero error messages and no operator notes. ${FINANCE_DESCRIPTION_TAIL}`,
+  description: `Returns what this platform has linked to Xero for ONE local record (a booking, payment, transaction, member credit, credit allocation, subscription charge or group settlement), and every Xero sync operation it ran for that record, newest first. "object_link" rows carry the Xero object type, id, number, the role it plays and whether the link is still active — an INACTIVE one is history, an ACTIVE one is a live claim about what exists in Xero right now. "sync_operation" rows carry the operation's status, type, direction, attempt count, whether it can be replayed, a stable error code, and whether an administrator resolved it by hand in Xero. Use it to answer why an invoice, credit note or allocation has not appeared in Xero. Member-to-Xero-contact linkage is a DIFFERENT tool that also needs membership access. It returns no Xero payloads, no Xero error messages and no operator notes. ${FINANCE_DESCRIPTION_TAIL}`,
   requiredAreas: ["finance"],
   evidenceScope: `Xero links and sync operations for ONE local record, at most ${XERO_LINKAGE_ROW_LIMIT}, newest first. ${XERO_LINKAGE_SCOPE_TAIL} This tool does NOT cover a member's Xero CONTACT linkage — that needs membership access as well as finance access, and is its own tool. ${STORED_EVIDENCE_DISCLOSURE}`,
   argsSchema: xeroLinkageArgsSchema,
@@ -924,7 +924,7 @@ const xeroContactLinkage = defineDiagnosticsTool<MemberIdArgs>({
   id: DIAGNOSTICS_XERO_CONTACT_LINKAGE_TOOL_ID,
   source: "select_only_sql",
   label: "Member Xero contact linkage",
-  description: `Returns whether ONE member is linked to a Xero contact, and every Xero contact sync this platform ran for them. The "member_contact" row is the authoritative link — isActive false with no xeroObjectId means the member has NO Xero contact, which is why their invoices cannot be created. "object_link" rows are the linkage history including links that were unlinked; "sync_operation" rows carry the sync status, attempt count and a stable error code. Needs BOTH finance and membership access, because it ties a member to a finance record. It returns no member name, email address, phone number or membership state — only the member id you supplied and Xero identifiers. ${FINANCE_DESCRIPTION_TAIL}`,
+  description: `Returns whether ONE member is linked to a Xero contact, and every Xero contact sync this platform ran for them. The "member_contact" row is the authoritative link — isActive false with no xeroObjectId means the member has NO Xero contact, which is why their invoices cannot be created. "object_link" rows include links that were unlinked, but an ACTIVE one is not history: an active CONTACT link beside a member_contact row with no xeroObjectId is a partial unlink — the member's pointer was cleared and the ledger rows were left active — and it needs an administrator to finish, not a re-read. "sync_operation" rows carry the sync status, attempt count and a stable error code. Needs BOTH finance and membership access, because it ties a member to a finance record. It returns no member name, email address, phone number or membership state — only the member id you supplied and Xero identifiers. ${FINANCE_DESCRIPTION_TAIL}`,
   requiredAreas: ["finance", "membership"],
   evidenceScope: `The Xero CONTACT linkage and contact sync operations for ONE member. ${XERO_LINKAGE_SCOPE_TAIL} It does not include the member's invoices or payments; those hang off the booking or payment record and are separate tools. It returns no member name, email address or phone number — this platform's diagnostics never do. ${STORED_EVIDENCE_DISCLOSURE}`,
   argsSchema: memberIdArgsSchema,
@@ -956,23 +956,38 @@ const xeroContactLinkage = defineDiagnosticsTool<MemberIdArgs>({
  * The record kinds an operator can ask for the finance audit history of, and the
  * `AuditLog."entityType"` values each one really means.
  *
- * TWO CASINGS ARE NOT A MISTAKE HERE. This platform's audit writers use both
- * `"Payment"` and `"PAYMENT"`, and both `"MemberSubscription"` and
- * `"SUBSCRIPTION"`, because the writers were added at different times. A tool
- * whose argument was the raw column value would silently return half the history
- * depending on which casing the model guessed. So the ARGUMENT is a normalised
- * domain word and `bind` closes over the server-owned array of column values it
- * covers — the model cannot name a column value at all, and the mapping is
- * reviewable in one place.
+ * THE ARGUMENT IS A NORMALISED DOMAIN WORD, never the raw column value: `bind`
+ * closes over the server-owned array of column values each word covers, so the
+ * model cannot name a column value at all and the mapping is reviewable in one
+ * place.
+ *
+ * FOUR SUBJECTS WERE REMOVED HERE AND THE REASON MATTERS (#2377 review). An
+ * earlier revision listed `xero_invoice → ["INVOICE"]`, `xero_contact →
+ * ["CONTACT"]` and `xero_allocation → ["ALLOCATION"]`, and paired `"PAYMENT"`
+ * with `"Payment"` and `"SUBSCRIPTION"` with `"MemberSubscription"`, on the
+ * stated theory that this platform's audit writers use two casings. THEY DO NOT.
+ * Every uppercase value of that shape in this tree is an argument to
+ * `startXeroSyncOperation`, which writes `XeroSyncOperation."entityType"` — a
+ * DIFFERENT relation that this entry does not query and is not granted. Every
+ * real `AuditLog."entityType"` writer uses PascalCase. So those three subjects
+ * could only ever return zero rows, and an empty result from a tool whose own
+ * scope line says "nothing matching means nothing in THOSE categories matched"
+ * is worse than no tool: it reads as evidence of absence.
+ *
+ * Xero sync history has a real home already — `diagnostics.xero_invoice_linkage`
+ * and `diagnostics.xero_contact_linkage` read `XeroSyncOperation` directly, with
+ * status, attempt count and a stable error code. Pointing an operator there is
+ * the honest answer, and the entry's description says so.
+ *
+ * A SECOND REASON those three could not have worked: `RECORD_ID` accepts a
+ * lowercase-alphanumeric cuid, and a Xero object id is a hyphenated GUID. The
+ * argument shape could not express the id the subject needed.
  */
 const FINANCE_AUDIT_SUBJECTS = {
-  payment: ["Payment", "PAYMENT"],
+  payment: ["Payment"],
   booking: ["Booking"],
-  xero_invoice: ["INVOICE"],
-  xero_contact: ["CONTACT"],
-  xero_allocation: ["ALLOCATION"],
   manual_refund_task: ["ManualRefundTask"],
-  membership_subscription: ["MemberSubscription", "SUBSCRIPTION"],
+  membership_subscription: ["MemberSubscription"],
 } as const;
 
 type FinanceAuditSubject = keyof typeof FINANCE_AUDIT_SUBJECTS;
@@ -1055,7 +1070,7 @@ const financeAuditHistory = defineDiagnosticsTool<FinanceAuditArgs>({
   id: DIAGNOSTICS_FINANCE_AUDIT_HISTORY_TOOL_ID,
   source: "select_only_sql",
   label: "Finance audit history for a record",
-  description: `Returns the platform's own finance audit events for ONE record — a payment, booking, Xero invoice, Xero contact, Xero allocation, manual refund task or membership subscription — newest first. Each row carries only stable codes and an instant: the event reference, the action code, the audit category, severity and outcome, what kind of record it concerned, and when it happened in UTC. Use it to see what the platform recorded happening to this record and in what order. It searches ONLY the finance audit categories (${FINANCE_AUDIT_CATEGORIES.join(", ")}); an administrator's change to payment SETTINGS is recorded under "admin" and is not here. It never returns who did it, event descriptions, stored metadata, IP addresses or error text. ${FINANCE_DESCRIPTION_TAIL}`,
+  description: `Returns the platform's own finance audit events for ONE record — a payment, booking, manual refund task or membership subscription — newest first. Each row carries only stable codes and an instant: the event reference, the action code, the audit category, severity and outcome, what kind of record it concerned, and when it happened in UTC. Use it to see what the platform recorded happening to this record and in what order. The recordId is this platform's own record id, not a Xero identifier: there is no Xero-object subject here, because Xero work is recorded as sync operations rather than audit events — use the Xero invoice or contact linkage tools for that. It searches ONLY the finance audit categories (${FINANCE_AUDIT_CATEGORIES.join(", ")}); an administrator's change to payment SETTINGS is recorded under "admin" and is not here. It never returns who did it, event descriptions, stored metadata, IP addresses or error text. ${FINANCE_DESCRIPTION_TAIL}`,
   requiredAreas: ["finance"],
   evidenceScope: `Audit events recorded against ONE record, in the finance categories ${FINANCE_AUDIT_CATEGORIES.join(" and ")} only, at most ${FINANCE_AUDIT_ROW_LIMIT}, newest first. Nothing matching means nothing in THOSE categories matched — not that nothing happened. Two gaps make that qualification necessary rather than polite: an administrator's change to payment or internet-banking SETTINGS is recorded under the "admin" category, which this tool cannot read; and the audit category is optional, so a row recorded with NO category is matched by no diagnostics tool at all, and 82 production write paths still record that way — subscription billing, member-credit adjustments and fee configuration among them. Never report that something did not happen on the strength of an empty result here; say that no categorised finance audit event matched, and point at Admin > Audit Log, which lists uncategorised rows as well. ${STORED_EVIDENCE_DISCLOSURE}`,
   argsSchema: financeAuditArgsSchema,

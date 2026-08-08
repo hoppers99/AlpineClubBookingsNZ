@@ -29,10 +29,21 @@
  *    admin screens render — "Paid", "Credit Issued + Card Refund", "Cancelled
  *    Before Payment". A diagnostic that invented its own vocabulary would send an
  *    operator looking for a state the UI never shows.
- *  - `deriveSettlementKind` and `deriveXeroState` (`admin-operational-state.ts`)
- *    are the stable classifications behind the `/admin/payments` filters. A
- *    diagnostic answer and the screen the operator then opens have to agree about
- *    what "invoice missing" means.
+ *  - `deriveSettlementKind`, `deriveXeroState`, `buildXeroActivityByRecord` and
+ *    `isXeroInvoiceExpectedPaymentStatus` (`admin-operational-state.ts`) are the
+ *    stable classifications behind the `/admin/payments` filters, and this module
+ *    calls all four with the SAME inputs the screen builds — the same
+ *    `Payment:{id}` operation scope, and the same OR of
+ *    `Payment."xeroInvoiceId"` with an active `PRIMARY_INVOICE`
+ *    `XeroObjectLink`. A diagnostic answer and the screen the operator then
+ *    opens have to agree about what "invoice missing" means, and an
+ *    authoritative-consistency test asserts that agreement by running
+ *    `listAdminPayments` over the same fixture row.
+ *  - `isAdditionalPaymentOwed` (`additional-payment-chase.ts`) is the one
+ *    definition of "an upward modification is still owing". It CONJOINS a
+ *    booking-lifecycle half with the money half precisely so a cancelled booking
+ *    is not dunned for a delta nothing zeroed, and this module reports its
+ *    answer rather than a second reading of the two columns.
  *
  * A `server_owned` entry is NOT a way around the substrate's gates: registry
  * lookup, loop budget, fresh AND-ed authorization, `.strict()` argument parsing
@@ -54,6 +65,14 @@
  * `readCancellationCredits` — but never returned) and
  * `Payment."manualPaymentNote"`.
  *
+ * EIGHT RELATIONS ARE READ, all by named `select`: `Booking`, `Payment`,
+ * `MemberCredit`, `XeroSyncOperation`, `XeroObjectLink`,
+ * `PaymentRecoveryOperation`, `ManualRefundTask` and `RefundRequest`. The
+ * `XeroObjectLink` read is an EXISTENCE check only — it selects `id` and returns a
+ * boolean — because "is there an invoice" is an OR that every other surface in this
+ * platform performs, and the column alone is the wrong answer (see
+ * `readPrimaryInvoiceLinked`).
+ *
  * READ ONLY, AND NO PROVIDER. Every call below is a Prisma `findUnique`,
  * `findMany` or `aggregate`. There is no write, no transaction, no Stripe call, no
  * Xero call and no HTTP request of any kind. The two authoritative helpers that
@@ -68,9 +87,15 @@
 import "server-only";
 
 import {
+  isAdditionalAmountUncollected,
+  isAdditionalPaymentOwed,
+} from "@/lib/additional-payment-chase";
+import {
+  buildXeroActivityByRecord,
   deriveSettlementKind,
   deriveXeroState,
   emptyXeroActivitySummary,
+  isXeroInvoiceExpectedPaymentStatus,
   type XeroActivitySummary,
 } from "@/lib/admin-operational-state";
 import {
@@ -199,8 +224,30 @@ export interface BookingFinanceStateRow extends DiagnosticsToolRawRow {
   blocker_codes: string;
   blocker_count: number;
   manually_marked_paid: boolean;
+  /**
+   * The booking has reached a status where nothing more can be collected —
+   * CANCELLED or BUMPED. Reported explicitly because it changes how three other
+   * fields must be read: `outstanding_cents` is forced to zero, no
+   * payment-progress blocker is emitted, and any residual delta on the payment
+   * row is bookkeeping rather than money the member owes.
+   */
+  booking_lifecycle_terminal: boolean;
   observed_at_utc: string;
 }
+
+/**
+ * The booking statuses at which nothing further can be collected and nothing is
+ * blocking "completion", because there is no completion to reach.
+ *
+ * Cancelling or bumping a booking leaves `Payment`'s money columns exactly as
+ * they were — nothing zeroes `additionalAmountCents`, and a PENDING payment row
+ * stays PENDING — so a diagnostic that reads those columns without the lifecycle
+ * reports a cancelled booking as still owing money. That is the same defect
+ * `isAdditionalPaymentOwed` exists to prevent for the chase email, and the same
+ * self-contradiction that had this source emit `payment_pending` beside the
+ * authoritative display label "Cancelled Before Payment".
+ */
+const TERMINAL_BOOKING_STATUSES = new Set(["CANCELLED", "BUMPED"]);
 
 /** The booking columns this source reads. Named explicitly, never `include`. */
 const BOOKING_SELECT = {
@@ -235,74 +282,150 @@ const PAYMENT_SELECT = {
  * consumed inside this function and dropped; nothing downstream of
  * `readBookingFinanceStateEvidence` ever sees it, and the registry projection has
  * no field for it.
+ *
+ * `type` is read for the same reason and is likewise never returned: a
+ * `BOOKING_MODIFICATION_REFUND` row is the evidence that this booking was
+ * REPRICED DOWNWARD after it was paid, which is what stops the ledger identity
+ * being asserted against a row where it legitimately cannot hold.
+ *
+ * THE CEILING IS 51, NOT 50, AND THAT IS THE WHOLE POINT. These rows are SUMMED
+ * by `getPaymentDisplayStatus` and `deriveSettlementKind`, so a row beyond the
+ * ceiling does not truncate a listing — it silently changes a CLASSIFICATION,
+ * and the executor's `truncated` flag counts projected rows and would stay
+ * false. Reading one more than the limit is how this source can TELL, and it
+ * refuses rather than classifying from an incomplete sum.
  */
+const CANCELLATION_CREDIT_CEILING = 50;
+
 async function readCancellationCredits(
   bookingId: string,
-): Promise<{ amountCents: number; description: string | null }[]> {
+): Promise<
+  { amountCents: number; description: string | null; type: string }[]
+> {
   const rows = await prisma.memberCredit.findMany({
     where: { sourceBookingId: bookingId },
-    select: { amountCents: true, description: true },
-    // Bounded: a booking's own credit rows are a handful, and a ceiling means a
-    // pathological one cannot make this read unbounded.
-    take: 50,
+    select: { amountCents: true, description: true, type: true },
+    take: CANCELLATION_CREDIT_CEILING + 1,
   });
+  if (rows.length > CANCELLATION_CREDIT_CEILING) {
+    throw new Error(
+      "Booking finance state: more credit rows than this source can classify from.",
+    );
+  }
   return rows.map((row) => ({
     amountCents: row.amountCents,
     description: row.description,
+    type: String(row.type),
   }));
 }
 
 /**
- * The Xero sync operations for this booking and its payment, summarised with the
- * SAME classification `/admin/payments` uses.
+ * The Xero-operation ceiling. Read one beyond it for the same reason
+ * `readCancellationCredits` does: these rows are COUNTED into a classification,
+ * so a row past the limit changes the answer silently rather than shortening a
+ * list.
+ */
+const XERO_ACTIVITY_CEILING = 50;
+
+/**
+ * The Xero sync operations for this booking's PAYMENT, summarised by the SAME
+ * function `/admin/payments` calls.
  *
- * Both `localModel` values are read because a booking's invoice work is recorded
- * against the booking and its payment adjustments against the payment, and an
- * operator asking "why has this not reached Xero" means both.
+ * TWO THINGS CHANGED HERE AND BOTH ARE ABOUT AGREEING WITH THE SCREEN (#2377
+ * review):
+ *
+ *  - THE SCOPE is `Payment:{paymentId}`, exactly as `listAdminPayments` keys it.
+ *    An earlier revision also read `localModel: "Booking"` on the theory that a
+ *    booking's invoice work is recorded against the booking. It is not: every
+ *    `startXeroSyncOperation` on the booking-invoice path
+ *    (`xero-booking-invoices.ts`, `xero-credit-notes.ts`,
+ *    `xero-applied-credit-allocation.ts`, `xero-invoice-payments.ts` and the
+ *    outbox) writes `localModel: "Payment"`. So the wider scope matched nothing
+ *    extra in practice while making the tool's own "the same classification the
+ *    admin screen shows" claim untrue by construction.
+ *  - THE SUMMARY comes from `buildXeroActivityByRecord`, the exported helper the
+ *    screen uses, instead of a line-for-line copy of `summarizeXeroActivity`.
+ *    This file's header says its classifications are never re-derived here; a
+ *    copied summariser was exactly that.
  */
 async function readXeroActivity(
-  bookingId: string,
   paymentId: string | null,
 ): Promise<XeroActivitySummary> {
-  const localIds = paymentId ? [bookingId, paymentId] : [bookingId];
+  if (!paymentId) return emptyXeroActivitySummary();
   const operations = await prisma.xeroSyncOperation.findMany({
     where: {
-      localModel: { in: ["Booking", "Payment"] },
-      localId: { in: localIds },
+      localModel: "Payment",
+      localId: paymentId,
       // An operation an administrator resolved by hand in Xero is deliberately
       // excluded from the failure counts, exactly as the admin overview excludes
       // it — otherwise a fixed problem keeps being reported as a live one.
       manuallyResolvedAt: null,
     },
-    select: { id: true, status: true, createdAt: true },
+    select: {
+      id: true,
+      status: true,
+      createdAt: true,
+      localModel: true,
+      localId: true,
+    },
     orderBy: { createdAt: "desc" },
-    take: 50,
+    take: XERO_ACTIVITY_CEILING + 1,
   });
-
-  const summary = emptyXeroActivitySummary();
-  for (const operation of operations) {
-    if (operation.status === "FAILED") summary.failed += 1;
-    else if (operation.status === "PARTIAL") summary.partial += 1;
-    else if (
-      operation.status === "PENDING" ||
-      operation.status === "RUNNING" ||
-      operation.status === "WAITING_PAYMENT"
-    ) {
-      summary.pending += 1;
-    }
-    if (
-      !summary.latestOperationAt ||
-      operation.createdAt > new Date(summary.latestOperationAt)
-    ) {
-      summary.latestOperationId = operation.id;
-      summary.latestOperationStatus = operation.status;
-      summary.latestOperationAt = operation.createdAt.toISOString();
-    }
+  if (operations.length > XERO_ACTIVITY_CEILING) {
+    throw new Error(
+      "Booking finance state: more Xero operations than this source can classify from.",
+    );
   }
-  return summary;
+
+  return (
+    buildXeroActivityByRecord(operations).get(`Payment:${paymentId}`) ??
+    emptyXeroActivitySummary()
+  );
 }
 
-/** The refund-side state that decides three of the blocker codes. */
+/**
+ * Is there an ACTIVE primary-invoice link for this payment?
+ *
+ * THE COLUMN IS NOT THE ONLY SOURCE, and treating it as one was the most
+ * expensive defect in this file. `Payment."xeroInvoiceId"` and the
+ * `XeroObjectLink` row are written by SEPARATE steps of the invoice mint
+ * (`xero-booking-invoices.ts`), so a booking can legitimately hold the link and
+ * not the column. This platform names that state `XERO_LINK_MISMATCH` and ships
+ * an auto-applicable backfill for it (`xero-booking-repair-classify.ts`).
+ *
+ * Every other surface that decides "is there an invoice" ORs the two: the admin
+ * payments screen (`admin-payments-service.ts`), the manual-settle READ guard
+ * (`manual-booking-payment-state.ts`) and the manual-settle WRITE fence
+ * (`payment-reconciliation.ts`). Reading the column alone made this tool report
+ * `xero_invoice_missing` for a booking that HAS an invoice — and the next step an
+ * operator takes from that is to raise a second one.
+ */
+async function readPrimaryInvoiceLinked(
+  paymentId: string | null,
+): Promise<boolean> {
+  if (!paymentId) return false;
+  const link = await prisma.xeroObjectLink.findFirst({
+    where: {
+      localModel: "Payment",
+      localId: paymentId,
+      xeroObjectType: "INVOICE",
+      role: "PRIMARY_INVOICE",
+      active: true,
+    },
+    select: { id: true },
+  });
+  return link !== null;
+}
+
+/**
+ * The refund-side state that decides three of the blocker codes.
+ *
+ * The recovery ceiling is read one beyond as well: `executionExhausted` is a
+ * `some()` over these rows, so an exhausted refund sitting past the limit would
+ * be an urgent blocker this source silently failed to report.
+ */
+const RECOVERY_OPERATION_CEILING = 50;
+
 async function readRefundPosture(
   bookingId: string,
   paymentId: string | null,
@@ -321,7 +444,7 @@ async function readRefundPosture(
             status: { in: ["PENDING", "PROCESSING", "FAILED"] },
           },
           select: { status: true, attempts: true },
-          take: 50,
+          take: RECOVERY_OPERATION_CEILING + 1,
         })
       : Promise.resolve([]),
     paymentId
@@ -333,6 +456,12 @@ async function readRefundPosture(
       where: { bookingId, status: "PENDING" },
     }),
   ]);
+
+  if (recovery.length > RECOVERY_OPERATION_CEILING) {
+    throw new Error(
+      "Booking finance state: more recovery operations than this source can classify from.",
+    );
+  }
 
   return {
     executionExhausted: recovery.some(
@@ -381,9 +510,10 @@ async function assembleBookingFinanceState(
       getMemberCreditBalance(booking.memberId),
     ]);
 
-  const [xeroActivity, refundPosture] = await Promise.all([
-    readXeroActivity(bookingId, payment?.id ?? null),
+  const [xeroActivity, refundPosture, primaryInvoiceLinked] = await Promise.all([
+    readXeroActivity(payment?.id ?? null),
     readRefundPosture(bookingId, payment?.id ?? null),
+    readPrimaryInvoiceLinked(payment?.id ?? null),
   ]);
 
   // ---- Money. Integer cents only, no division anywhere. ------------------
@@ -401,27 +531,97 @@ async function assembleBookingFinanceState(
   )
     ? (payment?.amountCents ?? 0)
     : 0;
-  const uncollectedAdditionalCents =
-    payment && payment.additionalPaymentStatus !== "SUCCEEDED"
-      ? payment.additionalAmountCents
-      : 0;
+  const terminalLifecycle = TERMINAL_BOOKING_STATUSES.has(booking.status);
 
-  // The identity `prepareManualSettlement` asserts at write time:
+  // ---- The two DIFFERENT questions an uncollected addition can answer. -----
+  //
+  // They differ by exactly the booking-lifecycle half of the shared owed test,
+  // and both are needed, so both are computed and each is used in one place
+  // only. Collapsing them is what this source did before, and it dunned a
+  // cancelled booking.
+  //
+  //  - THE LEDGER TERM is the MONEY half alone (`isAdditionalAmountUncollected`).
+  //    It is legitimately status-independent: the write-time identity it
+  //    reconstructs is a property of what was WRITTEN — see the "GENERALISED
+  //    LEDGER MIRROR" note in `payment-reconciliation.ts`, where every cent of
+  //    the price is collected, paid with credit, or still recorded as owed. A
+  //    cancelled booking's delta columns are left exactly as they were, so the
+  //    identity still holds over them and gating this half would manufacture a
+  //    variance on every cancelled booking that carried one.
+  //  - THE OWED TERM is the FULL shared predicate (`isAdditionalPaymentOwed`),
+  //    status half and money half. It is what the projection reports and what
+  //    gates the blocker, because "is money still owing" is the question every
+  //    other surface asks — the admin bookings list, the finance metrics, both
+  //    chase crons, the reports route and the booking panel all call this exact
+  //    function, and its docblock names the failure being avoided: a cancelled
+  //    booking must not read as still owing.
+  const uncollectedAdditionalLedgerCents = isAdditionalAmountUncollected(payment)
+    ? payment.additionalAmountCents
+    : 0;
+  const additionalPaymentOwed = isAdditionalPaymentOwed({
+    bookingStatus: booking.status,
+    payment,
+  });
+  const uncollectedAdditionalCents = additionalPaymentOwed
+    ? uncollectedAdditionalLedgerCents
+    : 0;
+
+  // The identity `prepareManualSettlement` CONSTRUCTS at write time:
   //   amountCents + creditAppliedCents + uncollectedAdditionalCents === finalPriceCents
   // Reported as a signed integer-cent variance rather than re-asserted, because a
-  // diagnostic exists precisely for the rows where it does NOT hold.
+  // diagnostic exists precisely for the rows where it does NOT hold — and because
+  // the writer itself is explicit that it builds the identity rather than
+  // asserting it, so nothing re-establishes it after a later reprice.
+  // The LEDGER term, not the owed term: see the note above.
   const ledgerVarianceCents = payment
     ? payment.amountCents +
       storedCreditAppliedCents +
-      uncollectedAdditionalCents -
+      uncollectedAdditionalLedgerCents -
       amountDueCents
     : 0;
+
+  /**
+   * Was this booking REPRICED DOWNWARD after money was captured?
+   *
+   * If it was, the write-time identity above no longer describes the row and a
+   * `ledger_variance` reported from it is a false finding. `Payment.amountCents`
+   * is GROSS captured and is never reduced by a refund
+   * (`syncPaymentAggregate`/`payment-transactions.ts`), while a downward guest,
+   * date or batch modification DOES rewrite `Booking.finalPriceCents` and settles
+   * the difference as a refund or a `BOOKING_MODIFICATION_REFUND` credit. The row
+   * is then permanently and legitimately `amountCents > finalPriceCents`, and no
+   * writer re-establishes the identity afterwards — `payment-reconciliation.ts`
+   * is explicit that it constructs the identity rather than asserting it.
+   *
+   * Two cheap signals, either of which means a reprice-or-refund happened after
+   * capture. Neither is a guess about the amount: they only suppress a variance
+   * this source cannot distinguish from a healthy repriced booking.
+   */
+  const repricedAfterCapture =
+    refundedAmountCents > 0 ||
+    credits.some((credit) => credit.type === "BOOKING_MODIFICATION_REFUND");
 
   // The denormalised column against the ledger truth. Signed, in cents.
   const creditLedgerVarianceCents = storedCreditAppliedCents - appliedCreditCents;
 
-  const outstandingCents =
-    amountDueCents - appliedCreditCents - capturedCents;
+  /**
+   * What is still owed, in integer cents.
+   *
+   * NET of refunds, because `capturedCents` is GROSS. A booking that lost a guest
+   * after it was paid has `finalPriceCents` 8 000, `amountCents` 12 000 and
+   * `refundedAmountCents` 4 000: gross arithmetic reports -4 000, which reads as a
+   * $40 overpayment on a perfectly healthy booking, and the next thing a Finance
+   * Officer does about an overpayment is refund it a second time.
+   *
+   * ZERO on a CANCELLED or BUMPED booking. Nothing can be collected against a
+   * booking that has no completion to reach, and `booking_lifecycle_terminal`
+   * says so beside it rather than leaving the zero to be read as "settled".
+   */
+  const outstandingCents = terminalLifecycle
+    ? 0
+    : amountDueCents -
+      appliedCreditCents -
+      (capturedCents - refundedAmountCents);
 
   const remainingRefundableCents = getRemainingRefundableCents(
     payment
@@ -444,41 +644,88 @@ async function assembleBookingFinanceState(
     refundedAmountCents,
     credits,
   });
+  /**
+   * "Is there an invoice?" — the SAME OR every other surface uses. The column
+   * and the link are written by separate steps and either alone is a wrong
+   * answer; see `readPrimaryInvoiceLinked`.
+   */
+  const invoiceLinked =
+    Boolean(payment?.xeroInvoiceId) || primaryInvoiceLinked;
+
+  /**
+   * The Xero classification, computed with the SCREEN's own expectation
+   * predicate so this field and `/admin/payments` cannot disagree about one
+   * payment. `isXeroInvoiceExpectedPaymentStatus` is the single definition, and
+   * the screen calls it too.
+   */
   const xeroState = deriveXeroState({
-    invoiceExpected: isSettledBookingStatus(booking.status),
-    invoiceLinked: Boolean(payment?.xeroInvoiceId),
+    invoiceExpected: isXeroInvoiceExpectedPaymentStatus(payment?.status),
+    invoiceLinked,
     activity: xeroActivity,
   });
 
-  // ---- Blockers, in the declared priority order. -------------------------
-  const blockers: FinanceBlockerCode[] = [];
-  const add = (code: FinanceBlockerCode) => {
-    if (!blockers.includes(code)) blockers.push(code);
+  /**
+   * The BOOKING-lifecycle answer to the same question, which is deliberately
+   * WIDER and is used only for the blocker.
+   *
+   * `isSettledBookingStatus` includes PAYMENT_PENDING, and that is not a
+   * disagreement with the screen — it is a different question. An
+   * internet-banking booking's Xero invoice is HOW the member pays, so a
+   * PAYMENT_PENDING booking with no invoice is a real, actionable problem that
+   * the screen's payment-status test cannot see. The blocker's own catalogue
+   * sentence says "reached a status where an invoice is expected", which is the
+   * lifecycle statement, so this is the predicate that belongs behind it.
+   *
+   * Both are `deriveXeroState`, so the activity precedence (a failed or pending
+   * sync outranks "missing") is identical and neither is re-derived here.
+   */
+  const lifecycleXeroState = deriveXeroState({
+    invoiceExpected: isSettledBookingStatus(booking.status),
+    invoiceLinked,
+    activity: xeroActivity,
+  });
+
+  // ---- Blockers. ----------------------------------------------------------
+  //
+  // Built by FILTERING the declared catalogue rather than by pushing onto a list
+  // and sorting it afterwards. The previous shape carried a `sort` that could
+  // never reorder anything (the checks already ran in catalogue order) and a
+  // dedupe that could never fire (every code was reachable once) — code that
+  // looks load-bearing and is not. Filtering the catalogue makes the priority
+  // order STRUCTURAL: it is the order of `FINANCE_BLOCKER_CODES` by
+  // construction, whatever order the predicates below are written in.
+  //
+  // A CANCELLED or BUMPED booking emits no payment-progress blocker. Its money
+  // columns are frozen where the cancellation left them, so "no charge has been
+  // attempted" is true of the columns and false as an answer: there is nothing
+  // to charge. Reporting `payment_pending` beside the authoritative display
+  // label "Cancelled Before Payment" was the tool contradicting itself in one
+  // row. The bookkeeping blockers (Xero, refunds, variances) are NOT suppressed
+  // — a cancelled booking can still owe a refund and still be wrong in Xero.
+  const blockerActive: Record<FinanceBlockerCode, boolean> = {
+    payment_record_missing: !payment,
+    refund_execution_exhausted: refundPosture.executionExhausted,
+    refund_execution_pending: refundPosture.executionPending,
+    manual_refund_open: refundPosture.manualOpen,
+    refund_appeal_pending: refundPosture.appealPending,
+    xero_operation_failed: lifecycleXeroState === "operationFailed",
+    xero_operation_partial: lifecycleXeroState === "operationPartial",
+    xero_operation_pending: lifecycleXeroState === "operationPending",
+    xero_invoice_missing: lifecycleXeroState === "invoiceMissing",
+    // Already false for a terminal booking: the shared owed test's status half
+    // excludes CANCELLED and BUMPED. Stated through the shared predicate rather
+    // than restated here, so there is one definition of "still owing".
+    additional_payment_outstanding: uncollectedAdditionalCents > 0,
+    payment_failed: !terminalLifecycle && payment?.status === "FAILED",
+    payment_processing: !terminalLifecycle && payment?.status === "PROCESSING",
+    payment_pending: !terminalLifecycle && payment?.status === "PENDING",
+    // Suppressed on a booking repriced downward after capture, where the
+    // write-time identity legitimately no longer holds. See `repricedAfterCapture`.
+    ledger_variance: ledgerVarianceCents !== 0 && !repricedAfterCapture,
+    credit_ledger_variance: creditLedgerVarianceCents !== 0,
   };
 
-  if (!payment) add("payment_record_missing");
-  if (refundPosture.executionExhausted) add("refund_execution_exhausted");
-  if (refundPosture.executionPending) add("refund_execution_pending");
-  if (refundPosture.manualOpen) add("manual_refund_open");
-  if (refundPosture.appealPending) add("refund_appeal_pending");
-  if (xeroState === "operationFailed") add("xero_operation_failed");
-  if (xeroState === "operationPartial") add("xero_operation_partial");
-  if (xeroState === "operationPending") add("xero_operation_pending");
-  if (xeroState === "invoiceMissing") add("xero_invoice_missing");
-  if (uncollectedAdditionalCents > 0) add("additional_payment_outstanding");
-  if (payment?.status === "FAILED") add("payment_failed");
-  if (payment?.status === "PROCESSING") add("payment_processing");
-  if (payment?.status === "PENDING") add("payment_pending");
-  if (ledgerVarianceCents !== 0) add("ledger_variance");
-  if (creditLedgerVarianceCents !== 0) add("credit_ledger_variance");
-
-  // Sorted into the declared priority order rather than insertion order, so the
-  // first code is always the one an operator should act on first even if the
-  // checks above are ever reordered.
-  blockers.sort(
-    (left, right) =>
-      FINANCE_BLOCKER_CODES.indexOf(left) - FINANCE_BLOCKER_CODES.indexOf(right),
-  );
+  const blockers = FINANCE_BLOCKER_CODES.filter((code) => blockerActive[code]);
 
   return [
     {
@@ -506,6 +753,7 @@ async function assembleBookingFinanceState(
       blocker_codes: blockers.length > 0 ? blockers.join(",") : "none",
       blocker_count: blockers.length,
       manually_marked_paid: payment?.manuallyMarkedPaidAt != null,
+      booking_lifecycle_terminal: terminalLifecycle,
       observed_at_utc: observedAtUtc,
     },
   ];

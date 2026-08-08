@@ -18,6 +18,36 @@
   recorded on the payment disagrees with the credit ledger. Both are exact, to the
   cent.
 
+  **It agrees with the screen the operator opens next, and that is now proved
+  rather than promised.** The whole-booking answer reuses the application's own
+  finance functions, and a test drives the real Admin > Payments service and the
+  diagnostic over the same booking and requires them to return the same Xero state
+  and the same settlement kind. Three places where they had drifted are fixed:
+  a booking whose Xero invoice is recorded as a link rather than as an id is no
+  longer reported as having no invoice (which could have led to a second invoice
+  being raised for one stay); a booking repriced downward after it was paid — a
+  guest removed, say — is no longer reported as overpaid with "one of the stored
+  numbers is wrong", because refunds are now netted out of what is outstanding;
+  and a cancelled booking is no longer reported as still owing money that the
+  cancellation left frozen in its columns. A cancelled or bumped booking now says
+  plainly that it has reached the end of its life, reports nothing outstanding, and
+  raises no "waiting for payment" finding — while still reporting a refund it owes
+  or a Xero problem it has.
+
+  **The words behind each blocker code now travel with the answer**, so the plain
+  English an operator reads and the plain English the assistant reads come from the
+  same place — "money has to be handed back by a person" cannot become "a refund is
+  on its way".
+
+  **Two search and evidence limits were tightened.** Searching for an amount of zero
+  used to match almost every payment in the club, because a column that is zero by
+  default was being compared against it; it now matches only payments whose own
+  amount is zero, which is the fully-credit-covered booking an operator asking that
+  question is actually looking for. And three "audit history" options that pointed
+  at Xero records were removed: they could never have matched anything, and an empty
+  answer from them read as evidence that nothing had happened. Xero history is in
+  the Xero linkage tools, where it always was.
+
   **It cannot change anything, and it never contacts a provider.** It cannot take a
   payment, allocate one, reconcile one, issue or retry a refund, touch a Xero
   invoice or contact, or replay a webhook — and it does not ask Stripe or Xero

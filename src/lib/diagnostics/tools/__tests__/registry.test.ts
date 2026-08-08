@@ -346,6 +346,7 @@ const EXAMPLE_RAW_ROWS: Record<string, Record<string, unknown>> = {
       "payment_record_missing,refund_execution_exhausted,refund_execution_pending,manual_refund_open,refund_appeal_pending,xero_operation_failed,xero_operation_partial,xero_operation_pending,xero_invoice_missing,additional_payment_outstanding,payment_failed,payment_processing,payment_pending,ledger_variance,credit_ledger_variance",
     blocker_count: 15,
     manually_marked_paid: true,
+    booking_lifecycle_terminal: true,
     observed_at_utc: "2026-08-08T09:00:00.000Z",
   },
   ...Object.fromEntries(

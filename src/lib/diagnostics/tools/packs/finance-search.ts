@@ -258,10 +258,33 @@ WHERE (
 )
 ORDER BY p."createdAt" DESC, p."id" ASC`;
 
+/**
+ * THE `$1 > 0` GUARD ON THE ADDITIONAL LEG IS A SECURITY CONTROL, not a
+ * micro-optimisation.
+ *
+ * `Payment."additionalAmountCents"` is `Int @default(0)` and NOT NULL, so almost
+ * every payment in the table holds a literal zero in it. Without the guard,
+ * `{amountCents: 0}` matched that column on essentially the whole relation and
+ * returned the ten most recent payments club-wide to a caller who had identified
+ * no record at all — a blank "show me recent payments" listing, which is exactly
+ * what #2377 forbids ("no blank searches", "no wildcard show-all searches", "no
+ * bulk extraction") and what acceptance criterion 5 turns on.
+ *
+ * A zero-amount search still WORKS, and still should: a fully credit-covered
+ * booking really does settle as a zero-amount payment and is one of the states an
+ * operator is most likely to be confused by. It now matches only rows whose
+ * PRIMARY amount is zero, which is the record they are looking for. There is no
+ * such thing as a zero-cent additional payment worth searching for — the
+ * platform's own owed test requires `additionalAmountCents > 0` before an
+ * addition exists at all.
+ */
 const AMOUNT_SEARCH_SQL = `SELECT
   ${SEARCH_COLUMNS}
 FROM public."Payment" p
-WHERE (p."amountCents" = $1::int OR p."additionalAmountCents" = $1::int)
+WHERE (
+    p."amountCents" = $1::int
+    OR ($1::int > 0 AND p."additionalAmountCents" = $1::int)
+  )
   AND p."createdAt" >= ${NOW_UTC} - (($2)::int * INTERVAL '1 day')
 ORDER BY p."createdAt" DESC, p."id" ASC`;
 
@@ -340,7 +363,7 @@ const amountSearch = defineDiagnosticsTool<AmountSearchArgs>({
   id: DIAGNOSTICS_FINANCE_AMOUNT_SEARCH_TOOL_ID,
   source: "select_only_sql",
   label: "Find a booking payment by exact amount and date range",
-  description: `Finds booking payments whose amount is EXACTLY the integer cents given, created inside a narrow window ending now (7d, 30d or 90d — 30d by default). Use it when a member or a bank statement gives an amount and a rough date but no reference. The amount must be exact integer cents (for example 12345 for $123.45) — there is no range, no rounding and no "about". At most ${FINANCE_SEARCH_ROW_LIMIT} rows, newest first; if several match, ask which booking is meant rather than choosing one. It matches the primary amount OR an additional-payment amount. It returns no member name, email address or phone number. ${FINANCE_DESCRIPTION_TAIL}`,
+  description: `Finds booking payments whose amount is EXACTLY the integer cents given, created inside a narrow window ending now (7d, 30d or 90d — 30d by default). Use it when a member or a bank statement gives an amount and a rough date but no reference. The amount must be exact integer cents (for example 12345 for $123.45) — there is no range, no rounding and no "about". At most ${FINANCE_SEARCH_ROW_LIMIT} rows, newest first; if several match, ask which booking is meant rather than choosing one. It matches the primary amount OR an additional-payment amount, except that an amount of 0 matches only payments whose PRIMARY amount is zero — a fully credit-covered booking. It returns no member name, email address or phone number. ${FINANCE_DESCRIPTION_TAIL}`,
   requiredAreas: ["finance"],
   evidenceScope: `Booking payments with that EXACT amount in integer cents, created inside the chosen window. ${SEARCH_SCOPE_TAIL} An amount that differs by a single cent will not match — if nothing is found, consider that the payment may carry a change fee, an additional-payment amount or applied credit that makes its stored amount different from the figure the operator has. ${STORED_EVIDENCE_DISCLOSURE}`,
   argsSchema: amountSearchArgsSchema,

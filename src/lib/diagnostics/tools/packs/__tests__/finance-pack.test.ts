@@ -277,6 +277,48 @@ describe("AID-6C finance pack: bounded, exact, non-blank searches (#2377)", () =
     ).toBe(true);
   });
 
+  it("cannot be turned into a blank recent-payments listing by searching for 0", () => {
+    // THE HOLE THIS CLOSES. `Payment."additionalAmountCents"` is `Int @default(0)`
+    // and NOT NULL, so `p."additionalAmountCents" = 0` is true of essentially the
+    // whole relation. An unguarded `amountCents = $1 OR additionalAmountCents = $1`
+    // therefore turned `{amountCents: 0}` into "the ten most recent payments in the
+    // club" for a caller who had identified no record at all — the blank,
+    // wildcard-equivalent, bulk-extraction search #2377 forbids by name and
+    // acceptance criterion 5 turns on.
+    //
+    // Asserted against the SHIPPED statement, and structurally rather than by
+    // string equality, so a rewrite of the query keeps the property or fails here.
+    // A zero-amount search still works and still matches a fully credit-covered
+    // booking — through the PRIMARY amount, which is the record the operator wants.
+    expect(amountSearch?.source).toBe("select_only_sql");
+    const sql =
+      amountSearch && amountSearch.source === "select_only_sql"
+        ? amountSearch.sql
+        : "";
+    // The PREDICATE only — the projection names both columns too, and a match
+    // there would prove nothing.
+    const whereClause = sql.slice(sql.indexOf("WHERE"));
+    expect(whereClause).toContain("WHERE");
+    const additionalLeg = whereClause
+      .split("\n")
+      .find((line) => line.includes('"additionalAmountCents"'));
+    expect(additionalLeg, "the additional-amount leg is gone").toBeDefined();
+    expect(
+      additionalLeg,
+      "the additional-amount leg is not guarded against a zero search term",
+    ).toMatch(/\$1::int\s*>\s*0/);
+    // And the primary leg is NOT guarded: zero is a real primary amount.
+    const primaryLeg = whereClause
+      .split("\n")
+      .find(
+        (line) =>
+          line.includes('p."amountCents"') &&
+          !line.includes('"additionalAmountCents"'),
+      );
+    expect(primaryLeg).toBeDefined();
+    expect(primaryLeg).not.toMatch(/>\s*0/);
+  });
+
   it("caps both searches at ten rows, #2377's recommended default", () => {
     expect(search?.rowLimit).toBe(10);
     expect(amountSearch?.rowLimit).toBe(10);
@@ -754,6 +796,30 @@ describe("AID-6C finance pack: the blocker catalogue (#2377)", () => {
       "@/lib/payment-recovery-constants"
     );
     expect(FINANCE_RECOVERY_ATTEMPT_CEILING).toBe(MAX_PAYMENT_RECOVERY_ATTEMPTS);
+  });
+
+  it("SHIPS the catalogue to the model, not just to this test", () => {
+    // THE DEFECT THIS CATCHES. The sentences above existed, said in their own
+    // docblock that they were there "so the words the model reads and the words a
+    // UI renders come from one place" — and reached nothing but this file. The
+    // projected row carried bare codes, and neither the tool description nor the
+    // evidence scope mapped a code to its sentence. A model handed
+    // `manual_refund_open` and no catalogue reads it as "a refund is in progress",
+    // which is the opposite of what it means.
+    const entry = DIAGNOSTICS_TOOLS.find(
+      (tool) => tool.id === DIAGNOSTICS_BOOKING_FINANCE_STATE_TOOL_ID,
+    );
+    expect(entry).toBeDefined();
+    const scope = entry?.evidenceScope ?? "";
+    for (const code of FINANCE_BLOCKER_CODES) {
+      expect(scope, `${code} is not in the shipped evidenceScope`).toContain(
+        code,
+      );
+      expect(
+        scope,
+        `${code}'s sentence is not in the shipped evidenceScope`,
+      ).toContain(FINANCE_BLOCKER_DESCRIPTIONS[code]);
+    }
   });
 
   it("has no code meaning `none`", () => {

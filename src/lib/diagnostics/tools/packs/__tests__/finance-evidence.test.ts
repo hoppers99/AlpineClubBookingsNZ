@@ -22,6 +22,7 @@ vi.mock("@/lib/prisma", () => ({
     payment: { findUnique: vi.fn() },
     memberCredit: { findMany: vi.fn(), aggregate: vi.fn() },
     xeroSyncOperation: { findMany: vi.fn() },
+    xeroObjectLink: { findFirst: vi.fn() },
     paymentRecoveryOperation: { findMany: vi.fn() },
     manualRefundTask: { count: vi.fn() },
     refundRequest: { count: vi.fn() },
@@ -58,8 +59,14 @@ interface Scenario {
   /** Signed `MemberCredit` rows the ledger aggregate should report for the booking. */
   appliedCreditLedgerCents?: number;
   memberCreditBalanceCents?: number;
-  cancellationCredits?: { amountCents: number; description: string }[];
+  cancellationCredits?: {
+    amountCents: number;
+    description: string;
+    type?: string;
+  }[];
   xeroOperations?: { id: string; status: string; createdAt: Date }[];
+  /** An ACTIVE PRIMARY_INVOICE `XeroObjectLink` exists for the payment. */
+  primaryInvoiceLink?: boolean;
   recoveryOperations?: { status: string; attempts: number }[];
   openManualRefundTasks?: number;
   pendingRefundAppeals?: number;
@@ -119,10 +126,22 @@ function setup(scenario: Scenario): void {
   }) as never);
 
   vi.mocked(prisma.memberCredit.findMany).mockResolvedValue(
-    (scenario.cancellationCredits ?? []) as never,
+    (scenario.cancellationCredits ?? []).map((credit) => ({
+      ...credit,
+      type: credit.type ?? "CANCELLATION_REFUND",
+    })) as never,
   );
+  // `buildXeroActivityByRecord` keys on `localModel:localId`, so the fixture rows
+  // have to carry the same two columns the screen's query selects.
   vi.mocked(prisma.xeroSyncOperation.findMany).mockResolvedValue(
-    (scenario.xeroOperations ?? []) as never,
+    (scenario.xeroOperations ?? []).map((operation) => ({
+      ...operation,
+      localModel: "Payment",
+      localId: payment?.id ?? PAYMENT_ID,
+    })) as never,
+  );
+  vi.mocked(prisma.xeroObjectLink.findFirst).mockResolvedValue(
+    (scenario.primaryInvoiceLink ? { id: "link-1" } : null) as never,
   );
   vi.mocked(prisma.paymentRecoveryOperation.findMany).mockResolvedValue(
     (scenario.recoveryOperations ?? []) as never,
@@ -230,16 +249,101 @@ describe("booking finance state: integer-cent arithmetic (#2377)", () => {
     expect(blockers(row)).toContain("ledger_variance");
   });
 
-  it("reports an OVERPAYMENT as a negative outstanding and a positive variance", async () => {
+  it("reports a TRUE OVERPAYMENT as a negative outstanding and a positive variance", async () => {
+    // A true overpayment: nothing was refunded, no modification credit was issued,
+    // and the price was never rewritten — so 12,000 really was captured against a
+    // 10,000 booking and the write-time identity really is broken.
+    //
+    // The earlier version of this test used the SAME numbers with no refund and
+    // called it an overpayment, which is also the exact shape of a perfectly
+    // healthy repriced booking (see the reprice test below). It therefore
+    // enshrined the defect rather than catching it: any implementation that
+    // reported `ledger_variance` for a repriced booking passed it.
     setup({
       booking: { finalPriceCents: 10_000 },
-      payment: { amountCents: 12_000 },
+      payment: { amountCents: 12_000, refundedAmountCents: 0 },
     });
     const row = await readRow();
     expect(row.amount_paid_cents).toBe(12_000);
     expect(row.outstanding_cents).toBe(-2_000);
     expect(row.ledger_variance_cents).toBe(2_000);
     expect(blockers(row)).toContain("ledger_variance");
+  });
+
+  it("nets REFUNDS out of what is outstanding on a booking repriced downward", async () => {
+    // The case that made the old arithmetic dangerous. A paid $120 booking loses a
+    // guest: `finalPriceCents` is rewritten to 8,000, `amountCents` stays at the
+    // GROSS 12,000 captured (a refund never reduces it — see
+    // `syncPaymentAggregate`), and the 4,000 difference is handed back. Nothing is
+    // wrong with this row, and gross arithmetic reported it as a $40 overpayment
+    // that a Finance Officer could refund a second time.
+    setup({
+      booking: { finalPriceCents: 8_000 },
+      payment: {
+        amountCents: 12_000,
+        refundedAmountCents: 4_000,
+        status: "PARTIALLY_REFUNDED",
+      },
+    });
+    const row = await readRow();
+    expect(row.amount_paid_cents).toBe(12_000);
+    expect(row.refunded_amount_cents).toBe(4_000);
+    expect(row.outstanding_cents).toBe(0);
+    // The raw identity IS broken here, and reporting it as a finding would be
+    // wrong: no writer re-establishes it after a post-payment reprice.
+    expect(row.ledger_variance_cents).toBe(4_000);
+    expect(blockers(row)).not.toContain("ledger_variance");
+  });
+
+  it("suppresses a ledger variance when a booking-modification CREDIT was issued", async () => {
+    // The other half of the same reprice, for a booking whose difference was
+    // settled as account credit rather than a card refund. `refundedAmountCents`
+    // stays 0, so only the credit type distinguishes it from a real discrepancy.
+    setup({
+      booking: { finalPriceCents: 8_000 },
+      payment: { amountCents: 12_000, refundedAmountCents: 0 },
+      cancellationCredits: [
+        {
+          amountCents: 4_000,
+          description: "Booking reduction credit for booking ABC",
+          type: "BOOKING_MODIFICATION_REFUND",
+        },
+      ],
+    });
+    const row = await readRow();
+    expect(row.ledger_variance_cents).toBe(4_000);
+    expect(blockers(row)).not.toContain("ledger_variance");
+  });
+
+  it("still reports a variance when the only credit is a CANCELLATION refund", async () => {
+    // A cancellation credit is not a reprice: `finalPriceCents` is untouched by
+    // one, so the identity still describes the row and a break in it is real.
+    setup({
+      booking: { finalPriceCents: 10_000, status: "CONFIRMED" },
+      payment: { amountCents: 12_000, refundedAmountCents: 0 },
+      cancellationCredits: [
+        {
+          amountCents: 2_000,
+          description: "Cancellation refund for booking ABC",
+          type: "CANCELLATION_REFUND",
+        },
+      ],
+    });
+    expect(blockers(await readRow())).toContain("ledger_variance");
+  });
+
+  it("counts a REFUNDED payment's gross capture as paid", async () => {
+    // `hasCapturedPayment` is the test, not `status === "SUCCEEDED"`. Money that
+    // moved and came back still moved, and the refunded amount is reported beside
+    // it rather than folded into the captured figure.
+    for (const status of ["REFUNDED", "PARTIALLY_REFUNDED"] as const) {
+      setup({
+        booking: { finalPriceCents: 10_000, status: "CONFIRMED" },
+        payment: { amountCents: 10_000, refundedAmountCents: 10_000, status },
+      });
+      const row = await readRow();
+      expect(row.amount_paid_cents, status).toBe(10_000);
+    }
   });
 
   it("reports an UNDERPAYMENT as an outstanding balance", async () => {
@@ -472,15 +576,59 @@ describe("booking finance state: blockers and their order (#2377)", () => {
     expect(call?.where).toMatchObject({ manuallyResolvedAt: null });
   });
 
-  it("reads the Xero operations of BOTH the booking and its payment", async () => {
+  it("reads the Xero operations of the PAYMENT, keyed exactly as the screen keys them", async () => {
+    // `Payment:{id}` and nothing else, which is how `listAdminPayments` scopes it.
+    // The booking-scoped alternative an earlier revision also read matches nothing:
+    // every writer on the booking-invoice path records `localModel: "Payment"`.
     setup({
       booking: { finalPriceCents: 10_000 },
       payment: { amountCents: 10_000 },
     });
     await readRow();
     const call = vi.mocked(prisma.xeroSyncOperation.findMany).mock.calls[0]?.[0];
-    expect(call?.where?.localId).toEqual({ in: [BOOKING_ID, PAYMENT_ID] });
-    expect(call?.where?.localModel).toEqual({ in: ["Booking", "Payment"] });
+    expect(call?.where?.localId).toBe(PAYMENT_ID);
+    expect(call?.where?.localModel).toBe("Payment");
+  });
+
+  it("treats an ACTIVE primary-invoice LINK as an invoice, with no invoice id on the payment", async () => {
+    // THE DIVERGENT STATE THIS PLATFORM NAMES `XERO_LINK_MISMATCH`. The link and
+    // the payment column are written by separate steps of the invoice mint, so a
+    // booking can hold the link and not the column, and this platform ships an
+    // auto-applicable backfill for exactly that. Reading the column alone reported
+    // `xero_invoice_missing` for a booking that HAS an invoice — and the next thing
+    // an operator does about a missing invoice is raise a second one.
+    setup({
+      booking: { finalPriceCents: 10_000, status: "CONFIRMED" },
+      payment: { amountCents: 10_000, xeroInvoiceId: null },
+      primaryInvoiceLink: true,
+    });
+    const row = await readRow();
+    expect(row.xero_state).toBe("invoiceLinked");
+    expect(blockers(row)).not.toContain("xero_invoice_missing");
+
+    // And with neither the column nor the link, it IS missing.
+    setup({
+      booking: { finalPriceCents: 10_000, status: "CONFIRMED" },
+      payment: { amountCents: 10_000, xeroInvoiceId: null },
+      primaryInvoiceLink: false,
+    });
+    expect(blockers(await readRow())).toContain("xero_invoice_missing");
+  });
+
+  it("queries the primary-invoice link with the same predicate every other surface uses", async () => {
+    setup({
+      booking: { finalPriceCents: 10_000 },
+      payment: { amountCents: 10_000 },
+    });
+    await readRow();
+    const call = vi.mocked(prisma.xeroObjectLink.findFirst).mock.calls[0]?.[0];
+    expect(call?.where).toMatchObject({
+      localModel: "Payment",
+      localId: PAYMENT_ID,
+      xeroObjectType: "INVOICE",
+      role: "PRIMARY_INVOICE",
+      active: true,
+    });
   });
 
   it("reports the authoritative display label rather than inventing one", async () => {
@@ -529,6 +677,42 @@ describe("booking finance state: blockers and their order (#2377)", () => {
     }
   });
 
+  it("emits blocker codes in the declared PRIORITY order", async () => {
+    // The order is the product: several of these are true at once, and telling a
+    // Finance Officer the Xero invoice is missing when a refund the platform owes
+    // has exhausted its retries sends them to the wrong screen. The list is built
+    // by filtering the catalogue, so the order is structural rather than an
+    // accident of the order the predicates happen to be written in — this asserts
+    // it end to end on a booking carrying six blockers at once.
+    setup({
+      booking: { finalPriceCents: 10_000, status: "CONFIRMED" },
+      payment: {
+        amountCents: 4_000,
+        status: "PENDING",
+        creditAppliedCents: 1_000,
+        xeroInvoiceId: null,
+      },
+      appliedCreditLedgerCents: 500,
+      recoveryOperations: [
+        { status: "FAILED", attempts: 5 },
+        { status: "PENDING", attempts: 1 },
+      ],
+      openManualRefundTasks: 1,
+      pendingRefundAppeals: 1,
+    });
+    const codes = blockers(await readRow());
+    expect(codes).toEqual([
+      "refund_execution_exhausted",
+      "refund_execution_pending",
+      "manual_refund_open",
+      "refund_appeal_pending",
+      "xero_invoice_missing",
+      "payment_pending",
+      "ledger_variance",
+      "credit_ledger_variance",
+    ]);
+  });
+
   it("flags a payment settled by hand, which has no card leg to refund", async () => {
     setup({
       booking: { finalPriceCents: 10_000 },
@@ -540,5 +724,102 @@ describe("booking finance state: blockers and their order (#2377)", () => {
     });
     const row = await readRow();
     expect(row.manually_marked_paid).toBe(true);
+  });
+});
+
+describe("booking finance state: the booking LIFECYCLE (#2377)", () => {
+  it.each(["CANCELLED", "BUMPED"] as const)(
+    "does not dun a %s booking for an additional payment nothing zeroed",
+    async (status) => {
+      // Cancelling a booking leaves `additionalAmountCents` and
+      // `additionalPaymentStatus` exactly as they were — nothing zeroes them — so a
+      // money-only reading of those two columns reports a cancelled booking as
+      // still owing. `isAdditionalPaymentOwed` conjoins the lifecycle half for
+      // precisely this reason, and its own docblock names the chase email as the
+      // surface that would otherwise dun a member for money they do not owe.
+      setup({
+        booking: { finalPriceCents: 12_000, status },
+        payment: {
+          amountCents: 10_000,
+          additionalAmountCents: 2_000,
+          additionalPaymentStatus: "PENDING",
+        },
+      });
+      const row = await readRow();
+      expect(row.uncollected_additional_cents).toBe(0);
+      expect(blockers(row)).not.toContain("additional_payment_outstanding");
+      // The LEDGER term keeps the money half, because the write-time identity is a
+      // property of what was written and a cancellation does not rewrite it. So the
+      // identity still holds over this row and no variance is manufactured.
+      expect(row.ledger_variance_cents).toBe(0);
+      expect(blockers(row)).not.toContain("ledger_variance");
+      expect(row.booking_lifecycle_terminal).toBe(true);
+    },
+  );
+
+  it("still reports an additional payment as owing on a CONFIRMED booking", async () => {
+    setup({
+      booking: { finalPriceCents: 12_000, status: "CONFIRMED" },
+      payment: {
+        amountCents: 10_000,
+        additionalAmountCents: 2_000,
+        additionalPaymentStatus: "PENDING",
+      },
+    });
+    const row = await readRow();
+    expect(row.uncollected_additional_cents).toBe(2_000);
+    expect(blockers(row)).toContain("additional_payment_outstanding");
+    expect(row.booking_lifecycle_terminal).toBe(false);
+  });
+
+  it("does not contradict itself on a booking CANCELLED before payment", async () => {
+    // The authoritative display label says "Cancelled Before Payment"; the blocker
+    // list used to say `payment_pending` and the outstanding figure used to say the
+    // member owed the whole price. Both were answers to a question the booking no
+    // longer has, and the spec bullet this tool leads with — "which condition is
+    // definitely blocking completion" — has no meaning for a booking with no
+    // completion to reach.
+    setup({
+      booking: { finalPriceCents: 10_000, status: "CANCELLED" },
+      payment: { amountCents: 10_000, status: "PENDING", xeroInvoiceId: null },
+    });
+    const row = await readRow();
+    expect(row.payment_display_label).toBe("Cancelled Before Payment");
+    expect(row.booking_lifecycle_terminal).toBe(true);
+    expect(row.outstanding_cents).toBe(0);
+    expect(blockers(row)).not.toContain("payment_pending");
+    // And a cancelled booking that was never charged is not missing an invoice
+    // either: `isSettledBookingStatus` excludes CANCELLED.
+    expect(blockers(row)).not.toContain("xero_invoice_missing");
+  });
+
+  it.each(["FAILED", "PROCESSING"] as const)(
+    "suppresses payment-progress blocker %s on a cancelled booking",
+    async (paymentStatus) => {
+      setup({
+        booking: { finalPriceCents: 10_000, status: "CANCELLED" },
+        payment: { amountCents: 10_000, status: paymentStatus },
+      });
+      const codes = blockers(await readRow());
+      expect(codes).not.toContain("payment_failed");
+      expect(codes).not.toContain("payment_processing");
+    },
+  );
+
+  it("still reports BOOKKEEPING blockers on a cancelled booking", async () => {
+    // The suppression is narrow on purpose. A cancelled booking can still owe a
+    // refund and can still be wrong in Xero, and those are the states an operator
+    // most often opens a cancelled booking to investigate.
+    setup({
+      booking: { finalPriceCents: 10_000, status: "CANCELLED" },
+      payment: { amountCents: 10_000, status: "SUCCEEDED" },
+      openManualRefundTasks: 1,
+      xeroOperations: [
+        { id: "op-1", status: "FAILED", createdAt: new Date("2026-08-01") },
+      ],
+    });
+    const codes = blockers(await readRow());
+    expect(codes).toContain("manual_refund_open");
+    expect(codes).toContain("xero_operation_failed");
   });
 });

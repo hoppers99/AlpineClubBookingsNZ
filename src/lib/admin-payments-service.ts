@@ -4,6 +4,7 @@ import {
   buildXeroActivityByRecord,
   deriveSettlementKind,
   deriveXeroState,
+  isXeroInvoiceExpectedPaymentStatus,
   matchesSettlementFilter,
   matchesXeroStateFilter,
   paymentApiSourceFilters,
@@ -400,7 +401,7 @@ export async function listAdminPayments(query: AdminPaymentsQuery): Promise<Json
           latestActivityAt: latestPaymentActivityAt(payment),
           xeroActivity,
           xeroState: deriveXeroState({
-            invoiceExpected: ["SUCCEEDED", "REFUNDED", "PARTIALLY_REFUNDED"].includes(payment.status),
+            invoiceExpected: isXeroInvoiceExpectedPaymentStatus(payment.status),
             invoiceLinked,
             activity: xeroActivity,
           }),
