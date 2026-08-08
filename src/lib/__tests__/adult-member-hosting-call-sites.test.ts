@@ -758,6 +758,24 @@ describe("the participant fence is gated on the hosting policy (#2623 T5)", () =
     }
   });
 
+  it("keeps the un-fenced return fail-fast on the coverage-owner key", () => {
+    // THE ONE THING THE GATE GIVES UP, kept bounded. Skipping the fence is safe
+    // because an inactive mode reaches no coverage-owner key at all — but the
+    // reconciler re-reads the mode for itself one call deeper, so in the narrow
+    // window where a lodge turns the rule ON between the two reads, that return
+    // IS a path to the coverage-owner advisory lock with no Member fence in
+    // front of it. `true` is `failFastCoverageOwner`: it makes that acquisition
+    // `pg_try_advisory_xact_lock`, so the worst case is the stable retry 409.
+    // Flip it to `false` and the same window becomes a BLOCKING wait taken
+    // inside the caller's booking transaction while it holds the global and
+    // per-lodge capacity locks — the #2623 T6 hazard relocated, and invisible
+    // to every behavioural test because the window needs two interleaved
+    // policy reads to open.
+    expect(readRepoCode(REVIEW_SERVICE)).toMatch(
+      /if \(!hostingModeIsActive\(planned\.mode\)\) \{\s*return reconcileAdultMemberHostingReview\(\s*bookingId,\s*db,\s*options,\s*true,?\s*\);/,
+    );
+  });
+
   it("leaves the shared standing-subject barrier deliberately mode-independent", () => {
     // THE OTHER HALF, AND IT IS THE ONE THAT COSTS SOMETHING TO GET WRONG.
     // `lockHostingCoverageMemberLifecycleTarget` looks like a fourth ungated

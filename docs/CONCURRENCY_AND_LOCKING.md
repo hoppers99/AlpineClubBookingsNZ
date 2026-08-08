@@ -448,7 +448,12 @@ nor the same-owner settle step is reachable, so there is no ordering left to pro
 write and could be refused with the fixed `HOSTING_COVERAGE_PARTICIPANT_RETRY` 409 by
 a concurrent member-lifecycle writer, for a rule it does not use. A club that enables
 the rule concurrently is covered by the policy write's own enumerate-and-enqueue
-reconciliation under the policy-set key.
+reconciliation under the policy-set key — and the un-fenced return the gate takes
+passes `failFastCoverageOwner`, so if the rule does turn on between that read and the
+reconciler's own one call deeper, the coverage-owner key is acquired with
+`pg_try_advisory_xact_lock` and the caller gets the stable retry 409 rather than a
+blocking wait taken inside its booking transaction. That path can write no queue row:
+it holds no participant proof, and every queue write demands one.
 Once the mode is active, before any coverage-owner key they plan the exact source
 booking owners plus the non-null actor, sort and de-duplicate the ids, and lock those
 `Member` rows in one `FOR KEY SHARE NOWAIT` statement. They then verify typed Member
