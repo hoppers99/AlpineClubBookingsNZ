@@ -1410,6 +1410,18 @@ export default async function BookingDetailPage({
           }}
           noEmails={isDeleted ? undefined : (noEmailsState ?? undefined)}
           manualPayment={manualPaymentState ?? undefined}
+          // #2649: the stranded zero-dollar waitlist confirm. A free booking
+          // parked in PAYMENT_PENDING with no payment row owes nothing, holds
+          // no bed and has no offer to replay, so it needs an operator. Offer
+          // the repair on exactly that shape and nowhere else; the route
+          // re-checks all of it under its locks.
+          showReturnToWaitlist={Boolean(
+            !isDeleted &&
+              modules.waitlist &&
+              booking.status === "PAYMENT_PENDING" &&
+              booking.finalPriceCents === 0 &&
+              !booking.payment,
+          )}
         />
       )}
 

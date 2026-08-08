@@ -200,12 +200,27 @@ and both underlying error codes (`claimErrorCode`, `releaseErrorCode`). Open the
 booking from Admin -> Bookings and pick the outcome:
 
 - **Put them back in the queue** — the repair the failed compensation would have
-  made: set the booking back to `WAITLISTED` and clear
-  `waitlistOfferedLodgeId` / `waitlistOfferedPriceCents`, so the ordinary offer
-  worker re-offers the next free bed. Correct whenever the bed that prompted the
-  offer has since gone. **There is no admin button for this today** — the
-  waitlist screen only lists `WAITLISTED` / `WAITLIST_OFFERED`, and Force
-  Confirm refuses any other status — so it needs someone with database access.
+  made, and the one that keeps the promise the member was given. Open the
+  booking from Admin -> Bookings and press **Return to waitlist** in the Admin
+  tools card (#2649). Correct whenever the bed that prompted the offer has since
+  gone. It needs `bookings: edit`, the same access Force Confirm needs.
+
+  In one locked transaction it sets the booking back to `WAITLISTED`, clears the
+  consumed offer (`waitlistOfferedAt`, `waitlistOfferExpiresAt`,
+  `waitlistOfferedLodgeId`, `waitlistOfferedPriceCents`) and the stale queue
+  position, and reconciles the bed allocations. Afterwards it hands the freed
+  nights back to the ordinary offer worker and tells the member they are back on
+  the waitlist at position N — unless the booking's **No emails** switch is on,
+  in which case the send is withheld and listed on the booking for you to relay.
+  It records a `waitlist.returned_to_waitlist` audit row whose metadata names
+  the `waitlist.confirm_offer_release_failed` row it resolves, so the trail
+  closes at both ends.
+
+  The button appears only on the stranded shape — `PAYMENT_PENDING`, free, and
+  with no payment record — and the route re-checks all three under its locks, so
+  a booking that someone else confirms or cancels in the same moment is refused
+  in plain words rather than clobbered. There is no longer any reason to open a
+  database session for this.
 - **Cancel and have them rejoin** — reachable entirely from the admin UI, and the
   right choice when nobody can safely touch the database. Cancel the booking from
   Admin -> Bookings and ask the member to rejoin the waitlist for those nights.

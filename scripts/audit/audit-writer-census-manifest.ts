@@ -85,8 +85,19 @@ export const AUDIT_CENSUS_TOTALS = {
    * running the census after the merge; adding the two deltas up would have got
    * there by luck, and reading either side's literal would have shipped a pin
    * that was quietly one short.
+   *
+   * 421 -> 422 (#2649): the admin repair for a stranded zero-dollar waitlist
+   * confirm writes `waitlist.returned_to_waitlist` with the awaited
+   * `createAuditLog`, inside the claim's own transaction, because the row is
+   * the other half of the `waitlist.confirm_offer_release_failed` trail #2648
+   * opened — its metadata carries that row's id, so the strand and its repair
+   * are linked in both directions. Categorised `booking` at the site, so it does
+   * not join `UNCATEGORISED_AUDIT_WRITERS` below. MEASURED with
+   * `npm run audit:census` on the merged tree, not derived from this comment
+   * chain: the census reports 422 row-producing sites, `createAuditLog` 103,
+   * `booking` 81.
    */
-  writeSites: 421,
+  writeSites: 422,
   /** Of those, sites whose event object carries no `category` key. */
   uncategorised: 82,
   /** Per-sink totals, so a shift between forms cannot cancel out in the total. */
@@ -95,7 +106,8 @@ export const AUDIT_CENSUS_TOTALS = {
     // outside every transaction because its own failure must not mask the strand.
     logAudit: { total: 239, uncategorised: 69 },
     // 101 -> 102 (#2627): the deletion-approval release, above.
-    createAuditLog: { total: 102, uncategorised: 11 },
+    // 102 -> 103 (#2649): the return-to-waitlist repair, above.
+    createAuditLog: { total: 103, uncategorised: 11 },
     createStructuredAuditLog: { total: 8, uncategorised: 0 },
     // 71 -> 72 (#2352 MC-03D): the page-content deletion, above.
     "auditLog.create": { total: 72, uncategorised: 2 },
@@ -115,7 +127,11 @@ export const AUDIT_CENSUS_TOTALS = {
    */
   categoryValues: {
     account: 15,
-    booking: 80,
+    // 80 -> 81 (#2649): `waitlist.returned_to_waitlist`. The same category the
+    // strand row it resolves already uses, readable with support:view +
+    // bookings:view — so it reaches exactly the administrators who can already
+    // see the booking it names, and nobody new.
+    booking: 81,
     payment: 16,
     family: 27,
     // 117 -> 118 (#2352 MC-03D): `PAGE_CONTENT_DELETED`. `admin` is the same

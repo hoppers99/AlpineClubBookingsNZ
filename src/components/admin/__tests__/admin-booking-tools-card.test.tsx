@@ -83,6 +83,34 @@ function exclusiveHold(
 }
 
 describe("AdminBookingToolsCard", () => {
+  // #2649. The repair is offered on exactly one shape, and the page decides it.
+  // A button that can only refuse is worse than no button: it invites an
+  // operator to act on a booking that is not stranded and reads as a general
+  // "un-confirm" tool, which it deliberately is not.
+  describe("return to waitlist (#2649)", () => {
+    it("offers the repair when the page says the booking is stranded", () => {
+      renderCard(allFeaturesOn, { showReturnToWaitlist: true });
+
+      expect(
+        screen.getByRole("button", { name: "Return to waitlist" }),
+      ).toBeTruthy();
+      expect(
+        screen.getByText("Waitlist confirmation did not finish"),
+      ).toBeTruthy();
+    });
+
+    it("renders nothing about it on an ordinary booking", () => {
+      renderCard(allFeaturesOn);
+
+      expect(
+        screen.queryByRole("button", { name: "Return to waitlist" }),
+      ).toBeNull();
+      expect(
+        screen.queryByText("Waitlist confirmation did not finish"),
+      ).toBeNull();
+    });
+  });
+
   it("shows the bed allocation link when the module is enabled", () => {
     renderCard(allFeaturesOn);
 

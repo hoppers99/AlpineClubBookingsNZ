@@ -577,6 +577,13 @@ status change. Explicit overbook overrides use the
 retention, overbooked date-only nights, and an admin waitlist completion report
 linking directly to the filtered audit record.
 
+The admin `PAYMENT_PENDING -> WAITLISTED` repair (#2649) is recorded the same
+way: `waitlist.returned_to_waitlist`, `booking` category, written with the
+booking status change in one transaction, and carrying the id of the
+`waitlist.confirm_offer_release_failed` row it resolves so the strand and its
+repair link in both directions. It is offered only for a free booking with no
+payment record, and re-asserts both of those facts inside its guarded claim.
+
 ## Booking Modification Lifecycle
 
 Known change request statuses: `REQUESTED`, `APPROVED`, `REJECTED`, and — for a
@@ -1508,6 +1515,7 @@ capacity unavailable -> WAITLISTED
 capacity opens/admin offers -> WAITLIST_OFFERED
 offer accepted -> confirmed or paid booking
 offer expires/declined -> WAITLISTED or CANCELLED
+stranded free confirm, admin repair -> WAITLISTED
 ```
 
 Cross-lodge offers (ADR-004, `waitlistOfferedLodgeId` set) accept

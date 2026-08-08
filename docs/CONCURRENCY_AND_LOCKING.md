@@ -1608,7 +1608,8 @@ so a stale child snapshot can never overwrite a terminal transition.
 ### Writer doing both → `lock(1)` first, then per-lodge
 
 The Stripe capture (`markBookingPaymentSucceeded`), the confirm-pending-guests
-zero-dollar and charge branches, the waitlist-confirm $0 PAID claim, the
+zero-dollar and charge branches, the waitlist-confirm $0 PAID claim, the admin
+return-to-waitlist repair (#2649), the
 switch-to-internet-banking hold, the quote-accept conversion
 (`approveBookingRequest`), and every booking modification service
 (batch/date/guest-removal) take **`lock(1)` first, then the per-lodge lock**.
@@ -1714,6 +1715,22 @@ severity in Admin -> Audit log, carrying the lodge, the stay, and both error
 codes) plus a `logger.error` for Sentry, and member copy that names the state
 instead of inviting a retry. Swallowing it would have been the worse failure:
 silent, unsearchable, and indistinguishable from a booking the member abandoned.
+
+Since #2649 that operator door is a button rather than a database session.
+`POST /api/admin/bookings/[id]/return-to-waitlist` (`bookings: edit`, `waitlist`
+module) is a fourth `PAYMENT_PENDING -> WAITLISTED` writer and takes the same
+protocol as the three that precede it: global `lock(1)`, then the booking's own
+immutable lodge capacity key, then a re-read of everything mutable, then a
+status-guarded `updateMany` that re-asserts BOTH `status: PAYMENT_PENDING` and
+`finalPriceCents: 0` — so a concurrent re-price cannot turn a repair into an
+un-confirm of a priced booking. A lost claim `return`s above the allocation
+reconcile and above the audit row, and the post-commit block runs on the success
+shape only, so the member email and `processWaitlistForDates` cannot fire on a
+claim that wrote nothing. It writes `waitlist.returned_to_waitlist` carrying the
+id of the `waitlist.confirm_offer_release_failed` row it resolves. It does no
+adult-member-hosting-coverage work, matching the two releases above it exactly;
+whether any of the three should is tracked as its own decision rather than
+answered differently for one of them.
 
 One residual window is accepted deliberately: the post-phase-one
 `booking.findUnique` that decides whether the $0 branch applies is not itself

@@ -322,7 +322,7 @@ const NOTICE = "AdminViewOnlyNotice";
 */
 const FIGURES = {
   /** Every `<ViewOnlyActionButton>` render site in the admin tree. */
-  callSites: 313,
+  callSites: 314,
   /** Those that hand their explanation to a banner, by either rule. */
   optOuts: 264,
   /** `describeReason={false}` — needs a banner in the SAME file. */
@@ -334,11 +334,11 @@ const FIGURES = {
   /** …of the vouched: proved through the wizard shell's channel (#2324). */
   shellVouchedOptOuts: 5,
   /** Controls that KEEP the per-button reason, and the files holding them. */
-  exceptions: 49,
-  exceptionFiles: 26,
+  exceptions: 50,
+  exceptionFiles: 27,
   /** The remainder bucket: neither a member detail card nor dialog-only. */
-  leafControls: 36,
-  leafFiles: 21,
+  leafControls: 37,
+  leafFiles: 22,
   /** Components that render an `AdminViewOnlySectionBanner`. */
   bannerComponents: 84,
 } as const;

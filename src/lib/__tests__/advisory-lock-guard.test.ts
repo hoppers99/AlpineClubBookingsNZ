@@ -47,6 +47,14 @@ const GLOBAL_BOOKING_MONEY_LOCK_INVENTORY: Record<string, number> = {
   // second, then re-read and reconcile through the lock-held lifecycle seam.
   "src/app/api/admin/bookings/[id]/exclusive-hold/route.ts": 1,
   "src/app/api/admin/bookings/[id]/force-confirm/route.ts": 1,
+  // #2649: the admin repair for a stranded zero-dollar waitlist confirm is a
+  // fourth PAYMENT_PENDING -> WAITLISTED writer. PAYMENT_PENDING holds capacity
+  // and WAITLISTED does not, so the release frees beds: it joins the global
+  // lifecycle cohort first (mutual exclusion with cancel and settlement), then
+  // takes the immutable booking-lodge capacity key, re-reads under both, and
+  // status-guards its claim on BOTH status and price. Same topology as the two
+  // releases in waitlist-confirm/route.ts, which it exists to finish.
+  "src/app/api/admin/bookings/[id]/return-to-waitlist/route.ts": 1,
   "src/app/api/bookings/[id]/confirm-draft/route.ts": 1,
   "src/app/api/bookings/[id]/guests/route.ts": 1,
   // #2597: phase-two participant contention compensates the already-committed

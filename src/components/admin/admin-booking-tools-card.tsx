@@ -10,6 +10,7 @@ import {
   BookingManualPaymentControls,
   type BookingManualPaymentState,
 } from "@/components/admin/booking-manual-payment-controls";
+import { AdminReturnToWaitlistControls } from "@/components/admin/admin-return-to-waitlist-controls";
 import { ConfirmPendingGuestsButton } from "@/components/admin/confirm-pending-guests-button";
 import { CopyBookingButton } from "@/components/admin/copy-booking-button";
 import type { BookingProviderMismatch } from "@/lib/booking-provider-mismatches";
@@ -42,6 +43,7 @@ export function AdminBookingToolsCard({
   exclusiveHold,
   noEmails,
   manualPayment,
+  showReturnToWaitlist = false,
 }: {
   bookingId: string;
   memberId: string;
@@ -98,6 +100,14 @@ export function AdminBookingToolsCard({
    * booking, which settles nothing.
    */
   manualPayment?: BookingManualPaymentState;
+  /**
+   * #2649: offer the stranded-zero-dollar-waitlist-confirm repair. The page
+   * sets this only for the exact stranded shape — `waitlist` module on, not
+   * deleted, `PAYMENT_PENDING`, `finalPriceCents === 0`, no `Payment` row — so
+   * an operator never meets a button that can only refuse. Advisory: the route
+   * re-derives every one of those facts under its own locks.
+   */
+  showReturnToWaitlist?: boolean;
 }) {
   const returnTo = `/bookings/${bookingId}`;
   const bedAllocationParams = new URLSearchParams({
@@ -179,6 +189,13 @@ export function AdminBookingToolsCard({
               state={manualPayment}
               noEmails={noEmails?.noEmails ?? false}
             />
+          )}
+          {/* #2649: the repair for a free waitlist confirm that got half-way.
+              It sits with the other booking-state controls rather than on the
+              waitlist queue, because a stranded booking is no longer waitlisted
+              and so never appears there. */}
+          {showReturnToWaitlist && (
+            <AdminReturnToWaitlistControls bookingId={bookingId} />
           )}
           {!isDeleted && (
             <CopyBookingButton
