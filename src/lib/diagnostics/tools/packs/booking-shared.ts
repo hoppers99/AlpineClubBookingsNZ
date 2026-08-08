@@ -123,6 +123,30 @@ export const AID6B_MIN_NAME_SEARCH_CHARS = 3;
  */
 export const AID6B_BYTE_LIMIT = 16_384;
 
+/**
+ * The byte ceiling for the two entries whose widest full result does NOT fit under
+ * `AID6B_BYTE_LIMIT`, measured rather than chosen — `registry.test.ts` reported
+ * both, and both are real:
+ *
+ *  - `booking_party_state` at its own 30-row limit, every guest carrying a given
+ *    AND a family name at the projection's 60-character cap, serialises to 18 123
+ *    bytes.
+ *  - `booking_capacity_by_night` at its own 31-night limit, every night carrying
+ *    four-figure bed counts and a full instant, serialises to 16 929.
+ *
+ * Leaving them at 16 384 would not have TRIMMED either result. Gate 9 refuses the
+ * whole thing with `result_too_large` and tells the operator to narrow a question
+ * whose only argument is a booking id — there is nothing to narrow. Raising the
+ * ceiling costs the model nothing extra to read, because `render.ts` still clips
+ * the rendered block at `renderedBlockMaxChars` and says how many of how many rows
+ * it listed; what changes is that a large real party gets an honest partial
+ * listing instead of a refusal.
+ *
+ * Still well under the substrate's hard 32 768, which remains the fail-closed
+ * backstop for anything wilder than the widths measured above.
+ */
+export const AID6B_WIDE_BYTE_LIMIT = 24_576;
+
 /** The byte ceiling for the single-row entries. Measured the same way. */
 export const AID6B_SINGLE_ROW_BYTE_LIMIT = 4_096;
 

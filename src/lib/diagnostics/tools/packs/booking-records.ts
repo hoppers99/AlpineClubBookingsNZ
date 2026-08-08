@@ -385,6 +385,7 @@ import {
   AID6B_SCOPE_TAIL,
   AID6B_SINGLE_ROW_BYTE_LIMIT,
   AID6B_UNTRUSTED_EVIDENCE_DISCLOSURE,
+  AID6B_WIDE_BYTE_LIMIT,
   dateOnly,
   dateOnlyOrNull,
   personNameOrNull,
@@ -801,7 +802,10 @@ const bookingPartyState = defineDiagnosticsTool<BookingIdArgs>({
     consentSubState: stableCodeOrNull(row.consent_sub_state),
   }),
   rowLimit: AID6B_PARTY_ROW_LIMIT,
-  byteLimit: AID6B_BYTE_LIMIT,
+  // Measured, not chosen: see `AID6B_WIDE_BYTE_LIMIT`. Thirty guests each carrying
+  // a given AND a family name at the projection's cap do not fit under the pack's
+  // ordinary ceiling, and gate 9 REFUSES rather than trims.
+  byteLimit: AID6B_WIDE_BYTE_LIMIT,
   // Every row carries a person's given and family name, and a member guest's
   // row carries their member id. ADR-004's per-invocation opt-in is DECLARED by
   // this flag and is not yet implemented (prerequisite on #2378), so it is not a

@@ -216,6 +216,22 @@ export interface AiDiagnosticsSelectGrant {
  * own privacy review". This is that review: `entityId` is used as a PREDICATE
  * against an id the caller already holds, is never projected, and the three
  * member-identifying columns beside it stay ungranted.
+ *
+ * AND SEVEN COLUMNS REMOVED FROM THE PRE-EXISTING FINANCE GRANTS, none of them
+ * AID-6B's: `PaymentTransaction."xeroInvoiceId"`,
+ * `PaymentRefund."paymentTransactionId"`, `PaymentRefund."stripePaymentIntentId"`,
+ * `PaymentRecoveryOperation."bookingId"`, `ManualRefundTask."bookingId"`,
+ * `XeroInboundEvent."source"` and `XeroSyncOperation."entityType"`. No statement in
+ * any pack reads one of them under its own relation's alias, so each was reach
+ * nobody argued for — and two of them stopped being harmless in this very release:
+ * the two `"bookingId"` grants were opaque cuids while `Booking` was ungranted, and
+ * AID-6B grants `Booking`, so leaving them would have handed this credential a join
+ * from a refund task straight onto a booking's dates, prices and owner that no tool
+ * performs. They survived two releases because the test that was supposed to catch
+ * them never ran: `finance-pack.test.ts` built a correctly-keyed set of granted
+ * columns and never passed it to an assertion. `provision-role.test.ts` now
+ * reconciles this allowlist against every registered statement in BOTH directions,
+ * with `alias -> relation` resolved per statement.
  */
 export const SELECT_GRANTS: readonly AiDiagnosticsSelectGrant[] = [
   {
@@ -276,7 +292,6 @@ export const SELECT_GRANTS: readonly AiDiagnosticsSelectGrant[] = [
       "refundedAmountCents",
       "reference",
       "stripePaymentIntentId",
-      "xeroInvoiceId",
       "xeroInvoiceNumber",
       "createdAt",
       "updatedAt",
@@ -288,13 +303,11 @@ export const SELECT_GRANTS: readonly AiDiagnosticsSelectGrant[] = [
     columns: [
       "id",
       "paymentId",
-      "paymentTransactionId",
       "status",
       "amountCents",
       "currency",
       "stripeRefundId",
       "stripeChargeId",
-      "stripePaymentIntentId",
       "xeroRefundCreditNoteId",
       "stripeCreatedAt",
       "createdAt",
@@ -307,7 +320,6 @@ export const SELECT_GRANTS: readonly AiDiagnosticsSelectGrant[] = [
       "id",
       "type",
       "status",
-      "bookingId",
       "paymentId",
       "amountCents",
       "attempts",
@@ -324,7 +336,6 @@ export const SELECT_GRANTS: readonly AiDiagnosticsSelectGrant[] = [
     relation: "ManualRefundTask",
     columns: [
       "id",
-      "bookingId",
       "paymentId",
       "amountCents",
       "status",
@@ -372,7 +383,6 @@ export const SELECT_GRANTS: readonly AiDiagnosticsSelectGrant[] = [
     relation: "XeroInboundEvent",
     columns: [
       "id",
-      "source",
       "eventCategory",
       "eventType",
       "resourceId",
@@ -405,7 +415,6 @@ export const SELECT_GRANTS: readonly AiDiagnosticsSelectGrant[] = [
     columns: [
       "id",
       "direction",
-      "entityType",
       "operationType",
       "localModel",
       "localId",
@@ -592,7 +601,9 @@ export const SELECT_GRANTS: readonly AiDiagnosticsSelectGrant[] = [
      * projections when their entries' byte ceilings were measured against the real
      * serialiser — and a grant whose column no statement reads is reach nobody
      * reviewed. The pack's contract test asserts the allowlist in BOTH directions for
-     * exactly this, so a projection trim that leaves its grant behind fails.
+     * exactly this (`provision-role.test.ts`, "the SELECT-only grant allowlist
+     * matches what the statements read"), so a projection trim that leaves its grant
+     * behind fails.
      */
     columns: [
       "id",

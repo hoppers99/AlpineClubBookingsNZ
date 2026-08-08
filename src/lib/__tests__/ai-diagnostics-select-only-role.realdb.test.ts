@@ -790,14 +790,43 @@ describe("diagnostics privilege proof DB safety guard (#2374)", () => {
       // Relations that carry the domain's own personal and free-text data and that
       // NO tool pack has argued for. `Member` and `Payment` used to be on this list
       // and legitimately left it in AID-6C (#2377) — but by COLUMN, so they are
-      // covered by the column-level case below rather than dropped. `Booking` and
-      // `MemberCredit` are the finance-adjacent relations AID-6C deliberately did
-      // NOT grant: the booking's own money is read through a `server_owned` entry
-      // and the credit ledger through the authoritative credit helpers, so the
-      // SELECT-only role never needs either.
-      ["Booking", `SELECT count(*) FROM public."Booking"`],
+      // covered by the column-level case below rather than dropped.
+      //
+      // `Booking` AND `BookingGuest` LEFT THIS LIST IN AID-6B (#2376), the same way
+      // and for the same reason: both are now granted BY COLUMN under
+      // `bookings:view`, and PostgreSQL permits `count(*)` for a role holding SELECT
+      // on ANY column of a relation — so leaving them here would have been a
+      // table-shaped assertion failing for a reason that has nothing to do with the
+      // boundary that actually matters. Their per-column boundary is asserted in
+      // "reads ONLY the declared columns of a column-granted relation" above, which
+      // derives every un-declared column from `pg_attribute` and requires 42501 for
+      // each, and in the withheld-column case below.
+      //
+      // WHAT REPLACES THEM has to be relations AID-6B looked at and DECLINED, or the
+      // case degrades into naming tables nobody was ever tempted by:
+      //  - `MemberCredit`: the credit ledger, read through the authoritative credit
+      //    helpers. Unchanged from AID-6C.
+      //  - `FamilyGroupJoinRequest`: #2376 reads family STRUCTURE through
+      //    `FamilyGroupMember`, and deliberately grants nothing on the REQUEST
+      //    relation, which carries the requester's free text and children's dates of
+      //    birth. `member_family_state` is the entry that would have used it.
+      //  - `MemberInduction`: `member_eligibility_state` reports an induction state,
+      //    and reads it through the application's own connection in a `server_owned`
+      //    entry rather than by granting the relation — so the SELECT-only credential
+      //    must still be refused it.
+      //  - `MembershipCancellationRequest`: named by `member_record_audit_history`'s
+      //    subject map as an audit ENTITY TYPE. That is a predicate on `AuditLog`,
+      //    not a read of the relation, and this asserts the difference.
       ["MemberCredit", `SELECT count(*) FROM public."MemberCredit"`],
-      ["BookingGuest", `SELECT count(*) FROM public."BookingGuest"`],
+      [
+        "FamilyGroupJoinRequest",
+        `SELECT count(*) FROM public."FamilyGroupJoinRequest"`,
+      ],
+      ["MemberInduction", `SELECT count(*) FROM public."MemberInduction"`],
+      [
+        "MembershipCancellationRequest",
+        `SELECT count(*) FROM public."MembershipCancellationRequest"`,
+      ],
     ])("cannot read the un-granted table %s", async (_label, sql) => {
       const code = await sqlStateAsRole(sql);
       expect(code).toBe(INSUFFICIENT_PRIVILEGE);
@@ -840,7 +869,84 @@ describe("diagnostics privilege proof DB safety guard (#2374)", () => {
             "userAgent",
           ],
         ],
-        ["Member", "xeroContactId", ["email", "firstName", "lastName", "phoneNumber"]],
+        // `Member`'s withheld set is REWRITTEN BY AID-6B (#2376), not shortened.
+        //
+        // `email`, `firstName`, `lastName` and `phoneNumber` were here, and #2376's
+        // owner decision grants all four: the first three as evidence about a member
+        // an operator has already selected, and `phoneNumber` (with `phoneAreaCode`)
+        // ONLY so the mobile search has a predicate — no entry projects a phone
+        // number, and `member_diagnostic_summary` reports `hasPhone` instead.
+        //
+        // What replaces them is the class the grant may NEVER reach, named rather
+        // than sampled: the two credentials the erasure test compares inside
+        // PostgreSQL and never loads, the federated identity, the date of birth
+        // (age-based eligibility in this platform is decided on `ageTier`, which IS
+        // granted, so the date is not needed), the address, the two lifecycle free-
+        // text reasons, the operator's private comments, and the two authorization
+        // columns — because a credential that could read `role` or
+        // `financeAccessLevel` could enumerate who to attack.
+        [
+          "Member",
+          "xeroContactId",
+          [
+            "passwordHash",
+            "totpSecret",
+            "googleSub",
+            "dateOfBirth",
+            "streetAddressLine1",
+            "cancelledReason",
+            "archivedReason",
+            "comments",
+            "role",
+            "financeAccessLevel",
+          ],
+        ],
+        // AID-6B's own widest new relations, pinned the same way. `Booking` and
+        // `BookingGuest` are granted by column, so what a reviewer should be able to
+        // find by name is the free text and the actor ids beside the columns that
+        // ARE granted.
+        [
+          "Booking",
+          "status",
+          [
+            "notes",
+            "adminReviewReason",
+            "adminReviewNotes",
+            "memberReviewJustification",
+            "adultMemberHostingReview",
+            "deletedReason",
+            "deletedById",
+            "adminReviewedById",
+            "adultMemberHostingReviewedById",
+          ],
+        ],
+        [
+          "BookingGuest",
+          "ageTier",
+          ["consentRespondedByMemberId", "rateMembershipTypeId"],
+        ],
+        [
+          "BookingChangeRequest",
+          "status",
+          [
+            "requestedChanges",
+            "proposalSnapshot",
+            "frozenEvidence",
+            "reason",
+            "adminNotes",
+            "memberMessage",
+            "lastConflictReason",
+            "internalNotes",
+            "reviewedByMemberId",
+          ],
+        ],
+        [
+          "MemberSubscription",
+          "status",
+          ["manualPaymentNote", "manuallyMarkedPaidByMemberId"],
+        ],
+        ["BedAllocation", "stayDate", ["approvedByMemberId"]],
+        ["LodgeRoom", "name", ["notes"]],
         [
           "Payment",
           "status",
@@ -1462,6 +1568,60 @@ describe("diagnostics privilege proof DB safety guard (#2374)", () => {
         subject: "payment",
         recordId: "clz0000000abcdefghijklmno",
       },
+      // AID-6B (#2376). All twelve, because all twelve refuse `{}` — and without a
+      // row here the loop below does not merely SKIP an entry, it throws on the
+      // first one it reaches and never executes a single AID-6B statement against a
+      // real server. That is the failure this file exists to prevent: the twelve new
+      // statements read twenty-five relations by column, and an ungranted column
+      // among them is a 42501 that passes every mock in the repository.
+      //
+      // The SEARCH arms are chosen for what they exercise on the server rather than
+      // for brevity. `booking_search` uses the `lodge_nights` arm because it is the
+      // only one that binds a date and an interval and evaluates the half-open
+      // overlap — `checkIn < ($5::date + $6 * INTERVAL '1 day') AND checkOut > $5` —
+      // which is a construct that has to PARSE and type-check under real
+      // PostgreSQL, not just read correctly. `member_search` uses `name_prefix`
+      // because it is the only predicate in the whole pack that is not `=`:
+      // `pg_catalog.starts_with`, whose schema qualification is load-bearing and
+      // whose existence a mock cannot prove.
+      "diagnostics.booking_search": {
+        kind: "lodge_nights",
+        lodgeId: "clz0000000abcdefghijklmno",
+        nightFrom: "2026-08-08",
+        window: "30d",
+      },
+      "diagnostics.member_search": { kind: "name_prefix", namePrefix: "smi" },
+      "diagnostics.booking_diagnostic_summary": {
+        bookingId: "clz0000000abcdefghijklmno",
+      },
+      "diagnostics.booking_party_state": {
+        bookingId: "clz0000000abcdefghijklmno",
+      },
+      "diagnostics.booking_bed_allocation_state": {
+        bookingId: "clz0000000abcdefghijklmno",
+      },
+      "diagnostics.booking_exception_request_state": {
+        bookingId: "clz0000000abcdefghijklmno",
+      },
+      "diagnostics.booking_record_audit_history": {
+        bookingId: "clz0000000abcdefghijklmno",
+      },
+      "diagnostics.member_diagnostic_summary": {
+        memberId: "clz0000000abcdefghijklmno",
+      },
+      "diagnostics.member_subscription_state": {
+        memberId: "clz0000000abcdefghijklmno",
+      },
+      "diagnostics.member_family_state": {
+        memberId: "clz0000000abcdefghijklmno",
+      },
+      "diagnostics.member_booking_summary": {
+        memberId: "clz0000000abcdefghijklmno",
+      },
+      "diagnostics.member_record_audit_history": {
+        subject: "member",
+        recordId: "clz0000000abcdefghijklmno",
+      },
     };
 
     it("runs EVERY registered SELECT-only entry, with its real parameters and grants", async () => {
@@ -1480,9 +1640,24 @@ describe("diagnostics privilege proof DB safety guard (#2374)", () => {
         const sqlEntries = DIAGNOSTICS_TOOLS.filter(
           (entry) => entry.source === "select_only_sql",
         );
-        // The probe, AID-6A's five correlation entries and AID-6C's nine finance
-        // entries, so this is not vacuous.
+        // The probe, AID-6A's five correlation entries, AID-6C's nine finance
+        // entries and AID-6B's twelve, so this is not vacuous.
         expect(sqlEntries.length).toBeGreaterThan(1);
+
+        // THE CENSUS, ASSERTED BEFORE THE LOOP RATHER THAN DISCOVERED INSIDE IT.
+        // An entry with no argument row does not skip: `parseArgs({})` fails, the
+        // assertion inside the loop throws, and every entry after it — however many
+        // — is never executed against the server at all. That is how twelve
+        // statements reached a review with their real-database proof silently not
+        // running. Naming the gap up front turns "expected false to be true" into a
+        // sentence that says which entry and what to do about it.
+        const unarguable = sqlEntries
+          .filter((entry) => !entry.parseArgs(REALDB_ENTRY_ARGS[entry.id] ?? {}).ok)
+          .map((entry) => entry.id);
+        expect(
+          unarguable,
+          "add a REALDB_ENTRY_ARGS row for each of these, or their statements are never proved against a real PostgreSQL",
+        ).toEqual([]);
 
         for (const entry of sqlEntries) {
           if (entry.source !== "select_only_sql") continue;

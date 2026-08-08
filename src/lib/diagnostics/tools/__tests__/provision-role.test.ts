@@ -18,6 +18,7 @@ import {
   SELECT_GRANTS,
   SUPPORTED_IDENTIFIER_DESCRIPTION,
 } from "../provision-role";
+import { DIAGNOSTICS_TOOLS } from "../registry";
 
 const base = {
   roleName: "ai_diagnostics_ro",
@@ -473,5 +474,174 @@ describe("provisioning SQL quoting refuses hostile input rather than escaping it
   it("keeps a quote-bearing password inside its literal", () => {
     const text = sql({ password: "pa'ss" });
     expect(text).toContain("PASSWORD 'pa''ss'");
+  });
+});
+
+/**
+ * THE GRANT ALLOWLIST AND THE STATEMENTS, RECONCILED IN BOTH DIRECTIONS.
+ *
+ * This is the control that makes the SELECT-only role's claim checkable, and it
+ * lives here rather than in a pack's own suite because the role is ONE credential
+ * shared by every pack: a column granted for AID-6C is readable by an AID-6B
+ * statement and vice versa, so a per-pack census can only ever prove a per-pack
+ * half of the property.
+ *
+ * WHY IT IS BEING WRITTEN NOW. AID-6C's `finance-pack.test.ts` docblock promised
+ * exactly this — "in BOTH directions… a granted column no statement uses is reach
+ * this pack did not argue for" — and the reverse direction was never implemented.
+ * `finance-pack.test.ts` built a correctly-keyed `grantedColumns` set and then
+ * never passed it to an `expect()`: an unused local that made the docblock look
+ * implemented while nothing could fail. Seven granted-but-unread columns survived
+ * two releases behind it, and #2376's own grant review is what found them.
+ *
+ * THE FORWARD DIRECTION IS ALSO STRICTER HERE than the one it replaces. The
+ * surviving check in `finance-pack.test.ts` flattened every relation's columns
+ * into one un-keyed set, so a column granted on `Payment` satisfied a read of the
+ * same-named column on `MemberSubscription`; and its column pattern captured
+ * `[A-Za-z]+`, so a column name carrying a digit or an underscore was invisible to
+ * it. This resolves `alias -> relation` PER STATEMENT and compares
+ * `Relation.column` pairs.
+ */
+describe("the SELECT-only grant allowlist matches what the statements read", () => {
+  const sqlEntries = DIAGNOSTICS_TOOLS.filter(
+    (entry): entry is Extract<typeof entry, { source: "select_only_sql" }> =>
+      entry.source === "select_only_sql",
+  );
+
+  /**
+   * The aliases a statement binds to a BASE relation.
+   *
+   * Per statement, and that is load-bearing rather than tidy: `r` is `LodgeRoom`
+   * in the bed-allocation statement, `BookingChangeRequest` in the exception
+   * statement and `PaymentRefund` in the refund statement; `m` is `Member` in the
+   * member search and `ManualRefundTask` in the refund state; `l` is `Lodge` in
+   * two statements and `WebhookLog` in a third. One global alias map would
+   * mis-attribute a column to a relation that never carried it — in both
+   * directions at once.
+   */
+  function baseRelationAliases(sql: string): Map<string, string> {
+    const aliases = new Map<string, string>();
+    for (const match of sql.matchAll(
+      /\b(?:FROM|JOIN)\s+public\."([A-Za-z]+)"(?:\s+(?:AS\s+)?([A-Za-z_][A-Za-z_0-9]*))?/g,
+    )) {
+      const relation = match[1];
+      // An un-aliased `FROM public."X"` is referenced as `X."col"`, so bind the
+      // relation name to itself rather than skipping the clause.
+      aliases.set(match[2] ?? relation, relation);
+    }
+    return aliases;
+  }
+
+  /**
+   * Every `alias."column"` reference a statement makes, as `Relation.column`.
+   *
+   * `[A-Za-z_][A-Za-z_0-9]*` on BOTH sides, not `[A-Za-z]+`: `Booking."checkIn"`
+   * and `BookingGuestNight."stayDate"` are fine either way, but a column carrying
+   * a digit or an underscore would be invisible to the narrower pattern, and
+   * invisible in the forward direction means an ungranted column that fails with
+   * 42501 on a real database and passes every mock.
+   */
+  function columnReads(sql: string): {
+    reads: Set<string>;
+    unattributed: Set<string>;
+  } {
+    const aliases = baseRelationAliases(sql);
+    const reads = new Set<string>();
+    const unattributed = new Set<string>();
+    for (const match of sql.matchAll(
+      /\b([A-Za-z_][A-Za-z_0-9]*)\."([A-Za-z_][A-Za-z_0-9]*)"/g,
+    )) {
+      const [, alias, column] = match;
+      // `public."Relation"` matches the same shape; it is a relation, not a read.
+      if (alias === "public") continue;
+      const relation = aliases.get(alias);
+      if (relation === undefined) {
+        unattributed.add(`${alias}."${column}"`);
+        continue;
+      }
+      reads.add(`${relation}.${column}`);
+    }
+    return { reads, unattributed };
+  }
+
+  /**
+   * The ONLY references allowed to resolve to no base relation: output labels of a
+   * derived table, which are not columns of anything and cannot need a grant.
+   *
+   * Declared rather than ignored. An alias this test cannot resolve is exactly what
+   * an ungranted read would look like, so a new one has to be named here — and the
+   * three below are named with the statement that produces them, because `n` is
+   * ALSO a real alias for `PolicyExceptionReservationNight` in a different
+   * statement and a global exemption would have hidden a genuine gap there.
+   */
+  const DERIVED_TABLE_LABELS: Record<string, readonly string[]> = {
+    // `booking_party_state`'s CROSS JOIN LATERAL, which computes a guest's night
+    // envelope; these three are its own output labels.
+    "diagnostics.booking_party_state": [
+      'n."night_count"',
+      'n."first_night"',
+      'n."last_night"',
+    ],
+  };
+
+  const grantedPairs = new Set(
+    SELECT_GRANTS.flatMap((grant) =>
+      (grant.columns ?? []).map((column) => `${grant.relation}.${column}`),
+    ),
+  );
+
+  it("resolves every column reference to a base relation or a declared label", () => {
+    for (const entry of sqlEntries) {
+      const { unattributed } = columnReads(entry.sql);
+      expect(
+        [...unattributed].sort(),
+        `${entry.id} references aliases this test cannot attribute to a relation`,
+      ).toEqual([...(DERIVED_TABLE_LABELS[entry.id] ?? [])].sort());
+    }
+  });
+
+  it("grants every column some statement READS — the 42501 direction", () => {
+    // An ungranted column is refused by PostgreSQL at runtime and passes every
+    // mock, so this is the direction that decides whether the tool works at all.
+    const missing: string[] = [];
+    for (const entry of sqlEntries) {
+      for (const pair of columnReads(entry.sql).reads) {
+        if (!grantedPairs.has(pair)) missing.push(`${entry.id} reads ${pair}`);
+      }
+    }
+    expect(missing.sort()).toEqual([]);
+  });
+
+  it("reads every column it GRANTS — the unreviewed-reach direction", () => {
+    // The direction that was promised and never implemented. A granted column no
+    // statement names is reach nobody argued for, and it does not stay harmless:
+    // `PaymentRecoveryOperation."bookingId"` and `ManualRefundTask."bookingId"`
+    // were opaque cuids while `Booking` was ungranted, and became a join onto a
+    // booking's dates, prices and owner the moment AID-6B granted `Booking`.
+    //
+    // There is deliberately NO exemption map. A column that no statement reads has
+    // no argument for being granted yet, and "yet" is what an exemption list turns
+    // into a permanent widening.
+    const read = new Set<string>();
+    for (const entry of sqlEntries) {
+      for (const pair of columnReads(entry.sql).reads) read.add(pair);
+    }
+    const unread = [...grantedPairs].filter((pair) => !read.has(pair)).sort();
+    expect(unread).toEqual([]);
+  });
+
+  it("grants no relation that no statement reads, and reads none it does not grant", () => {
+    const grantedRelations = new Set(SELECT_GRANTS.map((grant) => grant.relation));
+    const readRelations = new Set(
+      sqlEntries.flatMap((entry) =>
+        [...entry.sql.matchAll(/public\."([A-Za-z]+)"/g)].map((match) => match[1]),
+      ),
+    );
+    expect([...readRelations].filter((r) => !grantedRelations.has(r)).sort()).toEqual(
+      [],
+    );
+    expect([...grantedRelations].filter((r) => !readRelations.has(r)).sort()).toEqual(
+      [],
+    );
   });
 });

@@ -62,12 +62,12 @@ import {
   readMemberEligibilityEvidence,
 } from "./booking-evidence";
 import {
-  AID6B_BYTE_LIMIT,
   AID6B_DESCRIPTION_TAIL,
   AID6B_NIGHT_ROW_LIMIT,
   AID6B_SCOPE_TAIL,
   AID6B_SINGLE_ROW_BYTE_LIMIT,
   AID6B_UNTRUSTED_EVIDENCE_DISCLOSURE,
+  AID6B_WIDE_BYTE_LIMIT,
   dateOnlyOrNull,
   signedIntegerOrNull,
 } from "./booking-shared";
@@ -166,11 +166,27 @@ export const MEMBER_ELIGIBILITY_DESCRIPTIONS: Record<
 
 /**
  * The catalogues as ONE server-owned block of text each, interpolated into the
- * entries' `evidenceScope` so they actually reach the model.
+ * entries' `description` so they actually reach the model.
  *
  * AID-6C shipped a catalogue whose only consumer was its own test, and its review
  * called that a HIGH finding for a reason: a stable code is only better than prose
- * if the prose travels with it. A test pins that every code appears here.
+ * if the prose travels with it. A test pins that every code appears in the entry's
+ * model-facing text, whichever field carries it.
+ *
+ * THE `description` AND NOT THE `evidenceScope`, and the reason is a measurement
+ * rather than a preference. `render.ts` puts the scope inside EVERY result block
+ * and clips that block at `DIAGNOSTICS_TOOL_BOUNDS.renderedBlockMaxChars` by
+ * dropping whole rows from the tail. `booking_block_state`'s scope with the
+ * 3 101-character blocker catalogue inside it rendered an empty block of 7 545 of
+ * the 8 000 available, which is not enough room for the entry's own single row —
+ * so the renderer dropped the evidence and left a header claiming one row above a
+ * listing of none. `registry.test.ts`'s "stays HONEST" contract caught it.
+ *
+ * A catalogue is IDENTICAL for every result, so the per-result block is the wrong
+ * place to spend on it: the `description` reaches the model once with the tool
+ * definition and stays in context for every call, while the block's budget goes to
+ * the evidence. Both catalogues move for one rule rather than one of them moving
+ * for one measurement.
  */
 const BOOKING_BLOCKER_CATALOGUE_TEXT = BOOKING_BLOCKER_CODES.map(
   (code) => `${code} = ${BOOKING_BLOCKER_DESCRIPTIONS[code]}`,
@@ -204,7 +220,7 @@ const bookingBlockState = defineDiagnosticsTool<BookingIdArgs>({
   id: DIAGNOSTICS_BOOKING_BLOCK_STATE_TOOL_ID,
   source: "server_owned",
   label: "Authoritative booking block state",
-  description: `Returns this platform's OWN authoritative answer for why ONE booking cannot proceed — not a second reading of its columns. It runs the same soft-policy evaluator a member's exception request runs through (minimum stay, adult-member hosting, paid-up adult member), the same review-reason derivation the officer queue renders, the same per-night capacity engine every booking path checks against, the same member-night conflict scan, and the same edit-window classifier the member's own Edit button obeys. It gives the booking's lifecycle state, whether a Booking Officer review or an adult-member hosting review is still pending, the review reason codes, the live policy violation codes and whether an exception request for them would HOLD beds, the number of nights short of capacity and the tightest spare-bed figure, the nights another booking holds exclusively, how many member-night conflicts exist, the open exception requests and how many bed-nights they are actually holding with the deadline, whether the MEMBER could change the booking themselves, and stable blocker codes in the order they should be acted on. Needs BOTH bookings and membership access. ${AID6B_DESCRIPTION_TAIL}`,
+  description: `Returns this platform's OWN authoritative answer for why ONE booking cannot proceed — not a second reading of its columns. It runs the same soft-policy evaluator a member's exception request runs through (minimum stay, adult-member hosting, paid-up adult member), the same review-reason derivation the officer queue renders, the same per-night capacity engine every booking path checks against, the same member-night conflict scan, and the same edit-window classifier the member's own Edit button obeys. It gives the booking's lifecycle state, whether a Booking Officer review or an adult-member hosting review is still pending, the review reason codes, the live policy violation codes and whether an exception request for them would HOLD beds, the number of nights short of capacity and the tightest spare-bed figure, the nights another booking holds exclusively, how many member-night conflicts exist, the open exception requests and how many bed-nights they are actually holding with the deadline, whether the MEMBER could change the booking themselves, and stable blocker codes in the order they should be acted on. Needs BOTH bookings and membership access. BLOCKER CODES, in priority order — use these exact meanings and do not paraphrase them: ${BOOKING_BLOCKER_CATALOGUE_TEXT} ${AID6B_DESCRIPTION_TAIL}`,
   requiredAreas: ["bookings", "membership"],
   evidenceScope: `The authoritative blocking state of ONE booking, computed by the same code the booking and officer surfaces use, true as at its own observed instant.
 
@@ -214,7 +230,7 @@ tightestSpareBeds is the WORST night's beds remaining AFTER this booking's own p
 
 exceptionHeldNightCount is the ONLY reliable test of whether an open request is holding real beds. Never infer it from exceptionHoldExpiresAtUtc being present: a request written before that column existed can be holding beds with no deadline recorded, and the platform's own schema warns against exactly that inference. memberCanModify answers whether the MEMBER could change this booking themselves, not whether an administrator could — an administrator always can, with an override.
 
-BLOCKER CODES. blockerCodes is in PRIORITY order — report the first one as the primary problem and mention the rest as also true. Absent means nothing is blocking. Use these exact meanings and do not paraphrase them: ${BOOKING_BLOCKER_CATALOGUE_TEXT}
+BLOCKER CODES. blockerCodes is in PRIORITY order — report the first one as the primary problem and mention the rest as also true. Absent means nothing is blocking. Each code's exact meaning is in this tool's own description; use those words and do not paraphrase them.
 
 WHAT THIS DOES NOT COVER. A NEW-BOOKING policy-exception request lives in a different record with no booking id until it is converted, so it is not counted here. Induction does not gate any booking path in this release. Bed ALLOCATION is a separate question from capacity — a booking can fit and still have no bed assigned. ${AID6B_SCOPE_TAIL} ${AID6B_UNTRUSTED_EVIDENCE_DISCLOSURE}`,
   argsSchema: bookingIdArgsSchema,
@@ -331,7 +347,10 @@ ALLOCATION IS NOT CAPACITY. allocatedBedNights counts the bed-allocation rows th
     observedAtUtc: instantOrNull(row.observed_at_utc) ?? "",
   }),
   rowLimit: AID6B_NIGHT_ROW_LIMIT,
-  byteLimit: AID6B_BYTE_LIMIT,
+  // Measured, not chosen: see `AID6B_WIDE_BYTE_LIMIT`. Thirty-one nights of
+  // four-figure bed counts do not fit under the pack's ordinary ceiling, and a
+  // refused capacity read is worse than a clipped listing that says it clipped.
+  byteLimit: AID6B_WIDE_BYTE_LIMIT,
   // A booking reference and a set of nights is per-person information even without
   // a name. See `booking_block_state` on ADR-004's opt-in being declared and not
   // yet enforced.
@@ -349,7 +368,7 @@ const memberEligibilityState = defineDiagnosticsTool<MemberIdArgs>({
   id: DIAGNOSTICS_MEMBER_ELIGIBILITY_TOOL_ID,
   source: "server_owned",
   label: "Authoritative member eligibility state",
-  description: `Returns this platform's OWN authoritative answer for ONE member's standing — not a second reading of their columns. It runs the same lifecycle resolver the admin badge shows (including the erasure test, which a plain three-column read misses), the same membership-type resolution the season assignment drives, the same subscription-settlement rule every booking gate shares, the club's own subscription lockout MODE, the same adult-member-host predicate the hosting policy enforces, and the member's induction state. It gives the lifecycle label, whether the account is active and can log in, the age tier, the season year, the membership type key and where that type came from, what the type does to booking and to subscriptions, the stored subscription status and how it was settled, whether a subscription is required and whether it is unsettled, the club's lockout mode, whether the member QUALIFIES as an adult-member host, their induction state, whether an induction gates a booking at all, and stable eligibility codes in the order they should be acted on. ${AID6B_DESCRIPTION_TAIL}`,
+  description: `Returns this platform's OWN authoritative answer for ONE member's standing — not a second reading of their columns. It runs the same lifecycle resolver the admin badge shows (including the erasure test, which a plain three-column read misses), the same membership-type resolution the season assignment drives, the same subscription-settlement rule every booking gate shares, the club's own subscription lockout MODE, the same adult-member-host predicate the hosting policy enforces, and the member's induction state. It gives the lifecycle label, whether the account is active and can log in, the age tier, the season year, the membership type key and where that type came from, what the type does to booking and to subscriptions, the stored subscription status and how it was settled, whether a subscription is required and whether it is unsettled, the club's lockout mode, whether the member QUALIFIES as an adult-member host, their induction state, whether an induction gates a booking at all, and stable eligibility codes in the order they should be acted on. ELIGIBILITY CODES, in priority order — use these exact meanings and do not paraphrase them: ${MEMBER_ELIGIBILITY_CATALOGUE_TEXT} ${AID6B_DESCRIPTION_TAIL}`,
   requiredAreas: ["membership"],
   evidenceScope: `The authoritative standing of ONE member, computed by the same code the membership surfaces use, true as at its own observed instant.
 
@@ -363,7 +382,7 @@ INDUCTION DOES NOT GATE A BOOKING IN THIS RELEASE, and inductionGatesBooking is 
 
 THERE IS NO MEMBER NUMBER in this platform, so none is reported. If a member quotes one it is something else, probably a Xero contact or invoice number.
 
-ELIGIBILITY CODES. eligibilityCodes is in PRIORITY order — report the first one as the primary problem and mention the rest as also true. Absent means nothing in this list applies. Use these exact meanings and do not paraphrase them: ${MEMBER_ELIGIBILITY_CATALOGUE_TEXT}
+ELIGIBILITY CODES. eligibilityCodes is in PRIORITY order — report the first one as the primary problem and mention the rest as also true. Absent means nothing in this list applies. Each code's exact meaning is in this tool's own description; use those words and do not paraphrase them.
 
 This is a MEMBER-scoped answer. Whether they are present on a particular night, and whether a particular booking's hosting rule is satisfied, are booking questions — diagnostics.booking_block_state answers those. ${AID6B_SCOPE_TAIL} ${AID6B_UNTRUSTED_EVIDENCE_DISCLOSURE}`,
   argsSchema: memberIdArgsSchema,

@@ -459,12 +459,31 @@ describe("AID-6C finance pack: the grant allowlist matches the SQL (#2377)", () 
     expect(naming.map((tool) => tool.id)).toEqual([
       DIAGNOSTICS_XERO_CONTACT_LINKAGE_TOOL_ID,
     ]);
-    // `m` is the alias that statement binds to `public."Member"`; every other alias
-    // in it belongs to a Xero relation. Asserted on the alias rather than on the bare
-    // column names because a statement-wide column scan cannot tell the two apart.
+    // Asserted on the alias `public."Member"` is bound to rather than on bare
+    // column names, because a statement-wide column scan cannot tell a member
+    // column from a Xero one. The alias is READ OUT OF THE FROM CLAUSE and not
+    // written here: a first version of this assertion hard-coded `m`, the
+    // statement binds `mb`, and a regex that matches nothing produces an empty
+    // set — which is the shape of a passing "reads nothing sensitive" test. It
+    // failed loudly here only because the expectation was a non-empty list; had
+    // the expectation been `toHaveLength(0)`-shaped it would have been dead.
+    const memberAlias = /FROM\s+public\."Member"\s+([A-Za-z_][A-Za-z_0-9]*)/.exec(
+      naming[0].sql,
+    )?.[1];
+    expect(
+      memberAlias,
+      "no alias is bound to public.\"Member\" — this assertion would scan for nothing",
+    ).toBeDefined();
     const memberColumns = new Set(
-      [...naming[0].sql.matchAll(/\bm\."([A-Za-z]+)"/g)].map((match) => match[1]),
+      [
+        ...naming[0].sql.matchAll(
+          new RegExp(`\\b${memberAlias}\\."([A-Za-z]+)"`, "g"),
+        ),
+      ].map((match) => match[1]),
     );
+    // Non-empty first, so a future alias rename cannot turn this into a scan that
+    // finds nothing and passes.
+    expect(memberColumns.size).toBeGreaterThan(0);
     expect([...memberColumns].sort()).toEqual(["id", "xeroContactId"]);
   });
 
@@ -524,12 +543,83 @@ describe("AID-6C finance pack: the grant allowlist matches the SQL (#2377)", () 
     "userAgent",
   ] as const;
 
-  it.each(FORBIDDEN_COLUMNS)("never grants %s", (column) => {
+  /**
+   * The FOUR columns that were in the never-grant census above until AID-6B
+   * (#2376), each with the relation it is granted on and the decision that
+   * authorises it. Nothing else moved, and nothing may move without appearing
+   * here.
+   *
+   * WHY THE CENSUS HAD TO SPLIT RATHER THAN SHRINK. `FORBIDDEN_COLUMNS` was
+   * written when the SELECT-only role served one pack, so "the finance pack must
+   * never NAME this" and "the role must never GRANT this" were the same sentence.
+   * They stopped being the same sentence when a second pack, under a different
+   * permission and its own privacy review, was authorised to read a member's
+   * identity for a record an operator has already selected. Deleting the four from
+   * `FORBIDDEN_COLUMNS` outright would ALSO have stopped asserting that no finance
+   * statement names them, which is a property AID-6C promised and still holds — so
+   * the list stays whole for the statement sweep and only the GRANT sweep carries
+   * the exception.
+   */
+  const AID6B_AUTHORISED_IDENTITY_GRANTS: Record<string, [string, string]> = {
+    memberId: [
+      "Booking",
+      'the booking owner id. Projected by diagnostics.booking_search as an OPAQUE owner_member_ref under bookings:view, and bound as the predicate of its owner_member_id arm. Turning that id into a person needs membership:view and a different entry, which is the boundary #2376 draws.',
+    ],
+    email: [
+      "Member",
+      "the exact-match predicate for diagnostics.member_search's email_exact arm and the address diagnostics.member_diagnostic_summary reports for a member already selected by id. membership:view only.",
+    ],
+    firstName: [
+      "Member",
+      "a member's given name: the pg_catalog.starts_with predicate for the name_prefix search and evidence on the per-record membership, party and family entries. membership:view (or bookings:view for a guest name on a booking already selected).",
+    ],
+    lastName: [
+      "Member",
+      "a member's family name, for the same two reasons as firstName.",
+    ],
+  };
+
+  const NEVER_GRANTED_COLUMNS = FORBIDDEN_COLUMNS.filter(
+    (column) => !(column in AID6B_AUTHORISED_IDENTITY_GRANTS),
+  );
+
+  it.each(NEVER_GRANTED_COLUMNS)("never grants %s", (column) => {
     for (const grant of SELECT_GRANTS) {
       expect(
         grant.columns ?? [],
         `${grant.relation} grants "${column}"`,
       ).not.toContain(column);
+    }
+  });
+
+  it("grants an identity column ONLY where a reviewed decision authorises it", () => {
+    // BOTH directions, because an exception list is only worth having if it is
+    // closed at both ends. Forwards: nothing outside the four may be granted, so a
+    // fifth identity column cannot slip in under the shrunken sweep above.
+    // Backwards: every one of the four must ACTUALLY be granted on the relation
+    // named, so a grant that is later narrowed leaves a stale exception behind
+    // that fails here instead of quietly widening what the sweep above skips.
+    const grantedForbidden = new Map<string, string[]>();
+    for (const grant of SELECT_GRANTS) {
+      for (const column of grant.columns ?? []) {
+        if (!FORBIDDEN_COLUMNS.includes(column as never)) continue;
+        grantedForbidden.set(column, [
+          ...(grantedForbidden.get(column) ?? []),
+          grant.relation,
+        ]);
+      }
+    }
+
+    expect([...grantedForbidden.keys()].sort()).toEqual(
+      Object.keys(AID6B_AUTHORISED_IDENTITY_GRANTS).sort(),
+    );
+    for (const [column, [relation]] of Object.entries(
+      AID6B_AUTHORISED_IDENTITY_GRANTS,
+    )) {
+      expect(
+        grantedForbidden.get(column),
+        `"${column}" is authorised on ${relation} and is not granted there`,
+      ).toContain(relation);
     }
   });
 

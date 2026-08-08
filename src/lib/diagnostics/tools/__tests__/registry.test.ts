@@ -44,6 +44,34 @@ import {
 } from "../packs/finance-records";
 import { DIAGNOSTICS_BOOKING_FINANCE_STATE_TOOL_ID } from "../packs/finance-state";
 import {
+  DIAGNOSTICS_BOOKING_SEARCH_TOOL_ID,
+  DIAGNOSTICS_MEMBER_SEARCH_TOOL_ID,
+} from "../packs/booking-search";
+import {
+  DIAGNOSTICS_BOOKING_AUDIT_HISTORY_TOOL_ID,
+  DIAGNOSTICS_BOOKING_BED_ALLOCATION_TOOL_ID,
+  DIAGNOSTICS_BOOKING_EXCEPTION_REQUEST_TOOL_ID,
+  DIAGNOSTICS_BOOKING_PARTY_TOOL_ID,
+  DIAGNOSTICS_BOOKING_SUMMARY_TOOL_ID,
+} from "../packs/booking-records";
+import {
+  DIAGNOSTICS_MEMBER_AUDIT_HISTORY_TOOL_ID,
+  DIAGNOSTICS_MEMBER_BOOKING_SUMMARY_TOOL_ID,
+  DIAGNOSTICS_MEMBER_FAMILY_STATE_TOOL_ID,
+  DIAGNOSTICS_MEMBER_SUBSCRIPTION_STATE_TOOL_ID,
+  DIAGNOSTICS_MEMBER_SUMMARY_TOOL_ID,
+} from "../packs/membership-records";
+import {
+  DIAGNOSTICS_BOOKING_BLOCK_STATE_TOOL_ID,
+  DIAGNOSTICS_BOOKING_CAPACITY_TOOL_ID,
+  DIAGNOSTICS_MEMBER_ELIGIBILITY_TOOL_ID,
+} from "../packs/booking-state";
+import {
+  BOOKING_BLOCKER_CODES,
+  MEMBER_ELIGIBILITY_CODES,
+} from "../packs/booking-evidence";
+import { PERSON_NAME_MAX_CHARS } from "../packs/booking-shared";
+import {
   DIAGNOSTICS_SUPPORT_CORRELATION_TOOLS,
 } from "../packs/support-correlation";
 import { renderToolResultEvidenceBlock } from "../render";
@@ -108,6 +136,33 @@ const AREA_KEYS = new Set(ADMIN_PERMISSION_AREAS.map((area) => area.key));
  *
  * `result_too_large` remains the fail-closed backstop for anything wilder than that.
  */
+/** A cuid, which is what every record identifier in this schema is. */
+const WIDEST_RECORD_ID = "clz0000000abcdefghijklmno";
+/** An ISO-8601 instant as the projections render one. */
+const WIDEST_INSTANT = "2026-08-08T09:00:00.000Z";
+/**
+ * The widest a PROJECTED person name or family-group name can be, taken from the
+ * projection's own cap rather than written as a number: `personNameOrNull` clips
+ * at `PERSON_NAME_MAX_CHARS` and marks the clip, so a longer stored name cannot
+ * reach a row and measuring one here would inflate the ceiling with bytes no
+ * deployment can produce. Widening the cap re-measures every entry that carries a
+ * name.
+ */
+const WIDEST_PROJECTED_NAME = "N".repeat(PERSON_NAME_MAX_CHARS);
+/** Likewise for a room or bed label, which `lodgeLabelOrNull` clips at 24. */
+const WIDEST_PROJECTED_LODGE_LABEL = "L".repeat(24);
+/**
+ * Open-ended, so measured at the substrate's own field cap: an audit action code
+ * in this repository already runs to 60 characters and nothing bounds a new one,
+ * and an email address is member-typed text that RFC 5321 allows to reach 254 —
+ * gate 8 caps the projected value at `fieldValueMaxChars`, so that is the widest
+ * value either field can actually put in a row.
+ */
+const WIDEST_ACTION_CODE = "a".repeat(DIAGNOSTICS_TOOL_BOUNDS.fieldValueMaxChars);
+const WIDEST_PROJECTED_EMAIL = `${"e".repeat(
+  DIAGNOSTICS_TOOL_BOUNDS.fieldValueMaxChars - "@example.org".length,
+)}@example.org`;
+
 const EXAMPLE_RAW_ROWS: Record<string, Record<string, unknown>> = {
   [DIAGNOSTICS_SUBSTRATE_PROBE_TOOL_ID]: {
     probe_ok: true,
@@ -371,6 +426,304 @@ const EXAMPLE_RAW_ROWS: Record<string, Record<string, unknown>> = {
       },
     ]),
   ),
+
+  // -------------------------------------------------------------------------
+  // AID-6B (#2376), the booking/membership/induction/bed-allocation pack.
+  //
+  // Same per-field rule as the entries above, and it lands differently here
+  // because most of AID-6B's open-ended text is capped BY THE PROJECTION rather
+  // than by the substrate. A person's name cannot reach the substrate's
+  // 200-character field cap, because `personNameOrNull` hard-caps it at
+  // `PERSON_NAME_MAX_CHARS` (60) and marks the clip; a room or bed label is
+  // capped at 24 the same way. So the widest raw value worth measuring for those
+  // fields is the projection's own cap, and it is written as the constant rather
+  // than as a number so a future widening of the cap re-measures these ceilings
+  // instead of silently passing under them.
+  //
+  // The fields still measured at the substrate's 200-character cap are the ones
+  // nothing in this pack bounds: an audit `action_code` (already 60 characters in
+  // this repository and unbounded for a new one) and an email address (a member
+  // types it; RFC 5321 allows 254 and gate 8 caps the projected value at 200).
+  //
+  // The code LISTS are set to every declared code at once — the genuinely widest
+  // value each can hold — for the same reason `booking_finance_state` is above:
+  // a row carrying one blocker measures nothing about the ceiling.
+  [DIAGNOSTICS_BOOKING_SEARCH_TOOL_ID]: {
+    booking_ref: WIDEST_RECORD_ID,
+    booking_reference: "CLZ00000",
+    owner_member_ref: WIDEST_RECORD_ID,
+    lodge_ref: WIDEST_RECORD_ID,
+    lodge_name: WIDEST_PROJECTED_NAME,
+    booking_status: "WAITLIST_OFFERED",
+    check_in: "2026-08-08",
+    check_out: "2026-09-08",
+    guest_count: 30,
+    final_price_cents: 1_234_567,
+    has_non_members: true,
+    is_linked_child: true,
+    requires_admin_review: true,
+    admin_review_status: "NOT_REQUIRED",
+    hosting_review_status: "NOT_REQUIRED",
+    waitlist_position: 999,
+    whole_lodge_hold: true,
+    admin_capacity_hold: true,
+    capacity_overridden: true,
+    deleted_at_utc: WIDEST_INSTANT,
+    created_at_utc: WIDEST_INSTANT,
+    updated_at_utc: WIDEST_INSTANT,
+  },
+  [DIAGNOSTICS_MEMBER_SEARCH_TOOL_ID]: {
+    member_ref: WIDEST_RECORD_ID,
+    first_name: WIDEST_PROJECTED_NAME,
+    last_name: WIDEST_PROJECTED_NAME,
+    age_tier: "INFANT",
+    is_active: true,
+    can_login: true,
+    is_cancelled: true,
+    is_archived: true,
+    lifecycle_deleted: true,
+    has_email: true,
+    has_phone: true,
+    has_xero_contact: true,
+    has_parent_link: true,
+    requires_induction: true,
+    joined_date: "2026-08-08",
+    created_at_utc: WIDEST_INSTANT,
+    updated_at_utc: WIDEST_INSTANT,
+  },
+  [DIAGNOSTICS_BOOKING_SUMMARY_TOOL_ID]: {
+    booking_ref: WIDEST_RECORD_ID,
+    booking_reference: "CLZ00000",
+    owner_member_ref: WIDEST_RECORD_ID,
+    lodge_ref: WIDEST_RECORD_ID,
+    booking_status: "WAITLIST_OFFERED",
+    check_in: "2026-08-08",
+    check_out: "2026-09-08",
+    night_count: 31,
+    guest_count: 30,
+    total_price_cents: 1_234_567,
+    discount_cents: 1_234_567,
+    promo_adjustment_cents: -1_234_567,
+    final_price_cents: 1_234_567,
+    credit_election_cents: 1_234_567,
+    has_non_members: true,
+    non_member_hold_until_utc: WIDEST_INSTANT,
+    parent_booking_ref: WIDEST_RECORD_ID,
+    draft_expires_at_utc: WIDEST_INSTANT,
+    admin_review_status: "NOT_REQUIRED",
+    hosting_review_status: "NOT_REQUIRED",
+    whole_lodge_hold: true,
+    deleted_at_utc: WIDEST_INSTANT,
+    created_at_utc: WIDEST_INSTANT,
+    updated_at_utc: WIDEST_INSTANT,
+  },
+  [DIAGNOSTICS_BOOKING_PARTY_TOOL_ID]: {
+    guest_ref: WIDEST_RECORD_ID,
+    first_name: WIDEST_PROJECTED_NAME,
+    last_name: WIDEST_PROJECTED_NAME,
+    age_tier: "INFANT",
+    is_member: true,
+    guest_member_ref: WIDEST_RECORD_ID,
+    stay_start: "2026-08-08",
+    stay_end: "2026-09-08",
+    night_count: 31,
+    nights_are_contiguous: true,
+    first_night: "2026-08-08",
+    last_night: "2026-09-07",
+    price_cents: 1_234_567,
+    operationally_present: true,
+    // The widest declared sub-state, which is also the one a defect produces.
+    consent_sub_state: "unrecognised_consent_shape",
+  },
+  [DIAGNOSTICS_BOOKING_BED_ALLOCATION_TOOL_ID]: {
+    stay_date: "2026-08-08",
+    guest_ref: WIDEST_RECORD_ID,
+    room_name: WIDEST_PROJECTED_LODGE_LABEL,
+    bed_name: WIDEST_PROJECTED_LODGE_LABEL,
+    bed_type: "DOUBLE",
+    bed_type_matches_bed: true,
+    is_second_occupant: true,
+  },
+  [DIAGNOSTICS_BOOKING_EXCEPTION_REQUEST_TOOL_ID]: {
+    request_ref: WIDEST_RECORD_ID,
+    request_kind: "POLICY_EXCEPTION",
+    request_status: "SUPERSEDED",
+    requested_by_member_ref: WIDEST_RECORD_ID,
+    aggregate_capacity_mode: "NO_HOLD",
+    attempt_count: 99,
+    conflict_count: 99,
+    last_conflict_at_utc: WIDEST_INSTANT,
+    held_night_count: 31,
+    hold_expires_at_utc: WIDEST_INSTANT,
+    reviewed_at_utc: WIDEST_INSTANT,
+    cancelled_at_utc: WIDEST_INSTANT,
+    superseded_by_request_ref: WIDEST_RECORD_ID,
+    linked_modification_ref: WIDEST_RECORD_ID,
+    created_at_utc: WIDEST_INSTANT,
+    updated_at_utc: WIDEST_INSTANT,
+  },
+  [DIAGNOSTICS_BOOKING_AUDIT_HISTORY_TOOL_ID]: {
+    event_ref: WIDEST_RECORD_ID,
+    action_code: WIDEST_ACTION_CODE,
+    category_code: "booking_request",
+    severity_code: "important",
+    outcome_code: "success",
+    entity_type: "Booking",
+    occurred_at_utc: WIDEST_INSTANT,
+  },
+  [DIAGNOSTICS_MEMBER_SUMMARY_TOOL_ID]: {
+    member_ref: WIDEST_RECORD_ID,
+    first_name: WIDEST_PROJECTED_NAME,
+    last_name: WIDEST_PROJECTED_NAME,
+    email_address: WIDEST_PROJECTED_EMAIL,
+    has_phone: true,
+    age_tier: "INFANT",
+    is_active: true,
+    can_login: true,
+    cancelled_at_utc: WIDEST_INSTANT,
+    archived_at_utc: WIDEST_INSTANT,
+    lifecycle_deleted: true,
+    joined_date: "2026-08-08",
+    life_member_date: "2026-08-08",
+    requires_induction: true,
+    hut_leader_eligible: true,
+    has_xero_contact: true,
+    parent_member_ref: WIDEST_RECORD_ID,
+    secondary_parent_ref: WIDEST_RECORD_ID,
+    legacy_family_group_ref: WIDEST_RECORD_ID,
+    billing_family_group_ref: WIDEST_RECORD_ID,
+    dependent_count: 99,
+    created_at_utc: WIDEST_INSTANT,
+    updated_at_utc: WIDEST_INSTANT,
+  },
+  [DIAGNOSTICS_MEMBER_SUBSCRIPTION_STATE_TOOL_ID]: {
+    subscription_ref: WIDEST_RECORD_ID,
+    season_year: 2026,
+    subscription_status: "NOT_INVOICED",
+    // Xero names its own invoice numbers and a club can configure the prefix, so
+    // this is open-ended in the same sense an action code is.
+    xero_invoice_number: "I".repeat(40),
+    has_xero_invoice: true,
+    paid_at_utc: WIDEST_INSTANT,
+    manually_marked_paid_at_utc: WIDEST_INSTANT,
+    void_generation: 99,
+    created_at_utc: WIDEST_INSTANT,
+    updated_at_utc: WIDEST_INSTANT,
+  },
+  [DIAGNOSTICS_MEMBER_FAMILY_STATE_TOOL_ID]: {
+    relation_ref: WIDEST_RECORD_ID,
+    relation_kind: "FAMILY_GROUP_CO_MEMBER",
+    related_member_ref: WIDEST_RECORD_ID,
+    related_first_name: WIDEST_PROJECTED_NAME,
+    related_last_name: WIDEST_PROJECTED_NAME,
+    related_age_tier: "INFANT",
+    related_is_active: true,
+    related_is_cancelled: true,
+    related_is_archived: true,
+    family_group_ref: WIDEST_RECORD_ID,
+    family_group_name: WIDEST_PROJECTED_NAME,
+    joined_at_utc: WIDEST_INSTANT,
+    is_secondary_parent: true,
+  },
+  [DIAGNOSTICS_MEMBER_BOOKING_SUMMARY_TOOL_ID]: {
+    booking_ref: WIDEST_RECORD_ID,
+    booking_reference: "CLZ00000",
+    involvement: "owner",
+    lodge_ref: WIDEST_RECORD_ID,
+    lodge_name: WIDEST_PROJECTED_NAME,
+    booking_status: "WAITLIST_OFFERED",
+    check_in: "2026-08-08",
+    check_out: "2026-09-08",
+    guest_count: 30,
+    final_price_cents: 1_234_567,
+    deleted_at_utc: WIDEST_INSTANT,
+    created_at_utc: WIDEST_INSTANT,
+  },
+  [DIAGNOSTICS_MEMBER_AUDIT_HISTORY_TOOL_ID]: {
+    event_ref: WIDEST_RECORD_ID,
+    action_code: WIDEST_ACTION_CODE,
+    category_code: "communication",
+    severity_code: "important",
+    outcome_code: "success",
+    // The longest entity type this entry's own subject map can name.
+    entity_type: "MembershipCancellationRequest",
+    occurred_at_utc: WIDEST_INSTANT,
+  },
+  [DIAGNOSTICS_BOOKING_BLOCK_STATE_TOOL_ID]: {
+    booking_id: WIDEST_RECORD_ID,
+    booking_reference: "CLZ00000",
+    owner_member_ref: WIDEST_RECORD_ID,
+    booking_status: "WAITLIST_OFFERED",
+    booking_lifecycle_state: "terminal",
+    check_in: "2026-08-08",
+    check_out: "2026-09-08",
+    admin_review_pending: true,
+    hosting_review_pending: true,
+    // Every review reason at once, as `bookingReviewReasonCodes` joins them.
+    review_reason_codes: "ADULT_SUPERVISION,ADULT_MEMBER_HOSTING_REQUIRED",
+    // Every soft-policy violation `evaluateProposalPartyViolations` can raise, in
+    // the sorted order this source joins them in.
+    policy_violation_codes:
+      "ADULT_MEMBER_HOSTING_REQUIRED,MINIMUM_STAY,PAID_UP_ADULT_MEMBER_REQUIRED",
+    policy_capacity_mode: "NO_HOLD",
+    member_night_conflict_count: 99,
+    shortfall_night_count: 31,
+    whole_lodge_held_night_count: 31,
+    tightest_spare_beds: -99,
+    open_exception_request_count: 99,
+    exception_held_night_count: 31,
+    exception_hold_expires_at_utc: WIDEST_INSTANT,
+    member_can_modify: true,
+    edit_window_mode: "LOCKED_PERIOD",
+    // Every declared blocker at once — DERIVED, so a new code widens this row
+    // instead of leaving the ceiling measured against a stale list.
+    blocker_codes: BOOKING_BLOCKER_CODES.join(","),
+    blocker_count: BOOKING_BLOCKER_CODES.length,
+    observed_at_utc: WIDEST_INSTANT,
+  },
+  [DIAGNOSTICS_BOOKING_CAPACITY_TOOL_ID]: {
+    booking_id: WIDEST_RECORD_ID,
+    booking_reference: "CLZ00000",
+    lodge_ref: WIDEST_RECORD_ID,
+    night: "2026-08-08",
+    occupied_beds_excluding_this_booking: 999,
+    available_beds_excluding_this_booking: 999,
+    party_beds_this_night: 999,
+    spare_beds_after_this_booking: -999,
+    fits_this_night: true,
+    whole_lodge_held_by_another_booking: true,
+    this_booking_holds_whole_lodge: true,
+    capacity_overridden: true,
+    allocated_bed_nights: 999,
+    observed_at_utc: WIDEST_INSTANT,
+  },
+  [DIAGNOSTICS_MEMBER_ELIGIBILITY_TOOL_ID]: {
+    member_id: WIDEST_RECORD_ID,
+    lifecycle_label: "Cancelled",
+    is_active: true,
+    can_login: true,
+    age_tier: "INFANT",
+    season_year: 2026,
+    membership_type_key: "SENIOR_FAMILY_MEMBERSHIP",
+    membership_type_source: "built_in_default",
+    membership_booking_behavior: "BLOCK_BOOKING",
+    membership_subscription_behavior: "REQUIRED_BY_AGE_TIER",
+    subscription_status: "NOT_INVOICED",
+    subscription_paid_at_utc: WIDEST_INSTANT,
+    subscription_manually_marked_paid: true,
+    subscription_required: true,
+    subscription_unpaid: true,
+    subscription_lockout_mode: "NON_MEMBER_PRICING",
+    qualifies_as_adult_member_host: true,
+    requires_induction: true,
+    induction_status: "AWAITING_SIGN_OFF",
+    induction_gates_booking: false,
+    hut_leader_eligible: true,
+    // Every declared eligibility code at once, derived for the same reason.
+    eligibility_codes: MEMBER_ELIGIBILITY_CODES.join(","),
+    eligibility_code_count: MEMBER_ELIGIBILITY_CODES.length,
+    observed_at_utc: WIDEST_INSTANT,
+  },
 };
 
 /**
@@ -431,6 +784,44 @@ const EXAMPLE_ARGS: Record<string, unknown> = {
   [DIAGNOSTICS_BOOKING_FINANCE_STATE_TOOL_ID]: {
     bookingId: "clz0000000abcdefghijklmno",
   },
+  // AID-6B (#2376). Same rule as AID-6C: no entry in this pack takes a blank
+  // argument object, so every one needs its own row. The two searches are
+  // discriminated unions — the `kind` decides which term is required — and the
+  // arm chosen here is deliberately the one with the MOST parameters, because an
+  // arm that binds fewer would leave the wider arm's arity unchecked.
+  [DIAGNOSTICS_BOOKING_SEARCH_TOOL_ID]: {
+    kind: "lodge_nights",
+    lodgeId: WIDEST_RECORD_ID,
+    nightFrom: "2026-08-08",
+    window: "30d",
+  },
+  [DIAGNOSTICS_MEMBER_SEARCH_TOOL_ID]: {
+    kind: "name_prefix",
+    namePrefix: "smi",
+  },
+  [DIAGNOSTICS_BOOKING_SUMMARY_TOOL_ID]: { bookingId: WIDEST_RECORD_ID },
+  [DIAGNOSTICS_BOOKING_PARTY_TOOL_ID]: { bookingId: WIDEST_RECORD_ID },
+  [DIAGNOSTICS_BOOKING_BED_ALLOCATION_TOOL_ID]: { bookingId: WIDEST_RECORD_ID },
+  [DIAGNOSTICS_BOOKING_EXCEPTION_REQUEST_TOOL_ID]: {
+    bookingId: WIDEST_RECORD_ID,
+  },
+  [DIAGNOSTICS_BOOKING_AUDIT_HISTORY_TOOL_ID]: { bookingId: WIDEST_RECORD_ID },
+  [DIAGNOSTICS_MEMBER_SUMMARY_TOOL_ID]: { memberId: WIDEST_RECORD_ID },
+  [DIAGNOSTICS_MEMBER_SUBSCRIPTION_STATE_TOOL_ID]: {
+    memberId: WIDEST_RECORD_ID,
+  },
+  [DIAGNOSTICS_MEMBER_FAMILY_STATE_TOOL_ID]: { memberId: WIDEST_RECORD_ID },
+  [DIAGNOSTICS_MEMBER_BOOKING_SUMMARY_TOOL_ID]: { memberId: WIDEST_RECORD_ID },
+  [DIAGNOSTICS_MEMBER_AUDIT_HISTORY_TOOL_ID]: {
+    subject: "member",
+    recordId: WIDEST_RECORD_ID,
+  },
+  // The three server-owned entries bind no SQL parameter, so the arity contract
+  // skips them; they are here because the pack's own suite reuses this census to
+  // prove every entry parses a realistic argument object.
+  [DIAGNOSTICS_BOOKING_BLOCK_STATE_TOOL_ID]: { bookingId: WIDEST_RECORD_ID },
+  [DIAGNOSTICS_BOOKING_CAPACITY_TOOL_ID]: { bookingId: WIDEST_RECORD_ID },
+  [DIAGNOSTICS_MEMBER_ELIGIBILITY_TOOL_ID]: { memberId: WIDEST_RECORD_ID },
 };
 
 /**
@@ -1094,6 +1485,12 @@ describe("the evidence modules are SERVER-ONLY (#2375)", () => {
     "authorize.ts",
     "database.ts",
     "invoke.ts",
+    "packs/booking-evidence.ts",
+    "packs/booking-records.ts",
+    "packs/booking-search.ts",
+    "packs/booking-shared.ts",
+    "packs/booking-state.ts",
+    "packs/membership-records.ts",
     "packs/finance-evidence.ts",
     "packs/finance-records.ts",
     "packs/finance-search.ts",
