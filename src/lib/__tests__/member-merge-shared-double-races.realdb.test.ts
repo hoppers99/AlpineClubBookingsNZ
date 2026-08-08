@@ -74,6 +74,33 @@ const GUEST_NIGHT_ONLY_ROOM_ID = "race-2595-guestnight-room";
 const GUEST_NIGHT_ONLY_BED_ID = "race-2595-guestnight-bed";
 const GUEST_NIGHT_ONLY_BOOKING_ID = "race-2595-guestnight-booking";
 const GUEST_NIGHT_ONLY_GUEST_ID = "race-2595-guestnight-guest";
+// A THIRD lodge, for #2672. The duplicate holds a guest row here whose stay is
+// entirely in the PAST, and nothing else — no future night, no allocation. Under
+// the derivation #2641 shipped (future guest-nights only) this lodge is invisible
+// to merge, and a real admin date shift can pull that stay into the future while
+// the merge runs, into a lodge merge holds no key for. Under the derivation this
+// suite now pins (every guest row, no date filter) it is covered.
+const PAST_STAY_LODGE_ID = "race-2672-past-lodge";
+const PAST_STAY_ROOM_ID = "race-2672-past-room";
+const PAST_STAY_DOUBLE_BED_ID = "race-2672-past-double";
+const PAST_STAY_BOOKING_ID = "race-2672-past-booking";
+const PAST_STAY_GUEST_ID = "race-2672-past-guest";
+const PAST_STAY_PARTNER_BOOKING_ID = "race-2672-past-partner-booking";
+const PAST_STAY_PARTNER_GUEST_ID = "race-2672-past-partner-guest";
+const PAST_STAY_PARTNER_ALLOCATION_ID = "race-2672-past-partner-allocation";
+// A FOURTH lodge, used only by the coverage-refusal case: no fixture at all
+// until a booking is created there mid-merge.
+const LATE_LODGE_ID = "race-2672-late-lodge";
+const LATE_LODGE_ROOM_ID = "race-2672-late-room";
+const LATE_LODGE_BOOKING_ID = "race-2672-late-booking";
+const LATE_LODGE_GUEST_ID = "race-2672-late-guest";
+
+const ALL_LODGE_IDS = [
+  LODGE_ID,
+  GUEST_NIGHT_ONLY_LODGE_ID,
+  PAST_STAY_LODGE_ID,
+  LATE_LODGE_ID,
+];
 const UNBACKED_DOUBLE_ID = "race-2595-unbacked-double";
 const BACKED_DOUBLE_ID = "race-2595-backed-double";
 // Spare singles so the racing production writers have somewhere to place their
@@ -105,6 +132,9 @@ const ALL_BOOKING_IDS = [
   ...MERGE_BOOKING_IDS,
   NEIGHBOUR_BOOKING_ID,
   GUEST_NIGHT_ONLY_BOOKING_ID,
+  PAST_STAY_BOOKING_ID,
+  PAST_STAY_PARTNER_BOOKING_ID,
+  LATE_LODGE_BOOKING_ID,
 ];
 
 const LOSER_GUEST_ID = "race-2595-loser-guest";
@@ -129,12 +159,24 @@ const MERGE_NIGHT_DATE_ONLY = "2099-06-01";
 const NEIGHBOUR_NIGHT_DATE_ONLY = "2099-06-02";
 const NEIGHBOUR_CHECK_OUT_DATE_ONLY = "2099-06-03";
 
+// #2672's fully-past stay, and the future night a real `adminShiftBookingDates`
+// translates it onto. Both are one night long, because "shift dates" refuses to
+// change the night count.
+const PAST_STAY_NIGHT = new Date("2020-06-01T00:00:00.000Z");
+const PAST_STAY_CHECK_OUT = new Date("2020-06-02T00:00:00.000Z");
+const SHIFTED_NIGHT = new Date("2099-07-01T00:00:00.000Z");
+const SHIFTED_CHECK_OUT = new Date("2099-07-02T00:00:00.000Z");
+const SHIFTED_NIGHT_DATE_ONLY = "2099-07-01";
+const SHIFTED_CHECK_OUT_DATE_ONLY = "2099-07-02";
+
 const SHARE_SWEPT_AUDIT_ACTION = "BED_ALLOCATION_PARTNER_SHARE_SWEPT";
 
 let prisma: typeof import("@/lib/prisma")["prisma"];
 let buildMemberMergePreview: typeof import("@/lib/member-merge")["buildMemberMergePreview"];
 let executeMemberMerge: typeof import("@/lib/member-merge")["executeMemberMerge"];
 let runAutoBedAllocation: typeof import("@/lib/admin-bed-allocation")["runAutoBedAllocation"];
+let manuallyAllocateBed: typeof import("@/lib/admin-bed-allocation")["manuallyAllocateBed"];
+let adminShiftBookingDates: typeof import("@/lib/booking-date-modification-service")["adminShiftBookingDates"];
 let reconcileBedAllocationsForBooking: typeof import("@/lib/bed-allocation-lifecycle")["reconcileBedAllocationsForBooking"];
 let acquireMemberMergePartnerSharedLodgeLocks: typeof import("@/lib/bed-allocation-lifecycle")["acquireMemberMergePartnerSharedLodgeLocks"];
 let sweepUnbackedFutureSharedDoublesWithLocksHeld: typeof import("@/lib/bed-allocation-lifecycle")["sweepUnbackedFutureSharedDoublesWithLocksHeld"];
@@ -225,6 +267,72 @@ async function waitForLodgeLockWaiters(
   throw new Error(
     `Timed out waiting for ${expected} writer(s) on the ${lodgeId} capacity key; saw ${seen}. A production writer may have stopped taking the per-lodge tier.`,
   );
+}
+
+/**
+ * The `member-lifecycle:<id>` key of whichever merged member sorts FIRST — the
+ * key merge takes immediately after its lodge prefix.
+ *
+ * That makes it the one barrier in the merge that sits exactly between "the
+ * lodge set has been derived and locked" and "anything has been written". Every
+ * #2672 case parks the merge there, does its concurrent work, and releases.
+ * `member-lifecycle:` keys use the single-argument `pg_advisory_xact_lock` with
+ * `hashtext` (a signed int4), so the `(classid, objid)` split is done in SQL for
+ * the same reason as the lodge poller above.
+ */
+const FIRST_MEMBER_LIFECYCLE_KEY = `member-lifecycle:${[MASTER_ID, LOSER_ID].sort()[0]}`;
+
+async function pendingMemberLifecycleLockWaiters(): Promise<number> {
+  const rows = await observerClient.$queryRaw<Array<{ count: number }>>`
+    SELECT COUNT(*)::int AS "count"
+    FROM pg_locks
+    WHERE locktype = 'advisory'
+      AND objsubid = 1
+      AND granted = false
+      AND classid::bigint = ((hashtext(${FIRST_MEMBER_LIFECYCLE_KEY})::bigint >> 32) & 4294967295)
+      AND objid::bigint = (hashtext(${FIRST_MEMBER_LIFECYCLE_KEY})::bigint & 4294967295)
+  `;
+  return rows[0]?.count ?? 0;
+}
+
+/**
+ * Park a running merge on the member-lifecycle key and hand the caller the point
+ * in the transaction where the lodge prefix is held and nothing is written yet.
+ *
+ * `body` runs there; then the key is released and the merge's own settled
+ * outcome is returned, so a case can assert on a 409 as easily as on a success.
+ */
+async function withMergeParkedAfterItsLodgePrefix<T>(
+  mergeWriter: () => Promise<Awaited<ReturnType<typeof executeMemberMerge>>>,
+  body: () => Promise<T>,
+): Promise<{
+  body: T;
+  merge: PromiseSettledResult<Awaited<ReturnType<typeof executeMemberMerge>>>;
+}> {
+  let merge: Promise<Awaited<ReturnType<typeof executeMemberMerge>>> | undefined;
+  let bodyResult!: T;
+  await whileHoldingAdvisoryKey(
+    (tx) =>
+      tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${FIRST_MEMBER_LIFECYCLE_KEY}))`,
+    async () => {
+      merge = mergeWriter();
+      const startedAt = process.hrtime.bigint();
+      let seen = 0;
+      while (realElapsedMs(startedAt) < LOCK_POLL_TIMEOUT_MS) {
+        seen = await pendingMemberLifecycleLockWaiters();
+        if (seen >= 1) break;
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      }
+      if (seen < 1) {
+        throw new Error(
+          `Timed out waiting for the merge to queue on ${FIRST_MEMBER_LIFECYCLE_KEY}. Merge must take its lodge prefix and THEN the sorted member-lifecycle pair.`,
+        );
+      }
+      bodyResult = await body();
+    },
+  );
+  const [settled] = await Promise.allSettled([merge!]);
+  return { body: bodyResult, merge: settled };
 }
 
 /** Hold one advisory key on a separate connection for the body's duration. */
@@ -360,6 +468,12 @@ async function clearMergeFixtures(): Promise<void> {
     where: { bookingId: { in: ALL_BOOKING_IDS } },
   });
   await prisma.bookingEvent.deleteMany({
+    where: { bookingId: { in: ALL_BOOKING_IDS } },
+  });
+  // #2672 drives a real `adminShiftBookingDates`, which records a
+  // `BookingModification` — a RESTRICT relation, so it has to go before the
+  // booking or the whole fixture teardown fails on the foreign key.
+  await prisma.bookingModification.deleteMany({
     where: { bookingId: { in: ALL_BOOKING_IDS } },
   });
   await prisma.booking.deleteMany({ where: { id: { in: ALL_BOOKING_IDS } } });
@@ -626,6 +740,105 @@ async function seedMergeScenario(): Promise<void> {
   });
 }
 
+/**
+ * #2672's fixture, on top of `seedMergeScenario()`: the exact shape the old
+ * date-filtered derivation could not see.
+ *
+ * At a THIRD lodge:
+ *  - the duplicate is a guest on somebody else's booking whose stay finished in
+ *    2020 — a real, ordinary row, invisible to a `stayEnd >= today` filter; and
+ *  - the duplicate's confirmed partner already holds that lodge's one DOUBLE bed
+ *    on a FUTURE night, as the primary.
+ *
+ * Neither of those puts the lodge in a future-guest-night derivation: the past
+ * stay fails the date filter, and the ex-partner is not one of the merged
+ * members, so their own future booking and allocation are out of scope for both
+ * reads. One real `adminShiftBookingDates` translates the 2020 stay onto the
+ * ex-partner's night, and the duplicate is suddenly placeable beside them.
+ */
+async function seedPastStayLodgeScenario(): Promise<void> {
+  // The duplicate's fully-past stay, on a booking OWNED by the admin. Owner
+  // matters: a booking the duplicate owned would be re-pointed by `applyMoves`,
+  // and the date shift would then queue on that row lock instead of on the lodge
+  // key, which is a different fence and would hide the one under test.
+  await prisma.booking.create({
+    data: {
+      id: PAST_STAY_BOOKING_ID,
+      memberId: ACTOR_ID,
+      lodgeId: PAST_STAY_LODGE_ID,
+      checkIn: PAST_STAY_NIGHT,
+      checkOut: PAST_STAY_CHECK_OUT,
+      status: "COMPLETED",
+      totalPriceCents: 100,
+      finalPriceCents: 100,
+    },
+  });
+  await prisma.bookingGuest.create({
+    data: {
+      id: PAST_STAY_GUEST_ID,
+      bookingId: PAST_STAY_BOOKING_ID,
+      memberId: LOSER_ID,
+      firstName: "Duplicate",
+      lastName: "Loser",
+      ageTier: "ADULT",
+      stayStart: PAST_STAY_NIGHT,
+      stayEnd: PAST_STAY_CHECK_OUT,
+      priceCents: 100,
+    },
+  });
+  await prisma.bookingGuestNight.create({
+    data: {
+      bookingGuestId: PAST_STAY_GUEST_ID,
+      stayDate: PAST_STAY_NIGHT,
+      priceCents: 100,
+    },
+  });
+
+  // The ex-partner's own future booking at the same lodge, holding the double.
+  await seedBooking({
+    bookingId: PAST_STAY_PARTNER_BOOKING_ID,
+    memberId: EX_PARTNER_ID,
+    guestId: PAST_STAY_PARTNER_GUEST_ID,
+    guestMemberId: EX_PARTNER_ID,
+    firstName: "Dropped",
+    lastName: "Partner",
+    night: SHIFTED_NIGHT,
+    checkOut: SHIFTED_CHECK_OUT,
+    lodgeId: PAST_STAY_LODGE_ID,
+  });
+  await prisma.bedAllocation.create({
+    data: {
+      id: PAST_STAY_PARTNER_ALLOCATION_ID,
+      bookingId: PAST_STAY_PARTNER_BOOKING_ID,
+      bookingGuestId: PAST_STAY_PARTNER_GUEST_ID,
+      roomId: PAST_STAY_ROOM_ID,
+      bedId: PAST_STAY_DOUBLE_BED_ID,
+      bedType: "DOUBLE",
+      stayDate: SHIFTED_NIGHT,
+      source: "MANUAL",
+    },
+    select: { id: true },
+  });
+}
+
+/** Every occupant of #2672's double bed on the shifted night. */
+async function pastStayDoubleOccupants() {
+  const rows = await prisma.bedAllocation.findMany({
+    where: { bedId: PAST_STAY_DOUBLE_BED_ID, stayDate: SHIFTED_NIGHT },
+    select: {
+      id: true,
+      isSecondOccupant: true,
+      bookingGuest: { select: { memberId: true } },
+    },
+    orderBy: { isSecondOccupant: "asc" },
+  });
+  return rows.map((row) => ({
+    id: row.id,
+    isSecondOccupant: row.isSecondOccupant,
+    memberId: row.bookingGuest.memberId,
+  }));
+}
+
 /** Drive the real preview + execute pair, exactly as the admin route does. */
 async function runRealMemberMerge() {
   return (await queueableMergeWriter())();
@@ -862,7 +1075,12 @@ describe("member-merge shared-double race DB safety guard (#2595)", () => {
       ({ buildMemberMergePreview, executeMemberMerge } = await import(
         "@/lib/member-merge"
       ));
-      ({ runAutoBedAllocation } = await import("@/lib/admin-bed-allocation"));
+      ({ runAutoBedAllocation, manuallyAllocateBed } = await import(
+        "@/lib/admin-bed-allocation"
+      ));
+      ({ adminShiftBookingDates } = await import(
+        "@/lib/booking-date-modification-service"
+      ));
       ({
         acquireMemberMergePartnerSharedLodgeLocks,
         reconcileBedAllocationsForBooking,
@@ -904,18 +1122,33 @@ describe("member-merge shared-double race DB safety guard (#2595)", () => {
       });
 
       await prisma.bedAllocationSettings.deleteMany({
-        where: { id: { in: [LODGE_ID, GUEST_NIGHT_ONLY_LODGE_ID] } },
+        where: { id: { in: ALL_LODGE_IDS } },
       });
       await clearMergeFixtures();
       await prisma.lodgeBed.deleteMany({
-        where: { id: { in: [...MERGE_BED_IDS, GUEST_NIGHT_ONLY_BED_ID] } },
+        where: {
+          id: {
+            in: [
+              ...MERGE_BED_IDS,
+              GUEST_NIGHT_ONLY_BED_ID,
+              PAST_STAY_DOUBLE_BED_ID,
+            ],
+          },
+        },
       });
       await prisma.lodgeRoom.deleteMany({
-        where: { id: { in: [ROOM_ID, GUEST_NIGHT_ONLY_ROOM_ID] } },
+        where: {
+          id: {
+            in: [
+              ROOM_ID,
+              GUEST_NIGHT_ONLY_ROOM_ID,
+              PAST_STAY_ROOM_ID,
+              LATE_LODGE_ROOM_ID,
+            ],
+          },
+        },
       });
-      await prisma.lodge.deleteMany({
-        where: { id: { in: [LODGE_ID, GUEST_NIGHT_ONLY_LODGE_ID] } },
-      });
+      await prisma.lodge.deleteMany({ where: { id: { in: ALL_LODGE_IDS } } });
       await prisma.member.deleteMany({
         where: { id: { in: [...MERGE_MEMBER_IDS] } },
       });
@@ -980,6 +1213,48 @@ describe("member-merge shared-double race DB safety guard (#2595)", () => {
           sortOrder: 0,
         },
       });
+      // #2672's third lodge: one DOUBLE bed and nothing else. The ex-partner
+      // holds it on the shifted night; the duplicate's own stay here is in the
+      // past until an admin shifts it forward.
+      await prisma.lodge.create({
+        data: {
+          id: PAST_STAY_LODGE_ID,
+          name: "Race 2672 Past-stay Lodge",
+          slug: "race-2672-past-stay",
+        },
+      });
+      await prisma.lodgeRoom.create({
+        data: {
+          id: PAST_STAY_ROOM_ID,
+          lodgeId: PAST_STAY_LODGE_ID,
+          name: "Race 2672 Past-stay Room",
+        },
+      });
+      await prisma.lodgeBed.create({
+        data: {
+          id: PAST_STAY_DOUBLE_BED_ID,
+          roomId: PAST_STAY_ROOM_ID,
+          name: "Past-stay double",
+          bedType: "DOUBLE",
+          sortOrder: 0,
+        },
+      });
+      // The fourth lodge has a room so a booking there is realistic, and is
+      // otherwise untouched until the coverage-refusal case creates one.
+      await prisma.lodge.create({
+        data: {
+          id: LATE_LODGE_ID,
+          name: "Race 2672 Late Lodge",
+          slug: "race-2672-late",
+        },
+      });
+      await prisma.lodgeRoom.create({
+        data: {
+          id: LATE_LODGE_ROOM_ID,
+          lodgeId: LATE_LODGE_ID,
+          name: "Race 2672 Late Room",
+        },
+      });
       await prisma.bedAllocationSettings.create({
         data: {
           id: LODGE_ID,
@@ -1017,23 +1292,38 @@ describe("member-merge shared-double race DB safety guard (#2595)", () => {
         await attempt(clearMergeFixtures);
         await attempt(() =>
           prisma.bedAllocationSettings.deleteMany({
-            where: { id: { in: [LODGE_ID, GUEST_NIGHT_ONLY_LODGE_ID] } },
+            where: { id: { in: ALL_LODGE_IDS } },
           }),
         );
         await attempt(() =>
           prisma.lodgeBed.deleteMany({
-            where: { id: { in: [...MERGE_BED_IDS, GUEST_NIGHT_ONLY_BED_ID] } },
+            where: {
+              id: {
+                in: [
+                  ...MERGE_BED_IDS,
+                  GUEST_NIGHT_ONLY_BED_ID,
+                  PAST_STAY_DOUBLE_BED_ID,
+                ],
+              },
+            },
           }),
         );
         await attempt(() =>
           prisma.lodgeRoom.deleteMany({
-            where: { id: { in: [ROOM_ID, GUEST_NIGHT_ONLY_ROOM_ID] } },
+            where: {
+              id: {
+                in: [
+                  ROOM_ID,
+                  GUEST_NIGHT_ONLY_ROOM_ID,
+                  PAST_STAY_ROOM_ID,
+                  LATE_LODGE_ROOM_ID,
+                ],
+              },
+            },
           }),
         );
         await attempt(() =>
-          prisma.lodge.deleteMany({
-            where: { id: { in: [LODGE_ID, GUEST_NIGHT_ONLY_LODGE_ID] } },
-          }),
+          prisma.lodge.deleteMany({ where: { id: { in: ALL_LODGE_IDS } } }),
         );
         await attempt(() =>
           prisma.member.deleteMany({ where: { id: { in: [...MERGE_MEMBER_IDS] } } }),
@@ -1614,6 +1904,241 @@ describe("member-merge shared-double race DB safety guard (#2595)", () => {
       expect(merged.masterId).toBe(MASTER_ID);
       await expectMergeSweptOnlyTheUnbackedRow();
       await expectNoUnbackedSharedDouble();
+    });
+
+    /**
+     * ===== THE MUTABLE-DATE HOLE THAT DERIVATION LEFT OPEN (#2672) =========
+     * Same proof one step further out, and it is the whole issue.
+     *
+     * #2641's derivation asked for FUTURE guest-nights. `BookingGuest.stayStart`,
+     * `stayEnd` and `BookingGuestNight` are all MUTABLE, so a lodge where the
+     * duplicate's only stay finished in 2020 answered "not relevant" — and stayed
+     * that way exactly until an admin shifted the booking forward, which needs
+     * neither the global key nor any member key merge holds.
+     *
+     * The fixture holds nothing here but that past guest row. Restore the date
+     * filter and the merge sails past this lodge's key and the poller times out.
+     */
+    it("takes the capacity key of a lodge known only from a guest row whose stay is entirely in the past", async () => {
+      await seedMergeScenario();
+      await seedPastStayLodgeScenario();
+
+      // The premise, asserted rather than assumed: the merged members hold no
+      // allocation here and not one guest-night that is still in the future.
+      expect(
+        await prisma.bedAllocation.count({
+          where: {
+            room: { lodgeId: PAST_STAY_LODGE_ID },
+            bookingGuest: { memberId: { in: [MASTER_ID, LOSER_ID] } },
+          },
+        }),
+      ).toBe(0);
+      expect(
+        await prisma.bookingGuest.count({
+          where: {
+            memberId: { in: [MASTER_ID, LOSER_ID] },
+            booking: { lodgeId: PAST_STAY_LODGE_ID },
+            OR: [
+              { stayEnd: { gte: new Date() } },
+              { nights: { some: { stayDate: { gte: new Date() } } } },
+            ],
+          },
+        }),
+      ).toBe(0);
+
+      const mergeWriter = await queueableMergeWriter();
+      let merge: Promise<Awaited<ReturnType<typeof mergeWriter>>> | undefined;
+      await whileHoldingAdvisoryKey(
+        (tx) =>
+          tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtextextended(${PAST_STAY_LODGE_ID}, 0))`,
+        async () => {
+          merge = mergeWriter();
+          await waitForLodgeLockWaiters(1, PAST_STAY_LODGE_ID);
+        },
+      );
+
+      const merged = await merge!;
+      expect(merged.masterId).toBe(MASTER_ID);
+      await expectMergeSweptOnlyTheUnbackedRow();
+      await expectNoUnbackedSharedDouble();
+    });
+
+    /**
+     * ========= THE FOUR-STEP INTERLEAVING, DRIVEN END TO END (#2672) =======
+     * The escape the old derivation allowed, with every step a real production
+     * writer and no test-only seam in any of them:
+     *
+     *   1. the merge derives its lodge prefix — the past-stay lodge is in it now
+     *      and was not before;
+     *   2. `adminShiftBookingDates` translates the duplicate's 2020 stay onto a
+     *      future night at that lodge, and auto-allocates on the new nights;
+     *   3. an admin hand-places the duplicate beside their still-confirmed
+     *      partner on that lodge's double bed (auto-allocation cannot: it writes
+     *      no `isSecondOccupant` at all); and
+     *   4. both commit after the sweep's candidate read, so the sweep never sees
+     *      them and the merge's own commit drops the partnership underneath.
+     *
+     * The merge is parked on its member-lifecycle key — after the lodge prefix,
+     * before anything is written — which is the exact moment step 2 used to be
+     * free to run. What this asserts is that it is not free any more: the real
+     * date shift QUEUES on a capacity key the merge now holds. Steps 3 and 4 then
+     * cannot happen at all, and the case follows through to prove it: once the
+     * merge has committed, the same hand placement is REFUSED, because the
+     * partnership it would have relied on is gone.
+     *
+     * With the date filter restored, the shift commits immediately, no waiter
+     * ever appears on that key, and the poll below fails the case.
+     */
+    it("fences the admin date shift that used to walk a past stay into an unlocked lodge", async () => {
+      await seedMergeScenario();
+      await seedPastStayLodgeScenario();
+
+      const mergeWriter = await queueableMergeWriter();
+      let shift: ReturnType<typeof adminShiftBookingDates> | undefined;
+
+      const parked = await withMergeParkedAfterItsLodgePrefix(
+        mergeWriter,
+        async () => {
+          shift = adminShiftBookingDates({
+            bookingId: PAST_STAY_BOOKING_ID,
+            actor: { id: ACTOR_ID, role: "ADMIN" },
+            input: {
+              checkIn: SHIFTED_NIGHT_DATE_ONLY,
+              checkOut: SHIFTED_CHECK_OUT_DATE_ONLY,
+              confirmOverCapacity: true,
+              notifyMember: false,
+            },
+            ipAddress: "127.0.0.1",
+          });
+          // Keep the rejection handled: the shift cannot settle until the merge
+          // commits, and it may lose its own 5s budget doing so.
+          shift.catch(() => {});
+          // THE ASSERTION. The date writer takes `lock(1)` and then its booking's
+          // lodge key; the merge holds no global key, so this waiter can only be
+          // the lodge key — the one the derivation had to widen to cover.
+          await waitForLodgeLockWaiters(1, PAST_STAY_LODGE_ID);
+        },
+      );
+
+      expect(settledValueOrThrow(parked.merge).masterId).toBe(MASTER_ID);
+      await expectMergeSweptOnlyTheUnbackedRow();
+      await expectNoUnbackedSharedDouble();
+
+      const [shiftOutcome] = await Promise.allSettled([shift!]);
+      if (shiftOutcome.status === "rejected") {
+        // Queued behind a merge on its own default budget — the documented
+        // convoy. Rolled back whole, so the stay is still in 2020.
+        expect(
+          isRetryableTransactionExpiry(shiftOutcome.reason),
+          `A date shift queued behind a merge may only fail with a retryable transaction expiry; got: ${String(shiftOutcome.reason)}`,
+        ).toBe(true);
+        const guest = await prisma.bookingGuest.findUnique({
+          where: { id: PAST_STAY_GUEST_ID },
+          select: { stayEnd: true },
+        });
+        expect(guest?.stayEnd).toEqual(PAST_STAY_CHECK_OUT);
+      }
+
+      // Step 3, attempted AFTER the merge — the only order the fence leaves. The
+      // duplicate's guest row now names the master, and the master never had a
+      // partnership with the ex-partner, so the board refuses the placement in
+      // the admin's own words rather than writing an unbacked share.
+      await expect(
+        manuallyAllocateBed({
+          bookingGuestId: PAST_STAY_GUEST_ID,
+          bedId: PAST_STAY_DOUBLE_BED_ID,
+          stayDate: SHIFTED_NIGHT_DATE_ONLY,
+        }),
+      ).rejects.toThrow();
+
+      // And the bed-night the escape targeted holds exactly one occupant: the
+      // ex-partner, alone, on their own booking.
+      expect(await pastStayDoubleOccupants()).toEqual([
+        {
+          id: PAST_STAY_PARTNER_ALLOCATION_ID,
+          isSecondOccupant: false,
+          memberId: EX_PARTNER_ID,
+        },
+      ]);
+    });
+
+    /**
+     * ========== THE COVERAGE PROOF, AND WHAT IT REFUSES (#2672) ============
+     * Dropping the date filter fixes what the prefix CONTAINS. It says nothing
+     * about a guest row created at a lodge these members had never booked, in
+     * the window between the derivation at the top of the merge and the sweep.
+     *
+     * So step 3b re-derives the same guest-row lodge set under merge's sorted
+     * `Member … FOR UPDATE` and refuses if the prefix no longer covers it. That
+     * placement is what makes it a fence rather than a second look:
+     * `BookingGuest.memberId` is a foreign key to `Member`, so every insert
+     * naming these members needs `FOR KEY SHARE` on the member row and cannot
+     * commit while the merge holds `FOR UPDATE` on it.
+     *
+     * The guest row created here is deliberately a PAST one, on a booking the
+     * merged members do not own, in a lodge with no bed inventory at all: there
+     * is nothing for the sweep to remove and nothing for it to see, and it must
+     * still refuse. Nothing is written; the admin retries.
+     */
+    it("refuses the whole merge when a guest row appears in a lodge the prefix never locked", async () => {
+      await seedMergeScenario();
+
+      const mergeWriter = await queueableMergeWriter();
+      const parked = await withMergeParkedAfterItsLodgePrefix(
+        mergeWriter,
+        async () => {
+          await prisma.booking.create({
+            data: {
+              id: LATE_LODGE_BOOKING_ID,
+              memberId: ACTOR_ID,
+              lodgeId: LATE_LODGE_ID,
+              checkIn: PAST_STAY_NIGHT,
+              checkOut: PAST_STAY_CHECK_OUT,
+              status: "COMPLETED",
+              totalPriceCents: 100,
+              finalPriceCents: 100,
+            },
+            select: { id: true },
+          });
+          await prisma.bookingGuest.create({
+            data: {
+              id: LATE_LODGE_GUEST_ID,
+              bookingId: LATE_LODGE_BOOKING_ID,
+              memberId: MASTER_ID,
+              firstName: "Surviving",
+              lastName: "Master",
+              ageTier: "ADULT",
+              stayStart: PAST_STAY_NIGHT,
+              stayEnd: PAST_STAY_CHECK_OUT,
+              priceCents: 100,
+            },
+            select: { id: true },
+          });
+        },
+      );
+
+      expect(parked.merge.status).toBe("rejected");
+      const reason =
+        parked.merge.status === "rejected" ? parked.merge.reason : null;
+      expect((reason as { code?: string } | null)?.code).toBe(
+        "partner_share_lodge_drift",
+      );
+      expect(
+        (reason as { details?: { lodgeIds?: string[] } } | null)?.details
+          ?.lodgeIds,
+      ).toEqual([LATE_LODGE_ID]);
+
+      // Nothing merged and nothing swept: the duplicate, its confirmed link and
+      // the unbacked share are all exactly where the fixture left them.
+      expect(
+        await prisma.member.count({ where: { id: LOSER_ID } }),
+      ).toBe(1);
+      expect(await confirmedPartnerIdsOf(LOSER_ID)).toEqual([EX_PARTNER_ID]);
+      expect((await sharedDoubleOccupants(UNBACKED_DOUBLE_ID)).map((r) => r.id)).toEqual([
+        LOSER_ALLOCATION_ID,
+        EX_PARTNER_ALLOCATION_ID,
+      ]);
+      expect(await shareSweptAuditRows()).toEqual([]);
     });
   },
 );

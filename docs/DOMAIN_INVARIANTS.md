@@ -807,10 +807,14 @@ derivation).
   capacity key in sorted order BEFORE any member-lifecycle key, and takes NO
   global cohort `lock(1)` — a merge holds its keys for up to 120s and the global
   key would reject every 5s-budget cohort writer in the club. What replaces it
-  is a wider lodge derivation (the members' future bed allocations UNION their
-  future guest-nights, so a lodge a placement could still land in is covered)
-  plus a run-time check: the sweep is handed the locked lodge set and refuses the
-  whole merge with a 409 rather than judge a bed-night outside it (see
+  is a wider lodge derivation (the members' future bed allocations UNION the
+  lodges of EVERY booking they hold a guest row on — no date filter since #2672,
+  because the stay columns a date filter tests are rewritten by writers merge
+  cannot exclude — so a lodge a placement could still land in is covered) plus
+  two run-time checks: the sweep is handed the locked lodge set, re-derives the
+  guest-row lodges under merge's `Member … FOR UPDATE` and refuses the whole
+  merge with a 409 if the prefix no longer covers them, and refuses again rather
+  than judge a bed-night whose own room sits outside the set (see
   docs/CONCURRENCY_AND_LOCKING.md -> "Merge joins the bed-allocation cohort").
 
   Membership cancellation and archive need no sweep call: approval

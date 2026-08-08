@@ -2275,26 +2275,28 @@ export async function executeMemberMerge(params: {
     // only partner-share caller long enough for that to matter, so it takes the
     // narrow lodge-only prefix and pays for it with a WIDER lodge derivation:
     // `acquireMemberMergePartnerSharedLodgeLocks` unions the lodges of the two
-    // members' future allocations with the lodges of their future GUEST-NIGHTS,
-    // so a lodge is covered even where no allocation exists there yet. See
-    // docs/CONCURRENCY_AND_LOCKING.md -> "Merge joins the bed-allocation
-    // cohort" for the deadlock analysis of the resulting edges.
+    // members' future allocations with the lodges of every booking they hold a
+    // GUEST ROW on, so a lodge is covered even where no allocation exists there
+    // yet. See docs/CONCURRENCY_AND_LOCKING.md -> "Merge joins the
+    // bed-allocation cohort" for the deadlock analysis of the resulting edges.
     //
-    // THAT IS COVERAGE, NOT CLOSURE, and this comment used to claim closure
-    // ("every lodge a concurrent placement could land in is covered"). It is
-    // not true. The derivation filters on `BookingGuest.stayStart`/`stayEnd`
-    // and `BookingGuestNight`, which are MUTABLE, and the writers that move
-    // them (admin date override, and the no-override in-progress check-out
-    // extension) hold lock(1) plus their own lodge key and no member key merge
-    // holds. So a lodge with only PAST guest-nights at derivation time can
-    // acquire future ones while the merge runs. Step 3b's
-    // `UnlockedPartnerShareLodgeError` catches every such row that is visible
-    // at its candidate read and 409s the whole merge; a row committed after
-    // that read is not caught. The full statement of the gap, including why the
-    // escaped row can only become an unbacked shared double via a hand
-    // placement rather than auto-allocation, is on
-    // `futurePartnerShareGuestNightLodgeIds` in bed-allocation-lifecycle.ts.
-    // It is narrower than `main`, which runs no sweep at all.
+    // THAT SECOND READ CARRIES NO DATE FILTER, and #2672 is why. It used to ask
+    // for FUTURE guest-nights only, which meant it filtered on
+    // `BookingGuest.stayStart`/`stayEnd` and `BookingGuestNight` — all MUTABLE,
+    // all rewritten by writers (the admin date override, and the in-progress
+    // check-out extension that needs no override and no admin role) that hold
+    // lock(1) plus their own lodge key and no member key merge holds. A lodge
+    // with only PAST guest-nights at derivation time could therefore acquire
+    // future ones mid-merge, in a lodge merge held no key for. Locking on the
+    // guest row itself instead removes the class: no date write can make a
+    // guest row stop being a guest row at that lodge.
+    //
+    // The one thing the derivation alone cannot promise is that its set does
+    // not GROW, so step 3b re-derives it under the `Member … FOR UPDATE` taken
+    // below — the point after which no INSERT or re-point of a `BookingGuest`
+    // naming these members can commit, because that FK write needs
+    // `FOR KEY SHARE` on the member row — and 409s if a lodge appeared. That
+    // pair is what turns the argument into a fence rather than an observation.
     //
     // Deriving the lodge set here also needs BOTH identities: the helper reads
     // the two members' own future allocations and guest-nights, so it must run
@@ -2611,9 +2613,14 @@ export async function executeMemberMerge(params: {
     // CARRIES the duplicate's link over to a master that had none).
     //
     // Because merge holds no global cohort key, the sweep is handed the exact
-    // lodge set the prefix locked and refuses if a candidate row turns up outside
-    // it — one more drift refusal, in the same shape as the ones above, rather
-    // than a bed-inventory write in an unserialised lodge.
+    // lodge set the prefix locked and refuses if it is not still complete — one
+    // more drift refusal, in the same shape as the ones above, rather than a
+    // bed-inventory write in an unserialised lodge. Two refusals, in fact
+    // (#2672): the sweep first re-derives the members' whole guest-row lodge set
+    // and refuses if the prefix does not cover it, which is meaningful HERE
+    // precisely because the `Member … FOR UPDATE` above has already frozen that
+    // set for the rest of the transaction; then it refuses on any candidate row
+    // whose own room sits outside the prefix.
     try {
       sweptShares = await sweepUnbackedFutureSharedDoublesWithLocksHeld({
         memberIds: [masterId, loserId],

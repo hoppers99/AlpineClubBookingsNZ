@@ -1941,9 +1941,10 @@ async function futurePartnerShareAllocationLodgeIds(
 }
 
 /**
- * The lodges of every booking that holds a FUTURE guest-night for one of these
- * members — the lodges a placement for them could still LAND in while this
- * transaction runs, whether or not a bed allocation exists there yet (#2595).
+ * The lodges of EVERY booking these members hold a guest row on — past, present
+ * and future alike — i.e. the lodges a placement for them could land in while
+ * this transaction runs, whether or not a bed allocation exists there yet and
+ * whether or not the guest's stay is in the future today (#2595, #2672).
  *
  * This is the derivation that lets a caller drop the global cohort key, so its
  * completeness argument is the whole safety case and is spelled out here:
@@ -1956,22 +1957,18 @@ async function futurePartnerShareAllocationLodgeIds(
  *    lodge-scoped room reads in `admin-bed-allocation.ts`), and both
  *    `Booking.lodgeId` and `LodgeRoom.lodgeId` are NOT NULL, so the allocation's
  *    lodge is the booking's lodge.
- *  - A placement is only ever written for one of that guest's own nights, and
- *    the sweep only ever judges `stayDate >= today`, so a FUTURE placement
- *    implies a FUTURE guest-night.
+ *  - `Booking.lodgeId` is never written after create (no writer updates it), so
+ *    a guest row's lodge is fixed for the life of the row.
  *
- * WHAT THAT ARGUMENT DOES NOT COVER, stated plainly because the three bullets
- * above are all about IMMUTABLE or FK-constrained columns and it would be easy
- * to read them as closure. They are not. Every column this query FILTERS on is
- * mutable: `BookingGuest.stayStart`, `BookingGuest.stayEnd` and the
- * `BookingGuestNight` rows. The bullets prove "a future placement implies a
- * future guest-night IN THE SAME LODGE"; they do not prove "the set of lodges
- * holding a future guest-night cannot CHANGE while the merge runs". It can.
- *
- * Concretely, these writers rewrite a guest's dates while holding
- * `pg_advisory_xact_lock(1)` plus that booking's own lodge key — and NO
- * `member-lifecycle:` or `member-partner-link:` key, which are the only keys
- * merge holds once it has dropped the global one. So merge cannot exclude them:
+ * WHY THERE IS NO DATE FILTER HERE, and why there used to be (#2672). This
+ * query used to ask for FUTURE guest-nights only —
+ * `BookingGuest.stayEnd >= today OR any BookingGuestNight.stayDate >= today` —
+ * and the three bullets above were offered as its completeness argument. They
+ * do not support it. Every one of them is about an IMMUTABLE or FK-constrained
+ * column; every column the old filter tested is MUTABLE, and three production
+ * writers move them while holding `pg_advisory_xact_lock(1)` plus their own
+ * booking's lodge key and NO `member-lifecycle:` or `member-partner-link:` key
+ * — the only keys merge still holds once it has dropped the global one:
  *
  *  - `modifyBookingDates` and `adminShiftBookingDates`
  *    (`booking-date-modification-service.ts`) under `adminOverride`, whose
@@ -1984,41 +1981,27 @@ async function futurePartnerShareAllocationLodgeIds(
  *
  * Each is followed in its own transaction by
  * `reconcileBedAllocationsForBookingWithLodgeLockHeld`, so it also creates the
- * new `BedAllocation` rows on the newly-future nights.
+ * new `BedAllocation` rows on the newly-future nights. A booking at lodge Y
+ * whose guest-nights were ALL in the past when the old query ran was therefore
+ * invisible to it, and could acquire future nights mid-merge in a lodge merge
+ * held no key for. `Booking.lodgeId` being immutable never helped: the lodge
+ * does not move, the NIGHTS do.
  *
- * The consequence: a booking at lodge Y whose guest-nights are ALL in the past
- * when this query runs is invisible to both reads, and can be shifted into the
- * future during the merge, into a lodge the merge holds no key for. Nothing
- * about `Booking.lodgeId` being immutable prevents that — the lodge does not
- * move, the NIGHTS do.
+ * Dropping the filter removes that class of escape outright, because the
+ * property this query now reads — "these members have a guest row on a booking
+ * at lodge L" — cannot be falsified by any date write. It is the same choice,
+ * for the same reason, as the deliberate absence of a `Booking.status` filter
+ * below: over-locking on state a racing writer can change is the safe
+ * direction, and this query's job is coverage, not precision.
  *
- * How far the enforcement below actually gets. This is not unguarded, and it is
- * narrower than it first looks, but it is not closed:
- *
- *  - `sweepUnbackedFutureSharedDoublesWithLocksHeld` throws
- *    {@link UnlockedPartnerShareLodgeError} for any candidate row in a lodge
- *    outside the locked set, which rolls the whole merge back. That catches
- *    every interleaving where the offending row is visible at the sweep's
- *    CANDIDATE READ. A row committed after that read and before the merge
- *    commits is not caught — the merge holds no key the other writer contends
- *    on, so there is nothing to serialise them.
- *  - For the escaped row to be an unbacked SHARED DOUBLE rather than a harmless
- *    primary, something must write `isSecondOccupant: true` in that window.
- *    Auto-allocation cannot: `autoAllocateMissingBedNights`' `createMany`
- *    payload carries no `isSecondOccupant` at all and the planner
- *    (`bed-allocation.ts`) has no concept of one. Only the manual admin
- *    placement paths in `admin-bed-allocation.ts` write second occupants, and
- *    they ask `mayShareDoubleBedWith`, which — before the merge commits — still
- *    reads the CONFIRMED link the merge is about to drop and says yes.
- *
- * So the residual is a four-step interleaving (lodge Y outside the derived set
- * → a concurrent guest-date write puts a merged member on a future night at Y →
- * an admin hand-places a second occupant on it → both commit inside the sweep's
- * own read-to-commit window), not a single racing writer. It is a real hole in
- * the completeness claim and it is recorded rather than argued away. It is NOT
- * a regression: `main` runs no sweep at all, so on `main` that same state is
- * simply never reconciled. Closing it needs an owner decision about which
- * Critical surface pays — see the residual-risk section of PR #2641.
+ * What it costs, stated honestly: a member who has stayed at every lodge makes
+ * merge take every lodge's capacity key. That is bounded by the club's lodge
+ * count (not by the member's booking history), it is still per-lodge keys and
+ * never the global cohort key, and the shape is the convoy already documented
+ * at `docs/CONCURRENCY_AND_LOCKING.md` -> "Merge joins the bed-allocation
+ * cohort". The alternative considered and rejected was giving the three
+ * guest-date writers a `member-lifecycle:` tier of their own — see that section
+ * for why a member-family key on a money path was the worse trade.
  *
  * Deliberately NOT filtered by `Booking.status`. Status transitions serialise on
  * the global cohort key, which merge no longer holds, so a booking that is not
@@ -2027,29 +2010,78 @@ async function futurePartnerShareAllocationLodgeIds(
  * the safe direction; narrowing on status would reintroduce exactly the hole
  * this query closes.
  *
- * The `stayEnd`/`nights` disjunction is deliberate too: `BookingGuestNight` rows
- * are the per-night truth for modern bookings, but legacy guests can carry only
- * the `stayStart..stayEnd` envelope (which is why the planners fall back to it),
- * so either signal alone could miss a lodge.
+ * The one thing this read alone still cannot promise is that the SET does not
+ * grow: a guest row naming one of these members could be inserted at a lodge
+ * they have never booked, after this runs. That is closed separately and
+ * positively by {@link assertPartnerShareLodgeCoverageWithLocksHeld}, which
+ * re-runs this query under merge's `Member … FOR UPDATE` — the point after
+ * which no such insert can commit — and refuses the merge if the set grew.
  */
-async function futurePartnerShareGuestNightLodgeIds(
-  tx: Prisma.TransactionClient,
+async function partnerShareGuestRowLodgeIds(
+  db: BedAllocationLifecycleDb,
   uniqueMemberIds: string[],
 ): Promise<string[]> {
-  const today = getTodayDateOnly();
-  const guestRows = await tx.bookingGuest.findMany({
-    where: {
-      memberId: { in: uniqueMemberIds },
-      OR: [
-        { stayEnd: { gte: today } },
-        { nights: { some: { stayDate: { gte: today } } } },
-      ],
-    },
+  const guestRows = await db.bookingGuest.findMany({
+    where: { memberId: { in: uniqueMemberIds } },
     select: { booking: { select: { lodgeId: true } } },
   });
   return guestRows
     .map((guest) => guest.booking.lodgeId)
     .filter((lodgeId): lodgeId is string => Boolean(lodgeId));
+}
+
+/**
+ * Turn merge's lodge derivation from an argument into a proof (#2672).
+ *
+ * Call this from inside the merge transaction AFTER merge's sorted
+ * `Member … FOR UPDATE` statement (`lockMemberMergeHostingCoverageParticipants`)
+ * and while the lodge prefix is still held. It re-runs
+ * {@link partnerShareGuestRowLodgeIds} and refuses the whole merge if the set
+ * has grown past the lodges the prefix actually locked.
+ *
+ * Why that placement makes it a proof rather than another visibility check:
+ * `BookingGuest.memberId` is a real foreign key to `Member`, so PostgreSQL
+ * takes `FOR KEY SHARE` on the referenced member row for every INSERT of a
+ * guest row naming it, and for every UPDATE that re-points one onto it.
+ * `FOR KEY SHARE` conflicts with `FOR UPDATE`. Once merge holds the master and
+ * the loser `FOR UPDATE`, no such write can commit until merge does — the same
+ * property `adult-member-hosting-queue-participants.ts` already documents from
+ * the other side ("blocks every FK write naming those members, so an uninvolved
+ * booking-create or guest-add can wait behind the tail of a merge"). So the set
+ * this function reads is FROZEN for the remainder of the transaction, and a
+ * subset check against the locked lodges is a statement about the future, not
+ * only about the past.
+ *
+ * Combined with the no-date-filter derivation, that closes the loop: every
+ * lodge a `BedAllocation` naming these members can exist in, or be created in,
+ * before this merge commits is a lodge whose capacity key merge holds — and
+ * every writer that could create, move or invalidate such a row takes that key
+ * (`docs/CONCURRENCY_AND_LOCKING.md` -> "The counterpart inventory is
+ * deliberate"). The escape is fenced, not merely observed.
+ *
+ * A refusal here means a guest row for one of these members landed at a lodge
+ * they had never booked, between the prefix derivation at the top of the merge
+ * and the `FOR UPDATE`. Nothing is written, the admin is told the booking
+ * picture changed, and a retry derives the wider set. Deliberately checked
+ * BEFORE any candidate read, and regardless of whether the sweep would find
+ * anything to remove: the hazard is a lodge that has no shared double YET.
+ */
+async function assertPartnerShareLodgeCoverageWithLocksHeld(
+  db: BedAllocationLifecycleDb,
+  uniqueMemberIds: string[],
+  lockedLodgeIds: ReadonlySet<string>,
+): Promise<void> {
+  if (uniqueMemberIds.length === 0) return;
+  const uncoveredLodgeIds = [
+    ...new Set(
+      (await partnerShareGuestRowLodgeIds(db, uniqueMemberIds)).filter(
+        (lodgeId) => !lockedLodgeIds.has(lodgeId),
+      ),
+    ),
+  ].sort();
+  if (uncoveredLodgeIds.length > 0) {
+    throw new UnlockedPartnerShareLodgeError(uncoveredLodgeIds);
+  }
 }
 
 /**
@@ -2097,10 +2129,12 @@ export async function acquireFuturePartnerSharedAllocationLocks(
  * they keep the global key.
  *
  * Dropping it is only sound because the lodge set is derived from BOTH sources
- * (see {@link futurePartnerShareGuestNightLodgeIds}): the lodges the members
- * already hold future allocations in, and the lodges they hold future
- * guest-nights in. Every writer that could create, move or invalidate a future
- * shared double in a lodge takes that lodge's capacity key
+ * (see {@link partnerShareGuestRowLodgeIds}): the lodges the members already
+ * hold future allocations in, and the lodges of every booking they hold a guest
+ * row on at all — the second read carries NO date filter, because the columns a
+ * date filter would test are the ones a concurrent writer can move (#2672).
+ * Every writer that could create, move or invalidate a future shared double in
+ * a lodge takes that lodge's capacity key
  * (`docs/CONCURRENCY_AND_LOCKING.md` -> "The counterpart inventory is
  * deliberate"), so covering every lodge a placement could land in is equivalent
  * to covering the cohort for the rows this sweep judges — without serialising
@@ -2116,7 +2150,11 @@ export async function acquireFuturePartnerSharedAllocationLocks(
  * Returns the sorted lodge ids it locked, so the caller can hand them to
  * {@link sweepUnbackedFutureSharedDoublesWithLocksHeld} and have the sweep
  * REFUSE rather than touch a row in a lodge this prefix does not cover. The
- * derivation argument above is thereby enforced at run time instead of trusted.
+ * derivation argument above is thereby enforced at run time instead of trusted:
+ * the sweep re-derives the same set under merge's `Member … FOR UPDATE` (see
+ * {@link assertPartnerShareLodgeCoverageWithLocksHeld}) and refuses if a lodge
+ * appeared in between, and separately refuses on any candidate row whose own
+ * room sits outside the set.
  */
 export async function acquireMemberMergePartnerSharedLodgeLocks(
   tx: Prisma.TransactionClient,
@@ -2130,7 +2168,7 @@ export async function acquireMemberMergePartnerSharedLodgeLocks(
     tx,
     uniqueMemberIds,
   );
-  const guestNightLodgeIds = await futurePartnerShareGuestNightLodgeIds(
+  const guestNightLodgeIds = await partnerShareGuestRowLodgeIds(
     tx,
     uniqueMemberIds,
   );
@@ -2328,14 +2366,23 @@ export async function sweepFuturePartnerSharedAllocationsWithLocksHeld(params: {
 // ---------------------------------------------------------------------------
 
 /**
- * Thrown when a candidate future shared-double sits in a lodge the caller does
- * not hold the capacity key for (#2595).
+ * Thrown when the sweep would be operating in a lodge the caller does not hold
+ * the capacity key for (#2595, #2672). Two things raise it, and the `lodgeIds`
+ * it carries mean slightly different things in each case:
  *
- * That is only reachable if a lodge appeared for one of these members AFTER the
- * prefix derived its set — a booking guest row added, in a new lodge, by a
- * concurrent writer. Deleting the row anyway would mutate bed inventory in a
- * lodge this transaction never serialised against, so the caller must roll back
- * and let the operator retry; the retry derives the new lodge and covers it.
+ *  - the COVERAGE proof: one of these members holds a guest row at a lodge
+ *    outside the locked prefix, so a bed could be placed for them there without
+ *    ever contending on a key this transaction holds — even if no shared double
+ *    exists there yet; or
+ *  - the per-candidate check: a row the sweep is about to judge sits in a room
+ *    belonging to a lodge outside the prefix.
+ *
+ * Both are only reachable if a lodge appeared for one of these members AFTER
+ * the prefix derived its set — a booking guest row added in a new lodge by a
+ * concurrent writer, or a legacy allocation whose room has drifted out of its
+ * booking's lodge. Acting anyway would mutate bed inventory in a lodge this
+ * transaction never serialised against, so the caller must roll back and let
+ * the operator retry; the retry derives the new lodge and covers it.
  */
 export class UnlockedPartnerShareLodgeError extends Error {
   constructor(public readonly lodgeIds: string[]) {
@@ -2371,9 +2418,21 @@ type MergeSweepAllocationRow = Prisma.BedAllocationGetPayload<{
  * its two occupants is one of these members. Everything else is left alone, so
  * this can never turn into a lodge-wide re-plan.
  *
- * `lockedLodgeIds` is that prefix's own return value. Every candidate row must
- * sit in one of those lodges or the sweep throws
- * {@link UnlockedPartnerShareLodgeError} without writing anything.
+ * `lockedLodgeIds` is that prefix's own return value. It is checked TWICE, and
+ * the two checks answer different questions (#2672):
+ *
+ *  - {@link assertPartnerShareLodgeCoverageWithLocksHeld} first, before any
+ *    candidate is read and whether or not there is anything to sweep: does the
+ *    prefix cover every lodge these members can hold a bed in AT ALL? Called
+ *    under merge's `Member … FOR UPDATE`, that set can no longer grow, so
+ *    passing it is a fence for the rest of the transaction rather than an
+ *    observation about this instant.
+ *  - the per-candidate room check second: does any row this sweep is about to
+ *    JUDGE sit outside the set anyway? That catches a legacy allocation whose
+ *    room has drifted out of its booking's own lodge partition, which the
+ *    guest-row derivation cannot see.
+ *
+ * Either one throws {@link UnlockedPartnerShareLodgeError} and writes nothing.
  */
 export async function sweepUnbackedFutureSharedDoublesWithLocksHeld(params: {
   memberIds: readonly string[];
@@ -2386,6 +2445,12 @@ export async function sweepUnbackedFutureSharedDoublesWithLocksHeld(params: {
   if (scopeIds.length === 0) return [];
   const lockedLodgeIds = new Set(params.lockedLodgeIds);
   const today = getTodayDateOnly();
+
+  // #2672 — the coverage proof, before anything else and before the early
+  // return on "no candidates". The hazard this closes is a lodge that holds no
+  // shared double YET: a merged member's guest row there is all this sweep
+  // needs in order to be judging bed inventory in a lodge nothing serialises.
+  await assertPartnerShareLodgeCoverageWithLocksHeld(db, scopeIds, lockedLodgeIds);
 
   // Candidate second-occupant rows, from both sides of the share:
   //  (a) a scoped member IS the second occupant, and
@@ -2435,18 +2500,16 @@ export async function sweepUnbackedFutureSharedDoublesWithLocksHeld(params: {
   // #2595 — the derivation check, enforced rather than trusted. Without the
   // global cohort key the ONLY thing serialising this sweep against the
   // bed-allocation writers is the per-lodge capacity key, so every row it is
-  // about to judge must sit in a lodge whose key the caller holds. A miss means
-  // a lodge appeared for one of these members after the derivation, and the
-  // safe answer is to roll the merge back.
+  // about to judge must sit in a lodge whose key the caller holds.
   //
-  // This is a VISIBILITY check, not a fence, and it is worth being exact about
-  // which of the two it is. It is evaluated against the candidate rows read
-  // immediately above, so it fires for every offending row that had committed
-  // by then — but merge holds no key those writers contend on, so a row that
-  // commits after this read and before the merge's own commit is not seen here
-  // and cannot be. See `futurePartnerShareGuestNightLodgeIds` for the full
-  // statement of that residual and why the mutable guest-date columns are what
-  // makes it possible.
+  // What this second check adds over the coverage proof above (#2672): the
+  // coverage proof reasons from GUEST ROWS to lodges, via "an allocation's lodge
+  // is its booking's lodge". That holds for every row any current writer
+  // creates, but a legacy `BedAllocation` whose `room` has drifted into another
+  // lodge would break it, and this check reads each candidate's OWN
+  // `room.lodgeId` rather than deriving it. So it is a narrower net, cast on the
+  // rows actually being judged, and it is kept for exactly the case the wider
+  // net cannot express.
   const unlockedLodgeIds = [
     ...new Set(
       [...candidates.values()]

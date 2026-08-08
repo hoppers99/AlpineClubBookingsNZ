@@ -1537,7 +1537,8 @@ lockAdultMemberHostingPolicySet(tx)                              policy config
   → acquireMemberMergePartnerSharedLodgeLocks(tx, [master, loser])
         = acquireLodgeCapacityLock per affected lodge, sorted     per-lodge
           (affected = the lodges of their future bed allocations
-           UNION the lodges of their future guest-nights)
+           UNION the lodges of EVERY booking they hold a guest
+           row on — no date filter, no status filter, #2672)
         = NO pg_advisory_xact_lock(1)                             deliberately
   → member-lifecycle:<master> / member-lifecycle:<loser>, sorted  member
   → member-partner-link:<master> / member-partner-link:<loser>,   member links
@@ -1570,7 +1571,7 @@ acquire a lodge key *after* a member key and invert the fixed
 ordinary bed-allocation writer that takes global → lodge and then reaches a
 member tier. That is a deadlock, not a style point. The same reason forces the
 lodge set to be **derived** before the relation moves: the helper reads the two
-members' own future allocations and guest-nights, so it has to run while both
+members' own future allocations and guest rows, so it has to run while both
 identities still name their rows.
 
 **Why merge takes no global cohort key.** An advisory xact lock is released only
@@ -1586,7 +1587,7 @@ update, account-deletion approval) are all short transactions and keep the globa
 key through `acquireFuturePartnerSharedAllocationLocks`. Merge is the one caller
 long enough for it to matter, so it has its own narrower helper.
 
-**What pays for dropping it: the guest-night derivation.** With no global key, the
+**What pays for dropping it: the guest-row derivation.** With no global key, the
 only thing serialising the sweep against the bed-allocation writers is the
 per-lodge capacity key, so the derived lodge set has to cover every lodge a
 placement could *land* in, not just the lodges where a bed is already allocated.
@@ -1595,26 +1596,29 @@ It is the union of two reads:
 - the lodges of the two members' future `BedAllocation` rows (each row's own
   `room.lodgeId`, so a legacy row that has drifted out of its booking's lodge
   partition is still covered), and
-- the lodges of every booking holding a future guest-night for either member
-  (`BookingGuest.stayEnd >= today` OR any `BookingGuestNight.stayDate >= today`,
-  which is deliberately status-unfiltered: booking-status transitions serialise on
-  the global key that merge no longer holds, so a booking that is not allocatable
-  when the set is derived could become allocatable while the merge runs).
+- the lodges of **every booking either member holds a guest row on**
+  (`BookingGuest.memberId IN (master, loser)` and nothing else). No date filter,
+  no status filter: booking-status transitions serialise on the global key that
+  merge no longer holds, and the stay columns are rewritten by writers merge
+  cannot exclude, so narrowing on either would be narrowing on state a racing
+  writer can change.
 
-A future placement implies a future guest-night **in the same lodge**, because a
+A future placement implies a guest row **in the same lodge**, because a
 `BedAllocation` exists only for a `BookingGuest` (FK-constrained), every
 allocating writer picks its room from that booking's own lodge
 (`roomsForBooking`/`roomsAtLodge`, plus the explicit "Bed belongs to a different
 lodge than the booking" refusal on the manual paths and the reviewed move's
 `LODGE_MISMATCH`), both `Booking.lodgeId` and `LodgeRoom.lodgeId` are NOT NULL,
-and a placement is only written on one of that guest's own nights.
+and no writer ever updates `Booking.lodgeId`.
 
-**That is not the same as complete, and this section used to say it was.** Every
-column the derivation FILTERS on — `BookingGuest.stayStart`, `stayEnd`, and the
-`BookingGuestNight` rows — is **mutable**, and the writers that move them hold
-`lock(1)` plus their own booking's lodge key and **no** `member-lifecycle:` or
-`member-partner-link:` key. Those are the only keys merge still holds, so merge
-cannot exclude them:
+**Why the date filter is gone (#2672).** That second read used to ask for FUTURE
+guest-nights only — `BookingGuest.stayEnd >= today` OR any
+`BookingGuestNight.stayDate >= today` — and the completeness argument written
+around it enumerated `Booking.lodgeId` immutability, FK-constrainedness and NOT
+NULL columns. All true; none of them about the columns being filtered on. Every
+one of those is **mutable**, and the writers that move them hold `lock(1)` plus
+their own booking's lodge key and **no** `member-lifecycle:` or
+`member-partner-link:` key — the only keys merge still holds:
 
 - `modifyBookingDates` / `adminShiftBookingDates`
   (`booking-date-modification-service.ts`) under `adminOverride`, whose stated
@@ -1627,38 +1631,67 @@ cannot exclude them:
 
 Both then call `reconcileBedAllocationsForBookingWithLodgeLockHeld`, which
 auto-allocates on the newly-future nights. So a booking at lodge Y holding only
-PAST guest-nights when the set is derived is invisible to both reads and can
-acquire future ones mid-merge, in a lodge merge holds no key for. `Booking.lodgeId`
-being immutable does not help: the lodge does not move, the **nights** do.
+PAST guest-nights when the set was derived was invisible to both reads and could
+acquire future ones mid-merge, in a lodge merge held no key for. `Booking.lodgeId`
+being immutable never helped: the lodge does not move, the **nights** do. That
+escape was demonstrated end to end against real PostgreSQL — an admin date shift
+of a fully-past booking, followed by a hand-placed second occupant, committing
+inside merge's own read-to-commit window and surviving the merge as an unbacked
+shared double — and the same case is now the regression test for the fix
+(`member-merge-shared-double-races.realdb.test.ts`).
 
-The residual is bounded but real, and is stated in full on
-`futurePartnerShareGuestNightLodgeIds` (`bed-allocation-lifecycle.ts`). In short:
-the 409 below catches every such row **visible at the sweep's candidate read**,
-and only a row committed after that read escapes; and for an escaped row to be an
-unbacked *shared double* rather than a harmless primary, an admin must hand-place
-a second occupant in the same window, because auto-allocation writes no
-`isSecondOccupant` at all. It is **narrower than `main`**, which runs no sweep and
-never reconciles that state in the first place, so it is not a regression — but
-it is not closed, and #2595 does not claim it is.
+Filtering on the guest ROW instead of the guest's DATES removes the class: no
+date write can make a guest row stop being a guest row at that lodge. **What it
+costs** is that a member who has stayed at every lodge makes merge take every
+lodge's capacity key. That is bounded by the club's lodge count rather than by
+the member's booking history, it is still per-lodge keys and never the global
+cohort key, and the resulting shape is the convoy already described at the foot
+of this section. **The alternative that was rejected** was giving the three
+guest-date writers a `member-lifecycle:` tier of their own for the members whose
+dates they move. It is order-safe on paper (they already take `lock(1)` → lodge,
+so → member is the documented order) and it would close the gap at the source
+rather than by over-locking — but it puts a member-family key on a Critical money
+path, so every date change would contend with every archive, delete and merge,
+and it needs its own deadlock pass across three writers instead of none. Widening
+one read in one function was the smaller blast radius for the same outcome.
 
-**And it is enforced, not merely argued.**
+**And the set cannot GROW behind the merge's back either.** Dropping the date
+filter fixes what the set contains at derivation time; it says nothing about a
+guest row *inserted* at a lodge these members had never booked, between the
+derivation at the top of the merge and the sweep. Step 3b closes that positively
+rather than by argument: it **re-derives the same guest-row lodge set** and 409s
+if the prefix does not cover it — and it does so *after* merge's sorted
+`Member … FOR UPDATE`
+(`lockMemberMergeHostingCoverageParticipants`). `BookingGuest.memberId` is a real
+foreign key to `Member`, so PostgreSQL takes `FOR KEY SHARE` on the referenced
+member row for every INSERT naming it and every UPDATE re-pointing onto it, and
+`FOR KEY SHARE` conflicts with `FOR UPDATE`. Once merge holds both member rows
+`FOR UPDATE`, no such write can commit until merge does — the same property
+`adult-member-hosting-queue-participants.ts` already documents from the other
+side ("blocks every FK write naming those members, so an uninvolved
+booking-create or guest-add can wait behind the tail of a merge"). So the
+re-derived set is **frozen for the remainder of the transaction**, and passing
+the subset check is a statement about the future rather than about that instant.
+
+**Two checks, deliberately, answering different questions.**
 `acquireMemberMergePartnerSharedLodgeLocks` returns the exact lodge ids it locked
-and step 3b is handed them: any candidate bed-night outside that set aborts the
-whole merge with a 409 (`partner_share_lodge_drift`, audited as a refused merge)
-instead of deleting a row in a lodge this transaction never serialised against.
-Only a lodge that appeared for one of these members *after* the derivation can
-trigger it — a guest row added to a booking in a new lodge, or a guest's dates
-moved into the future, by a concurrent writer — and a retry derives it. The
-residual cost of the owner decision is therefore a rare, safe, retryable refusal
-of the merge, in place of a guaranteed club-wide stall on every merge.
+and step 3b is handed them:
 
-**The 409 is a visibility check, not a fence.** It is evaluated against the
-candidate rows the sweep READS, so it fires only for a lodge that appeared before
-that read. A row committed between the sweep's candidate read and the merge's own
-commit is not caught by it, and cannot be — merge holds no key the writer that
-committed it contends on. "A retry derives it" is true for the refusals the check
-does raise; it is not a statement that every late arrival raises one. See the gap
-stated above under "What pays for dropping it".
+- the **coverage** check runs first, before any candidate is read and whether or
+  not the sweep would find anything to remove, because the hazard is a lodge that
+  holds no shared double *yet*; and
+- the **per-candidate** check runs second, on each row's own `room.lodgeId`,
+  because a legacy allocation whose room has drifted out of its booking's lodge
+  partition is invisible to a derivation that reasons from guest rows.
+
+Either raises `UnlockedPartnerShareLodgeError`, which merge maps to a 409
+(`partner_share_lodge_drift`, audited as a refused merge) with **nothing
+written** — never a bed-inventory write in a lodge this transaction did not
+serialise against. What the admin sees is "A lodge booking for one of these
+members changed while the merge was running. Nothing was merged — please try
+again."; the retry derives the wider set and succeeds. The residual cost of the
+owner decision is therefore a rare, safe, retryable refusal, in place of a
+guaranteed club-wide stall on every merge.
 
 **Deadlock analysis, re-done for the new edge set.** The edges merge contributes
 are now **three**: `adult-member-hosting-policy-set` → per-lodge capacity,
@@ -1696,12 +1729,57 @@ and no reverse edge exists anywhere in the tree:
   holding `lock(1)`; that is a convoy, not a cycle, because merge never waits for
   the global key.
 
+**Re-done again for #2672, against the edge set `main` carries today** — which
+now also includes #2636's `DeletionRequest` row lock and this section's own
+lodge-only prefix. Widening the derivation and adding the coverage re-derivation
+introduce **no new edge at all**, and the derivation is worth stating rather than
+asserting:
+
+- **No new key.** The wider derivation takes the *same* family (per-lodge
+  capacity) at the *same* point in the order; only the cardinality of the set
+  changes. Acquisition inside the family is still sorted, and a cycle inside one
+  totally-ordered family is impossible however many members of it a transaction
+  takes: a sorted acquirer never requests a key below one it already holds.
+- **The coverage re-derivation waits on nothing.** It is a plain MVCC
+  `SELECT … FROM "BookingGuest"` with no `FOR` clause, issued under locks merge
+  already holds. A read that cannot block cannot be an edge in a wait-for graph.
+- **`lodge → Member`-row is not inverted by it.** Merge takes every lodge key at
+  the top and the sorted `Member … FOR UPDATE` much later, so when merge is
+  holding member rows it is not waiting for any lodge key. A concurrent
+  booking-create or guest-add holds `lock(1)` + its lodge key and then blocks on
+  the FK's `FOR KEY SHARE` against merge's `FOR UPDATE` — one direction only.
+  Widening merge's lodge set changes only *where* that writer stops: at one of
+  merge's lodge keys instead of at the member row. Both are convoys bounded by
+  the waiter's own budget, ending in `P2028` with nothing written.
+- **Against #2636/#2627's `DeletionRequest` row lock.** Merge takes no
+  `DeletionRequest` row at any point, and the release path
+  (`releaseDeletionRequestApprovalClaim`) takes that row plus an `AuditLog`
+  insert and **no** lodge, global or member-lifecycle key — so neither can be
+  waiting on anything the other holds. The deletion-approval *finalisation* does
+  share two of merge's tiers, but in the same direction merge uses (lodge →
+  member-lifecycle → `DeletionRequest` row → `Member` row) and, like merge, it
+  finishes the lodge family before reaching a member tier. Two transactions that
+  both complete family *n* before entering family *n+1* cannot hold each other's
+  next key.
+- **Against the #1756 partner-share callers.** They take `lock(1)` first and then
+  their own sorted lodge set. A wider merge set makes it likelier that such a
+  caller blocks on a lodge key merge holds *while holding `lock(1)`* — the
+  club-wide convoy described below, unchanged in kind and bounded by that
+  caller's own budget. It is still not a cycle, for the same single reason it
+  never was: merge waits for the global key nowhere, so the wait graph
+  terminates.
+
 `member-merge-execute.test.ts` pins that `executeMemberMerge` issues no
 `pg_advisory_xact_lock(1)` at all, and
 `member-merge-shared-double-races.realdb.test.ts` proves the same thing against
 real PostgreSQL by running a whole merge while another session holds `lock(1)`,
-plus the converse — that the merge still queues on the affected lodge key, and on
-the key of a lodge known only from a future guest-night.
+plus the converse — that the merge still queues on the affected lodge key, on the
+key of a lodge known only from a future guest-night, and (#2672) on the key of a
+lodge known only from a guest row whose stay is entirely in the **past**. The
+same suite drives the escape that filter used to allow, end to end and in both
+directions: a real `adminShiftBookingDates` moving a fully-past booking forward
+mid-merge, followed by a real hand-placed second occupant, is fenced by the lodge
+key now and produced a surviving unbacked shared double before.
 
 The sweep itself is `sweepUnbackedFutureSharedDoublesWithLocksHeld`, run as merge
 step 3b — after `applyMoves` (the guest rows now name the master) and after step
@@ -1709,9 +1787,11 @@ step 3b — after `applyMoves` (the guest rows now name the master) and after st
 teardown. Inside that window it sits after the #2597 participant `FOR UPDATE`
 set, the under-lock re-plan and the coverage-owner keys, so it acquires nothing
 and runs only once every drift refusal has passed: no bed-night is judged against
-a state the merge is about to 409 on. Its candidate rows are re-read under the
-locks; the removed rows are returned so the admin alert can be sent AFTER commit,
-alongside `settleHostingCoverageAfterCommit`.
+a state the merge is about to 409 on. Sitting after the participant `FOR UPDATE`
+is what makes its own coverage re-derivation a fence rather than a second look —
+see "And the set cannot GROW behind the merge's back either" above. Its candidate
+rows are re-read under the locks; the removed rows are returned so the admin
+alert can be sent AFTER commit, alongside `settleHostingCoverageAfterCommit`.
 
 Two consequences worth stating plainly, because neither is obvious from the code:
 
