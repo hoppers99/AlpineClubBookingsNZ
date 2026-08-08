@@ -14,10 +14,18 @@ force-confirm action. Force-confirm itself sits in the **bookings** permission
 area, so a view-only bookings role can browse the queue but not act on it. Money
 is integer cents (shown as dollars); dates are NZ date-only lodge nights.
 
+One waitlist repair does not live on this page. **Return to waitlist**, for a
+free booking whose confirmation got half-way, sits on the booking's own page
+under **Admin tools** — this queue lists only entries that are still waitlisted,
+which by definition that booking is not. See
+[Return a stranded free confirm to the waitlist](#return-a-stranded-free-confirm-to-the-waitlist).
+
 ## When you'd use it
 
 - A night frees up and you want to confirm the next waitlisted member.
 - A member accepts a waitlist offer and you need to push their booking through.
+- A member's free waitlist confirmation got stuck and you need to give them
+  their place back.
 - You want to see who is waiting, in what order, and whether their offer email
   was sent.
 
@@ -57,6 +65,46 @@ is integer cents (shown as dollars); dates are NZ date-only lodge nights.
 3. If the booking would exceed capacity, the overbook dialog lists the affected
    dates. Click **Confirm Anyway (Overbook)** to proceed — this writes a
    critical audit record you can open from the confirmation.
+
+### Return a stranded free confirm to the waitlist
+
+Very rarely, confirming a **free** waitlist offer gets half-way: the offer is
+used up and the booking moves to payment-pending, but the final step cannot
+finish and cannot undo itself. The booking then owes nothing, blocks nobody
+else's nights, and has no offer for the member to retry, so it will not clear on
+its own. The member is told exactly that at the time, and Admin → Audit log
+lists it under `waitlist.confirm_offer_release_failed`.
+
+1. Open the booking from **Admin → Bookings**. The waitlist queue will not show
+   it — it is no longer waitlisted.
+2. In the **Admin tools** card, press **Return to waitlist** and confirm.
+
+The booking goes back on the waitlist for the same nights, its beds are freed
+and offered to whoever is next, and the member is emailed that their waitlist
+place is back at position N — unless the booking has **No emails** on
+([Bookings](bookings.md#turn-off-all-emails-for-one-booking)), in which case the
+message is withheld and listed on the booking for you to pass on. That email is
+its own message, not the offer-expiry one: it says plainly that their offer did
+not run out and that they need do nothing. The action is audited, and the entry
+names the failure it resolves.
+
+The button appears only where the audit log shows this failure on that booking
+and it has not already been repaired — free, awaiting payment and no payment
+record is not enough on its own, because several ordinary paths leave a booking
+looking like that without it ever having been on a waitlist. If the booking has a
+balance, or someone else has already confirmed or cancelled it, the action says
+so and changes nothing. If it says something else is holding the booking right
+now, nothing was changed either — wait a moment and press it again.
+
+If the booking also has an admin hold on its nights, the confirmation dialog
+says so: returning it to the waitlist releases that hold and the nights become
+available to other members straight away. Set the hold again afterwards if you
+still need it.
+
+The alternative — cancel the booking and ask the member to rejoin — is still
+available and is the right call when the nights are no longer wanted.
+`docs/MAINTENANCE.md` has the full runbook, including how to find outstanding
+cases in the audit log.
 
 ## Settings reference
 
@@ -103,6 +151,7 @@ Force-confirming any of these skips the email choice, as described above.
 | "Offer email log missing" / "undeliverable" badge | The waitlist offer email did not send | Click **Review email recovery** to open the email deliverability page (`/admin/email-deliverability`) and re-send |
 | Confirming warns about overbooking | The lodge is full for those nights | Use **Confirm Anyway (Overbook)** only when you intend to overbook; it is audited |
 | "Unpaid finished stay created" after confirming | The confirmed stay is in the past and unpaid | Chase it from the **Unpaid Finished Stays** queue on the [Bookings](bookings.md) list |
+| A member says their free waitlist confirmation "did nothing", and the booking is not on this queue | The confirmation got half-way and could not undo itself | Open the booking from **Admin → Bookings** and press **Return to waitlist** in the Admin tools card — see [above](#return-a-stranded-free-confirm-to-the-waitlist) |
 
 ## Related links
 

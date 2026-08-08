@@ -105,7 +105,7 @@ correctly, and for anyone extending the taxonomy in AID-6B or AID-6C.
 | Category | Correlation entry | Reader needs | What actually records there |
 | --- | --- | --- | --- |
 | `system`, `security` | System | `support:view` | Setup, credentials, password/magic-link policy, backups, auth events and auth bounces, PIN login |
-| `admin` | System | `support:view` | **The cross-domain catch-all** — the largest category in the codebase (117 write sites). Member merge, member-lifecycle delete/archive, member import, lodge-access changes, seasonal membership assignments, internet-banking **payment settings**, booking-request **settings**, chores, lockers, rooms, bed allocation, lodge settings, access roles, modules |
+| `admin` | System | `support:view` | **The cross-domain catch-all** — the largest category in the codebase (118 write sites). Member merge, member-lifecycle delete/archive, member import, lodge-access changes, seasonal membership assignments, internet-banking **payment settings**, booking-request **settings**, chores, lockers, rooms, bed allocation, lodge settings, access roles, modules |
 | `booking` | Booking | `support:view` + `bookings:view` | Member-facing and system booking events. Not booking *settings* — those are `admin` |
 | `account` | Membership | `support:view` + `membership:view` | Member self-service: profile edits, notification preferences, post-login landing, membership cancellation, member photos, membership applications and nomination |
 | `family` | Membership | `support:view` + `membership:view` | Family groups, partner links, login-holder changes, dependents |
@@ -155,12 +155,13 @@ covers it: the column is optional.
 
 `AuditLog.category` is `String?` with no default, and the audit writer sets it only when
 the caller supplies one. The **executable census** — `npm run audit:census`, pinned by
-`src/lib/__tests__/audit-writer-census.test.ts` — counts **421 production audit write
+`src/lib/__tests__/audit-writer-census.test.ts` — counts **426 production audit write
 sites, of which 82 pass no category**: 69 through `logAudit`, 11 through
 `createAuditLog`, 2 hand-built Prisma writes, and none through
 `createStructuredAuditLog`. (The figure quoted here was 419 and was stale by two:
-the census and its reviewed manifest both report 421 on this commit, and this page
-is re-measured rather than carried forward.) Some are money-adjacent: subscription-billing settings, retry,
+the census and its reviewed manifest both report 421 on that commit, and this page
+is re-measured rather than carried forward — 426 is what the census reports on the
+merged tree carrying #2595, #2621 and #2649.) Some are money-adjacent: subscription-billing settings, retry,
 mark/unmark family, reconcile; the subscription charge confirm; all three member-credit
 adjustment steps; fee configuration; the saved-card charge results. Others are ordinary
 but relevant: booking-policy, season and promotional-code edits; Xero settings and

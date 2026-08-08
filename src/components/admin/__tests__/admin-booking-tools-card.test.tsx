@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 
 import type { ComponentProps } from "react";
-import { render, screen } from "@testing-library/react";
+import { fireEvent, render, screen } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import { MODULE_KEYS } from "@/config/modules";
 import type { FeatureFlags } from "@/config/schema";
@@ -83,6 +83,65 @@ function exclusiveHold(
 }
 
 describe("AdminBookingToolsCard", () => {
+  // #2649. The repair is offered on exactly one shape, and the page decides it.
+  // A button that can only refuse is worse than no button: it invites an
+  // operator to act on a booking that is not stranded and reads as a general
+  // "un-confirm" tool, which it deliberately is not.
+  describe("return to waitlist (#2649)", () => {
+    it("offers the repair when the page says the booking is stranded", () => {
+      renderCard(allFeaturesOn, { showReturnToWaitlist: true });
+
+      expect(
+        screen.getByRole("button", { name: "Return to waitlist" }),
+      ).toBeTruthy();
+      expect(
+        screen.getByText("Waitlist confirmation did not finish"),
+      ).toBeTruthy();
+    });
+
+    it("renders nothing about it on an ordinary booking", () => {
+      renderCard(allFeaturesOn);
+
+      expect(
+        screen.queryByRole("button", { name: "Return to waitlist" }),
+      ).toBeNull();
+      expect(
+        screen.queryByText("Waitlist confirmation did not finish"),
+      ).toBeNull();
+    });
+
+    it("states the consequence for an admin-held booking before the officer presses", async () => {
+      // #2649 review S3. The repair releases an admin capacity hold or an
+      // exclusive whole-lodge hold along with the status, freeing those nights
+      // to the next member. That has to be said in the dialog, not discovered
+      // in the audit log afterwards.
+      renderCard(allFeaturesOn, {
+        showReturnToWaitlist: true,
+        returnToWaitlistReleasesHold: true,
+      });
+
+      fireEvent.click(screen.getByRole("button", { name: "Return to waitlist" }));
+
+      expect(
+        await screen.findByText(/also carries an admin hold on its nights/),
+      ).toBeTruthy();
+    });
+
+    it("says nothing about a hold when the booking has none", async () => {
+      renderCard(allFeaturesOn, { showReturnToWaitlist: true });
+
+      fireEvent.click(screen.getByRole("button", { name: "Return to waitlist" }));
+
+      // The dialog opens either way; only the hold sentence is conditional.
+      expect(
+        await screen.findByText(/Put this booking back on the waitlist\?/),
+      ).toBeTruthy();
+      expect(
+        screen.queryByText(/also carries an admin hold on its nights/),
+      ).toBeNull();
+    });
+  });
+
   it("shows the bed allocation link when the module is enabled", () => {
     renderCard(allFeaturesOn);
 

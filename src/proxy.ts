@@ -1105,6 +1105,7 @@ export const config = {
     "/api/bookings/:id/guests/:guestId/consent",
     "/api/bookings/:id/waitlist-confirm",
     "/api/admin/bookings/:id/force-confirm",
+    "/api/admin/bookings/:id/return-to-waitlist",
     // Events calendar (#2241): the eventsCalendar rule in
     // src/config/feature-routes.ts gates "/api/calendar", and the first matcher
     // entry above excludes every "/api/..." path, so without this entry the

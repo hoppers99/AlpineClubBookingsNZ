@@ -2,6 +2,7 @@ import {
   waitlistConfirmationTemplate,
   waitlistOfferTemplate,
   waitlistOfferExpiredTemplate,
+  waitlistPlaceRestoredTemplate,
 } from "../email-templates";
 import { EMAIL_DEFAULT_LODGE_NAME } from "@/lib/email-message-settings";
 import {
@@ -143,6 +144,47 @@ export async function sendWaitlistOfferExpiredEmail(
       bookingContext.recipientMemberId,
     ),
     templateName: "waitlist-offer-expired",
+    templateData: {
+      firstName,
+      checkIn: formatNZDate(checkIn),
+      checkOut: formatNZDate(checkOut),
+      position,
+    },
+    lodgeId,
+  });
+}
+
+/**
+ * The RESTORED sibling of {@link sendWaitlistOfferExpiredEmail} (#2649).
+ *
+ * Identical plumbing — same arguments, same tokens, same booking-owner context,
+ * same optional lodge branding — because the two messages describe the same
+ * state change (the member is back on the waitlist at a known position). Only
+ * the reason differs, and only this one is true when an admin repairs a
+ * confirmation the club's own code stranded: the offer did not expire, so the
+ * expiry notice must not be reused for it.
+ */
+export async function sendWaitlistPlaceRestoredEmail(
+  // Waitlist entry's booking (#2258): a waitlist entry IS a booking row, so the
+  // per-booking "No emails" switch must be able to withhold these too.
+  bookingContext: { bookingId: string; recipientMemberId: string },
+  email: string,
+  firstName: string,
+  checkIn: Date,
+  checkOut: Date,
+  position: number,
+  // Booking's lodge (multi-lodge phase 8): see sendBookingConfirmedEmail.
+  lodgeId?: string | null,
+) {
+  await sendEmail({
+    to: email,
+    subject: `Your Waitlist Place Is Back - ${EMAIL_DEFAULT_LODGE_NAME}`,
+    html: waitlistPlaceRestoredTemplate(firstName, checkIn, checkOut, position),
+    bookingContext: bookingOwnerEmailContext(
+      bookingContext.bookingId,
+      bookingContext.recipientMemberId,
+    ),
+    templateName: "waitlist-place-restored",
     templateData: {
       firstName,
       checkIn: formatNZDate(checkIn),

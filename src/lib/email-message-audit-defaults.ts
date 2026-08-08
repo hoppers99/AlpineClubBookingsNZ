@@ -95,6 +95,10 @@ const EMAIL_AUDIT_DEFAULTS_BASE = {
     "defaultSubject": "Waitlist Offer Expired - {{CLUB_LODGE_NAME}}",
     "defaultBody": "Waitlist Offer Expired\n\nHi {{firstName}}, your waitlist offer for the dates below has expired.\n\nCheck-in: {{checkIn}}\nCheck-out: {{checkOut}}\nNew Position: #{{position}}\n\nYou've been returned to the waitlist. We'll notify you again if another spot opens up.\n\nView Booking: {{BASE_URL}}/bookings"
   },
+  "waitlist-place-restored": {
+    "defaultSubject": "Your Waitlist Place Is Back - {{CLUB_LODGE_NAME}}",
+    "defaultBody": "Your Waitlist Place Is Back\n\nHi {{firstName}}, your booking for the dates below could not be finished, so we have put you back on the waitlist. This was not something you did wrong, and your offer did not run out — you confirmed in time and our system could not complete it.\n\nCheck-in: {{checkIn}}\nCheck-out: {{checkOut}}\nNew Position: #{{position}}\n\nYou do not need to do anything. We will email you again as soon as a spot opens up for these nights.\n\nView Booking: {{BASE_URL}}/bookings"
+  },
   "admin-waitlist-offer": {
     "defaultSubject": "Waitlist Offer: {{memberName}}",
     "defaultBody": "Waitlist Offer Made\n\nA waitlist offer has been sent to {{memberName}}.\n\nMember: {{memberName}}\nCheck-in: {{checkIn}}\nCheck-out: {{checkOut}}\nGuests: {{guestCount}}\nQueue Position: #{{position}}\n\nThe member has 48 hours to confirm their booking.\n\nView Waitlist: {{BASE_URL}}/admin/waitlist"
