@@ -295,6 +295,26 @@ export default function AdminBedAllocationPage() {
   const [lodgeId, setLodgeId] = useState<string | null>(
     searchParams.get("lodgeId"),
   );
+  /**
+   * #2678: see `lodgeChosenAwayFromBooking` above. Replacing one non-null lodge
+   * with a different non-null lodge is the admin CHOOSING. `LodgeSelect`'s own
+   * calls are not, and both are excluded here: `onChange(null)` when
+   * `/api/admin/lodges` has left it with no options, and `onChange(lodges[0].id)`
+   * from a null value when nothing is selected yet.
+   *
+   * Stable rather than inline, because `LodgeSelect`'s normalising effect lists
+   * `onChange` among its dependencies — a fresh closure every render would re-run
+   * that effect on every render for no reason.
+   */
+  const handleLodgeChange = useCallback(
+    (next: string | null) => {
+      if (next !== null && lodgeId !== null && next !== lodgeId) {
+        setLodgeChosenAwayFromBooking(true);
+      }
+      setLodgeId(next);
+    },
+    [lodgeId, setLodgeChosenAwayFromBooking, setLodgeId],
+  );
 
   const dashboardScopeKey = `${lodgeId ?? "all"}:${fromDate}:${toDate}:${highlightedBookingId}`;
   const [saving, setSaving] = useState<string | null>(null);
@@ -1072,17 +1092,7 @@ export default function AdminBedAllocationPage() {
           <LodgeSelect
             lodges={lodges}
             value={lodgeId}
-            onChange={(next) => {
-              // #2678: see `lodgeChosenAwayFromBooking` above. Replacing one
-              // non-null lodge with a different non-null lodge is the admin
-              // choosing. The component's own calls are not: `onChange(null)`
-              // on an options outage, and `onChange(lodges[0].id)` from a null
-              // value when nothing is selected yet, both leave the focus alone.
-              if (next !== null && lodgeId !== null && next !== lodgeId) {
-                setLodgeChosenAwayFromBooking(true);
-              }
-              setLodgeId(next);
-            }}
+            onChange={handleLodgeChange}
             loading={lodgesLoading}
           />
           {/*
