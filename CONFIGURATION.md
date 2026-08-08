@@ -389,7 +389,13 @@ of the pattern: the member's expected arrival time is **display-only
 information** for the hut leader (#2621, owner decision 8 Aug), so the token
 renders the whole "Expected arrival: 4:30 PM" line for a booking that has one and
 nothing at all for a booking that does not. It changes no date, no charge and no
-chore assignment.
+chore assignment. The picker members and admins use offers 6:00 AM–11:00 PM on
+the hour and half hour, while the system accepts any half hour of the day, so a
+genuine after-midnight arrival can be recorded through the API or simply
+mentioned to the hut leader; a value stored outside the picker's range — or from
+before the half-hour rule was tightened — still reads back in 12-hour form on the
+booking page and the kiosk, and is named beside the dropdown so the screen never
+shows nothing where a time is recorded.
 
 A related rule follows from the same limitation: **one registered template
 serves exactly one outcome.** A body that has to say either "your appeal was
