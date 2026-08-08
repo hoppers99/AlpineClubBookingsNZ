@@ -1,0 +1,310 @@
+import fs from "node:fs";
+import path from "node:path";
+import { describe, expect, it } from "vitest";
+
+/**
+ * Census: there is ONE night-occupancy calculation, and it counts every term
+ * (#2681).
+ *
+ * "How many beds are occupied at this lodge on this night" was written five
+ * separate times — four near-identical copies in `capacity.ts` plus one in the
+ * capacity-warnings cron — and the cron copy had drifted three terms behind the
+ * others. A sixth copy in the custodian write path had drifted one term behind.
+ * Each term was added by remembering to edit every copy, and for #2525 that did
+ * not happen.
+ *
+ * The root cause is not the miss; it is that the inventory of occupancy terms
+ * and the inventory of occupancy surfaces both lived in reviewers' heads. This
+ * file makes both mechanical, in the style of
+ * `api-route-boundaries.test.ts`:
+ *
+ *  - every TERM must still be summed inside `computeNightOccupancy`, and each
+ *    term is summed there exactly once;
+ *  - every SURFACE that computes per-night bed occupancy must call it;
+ *  - every file that reads the capacity-holding booking population at all is
+ *    enumerated below with what it does, so a new one has to be classified
+ *    rather than quietly becoming copy number seven.
+ *
+ * Adding an occupancy term means editing `computeNightOccupancy` and this list.
+ * There is no third place to forget.
+ */
+
+const CAPACITY_MODULE = "src/lib/capacity.ts";
+
+function readRepoFile(relativePath: string): string {
+  return fs.readFileSync(path.resolve(process.cwd(), relativePath), "utf8");
+}
+
+/**
+ * The occupancy terms, each with the source evidence that proves
+ * `computeNightOccupancy` still sums it. Adding a term here without adding it
+ * to `computeNightOccupancy` fails, and removing it from
+ * `computeNightOccupancy` without removing it here fails.
+ */
+const OCCUPANCY_TERMS = [
+  {
+    id: "booked-guest-nights",
+    issue: "#713 / #1254",
+    what: "capacity-holding bookings, counted through each guest's EXPLICIT night set so a sparse stay is not counted on its gap nights",
+    evidence: [
+      "capacityHoldingBookingFilter()",
+      "guests: { include: { nights: true } }",
+      "getOccupiedBedsForNightFromIndex(night, occupancyIndex)",
+    ],
+  },
+  {
+    id: "custodian-bed-holds",
+    issue: "#2286",
+    what: "a bed held for a season by a hut-leader assignment, which has no booking and no guest row",
+    evidence: ["buildLodgeCustodianNightCounter(", "custodianCount(night)"],
+  },
+  {
+    id: "policy-exception-reservations",
+    issue: "#2525",
+    what: "beds provisionally reserved by a HELD booking-policy exception request",
+    evidence: [
+      "buildLodgePolicyExceptionReservationCounter(",
+      "reservationCount(night)",
+    ],
+  },
+  {
+    id: "whole-lodge-holds",
+    issue: "ADR-001 / #118",
+    what: "a capacity-holding booking that holds the whole lodge exclusively",
+    evidence: ["buildWholeLodgeHoldIndex(", "isNightWholeLodgeHeld(night, holdIndex)"],
+  },
+] as const;
+
+/**
+ * The symbols that implement an occupancy term. A file naming one of these is
+ * either the module that defines it, or `capacity.ts`, or a seventh copy.
+ * Matched on word boundaries so `getOccupiedBedsForNightFromIndex` does not
+ * count as a mention of `getOccupiedBedsForNight`.
+ */
+const TERM_SYMBOLS = [
+  "buildLodgeCustodianNightCounter",
+  "buildLodgePolicyExceptionReservationCounter",
+  "buildWholeLodgeHoldIndex",
+  "isNightWholeLodgeHeld",
+  "getOccupiedBedsForNightFromIndex",
+  "getOccupiedBedsForNight",
+] as const;
+
+/** Modules that DEFINE an occupancy term (and so must name its symbols). */
+const TERM_OWNERS: Record<string, string> = {
+  [CAPACITY_MODULE]: "owns computeNightOccupancy and the booking/hold indices",
+  "src/lib/custodian-occupancy.ts":
+    "owns the custodian bed-hold term (#2286)",
+  "src/lib/booking-exception-reservations.ts":
+    "owns the policy-exception reservation term (#2525)",
+};
+
+/**
+ * Surfaces that compute per-night bed occupancy. Every one of them must reach
+ * it through `computeNightOccupancy`, and none of them may name a term symbol
+ * itself — that is what "no sixth implementation" means mechanically.
+ */
+const OCCUPANCY_SURFACES: Array<{ file: string; why: string }> = [
+  {
+    file: "src/lib/cron-capacity-warnings.ts",
+    why: "the nightly capacity-warning cron (this is the surface that had drifted three terms behind)",
+  },
+  {
+    file: "src/lib/custodian-assignment.ts",
+    why: "the custodian bed-hold write path's over-capacity warn-and-confirm",
+  },
+];
+
+/**
+ * Files that read the capacity-holding booking population for something OTHER
+ * than a per-night bed count. Each entry is a decision, so a new reader has to
+ * be classified here rather than silently becoming a seventh occupancy copy.
+ */
+const NON_OCCUPANCY_READERS: Array<{
+  file: string;
+  why: string;
+  /** Term symbols this file is allowed to name, if any. */
+  allowedTermSymbols?: string[];
+}> = [
+  {
+    file: "src/lib/booking-status.ts",
+    why: "defines capacityHoldingBookingFilter itself",
+  },
+  {
+    file: "src/app/api/admin/reports/route.ts",
+    why: "utilisation reporting: measures how much the lodge was BOOKED, so it deliberately counts the bookings term ONLY — no custodian, no reservation, no hold pin (docs/CAPACITY_MODEL.md; pinned by custodian-write-path-contract.test.ts)",
+    allowedTermSymbols: ["getOccupiedBedsForNight"],
+  },
+  {
+    file: "src/lib/exclusive-hold-occupancy.ts",
+    why: "per-BED planner occupancy for a whole-lodge hold (#2317) — which bed-nights are taken, not how many beds are occupied. Names buildWholeLodgeHoldIndex in prose only, to record that it uses the same half-open night span",
+    allowedTermSymbols: ["buildWholeLodgeHoldIndex"],
+  },
+  {
+    file: "src/lib/admin-bookings-service.ts",
+    why: "flags admin booking rows that overlap an exclusive hold; no bed count",
+  },
+  {
+    file: "src/app/api/admin/bookings/[id]/exclusive-hold/route.ts",
+    why: "re-checks capacity-holding status at write time when setting a hold; no bed count",
+  },
+  {
+    file: "src/app/api/admin/bookings/[id]/capacity-hold/route.ts",
+    why: "prose reference only, in the route's own explanation of what a hold does",
+  },
+  {
+    file: "src/lib/booking-exception-requests.ts",
+    why: "prose reference only, in the edit-policy explanation",
+  },
+  {
+    file: "src/lib/booking-request.ts",
+    why: "prose reference only, in the request-conversion explanation",
+  },
+  {
+    file: "src/lib/seasonal-membership-assignments.ts",
+    why: "lists a member's own capacity-holding bookings for the season roll-over; no bed count",
+  },
+];
+
+function listSourceFiles(dir: string): string[] {
+  return fs.readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
+    const entryPath = path.join(dir, entry.name);
+    if (entry.isDirectory()) {
+      return entry.name === "__tests__" ? [] : listSourceFiles(entryPath);
+    }
+    if (!/\.tsx?$/.test(entry.name)) return [];
+    if (/\.(test|spec)\.tsx?$/.test(entry.name)) return [];
+    return [path.relative(process.cwd(), entryPath).split(path.sep).join("/")];
+  });
+}
+
+function mentions(source: string, symbol: string): boolean {
+  // Test helper: `symbol` comes from the closed literal lists above, not input.
+  // nosemgrep: javascript.lang.security.audit.detect-non-literal-regexp.detect-non-literal-regexp
+  return new RegExp(`\\b${symbol}\\b`).test(source);
+}
+
+/** The body of `computeNightOccupancy`, up to the next top-level declaration. */
+function computeNightOccupancySource(): string {
+  const source = readRepoFile(CAPACITY_MODULE);
+  const start = source.indexOf("export async function computeNightOccupancy(");
+  expect(
+    start,
+    "computeNightOccupancy must exist in src/lib/capacity.ts",
+  ).toBeGreaterThan(-1);
+  const candidates = [
+    source.indexOf("\nexport ", start + 1),
+    source.indexOf("\n/**", start + 1),
+  ].filter((index) => index > -1);
+  const end = candidates.length > 0 ? Math.min(...candidates) : source.length;
+  return source.slice(start, end);
+}
+
+describe("#2681 night-occupancy census: one calculation, every term", () => {
+  it.each(OCCUPANCY_TERMS)(
+    "computeNightOccupancy still sums the $id term ($issue)",
+    (term) => {
+      const body = computeNightOccupancySource();
+      for (const evidence of term.evidence) {
+        expect(
+          body.includes(evidence),
+          `computeNightOccupancy no longer shows evidence of the ${term.id} term (${term.issue}) — ${term.what}. Missing: ${evidence}`,
+        ).toBe(true);
+      }
+    },
+  );
+
+  it("sums each term exactly once in capacity.ts, so the four engines cannot diverge again", () => {
+    const source = readRepoFile(CAPACITY_MODULE);
+    const countOf = (needle: string) => source.split(needle).length - 1;
+
+    // One call each. Before #2681 these read 4, 4 and 4: one per engine.
+    expect(countOf("buildLodgeCustodianNightCounter(")).toBe(1);
+    expect(countOf("buildLodgePolicyExceptionReservationCounter(")).toBe(1);
+    expect(countOf("getOccupiedBedsForNightFromIndex(night, occupancyIndex)")).toBe(1);
+
+    // buildWholeLodgeHoldIndex has exactly two call sites: the shared
+    // calculation, and getLodgeHeldNights, which reports WHICH nights are held
+    // rather than how many beds are taken. Its own query is the hold-only
+    // population, so it is not an occupancy sum.
+    expect(countOf("buildWholeLodgeHoldIndex(")).toBe(3); // 1 definition + 2 calls
+  });
+
+  it("keeps the four engines and the cron on the one calculation", () => {
+    const capacity = readRepoFile(CAPACITY_MODULE);
+    for (const engine of [
+      "export async function checkCapacity(",
+      "export async function checkCapacityForGuestRanges(",
+      "export async function checkCapacityForPartnerSharedAdmission(",
+      "export async function getMonthAvailability(",
+    ]) {
+      const start = capacity.indexOf(engine);
+      expect(start, `${engine} must exist`).toBeGreaterThan(-1);
+      const next = capacity.indexOf("\nexport ", start + 1);
+      const body = capacity.slice(start, next === -1 ? undefined : next);
+      expect(
+        body.includes("await computeNightOccupancy({"),
+        `${engine} must get its occupancy from computeNightOccupancy, not its own copy`,
+      ).toBe(true);
+    }
+
+    for (const surface of OCCUPANCY_SURFACES) {
+      const source = readRepoFile(surface.file);
+      expect(
+        source.includes("computeNightOccupancy({"),
+        `${surface.file} (${surface.why}) must call computeNightOccupancy`,
+      ).toBe(true);
+    }
+  });
+
+  it("lets no surface outside the calculation name an occupancy term", () => {
+    const allowedElsewhere = new Map<string, string[]>();
+    for (const reader of NON_OCCUPANCY_READERS) {
+      allowedElsewhere.set(reader.file, reader.allowedTermSymbols ?? []);
+    }
+
+    const offenders: string[] = [];
+    for (const file of listSourceFiles(path.resolve(process.cwd(), "src"))) {
+      if (file in TERM_OWNERS) continue;
+      const source = readRepoFile(file);
+      const allowed = allowedElsewhere.get(file) ?? [];
+      for (const symbol of TERM_SYMBOLS) {
+        if (!mentions(source, symbol)) continue;
+        if (allowed.includes(symbol)) continue;
+        offenders.push(`${file} names ${symbol}`);
+      }
+    }
+
+    expect(
+      offenders,
+      "A new file is summing an occupancy term itself. Call computeNightOccupancy (src/lib/capacity.ts) instead, or — if it genuinely is not a per-night bed count — declare it in NON_OCCUPANCY_READERS in this file with the reason.",
+    ).toEqual([]);
+  });
+
+  it("enumerates every reader of the capacity-holding booking population", () => {
+    const declared = new Set<string>([
+      ...Object.keys(TERM_OWNERS),
+      ...OCCUPANCY_SURFACES.map((surface) => surface.file),
+      ...NON_OCCUPANCY_READERS.map((reader) => reader.file),
+    ]);
+
+    const readers = listSourceFiles(path.resolve(process.cwd(), "src")).filter(
+      (file) => mentions(readRepoFile(file), "capacityHoldingBookingFilter"),
+    );
+
+    const undeclared = readers.filter((file) => !declared.has(file));
+    expect(
+      undeclared,
+      "A new file reads the capacity-holding booking population. If it counts beds per night it must call computeNightOccupancy and be listed in OCCUPANCY_SURFACES; otherwise list it in NON_OCCUPANCY_READERS with what it does instead.",
+    ).toEqual([]);
+
+    // And the inventory must not rot the other way: every declared entry has to
+    // still exist, or the list is describing a tree that is no longer there.
+    for (const file of declared) {
+      expect(
+        fs.existsSync(path.resolve(process.cwd(), file)),
+        `${file} is declared in the occupancy census but no longer exists`,
+      ).toBe(true);
+    }
+  });
+});

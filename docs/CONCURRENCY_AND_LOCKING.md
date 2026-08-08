@@ -2450,10 +2450,17 @@ wiring, checked against the contract above:
   the rows that still exist. `reservePolicyExceptionCapacity` writes the footprint
   (upsert per night, idempotent on the unique key);
   `releasePolicyExceptionReservation` deletes it;
-  `buildLodgePolicyExceptionReservationCounter` is the per-night counter the four
-  capacity engines add to `occupiedBeds` **exactly as they add the custodian
-  counter** (`checkCapacity`, `checkCapacityForGuestRanges`,
-  `checkCapacityForPartnerSharedAdmission`, `getMonthAvailability`).
+  `buildLodgePolicyExceptionReservationCounter` is the per-night counter added to
+  `occupiedBeds` **exactly as the custodian counter is**. Since #2681 it is called
+  in exactly one place — `computeNightOccupancy()` in `capacity.ts` — which the
+  four capacity engines (`checkCapacity`, `checkCapacityForGuestRanges`,
+  `checkCapacityForPartnerSharedAdmission`, `getMonthAvailability`), the
+  capacity-warnings cron and the custodian bed-hold write path all read through.
+  The lock topology is unchanged: `computeNightOccupancy` reads on the caller's
+  transaction client, so the reservation is still read inside the same per-lodge
+  capacity lock the claim is written under. Before #2681 the cron and the
+  custodian write path had their own occupancy copies and neither counted this
+  term at all.
 - **Request-hold writer (#2524 service, wired in #2525's integration)** —
   `createModificationExceptionRequest`
   (`booking-exception-request-service.ts`) reserves the incremental hold for a

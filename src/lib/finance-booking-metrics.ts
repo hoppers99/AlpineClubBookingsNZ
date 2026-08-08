@@ -11,6 +11,7 @@ import { getDefaultLodgeId, lodgeNullTolerantScope } from "@/lib/lodges";
 import logger from "@/lib/logger";
 import { prisma } from "@/lib/prisma";
 import { countActiveGuestsForNight } from "@/lib/booking-guest-stay-ranges";
+import { todayDateOnlyForTimeZone } from "@/lib/date-only";
 import {
   OPERATIONAL_STAY_BOOKING_STATUSES,
   PAYMENT_OWED_BOOKING_STATUSES,
@@ -442,8 +443,19 @@ function maxDateFromList(values: Date[]): Date {
   return values.reduce((currentMax, value) => maxDate(currentMax, value));
 }
 
+/**
+ * Today's date in the CLUB's time zone (#2682).
+ *
+ * This is the default `asOfDate` — the cut-off deciding which stays count as
+ * realised. New Zealand runs 12-13 hours ahead of UTC, so a UTC "today" is
+ * still yesterday in New Zealand for roughly the first half of every NZ day:
+ * anyone reconciling in the morning would see a different day's figures than
+ * they would that afternoon, with no input having changed.
+ * `todayDateOnlyForTimeZone` is the canonical answer
+ * (`src/lib/date-only.ts`; docs/DOMAIN_INVARIANTS.md, "Date handling rules").
+ */
 function getCurrentIsoDate(): string {
-  return new Date().toISOString().slice(0, 10);
+  return todayDateOnlyForTimeZone();
 }
 
 function normalizeRealizedWindow(

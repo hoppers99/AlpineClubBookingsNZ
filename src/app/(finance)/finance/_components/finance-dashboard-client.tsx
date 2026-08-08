@@ -23,6 +23,7 @@ import dynamic from "next/dynamic";
 import { useRouter } from "next/navigation";
 import { KpiStatCard } from "@/components/finance/charts/kpi-stat-card";
 import { DatasetResetButton } from "@/components/admin/dataset-reset-button";
+import { todayDateOnlyForTimeZone } from "@/lib/date-only";
 
 // Charts load on demand (#1147): recharts is ~139kB gz, so the chart
 // components mount after the dashboard shell instead of blocking First Load
@@ -99,7 +100,7 @@ function downloadCsv(model: FinanceDashboardPageModel) {
   const url = URL.createObjectURL(blob);
   const anchor = document.createElement("a");
   anchor.href = url;
-  anchor.download = `finance-${model.selection.view}-${new Date().toISOString().slice(0, 10)}.csv`;
+  anchor.download = `finance-${model.selection.view}-${todayDateOnlyForTimeZone()}.csv`;
   anchor.click();
   URL.revokeObjectURL(url);
 }

@@ -18,6 +18,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { Checkbox } from "@/components/ui/checkbox";
 import { useClubIdentity } from "@/components/club-identity-provider";
 import { useAgeTierOptions } from "@/lib/use-age-tier-options";
+import { todayDateOnlyForTimeZone } from "@/lib/date-only";
 import { DEFAULT_SCHOOL_GROUP_SOFT_CAP } from "@/lib/school-booking-constants";
 
 // Schools request counts of children per age tier; teachers and parent helpers
@@ -32,10 +33,6 @@ interface TeacherInput {
 
 function emptyTeacher(): TeacherInput {
   return { firstName: "", lastName: "", email: "" };
-}
-
-function todayDateOnly(): string {
-  return new Date().toISOString().slice(0, 10);
 }
 
 export default function SchoolBookingRequestPage() {
@@ -310,7 +307,7 @@ export default function SchoolBookingRequestPage() {
                 id="checkIn"
                 type="date"
                 value={checkIn}
-                min={todayDateOnly()}
+                min={todayDateOnlyForTimeZone()}
                 onChange={(e) => setCheckIn(e.target.value)}
                 required
               />
@@ -321,7 +318,7 @@ export default function SchoolBookingRequestPage() {
                 id="checkOut"
                 type="date"
                 value={checkOut}
-                min={checkIn || todayDateOnly()}
+                min={checkIn || todayDateOnlyForTimeZone()}
                 onChange={(e) => setCheckOut(e.target.value)}
                 required
               />

@@ -495,6 +495,19 @@ derivation).
   (`setHours(0,0,0,0)`) instant: under the `TZ=Pacific/Auckland` server pin the
   latter resolves to `(D-1)T12:00Z` and shifts the boundary by a day for the
   first ~13h of each NZ day (F8/F32, #1888).
+- **"Today" is an NZ calendar day, and there is one way to ask for it.**
+  `todayDateOnlyForTimeZone()` returns it as a `yyyy-MM-dd` string and
+  `getTodayDateOnly()` as a date-only `Date`; both live in
+  `src/lib/date-only.ts` and both work on the server and in the browser. Never
+  `new Date().toISOString().slice(0, 10)` (or `.substring(0, 10)`, or
+  `.split("T")[0]`) — that is the **UTC** day, which is still *yesterday* in New
+  Zealand for roughly the first half of every NZ day. #2682 fixed fifteen sites
+  that did this, including the `min` on two public lodge-night pickers and the
+  default `asOfDate` cut-off on two finance windows;
+  `src/lib/__tests__/nz-today-date-only.test.tsx` freezes the clock inside the
+  divergence window and fails the build if the pattern comes back. Truncating an
+  existing `@db.Date` value the same way is fine and is a different thing — those
+  are already pinned to UTC midnight.
 - **Client-side, a selected lodge night is an NZ date-only `yyyy-MM-dd` string
   carried end-to-end.** The booking calendar (`src/components/booking-calendar.tsx`),
   the member booking wizard, and the admin "book on behalf" kiosk

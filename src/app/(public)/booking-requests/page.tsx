@@ -10,6 +10,7 @@ import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { useClubIdentity } from "@/components/club-identity-provider";
 import { useAgeTierOptions } from "@/lib/use-age-tier-options";
+import { todayDateOnlyForTimeZone } from "@/lib/date-only";
 import { formatCents } from "@/lib/utils";
 
 interface RequestGuest {
@@ -20,10 +21,6 @@ interface RequestGuest {
 
 function emptyGuest(): RequestGuest {
   return { firstName: "", lastName: "", ageTier: "ADULT" };
-}
-
-function todayDateOnly(): string {
-  return new Date().toISOString().slice(0, 10);
 }
 
 export default function BookingRequestPage() {
@@ -288,7 +285,7 @@ export default function BookingRequestPage() {
                 id="checkIn"
                 type="date"
                 value={checkIn}
-                min={todayDateOnly()}
+                min={todayDateOnlyForTimeZone()}
                 onChange={(e) => setCheckIn(e.target.value)}
                 required
               />
@@ -299,7 +296,7 @@ export default function BookingRequestPage() {
                 id="checkOut"
                 type="date"
                 value={checkOut}
-                min={checkIn || todayDateOnly()}
+                min={checkIn || todayDateOnlyForTimeZone()}
                 onChange={(e) => setCheckOut(e.target.value)}
                 required
               />

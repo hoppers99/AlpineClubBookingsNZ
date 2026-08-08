@@ -417,6 +417,132 @@ export async function getLodgeHeldNights(
     .map(formatDateOnly);
 }
 
+/** One night's occupancy, as {@link computeNightOccupancy} reports it. */
+export interface NightOccupancy {
+  /**
+   * Beds occupied on this night by every counted term, with NO whole-lodge pin
+   * applied. Callers that present a held night as a full lodge apply that
+   * themselves — see {@link wholeLodgeHeld}.
+   */
+  occupiedBeds: number;
+  /**
+   * A capacity-holding booking holds the whole lodge exclusively this night
+   * (ADR-001, issue #118). Reported as a flag rather than folded into
+   * `occupiedBeds` because what a held night should LOOK like is the one thing
+   * the callers genuinely disagree about.
+   */
+  wholeLodgeHeld: boolean;
+}
+
+/**
+ * THE occupancy calculation (#2681). "How many beds are occupied at this lodge
+ * on this night" is computed here and nowhere else.
+ *
+ * It used to be written out five times — four near-identical copies in this
+ * file plus one in `cron-capacity-warnings.ts` — and the cron copy had silently
+ * drifted **three terms** behind the others (#713 explicit guest nights, #2525
+ * policy-exception reservations, and the ADR-001 whole-lodge hold), so it
+ * under-reported occupancy and failed to warn on lodges that were genuinely
+ * close to full. Every term now lives here exactly once, and
+ * `src/lib/__tests__/night-occupancy-census.test.ts` fails the build if a sixth
+ * copy appears or if any term is dropped from this function.
+ *
+ * ## The terms, and the issue that added each
+ *
+ * 1. **Booked guest nights (#713)** — the capacity-holding bookings
+ *    (`capacityHoldingBookingFilter()`, issue #1254) overlapping the window at
+ *    this lodge, counted per night through each guest's EXPLICIT night set. The
+ *    query loads `guests: { include: { nights: true } }` and not `guests: true`
+ *    for exactly that reason: with no night rows loaded,
+ *    `isGuestActiveOnNight` falls back to the `stayStart`/`stayEnd` envelope
+ *    and a sparse, non-contiguous stay is counted on its gap nights.
+ * 2. **Custodian bed holds (#2286)** — a bed held for a season by a hut-leader
+ *    assignment has no booking and no guest row, so it is invisible to the
+ *    occupancy index. Counted as an OCCUPANT, not as a smaller ceiling, so
+ *    `occupiedBeds + availableBeds === lodgeCapacity` still holds on every
+ *    night (the #155 payload contract).
+ * 3. **Policy-exception reservations (#2525)** — a HELD exception request's
+ *    provisionally reserved beds are unavailable until the request is
+ *    rejected/cancelled/superseded or approved. Read under the same per-lodge
+ *    capacity lock the claim is written under, so a held request never oversells.
+ * 4. **Whole-lodge holds (ADR-001, #118)** — reported as a per-night flag.
+ *
+ * ## Lock topology is unchanged
+ *
+ * Every read happens on the caller's `db`, which is the caller's transaction
+ * client whenever it has one, so exactly the same reads happen inside exactly
+ * the same `acquireLodgeCapacityLock` as before this was extracted.
+ */
+export async function computeNightOccupancy(input: {
+  lodgeId: string;
+  /** Inclusive first night, a UTC date-only value. */
+  from: Date;
+  /** Exclusive end, a UTC date-only value. */
+  toExclusive: Date;
+  /** Nights to report on — normally `eachDateOnlyInRange(from, toExclusive)`. */
+  nights: readonly Date[];
+  /** Drop one booking from the population (the booking being edited). */
+  excludeBookingId?: string;
+  /**
+   * Drop one hut-leader assignment's own custodian hold. Used only by the
+   * custodian write path, which is asking what occupancy would be with the
+   * assignment it is about to write counted exactly once, by itself.
+   */
+  excludeCustodianAssignmentId?: string;
+  db?: TransactionClient;
+}): Promise<(night: Date) => NightOccupancy> {
+  const db = input.db ?? prisma;
+
+  const overlappingBookings = await db.booking.findMany({
+    where: {
+      checkIn: { lt: input.toExclusive },
+      checkOut: { gt: input.from },
+      // Capacity-holding population (issue #1254) spread at top level; the
+      // per-lodge scope (also an OR fragment) goes under AND so the two OR
+      // conditions compose — a second top-level OR would clobber the first.
+      // `Booking.lodgeId` is NOT NULL, so the plain field match is exact.
+      ...capacityHoldingBookingFilter(),
+      lodgeId: input.lodgeId,
+      ...(input.excludeBookingId ? { id: { not: input.excludeBookingId } } : {}),
+    },
+    include: {
+      // Term 1: each guest's explicit night set (issue #713), so non-contiguous
+      // stays are counted only on the nights they actually occupy. Guests with
+      // no night rows fall back to the stayStart/stayEnd envelope.
+      guests: { include: { nights: true } },
+    },
+  });
+
+  const occupancyIndex = buildOccupancyIndex(overlappingBookings);
+  // Term 4.
+  const holdIndex = buildWholeLodgeHoldIndex(overlappingBookings);
+  // Term 2.
+  const custodianCount = await buildLodgeCustodianNightCounter({
+    lodgeId: input.lodgeId,
+    from: input.from,
+    toExclusive: input.toExclusive,
+    nights: input.nights,
+    excludeAssignmentId: input.excludeCustodianAssignmentId,
+    db,
+  });
+  // Term 3.
+  const reservationCount = await buildLodgePolicyExceptionReservationCounter({
+    lodgeId: input.lodgeId,
+    from: input.from,
+    toExclusive: input.toExclusive,
+    nights: input.nights,
+    db,
+  });
+
+  return (night: Date) => ({
+    occupiedBeds:
+      getOccupiedBedsForNightFromIndex(night, occupancyIndex) +
+      custodianCount(night) +
+      reservationCount(night),
+    wholeLodgeHeld: isNightWholeLodgeHeld(night, holdIndex),
+  });
+}
+
 /**
  * Check if there's enough capacity for a given number of guests across all nights.
  */
@@ -434,58 +560,17 @@ export async function checkCapacity(
   const exclusiveEnd = normalizeDateOnlyForTimeZone(checkOut);
   const nights = eachDateOnlyInRange(start, exclusiveEnd);
 
-  const overlappingBookings = await db.booking.findMany({
-    where: {
-      checkIn: { lt: exclusiveEnd },
-      checkOut: { gt: start },
-      // Capacity-holding population (issue #1254) spread at top level; the
-      // per-lodge scope (also an OR fragment) goes under AND so the two OR
-      // conditions compose — a second top-level OR would clobber the first.
-      ...capacityHoldingBookingFilter(),
-      lodgeId,
-      ...(excludeBookingId ? { id: { not: excludeBookingId } } : {}),
-    },
-    include: {
-      // Load each guest's explicit night set (issue #713) so non-contiguous
-      // stays are counted only on the nights they actually occupy. Guests
-      // without night rows fall back to the stayStart/stayEnd envelope.
-      guests: { include: { nights: true } },
-    },
+  const occupancy = await computeNightOccupancy({
+    lodgeId,
+    from: start,
+    toExclusive: exclusiveEnd,
+    nights,
+    excludeBookingId,
+    db,
   });
 
-  const occupancyIndex = buildOccupancyIndex(overlappingBookings);
-  const holdIndex = buildWholeLodgeHoldIndex(overlappingBookings);
-  // Custodian occupancy (#2286): a bed held for a season by a hut-leader
-  // assignment has no booking and no guest row, so it is invisible to the
-  // occupancy index. Count it as an OCCUPANT, not as a reduction of
-  // lodgeCapacity — identical arithmetic for availableBeds, but
-  // occupiedBeds + availableBeds === lodgeCapacity still holds on every night
-  // (the #155 payload contract) and no consumer changes shape.
-  const custodianCount = await buildLodgeCustodianNightCounter({
-    lodgeId,
-    from: start,
-    toExclusive: exclusiveEnd,
-    nights,
-    db,
-  });
-  // Provisional policy-exception reservations (#2525) count as occupancy exactly
-  // like a custodian hold: a HELD request's reserved beds are unavailable until
-  // the request is rejected/cancelled/superseded (rows deleted) or approved (rows
-  // deleted, beds re-taken by the executed booking). Read under the same per-lodge
-  // capacity lock the claim is written under, so a held request never oversells.
-  const reservationCount = await buildLodgePolicyExceptionReservationCounter({
-    lodgeId,
-    from: start,
-    toExclusive: exclusiveEnd,
-    nights,
-    db,
-  });
   const nightDetails: NightAvailability[] = nights.map((night) => {
-    const occupiedBeds =
-      getOccupiedBedsForNightFromIndex(night, occupancyIndex) +
-      custodianCount(night) +
-      reservationCount(night);
-    const wholeLodgeHeld = isNightWholeLodgeHeld(night, holdIndex);
+    const { occupiedBeds, wholeLodgeHeld } = occupancy(night);
 
     return {
       date: night,
@@ -516,16 +601,27 @@ export async function checkCapacity(
   };
 }
 
-// NOTE (issue #155): checkCapacityForGuestRanges deliberately does NOT get the
-// same occupiedBeds pin. Its nightDetails feed ~25 call sites across booking
-// creation, payment, modify-quote, and cron paths; none of them read
-// `.occupiedBeds` (verified by grep — they only use `.available`,
-// `.minAvailable`, and `.availableBeds`/`.wholeLodgeHeld` via
-// overCapacityNights/wholeLodgeBlockedNights), so pinning would be safe today,
-// but re-verifying every consumer each time a new one is added is a bigger
-// surface than this fix needs. checkCapacity has exactly three consumers
-// (availability/check route, the dashboard's next-stay occupancy widget, and
-// a plain availability boolean check) and all three were checked directly.
+// The two REAL differences between checkCapacity and checkCapacityForGuestRanges
+// (#2681). Every other line the two used to share now lives in
+// computeNightOccupancy, so these are the only things left to disagree about:
+//
+// 1. What `occupiedBeds` MEANS. checkCapacity reports existing occupancy and
+//    pins a held night to lodgeCapacity, because a member reading that payload
+//    (issue #155) must not be able to tell a held night from a genuinely full
+//    one (ADR-001 decision 6). checkCapacityForGuestRanges reports existing
+//    occupancy PLUS the proposal being tested, which is a different quantity —
+//    pinning it to lodgeCapacity would discard the proposal, so it does not pin.
+//    Its `availableBeds` is still hard-pinned to 0 on a held night, which is
+//    what every consumer actually reads.
+// 2. The sufficiency test. checkCapacity is asked "do `guestCount` beds fit?",
+//    so it needs `minAvailable >= guestCount`; checkCapacityForGuestRanges has
+//    already subtracted the proposal, so it needs `minAvailable >= 0`.
+//
+// This supersedes the pre-#2681 note here, which explained why the two were NOT
+// unified: "re-verifying every consumer each time a new one is added is a bigger
+// surface than this fix needs." That reasoning is what let the #2525 term reach
+// four surfaces and miss the fifth. The shared arithmetic is now unified in one
+// place regardless of consumer count, and the census test keeps it that way.
 
 export async function checkCapacityForGuestRanges(
   lodgeId: string,
@@ -545,59 +641,24 @@ export async function checkCapacityForGuestRanges(
     return { available: true, minAvailable: Number.POSITIVE_INFINITY, nightDetails: [] };
   }
 
-  const overlappingBookings = await db.booking.findMany({
-    where: {
-      checkIn: { lt: exclusiveEnd },
-      checkOut: { gt: start },
-      // Capacity-holding population (issue #1254) spread at top level; the
-      // per-lodge scope (also an OR fragment) goes under AND so the two OR
-      // conditions compose — a second top-level OR would clobber the first.
-      ...capacityHoldingBookingFilter(),
-      lodgeId,
-      ...(excludeBookingId ? { id: { not: excludeBookingId } } : {}),
-    },
-    include: {
-      // Load each guest's explicit night set (issue #713) so non-contiguous
-      // stays are counted only on the nights they actually occupy. Guests
-      // without night rows fall back to the stayStart/stayEnd envelope.
-      guests: { include: { nights: true } },
-    },
+  // Every occupancy term (bookings with explicit nights, custodian holds,
+  // policy-exception reservations, whole-lodge holds) comes from the one
+  // implementation, so this engine cannot drift from the others.
+  const occupancy = await computeNightOccupancy({
+    lodgeId,
+    from: start,
+    toExclusive: exclusiveEnd,
+    nights,
+    excludeBookingId,
+    db,
   });
 
-  const occupancyIndex = buildOccupancyIndex(overlappingBookings);
-  const holdIndex = buildWholeLodgeHoldIndex(overlappingBookings);
-  // Custodian occupancy (#2286) counted as base occupancy, exactly as in
-  // checkCapacity — this propagates the reduction to every admission path
-  // (booking create, modify, request, waitlist confirm, payment, cron) with no
-  // call-site change.
-  const custodianCount = await buildLodgeCustodianNightCounter({
-    lodgeId,
-    from: start,
-    toExclusive: exclusiveEnd,
-    nights,
-    db,
-  });
-  // Provisional policy-exception reservations (#2525) counted as occupancy, same
-  // as the custodian term — so every admission path that reaches this engine
-  // (booking create, modify, waitlist confirm, payment) refuses to sell a bed a
-  // held request has reserved. See docs/CONCURRENCY_AND_LOCKING.md.
-  const reservationCount = await buildLodgePolicyExceptionReservationCounter({
-    lodgeId,
-    from: start,
-    toExclusive: exclusiveEnd,
-    nights,
-    db,
-  });
   const nightDetails: NightAvailability[] = nights.map((night) => {
-    const occupiedBeds =
-      getOccupiedBedsForNightFromIndex(night, occupancyIndex) +
-      custodianCount(night) +
-      reservationCount(night);
+    const { occupiedBeds, wholeLodgeHeld } = occupancy(night);
     const proposedBeds = countActiveGuestsForNight(guests, night, {
       checkIn: start,
       checkOut: exclusiveEnd,
     });
-    const wholeLodgeHeld = isNightWholeLodgeHeld(night, holdIndex);
 
     return {
       date: night,
@@ -824,57 +885,29 @@ export async function checkCapacityForPartnerSharedAdmission(
     coverageBySharer.push(covered);
   }
 
-  const overlappingBookings = await db.booking.findMany({
-    where: {
-      checkIn: { lt: exclusiveEnd },
-      checkOut: { gt: start },
-      ...capacityHoldingBookingFilter(),
-      lodgeId,
-      ...(excludeBookingId ? { id: { not: excludeBookingId } } : {}),
-    },
-    include: {
-      guests: { include: { nights: true } },
-    },
-  });
-
-  const occupancyIndex = buildOccupancyIndex(overlappingBookings);
-  const holdIndex = buildWholeLodgeHoldIndex(overlappingBookings);
-  // Custodian occupancy (#2286) counted as base occupancy here too, so an
-  // admin-initiated shared admission cannot admit into a bed a custodian
-  // holds. ACCEPTED OVERSHOOT, documented in docs/CAPACITY_MODEL.md and pinned
-  // by a test: `headroom` comes from getLodgePartnerSharedCapacityStatus,
+  // Base occupancy from the one implementation. The custodian term carries an
+  // ACCEPTED OVERSHOOT on this path, documented in docs/CAPACITY_MODEL.md and
+  // pinned by a test: `headroom` comes from getLodgePartnerSharedCapacityStatus,
   // which is undated and still counts a custodian-held DOUBLE toward
   // partnerSharedHeadroom — so an admin can be admitted a sharer when zero
   // physically shareable doubles remain. At PLACEMENT level nothing can go
   // wrong (a custodian bed has no primary allocation row to share, and the
   // allocation guard sits in front), and the overshoot is admin-only and
   // analogous to the accepted #1668 over-capacity override.
-  const custodianCount = await buildLodgeCustodianNightCounter({
+  const occupancy = await computeNightOccupancy({
     lodgeId,
     from: start,
     toExclusive: exclusiveEnd,
     nights,
+    excludeBookingId,
     db,
   });
-  // Provisional policy-exception reservations (#2525) counted as base occupancy
-  // here too, so an admin-initiated shared admission cannot admit into a bed a
-  // held request has reserved.
-  const reservationCount = await buildLodgePolicyExceptionReservationCounter({
-    lodgeId,
-    from: start,
-    toExclusive: exclusiveEnd,
-    nights,
-    db,
-  });
+
   let reason: string | null = null;
   const nightDetails: PartnerSharedNightDetail[] = nights.map((night) => {
     const nightKey = formatDateOnly(night);
-    const occupied =
-      getOccupiedBedsForNightFromIndex(night, occupancyIndex) +
-      custodianCount(night) +
-      reservationCount(night);
+    const { occupiedBeds: occupied, wholeLodgeHeld } = occupancy(night);
     const ordinary = countActiveGuestsForNight(ordinaryGuests, night, envelope);
-    const wholeLodgeHeld = isNightWholeLodgeHeld(night, holdIndex);
     if (wholeLodgeHeld) {
       // A whole-lodge hold (ADR-001, issue #118) hard-blocks this night even for
       // the admin-initiated partner-shared admission path — decision 5: a hold is
@@ -966,45 +999,17 @@ export async function getMonthAvailability(
   const endDate = getNextMonthStartDateOnly(year, month);
   const lodgeCapacity = await getLodgeCapacity(lodgeId);
 
-  const overlappingBookings = await prisma.booking.findMany({
-    where: {
-      checkIn: { lt: endDate },
-      checkOut: { gt: startDate },
-      // Capacity-holding population (issue #1254) spread at top level; the
-      // per-lodge scope (also an OR fragment) goes under AND so the two compose.
-      ...capacityHoldingBookingFilter(),
-      lodgeId,
-    },
-    include: {
-      // Load each guest's explicit night set (issue #713) so non-contiguous
-      // stays are counted only on the nights they actually occupy. Guests
-      // without night rows fall back to the stayStart/stayEnd envelope.
-      guests: { include: { nights: true } },
-    },
-  });
-
   const availability = new Map<string, number>();
   const nights = eachDateOnlyInRange(startDate, endDate);
-  const occupancyIndex = buildOccupancyIndex(overlappingBookings);
-  const holdIndex = buildWholeLodgeHoldIndex(overlappingBookings);
-  // Custodian occupancy (#2286). Every consumer of this map computes
-  // `available = capacity - occupied` itself (member calendar
-  // api/availability/route.ts; admin calendar api/admin/bookings/route.ts), so
-  // counting the custodian here makes BOTH calendars correct with zero
-  // consumer changes. Owner decision (29 Jul): the member-facing calendar gets
-  // NO custodian-specific label — the lodge simply shows one fewer bed,
-  // indistinguishable from any occupied bed, so nothing about who is in the
-  // building leaks to a member.
-  const custodianCount = await buildLodgeCustodianNightCounter({
-    lodgeId,
-    from: startDate,
-    toExclusive: endDate,
-    nights,
-  });
-  // Provisional policy-exception reservations (#2525) counted as occupancy on the
-  // calendar too, so a held request's beds show as taken (indistinguishable from
-  // any other occupied bed — no identity leak) rather than bookable.
-  const reservationCount = await buildLodgePolicyExceptionReservationCounter({
+  // Both calendars (member `api/availability/route.ts`, admin
+  // `api/admin/bookings/route.ts`) compute `available = capacity - occupied`
+  // from this map themselves, so counting every occupancy term here makes both
+  // correct with zero consumer changes. Owner decision (29 Jul): NO
+  // custodian-specific label on the member-facing calendar — the lodge simply
+  // shows one fewer bed, indistinguishable from any occupied bed, so nothing
+  // about who is in the building leaks to a member. The same is true of a held
+  // policy-exception request's reserved beds.
+  const occupancy = await computeNightOccupancy({
     lodgeId,
     from: startDate,
     toExclusive: endDate,
@@ -1012,19 +1017,14 @@ export async function getMonthAvailability(
   });
 
   for (const night of nights) {
+    const { occupiedBeds, wholeLodgeHeld } = occupancy(night);
+    const key = formatDateOnly(night);
     // A whole-lodge-held night (ADR-001, issue #118) must be indistinguishable
     // from a genuinely full lodge on the public calendar (decision 6): report
     // full occupancy so no free beds are ever shown, regardless of the real
     // headcount on that night. Otherwise a held-but-not-full night would leak
     // the hold — a member could tell it apart from a full lodge.
-    const occupiedBeds = isNightWholeLodgeHeld(night, holdIndex)
-      ? lodgeCapacity
-      : getOccupiedBedsForNightFromIndex(night, occupancyIndex) +
-        custodianCount(night) +
-        reservationCount(night);
-
-    const key = formatDateOnly(night);
-    availability.set(key, occupiedBeds);
+    availability.set(key, wholeLodgeHeld ? lodgeCapacity : occupiedBeds);
   }
 
   return availability;
