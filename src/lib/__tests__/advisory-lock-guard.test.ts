@@ -346,7 +346,7 @@ const ROW_LOCK_SITE_INVENTORY: Record<string, number> = {
   // statements above plus the two `FOR KEY SHARE` ones that were inventoried
   // nowhere — the ordinary seams' sorted NOWAIT acquisition, and the
   // booking-request hold's blocking lock over its exact linked-member snapshot.
-  // The merge `FOR UPDATE` now runs under a 5s `lock_timeout` and restores it,
+  // The merge `FOR UPDATE` now runs under a 10s `lock_timeout` and restores it,
   // so a wait-while-holding-the-policy-key is bounded and lands on the same
   // stable retry (#2623 T6).
   // See docs/CONCURRENCY_AND_LOCKING.md → "Adult-member-hosting queue
