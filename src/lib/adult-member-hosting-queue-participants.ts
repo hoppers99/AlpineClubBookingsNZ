@@ -323,7 +323,118 @@ export function assertHostingCoverageQueueParticipantsLocked(
   }
 }
 
-/** One blocking, sorted master/loser/ancillary-owner row-lock statement. */
+/**
+ * How long member merge may wait for its participant rows (#2623 T6).
+ *
+ * An order of magnitude below merge's own `timeout: 120_000` transaction budget
+ * (`member-merge.ts`), which is the number this replaces as the effective bound,
+ * and far above the sub-second acquisition a healthy system sees — so a merge
+ * that trips it really is contended rather than merely busy. It is deliberately
+ * NOT lower: the point of keeping this lock blocking is that a short overlap
+ * with an ordinary writer should still succeed, and 5s is the same order as the
+ * block-detection poll the real-PostgreSQL race harness uses, so a bound there
+ * would race the suite that proves the wait is still a wait.
+ */
+export const MEMBER_MERGE_PARTICIPANT_LOCK_TIMEOUT_MS = 10_000;
+
+/**
+ * Bound one statement's lock wait, for the current transaction only.
+ *
+ * `set_config(..., is_local => true)` rather than `SET LOCAL` because the value
+ * is then an ordinary bound parameter instead of interpolated SQL — `SET` takes
+ * no placeholders. It runs through `$executeRaw` for the same reason every other
+ * raw statement in this module does: nothing reads the returned row, only that
+ * the statement succeeded.
+ *
+ * See `clearTransactionLockTimeout` for why the UNDO is not this function with a
+ * zero.
+ */
+async function setTransactionLockTimeout(
+  db: Pick<PrismaClient, "$executeRaw">,
+  milliseconds: number,
+): Promise<void> {
+  await db.$executeRaw(
+    Prisma.sql`SELECT set_config('lock_timeout', ${String(milliseconds)}, true)`,
+  );
+}
+
+/**
+ * Undo the bound above, restoring whatever `lock_timeout` this deployment
+ * actually configures (#2623 F4).
+ *
+ * NOT `set_config('lock_timeout', '0', true)`, which is what this did first. `0`
+ * is not "the previous value", it is "wait forever" — so on a deployment that
+ * sets `lock_timeout` at the database or role level, restoring `0` REMOVED that
+ * operator's bound for the rest of the merge transaction: the sorted
+ * coverage-owner keys and the loser `member.delete` with its FK checks. That is
+ * the exact opposite of the intent stated below, which is to hand the remaining
+ * statements back their ordinary failure semantics.
+ *
+ * Measured on real PostgreSQL against a database carrying
+ * `ALTER DATABASE … SET lock_timeout = '3s'`:
+ *
+ *   set_config('lock_timeout','0',true)   -> 0    (operator's bound destroyed)
+ *   RESET lock_timeout                    -> 3s   (restored, but see below)
+ *   SET LOCAL lock_timeout TO DEFAULT     -> 3s   (restored)
+ *
+ * `SET LOCAL` rather than `RESET` because `RESET` is SESSION-scoped: it survives
+ * the commit on a pooled connection. Measured on the same database, a session
+ * holding `SET lock_timeout = '7s'` came out of a transaction containing `RESET`
+ * at `3s` — the caller's own session setting silently destroyed for every later
+ * statement that connection serves. `SET LOCAL` left it at `7s`.
+ *
+ * No parameter is interpolated, so the reason `set_config` was needed above —
+ * `SET` takes no placeholders — does not apply here.
+ *
+ * On this repository's current configuration nothing sets `lock_timeout` at any
+ * level, so `DEFAULT` resolves to `0` and this is byte-for-byte the old
+ * behaviour. It is hardening against a deployment that adds one, not a live bug.
+ */
+async function clearTransactionLockTimeout(
+  db: Pick<PrismaClient, "$executeRaw">,
+): Promise<void> {
+  await db.$executeRaw(Prisma.sql`SET LOCAL lock_timeout TO DEFAULT`);
+}
+
+/**
+ * One blocking, sorted master/loser/ancillary-owner row-lock statement, with a
+ * bounded wait (#2623 T6).
+ *
+ * BLOCKING ON PURPOSE, and that half is unchanged. `member-merge.ts` documents
+ * the wait as deliberate: merge is an irreversible admin operation, and a
+ * `NOWAIT` here would fail it far more often than the hazard justifies. Its two
+ * fail-fast siblings in this module (`lockHostingCoverageMemberLifecycleTarget`,
+ * `acquireHostingCoverageQueueParticipantProof`) are request-path writers, where
+ * failing instantly and asking for a reload is the right answer.
+ *
+ * WHAT WAS WRONG WAS THE WAIT BEING UNBOUNDED WHILE HOLDING. This statement runs
+ * inside the merge transaction, which is still holding the adult-member hosting
+ * policy-set advisory key, so a wait here is a wait-while-holding. The alarming
+ * reading of that — an unbounded fan-out of third parties — is not true: owners
+ * come from a capped plan (`HOSTING_COVERAGE_MEMBER_FANOUT_LIMIT`), so the set is
+ * at most that plus master and loser, and merge's own 120s transaction deadline
+ * eventually aborts and releases. What remains real is that `FOR UPDATE` on up to
+ * that many THIRD-PARTY owners also blocks every FK write naming those members, so
+ * an uninvolved booking-create or guest-add can wait behind the tail of a merge,
+ * for as long as merge's deadline allows.
+ *
+ * So the wait is bounded to `MEMBER_MERGE_PARTICIPANT_LOCK_TIMEOUT_MS` and
+ * released. PostgreSQL raises `lock_timeout` cancellation as SQLSTATE `55P03`,
+ * the same code `NOWAIT` raises, so it lands on the existing
+ * `HostingCoverageParticipantRetryError` that merge already converts into its
+ * clean "participants changed, nothing was saved, re-run the preview" 409.
+ *
+ * The timeout is restored to this deployment's own DEFAULT after a successful
+ * acquisition rather than left in force: the rest of the merge transaction takes
+ * further locks — sorted coverage-owner keys, the loser delete — whose failures
+ * are NOT mapped onto that retry, and turning them into unmapped `55P03`s would
+ * trade a bounded wait for an opaque error. Restoring the DEFAULT rather than a
+ * hardcoded `0` is what keeps that true on a deployment whose operator sets
+ * `lock_timeout` at the database or role level — see
+ * `clearTransactionLockTimeout`. There is no restore on the failure path because a cancelled
+ * statement leaves the transaction aborted, so a second statement there could only
+ * replace the retry error with `25P02`.
+ */
 export async function lockMemberMergeHostingCoverageParticipants(
   db: Pick<PrismaClient, "$executeRaw" | "member">,
   params: {
@@ -337,13 +448,22 @@ export async function lockMemberMergeHostingCoverageParticipants(
     params.loserId,
     ...params.ownerMemberIds,
   ]);
-  await db.$executeRaw(Prisma.sql`
-    SELECT 1
-    FROM "Member"
-    WHERE "id" IN (${Prisma.join(ids)})
-    ORDER BY "id"
-    FOR UPDATE
-  `);
+  await setTransactionLockTimeout(db, MEMBER_MERGE_PARTICIPANT_LOCK_TIMEOUT_MS);
+  try {
+    await db.$executeRaw(Prisma.sql`
+      SELECT 1
+      FROM "Member"
+      WHERE "id" IN (${Prisma.join(ids)})
+      ORDER BY "id"
+      FOR UPDATE
+    `);
+  } catch (error) {
+    if (isPostgresLockNotAvailable(error)) {
+      throw new HostingCoverageParticipantRetryError();
+    }
+    throw error;
+  }
+  await clearTransactionLockTimeout(db);
   const locked = await db.member.findMany({
     where: { id: { in: ids } },
     orderBy: { id: "asc" },

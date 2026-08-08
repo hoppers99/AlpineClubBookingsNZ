@@ -1,6 +1,5 @@
 import type { Announcements } from "@dnd-kit/core";
 import { deriveActiveDragDates } from "./active-drag-dates";
-import { planAllocationMove } from "./allocation-move";
 import type {
   BedOption,
   BucketGuestGroup,
@@ -11,7 +10,7 @@ import type {
 
 export const BED_ALLOCATION_SCREEN_READER_INSTRUCTIONS = {
   draggable:
-    "To pick up a guest, press space or enter. Use the arrow keys to choose a destination bed, then press space or enter to drop. Existing allocations keep their original lodge night even when you move across date columns. Press escape to cancel without making a change.",
+    "To pick up a guest, press space or enter. Use the arrow keys to choose a destination bed, then press space or enter to drop. Existing allocations open move options where you choose one night or every existing allocation night for this person on the booking. Original lodge nights are always kept. Press escape to cancel without making a change.",
 };
 
 function formatNightList(stayDates: string[]) {
@@ -22,6 +21,7 @@ function formatNightList(stayDates: string[]) {
 
 type DropFeedback =
   | { outcome: "request"; description: string }
+  | { outcome: "review"; description: string }
   | { outcome: "noop"; description: string }
   | { outcome: "refused"; description: string };
 
@@ -51,8 +51,8 @@ function planBedAllocationDropFeedback(input: {
     return allocation
       ? {
           outcome: "request",
-          // Bucket removal deletes only the dragged allocation id. A
-          // first-visible chip is a proxy only for BED moves, never removal.
+          // Bucket removal deletes only the dragged allocation id. Moving is a
+          // separate preview/confirm flow whose scope is never inferred here.
           description: `Remove ${allocation.guestName} from ${formatNightList([
             allocation.stayDate,
           ])}`,
@@ -86,36 +86,9 @@ function planBedAllocationDropFeedback(input: {
     (item) => item.id === activeData.allocationId,
   );
   if (!allocation) return null;
-  const originalDates = deriveActiveDragDates({
-    activeDrag: activeData,
-    visibleAllocations,
-    bucketGroups,
-  });
-  const movePlan = planAllocationMove({
-    allocation,
-    target: overData,
-    visibleAllocations,
-    // The drop target came from the rendered board. Include it explicitly so
-    // the planner can apply its out-of-window guard without feedback inventing
-    // a second, subtly different board-window contract.
-    visibleNights: [
-      ...new Set([
-        overData.stayDate,
-        ...visibleAllocations.map((item) => item.stayDate),
-      ]),
-    ],
-  });
-  if (movePlan.type === "noop") {
-    return {
-      outcome: "noop",
-      description: `No change for ${allocation.guestName}; the selected allocation${originalDates.length === 1 ? "" : "s"} already ${originalDates.length === 1 ? "uses" : "use"} ${bed.label}`,
-    };
-  }
   return {
-    outcome: "request",
-    description: `${allocation.guestName} to ${bed.label}, snapped to ${formatNightList(
-      originalDates,
-    )}`,
+    outcome: "review",
+    description: `Open move options for ${allocation.guestName} to ${bed.label}; choose the exact scope before confirming and keep every original lodge night`,
   };
 }
 
@@ -186,6 +159,9 @@ export function createBedAllocationAnnouncements(input: {
       }
       if (feedback.outcome === "refused") {
         return `Drop refused. ${feedback.description}. No request was sent.`;
+      }
+      if (feedback.outcome === "review") {
+        return `${feedback.description}. No move has been sent.`;
       }
       return `Requested ${feedback.description}. Saving; success or failure will be reported after the server responds.`;
     },

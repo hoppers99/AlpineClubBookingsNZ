@@ -197,6 +197,19 @@ export interface BuildBedAllocationPlanInput {
    * preview and any other caller stay displacement-free.
    */
   prioritizeCapacityHolding?: boolean;
+  /**
+   * Reports an internal bookkeeping divergence the planner detected while
+   * building this plan (#2656). The hard throw stays TEST-ONLY: a live lodge
+   * must not get a 500 mid-booking over a diagnostic. Production callers pass a
+   * callback so the divergence is logged and breadcrumbed instead of being
+   * silently carried, which is what it was before.
+   *
+   * This module is pure and deterministic — no logger, no Sentry, no clock — so
+   * the reporting itself belongs to the caller. `bed-allocation-lifecycle.ts`
+   * and `admin-bed-allocation.ts` already have a logger and wire this up; the
+   * callback must not throw.
+   */
+  onInvariantViolation?: (message: string) => void;
 }
 
 export interface BedAllocationPlan {
@@ -248,8 +261,37 @@ function normalizeStayDate(value: string | Date): string {
   return typeof value === "string" ? value : formatDateOnly(value);
 }
 
+/**
+ * The CAPACITY key: one physical bed on one night. Answers exactly one
+ * question — "is this bed-night unavailable?" — and nothing else. A shared
+ * DOUBLE (#1701) legitimately holds two occupant rows on this one key, so the
+ * key can never identify WHO is there; use {@link occupantSlotKey} for that
+ * (#2656).
+ */
 function occupiedKey(bedId: string, stayDate: string) {
   return `${bedId}:${stayDate}`;
+}
+
+/**
+ * The IDENTITY key: one occupant of one bed-night (#2656). A double bed may
+ * hold two occupants on the same night — possibly from two DIFFERENT bookings,
+ * via a `MemberPartnerLink` — so the occupant view must not collapse them onto
+ * the bed-night key; the second would silently overwrite the first, leaving one
+ * map entry for two database rows.
+ *
+ * `bookingGuestId` is the discriminator rather than `isSecondOccupant`: it is
+ * already present on every row that reaches the planner (`OccupiedBedNight`
+ * carries no `isSecondOccupant`, and the seed loop skips occupant tracking
+ * entirely without a booking/guest id), and `@@unique([bookingGuestId,
+ * stayDate])` makes it exactly as discriminating — one guest can hold at most
+ * one bed on a night, so a guest id plus a night names one slot.
+ */
+function occupantSlotKey(
+  bedId: string,
+  stayDate: string,
+  bookingGuestId: string,
+) {
+  return `${bedId}:${stayDate}:${bookingGuestId}`;
 }
 
 function guestNightKey(bookingGuestId: string, stayDate: string) {
@@ -313,7 +355,7 @@ function guestStayNights(guest: BedAllocationGuest): string[] {
   return eachDateOnlyInRange(guest.stayStart, guest.stayEnd).map(formatDateOnly);
 }
 
-function isAdultAgeTier(ageTier?: BedAllocationAgeTier | null): boolean {
+export function isAdultAgeTier(ageTier?: BedAllocationAgeTier | null): boolean {
   return !ageTier || ageTier === "ADULT";
 }
 
@@ -438,6 +480,13 @@ interface PlannerState {
   activeRooms: SortedRoomWithBeds[];
   /** Every active bed (all rooms) — the NO_ACTIVE_BEDS vs NO_BED_AVAILABLE signal. */
   allBeds: BedAllocationBed[];
+  /**
+   * CAPACITY, keyed `bedId:stayDate` ({@link occupiedKey}): the bed-nights that
+   * are unavailable to a new placement, whoever is in them. One entry per
+   * physical bed-night — a shared DOUBLE holding two occupants is ONE entry
+   * here, and stays occupied until the LAST of them leaves (#2656). Never ask
+   * this set who is present; that is {@link PlannerState.occupantBySlot}.
+   */
   occupied: Set<string>;
   /**
    * The occupancy at plan start — the DATABASE state (never mutated). MOVE
@@ -460,11 +509,37 @@ interface PlannerState {
    * entry and hand the held bed to the incoming booking — the hold's occupancy
    * was displaced by proxy even though it owns no row. Keeping the key here and
    * teaching `evictBooking` (and the two paths that pick eviction candidates
-   * from `occupantByKey` rather than from `occupied`) to respect it is what
+   * from the occupant view rather than from `occupied`) to respect it is what
    * makes "non-displaceable" true of the bed-night rather than only of the row.
+   *
+   * Since #2656 the SAME hazard between two REAL rows on a shared double is
+   * handled structurally instead, by `occupantSlotsByBedNight`: eviction
+   * releases a bed-night only once no occupant slot remains on it. This set
+   * stays for the case that owns no row at all — an occupancy with no booking
+   * behind it, which no slot bookkeeping can represent.
    */
   permanentlyOccupied: Set<string>;
-  occupantByKey: Map<string, OccupantInfo>;
+  /**
+   * IDENTITY, keyed `bedId:stayDate:bookingGuestId` ({@link occupantSlotKey}):
+   * WHO is in each occupied bed-night. One entry per known occupant ROW, so a
+   * shared DOUBLE (#1701) holding two occupants — possibly from two different
+   * bookings — is two entries here against one `occupied` entry (#2656).
+   *
+   * Only rows the planner can attribute to a booking guest live here: an
+   * attribution-less hold has no slot (it is pinned in `permanentlyOccupied`
+   * instead), and this run's own new AUTO allocations live in `allocations`.
+   * That is why the test-only recount sums all three.
+   */
+  occupantBySlot: Map<string, OccupantInfo>;
+  /**
+   * The reverse index of `occupantBySlot`: bed-night key → the occupant slots
+   * currently on it (#2656). This is what makes "is anyone still in this bed?"
+   * answerable after ONE occupant of a shared double is evicted, which is what
+   * keeps `evictBooking` from freeing a bed-night whose other occupant's row is
+   * still in the database. Deep-cloned with the state — sharing the inner Sets
+   * across a discarded trial would leak occupancy between strategies.
+   */
+  occupantSlotsByBedNight: Map<string, Set<string>>;
   occupantsByBooking: Map<string, Map<string, OccupantInfo>>;
   allocatedGuestNights: Set<string>;
   allocations: BedAllocationCandidate[];
@@ -599,8 +674,69 @@ function otherRoomNightBookingsWith(
   return conflicting;
 }
 
+/** Drops one occupant slot from the identity view. Touches no capacity state. */
+function forgetOccupantSlot(
+  state: PlannerState,
+  bedId: string,
+  stayDate: string,
+  bookingGuestId: string,
+) {
+  const bedNight = occupiedKey(bedId, stayDate);
+  const slot = occupantSlotKey(bedId, stayDate, bookingGuestId);
+  state.occupantBySlot.delete(slot);
+  const slots = state.occupantSlotsByBedNight.get(bedNight);
+  if (!slots) return;
+  slots.delete(slot);
+  if (slots.size === 0) state.occupantSlotsByBedNight.delete(bedNight);
+}
+
+/** Whether any known occupant row still holds this bed-night (#2656). */
+function bedNightHasOccupants(state: PlannerState, bedNight: string): boolean {
+  return (state.occupantSlotsByBedNight.get(bedNight)?.size ?? 0) > 0;
+}
+
+/** The live occupant rows on one bed-night — 0, 1, or (shared double) 2. */
+function occupantsOnBedNight(
+  state: PlannerState,
+  bedNight: string,
+): OccupantInfo[] {
+  const slots = state.occupantSlotsByBedNight.get(bedNight);
+  if (!slots) return [];
+  const occupants: OccupantInfo[] = [];
+  for (const slot of slots) {
+    const occupant = state.occupantBySlot.get(slot);
+    if (occupant) occupants.push(occupant);
+  }
+  return occupants;
+}
+
 function setOccupant(state: PlannerState, info: OccupantInfo) {
-  state.occupantByKey.set(occupiedKey(info.bedId, info.stayDate), info);
+  // A guest holds at most one bed per night (@@unique([bookingGuestId,
+  // stayDate])). Re-seating the same guest-night on a DIFFERENT bed must not
+  // leave its old slot behind, or that bed-night would never free again.
+  // Defensive: today's only re-seat path (relocation) evicts the booking first.
+  const previous = state.occupantsByBooking
+    .get(info.bookingId)
+    ?.get(guestNightKey(info.bookingGuestId, info.stayDate));
+  if (previous && previous.bedId !== info.bedId) {
+    forgetOccupantSlot(
+      state,
+      previous.bedId,
+      previous.stayDate,
+      previous.bookingGuestId,
+    );
+  }
+
+  const bedNight = occupiedKey(info.bedId, info.stayDate);
+  const slot = occupantSlotKey(info.bedId, info.stayDate, info.bookingGuestId);
+  state.occupantBySlot.set(slot, info);
+  let slots = state.occupantSlotsByBedNight.get(bedNight);
+  if (!slots) {
+    slots = new Set();
+    state.occupantSlotsByBedNight.set(bedNight, slots);
+  }
+  slots.add(slot);
+
   let rows = state.occupantsByBooking.get(info.bookingId);
   if (!rows) {
     rows = new Map();
@@ -1403,7 +1539,16 @@ function clonePlannerState(state: PlannerState): PlannerState {
     occupied: new Set(state.occupied),
     occupiedAtStart: new Set(state.occupiedAtStart),
     permanentlyOccupied: new Set(state.permanentlyOccupied),
-    occupantByKey: new Map(state.occupantByKey),
+    occupantBySlot: new Map(state.occupantBySlot),
+    // DEEP clone (#2656): a shallow `new Map(...)` would share the inner Sets,
+    // so a discarded trial's evictions would silently leak into the state that
+    // wins — freeing bed-nights nobody actually left.
+    occupantSlotsByBedNight: new Map(
+      [...state.occupantSlotsByBedNight].map(([bedNight, slots]) => [
+        bedNight,
+        new Set(slots),
+      ]),
+    ),
     occupantsByBooking: new Map(
       [...state.occupantsByBooking].map(([bookingId, rows]) => [
         bookingId,
@@ -2378,12 +2523,24 @@ function evictBooking(
   );
   for (const row of rows) {
     const key = occupiedKey(row.bedId, row.stayDate);
-    // A bed-night this booking SHARES with an attribution-less hold (custodian
-    // #2286, whole-lodge #2317) stays occupied: the hold keeps the bed whether
-    // or not the co-located booking is displaced. Only the booking's own claim
-    // and its composition contribution are released.
-    if (!state.permanentlyOccupied.has(key)) state.occupied.delete(key);
-    state.occupantByKey.delete(key);
+    forgetOccupantSlot(state, row.bedId, row.stayDate, row.bookingGuestId);
+    // Release the PHYSICAL bed-night only when nobody is left in it.
+    //
+    // - A bed-night this booking SHARES with an attribution-less hold
+    //   (custodian #2286, whole-lodge #2317) stays occupied: the hold keeps the
+    //   bed whether or not the co-located booking is displaced.
+    // - A shared DOUBLE (#1701) whose OTHER occupant belongs to a different
+    //   booking stays occupied too (#2656): that occupant's row is still in the
+    //   database, so freeing the key here would let the planner allocate a
+    //   stranger onto an occupied bed — silently skipped at write time if the
+    //   survivor is the primary, or written in beside them with no
+    //   `MemberPartnerLink` if the survivor is the second occupant.
+    //
+    // Only the booking's own claim and its composition contribution are
+    // released in either case.
+    if (!state.permanentlyOccupied.has(key) && !bedNightHasOccupants(state, key)) {
+      state.occupied.delete(key);
+    }
     trackRoomNightOccupant(
       state,
       row.roomId,
@@ -2582,9 +2739,15 @@ function relocateOrUnallocateBooking(
     // counts passed. Never partially relocate — roll the trial marks back and
     // unallocate the whole stay instead.
     for (const assignment of assignments) {
-      state.occupied.delete(
-        occupiedKey(assignment.bed.id, assignment.stayDate),
-      );
+      const key = occupiedKey(assignment.bed.id, assignment.stayDate);
+      // Mirror evictBooking's guard (#2656): only ever release a bed-night that
+      // nothing else holds. `assignGuestsToRoomBeds` can only have marked
+      // bed-nights that were free, so both guards are defensive here — they
+      // exist so this rollback can never become the one path that frees a bed
+      // out from under a surviving occupant or a hold.
+      if (state.permanentlyOccupied.has(key)) continue;
+      if (bedNightHasOccupants(state, key)) continue;
+      state.occupied.delete(key);
     }
     unallocateAllRows();
     return;
@@ -2683,24 +2846,58 @@ function planEvictionsForRoom(
     if (guests.length > free) shortfalls.set(night, guests.length - free);
   }
 
-  const remaining = new Map(shortfalls);
-  const chosen: string[] = [];
-  const creditRoomRows = (id: string) => {
-    const rows = state.occupantsByBooking.get(id);
-    if (!rows) return;
-    for (const row of rows.values()) {
-      const deficit = remaining.get(row.stayDate);
-      // A row co-located with an attribution-less hold frees no bed when it is
-      // evicted (#2317 review) — the hold still has the bed-night — so it must
-      // not be credited against the night's shortfall.
-      if (state.permanentlyOccupied.has(occupiedKey(row.bedId, row.stayDate))) {
-        continue;
-      }
-      if (row.roomId === room.id && deficit !== undefined) {
-        remaining.set(row.stayDate, deficit - 1);
+  /**
+   * The night shortfalls left over once exactly `evictionIds` are evicted.
+   *
+   * Credit is counted in PHYSICAL BED-NIGHTS FREED, never in rows or bookings
+   * displaced (#2656, owner directive 6). A row only frees its bed-night when
+   * EVERY occupant of that bed-night is going — so one occupant of a shared
+   * double leaving credits nothing while the other stays (whether the survivor
+   * belongs to another booking or to the same one), and a double emptied of
+   * both its occupants credits exactly ONE bed, not two.
+   *
+   * Both halves are load-bearing, and the per-bed-night half matters most for
+   * the CROSS-BOOKING double this issue is about, not only for one booking's
+   * two guests (#2669 review F2). Counting a shared double once per row makes a
+   * room read as feasible for two when emptying it frees one bed;
+   * `placePartyInRoom` then seats one, `tryWholeStayWithDisplacement` returns
+   * true regardless, and the caller has already taken those guest-nights out of
+   * the unallocated list — so a held guest-night is neither placed nor
+   * reported. It simply disappears.
+   */
+  const remainingAfter = (evictionIds: string[]): Map<string, number> => {
+    const evicting = new Set(evictionIds);
+    const left = new Map(shortfalls);
+    const creditedBedNights = new Set<string>();
+    for (const id of evictionIds) {
+      const rows = state.occupantsByBooking.get(id);
+      if (!rows) continue;
+      for (const row of rows.values()) {
+        if (row.roomId !== room.id) continue;
+        const deficit = left.get(row.stayDate);
+        if (deficit === undefined) continue;
+        const bedNight = occupiedKey(row.bedId, row.stayDate);
+        // Already counted via this bed-night's other occupant.
+        if (creditedBedNights.has(bedNight)) continue;
+        // A row co-located with an attribution-less hold frees no bed when it
+        // is evicted (#2317 review) — the hold still has the bed-night.
+        if (state.permanentlyOccupied.has(bedNight)) continue;
+        // A bed-night keeping an occupant nobody is evicting frees no bed.
+        const survives = occupantsOnBedNight(state, bedNight).some(
+          (occupant) => !evicting.has(occupant.bookingId),
+        );
+        if (survives) continue;
+        creditedBedNights.add(bedNight);
+        left.set(row.stayDate, deficit - 1);
       }
     }
+    return left;
   };
+  const anyShortfall = (left: Map<string, number>) =>
+    [...left.values()].some((deficit) => deficit > 0);
+
+  let remaining = new Map(shortfalls);
+  const chosen: string[] = [];
   // Composition-mandated evictions come first, in the same newest-first order
   // as optional ones (#1677 pin); their freed beds count against the night
   // shortfalls like any other eviction.
@@ -2711,12 +2908,13 @@ function planEvictionsForRoom(
       return { id, createdAtMs: first?.bookingCreatedAtMs ?? 0 };
     })
     .sort((a, b) => b.createdAtMs - a.createdAtMs || b.id.localeCompare(a.id));
+  const mandatoryCount = mandatoryOrdered.length;
   for (const { id } of mandatoryOrdered) {
     chosen.push(id);
-    creditRoomRows(id);
   }
+  remaining = remainingAfter(chosen);
 
-  if ([...remaining.values()].some((deficit) => deficit > 0)) {
+  if (anyShortfall(remaining)) {
     const candidateIds = new Set<string>();
     for (const [night, deficit] of remaining) {
       if (deficit <= 0) continue;
@@ -2724,9 +2922,13 @@ function planEvictionsForRoom(
         const key = occupiedKey(bed.id, night);
         // Evicting a booking off a permanently-held bed-night frees nothing.
         if (state.permanentlyOccupied.has(key)) continue;
-        const occupant = state.occupantByKey.get(key);
-        if (occupant && occupant.bookingId !== booking.id) {
-          candidateIds.add(occupant.bookingId);
+        // EVERY occupant of the bed-night is a candidate, not just whichever
+        // one a single-entry lookup happened to return (#2656): on a shared
+        // double the only wholly-displaceable occupant may be either of them.
+        for (const occupant of occupantsOnBedNight(state, key)) {
+          if (occupant.bookingId !== booking.id) {
+            candidateIds.add(occupant.bookingId);
+          }
         }
       }
     }
@@ -2744,7 +2946,7 @@ function planEvictionsForRoom(
       );
 
     for (const candidate of evictable) {
-      if (![...remaining.values()].some((deficit) => deficit > 0)) break;
+      if (!anyShortfall(remaining)) break;
       const rows = state.occupantsByBooking.get(candidate.id);
       if (!rows) continue;
       let helps = false;
@@ -2756,10 +2958,23 @@ function planEvictionsForRoom(
       }
       if (!helps) continue;
       chosen.push(candidate.id);
-      creditRoomRows(candidate.id);
+      remaining = remainingAfter(chosen);
     }
   }
-  if ([...remaining.values()].some((deficit) => deficit > 0)) return null;
+  if (anyShortfall(remaining)) return null;
+
+  // Drop optional evictions the final set does not need (#2656). "Helps" above
+  // is deliberately loose — one occupant of a shared double has to be able to
+  // enter the set BEFORE the occupant that makes it pay off — so without this
+  // pass a provisional booking could be displaced (and audited as displaced)
+  // having freed nothing. Composition-mandated evictions are never dropped:
+  // they are required for the room's age mix, not for its bed count.
+  for (let index = chosen.length - 1; index >= mandatoryCount; index -= 1) {
+    const trimmed = [...chosen.slice(0, index), ...chosen.slice(index + 1)];
+    if (!anyShortfall(remainingAfter(trimmed))) {
+      chosen.splice(index, 1);
+    }
+  }
   return chosen;
 }
 
@@ -2787,6 +3002,37 @@ function tryWholeStayWithDisplacement(
 
     const snapshots = evictionBookingIds.map((id) => evictBooking(state, id));
     placePartyInRoom(state, booking, room, demand);
+
+    // Defence in depth (#2669 review). `placePartyInRoom` seats whoever fits
+    // and this function returns true either way, while the caller has ALREADY
+    // removed this booking's demanded guest-nights from
+    // `unallocatedGuestNights` and will `continue` on a true return. So any
+    // arithmetic slip in `planEvictionsForRoom` — over-crediting a shared bed,
+    // a future feasibility rule that does not match what the bed assignment can
+    // actually do — turns a held guest-night into a VANISHED one rather than a
+    // reported `NO_BED_AVAILABLE`. Re-report anything the room did not seat, so
+    // the worst such a slip can cost is a placement, never the record of it.
+    // Costs nothing when the room did seat everyone, which is every shape the
+    // suite covers.
+    const reported = new Set(
+      state.unallocatedGuestNights.map((row) =>
+        guestNightKey(row.bookingGuestId, row.stayDate),
+      ),
+    );
+    for (const guest of demand.guests) {
+      for (const night of guest.nights) {
+        const key = guestNightKey(guest.id, night);
+        if (state.allocatedGuestNights.has(key) || reported.has(key)) continue;
+        reported.add(key);
+        state.unallocatedGuestNights.push({
+          bookingId: booking.id,
+          bookingGuestId: guest.id,
+          stayDate: night,
+          reason: allocationReasonForNoBed(state.allBeds),
+        });
+      }
+    }
+
     for (const snapshot of snapshots) {
       relocateOrUnallocateBooking(state, snapshot, booking.id, room.id);
     }
@@ -2875,8 +3121,18 @@ function tryDisplaceForHeldGuestNight(
       // would NOT free the bed, so the bed is not a displacement target — the
       // guest-night stays unallocated instead (#2317 review).
       if (state.permanentlyOccupied.has(key)) continue;
-      const occupant = state.occupantByKey.get(key);
-      if (!occupant || occupant.bookingId === booking.id) continue;
+      // Claim a bed-night only when ONE booking owns every occupant of it and
+      // that whole booking is displaceable (#2656). A shared DOUBLE split
+      // across two bookings is never a displacement target: evicting one of
+      // them frees no bed, and taking it anyway is exactly how a stranger ends
+      // up written in beside someone else's second occupant.
+      const occupants = occupantsOnBedNight(state, key);
+      if (occupants.length === 0) continue;
+      const occupant = occupants[0];
+      if (occupants.some((row) => row.bookingId !== occupant.bookingId)) {
+        continue;
+      }
+      if (occupant.bookingId === booking.id) continue;
       if (!isBookingWhollyDisplaceable(state, occupant.bookingId)) continue;
       // Evicting this occupant must clear the room-night's composition
       // conflict for the incoming guest: any conflicting row from a booking
@@ -2901,16 +3157,33 @@ function tryDisplaceForHeldGuestNight(
 }
 
 /**
- * Test-only bookkeeping check (#1768): rebuilds the room-night age-mix index
- * from scratch (seeded unknown rows + live occupant rows + this run's new
- * allocations) and throws when the incrementally-maintained index disagrees —
- * the composition guards are only as sound as the index's symmetry across
- * seed/allocate/evict/relocate/rollback, so every planner test exercises this.
+ * Bookkeeping check (#1768): rebuilds the room-night age-mix index from scratch
+ * (seeded unknown rows + live occupant rows + this run's new allocations) and
+ * describes the disagreement when the incrementally-maintained index diverges,
+ * else null. The composition guards are only as sound as the index's symmetry
+ * across seed/allocate/evict/relocate/rollback, so every planner test
+ * exercises this.
+ *
+ * The recount is PER OCCUPANT ROW, not per bed-night (#2656): a shared DOUBLE
+ * holding two people contributes two occupants to the room-night composition,
+ * one under each occupant's own booking key. Sharing a bed grants no
+ * composition exemption, so de-duplicating per bed-night here would silently
+ * under-count the room and re-open the very hole the guard exists to close.
+ *
+ * It reads {@link PlannerState.occupantBySlot}, and that is deliberate: it is
+ * the ONLY recount of that map and of its reverse index
+ * `occupantSlotsByBedNight`, the two structures every capacity decision in this
+ * file now rests on. #2595 had briefly rerouted this loop through
+ * `occupantsByBooking` to work around the old `occupantByKey` losing one
+ * occupant of a shared double; that workaround is superseded here, because the
+ * identity map is keyed per occupant slot and is no longer lossy. Rerouting it
+ * again would leave the slot index and its reverse with no consistency check at
+ * all.
  */
-function assertRoomNightAgeMixConsistent(
+function describeRoomNightAgeMixDivergence(
   state: PlannerState,
   guestAgeTierById: Map<string, BedAllocationAgeTier | null | undefined>,
-) {
+): string | null {
   const expected = new Map<string, Map<string, RoomNightAgeCounts>>();
   const add = (
     roomId: string,
@@ -2937,7 +3210,7 @@ function assertRoomNightAgeMixConsistent(
   for (const row of state.unknownRoomNightRows) {
     add(row.roomId, row.stayDate, "", row.isAdult);
   }
-  for (const row of state.occupantByKey.values()) {
+  for (const row of state.occupantBySlot.values()) {
     add(row.roomId, row.stayDate, row.bookingId, isAdultAgeTier(row.ageTier));
   }
   for (const allocation of state.allocations) {
@@ -2962,11 +3235,8 @@ function assertRoomNightAgeMixConsistent(
       .join(" ");
   const actualText = describe(state.roomNightAgeMix);
   const expectedText = describe(expected);
-  if (actualText !== expectedText) {
-    throw new Error(
-      `bed-allocation roomNightAgeMix out of sync\n expected: ${expectedText}\n actual:   ${actualText}`,
-    );
-  }
+  if (actualText === expectedText) return null;
+  return `bed-allocation roomNightAgeMix out of sync\n expected: ${expectedText}\n actual:   ${actualText}`;
 }
 
 /**
@@ -2987,7 +3257,18 @@ function assertRoomNightAgeMixConsistent(
  *   booking id is reported in `roomContinuityFallbackBookingIds`.
  *
  * Pure and deterministic: stable sorts only, no clock or randomness — the
- * admin dashboard re-renders the same plan for the same input.
+ * admin dashboard re-renders the same plan for the same input. It imports no
+ * logger and no Sentry; a detected bookkeeping divergence is handed to the
+ * caller's `onInvariantViolation` instead (#2656).
+ *
+ * Two distinct questions, two distinct keys (#2656). "Is this bed-night
+ * unavailable?" is CAPACITY, keyed `bedId:stayDate` — one entry per physical
+ * bed-night, released only when its LAST occupant leaves. "Who is in this
+ * bed-night?" is IDENTITY, keyed `bedId:stayDate:bookingGuestId` — one entry
+ * per occupant row, because a DOUBLE (#1701) may legitimately hold two people,
+ * from two different bookings, on one night. Answering the capacity question
+ * from the identity view is what let a partial eviction free a bed somebody
+ * else's row was still sitting in.
  */
 export function buildFirstFitBedAllocationPlan({
   enabled,
@@ -2996,6 +3277,7 @@ export function buildFirstFitBedAllocationPlan({
   occupiedBedNights = [],
   allocationPriorityOrder = [...BED_ALLOCATION_PRIORITY_VOCABULARY],
   prioritizeCapacityHolding = false,
+  onInvariantViolation,
 }: BuildBedAllocationPlanInput): BedAllocationPlan {
   if (!enabled) {
     return { allocations: [], unallocatedGuestNights: [] };
@@ -3011,7 +3293,8 @@ export function buildFirstFitBedAllocationPlan({
     occupied: new Set(),
     occupiedAtStart: new Set(),
     permanentlyOccupied: new Set(),
-    occupantByKey: new Map(),
+    occupantBySlot: new Map(),
+    occupantSlotsByBedNight: new Map(),
     occupantsByBooking: new Map(),
     allocatedGuestNights: new Set(),
     allocations: [],
@@ -3323,9 +3606,18 @@ export function buildFirstFitBedAllocationPlan({
 
   // The index must stay derivable from the committed state — cheap enough to
   // verify on every test run, where any evict/relocate/rollback asymmetry
-  // would otherwise ship a silent composition-guard hole.
-  if (process.env.NODE_ENV === "test") {
-    assertRoomNightAgeMixConsistent(state, guestAgeTierById);
+  // would otherwise ship a silent composition-guard hole. In production the
+  // recount runs only when the caller asked to hear about a divergence
+  // (#2656): it reports, it never throws, and it never changes the plan.
+  if (process.env.NODE_ENV === "test" || onInvariantViolation) {
+    const divergence = describeRoomNightAgeMixDivergence(
+      state,
+      guestAgeTierById,
+    );
+    if (divergence) {
+      onInvariantViolation?.(divergence);
+      if (process.env.NODE_ENV === "test") throw new Error(divergence);
+    }
   }
 
   const plan: BedAllocationPlan = {

@@ -1129,14 +1129,41 @@ export async function reconcileAdultMemberHostingReview(
  * first reconciliation is the same one it evaluated under, so a club that has
  * not turned the policy on never fans out.
  *
- * It is NOT free, though, and this docstring used to claim it was. The
- * participant fence below is acquired BEFORE the policy mode is read, so a club
- * with hosting disabled still pays the `FOR KEY SHARE NOWAIT` statement and its
- * two under-lock re-reads on every booking write — and can still be refused
- * with the fixed retry 409 by a concurrent member-lifecycle writer, for a rule
- * it does not use. The sibling seams at `reconcileHostingCoverageForConfirmedCover`
- * and `enqueueHostingCoverageReevaluationForMember` check the mode first; these
- * two do not. That asymmetry is tracked as T5 on #2623.
+ * AND IT NOW COSTS NO FENCE EITHER (#2623 T5). This used to acquire the
+ * participant proof BEFORE reading the policy mode, so a club with hosting
+ * disabled paid the `FOR KEY SHARE NOWAIT` statement and its two under-lock
+ * re-reads on every booking write — and could still be refused with the fixed
+ * `HOSTING_COVERAGE_PARTICIPANT_RETRY` 409 by a concurrent member-lifecycle
+ * writer, for a rule it does not use. That 409 tells a member to reload and to
+ * check their payment status, which at such a club is a scary, payment-flavoured
+ * refusal produced entirely by a switched-off feature guarding a queue row that
+ * would never be written.
+ *
+ * The mode is therefore read FIRST, as the sibling seam
+ * `enqueueOwnHostingCoverageReevaluation` also does, and an inactive mode returns
+ * through the plain single-booking reconciler — which is what the fenced path did
+ * anyway once `outcome.mode` came back inactive, minus the lock. The single-id
+ * reconciler still runs, because clearing a snapshot left behind by a lodge that
+ * has since switched the rule off is exactly its job.
+ *
+ * THE THRESHOLD IS NOT THE SIBLING'S, and the difference is deliberate rather than
+ * drift (#2623 F5). That seam gates on `resolved.mode !== "ENFORCED"`, because all
+ * it does is enqueue queue work that only an ENFORCED lodge can ever act on. This
+ * one gates on `hostingModeIsActive` — ENFORCED *or* ADMIN_REVIEW_REQUIRED —
+ * because under review-only the dependants still have to be re-read and a review
+ * snapshot still has to be written, so the fence is genuinely owed. Narrowing this
+ * to the sibling's test skips the fence at a review-only lodge that needs it, and
+ * the `ADMIN_REVIEW_REQUIRED` case in `adult-member-hosting-same-owner.test.ts`
+ * fails if you try it.
+ *
+ * SKIPPING THE FENCE HERE IS SAFE, not merely cheap: with the mode inactive
+ * `evaluateBookingAdultMemberHosting` takes no coverage-owner advisory key, so
+ * there is no coverage-owner → Member ordering left to protect, and neither the
+ * sibling fan-out nor `settleSameOwnerDependentCoverage` — the two things that
+ * consume the proof — is reachable. A club that turns the rule ON between this
+ * read and the reconciler's own read is covered the same way every other mode
+ * gate in this module is: the policy write holds the policy-set key and enqueues
+ * re-evaluation for the affected bookings itself.
  */
 export async function reconcileAdultMemberHostingReviewWithSiblings(
   bookingId: string,
@@ -1158,6 +1185,13 @@ export async function reconcileAdultMemberHostingReviewWithSiblings(
   })) as CoverageOwnerFacts | null;
   if (!plannedBooking) {
     return { action: "none", violation: null, mode: null };
+  }
+  // #2623 T5: the mode gate comes BEFORE the fence. See the docstring above for
+  // why an inactive lodge must not pay a row lock, and why skipping it here
+  // cannot leave a coverage-owner key held out of order.
+  const planned = await loadAdultMemberHostingPolicy(plannedBooking.lodgeId, db);
+  if (!hostingModeIsActive(planned.mode)) {
+    return reconcileAdultMemberHostingReview(bookingId, db, options, true);
   }
   const actorMemberId = options.coverageChange?.actorMemberId ?? null;
   const participantProof = await acquireOrValidateQueueParticipantProof(
@@ -2159,6 +2193,12 @@ export async function enqueueMemberMergeHostingCoveragePlan(
  * scope would have left an enforcing single-booking club with no lapse detection at
  * all, for no reason.
  *
+ * THE PARTICIPANT FENCE IS ALREADY MODE-GATED HERE and always was: the per-lodge
+ * `ENFORCED` filter below returns 0 before any proof is acquired, so #2623 T5's
+ * report that this seam takes the participant lock ungated does not hold against
+ * this code. The subject barrier ABOVE it is ungated, and deliberately — see the
+ * comment at that lock.
+ *
  * Returns the number of items recorded, so a caller can log the truth.
  */
 export async function enqueueHostingCoverageReevaluationForMember(
@@ -2172,6 +2212,24 @@ export async function enqueueHostingCoverageReevaluationForMember(
   // lock, so one side wins cleanly: the hold is included in the candidate
   // snapshot, or the hold resumes after this standing change and refuses its
   // now-inactive member. NOWAIT keeps repeated bulk fan-outs fail-fast.
+  //
+  // DELIBERATELY NOT GATED ON THE HOSTING POLICY, and #2623 T5 is where that was
+  // tested rather than assumed. Gating the enqueue seams on the mode is right —
+  // see `reconcileAdultMemberHostingReviewWithSiblings` — but this barrier is not
+  // one of them. It is the SHARED standing-subject fence: account deletion and
+  // every other standing writer reach it through this function, and it is what
+  // makes a concurrent booking-request linked-member hold and a deactivation
+  // mutually exclusive. `docs/CONCURRENCY_AND_LOCKING.md` states the contract in
+  // as many words — the hold's refusal "is independent of the lodge's hosting
+  // consequence (DISABLED, ADMIN_REVIEW_REQUIRED, or ENFORCED), so review policy
+  // is not an identity-safety backstop" — and
+  // `adult-member-hosting-queue-merge.realdb.test.ts` proves both winner orders
+  // against real PostgreSQL in all three modes. A club-wide `ENFORCED` gate here
+  // was written, and those six interleavings failed for DISABLED and
+  // ADMIN_REVIEW_REQUIRED: a deletion could deactivate the member and unlink the
+  // guest underneath a hold that had already read them as active. The spurious
+  // retry a non-enforcing club can still see on a standing write is the price of
+  // that fence, and it is a price this repository has decided to pay.
   await lockHostingCoverageMemberLifecycleTarget(db, memberId);
   const plannedAttended = await loadHostingCoverageMemberFanoutCandidates(memberId, db);
   if (plannedAttended.length === 0) return 0;

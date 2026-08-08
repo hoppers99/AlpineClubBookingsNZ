@@ -7,6 +7,7 @@ import {
   type BedAllocationRoom,
 } from "@/lib/bed-allocation";
 import { createAuditLog } from "@/lib/audit";
+import { reportBedAllocationInvariantViolation } from "@/lib/bed-allocation-diagnostics";
 import { bookingHoldsCapacity } from "@/lib/booking-status";
 import {
   addDaysDateOnly,
@@ -21,6 +22,7 @@ import {
   custodianOccupiedBedNightsForPlanner,
   findCustodianBedHolds,
 } from "@/lib/custodian-occupancy";
+import { mayShareDoubleBedWith } from "@/lib/double-bed-sharing";
 import {
   buildWholeLodgeHeldNightPredicate,
   findBlockingWholeLodgeHolds,
@@ -418,6 +420,92 @@ async function resolveLodgeIdsForRooms(
  * ("every placing write re-checks the live holds immediately before writing")
  * true for the lifecycle planner rather than only for `runAutoBedAllocation`.
  */
+/**
+ * Drop any payload row that would land on a bed-night the database still shows
+ * as occupied (#2656).
+ *
+ * `createMany({ skipDuplicates: true })` is NOT a safety mechanism here. On a
+ * shared DOUBLE (#1701) it silently swallows a row that collides with a
+ * surviving PRIMARY — the guest-night is then neither placed nor reported — and
+ * it does not collide at all when the survivor is the SECOND occupant, so the
+ * row is created and an unrelated person is written into a double beside
+ * someone else's partner, with no `MemberPartnerLink`. The corrected planner
+ * never drafts either row; this is the write-layer proof of that rather than a
+ * reliance on the unique index to notice.
+ *
+ * Runs BEFORE the displacements are applied (#2669 review F1). It can, because
+ * the caller's exclusion set names the SOURCE bed of every planned
+ * displacement, so a bed the plan is about to free already reads as free here
+ * without depending on the write having happened. Anything still occupied,
+ * after that exclusion, is a genuine disagreement
+ * between the plan and the database (a concurrent writer, or a planner
+ * regression), and refusing the row leaves the guest-night in the
+ * awaiting-allocation queue for the next reconcile — the same posture as the
+ * custodian and whole-lodge re-filters.
+ */
+async function dropRowsOnOccupiedBedNights<
+  TRow extends { bedId: string; stayDate: Date },
+>(
+  db: BedAllocationLifecycleDb,
+  rows: TRow[],
+  context: {
+    bookingId: string;
+    /**
+     * The occupant slots this apply has already vacated, keyed
+     * `sourceBedId:bookingGuestId:stayDate` — the bed each displaced row was on
+     * BEFORE the displacement ran.
+     *
+     * The source bed has to be part of the key (#2669 review). This read runs
+     * after the displacements on the same client, so a DELETEd row is already
+     * gone and this exclusion is only belt-and-braces for it; but a MOVEd row
+     * still exists, at its NEW bed. Keyed by guest-night alone the exclusion
+     * would strike that row out too, and the MOVE's DESTINATION bed-night would
+     * read as free — admitting a payload row onto an occupied bed, which is the
+     * one outcome this whole function exists to prevent. Keyed by source bed the
+     * exclusion only ever forgives an occupant found where it used to be.
+     */
+    vacatedOccupantSlots?: Set<string>;
+  },
+): Promise<TRow[]> {
+  if (rows.length === 0) return rows;
+
+  const occupants = await db.bedAllocation.findMany({
+    where: {
+      OR: rows.map((row) => ({ bedId: row.bedId, stayDate: row.stayDate })),
+    },
+    select: { bedId: true, stayDate: true, bookingGuestId: true },
+  });
+  if (occupants.length === 0) return rows;
+
+  const vacated = context.vacatedOccupantSlots;
+  const takenKeys = new Set(
+    occupants
+      .filter(
+        (occupant) =>
+          !vacated?.has(
+            `${occupant.bedId}:${occupant.bookingGuestId}:${formatDateOnly(occupant.stayDate)}`,
+          ),
+      )
+      .map(
+        (occupant) => `${occupant.bedId}:${formatDateOnly(occupant.stayDate)}`,
+      ),
+  );
+  const writable = rows.filter(
+    (row) => !takenKeys.has(`${row.bedId}:${formatDateOnly(row.stayDate)}`),
+  );
+  if (writable.length < rows.length) {
+    logger.error(
+      {
+        bookingId: context.bookingId,
+        droppedCount: rows.length - writable.length,
+        issue: 2656,
+      },
+      "Bed allocation write-time re-check dropped rows targeting bed-nights that are still occupied — the plan and the database disagree",
+    );
+  }
+  return writable;
+}
+
 async function dropRowsOnCustodianHeldBedNights<
   TRow extends { bedId: string; stayDate: Date },
 >(
@@ -813,6 +901,18 @@ async function autoAllocateMissingBedNights({
       },
       ...(lodgeId ? { room: lodgeNullTolerantScope(lodgeId) } : {}),
     },
+    // Determinism (#2656). The planner is pure and deterministic for a given
+    // input, so its input must be deterministic too: without an ORDER BY,
+    // PostgreSQL may return the two rows of a shared DOUBLE — or any two rows —
+    // in either order between runs, and seeding order reaches per-booking row
+    // iteration and bed-stability preferences.
+    //
+    // `(bedId, stayDate)` is NOT unique, and that is this issue's whole premise:
+    // a shared DOUBLE puts TWO rows on one bed-night. So `id` is not a formal
+    // tie-break here — it is the real discriminator, in exactly the case this
+    // ordering was added for. `(bookingGuestId, stayDate)` IS unique, so the
+    // three columns together are a total order over the result set.
+    orderBy: [{ stayDate: "asc" }, { bedId: "asc" }, { id: "asc" }],
     select: {
       bedId: true,
       bookingId: true,
@@ -993,6 +1093,15 @@ async function autoAllocateMissingBedNights({
     // allocation is moved aside or unallocated so a held booking always gets a
     // bed the availability math already admitted it to.
     prioritizeCapacityHolding: true,
+    // #2656: the planner is pure, so it cannot log or breadcrumb a bookkeeping
+    // divergence itself. The hard assertion stays test-only; in production a
+    // live lodge hitting one becomes visible here instead of silent.
+    onInvariantViolation: (message) =>
+      reportBedAllocationInvariantViolation(message, {
+        bookingId,
+        lodgeId: lodgeId ?? null,
+        source: "reconcileBedAllocationsForBooking",
+      }),
     allocationPriorityOrder: settings.allocationPriorityOrder,
     rooms: plannerRooms,
     bookings: plannerBookings,
@@ -1154,7 +1263,13 @@ async function autoAllocateMissingBedNights({
   // Common case (no displacement): a plain createMany, unchanged apart from the
   // re-checked payload.
   if (displacements.length === 0) {
-    const data = await recheckPayload(db);
+    const rechecked = await recheckPayload(db);
+    if (rechecked.length === 0) return 0;
+    // Nothing was freed on this path, so any occupied target bed-night is a
+    // straight disagreement with the plan — refuse the row rather than letting
+    // `skipDuplicates` swallow it or (beside a second occupant) let it through
+    // (#2656).
+    const data = await dropRowsOnOccupiedBedNights(db, rechecked, { bookingId });
     if (data.length === 0) return 0;
     const created = await db.bedAllocation.createMany({
       ...createManyArgs,
@@ -1191,11 +1306,47 @@ async function autoAllocateMissingBedNights({
       return { count: 0, applied: false, appliedDisplacements: [] };
     }
 
+    // Never write onto a bed-night that is still occupied — see
+    // dropRowsOnOccupiedBedNights.
+    //
+    // This runs BEFORE the displacements are applied (#2669 review F1), not
+    // after. It can afford to, because its exclusion set is asserted in JS
+    // against the SOURCE bed of each planned displacement rather than read out
+    // of the database, so a bed this plan is about to free already reads as
+    // free here. Running it afterwards meant an emptied payload left the
+    // displacements committed and audited: a provisional booking evicted, and
+    // an audit saying its bed was returned "so a capacity-holding booking could
+    // claim it", for an allocation that was then never written.
+    //
+    // The exclusion set is the FULL planned list rather than the justified
+    // subset, which is not yet known — and that is sound in the only direction
+    // that matters. A displacement is dropped as unjustified precisely when NO
+    // surviving payload row claims a bed-night its booking frees, so forgiving
+    // its occupant here can never admit a row onto a bed that stays occupied.
+    const writable = await dropRowsOnOccupiedBedNights(client, data, {
+      bookingId,
+      // Keyed by the SOURCE bed, so a MOVE's destination is never forgiven —
+      // see the parameter's docblock. `fromBedId` is the planner's view; where
+      // the database disagreed, the row simply is not excluded and its
+      // bed-night reads as taken, which is the conservative direction.
+      vacatedOccupantSlots: new Set(
+        displacements.map(
+          (displacement) =>
+            `${displacement.fromBedId}:${displacement.bookingGuestId}:${displacement.stayDate}`,
+        ),
+      ),
+    });
+    if (writable.length === 0) {
+      // Nothing will be written, so nothing may be displaced for it.
+      return { count: 0, applied: false, appliedDisplacements: [] };
+    }
+
     // Only the displacements the re-checked payload still needs (see
-    // `justifiedDisplacements`). A row dropped by a write-time re-filter takes
-    // its displacement down with it rather than leaving a provisional booking
-    // evicted for a bed nobody ends up in.
-    const applicable = justifiedDisplacements(data);
+    // `justifiedDisplacements`). A row dropped by a write-time re-filter — the
+    // unallocatable-booking re-check, either hold re-filter, or the occupancy
+    // filter above — takes its displacement down with it rather than leaving a
+    // provisional booking evicted for a bed nobody ends up in.
+    const applicable = justifiedDisplacements(writable);
     if (applicable.length < displacements.length) {
       logger.info(
         {
@@ -1207,11 +1358,48 @@ async function autoAllocateMissingBedNights({
       );
     }
 
+    // The rows the displacements are about to move or delete, read BEFORE the
+    // write (#2656): `updateMany`/`deleteMany` return only a count, and the
+    // shared-double repairs below need to know which of the two occupant slots
+    // each row held. Keyed by guest-night, which is unique
+    // (@@unique([bookingGuestId, stayDate])).
+    const displacedRows =
+      applicable.length === 0
+        ? []
+        : await client.bedAllocation.findMany({
+            where: {
+              OR: applicable.map((displacement) => ({
+                bookingGuestId: displacement.bookingGuestId,
+                stayDate: new Date(`${displacement.stayDate}T00:00:00.000Z`),
+              })),
+            },
+            select: {
+              bookingGuestId: true,
+              stayDate: true,
+              bedId: true,
+              isSecondOccupant: true,
+            },
+          });
+    const displacedByGuestNight = new Map(
+      displacedRows.map((row) => [
+        `${row.bookingGuestId}:${formatDateOnly(row.stayDate)}`,
+        row,
+      ]),
+    );
+    // Bed-nights this apply strips of their PRIMARY occupant. Only a departing
+    // primary can strand a partner (#1750), so a departing second occupant
+    // contributes nothing here.
+    const vacatedPrimaryBedNights: OrphanedBedNight[] = [];
+
     for (const displacement of applicable) {
+      const stayDate = new Date(`${displacement.stayDate}T00:00:00.000Z`);
       const where = {
         bookingGuestId: displacement.bookingGuestId,
-        stayDate: new Date(`${displacement.stayDate}T00:00:00.000Z`),
+        stayDate,
       };
+      const previous = displacedByGuestNight.get(
+        `${displacement.bookingGuestId}:${displacement.stayDate}`,
+      );
       if (
         displacement.type === "MOVE" &&
         displacement.toBedId &&
@@ -1219,15 +1407,56 @@ async function autoAllocateMissingBedNights({
       ) {
         await client.bedAllocation.updateMany({
           where,
-          data: { bedId: displacement.toBedId, roomId: displacement.toRoomId },
+          data: {
+            bedId: displacement.toBedId,
+            roomId: displacement.toRoomId,
+            // A MOVE destination was free in the database at plan start and no
+            // other row in this plan may target it, so the moved row arrives
+            // ALONE — it must be the primary there. Without this, relocating
+            // the second occupant of a shared double would plant a fresh
+            // orphaned `isSecondOccupant=true` row on the destination and
+            // dead-end that bed-night behind the `resolveSecondOccupant` orphan
+            // guard (#2656). A no-op for a row that was already primary.
+            //
+            // The denormalized `bedType` is deliberately NOT rewritten here: it
+            // is only ever read by the non-DOUBLE partial unique index, whose
+            // stale values err toward under-occupancy, and manual placement
+            // reads the LIVE `LodgeBed.bedType` instead (#1749).
+            isSecondOccupant: false,
+          },
         });
+        if (previous && !previous.isSecondOccupant) {
+          if (previous.bedId !== displacement.toBedId) {
+            vacatedPrimaryBedNights.push({ bedId: previous.bedId, stayDate });
+          }
+        }
       } else {
         await client.bedAllocation.deleteMany({ where });
+        if (previous && !previous.isSecondOccupant) {
+          vacatedPrimaryBedNights.push({ bedId: previous.bedId, stayDate });
+        }
       }
     }
+
+    // Promote the survivor on every shared double this apply just took the
+    // primary off (#2656 / #1750 invariant). Every other removal path already
+    // does this; the displacement apply path was the one that did not, so it
+    // could leave the orphaned `isSecondOccupant=true` row that
+    // `docs/DOMAIN_INVARIANTS.md` says is never left behind. Runs after the
+    // removals, so the flip to `isSecondOccupant=false` cannot collide with
+    // @@unique([bedId, stayDate, isSecondOccupant]), and on the same client so
+    // it commits or rolls back with them.
+    const promotedPartners = await promoteOrphanedSecondOccupantsBatch(
+      client,
+      vacatedPrimaryBedNights,
+    );
+    for (const partner of promotedPartners) {
+      await recordPartnerPromotionAudit(client, partner);
+    }
+
     const created = await client.bedAllocation.createMany({
       ...createManyArgs,
-      data,
+      data: writable,
     });
     return {
       count: created.count,
@@ -1448,12 +1677,14 @@ export async function reconcileBedAllocationsForBooking(
 export type PartnerSharedSweepReason =
   | "partner_link_dissolved"
   | "member_deactivated"
-  | "member_age_tier_changed";
+  | "member_age_tier_changed"
+  | "members_merged";
 
 const PARTNER_SHARE_SWEEP_REASON_LABELS: Record<PartnerSharedSweepReason, string> = {
   partner_link_dissolved: "Partner link dissolved",
   member_deactivated: "Member deactivated",
   member_age_tier_changed: "Member is no longer an adult",
+  members_merged: "Members merged with no confirmed partnership",
 };
 
 /** Human phrase for a sweep reason, shared by the audit rows and admin alert. */
@@ -1528,6 +1759,7 @@ export function partnerShareSweepCounterpartNames(
   memberId: string,
 ): string {
   const names = new Set<string>();
+  let sawSelfPair = false;
   for (const row of swept) {
     if (row.secondOccupantMemberId !== memberId && row.secondOccupantName) {
       names.add(row.secondOccupantName);
@@ -1535,8 +1767,21 @@ export function partnerShareSweepCounterpartNames(
     if (row.primaryMemberId !== memberId && row.primaryName) {
       names.add(row.primaryName);
     }
+    if (
+      row.secondOccupantMemberId === memberId &&
+      row.primaryMemberId === memberId
+    ) {
+      sawSelfPair = true;
+    }
   }
-  return [...names].join(", ") || "Unknown member";
+  if (names.size > 0) return [...names].join(", ");
+  // #2595 — the merge of two records that were each other's confirmed partners
+  // and shared a bed. Both guest rows collapse onto the master, so BOTH sides
+  // filter out here and the old fall-back told an officer the counterpart was
+  // "Unknown member" — which reads like missing data rather than the truth,
+  // which is that there is no longer a second person at all.
+  if (sawSelfPair) return "the same member (a merged duplicate of themselves)";
+  return "Unknown member";
 }
 
 async function recordPartnerShareSweepAudits(
@@ -1548,12 +1793,26 @@ async function recordPartnerShareSweepAudits(
   // and the primary's booking when they differ (a couple sharing within one
   // booking gets a single row) — grouped so a multi-night sweep records a
   // nights list rather than a row per night.
+  //
+  // #2595 — the row must be enough to RESTORE what was removed. `allocationIds`
+  // alone are not: they name rows that no longer exist. So the group also
+  // carries the bed, room, booking-guest and occupant name for each swept
+  // bed-night, in the same order as `stayDates`, which is everything an
+  // operator needs to put the person back on that bed from the audit trail
+  // alone. This matters more for merge than for the #1756 lifecycle events:
+  // arm (b) of the merge sweep can remove a row on a THIRD party's booking (see
+  // `sweepUnbackedFutureSharedDoublesWithLocksHeld`), whose owner had no part in
+  // the merge and no other record of what happened.
   interface SweepAuditGroup {
     bookingId: string;
     role: "second_occupant" | "primary";
     counterpartBookingId: string | null;
     stayDates: string[];
     allocationIds: string[];
+    bedIds: string[];
+    roomIds: string[];
+    bookingGuestIds: string[];
+    secondOccupantNames: string[];
   }
   const groups = new Map<string, SweepAuditGroup>();
   const add = (
@@ -1565,9 +1824,23 @@ async function recordPartnerShareSweepAudits(
     const key = `${bookingId}:${role}:${counterpartBookingId ?? "none"}`;
     const group =
       groups.get(key) ??
-      { bookingId, role, counterpartBookingId, stayDates: [], allocationIds: [] };
+      {
+        bookingId,
+        role,
+        counterpartBookingId,
+        stayDates: [],
+        allocationIds: [],
+        bedIds: [],
+        roomIds: [],
+        bookingGuestIds: [],
+        secondOccupantNames: [],
+      };
     group.stayDates.push(formatDateOnly(row.stayDate));
     group.allocationIds.push(row.allocationId);
+    group.bedIds.push(row.bedId);
+    group.roomIds.push(row.roomId);
+    group.bookingGuestIds.push(row.bookingGuestId);
+    group.secondOccupantNames.push(row.secondOccupantName);
     groups.set(key, group);
   };
   for (const row of swept) {
@@ -1578,11 +1851,29 @@ async function recordPartnerShareSweepAudits(
   }
 
   const reasonLabel = describePartnerSharedSweepReason(reason).toLowerCase();
+  // #2595 — the merge caller is the one that must NOT swallow an audit failure,
+  // and the difference is the promise each caller makes.
+  //
+  // The #1756 lifecycle callers commit their sweep and then fire a best-effort
+  // admin email; a lost audit row there costs a nudge on a short transaction the
+  // operator just performed and can see the result of. Merge's justification for
+  // the same fire-and-forget email is explicitly "the evidence is already
+  // committed" — so if the evidence is what failed, the promise is void. Merge
+  // also deletes rows on bookings whose owners were not party to the merge, and
+  // the audit row is their ONLY record of it.
+  //
+  // A Postgres-level failure would abort merge's transaction anyway. What this
+  // catches is the JS/Prisma-level failure inside `createAuditLog`, which the
+  // shared catch below would otherwise swallow with the transaction still
+  // healthy — committing a bed deletion whose only trace is a log line. Rolling
+  // the merge back instead is safe and retryable: nothing has left the database.
+  const auditFailureIsFatal = reason === "members_merged";
   for (const group of groups.values()) {
-    // Best-effort, mirroring recordPartnerPromotionAudit: an audit-write
-    // failure must never roll back a committed sweep. There is no acting
-    // member — the removal is a system consequence of the pair breaking — so
-    // this is a "lodge" system event recorded against each affected booking.
+    // Best-effort for the #1756 lifecycle events, mirroring
+    // recordPartnerPromotionAudit: an audit-write failure must never roll back a
+    // committed sweep. There is no acting member — the removal is a system
+    // consequence of the pair breaking — so this is a "lodge" system event
+    // recorded against each affected booking.
     try {
       await createAuditLog(
         {
@@ -1597,12 +1888,19 @@ async function recordPartnerShareSweepAudits(
               ? `Second occupant removed from shared double bed back to the awaiting-allocation queue (${reasonLabel})`
               : `This booking's shared double bed lost its second occupant to the stale partner-share sweep (${reasonLabel})`,
           metadata: {
-            issue: 1756,
+            // The mechanism's own issue for the four pair-breaking lifecycle
+            // events; #2595 for the merge reconciliation, so an operator
+            // reading the audit trail lands on the defect that added it.
+            issue: reason === "members_merged" ? 2595 : 1756,
             reason,
             role: group.role,
             counterpartBookingId: group.counterpartBookingId,
             stayDates: group.stayDates,
             allocationIds: group.allocationIds,
+            bedIds: group.bedIds,
+            roomIds: group.roomIds,
+            bookingGuestIds: group.bookingGuestIds,
+            secondOccupantNames: group.secondOccupantNames,
           },
         },
         db,
@@ -1612,8 +1910,146 @@ async function recordPartnerShareSweepAudits(
         { err, group, reason },
         "Failed to record partner share sweep audit",
       );
+      if (auditFailureIsFatal) throw err;
     }
   }
+}
+
+/**
+ * The lodges of every FUTURE bed allocation these members already hold — the
+ * rows a partner-share sweep may judge or delete in this transaction.
+ *
+ * A conservative over-lock: it also names a lodge where the member merely has
+ * an unshared future placement. It cannot MISS the lodge of a shared bed-night
+ * whose counterpart belongs to another booking, because both occupants sit on
+ * the same bed, hence in the same room and the same lodge.
+ */
+async function futurePartnerShareAllocationLodgeIds(
+  tx: Prisma.TransactionClient,
+  uniqueMemberIds: string[],
+): Promise<string[]> {
+  const allocationLodges = await tx.bedAllocation.findMany({
+    where: {
+      stayDate: { gte: getTodayDateOnly() },
+      bookingGuest: { memberId: { in: uniqueMemberIds } },
+    },
+    select: { room: { select: { lodgeId: true } } },
+  });
+  return allocationLodges
+    .map((allocation) => allocation.room.lodgeId)
+    .filter((lodgeId): lodgeId is string => Boolean(lodgeId));
+}
+
+/**
+ * The lodges of every booking that holds a FUTURE guest-night for one of these
+ * members — the lodges a placement for them could still LAND in while this
+ * transaction runs, whether or not a bed allocation exists there yet (#2595).
+ *
+ * This is the derivation that lets a caller drop the global cohort key, so its
+ * completeness argument is the whole safety case and is spelled out here:
+ *
+ *  - A `BedAllocation` row exists only for a `BookingGuest` (`bookingGuestId`
+ *    is NOT NULL and FK-constrained), so no placement can name a member who has
+ *    no guest row.
+ *  - Every allocating writer picks its rooms from the guest's OWN booking's
+ *    lodge (`roomsForBooking`/`roomsAtLodge` in `bed-allocation.ts`, and the
+ *    lodge-scoped room reads in `admin-bed-allocation.ts`), and both
+ *    `Booking.lodgeId` and `LodgeRoom.lodgeId` are NOT NULL, so the allocation's
+ *    lodge is the booking's lodge.
+ *  - A placement is only ever written for one of that guest's own nights, and
+ *    the sweep only ever judges `stayDate >= today`, so a FUTURE placement
+ *    implies a FUTURE guest-night.
+ *
+ * WHAT THAT ARGUMENT DOES NOT COVER, stated plainly because the three bullets
+ * above are all about IMMUTABLE or FK-constrained columns and it would be easy
+ * to read them as closure. They are not. Every column this query FILTERS on is
+ * mutable: `BookingGuest.stayStart`, `BookingGuest.stayEnd` and the
+ * `BookingGuestNight` rows. The bullets prove "a future placement implies a
+ * future guest-night IN THE SAME LODGE"; they do not prove "the set of lodges
+ * holding a future guest-night cannot CHANGE while the merge runs". It can.
+ *
+ * Concretely, these writers rewrite a guest's dates while holding
+ * `pg_advisory_xact_lock(1)` plus that booking's own lodge key — and NO
+ * `member-lifecycle:` or `member-partner-link:` key, which are the only keys
+ * merge holds once it has dropped the global one. So merge cannot exclude them:
+ *
+ *  - `modifyBookingDates` and `adminShiftBookingDates`
+ *    (`booking-date-modification-service.ts`) under `adminOverride`, whose
+ *    documented purpose includes moving a fully-past booking's dates; and
+ *  - `modifyBookingBatch` via `buildInProgressGuestRangePlan`
+ *    (`booking-edit-guest-ranges.ts`), which needs NO override and no admin
+ *    role: extending an in-progress booking's check-out widens EVERY remaining
+ *    guest's `stayEnd` to the new check-out, including a partial-stay guest
+ *    whose own nights had already finished.
+ *
+ * Each is followed in its own transaction by
+ * `reconcileBedAllocationsForBookingWithLodgeLockHeld`, so it also creates the
+ * new `BedAllocation` rows on the newly-future nights.
+ *
+ * The consequence: a booking at lodge Y whose guest-nights are ALL in the past
+ * when this query runs is invisible to both reads, and can be shifted into the
+ * future during the merge, into a lodge the merge holds no key for. Nothing
+ * about `Booking.lodgeId` being immutable prevents that — the lodge does not
+ * move, the NIGHTS do.
+ *
+ * How far the enforcement below actually gets. This is not unguarded, and it is
+ * narrower than it first looks, but it is not closed:
+ *
+ *  - `sweepUnbackedFutureSharedDoublesWithLocksHeld` throws
+ *    {@link UnlockedPartnerShareLodgeError} for any candidate row in a lodge
+ *    outside the locked set, which rolls the whole merge back. That catches
+ *    every interleaving where the offending row is visible at the sweep's
+ *    CANDIDATE READ. A row committed after that read and before the merge
+ *    commits is not caught — the merge holds no key the other writer contends
+ *    on, so there is nothing to serialise them.
+ *  - For the escaped row to be an unbacked SHARED DOUBLE rather than a harmless
+ *    primary, something must write `isSecondOccupant: true` in that window.
+ *    Auto-allocation cannot: `autoAllocateMissingBedNights`' `createMany`
+ *    payload carries no `isSecondOccupant` at all and the planner
+ *    (`bed-allocation.ts`) has no concept of one. Only the manual admin
+ *    placement paths in `admin-bed-allocation.ts` write second occupants, and
+ *    they ask `mayShareDoubleBedWith`, which — before the merge commits — still
+ *    reads the CONFIRMED link the merge is about to drop and says yes.
+ *
+ * So the residual is a four-step interleaving (lodge Y outside the derived set
+ * → a concurrent guest-date write puts a merged member on a future night at Y →
+ * an admin hand-places a second occupant on it → both commit inside the sweep's
+ * own read-to-commit window), not a single racing writer. It is a real hole in
+ * the completeness claim and it is recorded rather than argued away. It is NOT
+ * a regression: `main` runs no sweep at all, so on `main` that same state is
+ * simply never reconciled. Closing it needs an owner decision about which
+ * Critical surface pays — see the residual-risk section of PR #2641.
+ *
+ * Deliberately NOT filtered by `Booking.status`. Status transitions serialise on
+ * the global cohort key, which merge no longer holds, so a booking that is not
+ * allocatable when the set is derived could become allocatable while the merge
+ * runs. Reading the immutable member ids and over-locking on a mutable status is
+ * the safe direction; narrowing on status would reintroduce exactly the hole
+ * this query closes.
+ *
+ * The `stayEnd`/`nights` disjunction is deliberate too: `BookingGuestNight` rows
+ * are the per-night truth for modern bookings, but legacy guests can carry only
+ * the `stayStart..stayEnd` envelope (which is why the planners fall back to it),
+ * so either signal alone could miss a lodge.
+ */
+async function futurePartnerShareGuestNightLodgeIds(
+  tx: Prisma.TransactionClient,
+  uniqueMemberIds: string[],
+): Promise<string[]> {
+  const today = getTodayDateOnly();
+  const guestRows = await tx.bookingGuest.findMany({
+    where: {
+      memberId: { in: uniqueMemberIds },
+      OR: [
+        { stayEnd: { gte: today } },
+        { nights: { some: { stayDate: { gte: today } } } },
+      ],
+    },
+    select: { booking: { select: { lodgeId: true } } },
+  });
+  return guestRows
+    .map((guest) => guest.booking.lodgeId)
+    .filter((lodgeId): lodgeId is string => Boolean(lodgeId));
 }
 
 /**
@@ -1622,6 +2058,14 @@ async function recordPartnerShareSweepAudits(
  * the sweep may touch allocations in several lodges, so the canonical order is
  * global cohort, then every affected lodge in sorted order, then any member
  * lifecycle locks owned by the caller.
+ *
+ * Used by the #1756 pair/member sweep callers (link dissolve, deactivation,
+ * age-tier correction, seasonal reassignment, bulk update, account-deletion
+ * approval). Member merge takes the narrower
+ * {@link acquireMemberMergePartnerSharedLodgeLocks} instead — see that helper
+ * for why, and `docs/CONCURRENCY_AND_LOCKING.md` for the composed orders.
+ * Neither may take the lodge tier after a member-lifecycle key: these helpers
+ * are what keep every caller on the documented global -> lodge -> member order.
  */
 export async function acquireFuturePartnerSharedAllocationLocks(
   tx: Prisma.TransactionClient,
@@ -1631,27 +2075,72 @@ export async function acquireFuturePartnerSharedAllocationLocks(
   const uniqueMemberIds = [...new Set(memberIds.filter(Boolean))];
   if (uniqueMemberIds.length === 0) return;
 
-  // Either occupant's own allocation names the affected lodge. This may lock
-  // a lodge where the member has another, non-shared future placement too; the
-  // conservative over-lock keeps discovery bounded and cannot miss the lodge
-  // of a shared bed-night whose counterpart belongs to another booking.
-  const allocationLodges = await tx.bedAllocation.findMany({
-    where: {
-      stayDate: { gte: getTodayDateOnly() },
-      bookingGuest: { memberId: { in: uniqueMemberIds } },
-    },
-    select: { room: { select: { lodgeId: true } } },
-  });
   const lodgeIds = [
-    ...new Set(
-      allocationLodges
-        .map((allocation) => allocation.room.lodgeId)
-        .filter((lodgeId): lodgeId is string => Boolean(lodgeId)),
-    ),
+    ...new Set(await futurePartnerShareAllocationLodgeIds(tx, uniqueMemberIds)),
   ].sort();
   for (const lodgeId of lodgeIds) {
     await acquireLodgeCapacityLock(tx, lodgeId);
   }
+}
+
+/**
+ * Member merge's partner-share prefix (#2595): every affected lodge capacity
+ * key in sorted order and NOTHING ELSE — no global cohort `lock(1)`.
+ *
+ * Merge is the one partner-share caller that cannot afford the global key. An
+ * advisory xact lock is released only at COMMIT and merge runs with a 120s
+ * budget because it makes hundreds of sequential round-trips, so holding
+ * `lock(1)` for a whole merge excludes every cancel/capture/settle/refund and
+ * every bed-allocation writer in the club for that entire window — writers whose
+ * own transactions run on Prisma's default 5s budget and are rejected with
+ * `P2028` rather than served. The #1756 callers are all short transactions, so
+ * they keep the global key.
+ *
+ * Dropping it is only sound because the lodge set is derived from BOTH sources
+ * (see {@link futurePartnerShareGuestNightLodgeIds}): the lodges the members
+ * already hold future allocations in, and the lodges they hold future
+ * guest-nights in. Every writer that could create, move or invalidate a future
+ * shared double in a lodge takes that lodge's capacity key
+ * (`docs/CONCURRENCY_AND_LOCKING.md` -> "The counterpart inventory is
+ * deliberate"), so covering every lodge a placement could land in is equivalent
+ * to covering the cohort for the rows this sweep judges — without serialising
+ * the club.
+ *
+ * Immutable pre-lock keys: `memberIds` come from the request. Everything the
+ * set is derived FROM is re-read under the locks by the sweep itself.
+ *
+ * Call it BEFORE any member-lifecycle key, exactly like its sibling; the
+ * documented order is lodge -> member and merge's own hosting policy-set key
+ * comes before both.
+ *
+ * Returns the sorted lodge ids it locked, so the caller can hand them to
+ * {@link sweepUnbackedFutureSharedDoublesWithLocksHeld} and have the sweep
+ * REFUSE rather than touch a row in a lodge this prefix does not cover. The
+ * derivation argument above is thereby enforced at run time instead of trusted.
+ */
+export async function acquireMemberMergePartnerSharedLodgeLocks(
+  tx: Prisma.TransactionClient,
+  memberIds: readonly string[],
+): Promise<string[]> {
+  const uniqueMemberIds = [...new Set(memberIds.filter(Boolean))];
+  if (uniqueMemberIds.length === 0) return [];
+
+  // Sequential on purpose: both reads share one interactive transaction client.
+  const allocationLodgeIds = await futurePartnerShareAllocationLodgeIds(
+    tx,
+    uniqueMemberIds,
+  );
+  const guestNightLodgeIds = await futurePartnerShareGuestNightLodgeIds(
+    tx,
+    uniqueMemberIds,
+  );
+  const lodgeIds = [
+    ...new Set([...allocationLodgeIds, ...guestNightLodgeIds]),
+  ].sort();
+  for (const lodgeId of lodgeIds) {
+    await acquireLodgeCapacityLock(tx, lodgeId);
+  }
+  return lodgeIds;
 }
 
 /**
@@ -1778,6 +2267,289 @@ export async function sweepFuturePartnerSharedAllocationsWithLocksHeld(params: {
   if (targets.length === 0) {
     return [];
   }
+
+  // Idempotent, race-safe delete: id-scoped AND re-checking isSecondOccupant,
+  // so a row concurrently removed (or promoted to primary by an unrelated
+  // #1750 repair) is skipped rather than a primary ever being deleted.
+  await db.bedAllocation.deleteMany({
+    where: {
+      id: { in: targets.map((target) => target.allocationId) },
+      isSecondOccupant: true,
+    },
+  });
+
+  await recordPartnerShareSweepAudits(db, targets, params.reason);
+  return targets;
+}
+
+// ---------------------------------------------------------------------------
+// Unbacked shared-double reconciliation (#2595)
+//
+// The #1756 sweep above answers "this NAMED pair (or this one member) stopped
+// qualifying — remove their shares". Member merge cannot use it, because merge
+// is not a pair-breaking event about one pair: it COLLAPSES two identities, and
+// the resulting shares have to be judged one bed-night at a time.
+//
+// `planPartnerLinkMerge` keeps at most one CONFIRMED partner for the surviving
+// master, so merging a duplicate that already had its own confirmed partner
+// DROPS that link. `applyMoves` then re-points `BookingGuest.memberId` from the
+// duplicate onto the master with a blanket `updateMany` and leaves every bed
+// allocation exactly where it was — so the master and the duplicate's
+// ex-partner are left sharing a future DOUBLE bed with no partnership behind
+// it, which is precisely what `resolveSecondOccupant`/`mayShareDoubleBed`
+// refuse to create in the first place. Nothing else supplies the invariant:
+// merge takes no lodge tier, no lifecycle sweep covers merge, and there is no
+// database trigger.
+//
+// Passing the pair to the #1756 sweep would be wrong in both directions. With
+// `partnerMemberId` it only knows one pair, and merge can invalidate several
+// bed-nights against several different counterparts. Without it, the sweep
+// removes EVERY future share the member has — including the master's own,
+// still-CONFIRMED share with the partner it kept, which the merge did nothing
+// to invalidate.
+//
+// So this reconciliation is validity-driven rather than event-driven: it
+// re-derives each candidate bed-night's actual two occupants and re-asks the
+// single source of truth (`mayShareDoubleBedWith`, the batched form of
+// `mayShareDoubleBed`) whether they may still share. Only the bed-nights that
+// FAIL are swept, and only ever the `isSecondOccupant=true` row, so the primary
+// keeps their bed and no partner can be orphaned. Being validity-driven it is
+// also idempotent and safe to run on an unaffected merge: the candidate set is
+// simply empty, or every pair still qualifies and nothing is written.
+//
+// LOCKS. Take `acquireMemberMergePartnerSharedLodgeLocks(tx, memberIds)` —
+// every affected lodge in sorted order, and NOT the global cohort key — BEFORE
+// any member-lifecycle key, because the documented order is lodge -> member
+// (docs/CONCURRENCY_AND_LOCKING.md). A caller that already holds
+// member-lifecycle keys must NOT reach for the lodge tier afterwards. Pass the
+// lodge ids that helper returns as `lockedLodgeIds`: without the global key,
+// nothing else proves this sweep is not judging a row in an unlocked lodge, so
+// it refuses instead of guessing.
+// ---------------------------------------------------------------------------
+
+/**
+ * Thrown when a candidate future shared-double sits in a lodge the caller does
+ * not hold the capacity key for (#2595).
+ *
+ * That is only reachable if a lodge appeared for one of these members AFTER the
+ * prefix derived its set — a booking guest row added, in a new lodge, by a
+ * concurrent writer. Deleting the row anyway would mutate bed inventory in a
+ * lodge this transaction never serialised against, so the caller must roll back
+ * and let the operator retry; the retry derives the new lodge and covers it.
+ */
+export class UnlockedPartnerShareLodgeError extends Error {
+  constructor(public readonly lodgeIds: string[]) {
+    super(
+      `Future shared-double reconciliation found candidate rows in unlocked lodge(s): ${lodgeIds.join(", ")}`,
+    );
+    this.name = "UnlockedPartnerShareLodgeError";
+  }
+}
+
+/** The #2595 sweep also needs each candidate's lodge, to prove it is locked. */
+const MERGE_SWEEP_ALLOCATION_SELECT = {
+  ...SWEEP_ALLOCATION_SELECT,
+  room: { select: { lodgeId: true } },
+} as const;
+
+type MergeSweepAllocationRow = Prisma.BedAllocationGetPayload<{
+  select: typeof MERGE_SWEEP_ALLOCATION_SELECT;
+}>;
+
+/**
+ * Remove every FUTURE shared-double placement involving these members that no
+ * longer has a valid partnership behind it, and audit both sides of each
+ * removed bed-night.
+ *
+ * For callers that already hold the complete prefix from
+ * `acquireMemberMergePartnerSharedLodgeLocks(tx, memberIds)`; the candidate rows
+ * are deliberately re-read after those locks. Returns the removed rows so the
+ * caller can alert admins AFTER the enclosing transaction commits (external
+ * calls stay outside it), exactly like its #1756 sibling.
+ *
+ * `memberIds` is a SCOPE, not a pair: a bed-night is a candidate when either of
+ * its two occupants is one of these members. Everything else is left alone, so
+ * this can never turn into a lodge-wide re-plan.
+ *
+ * `lockedLodgeIds` is that prefix's own return value. Every candidate row must
+ * sit in one of those lodges or the sweep throws
+ * {@link UnlockedPartnerShareLodgeError} without writing anything.
+ */
+export async function sweepUnbackedFutureSharedDoublesWithLocksHeld(params: {
+  memberIds: readonly string[];
+  lockedLodgeIds: readonly string[];
+  reason: PartnerSharedSweepReason;
+  db: BedAllocationLifecycleDb;
+}): Promise<SweptPartnerSharedAllocation[]> {
+  const db = params.db;
+  const scopeIds = [...new Set(params.memberIds.filter(Boolean))];
+  if (scopeIds.length === 0) return [];
+  const lockedLodgeIds = new Set(params.lockedLodgeIds);
+  const today = getTodayDateOnly();
+
+  // Candidate second-occupant rows, from both sides of the share:
+  //  (a) a scoped member IS the second occupant, and
+  //  (b) a scoped member holds the PRIMARY side, so the partner sitting with
+  //      them is the row to judge.
+  // Both are needed for merge: `applyMoves` re-points the duplicate's guest
+  // rows onto the master, and the master may end up on either side of the
+  // bed-night depending on which booking placed which guest first.
+  const candidates = new Map<string, MergeSweepAllocationRow>();
+  const secondRows = await db.bedAllocation.findMany({
+    where: {
+      isSecondOccupant: true,
+      stayDate: { gte: today },
+      bookingGuest: { memberId: { in: scopeIds } },
+    },
+    select: MERGE_SWEEP_ALLOCATION_SELECT,
+  });
+  for (const row of secondRows) {
+    candidates.set(row.id, row);
+  }
+
+  const primaryBedNights = await db.bedAllocation.findMany({
+    where: {
+      isSecondOccupant: false,
+      stayDate: { gte: today },
+      bookingGuest: { memberId: { in: scopeIds } },
+    },
+    select: { bedId: true, stayDate: true },
+  });
+  if (primaryBedNights.length > 0) {
+    const partneredRows = await db.bedAllocation.findMany({
+      where: {
+        isSecondOccupant: true,
+        OR: primaryBedNights.map((night) => ({
+          bedId: night.bedId,
+          stayDate: night.stayDate,
+        })),
+      },
+      select: MERGE_SWEEP_ALLOCATION_SELECT,
+    });
+    for (const row of partneredRows) {
+      candidates.set(row.id, row);
+    }
+  }
+  if (candidates.size === 0) return [];
+
+  // #2595 — the derivation check, enforced rather than trusted. Without the
+  // global cohort key the ONLY thing serialising this sweep against the
+  // bed-allocation writers is the per-lodge capacity key, so every row it is
+  // about to judge must sit in a lodge whose key the caller holds. A miss means
+  // a lodge appeared for one of these members after the derivation, and the
+  // safe answer is to roll the merge back.
+  //
+  // This is a VISIBILITY check, not a fence, and it is worth being exact about
+  // which of the two it is. It is evaluated against the candidate rows read
+  // immediately above, so it fires for every offending row that had committed
+  // by then — but merge holds no key those writers contend on, so a row that
+  // commits after this read and before the merge's own commit is not seen here
+  // and cannot be. See `futurePartnerShareGuestNightLodgeIds` for the full
+  // statement of that residual and why the mutable guest-date columns are what
+  // makes it possible.
+  const unlockedLodgeIds = [
+    ...new Set(
+      [...candidates.values()]
+        .map((row) => row.room.lodgeId)
+        .filter((lodgeId): lodgeId is string => Boolean(lodgeId))
+        .filter((lodgeId) => !lockedLodgeIds.has(lodgeId)),
+    ),
+  ].sort();
+  if (unlockedLodgeIds.length > 0) {
+    throw new UnlockedPartnerShareLodgeError(unlockedLodgeIds);
+  }
+
+  // The primary occupant on each candidate bed-night names the OTHER half of
+  // the pair being judged, and the cross-booking side of the audit trail.
+  const primaries = await db.bedAllocation.findMany({
+    where: {
+      isSecondOccupant: false,
+      OR: [...candidates.values()].map((row) => ({
+        bedId: row.bedId,
+        stayDate: row.stayDate,
+      })),
+    },
+    select: SWEEP_ALLOCATION_SELECT,
+  });
+  const primaryByBedNight = new Map(
+    primaries.map((row) => [sweepBedNightKey(row.bedId, row.stayDate), row]),
+  );
+
+  // One eligibility question per distinct primary member, batched over all the
+  // second occupants it faces (`mayShareDoubleBedWith` answers a whole set in
+  // two statements), so the statement count is bounded by the number of
+  // distinct primaries rather than by the number of candidate bed-nights.
+  const secondsByPrimaryMember = new Map<string, Set<string>>();
+  for (const row of candidates.values()) {
+    const primary = primaryByBedNight.get(sweepBedNightKey(row.bedId, row.stayDate));
+    const primaryMemberId = primary?.bookingGuest.memberId;
+    const secondMemberId = row.bookingGuest.memberId;
+    if (!primaryMemberId || !secondMemberId) continue;
+    const seconds = secondsByPrimaryMember.get(primaryMemberId) ?? new Set<string>();
+    seconds.add(secondMemberId);
+    secondsByPrimaryMember.set(primaryMemberId, seconds);
+  }
+  const eligibleByPrimaryMember = new Map<string, Set<string>>();
+  for (const [primaryMemberId, seconds] of secondsByPrimaryMember) {
+    eligibleByPrimaryMember.set(
+      primaryMemberId,
+      await mayShareDoubleBedWith(primaryMemberId, [...seconds], db),
+    );
+  }
+
+  const targets: SweptPartnerSharedAllocation[] = [];
+  for (const row of candidates.values()) {
+    const primary =
+      primaryByBedNight.get(sweepBedNightKey(row.bedId, row.stayDate)) ?? null;
+    // No primary on the bed-night: a #1743/#1750 orphan. Judging a PAIR that
+    // does not exist would delete a row on the strength of a partnership
+    // question nobody asked, so it is skipped — but be precise about what that
+    // defers to, because the obvious reading is wrong twice over.
+    //
+    // There is no standing promotion pass. `promoteOrphanedSecondOccupants`
+    // runs only from `deleteAllocationsWithPartnerPromotion`, the reconcile
+    // prune, and `promoteVacatedOldBedNight` — i.e. only when some OTHER
+    // operation removes or moves a primary on that exact bed-night. A
+    // pre-existing orphan therefore stays put, possibly indefinitely. Nor is
+    // this "the same choice the #1756 sweep makes": #1756's PAIR scope skips
+    // orphans, but its single-member scope sweeps them and records
+    // `primaryBookingId: null`.
+    //
+    // Skipping is still right here. A lone second occupant is not an unbacked
+    // SHARE — there is only one person on the bed — and the row makes
+    // `resolveSecondOccupant` refuse the bed-night outright ("This double bed
+    // already has two occupants") rather than pair a new arrival with it. So
+    // the #2595 invariant holds either way, and the failure mode is a blocked
+    // bed rather than a bad share.
+    if (!primary) continue;
+    const primaryMemberId = primary.bookingGuest.memberId;
+    const secondMemberId = row.bookingGuest.memberId;
+    // A share needs a member on BOTH sides (`resolveSecondOccupant` refuses to
+    // create one otherwise), so an unlinked guest on either side is unbacked by
+    // construction and needs no eligibility round-trip.
+    const stillMayShare =
+      Boolean(primaryMemberId) &&
+      Boolean(secondMemberId) &&
+      (eligibleByPrimaryMember.get(primaryMemberId as string)?.has(
+        secondMemberId as string,
+      ) ??
+        false);
+    if (stillMayShare) continue;
+    targets.push({
+      allocationId: row.id,
+      bookingId: row.bookingId,
+      bookingGuestId: row.bookingGuestId,
+      bedId: row.bedId,
+      roomId: row.roomId,
+      stayDate: row.stayDate,
+      secondOccupantMemberId: secondMemberId,
+      secondOccupantName: sweepGuestName(row.bookingGuest),
+      primaryBookingId: primary.bookingId,
+      primaryMemberId,
+      primaryName: sweepGuestName(primary.bookingGuest),
+    });
+  }
+  if (targets.length === 0) return [];
 
   // Idempotent, race-safe delete: id-scoped AND re-checking isSecondOccupant,
   // so a row concurrently removed (or promoted to primary by an unrelated

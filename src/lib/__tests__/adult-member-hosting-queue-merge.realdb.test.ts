@@ -3018,6 +3018,111 @@ let deletionApprovalWasReleased: (typeof import("@/lib/deletion-request-decision
       await expect(Promise.all([first, second])).resolves.toBeDefined();
     });
 
+    it("bounds the merge participant wait instead of holding the policy key for the whole transaction budget (#2623 T6)", async () => {
+      // ONLY REAL POSTGRESQL CAN ESTABLISH THIS. The unit suite proves the
+      // statements are emitted in the right order; whether PostgreSQL actually
+      // cancels the wait, and whether it reports the cancellation as the same
+      // SQLSTATE `55P03` that `NOWAIT` raises, are facts about the database.
+      //
+      // Before the bound, this second transaction waited for as long as merge's
+      // own `timeout: 120_000` allowed — while holding the adult-member hosting
+      // policy-set advisory key, and while its own `FOR UPDATE` on up to
+      // `HOSTING_COVERAGE_MEMBER_FANOUT_LIMIT` third-party owners blocked every FK
+      // write naming them, so an uninvolved booking-create or guest-add waited
+      // behind the tail of a merge it had nothing to do with.
+      const held = deferred();
+      const release = deferred();
+      const holder = mergeA.$transaction(
+        async (tx) => {
+          await lockMemberMergeHostingCoverageParticipants(tx, {
+            masterId: IDS.master,
+            loserId: IDS.loser,
+            ownerMemberIds: [],
+          });
+          held.resolve();
+          await release.promise;
+        },
+        { timeout: 60_000 },
+      );
+      await held.promise;
+
+      const startedAt = process.hrtime.bigint();
+      let waitedMs = 0;
+      let contended: unknown;
+      try {
+        await mergeB.$transaction(
+          async (tx) => {
+            await lockAdultMemberHostingPolicySet(tx);
+            await lockMemberMergeHostingCoverageParticipants(tx, {
+              masterId: IDS.master,
+              loserId: IDS.loser,
+              ownerMemberIds: [],
+            });
+          },
+          // Deliberately far above the lock bound: if the bound did not exist,
+          // this would sit here until the holder released rather than failing.
+          { timeout: 60_000 },
+        );
+      } catch (error) {
+        contended = error;
+        waitedMs = realElapsedMs(startedAt);
+      } finally {
+        release.resolve();
+      }
+      await holder;
+
+      // The stable contract merge already converts into its "nothing was saved,
+      // re-run the preview" 409 — not a raw driver error.
+      expect(contended).toMatchObject({
+        code: HOSTING_COVERAGE_RETRY_CODE,
+        statusCode: 409,
+        message: HOSTING_COVERAGE_RETRY_MESSAGE,
+      });
+      // It really waited (this lock is still BLOCKING on purpose) and it really
+      // stopped (it did not run to the transaction budget).
+      expect(waitedMs).toBeGreaterThan(5_000);
+      expect(waitedMs).toBeLessThan(30_000);
+    }, 90_000);
+
+    it("still lets a short overlap through, so the bound did not turn the merge lock into NOWAIT (#2623 T6)", async () => {
+      // The other half, and the reason the bound is 10s rather than 0: merge is
+      // irreversible admin work, so a brief overlap with an ordinary writer must
+      // still succeed. `member-merge.ts` documents that blocking wait as
+      // deliberate.
+      const held = deferred();
+      const release = deferred();
+      const holder = mergeA.$transaction(
+        async (tx) => {
+          await lockMemberMergeHostingCoverageParticipants(tx, {
+            masterId: IDS.master,
+            loserId: IDS.loser,
+            ownerMemberIds: [],
+          });
+          held.resolve();
+          await release.promise;
+        },
+        { timeout: 30_000 },
+      );
+      await held.promise;
+
+      const waiter = mergeB.$transaction(
+        (tx) =>
+          lockMemberMergeHostingCoverageParticipants(tx, {
+            masterId: IDS.master,
+            loserId: IDS.loser,
+            ownerMemberIds: [],
+          }),
+        { timeout: 30_000 },
+      );
+      try {
+        await waitForClientToBlock("race-2597-merge-b");
+      } finally {
+        release.resolve();
+      }
+      await expect(waiter).resolves.toEqual([IDS.loser, IDS.master].sort());
+      await holder;
+    }, 60_000);
+
     it("moves rows created by config-transfer policy reconciliation when config wins before the full merge", async () => {
       const releaseConfig = deferred();
       const configReady = deferredValue<{

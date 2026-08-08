@@ -899,6 +899,15 @@ describe("consent columns have exactly one writer", () => {
       // name a workflow the member cannot enter. It writes no consent column.
       "src/lib/booking-exception-request-service.ts":
         "the exception-request re-evaluation reads a live booking's consent state so a refusal can actually be reviewed",
+      // #2595's reviewed bed-move service. A READER, twice over, and it writes no
+      // consent column: it folds each guest's stored consent fields into the
+      // preview digest so an apply refuses the moment any of them changes under
+      // the operator, and it asks `isOperationallyPresentConsent` whether the
+      // guest is present enough to hold a bed at all (`GUEST_NOT_PRESENT`) —
+      // the same rule the placement paths already apply. It composes no consent
+      // shape; every write it makes is to `BedAllocation`.
+      "src/lib/bed-allocation-move.ts":
+        "the reviewed move digest reads each guest's stored consent state, and the conflict pass refuses a guest who is not operationally present",
     };
 
     const mentions = productionFilesUnder("src")

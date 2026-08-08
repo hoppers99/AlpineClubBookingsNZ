@@ -84,6 +84,47 @@ describe("bed allocation lock topology", () => {
     }
   });
 
+  it("serializes reviewed moves global then sorted lodges, member families, and allocation rows", () => {
+    const text = source("src/lib/bed-allocation-move.ts");
+    const apply = text.slice(
+      text.indexOf("export async function applyBedAllocationMove"),
+    );
+    expectInOrder(apply, [
+      "pg_advisory_xact_lock(1)",
+      "loadRelatedRows(base, tx)",
+      "moveLodgeIds(base, discoveryRows)",
+      "acquireLodgeCapacityLock",
+      "loadMoveState(base, tx)",
+      "acquireMemberLifecycleLocks",
+      "acquireMemberPartnerLinkLocks",
+      "lockMoveRows",
+      "authoritativeBase = await loadMoveBase",
+      "authoritative = await loadMoveState",
+      "preview.digest !== input.request.previewDigest",
+      "updateReviewedMoveRows",
+      "BED_ALLOCATION_MOVE_APPLIED",
+    ]);
+    expect(apply).not.toContain("lockMemberNights");
+    expect(text).toContain('ORDER BY "bedId", "stayDate", "isSecondOccupant", "id"');
+    expect(apply).toContain("{ timeout: 30_000, maxWait: 10_000 }");
+    const guardedUpdate = between(
+      text,
+      "async function updateReviewedMoveRows",
+      "export async function applyBedAllocationMove",
+    );
+    expect(guardedUpdate.match(/UPDATE "BedAllocation"/g) ?? []).toHaveLength(1);
+    for (const guard of [
+      'allocation."bookingId" = reviewed."bookingId"',
+      'allocation."bookingGuestId" = reviewed."bookingGuestId"',
+      'allocation."roomId" = reviewed."roomId"',
+      'allocation."bedId" = reviewed."bedId"',
+      'allocation."stayDate" = reviewed."stayDate"',
+      'allocation."updatedAt" = reviewed."updatedAt"',
+    ]) {
+      expect(guardedUpdate).toContain(guard);
+    }
+  });
+
   it("keeps the reviewed-removal PostgreSQL races on the guarded CI harness and production writer entrypoints", () => {
     const harness = source(
       "src/lib/__tests__/concurrency-lock-races.realdb.test.ts",

@@ -155,10 +155,12 @@ covers it: the column is optional.
 
 `AuditLog.category` is `String?` with no default, and the audit writer sets it only when
 the caller supplies one. The **executable census** — `npm run audit:census`, pinned by
-`src/lib/__tests__/audit-writer-census.test.ts` — counts **419 production audit write
+`src/lib/__tests__/audit-writer-census.test.ts` — counts **421 production audit write
 sites, of which 82 pass no category**: 69 through `logAudit`, 11 through
 `createAuditLog`, 2 hand-built Prisma writes, and none through
-`createStructuredAuditLog`. Some are money-adjacent: subscription-billing settings, retry,
+`createStructuredAuditLog`. (The figure quoted here was 419 and was stale by two:
+the census and its reviewed manifest both report 421 on this commit, and this page
+is re-measured rather than carried forward.) Some are money-adjacent: subscription-billing settings, retry,
 mark/unmark family, reconcile; the subscription charge confirm; all three member-credit
 adjustment steps; fee configuration; the saved-card charge results. Others are ordinary
 but relevant: booking-policy, season and promotional-code edits; Xero settings and
@@ -312,12 +314,16 @@ refused by PostgreSQL itself (42501), and so is `SELECT *`. A future tool, a
 projection bug, or a `psql` session opened with that credential all hit the same
 refusal.
 
-`entityId` is the deliberate omission to explain. It is often a member id, and this
-pack's permission set is system-plus-domain rather than a per-record investigation
-with ADR-004's per-invocation personal-data opt-in. Per-record evidence — the member,
-the booking, the payment — is AID-6B (#2376) and AID-6C (#2377) work, under their own
-area permission and their own privacy review. Every entry in this pack therefore
-reports `surfacesPersonalData: false`, and means it.
+`entityId` was the deliberate omission to explain, and AID-6C (#2377) has since
+added it — under its own area permission and its own privacy review, exactly as this
+section said it would have to be. It is often a member id, and this pack's permission
+set is system-plus-domain rather than a per-record investigation with ADR-004's
+per-invocation personal-data opt-in, so **no entry in this pack projects it**: the
+correlation tools' eight projected fields are unchanged, and every entry here still
+reports `surfacesPersonalData: false` and means it. What the column buys is
+AID-6C's `diagnostics.finance_record_audit_history`, which uses it as a PREDICATE
+against an id the caller already holds, behind `finance:view`, and does not project
+it either. See [tool-pack-finance.md](tool-pack-finance.md).
 
 The runtime self-check verifies the granted **columns** against the same allowlist
 and refuses the role if a wider grant appears. That matters because a hand-added
@@ -505,6 +511,8 @@ here:
 
 - [Tool substrate reference](tools.md) — the gates, bounds, audit, and the rules for
   adding a tool.
+- [Finance and Xero tool pack (AID-6C)](tool-pack-finance.md) — the second pack, and
+  the one that added `entityId` to the `AuditLog` grant.
 - [Deployment and operator guide](deployment.md) — provisioning the role, the grants
   it makes, and what readiness reports.
 - [Page context](page-context.md) and the

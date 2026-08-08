@@ -2103,6 +2103,130 @@ describe("a change to one PERSON's standing (#2576 §8, §17)", () => {
       vi.useRealTimers();
     }
   });
+
+  it("still fences the standing subject at a club that enforces nowhere (#2623 T5)", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(TODAY);
+    try {
+      // #2623 T5 asked for this seam's fence to be gated on the policy. Its
+      // PARTICIPANT fence already is — the per-lodge `ENFORCED` filter returns 0
+      // before any proof is acquired. The subject barrier above it must NOT be:
+      // it is the shared standing-subject fence every lifecycle writer reaches,
+      // and account deletion relies on it to exclude a concurrent
+      // booking-request linked-member hold in every mode, `DISABLED` included.
+      // Real PostgreSQL refutes the gate directly — see the mode-parameterised
+      // hold/deletion interleavings in
+      // `adult-member-hosting-queue-merge.realdb.test.ts`.
+      const { db, queued } = makeStore([attendedBooking("b-owner-1", "owner-1")], {
+        policies: [policyRow({ mode: "DISABLED" })],
+      });
+      db.$executeRaw.mockRejectedValue({
+        driverAdapterError: { cause: { originalCode: "55P03" } },
+      });
+
+      await expect(
+        enqueueHostingCoverageReevaluationForMember("lapsing-adult", db),
+      ).rejects.toBeInstanceOf(HostingCoverageParticipantRetryError);
+      expect(db.$executeRaw).toHaveBeenCalledTimes(1);
+      expect(queued).toEqual([]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
+describe("the participant fence is not taken for a rule the club is not using (#2623 T5)", () => {
+  const TODAY = new Date("2026-07-01T00:00:00.000Z");
+
+  function partyBooking(mode: string) {
+    return makeStore(
+      [
+        booking({
+          id: "b-main",
+          memberId: "owner-1",
+          guests: [
+            guestRow("non-member-1", ["2026-07-03", "2026-07-04"]),
+          ],
+        }),
+      ],
+      { policies: [policyRow({ mode })] },
+    );
+  }
+
+  it("does not refuse an ordinary booking write at a DISABLED lodge while a member-lifecycle writer holds the row", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(TODAY);
+    try {
+      const { db } = partyBooking("DISABLED");
+      // A concurrent member-lifecycle writer already holds the owner's Member row,
+      // so the fence's `FOR KEY SHARE NOWAIT` would come back 55P03. Before the
+      // gate this turned a plain booking write into
+      // `HOSTING_COVERAGE_PARTICIPANT_RETRY` — "reload before trying again, and
+      // check payment status if a payment was involved" — for a rule this club has
+      // switched off, guarding a queue row that would never be written.
+      db.$executeRaw.mockRejectedValue({
+        driverAdapterError: { cause: { originalCode: "55P03" } },
+      });
+
+      await expect(
+        reconcileAdultMemberHostingReviewWithSiblings("b-main", db),
+      ).resolves.toMatchObject({ mode: "DISABLED" });
+      expect(db.$executeRaw).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("still clears a snapshot left behind by a lodge that has since switched the rule off", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(TODAY);
+    try {
+      // Skipping the fence must not skip the RECONCILIATION: a review recorded
+      // while the rule was on has to be cleared once it is off, which is the one
+      // thing the un-fenced path still has to do.
+      const { db, updates } = makeStore(
+        [
+          booking({
+            id: "b-main",
+            memberId: "owner-1",
+            adultMemberHostingReviewStatus: "PENDING",
+            guests: [guestRow("non-member-1", ["2026-07-03", "2026-07-04"])],
+          }),
+        ],
+        { policies: [policyRow({ mode: "DISABLED" })] },
+      );
+
+      await expect(
+        reconcileAdultMemberHostingReviewWithSiblings("b-main", db),
+      ).resolves.toMatchObject({ action: "cleared" });
+      expect(updates).toHaveLength(1);
+      expect(updates[0].data).toMatchObject({
+        adultMemberHostingReviewStatus: null,
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("still fences an ADMIN_REVIEW_REQUIRED lodge, where queue work is real", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(TODAY);
+    try {
+      // The gate is `hostingModeIsActive`, not `ENFORCED`: under review-only the
+      // dependants still have to be re-read, so the fence is still owed.
+      const { db } = partyBooking("ADMIN_REVIEW_REQUIRED");
+      db.$executeRaw.mockRejectedValue({
+        driverAdapterError: { cause: { originalCode: "55P03" } },
+      });
+
+      await expect(
+        reconcileAdultMemberHostingReviewWithSiblings("b-main", db),
+      ).rejects.toBeInstanceOf(HostingCoverageParticipantRetryError);
+      expect(db.$executeRaw).toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });
 
 describe("the dependent reads truncate reproducibly (#2576 §10)", () => {

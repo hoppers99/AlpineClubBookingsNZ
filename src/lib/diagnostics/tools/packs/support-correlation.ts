@@ -39,9 +39,11 @@
  * only when a caller supplies one — so a row with NO category exists and is common. The
  * executable census of this repository's production audit writes
  * (`scripts/audit/audit-writer-census.ts`, pinned by
- * `src/lib/__tests__/audit-writer-census.test.ts`) counts 418 write sites, of which
+ * `src/lib/__tests__/audit-writer-census.test.ts`) counts 421 write sites, of which
  * 82 pass no category: 69 `logAudit`, 11 `createAuditLog`, 2 hand-built Prisma
- * writes, and none through `createStructuredAuditLog`. They include money-adjacent
+ * writes, and none through `createStructuredAuditLog`. (This comment said 418 and
+ * the pack doc said 419; both were stale, and both are re-measured against the tree
+ * rather than carried forward — the uncategorised figure is unchanged.) They include money-adjacent
  * ones — subscription-billing settings/retry/mark-family/unmark-family/reconcile, the
  * subscription charge confirm, all three member-credit adjustment steps, fee
  * configuration and the family login-holder change — plus booking-policy edits, bulk

@@ -27,6 +27,7 @@ import {
   type BedAllocationRoom,
   type UnallocatedGuestNight,
 } from "@/lib/bed-allocation";
+import { reportBedAllocationInvariantViolation } from "@/lib/bed-allocation-diagnostics";
 import {
   BED_ALLOCATABLE_BOOKING_STATUSES,
   dropAllocationRowsForUnallocatableBookings,
@@ -2158,6 +2159,14 @@ export async function getBedAllocationDashboard(input: {
   const plan = settings.autoAllocationEnabled
     ? buildFirstFitBedAllocationPlan({
         enabled: true,
+        // #2656: the planner is pure, so it hands a detected bookkeeping
+        // divergence back rather than logging it itself. Test runs still throw;
+        // a live board render logs and breadcrumbs instead of staying silent.
+        onInvariantViolation: (message) =>
+          reportBedAllocationInvariantViolation(message, {
+            lodgeId: input.lodgeId ?? null,
+            source: "getBedAllocationDashboard",
+          }),
         allocationPriorityOrder: settings.allocationPriorityOrder,
         rooms: plannerRooms,
         bookings: plannerBookings,
@@ -3567,6 +3576,14 @@ async function classifyBedTakenNights(input: {
       stayDate: { in: input.candidateNights.map(parseDateOnly) },
       bookingGuestId: { not: input.guest.id },
     },
+    // The PRIMARY of a shared DOUBLE must sort first, deterministically (#2669
+    // review). `byNight` below preserves this order and the `BED_TAKEN` refusal
+    // names `occupants[0]`; without an ORDER BY, `(bedId, stayDate)` is not
+    // unique on a shared double (#1701/#2656) so PostgreSQL could return the
+    // SECOND occupant first and the refusal would name the partner rather than
+    // the guest who actually holds the bed. `false` sorts before `true`, and
+    // `bookingGuestId` is a total order within a bed-night.
+    orderBy: [{ isSecondOccupant: "asc" }, { bookingGuestId: "asc" }],
     select: {
       stayDate: true,
       isSecondOccupant: true,

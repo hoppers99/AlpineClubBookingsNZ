@@ -99,7 +99,9 @@ the area that already governs its data in the admin route lattice
 | Config & readiness, sanitized correlation (AID-6A, #2375) | module flags, readiness/health, sanitized audit/error correlation | `support:view` |
 | Booking & bed-allocation tools (AID-6B, #2376) | bookings, public requests, waitlist, bed allocation | `bookings:view` |
 | Membership & induction tools (AID-6B, #2376) | members, applications, family links, inductions | `membership:view` |
-| Finance & Xero-linkage tools (AID-6C, #2377) | payments, subscriptions, refunds, reports, Xero linkage | `finance:view` |
+| Finance & Xero-linkage tools (AID-6C, #2377) | payments, attempts, refunds, webhook receipts, Xero invoice linkage, finance audit history | `finance:view` |
+| Member↔Xero contact linkage (AID-6C, #2377) | a member's Xero contact link and its sync operations | `finance:view` **and** `membership:view` |
+| Authoritative booking-finance state (AID-6C, #2377) | the booking's own price and status combined with its payment, credit and refund position | `finance:view` **and** `bookings:view` |
 | (any lodge-operations tool, if added) | hut leaders, rosters, chores, rooms/beds, lodge settings | `lodge:view` |
 | (any content tool, if added) | page content, banners, site chrome | `content:view` |
 

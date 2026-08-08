@@ -87,6 +87,7 @@ vi.mock("@/lib/logger", () => ({
 }));
 
 import {
+  fenceHostingPolicyFindMany,
   fenceMemberFindMany,
   recordingBookingDouble,
 } from "@/lib/__tests__/support/hosting-participant-fence-double";
@@ -106,6 +107,10 @@ describe("cancelBooking split cascade (#738)", () => {
           return (fnOrActions as (tx: unknown) => Promise<unknown>)({
             $executeRaw: mocks.txExecuteRaw,
             member: { findMany: fenceMemberFindMany() },
+            // #2623 T5: the seam reads the lodge's hosting mode before the fence, so
+            // the double answers with an ACTIVE one and the fence above stays on the
+            // path. See `fenceHostingPolicyFindMany`.
+            adultMemberHostingPolicy: { findMany: fenceHostingPolicyFindMany() },
             booking: {
               findUnique: fenceBooking.findUnique,
               findMany: fenceBooking.findMany,

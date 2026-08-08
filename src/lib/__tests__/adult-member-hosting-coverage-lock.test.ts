@@ -31,6 +31,43 @@ function readRepoFile(relativePath: string): string {
   return readFileSync(path.resolve(process.cwd(), relativePath), "utf8");
 }
 
+/**
+ * The whole body of a top-level function, from its declaration to its own closing
+ * brace — not a fixed number of characters from the declaration.
+ *
+ * A CHARACTER WINDOW IS NOT THE CONSTRUCT THESE ASSERTIONS MEAN TO PIN, and #2623
+ * proved it: a comment added inside `enqueueHostingCoverageReevaluationForMember`
+ * explaining WHY a neighbouring lock is deliberately ungated pushed the
+ * `lockHostingCoverageOwner` call past `start + 4000`, and the test failed on a
+ * change that moved no code at all. The failure mode in the other direction is
+ * worse and silent: shrink a function and the window spills into the NEXT one, so
+ * the assertion passes on a call that has been hoisted out of the guarded path
+ * entirely — exactly the mutation this file exists to catch.
+ *
+ * Every source file here is prettier-formatted, so a top-level function ends at
+ * the first line that is exactly `}` in column 0 after its declaration; nothing
+ * inside the body is unindented. That makes the boundary exact without a parser.
+ * The "line that is exactly `}`" part is load-bearing rather than pedantic:
+ * `evaluateBookingAdultMemberHosting` returns a multi-line inline object type
+ * whose own brace closes in column 0 as `}>`, so a bare search for a column-0 `}`
+ * would end the body inside the signature and never reach a single statement.
+ */
+function topLevelFunctionBody(source: string, name: string): string | null {
+  const start = source.indexOf(`function ${name}(`);
+  if (start === -1) return null;
+  // `\r?\n` on both sides, and NULL rather than a fall back to the rest of the
+  // file, are the same guard twice. `*.ts` is pinned `eol=lf` in `.gitattributes`
+  // precisely because a Windows checkout otherwise materialises CRLF — and if
+  // that pin ever lapsed, an LF-only pattern would find no closing brace, a
+  // rest-of-file fallback would then contain every OTHER holder's lock call, and
+  // all four assertions would pass vacuously on Windows while still meaning
+  // something on Linux CI. That is the #2399 failure mode exactly, so it fails
+  // loudly instead.
+  const closing = /\r?\n\}(?=\r?\n|$)/.exec(source.slice(start));
+  if (!closing) return null;
+  return source.slice(start, start + closing.index + closing[0].length);
+}
+
 /** A client that records the tagged-template SQL it was handed. */
 function recordingClient() {
   const calls: Array<{ sql: string; values: unknown[] }> = [];
@@ -115,13 +152,12 @@ describe("the per-owner coverage lock (#2576 §9)", () => {
       "enqueueOwnHostingCoverageReevaluation",
       "enqueueHostingCoverageReevaluationForMember",
     ]) {
-      const start = review.indexOf(`function ${holder}(`);
-      expect(start, holder).toBeGreaterThan(-1);
-      // The lock must appear inside the function body, before the next top-level
-      // declaration. A generous window rather than a parser: the point is that the
-      // call has not been deleted or hoisted out of the guarded path.
-      const body = review.slice(start, start + 4000);
-      expect(body, holder).toContain("lockHostingCoverageOwner");
+      // The lock must appear inside the function's OWN body — the point is that
+      // the call has not been deleted or hoisted out of the guarded path, so the
+      // slice has to end where the function does rather than a fixed distance in.
+      const body = topLevelFunctionBody(review, holder);
+      expect(body, holder).not.toBeNull();
+      expect(body ?? "", holder).toContain("lockHostingCoverageOwner");
     }
   });
 
@@ -226,7 +262,19 @@ describe("the per-owner coverage lock (#2576 §9)", () => {
     const body = source.slice(executeStart, executeStart + 50_000);
     const markers = [
       "await lockAdultMemberHostingPolicySet(tx)",
+      // #2595: the partner-share prefix (every affected lodge capacity key,
+      // sorted — and deliberately NOT the global cohort key) sits BETWEEN the
+      // policy-set key and the member-lifecycle pair. Pinned by position, because
+      // taking it any later would invert the documented lodge -> member order.
+      "await acquireMemberMergePartnerSharedLodgeLocks(",
       "member-lifecycle:${lockA}",
+      // #2595: merge writes partner links (step 2) and READS them to decide a
+      // destructive bed write (step 3b), so it takes the canonical
+      // member-partner-link keys too — LAST, matching the reviewed move's
+      // member-lifecycle -> member-partner-link order so no new wait-graph edge
+      // is created. Pinned by position: taking it before the lifecycle pair
+      // would invert that order against `bed-allocation-move.ts`.
+      "await acquireMemberPartnerLinkLocks(tx, [masterId, loserId])",
       "const relationMoves = await applyMoves(",
       "const hostingPlan = await buildMemberMergeHostingCoveragePlan(",
       "await lockMemberMergeHostingCoverageParticipants(tx,",
@@ -237,9 +285,13 @@ describe("the per-owner coverage lock (#2576 §9)", () => {
       "const residualLoserGuestRows = await tx.bookingGuest.findMany(",
       "await lockHostingCoverageOwners(",
       "await applyLateHostingCoverageMoves(",
+      // #2595 step 3b: after the moves and every drift refusal, before the Xero
+      // teardown, and its alert strictly after the transaction commits.
+      "sweptShares = await sweepUnbackedFutureSharedDoublesWithLocksHeld({",
       "await enqueueMemberMergeHostingCoveragePlan(",
       "await tx.member.delete({ where: { id: loserId } })",
       "await settleHostingCoverageAfterCommit({ limit: 50 }, client)",
+      "sendAdminPartnerShareSweptAlert({",
     ];
     const positions = markers.map((marker) => body.indexOf(marker));
     expect(positions.every((position) => position >= 0), markers.join(" -> ")).toBe(

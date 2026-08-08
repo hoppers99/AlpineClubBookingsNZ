@@ -50,12 +50,37 @@ function readRepoFile(relativePath: string): string {
  * Block comments and whole-line `//` comments only: a trailing comment on a line of
  * code is left alone rather than risking a `//` inside a string literal.
  */
+/**
+ * Memoised, because the sweeps below are quadratic without it. `sourceFilesNaming`
+ * walks every non-test source file under `src/` for ONE identifier, and each seam
+ * or catcher inventory is its own walk — so without a cache a file is read and
+ * comment-stripped once per sweep rather than once per run. Adding the fourth
+ * `ENQUEUE_SEAMS` entry took the drain assertion from ~830 ms to over 9 s under
+ * parallel load and blew vitest's 5 s default, while still passing when this file
+ * was run alone: a timeout that only appears under load is the worst kind, because
+ * CI may or may not catch it. Keyed by repo-relative path; the tree does not
+ * change mid-run.
+ *
+ * The key is NORMALISED to forward slashes (#2623 F8). `sourceFilesNaming` builds
+ * its paths with `path.relative`, which yields backslashes on Windows, while every
+ * direct call site here passes a forward-slash literal — so the same file cached
+ * under two keys and was read and stripped twice. Harmless but pointless, and
+ * invisible on Linux CI, which is exactly the kind of divergence that makes a
+ * local timing measurement disagree with CI's.
+ */
+const repoCodeCache = new Map<string, string>();
+
 function readRepoCode(relativePath: string): string {
-  return readRepoFile(relativePath)
+  const key = relativePath.split(path.sep).join("/");
+  const cached = repoCodeCache.get(key);
+  if (cached !== undefined) return cached;
+  const code = readRepoFile(relativePath)
     .replace(/\/\*[\s\S]*?\*\//g, "")
     .split("\n")
     .filter((line) => !/^\s*(\/\/|\*)/.test(line))
     .join("\n");
+  repoCodeCache.set(key, code);
+  return code;
 }
 
 /**
@@ -542,14 +567,45 @@ describe("the same-owner refusal and the escalation seam (#2576 §6, §8, §9)",
     // `dependentCoverage` defaults to ESCALATE — sat outside the assertion entirely:
     // waitlist.ts, booking-request.ts, booking-request-quotes.ts, group-booking.ts
     // and school-booking-request.ts. The sweep below finds them by what they CALL.
+    // #2623 T9(a): the merge plan seam belongs here too. Nothing escaped without
+    // it — `member-merge.ts` is its only caller and is pinned separately above,
+    // and it does drain — but the whole point of finding seam users by what they
+    // CALL is that the NEXT caller is covered without anybody remembering to add
+    // it to a list.
     const ENQUEUE_SEAMS = [
       "enqueueOwnHostingCoverageReevaluation(",
       "enqueueHostingCoverageReevaluationForMember(",
+      "enqueueMemberMergeHostingCoveragePlan(",
       "reconcileAdultMemberHostingReviewWithSiblings(",
     ];
     const seamUsers = new Set<string>();
     for (const seam of ENQUEUE_SEAMS) {
-      for (const file of sourceFilesNaming(seam)) seamUsers.add(file);
+      const users = sourceFilesNaming(seam);
+      // A seam nobody calls contributes nothing, and a renamed seam left in this
+      // list would degrade the sweep to the hardcoded list it replaced without
+      // failing anything. Every entry has to be earning its place.
+      //
+      // NON-EMPTINESS IS TOO WEAK, and #2623 F3 found exactly where.
+      // `sourceFilesNaming` matches any non-test file NAMING the identifier —
+      // including the file that DECLARES it. Three of these four seams are
+      // declared in `adult-member-hosting-review.ts`, which is also in
+      // `TX_SCOPED_HELPERS` and so is skipped by the sweep below. So for
+      // `enqueueMemberMergeHostingCoveragePlan(`, whose only real caller is
+      // `member-merge.ts`, losing that caller would leave `users` as just the
+      // declaration: non-empty, guard green, and `member-merge.ts` silently out
+      // of the sweep — the exact regression this entry was added to prevent.
+      // Discount the declaration and require a real CALLER. The declaring file
+      // is found rather than hardcoded, so moving a seam to another module does
+      // not quietly turn this back into the weaker check.
+      const declaresSeam = `function ${seam.slice(0, -1)}(`;
+      const callers = users.filter(
+        (file) => !readRepoCode(file).includes(declaresSeam),
+      );
+      expect(
+        callers,
+        `${seam} has no caller outside its own declaration`,
+      ).not.toEqual([]);
+      for (const file of users) seamUsers.add(file);
     }
     for (const file of [...seamUsers].sort()) {
       if (TX_SCOPED_HELPERS.includes(file)) continue;
@@ -684,6 +740,113 @@ describe("the same-owner refusal and the escalation seam (#2576 §6, §8, §9)",
   });
 });
 
+describe("the participant fence is gated on the hosting policy (#2623 T5)", () => {
+  const REVIEW_SERVICE = "src/lib/adult-member-hosting-review.ts";
+
+  function functionStartsIn(service: string): number[] {
+    return [...service.matchAll(/\n(?:export )?(?:async )?function \w+/g)].map(
+      (match) => match.index ?? 0,
+    );
+  }
+
+  it("reads the lodge's mode before every queue-participant acquisition", () => {
+    // WHY STRUCTURAL. The behavioural proof lives in
+    // `adult-member-hosting-same-owner.test.ts`, and it can only assert the sites
+    // it happens to reach. This is the claim about the SET: a fourth seam added
+    // later, or a gate quietly hoisted out of one of these three, is invisible to
+    // every behavioural test that does not already exercise that seam — and the
+    // consequence is a `FOR KEY SHARE NOWAIT` taken on an ordinary booking write
+    // at a club with the rule switched off, which surfaces to the member as the
+    // fixed payment-flavoured retry 409 and nothing else.
+    //
+    // `await` is part of the pattern so the declaration of
+    // `acquireOrValidateQueueParticipantProof` in this same file is not read as a
+    // call site.
+    const service = readRepoCode(REVIEW_SERVICE);
+    const functionStarts = functionStartsIn(service);
+    const sites = [
+      ...service.matchAll(/await acquireOrValidateQueueParticipantProof\(/g),
+    ].map((match) => match.index ?? 0);
+    // The three enqueue seams. A change to this number is a new fence: gate it,
+    // then say so here.
+    expect(sites).toHaveLength(3);
+
+    for (const site of sites) {
+      const enclosing = Math.max(
+        ...functionStarts.filter((start) => start < site),
+        -1,
+      );
+      const gate = service.lastIndexOf("loadAdultMemberHostingPolicy(", site);
+      expect(
+        gate,
+        `a hosting fence at offset ${site} is acquired before its own function ` +
+          "reads the policy mode: " +
+          service.slice(site, site + 80).split("\n")[0],
+      ).toBeGreaterThan(enclosing);
+    }
+  });
+
+  it("keeps the un-fenced return fail-fast on the coverage-owner key", () => {
+    // THE ONE THING THE GATE GIVES UP, kept bounded. Skipping the fence is safe
+    // because an inactive mode reaches no coverage-owner key at all — but the
+    // reconciler re-reads the mode for itself one call deeper, so in the narrow
+    // window where a lodge turns the rule ON between the two reads, that return
+    // IS a path to the coverage-owner advisory lock with no Member fence in
+    // front of it. `true` is `failFastCoverageOwner`: it makes that acquisition
+    // `pg_try_advisory_xact_lock`, so the worst case is the stable retry 409.
+    // Flip it to `false` and the same window becomes a BLOCKING wait taken
+    // inside the caller's booking transaction while it holds the global and
+    // per-lodge capacity locks — the #2623 T6 hazard relocated, and invisible
+    // to every behavioural test because the window needs two interleaved
+    // policy reads to open.
+    expect(readRepoCode(REVIEW_SERVICE)).toMatch(
+      /if \(!hostingModeIsActive\(planned\.mode\)\) \{\s*return reconcileAdultMemberHostingReview\(\s*bookingId,\s*db,\s*options,\s*true,?\s*\);/,
+    );
+  });
+
+  it("leaves the shared standing-subject barrier deliberately mode-independent", () => {
+    // THE OTHER HALF, AND IT IS THE ONE THAT COSTS SOMETHING TO GET WRONG.
+    // `lockHostingCoverageMemberLifecycleTarget` looks like a fourth ungated
+    // fence and is not one: every standing writer — deactivation, archive,
+    // membership cancellation, consent decline, the Xero lapse sync, account
+    // deletion — reaches it through this one function, and it is what makes a
+    // concurrent booking-request linked-member hold and a deactivation mutually
+    // exclusive. `docs/CONCURRENCY_AND_LOCKING.md` states the contract: the
+    // hold's refusal "is independent of the lodge's hosting consequence
+    // (DISABLED, ADMIN_REVIEW_REQUIRED, or ENFORCED), so review policy is not an
+    // identity-safety backstop."
+    //
+    // A club-wide `ENFORCED` gate was written above it while implementing T5 and
+    // real PostgreSQL refuted it: six interleavings in
+    // `adult-member-hosting-queue-merge.realdb.test.ts` failed for DISABLED and
+    // ADMIN_REVIEW_REQUIRED, because a deletion could then deactivate the member
+    // and unlink the guest underneath a hold that had already read them active.
+    // So this asserts the ABSENCE of a gate, with the reason, rather than letting
+    // the next reader "finish the job".
+    const service = readRepoCode(REVIEW_SERVICE);
+    const barrier = service.indexOf(
+      "await lockHostingCoverageMemberLifecycleTarget(",
+    );
+    expect(barrier).toBeGreaterThan(-1);
+    const enclosing = Math.max(
+      ...functionStartsIn(service).filter((start) => start < barrier),
+      -1,
+    );
+    expect(
+      service.slice(enclosing, barrier),
+      "The standing-subject barrier now has a hosting-policy read above it in " +
+        "its own function. That makes identity safety depend on review policy, " +
+        "which docs/CONCURRENCY_AND_LOCKING.md forbids by name.",
+    ).not.toContain("loadAdultMemberHostingPolicy(");
+    // And it is still the FIRST thing that function does, so nothing — not even
+    // an empty-fan-out early return — can commit before the subject is frozen.
+    expect(
+      service.slice(enclosing, barrier),
+      "Work moved above the standing-subject barrier.",
+    ).not.toContain("loadHostingCoverageMemberFanoutCandidates(");
+  });
+});
+
 describe("no policy read inside a booking transaction (#2569 §7)", () => {
   it("the create path evaluates the proposed party before the creating service runs", () => {
     // `evaluateProposedAdultMemberHosting` loads the policy rows and the party's
@@ -783,5 +946,83 @@ describe("no policy read inside a booking transaction (#2569 §7)", () => {
     expect(readRepoCode("src/lib/booking-exception-approval.ts")).toContain(
       "approvedExceptionAdultMemberHostingDecision:",
     );
+  });
+});
+
+describe("the participant fence stays switched ON where a suite claims it (#2623 F1)", () => {
+  /**
+   * Suites that wire the #2619 fence doubles but leave the lodge's hosting mode
+   * at the resolver's `DISABLED` default, so after #2623 T5's mode gate their
+   * seam returns before the fence and the doubles beside it exercise nothing.
+   *
+   * THIS LIST IS THE POINT. The fence doubles' own docstring names "exercised
+   * their seams with the fence effectively switched off" as the state to avoid,
+   * and T5 silently put eight suites back into it — silently, because a double
+   * that is never reached looks exactly like a double that passes. An exact
+   * `toEqual` turns that into an enumerated, reviewable list: a NEW suite that
+   * wires the doubles without an active policy fails here, and fixing one of
+   * these means deleting its line.
+   *
+   * NONE of them is a one-line fix, which is why they are listed rather than
+   * corrected. Two distinct blockers, both measured:
+   *
+   *   * FIXTURE DEPTH (the first eight, 77 tests). Supplying an active mode runs
+   *     the hosting EVALUATOR, and these suites' booking fixtures are not
+   *     hosting-evaluable: guest rows carry `isMember: true` with no `memberId`
+   *     and no nested member, so `memberIsInGoodStanding` reads
+   *     `undefined.active` and the seam throws. The participant's member data
+   *     comes off the booking fixture's own guest rows, not a `member.findMany`
+   *     a double could intercept, so restoring coverage means reshaping each
+   *     suite's booking fixtures.
+   *   * HOISTING (the last three, 0 tests). Their policy double lives inside a
+   *     `vi.mock` factory, which vitest hoists above the imports, so referencing
+   *     `fenceHostingPolicyFindMany` there is a `ReferenceError: Cannot access
+   *     '__vi_import_N__' before initialization`. Those three lose no coverage —
+   *     measured, no test in them reaches the gate — but they cannot take the
+   *     change in this shape either.
+   */
+  const FENCE_DOUBLES_WITHOUT_AN_ACTIVE_POLICY = [
+    "src/lib/__tests__/booking-guest-consent-authority.test.ts",
+    "src/lib/__tests__/booking-request-quotes.test.ts",
+    "src/lib/__tests__/booking-request.test.ts",
+    "src/lib/__tests__/fix-mod-payment.test.ts",
+    "src/lib/__tests__/guest-removal-minors-alert-route.test.ts",
+    "src/lib/__tests__/guests-add-notify-choice.test.ts",
+    "src/lib/__tests__/partial-stay-edit-pricing.test.ts",
+    "src/lib/__tests__/phase8b-booking-mods.test.ts",
+    "src/lib/__tests__/school-booking-request.test.ts",
+    "src/lib/__tests__/waitlist-confirm-minimum-stay.test.ts",
+    "src/lib/__tests__/waitlist.test.ts",
+  ];
+
+  it("lists every suite whose fence doubles the mode gate now bypasses", () => {
+    const root = path.resolve(process.cwd(), "src");
+    const wired: string[] = [];
+    const walk = (dir: string) => {
+      for (const entry of readdirSync(dir, { withFileTypes: true })) {
+        const full = path.join(dir, entry.name);
+        if (entry.isDirectory()) {
+          walk(full);
+          continue;
+        }
+        if (!/\.test\.tsx?$/.test(entry.name)) continue;
+        const rel = path.relative(process.cwd(), full).split(path.sep).join("/");
+        const source = readRepoFile(rel);
+        if (!source.includes("hosting-participant-fence-double")) continue;
+        // The suite that DEFINES the hosting behaviour sets its own policies per
+        // test rather than through the shared double, so it is not in scope.
+        if (rel === "src/lib/__tests__/adult-member-hosting-review.test.ts") continue;
+        if (source.includes("fenceHostingPolicyFindMany")) continue;
+        wired.push(rel);
+      }
+    };
+    walk(root);
+    expect(
+      wired.sort(),
+      "A suite wiring the #2619 fence doubles without an ACTIVE hosting policy " +
+        "reaches none of them: T5's mode gate returns first. Either give its tx " +
+        "double `fenceHostingPolicyFindMany()` (and make its booking fixtures " +
+        "hosting-evaluable), or add it here with a reason.",
+    ).toEqual(FENCE_DOUBLES_WITHOUT_AN_ACTIVE_POLICY);
   });
 });

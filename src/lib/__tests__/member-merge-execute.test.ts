@@ -1589,8 +1589,9 @@ describe("member-photo reconciliation at execute time (MP1, #189)", () => {
       lockInput.values ??
       (executeRaw.mock.calls[rowLockIndex].slice(1) as string[]);
     expect(lockArgs).toEqual([MASTER_ID, LOSER_ID].sort());
-    // Hosting policy-set first, then both lifecycle keys in sorted order. This is
-    // the counterpart order shared with policy reconciliation and the drain.
+    // Hosting policy-set first, then the #2595 partner-share lodge prefix, then
+    // both lifecycle keys in sorted order. This is the counterpart order shared
+    // with policy reconciliation and the drain.
     expect(
       statements
         .slice(0, 3)
@@ -1599,11 +1600,119 @@ describe("member-photo reconciliation at execute time (MP1, #189)", () => {
     expect(executeRaw.mock.calls[0][1]).toBe(
       ADULT_MEMBER_HOSTING_POLICY_SET_LOCK_KEY,
     );
+    // #2595 — merge's partner-share prefix is the affected LODGE capacity keys
+    // and NOTHING ELSE. This fixture's members hold no future allocation and no
+    // future guest-night, so the derived set is empty and the two member-lifecycle
+    // keys follow the policy-set key directly;
+    // `acquireMemberMergePartnerSharedLodgeLocks` owns the derivation and
+    // `bed-allocation-lifecycle.test.ts` covers it.
     expect(executeRaw.mock.calls.slice(1, 3).map((call) => call[1])).toEqual(
       [MASTER_ID, LOSER_ID]
         .sort()
         .map((id) => `member-lifecycle:${id}`),
     );
+    // #2595 — and then the partner-link pair, LAST and sorted. Merge writes
+    // partner links (step 2) and reads them to decide which future shared
+    // doubles step 3b deletes; the CONFIRMED partial uniques are per side, so
+    // this key is the only thing enforcing "at most one confirmed partner".
+    // Pinned by position as well as presence: taking it BEFORE member-lifecycle
+    // would invert the order the reviewed move uses and create a wait-graph edge
+    // that does not exist today.
+    expect(executeRaw.mock.calls.slice(3, 5).map((call) => call[1])).toEqual(
+      [MASTER_ID, LOSER_ID]
+        .sort()
+        .map((id) => `member-partner-link:${id}`),
+    );
+    // The owner decision on #2595, pinned: a merge must NEVER take the global
+    // cohort key. It is held until COMMIT and a merge runs on a 120s budget, so
+    // taking it here rejects every 5s-budget cohort writer in the club. Written
+    // as a whole-transaction assertion, not a positional one, so re-adding it
+    // anywhere in `executeMemberMerge` fails this test.
+    expect(
+      statements.filter((s) => /pg_advisory_xact_lock\(\s*1\s*\)/.test(s)),
+    ).toEqual([]);
+  });
+
+  it("409s partner_share_lodge_drift when step 3b finds a bed-night in a lodge it never locked", async () => {
+    // #2595 — the run-time enforcement of the guest-night derivation, end to
+    // end. `acquireMemberMergePartnerSharedLodgeLocks` derives the lodge set
+    // from the two members' future allocations and guest-nights; the sweep is
+    // handed that exact set and REFUSES if a candidate row turns up outside it,
+    // rather than deleting bed inventory in a lodge this transaction never
+    // serialised against. That is only reachable when a lodge appears for one of
+    // the members AFTER the derivation — a booking guest row added by a
+    // concurrent writer — so it is a drift refusal in the same shape as the ones
+    // above it, and the operator's retry derives the new lodge and covers it.
+    //
+    // `bed-allocation-lifecycle.test.ts` proves the sweep throws. Only this test
+    // proves `executeMemberMerge` turns that into a 409 with the right code and
+    // lodge ids, refuses BEFORE deleting the loser, and audits the refusal.
+    const UNLOCKED_LODGE_ID = "lodge-appeared-mid-merge";
+    const bedAllocation = {
+      ...defaultDelegate(),
+      findMany: vi.fn((args: unknown) => {
+        const where = (args as { where?: Record<string, unknown> }).where ?? {};
+        // The prefix's own derivation read: no future allocation anywhere, and
+        // `bookingGuest.findMany` defaults to empty too, so the locked lodge set
+        // is EMPTY and any candidate at all is out of scope.
+        if (where.isSecondOccupant !== true) return Promise.resolve([]);
+        // The sweep's first candidate query, in a lodge nobody locked.
+        return Promise.resolve([
+          {
+            id: "alloc-in-unlocked-lodge",
+            bookingId: "booking-x",
+            bookingGuestId: "guest-x",
+            bedId: "bed-x",
+            roomId: "room-x",
+            stayDate: new Date("2099-08-01"),
+            bookingGuest: {
+              memberId: MASTER_ID,
+              firstName: "Pat",
+              lastName: "Pine",
+            },
+            room: { lodgeId: UNLOCKED_LODGE_ID },
+          },
+        ]);
+      }),
+    };
+    const { client, auditLog } = makeClient({ bedAllocation });
+
+    await expect(
+      executeMemberMerge({
+        masterId: MASTER_ID,
+        loserId: LOSER_ID,
+        actorMemberId: ACTOR_ID,
+        previewToken: validToken(),
+        confirmationText: "MERGE Dup Person",
+        db: client as never,
+      }),
+    ).rejects.toMatchObject({
+      statusCode: 409,
+      code: "partner_share_lodge_drift",
+      details: { lodgeIds: [UNLOCKED_LODGE_ID] },
+    });
+
+    // Refused, not repaired: nothing was deleted in the unlocked lodge and the
+    // loser survives (the real transaction rolls back; the mock has none, so
+    // assert the merge never got that far).
+    expect(bedAllocation.deleteMany).not.toHaveBeenCalled();
+    expectRefusedAudit(
+      (auditLog as { create: AuditCreateSpy }).create,
+      "partner_share_lodge_drift",
+    );
+
+    // Plain English for the operator, and it does NOT leak the lodge id into
+    // the message the admin sees.
+    const message = await executeMemberMerge({
+      masterId: MASTER_ID,
+      loserId: LOSER_ID,
+      actorMemberId: ACTOR_ID,
+      previewToken: validToken(),
+      confirmationText: "MERGE Dup Person",
+      db: makeClient({ bedAllocation }).client as never,
+    }).catch((err: Error) => err.message);
+    expect(message).toMatch(/changed while the merge was running/i);
+    expect(message).not.toContain(UNLOCKED_LODGE_ID);
   });
 
   it("holds the policy set through booking moves and loser deletion so a late reconcile sees the survivor", async () => {

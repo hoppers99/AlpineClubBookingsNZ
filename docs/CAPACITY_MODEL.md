@@ -469,13 +469,66 @@ still without creating a single row.
 - **Non-displaceable is a property of the bed-NIGHT, not just of the row.** A
   real `BedAllocation` row can legitimately share a held bed-night — ADR-001
   decision 1 never refuses the overlapping booking, the hold prune sweeps only
-  the held booking's own rows, and manual placement is deliberately open — and
-  planner occupancy is keyed `bedId:stayDate`, so the two would otherwise be one
-  entry that #1677 whole-booking eviction deletes. The planner therefore pins
-  every null-booking bed-night as permanently occupied: evicting the co-located
-  booking releases that booking's claim and never the hold's, and a room is
-  never sized as feasible off rows whose eviction frees nothing. The same
-  applies to custodian bed holds (#2286).
+  the held booking's own rows, and manual placement is deliberately open — and a
+  hold owns no row for the planner to count, so nothing about the co-located
+  booking's eviction tells the planner the bed is still taken. The planner
+  therefore pins every null-booking bed-night as permanently occupied: evicting
+  the co-located booking releases that booking's claim and never the hold's, and
+  a room is never sized as feasible off rows whose eviction frees nothing. The
+  same applies to custodian bed holds (#2286).
+- **The same hazard exists between two REAL rows (#2656).** A shared DOUBLE
+  (#1701) holds two occupant rows on one bed-night, and they may belong to two
+  DIFFERENT bookings — that is the whole point of the partner-link rule. Until
+  #2656 the planner's occupant view was keyed `bedId:stayDate` like its
+  occupancy set, so the second row overwrote the first (one map entry, two
+  database rows) and evicting either booking released the WHOLE bed-night while
+  the other booking's row was untouched in the database. The planner then
+  allocated a capacity-holding booking onto an occupied double: silently skipped
+  at write time if the survivor was the primary (a booking displaced and audited
+  for nothing, the guest-night neither placed nor reported), or written in
+  beside the survivor if it was the second occupant — a stranger in a double
+  with no `MemberPartnerLink`, exactly what `mayShareDoubleBed()` exists to
+  prevent. Reachable only through `prioritizeCapacityHolding` (the lifecycle
+  auto-allocation path), and non-deterministic, because the row order came from
+  an unordered query.
+
+  **The planner now keeps occupant IDENTITY and bed-night CAPACITY apart.**
+  Capacity stays one entry per physical bed-night keyed `bedId:stayDate`, and it
+  is released only when the LAST occupant of that bed-night leaves. Identity is
+  keyed `bedId:stayDate:bookingGuestId` — one entry per occupant row, because
+  `@@unique([bookingGuestId, stayDate])` makes a guest plus a night name exactly
+  one slot — with a reverse index from bed-night to its slots so "is anyone
+  still in this bed?" is answerable. Three rules follow, and they are the
+  displacement contract for a shared double:
+  1. Evicting one occupant of a two-occupant double frees **zero** physical
+     beds while the other remains, and is credited **nothing** against a room's
+     shortfall. Displacement counting is in physical bed-nights freed, never in
+     rows or bookings displaced.
+  2. The double counts as **one** freed bed once BOTH occupant slots are gone —
+     one bed, not two, even when both occupants belong to the same booking.
+  3. On the **single-bed claim path** — `tryDisplaceForHeldGuestNight`, which
+     claims ONE bed-night by evicting exactly ONE booking — a bed-night whose
+     occupants span more than one booking is never a displacement target at
+     all. Only one of the two would go, so the bed would not actually be freed,
+     and taking it anyway is how a stranger ends up written in beside someone
+     else's second occupant.
+
+     The **whole-stay room path** — `planEvictionsForRoom` — deliberately does
+     the opposite, and rules 1 and 2 are what make that safe. It clears a whole
+     room by evicting a SET of bookings, so it makes EVERY occupant of a
+     candidate bed-night an eviction candidate, including both occupants of a
+     shared double held by two different bookings. It never gains the bed
+     until all of them are in the set, because credit is counted in beds freed
+     (rule 1): either both bookings on that double are displaced together, or
+     the room is never chosen. So a shared double CAN be vacated across two
+     bookings — by the path that takes both — and can never be half-vacated by
+     either path.
+
+     Either way, an eviction that turns out to free nothing is dropped from the
+     plan rather than displacing a booking for nothing.
+
+  `permanentlyOccupied` is still needed for the hold case above: an occupancy
+  with no row behind it cannot be represented as an occupant slot.
 - **The blocking predicate is this engine's own**, never a parallel list:
   `wholeLodgeHold` AND `bookingHoldsCapacity()` / `capacityHoldingBookingFilter()`
   over the same lodge — `getLodgeHeldNights`'s population. So the planners

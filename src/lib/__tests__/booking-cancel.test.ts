@@ -208,6 +208,7 @@ vi.mock("@/lib/xero-applied-credit-allocation-repair", () => ({
 }));
 
 import {
+  fenceHostingPolicyFindMany,
   fenceMemberFindMany,
   recordingBookingDouble,
 } from "@/lib/__tests__/support/hosting-participant-fence-double";
@@ -265,6 +266,10 @@ describe("cancelBooking credit refunds", () => {
           const mockTx = {
             $executeRaw: mocks.txExecuteRaw,
             member: { findMany: fenceMemberFindMany() },
+            // #2623 T5: the seam reads the lodge's hosting mode before the fence, so
+            // the double answers with an ACTIVE one and the fence above stays on the
+            // path. See `fenceHostingPolicyFindMany`.
+            adultMemberHostingPolicy: { findMany: fenceHostingPolicyFindMany() },
             booking: {
               findUnique: fenceBooking.findUnique,
               findMany: fenceBooking.findMany,
@@ -2544,6 +2549,46 @@ describe("cancelBooking credit refunds", () => {
       );
     });
   });
+
+  it("still refuses the cancellation when the hosting participant fence loses (#2619, #2623 T5)", async () => {
+    // THE FENCE IS STILL ON THIS PATH, and this suite is where that stops being
+    // a claim about a test double. #2623 T5 put a hosting-mode read in front of
+    // the participant fence so a club with the rule switched off pays no row
+    // lock on an ordinary booking write. The reverse has to keep holding: at a
+    // lodge where the rule IS active, a concurrent member-lifecycle writer
+    // holding the owner's `Member` row must still stop the cancellation rather
+    // than let it commit around the fence.
+    //
+    // It is also the mutation detector for `fenceHostingPolicyFindMany`. If that
+    // double is ever "simplified" to `DISABLED` or `[]`, the gate returns before
+    // the fence and this cancellation succeeds — the failure the fence doubles
+    // in this file exist to make impossible, and one that no other assertion
+    // here would notice.
+    mocks.txExecuteRaw.mockImplementation(async (statement: unknown) => {
+      const sql = String(
+        (statement as { strings?: readonly string[] })?.strings?.join(" ") ?? "",
+      );
+      if (sql.includes("FOR KEY SHARE NOWAIT")) {
+        throw { driverAdapterError: { cause: { originalCode: "55P03" } } };
+      }
+      return undefined;
+    });
+
+    // The stable contract, not an opaque failure: the fixed retry code and its
+    // 409, which is what every caller of this service already keys off.
+    await expect(
+      cancelBooking("booking_1", "member_1", "MEMBER", "127.0.0.1", "credit"),
+    ).rejects.toMatchObject({
+      code: "HOSTING_COVERAGE_PARTICIPANT_RETRY",
+      statusCode: 409,
+    });
+    // And it lands before anything irreversible leaves the process. The ledger
+    // writes that already ran are inside the claim transaction the throw rolls
+    // back (#1160); the provider call and the member's email are not, and they
+    // never happen.
+    expect(mocks.refundPaymentTransactions).not.toHaveBeenCalled();
+    expect(mocks.sendBookingCancelledEmail).not.toHaveBeenCalled();
+  });
 });
 
 
@@ -2588,6 +2633,10 @@ describe("cancelBooking detaches the held booking-request pointer (issue #1254)"
           const mockTx = {
             $executeRaw: mocks.txExecuteRaw,
             member: { findMany: fenceMemberFindMany() },
+            // #2623 T5: the seam reads the lodge's hosting mode before the fence, so
+            // the double answers with an ACTIVE one and the fence above stays on the
+            // path. See `fenceHostingPolicyFindMany`.
+            adultMemberHostingPolicy: { findMany: fenceHostingPolicyFindMany() },
             booking: {
               findUnique: fenceBooking.findUnique,
               findMany: fenceBooking.findMany,
@@ -2745,6 +2794,10 @@ describe("cancelBooking no-payment claim-first (issue #1311)", () => {
           const mockTx = {
             $executeRaw: mocks.txExecuteRaw,
             member: { findMany: fenceMemberFindMany() },
+            // #2623 T5: the seam reads the lodge's hosting mode before the fence, so
+            // the double answers with an ACTIVE one and the fence above stays on the
+            // path. See `fenceHostingPolicyFindMany`.
+            adultMemberHostingPolicy: { findMany: fenceHostingPolicyFindMany() },
             booking: {
               findUnique: fenceBooking.findUnique,
               findMany: fenceBooking.findMany,
@@ -3029,6 +3082,10 @@ describe("cancelBooking requireRequestHold guard (issue #1406)", () => {
           const mockTx = {
             $executeRaw: mocks.txExecuteRaw,
             member: { findMany: fenceMemberFindMany() },
+            // #2623 T5: the seam reads the lodge's hosting mode before the fence, so
+            // the double answers with an ACTIVE one and the fence above stays on the
+            // path. See `fenceHostingPolicyFindMany`.
+            adultMemberHostingPolicy: { findMany: fenceHostingPolicyFindMany() },
             booking: {
               findUnique: fenceBooking.findUnique,
               findMany: fenceBooking.findMany,
