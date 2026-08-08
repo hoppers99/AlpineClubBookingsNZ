@@ -442,7 +442,34 @@ chain. The queue read is deliberately not a `FOR UPDATE`: no queue tuple lock is
 held while the member tiers are acquired, so there is no queue → Member inversion.
 
 Ordinary producers close the new-row side of that handshake at each high-level
-enqueue seam (#2597). Before any coverage-owner key they plan the exact source
+enqueue seam (#2597). **Each seam reads the lodge's resolved hosting mode first and
+returns before acquiring anything when that mode gives it nothing to do** (#2623 T5).
+The two seams do not share one threshold, and the difference is deliberate rather
+than drift:
+
+| Seam | Returns early when | Why |
+| --- | --- | --- |
+| `enqueueOwnHostingCoverageReevaluation` | `mode !== "ENFORCED"` | It only enqueues queue work, and only an ENFORCED lodge can ever act on it. |
+| `reconcileAdultMemberHostingReviewWithSiblings` | mode is neither `ENFORCED` nor `ADMIN_REVIEW_REQUIRED` | Under review-only the dependants must still be re-read and a review snapshot written, so the fence is genuinely owed. |
+
+Widening the first to the second's test would take a lock for work that cannot
+exist; narrowing the second to the first's would skip the fence at a review-only
+lodge that needs it.
+
+That gate is a correctness statement as well as a cost one: with the mode inactive
+the evaluator takes no coverage-owner advisory key and neither the sibling fan-out
+nor the same-owner settle step is reachable, so there is no ordering left to protect
+— while without it, a club with hosting `DISABLED` paid a row lock on every booking
+write and could be refused with the fixed `HOSTING_COVERAGE_PARTICIPANT_RETRY` 409 by
+a concurrent member-lifecycle writer, for a rule it does not use. A club that enables
+the rule concurrently is covered by the policy write's own enumerate-and-enqueue
+reconciliation under the policy-set key — and the un-fenced return the gate takes
+passes `failFastCoverageOwner`, so if the rule does turn on between that read and the
+reconciler's own one call deeper, the coverage-owner key is acquired with
+`pg_try_advisory_xact_lock` and the caller gets the stable retry 409 rather than a
+blocking wait taken inside its booking transaction. That path can write no queue row:
+it holds no participant proof, and every queue write demands one.
+Once the mode is active, before any coverage-owner key they plan the exact source
 booking owners plus the non-null actor, sort and de-duplicate the ids, and lock those
 `Member` rows in one `FOR KEY SHARE NOWAIT` statement. They then verify typed Member
 existence and re-read each source booking's authoritative owner and lodge. A missing
@@ -494,6 +521,21 @@ the shared fan-out covers deactivation, archive, cancellation, consent,
 subscription and account-deletion writers rather than relying on one route to
 remember it.
 
+**That subject barrier is deliberately NOT gated on the hosting mode, and it is the
+one exception to the paragraph above** (#2623 T5). The participant fence inside the
+same function already is gated — the per-lodge `ENFORCED` filter returns before any
+proof is acquired — but the barrier sits above it and runs for every club, because
+it is the shared standing-subject fence rather than a hosting-coverage one: it is
+what makes a concurrent booking-request linked-member hold and a deactivation
+mutually exclusive, which is the identity-safety contract stated below ("independent
+of the lodge's hosting consequence"). A club-wide `ENFORCED` gate was written above
+it while implementing #2623 T5 and real PostgreSQL refuted it — the mode-parameterised
+hold/deletion interleavings in `adult-member-hosting-queue-merge.realdb.test.ts`
+failed for `DISABLED` and `ADMIN_REVIEW_REQUIRED`, because a deletion could then
+deactivate the member and unlink the guest underneath a hold that had already read
+them as active. `adult-member-hosting-call-sites.test.ts` now asserts the ABSENCE of
+a mode read above that barrier, with the reason, so it is not "finished" later.
+
 The acquisition is deliberately per seam, not a transaction-wide pre-plan. A bulk
 transaction can call a fan-out more than once, so compatible Member key-share locks
 alone would still let two transactions hold different coverage-owner keys and wait
@@ -528,7 +570,35 @@ plans the survivor's attendance plus the captured loser-owned bookings, then tak
 one sorted `Member FOR UPDATE` statement over master, loser and every ancillary
 queue owner. It re-plans under those rows; a new guest, booking, owner or lodge that
 changes the participant fingerprint returns the merge's existing safe 409 rather
-than acquiring another row late. Only then does it take the sorted coverage-owner
+than acquiring another row late.
+
+**That statement waits, but only for `MEMBER_MERGE_PARTICIPANT_LOCK_TIMEOUT_MS`
+(10s)** (#2623 T6). It stays BLOCKING rather than `NOWAIT` because merge is
+irreversible admin work and a short overlap with an ordinary writer should still
+succeed. What was wrong was the wait being unbounded *while holding*: the merge
+transaction still holds the adult-member hosting policy-set advisory key here, and
+its own `FOR UPDATE` on up to `HOSTING_COVERAGE_MEMBER_FANOUT_LIMIT` (50)
+THIRD-PARTY owners blocks every FK write naming them — so an uninvolved
+booking-create or guest-add waited behind the tail of a merge, for as long as the
+merge transaction's own `timeout: 120_000` allowed. The bound is applied with
+`set_config('lock_timeout', …, true)` immediately before the statement and restored
+with `SET LOCAL lock_timeout TO DEFAULT` immediately after a successful acquisition,
+so the rest of the merge
+transaction's locks — sorted coverage-owner keys, the loser delete — keep their own
+unmapped failure semantics. **`DEFAULT`, not a hardcoded `0`**: `0` means "wait
+forever" rather than "whatever it was", so on a deployment that sets `lock_timeout`
+at the database or role level, restoring `0` would delete the operator's bound for
+the rest of the merge. `SET LOCAL` rather than `RESET` because `RESET` is
+session-scoped and survives the commit on a pooled connection, silently clearing a
+session-level setting the caller had made. Nothing in this repository sets
+`lock_timeout` at any level today, so `DEFAULT` resolves to `0` and the behaviour is
+unchanged; it is hardening against a deployment that adds one. PostgreSQL raises a `lock_timeout` cancellation as
+SQLSTATE `55P03`, the same code `NOWAIT` raises, so it lands on
+`HostingCoverageParticipantRetryError` and merge converts it into its existing
+"participants changed, nothing was saved, re-run the preview" 409. There is no
+restore on the failure path because the cancelled statement leaves the transaction
+aborted. Both halves — that it stops, and that it still waits — are proven against
+real PostgreSQL in `adult-member-hosting-queue-merge.realdb.test.ts`. Only then does it take the sorted coverage-owner
 keys, sweep both live queue pointers (`memberId` and the FK-less `actorMemberId`),
 fold those late counts into the existing relation totals, enqueue actorless
 merge-generated `SYSTEM_CHANGE` work under the private exact proof, and delete the
@@ -1171,7 +1241,18 @@ mispricing a booking.
   PostgreSQL in `adult-member-hosting-queue-merge.realdb.test.ts`.
 
 Do not add or compose a row lock without updating this inventory and documenting
-its order against every advisory- and row-lock counterpart.
+its order against every advisory- and row-lock counterpart. **Every lock strength
+counts** (#2623 T9(d)): `advisory-lock-guard.test.ts` used to census the literal
+`FOR UPDATE` only, so the six non-test `FOR KEY SHARE` statements this repository
+ships — the hosting queue participant fence, the booking-request linked-member hold,
+the coverage drain's claimed-identity lock, the incident actor lock and the two Xero
+contact reservations — appeared in no counted inventory at all, and were exempt from
+the "lock raw, read typed" rule for the same reason until that rule was widened.
+Nothing escaped: all six select a constant through `$executeRaw`. A seventh written
+as `$queryRaw` projecting columns would have passed every gate. The census now
+matches `FOR UPDATE`, `FOR NO KEY UPDATE`, `FOR SHARE` and `FOR KEY SHARE`, and
+ignores double-quoted string literals so prose inside an error message is not
+counted as a statement.
 
 ### Member merge — dual member-lifecycle lock (E11 #1937)
 
