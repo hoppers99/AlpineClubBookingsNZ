@@ -191,7 +191,7 @@ These flows are the "Public quote requester" and "School contact" journeys in
 Prices are shown in dollars (formatted from the cents the club stores). The
 policies behind minimum stay, group discount, and cancellation are set by the
 club — see the operator [Booking Policies](../guides/booking-policies.md) guide
-and [`DOMAIN_INVARIANTS.md`](../DOMAIN_INVARIANTS.md#booking-dates-and-capacity).
+and [`booking-dates-and-capacity.md`](../invariants/booking-dates-and-capacity.md).
 
 ### Asking to be let past a booking rule
 
@@ -309,5 +309,5 @@ different party. Either way the officer's explanation is on your request in
   [The waitlist & offers](waitlist-and-offers.md),
   [Changing or cancelling a booking](changing-or-cancelling-a-booking.md).
 - Reference: the [booking lifecycle](../STATE_MACHINES.md#booking-lifecycle), the
-  [booking dates & capacity invariants](../DOMAIN_INVARIANTS.md#booking-dates-and-capacity),
+  [booking dates & capacity invariants](../invariants/booking-dates-and-capacity.md),
   and the [UX flow map](../UX_FLOW_MAP.md).

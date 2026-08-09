@@ -1919,7 +1919,8 @@ one outstanding outgoing request per member, the memberId-target
 shared-family-group guard on the member API, and the stale-share sweep
 invariant (#1756, extended to merge by #2595): no future `isSecondOccupant`
 allocation may outlive its partner link or the active-adult precondition (see
-docs/DOMAIN_INVARIANTS.md, "Double-bed shared occupancy").
+`INV-CAP-010` for the #1756 sweep and `INV-CAP-030` for the merge form, both in
+docs/invariants/booking-dates-and-capacity.md).
 
 ## Member Guest Consent Lifecycle ("+ Add Member Guest", #2305 / MG2 #2307, MG4 #2309)
 
@@ -2105,7 +2106,7 @@ and the last active login-enabled Full Admin can never be cancelled, both
 evaluated inside the approval transaction. A self-raised cancellation is
 allowed but cannot be self-approved — including one raised from the profile
 panel, where the requester is recorded as the member themselves. See
-[`DOMAIN_INVARIANTS.md`](DOMAIN_INVARIANTS.md#membership-lifecycle) and
+[`membership-lifecycle.md`](invariants/membership-lifecycle.md) and
 [`CANCELLATIONS.md`](CANCELLATIONS.md#who-can-be-cancelled).
 
 Approval blockers (#2392): `loadMembershipCancellationBlockersByMemberId` is the

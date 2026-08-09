@@ -134,7 +134,7 @@ The booking side of this split is described in
 
 All amounts are shown in dollars, formatted from the integer cents the club
 stores. Settlement rules are in
-[`DOMAIN_INVARIANTS.md`](../DOMAIN_INVARIANTS.md#payment-and-settlement).
+[`payment-and-settlement.md`](../invariants/payment-and-settlement.md).
 
 ## Troubleshooting
 
@@ -156,6 +156,6 @@ stores. Settlement rules are in
 - Sibling guides: [Booking a stay](booking-a-stay.md),
   [Changing or cancelling a booking](changing-or-cancelling-a-booking.md).
 - Reference: the [payment lifecycle](../STATE_MACHINES.md#payment-lifecycle) and
-  [payment & settlement invariants](../DOMAIN_INVARIANTS.md#payment-and-settlement).
+  [payment & settlement invariants](../invariants/payment-and-settlement.md).
   Operators use the [Payments](../guides/payments.md) and
   [Internet Banking](../guides/internet-banking.md) guides.

@@ -36,7 +36,9 @@ conditions. Planning mode must not edit app logic.
 
 Use coding mode only after scope is clear. Keep the change narrow, follow the
 existing module boundaries in `docs/ARCHITECTURE.md`, and preserve the domain
-invariants in `docs/DOMAIN_INVARIANTS.md`. If implementation needs schema,
+invariants: read the `docs/DOMAIN_INVARIANTS.md` index and the `INV-*` files its
+routing table sends you to for the surfaces you touch, and cite `INV-*` ids
+rather than line numbers. If implementation needs schema,
 payment, booking, membership, or provider behavior beyond the issue, stop and
 report the mismatch.
 

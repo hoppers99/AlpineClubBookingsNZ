@@ -452,7 +452,8 @@ function maxDateFromList(values: Date[]): Date {
  * anyone reconciling in the morning would see a different day's figures than
  * they would that afternoon, with no input having changed.
  * `todayDateOnlyForTimeZone` is the canonical answer
- * (`src/lib/date-only.ts`; docs/DOMAIN_INVARIANTS.md, "Date handling rules").
+ * (`src/lib/date-only.ts`; `INV-DATE-019`,
+ * `docs/invariants/booking-dates-and-capacity.md`).
  */
 function getCurrentIsoDate(): string {
   return todayDateOnlyForTimeZone();

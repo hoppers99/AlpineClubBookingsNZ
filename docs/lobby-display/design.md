@@ -964,7 +964,7 @@ upstream owner's input on discussion #964):
    ≥ `WHOLE_LODGE_MIN_GUESTS` = 8 guests) collapses to its label only. Sole
    occupancy is measured on nights, not departure-day visibility (LTV-016;
    the night model of the
-   [stay-boundary invariant](../DOMAIN_INVARIANTS.md#the-stay-boundary-midday-nz-to-midday-nz-normative),
+   [stay-boundary invariant](../invariants/booking-dates-and-capacity.md#the-stay-boundary-midday-nz-to-midday-nz-normative),
    which names this wall's night counts as deliberately fenced): a group
    leaving in the morning keeps its blockout even when the next booking
    arrives that evening.

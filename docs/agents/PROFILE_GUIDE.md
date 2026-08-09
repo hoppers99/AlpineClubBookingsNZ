@@ -1,6 +1,7 @@
 # Profile Guide
 
-Codex profile examples live in `docs/agents/codex/profiles`. They are repository examples,
+Codex profile examples live in
+[`docs/agents/codex/profiles`](codex/profiles/README.md). They are repository examples,
 not installed configuration. Codex local profiles are loaded from
 `~/.codex/<profile-name>.config.toml` when selected with
 `codex --profile <profile-name>`.

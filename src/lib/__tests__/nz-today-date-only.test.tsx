@@ -12,7 +12,8 @@ import { NextRequest } from "next/server";
  * New Zealand runs 12-13 hours ahead of UTC, so for roughly the first half of
  * every NZ day, "today in UTC" is still YESTERDAY in New Zealand. Several
  * places derived today's lodge night as `new Date().toISOString().slice(0, 10)`
- * — the UTC date — which `docs/DOMAIN_INVARIANTS.md` already forbids and
+ * — the UTC date — which `INV-DATE-019`
+ * (`docs/invariants/booking-dates-and-capacity.md`) forbids and
  * `todayDateOnlyForTimeZone()` (`src/lib/date-only.ts`) already answers
  * correctly.
  *

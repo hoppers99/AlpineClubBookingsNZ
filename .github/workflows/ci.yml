@@ -190,6 +190,16 @@ jobs:
           PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: node scripts/ci/check-pr-changelog-fragment.mjs
 
+      # #2691: every `docs/` page is reachable from a front door, and every cited
+      # `INV-*` invariant id resolves to a real definition that the index lists.
+      # Both properties are what make the routing table in AGENTS.md usable
+      # instead of decorative, and neither is self-maintaining — the issue's own
+      # watchpoint names the routing table as the part most likely to rot.
+      # Needs nothing but git and Node, so it runs before `npm ci` and fails in
+      # seconds rather than after the install.
+      - name: Check doc index integrity (reachability + invariant ids)
+        run: node scripts/ci/check-doc-index-integrity.mjs
+
       - name: Install dependencies
         run: npm ci
 

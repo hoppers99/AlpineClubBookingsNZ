@@ -1946,12 +1946,12 @@ model BookingGuest {
   // The full sub-state discriminator table (which columns are set in each
   // reachable combination) is the single source of truth in
   // MEMBER_GUEST_CONSENT_SUB_STATES (src/lib/member-guest-consent.ts) and is
-  // mirrored in docs/DOMAIN_INVARIANTS.md. The eight lines below are GENERATED
-  // from that table by src/lib/__tests__/member-guest-consent.test.ts, which
-  // fails unless this comment contains each of them verbatim — so they cannot
-  // go stale. "null" = the column must be NULL, "set" = it must be non-NULL,
-  // "any" = either is legal, and target / other / admin say WHO the responder
-  // is:
+  // mirrored in docs/invariants/member-guest-consent.md (INV-GUEST-017). The
+  // eight lines below are GENERATED from that table by
+  // src/lib/__tests__/member-guest-consent.test.ts, which fails unless this
+  // comment contains each of them verbatim — so they cannot go stale. "null" =
+  // the column must be NULL, "set" = it must be non-NULL, "any" = either is
+  // legal, and target / other / admin say WHO the responder is:
   //   FAMILY_OR_LEGACY: status NULL / requestedAt null / respondedAt null / respondedBy null / expiresAt null
   //   AWAITING_TARGET: status PENDING / requestedAt set / respondedAt null / respondedBy null / expiresAt set
   //   TARGET_APPROVED: status CONFIRMED / requestedAt set / respondedAt set / respondedBy target / expiresAt any
@@ -4825,7 +4825,8 @@ model BookingChangeRequest {
   // surfaces (the officer queue and its detail endpoint). No member-facing
   // projection, route select, email template or notification may name it; the
   // member DTO in src/lib/member-exception-requests.ts is a strict allowlist
-  // that has no slot for it, and DOMAIN_INVARIANTS records the rule.
+  // that has no slot for it, and INV-REQ-003 in
+  // docs/invariants/booking-requests.md records the rule.
   internalNotes        String?                    @db.VarChar(2000)
   reviewedByMemberId   String?
   reviewedAt           DateTime?

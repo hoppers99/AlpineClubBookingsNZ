@@ -10,7 +10,10 @@ description: Payment and integration review workflow for AlpineClubBookingsNZ. U
 - `AGENTS.md`
 - `docs/agents/CODEX_WORKFLOW.md`
 - `docs/agents/REVIEW_SEVERITY.md`
-- `docs/DOMAIN_INVARIANTS.md`
+- `docs/DOMAIN_INVARIANTS.md` — the invariant index; then the domain files this
+  review actually needs: `docs/invariants/money.md` (`INV-MONEY`),
+  `docs/invariants/payment-and-settlement.md` (`INV-PAY`), and
+  `docs/invariants/integrations.md` (`INV-INT`)
 - `docs/STATE_MACHINES.md`
 - `docs/ARCHITECTURE.md`
 - `docs/SECURITY-ATTACK-SURFACE.md`
