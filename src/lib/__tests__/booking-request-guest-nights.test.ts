@@ -10,8 +10,11 @@
  * The per-pipeline write points are pinned in each pipeline's own suite
  * (`booking-request.test.ts`, `school-booking-request.test.ts`,
  * `booking-request-quotes.test.ts`, `reassign-held-booking-guests.test.ts`).
- * This file pins the two properties those tests cannot see between them: that
- * the rows carry the right DATES, and that writing them moves no MONEY.
+ * This file pins the properties those tests cannot see between them: that the
+ * rows carry the right DATES, that a guest priced by the ENGINE keeps the
+ * engine's own per-night rates, and that a guest carrying an officer's flat
+ * total is divided by exactly the rule Xero line building already synthesises,
+ * so no money moves on that path.
  */
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { AgeTier } from "@prisma/client";
@@ -84,6 +87,44 @@ describe("buildApprovalGuestNights — the dates (#2739)", () => {
   });
 });
 
+describe("buildApprovalGuestNights — the engine's own rates (#2739)", () => {
+  it("stores the pricing engine's per-night vector verbatim when it is supplied", () => {
+    // A season boundary or a per-night group discount makes the nights of one
+    // stay genuinely different prices. The engine has already resolved them, and
+    // the canonical direct-create writer stores exactly that vector, so
+    // re-deriving a flat split here would write the right total against the
+    // wrong nights — misattributing revenue across a period boundary in the
+    // finance reconciliation, which sums night rows inside a DATE WINDOW.
+    const nights = buildApprovalGuestNights({
+      checkIn: CHECK_IN,
+      checkOut: CHECK_OUT,
+      priceCents: 18000,
+      perNightCents: [5000, 5000, 8000],
+    });
+
+    expect(nights.map((night) => night.priceCents)).toEqual([5000, 5000, 8000]);
+  });
+
+  it.each([
+    ["a vector of the wrong length", [5000, 13000]],
+    ["a vector that does not sum to the guest's price", [5000, 5000, 5000]],
+    ["a vector carrying a fractional cent", [5000, 5000, 8000.5]],
+  ])("refuses %s and divides the stored price instead", (_label, perNightCents) => {
+    // A night set that does not reconcile to the guest's stored price is worse
+    // than a flat one: invoicing bills from these rows, so the invoice would
+    // stop matching the booking.
+    const nights = buildApprovalGuestNights({
+      checkIn: CHECK_IN,
+      checkOut: CHECK_OUT,
+      priceCents: 18000,
+      perNightCents,
+    });
+
+    expect(nights.map((night) => night.priceCents)).toEqual([6000, 6000, 6000]);
+    expect(nights.reduce((sum, night) => sum + night.priceCents, 0)).toBe(18000);
+  });
+});
+
 describe("buildApprovalGuestNights — the money (#2739)", () => {
   it("splits to the exact cent, with the extra cents on the EARLIEST nights", () => {
     const nights = buildApprovalGuestNights({
@@ -111,8 +152,13 @@ describe("buildApprovalGuestNights — the money (#2739)", () => {
   );
 
   it("leaves the Xero invoice byte-identical to the one it raises with no rows at all", () => {
-    // THE MONEY-SAFETY PROOF, and the reason this split rule was chosen over the
-    // #1098 backfill's (whole remainder on the first night).
+    // THE MONEY-SAFETY PROOF FOR THE FLAT-TOTAL PATH — the public approval, the
+    // quote hold, and the backfill of every booking that already exists — and
+    // the reason this split rule was chosen over the #1098 backfill's (whole
+    // remainder on the first night). It is NOT claimed for a guest the engine
+    // priced: those rows carry the engine's real rates, which is what a
+    // directly-created booking's rows carry, and the resulting invoice bills the
+    // same total in the runs the rates actually form.
     //
     // `buildInvoiceLineItems` ALREADY synthesises a per-night vector for a guest
     // carrying no night rows and bills from it. Writing real rows only changes
@@ -207,6 +253,30 @@ describe("buildApprovalGuestCreates gives every guest a night set (#2739)", () =
     expect(prismaData).not.toHaveProperty("memberGuestConsent");
     expect(prismaData).not.toHaveProperty("crossFamilyMemberGuest");
   });
+
+  it("REFUSES TO COMPILE for a guest with no night set — the guardrail itself", () => {
+    /*
+      This is the assertion that makes INV-CAP-032's "a fifth pipeline cannot be
+      added without answering the question" true rather than aspirational, and it
+      is checked by `npm run typecheck`, not at runtime.
+
+      `@ts-expect-error` fails the build when the line does NOT error. So if
+      `nights` ever goes back to optional — or the `?? []` fallback comes back —
+      this line stops erroring and typecheck goes red. Without it, a new pipeline
+      that maps night-less guests through this shaper compiles clean and writes
+      an empty create: zero night rows, which is precisely the defect #2739
+      fixes, and invisible to every mock test because they assert the args that
+      WERE passed.
+    */
+    expect(() =>
+      // @ts-expect-error — a guest carrying no night set must never reach Prisma.
+      toPipelineGuestCreateData({
+        firstName: "Tara",
+        lastName: "Tester",
+        priceCents: 9000,
+      }),
+    ).toThrow();
+  });
 });
 
 describe("the guests now reach the Bed Allocation officer card (#2739)", () => {
@@ -233,14 +303,29 @@ describe("the guests now reach the Bed Allocation officer card (#2739)", () => {
     });
   }
 
-  it("counts a converted guest once the pipeline writes their nights", async () => {
-    const nights = buildApprovalGuestNights({
+  /**
+   * The night rows as the PIPELINE emits them — built through
+   * `buildApprovalGuestCreates` and unwrapped from the `nights: { create: [...] }`
+   * envelope `toPipelineGuestCreateData` hands Prisma. Feeding the counter a
+   * hand-built array instead would pin a property of the counter (which this
+   * branch does not touch) rather than the fact that a pipeline's output reaches
+   * it, so a pipeline that stopped nesting nights would leave this suite green.
+   */
+  async function pipelineNights() {
+    const [guestCreate] = await buildApprovalGuestCreates({} as never, {
+      guests: [{ firstName: "Tara", lastName: "Tester", ageTier: AgeTier.ADULT }],
+      linkedMembers: new Map<number, string>(),
+      guestPriceCents: [9000],
       checkIn: CHECK_IN,
       checkOut: CHECK_OUT,
-      priceCents: 9000,
+      adminMemberId: "admin-1",
+      heldBookingId: null,
     });
+    return toPipelineGuestCreateData(guestCreate).nights.create;
+  }
 
-    expect(await countFor(nights)).toBe(1);
+  it("counts a converted guest once the pipeline writes their nights", async () => {
+    expect(await countFor(await pipelineNights())).toBe(1);
   });
 
   it("counted nobody while the pipeline wrote none — the defect, pinned", async () => {

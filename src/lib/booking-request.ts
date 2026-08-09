@@ -1727,34 +1727,56 @@ export async function reassignHeldBookingGuests(
 
   if (existing.length !== guestCreates.length) {
     await tx.bookingGuest.deleteMany({ where: { bookingId } });
-    // One `create` per guest rather than one `createMany` (#2739). A night set
-    // is a nested create, which `createMany` cannot express, and reading the
-    // rows back to attach nights afterwards would have to match them to their
-    // inputs by an order `createMany` does not promise — every row shares one
-    // statement timestamp, so the tie-break is a cuid, and the wrong guest's
-    // nights is a bed on the wrong night. Creating them one at a time also hands
-    // back the ids, so the read-back this replaced is gone.
+    // One `create` per guest rather than one `createMany` (#2739), then ONE
+    // `createMany` for the whole party's night rows.
+    //
+    // The guests cannot stay a `createMany`: their night rows need their ids,
+    // and reading the rows back to match them to their inputs would rest on an
+    // order `createMany` does not promise — every row shares one statement
+    // timestamp, so the tie-break is a cuid, and the wrong guest's nights is a
+    // bed on the wrong night. Creating them one at a time hands the ids back, so
+    // the read-back this replaced is gone as well.
+    //
+    // The NIGHTS are batched rather than nested per guest so the statement count
+    // stays O(guests) instead of O(guests x nights): this runs inside the
+    // approval transaction, on Prisma's default 5s interactive-transaction
+    // timeout, and a school party is bounded only by lodge capacity — forty
+    // guests over five nights is two hundred round trips nested, forty-one
+    // batched.
     const created: Array<{ id: string; memberId: string | null }> = [];
+    const nightRows: Array<{
+      bookingGuestId: string;
+      stayDate: Date;
+      priceCents: number;
+    }> = [];
     for (const guest of planned) {
-      created.push(
-        await tx.bookingGuest.create({
-          data: {
-            bookingId,
-            firstName: guest.firstName,
-            lastName: guest.lastName,
-            ageTier: guest.ageTier,
-            isMember: guest.isMember,
-            memberId: guest.memberId ?? null,
-            stayStart: guest.stayStart,
-            stayEnd: guest.stayEnd,
-            priceCents: guest.priceCents,
-            rateMembershipTypeId: guest.rateMembershipTypeId ?? null,
-            ...(guest.memberGuestConsent ?? {}),
-            nights: { create: guest.nights },
-          },
-          select: { id: true, memberId: true },
-        })
-      );
+      const row = await tx.bookingGuest.create({
+        data: {
+          bookingId,
+          firstName: guest.firstName,
+          lastName: guest.lastName,
+          ageTier: guest.ageTier,
+          isMember: guest.isMember,
+          memberId: guest.memberId ?? null,
+          stayStart: guest.stayStart,
+          stayEnd: guest.stayEnd,
+          priceCents: guest.priceCents,
+          rateMembershipTypeId: guest.rateMembershipTypeId ?? null,
+          ...(guest.memberGuestConsent ?? {}),
+        },
+        select: { id: true, memberId: true },
+      });
+      created.push(row);
+      for (const night of guest.nights) {
+        nightRows.push({
+          bookingGuestId: row.id,
+          stayDate: night.stayDate,
+          priceCents: night.priceCents,
+        });
+      }
+    }
+    if (nightRows.length > 0) {
+      await tx.bookingGuestNight.createMany({ data: nightRows });
     }
     return {
       preservedInPlace: false,
@@ -1797,24 +1819,6 @@ export async function reassignHeldBookingGuests(
         // fields. Prices stay the admin-set split.
         rateMembershipTypeId: guest.rateMembershipTypeId ?? null,
         /**
-         * Re-sync the canonical night set to the approved envelope and the
-         * approved price (#2739), the same delete-then-recreate every other
-         * night-set rewriter uses (`booking-modify-plan.ts`,
-         * `booking-date-modification-service.ts`).
-         *
-         * REPLACED RATHER THAN LEFT ALONE, because both halves can have moved.
-         * The row is being handed the approval's dates and the approval's price
-         * — an officer may have accepted a different quote option than the one
-         * the hold was taken at — so night rows left over from the hold would
-         * describe a stay and a total that no longer exist.
-         *
-         * This does NOT touch the beds #1254 preserves: `BedAllocation` keys on
-         * `bookingGuestId` and `stayDate`, not on a night row's id, so deleting
-         * and rewriting nights cascades to nothing. Guest ids still survive the
-         * swap, which is the property that preservation actually rests on.
-         */
-        nights: { deleteMany: {}, create: guest.nights },
-        /**
          * MG4 (#2309), and the one case in this function that is NOT "write
          * whatever the planner said".
          *
@@ -1843,6 +1847,42 @@ export async function reassignHeldBookingGuests(
       },
     });
   }
+
+  /**
+   * Re-sync the canonical night set to the approved envelope and the approved
+   * price (#2739), the same delete-then-recreate every other night-set rewriter
+   * uses (`booking-modify-plan.ts`, `booking-date-modification-service.ts`) —
+   * once for the whole party rather than nested inside each `update`, so the
+   * statement count stays O(guests) inside the approval transaction and its 5s
+   * default timeout.
+   *
+   * REPLACED RATHER THAN LEFT ALONE, because both halves can have moved. The
+   * rows are being handed the approval's dates and the approval's price — an
+   * officer may have accepted a different quote option than the one the hold was
+   * taken at — so night rows left over from the hold would describe a stay and a
+   * total that no longer exist.
+   *
+   * This does NOT touch the beds #1254 preserves: `BedAllocation` keys on
+   * `bookingGuestId` and `stayDate`, not on a night row's id, so deleting and
+   * rewriting nights cascades to nothing. Guest ids still survive the swap,
+   * which is the property that preservation actually rests on.
+   */
+  if (existing.length > 0) {
+    await tx.bookingGuestNight.deleteMany({
+      where: { bookingGuestId: { in: existing.map((row) => row.id) } },
+    });
+    const replacementNights = planned.flatMap((guest, index) =>
+      guest.nights.map((night) => ({
+        bookingGuestId: existing[index].id,
+        stayDate: night.stayDate,
+        priceCents: night.priceCents,
+      }))
+    );
+    if (replacementNights.length > 0) {
+      await tx.bookingGuestNight.createMany({ data: replacementNights });
+    }
+  }
+
   return {
     preservedInPlace: true,
     memberGuestNotificationRows: owedNotifications(

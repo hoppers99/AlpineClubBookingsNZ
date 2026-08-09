@@ -58,7 +58,14 @@ vi.mock("@/lib/prisma", () => ({
       findMany: vi.fn(),
       deleteMany: vi.fn(),
       createMany: vi.fn(),
+      create: vi.fn(),
       update: vi.fn(),
+    },
+    // #2739: the held-booking reassign writes the party's night rows in one
+    // batched delete + createMany after the guest rows exist.
+    bookingGuestNight: {
+      deleteMany: vi.fn(),
+      createMany: vi.fn(),
     },
     payment: {
       create: vi.fn(),

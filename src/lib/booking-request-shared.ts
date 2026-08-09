@@ -93,7 +93,7 @@ export type HeldBookingGuestInput = {
 
 /**
  * The night rows for one pipeline guest, from the approved envelope and the
- * admin-set price already split onto that guest (#2739).
+ * price already settled onto that guest (#2739).
  *
  * DATES. `getStayNights` is the pricing engine's own night list and the one the
  * canonical direct-create writer bills from, so a converted booking's rows carry
@@ -102,30 +102,64 @@ export type HeldBookingGuestInput = {
  * morning is not a night, and inventing one there would claim a bed while its
  * real occupant is still in it (INV-DATE-012).
  *
- * MONEY DOES NOT MOVE, and the split rule is why. The nights sum to the guest's
- * stored `priceCents` exactly — integer cents, one extra cent on each of the
- * earliest `remainder` nights. That is deliberately `evenlySplitCents`'s rule in
- * `xero-booking-invoices.ts`, which is the vector that file ALREADY synthesises
- * for a guest carrying no night rows and bills from. So a converted booking's
- * Xero line items — description, quantity, unit amount — come out byte-identical
- * whether the rows exist or not, on a fresh invoice and on an invoice-update
- * diff of a backfilled booking alike. The #1098 backfill's older rule (the whole
- * remainder on the first night, borrowed from `splitPriceAcrossGuests`, which
- * splits across GUESTS) totals the same but splits into different Xero lines,
- * which on an already-raised invoice would read as a change to push.
+ * MONEY. Two cases, and which one applies is decided by the CALLER, because only
+ * the caller knows where the guest's total came from:
  *
- * These prices are a negotiated total's share, NOT per-night rates — the
- * distinction #1098 recorded when it skipped these bookings. Nothing here
- * re-prices anything: the total was set by an officer and is passed through.
+ *  - THE ENGINE PRICED THIS GUEST (`perNightCents` supplied). The pricing engine
+ *    already resolved a real rate for every night — a season boundary inside the
+ *    stay, or a per-night group discount, makes those nights genuinely different
+ *    prices — so the true vector is stored verbatim, exactly as the canonical
+ *    direct-create writer (`buildGuestCreateData`) stores
+ *    `priced.perNightCents[k]`. Re-deriving an even split here would throw away
+ *    a number the engine had already computed and misattribute revenue across a
+ *    period boundary in the finance reconciliation, which sums night rows inside
+ *    a DATE WINDOW.
+ *  - AN OFFICER SET A FLAT TOTAL (no `perNightCents`). There is no per-night
+ *    truth to store: the number is a negotiated total's share, not a rate — the
+ *    distinction #1098 recorded when its backfill skipped these bookings — so
+ *    the share is divided across the nights and nothing is re-priced. The
+ *    division is to the exact cent with one extra cent on each of the earliest
+ *    `remainder` nights, which is deliberately `evenlySplitCents`'s rule in
+ *    `xero-booking-invoices.ts`: the vector that file ALREADY synthesises for a
+ *    guest carrying no night rows and bills from. So on this path a converted
+ *    booking's Xero line items come out byte-identical whether the rows exist or
+ *    not, on a fresh invoice and on an invoice-update diff of a backfilled
+ *    booking alike. The #1098 backfill's older rule (the whole remainder on the
+ *    first night, borrowed from `splitPriceAcrossGuests`, which splits across
+ *    GUESTS) totals the same but splits into different Xero lines, which on an
+ *    already-raised invoice would read as a change to push.
+ *
+ * Either way the rows sum to the guest's stored `priceCents` EXACTLY. A supplied
+ * vector that does not (wrong length, or a total that disagrees) is refused and
+ * the split is used instead — a night set that does not reconcile to the guest's
+ * price is worse than a flat one, because invoicing bills from it.
  */
 export function buildApprovalGuestNights(params: {
   checkIn: Date;
   checkOut: Date;
   priceCents: number;
+  /**
+   * The pricing engine's real per-night vector for this guest
+   * (`PriceBreakdown.guests[i].perNightCents`), when the engine is what priced
+   * them. Omitted when the total is an officer's flat figure.
+   */
+  perNightCents?: readonly number[];
 }): ApprovalGuestNight[] {
   const nightDates = getStayNights(params.checkIn, params.checkOut);
   const count = nightDates.length;
   if (count === 0) return [];
+  const engine = params.perNightCents;
+  if (
+    engine &&
+    engine.length === count &&
+    engine.every((cents) => Number.isInteger(cents)) &&
+    engine.reduce((sum, cents) => sum + cents, 0) === params.priceCents
+  ) {
+    return nightDates.map((stayDate, index) => ({
+      stayDate,
+      priceCents: engine[index],
+    }));
+  }
   const base = Math.floor(params.priceCents / count);
   const remainder = params.priceCents - base * count;
   return nightDates.map((stayDate, index) => ({
@@ -192,6 +226,15 @@ export async function buildApprovalGuestCreates(
     guests: Array<{ firstName: string; lastName: string; ageTier: AgeTier }>;
     linkedMembers: Map<number, string>;
     guestPriceCents: number[];
+    /**
+     * The pricing engine's per-night vector per guest, parallel to
+     * `guestPriceCents` (#2739). Supply it whenever `guestPriceCents` came from
+     * the engine (`price.guests.map((g) => g.priceCents)`) so the night rows
+     * store the rates the engine really resolved instead of a re-derived flat
+     * split; omit it when the total is an officer's flat figure, which has no
+     * per-night truth to store. See `buildApprovalGuestNights`.
+     */
+    guestPerNightCents?: Array<readonly number[] | undefined>;
     checkIn: Date;
     checkOut: Date;
     adminMemberId: string;
@@ -202,6 +245,7 @@ export async function buildApprovalGuestCreates(
     guests,
     linkedMembers,
     guestPriceCents,
+    guestPerNightCents,
     checkIn,
     checkOut,
     adminMemberId,
@@ -242,7 +286,7 @@ export async function buildApprovalGuestCreates(
       seasonYear: getSeasonYear(checkIn),
       guests: unratedGuestCreates,
     })
-  ).map((guest) => ({
+  ).map((guest, index) => ({
     firstName: guest.firstName,
     lastName: guest.lastName,
     ageTier: guest.ageTier,
@@ -254,11 +298,15 @@ export async function buildApprovalGuestCreates(
     rateMembershipTypeId: guest.rateMembershipTypeId,
     // #2739. Built from the approved envelope every guest on this pipeline
     // takes (stayStart/stayEnd above are exactly checkIn/checkOut), so the
-    // canonical night set and the derived envelope agree night for night.
+    // canonical night set and the derived envelope agree night for night. The
+    // engine's own per-night vector wins where the caller has one — the index is
+    // the guest's, and `resolveGuestRateMembershipTypes` returns the list in the
+    // order it was handed, which `guestPriceCents` is already indexed by above.
     nights: buildApprovalGuestNights({
       checkIn,
       checkOut,
       priceCents: guest.priceCents,
+      perNightCents: guestPerNightCents?.[index],
     }),
   }));
 
@@ -371,13 +419,21 @@ export async function planBookingRequestGuestConsent<
  * is a plain array — `reassignHeldBookingGuests` needs it in a different Prisma
  * shape than a nested create does — so the `nights: { create: [...] }` wrapping
  * the canonical direct-create writer uses (`buildGuestCreateData`) happens here,
- * once, rather than at each write point. A guest that reaches this function with
- * no `nights` field at all still gets an explicit empty create rather than a
- * silent omission, so "this pipeline writes no nights" can never again be the
- * accident it was.
+ * once, rather than at each write point.
+ *
+ * `nights` IS REQUIRED HERE, with no `?? []` fallback, and that is the guardrail
+ * itself rather than a formality. An optional field would let a fifth pipeline
+ * map guests that carry no night set straight through, compile clean, and write
+ * an empty create — zero night rows, which is exactly the defect #2739 fixes and
+ * is invisible to every mock test, because they assert the args that WERE
+ * passed. Required means that pipeline is a TYPE ERROR instead, which is the
+ * only thing that makes "a fifth pipeline cannot be added without answering the
+ * question" true rather than aspirational. Pinned by the `@ts-expect-error` case
+ * in `src/lib/__tests__/booking-request-guest-nights.test.ts`, which fails
+ * `npm run typecheck` if the field ever goes back to optional.
  */
 export function toPipelineGuestCreateData<Guest extends object>(
-  guest: Guest & MemberGuestConsentGuestFields & { nights?: readonly ApprovalGuestNight[] }
+  guest: Guest & MemberGuestConsentGuestFields & { nights: readonly ApprovalGuestNight[] }
 ): Omit<Guest, keyof MemberGuestConsentGuestFields | "nights"> & {
   nights: { create: ApprovalGuestNight[] };
 } {
@@ -386,7 +442,7 @@ export function toPipelineGuestCreateData<Guest extends object>(
   return {
     ...rest,
     ...(memberGuestConsent ?? {}),
-    nights: { create: [...(nights ?? [])] },
+    nights: { create: [...nights] },
   } as unknown as Omit<Guest, keyof MemberGuestConsentGuestFields | "nights"> & {
     nights: { create: ApprovalGuestNight[] };
   };

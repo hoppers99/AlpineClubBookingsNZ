@@ -24,13 +24,19 @@ function makeTx() {
       findMany: vi.fn(),
       deleteMany: vi.fn().mockResolvedValue({ count: 0 }),
       createMany: vi.fn().mockResolvedValue({ count: 0 }),
-      // #2739: the recreate fallback creates one row at a time, because a night
-      // set is a nested create that `createMany` cannot express.
+      // #2739: the recreate fallback creates one row at a time, because its
+      // night rows need the id each create hands back.
       create: vi.fn().mockImplementation(async () => {
         createdCount += 1;
         return { id: `new-${createdCount}`, memberId: null };
       }),
       update: vi.fn().mockResolvedValue({}),
+    },
+    // #2739: night rows are written for the whole party in one batch, keyed by
+    // the guest ids the branch above already holds.
+    bookingGuestNight: {
+      deleteMany: vi.fn().mockResolvedValue({ count: 0 }),
+      createMany: vi.fn().mockResolvedValue({ count: 0 }),
     },
     familyGroupMember: { findMany: vi.fn().mockResolvedValue([]) },
     member: { findMany: vi.fn().mockResolvedValue([]) },
@@ -142,20 +148,26 @@ describe("reassignHeldBookingGuests (issue #1254 bed preservation)", () => {
     expect(tx.bookingGuest.deleteMany).toHaveBeenCalledWith({
       where: { bookingId: "held-1" },
     });
-    // #2739: one create per guest, each carrying its own night set. `createMany`
-    // cannot nest one, and matching read-back rows to their inputs afterwards
-    // would rest on an ordering `createMany` does not promise.
+    // #2739: one create per guest, because each guest's night rows need the id
+    // that create hands back — matching read-back rows to their inputs would
+    // rest on an ordering `createMany` does not promise. The NIGHTS are then
+    // written for the whole party in one batch, so the statement count stays
+    // O(guests) inside the approval transaction.
     expect(tx.bookingGuest.createMany).not.toHaveBeenCalled();
     expect(tx.bookingGuest.create).toHaveBeenCalledTimes(2);
     expect(tx.bookingGuest.create).toHaveBeenNthCalledWith(
       1,
       expect.objectContaining({
-        data: expect.objectContaining({
-          firstName: "Tara",
-          nights: { create: defaultNights() },
-        }),
+        data: expect.objectContaining({ firstName: "Tara" }),
       }),
     );
+    expect(tx.bookingGuestNight.createMany).toHaveBeenCalledTimes(1);
+    expect(tx.bookingGuestNight.createMany).toHaveBeenCalledWith({
+      data: [
+        ...defaultNights().map((night) => ({ bookingGuestId: "new-1", ...night })),
+        ...defaultNights().map((night) => ({ bookingGuestId: "new-2", ...night })),
+      ],
+    });
     expect(tx.bookingGuest.update).not.toHaveBeenCalled();
   });
 
@@ -175,14 +187,16 @@ describe("reassignHeldBookingGuests (issue #1254 bed preservation)", () => {
       memberGuest(),
     );
 
-    expect(tx.bookingGuest.update).toHaveBeenCalledWith(
-      expect.objectContaining({
-        where: { id: "g1" },
-        data: expect.objectContaining({
-          nights: { deleteMany: {}, create: defaultNights(9000) },
-        }),
-      }),
-    );
+    expect(tx.bookingGuestNight.deleteMany).toHaveBeenCalledWith({
+      where: { bookingGuestId: { in: ["g1"] } },
+    });
+    expect(tx.bookingGuestNight.createMany).toHaveBeenCalledWith({
+      data: defaultNights(9000).map((night) => ({
+        bookingGuestId: "g1",
+        ...night,
+      })),
+    });
+    // The guest ROWS survive — that is what #1254's bed preservation rests on.
     expect(tx.bookingGuest.deleteMany).not.toHaveBeenCalled();
   });
 });

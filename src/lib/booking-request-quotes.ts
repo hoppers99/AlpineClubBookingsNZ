@@ -36,6 +36,7 @@ import {
   notifyMemberGuestsHoldReleased,
   planBookingRequestGuestConsent,
   toPipelineGuestCreateData,
+  type HeldBookingGuestInput,
 } from "@/lib/booking-request-shared";
 import {
   loadMemberGuestAddPolicy,
@@ -1354,7 +1355,11 @@ export async function holdBookingRequestSlots(input: {
   // unlinked guests record the built-in NON_MEMBER type. Snapshot-only — the
   // quoted per-guest split above stays exactly as stored. rateSource is
   // resolver-internal and never persisted.
-  const guestCreates = (
+  // Annotated (#2739) so this producer is type-checked against the same shape
+  // `buildApprovalGuestCreates` returns: the hold is the one write point that
+  // builds its guest rows inline rather than through that helper, so without the
+  // annotation nothing would check that it supplies a night set at all.
+  const guestCreates: HeldBookingGuestInput[] = (
     await resolveGuestRateMembershipTypes(prisma, {
       seasonYear: getSeasonYear(request.checkIn),
       guests: guests.map((guest, index) => {
