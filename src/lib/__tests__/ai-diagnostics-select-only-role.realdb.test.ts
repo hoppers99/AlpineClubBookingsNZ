@@ -42,6 +42,8 @@
  *   CONCURRENCY_RACE_DATABASE_URL=postgresql://postgres:postgres@127.0.0.1:55442/concurrency_race_1881 \
  *     npx vitest run src/lib/__tests__/ai-diagnostics-select-only-role.realdb.test.ts
  */
+import { readFileSync } from "node:fs";
+
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 
 import { realElapsedMs } from "./helpers/clock";
@@ -75,6 +77,10 @@ const GROUP_LIKE_ROLE = "aid5_probe_group_like";
  * reach the case where the sweep silently strips nothing.
  */
 const DEPLOYER_ROLE = "aid5_probe_deployer";
+
+function quoteTestRoleIdentifier(value: string): string {
+  return `"${value.replaceAll('"', '""')}"`;
+}
 
 /** PostgreSQL SQLSTATEs this suite asserts on. */
 const INSUFFICIENT_PRIVILEGE = "42501";
@@ -131,6 +137,37 @@ describe("diagnostics privilege proof DB safety guard (#2374)", () => {
     "not-a-url",
   ])("rejects unsafe target %s", (url) => {
     expect(() => assertSafePrivilegeProofDbUrl(url)).toThrow();
+  });
+
+  it("keeps known-password role cleanup explicit and fail-closed", () => {
+    const source = readFileSync(import.meta.filename, "utf8");
+    const cleanupStart = source.lastIndexOf("    afterAll(async () => {");
+    expect(cleanupStart).toBeGreaterThan(0);
+    const cleanupSource = source.slice(cleanupStart);
+    const closePool = cleanupSource.indexOf(
+      'cleanupStep("close diagnostics pool"',
+    );
+    const terminate = cleanupSource.indexOf("pg_catalog.pg_terminate_backend");
+    const revokeMemberships = cleanupSource.indexOf(
+      "pg_catalog.pg_auth_members edge",
+    );
+    const dropOwned = cleanupSource.indexOf(
+      "DROP OWNED BY ${quoteTestRoleIdentifier(role)}",
+    );
+    const dropRole = cleanupSource.indexOf(
+      "DROP ROLE ${quoteTestRoleIdentifier(role)}",
+    );
+    const proveAbsent = cleanupSource.indexOf("still exists after DROP ROLE");
+
+    expect(closePool).toBeGreaterThan(0);
+    expect(terminate).toBeGreaterThan(closePool);
+    expect(revokeMemberships).toBeGreaterThan(terminate);
+    expect(dropOwned).toBeGreaterThan(revokeMemberships);
+    expect(dropRole).toBeGreaterThan(dropOwned);
+    expect(proveAbsent).toBeGreaterThan(dropRole);
+    expect(cleanupSource).toContain(
+      "AI Diagnostics real-PostgreSQL cleanup failed",
+    );
   });
 });
 
@@ -325,37 +362,151 @@ describe("diagnostics privilege proof DB safety guard (#2374)", () => {
     }, 120_000);
 
     afterAll(async () => {
+      const cleanupErrors: string[] = [];
+      const cleanupStep = async (
+        label: string,
+        action: () => Promise<unknown>,
+      ): Promise<void> => {
+        try {
+          await action();
+        } catch (err) {
+          cleanupErrors.push(
+            `${label}: ${err instanceof Error ? err.message : String(err)}`,
+          );
+        }
+      };
+
+      // Close the restricted pool FIRST. A checked-out known-password session is a
+      // dependency of the role and makes DROP ROLE fail; a client timeout is not a
+      // substitute for actually closing it.
       if (typeof closeDiagnosticsDatabase === "function") {
-        await closeDiagnosticsDatabase().catch(() => {});
+        await cleanupStep("close diagnostics pool", closeDiagnosticsDatabase);
       }
+
+      // Release any transaction/SET ROLE state on the suite client, then close it.
+      // Cleanup uses a new superuser connection so a failed test cannot leave this
+      // client aborted or impersonating one of the roles it must remove.
       if (typeof admin !== "undefined") {
+        await cleanupStep("rollback suite admin transaction", async () => {
+          await admin.query("ROLLBACK");
+        });
+        await cleanupStep("reset suite admin role", async () => {
+          await admin.query("RESET ROLE");
+        });
+        await cleanupStep("close suite admin connection", async () => {
+          await admin.end();
+        });
+      }
+
+      let cleanupAdmin: PgClient | undefined;
+      if (typeof PgClientCtor !== "undefined") {
+        await cleanupStep("open isolated cleanup connection", async () => {
+          assertSafePrivilegeProofDbUrl(RACE_DB_URL);
+          cleanupAdmin = new PgClientCtor({ connectionString: RACE_DB_URL });
+          await cleanupAdmin.connect();
+        });
+      }
+
+      if (cleanupAdmin) {
+        const removeRole = async (role: string): Promise<void> => {
+          const roleExists = await cleanupAdmin!.query(
+            `SELECT EXISTS (
+               SELECT 1 FROM pg_catalog.pg_roles WHERE rolname = $1
+             ) AS present`,
+            [role],
+          );
+          if (!roleExists.rows[0]?.present) return;
+
+          // No session may retain the known password while cleanup proceeds.
+          await cleanupAdmin!.query(
+            `SELECT pg_catalog.pg_terminate_backend(pid)
+             FROM pg_catalog.pg_stat_activity
+             WHERE usename = $1 AND pid <> pg_catalog.pg_backend_pid()`,
+            [role],
+          );
+
+          // Remove memberships in BOTH directions and name the original grantor.
+          // PostgreSQL records one row per grantor; a bare REVOKE can otherwise
+          // report success while another grantor's membership survives.
+          const memberships = await cleanupAdmin!.query(
+            `SELECT granted.rolname AS granted_role,
+                    member.rolname  AS member_role,
+                    grantor.rolname AS grantor_role
+             FROM pg_catalog.pg_auth_members edge
+             JOIN pg_catalog.pg_roles granted ON granted.oid = edge.roleid
+             JOIN pg_catalog.pg_roles member  ON member.oid  = edge.member
+             JOIN pg_catalog.pg_roles grantor ON grantor.oid = edge.grantor
+             WHERE granted.rolname = $1 OR member.rolname = $1`,
+            [role],
+          );
+          for (const edge of memberships.rows) {
+            await cleanupAdmin!.query(
+              `REVOKE ${quoteTestRoleIdentifier(String(edge.granted_role))} ` +
+                `FROM ${quoteTestRoleIdentifier(String(edge.member_role))} ` +
+                `GRANTED BY ${quoteTestRoleIdentifier(String(edge.grantor_role))}`,
+            );
+          }
+
+          const membershipResidue = await cleanupAdmin!.query(
+            `SELECT count(*)::int AS remaining
+             FROM pg_catalog.pg_auth_members edge
+             JOIN pg_catalog.pg_roles granted ON granted.oid = edge.roleid
+             JOIN pg_catalog.pg_roles member  ON member.oid  = edge.member
+             WHERE granted.rolname = $1 OR member.rolname = $1`,
+            [role],
+          );
+          if (membershipResidue.rows[0]?.remaining !== 0) {
+            throw new Error(`${role} still has role-membership dependencies`);
+          }
+
+          // Required even when the role owns no object today: this drops its
+          // grants/dependencies in the scratch database before the cluster role.
+          await cleanupAdmin!.query(
+            `DROP OWNED BY ${quoteTestRoleIdentifier(role)}`,
+          );
+          await cleanupAdmin!.query(`DROP ROLE ${quoteTestRoleIdentifier(role)}`);
+
+          const absent = await cleanupAdmin!.query(
+            `SELECT NOT EXISTS (
+               SELECT 1 FROM pg_catalog.pg_roles WHERE rolname = $1
+             ) AS absent`,
+            [role],
+          );
+          if (!absent.rows[0]?.absent) {
+            throw new Error(`${role} still exists after DROP ROLE`);
+          }
+        };
+
         for (const table of [GRANTED_TABLE, WRITABLE_TABLE, UNGRANTED_TABLE]) {
-          await admin
-            .query(`DROP TABLE IF EXISTS public.${table}`)
-            .catch(() => {});
+          await cleanupStep(`drop scratch table ${table}`, async () => {
+            await cleanupAdmin!.query(`DROP TABLE IF EXISTS public.${table}`);
+          });
         }
-        // Leave the database's PUBLIC TEMP grant as the provisioning left it for
-        // the app role, but hand it back to PUBLIC so a later suite on this
-        // shared throwaway database is unaffected by this one.
-        await admin
-          .query(`GRANT TEMPORARY ON DATABASE "${databaseName}" TO PUBLIC`)
-          .catch(() => {});
-        await admin
-          .query(`REVOKE ALL ON SCHEMA public FROM "${TEST_ROLE}"`)
-          .catch(() => {});
-        // Belt for the membership cases: if one of them failed part-way these roles
-        // would otherwise survive the run and be granted again on the next one.
+        // Leave the shared scratch database's PUBLIC TEMP grant as it was before
+        // this suite, so later isolated suites are not coupled to our provisioner.
+        if (databaseName) {
+          await cleanupStep("restore PUBLIC TEMPORARY", async () => {
+            await cleanupAdmin!.query(
+              `GRANT TEMPORARY ON DATABASE ${quoteTestRoleIdentifier(databaseName)} TO PUBLIC`,
+            );
+          });
+        }
+
+        // Main role first while every possible membership grantor still exists.
+        // This is the known-password role; failure to remove it fails the suite.
+        await cleanupStep(`remove ${TEST_ROLE}`, () => removeRole(TEST_ROLE));
         for (const role of [APP_LIKE_ROLE, GROUP_LIKE_ROLE, DEPLOYER_ROLE]) {
-          await admin.query(`DROP OWNED BY "${role}"`).catch(() => {});
-          await admin.query(`DROP ROLE IF EXISTS "${role}"`).catch(() => {});
+          await cleanupStep(`remove ${role}`, () => removeRole(role));
         }
-        await admin
-          .query(`REVOKE "${adminRole}" FROM "${TEST_ROLE}"`)
-          .catch(() => {});
-        await admin
-          .query(`DROP ROLE IF EXISTS "${TEST_ROLE}"`)
-          .catch(() => {});
-        await admin.end().catch(() => {});
+        await cleanupStep("close isolated cleanup connection", async () => {
+          await cleanupAdmin!.end();
+        });
+      }
+
+      if (cleanupErrors.length > 0) {
+        throw new Error(
+          `AI Diagnostics real-PostgreSQL cleanup failed:\n${cleanupErrors.join("\n")}`,
+        );
       }
     }, 120_000);
 
@@ -1934,6 +2085,63 @@ describe("diagnostics privilege proof DB safety guard (#2374)", () => {
           }
         }
       });
+    });
+
+    it("runs the real member-search mobile arm against punctuated stored fragments", async () => {
+      const memberId = "aid6b_mobile_probe_member";
+      const email = "aid6b-mobile-probe@example.invalid";
+      await admin.query(`DELETE FROM public."Member" WHERE "id" = $1`, [memberId]);
+      await admin.query(
+        `INSERT INTO public."Member"
+           ("id", "email", "passwordHash", "firstName", "lastName",
+            "phoneCountryCode", "phoneAreaCode", "phoneNumber",
+            "createdAt", "updatedAt")
+         VALUES ($1, $2, 'not-a-login-hash', 'Mobile', 'Probe',
+                 '+64 ', ' 27-', '422 4115', pg_catalog.now(), pg_catalog.now())`,
+        [memberId, email],
+      );
+
+      try {
+        await withDeclaredGrantsOnly(async () => {
+          const handle = await getDiagnosticsDatabase();
+          expect(handle.ok).toBe(true);
+          if (!handle.ok) return;
+
+          const entry = DIAGNOSTICS_TOOLS.find(
+            (candidate) => candidate.id === "diagnostics.member_search",
+          );
+          expect(entry?.source).toBe("select_only_sql");
+          if (!entry || entry.source !== "select_only_sql") return;
+
+          const binding = entry.parseArgs({
+            kind: "mobile",
+            mobile: "+64 27-422 4115",
+          });
+          expect(binding.ok).toBe(true);
+          if (!binding.ok || binding.source !== "select_only_sql") return;
+          expect(binding.params[4]).toBe("64274224115");
+
+          const result = await runDiagnosticsReadOnlyQuery(
+            {
+              sql: entry.sql,
+              params: binding.params,
+              rowLimit: entry.rowLimit,
+              toolId: entry.id,
+            },
+            handle.pool,
+          );
+          expect(result.ok).toBe(true);
+          if (!result.ok) return;
+          expect(result.rows).toHaveLength(1);
+          const projected = entry.project(result.rows[0]);
+          expect(projected).toMatchObject({ memberRef: memberId });
+          expect(projected).not.toHaveProperty("phoneCountryCode");
+          expect(projected).not.toHaveProperty("phoneAreaCode");
+          expect(projected).not.toHaveProperty("phoneNumber");
+        });
+      } finally {
+        await admin.query(`DELETE FROM public."Member" WHERE "id" = $1`, [memberId]);
+      }
     });
 
     it("correlates a REAL audit row and returns none of the withheld values", async () => {

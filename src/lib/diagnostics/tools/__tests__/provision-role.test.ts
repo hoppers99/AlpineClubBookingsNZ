@@ -57,6 +57,33 @@ function documentedGrantCount(document: string, relation: string): number | null
   return match ? Number(match[1]) : null;
 }
 
+function documentedExactGrantSets(document: string): Record<string, string[]> {
+  const start = "<!-- ai-diagnostics-exact-grants:start -->";
+  const end = "<!-- ai-diagnostics-exact-grants:end -->";
+  const startIndex = document.indexOf(start);
+  const endIndex = document.indexOf(end);
+  if (startIndex < 0 || endIndex <= startIndex) {
+    throw new Error("deployment guide has no canonical exact-grant block");
+  }
+
+  const block = document.slice(startIndex + start.length, endIndex);
+  const documented: Record<string, string[]> = {};
+  for (const line of block.split(/\r?\n/)) {
+    const match = line.match(/^public\."([A-Za-z]+)":\s+(.+)$/);
+    if (!match) continue;
+    const [, relation, columnText] = match;
+    if (documented[relation]) {
+      throw new Error(`deployment guide declares ${relation} more than once`);
+    }
+    const columns = columnText.split(",").map((column) => column.trim());
+    if (columns.some((column) => column.length === 0)) {
+      throw new Error(`deployment guide declares an empty ${relation} column`);
+    }
+    documented[relation] = [...columns].sort();
+  }
+  return documented;
+}
+
 function sql(overrides: Partial<typeof base> = {}): string {
   return buildAiDiagnosticsRoleSql({ ...base, ...overrides }).join("\n");
 }
@@ -740,6 +767,29 @@ describe("the SELECT-only grant allowlist matches what the statements read", () 
         `${relation} deployment count`,
       ).toBe(count);
     }
+  });
+
+  it("publishes the exact grant sets bidirectionally, so a same-count swap fails", () => {
+    const deploymentDoc = readFileSync(
+      join(REPO_ROOT, "docs", "ai-diagnostics", "deployment.md"),
+      "utf8",
+    );
+    const documented = documentedExactGrantSets(deploymentDoc);
+    const declared = Object.fromEntries(
+      SELECT_GRANTS.map((grant) => {
+        if (!grant.columns) {
+          throw new Error(
+            `SELECT_GRANTS.${grant.relation} is table-wide; exact docs require columns`,
+          );
+        }
+        return [grant.relation, [...grant.columns].sort()];
+      }),
+    );
+
+    // Object equality is deliberately BOTH directions: a missing source column,
+    // an undocumented grant, an extra documented relation, and a one-for-one
+    // column substitution all fail with the relation named.
+    expect(documented).toEqual(declared);
   });
 
   it("grants no relation that no statement reads, and reads none it does not grant", () => {

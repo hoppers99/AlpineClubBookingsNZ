@@ -278,6 +278,43 @@ column, never wholesale**:
 | `public."FamilyGroupMember"` | **4 explicitly named columns** — all current columns, but not a table-wide grant; the relation has no `role` column | the member family relationships |
 | `public."FamilyGroup"` | **2 columns**: `id`, `name` | the member family relationships |
 
+The table above explains why each relation is present. The following block is the
+canonical exact column declaration for operators and reviewers. It is intentionally
+machine-readable: the provisioning test parses it and compares every relation and
+column in both directions with `SELECT_GRANTS`, so replacing one column with another
+while keeping the same count fails CI.
+
+<!-- ai-diagnostics-exact-grants:start -->
+```text
+public."AuditLog": id, action, category, severity, outcome, entityType, entityId, requestId, createdAt
+public."Payment": id, bookingId, status, source, amountCents, refundedAmountCents, changeFeeCents, additionalAmountCents, creditAppliedCents, additionalPaymentStatus, reference, stripePaymentIntentId, additionalPaymentIntentId, xeroInvoiceId, xeroInvoiceNumber, xeroRefundCreditNoteId, internetBankingHoldSlots, internetBankingHoldUntil, internetBankingHoldReleasedAt, manuallyMarkedPaidAt, createdAt, updatedAt
+public."PaymentTransaction": id, paymentId, kind, source, status, amountCents, refundedAmountCents, reference, stripePaymentIntentId, xeroInvoiceNumber, createdAt, updatedAt
+public."PaymentRefund": id, paymentId, status, amountCents, currency, stripeRefundId, stripeChargeId, xeroRefundCreditNoteId, stripeCreatedAt, createdAt
+public."PaymentRecoveryOperation": id, type, status, paymentId, amountCents, attempts, idempotencyKey, succeededAt, createdAt, updatedAt
+public."ManualRefundTask": id, paymentId, amountCents, status, completedAt, createdAt
+public."RefundRequest": id, bookingId, status, requestedAmountCents, approvedAmountCents, reviewedAt, createdAt
+public."ProcessedWebhookEvent": eventId, source, eventType, status, processingStartedAt, processedAt
+public."WebhookLog": id, source, eventType, eventId, status, durationMs, createdAt
+public."XeroInboundEvent": id, eventCategory, eventType, resourceId, correlationKey, status, eventCreatedAt, processedAt, createdAt
+public."XeroObjectLink": id, localModel, localId, xeroObjectType, xeroObjectId, xeroObjectNumber, role, active, createdAt, updatedAt
+public."XeroSyncOperation": id, direction, operationType, localModel, localId, status, attemptCount, replayable, lastErrorCode, xeroObjectType, xeroObjectId, xeroObjectNumber, manuallyResolvedAt, startedAt, completedAt, createdAt, updatedAt
+public."Member": id, email, firstName, lastName, ageTier, active, canLogin, cancelledAt, archivedAt, joinedDate, lifeMemberDate, requiresInduction, hutLeaderEligible, parentMemberId, secondaryParentId, familyGroupId, billingFamilyGroupId, phoneAreaCode, phoneNumber, phoneCountryCode, xeroContactId, createdAt, updatedAt
+public."Booking": id, memberId, lodgeId, status, checkIn, checkOut, totalPriceCents, discountCents, promoAdjustmentCents, finalPriceCents, creditElectionCents, hasNonMembers, nonMemberHoldUntil, parentBookingId, draftExpiresAt, requiresAdminReview, adminReviewStatus, adultMemberHostingReviewStatus, waitlistPosition, wholeLodgeHold, adminCapacityHoldAt, capacityOverriddenAt, deletedAt, createdAt, updatedAt
+public."Lodge": id, name
+public."BookingGuest": id, bookingId, firstName, lastName, ageTier, isMember, memberId, stayStart, stayEnd, priceCents, consentStatus, consentRequestedAt, consentRespondedAt, consentRespondedByMemberId, consentExpiresAt
+public."MemberPartnerLink": memberAId, memberBId, status
+public."BookingGuestNight": bookingGuestId, stayDate
+public."BedAllocation": id, bookingId, bookingGuestId, roomId, bedId, stayDate, bedType, isSecondOccupant
+public."LodgeRoom": id, name
+public."LodgeBed": id, roomId, name, bedType
+public."BookingChangeRequest": id, bookingId, kind, status, requestedByMemberId, aggregateCapacityMode, attemptCount, conflictCount, lastConflictAt, holdExpiresAt, reviewedAt, cancelledAt, supersededByRequestId, linkedModificationId, createdAt, updatedAt
+public."PolicyExceptionReservationNight": changeRequestId
+public."MemberSubscription": id, memberId, seasonYear, status, xeroInvoiceId, xeroInvoiceNumber, paidAt, manuallyMarkedPaidAt, voidGeneration, createdAt, updatedAt
+public."FamilyGroupMember": id, familyGroupId, memberId, joinedAt
+public."FamilyGroup": id, name
+```
+<!-- ai-diagnostics-exact-grants:end -->
+
 Every other relation in the schema is unreadable — including `IntegrationCredential`
 (encrypted provider secrets), `XeroToken`, which stores **plaintext** Xero OAuth
 access and refresh tokens, and `FamilyGroupJoinRequest`, which carries requester

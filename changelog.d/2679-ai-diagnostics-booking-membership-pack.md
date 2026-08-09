@@ -1,80 +1,68 @@
-- AI Diagnostics can now investigate a specific booking or member. An administrator
-  with **Bookings** view access can look up a booking — by its id, by the
-  eight-character reference a member reads off their confirmation, by the member who
-  owns it, or by a lodge and a short run of nights — and then ask what is actually
-  stopping it. An administrator with **Membership** view access can look up a member
-  by record id, exact email address, the start of a name, or a mobile number, and
-  then ask why that member is blocked or being charged non-member rates. Neither
-  needs Support & System access to do it.
-- The answers come from the platform's own rules rather than from a second reading of
-  the rows. The blocking answer runs the same minimum-stay, adult-member-hosting and
-  paid-up-adult-member evaluator a member's own exception request runs through, the
-  same review-reason derivation the officer queue renders, the same per-night
-  capacity engine every booking path checks against — so its occupancy figures
-  already include custodian bed holds and beds held by pending exception requests,
-  neither of which has a booking to show for it — the same member-night conflict
-  scan, and the same edit-window rule the member's own Edit button obeys. The
-  membership answer runs the platform's own lifecycle resolver, membership-type
-  resolution, subscription-settlement rule, lockout mode and adult-member-host
-  predicate.
-- Diagnostics stays completely read only. It cannot create, change, cancel, confirm,
-  approve, refuse, allocate, move, complete, sign off or release anything, it
-  contacts no external provider, and every tool description tells the assistant so —
-  because an officer who believes an exception has already been approved does not
-  approve it, and the member's held beds are then released by the hold reaper.
-- Three things the assistant will now say plainly rather than guessing at. A
-  **cancelled, bumped or deleted booking** reports only that fact: no policy failure,
-  no capacity shortfall and no review is reported against it, because a booking that
-  is over is not a booking that is broken. An **outstanding induction** is reported as
-  a flag and explicitly not as a booking blocker, because nothing in the booking path
-  reads it in this release. And there is **no member number** in this platform, so a
-  member quoting one is quoting something else — the assistant says so instead of
-  searching for a field that does not exist.
-- An exclusive whole-lodge hold is now kept distinct from an ordinary capacity
-  shortfall: Diagnostics reports the hard `whole_lodge_held` reason, withholds
-  derived spare-bed arithmetic for that night, and never suggests an admin
-  over-capacity confirmation could bypass it.
-- A selected parent booking now shows its directly linked child bookings within a
-  fixed limit. Party consent evidence uses the platform's complete legal-state
-  discriminator, and double-bed allocations report whether two occupants satisfy
-  the authoritative rule: distinct active adult members with a confirmed partner
-  link. The live bed definition, not an allocation's stale copied type, decides that
-  verdict; a missing bed is unavailable evidence. Missing, pending and corrupt
-  states remain explicit rather than inferred.
-- Server-owned booking evidence now refuses oversized booking spans, parties,
-  per-guest night sets and open-request populations before expanding them or running
-  capacity and policy helpers. Its observed-at time is the end of assembly rather
-  than a claimed database snapshot; the assistant is told that facts may span READ
-  COMMITTED instants and must be refreshed before action.
-- A search deliberately tells an administrator less than a record does. A member
-  search returns names, age tier and lifecycle state, and only *whether* an email
-  address and a phone number are on file; the address itself comes back for one
-  selected member, and the phone number is never returned at all. Booking notes,
-  admin review notes, a member's message to an officer, an officer's private notes, a
-  member's private comments, dates of birth, addresses, and every credential and
-  two-factor column stay unreadable to the diagnostics database credential — the
-  database itself refuses them, not just the code.
-- **Operators: this release needs `npm run diagnostics:provision-role` re-run after
-  deploy.** It adds relation grants for the booking and membership tables, and until
-  provisioning is re-run the diagnostics readiness check reports the credential as
-  under-provisioned and every database-backed diagnostics tool refuses by design. That
-  grant now includes `Member.phoneCountryCode` as a predicate-only field so an
-  accepted `+64` mobile search can match the stored country, area and number parts;
-  the phone value is never projected. The allowlist is 26 relations / 243 columns.
-  This re-provisioning is the **only** change this release makes to a running system:
-  there is no AI Diagnostics screen yet, nothing calls a diagnostics tool, and every
-  entry described above is dormant until the assistant surface ships.
-- **Seven columns were also removed from what the diagnostics database credential can
-  read**, tightening a boundary this release did not widen. All seven belong to the
-  earlier finance release and no diagnostic query ever read one; two of them — a link
-  from a refund task to its booking, and the same link on a payment recovery record —
-  were harmless only while booking tables were unreadable, and this release makes
-  booking tables readable. The check that should have found them had been written but
-  never wired up to anything, so it could not fail; it is wired up now, and it
-  reconciles what the credential may read against what the queries actually read in
-  both directions. PostgreSQL is asked the same question independently, on a real
-  database, against the role the shipped provisioning creates: this credential may
-  read a column **if and only if** one of the product's own queries reads it.
-- The runtime privilege check now also rejects table-wide SELECT on every
-  column-restricted declaration, including a table whose declaration currently
-  names every column, so a future migration cannot silently widen the credential.
+- **AI Diagnostics can now investigate one selected booking or member with
+  permission-matched, read-only evidence (#2376).** Booking Officers can find a
+  booking and inspect its stored state, party, links, requests, audit history,
+  blockers and night-by-night capacity. Membership Officers can find a member and
+  inspect their stored state, subscriptions, family links, booking involvement,
+  audit history and current eligibility. Neither role needs Support & System access.
+
+  Three tools cross that boundary deliberately and require both Bookings and
+  Membership view access: a member's booking summary, a booking's blocker state,
+  and the double-bed sharing verdict. The last one reads the live membership state
+  and confirmed partner link for both occupants, and the other occupant can belong
+  to another booking. Those cross-booking identifiers are classifier inputs only
+  and are never returned; a caller missing either permission is denied before any
+  membership row or partner link is queried.
+
+  Booking blockers now use the platform's canonical persisted hosting evaluation,
+  shared with the booking lifecycle rather than recreated from a proposed party.
+  That preserves sparse guest nights, accepted-consent attendance, split
+  parent/child coverage, subscription settlement and current-booking exclusion. A
+  pending-consent adult cannot host, a split parent's adult can cover the child
+  booking, and a booking cannot use itself as same-owner cover.
+
+  Date and capacity evidence now fails closed around corrupt legacy data. Guest
+  stays remain half-open: `stayStart` is the first occupied night and `stayEnd` is
+  the exclusive departure day, so equal endpoints contain zero nights and are
+  refused instead of becoming a fabricated one-night stay. Allocation counts read
+  only the selected booking's own guests inside `[checkIn, checkOut)`, stop at the
+  30-guests × 31-nights ceiling plus one, and refuse an oversized population rather
+  than clipping it. PostgreSQL enforces read-only mode and a five-second statement
+  timeout for that bounded query; the outer JavaScript deadline is not treated as
+  database cancellation.
+
+  Whole-lodge evidence now separates current effect from historical storage. A
+  booking is reported as effectively holding the lodge only when its raw flag is
+  set and its canonical lifecycle state still holds capacity. Cancelled, bumped,
+  deleted and otherwise non-capacity-holding records can still show the raw flag,
+  but never claim an active exclusive hold.
+
+  Member eligibility now reads the persisted financial-year settings strictly. A
+  genuinely absent singleton still uses the documented default; a rejected
+  database read becomes `evidence_unavailable` instead of being mistaken for proof
+  that March applies. Diagnostics still never calls Xero to fill a missing fact.
+
+  Mobile search now normalises the stored country, area and number fragments as
+  well as the operator's input, so legacy `+`, spaces, hyphens and parentheses can
+  match. It uses one fixed PostgreSQL punctuation translation rather than wildcard
+  or regular-expression language, and no tool returns the phone number.
+
+  Operators must re-run `npm run diagnostics:provision-role` after deployment. The
+  allowlist is still exactly 26 relations and 243 columns, including 23 on
+  `Member`; the deployment guide now publishes every exact relation-column set and
+  a test compares those sets with the source declaration in both directions, so a
+  same-count column swap fails. Provisioning copy also states honestly that email
+  is projected once while all three phone fragments are predicate-only.
+
+  The opt-in real-PostgreSQL privilege proof now exercises the punctuated stored
+  mobile case and fails closed during teardown: it closes restricted connections,
+  terminates remaining sessions, revokes role memberships, drops owned privileges,
+  drops every known-password test role and verifies that each role is absent. The
+  suite remains off in ordinary local tests and runs only against the dedicated
+  loopback scratch database in its hosted proof job.
+
+  Diagnostics remains dormant until its assistant surface ships. Nothing in this
+  pack can create, change, cancel, confirm, approve, refuse, allocate, move,
+  complete, sign off, link, unlink or release anything, and it contacts no external
+  provider. Stored text remains untrusted evidence, and invocation audit records
+  contain metadata and non-reversible hashes rather than arguments, results,
+  questions or answers.

@@ -24,8 +24,8 @@
  * deleting its manifest entry in the same diff, and adding one means adding an
  * entry a reviewer will see.
  */
-import { readFileSync } from "node:fs";
-import { resolve } from "node:path";
+import { readFileSync, readdirSync } from "node:fs";
+import { join, relative, resolve } from "node:path";
 
 import { describe, expect, it } from "vitest";
 
@@ -66,6 +66,79 @@ function census() {
 
 function ids(sites: readonly AuditWriteSite[]): string[] {
   return sites.map((site) => site.id).sort();
+}
+
+type CurrentCensusClaim = {
+  file: string;
+  writeSites: number;
+  uncategorised: number;
+};
+
+function currentAuditCensusClaims(): CurrentCensusClaim[] {
+  const repoRoot = process.cwd();
+  const sourceFiles: string[] = [];
+  const walk = (directory: string): void => {
+    for (const entry of readdirSync(directory, { withFileTypes: true })) {
+      const path = join(directory, entry.name);
+      if (entry.isDirectory()) {
+        if (entry.name !== "__tests__") walk(path);
+      } else if (entry.name.endsWith(".md") || entry.name.endsWith(".ts")) {
+        sourceFiles.push(path);
+      }
+    }
+  };
+  walk(resolve(repoRoot, "docs"));
+  walk(resolve(repoRoot, "src", "lib", "diagnostics", "tools", "packs"));
+
+  const patterns: readonly {
+    pattern: RegExp;
+    implicitUncategorised?: number;
+  }[] = [
+    {
+      pattern:
+        /\b(?<writeSites>\d+)\s+row-producing\s+production\s+audit\s+write\s+sites\b[^.]{0,120}?\b(?<uncategorised>zero|\d+)\b[^.]{0,50}\b(?:record no category|uncategorised)\b/giu,
+    },
+    {
+      pattern:
+        /\b(?:the\s+)?census(?:\s+now)?\s+reads\s+(?<writeSites>\d+)\s+(?:row-producing\s+)?(?:production\s+)?(?:audit\s+)?write\s+sites\s+and\s+(?<uncategorised>zero|\d+)\s+uncategorised\b/giu,
+    },
+    {
+      pattern:
+        /\bcurrent\s+exact-head\s+production\s+writers\s+have\s+(?<writeSites>\d+)\s+row-producing\s+sites\s+and\s+(?<uncategorised>zero|\d+)\s+uncategorised\s+sites\b/giu,
+    },
+    {
+      pattern:
+        /\b(?:the\s+)?exact-head\s+census\s+has\s+(?<writeSites>\d+)\s+row-producing\s+current\s+production\s+writer\s+sites\s+and\s+(?<uncategorised>zero|\d+)\s+uncategorised\s+sites\b/giu,
+    },
+    {
+      pattern: /\ball\s+(?<writeSites>\d+)\s+now\s+record\s+a\s+category\b/giu,
+      implicitUncategorised: 0,
+    },
+  ];
+
+  const claims: CurrentCensusClaim[] = [];
+  for (const sourceFile of sourceFiles) {
+    const contents = readFileSync(sourceFile, "utf8")
+      .replaceAll("**", "")
+      .replace(/\s+\*\s+/g, " ")
+      .replace(/\s+/g, " ");
+    for (const { pattern, implicitUncategorised } of patterns) {
+      for (const match of contents.matchAll(pattern)) {
+        const groups = match.groups ?? {};
+        const uncategorised = groups.uncategorised;
+        claims.push({
+          file: relative(repoRoot, sourceFile).replaceAll("\\", "/"),
+          writeSites: Number(groups.writeSites),
+          uncategorised:
+            implicitUncategorised ??
+            (uncategorised?.toLowerCase() === "zero"
+              ? 0
+              : Number(uncategorised)),
+        });
+      }
+    }
+  }
+  return claims.sort((left, right) => left.file.localeCompare(right.file));
 }
 
 describe("audit writer census (#2581)", { timeout: 180_000 }, () => {
@@ -123,77 +196,45 @@ describe("audit writer census (#2581)", { timeout: 180_000 }, () => {
     ).toEqual(Object.keys(UNCATEGORISED_AUDIT_WRITERS).sort());
   });
 
-  it("keeps every DOCUMENT that quotes the census quoting the measured figure", () => {
+  it("discovers and pins every runtime or document current-census claim", () => {
     /*
-      THE PROSE COPIES, PINNED — because the census's own numbers have already
-      merged at two different values at once.
+      Current totals occur in operator docs, model-facing runtime scope, and a
+      runtime source contract. The old hand-maintained four-document list missed
+      the second booking-guide occurrence and both runtime occurrences. Discover
+      the reviewed wording instead, pin the occurrence inventory, and compare every
+      value with the manifest.
 
-      The write-site total and the uncategorised count are quoted as present-tense
-      fact in four documents, and until now no test read any of them. That is not a
-      theoretical gap: #2676 re-measured the census, corrected the figures in
-      `tool-pack-support.md` and `guides/audit-log.md`, and merged cleanly while
-      `tool-pack-booking-membership.md` and `tool-pack-finance.md` went on saying
-      426 write sites and 82 uncategorised. A reader has no way to tell which page
-      is the stale one, and each of these sentences is a claim about what a
-      diagnostics tool can SEE — an operator who believes the wrong one is told a
-      correlation gap exists that does not, or misses one that does.
-
-      The fragments are generated from the manifest and compared against the
-      document with whitespace collapsed, so markdown re-wrapping is not a failure
-      and a changed number is. Historical statements ("82 were still uncategorised
-      when #2581 opened") are deliberately NOT pinned: they are past tense and stay
-      true, and pinning them would force a rewrite of the narrative every time the
-      present-tense figure moved.
+      Changing a number, deleting/rewording a claim so it escapes the parser, or
+      adding a new current-fact copy all fail visibly. Historical statements such
+      as "82 were still uncategorised when #2581 opened" deliberately do not match:
+      they remain true and are not current-fact copies.
     */
-    const spell = (count: number) => (count === 0 ? "zero" : String(count));
     const totals = AUDIT_CENSUS_TOTALS;
-    const claims: readonly { file: string; fragments: readonly string[] }[] = [
-      {
-        file: "docs/ai-diagnostics/tool-pack-booking-membership.md",
-        fragments: [
-          `**${totals.writeSites} row-producing production audit write sites**`,
-          `**${spell(totals.uncategorised)}** of them record no category`,
-        ],
-      },
-      {
-        file: "docs/ai-diagnostics/tool-pack-finance.md",
-        fragments: [
-          `the census now reads **${totals.writeSites} write sites and ${spell(totals.uncategorised)} uncategorised**`,
-        ],
-      },
-      {
-        file: "docs/ai-diagnostics/tool-pack-support.md",
-        fragments: [
-          `The census reads **${totals.writeSites} write sites and ${spell(totals.uncategorised)} uncategorised**`,
-        ],
-      },
-      {
-        file: "docs/guides/audit-log.md",
-        fragments: [`all\n${totals.writeSites} now record a category`],
-      },
-    ];
-
-    const collapse = (text: string) => text.replace(/\s+/g, " ").trim();
-    const missing: string[] = [];
-    for (const claim of claims) {
-      // Test helper: a fixed, test-controlled repo path under process.cwd().
-      const contents = collapse(
-        readFileSync(resolve(process.cwd(), claim.file), "utf8"),
-      );
-      for (const fragment of claim.fragments) {
-        if (!contents.includes(collapse(fragment))) {
-          missing.push(`${claim.file}: ${collapse(fragment)}`);
-        }
-      }
-    }
-
+    const claims = currentAuditCensusClaims();
     expect(
-      missing.sort(),
-      "A document quotes the audit-writer census at a figure the census no " +
-        "longer measures. Re-run `npm run audit:census` and correct EVERY page " +
-        "listed here in the same commit — the numbers below are what the tree " +
-        "actually reports.",
-    ).toEqual([]);
+      claims.map((claim) => claim.file),
+      "The inventory of runtime/docs current audit-census claims changed. Keep " +
+        "the wording recognisable, and review every new or removed copy here.",
+    ).toEqual([
+      "docs/ai-diagnostics/tool-pack-booking-membership.md",
+      "docs/ai-diagnostics/tool-pack-booking-membership.md",
+      "docs/ai-diagnostics/tool-pack-finance.md",
+      "docs/ai-diagnostics/tool-pack-support.md",
+      "docs/guides/audit-log.md",
+      "src/lib/diagnostics/tools/packs/booking-records.ts",
+      "src/lib/diagnostics/tools/packs/support-correlation.ts",
+    ]);
+    expect(
+      claims,
+      "A runtime or document current-fact copy is stale. Re-run `npm run " +
+        "audit:census`, then update every discovered claim in the same commit.",
+    ).toEqual(
+      claims.map(({ file }) => ({
+        file,
+        writeSites: totals.writeSites,
+        uncategorised: totals.uncategorised,
+      })),
+    );
   });
 
   it("keeps every classification #2581 applied exactly where it was reviewed", () => {

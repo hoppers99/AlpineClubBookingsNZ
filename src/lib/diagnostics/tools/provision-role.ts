@@ -446,17 +446,16 @@ export const SELECT_GRANTS: readonly AiDiagnosticsSelectGrant[] = [
      * officer reads the same fields on a screen, in bulk, with a CSV export. What it
      * buys is a diagnostic that can name the member instead of quoting a cuid.
      *
-     * TWO COLUMNS ARE GRANTED SO THEY NEVER HAVE TO BE PROJECTED, which is the
-     * pattern AID-6C argues for by name on
-     * `PaymentRecoveryOperation."idempotencyKey"`:
+     * FOUR SEARCH COLUMNS NEED AN EXPLICIT PROJECTION ACCOUNTING. Granting a
+     * predicate column still makes it readable to the role, so each is named here:
      *  - `email` is the `member_search` email PREDICATE (an operator pastes in an
      *    address they already hold) and the erasure test's input. It IS projected,
      *    once, by `member_diagnostic_summary`, for one selected member.
      *  - `phoneCountryCode`, `phoneAreaCode` and `phoneNumber` are the
-     *    `member_search` mobile PREDICATE and NOTHING ELSE. No entry in either pack returns a phone number: the
-     *    summary reports only whether one is on file. A diagnostic never needs to
-     *    read a number back to an operator who has the member's admin page one click
-     *    away.
+     *    `member_search` mobile PREDICATE and NOTHING ELSE. No entry in either pack
+     *    returns a phone number: the summary reports only whether one is on file.
+     *    A diagnostic never needs to read a number back to an operator who has the
+     *    member's admin page one click away.
      *
      * WHAT STAYS REFUSED BY THE SERVER (42501), not by a projection's good
      * intentions, and each class for its own reason:

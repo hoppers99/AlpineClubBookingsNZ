@@ -20,7 +20,7 @@ invocation and AND-s them.
 | `diagnostics.booking_diagnostic_summary` | `bookings` | `select_only_sql` |
 | `diagnostics.booking_linked_state` | `bookings` | `select_only_sql` |
 | `diagnostics.booking_party_state` | `bookings` | `select_only_sql` |
-| `diagnostics.booking_bed_allocation_state` | `bookings` | `select_only_sql` |
+| `diagnostics.booking_bed_allocation_state` | `bookings` **and** `membership` | `select_only_sql` |
 | `diagnostics.booking_exception_request_state` | `bookings` | `select_only_sql` |
 | `diagnostics.booking_record_audit_history` | `bookings` | `select_only_sql` |
 | `diagnostics.member_search` | `membership` | `select_only_sql` |
@@ -41,7 +41,7 @@ invocation and AND-s them.
 | What does the platform hold about this booking? | `diagnostics.booking_diagnostic_summary` | `bookings:view` |
 | Which parent or direct child bookings are linked to it? | `diagnostics.booking_linked_state` | `bookings:view` |
 | Who is on it, for which nights, and on what footing? | `diagnostics.booking_party_state` | `bookings:view` |
-| Which guest is in which bed on which night? | `diagnostics.booking_bed_allocation_state` | `bookings:view` |
+| Which guest is in which bed on which night, and may the two occupants share this double? | `diagnostics.booking_bed_allocation_state` | `bookings:view` **and** `membership:view` |
 | Has anybody asked an officer to allow something, and is that request holding beds? | `diagnostics.booking_exception_request_state` | `bookings:view` |
 | What did the platform record happening to this booking? | `diagnostics.booking_record_audit_history` | `bookings:view` |
 | Which member is this? (a member id, their exact email address, the start of a name, or a mobile number) | `diagnostics.member_search` | `membership:view` |
@@ -63,8 +63,8 @@ writes a row other than its own audit record.
 
 `bookings:view` is the area that already governs Admin > Bookings, the waitlist
 and Admin > Bed Allocation. `membership:view` is the area that already governs
-Admin > Members and Admin > Family Groups. **Fourteen of the sixteen entries
-require exactly one of those two areas and nothing else** — eight on `bookings`,
+Admin > Members and Admin > Family Groups. **Thirteen of the sixteen entries
+require exactly one of those two areas and nothing else** — seven on `bookings`,
 six on `membership`.
 
 **No entry in this pack requires `support:view`.** That is #2376's owner decision
@@ -74,7 +74,7 @@ demand it merely because the feature appears inside AI Diagnostics. A Booking
 Officer investigating a booking is doing their own job; so is a Membership
 Officer looking at a member.
 
-Two entries need both areas, and in both cases that is the epic's own rule for a
+Three entries need both areas, and in every case that is the epic's own rule for a
 tool that spans two domains rather than a judgement call:
 
 - **`member_booking_summary` requires `membership:view` AND `bookings:view`.** It
@@ -85,8 +85,13 @@ tool that spans two domains rather than a judgement call:
   exception queue) with membership facts — the paid-up-adult requirement and the
   adult-member hosting rule both read live `Member` rows and season subscription
   state.
+- **`booking_bed_allocation_state` requires `bookings:view` AND
+  `membership:view`.** The allocation rows belong to the selected booking, but
+  double-bed eligibility reads both occupants' live membership state and partner
+  link. The other occupant can belong to another booking. Their member, guest and
+  booking identifiers are classifier inputs only and are never projected.
 
-### Why those two are separate entries rather than one tool with an argument
+### Why these are separate entries rather than one tool with an argument
 
 **An argument can never decide which permission set applies.** `requiredAreas` is
 fixed on the registry entry, and `invoke.ts` authorises **before** it parses
@@ -111,7 +116,8 @@ anyway is denied server-side with `permission_denied` and the missing area named
 Nothing infers the answer from elsewhere and no entry has a reduced,
 permission-free variant. A Booking Officer without `membership:view` keeps every
 `bookings`-only entry — including `booking_capacity_by_night` — and is refused
-`booking_block_state` with the missing area stated. A Membership Officer without
+`booking_block_state` and `booking_bed_allocation_state` with the missing area
+stated. No membership row or partner link is queried before that denial. A Membership Officer without
 `bookings:view` keeps the five membership-only entries plus
 `member_eligibility_state`, and is refused `member_booking_summary`.
 
@@ -203,7 +209,8 @@ from the screen a Booking Officer trusts.
 
 | What it decides | Function | Module |
 | --- | --- | --- |
-| Which exception-eligible soft policies a party breaks | `evaluateProposalPartyViolations` | `booking-exception-request-service.ts` |
+| Which persisted minimum-stay and paid-up-adult policies a party breaks | `evaluatePersistedBookingNonHostingPolicyViolations` | `booking-exception-request-service.ts` |
+| Whether the persisted party satisfies adult-member hosting | `evaluatePersistedBookingAdultMemberHostingReadOnly` | `adult-member-hosting-review.ts` |
 | Why a booking is in admin review | `bookingReviewReasonCodes` | `booking-review.ts` |
 | Whether a pending review blocks check-in | `isCheckinBlockedByPendingReview` | `booking-review.ts` |
 | Per-night occupancy and beds left | `checkCapacity` | `capacity.ts` |
@@ -240,17 +247,31 @@ mutation. Diagnostics still mutates no durable/domain or provider state and call
 no live provider. For the current season it uses a stored override when present,
 the March default only when persisted state proves no Xero tenant is connected,
 and returns evidence unavailable when a connected tenant's unstored month would
-otherwise require cache state or a provider call.
+otherwise require cache state or a provider call. The settings row is read
+strictly: a genuinely absent singleton uses the canonical defaults, while a
+rejected database read propagates as `evidence_unavailable` rather than being
+misreported as an observed March default.
+
+**Persisted hosting is evaluated as persisted hosting.** The read-only diagnostic
+seam and the lock-owning lifecycle evaluator share one internal canonical
+implementation. It loads the current booking snapshot and therefore preserves
+explicit sparse nights, operational consent, split parent/child siblings,
+subscription settlement and current-booking exclusion. A pending-consent adult is
+not a host, a sibling can cover a child's nights, and the booking owner cannot
+self-cover through `SAME_BOOKING_OWNER`. No proposal id is invented and the
+proposal hosting evaluator is not called.
 
 **The write-performing and lock-taking siblings are named here so a future edit
 cannot reach for one by accident.** None of these is used, and none may be:
 `evaluateBookingAdultMemberHosting` (takes an advisory lock),
 `reconcileAdultMemberHostingReview`, `createModificationExceptionRequest`,
 `approveAndExecutePolicyExceptionRequest`, `processWaitlistForDates`,
-`confirmWaitlistOffer` and `replaceBedAllocationsForBooking`. Every call the
-sources make is a Prisma `findUnique`, `findFirst`, `findMany`, `count`,
-`groupBy` or a read-only helper built from those; there is no write, no
-`$transaction`, no `$executeRaw`, no advisory lock and no HTTP request.
+`confirmWaitlistOffer` and `replaceBedAllocationsForBooking`. Reads use narrow
+Prisma `findUnique`, `findFirst`, `findMany` and `count` calls or read-only helpers
+built from those. One capacity sub-read uses a short Prisma transaction solely to
+set PostgreSQL `READ ONLY` and a five-second `statement_timeout` before its bounded
+allocation query; those two fixed control statements are the only `$executeRaw`
+calls. There is no data-write statement, advisory lock or HTTP request.
 
 ### The server-owned residual, stated plainly
 
@@ -327,6 +348,14 @@ request population is refused before the capacity/policy/conflict helpers run. T
 31-night booking envelope guard applies even to deleted, terminal and waitlisted
 records, because status suppression does not make an unbounded source safe.
 
+The capacity source's `allocatedBedNights` aggregate is bounded too. It selects
+only allocations for the chosen booking whose `stayDate` is inside
+`[checkIn, checkOut)` and whose guest belongs to the same booking, orders them,
+takes the 30-guests × 31-nights ceiling plus one, and aggregates locally. An
+oversized corrupt population is refused rather than clipped. The short read-only
+transaction gives PostgreSQL its own five-second statement timeout; the outer
+JavaScript deadline is not presented as SQL cancellation.
+
 **These three sources do not run inside one database snapshot.** They compose
 multiple ordinary READ COMMITTED statements and authoritative helpers. Their
 `observedAtUtc` is captured when assembly completes, not when one shared snapshot
@@ -371,7 +400,11 @@ column**, never wholesale.
 
 Twenty-six relations, 243 granted columns, and every omitted column is a
 decision. The operator CLI prints the declared grants, columns and all, on every
-run and on `--dry-run`.
+run and on `--dry-run`. The canonical exact per-relation column sets are published
+in the [deployment guide](deployment.md#what-the-diagnostics-role-may-read-today),
+not just their counts. `provision-role.test.ts` parses that reviewed block and
+compares it bidirectionally with `SELECT_GRANTS`, so replacing one documented
+column with another while preserving 26 / 243 fails.
 
 **Both directions of that claim are tested, and one of them against PostgreSQL
 itself.** `provision-role.test.ts` reconciles the allowlist against every
@@ -533,9 +566,13 @@ merely unprojected: they are **outside the grant**, so PostgreSQL refuses them
   member's private comments to an officer and a lodge's door codes are all on
   relations this credential cannot read at all.
 
-**The phone number is never returned by any entry in either pack.** Two of its
-three columns are granted so an operator can search on a number they already hold;
-`hasPhone` reports only that one is on file, using the same
+**The phone number is never returned by any entry in either pack.** All three
+stored fragments are granted only because an operator can search on a number they
+already hold. The argument is reduced to digits before binding, and each stored
+country, area and number fragment is reduced with the same fixed
+`pg_catalog.translate(..., '+ -()', '')` transformation before comparison. That
+accepts legacy `+`, space, hyphen and parenthesis punctuation without admitting
+regex or pattern language. `hasPhone` reports only that one is on file, using the same
 `IS NOT NULL AND <> ''` test as the search and as the application's own
 `formatMemberPhone`, so the two can never disagree about whether a member is
 reachable.
@@ -613,11 +650,12 @@ model reads as "there is no problem" — is the failure mode the whole
   booking-guest id, `booking_bed_allocation_state` and `booking_party_state`
   together resolve **named guest → bed → night**, including which two guests share
   a double (the `isSecondOccupant` flag distinguishes them) and each guest's age
-  tier, under `bookings:view` alone. That is deliberate and it is not a widening —
-  it is exactly what `/admin/bed-allocation` shows the same officer, from the same
-  rows, under the same permission — and it is confined to **one booking** at a
-  time, because both entries take a booking id and neither can be run over a lodge,
-  a night or a range.
+  tier. The party entry needs `bookings:view`; the allocation entry additionally
+  needs `membership:view`, because its sharing verdict reads both occupants'
+  current member rows and confirmed partner link, and the other occupant may be on
+  another booking. Those cross-booking identifiers are never projected. Both
+  entries remain confined to **one explicitly selected booking**: neither can be
+  run over a lodge, a night or an arbitrary range.
 - **The audit category is optional, so an empty audit result is not evidence that
   nothing happened.** A row recorded with no category at all is matched by no
   diagnostics tool anywhere. Re-measured by RUNNING the census on the merged tree
@@ -715,6 +753,11 @@ The property holds by construction rather than by care, in four places:
   columns is an integer number of days, and because `checkOut` is the departure
   day rather than a night, that integer **is** the number of lodge nights: the
   14th to the 17th is three nights.
+- **Guest envelopes use the same half-open rule.** `stayStart` is inclusive and
+  `stayEnd` is the exclusive departure day, never the last occupied night. Equal
+  endpoints contain zero nights. When a legacy guest has no explicit night rows,
+  Diagnostics may expand a valid envelope as fallback evidence, but it refuses an
+  equal-endpoint envelope as corrupt instead of fabricating one occupied night.
 - **A date is re-validated on the way out.** `dateOnlyOrNull` reports the shared
   `(unparseable)` sentinel for anything that is not day-shaped, rather than
   shipping a full ISO instant into a field a model would read as a moment and
@@ -835,6 +878,13 @@ negative number. `booking_block_state` likewise counts the night only in
 `wholeLodgeHeldNightCount`: it does not raise `capacity_exceeded`, add to
 `shortfallNightCount`, or use that policy pin for `tightestSpareBeds`. An admin
 over-capacity confirmation cannot bypass the hold.
+
+The selected booking's own hold has two deliberately separate facts.
+`thisBookingEffectivelyHoldsWholeLodge` is the current authoritative answer: the
+stored flag is true, the booking is not deleted, and its canonical lifecycle state
+still holds capacity. `thisBookingHasWholeLodgeHoldFlag` is the raw historical
+column. A cancelled, bumped, deleted or otherwise non-capacity-holding row may
+retain that raw flag, but it never reports an effective hold.
 
 **`waitlistPosition` is one-based, so `booking_search` reports it as absent rather
 than 0.** Every writer assigns from 1 (`booking-create.ts` counts the queue ahead
@@ -979,6 +1029,7 @@ are the only two entries in the pack that declare `surfacesPersonalData: false`.
 | Search window | Closed enum: `1d`, `7d` (default), `30d` |
 | Party rows | 30 — a whole-lodge school group, so a truncation means something |
 | Bed-allocation rows | 60 — a guest-night is a row, so six guests over ten nights is the whole limit |
+| Capacity allocation inputs | 930 — 30 guests × 31 nights, selected only inside the booking envelope and refused at ceiling plus one |
 | Capacity nights | 31 — a longer stay is **refused**, never clipped. Every night row carries `bookingLifecycleState`, because this entry does **not** suppress on a cancelled booking (what room there was is a fair question about one) and `fitsThisNight: true` with nothing saying the booking is over reads as an invitation to confirm it |
 | Exception-request, audit-history and member-booking rows | 18 each, newest first, truncation reported |
 | Subscription rows | 6 seasons (a row **is** a season, by unique constraint) |
@@ -1102,11 +1153,13 @@ ceilings, and the audit row.
 | Every booking and membership tool fails; readiness says `under_provisioned` | **This release added thirteen relation grants and widened `Member`, and provisioning has not been re-run** | Run `npm run diagnostics:provision-role`, then re-check readiness |
 | A Booking Officer is told no diagnostics tool is available | Their access role has `bookings` but the module or the diagnostics credential is not set up | `diagnostics.readiness` (needs `support:view`) reports the blocker |
 | `booking_block_state` is refused but the other booking tools work | The caller lacks `membership:view` | The denial names the missing area; `booking_capacity_by_night` and the per-booking entries still answer |
+| `booking_bed_allocation_state` is refused while booking summary works | The sharing verdict needs live facts about both occupants, and the caller lacks `membership:view` | The denial names the missing area; no member or partner-link row was queried |
 | `member_booking_summary` is refused but the other membership tools work | The caller lacks `bookings:view` | Same — it is the only membership entry that also reads bookings |
 | A search returns several rows for one booking reference | A booking reference is the first eight characters of a cuid and is not unique | Pick the booking by its lodge, nights and party size, then use the exact booking id |
 | A name search returns a whole family | A prefix matches given **and** family names | Ask the operator which member they mean; the tool will not choose |
 | A member quotes a "membership number" and nothing matches | This platform stores no member number | Search by exact email address or mobile instead; the number is probably a Xero contact or invoice number |
-| A server-owned booking tool refuses with `evidence_unavailable` | The booking exceeds 31 nights, has more than 30 guests, a guest has more than 31 explicit/fallback nights, block state has more than 18 open requests, or the calculation exceeded its own 10-second deadline | Inspect the record on Admin > Booking detail / Bed Allocation; a bounded-population refusal may indicate corrupt legacy data, while a deadline means the application database is slow or unreachable |
+| A server-owned booking tool refuses with `evidence_unavailable` | The booking exceeds 31 nights, has more than 30 guests, a guest has more than 31 explicit/fallback nights or an equal start/end fallback envelope, block state has more than 18 open requests, capacity sees more than 930 in-envelope consistent allocation rows, or a read/deadline fails | Inspect the record on Admin > Booking detail / Bed Allocation; a bounded-population or zero-night refusal may indicate corrupt legacy data, while a database error or deadline means evidence was unavailable rather than absent |
+| `member_eligibility_state` alone is unavailable | The persisted financial-year settings read failed, or a connected Xero tenant's year-end month is not stored locally | Retry the database read or inspect Membership Lockout settings; Diagnostics will not substitute the March default for a failed read or call Xero |
 | The party looks smaller than the operator expects | The result was refused as `result_too_large`, or the rendered block listed only some rows | The header says how many of how many were listed; Admin > Booking detail shows the whole party |
 | A guest's stay range looks wrong | The envelope is not the stay — a guest may occupy non-contiguous nights | Read `nightsAreContiguous`: true means no gap, false means there is one, and null means the guest has no per-night rows at all |
 | An audit history is empty for something an operator watched happen | A historical pre-categorisation event lacks category, or the event is filed under another entity type or another domain. Current exact-head production writers have 427 row-producing sites and zero uncategorised sites. | Admin > Audit Log lists historical uncategorised rows and every category and entity type together |
