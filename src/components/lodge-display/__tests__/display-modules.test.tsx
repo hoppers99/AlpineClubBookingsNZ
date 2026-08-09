@@ -706,8 +706,11 @@ describe("SinglesBoard (AC4)", () => {
       container.querySelectorAll(".display-singles-bar")
     ) as HTMLElement[];
     expect(bars).toHaveLength(3);
+    // With no room axis the night columns start at 2 (column 1 is the guest
+    // name), so the 13th is column 2 and the 15th is column 4 — the 14th is
+    // left empty between them.
     const gappyBars = bars.filter((bar) => bar.style.gridRow === "2");
-    expect(gappyBars.map((bar) => bar.style.gridColumnStart)).toEqual(["1", "3"]);
+    expect(gappyBars.map((bar) => bar.style.gridColumnStart)).toEqual(["2", "4"]);
   });
 });
 

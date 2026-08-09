@@ -578,9 +578,16 @@ describe("buildDisplayState privacy matrix", () => {
         // #2621: present on every row, and NULL on this one — a whole-lodge
         // row shows no names, so it carries no arrival time either.
         "arrivalTime",
+        // #2735: present on every row, INCLUDING one whose names are withheld —
+        // a bar has to be drawn for a blockout too, and the row's own
+        // stayStart/stayEnd already published the same span. It is the group's
+        // nights and names nobody, so it discloses nothing the envelope did not
+        // and nothing about the hold being exclusive.
+        "nights",
       ].sort()
     );
     expect(row.arrivalTime).toBeNull();
+    expect(row.nights).toEqual(["2026-04-13", "2026-04-14"]);
     // No exclusivity/hold/conflict wording anywhere in the serialised payload.
     const serialised = JSON.stringify(state);
     expect(serialised).not.toMatch(/exclusiv/i);
