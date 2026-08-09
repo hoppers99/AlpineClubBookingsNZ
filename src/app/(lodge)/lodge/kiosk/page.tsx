@@ -30,11 +30,22 @@ interface Guest {
   isDeparting: boolean;
   // #2631: the DEPARTING BADGE (`isDeparting`) is the operational day — "leaves
   // today" — and a sparse stay has one on every segment. The CHECK-OUT BUTTON
-  // rides on `isFinalDeparture` instead, because the depart endpoint resolves
-  // its guest by `stayEnd` equality and 404s on any earlier departure morning.
-  // Gate the button on the badge and the kiosk dead-ends: staff tap "Mark
-  // Departed", the server refuses, and there is nothing they can do about it.
-  isFinalDeparture: boolean;
+  // rides on `canMarkDeparted`, which the server derives from the depart
+  // endpoint's OWN predicate, so the button is offered exactly where the server
+  // will accept it. Gate it on anything else and the kiosk dead-ends: staff tap
+  // "Mark Departed", the server refuses, and there is nothing they can do about
+  // it. (#2628 renamed this from `isFinalDeparture`, which was `stayEnd`
+  // equality and withheld the button on a sparse stay's earlier departure —
+  // that check-out was simply unrecordable.)
+  canMarkDeparted: boolean;
+  // #2628: the CHECK-IN button's flag, and the mirror of the one above. It was
+  // computed here as `isArriving && !departedAt`, which cannot see the night
+  // set — so on a sparse stay's second arrival (departed on the 12th, back on
+  // the 14th) the page hid this button AND the depart button, and the hut
+  // leader had no control at all on a night the guest was in the building. The
+  // server derives it where the nights are loaded; it is false for the same
+  // days as before on every contiguous stay.
+  canMarkArrived: boolean;
   arrivedAt: string | null;
   departedAt: string | null;
 }
@@ -494,7 +505,19 @@ export default function KioskPage() {
         prev.map((b) => ({
           ...b,
           guests: b.guests.map((g) =>
-            g.id === guestId ? { ...g, arrivedAt: data.arrivedAt } : g
+            g.id === guestId
+              ? {
+                  ...g,
+                  arrivedAt: data.arrivedAt,
+                  // A RETURN clears the departure recorded on the guest's
+                  // earlier segment (#2628); take the server's answer rather
+                  // than assuming this row did not move.
+                  departedAt:
+                    data.departedAt === undefined
+                      ? g.departedAt
+                      : data.departedAt,
+                }
+              : g
           ),
         }))
       );
@@ -868,9 +891,15 @@ export default function KioskPage() {
                               <div
                                 key={guest.id}
                                 className={`flex items-center justify-between rounded-lg px-4 py-3 min-h-[56px] ${
-                                  guest.departedAt
+                                  // Faded = "gone". A guest who is checking back
+                                  // in tonight is not gone, even though the
+                                  // stay's single `departedAt` still holds the
+                                  // check-out from their previous segment
+                                  // (#2628) — fading them there would show
+                                  // somebody standing at the desk as departed.
+                                  guest.departedAt && !guest.canMarkArrived
                                     ? "bg-kiosk-inset opacity-60"
-                                    : guest.arrivedAt
+                                    : guest.arrivedAt && !guest.departedAt
                                       ? "bg-kiosk-success-bg border border-kiosk-success-border"
                                       : "bg-kiosk-inset"
                                 }`}
@@ -908,19 +937,24 @@ export default function KioskPage() {
                                       Non-member
                                     </span>
                                   )}
-                                  {canMarkAttendance && guest.isArriving && !guest.departedAt && !booking.blockedFromCheckin && (
+                                  {canMarkAttendance && guest.canMarkArrived && !booking.blockedFromCheckin && (
                                     <button
                                       onClick={() => toggleArrival(guest.id)}
                                       className={`text-sm font-medium px-4 py-2 rounded-lg min-h-[44px] transition-colors ${
-                                        guest.arrivedAt
+                                        // "Arrived" means HERE NOW, so a stale
+                                        // `arrivedAt` left over from an earlier
+                                        // segment of a stay with a gap in it
+                                        // does not count until the return is
+                                        // recorded (#2628).
+                                        guest.arrivedAt && !guest.departedAt
                                           ? "bg-kiosk-success-solid text-kiosk-success-solid-fg"
                                           : "bg-kiosk-accent text-kiosk-accent-fg hover:bg-kiosk-accent-hover active:bg-kiosk-accent-active"
                                       }`}
                                     >
-                                      {guest.arrivedAt ? "Arrived" : "Mark Arrived"}
+                                      {guest.arrivedAt && !guest.departedAt ? "Arrived" : "Mark Arrived"}
                                     </button>
                                   )}
-                                  {canMarkAttendance && guest.isFinalDeparture && !booking.blockedFromCheckin && (
+                                  {canMarkAttendance && guest.canMarkDeparted && !booking.blockedFromCheckin && (
                                     <button
                                       onClick={() => toggleDeparture(guest.id)}
                                       className={`text-sm font-medium px-4 py-2 rounded-lg min-h-[44px] transition-colors ${

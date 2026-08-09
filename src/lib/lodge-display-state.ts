@@ -4,6 +4,7 @@ import {
   getGuestStayEnd,
   getGuestStayStart,
   getLodgeVisibleGuestsForDate,
+  isGuestActiveOnNight,
 } from "./booking-guest-stay-ranges";
 import { OPERATIONAL_STAY_BOOKING_STATUSES } from "./booking-status";
 import {
@@ -493,8 +494,17 @@ export async function buildDisplayState(
         }
         dayMap.set(dateKey, visible.length);
       }
-      const nightGuests = visible.filter(
-        (guest) => getGuestStayEnd(guest, booking).getTime() !== date.getTime()
+      // NIGHTS, asked as a night question (#2628). This used to subtract the
+      // envelope end — "everyone visible except whoever's `stayEnd` is today" —
+      // which is the same set only because the visibility rule above happens to
+      // add exactly one departure morning per stay. Reading the night model
+      // directly is byte-identical today for every stay, contiguous or sparse,
+      // and it means a later change to who is VISIBLE on the wall can no longer
+      // silently invent a night here. It is the phantom night that matters: a
+      // sole-occupancy count is what decides whether an unauthenticated screen
+      // prints guests' names (INV-DATE-006, issue #58).
+      const nightGuests = visible.filter((guest) =>
+        isGuestActiveOnNight(guest, date, booking)
       );
       if (nightGuests.length > 0) {
         let nightMap = perBookingNightCounts.get(booking.id);

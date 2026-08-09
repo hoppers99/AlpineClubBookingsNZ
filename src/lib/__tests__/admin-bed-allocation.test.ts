@@ -59,6 +59,7 @@ import {
   updateBedAllocationBedWithLocksHeld as updateBedAllocationBed,
   deleteBedAllocationWithLocksHeld as deleteBedAllocation,
   deleteBedAllocationRoomWithLocksHeld as deleteBedAllocationRoom,
+  deleteBedAllocationBedWithLocksHeld,
 } from "@/lib/admin-bed-allocation";
 import { getLodgePartnerSharedCapacityStatus } from "@/lib/lodge-capacity";
 import { lodgeNullTolerantScope } from "@/lib/lodges";
@@ -355,15 +356,20 @@ describe("admin bed allocation", () => {
     expect(bookingsSetupHub).toContain('href: "/admin/rooms-beds"');
   });
 
-  it("blocks deactivating a bed with future allocations", async () => {
+  it("blocks deactivating a bed with current or future allocations, naming the occupant", async () => {
     const update = vi.fn();
-    const db = {
-      bedAllocation: {
-        findMany: vi.fn().mockResolvedValue([
-          { stayDate: parseDateOnly("2026-07-01") },
-          { stayDate: parseDateOnly("2026-07-03") },
-        ]),
+    const findMany = vi.fn().mockResolvedValue([
+      {
+        stayDate: parseDateOnly("2026-07-01"),
+        bookingGuest: { firstName: "Ada", lastName: "Lovelace" },
       },
+      {
+        stayDate: parseDateOnly("2026-07-03"),
+        bookingGuest: { firstName: "Ada", lastName: "Lovelace" },
+      },
+    ]);
+    const db = {
+      bedAllocation: { findMany },
       lodgeBed: {
         update,
       },
@@ -376,9 +382,89 @@ describe("admin bed allocation", () => {
         db: db as never,
       }),
     ).rejects.toThrow(
-      "Cannot deactivate this bed while future allocations exist on 2026-07-01, 2026-07-03.",
+      "Cannot deactivate this bed while current or future allocations exist on 2026-07-01, 2026-07-03 (Ada Lovelace). Clear those dates on the bed allocation page first.",
     );
     expect(update).not.toHaveBeenCalled();
+  });
+
+  it("MUTATION PROBE: deactivate's window starts at LAST NIGHT, not today (#2628)", async () => {
+    // Night N runs to midday NZ on date N+1 (INV-DATE-002), so at any moment on
+    // day D the guest who slept on night D-1 is still in the lodge or has only
+    // just left it. `stayDate: { gte: today }` forgot them, which let an admin
+    // retire a bed somebody was lying in. The frozen clock puts today at
+    // 2026-07-01, so the boundary must be 2026-06-30.
+    const findMany = vi.fn().mockResolvedValue([]);
+    const db = {
+      bedAllocation: { findMany },
+      lodgeBed: { update: vi.fn().mockResolvedValue({ id: "bed-1" }) },
+      hutLeaderAssignment: { findMany: vi.fn().mockResolvedValue([]) },
+    };
+
+    await updateBedAllocationBed({ id: "bed-1", active: false, db: db as never });
+
+    expect(findMany.mock.calls[0][0].where).toEqual({
+      bedId: "bed-1",
+      stayDate: { gte: parseDateOnly("2026-06-30") },
+    });
+  });
+
+  it("refuses to DELETE a bed with any allocation, past included, rather than raising P2003 (#2628)", async () => {
+    // `BedAllocation.bed` is `onDelete: Restrict`. A bed whose only rows are
+    // historic used to sail past the guard and fail deep in the driver with a
+    // raw constraint error the admin cannot act on — the same trap #2286 closed
+    // for custodian holds, and closed the same way.
+    const findMany = vi.fn().mockResolvedValue([
+      {
+        stayDate: parseDateOnly("2026-06-01"),
+        bookingGuest: { firstName: "Grace", lastName: "Hopper" },
+      },
+    ]);
+    const bedDelete = vi.fn();
+    const db = {
+      bedAllocation: { findMany },
+      lodgeBed: { delete: bedDelete },
+      hutLeaderAssignment: { findMany: vi.fn().mockResolvedValue([]) },
+    };
+
+    await expect(
+      deleteBedAllocationBedWithLocksHeld({ id: "bed-1", db: db as never }),
+    ).rejects.toThrow(
+      "Cannot delete this bed while allocations exist on 2026-06-01 (Grace Hopper). Clear those dates on the bed allocation page first.",
+    );
+    expect(bedDelete).not.toHaveBeenCalled();
+    // No date predicate at all on the delete path: past rows block too.
+    expect(findMany.mock.calls[0][0].where).toEqual({ bedId: "bed-1" });
+  });
+
+  it("CAPS the refusal instead of listing a bed's whole history (#2628)", async () => {
+    // The delete branch has no date predicate at all, so on a bed in long
+    // service it matches every night it has ever held. Naming them all put a
+    // page of dates and a page of past guests' names into one 409 body and into
+    // the audit trail, for a yes/no answer. The query asks for one more row than
+    // it will name — enough to know there are more — and the message says so.
+    const rows = Array.from({ length: 6 }, (_, index) => ({
+      stayDate: parseDateOnly(`2026-06-0${index + 1}`),
+      bookingGuest: {
+        firstName: `Guest${index + 1}`,
+        lastName: "Historic",
+      },
+    }));
+    const findMany = vi.fn().mockResolvedValue(rows);
+    const db = {
+      bedAllocation: { findMany },
+      lodgeBed: { delete: vi.fn() },
+      hutLeaderAssignment: { findMany: vi.fn().mockResolvedValue([]) },
+    };
+
+    await expect(
+      deleteBedAllocationBedWithLocksHeld({ id: "bed-1", db: db as never }),
+    ).rejects.toThrow(
+      "Cannot delete this bed while allocations exist on 2026-06-01, 2026-06-02, 2026-06-03, 2026-06-04, 2026-06-05 and more (Guest1 Historic, Guest2 Historic, Guest3 Historic, Guest4 Historic, Guest5 Historic and others). Clear those dates on the bed allocation page first.",
+    );
+    // The DATABASE is bounded too, not just the string — an unbounded findMany
+    // over a decade of allocations inside the guard's transaction is the part a
+    // longer message would only be a symptom of.
+    expect(findMany.mock.calls[0][0].take).toBe(6);
   });
 
   it("adds persistent admin-only mode settings", () => {
@@ -3542,17 +3628,26 @@ describe("bed allocation board member-guest consent exclusion (D-12, #2307)", ()
       const where = args.select.guests.where as
         | { OR?: Array<{ consentStatus: string | null }> }
         | undefined;
+      // #2628: the counter reads `nights` — the canonical night set the board
+      // builds its own awaiting-allocation rows from — instead of expanding the
+      // stayStart/stayEnd envelope, so the fixture carries the night rows a
+      // real guest has. Adjusting a fixture to supply the column the code now
+      // selects is not a behaviour change; the assertion below is unchanged.
       const guests = [
         {
           id: "guest-ordinary",
-          stayStart: parseDateOnly("2026-07-01"),
-          stayEnd: parseDateOnly("2026-07-03"),
+          nights: [
+            { stayDate: parseDateOnly("2026-07-01") },
+            { stayDate: parseDateOnly("2026-07-02") },
+          ],
           consentStatus: null,
         },
         {
           id: "guest-awaiting",
-          stayStart: parseDateOnly("2026-07-01"),
-          stayEnd: parseDateOnly("2026-07-03"),
+          nights: [
+            { stayDate: parseDateOnly("2026-07-01") },
+            { stayDate: parseDateOnly("2026-07-02") },
+          ],
           consentStatus: "PENDING",
         },
       ];
@@ -3580,6 +3675,159 @@ describe("bed allocation board member-guest consent exclusion (D-12, #2307)", ()
     });
 
     expect(count).toBe(1);
+  });
+
+  it("does not report a SPARSE stay as awaiting a bed forever (#2628)", async () => {
+    // The defect: this counter expanded `stayStart`/`stayEnd`, so a guest booked
+    // on nights {1, 3} was also "expected" on the 2nd. Nothing ever allocates a
+    // bed for the 2nd — the board builds its rows from `BookingGuestNight` and
+    // so does the allocator — so the officer card advertised work that could
+    // never be cleared, on a guest the board itself does not list.
+    const bookingFindMany = vi.fn().mockResolvedValue([
+      {
+        id: "booking-sparse",
+        guests: [
+          {
+            id: "guest-sparse",
+            nights: [
+              { stayDate: parseDateOnly("2026-07-01") },
+              { stayDate: parseDateOnly("2026-07-03") },
+            ],
+          },
+        ],
+      },
+    ]);
+    const allocationFindMany = vi.fn().mockResolvedValue([
+      { bookingGuestId: "guest-sparse", stayDate: parseDateOnly("2026-07-01") },
+      { bookingGuestId: "guest-sparse", stayDate: parseDateOnly("2026-07-03") },
+    ]);
+
+    const count = await countGuestsAwaitingBed({
+      from: parseDateOnly("2026-07-01"),
+      to: parseDateOnly("2026-07-08"),
+      db: {
+        booking: { findMany: bookingFindMany },
+        bedAllocation: { findMany: allocationFindMany },
+      } as never,
+    });
+
+    // Both of their real nights are allocated, so there is nothing to do.
+    expect(count).toBe(0);
+    // The counter loads the night set, window-scoped exactly like the board's.
+    expect(bookingFindMany.mock.calls[0][0].select.guests.select.nights).toEqual({
+      where: {
+        stayDate: { gte: parseDateOnly("2026-07-01"), lt: parseDateOnly("2026-07-08") },
+      },
+      select: { stayDate: true },
+    });
+  });
+
+  it("still counts a sparse guest whose real night is unallocated", async () => {
+    // The positive control for the test above: the fix must not make the card
+    // blind, only accurate. One of the two segments has no bed.
+    const bookingFindMany = vi.fn().mockResolvedValue([
+      {
+        id: "booking-sparse",
+        guests: [
+          {
+            id: "guest-sparse",
+            nights: [
+              { stayDate: parseDateOnly("2026-07-01") },
+              { stayDate: parseDateOnly("2026-07-03") },
+            ],
+          },
+        ],
+      },
+    ]);
+
+    const count = await countGuestsAwaitingBed({
+      from: parseDateOnly("2026-07-01"),
+      to: parseDateOnly("2026-07-08"),
+      db: {
+        booking: { findMany: bookingFindMany },
+        bedAllocation: {
+          findMany: vi.fn().mockResolvedValue([
+            { bookingGuestId: "guest-sparse", stayDate: parseDateOnly("2026-07-01") },
+          ]),
+        },
+      } as never,
+    });
+
+    expect(count).toBe(1);
+  });
+
+  it("counts nobody for a guest whose GAP spans the whole window (#2628)", async () => {
+    // The sparse-gap fix itself, pinned. This guest is booked either side of the
+    // window — nights on 2026-06-28 and 2026-07-10 — so their envelope
+    // [2026-06-28, 2026-07-11) covers every day of it and the booking/guest
+    // where-clauses select them, but the window-scoped `nights` load comes back
+    // EMPTY because they are not in the lodge on any of these nights.
+    //
+    // Envelope expansion made that guest eight unallocated bed-nights of work no
+    // allocator would ever do; reading the night set makes it what it is, which
+    // is nothing. This is the mutation probe for the revert: restore
+    // `eachDateOnlyInRange(clamped.stayStart, clamped.stayEnd)` and the count
+    // goes from 0 to 1.
+    const bookingFindMany = vi.fn().mockResolvedValue([
+      {
+        id: "booking-gap",
+        guests: [
+          {
+            id: "guest-gap",
+            // What Prisma returns for the windowed select the counter issues.
+            nights: [],
+            // The envelope Prisma matched the row on, spelled out so the
+            // fixture cannot be mistaken for "a guest who is not in the window".
+            stayStart: parseDateOnly("2026-06-28"),
+            stayEnd: parseDateOnly("2026-07-11"),
+          },
+        ],
+      },
+    ]);
+
+    const count = await countGuestsAwaitingBed({
+      from: parseDateOnly("2026-07-01"),
+      to: parseDateOnly("2026-07-08"),
+      db: {
+        booking: { findMany: bookingFindMany },
+        // Nothing is allocated, so every night the counter believes in is work.
+        bedAllocation: { findMany: vi.fn().mockResolvedValue([]) },
+      } as never,
+    });
+
+    expect(count).toBe(0);
+  });
+
+  it("counts nobody for a guest carrying no night rows at all (#2628)", async () => {
+    // The stated behaviour change, pinned so it cannot drift back silently. A
+    // guest with zero `BookingGuestNight` rows has nothing the board will place:
+    // `buildGuestNightRows` builds the board's buckets from those rows alone, so
+    // such a guest is not on the board and must not be on the card counting the
+    // board's work either. The envelope would have made them a week of it.
+    const bookingFindMany = vi.fn().mockResolvedValue([
+      {
+        id: "booking-nightless",
+        guests: [
+          {
+            id: "guest-nightless",
+            nights: [],
+            stayStart: parseDateOnly("2026-07-01"),
+            stayEnd: parseDateOnly("2026-07-08"),
+          },
+        ],
+      },
+    ]);
+
+    const count = await countGuestsAwaitingBed({
+      from: parseDateOnly("2026-07-01"),
+      to: parseDateOnly("2026-07-08"),
+      db: {
+        booking: { findMany: bookingFindMany },
+        bedAllocation: { findMany: vi.fn().mockResolvedValue([]) },
+      } as never,
+    });
+
+    expect(count).toBe(0);
   });
 });
 

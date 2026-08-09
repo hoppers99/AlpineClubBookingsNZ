@@ -36,6 +36,14 @@ function makeGuests(count: number) {
     isMember: false,
     stayStart: new Date("2026-07-01T00:00:00.000Z"),
     stayEnd: new Date("2026-07-03T00:00:00.000Z"),
+    // #2628: the heavy include always loads the night rows, so every fixture
+    // guest carries the two nights its half-open envelope describes — the 1st
+    // and the 2nd. Without them the derived state is measured off the old
+    // envelope fallback instead of the canonical nights.
+    nights: [
+      { stayDate: new Date("2026-07-01T00:00:00.000Z") },
+      { stayDate: new Date("2026-07-02T00:00:00.000Z") },
+    ],
   }));
 }
 

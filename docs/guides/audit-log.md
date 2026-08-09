@@ -190,8 +190,36 @@ more people, not fewer.
 
 `Category` is optional in the database, and **82 of the platform's places that
 record an audit entry used not to set one**. As of this release **none do**: all
-427 now record a category, measured on every build rather than estimated, and a
-new one that forgot would fail the build by name.
+427 now record a category, measured on every build rather than estimated.
+
+**And a new one can no longer forget.** Recording an entry without a category is
+now refused three separate ways. Giving the 82 places a category and stopping the
+*next* one being written the same way were two separate pieces of work, done in
+that order and both landing in this release; this is the second:
+
+1. **It does not compile.** The category is a required field on both ways the
+   platform records an entry, so a developer who leaves it out gets an error
+   before the code runs at all.
+2. **It is refused at the moment of writing.** If a category reaches the
+   recording step that is not one of the eleven on this page — a typo, an
+   invented name, an empty value — the entry is refused rather than stored
+   unreadable. Where that entry is part of a change being saved, the change is
+   abandoned with it, which is the same thing that already happens if the entry
+   cannot be written for any other reason: the record and the change it describes
+   succeed together or not at all.
+3. **The build still counts them**, for the two kinds of writer the first two
+   cannot see — a database migration writing the table directly, and a
+   maintenance script outside the normal path.
+
+The practical effect for you: an entry recorded the ordinary way — through the
+platform's own recording step, which is how every one of the 427 places does it —
+cannot be born without a category any more. **It is not a mathematical
+guarantee**, and it is worth saying so rather than overclaiming: someone writing
+directly to the database table in a migration, or building a query by hand, is
+outside the first two refusals, which is exactly what the third one is for. Six
+specific ways of slipping past the build's count were found while reviewing this
+change and all six were closed, each with its own test. Your **older** history is
+a different matter, and the rest of this section is about that.
 
 **Entries recorded before this release still have no category**, and there is no
 way to tell from the entry itself. Filling those in is a separate change, done
