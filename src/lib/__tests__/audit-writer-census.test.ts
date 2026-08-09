@@ -96,22 +96,22 @@ function currentAuditCensusClaims(): CurrentCensusClaim[] {
   }[] = [
     {
       pattern:
-        /\b(?<writeSites>\d+)\s+row-producing\s+production\s+audit\s+write\s+sites\b[^.]{0,120}?\b(?<uncategorised>zero|\d+)\b[^.]{0,50}\b(?:record no category|uncategorised)\b/giu,
+        /\b(\d+)\s+row-producing\s+production\s+audit\s+write\s+sites\b[^.]{0,120}?\b(zero|\d+)\b[^.]{0,50}\b(?:record no category|uncategorised)\b/giu,
     },
     {
       pattern:
-        /\b(?:the\s+)?census(?:\s+now)?\s+reads\s+(?<writeSites>\d+)\s+(?:row-producing\s+)?(?:production\s+)?(?:audit\s+)?write\s+sites\s+and\s+(?<uncategorised>zero|\d+)\s+uncategorised\b/giu,
+        /\b(?:the\s+)?census(?:\s+now)?\s+reads\s+(\d+)\s+(?:row-producing\s+)?(?:production\s+)?(?:audit\s+)?write\s+sites\s+and\s+(zero|\d+)\s+uncategorised\b/giu,
     },
     {
       pattern:
-        /\bcurrent\s+exact-head\s+production\s+writers\s+have\s+(?<writeSites>\d+)\s+row-producing\s+sites\s+and\s+(?<uncategorised>zero|\d+)\s+uncategorised\s+sites\b/giu,
+        /\bcurrent\s+exact-head\s+production\s+writers\s+have\s+(\d+)\s+row-producing\s+sites\s+and\s+(zero|\d+)\s+uncategorised\s+sites\b/giu,
     },
     {
       pattern:
-        /\b(?:the\s+)?exact-head\s+census\s+has\s+(?<writeSites>\d+)\s+row-producing\s+current\s+production\s+writer\s+sites\s+and\s+(?<uncategorised>zero|\d+)\s+uncategorised\s+sites\b/giu,
+        /\b(?:the\s+)?exact-head\s+census\s+has\s+(\d+)\s+row-producing\s+current\s+production\s+writer\s+sites\s+and\s+(zero|\d+)\s+uncategorised\s+sites\b/giu,
     },
     {
-      pattern: /\ball\s+(?<writeSites>\d+)\s+now\s+record\s+a\s+category\b/giu,
+      pattern: /\ball\s+(\d+)\s+now\s+record\s+a\s+category\b/giu,
       implicitUncategorised: 0,
     },
   ];
@@ -124,11 +124,10 @@ function currentAuditCensusClaims(): CurrentCensusClaim[] {
       .replace(/\s+/g, " ");
     for (const { pattern, implicitUncategorised } of patterns) {
       for (const match of contents.matchAll(pattern)) {
-        const groups = match.groups ?? {};
-        const uncategorised = groups.uncategorised;
+        const uncategorised = match[2];
         claims.push({
           file: relative(repoRoot, sourceFile).replaceAll("\\", "/"),
-          writeSites: Number(groups.writeSites),
+          writeSites: Number(match[1]),
           uncategorised:
             implicitUncategorised ??
             (uncategorised?.toLowerCase() === "zero"
