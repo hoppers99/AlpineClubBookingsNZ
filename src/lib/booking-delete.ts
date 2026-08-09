@@ -184,6 +184,101 @@ type SoftDeleteOutcome = {
   payment: BookingForDelete["payment"] | null;
 };
 
+/**
+ * Close the window in which money can still be captured against a booking the
+ * club has just deleted (#2700, owner decision 10 Aug 2026, part 1).
+ *
+ * THE RACE THIS EXISTS FOR. An admin deletes a cancelled booking while its
+ * owner is sitting on the Stripe payment page for a modification. Deletion does
+ * not touch Stripe, so the PaymentIntent stays live and the member can still
+ * pay. `getCancelledBookingDeleteBlockers` cannot prevent it: that gate counts
+ * CAPTURED PaymentTransactions (`CAPTURED_PAYMENT_STATUSES`) and a
+ * `SUCCEEDED` additional payment, so an intent that has NOT yet captured is
+ * exactly the state it permits — and exactly the state that can capture a
+ * moment later. Cancelling the intent is what actually shuts the window.
+ *
+ * "MOSTLY CLOSES" IS THE HONEST CLAIM, NOT "CLOSES". Between the commit above
+ * and the Stripe call below the member can still confirm, and Stripe can
+ * capture between our retrieve and our cancel. That residue is deliberate and
+ * is what the other half of the decision covers: `confirm-modification-payment`
+ * records the capture and raises an OPEN `ManualRefundTask`
+ * (`deleted-booking-modification-payment.ts`). Part 1 makes the race rare;
+ * part 2 makes it safe when it still fires.
+ *
+ * WHY AFTER THE COMMIT, NOT INSIDE IT. Two reasons, both binding. A Stripe call
+ * inside a booking transaction would hold the global `pg_advisory_xact_lock(1)`
+ * across a network round trip to a live provider, which `AGENTS.md` forbids
+ * ("keep external provider calls outside long database transactions"). And a
+ * provider timeout would roll back a deletion the admin was told nothing about.
+ * Committing first means the booking is definitively deleted and the Stripe
+ * tidy-up is best-effort on top of it.
+ *
+ * WHY IT NEVER THROWS. The deletion is already durable. Turning a completed
+ * delete into a 500 would tell the admin it failed when it did not, and invite
+ * a retry that answers `409 Booking has already been deleted`. Every failure is
+ * logged loudly instead, and the capture it might let through is caught by the
+ * `ManualRefundTask` path.
+ *
+ * BOTH INTENTS, NOT JUST THE MODIFICATION ONE. The decision was written about
+ * the modification payment because that is the surface #2700 found, but the
+ * base intent is the same hazard for the same reason, and a cancelled booking's
+ * base intent is normally already terminal — so cancelling it is a no-op in the
+ * ordinary case and a real fix in the case where it is not.
+ * `cancelPaymentIntentIfCancellableWithResult` only acts on a genuinely
+ * in-flight status and reports whether it did, so this is idempotent.
+ *
+ * THE LEDGER IS ONLY TOUCHED WHEN STRIPE CONFIRMS THE CANCEL. If Stripe reports
+ * `canceled: false` the intent reached a terminal state on its own — possibly
+ * `succeeded`, with the confirm endpoint not yet run — and marking the local
+ * transaction FAILED there would write a lie that the confirm endpoint would
+ * then have to overwrite. `markPaymentIntentTransactionFailed` additionally
+ * refuses to move an already-captured row, so the two guards agree.
+ */
+async function cancelInFlightPaymentIntentsAfterSoftDelete(
+  bookingId: string,
+  payment: BookingForDelete["payment"] | null
+): Promise<void> {
+  if (!payment) return;
+
+  // De-duplicated: the two columns are normally distinct, but a legacy row can
+  // carry the same id in both and Stripe must not be asked twice.
+  const intentIds = Array.from(
+    new Set(
+      [payment.stripePaymentIntentId, payment.additionalPaymentIntentId].filter(
+        (intentId): intentId is string => Boolean(intentId)
+      )
+    )
+  );
+
+  for (const paymentIntentId of intentIds) {
+    try {
+      const { canceled } = await cancelPaymentIntentIfCancellableWithResult(
+        paymentIntentId
+      );
+
+      if (!canceled) {
+        logger.info(
+          { bookingId, paymentIntentId },
+          "Soft-deleted booking: PaymentIntent was not in a cancellable state, left as-is"
+        );
+        continue;
+      }
+
+      await markPaymentIntentTransactionFailed({ paymentIntentId });
+      logger.info(
+        { bookingId, paymentIntentId },
+        "Soft-deleted booking: cancelled the in-flight PaymentIntent so nothing further can be captured"
+      );
+    } catch (err) {
+      // Never rethrow: see "WHY IT NEVER THROWS" above.
+      logger.error(
+        { err, bookingId, paymentIntentId },
+        "Soft-deleted booking: FAILED to cancel an in-flight PaymentIntent - money may still be capturable against a deleted booking"
+      );
+    }
+  }
+}
+
 async function softDeleteCancelledBookingInTransaction(
   bookingId: string,
   actor: BookingDeleteActor,
@@ -271,13 +366,18 @@ async function softDeleteCancelledBookingInTransaction(
     });
 
     return {
-      status: 200,
-      data: {
-        success: true,
-        mode: "soft-delete",
-        bookingId: booking.id,
-        message: "Cancelled booking deleted",
+      result: {
+        status: 200,
+        data: {
+          success: true,
+          mode: "soft-delete",
+          bookingId: booking.id,
+          message: "Cancelled booking deleted",
+        },
       },
+      // Carried out of the transaction so the Stripe tidy-up above needs no
+      // second read of a booking that is now deleted.
+      payment: booking.payment,
     };
   });
 }
