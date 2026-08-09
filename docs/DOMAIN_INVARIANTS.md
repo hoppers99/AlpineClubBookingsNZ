@@ -37,13 +37,13 @@ description, so you can find the right file without opening more than one.
 | [`operations.md`](invariants/operations.md) | `INV-OPS` | raw SQL, row locking, deployment, what may be used as test input |
 
 Two supporting files sit beside them: the full id scheme in
-[`_PHASE1_SCHEME.md`](invariants/_PHASE1_SCHEME.md), and the imperfections found
+[`SCHEME.md`](invariants/SCHEME.md), and the imperfections found
 during the restructure and deliberately not fixed in it, in
 [`_FOLLOW_UPS.md`](invariants/_FOLLOW_UPS.md).
 
 ## How IDs work
 
-The full rules are in [`_PHASE1_SCHEME.md`](invariants/_PHASE1_SCHEME.md). The
+The full rules are in [`SCHEME.md`](invariants/SCHEME.md). The
 operative ones:
 
 - **Form.** `INV-<PREFIX>-<NNN>`, where `<NNN>` is exactly three digits from

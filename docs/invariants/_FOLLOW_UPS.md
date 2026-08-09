@@ -3,10 +3,10 @@
 Audience: Developer, Agent.
 
 Index: [`docs/DOMAIN_INVARIANTS.md`](../DOMAIN_INVARIANTS.md) · ID scheme:
-[`_PHASE1_SCHEME.md`](_PHASE1_SCHEME.md).
+[`SCHEME.md`](SCHEME.md).
 
 The `INV-*` restructure (#2691) was a **move**, not an edit: it inserted id
-headings, re-pointed three relative link paths and added a handful of bracketed
+headings, re-pointed two relative link paths and added eight bracketed
 `[INV-*]` cross-file pointers, and changed no other word. Everything below was
 noticed while doing that and left exactly as it was found, because a restructure
 that also changes meaning is unreviewable.
@@ -21,7 +21,7 @@ against the file that holds the rule.
 ## 1. Coarse blocks: one id covering many independently-normative rules
 
 The scheme gives one id per **block**, and a block is never split mid-bullet
-(`_PHASE1_SCHEME.md` §2), because splitting one means inserting a heading inside
+(`SCHEME.md` §2), because splitting one means inserting a heading inside
 a list item, re-indenting the prose and re-wrapping every line — which is exactly
 how a word changes unnoticed. The consequence is that a few very long blocks each
 carry a great many separate obligations under a single id, so citing one of them
@@ -43,7 +43,7 @@ heading.
 | `INV-ADDPAY-001` | 125 | Who is owed, who may pay, what is sent, the cutover, idempotency stamps, the shared clock and the unreachability pre-check |
 | `INV-MONEY-005` | 105 | Promo "use" semantics plus every cap, lock, reprice-coverage and trap rule beneath it |
 
-Refining any of these is cheap under the scheme (`_PHASE1_SCHEME.md` §1.4): the
+Refining any of these is cheap under the scheme (`SCHEME.md` §1.4): the
 part that keeps the original meaning keeps the id and the new parts take fresh
 numbers, so no existing citation moves. It just must not happen inside a
 transcription.
@@ -84,7 +84,7 @@ one can leave the other stale.
   editor does not remove one copy believing it a mistake.
 
 The scheme's answer for a genuine duplicate is to keep both ids and make the
-absorbed one a `Superseded by` stub (`_PHASE1_SCHEME.md` §1.4), never to delete
+absorbed one a `Superseded by` stub (`SCHEME.md` §1.4), never to delete
 one — but which is the survivor is an owner call, not a transcription decision.
 
 ## 5. Headings that stopped describing their content
@@ -165,7 +165,7 @@ does not have to repeat it.
 
 The source document navigated itself with "above", "below", "its own section
 below" and "rule (b) above". Where the target stayed in the same destination
-file, the sentence was left completely alone (`_PHASE1_SCHEME.md` §4.2, rule 1)
+file, the sentence was left completely alone (`SCHEME.md` §4.2, rule 1)
 — that covers the large majority, and is why the file boundaries follow the
 source's own heading zones. Where a reference crossed a new file boundary, edit
 type 2 was applied: a bracketed ` [INV-*]` pointer **appended** beside the phrase
@@ -183,7 +183,7 @@ Two classes were deliberately left unpointered, both per the scheme:
 - **References that name their target by section title** — "the stay-boundary
   invariant in 'Booking Dates And Capacity'" (four occurrences) and 'see
   "Member-Guest Consent"' (one). A title resolves through the index whatever file
-  it lives in, so these navigate correctly without an edit (`_PHASE1_SCHEME.md`
+  it lives in, so these navigate correctly without an edit (`SCHEME.md`
   §4.1, §4.2).
 - **The one reference that points the wrong way** — `INV-LIFE-035`'s "#2424
   (above)", whose target `INV-LIFE-038` is below it in the *same* file. That is a

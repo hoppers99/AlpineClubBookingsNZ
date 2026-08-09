@@ -107,7 +107,7 @@ export const RESERVED_INVOICE_PREFIXES = new Set([
  * and are therefore exempt from the shape guard only — never from citation
  * resolution.
  *
- * `_PHASE1_SCHEME.md` is the id scheme itself: it argues for three digits by
+ * `SCHEME.md` is the id scheme itself: it argues for three digits by
  * showing the two-digit form the issue body illustrated, and justifies the shape
  * guard by showing the two near-misses it catches. Those sentences are about the
  * malformed forms, so fencing them would be a worse document. The
@@ -115,7 +115,7 @@ export const RESERVED_INVOICE_PREFIXES = new Set([
  * drop the exemption.
  */
 export const SHAPE_GUARD_EXEMPT_FILES = new Set([
-  "docs/invariants/_PHASE1_SCHEME.md",
+  "docs/invariants/SCHEME.md",
   "docs/invariants/SCHEME.md",
 ]);
 

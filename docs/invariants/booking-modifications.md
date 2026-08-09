@@ -11,7 +11,7 @@ price are edited.
 
 Index: [`docs/DOMAIN_INVARIANTS.md`](../DOMAIN_INVARIANTS.md) — every `INV-*` ID
 with a one-line description of what it covers. ID scheme and allocation rules:
-[`_PHASE1_SCHEME.md`](_PHASE1_SCHEME.md).
+[`SCHEME.md`](SCHEME.md).
 
 The source's `## Booking Modifications` section also carried adult-member
 hosting, booking requests, subscription-lockout pricing, policy exceptions and

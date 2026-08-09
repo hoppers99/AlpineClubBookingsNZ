@@ -11,7 +11,7 @@ what is logged about an integration, or Xero contact-group grouping.
 
 Index: [`docs/DOMAIN_INVARIANTS.md`](../DOMAIN_INVARIANTS.md) — every `INV-*` ID
 with a one-line description of what it covers. ID scheme and allocation rules:
-[`_PHASE1_SCHEME.md`](_PHASE1_SCHEME.md).
+[`SCHEME.md`](SCHEME.md).
 
 `INV-XERO` is deliberately not a prefix: the `INV-` namespace already carries
 Xero invoice-number test fixtures, so the Xero grouping rules take `INV-INT`

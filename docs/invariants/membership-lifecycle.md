@@ -14,7 +14,7 @@ resolved, or how two member records are merged.
 
 Index: [`docs/DOMAIN_INVARIANTS.md`](../DOMAIN_INVARIANTS.md) — every `INV-*` ID
 with a one-line description of what it covers. ID scheme and allocation rules:
-[`_PHASE1_SCHEME.md`](_PHASE1_SCHEME.md).
+[`SCHEME.md`](SCHEME.md).
 
 Two blocks here sit under a domain heading that no longer describes them and are
 deliberately left where the source put them, because re-domaining inside a
