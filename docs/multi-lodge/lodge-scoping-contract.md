@@ -95,8 +95,16 @@ operational documents (which may carry door/emergency access details).
   through to a lodge of any state). Offering nothing there is the deliberate
   choice: a client that cannot know which lodge the server will stamp on the
   booking must not guess at an optional preference. The unscoped mode is
-  retained as an eligibility-filtered discovery contract, not because a client
-  needs it. Admin on-behalf bookings and quotes
+  retained **because consumers outside this repository need it** — see
+  `INV-INT-016`. It is the pre-multi-lodge signature, and forked booking wizards
+  and external integrations still call it that way, so requiring `lodgeId` would
+  break them for no internal gain; the eligibility filtering is what makes
+  retaining it safe, not the reason for retaining it. (An earlier revision of
+  this sentence said the opposite — "retained as an eligibility-filtered
+  discovery contract, not because a client needs it" — which reads as an
+  invitation to delete a branch a fork depends on.) No client in `src/` may use
+  the mode, which is a separate rule and is pinned by a test; see
+  `INV-INT-016`. Admin on-behalf bookings and quotes
   bypass it as the audited override path. `STAFF` rows bind a kiosk account to its lodge;
   exactly one grant binds, zero grants fall back to the default lodge, and
   **two or more grants are ambiguous and denied** (`getStaffLodgeBinding`
@@ -136,7 +144,11 @@ operational documents (which may carry door/emergency access details).
 - **The admin bed-allocation board obeys the same rule when a booking is named**
   (#2678). `GET /api/admin/bed-allocation` still supports a genuine club-wide
   mode — `ADMIN` access is club-wide and never lodge-filtered, so an omitted
-  `lodgeId` legitimately means "the whole club" and that is unchanged. But when
+  `lodgeId` legitimately means "the whole club" and that is unchanged. **No board
+  selector currently offers that mode**, though: with two or more lodges
+  `LodgeSelect` forces a null value to `lodges[0].id`, so the API mode is
+  exercised only by the transient/outage null state described further down this
+  entry — making club-wide an explicit, selectable option is #2701. But when
   the request names a `bookingId`, the lodge now comes from that booking's
   `Booking.lodgeId` server-side and **any `lodgeId` on the query string is
   ignored**, exactly as `requested-room/options` does. This was the last
@@ -188,7 +200,23 @@ operational documents (which may carry door/emergency access details).
   pickers are club-wide again, and writes are **not** disabled for them (only
   Run Auto Allocation, Reset allocations and the preferences section gate on
   `lodgeId`). That is tracked separately because it needs a decision about what
-  a club-wide board should offer, not just where the lodge comes from.
+  a club-wide board should offer, not just where the lodge comes from (#2701).
+- **The hut-leader bed picker obeys the same rule when an assignment is named**
+  (#2678). `GET /api/admin/hut-leaders/available-beds` took `assignmentId` and
+  `lodgeId` as unrelated parameters and never reconciled them, so a request
+  naming assignment A at lodge B was answerable and returned lodge B's beds.
+  `HutLeaderAssignment.lodgeId` is NOT NULL, so a named assignment already fixes
+  the lodge: it is now derived server-side and a contradicting `lodgeId` is
+  **ignored**, matching `requested-room/options` and the board above. The
+  CREATE form is untouched — it has no `assignmentId`, so the lodge the admin
+  chooses is the lodge it uses — and the writer's own cross-lodge refusal
+  (`custodian-assignment.ts`, `BED_WRONG_LODGE`) stays as defence in depth. A
+  derived lodge is still validated as active, which is identical to what the
+  honest caller already got, because the row-edit form was already sending that
+  same lodge. Pinned by
+  `src/app/api/admin/hut-leaders/available-beds/__tests__/assignment-lodge-scope.test.ts`.
+  Nothing here was exploitable: the reason it was safe was a guard on the write
+  rather than the read being correct, which is the shape #2664 was filed about.
 
 ## Club-Wide Models (No Lodge Dimension)
 

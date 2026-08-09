@@ -14,8 +14,14 @@
   room preference in the booking wizard.
 
   Nothing changes for the board when you open it directly and choose a lodge
-  yourself, and the club-wide view is still available that way. No allocation,
-  hold or booking is altered.
+  yourself. No allocation, hold or booking is altered.
+
+  The same rule now applies to the **hut leaders** bed picker. When you edit an
+  existing assignment, the beds you are offered come from that assignment's own
+  lodge, worked out from the assignment rather than from the link — so a stale
+  or hand-edited address can no longer offer you beds at the wrong property.
+  Creating a new assignment is unchanged: there is no assignment yet, so the
+  lodge you choose is the lodge you get.
 
   One consequence to expect: while a booking is focused it now decides the
   board's lodge, so if you switch the lodge selector to a different lodge the
@@ -27,4 +33,19 @@
   lodges cannot be loaded, the board still falls back to showing the whole club,
   and the bed pickers are club-wide again in that state. Confirming a bed is
   still refused, so nothing incorrect can be saved — but you may be offered beds
-  you cannot use. That is being handled separately.
+  you cannot use. That is being handled separately, along with making "all
+  lodges" a view you can actually choose: at present, on a club with more than
+  one lodge, the selector always resolves to a real lodge, so there is no
+  club-wide board to pick.
+
+- **Internal: the member room-listing endpoint keeps its older, lodge-free form
+  on purpose, and that reason is now written down (#2678).** Nothing to do and
+  nothing changes. Since the booking wizard started naming a lodge, no screen in
+  this club's own site asks that endpoint for "every lodge's rooms" any more — so
+  from the inside the older form looks like something left behind, and a future
+  tidy-up would remove it. It is kept deliberately: other clubs run their own
+  copy of this software and their booking pages still call it the old way, and
+  removing it would break them for no gain here. That is now recorded as a rule
+  with the reason attached, and a check stops any screen in this site quietly
+  going back to the lodge-free form — which is what caused the wrong-lodge room
+  pickers in the first place.

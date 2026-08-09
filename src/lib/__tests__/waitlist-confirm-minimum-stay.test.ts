@@ -52,6 +52,38 @@ function memberIdsRequested(args: unknown): string[] {
   return where?.id?.in ?? where?.memberId?.in ?? [];
 }
 
+/** The `where`/`select` key sets a read actually asked for, sorted. */
+function keysOf(value: unknown): string[] {
+  return value && typeof value === "object"
+    ? Object.keys(value as Record<string, unknown>).sort()
+    : [];
+}
+
+/**
+ * True when a read's `where` and `select` are EXACTLY these key sets (#2675
+ * review).
+ *
+ * A delegate that answers on `where.id.in` alone reports every requested member
+ * as found, healthy and settled whatever else the query asked — which is the
+ * hazard `fenceMemberFindMany`'s own docstring spells out: it would make a
+ * guard's "linked member not found" (or "not active", or "wrong season")
+ * refusal UNFAILABLE in this suite, silently, the moment such a guard is added
+ * to the confirm path. Matching the exact query shape means a read this fixture
+ * was not built for gets `[]` — the honest answer, and one that fails loudly at
+ * the guard rather than passing vacuously.
+ */
+function matchesShape(
+  args: unknown,
+  where: readonly string[],
+  select: readonly string[],
+): boolean {
+  const a = args as { where?: unknown; select?: unknown } | undefined;
+  return (
+    keysOf(a?.where).join(",") === [...where].sort().join(",") &&
+    keysOf(a?.select).join(",") === [...select].sort().join(",")
+  );
+}
+
 const txClient = {
   $executeRaw: vi.fn(),
   /**
@@ -71,25 +103,57 @@ const txClient = {
    * adult member, subscription PAID.
    *
    * The fence's id-only re-read is still answered by the helper (which sorts, as
-   * the fence requires); every OTHER `member.findMany` — the membership-type
-   * policy resolver's and the settlement loader's — gets these live rows.
+   * the fence requires). Beyond it this delegate answers EXACTLY TWO reads, each
+   * matched on its full query shape rather than on "some ids were asked for":
+   * `resolveMembershipTypePoliciesForMembers` (`membership-type-policy.ts`, the
+   * six-column select) and `loadMemberSubscriptionSettlements`
+   * (`subscription-lockout-facts.ts`, `{ id, ageTier }`). Anything else gets
+   * `[]`, because answering it would make some future guard's refusal unfailable
+   * here — see `matchesShape`.
    */
   member: {
-    findMany: fenceMemberFindMany([], async (args: unknown) =>
-      memberIdsRequested(args).map((id) => ({
-        id,
-        firstName: "Offer",
-        lastName: "Owner",
-        email: `${id}@test.com`,
-        role: "MEMBER",
-        ageTier: "ADULT",
-      })),
-    ),
+    findMany: fenceMemberFindMany([], async (args: unknown) => {
+      // resolveMembershipTypePoliciesForMembers — membership-type-policy.ts.
+      if (
+        matchesShape(
+          args,
+          ["id"],
+          ["id", "firstName", "lastName", "email", "role", "ageTier"],
+        )
+      ) {
+        return memberIdsRequested(args).map((id) => ({
+          id,
+          firstName: "Offer",
+          lastName: "Owner",
+          email: `${id}@test.com`,
+          role: "MEMBER",
+          ageTier: "ADULT",
+        }));
+      }
+      // loadMemberSubscriptionSettlements — subscription-lockout-facts.ts.
+      if (matchesShape(args, ["id"], ["id", "ageTier"])) {
+        return memberIdsRequested(args).map((id) => ({ id, ageTier: "ADULT" }));
+      }
+      return [];
+    }),
   },
   memberSubscription: {
-    findMany: vi.fn(async (args: unknown) =>
-      memberIdsRequested(args).map((id) => ({ memberId: id, status: "PAID" })),
-    ),
+    /**
+     * The settlement loader's own read, and only it: `where` is
+     * `{ memberId: { in }, seasonYear }` with a `{ memberId, status }` select
+     * (`subscription-lockout-facts.ts`). Answering PAID for any shape would
+     * answer PAID for the WRONG SEASON too, which is the one thing this
+     * suite's `NON_MEMBER_PRICING` subject is about.
+     */
+    findMany: vi.fn(async (args: unknown) => {
+      if (!matchesShape(args, ["memberId", "seasonYear"], ["memberId", "status"])) {
+        return [];
+      }
+      return memberIdsRequested(args).map((id) => ({
+        memberId: id,
+        status: "PAID",
+      }));
+    }),
   },
   // #2364: the hosting review is reconciled inside the booking write, so
   // every prisma/tx double a booking path runs against needs this client.
@@ -560,5 +624,81 @@ describe("confirmWaitlistOffer paid-up-adult re-check (#2543)", () => {
     const result = await confirmWaitlistOffer("booking-1", "member-1");
     expect(result.success).toBe(true);
     expect("subscriptionMemberRateNotice" in result).toBe(false);
+  });
+});
+
+/**
+ * #2675 review — the tx doubles above must answer ONLY the reads they model.
+ *
+ * `fenceMemberFindMany`'s docstring states the hazard in as many words: a
+ * delegate that answers a member read carrying extra predicates "would report
+ * every requested member as found, active and unarchived, making its 'linked
+ * member not found' refusal unfailable in any suite using this helper". The
+ * first draft of this file's delegate did exactly that — it read `where.id.in`
+ * and echoed the ids back as live ADULT members whatever else was asked, and
+ * answered the subscription read PAID whatever season it named.
+ *
+ * No guard on today's confirm path issues either shape, so nothing was masked
+ * yet. These pin that it stays that way: the delegate has to be shape-matched,
+ * not id-matched, so an existence/standing/season guard added to this path
+ * later fails honestly here instead of passing vacuously.
+ */
+describe("tx member doubles answer only the reads they model (#2675)", () => {
+  it("answers the membership-type policy resolver's six-column read", async () => {
+    await expect(
+      txClient.member.findMany({
+        where: { id: { in: ["m1"] } },
+        select: {
+          id: true,
+          firstName: true,
+          lastName: true,
+          email: true,
+          role: true,
+          ageTier: true,
+        },
+      }),
+    ).resolves.toEqual([
+      expect.objectContaining({ id: "m1", role: "MEMBER", ageTier: "ADULT" }),
+    ]);
+  });
+
+  it("answers the settlement loader's { id, ageTier } read", async () => {
+    await expect(
+      txClient.member.findMany({
+        where: { id: { in: ["m1"] } },
+        select: { id: true, ageTier: true },
+      }),
+    ).resolves.toEqual([{ id: "m1", ageTier: "ADULT" }]);
+  });
+
+  it("returns NOTHING for a member read that also asks about standing", async () => {
+    // `assertLinkedMembersExist`'s shape. Answering it would make its "linked
+    // member not found" refusal unfailable in this suite.
+    await expect(
+      txClient.member.findMany({
+        // Cast because the helper's own arg type describes only the FENCE's
+        // read; the whole point here is a query shape it does not model.
+        where: { id: { in: ["m1"] }, active: true, archivedAt: null } as never,
+        select: { id: true },
+      }),
+    ).resolves.toEqual([]);
+  });
+
+  it("answers the subscription read only in its own season-keyed shape", async () => {
+    await expect(
+      txClient.memberSubscription.findMany({
+        where: { memberId: { in: ["m1"] }, seasonYear: 2026 },
+        select: { memberId: true, status: true },
+      }),
+    ).resolves.toEqual([{ memberId: "m1", status: "PAID" }]);
+
+    // Without the season it is not the read this fixture models, so it must not
+    // report the subscription settled.
+    await expect(
+      txClient.memberSubscription.findMany({
+        where: { memberId: { in: ["m1"] } },
+        select: { memberId: true, status: true },
+      }),
+    ).resolves.toEqual([]);
   });
 });

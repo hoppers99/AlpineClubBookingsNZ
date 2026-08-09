@@ -1045,12 +1045,18 @@ describe("the participant fence stays switched ON where a suite claims it (#2623
         }
         if (!/\.test\.tsx?$/.test(entry.name)) continue;
         const rel = path.relative(process.cwd(), full).split(path.sep).join("/");
-        const source = readRepoFile(rel);
+        // COMMENT-STRIPPED, not raw (#2675 review). This file defines
+        // `readRepoCode` precisely because a plain text search reads prose as a
+        // call site, and the suites below carry long comments naming both the
+        // module and the helper. Reading the raw file let an author delete the
+        // wiring, keep the explanation, and stay green.
+        const source = readRepoCode(rel);
         if (!source.includes("hosting-participant-fence-double")) continue;
         // The suite that DEFINES the hosting behaviour sets its own policies per
         // test rather than through the shared double, so it is not in scope.
         if (rel === "src/lib/__tests__/adult-member-hosting-review.test.ts") continue;
-        if (source.includes("fenceHostingPolicyFindMany")) continue;
+        // A real CALL, not the identifier appearing somewhere in the file.
+        if (/fenceHostingPolicyFindMany\s*\(/.test(source)) continue;
         wired.push(rel);
       }
     };
@@ -1062,5 +1068,92 @@ describe("the participant fence stays switched ON where a suite claims it (#2623
         "double `fenceHostingPolicyFindMany()` (and make its booking fixtures " +
         "hosting-evaluable), or add it here with a reason.",
     ).toEqual(FENCE_DOUBLES_WITHOUT_AN_ACTIVE_POLICY);
+  });
+
+  /**
+   * The census above can only see that the helper is CALLED — it cannot see what
+   * mode the call states, and #2675 made `{ mode: ... }` an override eight
+   * suites now write. Changing one of those words back to an inactive mode
+   * restores the exact #2623 T5 bypass with every test in the tree still green,
+   * because the gate returns before the fence and the doubles beside it simply
+   * stop being reached. Nothing throws; coverage just evaporates.
+   *
+   * So the value is guarded where it is WRITTEN, and this pins that guard.
+   */
+  it("refuses to build a policy double in an INACTIVE hosting mode", async () => {
+    const { fenceHostingPolicyFindMany } = await import(
+      "./support/hosting-participant-fence-double"
+    );
+
+    for (const inactive of ["DISABLED", "", "enforced", null, undefined]) {
+      expect(
+        () =>
+          fenceHostingPolicyFindMany({
+            mode: inactive as unknown as "ENFORCED",
+          }),
+        `mode: ${JSON.stringify(inactive)} must be refused`,
+      ).toThrow(/ACTIVE hosting mode/);
+    }
+
+    // Both ACTIVE modes stay available — the choice between refusing a hazard
+    // and recording it is a real one a suite has to make.
+    for (const active of ["ENFORCED", "ADMIN_REVIEW_REQUIRED"] as const) {
+      const double = fenceHostingPolicyFindMany({ mode: active });
+      await expect(double()).resolves.toEqual([
+        expect.objectContaining({ mode: active }),
+      ]);
+    }
+    // And the default, which states no mode at all, is still ENFORCED.
+    await expect(fenceHostingPolicyFindMany()()).resolves.toEqual([
+      expect.objectContaining({ mode: "ENFORCED" }),
+    ]);
+  });
+
+  /**
+   * The mode every wired suite actually states, read off the tree.
+   *
+   * Belt and braces with the runtime refusal above: that one fires only when the
+   * helper is CALLED with a bad mode, and a suite could instead stop calling it
+   * and hand-roll a `findMany` returning `DISABLED` under the same key. This
+   * reads the literal each suite writes, so the census owns the VALUE as well as
+   * the call.
+   */
+  it("states an active mode at every fence-policy call site", () => {
+    const root = path.resolve(process.cwd(), "src");
+    const offenders: string[] = [];
+    const walk = (dir: string) => {
+      for (const entry of readdirSync(dir, { withFileTypes: true })) {
+        const full = path.join(dir, entry.name);
+        if (entry.isDirectory()) {
+          walk(full);
+          continue;
+        }
+        if (!/\.test\.tsx?$/.test(entry.name)) continue;
+        const rel = path.relative(process.cwd(), full).split(path.sep).join("/");
+        // This census file is the guard, not a subject of it: the test above
+        // calls the helper deliberately with inactive modes to prove it refuses
+        // them, and with a loop variable rather than a literal.
+        if (rel === "src/lib/__tests__/adult-member-hosting-call-sites.test.ts") {
+          continue;
+        }
+        const source = readRepoCode(rel);
+        for (const match of source.matchAll(
+          /fenceHostingPolicyFindMany\s*\(([^)]*)\)/g,
+        )) {
+          const args = match[1];
+          if (!/\bmode\b/.test(args)) continue; // the default is ENFORCED
+          if (/"(ENFORCED|ADMIN_REVIEW_REQUIRED)"/.test(args)) continue;
+          offenders.push(`${rel}: ${match[0]}`);
+        }
+      }
+    };
+    walk(root);
+    expect(
+      offenders.sort(),
+      "A fence policy double naming an INACTIVE mode switches the #2619 " +
+        "participant fence off in the suite that wires it (#2623 T5's gate " +
+        "returns first) while every test stays green — the #2675 bypass, " +
+        "restored by one word. Use ENFORCED or ADMIN_REVIEW_REQUIRED.",
+    ).toEqual([]);
   });
 });

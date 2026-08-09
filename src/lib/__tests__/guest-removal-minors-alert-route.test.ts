@@ -185,8 +185,15 @@ function preEditBooking(guests: Guest[]) {
         Together they describe exactly the party these tests are about: one
         non-member minor, covered on both nights by the adult member beside them,
         so removing the adult is a MINORS-ONLY question and not a hosting one.
+
+        The guest's own `ageTier` is carried onto the member row rather than
+        letting `hostingMemberRow` default to ADULT. This is the MINORS suite:
+        a member-linked minor is exactly the fixture the next test here will
+        add, and `participantQualifiesAsHost` reads the MEMBER's tier — so the
+        default would score that child as an adult host and suppress a hosting
+        violation production would raise, with nothing failing anywhere.
       */
-      member: g.memberId ? hostingMemberRow(g.memberId) : null,
+      member: g.memberId ? hostingMemberRow(g.memberId, { ageTier: g.ageTier }) : null,
     })),
     payment: null,
     member: {
@@ -401,6 +408,44 @@ describe("DELETE guest removal — minors-only admin alert wiring (#1372)", () =
 
     expect(res.status).toBe(200);
     expect(mocks.sendAdminMinorsOnlyReviewAlert).not.toHaveBeenCalled();
+  });
+
+  /**
+   * #2675 review — the fixture builder must not invent an ADULT member.
+   *
+   * `preEditBooking` synthesises the live `Member` relation from `memberId`, and
+   * `hostingMemberRow` defaults to ADULT. A member-linked CHILD or YOUTH guest
+   * would therefore arrive at `participantQualifiesAsHost` — which reads the
+   * MEMBER's tier, not the guest row's — as an adult host, suppressing a hosting
+   * violation production would raise. Nothing else in this suite would notice,
+   * and this is the MINORS suite: a member-linked minor is exactly the fixture
+   * the next test added here will need.
+   */
+  it("gives a member-linked minor a Member row at the guest's OWN age tier", () => {
+    const memberChild: Guest = {
+      ...CHILD,
+      id: "g-child-member",
+      isMember: true,
+      memberId: "m-child",
+    };
+
+    const guests = preEditBooking([ADULT, memberChild]).guests;
+
+    expect(guests.find((g) => g.id === "g-child-member")?.member).toEqual({
+      id: "m-child",
+      ageTier: "CHILD",
+      active: true,
+      cancelledAt: null,
+      archivedAt: null,
+    });
+    // The adult beside them is unchanged, so the pin is about the tier being
+    // CARRIED, not about the default being wrong.
+    expect(guests.find((g) => g.id === "g-adult")?.member).toEqual(
+      expect.objectContaining({ id: "m1", ageTier: "ADULT" }),
+    );
+    // And a true non-member still gets an explicit null, not a partial row.
+    expect(guests.find((g) => g.id === "g-child")).toBeUndefined();
+    expect(preEditBooking([CHILD]).guests[0]?.member).toBeNull();
   });
 });
 

@@ -22,14 +22,21 @@
     sailed straight through. A refund request could be raised against a booking
     the club had already removed, complete with an alert email to the office.
   - **Cancelling a pending policy-exception request on a deleted booking.**
+  - **Sending a guest their payment link.** This one already refused, but it
+    said so to the wrong person. Someone with no connection to the booking was
+    told "you are not allowed" while it existed, and "no such booking" once it
+    had been deleted — which is a way of learning that a booking was deleted
+    without being entitled to know anything about it at all. It now says "you
+    are not allowed" either way, and only someone who *is* entitled to act on
+    the booking is told it no longer exists.
 
   Nothing here changes what happens to a live booking, and no existing refund
-  request, exception request or arrival time is altered. If you have been relying
-  on being able to raise a refund request after deleting a booking, raise it
-  before deleting, or ask an admin to restore the record first.
+  request, exception request, arrival time or payment link is altered. If you
+  have been relying on being able to raise a refund request after deleting a
+  booking, raise it before deleting, or ask an admin to restore the record first.
 
   Two further actions still work on a deleted booking and are deliberately left
   alone for now, because each needs a decision rather than a guard: recording a
   guest's consent answer, and recording a modification payment the card provider
-  has already taken. Three read-only screens will also still show the owner their
+  has already taken. Two read-only screens will also still show the owner their
   own deleted booking's details. All of these are being handled separately.

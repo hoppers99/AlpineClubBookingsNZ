@@ -250,12 +250,19 @@ afterEach(() => {
  *
  * The guest's own values always win: a fixture that states its stay window or
  * its per-night rows keeps them, and only the absent facts are filled in.
+ *
+ * THE GUEST'S OWN `ageTier` IS CARRIED ONTO THE MEMBER ROW (#2675 review).
+ * `BookingGuest.ageTier` and `Member.ageTier` are separate columns that a real
+ * row always agrees on, and it is the MEMBER's that
+ * `participantQualifiesAsHost` reads. Letting `hostingMemberRow` fall back to
+ * its ADULT default would score a member-linked CHILD or YOUTH guest as an
+ * adult host and quietly suppress a hosting violation production would raise —
+ * an ADULT Member row hanging off a CHILD guest row being precisely the
+ * "shape production cannot emit" this whole helper exists to stop.
  */
-function completeHostingGuestRows<T extends { memberId?: string | null }>(
-  guests: readonly T[],
-  checkIn: Date,
-  checkOut: Date,
-) {
+function completeHostingGuestRows<
+  T extends { memberId?: string | null; ageTier?: string },
+>(guests: readonly T[], checkIn: Date, checkOut: Date) {
   return guests.map((guest) => ({
     // A guest with no stay window of its own stays the whole booking, which is
     // what every route in this file assumes when it reprices the full party.
@@ -267,7 +274,12 @@ function completeHostingGuestRows<T extends { memberId?: string | null }>(
     consentStatus: null as string | null,
     ...guest,
     member:
-      typeof guest.memberId === "string" ? hostingMemberRow(guest.memberId) : null,
+      typeof guest.memberId === "string"
+        ? hostingMemberRow(
+            guest.memberId,
+            guest.ageTier ? { ageTier: guest.ageTier } : {},
+          )
+        : null,
   }));
 }
 
@@ -443,6 +455,51 @@ function makeTx(booking: ReturnType<typeof makeBooking>) {
 }
 
 // --- Tests ---
+
+/**
+ * #2675 review — the hosting fixture completion must not invent an ADULT member.
+ *
+ * `completeHostingGuestRows` synthesises the live `Member` relation from
+ * `memberId`, and `hostingMemberRow` defaults to ADULT. Deriving it from the id
+ * alone would score any member-linked CHILD or YOUTH guest as an adult host at
+ * `participantQualifiesAsHost` — which reads the MEMBER's tier, not the guest
+ * row's — and suppress a hosting violation production would raise, with nothing
+ * in this file failing.
+ */
+describe("completeHostingGuestRows (#2675)", () => {
+  it("carries the guest's own age tier onto the Member row it synthesises", () => {
+    const rows = completeHostingGuestRows(
+      [
+        { id: "g1", memberId: "m-adult", ageTier: "ADULT" },
+        { id: "g2", memberId: "m-child", ageTier: "CHILD" },
+        { id: "g3", memberId: null, ageTier: "CHILD" },
+      ],
+      new Date("2026-06-01"),
+      new Date("2026-06-03"),
+    );
+
+    expect(rows[0].member).toEqual(
+      expect.objectContaining({ id: "m-adult", ageTier: "ADULT" }),
+    );
+    expect(rows[1].member).toEqual(
+      expect.objectContaining({ id: "m-child", ageTier: "CHILD" }),
+    );
+    // A true non-member gets an EXPLICIT null, never a partial row: the standing
+    // predicate tests `member !== null`, so an absent key throws instead.
+    expect(rows[2].member).toBeNull();
+  });
+
+  it("still defaults to ADULT for a guest row that states no tier", () => {
+    const [row] = completeHostingGuestRows(
+      [{ id: "g1", memberId: "m1" }],
+      new Date("2026-06-01"),
+      new Date("2026-06-03"),
+    );
+    expect(row.member).toEqual(
+      expect.objectContaining({ id: "m1", ageTier: "ADULT" }),
+    );
+  });
+});
 
 describe("PUT /api/bookings/[id]/modify-dates", () => {
   let PUT: typeof import("@/app/api/bookings/[id]/modify-dates/route").PUT;
