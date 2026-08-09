@@ -38,6 +38,7 @@ vi.mock("@/lib/logger", () => ({
 }));
 
 import { calculateModifiedPricing } from "@/lib/booking-modify-plan";
+import { eachDateOnlyInRange } from "@/lib/date-only";
 import {
   resolveGuestRateMembershipTypes,
   priceBookingGuestsWithMembershipTypePolicy,
@@ -263,6 +264,14 @@ describe("calculateModifiedPricing in-progress check-out-day capacity (#2029)", 
       rateSource: "OWN_TYPE",
       stayStart: D(stayStart),
       stayEnd: D(stayEnd),
+      // #2736: the real query (`LoadedBookingForModify`) always includes the
+      // guest's `BookingGuestNight` rows, so this double supplies them too —
+      // without them these cases would only ever exercise the envelope FALLBACK
+      // and quietly stop covering the branch production actually takes. They are
+      // the envelope expanded, because this guest's stay is contiguous.
+      nights: eachDateOnlyInRange(D(stayStart), D(stayEnd)).map((stayDate) => ({
+        stayDate,
+      })),
       priceCents,
     };
   }

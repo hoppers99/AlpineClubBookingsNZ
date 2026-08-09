@@ -16,6 +16,7 @@ import {
   type BuildInProgressGuestRangePlanInput,
 } from "@/lib/booking-edit-guest-ranges";
 import type { SeasonRateData } from "@/lib/pricing";
+import { eachDateOnlyInRange } from "@/lib/date-only";
 
 const D = (s: string) => new Date(`${s}T00:00:00.000Z`);
 
@@ -43,6 +44,14 @@ function guest(stayStart: string, stayEnd: string, priceCents: number, id = "g1"
     rateSource: "OWN_TYPE" as const,
     stayStart: D(stayStart),
     stayEnd: D(stayEnd),
+    // #2736: every real caller loads the guest's `BookingGuestNight` rows, so
+    // this double carries them — otherwise these #2029 pins would only ever
+    // exercise the envelope FALLBACK and stop covering the branch production
+    // takes. Contiguous stay, so they are the envelope expanded and every
+    // expectation below is unchanged.
+    nights: eachDateOnlyInRange(D(stayStart), D(stayEnd)).map((stayDate) => ({
+      stayDate,
+    })),
     priceCents,
   };
 }
