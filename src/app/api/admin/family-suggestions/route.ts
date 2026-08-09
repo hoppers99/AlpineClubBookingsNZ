@@ -80,7 +80,16 @@ export async function POST(req: NextRequest) {
       { status: 201 }
     );
   } catch (err) {
-    logger.error({ err, name, memberIds }, "Failed to create family group from suggestion");
+    // INV-PRIV-011 (#2683): the suggested group `name` is a family surname, so
+    // it is logged as its length only — enough to tell a validation failure
+    // from an empty or absurd value without naming the household. `memberIds`
+    // are cuids, which identify the rows that failed. Nothing was created on
+    // this path, so there is no audit row and nothing is lost by leaving the
+    // name out: the admin sees it on screen in the request they just made.
+    logger.error(
+      { err, nameLength: name.length, memberIds },
+      "Failed to create family group from suggestion"
+    );
     if (err instanceof FamilySuggestionError) {
       return NextResponse.json({ error: err.message }, { status: 422 });
     }

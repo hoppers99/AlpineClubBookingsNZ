@@ -518,9 +518,38 @@ or provider identifiers from logs.
 
 Current mitigations include `redact-sensitive-json` coverage for known token URL
 patterns, URL-encoded callback paths, and redaction in webhook error recording.
+Since #2683 that redactor also strips person fields — every name spelling
+including the composed ones a route invents (`memberName`, `guestName`,
+`fullName`, `surname`, `givenName`), street and postal address including Xero's
+own bare `City`/`Region`/`Country`, date of birth, gender and occupation — plus
+hashed and second-factor credentials. Query parameters go through the same key
+denylist as object keys, so a name or an address in a URL is redacted rather
+than only a token being redacted. The full statement of what is covered, what is
+NOT, and what audit rows deliberately keep instead is
+[`INV-PRIV-011`](invariants/analytics-and-privacy.md#inv-priv-011).
+
+**Coverage is by key spelling and is therefore a floor, not a guarantee.** A
+call site that composes a person's name into a key the denylist does not carry
+defeats it, and names and addresses have no value-shaped fallback the way emails
+and phone numbers do. The mitigation for that is at the call site: log the
+identifier, not the person. #2683 fixed five call sites that did otherwise, and
+`name` is deliberately left unredacted because it also keys lodges, rooms,
+templates and Xero contact groups — where a person's `name` genuinely has to be
+sent (Xero requires it on a contact), it is stripped at the persistence boundary
+so the outbound request carries it and the stored operation payload does not.
+
+The same change bounded the walk itself: it caps depth, marks a back-reference
+rather than recursing, memoises shared subtrees, bounds total output, and never
+throws — an unbounded walk over a self-referencing Prisma relation overflowed the
+stack from inside a logging call and took the process down with it, and pino
+calls its formatter with no try/catch of its own. Truncation is always visible
+(`[TRUNCATED]`, `[Circular]`, `[UNREADABLE]`, `[REDACTION_FAILED]`) so an
+operator can tell a cut branch from an absent one.
+
 Residual risk remains for new token patterns and provider payloads that do not
-pass through the same redaction path. #616 should include explicit provider
-payload log redaction checks.
+pass through the same redaction path, and for any future key spelling the
+denylist does not anticipate. #616 should include explicit provider payload log
+redaction checks.
 
 ### Compromised CI Secret Or Deployment Secret
 
