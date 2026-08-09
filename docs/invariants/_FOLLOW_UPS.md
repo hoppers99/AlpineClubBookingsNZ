@@ -12,13 +12,18 @@ noticed while doing that and left exactly as it was found, because a restructure
 that also changes meaning is unreviewable.
 
 **This file is a to-do list, not a rule.** Nothing here is normative and nothing
-here has an id. Each item is a candidate for its own issue; when one is filed,
-add the number beside it. Fixing any of them is a separate, reviewable change
-against the file that holds the rule.
+here has an id. Fixing any of them is a separate, reviewable change against the
+file that holds the rule.
+
+**Every item below is filed.** #2706 covers the structural work (splitting the
+over-coarse ids, re-homing the two mis-domained blocks), #2707 the four
+documentation defects, and #2708 puts the six unsettled passages to the owner as
+a decision. Nothing here is carried as prose alone: a comment does not get a fix
+done, and this file is a register of filed work, not a substitute for it.
 
 ---
 
-## 1. Coarse blocks: one id covering many independently-normative rules
+## 1. Coarse blocks: one id covering many independently-normative rules — filed as #2706
 
 The scheme gives one id per **block**, and a block is never split mid-bullet
 (`SCHEME.md` §2), because splitting one means inserting a heading inside
@@ -48,7 +53,7 @@ part that keeps the original meaning keeps the id and the new parts take fresh
 numbers, so no existing citation moves. It just must not happen inside a
 transcription.
 
-## 2. A citation to an identifier that is defined nowhere in `docs/`
+## 2. A citation to an identifier that is defined nowhere in `docs/` — filed as #2707
 
 `INV-PAY-018` (source line 1701) says change fees "stay non-refundable per
 FEE-03". `FEE-03` is not defined anywhere in the documentation tree. It survives
@@ -57,14 +62,14 @@ reader who follows it lands on nothing.
 
 Either give the rule a real home and cite that, or drop the identifier.
 
-## 3. A navigation pointer that points the wrong way
+## 3. A navigation pointer that points the wrong way — filed as #2707
 
 `INV-LIFE-035` (source line 6292) reads "#2424 (above) has since closed the
 parent-email exposure". The #2424 material is `INV-LIFE-038`, which is **below**
 it. This was already wrong in the source document and is carried across
 unchanged.
 
-## 4. Near-duplicate rules
+## 4. Near-duplicate rules — filed as #2707
 
 Each pair states the same obligation twice, under different ids, so a change to
 one can leave the other stale.
@@ -87,7 +92,7 @@ The scheme's answer for a genuine duplicate is to keep both ids and make the
 absorbed one a `Superseded by` stub (`SCHEME.md` §1.4), never to delete
 one — but which is the survivor is an owner call, not a transcription decision.
 
-## 5. Headings that stopped describing their content
+## 5. Headings that stopped describing their content — filed as #2707
 
 Two `###` heading zones in the source ran on past their subject, and the split
 followed the source's headings rather than re-domaining anything:
@@ -105,7 +110,7 @@ followed the source's headings rather than re-domaining anything:
 Both files' front matter and prefixes describe what is actually in them; only the
 transcribed section headings still carry the narrow titles.
 
-## 6. Blocks whose domain does not match the file they are in
+## 6. Blocks whose domain does not match the file they are in — filed as #2706
 
 Both are in `membership-lifecycle.md` because that is where the source put them.
 Ids are location-independent and the index is authoritative for id → file, so
@@ -130,7 +135,7 @@ that one index heading, because 21 of the 27 inbound anchor links in the
 repository target the source `##` headings and keeping them byte-identical is
 what makes those links need no edit.
 
-## 7. Passages the document itself does not consider settled
+## 7. Passages the document itself does not consider settled — filed as #2708
 
 These are rules whose own text says they are awaiting a decision. They moved
 verbatim and kept their flags. Somebody should schedule the confirmations.
