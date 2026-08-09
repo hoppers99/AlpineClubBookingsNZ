@@ -22,7 +22,10 @@
  * `booking_bed_allocation_state` is combined: it requires `bookings:view` and
  * `membership:view` because its double-bed verdict reads live membership and
  * partner-link facts for both occupants. Without membership access it is withheld
- * and, if named anyway, denied before any member or partner-link row is read.
+ * and, if named anyway, denied before any selected-booking occupant `Member` or
+ * `MemberPartnerLink` evidence row is read. Fresh authorization may read the acting
+ * administrator's own membership and access-role state; it still runs before
+ * argument parsing and selected-record evidence.
  * `booking_capacity_by_night` needs `bookings:view` only. The admin allocation route
  * itself is bookings-scoped, but this diagnostic allocation classifier crosses into
  * membership evidence. `member_eligibility_state` needs `membership:view` only.

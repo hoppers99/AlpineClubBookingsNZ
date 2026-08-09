@@ -395,6 +395,21 @@ describe("AID-6B booking/membership pack: permissions (#2376)", () => {
     ] as const) {
       expect(source, `${name} retained stale broad claim`).not.toContain(staleClaim);
     }
+
+    const occupantEvidenceBoundary =
+      "before any selected-booking occupant Member or MemberPartnerLink evidence row is read";
+    expect(stateOverview.split(occupantEvidenceBoundary)).toHaveLength(2);
+    expect(packGuide.split(occupantEvidenceBoundary)).toHaveLength(3);
+
+    const staleEvidenceOverclaims = [
+      ["before any", "member or partner-link row is read"].join(" "),
+      ["no membership row or partner link", "is queried before that denial"].join(" "),
+      ["no member or partner-link row", "was queried"].join(" "),
+    ];
+    for (const staleClaim of staleEvidenceOverclaims) {
+      expect(stateOverview.toLowerCase()).not.toContain(staleClaim);
+      expect(packGuide.toLowerCase()).not.toContain(staleClaim);
+    }
   });
 
   it("never requires `support:view` for a booking or membership tool", () => {
