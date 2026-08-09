@@ -7,6 +7,7 @@ import { logAudit } from "@/lib/audit";
 import { sendAdminRefundRequestAlert } from "@/lib/email";
 import { getRemainingRefundableCents } from "@/lib/booking-payment-state";
 import { hasAdminAccess } from "@/lib/access-roles";
+import { deletedBookingRefusalResponse } from "@/lib/deleted-booking-refusal";
 
 const createSchema = z.object({
   reason: z.string().min(10).max(2000),
@@ -208,7 +209,11 @@ export async function GET(
 
   const booking = await prisma.booking.findUnique({
     where: { id: bookingId },
-    select: { memberId: true },
+    // #2700: `deletedAt` selected beside the authority field, the way
+    // `requested-room/options` does it (`INV-ADDPAY-031`). The POST above reads
+    // the booking with `include` and already had it; this read did not, which is
+    // how the GET stayed unguarded while its own POST was closed in #2674.
+    select: { memberId: true, deletedAt: true },
   });
 
   if (!booking) {
@@ -217,6 +222,23 @@ export async function GET(
 
   if (booking.memberId !== session.user.id && !hasAdminAccess(session.user)) {
     return NextResponse.json({ error: "Forbidden" }, { status: 403 });
+  }
+
+  // #2700 — one of the two reads `INV-ADDPAY-033` tracked: it served a deleted
+  // booking's own refund appeals to its owner, while the booking page that links
+  // here refuses the record outright. Owner decision, 10 Aug 2026: refuse, with
+  // the SAME sentence the consent write uses rather than a bare 404, so a member
+  // following a stale link is told what happened.
+  //
+  // AFTER the 403 above, deliberately: a caller with no claim on the booking
+  // gets the same answer whether it is deleted or live, so this discloses
+  // nothing to anyone not already entitled to read it.
+  //
+  // No UI regression: `RefundAppealButton` — the only client of this endpoint —
+  // is rendered on `bookings/[id]/page.tsx` behind `!isDeleted`, so it never
+  // mounts against a deleted booking for any role, Full Admin included.
+  if (booking.deletedAt) {
+    return deletedBookingRefusalResponse();
   }
 
   const requests = await prisma.refundRequest.findMany({

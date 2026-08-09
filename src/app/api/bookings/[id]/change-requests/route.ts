@@ -19,6 +19,7 @@ import {
   memberBookingChangeRequestSelect,
   projectMemberBookingChangeRequest,
 } from "@/lib/booking-change-request-member-view";
+import { deletedBookingRefusalResponse } from "@/lib/deleted-booking-refusal";
 
 const createChangeRequestSchema = z.object({
   checkIn: z.string().optional(),
@@ -508,7 +509,9 @@ export async function GET(
   const { id: bookingId } = await params;
   const booking = await prisma.booking.findUnique({
     where: { id: bookingId },
-    select: { memberId: true },
+    // #2700: `deletedAt` selected beside the authority field, per
+    // `INV-ADDPAY-031`'s house shape.
+    select: { memberId: true, deletedAt: true },
   });
 
   if (!booking) {
@@ -517,6 +520,18 @@ export async function GET(
 
   if (booking.memberId !== session.user.id && !isAdmin) {
     return NextResponse.json({ error: "Forbidden" }, { status: 403 });
+  }
+
+  // #2700 — the other read `INV-ADDPAY-033` tracked. It listed a deleted
+  // booking's change requests (policy-exception rows among them) to its owner,
+  // while `bookings/[id]/page.tsx` refuses the record to that same member. Owner
+  // decision, 10 Aug 2026: refuse, sharing ONE sentence with the consent write
+  // and the refund-appeal read rather than three variants that drift apart.
+  //
+  // AFTER the 403 above, so a caller with no claim gets the same answer either
+  // way and this is never a deleted-or-live oracle.
+  if (booking.deletedAt) {
+    return deletedBookingRefusalResponse();
   }
 
   // #2562 — an EXPLICIT column projection, never `include:`.

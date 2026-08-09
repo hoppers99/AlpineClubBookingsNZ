@@ -6,7 +6,10 @@ import {
 } from "@prisma/client";
 import { createAuditLog } from "@/lib/audit";
 import { deleteDraftBookingDependents } from "@/lib/draft-booking-cleanup";
+import logger from "@/lib/logger";
+import { markPaymentIntentTransactionFailed } from "@/lib/payment-transactions";
 import { prisma } from "@/lib/prisma";
+import { cancelPaymentIntentIfCancellableWithResult } from "@/lib/stripe";
 import { reconcileBedAllocationsForBookingWithGlobalLockHeld } from "@/lib/bed-allocation-lifecycle";
 
 type BookingDeleteDb = Prisma.TransactionClient | typeof prisma;
@@ -160,33 +163,68 @@ async function softDeleteCancelledBooking(
   actor: BookingDeleteActor,
   reason: string
 ): Promise<DeleteBookingResult> {
+  const outcome = await softDeleteCancelledBookingInTransaction(
+    bookingId,
+    actor,
+    reason
+  );
+
+  // #2700 — the deletion is committed; now make sure nothing can still be paid
+  // against it. See `cancelInFlightPaymentIntentsAfterSoftDelete` for why this
+  // is here at all and why it runs AFTER the commit.
+  if (outcome.result.status === 200) {
+    await cancelInFlightPaymentIntentsAfterSoftDelete(bookingId, outcome.payment);
+  }
+
+  return outcome.result;
+}
+
+type SoftDeleteOutcome = {
+  result: DeleteBookingResult;
+  payment: BookingForDelete["payment"] | null;
+};
+
+async function softDeleteCancelledBookingInTransaction(
+  bookingId: string,
+  actor: BookingDeleteActor,
+  reason: string
+): Promise<SoftDeleteOutcome> {
   return prisma.$transaction(async (tx) => {
     await tx.$executeRaw`SELECT pg_advisory_xact_lock(1)`;
     const booking = await loadBookingForDelete(tx, bookingId);
 
     if (!booking) {
-      return { status: 404, error: "Booking not found" };
+      return { result: { status: 404, error: "Booking not found" }, payment: null };
     }
     if (booking.status !== BookingStatus.CANCELLED) {
       return {
-        status: 400,
-        error: "Only cancelled bookings can be soft-deleted",
+        result: {
+          status: 400,
+          error: "Only cancelled bookings can be soft-deleted",
+        },
+        payment: null,
       };
     }
     if (booking.deletedAt) {
       return {
-        status: 409,
-        error: "Booking has already been deleted",
+        result: {
+          status: 409,
+          error: "Booking has already been deleted",
+        },
+        payment: null,
       };
     }
 
     const blockers = await getCancelledBookingDeleteBlockers(tx, booking);
     if (blockers.length > 0) {
       return {
-        status: 409,
-        error:
-          "Cancelled booking cannot be deleted because financial or Xero history exists",
-        blockers,
+        result: {
+          status: 409,
+          error:
+            "Cancelled booking cannot be deleted because financial or Xero history exists",
+          blockers,
+        },
+        payment: null,
       };
     }
 
