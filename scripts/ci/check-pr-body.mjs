@@ -58,22 +58,31 @@ function parseArgs(argv) {
  *    declaration is accepted.
  *
  * Status is also what distinguishes an ADDED fragment from the deletions a
- * release-compile PR makes, so `--name-status` is required, not a nicety.
+ * release-compile PR makes, and what keeps a renamed sensitive file visible by
+ * both its old and new path, so `--name-status` is required, not a nicety.
+ *
+ * Returns `null` — NOT `[]` — when the diff cannot be resolved. Since #2726 the
+ * concurrency gate waives a missing section for a diff it can see is
+ * non-sensitive, so "I could not look" and "I looked and found nothing" have to
+ * stay distinguishable: collapsing them would make this runner print PASS for
+ * any body at all the moment `origin/main` is unfetched, which is the same
+ * hollow-PASS failure #2666 fixed on the changelog gate.
  */
 function changesAgainst(base) {
   try {
     const mergeBase = execFileSync("git", ["merge-base", "HEAD", base], {
       encoding: "utf8",
     }).trim();
-    return parseNameStatus(
-      gitDiffChangedFiles(mergeBase, "HEAD", { nameStatus: true }),
-    );
+    return parseNameStatus(gitDiffChangedFiles(mergeBase, "HEAD"));
   } catch {
     console.warn(
-      `! Could not diff against ${base}; checking the body shape only.\n` +
-        "  The sensitive-path and code-bearing rules are NOT exercised.",
+      `! Could not diff against ${base}; the diff-dependent rules cannot be checked.\n` +
+        "  BOTH gates decide what they ask for from the changed files, so with no\n" +
+        "  diff this runner cannot reach CI's verdict — it reports failure rather\n" +
+        "  than a green it has no evidence for. Fetch the base branch (git fetch\n" +
+        "  origin main) or pass --base <ref> naming a ref that exists.",
     );
-    return [];
+    return null;
   }
 }
 
@@ -98,15 +107,44 @@ try {
 }
 
 const changes = changesAgainst(base);
+const diffKnown = changes !== null;
 // The concurrency gate keys on paths alone; the changelog gate needs the status
 // as well. `parseNameStatus` expands a rename into its delete + add pair, so the
 // path list is deduped before the concurrency gate counts or matches it.
-const changedFiles = [...new Set(changes.map((change) => change.path))];
+//
+// `null` is passed straight through when the diff could not be resolved: that is
+// the concurrency gate's "diff unknown" input, and it keeps the section required
+// AND refuses a ticked `N/A`, rather than granting either on evidence this runner
+// does not have. This is the SAME verdict CI reaches in the same state —
+// `PR_BASE_SHA` and `PR_HEAD_SHA` missing makes the CI entrypoint pass `null` too.
+const changedFiles = diffKnown ? [...new Set(changes.map((change) => change.path))] : null;
+const diffSummary = diffKnown
+  ? `${changedFiles.length} changed file(s) vs ${base}`
+  : `an unresolved diff vs ${base}, so no diff context`;
 const failures = [];
 
 for (const [label, run] of [
   ["Concurrency declaration", () => validateConcurrencyDeclaration(body, changedFiles)],
-  ["Changelog fragment", () => validateChangelogFragment(body, changes)],
+  [
+    "Changelog fragment",
+    () => {
+      // An unknown diff must never be laundered into `[]` here. `isCodeBearing`
+      // would see nothing, the gate would return `not-code-bearing`, and this
+      // runner would print PASS for a body with no fragment and no marker — the
+      // hollow PASS #2666 fixed, arriving by a different route. CI refuses the
+      // same state outright (the changelog gate's entrypoint throws when
+      // PR_BASE_SHA/PR_HEAD_SHA are missing), so refusing here is what keeps the
+      // two in step.
+      if (!diffKnown) {
+        throw new Error(
+          "The PR diff could not be resolved, so whether this PR changes application " +
+            "source — and therefore owes a changelog entry — cannot be decided. Make the " +
+            "diff readable (fetch the base branch, or pass --base <ref>) and run this again.",
+        );
+      }
+      return validateChangelogFragment(body, changes);
+    },
+  ],
 ]) {
   try {
     run();
@@ -122,12 +160,8 @@ for (const [label, run] of [
 
 if (failures.length > 0) {
   console.error(`\n${failures.map((f) => `- ${f}`).join("\n\n")}`);
-  console.error(
-    `\nChecked against ${changedFiles.length} changed file(s) vs ${base}.`,
-  );
+  console.error(`\nChecked against ${diffSummary}.`);
   process.exit(1);
 }
 
-console.log(
-  `\nPR body passes both gates (${changedFiles.length} changed file(s) vs ${base}).`,
-);
+console.log(`\nPR body passes both gates (${diffSummary}).`);
