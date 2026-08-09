@@ -276,9 +276,16 @@ describe("custodian write-path contract (#2286)", () => {
     expect(reports).not.toContain("custodian-occupancy");
     expect(reports).toContain("deliberately EXCLUDED");
 
-    // And the other way round: the cron DOES count it.
+    // And the other way round: the cron DOES count it. Since #2681 the cron no
+    // longer builds the custodian counter itself — it calls the ONE shared
+    // occupancy calculation, which counts the custodian as one of its terms. The
+    // guarantee is unchanged, so it is asserted through that indirection: the
+    // cron must reach occupancy via computeNightOccupancy, and
+    // computeNightOccupancy must still include the custodian term.
     const cron = readRepoFile("src/lib/cron-capacity-warnings.ts");
-    expect(cron).toContain("buildLodgeCustodianNightCounter");
+    expect(cron).toContain("computeNightOccupancy");
+    const capacity = readRepoFile("src/lib/capacity.ts");
+    expect(capacity).toContain("buildLodgeCustodianNightCounter");
   });
 
   it("takes the per-lodge advisory lock in every self-wrapped placement transaction", () => {

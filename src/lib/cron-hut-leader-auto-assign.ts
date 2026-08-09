@@ -84,16 +84,24 @@ export async function autoAssignHutLeaders(): Promise<{
             memberId: true,
             stayStart: true,
             stayEnd: true,
-            member: { select: { id: true, firstName: true, lastName: true, active: true } },
+            // Names are no longer selected: they were read only to be logged
+            // (INV-PRIV-011, #2683), and not fetching them is the strongest
+            // form of not leaking them.
+            member: { select: { id: true, active: true } },
           },
         },
       },
     });
 
-    // Collect distinct active adult members
+    // Collect distinct active adult members.
+    //
+    // INV-PRIV-011 (#2683): the member's composed name is deliberately NOT
+    // carried here. It existed only to be logged, and this job runs nightly
+    // across every lodge night, so it wrote a stream of members' full names into
+    // the application log on a completely ordinary success path. The member id
+    // identifies the assignment for anyone reading the log.
     const adultMembers = new Map<string, {
       id: string;
-      name: string;
       checkIn: Date;
       checkOut: Date;
       lodgeId: string | null;
@@ -104,7 +112,6 @@ export async function autoAssignHutLeaders(): Promise<{
         if (guest.memberId && guest.member && guest.member.active && !adultMembers.has(guest.memberId)) {
           adultMembers.set(guest.memberId, {
             id: guest.memberId,
-            name: `${guest.member.firstName} ${guest.member.lastName}`,
             checkIn: guest.stayStart,
             checkOut: guest.stayEnd,
             lodgeId: booking.lodgeId,
@@ -157,7 +164,7 @@ export async function autoAssignHutLeaders(): Promise<{
       const dateStr = day.toISOString().split("T")[0];
       assignedDates.push(dateStr);
       logger.info(
-        { memberId: member.id, memberName: member.name, date: dateStr },
+        { memberId: member.id, date: dateStr },
         "Auto-assigned hut leader"
       );
     } catch (err) {

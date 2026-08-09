@@ -3,11 +3,13 @@
 Audience: Developer, Agent.
 
 Prefix defined in this file: **`INV-PRIV`** — analytics loading and consent, what
-this application is allowed to send to Google, and what a visitor's choice does.
+this application is allowed to send to Google, what a visitor's choice does, and
+what personal data may appear in a log.
 
 Read this file when you are changing analytics loading, the consent banner or the
-public Analytics preferences control, the analytics route policy, or anything that
-decides what leaves this application for Google.
+public Analytics preferences control, the analytics route policy, anything that
+decides what leaves this application for Google, or the log/Sentry redactor and
+what it strips out.
 
 Index: [`docs/DOMAIN_INVARIANTS.md`](../DOMAIN_INVARIANTS.md) — every `INV-*` ID
 with a one-line description of what it covers. ID scheme and allocation rules:
@@ -113,3 +115,77 @@ id can never leave a stale tag active.
 Every one of these fails CLOSED: a missing row, an invalid measurement id, a
 disabled module or a database read failure all mean no analytics, and the public
 website still renders normally.
+
+## INV-PRIV-011
+
+What personal data may appear in a log, and what an audit row is allowed to keep.
+These are two different answers on purpose, and neither is "none".
+
+- **The log/Sentry redactor strips person fields BY KEY NAME, and its coverage
+  is therefore not exhaustive.** `src/lib/redact-sensitive-json.ts` is what every
+  log line and every Sentry event passes through — pino's `log` formatter in
+  `src/lib/logger.ts`, and `beforeSend`/`beforeBreadcrumb` in all THREE Sentry
+  surfaces (`src/instrumentation-client.ts`, `sentry.server.config.ts`,
+  `sentry.edge.config.ts`; the server one is the one that sees Prisma member
+  objects). It redacts, by key: first, last, middle and given names and the
+  composed spellings a route invents (`fullName`, `memberName`, `guestName`,
+  `contactName`, `surname`, `familyName`); street and postal address including
+  Xero's own bare `City`/`Region`/`Country`/`PostalCode`; date of birth; gender;
+  occupation; email; phone; credentials including hashed and second-factor ones;
+  and payment identifiers.
+- **A key spelling it does not know is a leak, so this list is a floor and not a
+  guarantee.** Emails and phone numbers have a second, value-shaped net, so a
+  missed key name still cannot leak one of those. Names and addresses have NO
+  such fallback — nothing about the string "12 Example Street" identifies it as
+  an address — so for those the key name is the only defence. A call site that
+  composes a person's name into a key the list does not carry defeats it
+  entirely, which is what #2683 found in five places (a family group's name, a
+  Xero import result, a webhook payload spread, a minor's name on a
+  member-facing route, and the nightly hut-leader cron). Those are fixed at
+  source. **When you add a call site that logs a person, log the identifier.**
+- **`name` is deliberately NOT on the denylist**, neither as an exact key nor as
+  a fragment. It is the key for lodges, rooms, membership types, email
+  templates, modules, fee schedules and Xero contact groups, and the admin Xero
+  operations panel reads group names straight out of an already-redacted
+  payload, so redacting it would blank operational logs and live admin UI. Where
+  a person's `name` genuinely must be SENT — Xero's API requires `Name` on a
+  contact — it is stripped at the persistence boundary instead, so the outbound
+  request carries it and `XeroSyncOperation.requestPayload` does not
+  (`stripPersonNameFromStoredContactPayload` in `src/lib/xero-contacts.ts`).
+- **Audit rows deliberately keep MORE than a log line does: first name, last
+  name and street address.** The admin-action audit trail is written through
+  `src/lib/audit.ts` (`logAudit`, `createAuditLog`, `createStructuredAuditLog`),
+  whose `details` and `metadata` are sanitised by `sanitizeAuditMetadata` and
+  `sanitizeAuditArchiveText` — a different key list, which redacts credentials,
+  tokens, card numbers and long HTML but NOT person fields. Owner decision of
+  9-10 Aug 2026 on #2683: an `AuditLog` row is a permission-gated,
+  retention-classed evidence record whose job is to say who did what to whom, so
+  "who" has to be legible to the officer reviewing it; this schema holds no
+  special-category data (a check across all 172 models found no medical,
+  dietary, emergency-contact, next-of-kin or ethnicity field), and the file's own
+  ARCHIVE MODE note records that over-redaction had already destroyed the only
+  surviving copy of a club's email wording. `src/lib/__tests__/audit.test.ts`
+  pins all three fields, in both directions at once.
+- **The boundary is the module, not the caller's intent.** A value keeps a person
+  field only by being written as an audit row through `audit.ts`. Anything that
+  reaches `logger.*`, Sentry, a webhook log or a persisted Xero payload goes
+  through the redactor and loses it, whatever the calling code believes its
+  context to be. There is no "audit context" switch on the redactor for a later
+  change to copy, so the exception cannot spread by imitation; widening it means
+  moving a call onto the audit writer, which is a visible change carrying its own
+  permission and retention consequences.
+- **The redactor has two limit profiles, and the difference is load-bearing.**
+  `redactSensitiveJson` is the log path: depth 6 and an output budget, because a
+  log line must stay cheap. `redactSensitiveRecord` is the stored-or-displayed
+  path — `sanitizeForJson` in `src/lib/xero-sync.ts` and the admin Xero panels —
+  and drops those limits, because those payloads are persisted records that
+  read-modify-write cycles re-read and re-persist, so a truncation there is
+  permanent and compounds. Both apply exactly the same redaction rules.
+- **A key added to the denylist must never be broad enough to rewrite an
+  identifier.** The value-shaped phone pattern is bounded so that an 8+ digit run
+  inside a cuid survives, because those ids are load-bearing in persisted
+  payloads. The email pattern excludes path separators for the same reason: it
+  used to match `node_modules/@sentry/nextjs/…` and replace every stack trace
+  naming a scoped package with `[REDACTED]`. The same caution governs every key
+  fragment added later — which is why `region`, `country` and `city` are exact
+  keys rather than fragments, and why `token` is not a fragment at all.

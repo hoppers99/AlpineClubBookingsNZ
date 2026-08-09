@@ -131,3 +131,38 @@ only the ID heading lines were added.
   mismatched members, chunked and resumable by member-id cursor, and never
   advances the CONTACT delta-sync watermark. Members without a Xero contact are
   reported as skipped, never silently omitted.
+
+## Endpoint modes external consumers still call (#2678)
+
+### INV-INT-016
+
+**`GET /api/bookings/rooms` keeps its no-`lodgeId` mode because CONSUMERS
+OUTSIDE THIS REPOSITORY still call it that way** — not because anything in
+`src/` needs it (#2678 surface 4).
+
+The unscoped signature is the **pre-multi-lodge** one. This repository is a
+template that other clubs fork and run, and their booking wizards and external
+integrations still call the endpoint without a `lodgeId`. Requiring one would
+break them for no internal gain. Since #2677 no page in `src/` uses the mode, so
+from inside this repository it looks like an oversight and a tidy-up will
+propose deleting it. It is not: the reason cannot be re-derived from the code,
+which is why it is written here rather than left in a closed issue.
+
+Two things follow, and both are load-bearing:
+
+- **Do not make `lodgeId` required, and do not delete the branch.** Changing the
+  mode is a breaking change to a published contract with no internal benefit.
+  The eligibility filtering is what makes retaining it SAFE — a named forbidden
+  lodge answers `403`, an unscoped listing is filtered to the member's eligible
+  lodges — but it is not the reason for retaining it.
+- **No client in `src/` may call it without a `lodgeId`.** Doing so is the
+  #2664 defect (a picker offering another lodge's rooms for a booking whose
+  lodge is already fixed), and internal reuse of the mode is what made that
+  defect possible. Pinned by
+  `src/app/api/bookings/__tests__/rooms-unscoped-mode-has-no-internal-caller.test.ts`.
+
+Known and deliberately not fixed here: the unscoped listing filters on
+`Room.active` and booking restrictions but not on the LODGE's own `active` flag,
+so an unrestricted member's cross-lodge listing includes archived lodges' rooms
+(`docs/multi-lodge/lodge-scoping-contract.md`). Retaining the mode retains that
+for whoever calls it.

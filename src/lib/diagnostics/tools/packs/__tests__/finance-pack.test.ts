@@ -718,6 +718,26 @@ describe("AID-6C finance pack: read-only (#2377)", () => {
       );
     }
   });
+
+  /**
+   * #2674 review — a census COUNT must not be quoted in shipped operator copy.
+   *
+   * `evidenceScope` is a runtime string: it is what an operator (and the
+   * diagnostics model) actually reads, not a developer comment. It carried
+   * "82 production write paths still record that way" long after #2581's second
+   * child categorised all 82 at the source, so the copy asserted, in the present
+   * tense, a state the tree had already left — while the docblock thirty lines
+   * above it had been corrected. A number in this string is a number nobody
+   * re-measures; the qualification the scope line exists to make ("an empty
+   * result is not evidence that nothing happened") does not need one.
+   */
+  it("quotes no write-site census count in any shipped scope line", () => {
+    for (const tool of financeTools) {
+      expect(tool.evidenceScope ?? "", tool.id).not.toMatch(
+        /\d[\d,_]*\s+(production\s+)?write\s+(paths|sites)/i,
+      );
+    }
+  });
 });
 
 describe("AID-6C finance pack: integer cents (#2377)", () => {

@@ -431,6 +431,55 @@ export function getMissingFieldsForXeroContactCreate(member: {
   return missingFields;
 }
 
+/**
+ * The contact request as it is PERSISTED, which is deliberately not the contact
+ * request as it is SENT (INV-PRIV-011, #2683).
+ *
+ * Xero's accounting API requires `Name` on a contact, so these writers have to
+ * send `"${firstName} ${lastName}"` — there is no version of the request that
+ * omits it. But the same object was handed to `startXeroSyncOperation` as the
+ * operation's `requestPayload`, so every contact create and every contact update
+ * wrote a member's full name into `XeroSyncOperation.requestPayload` and kept it
+ * there. `firstName`, `lastName`, `emailAddress` and the address lines are all
+ * stripped by the redactor on the way in; `name` is not, and cannot be, because
+ * `name` is also the key for lodges, rooms, templates and Xero contact groups
+ * that the admin panel reads back out of these very payloads.
+ *
+ * So it is removed here, at the persistence boundary, the same way the other
+ * call sites that composed a person's name were fixed at source. The idempotency
+ * key is unaffected: `buildXeroPayloadHash` runs on the outbound request, not on
+ * the stored copy, precisely so that redaction cannot change an operation's
+ * identity.
+ *
+ * Shape-tolerant on purpose — `retryXeroWriteWithContactRepair` is shared with
+ * the invoice and credit-note writers, and this must be a no-op for their
+ * payloads.
+ */
+function stripPersonNameFromStoredContactPayload(payload: unknown): unknown {
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
+    return payload;
+  }
+  const record = payload as Record<string, unknown>;
+  if (!Array.isArray(record.contacts)) {
+    return payload;
+  }
+  return {
+    ...record,
+    contacts: record.contacts.map((entry) => {
+      if (!entry || typeof entry !== "object" || Array.isArray(entry)) {
+        return entry;
+      }
+      const contact = entry as Record<string, unknown>;
+      if (!("name" in contact)) {
+        return entry;
+      }
+      const stored: Record<string, unknown> = { ...contact };
+      delete stored.name;
+      return stored;
+    }),
+  };
+}
+
 function buildMemberXeroContactCreatePayload(
   member: LockedMemberContactCreateSnapshot,
 ): Contact {
@@ -754,7 +803,10 @@ export async function findOrCreateXeroContact(
             localId: memberId,
             idempotencyKey,
             correlationKey: idempotencyKey,
-            requestPayload: { contacts: [contact] },
+            // INV-PRIV-011 (#2683): sent with Xero's required Name, stored without it.
+            requestPayload: stripPersonNameFromStoredContactPayload({
+              contacts: [contact],
+            }),
             createdByMemberId: options?.createdByMemberId ?? null,
           },
           value: { contact, lockedMember: locked },
@@ -1084,7 +1136,10 @@ export async function createXeroContactForMember(
           localId: memberId,
           idempotencyKey,
           correlationKey: idempotencyKey,
-          requestPayload: { contacts: [contact] },
+          // INV-PRIV-011 (#2683): sent with Xero's required Name, stored without it.
+          requestPayload: stripPersonNameFromStoredContactPayload({
+            contacts: [contact],
+          }),
           createdByMemberId: options?.createdByMemberId ?? null,
         },
         value: contact,
@@ -1279,7 +1334,9 @@ async function persistUpdatedXeroOperationRequest(input: {
   await prisma.xeroSyncOperation.update({
     where: { id: input.operationId },
     data: {
-      requestPayload: sanitizeForJson(input.requestPayload),
+      requestPayload: sanitizeForJson(
+        stripPersonNameFromStoredContactPayload(input.requestPayload),
+      ),
       idempotencyKey: input.keys?.idempotencyKey,
       correlationKey: input.keys?.correlationKey,
     },
@@ -1430,7 +1487,10 @@ export async function updateXeroContact(
       localId: options?.localId,
       idempotencyKey: keys.idempotencyKey,
       correlationKey: keys.correlationKey,
-      requestPayload: buildRequestPayload(xeroContactId, contactData),
+      // INV-PRIV-011 (#2683): sent with Xero's required Name, stored without it.
+      requestPayload: stripPersonNameFromStoredContactPayload(
+        buildRequestPayload(xeroContactId, contactData),
+      ),
       createdByMemberId: options?.createdByMemberId ?? null,
     };
   };

@@ -3085,7 +3085,13 @@ rule result.
   grants Treasurer edit access to finance admin routes.
 - Public bearer tokens are stored hashed or encrypted according to use case.
 - Logs, Sentry events, and webhook records should be redacted before storing or
-  emitting sensitive values.
+  emitting sensitive values. `src/lib/redact-sensitive-json.ts` is the one
+  chokepoint: it strips credentials, tokens, payment identifiers and person
+  fields BY KEY NAME, and bounds its own walk so a self-referencing record
+  cannot overflow the stack from inside a logging call. Because coverage is by
+  key spelling it is a floor rather than a guarantee, and the admin-action audit
+  trail deliberately keeps more than a log line does — see
+  [`INV-PRIV-011`](invariants/analytics-and-privacy.md#inv-priv-011).
 - Mutation routes should validate inputs with structured schemas and enforce
   role/session checks close to the route boundary.
 - External service callbacks and webhooks must verify signatures, state, or

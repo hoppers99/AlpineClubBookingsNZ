@@ -348,7 +348,7 @@ export default function ReportsPage() {
     const blob = new Blob([csvContent], { type: "text/csv;charset=utf-8;" });
     const url = URL.createObjectURL(blob);
     const anchor = document.createElement("a");
-    const dateStr = new Date().toISOString().slice(0, 10);
+    const dateStr = todayDateOnlyForTimeZone();
     anchor.href = url;
     anchor.download = `tac-report-${dateStr}.csv`;
     anchor.click();

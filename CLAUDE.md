@@ -173,10 +173,14 @@ typecheck-clean PR can still fail on them:
 - **Changelog entry** — fails a PR that changes a non-test file under `src/` or
   `prisma/` and carries neither a `changelog.d/` fragment nor the
   `changelog: none — <reason>` marker in the PR body.
-- **Concurrency declaration** — cannot be `N/A` when the diff touches a non-test
-  file on a sensitive path (money, capacity, lifecycle, webhook/cron, Xero or
-  Stripe modules, `prisma/schema.prisma`, `prisma/migrations/`), even for a
-  read-only change.
+- **Concurrency declaration** — keyed entirely on the diff. The
+  `## Concurrency And Lock Impact` section is **required, and cannot be `N/A`**,
+  when the diff touches a non-test file on a sensitive path (money, capacity,
+  lifecycle, webhook/cron, Xero or Stripe modules, `prisma/schema.prisma`,
+  `prisma/migrations/`) — even for a read-only change. When the diff touches no
+  such file the section is not asked for at all and may be omitted (#2726),
+  which is how a Dependabot PR passes without the template. Fill the template in
+  anyway; the gate is a floor, not the standard.
 
 Both parse the PR body, so **editing the body alone does not re-run Actions** —
 push an empty commit after fixing one. That makes a wrong body expensive: each
@@ -196,3 +200,9 @@ cause nearly every failure: the headings and field labels are matched **exactly*
 (copy them from `.github/pull_request_template.md`, do not reword), and each
 field's value must sit on the **same line as its label** — a value wrapped onto
 the next line reads as empty.
+
+It does need to be able to read the diff, because that is what both gates key
+on. If it cannot resolve the base — an unfetched `origin/main`, a `--base` ref
+that does not exist — it reports failure instead of a green it cannot stand
+behind, and refuses a ticked `N/A` on the same grounds. Run `git fetch origin
+main` (or pass `--base <ref>`) and check again.

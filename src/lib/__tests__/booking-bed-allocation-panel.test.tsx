@@ -326,30 +326,25 @@ describe("BookingBedAllocationPanel", () => {
     expect(body.allocationIds).toBeUndefined();
   });
 
-  it("keeps the approval club-wide when the booking has no lodge", async () => {
-    // Null lodgeId is the pre-backfill tolerance the board keeps too: scoping to
-    // a lodge the booking does not have would approve nothing at all.
-    renderPanel({ lodgeId: null });
+  it("names the booking's lodge on every board link it builds (#2678)", async () => {
+    // REPLACES "keeps the approval club-wide when the booking has no lodge".
+    //
+    // That test rendered the panel with `lodgeId: null` and called it the
+    // "pre-backfill tolerance". There is no such state: `Booking.lodgeId` is NOT
+    // NULL in the schema, so a booking without a lodge is a shape production
+    // cannot emit, and the tolerance was really a latent second instance of
+    // #2664 waiting for a caller to pass null. The prop is now `string`, and
+    // what is worth pinning is the opposite property — that the lodge travels
+    // on the deep link, so the board does not open club-wide over a booking
+    // that has a lodge.
+    renderPanel();
 
-    const confirm = await screen.findByRole("button", {
-      name: "Confirm draft beds",
+    const boardLink = await screen.findByRole("link", {
+      name: "Open on the board",
     });
-    fetchMock.mockResolvedValueOnce(jsonResponse({ approvedCount: 2 }));
-    fireEvent.click(confirm);
-
-    await waitFor(() => {
-      expect(
-        fetchMock.mock.calls.some(
-          (call) => String(call[0]) === "/api/admin/bed-allocation/approve",
-        ),
-      ).toBe(true);
-    });
-    const approveCall = fetchMock.mock.calls.find(
-      (call) => String(call[0]) === "/api/admin/bed-allocation/approve",
-    );
-    expect(JSON.parse(String(approveCall?.[1]?.body))).toEqual({
-      bookingId: "booking-1",
-    });
+    const href = boardLink.getAttribute("href") ?? "";
+    expect(href).toContain("bookingId=booking-1");
+    expect(href).toContain("lodgeId=lodge-1");
   });
 
   it("says plainly that confirming does not place the nights nobody is on a bed for", async () => {

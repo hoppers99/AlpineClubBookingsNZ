@@ -48,10 +48,51 @@ import { vi } from "vitest";
  * The scope set is the narrowest one that is still a decided set: `sameBooking`
  * only. `sameBookingOwner` would pull the coverage-owner advisory key and the
  * same-owner settle step into suites that never modelled either.
+ *
+ * `mode` IS THEREFORE NOT A FREE KNOB (#2675 review). Callers may pick between
+ * the two ACTIVE modes — `ENFORCED` (a hosting hazard refuses the write) and
+ * `ADMIN_REVIEW_REQUIRED` (it is recorded and the write proceeds) — because that
+ * choice changes what a suite's own assertions see. They may not select an
+ * inactive one: `hostingModeIsActive` admits only those two, so anything else
+ * re-opens the #2623 T5 bypass in the very suites this helper exists to close it
+ * in. The census in `adult-member-hosting-call-sites.test.ts` cannot catch that
+ * on its own — it can only see that the helper is CALLED — so the refusal is
+ * here, at the one place the value is written.
  */
+
+/** The modes `hostingModeIsActive` admits — the only ones a double may state. */
+export type ActiveHostingMode = "ENFORCED" | "ADMIN_REVIEW_REQUIRED";
+const ACTIVE_HOSTING_MODES: readonly string[] = [
+  "ENFORCED",
+  "ADMIN_REVIEW_REQUIRED",
+];
+
 export function fenceHostingPolicyFindMany(
-  overrides: Record<string, unknown> = {},
+  overrides: Omit<Record<string, unknown>, "mode"> & {
+    mode?: ActiveHostingMode;
+  } = {},
 ) {
+  // Runtime guard as well as a type, because a suite can widen its way past the
+  // type (`as`, an untyped spread, a `Record<string, unknown>` built elsewhere)
+  // and the failure mode is silent: the gate at
+  // `adult-member-hosting-review.ts` returns before the participant fence, every
+  // fence double beside it stops being reached, and every test stays green.
+  // That is #2623 T5 and #2675 exactly.
+  if (
+    "mode" in overrides &&
+    !ACTIVE_HOSTING_MODES.includes(String(overrides.mode))
+  ) {
+    throw new Error(
+      `fenceHostingPolicyFindMany: mode must be an ACTIVE hosting mode ` +
+        `(${ACTIVE_HOSTING_MODES.join(" or ")}), got ${JSON.stringify(overrides.mode)}. ` +
+        `An inactive mode takes the #2623 T5 early return in ` +
+        `reconcileAdultMemberHostingReviewWithSiblings, so the #2619 participant ` +
+        `fence is never reached and the doubles beside it assert nothing — the ` +
+        `#2675 bypass, silently restored. A suite that genuinely needs the rule ` +
+        `switched off must not wire this helper at all, and must be listed in ` +
+        `FENCE_DOUBLES_WITHOUT_AN_ACTIVE_POLICY with its reason.`,
+    );
+  }
   return vi.fn(async () => [
     {
       id: "fence-double-club-policy",
@@ -65,6 +106,57 @@ export function fenceHostingPolicyFindMany(
       ...overrides,
     },
   ]);
+}
+
+/**
+ * The live `Member` row the hosting EVALUATOR reads off a booking guest (#2675).
+ *
+ * `BOOKING_HOSTING_SELECT` hydrates `guests.member` with exactly these five
+ * columns, and `memberIsInGoodStanding` reads three of them. A guest fixture
+ * that carries `isMember: true` with no `member` relation is therefore a shape
+ * production cannot emit, and it does not fail honestly: `member !== null` is
+ * TRUE for `undefined`, so the predicate goes on to read `undefined.active` and
+ * the seam throws a `TypeError` instead of treating the guest as a non-member.
+ *
+ * That never showed while the fence doubles left the lodge's hosting mode at the
+ * resolver's `DISABLED` default, because `evaluateBookingAdultMemberHosting`
+ * builds no participants at all unless the mode is active. Pairing
+ * `fenceHostingPolicyFindMany` with a fixture whose guests carry this row is
+ * what makes a suite genuinely hosting-evaluable.
+ *
+ * ADULT AND IN GOOD STANDING by default, because that is the shape that keeps an
+ * existing suite's assertions intact: an adult member participant qualifies as a
+ * host, so a fixture whose guests are all members raises no hosting violation
+ * and the seam behaves exactly as it did with the rule off — while the fence in
+ * front of it is now genuinely exercised. Pass `overrides` to model a lapsed,
+ * archived or non-adult member deliberately, and `null` (not a partial row) to
+ * model a true non-member guest.
+ *
+ * THE CALLER MUST PASS THE GUEST ROW'S OWN `ageTier` rather than relying on the
+ * ADULT default (#2675 review). `BookingGuest.ageTier` and `Member.ageTier` are
+ * separate columns that a real row always agrees on, and
+ * `participantQualifiesAsHost` reads the MEMBER's. Deriving this row from
+ * `memberId` alone therefore turns any member-linked CHILD or YOUTH guest into
+ * an adult host and suppresses a hosting violation production would raise —
+ * silently, because nothing in the suite asserts the tier.
+ */
+export function hostingMemberRow(
+  id: string,
+  overrides: Partial<{
+    ageTier: string;
+    active: boolean;
+    cancelledAt: Date | null;
+    archivedAt: Date | null;
+  }> = {},
+) {
+  return {
+    id,
+    ageTier: "ADULT",
+    active: true,
+    cancelledAt: null,
+    archivedAt: null,
+    ...overrides,
+  };
 }
 
 /**

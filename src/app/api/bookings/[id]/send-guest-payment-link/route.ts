@@ -56,7 +56,7 @@ export async function POST(
     },
   });
 
-  if (!booking || booking.deletedAt) {
+  if (!booking) {
     return NextResponse.json({ error: "Booking not found" }, { status: 404 });
   }
   // #2258: the caller may be the BOOKER, not an officer. Remember which, so a
@@ -64,6 +64,21 @@ export async function POST(
   const isAdmin = hasAdminAccess(session.user);
   if (booking.memberId !== session.user.id && !isAdmin) {
     return NextResponse.json({ error: "Forbidden" }, { status: 403 });
+  }
+  // #2674 (INV-ADDPAY-031): the deletion check sits AFTER the authorisation
+  // check, not folded into the not-found branch above it. Checked first — which
+  // is how this route was written — a caller with no claim on the booking got
+  // 404 for a deleted booking and 403 for a live one, so an id whose existence
+  // they could otherwise establish (a booking they were a guest on, a shared
+  // URL) flipped 403 -> 404 the moment an admin deleted it. The body stays
+  // BYTE-IDENTICAL to the not-found branch so a deleted booking and a
+  // nonexistent one are indistinguishable to a caller who IS authorised.
+  //
+  // 404 for every role, with no Full Admin exemption: that exemption belongs to
+  // record-VIEWING surfaces like `bookings/[id]/page.tsx`, and this is a write
+  // (it mints and emails live payment tokens).
+  if (booking.deletedAt) {
+    return NextResponse.json({ error: "Booking not found" }, { status: 404 });
   }
 
   const children = booking.linkedBookings;

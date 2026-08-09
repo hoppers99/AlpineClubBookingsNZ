@@ -182,7 +182,7 @@ describe("PR changelog fragment gate", () => {
   it("classifies a non-ASCII source path instead of failing open on git's quoting", () => {
     const root = makeRepoAdding("src/lib/café.ts");
     try {
-      const raw = gitDiffChangedFiles("HEAD~1", "HEAD", { nameStatus: true, cwd: root });
+      const raw = gitDiffChangedFiles("HEAD~1", "HEAD", { cwd: root });
       expect(raw).toContain("src/lib/café.ts");
       expect(raw).not.toContain("\\303");
       const parsed = parseNameStatus(raw);

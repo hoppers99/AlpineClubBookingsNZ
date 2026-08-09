@@ -373,7 +373,7 @@ deliberately left unpointered, so a later reader does not repeat the sweep.
 
 ## 5. The files
 
-15 files in this directory, 16 prefixes, 467 IDs, plus this scheme and
+15 files in this directory, 16 prefixes, 468 IDs, plus this scheme and
 [`_FOLLOW_UPS.md`](_FOLLOW_UPS.md).
 
 **The index is authoritative for prefix → file and ID → file**, and it is the

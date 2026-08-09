@@ -1432,10 +1432,12 @@ export async function createModificationExceptionRequest(
  * Member cancels their own OPEN modification policy-exception request. Guarded
  * single transition, frees the slot, returns false (no side effect) on a lost
  * claim. Scoped to POLICY_EXCEPTION so it can never touch a locked-period row,
- * and to the request's own `bookingId` so a request reached via the wrong
- * booking URL cannot be claimed (which would mislabel the success-path audit
- * with the URL's booking rather than the request's real one) — a mismatched
- * pair claims 0 rows and returns false.
+ * to the request's own `bookingId` so a request reached via the wrong booking
+ * URL cannot be claimed (which would mislabel the success-path audit with the
+ * URL's booking rather than the request's real one), and — #2674 — to a booking
+ * that has not been soft-deleted. Each of those is a predicate ON THE CLAIM, so
+ * every failure mode is the same indistinguishable lost claim: 0 rows, false,
+ * no write, no reservation release, and the route's plain 409.
  */
 export async function cancelModificationExceptionRequest(input: {
   id: string;
@@ -1470,6 +1472,51 @@ export async function cancelModificationExceptionRequest(input: {
         requestedByMemberId: input.requestedByMemberId,
         kind: "POLICY_EXCEPTION",
         status: "REQUESTED",
+        // #2674: and the booking must not be SOFT-DELETED.
+        //
+        // WHY THIS PATH WAS GENUINELY REACHABLE. #2674 was filed against the
+        // arrival-time write, which already refuses a deleted booking by
+        // accident — its status gate admits only live bookings, and
+        // `Booking.deletedAt` has exactly one writer
+        // (`softDeleteCancelledBooking`, src/lib/booking-delete.ts) which
+        // refuses anything not already CANCELLED and never clears the column,
+        // so a soft-deleted booking is CANCELLED permanently. This claim had no
+        // such accident to inherit: the route above it never loads the Booking
+        // at all, and the `where` here named the REQUEST's own columns and
+        // nothing about the booking. A member could cancel their open exception
+        // request on a booking the club had deleted, writing CANCELLED +
+        // cancelledAt + a version bump, releasing the provisional reservation,
+        // and earning a success audit row against a deleted record.
+        //
+        // AND THE STATE IS PRODUCIBLE. `CANCELLED + deletedAt + an open
+        // REQUESTED policy-exception request` needs nothing exotic: booking
+        // cancellation never resolves change requests (booking-cancel.ts does
+        // not mention `bookingChangeRequest` once), and
+        // `getCancelledBookingDeleteBlockers` does not count them either, so an
+        // open request neither closes itself on cancel nor blocks the delete.
+        //
+        // WHY A RELATION FILTER RATHER THAN A PRE-READ. Three reasons, and the
+        // third is the deciding one:
+        //  - it is ATOMIC with the claim. A read-then-write would leave a window
+        //    in which the booking is deleted between the check and the update;
+        //    here the guard is evaluated by the same statement that takes the
+        //    row, under the locks already held.
+        //  - it costs no extra query, and the existing lost-claim branch already
+        //    handles a zero count with no side effect at all.
+        //  - it leaks NOTHING. A deleted booking now loses the claim exactly as
+        //    a wrong-owner or wrong-booking caller does, so all three produce
+        //    the identical 409. A pre-read answering 404 would have been the
+        //    worse shape here: this route has no authorisation step in front of
+        //    it — the claim IS the authorisation — so a 404-on-deleted branch
+        //    ahead of it would let ANY signed-in member probe any booking id
+        //    from the URL and learn whether that booking was deleted. 409
+        //    "no longer open and cannot be cancelled" is also honest on the
+        //    facts: on a deleted booking the request is not cancellable.
+        //
+        // The provisional capacity hold is not stranded by refusing here: the
+        // #2553 hold reaper (`cron-policy-exception-hold-reaper.ts`) releases it
+        // and moves the request to EXPIRED on its own deadline.
+        booking: { deletedAt: null },
       },
       data: {
         status: "CANCELLED",

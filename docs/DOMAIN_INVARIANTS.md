@@ -31,7 +31,7 @@ description, so you can find the right file without opening more than one.
 | [`subscription-lockout-pricing.md`](invariants/subscription-lockout-pricing.md) | `INV-LOCKOUT` | lapsed-subscription pricing, admin date overrides, retroactive creates, withheld email |
 | [`booking-policy-exceptions.md`](invariants/booking-policy-exceptions.md) | `INV-EXCEPT` | policy-exception requests and officer decisions on them |
 | [`additional-payment-chasing.md`](invariants/additional-payment-chasing.md) | `INV-ADDPAY` | an outstanding additional payment, quote/request holds, refund settlement |
-| [`analytics-and-privacy.md`](invariants/analytics-and-privacy.md) | `INV-PRIV` | analytics loading, the consent banner, the public Analytics preferences control, the analytics route policy, what leaves this application for Google |
+| [`analytics-and-privacy.md`](invariants/analytics-and-privacy.md) | `INV-PRIV` | analytics loading, the consent banner, the public Analytics preferences control, the analytics route policy, what leaves this application for Google, what personal data may appear in a log |
 | [`membership-lifecycle.md`](invariants/membership-lifecycle.md) | `INV-LIFE` (except `INV-LIFE-062`) | applications and nomination, cancellation, archive and deletion, roles and the admin lock-out guards, seasonal membership type and age tier, family groups, partner and parent/dependant links, email inheritance, inductions, member merge |
 | [`integrations.md`](invariants/integrations.md) | `INV-INT` | webhooks, cron idempotency, provider callbacks, Xero member grouping |
 | [`operations.md`](invariants/operations.md) | `INV-OPS` | raw SQL, row locking, deployment, dropping a column, what may be used as test input |
@@ -134,6 +134,7 @@ number and prefix, and it is listed at the end of the table below.
 | `INV-DATE-011` | Lodge bookings use NZ date-only nights, not arbitrary timestamps |
 | `INV-DATE-012` | `BookingGuest.stayStart`/`stayEnd` are date-only occupancy in the envelope |
 | `INV-DATE-013` | Compare date columns only against date-only values, never a raw clock |
+| `INV-DATE-019` | Ask the club's calendar for "today", never the UTC clock |
 | `INV-DATE-014` | Client-side a lodge night is an NZ `yyyy-MM-dd` string, carried end to end |
 | `INV-DATE-015` | Rendering has one seam, `nzst-date.ts`; bare `toLocale*` is lint-blocked |
 | `INV-DATE-016` | `formatNZLongDate` is reserved for four named member-facing surfaces |
@@ -524,11 +525,15 @@ Prefix `INV-ADDPAY`.
 | `INV-ADDPAY-020` | Stepped Stripe refunds settle as per-delta credit notes summing exactly to the refunded total |
 | `INV-ADDPAY-021` | For Stripe payments the local refund ledger is truth; inbound Xero may only raise it |
 | `INV-ADDPAY-022` | Soft-delete may hide a duplicate only when no external money history must stay operator-visible |
+| `INV-ADDPAY-030` | A soft-deleted booking is always CANCELLED and stays so; most routes refuse it only incidentally |
+| `INV-ADDPAY-031` | House shape for a deleted-booking guard: 404 for every role, after the authorisation check |
+| `INV-ADDPAY-032` | Two writes stay reachable on a soft-deleted booking, tracked as decisions not guards |
+| `INV-ADDPAY-033` | Two unguarded GETs still serve a deleted booking's own data to its owner |
 
 ## Analytics And Privacy
 
-Analytics loading and consent, and what this application is allowed to send to
-Google.
+Analytics loading and consent, what this application is allowed to send to
+Google, and what personal data may appear in a log.
 File:
 [`invariants/analytics-and-privacy.md`](invariants/analytics-and-privacy.md).
 Prefix `INV-PRIV`.
@@ -545,6 +550,7 @@ Prefix `INV-PRIV`.
 | `INV-PRIV-008` | Leaving the public website unmounts the runtime, sets the kill switch and queues a denial |
 | `INV-PRIV-009` | The per-browser choice stores the consent revision and surface; only an explicit action bumps it |
 | `INV-PRIV-010` | Every one of these fails closed, and the public website still renders normally |
+| `INV-PRIV-011` | Which person fields the log/Sentry redactor strips by key, that key coverage is not exhaustive, and that audit rows deliberately keep name and street address |
 
 ## Membership Lifecycle
 
@@ -669,6 +675,7 @@ File: [`invariants/integrations.md`](invariants/integrations.md). Prefix
 | `INV-INT-013` | Mode or rule changes never auto-resync the population; members re-group on their next trigger |
 | `INV-INT-014` | The per-member sync keeps Xero calls outside transactions, ledgers each op, and adds before removing |
 | `INV-INT-015` | The bulk re-sync is admin-triggered, dry-run-first, chunked, resumable, and never moves the watermark |
+| `INV-INT-016` | `GET /api/bookings/rooms` keeps its no-`lodgeId` mode for FORKED/EXTERNAL consumers; no `src/` client may use it |
 
 ## Operations
 

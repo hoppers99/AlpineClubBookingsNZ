@@ -29,6 +29,7 @@ export function AdminBookingToolsCard({
   bookingId,
   memberId,
   memberName,
+  lodgeId,
   checkIn,
   checkOut,
   copyProps,
@@ -49,6 +50,15 @@ export function AdminBookingToolsCard({
   bookingId: string;
   memberId: string;
   memberName: string;
+  /**
+   * The booking's own lodge (#2678). NOT NULL in the schema, and deliberately
+   * not nullable here: it travels on the bed-allocation deep link so the board
+   * opens on the lodge the booking is actually at. The server derives the same
+   * lodge from `bookingId` regardless — this keeps the board's own lodge
+   * selector agreeing with the scope it was served, rather than showing "all
+   * lodges" over a single lodge's data.
+   */
+  lodgeId: string;
   checkIn: Date;
   checkOut: Date;
   copyProps: { sourceCheckIn: string; sourceCheckOut: string; minCheckIn: string };
@@ -125,6 +135,12 @@ export function AdminBookingToolsCard({
     from: formatDateOnly(checkIn),
     to: formatDateOnly(checkOut),
     bookingId,
+    // #2678: without this the board opened CLUB-WIDE with this booking focused,
+    // and its bed pickers offered every lodge's beds for this booking's guests
+    // — a choice the writer then refused. The API derives the lodge from
+    // `bookingId` too, so this is what keeps the board's lodge selector honest
+    // about the scope it was served, not the thing that scopes the read.
+    lodgeId,
   });
   const bedAllocationHref = buildHrefWithReturnTo(
     `/admin/bed-allocation?${bedAllocationParams.toString()}`,
