@@ -106,10 +106,20 @@ function guestPayload(opts: {
  * Serves the kiosk's endpoints with a week that spans both departure mornings,
  * and the given guest payload for whichever day is opened.
  */
-function installFetchMock(payload: ReturnType<typeof guestPayload>) {
+function installFetchMock(
+  payload: ReturnType<typeof guestPayload>,
+  // #2737: the attendance WRITES are unmocked by default and the throw below is
+  // deliberate — a test that presses a button without declaring what the server
+  // says is not testing anything. Pass this to declare it.
+  arriveResponse?: () => Response,
+) {
   const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
     const url = new URL(String(input), "http://localhost");
     const path = url.pathname;
+
+    if (/^\/api\/lodge\/guests\/\d{4}-\d{2}-\d{2}\/arrive$/.test(path) && arriveResponse) {
+      return arriveResponse();
+    }
 
     if (path === "/api/lodge/access") {
       return Response.json({
@@ -260,6 +270,75 @@ describe("kiosk Mark Departed follows the check-out flag, not the badge (#2631)"
     expect(within(row).getByText("Departing")).toBeVisible();
     expect(
       within(row).queryByRole("button", { name: "Mark Departed" }),
+    ).toBeNull();
+  });
+});
+
+describe("the kiosk repeats the server's gap-night refusal verbatim (#2737)", () => {
+  beforeEach(() => {
+    process.env.TZ = "Pacific/Auckland";
+  });
+
+  afterEach(() => {
+    cleanup();
+    vi.restoreAllMocks();
+    vi.unstubAllGlobals();
+    vi.setSystemTime(frozenTestNow());
+    hostTimeZone.restore();
+  });
+
+  const REFUSAL =
+    "This guest is not booked in for this night, so they cannot be checked in. Reload the day to see who is staying.";
+
+  it("shows the refusal sentence, not 'Failed to update arrival'", async () => {
+    // The only way the endpoint's new 409 is reachable in practice: a page left
+    // open from an earlier night still shows a Mark Arrived button that the
+    // server now refuses. The generic line sends the hut leader looking for a
+    // fault that is not there; the server's own sentence tells them to reload.
+    installFetchMock(
+      guestPayload({
+        isDeparting: false,
+        canMarkDeparted: false,
+        isArriving: true,
+        canMarkArrived: true,
+      }),
+      () =>
+        Response.json(
+          { error: REFUSAL, code: "GUEST_NOT_BOOKED_THIS_NIGHT" },
+          { status: 409 },
+        ),
+    );
+
+    const row = await openGuestRow(RETURN_NIGHT);
+    fireEvent.click(within(row).getByRole("button", { name: "Mark Arrived" }));
+
+    expect(await screen.findByText(REFUSAL)).toBeVisible();
+    expect(screen.queryByText("Failed to update arrival")).toBeNull();
+  });
+
+  it("keeps the generic line for any OTHER failure", async () => {
+    // The whitelist half. A 500, or a 409 carrying some other code, must not
+    // put arbitrary server text on the kiosk screen.
+    installFetchMock(
+      guestPayload({
+        isDeparting: false,
+        canMarkDeparted: false,
+        isArriving: true,
+        canMarkArrived: true,
+      }),
+      () =>
+        Response.json(
+          { error: "Internal detail nobody at the lodge should read" },
+          { status: 500 },
+        ),
+    );
+
+    const row = await openGuestRow(RETURN_NIGHT);
+    fireEvent.click(within(row).getByRole("button", { name: "Mark Arrived" }));
+
+    expect(await screen.findByText("Failed to update arrival")).toBeVisible();
+    expect(
+      screen.queryByText("Internal detail nobody at the lodge should read"),
     ).toBeNull();
   });
 });
