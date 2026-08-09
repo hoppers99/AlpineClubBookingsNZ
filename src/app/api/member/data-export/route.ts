@@ -11,6 +11,7 @@ import { requireActiveSessionUser } from "@/lib/session-guards";
 import { prisma } from "@/lib/prisma";
 import { checkRateLimit, rateLimiters } from "@/lib/rate-limit";
 import logger from "@/lib/logger";
+import { todayDateOnlyForTimeZone } from "@/lib/date-only";
 
 export async function GET() {
   const session = await auth();
@@ -200,7 +201,7 @@ export async function GET() {
       },
     });
 
-    const exportDate = new Date().toISOString().substring(0, 10);
+    const exportDate = todayDateOnlyForTimeZone();
     const payload = {
       exportedAt: new Date().toISOString(),
       exportedBy: `${member.firstName} ${member.lastName}`,

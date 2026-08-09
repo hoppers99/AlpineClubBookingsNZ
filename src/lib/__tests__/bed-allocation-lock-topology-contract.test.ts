@@ -1,9 +1,54 @@
-import { readFileSync } from "fs";
+import fs, { readFileSync } from "fs";
 import path from "path";
 import { describe, expect, it } from "vitest";
 
 function source(relativePath: string): string {
   return readFileSync(path.resolve(process.cwd(), relativePath), "utf8");
+}
+
+/** Every `.ts`/`.tsx` source under `dir`, excluding declarations. */
+function walkSources(dir: string, files: string[] = []): string[] {
+  for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+    const full = path.join(dir, entry.name);
+    if (entry.isDirectory()) {
+      if (entry.name === "node_modules") continue;
+      walkSources(full, files);
+    } else if (/\.(ts|tsx)$/.test(entry.name) && !entry.name.endsWith(".d.ts")) {
+      files.push(full);
+    }
+  }
+  return files;
+}
+
+function isTestFile(relPath: string): boolean {
+  return (
+    relPath.includes("__tests__") ||
+    /\.(test|spec)\.tsx?$/.test(relPath) ||
+    relPath.includes(".integration.")
+  );
+}
+
+/**
+ * The balanced `open`..`close` region starting at `openIndex`, so a nested
+ * object or call inside a payload cannot end the match early. A substring
+ * window would read the NEXT call's `data:` block as part of this one.
+ */
+function balancedFrom(
+  text: string,
+  openIndex: number,
+  open: string,
+  close: string,
+): string {
+  let depth = 0;
+  for (let i = openIndex; i < text.length; i += 1) {
+    const char = text[i];
+    if (char === open) depth += 1;
+    else if (char === close) {
+      depth -= 1;
+      if (depth === 0) return text.slice(openIndex, i + 1);
+    }
+  }
+  return text.slice(openIndex);
 }
 
 function between(text: string, start: string, end: string): string {
@@ -338,5 +383,87 @@ describe("bed allocation lock topology", () => {
       "claimed.count === 0",
       "reconcileBedAllocationsForBookingWithLodgeLockHeld",
     ]);
+  });
+
+  /**
+   * `Booking.lodgeId` is IMMUTABLE for the row's life, and this is the only
+   * thing that says so (#2672).
+   *
+   * Merge's partner-share lodge derivation
+   * (`partnerShareGuestRowLodgeIds` in `bed-allocation-lifecycle.ts`) reads
+   * `BookingGuest.memberId` and takes the booking's lodge key. Its completeness
+   * argument has three legs; two are schema-enforced (`BedAllocation.bookingGuestId`
+   * is a NOT NULL FK, `Booking.lodgeId`/`LodgeRoom.lodgeId` are NOT NULL) and the
+   * third — that nothing ever MOVES a booking between lodges — was prose only.
+   *
+   * What breaking it costs, precisely: a merge derives lodge {A} and locks it;
+   * a concurrent "move this booking to the other lodge" write re-points the
+   * booking to B. A `Booking` update takes no lock on `Member`, so merge's
+   * sorted `Member … FOR UPDATE` does not fence it, and
+   * `assertPartnerShareLodgeCoverageWithLocksHeld` — which re-derives the LODGE
+   * from the booking — cannot see a move committed after it runs.
+   * `reconcileBedAllocationsForBookingWithLodgeLockHeld` then allocates at B and
+   * the sweep judges bed inventory in a lodge merge never serialised against,
+   * with NO refusal. That is strictly worse than the #2672 class it replaces,
+   * which at least 409s.
+   *
+   * So the scan is deliberately structural rather than a string match: it walks
+   * every non-test source, extracts the balanced `data`/`create`/`update`
+   * payload of every `.booking.update`/`.updateMany`/`.upsert` call, and also
+   * looks for a raw `UPDATE "Booking" … SET … "lodgeId"`. `prisma/migrations`
+   * is out of scope on purpose — the one-off backfill
+   * (`SET "lodgeId" = default_lodge_id() WHERE "lodgeId" IS NULL`) predates the
+   * column being NOT NULL and is not a runtime writer.
+   */
+  it("keeps Booking.lodgeId immutable: no writer moves a booking between lodges", () => {
+    const offenders: string[] = [];
+    for (const file of walkSources(path.resolve(process.cwd(), "src"))) {
+      const rel = path.relative(process.cwd(), file).split(path.sep).join("/");
+      if (isTestFile(rel)) continue;
+      const text = fs.readFileSync(file, "utf8");
+
+      const writeCall = /\.booking\.(update|updateMany|upsert)\(/g;
+      let call: RegExpExecArray | null;
+      while ((call = writeCall.exec(text)) !== null) {
+        const args = balancedFrom(text, text.indexOf("(", call.index), "(", ")");
+        const payloadKey = /(?:^|[\s,{])(data|create|update)\s*:/g;
+        let payloadMatch: RegExpExecArray | null;
+        while ((payloadMatch = payloadKey.exec(args)) !== null) {
+          const braceStart = args.indexOf(
+            "{",
+            payloadMatch.index + payloadMatch[0].length - 1,
+          );
+          if (braceStart === -1) continue;
+          const payload = balancedFrom(args, braceStart, "{", "}");
+          if (/(?:^|[\s,{])lodgeId\s*:/.test(payload)) {
+            offenders.push(
+              `${rel}: .booking.${call[1]}() ${payloadMatch[1]} block writes lodgeId`,
+            );
+          }
+        }
+      }
+
+      if (
+        /UPDATE\s+(?:"public"\.)?"?Booking"?[\s\S]{0,600}?\bSET\b[\s\S]{0,600}?"?lodgeId"?\s*=/i.test(
+          text,
+        )
+      ) {
+        offenders.push(`${rel}: raw UPDATE "Booking" … SET "lodgeId"`);
+      }
+    }
+
+    expect(
+      offenders,
+      "INV-CAP-030 (#2672): merge's partner-share lodge derivation reads " +
+        "Booking.lodgeId as IMMUTABLE for the row's life. A writer here reopens the " +
+        "unlocked-lodge escape in its SILENT form — a booking moved mid-merge is " +
+        "fenced by nothing (a Booking update takes no lock on Member, so merge's " +
+        "`Member … FOR UPDATE` does not stop it) and the sweep judges bed inventory " +
+        "in an unserialised lodge with NO refusal at all. If you genuinely need to " +
+        "move a booking between lodges, give the guest-date writers a " +
+        "`member-lifecycle:` tier first (issue #2672 Option 2) and re-do the " +
+        "deadlock pass in docs/CONCURRENCY_AND_LOCKING.md -> " +
+        '"Merge joins the bed-allocation cohort".',
+    ).toEqual([]);
   });
 });

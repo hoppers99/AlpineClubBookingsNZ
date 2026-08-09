@@ -1,8 +1,7 @@
 import type { Prisma } from "@prisma/client";
-import { capacityHoldingBookingFilter } from "@/lib/booking-status";
 import {
+  computeNightOccupancy,
   findOverlappingOverriddenNonHoldingBookings,
-  getOccupiedBedsForNight,
 } from "@/lib/capacity";
 import {
   custodianHeldNightsForBed,
@@ -218,40 +217,46 @@ export async function validateCustodianBedHold(input: {
   const capacity = await getLodgeCapacity(lodgeId, db);
   if (capacity <= 0) return;
 
-  const overlappingBookings = await db.booking.findMany({
-    where: {
-      checkIn: { lt: toExclusive },
-      checkOut: { gt: startDate },
-      // Capacity-holding population (#1254) at the top level; the per-lodge
-      // scope goes under AND so the two OR fragments compose.
-      ...capacityHoldingBookingFilter(),
-      AND: [lodgeNullTolerantScope(lodgeId)],
-    },
-    include: { guests: { include: { nights: true } } },
+  // THE occupancy calculation (#2681), shared with the admission engines and
+  // the capacity-warnings cron, so this warning cannot drift behind them. It
+  // already counts OTHER custodians already holding beds on these nights —
+  // three custodians on one night is three beds, so the arithmetic is a count —
+  // and `excludeCustodianAssignmentId` drops this assignment's own hold so the
+  // `+ 1` below adds it exactly once. Before #2681 this loop was its own copy
+  // of the calculation and did not count provisional policy-exception
+  // reservations (#2525), so a bed a held request had reserved was invisible
+  // and the admin was not warned that the hold tips the lodge over.
+  //
+  // The whole-lodge hold flag is deliberately NOT pinned here, and the reason
+  // is a POLICY, not an arithmetic fact: a hold and a custodian hold do not
+  // block each other in either direction (docs/CAPACITY_MODEL.md, "Whole-lodge
+  // holds and custodian beds do not block each other"). Pinning would turn this
+  // advisory count into a hard "lodge is full" on every held night and refuse a
+  // hut leader a bed the club fully intends them to occupy.
+  //
+  // Do NOT restate that as "the custodian's bed is outside the held pool" — it
+  // is not. `getLodgeCapacityStatus` counts every active bed, including the
+  // custodian's, and `wholeLodgeHoldOccupiedBedNightsForPlanner` (#2317)
+  // expands a hold across every active bed too. The consequence is a real gap,
+  // stated rather than hidden: creating a custodian hold over an exclusively
+  // held night raises no warning at all, because this loop compares against the
+  // holding group's own headcount. Whether it should is an owner decision, not
+  // something #2681 changed.
+  const occupancy = await computeNightOccupancy({
+    lodgeId,
+    from: startDate,
+    toExclusive,
+    nights,
+    excludeCustodianAssignmentId: input.assignmentId,
+    db,
   });
-
-  // Other custodians already holding beds on these nights count too — three
-  // custodians on one night is three beds, so the arithmetic is a count.
-  const otherHolds = (
-    await findCustodianBedHolds({
-      lodgeId,
-      from: startDate,
-      toExclusive,
-      db,
-    })
-  ).filter((hold) => hold.assignmentId !== input.assignmentId);
 
   const overCapacity: CustodianOverCapacityNight[] = [];
   for (const night of nights) {
-    const nightKey = formatDateOnly(night);
-    const others = otherHolds.filter(
-      (hold) => hold.startDate <= nightKey && nightKey <= hold.endDate,
-    ).length;
-    // +1 for the hold being created/edited.
-    const occupiedBeds =
-      getOccupiedBedsForNight(night, overlappingBookings) + others + 1;
+    // + 1 for the hold being created/edited.
+    const occupiedBeds = occupancy(night).occupiedBeds + 1;
     if (occupiedBeds > capacity) {
-      overCapacity.push({ date: nightKey, occupiedBeds, capacity });
+      overCapacity.push({ date: formatDateOnly(night), occupiedBeds, capacity });
     }
   }
   if (overCapacity.length > 0) {
