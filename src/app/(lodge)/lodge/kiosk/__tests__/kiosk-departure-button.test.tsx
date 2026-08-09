@@ -317,8 +317,9 @@ describe("the kiosk repeats the server's gap-night refusal verbatim (#2737)", ()
   });
 
   it("keeps the generic line for any OTHER failure", async () => {
-    // The whitelist half. A 500, or a 409 carrying some other code, must not
-    // put arbitrary server text on the kiosk screen.
+    // The STATUS half of the whitelist. A 500 must not put arbitrary server
+    // text on the kiosk screen. MUTATION PROBE: drop the `res.status === 409`
+    // clause in `toggleArrival` and this fails.
     installFetchMock(
       guestPayload({
         isDeparting: false,
@@ -330,6 +331,42 @@ describe("the kiosk repeats the server's gap-night refusal verbatim (#2737)", ()
         Response.json(
           { error: "Internal detail nobody at the lodge should read" },
           { status: 500 },
+        ),
+    );
+
+    const row = await openGuestRow(RETURN_NIGHT);
+    fireEvent.click(within(row).getByRole("button", { name: "Mark Arrived" }));
+
+    expect(await screen.findByText("Failed to update arrival")).toBeVisible();
+    expect(
+      screen.queryByText("Internal detail nobody at the lodge should read"),
+    ).toBeNull();
+  });
+
+  it("keeps the generic line for a 409 carrying some OTHER code", async () => {
+    // The CODE half of the same whitelist, which the 500 case above cannot
+    // reach. `toggleArrival` passes the server's sentence through only for
+    // `GUEST_NOT_BOOKED_THIS_NIGHT`; every other code keeps the generic line,
+    // so a future 409 on this endpoint cannot start rendering arbitrary server
+    // prose on a screen in the hut by doing nothing at all.
+    //
+    // MUTATION PROBE: drop the `refusal?.code === "GUEST_NOT_BOOKED_THIS_NIGHT"`
+    // clause and this fails while every other test in the tree stays green —
+    // which is exactly why it is here.
+    installFetchMock(
+      guestPayload({
+        isDeparting: false,
+        canMarkDeparted: false,
+        isArriving: true,
+        canMarkArrived: true,
+      }),
+      () =>
+        Response.json(
+          {
+            error: "Internal detail nobody at the lodge should read",
+            code: "SOME_OTHER_CODE",
+          },
+          { status: 409 },
         ),
     );
 

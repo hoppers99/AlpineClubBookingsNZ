@@ -146,11 +146,25 @@ function loadLodgeGuestInArrivalEnvelope(
       // against a record that still says "departed" from the 12th, and only the
       // night set says which of those two a given date is.
       //
-      // #2737: these three are now load-bearing for the LOOKUP itself, not only
-      // for the route's return-detection. Drop `nights` and the night rule above
-      // silently degrades to the envelope fallback — which is exactly the
-      // gap-night hole this closes, so a fixture that omits them is pinning the
-      // wrong function.
+      // #2737: `nights` is now load-bearing for the LOOKUP itself, not only for
+      // the route's return-detection. Drop it and the night rule above silently
+      // degrades to the envelope fallback — which is exactly the gap-night hole
+      // this closes, so a fixture that omits it is pinning the wrong function.
+      //
+      // `stayStart`/`stayEnd` are defence in depth rather than load-bearing
+      // TODAY, and the difference is worth stating precisely so nobody
+      // "verifies" it wrongly in either direction. The `where` above already
+      // pins the row to the guest's own envelope, so for a legacy guest with no
+      // night rows the fallback answers the same whether these are selected or
+      // not. They stay selected so the in-code rule is keyed to the GUEST's
+      // envelope and not the whole booking's — `getGuestStayStart`/`End`
+      // substitute `booking.checkIn`/`checkOut` when they are missing, and the
+      // two differ for a partial-stay guest. The rule must not depend on the
+      // `where` to be correct, because the `where` is only a coarse pre-filter
+      // (INV-DATE-022) and is free to widen. Neither `tsc` (both fields are
+      // optional on `GuestStayRange`) nor any mocked-Prisma test can catch
+      // these going missing, so the select-shape probe in
+      // `lodge-arrive-depart-asymmetry.test.ts` pins all three by name.
       stayStart: true,
       stayEnd: true,
       nights: { select: { stayDate: true } },

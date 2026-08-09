@@ -86,6 +86,14 @@ describe("the arrive/depart asymmetry survives the operational-day unification",
     // Stop loading the night rows and the rule silently degrades back to the
     // envelope, which is the gap-night hole #2737 closed.
     expect(select.nights).toEqual({ select: { stayDate: true } });
+    // …and the guest's OWN envelope, which is what the fallback branch keys
+    // off. `tsc` cannot catch these going missing — `GuestStayRange` makes both
+    // optional and the helper falls back to `booking.checkIn`/`checkOut` — and
+    // no mocked-Prisma test can either, because a double returns whatever it
+    // likes regardless of the select. This probe is the only thing in the tree
+    // that fails, so it asserts the whole shape rather than a third of it.
+    expect(select.stayStart).toBe(true);
+    expect(select.stayEnd).toBe(true);
   });
 
   it("arrive REFUSES a night inside a sparse stay's gap, distinctly from not-found (#2737)", async () => {
@@ -165,6 +173,49 @@ describe("the arrive/depart asymmetry survives the operational-day unification",
     ).toBe("not-a-booked-night");
   });
 
+  it("the envelope fallback is the GUEST's own, never the whole booking's (#2737)", async () => {
+    // WHY `stayStart`/`stayEnd` STAY IN THE SELECT. A partial-stay guest on a
+    // longer booking, carrying no night rows: the fallback has to answer over
+    // THEIR envelope, and `getGuestStayStart`/`getGuestStayEnd` silently
+    // substitute `booking.checkIn`/`checkOut` the moment those fields are
+    // missing. The mock is forced open past the SQL filter on purpose — the
+    // in-code rule must be right on its own, not merely because today's `where`
+    // happens to agree with it. Rewrite the rule in terms of the booking and
+    // the four assertions below split two-and-two.
+    mockPrisma.bookingGuest.findFirst.mockResolvedValue({
+      id: "guest-1",
+      bookingId: "booking-1",
+      firstName: "Part",
+      lastName: "Stay",
+      memberId: null,
+      arrivedAt: null,
+      departedAt: null,
+      stayStart: day("2026-07-03"),
+      stayEnd: day("2026-07-05"),
+      nights: [],
+      booking: {
+        memberId: "member-1",
+        checkIn: day("2026-07-01"),
+        checkOut: day("2026-07-08"),
+      },
+    });
+
+    // Inside the BOOKING, outside this guest's own stay: they are not here.
+    for (const away of ["2026-07-01", "2026-07-06"]) {
+      expect(
+        (await findLodgeGuestForDate("guest-1", day(away))).outcome,
+        away,
+      ).toBe("not-a-booked-night");
+    }
+    // …and their own two nights are still accepted.
+    for (const own of ["2026-07-03", "2026-07-04"]) {
+      expect(
+        (await findLodgeGuestForDate("guest-1", day(own))).outcome,
+        own,
+      ).toBe("ok");
+    }
+  });
+
   it("depart loads on the coarse envelope and decides on the night set", async () => {
     mockPrisma.bookingGuest.findFirst.mockResolvedValue(null);
 
@@ -181,6 +232,10 @@ describe("the arrive/depart asymmetry survives the operational-day unification",
     // …and the night rows are actually loaded, or the rule silently degrades to
     // the envelope and the sparse case comes straight back.
     expect(select.nights).toEqual({ select: { stayDate: true } });
+    // Same whole-shape probe as the arrive lookup above, for the same reason:
+    // the depart fallback is the guest's own envelope, not the booking's.
+    expect(select.stayStart).toBe(true);
+    expect(select.stayEnd).toBe(true);
   });
 
   it("depart is still NOT presence: a guest mid-stay is refused", async () => {
