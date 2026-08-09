@@ -3755,6 +3755,80 @@ describe("bed allocation board member-guest consent exclusion (D-12, #2307)", ()
 
     expect(count).toBe(1);
   });
+
+  it("counts nobody for a guest whose GAP spans the whole window (#2628)", async () => {
+    // The sparse-gap fix itself, pinned. This guest is booked either side of the
+    // window — nights on 2026-06-28 and 2026-07-10 — so their envelope
+    // [2026-06-28, 2026-07-11) covers every day of it and the booking/guest
+    // where-clauses select them, but the window-scoped `nights` load comes back
+    // EMPTY because they are not in the lodge on any of these nights.
+    //
+    // Envelope expansion made that guest eight unallocated bed-nights of work no
+    // allocator would ever do; reading the night set makes it what it is, which
+    // is nothing. This is the mutation probe for the revert: restore
+    // `eachDateOnlyInRange(clamped.stayStart, clamped.stayEnd)` and the count
+    // goes from 0 to 1.
+    const bookingFindMany = vi.fn().mockResolvedValue([
+      {
+        id: "booking-gap",
+        guests: [
+          {
+            id: "guest-gap",
+            // What Prisma returns for the windowed select the counter issues.
+            nights: [],
+            // The envelope Prisma matched the row on, spelled out so the
+            // fixture cannot be mistaken for "a guest who is not in the window".
+            stayStart: parseDateOnly("2026-06-28"),
+            stayEnd: parseDateOnly("2026-07-11"),
+          },
+        ],
+      },
+    ]);
+
+    const count = await countGuestsAwaitingBed({
+      from: parseDateOnly("2026-07-01"),
+      to: parseDateOnly("2026-07-08"),
+      db: {
+        booking: { findMany: bookingFindMany },
+        // Nothing is allocated, so every night the counter believes in is work.
+        bedAllocation: { findMany: vi.fn().mockResolvedValue([]) },
+      } as never,
+    });
+
+    expect(count).toBe(0);
+  });
+
+  it("counts nobody for a guest carrying no night rows at all (#2628)", async () => {
+    // The stated behaviour change, pinned so it cannot drift back silently. A
+    // guest with zero `BookingGuestNight` rows has nothing the board will place:
+    // `buildGuestNightRows` builds the board's buckets from those rows alone, so
+    // such a guest is not on the board and must not be on the card counting the
+    // board's work either. The envelope would have made them a week of it.
+    const bookingFindMany = vi.fn().mockResolvedValue([
+      {
+        id: "booking-nightless",
+        guests: [
+          {
+            id: "guest-nightless",
+            nights: [],
+            stayStart: parseDateOnly("2026-07-01"),
+            stayEnd: parseDateOnly("2026-07-08"),
+          },
+        ],
+      },
+    ]);
+
+    const count = await countGuestsAwaitingBed({
+      from: parseDateOnly("2026-07-01"),
+      to: parseDateOnly("2026-07-08"),
+      db: {
+        booking: { findMany: bookingFindMany },
+        bedAllocation: { findMany: vi.fn().mockResolvedValue([]) },
+      } as never,
+    });
+
+    expect(count).toBe(0);
+  });
 });
 
 /*

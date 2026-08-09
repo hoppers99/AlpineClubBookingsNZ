@@ -527,6 +527,15 @@ describe("hut-leader roster wizard reaches the generate step (#2622)", () => {
             stayStart: day("2026-07-11"),
             stayEnd: DATE,
             member: null,
+            // #2628: the route loads the night rows and decides from them, so
+            // the fixture has to carry them or it only ever exercises the old
+            // envelope fallback. Two nights, the 11th and the 12th — exactly
+            // what the half-open envelope above describes — so the 13th is the
+            // departure morning this case is about.
+            nights: [
+              { stayDate: day("2026-07-11") },
+              { stayDate: day("2026-07-12") },
+            ],
           },
         ],
       },

@@ -356,8 +356,22 @@ describe("F9: PUT /api/lodge/guests/[date]/arrive", () => {
       lastName: "Guest",
       memberId: "member-1",
       arrivedAt: null,
+      // #2628: the arrive lookup loads the stay bounds, the night rows and the
+      // booking dates so it can tell a first arrival from a RETURN. A fixture
+      // without them only stays green because `departedAt` is unset and the
+      // check short-circuits — set a departure and the helper would be handed
+      // an undefined booking date. Two nights, the 10th and the 11th, which is
+      // exactly what the envelope below describes, so this is a plain arrival.
+      stayStart: new Date("2026-07-10T00:00:00.000Z"),
+      stayEnd: new Date("2026-07-12T00:00:00.000Z"),
+      nights: [
+        { stayDate: new Date("2026-07-10T00:00:00.000Z") },
+        { stayDate: new Date("2026-07-11T00:00:00.000Z") },
+      ],
       booking: {
         memberId: "booking-owner-1",
+        checkIn: new Date("2026-07-10T00:00:00.000Z"),
+        checkOut: new Date("2026-07-12T00:00:00.000Z"),
       },
     });
     mockPrisma.bookingGuest.update.mockResolvedValue({});
@@ -391,8 +405,21 @@ describe("F9: PUT /api/lodge/guests/[date]/arrive", () => {
       lastName: "Guest",
       memberId: "member-1",
       arrivedAt: new Date(),
+      // #2628: same as the case above — the arrive lookup reads the night rows
+      // and the booking dates to spot a return, so the fixture carries the two
+      // nights its envelope describes (the 10th and the 11th). This guest is on
+      // the first night of a contiguous stay, so the toggle-off path is what
+      // runs, unchanged.
+      stayStart: new Date("2026-07-10T00:00:00.000Z"),
+      stayEnd: new Date("2026-07-12T00:00:00.000Z"),
+      nights: [
+        { stayDate: new Date("2026-07-10T00:00:00.000Z") },
+        { stayDate: new Date("2026-07-11T00:00:00.000Z") },
+      ],
       booking: {
         memberId: "booking-owner-1",
+        checkIn: new Date("2026-07-10T00:00:00.000Z"),
+        checkOut: new Date("2026-07-12T00:00:00.000Z"),
       },
     });
     mockPrisma.bookingGuest.update.mockResolvedValue({});
@@ -663,6 +690,15 @@ describe("F9: GET /api/lodge/guests/[date] - arrivedAt/departedAt", () => {
             isMember: true,
             arrivedAt,
             departedAt: null,
+            // #2628: the guests route always loads the night rows and answers
+            // presence from them, so the fixture carries the two nights the
+            // booking envelope describes — the 10th and the 11th.
+            stayStart: new Date("2026-07-10"),
+            stayEnd: new Date("2026-07-12"),
+            nights: [
+              { stayDate: new Date("2026-07-10") },
+              { stayDate: new Date("2026-07-11") },
+            ],
           },
         ],
       },
@@ -695,6 +731,15 @@ describe("F9: GET /api/lodge/guests/[date] - arrivedAt/departedAt", () => {
             arrivedAt: null,
             departedAt: null,
             member: { ageTier: "YOUTH" },
+            // #2628: the guests route always loads the night rows and answers
+            // presence from them, so the fixture carries the two nights the
+            // booking envelope describes — the 10th and the 11th.
+            stayStart: new Date("2026-07-10"),
+            stayEnd: new Date("2026-07-12"),
+            nights: [
+              { stayDate: new Date("2026-07-10") },
+              { stayDate: new Date("2026-07-11") },
+            ],
           },
         ],
       },
