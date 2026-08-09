@@ -1,17 +1,23 @@
 // @vitest-environment jsdom
 
 /**
- * #2631 — the Departing BADGE and the Mark Departed BUTTON are not the same
- * question, and the kiosk must not treat them as one.
+ * #2631 / #2628 — the Departing BADGE and the Mark Departed BUTTON are two
+ * separate flags, and the button's must be exactly what the server will accept.
  *
  * `isDeparting` is the operational day: "somebody leaves the lodge today". A
  * sparse stay (nights {11, 14}) leaves the lodge twice — on the 12th and again
- * on the 15th — so the badge is correct on both mornings. The depart endpoint
- * is not the operational day: `findLodgeGuestDepartingOnDate` matches `stayEnd`
- * exactly, deliberately and fencedly (see `lodge-arrive-depart-asymmetry`), so
- * a check-out posted on the 12th 404s and there is nothing the hut leader can
- * do about it. Rendering the button off the badge is therefore a dead end, and
- * these cases pin the split that removes it.
+ * on the 15th — so the badge is correct on both mornings. The button rides on
+ * `canMarkDeparted`, which the guests route derives from the depart endpoint's
+ * OWN predicate (`isGuestDepartureMorning`), so the kiosk never offers a
+ * check-out the server refuses and never withholds one it would accept.
+ *
+ * #2631 shipped this split with the flag computed as `stayEnd` equality, which
+ * matched the endpoint AT THE TIME: it resolved its guest that way and 404'd on
+ * any earlier morning. That made the sparse stay's first check-out
+ * unrecordable — badge on, button withheld, nothing the hut leader could do.
+ * #2628 fixed the endpoint per segment, so the button is now offered on BOTH
+ * mornings. The two cases below are the same two cases, with the intermediate
+ * one flipped to the answer the server now gives.
  *
  * Frozen clock discipline: the fixtures are anchored to a fixed instant in
  * July 2026 rather than to the real calendar.
@@ -54,7 +60,7 @@ const FINAL_DEPARTURE = {
   openLabel: "Open Wednesday, 15 July",
 };
 
-function guestPayload(opts: { isDeparting: boolean; isFinalDeparture: boolean }) {
+function guestPayload(opts: { isDeparting: boolean; canMarkDeparted: boolean }) {
   return {
     bookings: [
       {
@@ -168,24 +174,24 @@ describe("kiosk Mark Departed follows the check-out flag, not the badge (#2631)"
     hostTimeZone.restore();
   });
 
-  it("an intermediate departure morning shows the Departing chip and NO button", async () => {
+  it("an intermediate departure morning shows the chip AND the button (#2628)", async () => {
     installFetchMock(
-      guestPayload({ isDeparting: true, isFinalDeparture: false }),
+      guestPayload({ isDeparting: true, canMarkDeparted: true }),
     );
 
     const row = await openGuestRow(INTERMEDIATE_DEPARTURE);
 
     // The badge is right: they really are leaving the lodge this morning.
     expect(within(row).getByText("Departing")).toBeVisible();
-    // The button is not offered, because the server would refuse it.
+    // …and so is the button now, because the endpoint accepts this morning.
     expect(
-      within(row).queryByRole("button", { name: "Mark Departed" }),
-    ).toBeNull();
+      within(row).getByRole("button", { name: "Mark Departed" }),
+    ).toBeVisible();
   });
 
   it("the FINAL departure morning shows the chip and the button together", async () => {
     installFetchMock(
-      guestPayload({ isDeparting: true, isFinalDeparture: true }),
+      guestPayload({ isDeparting: true, canMarkDeparted: true }),
     );
 
     const row = await openGuestRow(FINAL_DEPARTURE);
@@ -194,5 +200,22 @@ describe("kiosk Mark Departed follows the check-out flag, not the badge (#2631)"
     expect(
       within(row).getByRole("button", { name: "Mark Departed" }),
     ).toBeVisible();
+  });
+
+  it("STILL WITHHOLDS the button where the server would refuse", async () => {
+    // The split itself, which #2628 narrowed but did not remove. The two flags
+    // coincide today; the button must follow the SERVER's flag, so a payload
+    // where they disagree renders the badge and no button. Gate the button on
+    // `isDeparting` instead and this fails.
+    installFetchMock(
+      guestPayload({ isDeparting: true, canMarkDeparted: false }),
+    );
+
+    const row = await openGuestRow(INTERMEDIATE_DEPARTURE);
+
+    expect(within(row).getByText("Departing")).toBeVisible();
+    expect(
+      within(row).queryByRole("button", { name: "Mark Departed" }),
+    ).toBeNull();
   });
 });

@@ -545,9 +545,9 @@ describe("hut-leader roster wizard reaches the generate step (#2622)", () => {
       id: "leaving",
       isDeparting: true,
       isArriving: false,
-      // Their last night was the 12th and `stayEnd` is the 13th, so this is
-      // also the one morning the depart endpoint will accept.
-      isFinalDeparture: true,
+      // Their last night was the 12th, so the 13th is a departure morning and
+      // the depart endpoint will accept a check-out here.
+      canMarkDeparted: true,
     });
   });
 
@@ -609,29 +609,29 @@ describe("hut-leader roster wizard reaches the generate step (#2622)", () => {
     expect(await guestsOn("2026-07-11")).toMatchObject({
       isArriving: true,
       isDeparting: false,
-      isFinalDeparture: false,
+      canMarkDeparted: false,
     });
-    // THE INTERMEDIATE DEPARTURE MORNING. They really do leave today — the
-    // badge is right — but `stayEnd` is the 15th, so the depart endpoint
-    // (`stayEnd` equality, fenced) can never accept a check-out on the 12th.
-    // The flag the kiosk's button reads therefore stays false here.
+    // THE INTERMEDIATE DEPARTURE MORNING. They really do leave today, and
+    // since #2628 the depart endpoint accepts a check-out here too — it reads
+    // departure mornings per SEGMENT instead of `stayEnd` equality. Before
+    // that this check-out was simply unrecordable.
     expect(await guestsOn("2026-07-12")).toMatchObject({
       isArriving: false,
       isDeparting: true,
-      isFinalDeparture: false,
+      canMarkDeparted: true,
     });
     // The gap day: nobody at all, and therefore no booking card either.
     expect(await guestsOn("2026-07-13")).toBeNull();
     expect(await guestsOn("2026-07-14")).toMatchObject({
       isArriving: true,
       isDeparting: false,
-      isFinalDeparture: false,
+      canMarkDeparted: false,
     });
-    // The FINAL departure morning: both flags, and the button appears.
+    // The final departure morning: both flags, and the button appears.
     expect(await guestsOn("2026-07-15")).toMatchObject({
       isArriving: false,
       isDeparting: true,
-      isFinalDeparture: true,
+      canMarkDeparted: true,
     });
   });
 });

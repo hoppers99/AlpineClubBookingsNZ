@@ -30,11 +30,14 @@ interface Guest {
   isDeparting: boolean;
   // #2631: the DEPARTING BADGE (`isDeparting`) is the operational day — "leaves
   // today" — and a sparse stay has one on every segment. The CHECK-OUT BUTTON
-  // rides on `isFinalDeparture` instead, because the depart endpoint resolves
-  // its guest by `stayEnd` equality and 404s on any earlier departure morning.
-  // Gate the button on the badge and the kiosk dead-ends: staff tap "Mark
-  // Departed", the server refuses, and there is nothing they can do about it.
-  isFinalDeparture: boolean;
+  // rides on `canMarkDeparted`, which the server derives from the depart
+  // endpoint's OWN predicate, so the button is offered exactly where the server
+  // will accept it. Gate it on anything else and the kiosk dead-ends: staff tap
+  // "Mark Departed", the server refuses, and there is nothing they can do about
+  // it. (#2628 renamed this from `isFinalDeparture`, which was `stayEnd`
+  // equality and withheld the button on a sparse stay's earlier departure —
+  // that check-out was simply unrecordable.)
+  canMarkDeparted: boolean;
   arrivedAt: string | null;
   departedAt: string | null;
 }
@@ -920,7 +923,7 @@ export default function KioskPage() {
                                       {guest.arrivedAt ? "Arrived" : "Mark Arrived"}
                                     </button>
                                   )}
-                                  {canMarkAttendance && guest.isFinalDeparture && !booking.blockedFromCheckin && (
+                                  {canMarkAttendance && guest.canMarkDeparted && !booking.blockedFromCheckin && (
                                     <button
                                       onClick={() => toggleDeparture(guest.id)}
                                       className={`text-sm font-medium px-4 py-2 rounded-lg min-h-[44px] transition-colors ${

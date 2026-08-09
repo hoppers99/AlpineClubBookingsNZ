@@ -1128,8 +1128,21 @@ describe("Phase 8: Hut Leader & Kiosk Improvements", () => {
         memberId: null,
         arrivedAt: new Date("2026-04-13T08:00:00.000Z"),
         departedAt: null,
+        // #2628: the depart lookup loads the coarse envelope and then applies
+        // the per-segment departure-morning rule, so this fixture carries the
+        // columns that rule reads. Last night was the 12th, so the 13th is a
+        // departure morning — the same guest the old `stayEnd: date` filter
+        // matched.
+        stayStart: new Date("2026-04-11T00:00:00.000Z"),
+        stayEnd: new Date("2026-04-13T00:00:00.000Z"),
+        nights: [
+          { stayDate: new Date("2026-04-11T00:00:00.000Z") },
+          { stayDate: new Date("2026-04-12T00:00:00.000Z") },
+        ],
         booking: {
           memberId: "booking-owner-2",
+          checkIn: new Date("2026-04-11T00:00:00.000Z"),
+          checkOut: new Date("2026-04-13T00:00:00.000Z"),
         },
       });
     mockPrisma.bookingGuest.update.mockResolvedValue({});
@@ -1459,11 +1472,12 @@ describe("Phase 8: Hut Leader & Kiosk Improvements", () => {
     expect(content).toContain("Guests Departing Today");
     expect(content).toContain("guest.ageTier === \"ADULT\"");
     expect(content).toContain("canMarkAttendance && guest.isArriving");
-    // #2631: the check-out BUTTON hangs off `isFinalDeparture`, not off the
-    // Departing badge — the depart endpoint only accepts the morning after the
-    // LAST booked night, so a sparse stay's intermediate departure morning gets
-    // the badge and no button.
-    expect(content).toContain("canMarkAttendance && guest.isFinalDeparture");
+    // #2631/#2628: the check-out BUTTON hangs off `canMarkDeparted`, not off
+    // the Departing badge. The server derives that flag from the depart
+    // endpoint's own predicate, so the kiosk offers the button exactly where
+    // the server accepts it — on every departure morning a sparse stay has
+    // since #2628, and never anywhere the endpoint would refuse.
+    expect(content).toContain("canMarkAttendance && guest.canMarkDeparted");
     expect(content).not.toContain("canMarkAttendance && guest.isDeparting");
     expect(content).toContain("120000");
     expect(content).toContain("Manage Today's Roster");
@@ -1491,7 +1505,7 @@ describe("Phase 8: Hut Leader & Kiosk Improvements", () => {
       "canMarkAttendance && guest.isArriving && !guest.departedAt && !booking.blockedFromCheckin"
     );
     expect(content).toContain(
-      "canMarkAttendance && guest.isFinalDeparture && !booking.blockedFromCheckin"
+      "canMarkAttendance && guest.canMarkDeparted && !booking.blockedFromCheckin"
     );
   });
 });

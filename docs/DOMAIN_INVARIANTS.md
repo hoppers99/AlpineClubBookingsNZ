@@ -126,6 +126,7 @@ number and prefix, and it is listed at the end of the table below.
 | `INV-DATE-003` | A stay is the half-open range `[checkIn, checkOut)` expanded to nights; explicit `BookingGuestNight` rows override the envelope |
 | `INV-DATE-004` | Presence on day D: morning half from D−1's night, evening half from D's |
 | `INV-DATE-005` | Two helper families — night model for resources, operational-day for people |
+| `INV-DATE-020` | One expander turns a stay into nights; its envelope branch stays half-open |
 | `INV-DATE-006` | The lobby wall is deliberately mixed and stays on its own fenced path |
 | `INV-DATE-007` | Departing lodge A and arriving at lodge B on one date is legal |
 | `INV-DATE-008` | Zero-night bookings expand to no nights and every route refuses them |

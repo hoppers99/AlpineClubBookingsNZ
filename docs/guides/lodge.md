@@ -61,10 +61,12 @@ an admin review is not in its numbers. The day list counts who is **in the
 building**, so it does show that booking, marked "Blocked from Check-In". A
 day can therefore read as empty on the strip and open onto a flagged party.
 
-**Mark Departed** appears only on a guest's *final* departure — the morning
-after their last booked night. On a stay with a gap in it, the earlier
-departure morning shows the **Departing** badge without the button, because
-check-out can only be recorded once, at the end of the booking.
+**Mark Departed** appears on every morning a guest actually leaves. On a stay
+with a gap in it, that is more than once: someone booked in for Friday and again
+for Monday leaves on Saturday morning and again on Tuesday morning, and each
+check-out can be recorded on the day it happens. Until #2628 only the last one
+could be — the earlier morning showed the **Departing** badge with no button —
+so a guest who left and came back was recorded as leaving once, at the end.
 
 The **Who's at the lodge** panel that sits under an admin calendar counts
 guest-**nights** rather than lodge days. On the chore roster calendar, whose

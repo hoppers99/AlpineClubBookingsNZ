@@ -11,7 +11,7 @@ import { OPERATIONAL_STAY_BOOKING_STATUSES } from "@/lib/booking-status";
 import { isCheckinBlockedByPendingReview } from "@/lib/booking-review";
 import {
   getGuestOperationalDayPresence,
-  getGuestStayEnd,
+  isGuestDepartureMorning,
   getOperationallyPresentGuestsForDay,
 } from "@/lib/booking-guest-stay-ranges";
 
@@ -36,15 +36,23 @@ const dateSchema = z.string().regex(/^\d{4}-\d{2}-\d{2}$/);
  * ONE SCOPE IS NOT ONE FLAG, THOUGH. `isDeparting` is the operational-day
  * BADGE and it fires on every departure morning a sparse stay has — nights
  * {11, 14} leave the lodge on the 12th and again on the 15th.
- * `isFinalDeparture` is a second, narrower flag for the CHECK-OUT BUTTON: the
- * depart endpoint resolves its guest by `stayEnd` equality
- * (`findLodgeGuestDepartingOnDate`, deliberately fenced — see
- * `lodge-arrive-depart-asymmetry.test.ts`), so it can only ever succeed on the
- * one morning after the LAST booked night. Render "Mark Departed" off the
- * badge and the kiosk offers a button that 404s on every intermediate
- * departure morning, which is exactly the dead end this flag exists to
- * prevent. Derived from the guest's own `stayEnd`, matching the endpoint's
- * predicate rather than re-deriving presence.
+ * `canMarkDeparted` is a second flag for the CHECK-OUT BUTTON, and its whole
+ * job is to be TRUE EXACTLY WHEN THE DEPART ENDPOINT WILL ACCEPT: offer the
+ * button anywhere else and staff tap it, the server refuses, and there is
+ * nothing they can do about it.
+ *
+ * It was `isFinalDeparture` until #2628, derived from `stayEnd` equality
+ * because the endpoint resolved its guest that way and so could only ever
+ * succeed on the morning after the LAST booked night. That made the earlier
+ * departure of a sparse stay unrecordable: the badge said "Departing", the
+ * button was withheld, and the guest's first check-out never happened. The
+ * endpoint now accepts every departure morning
+ * (`findLodgeGuestDepartingOnDate` reads `isGuestDepartureMorning`, still
+ * deliberately fenced off from presence — see
+ * `lodge-arrive-depart-asymmetry.test.ts`), so this flag reads the SAME
+ * predicate by name. The two flags now coincide, and that is a consequence of
+ * the rule rather than a licence to delete one: they answer different
+ * questions and the endpoint is free to narrow again.
  */
 export async function GET(
   req: NextRequest,
@@ -181,12 +189,11 @@ export async function GET(
             isMember: g.isMember,
             isArriving: presence.isArriving,
             isDeparting: presence.isDeparting,
-            // The check-out button's flag, NOT the badge's. Equality with the
-            // guest's own `stayEnd`, which is the depart endpoint's own
-            // predicate, so "the kiosk offers it" and "the server accepts it"
-            // are the same condition by construction.
-            isFinalDeparture:
-              getGuestStayEnd(g, b).getTime() === date.getTime(),
+            // The check-out button's flag, NOT the badge's. Literally the
+            // depart endpoint's own predicate, so "the kiosk offers it" and
+            // "the server accepts it" are the same condition by construction
+            // (#2628).
+            canMarkDeparted: isGuestDepartureMorning(g, date, b),
             arrivedAt: g.arrivedAt?.toISOString() ?? null,
             departedAt: g.departedAt?.toISOString() ?? null,
             phone:
