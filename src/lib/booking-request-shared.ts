@@ -37,6 +37,7 @@ import {
   assertMembershipTypeBookingAllowed,
   resolveGuestRateMembershipTypes,
 } from "@/lib/membership-type-policy";
+import { getStayNights } from "@/lib/policies/pricing";
 import { prisma } from "@/lib/prisma";
 import { getSeasonYear } from "@/lib/utils";
 
@@ -46,6 +47,16 @@ export type OwnerSubstitution = {
   invalidMemberId: string;
   substituteMemberId: string;
   reason: string;
+};
+
+/**
+ * One `BookingGuestNight` row about to be written for a pipeline guest (#2739).
+ * The same `{ stayDate, priceCents }` pair the canonical direct-create writer
+ * (`buildGuestCreateData`, `booking-create-guests.ts`) nests under `nights`.
+ */
+export type ApprovalGuestNight = {
+  stayDate: Date;
+  priceCents: number;
 };
 
 /**
@@ -68,7 +79,60 @@ export type HeldBookingGuestInput = {
   // the NULL-snapshot isMember fallback forever. Snapshot-only — request
   // prices are admin-set totals and stay exactly as stored.
   rateMembershipTypeId?: string | null;
+  /**
+   * The guest's canonical night set (#2739). REQUIRED, not optional, and that is
+   * the whole point of the field: a booking-request booking used to be created
+   * with none, so its guests were invisible to every bed-allocation surface —
+   * not listed on the board, not placed by the planner, not counted as awaiting
+   * a bed — while being real people on a confirmed booking (INV-CAP-032).
+   * Optional here would let a fourth pipeline write night-less guests again
+   * without saying so.
+   */
+  nights: ApprovalGuestNight[];
 };
+
+/**
+ * The night rows for one pipeline guest, from the approved envelope and the
+ * admin-set price already split onto that guest (#2739).
+ *
+ * DATES. `getStayNights` is the pricing engine's own night list and the one the
+ * canonical direct-create writer bills from, so a converted booking's rows carry
+ * exactly the encoding a directly-created booking's do: NZ date-only values over
+ * the HALF-OPEN range `[checkIn, checkOut)` (INV-DATE-003). The check-out
+ * morning is not a night, and inventing one there would claim a bed while its
+ * real occupant is still in it (INV-DATE-012).
+ *
+ * MONEY DOES NOT MOVE, and the split rule is why. The nights sum to the guest's
+ * stored `priceCents` exactly — integer cents, one extra cent on each of the
+ * earliest `remainder` nights. That is deliberately `evenlySplitCents`'s rule in
+ * `xero-booking-invoices.ts`, which is the vector that file ALREADY synthesises
+ * for a guest carrying no night rows and bills from. So a converted booking's
+ * Xero line items — description, quantity, unit amount — come out byte-identical
+ * whether the rows exist or not, on a fresh invoice and on an invoice-update
+ * diff of a backfilled booking alike. The #1098 backfill's older rule (the whole
+ * remainder on the first night, borrowed from `splitPriceAcrossGuests`, which
+ * splits across GUESTS) totals the same but splits into different Xero lines,
+ * which on an already-raised invoice would read as a change to push.
+ *
+ * These prices are a negotiated total's share, NOT per-night rates — the
+ * distinction #1098 recorded when it skipped these bookings. Nothing here
+ * re-prices anything: the total was set by an officer and is passed through.
+ */
+export function buildApprovalGuestNights(params: {
+  checkIn: Date;
+  checkOut: Date;
+  priceCents: number;
+}): ApprovalGuestNight[] {
+  const nightDates = getStayNights(params.checkIn, params.checkOut);
+  const count = nightDates.length;
+  if (count === 0) return [];
+  const base = Math.floor(params.priceCents / count);
+  const remainder = params.priceCents - base * count;
+  return nightDates.map((stayDate, index) => ({
+    stayDate,
+    priceCents: base + (index < remainder ? 1 : 0),
+  }));
+}
 
 /** Capacity nights that came back oversubscribed, as NZ date-only strings. */
 export function getCapacityFullNights(
@@ -188,6 +252,14 @@ export async function buildApprovalGuestCreates(
     stayEnd: guest.stayEnd,
     priceCents: guest.priceCents,
     rateMembershipTypeId: guest.rateMembershipTypeId,
+    // #2739. Built from the approved envelope every guest on this pipeline
+    // takes (stayStart/stayEnd above are exactly checkIn/checkOut), so the
+    // canonical night set and the derived envelope agree night for night.
+    nights: buildApprovalGuestNights({
+      checkIn,
+      checkOut,
+      priceCents: guest.priceCents,
+    }),
   }));
 
   // Block admin-mediated double-books: a request whose guests an admin
@@ -287,22 +359,37 @@ export async function planBookingRequestGuestConsent<
 
 /**
  * Strip the two MG2 planning fields off a planned guest row, leaving exactly the
- * Prisma-writable shape plus the consent columns.
+ * Prisma-writable shape plus the consent columns — and nest the guest's night
+ * set the way Prisma wants it.
  *
  * `crossFamilyMemberGuest` is a D-8 DISPLAY marker that never had a column, and
  * spreading a planned guest straight into `bookingGuest.create` would hand
  * Prisma an unknown field. Doing the strip in one named place means the three
  * pipeline write points cannot each forget it differently.
+ *
+ * #2739 gives it a second job for the same reason. `HeldBookingGuestInput.nights`
+ * is a plain array — `reassignHeldBookingGuests` needs it in a different Prisma
+ * shape than a nested create does — so the `nights: { create: [...] }` wrapping
+ * the canonical direct-create writer uses (`buildGuestCreateData`) happens here,
+ * once, rather than at each write point. A guest that reaches this function with
+ * no `nights` field at all still gets an explicit empty create rather than a
+ * silent omission, so "this pipeline writes no nights" can never again be the
+ * accident it was.
  */
 export function toPipelineGuestCreateData<Guest extends object>(
-  guest: Guest & MemberGuestConsentGuestFields
-): Omit<Guest, keyof MemberGuestConsentGuestFields> {
-  const { memberGuestConsent, crossFamilyMemberGuest, ...rest } = guest;
+  guest: Guest & MemberGuestConsentGuestFields & { nights?: readonly ApprovalGuestNight[] }
+): Omit<Guest, keyof MemberGuestConsentGuestFields | "nights"> & {
+  nights: { create: ApprovalGuestNight[] };
+} {
+  const { memberGuestConsent, crossFamilyMemberGuest, nights, ...rest } = guest;
   void crossFamilyMemberGuest;
-  return { ...rest, ...(memberGuestConsent ?? {}) } as Omit<
-    Guest,
-    keyof MemberGuestConsentGuestFields
-  >;
+  return {
+    ...rest,
+    ...(memberGuestConsent ?? {}),
+    nights: { create: [...(nights ?? [])] },
+  } as unknown as Omit<Guest, keyof MemberGuestConsentGuestFields | "nights"> & {
+    nights: { create: ApprovalGuestNight[] };
+  };
 }
 
 /**

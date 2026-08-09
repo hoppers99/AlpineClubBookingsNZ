@@ -31,6 +31,7 @@ import {
 } from "@/lib/booking-request";
 import { reconcileBedAllocationsForBookingWithGlobalLockHeld } from "@/lib/bed-allocation-lifecycle";
 import {
+  buildApprovalGuestNights,
   collectNotifiedMemberGuestIds,
   notifyMemberGuestsHoldReleased,
   planBookingRequestGuestConsent,
@@ -1380,6 +1381,16 @@ export async function holdBookingRequestSlots(input: {
     stayEnd: guest.stayEnd,
     priceCents: guest.priceCents,
     rateMembershipTypeId: guest.rateMembershipTypeId,
+    // #2739. A hold is a capacity-holding booking that an officer can already
+    // place beds on, so its guests need the canonical night set for exactly the
+    // reason a converted booking's do — without it the board shows an
+    // AWAITING_REVIEW booking with nobody on it. Built from the request's own
+    // envelope, which is what the guest rows above take.
+    nights: buildApprovalGuestNights({
+      checkIn: request.checkIn,
+      checkOut: request.checkOut,
+      priceCents: guest.priceCents,
+    }),
   }));
 
   let capacityFullNights: string[] | null = null;

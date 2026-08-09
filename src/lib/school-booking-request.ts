@@ -2081,7 +2081,11 @@ export async function approveMemberWholeLodgeRequest(input: {
           notes: request.message,
           createdById: input.adminMemberId,
           ...exclusiveHoldData,
-          guests: { create: guestCreates },
+          // #2739: routed through the same shaper as the other pipeline write
+          // points. It is what nests each guest's canonical night set, and this
+          // create used to hand `guestCreates` to Prisma raw — the one write
+          // point that would have kept producing night-less guests.
+          guests: { create: guestCreates.map(toPipelineGuestCreateData) },
         },
         select: { id: true },
       });
