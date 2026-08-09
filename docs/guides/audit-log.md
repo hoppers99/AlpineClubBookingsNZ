@@ -193,9 +193,9 @@ record an audit entry used not to set one**. As of this release **none do**: all
 427 now record a category, measured on every build rather than estimated.
 
 **And a new one can no longer forget.** Recording an entry without a category is
-now refused three separate ways, which matters because the previous release
-closed the gap without closing the door — every place had been fixed, but nothing
-stopped the next one being written the same way:
+now refused three separate ways. Giving the 82 places a category and stopping the
+*next* one being written the same way were two separate pieces of work, done in
+that order and both landing in this release; this is the second:
 
 1. **It does not compile.** The category is a required field on both ways the
    platform records an entry, so a developer who leaves it out gets an error
@@ -211,9 +211,15 @@ stopped the next one being written the same way:
    cannot see — a database migration writing the table directly, and a
    maintenance script outside the normal path.
 
-The practical effect for you: the gap that made this section necessary cannot
-re-open for **new** entries. Your **older** history is a different matter, and
-the rest of this section is about that.
+The practical effect for you: an entry recorded the ordinary way — through the
+platform's own recording step, which is how every one of the 427 places does it —
+cannot be born without a category any more. **It is not a mathematical
+guarantee**, and it is worth saying so rather than overclaiming: someone writing
+directly to the database table in a migration, or building a query by hand, is
+outside the first two refusals, which is exactly what the third one is for. Six
+specific ways of slipping past the build's count were found while reviewing this
+change and all six were closed, each with its own test. Your **older** history is
+a different matter, and the rest of this section is about that.
 
 **Entries recorded before this release still have no category**, and there is no
 way to tell from the entry itself. Filling those in is a separate change, done
