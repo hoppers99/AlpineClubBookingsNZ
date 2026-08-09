@@ -1550,7 +1550,14 @@ lockAdultMemberHostingPolicySet(tx)                              policy config
   → under-lock hosting re-plan + sorted hosting-coverage-owner     last
   → contact-create proof re-check + late owner/actor queue sweeps
   → step 3b: sweepUnbackedFutureSharedDoublesWithLocksHeld
-             (handed the locked lodge set; refuses 409 outside it)
+             (handed the locked lodge set. MUST stay below the
+              `Member … FOR UPDATE` line above: it first re-derives
+              the guest-row lodges under that row lock — where the
+              FK's FOR KEY SHARE cannot commit against it, so the
+              set is frozen — and 409s if the prefix no longer
+              covers them. Moved above it, that check degrades from
+              a fence to an observation. Then 409s per candidate
+              row outside the set, #2672)
   → steps 4-8: Xero teardown, field merge, audit, enqueue, delete
 ```
 
@@ -1670,12 +1677,52 @@ The fix below is justified by the coverage gap being real and by refusing rather
 than by a demonstrated surviving share, and nothing here claims otherwise.
 
 Filtering on the guest ROW instead of the guest's DATES removes the class: no
-date write can make a guest row stop being a guest row at that lodge. **What it
-costs** is that a member who has stayed at every lodge makes merge take every
-lodge's capacity key. That is bounded by the club's lodge count rather than by
-the member's booking history, it is still per-lodge keys and never the global
-cohort key, and the resulting shape is the convoy already described at the foot
-of this section. **The alternative that was rejected** was giving the three
+date write can make a guest row stop being a guest row at that lodge.
+
+**What it costs, at the size it actually is.** A member who has ever held a
+guest row at every lodge makes merge take **every** lodge's capacity key. It is
+true that this is bounded by the club's lodge count rather than by the member's
+booking history — and on its own that sentence is misleading, so it is not left
+standing alone: `docs/multi-lodge/README.md` records that the club operates
+**two** lodges with a plausible future third, so for any long-standing member
+that bound **is the whole club**. Stated plainly, and this is the fact the #2672
+owner decision turns on: for the merge's whole 120s budget, every booking
+create, confirm, payment capture, cancel-with-reconcile, board place/move/remove
+and admin date shift at either lodge queues on a key merge holds, on its own
+5-second Prisma budget, and is **rejected with `P2028` having written nothing** —
+not merely delayed. That is the capacity half of the very outcome the "why merge
+takes no global cohort key" paragraph above rejects `lock(1)` for.
+
+What dropping `lock(1)` still buys is real but **narrower than it sounds**: the
+writers it protects are the ones that take the global key and **no** lodge key —
+the settlement/cancel claim transactions — because #2593 already made the
+allocation-participating confirmed-create and cancellation paths compose
+global → lodge (see the header of `adult-member-hosting-coverage-lock.ts`), so
+most capacity writers take a lodge key and stall either way. The resulting shape
+is the convoy described at the foot of this section, **measured** at ~114s waits.
+
+The distribution that would size this precisely — how many members actually hold
+guest rows at more than one lodge — has **not** been measured; exploratory work
+takes no production database. On a two-lodge club the safe reading is the worst
+case above. The queries to run against a representative database, if the owner
+wants the real number before ticking #2672, are:
+
+```sql
+SELECT count(*) FROM "Lodge";
+
+SELECT lodges, count(*)
+FROM (
+  SELECT bg."memberId", count(DISTINCT b."lodgeId") AS lodges
+  FROM "BookingGuest" bg
+  JOIN "Booking" b ON b.id = bg."bookingId"
+  WHERE bg."memberId" IS NOT NULL
+  GROUP BY 1
+) t
+GROUP BY 1
+ORDER BY 1;
+```
+
+**The alternative that was rejected** was giving the three
 guest-date writers a `member-lifecycle:` tier of their own for the members whose
 dates they move. It is order-safe on paper (they already take `lock(1)` → lodge,
 so → member is the documented order) and it would close the gap at the source

@@ -576,6 +576,17 @@ guest-row lodges under merge's `Member … FOR UPDATE` and refuses the whole
 merge with a 409 if the prefix no longer covers them, and refuses again rather
 than judge a bed-night whose own room sits outside the set (see
 docs/CONCURRENCY_AND_LOCKING.md -> "Merge joins the bed-allocation cohort").
+That derivation reads `Booking.lodgeId` as **immutable for the row's life** — a
+booking is never moved between lodges — which nothing in the schema enforces, so
+`bed-allocation-lock-topology-contract.test.ts` fails the build on any writer of
+that column. Breaking it would reopen the same escape in a SILENT form: a
+`Booking` update takes no lock on `Member`, so the `Member … FOR UPDATE` above
+does not fence it and the coverage re-derivation cannot see a move committed
+after it, leaving the sweep judging bed inventory in an unserialised lodge with
+no refusal at all. What this costs when it holds: on a two-lodge club a merge of
+a long-standing member effectively holds every lodge capacity key for its whole
+120s budget, so concurrent capacity writers at those lodges are rejected with
+`P2028` rather than merely delayed.
 
 ### INV-CAP-031
 

@@ -1036,6 +1036,63 @@ describe("review finding source/schema contracts", () => {
     );
   });
 
+  it("runs the member-merge shared-double race suite against the same dedicated PostgreSQL (#2672)", () => {
+    // The #2672 safety case is a set of claims about PostgreSQL's own
+    // behaviour: that merge's WIDENED lodge derivation actually makes a
+    // concurrent `adminShiftBookingDates` queue on a capacity key merge holds
+    // (it used to commit unwaited), and that `BookingGuest.memberId`'s foreign
+    // key actually fences a guest-row insert behind merge's sorted
+    // `Member … FOR UPDATE`, which is the only reason
+    // `assertPartnerShareLodgeCoverageWithLocksHeld` is a fence rather than
+    // another look. `bed-allocation-lifecycle.test.ts` pins the SHAPE of the
+    // query and the EXISTENCE of the refusal against a mock; neither can
+    // establish either property. Only this suite can — and it `describe.skip`s
+    // itself without the harness env vars, so an unwired step turns 550 lines of
+    // headline evidence into a file that can never fail a future PR. That is
+    // exactly the failure mode the job's own #1881 comment forbids ("never let
+    // the opt-in real-Postgres lock harness silently skip in CI"), so the step,
+    // its env and its ordering after the migrate step are pinned here.
+    const workflow = readRepoFile(".github/workflows/ci.yml");
+    const migrateStep = workflow.indexOf(
+      "name: Migrate dedicated advisory-lock race database"
+    );
+    const mergeRaceStep = workflow.indexOf(
+      "name: Test member-merge shared-double races against dedicated PostgreSQL"
+    );
+    expect(migrateStep).toBeGreaterThan(-1);
+    expect(
+      mergeRaceStep,
+      "ci.yml no longer runs member-merge-shared-double-races.realdb.test.ts. " +
+        "That suite self-skips without RUN_CONCURRENCY_RACE_TESTS, so removing " +
+        "the step silently un-tests every #2672 lock property."
+    ).toBeGreaterThan(migrateStep);
+    const stepBlock = workflow.slice(
+      mergeRaceStep,
+      workflow.indexOf("      - name:", mergeRaceStep + 1)
+    );
+    expect(stepBlock).toContain('RUN_CONCURRENCY_RACE_TESTS: "1"');
+    expect(stepBlock).toContain(
+      "CONCURRENCY_RACE_DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:55442/concurrency_race_1881"
+    );
+    expect(stepBlock).toContain(
+      "npx vitest run src/lib/__tests__/member-merge-shared-double-races.realdb.test.ts"
+    );
+
+    // The three cases #2672 added, by name. A rename that loses one of them is
+    // a silent loss of the evidence the fix stands on.
+    const suite = readRepoFile(
+      "src/lib/__tests__/member-merge-shared-double-races.realdb.test.ts"
+    );
+    expect(suite).toContain('process.env.RUN_CONCURRENCY_RACE_TESTS === "1"');
+    for (const caseName of [
+      "takes the capacity key of a lodge known only from a guest row whose stay is entirely in the past",
+      "fences the admin date shift that used to walk a past stay into an unlocked lodge",
+      "refuses the whole merge when a guest row appears in a lodge the prefix never locked",
+    ]) {
+      expect(suite, `#2672 case missing: ${caseName}`).toContain(caseName);
+    }
+  });
+
   it("proves the SELECT-only diagnostics role against a real PostgreSQL in CI (#2374)", () => {
     // AID-5's privilege proof is MANDATORY (issue #2374): ADR-007's claims —
     // no INSERT/UPDATE/DELETE, no DDL, no TEMP, no credential-store read, a

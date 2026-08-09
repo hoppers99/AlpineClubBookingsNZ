@@ -28,8 +28,12 @@
   "a lodge booking for one of these members changed while the merge was running
   — nothing was merged, please try again", and a retry picks the new lodge up.
 
-  What an operator may notice: on a club with several lodges, a merge involving
-  a long-standing member can now hold more lodges at once, so a booking edit at
-  one of those lodges may briefly wait or ask to be retried while the merge
-  finishes. Nothing is ever half-saved — a refused edit or a refused merge rolls
-  back completely.
+  What an operator will notice, stated at full size. A merge of a long-standing
+  member now holds **every lodge that person has ever booked at** — on a
+  two-lodge club, in practice all of them — for as long as the merge takes, up
+  to two minutes. While it runs, a booking creation, confirmation, payment
+  capture, cancellation or bed-board edit at one of those lodges is not merely
+  delayed: after about five seconds it is **refused outright** with a "please try
+  again" and has to be repeated. Merges are rare and short in the ordinary case,
+  but this is the trade. Nothing is ever half-saved — a refused edit, and a
+  refused merge, roll back completely.

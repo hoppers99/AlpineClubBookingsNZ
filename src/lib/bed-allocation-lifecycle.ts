@@ -1958,7 +1958,20 @@ async function futurePartnerShareAllocationLodgeIds(
  *    `Booking.lodgeId` and `LodgeRoom.lodgeId` are NOT NULL, so the allocation's
  *    lodge is the booking's lodge.
  *  - `Booking.lodgeId` is never written after create (no writer updates it), so
- *    a guest row's lodge is fixed for the life of the row.
+ *    a guest row's lodge is fixed for the life of the row. That third bullet is
+ *    the ONLY one of the three that nothing in the schema enforces — the column
+ *    is NOT NULL but perfectly updatable — so it is pinned by a census instead:
+ *    `bed-allocation-lock-topology-contract.test.ts` -> "no writer moves a
+ *    Booking between lodges" fails the build on any `booking.update`/
+ *    `updateMany`/`upsert` data block or raw `UPDATE "Booking" … SET "lodgeId"`
+ *    that would break it. Breaking it would reopen this hole in its SILENT
+ *    form: merge would derive lodge {A}, the booking would move to B under no
+ *    key merge holds (a `Booking` update takes no lock on `Member`, so the
+ *    `FOR UPDATE` below does not fence it), and the sweep would judge bed
+ *    inventory at B with no refusal at all — strictly worse than #2672's own
+ *    class, which at least 409s. Moving a booking between lodges therefore
+ *    needs the guest-date writers to take a `member-lifecycle:` tier first
+ *    (issue #2672 Option 2), not a quiet `lodgeId` write.
  *
  * WHY THERE IS NO DATE FILTER HERE, and why there used to be (#2672). This
  * query used to ask for FUTURE guest-nights only —
@@ -1994,14 +2007,26 @@ async function futurePartnerShareAllocationLodgeIds(
  * below: over-locking on state a racing writer can change is the safe
  * direction, and this query's job is coverage, not precision.
  *
- * What it costs, stated honestly: a member who has stayed at every lodge makes
- * merge take every lodge's capacity key. That is bounded by the club's lodge
- * count (not by the member's booking history), it is still per-lodge keys and
- * never the global cohort key, and the shape is the convoy already documented
- * at `docs/CONCURRENCY_AND_LOCKING.md` -> "Merge joins the bed-allocation
- * cohort". The alternative considered and rejected was giving the three
- * guest-date writers a `member-lifecycle:` tier of their own — see that section
- * for why a member-family key on a money path was the worse trade.
+ * What it costs, stated at the size it actually is rather than as a bound. A
+ * member who has ever held a guest row at every lodge makes merge take EVERY
+ * lodge's capacity key. "Bounded by the club's lodge count rather than by the
+ * member's booking history" is true and, on its own, misleading:
+ * `docs/multi-lodge/README.md` records that the club operates TWO lodges with a
+ * plausible future third, so for any long-standing member that bound IS the
+ * whole club. Read plainly: for the merge's whole 120s budget, every booking
+ * create, confirm, capture, cancel-with-reconcile, board place/move/remove and
+ * admin date shift at either lodge queues on a key merge holds, on its own 5s
+ * Prisma budget, and is REJECTED with `P2028` having written nothing — not
+ * merely delayed. What dropping `lock(1)` still buys is real but narrower than
+ * it sounds: only the writers that take the global key and NO lodge key (the
+ * settlement/cancel claim transactions) are served, because #2593 already made
+ * the allocation-participating confirmed-create and cancellation paths compose
+ * global -> lodge. The shape is the convoy documented at
+ * `docs/CONCURRENCY_AND_LOCKING.md` -> "Merge joins the bed-allocation cohort",
+ * measured there at ~114s waits. The alternative considered and rejected was
+ * giving the three guest-date writers a `member-lifecycle:` tier of their own —
+ * see that section for why a member-family key on a money path was the worse
+ * trade.
  *
  * Deliberately NOT filtered by `Booking.status`. Status transitions serialise on
  * the global cohort key, which merge no longer holds, so a booking that is not
@@ -2051,6 +2076,19 @@ async function partnerShareGuestRowLodgeIds(
  * this function reads is FROZEN for the remainder of the transaction, and a
  * subset check against the locked lodges is a statement about the future, not
  * only about the past.
+ *
+ * Note what is being claimed and what is not. `BookingGuest.memberId` is NOT an
+ * immutable column — merge's own `applyMoves` re-points it (`member-merge.ts`,
+ * `spec("BookingGuest", "member", "memberId", "move")`) and account-deletion
+ * anonymisation NULLs it in bulk
+ * (`src/app/api/admin/deletion-requests/[id]/route.ts`). The claim is narrower
+ * and survives that: every write that ADDS a guest row naming these members, or
+ * RE-POINTS an existing one onto them, needs `FOR KEY SHARE` on the member row
+ * and so is fenced by the `FOR UPDATE`; and the one write that REMOVES a
+ * reference (`memberId: null`) can only SHRINK the derived set, which is the
+ * safe direction for a derivation that deliberately over-locks. Plain deletes
+ * and stay-date rewrites are the same shrink-or-no-change case. The set cannot
+ * grow behind the lock, and only growth breaks coverage.
  *
  * Combined with the no-date-filter derivation, that closes the loop: every
  * lodge a `BedAllocation` naming these members can exist in, or be created in,
