@@ -57,13 +57,13 @@ id and need the file it lives in.
 | Fees, prices, promo caps, subscription charges — anything holding cents | `INV-MONEY` → [`money.md`](docs/invariants/money.md) | [`AUTHORITATIVE_FEES.md`](docs/AUTHORITATIVE_FEES.md) |
 | Taking, clearing, crediting or refunding money | `INV-PAY` → [`payment-and-settlement.md`](docs/invariants/payment-and-settlement.md) | [`xero/ARCHITECTURE.md`](docs/xero/ARCHITECTURE.md) |
 | What day it is — lodge nights, the midday-NZ stay boundary, date columns | `INV-DATE` → [`booking-dates-and-capacity.md`](docs/invariants/booking-dates-and-capacity.md) | [`CAPACITY_MODEL.md`](docs/CAPACITY_MODEL.md) |
-| Beds — capacity, allocation, waitlist, whole-lodge holds | `INV-CAP` → [`booking-dates-and-capacity.md`](docs/invariants/booking-dates-and-capacity.md) | [`CAPACITY_MODEL.md`](docs/CAPACITY_MODEL.md), [`guides/bed-allocation.md`](docs/guides/bed-allocation.md) |
+| Beds — capacity, allocation, waitlist, whole-lodge holds, custodian bed holds | `INV-CAP` (plus `INV-LIFE-062`) → [`booking-dates-and-capacity.md`](docs/invariants/booking-dates-and-capacity.md) | [`CAPACITY_MODEL.md`](docs/CAPACITY_MODEL.md), [`guides/bed-allocation.md`](docs/guides/bed-allocation.md) |
 | Editing or cancelling an existing booking's dates, party or price | `INV-MOD` → [`booking-modifications.md`](docs/invariants/booking-modifications.md) | [`CANCELLATIONS.md`](docs/CANCELLATIONS.md) |
 | A member bringing another member as a guest, and consent to do so | `INV-GUEST` → [`member-guest-consent.md`](docs/invariants/member-guest-consent.md) | — |
 | Who may host whom, and what a hosting strand covers | `INV-HOST` → [`adult-member-hosting.md`](docs/invariants/adult-member-hosting.md) | — |
 | Booking requests, officer queues, policy exceptions, chasing an outstanding payment | `INV-REQ` → [`booking-requests.md`](docs/invariants/booking-requests.md), `INV-EXCEPT` → [`booking-policy-exceptions.md`](docs/invariants/booking-policy-exceptions.md), `INV-ADDPAY` → [`additional-payment-chasing.md`](docs/invariants/additional-payment-chasing.md) | [`guides/booking-requests.md`](docs/guides/booking-requests.md) |
 | Lapsed-subscription pricing, admin date overrides, withheld notifications | `INV-LOCKOUT` → [`subscription-lockout-pricing.md`](docs/invariants/subscription-lockout-pricing.md) | [`guides/subscription-lockout.md`](docs/guides/subscription-lockout.md) |
-| Applications, cancellation, roles, family groups, member merge, custodian holds | `INV-LIFE` → [`membership-lifecycle.md`](docs/invariants/membership-lifecycle.md) | [`guides/membership-cancellations.md`](docs/guides/membership-cancellations.md) |
+| Applications, cancellation, roles, family groups, member merge | `INV-LIFE` (except `INV-LIFE-062`) → [`membership-lifecycle.md`](docs/invariants/membership-lifecycle.md) | [`guides/membership-cancellations.md`](docs/guides/membership-cancellations.md) |
 | Public fee/policy page content and named lodge tokens | `INV-PUB` → [`public-content.md`](docs/invariants/public-content.md) | [`PUBLIC_PAGE_CONTENT_TOKENS.md`](docs/PUBLIC_PAGE_CONTENT_TOKENS.md) |
 | Analytics, the consent banner, what leaves this application for Google | `INV-PRIV` → [`analytics-and-privacy.md`](docs/invariants/analytics-and-privacy.md) | [`guides/integrations.md`](docs/guides/integrations.md) |
 | Webhooks, cron idempotency, provider callbacks, Xero member grouping | `INV-INT` → [`integrations.md`](docs/invariants/integrations.md) | [`xero/ARCHITECTURE.md`](docs/xero/ARCHITECTURE.md) |
@@ -195,11 +195,16 @@ id and need the file it lives in.
   `docs/COVERAGE_MATRIX.md`.
 - New or modified admin settings sections are bound by the canonical settings
   pattern — staged per-section editing, and view-only gating of every edit
-  affordance. `docs/ARCHITECTURE.md` → "Admin/member layer" states it in full,
-  with its published call-site counts and the four acknowledged divergent
-  surfaces, and it is binding for a section you write or change. Read it before
-  touching a settings section, a staged-edit form, or a permission-gated
-  control — the routing table above routes there for exactly that.
+  affordance through `ViewOnlyActionButton`, headed by one
+  `AdminViewOnlySectionBanner` per section (the default across the admin tree
+  since #2160; `AdminViewOnlyNotice` is still live and is retained in three named
+  cases, so do not delete one on sight). `docs/ARCHITECTURE.md` →
+  "Admin/member layer" states all of that in full, with its published call-site
+  counts, the banner-versus-Notice distinction and the four acknowledged
+  divergent surfaces, and it is binding for a section you write or change. Read
+  it before touching a settings section, a staged-edit form, or a
+  permission-gated control — the routing table above routes there for exactly
+  that.
 - Security, payment, booking, membership lifecycle, Xero, Stripe, and
   data-integrity work requires high or xhigh reasoning effort and human review
   before merge.

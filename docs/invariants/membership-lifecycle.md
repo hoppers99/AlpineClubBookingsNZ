@@ -5,8 +5,13 @@ Audience: Developer, Agent.
 Prefix defined in this file: **`INV-LIFE`** — membership applications and
 nomination, cancellation, archive and deletion, access roles and the admin
 lock-out guards, seasonal membership type and age tier, family groups, partner
-and parent/dependant links, email inheritance, inductions, custodian bed holds,
-and member profile merge.
+and parent/dependant links, email inheritance, inductions, and member profile
+merge.
+
+One `INV-LIFE` rule does not live here: `INV-LIFE-062`, the custodian bed hold,
+was re-homed to
+[`booking-dates-and-capacity.md`](booking-dates-and-capacity.md) by #2706. It
+keeps its number and its prefix; the index is authoritative for ID → file.
 
 Read this file when you are changing how a membership starts, changes or ends,
 who may act for whom inside a family, how a member's roles or age tier are
@@ -16,14 +21,13 @@ Index: [`docs/DOMAIN_INVARIANTS.md`](../DOMAIN_INVARIANTS.md) — every `INV-*` 
 with a one-line description of what it covers. ID scheme and allocation rules:
 [`SCHEME.md`](SCHEME.md).
 
-Two blocks here sit under a domain heading that no longer describes them and are
-deliberately left where the source put them, because re-domaining inside a
-transcription would make both changes unreviewable: the custodian bed-occupancy
-block (`INV-LIFE-062`) is a capacity invariant end to end, and the
-`FamilyGroupMember.role` column-drop narrative nested inside `INV-LIFE-037` is
-migration-policy material. IDs are location-independent and the index is
-authoritative for ID → file, so re-homing either later costs nothing; both are
-recorded in [`_FOLLOW_UPS.md`](_FOLLOW_UPS.md).
+The two blocks that sat here under a domain heading that did not describe them
+have both been re-homed by #2706: the custodian bed-occupancy block
+(`INV-LIFE-062`) to
+[`booking-dates-and-capacity.md`](booking-dates-and-capacity.md), and the
+`FamilyGroupMember.role` column-drop narrative that was nested inside
+`INV-LIFE-037` to [`operations.md`](operations.md) as `INV-OPS-005` to
+`INV-OPS-011`. Neither move changed a word of either rule.
 
 Every heading below whose whole text is an `INV-*` ID defines that invariant. IDs
 are permanent: never renumbered, never reused. **The text under each ID is a
@@ -351,6 +355,9 @@ never double-charges or overrides an existing coverage arrangement. Confirmation
 timestamps on a mapped target are set only when currently null and are never
 regressed, and the overwrite is bound to a previewed HMAC token so any drift in
 the computed outcome refuses the approval.
+
+## INV-LIFE-066
+
 The applicant MAP path also carries the #1026 privileged-email gate: when the
 mapping would change the login email of a login-capable target holding a
 privileged access role, only a Full Admin may approve it — a scoped admin's
@@ -359,6 +366,9 @@ recomputed inside the approval transaction (part of the tokenized outcome), a
 Full-Admin-minted preview replayed by a scoped admin fails closed with a 409
 token mismatch. Same-email mappings and the non-login promotion path (where
 `hasPrivilegedAccess` is canLogin-aware and therefore false) are unaffected.
+
+## INV-LIFE-067
+
 On-behalf booking must not depend on `membership:view`: a Booking Officer
 (`bookings:edit`) reaches the booking owner's or target member's family group
 through the bookings-scoped pickers
@@ -371,6 +381,9 @@ the correct member identity — and therefore correct member pricing — instead
 silently re-adding the member as a mispriced non-member. The member-scoped
 `GET /api/admin/members/[id]/family` remains gated on `membership:view` for
 membership surfaces.
+
+## INV-LIFE-068
+
 MG4 (#2309) adds a **third** bookings-scoped picker, and it is the one
 exception to the sentence above — stated here rather than left for a reader to
 discover, because the exception is deliberate and owner-decided (D-20).
@@ -389,6 +402,9 @@ browsed the whole roll from inside a booking would have undone #1376 through a
 door nobody thought to look at. The same decision statement governs whether the
 club's member-facing open-search setting binds an officer (it does not) — see
 the member-guest consent cluster above [INV-GUEST-016].
+
+## INV-LIFE-069
+
 On-behalf CREATION is aligned with modification (#1313/#1442): `/api/bookings`,
 `/api/bookings/quote`, and `/api/promo-codes/validate` authorize a
 `forMemberId` via `bookingManagementAuthorizationRole` (`bookings:edit`), so a
@@ -403,6 +419,9 @@ bypasses — email verification, Xero-link, subscription, guest-subscription,
 and minimum-stay gates all apply to self-bookings; the gate bypasses are keyed
 to authorized on-behalf bookings only. Only admin-only accounts (no `USER`
 token) are redirected from the member wizard to `/admin/book`.
+
+## INV-LIFE-070
+
 A Booking Officer may also inline-create a **non-member booking owner** on
 `/admin/book` (#1935): `POST /api/admin/bookings/non-member-contact`
 (bookings:edit — the #1376 on-behalf scope) mints a non-login owner identical to
@@ -425,6 +444,9 @@ chokepoint, and the placeholder is excluded from Xero contact email-matching
 it is never used to match or pushed to Xero as a real address. Non-member
 booking owners are priced identically to public booking-request non-members
 (both feed the shared pricing engine with non-member guests).
+
+## INV-LIFE-071
+
 Legacy membership lifecycle/classification code may read `Member.role` only to
 distinguish compatibility categories such as non-login/non-member records until
 that workflow is fully represented by seasonal membership type.
@@ -435,6 +457,9 @@ Family, School, or another
 configured type. Age-tier Xero groups and membership-type Xero groups may both
 exist; duplicate exact rules and multiple managed rules for the same scope are
 not valid.
+
+## INV-LIFE-072
+
 Built-in membership types can never be deleted or merged. A custom type may be
 deleted only when it has zero `SeasonalMembershipAssignment` rows; a custom type
 that still has assignments must be merged into another type first. A merge
@@ -453,6 +478,9 @@ other seasonal assignment change) do not synchronously resync Xero contact
 groups; reassigned members reconcile through the existing periodic/mismatch Xero
 tooling, and the admin is warned before confirming when the source and target
 Xero rules differ.
+
+## INV-LIFE-073
+
 The `NOT_APPLICABLE` age tier is the single "no age" classification, driven by
 two independent forces resolved by one shared helper
 (`resolveEnforcedAgeTier`, `src/lib/age-tier-enforcement.ts`) applied at each of
@@ -885,8 +913,8 @@ below are where it is deliberately softened for the members who cannot speak for
 themselves — those with **no login of their own**, who since #2255 can sit up to
 four generations from the adult acting for them. The investigation's original
 "can see every co-member's data including parents' emails" power is **not**
-restated here: #2424 (above) has since closed the parent-email exposure, so the
-family read is now a whitelist, not an open book.
+restated here: #2424 [INV-LIFE-038] has since closed the parent-email exposure,
+so the family read is now a whitelist, not an open book.
 
 ## INV-LIFE-036
 
@@ -900,7 +928,8 @@ apply to every non-login member whatever their age.
 
 ## INV-LIFE-037
 
-The four powers over a non-login member, and how #2284 settled each:
+The four powers over a non-login member, and how #2284 settled each
+[INV-LIFE-074, INV-LIFE-075, INV-LIFE-076]:
 
 - **Requesting cancellation of their membership (S1, owner decision: flag, not a
   second signature).** A non-login member is written already-confirmed on a
@@ -914,6 +943,9 @@ The four powers over a non-login member, and how #2284 settled each:
   never mistaken for a personally-given one and the judgement moves to the admin.
   Candidate eligibility is read through `isMembershipHolderRecord`, not
   re-derived. The request still executes only on admin approval.
+
+## INV-LIFE-074
+
 - **Adding them to a booking (S2, owner decision: notify, module-independent).**
   A family-scope add now tells the added member — directly if they hold a login,
   otherwise the group's login-holding adults — reusing
@@ -925,6 +957,9 @@ The four powers over a non-login member, and how #2284 settled each:
   `EmailBookingContext` so the #2258 per-booking "No emails" switch withholds it,
   and it carries a personal opt-out in `NotificationPreference` (it is an FYI, not
   a consent request).
+
+## INV-LIFE-075
+
 - **Editing their details (S3, owner decision: read-only provenance).** A
   delegated edit was audited but never shown to the family. A read-only
   **"Details last confirmed by X on date"** line now renders on the member's
@@ -932,6 +967,9 @@ The four powers over a non-login member, and how #2284 settled each:
   `detailsConfirmedAt` (`src/lib/member-family-service.ts`), added to the
   member-facing payload by the same deliberate whitelist the #2424 rule uses —
   the confirmer's NAME only, and they are already a listed family adult.
+
+## INV-LIFE-076
+
 - **The one-step partner declaration (S4, owner decision: retire the role
   reliance) — formerly the one role-differentiated power, now aligned with the
   equal-adults boundary.** Declaring a CONFIRMED partner link over a non-login
@@ -962,120 +1000,13 @@ The four powers over a non-login member, and how #2284 settled each:
   Prisma Client, and not in the schema. **Membership in a group is the only fact
   the join table records.**
 
-  Why the runtime half needed the `@ignore` rather than just deleting the call
-  sites, recorded because the same trap applies to the next doomed column.
-  Measured against Prisma 7.9.0 by recording the SQL through a driver adapter:
+## INV-LIFE-077
 
-  - A static `@default("MEMBER")` is materialised **client-side** as a bind
-    parameter, so the column appeared in the column list of every `INSERT` the
-    client emitted — `create`, `upsert`'s insert branch and `createMany` alike —
-    **even for a call that set no role and narrowed itself with
-    `select: { id: true }`**. Narrowing cannot reach that: it is the write's
-    column list, not its projection.
-  - An unnarrowed `create`/`update`/`upsert`/`delete` names every scalar in its
-    implicit `RETURNING`, and an `include:` (or a bare `: true`) on the join table
-    names every scalar in its `SELECT`.
-
-  `@ignore` closed all of those at once, which is what let the drop be reasoned
-  about at all. Removing the field outright now does the same thing permanently:
-  **no call shape on this delegate can emit SQL naming the column**, because the
-  generated client has no such field to put in a `SELECT`, an `INSERT` column
-  list, a `RETURNING` or a `WHERE`.
-
-  How that is enforced, measured in the rehearsal rather than asserted, because
-  the convenient shorthand ("it is a compile error now") is not quite true and the
-  difference decides how much guard coverage is still owed:
-
-  - `where: { role: ... }` **is** a compile error —
-    `'role' does not exist in type 'FamilyGroupMemberWhereInput'`;
-  - `select: { role: true }` and `create({ data: { role } })` **compile cleanly**,
-    and are rejected at runtime by the client with `PrismaClientValidationError`
-    **before any SQL is emitted**.
-
-  So the residual hazard is a 500 on one route, not a Postgres 42703, and it is
-  unconditional rather than data-dependent — the first invocation of that code
-  path fails, in any test or dev run. What is gone completely is the *implicit*
-  hazard the old guard existed for: an `include:` or a bare `: true` naming the
-  column with no author intent at all. The client cannot name a field the schema
-  does not declare.
-
-  `src/lib/__tests__/family-group-role-retirement.test.ts` survives the drop in
-  reduced form. Its delegate, nested-relation and write/read scans were deleted on
-  the reasoning just above — the implicit hazard is structurally impossible and the
-  explicit one is loud and unconditional — and `familyGroupMember` came out of
-  `src/lib/__tests__/doomed-column-select-guard.test.ts`'s
-  `NARROW_SELECT_MODELS` at the same time. What it still pins is the part the
-  compiler cannot reach: the **generated client's shape** (the owner-required proof
-  that the replacement runtime cannot name the dropped column) and **raw SQL**,
-  where a `$queryRaw` or a psql heredoc naming the column is invisible to
-  TypeScript. It also ties the schema's field-absence to the committed migration
-  and to the migration's `windowed` ledger row with its `rollback.sql`.
-
-  Worth recording precisely, because the #2284 close-out is easy to misread: what
-  #2284 removed was the last **authorisation** reader. **Payload** readers
-  outlived it and were found by #2520 — every admin family-group response
-  (`GET`/`POST /api/admin/family-groups` and `GET`/`PUT
-  /api/admin/family-groups/[id]`) returned a per-member `role`, and
-  `GET /api/member/onboarding` selected the column explicitly and returned it to
-  the member-facing onboarding wizard as `groupRole`. None was rendered (the
-  wizard declared `groupRole` in its type and never used it; the admin pages never
-  referenced it), so removing them changes no screen — but "the column has no
-  reader" was not true of the deployed release until PR #2565, and the drop's
-  safety depends on it being true. A retired audit script
-  (`scripts/audit-access-role-membership-cleanup.ts`) also still named the column
-  in raw fixture SQL and a snapshot query; #2520 removed those the same way #2130
-  removed that script's `AgeTierSetting.xeroContactGroupId` references.
-  No code may treat family-group membership as carrying a rank: **membership in a
-  group is the only fact the join table records**, and every adult login
-  co-member of a group is equal (the boundary above). Relatedly, the family-group
-  join request no longer materialises a group around a consentless target with any
-  role at all (`src/app/api/members/family/request-join/route.ts`).
-
-  **How the drop actually shipped, and why the plan changed.** An earlier version
-  of this text described a deliberately two-step retirement: deploy the runtime
-  half, wait for it to become the draining colour, then drop the column in a later
-  release declaring `old_code_compatible=yes`. **The owner superseded that on
-  3 Aug 2026** (#2520): the physical drop ships now, as part of the Tokoroa
-  cutover, behind an accepted maintenance window, rather than carrying an obsolete
-  column through another release. This paragraph replaces the old plan rather than
-  sitting beside it, because no release ever shipped under it — the "leave it as
-  declared" convention in `docs/BLUE_GREEN_MIGRATION_POLICY.md` protects the record
-  of what operators actually deployed under, which this was not.
-
-  What that means concretely, and it is the honest version of the constraint the
-  old plan was designed to avoid:
-
-  - The runtime half was **never deployed on its own**, so the release in
-    production when the drop lands is the last tagged one, whose Prisma client
-    names the column in ordinary projections, in every insert's column list, **and
-    in a `WHERE` clause** — `role: "ADMIN"`, the one-step partner declaration read
-    that the member profile page renders. The moment the DROP commits, that release
-    fails across the whole family surface.
-  - So the ledger row is `old_code_compatible=**windowed**`, not `yes`: it says in
-    writing that the previous release *will* break, and it carries the full ordered
-    maintenance-window plan. `previous_expand_release` names an adjacent migration
-    in the same release, because **no truthful value exists**: the runtime half
-    shipped no migration of its own, so there is no folder from it to name, and the
-    field is single-valued and checked only for non-emptiness. The real precondition
-    is written out in the row's `lock_impact_plan` instead. That last part is the
-    practice the #2130 contract row (`20260721130000`) established — its own single
-    field could not express two expand releases either, so it named one and
-    explained both in the plan column — but #2130's field names a *real, already
-    deployed* expand release, which this one's cannot.
-  - The rollback boundary moves back to the **migrate step**, so
-    `rollback.sql` ships beside the migration and was rehearsed both ways. It
-    restores the column's exact shape (`TEXT NOT NULL DEFAULT 'MEMBER'`) but not
-    the per-row labels, which no script can recover; `'MEMBER'` is the documented
-    safe compatibility value. The operator sequence, the four pre-migration checks
-    and the rollback-boundary rules are in
-    `docs/PRODUCTION_UPGRADE_RUNBOOK.md` → "Windowed migration deploy sequence"
-    → §2.4.1.
-
-  The stored values were **meaningless rather than frozen** for the whole interval
-  between #2284 and the drop: nothing read them, and every row inserted after the
-  runtime half took `'MEMBER'` from the database default because the client had
-  stopped naming the column. That is why destroying them costs nothing
-  behaviourally.
+No code may treat family-group membership as carrying a rank: **membership in a
+group is the only fact the join table records**, and every adult login
+co-member of a group is equal (the boundary above). Relatedly, the family-group
+join request no longer materialises a group around a consentless target with any
+role at all (`src/app/api/members/family/request-join/route.ts`).
 
 ## INV-LIFE-038
 
@@ -1473,66 +1404,6 @@ the member population or a composed writer before it reaches this table, so
 the final dry run and apply require the operator write freeze in
 `docs/INDUCTION_BASELINE_RUNBOOK.md`.
 
-## INV-LIFE-062
-
-A `HutLeaderAssignment` may additionally hold ONE bed (`bedId`), which makes it
-a **custodian occupancy** (#2286). The invariants:
-
-- **Optional and inert by default.** `bedId = null` is a role only and has zero
-  capacity effect — the pre-#2286 behaviour, and what every
-  `hut-leader-auto-assign` cron row is. Only a bed-holding assignment reaches a
-  capacity or allocation consumer.
-- **Inclusive night semantics.** The hold covers the night of every date from
-  `startDate` to `endDate` **inclusive**, never the half-open booking envelope.
-  The bed is bookable again for the night after `endDate`. (This is the
-  custodian exception the stay-boundary invariant in "Booking Dates And
-  Capacity" names deliberately: an assignment's `endDate` is a covered day,
-  not a departure morning.)
-- **Counted as an occupant, never as a smaller lodge.** The capacity engines add
-  the per-night custodian **count** to `occupiedBeds` rather than reducing
-  `lodgeCapacity`, so `occupiedBeds + availableBeds === lodgeCapacity` still
-  holds on every night. It is a count, never a boolean: two custodians handing
-  over on different beds subtract two.
-- **No booking, no allocation row, no guest.** A custodian is not a
-  `BookingGuest`, so they are structurally absent from the chore roster, the
-  booking rows and the display occupancy counts. They may still make an ordinary
-  booking of their own anywhere, including at the same lodge, and capacity then
-  correctly counts both their held bed and their booked bed.
-- **Two assignments may never hold the SAME bed on an overlapping night.** The
-  one-day handover overlap assignments already permit is allowed only on
-  different beds; the same-bed case is refused at create and update.
-- **A whole-lodge hold and a custodian never contend.** The hold reserves the
-  *bookable* lodge; the custodian's bed sits outside that pool. Neither refuses
-  the other, and the ADR-001 held-night pin is unchanged.
-- **Exclusion is enforced in application code, never by a database constraint**
-  (owner decision 28 Jul 2026, option (a)). Two things make that safe, and both
-  are required:
-  1. **Every** `BedAllocation` write path that places a guest on a bed re-reads
-     the live holds **on the same client, immediately before the write**, and
-     refuses or drops what would land on one: the manual funnel
-     `allocateBedNight`, the range assign's `CUSTODIAN_HOLD` classification,
-     `runAutoBedAllocation`'s in-transaction re-filter, and the lifecycle
-     reconcile's write-time re-filter (`dropRowsOnCustodianHeldBedNights`). A
-     read at plan time alone is NOT enough — a reconcile is routinely called
-     post-commit, so a hold committed between the plan and the write would
-     otherwise be written over.
-  2. Every placement transaction this code **opens itself** takes the per-lodge
-     advisory lock (`acquireLodgeCapacityLock`) as its first statement, sorted
-     when it can span several lodges, so that re-read and the write serialise
-     against the hold writer, which takes the same key. A reconcile running
-     inside a CALLER's transaction inherits that caller's lock discipline
-     instead of adding a key to an ordering it does not control; its write-time
-     re-filter still runs on that client.
-
-  `custodian-write-path-contract.test.ts` fails CI when a new write
-  path appears undeclared, and `CUSTODIAN_BED_CONFLICT` on the allocation board
-  surfaces any row that got through anyway.
-- **A held bed cannot be deactivated or deleted**, nor can its room, while the
-  hold exists (`onDelete: Restrict` is the FK backstop behind the app guards).
-- **Minor privacy.** A minor-age custodian is never individually named on the
-  lobby display at any name-display granularity; the slot shows the role word
-  alone.
-
 ## INV-LIFE-063
 
 Hard delete must remain limited to records that pass the eligibility checks for
@@ -1654,6 +1525,9 @@ and is hard-deleted at the end. The merge is **additive and master-wins**:
   an explicit warning when the master's own link at the duplicate will be
   cleared (owner decision on #2437, 1 Aug 2026: detect and refuse; no new
   advisory-lock participants, no DB CHECK constraint).
+
+### INV-LIFE-078
+
 - **Relation buckets.** Every Member-referencing relation is classified into
   exactly one bucket by `MEMBER_MERGE_RELATION_SPECS`, enforced complete by a
   DMMF/schema test that fails CI if a new relation is added unclassified:
@@ -1700,6 +1574,9 @@ and is hard-deleted at the end. The merge is **additive and master-wins**:
     the member a booking request converted into, replayed as a live member id by
     the idempotent approval path, so the merge re-points it loser → master
     alongside its FK twin `requestedByMemberId` (#2243).
+
+### INV-LIFE-079
+
 - **Subscription-collision blocker.** If the loser holds a *meaningful*
   `MemberSubscription` (any invoice/payment/charge-coverage signal) for a season
   the master holds **any** subscription row for — meaningful or not — the merge
@@ -1709,6 +1586,9 @@ and is hard-deleted at the end. The merge is **additive and master-wins**:
   charge-coverage-backed row would fail on its `onDelete: Restrict` FK). A
   meaningless loser subscription for a season the master also holds is dropped;
   otherwise it moves.
+
+### INV-LIFE-080
+
 - **Xero teardown (ENTRANCE_FEE_INVOICE re-point rule).** Inside the transaction
   and with **no Xero API calls**, the loser's contact-identity `XeroObjectLink`
   rows are deactivated and its `xeroContactId` nulled (mirroring the delete path).
@@ -1721,6 +1601,9 @@ and is hard-deleted at the end. The merge is **additive and master-wins**:
   **contact** is not touched in Xero — the preview warns the admin to archive or
   merge it there manually (residual risk: no post-merge Xero contact-group or
   invoice re-sync, consistent with the periodic-reconciliation stance).
+
+### INV-LIFE-081
+
 - **Xero contact participants are lifecycle-fenced.** Member-scoped contact
   UPDATE (including operator retry and bulk name repair) reserves from the
   complete Member row only after taking that member `FOR KEY SHARE`; the
@@ -1735,6 +1618,9 @@ and is hard-deleted at the end. The merge is **additive and master-wins**:
   completion refuse; writer-first is followed by the normal teardown, so no
   active CONTACT link remains for a deleted member or merge loser. Every Xero
   provider call remains outside these short transactions.
+
+### INV-LIFE-082
+
 - **Guards, preview and confirmation.** Full Admin only; master ≠ loser; both
   exist; master active and not archived; loser ≠ the acting admin; the loser may
   not hold any admin access role (and the last-Full-Admin backstop applies); no
@@ -1751,6 +1637,9 @@ and is hard-deleted at the end. The merge is **additive and master-wins**:
   that lands during it; that residual window is closed by the second patch
   derivation above, which 409s on any disagreement — so a committed merge never
   carries drift, and there is no drift field in the audit to read.
+
+### INV-LIFE-083
+
 - **Refused attempts are audited too (#2498).** Every refusal — self-merge,
   missing member, `merge_blocked`, wrong confirmation phrase, `preview_drift`,
   the #2595 `partner_share_lodge_drift` arm, and the

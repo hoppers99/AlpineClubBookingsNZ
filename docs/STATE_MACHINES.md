@@ -1919,7 +1919,8 @@ one outstanding outgoing request per member, the memberId-target
 shared-family-group guard on the member API, and the stale-share sweep
 invariant (#1756, extended to merge by #2595): no future `isSecondOccupant`
 allocation may outlive its partner link or the active-adult precondition (see
-`INV-CAP-010` in docs/invariants/booking-dates-and-capacity.md).
+`INV-CAP-010` for the #1756 sweep and `INV-CAP-030` for the merge form, both in
+docs/invariants/booking-dates-and-capacity.md).
 
 ## Member Guest Consent Lifecycle ("+ Add Member Guest", #2305 / MG2 #2307, MG4 #2309)
 

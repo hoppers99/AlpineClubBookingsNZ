@@ -708,7 +708,7 @@ describe("cancelBooking credit refunds", () => {
     );
 
     expect(result.status).toBe(200);
-    // Change fee stays non-refundable (FEE-03): base =
+    // Change fee stays non-refundable (INV-PAY-018): base =
     // min(10000 − 3000, 10000 + 500) − 500 = 6500.
     expect(mocks.calculateRefundAmount).toHaveBeenCalledWith(
       6500,

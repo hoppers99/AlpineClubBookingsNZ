@@ -22,7 +22,7 @@ description, so you can find the right file without opening more than one.
 | --- | --- | --- |
 | [`public-content.md`](invariants/public-content.md) | `INV-PUB` | public fee/policy page content and named lodge tokens |
 | [`money.md`](invariants/money.md) | `INV-MONEY` | anything holding cents: fee authorities, whole-lodge pricing, promo caps, subscription charges, or the Xero invoice identity behind them |
-| [`booking-dates-and-capacity.md`](invariants/booking-dates-and-capacity.md) | `INV-DATE`, `INV-CAP` | what day it is, who is present, how many beds, which bed |
+| [`booking-dates-and-capacity.md`](invariants/booking-dates-and-capacity.md) | `INV-DATE`, `INV-CAP`, plus `INV-LIFE-062` | what day it is, who is present, how many beds, which bed, custodian bed holds |
 | [`payment-and-settlement.md`](invariants/payment-and-settlement.md) | `INV-PAY` | taking, clearing, crediting or refunding money |
 | [`member-guest-consent.md`](invariants/member-guest-consent.md) | `INV-GUEST` | a member bringing a member as a guest, and consent to do so |
 | [`booking-modifications.md`](invariants/booking-modifications.md) | `INV-MOD` | editing an existing booking's dates, party or price |
@@ -32,9 +32,9 @@ description, so you can find the right file without opening more than one.
 | [`booking-policy-exceptions.md`](invariants/booking-policy-exceptions.md) | `INV-EXCEPT` | policy-exception requests and officer decisions on them |
 | [`additional-payment-chasing.md`](invariants/additional-payment-chasing.md) | `INV-ADDPAY` | an outstanding additional payment, quote/request holds, refund settlement |
 | [`analytics-and-privacy.md`](invariants/analytics-and-privacy.md) | `INV-PRIV` | analytics loading, the consent banner, the public Analytics preferences control, the analytics route policy, what leaves this application for Google |
-| [`membership-lifecycle.md`](invariants/membership-lifecycle.md) | `INV-LIFE` | applications and nomination, cancellation, archive and deletion, roles and the admin lock-out guards, seasonal membership type and age tier, family groups, partner and parent/dependant links, email inheritance, inductions, custodian holds, member merge |
+| [`membership-lifecycle.md`](invariants/membership-lifecycle.md) | `INV-LIFE` (except `INV-LIFE-062`) | applications and nomination, cancellation, archive and deletion, roles and the admin lock-out guards, seasonal membership type and age tier, family groups, partner and parent/dependant links, email inheritance, inductions, member merge |
 | [`integrations.md`](invariants/integrations.md) | `INV-INT` | webhooks, cron idempotency, provider callbacks, Xero member grouping |
-| [`operations.md`](invariants/operations.md) | `INV-OPS` | raw SQL, row locking, deployment, what may be used as test input |
+| [`operations.md`](invariants/operations.md) | `INV-OPS` | raw SQL, row locking, deployment, dropping a column, what may be used as test input |
 
 Two supporting files sit beside them: the full id scheme in
 [`SCHEME.md`](invariants/SCHEME.md), and the imperfections found
@@ -86,6 +86,11 @@ File: [`invariants/money.md`](invariants/money.md). Prefix `INV-MONEY`.
 | `INV-MONEY-003` | Do not introduce floating point money arithmetic |
 | `INV-MONEY-004` | Whole-lodge approval price: manual override, else an officer-elected flat rate covering every night, else per-guest |
 | `INV-MONEY-005` | A promo "use" means a benefit was delivered; every cap counts only those allocation rows |
+| `INV-MONEY-023` | Cap checks take the promo row lock and re-read the counter under it |
+| `INV-MONEY-024` | A reprice narrows promo coverage and protects existing beneficiaries; it never refuses |
+| `INV-MONEY-025` | A cap check excluding a booking subtracts that booking's own allocation rows |
+| `INV-MONEY-026` | TRAP: the in-memory allocation list is not benefit-filtered; filter it yourself |
+| `INV-MONEY-027` | A `SET_PRICE` application netting to exactly zero counts as no use |
 | `INV-MONEY-006` | Refunds, credits, Stripe and Xero amounts reconcile back to cent-based ledger records |
 | `INV-MONEY-007` | Admin adjustments need audit, approval, and a visible business reason |
 | `INV-MONEY-008` | A confirmed subscription charge is immutable; only delivery, status and Xero metadata advance |
@@ -110,7 +115,9 @@ What a lodge night is, who is present on a day, how many beds a lodge has, and
 which bed a guest gets.
 File:
 [`invariants/booking-dates-and-capacity.md`](invariants/booking-dates-and-capacity.md).
-Prefixes `INV-DATE`, `INV-CAP`.
+Prefixes `INV-DATE`, `INV-CAP`. The same file also holds `INV-LIFE-062`, the
+custodian bed hold, re-homed from membership lifecycle by #2706: it keeps its
+number and prefix, and it is listed at the end of the table below.
 
 | ID | Covers |
 | --- | --- |
@@ -141,7 +148,9 @@ Prefixes `INV-DATE`, `INV-CAP`.
 | `INV-CAP-007` | Auto-allocated stays are room-continuous per booking, with bounded fallback |
 | `INV-CAP-008` | Allocation preferences are per lodge and advisory, never safety overrides |
 | `INV-CAP-009` | Automated placement never mixes one booking's minors with another's adult; the manual board warns only |
-| `INV-CAP-010` | A DOUBLE may hold two confirmed partners; five writers sweep it when broken, survivors auto-promote, and each active DOUBLE adds one admin-only partner-shared slot above base capacity |
+| `INV-CAP-010` | A DOUBLE may hold two confirmed partners; breaking that precondition sweeps future shared rows |
+| `INV-CAP-030` | Member merge sweeps only the future shared bed-nights its own validity re-check refuses |
+| `INV-CAP-031` | Cancellation and archive need no sweep; placement, planner keys, indexes, headroom, partner auto-promotion |
 | `INV-CAP-011` | Waitlisted and offered bookings hold no capacity until confirmed |
 | `INV-CAP-012` | A waitlist offer reprices at current rates and states what will be paid |
 | `INV-CAP-013` | A member may be present on only one live booking per lodge night |
@@ -161,6 +170,7 @@ Prefixes `INV-DATE`, `INV-CAP`.
 | `INV-CAP-027` | Allocation moves keep their nights, require review, commit atomically |
 | `INV-CAP-028` | Destructive removal is preview-bound, digest-checked, and never replans |
 | `INV-CAP-029` | A range assignment writes all or nothing and audits itself exactly once |
+| `INV-LIFE-062` | A hut-leader assignment may hold one bed: a custodian occupancy, on inclusive night semantics |
 
 ## Payment And Settlement
 
@@ -171,7 +181,19 @@ Prefix `INV-PAY`.
 
 | ID | Covers |
 | --- | --- |
-| `INV-PAY-001` | Manual mark-paid for booking payments: cash provenance, its fences, reversal, and the uncollected extra |
+| `INV-PAY-001` | Manual mark-paid provenance for booking payments, and the predicate that reads it |
+| `INV-PAY-038` | Mark-paid is a sibling entry point into the one settlement body, not a second path |
+| `INV-PAY-039` | Mark-paid never calls Xero, and is refused on any Xero evidence |
+| `INV-PAY-040` | A capacity failure refuses the mark-paid and records nothing |
+| `INV-PAY-041` | Invoice minting is fenced at enqueue, at settle, and in the handler |
+| `INV-PAY-042` | Inbound Xero PAID on a manually settled booking is raised, never quietly ignored |
+| `INV-PAY-043` | Duplicate capture on a cash-settled booking is auto-refunded, not silently kept |
+| `INV-PAY-044` | Cancelling a manually settled booking yields a durable `ManualRefundTask`, never a card refund |
+| `INV-PAY-045` | Reversal is permitted only while nothing has happened that it could not undo |
+| `INV-PAY-046` | An outstanding upward-modification delta is asked about, never silently absorbed or left behind |
+| `INV-PAY-047` | The generalised ledger mirror: every cent is collected, paid with credit, or still owed |
+| `INV-PAY-048` | A stored unconsumed credit election is cleared, recorded and reported, never stranded |
+| `INV-PAY-049` | Both directions are audited with the acting admin and the previous status |
 | `INV-PAY-002` | Account credit is consumed only at `PAYMENT_PENDING`; a draft stores an election and spends nothing |
 | `INV-PAY-003` | The edit path may write an election only onto DRAFT, AWAITING_REVIEW and PAYMENT_PENDING |
 | `INV-PAY-004` | Members may edit their own drafts; a draft edit moves no money and claims no capacity |
@@ -345,7 +367,7 @@ File:
 | `INV-REQ-006` | The column is an expand-only nullable addition, so an older decision reads correctly as "none" |
 | `INV-REQ-007` | The member's projection states only facts: capacity from the ledger, conflicts reported, no promises |
 
-### Subscription-lockout booking pricing
+### Subscription-lockout pricing, admin date overrides and member-facing email
 
 File:
 [`invariants/subscription-lockout-pricing.md`](invariants/subscription-lockout-pricing.md).
@@ -389,9 +411,34 @@ Prefix `INV-LOCKOUT`.
 | `INV-LOCKOUT-034` | Config transfer maps the legacy bundle key; unmapped, it would silently drop a real decision |
 | `INV-LOCKOUT-035` | That hook derives only into an absent mode, and runs before the field-validation loop |
 | `INV-LOCKOUT-036` | Reversal is a mode change: no migration, no code change, no already-taken booking repriced |
-| `INV-LOCKOUT-037` | The admin-only date override lifts the edit-window locks: date-only, with an explicit pricing mode; also the per-action notify-member regime and the account-deletion approve/reject/release protocol |
+| `INV-LOCKOUT-037` | The admin-only date override: date-only, per-action notify, `pricingMode` `shift` — `recalculate` is `INV-LOCKOUT-053` |
+| `INV-LOCKOUT-044` | The #1780 sweep extends the per-action notify choice to the remaining admin emails |
+| `INV-LOCKOUT-045` | An account-deletion approval with bookings to cancel claims `APPROVAL_IN_PROGRESS` before cancelling |
+| `INV-LOCKOUT-046` | That claim is taken only when there is something irreversible to protect |
+| `INV-LOCKOUT-047` | `APPROVAL_IN_PROGRESS` is an OPEN state every outstanding-request reader must count |
+| `INV-LOCKOUT-048` | A Full Admin may release a started approval back to `PENDING`, audited |
+| `INV-LOCKOUT-049` | A released request is marked in the row, and rejecting one is gated and confirmed |
+| `INV-LOCKOUT-050` | The flavour of `PENDING` a rejection was authorised against travels into the guarded claim |
+| `INV-LOCKOUT-051` | The release and its audit record commit together, under that row's own lock |
+| `INV-LOCKOUT-052` | A decision that loses its guard to a release is reported as exactly that |
+| `INV-LOCKOUT-053` | The override's other `pricingMode` (`INV-LOCKOUT-037`): `recalculate` reprices in full, clamps lifted |
 | `INV-LOCKOUT-038` | Under an override an over-capacity target is warn-and-confirm, recorded and audited |
 | `INV-LOCKOUT-039` | Per-booking "No emails" withholds everything about that booking, enforced at the mailer |
+| `INV-LOCKOUT-054` | Authenticated booking links follow the booking-detail read gate |
+| `INV-LOCKOUT-055` | Admin-audience mail is never withheld; the registry's audience is the authority |
+| `INV-LOCKOUT-056` | An unreadable switch withholds the send and records the row FAILED |
+| `INV-LOCKOUT-057` | Every withhold writes a `SKIPPED_NO_EMAILS` `EmailLog` row with no retained body |
+| `INV-LOCKOUT-058` | The retry cron re-reads the switch and the booking authority before every replay |
+| `INV-LOCKOUT-059` | Waitlist candidacy excludes a silenced booking; two residual cases are surfaced, not denied |
+| `INV-LOCKOUT-060` | A silenced waitlist entry keeps its place and the position quoted to others |
+| `INV-LOCKOUT-061` | Xero-sent invoice emails are gated too, superseding the #1705 always-send carve-out |
+| `INV-LOCKOUT-062` | Enabling the switch requires an acknowledgement; both set and clear are audited |
+| `INV-LOCKOUT-063` | The acknowledgement is a two-button dialog, never a checkbox, gated on `bookings:edit` |
+| `INV-LOCKOUT-064` | A persistent banner lists what was actually withheld, grouped per template with counts |
+| `INV-LOCKOUT-065` | Two consequences nothing can record are stated in the acknowledgement dialog |
+| `INV-LOCKOUT-066` | A member must never learn the switch exists, in the render or the RSC payload |
+| `INV-LOCKOUT-067` | The per-action notify prompts are not offered while the switch is on |
+| `INV-LOCKOUT-068` | The silenced path sends no `notifyMember` flag, never `false` |
 | `INV-LOCKOUT-040` | Creation is today-or-future except an admin on-behalf retroactive create inside 365 days; the Xero period-lock guard reaches the modify paths too |
 | `INV-LOCKOUT-041` | Shift overrides write no Xero documents; on-behalf over-capacity creates are warn-and-confirm |
 | `INV-LOCKOUT-042` | A deliberately over-capacity booking is never destroyed by a later capacity re-check |
@@ -405,11 +452,42 @@ Prefix `INV-EXCEPT`.
 
 | ID | Covers |
 | --- | --- |
-| `INV-EXCEPT-001` | The durable member-request and admin-decision flow for eligible SOFT policy failures only |
-| `INV-EXCEPT-002` | The request-creation half: own store for new bookings, server-re-derived violations, one open request |
-| `INV-EXCEPT-003` | The officer-decision half: approving executes in one transaction, on a full-party capacity recheck |
+| `INV-EXCEPT-001` | The flow's scope — eligible SOFT failures only — and the immutable, self-proving proposal |
+| `INV-EXCEPT-004` | The frozen evidence is authoritative; only reviewed, allowlisted violations can be stored |
+| `INV-EXCEPT-005` | A held request's provisional reservation is per-night, directional and durable |
+| `INV-EXCEPT-006` | Drift is set algebra over the frozen and the current violations of one proposal |
+| `INV-EXCEPT-007` | `memberMessage` is required, trimmed, at most 1000 characters, normalised once |
+| `INV-EXCEPT-008` | Only a `REQUESTED` request may move, once, under a guarded version claim |
+| `INV-EXCEPT-009` | Every held bed carries an immutable deadline, and only a held bed does |
+| `INV-EXCEPT-010` | Approval claims, releases and executes in one transaction |
+| `INV-EXCEPT-002` | The request-creation half, and the dedicated store a new-booking proposal lives in |
+| `INV-EXCEPT-011` | Violations are re-derived server-side; a proposal tripping none is refused |
+| `INV-EXCEPT-012` | At most one open request per subject, enforced by a NULL-distinct unique index |
+| `INV-EXCEPT-013` | Creation never changes a live booking |
+| `INV-EXCEPT-014` | Cancel and supersede are guarded; a lost claim runs no side effect |
+| `INV-EXCEPT-015` | The officer alert is fire-and-forget after commit, never in-band |
+| `INV-EXCEPT-003` | The officer-decision half: approving executes in one transaction, never a status flip |
+| `INV-EXCEPT-016` | The capacity recheck covers the full proposed party and excludes the live booking |
+| `INV-EXCEPT-017` | The recheck window covers every frozen guest night, not the envelope alone |
+| `INV-EXCEPT-018` | Capacity stays a hard refusal; an approving officer is not an override actor |
+| `INV-EXCEPT-019` | Never a false keep-pending, including once the post-commit phase has begun |
+| `INV-EXCEPT-020` | A kept-pending capacity conflict is always recorded, on either store |
+| `INV-EXCEPT-021` | The live proposal is verified by replaying the frozen delta, not by trust |
+| `INV-EXCEPT-022` | One implementation computes what the delta produces, for all four surfaces |
+| `INV-EXCEPT-023` | Only the reviewed rules are overridden; ADMIN is never borrowed for guest authorisation |
+| `INV-EXCEPT-024` | An approved hosting exception is recorded as decided in the same transaction |
+| `INV-EXCEPT-025` | The adult-supervision review is never decided by proxy; it opens PENDING and BLOCKED |
+| `INV-EXCEPT-026` | Reauthorization re-reads the officer's current roles inside the approval transaction |
+| `INV-EXCEPT-027` | A decision is explicit, attributable and single-flight against the version shown |
+| `INV-EXCEPT-028` | The officer decides a party they were shown, guest by guest |
+| `INV-EXCEPT-029` | The settlement-method choice is asked on the decision form, never reported as pending |
+| `INV-EXCEPT-030` | The member's own list returns the officer's note, the last conflict, and any booking |
+| `INV-EXCEPT-031` | An approved new booking gets its own approval email after commit; a modification does not |
+| `INV-EXCEPT-032` | One algorithm decides both request tables, so the two flavours cannot drift apart |
+| `INV-EXCEPT-033` | A new booking is authorised as the requesting member, not merely created |
+| `INV-EXCEPT-034` | A supersede carries the predecessor's attempt count forward |
 
-### Chasing an outstanding additional payment
+### Additional-payment chasing, request holds and refund settlement
 
 File:
 [`invariants/additional-payment-chasing.md`](invariants/additional-payment-chasing.md).
@@ -417,7 +495,14 @@ Prefix `INV-ADDPAY`.
 
 | ID | Covers |
 | --- | --- |
-| `INV-ADDPAY-001` | Who is owed an additional payment, who may pay one, what is sent, and what makes it idempotent |
+| `INV-ADDPAY-001` | Who is owed an additional payment, tested on booking status and amount together |
+| `INV-ADDPAY-023` | Who may pay one: every member surface excludes CANCELLED and BUMPED |
+| `INV-ADDPAY-024` | At most two reminders per obligation, and the chase stops at check-out |
+| `INV-ADDPAY-025` | Nothing raised before the derived cron cutover is chased; a read failure sends nothing |
+| `INV-ADDPAY-026` | Guarded stamps claim before each send, read and fenced relative to the current episode |
+| `INV-ADDPAY-027` | One clock: manual and automatic sends share both stamps and the cooldown, both ways |
+| `INV-ADDPAY-028` | Only a transmitted message counts as sent; otherwise the stamps are given back |
+| `INV-ADDPAY-029` | Silence is refused, not swallowed, and unreachability is checked before anything is claimed |
 | `INV-ADDPAY-002` | Three side doors into the finished-unpaid state are closed at the door |
 | `INV-ADDPAY-003` | A booking left with only non-adults needs admin approval however it got there |
 | `INV-ADDPAY-004` | Any pending admin review blocks a paid or completed booking from lodge check-in, whatever its reason |
@@ -464,10 +549,16 @@ Prefix `INV-PRIV`.
 ## Membership Lifecycle
 
 How a membership starts, changes and ends; who may act for whom inside a family;
-roles, age tiers, inductions, custodian bed holds and member merge.
+roles, age tiers, inductions and member merge.
 File:
 [`invariants/membership-lifecycle.md`](invariants/membership-lifecycle.md).
-Prefix `INV-LIFE`.
+Prefix `INV-LIFE`, with one exception: `INV-LIFE-062`, the custodian bed hold,
+lives in
+[`invariants/booking-dates-and-capacity.md`](invariants/booking-dates-and-capacity.md)
+beside the `INV-CAP` rules and is listed under Booking Dates And Capacity above.
+The `FamilyGroupMember.role` column drop that used to sit inside `INV-LIFE-037`
+is now `INV-OPS-005` to `INV-OPS-011` in
+[`invariants/operations.md`](invariants/operations.md).
 
 | ID | Covers |
 | --- | --- |
@@ -487,7 +578,15 @@ Prefix `INV-LIFE`.
 | `INV-LIFE-014` | A deleted account yields no session even with `active: true`; all three providers refuse |
 | `INV-LIFE-015` | The deleted-account marker is a strong signal, not a schema invariant; one path overwrites both |
 | `INV-LIFE-016` | Cancellation clears no roles and no JWT, so any admin-access route must re-read `active` |
-| `INV-LIFE-017` | Approval mapping preserves login uniqueness and auth; also on-behalf scope and pickers, non-member owner creation, membership-type merge, and the N/A precedence ladder |
+| `INV-LIFE-017` | Application-approval mapping preserves login uniqueness and auth, and never double-charges coverage |
+| `INV-LIFE-066` | The applicant MAP path's #1026 privileged-email gate is Full-Admin-only, fail-closed |
+| `INV-LIFE-067` | On-behalf booking pickers are `bookings:edit`-scoped and never require `membership:view` |
+| `INV-LIFE-068` | MG4's member-guest picker: email mode `bookings:edit`, name mode also `membership:view` |
+| `INV-LIFE-069` | On-behalf creation matches modification, and no on-behalf actor may target themselves |
+| `INV-LIFE-070` | A Booking Officer may inline-create a non-login non-member booking owner |
+| `INV-LIFE-071` | Legacy `Member.role` reads, seasonal assignment storage, and age tiers stay separate axes |
+| `INV-LIFE-072` | Built-in membership types never delete or merge; a custom merge has stated preconditions |
+| `INV-LIFE-073` | `NOT_APPLICABLE` is resolved by one shared helper on a four-step precedence ladder |
 | `INV-LIFE-018` | Guards for age-exempt types, N/A flips, season roll-forward and the Xero member import |
 | `INV-LIFE-019` | `NOT_APPLICABLE` has no `AgeTierSetting` row and is out of every age-based automation; also committee presentation and contact routing, member-photo visibility, and EXIF/GPS stripping on every image path |
 | `INV-LIFE-020` | With the 2FA module on, the JWT claim flips only via a server-minted single-use challenge |
@@ -507,7 +606,11 @@ Prefix `INV-LIFE`.
 | `INV-LIFE-034` | Organisations are excluded by role, never by age tier, because N/A is carried by people too |
 | `INV-LIFE-035` | The family group is the authorisation boundary, and every login-holding adult in it is equal |
 | `INV-LIFE-036` | The dividing line is `canLogin`, not age; nothing changes at eighteen |
-| `INV-LIFE-037` | The four powers over a non-login member, how each was settled, and the role column's drop |
+| `INV-LIFE-037` | The four powers over a non-login member, and the cancellation-request confirmation flag |
+| `INV-LIFE-074` | Adding a non-login member to a booking notifies them or their family adults |
+| `INV-LIFE-075` | A delegated details edit shows read-only provenance on the family cards |
+| `INV-LIFE-076` | The one-step partner declaration keys on the voucher pointer, not a family-group role |
+| `INV-LIFE-077` | Family-group membership carries no rank; membership is the only fact recorded |
 | `INV-LIFE-038` | What one member may see about another member's parent: a deliberate two-layer whitelist |
 | `INV-LIFE-039` | That whitelist is enforced server-side field by field; admin surfaces are unchanged |
 | `INV-LIFE-040` | The admin link route's other requirements, including that the target not be the parent's ancestor |
@@ -532,10 +635,15 @@ Prefix `INV-LIFE`.
 | `INV-LIFE-059` | Induction sign-off is one overall pass per signer; hut-leader eligibility is not an assignment |
 | `INV-LIFE-060` | The trusted legacy induction baseline is a one-off exception with an exactly defined population |
 | `INV-LIFE-061` | Applying that baseline needs a Full Admin and exact confirmations, and writes only new rows |
-| `INV-LIFE-062` | A hut-leader assignment may hold one bed: a custodian occupancy, on inclusive night semantics |
 | `INV-LIFE-063` | Hard delete stays limited to records passing every durable-history eligibility check |
 | `INV-LIFE-064` | Family Group identity screens show a calculated age: one helper, stored nowhere, NZ date-only |
-| `INV-LIFE-065` | Member profile merge: Full Admin only, additive and master-wins, with buckets, guards and audit; Xero contact writers (webhook reconcile, bulk sync, group import, canonical backfill) are lifecycle-fenced under Member row locks |
+| `INV-LIFE-065` | Member profile merge: Full Admin only, additive and master-wins, with a re-derived field patch |
+| `INV-LIFE-078` | Every Member-referencing relation is classified move, resolve, cascade or snapshot |
+| `INV-LIFE-079` | A meaningful loser subscription colliding on a season the master holds blocks the merge |
+| `INV-LIFE-080` | Xero teardown deactivates the loser's links, re-pointing only the entrance-fee invoice |
+| `INV-LIFE-081` | Xero contact writers are lifecycle-fenced under Member row locks |
+| `INV-LIFE-082` | Full Admin only, guarded, preview-token-verified, phrase-confirmed and audited |
+| `INV-LIFE-083` | Every refusal writes one best-effort, non-PII `MEMBER_MERGE_REFUSED` audit row |
 
 ## Integrations
 
@@ -564,13 +672,20 @@ File: [`invariants/integrations.md`](invariants/integrations.md). Prefix
 
 ## Operations
 
-Raw SQL and row locking, production deployment, and what may be used as test
-input.
+Raw SQL and row locking, production deployment including the worked windowed
+column drop, and what may be used as test input.
 File: [`invariants/operations.md`](invariants/operations.md). Prefix `INV-OPS`.
 
 | ID | Covers |
 | --- | --- |
 | `INV-OPS-001` | Raw SQL never declares its own result shape: lock raw and read typed, or validate the rows |
 | `INV-OPS-002` | Production deployment must respect `docs/BLUE_GREEN_MIGRATION_POLICY.md` |
+| `INV-OPS-005` | A doomed column needs `@ignore`: static defaults and implicit `RETURNING` still name it |
+| `INV-OPS-006` | Post-drop the compiler catches only `where`; `select` and `create` fail at runtime |
+| `INV-OPS-007` | The surviving guard test pins the generated client's shape and raw SQL |
+| `INV-OPS-008` | Payload readers must be gone before the drop, not just authorisation readers |
+| `INV-OPS-009` | How the role-column drop actually shipped, and why the two-step plan was superseded |
+| `INV-OPS-010` | A windowed drop: the `windowed` ledger row, `rollback.sql`, and the operator sequence |
+| `INV-OPS-011` | The dropped column's stored values were meaningless rather than frozen |
 | `INV-OPS-003` | Public CI and local validation must use test/demo credentials or placeholders |
 | `INV-OPS-004` | Production data, backups, live provider accounts and live webhooks are not valid test inputs |

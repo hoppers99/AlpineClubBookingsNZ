@@ -684,8 +684,8 @@ value**:
 The mode is also passed for a second, non-pool reason: two independent reads in
 one request can disagree if an admin saves the panel between them, which on
 `modify-quote` (seven or more pricing passes, two of them differenced into the
-member's settlement delta) is a money error rather than a nuisance. See
-`docs/DOMAIN_INVARIANTS.md` → "Subscription-lockout booking pricing".
+member's settlement delta) is a money error rather than a nuisance. See the
+`INV-LOCKOUT` rules in `docs/invariants/subscription-lockout-pricing.md`.
 
 ### Composition: application-approval mapping (E10, #1936)
 
@@ -1525,7 +1525,7 @@ concurrent conflicting write.
 #### Merge joins the bed-allocation cohort — lodge BEFORE member, and no global key (#2595)
 
 Merge invalidates future partner-shared double-bed placements (see
-`INV-CAP-010` in docs/invariants/booking-dates-and-capacity.md: dropping the
+`INV-CAP-030` in docs/invariants/booking-dates-and-capacity.md: dropping the
 duplicate's CONFIRMED partner link leaves the master sharing a double with
 somebody it has no partnership with). Repairing that inside the merge
 transaction means merge is a bed-allocation writer, so it takes a
@@ -1948,7 +1948,7 @@ displacement down with it. The exclusion is keyed
 a MOVEd row still exists at its NEW bed and a guest-night-only key would forgive
 it there, making the MOVE's destination read as free. The same apply also
 promotes any second occupant its displacements orphan, on the same client, so
-the shared-double invariant `INV-CAP-010`
+the shared-double invariant `INV-CAP-031`
 (docs/invariants/booking-dates-and-capacity.md) holds on this path like
 every other.
 `existingAllocations` is ordered `(stayDate, bedId, id)` for the same family of

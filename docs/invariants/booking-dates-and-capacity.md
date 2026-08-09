@@ -7,6 +7,11 @@ stay starts and ends, how dates are stored, compared and rendered — and
 **`INV-CAP`** — how many beds exist, who consumes them, and how beds are
 allocated.
 
+This file also hosts one rule from another prefix: `INV-LIFE-062`, the custodian
+bed hold, re-homed here from `membership-lifecycle.md` by #2706 because it is a
+capacity invariant end to end. IDs are location-independent and the index is
+authoritative for ID → file, so it keeps its number and its prefix.
+
 Read this file when you are changing anything that decides which NZ calendar day
 a booking touches, who is present on a day, how many beds a lodge has, or which
 bed a guest is placed in.
@@ -530,128 +535,132 @@ derivation).
   history and stay untouched, and the sweep is idempotent (a second run finds
   nothing).
 
-  **Member merge is the fifth writer of this invariant, and needs its own,
-  validity-driven form (#2595).** Merge is not a pair-breaking event about one
-  pair — it COLLAPSES two identities. `planPartnerLinkMerge` keeps at most one
-  CONFIRMED partner for the surviving master, so merging a duplicate that
-  already had its own confirmed partner DROPS that link, and `applyMoves` then
-  re-points `BookingGuest.memberId` onto the master and leaves every bed
-  allocation exactly where it was — so the master and the duplicate's
-  ex-partner are left sharing a future DOUBLE with nothing behind it. Neither
-  #1756 scope fits: the pair scope knows only one pair (a merge can invalidate
-  several bed-nights against several counterparts), and the member scope would
-  also remove the master's OWN still-CONFIRMED share, which the merge did
-  nothing to invalidate. So merge runs
-  `sweepUnbackedFutureSharedDoublesWithLocksHeld`
-  (`bed-allocation-lifecycle.ts`) instead: for the `[master, loser]` scope it
-  re-derives each candidate future bed-night's actual two occupants and
-  re-asks the same single source of truth (`mayShareDoubleBedWith`, the
-  batched form of `mayShareDoubleBed`) whether they may still share, sweeping
-  ONLY the bed-nights that fail — again only the `isSecondOccupant` row, with
-  the same `BED_ALLOCATION_PARTNER_SHARE_SWEPT` audit against both bookings
-  (reason `members_merged`, `issue: 2595`) and the same post-commit admin
-  alert. A guest with no member on either side is unbacked by construction
-  (placement requires a member on both sides) and is swept without an
-  eligibility round-trip; a bed-night whose primary is missing is left to the
-  #1750 promotion pass rather than judged as a pair that does not exist. Being
-  validity-driven it is idempotent and vacuous on a merge that broke nothing.
-  Its lock prefix is DELIBERATELY narrower than its #1756 sibling's:
-  `acquireMemberMergePartnerSharedLodgeLocks` takes every affected lodge
-  capacity key in sorted order BEFORE any member-lifecycle key, and takes NO
-  global cohort `lock(1)` — a merge holds its keys for up to 120s and the global
-  key would reject every 5s-budget cohort writer in the club. What replaces it
-  is a wider lodge derivation (the members' future bed allocations UNION their
-  future guest-nights, so a lodge a placement could still land in is covered)
-  plus a run-time check: the sweep is handed the locked lodge set and refuses the
-  whole merge with a 409 rather than judge a bed-night outside it (see
-  docs/CONCURRENCY_AND_LOCKING.md -> "Merge joins the bed-allocation cohort").
+### INV-CAP-030
 
-  Membership cancellation and archive need no sweep call: approval
-  is blocked while ANY future booking or member guest appearance exists, so a
-  cancellable member cannot occupy a future shared bed-night. Only an admin adds the second occupant on the board,
-  and only onto a bed whose primary already **holds capacity**. That check is
-  made at PLACEMENT time only and is not maintained afterwards, so it is a
-  strong default rather than a guarantee: `BED_ALLOCATABLE_BOOKING_STATUSES` is
-  a deliberate superset of the capacity-holding statuses, so a primary can later
-  stop holding capacity while keeping its rows, and displacement can then reach
-  it. Since #2656 the planner **represents** a shared double rather than
-  collapsing it — occupant identity is keyed `bedId:stayDate:bookingGuestId`,
-  distinct from the `bedId:stayDate` capacity key — so it never frees a
-  bed-night one of the pair still occupies, never treats a bed-night whose
-  occupants span two bookings as a SINGLE-BED displacement target, and counts an
-  emptied double as one freed bed. (The whole-stay room path is deliberately
-  different: it makes every occupant of a bed-night an eviction candidate and
-  gains the bed only once ALL of them are in the eviction set, so both bookings
-  on a shared double are displaced together or the room is not chosen — see
-  docs/CAPACITY_MODEL.md rule 3.) Auto-allocation never
-  creates a second occupant; every other bed type stays exactly one occupant per
-  night. DB-enforced without CHECK constraints:
-  `@@unique([bedId, stayDate, isSecondOccupant])` caps a bed-night at ≤2 rows and
-  a raw-SQL partial unique index (`WHERE "bedType" <> 'DOUBLE'`, recorded in
-  `prisma/partial-unique-indexes.tsv`) caps every non-DOUBLE bed at exactly one;
-  `BedAllocation.bedType` is a denormalized copy the partial index reads (a
-  partial index cannot join to `LodgeBed`). The **base** capacity figure is
-  unchanged — a shared double is still ONE bed of `activeBedCount` and each
-  occupant is a full person-night (pricing/settlement untouched) — but each
-  active DOUBLE adds one **partner-shared slot** of admission headroom above
-  it (#1745): reserved (only `checkCapacityForPartnerSharedAdmission` on the
-  admin-initiated partner flow may use it — every public/member/system path
-  reads the unchanged base `getLodgeCapacity`), bounded (≤ active DOUBLE
-  count per night, with the sharer's partner required to hold an ordinary
-  base-backed place — a sharer can never anchor another sharer — so a
-  feasible pairing always exists, modulo the documented #1668 forced-overbook
-  residual), and capped by an explicit `LodgeSettings.capacity`, which limits
-  *people*, so a `capped_beds` lodge gets no headroom (see
-  docs/CAPACITY_MODEL.md, "Partner-shared double-bed headroom"). Initiation
-  is admin-only (#1746): the `partnerSharedGuests` flags on the booking
-  modify routes are rejected for non-admin actors at BOTH route and service,
-  the edit panel's quick-add candidates are server-computed
-  (`listBookingPartnerSharingCandidates`), and the public wizard carries no
-  shared-slot affordance. A DOUBLE
-  holding a second occupant
-  cannot be retyped to a non-double until that occupant is removed. Whenever a
-  shared double loses its primary — a reviewed removal (#2594), a board move of
-  the primary onto another bed, or a cross-booking cancellation / reconcile prune
-  (#1750) — the surviving partner is **auto-promoted** to primary on the vacated
-  bed-night atomically with the removal on transactional paths. Single-row paths
-  write one `BED_ALLOCATION_PARTNER_PROMOTED` audit per promotion because the
-  partner may belong to a different booking (sharing eligibility is
-  member-level). **The lifecycle displacement apply path (#1387/#1677) promotes
-  too, since #2656** — it was the one removal path that did not, so displacing
-  the primary of a shared double left exactly the orphan this list says never
-  survives. It reads the rows it is about to move or delete BEFORE the write,
-  promotes the survivor on every bed-night that lost its primary, and clears
-  `isSecondOccupant` on a MOVE (a relocated row lands alone on a bed that was
-  free at plan start, so it is the primary there and must not carry a fresh
-  orphan to its destination). Two bulk paths batch that audit:
-  **range assignment** (#2251),
-  which can vacate up to 366
-  bed-nights, and **reviewed removal** (#2594), which can span a booking or the
-  board's 31-night lodge window. Each records **one batched
-  `BED_ALLOCATION_PARTNERS_PROMOTED`** entry instead, targeted at the booking
-  anchoring the operation when one exists and listing each promotion
-  (`{allocationId, bookingId, bookingGuestId, bedId, stayDate}`) up to
-  its 50-identity bound (the audit sanitiser's array limit),
-  with the exact `promotedCount` and a `promotionsTruncated` flag alongside — so
-  the promoted partner's own booking is still named per promotion, and the audit
-  rows written inside that transaction stay bounded independently of the range
-  length. Promotion is gated on
-  `isSecondOccupant` alone, never the denormalized `bedType` of the removed row or
-  the survivor: an AUTO-allocated row on a real DOUBLE carries the SINGLE default,
-  so trusting that type would strand the partner it needs to promote. The
-  bed-night is
-  therefore never left dead-ended behind the orphaned-second-occupant guard in
-  `resolveSecondOccupant`, and re-pairing follows the normal sharing rules (in
-  particular the promoted primary's booking must hold capacity before a new
-  partner may join). The reviewed-removal and board-move services self-wrap
-  their read + write + promote in a transaction, while the lifecycle prune
-  captures-before / flips-after on the caller's own client. Reconcile is
-  usually already inside a transaction, but a few callers
-  reconcile on the bare `prisma` singleton (e.g. `cron-complete-bookings`, the
-  confirm-pending-guests route); on those a crash between the delete and the flip
-  regresses to the pre-#1750 state — a recoverable orphaned second occupant,
-  visible on the board and cleared by the next successful reconcile or a manual
-  move, never a capacity or double-booking violation.
+**Member merge is the fifth writer of this invariant, and needs its own,
+validity-driven form (#2595).** Merge is not a pair-breaking event about one
+pair — it COLLAPSES two identities. `planPartnerLinkMerge` keeps at most one
+CONFIRMED partner for the surviving master, so merging a duplicate that
+already had its own confirmed partner DROPS that link, and `applyMoves` then
+re-points `BookingGuest.memberId` onto the master and leaves every bed
+allocation exactly where it was — so the master and the duplicate's
+ex-partner are left sharing a future DOUBLE with nothing behind it. Neither
+#1756 scope fits: the pair scope knows only one pair (a merge can invalidate
+several bed-nights against several counterparts), and the member scope would
+also remove the master's OWN still-CONFIRMED share, which the merge did
+nothing to invalidate. So merge runs
+`sweepUnbackedFutureSharedDoublesWithLocksHeld`
+(`bed-allocation-lifecycle.ts`) instead: for the `[master, loser]` scope it
+re-derives each candidate future bed-night's actual two occupants and
+re-asks the same single source of truth (`mayShareDoubleBedWith`, the
+batched form of `mayShareDoubleBed`) whether they may still share, sweeping
+ONLY the bed-nights that fail — again only the `isSecondOccupant` row, with
+the same `BED_ALLOCATION_PARTNER_SHARE_SWEPT` audit against both bookings
+(reason `members_merged`, `issue: 2595`) and the same post-commit admin
+alert. A guest with no member on either side is unbacked by construction
+(placement requires a member on both sides) and is swept without an
+eligibility round-trip; a bed-night whose primary is missing is left to the
+#1750 promotion pass rather than judged as a pair that does not exist. Being
+validity-driven it is idempotent and vacuous on a merge that broke nothing.
+Its lock prefix is DELIBERATELY narrower than its #1756 sibling's:
+`acquireMemberMergePartnerSharedLodgeLocks` takes every affected lodge
+capacity key in sorted order BEFORE any member-lifecycle key, and takes NO
+global cohort `lock(1)` — a merge holds its keys for up to 120s and the global
+key would reject every 5s-budget cohort writer in the club. What replaces it
+is a wider lodge derivation (the members' future bed allocations UNION their
+future guest-nights, so a lodge a placement could still land in is covered)
+plus a run-time check: the sweep is handed the locked lodge set and refuses the
+whole merge with a 409 rather than judge a bed-night outside it (see
+docs/CONCURRENCY_AND_LOCKING.md -> "Merge joins the bed-allocation cohort").
+
+### INV-CAP-031
+
+Membership cancellation and archive need no sweep call: approval
+is blocked while ANY future booking or member guest appearance exists, so a
+cancellable member cannot occupy a future shared bed-night. Only an admin adds the second occupant on the board,
+and only onto a bed whose primary already **holds capacity**. That check is
+made at PLACEMENT time only and is not maintained afterwards, so it is a
+strong default rather than a guarantee: `BED_ALLOCATABLE_BOOKING_STATUSES` is
+a deliberate superset of the capacity-holding statuses, so a primary can later
+stop holding capacity while keeping its rows, and displacement can then reach
+it. Since #2656 the planner **represents** a shared double rather than
+collapsing it — occupant identity is keyed `bedId:stayDate:bookingGuestId`,
+distinct from the `bedId:stayDate` capacity key — so it never frees a
+bed-night one of the pair still occupies, never treats a bed-night whose
+occupants span two bookings as a SINGLE-BED displacement target, and counts an
+emptied double as one freed bed. (The whole-stay room path is deliberately
+different: it makes every occupant of a bed-night an eviction candidate and
+gains the bed only once ALL of them are in the eviction set, so both bookings
+on a shared double are displaced together or the room is not chosen — see
+docs/CAPACITY_MODEL.md rule 3.) Auto-allocation never
+creates a second occupant; every other bed type stays exactly one occupant per
+night. DB-enforced without CHECK constraints:
+`@@unique([bedId, stayDate, isSecondOccupant])` caps a bed-night at ≤2 rows and
+a raw-SQL partial unique index (`WHERE "bedType" <> 'DOUBLE'`, recorded in
+`prisma/partial-unique-indexes.tsv`) caps every non-DOUBLE bed at exactly one;
+`BedAllocation.bedType` is a denormalized copy the partial index reads (a
+partial index cannot join to `LodgeBed`). The **base** capacity figure is
+unchanged — a shared double is still ONE bed of `activeBedCount` and each
+occupant is a full person-night (pricing/settlement untouched) — but each
+active DOUBLE adds one **partner-shared slot** of admission headroom above
+it (#1745): reserved (only `checkCapacityForPartnerSharedAdmission` on the
+admin-initiated partner flow may use it — every public/member/system path
+reads the unchanged base `getLodgeCapacity`), bounded (≤ active DOUBLE
+count per night, with the sharer's partner required to hold an ordinary
+base-backed place — a sharer can never anchor another sharer — so a
+feasible pairing always exists, modulo the documented #1668 forced-overbook
+residual), and capped by an explicit `LodgeSettings.capacity`, which limits
+*people*, so a `capped_beds` lodge gets no headroom (see
+docs/CAPACITY_MODEL.md, "Partner-shared double-bed headroom"). Initiation
+is admin-only (#1746): the `partnerSharedGuests` flags on the booking
+modify routes are rejected for non-admin actors at BOTH route and service,
+the edit panel's quick-add candidates are server-computed
+(`listBookingPartnerSharingCandidates`), and the public wizard carries no
+shared-slot affordance. A DOUBLE
+holding a second occupant
+cannot be retyped to a non-double until that occupant is removed. Whenever a
+shared double loses its primary — a reviewed removal (#2594), a board move of
+the primary onto another bed, or a cross-booking cancellation / reconcile prune
+(#1750) — the surviving partner is **auto-promoted** to primary on the vacated
+bed-night atomically with the removal on transactional paths. Single-row paths
+write one `BED_ALLOCATION_PARTNER_PROMOTED` audit per promotion because the
+partner may belong to a different booking (sharing eligibility is
+member-level). **The lifecycle displacement apply path (#1387/#1677) promotes
+too, since #2656** — it was the one removal path that did not, so displacing
+the primary of a shared double left exactly the orphan this list says never
+survives. It reads the rows it is about to move or delete BEFORE the write,
+promotes the survivor on every bed-night that lost its primary, and clears
+`isSecondOccupant` on a MOVE (a relocated row lands alone on a bed that was
+free at plan start, so it is the primary there and must not carry a fresh
+orphan to its destination). Two bulk paths batch that audit:
+**range assignment** (#2251),
+which can vacate up to 366
+bed-nights, and **reviewed removal** (#2594), which can span a booking or the
+board's 31-night lodge window. Each records **one batched
+`BED_ALLOCATION_PARTNERS_PROMOTED`** entry instead, targeted at the booking
+anchoring the operation when one exists and listing each promotion
+(`{allocationId, bookingId, bookingGuestId, bedId, stayDate}`) up to
+its 50-identity bound (the audit sanitiser's array limit),
+with the exact `promotedCount` and a `promotionsTruncated` flag alongside — so
+the promoted partner's own booking is still named per promotion, and the audit
+rows written inside that transaction stay bounded independently of the range
+length. Promotion is gated on
+`isSecondOccupant` alone, never the denormalized `bedType` of the removed row or
+the survivor: an AUTO-allocated row on a real DOUBLE carries the SINGLE default,
+so trusting that type would strand the partner it needs to promote. The
+bed-night is
+therefore never left dead-ended behind the orphaned-second-occupant guard in
+`resolveSecondOccupant`, and re-pairing follows the normal sharing rules (in
+particular the promoted primary's booking must hold capacity before a new
+partner may join). The reviewed-removal and board-move services self-wrap
+their read + write + promote in a transaction, while the lifecycle prune
+captures-before / flips-after on the caller's own client. Reconcile is
+usually already inside a transaction, but a few callers
+reconcile on the bare `prisma` singleton (e.g. `cron-complete-bookings`, the
+confirm-pending-guests route); on those a crash between the delete and the flip
+regresses to the pre-#1750 state — a recoverable orphaned second occupant,
+visible on the board and cleared by the next successful reconcile or a manual
+move, never a capacity or double-booking violation.
 
 ### INV-CAP-011
 
@@ -1021,3 +1030,63 @@ derivation).
   (`MAX_BED_ALLOCATION_ASSIGN_RANGE_NIGHTS`, 366) exists only to keep one
   transaction finite, and is **refused at, never silently truncated to** — as is
   every board window the admin types.
+
+### INV-LIFE-062
+
+A `HutLeaderAssignment` may additionally hold ONE bed (`bedId`), which makes it
+a **custodian occupancy** (#2286). The invariants:
+
+- **Optional and inert by default.** `bedId = null` is a role only and has zero
+  capacity effect — the pre-#2286 behaviour, and what every
+  `hut-leader-auto-assign` cron row is. Only a bed-holding assignment reaches a
+  capacity or allocation consumer.
+- **Inclusive night semantics.** The hold covers the night of every date from
+  `startDate` to `endDate` **inclusive**, never the half-open booking envelope.
+  The bed is bookable again for the night after `endDate`. (This is the
+  custodian exception the stay-boundary invariant in "Booking Dates And
+  Capacity" names deliberately: an assignment's `endDate` is a covered day,
+  not a departure morning.)
+- **Counted as an occupant, never as a smaller lodge.** The capacity engines add
+  the per-night custodian **count** to `occupiedBeds` rather than reducing
+  `lodgeCapacity`, so `occupiedBeds + availableBeds === lodgeCapacity` still
+  holds on every night. It is a count, never a boolean: two custodians handing
+  over on different beds subtract two.
+- **No booking, no allocation row, no guest.** A custodian is not a
+  `BookingGuest`, so they are structurally absent from the chore roster, the
+  booking rows and the display occupancy counts. They may still make an ordinary
+  booking of their own anywhere, including at the same lodge, and capacity then
+  correctly counts both their held bed and their booked bed.
+- **Two assignments may never hold the SAME bed on an overlapping night.** The
+  one-day handover overlap assignments already permit is allowed only on
+  different beds; the same-bed case is refused at create and update.
+- **A whole-lodge hold and a custodian never contend.** The hold reserves the
+  *bookable* lodge; the custodian's bed sits outside that pool. Neither refuses
+  the other, and the ADR-001 held-night pin is unchanged.
+- **Exclusion is enforced in application code, never by a database constraint**
+  (owner decision 28 Jul 2026, option (a)). Two things make that safe, and both
+  are required:
+  1. **Every** `BedAllocation` write path that places a guest on a bed re-reads
+     the live holds **on the same client, immediately before the write**, and
+     refuses or drops what would land on one: the manual funnel
+     `allocateBedNight`, the range assign's `CUSTODIAN_HOLD` classification,
+     `runAutoBedAllocation`'s in-transaction re-filter, and the lifecycle
+     reconcile's write-time re-filter (`dropRowsOnCustodianHeldBedNights`). A
+     read at plan time alone is NOT enough — a reconcile is routinely called
+     post-commit, so a hold committed between the plan and the write would
+     otherwise be written over.
+  2. Every placement transaction this code **opens itself** takes the per-lodge
+     advisory lock (`acquireLodgeCapacityLock`) as its first statement, sorted
+     when it can span several lodges, so that re-read and the write serialise
+     against the hold writer, which takes the same key. A reconcile running
+     inside a CALLER's transaction inherits that caller's lock discipline
+     instead of adding a key to an ordering it does not control; its write-time
+     re-filter still runs on that client.
+
+  `custodian-write-path-contract.test.ts` fails CI when a new write
+  path appears undeclared, and `CUSTODIAN_BED_CONFLICT` on the allocation board
+  surfaces any row that got through anyway.
+- **A held bed cannot be deactivated or deleted**, nor can its room, while the
+  hold exists (`onDelete: Restrict` is the FK backstop behind the app guards).
+- **Minor privacy.** A minor-age custodian is never individually named on the
+  lobby display at any name-display granularity; the slot shows the role word
+  alone.
