@@ -369,3 +369,74 @@ mounted: the trap steals it back and the release then hands focus to the control
 that opened the dialog — or to `<body>` under a synthetic click, which does not
 focus its button. `focused-action-error-focus-contract.test.tsx` pins this
 deliberately; so, incidentally, does `deletion-requests-client.test.tsx`.
+
+## A mutation probe is a change you have to undo
+
+`AGENTS.md` requires every new guard to be mutation-verified: break the thing
+the guard exists to catch, confirm the suite goes red, **then restore the
+mutation and re-run**. The restore is the half that gets skipped, and a probe
+left in the tree is a shipped defect wearing a green suite — the suite is green
+precisely because the guard is still working on code you no longer meant to
+ship.
+
+Two traps make the restore less reliable than it looks:
+
+- **Check the restore against the repository, not against your own backup.**
+  `git diff` before committing is the only check that cannot agree with itself.
+  A hash comparison against a copy you made is satisfied by a probe that never
+  landed at all, which is the same vacuous pass the frozen-clock section is
+  about.
+- **On Windows, prove the probe landed where you think.** .NET's working
+  directory is not PowerShell's: `[IO.File]::ReadAllText("AGENTS.md")` after a
+  `Set-Location` into a worktree reads and writes the file of the **original**
+  directory, so a probe run from a worktree can silently mutate — or, worse,
+  no-op against — a different checkout. Use absolute paths, and assert the
+  mutated text actually differs before you run the suite.
+
+## A suite can time out on a tree that is fine
+
+`review-findings-contracts.test.ts` shells out over the whole migration tree, so
+it is load-sensitive: started while other lanes are installing or compiling, it
+times out on a branch with nothing wrong with it.
+
+Raising the timeout from the command line does not help. Its per-test timeouts
+are written **inline in the file**, as the third argument to each `it(...)`, and
+an inline timeout wins over `--testTimeout`. Re-run the suite **alone** before
+believing a failure from it, and never report it as clean when it is not — say
+what failed and why it is not yours. `AGENTS.md` lists it alongside the other
+known-environmental suites.
+
+## Census tests and the merge hazard
+
+A third convention that is load-bearing rather than stylistic, for the same
+reason as the two above: written the obvious way, this reports green on
+something other than what it claims.
+
+A **census** is a test that pins how many call sites of a given shape exist —
+every writer that can strand a booking, every `toLocaleDateString` escape, every
+`ViewOnlyActionButton` opt-out. It is one of the strongest guards here, because
+it fails the moment somebody adds a call site nobody classified.
+
+It also carries a merge hazard no CI check can see. Two branches each add one
+call site. Each bumps the census literal from `6` to `7` — the same line, the
+same value — so git merges them with **no conflict**. Both were green alone, the
+merged suite is green, and `main` now asserts `7` where the truth is `8`. The
+next real addition sails through a census that has stopped counting anything.
+
+So:
+
+1. **Re-derive the count; never increment it.** Run the census against the tree
+   in front of you and record what it reports. Never take the number you started
+   with and add your own branch's additions to it.
+2. **Re-derive it after every merge into your branch, and once more before
+   flipping the PR ready.** Those are the only moments the merged tree exists.
+3. **If the number moved for a reason you did not cause, the hazard has fired**
+   — check the other branch's entries too. A wrong total usually means a wrong
+   *classification*, not just arithmetic: something named that is not really a
+   member of the set, or a real one missing. Commit `5a5e4e748` (#2649) found a
+   census claiming "at least nine other producers" that was really six, with two
+   of the named ones refuted outright.
+4. **Prefer a census that enumerates over one that only counts.** Listing the
+   entries by name puts two concurrent additions on the same lines, so git
+   raises a conflict and a human classifies both — which is exactly the review a
+   bare integer skipped.

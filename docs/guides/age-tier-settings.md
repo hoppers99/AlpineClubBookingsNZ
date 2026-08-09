@@ -89,7 +89,7 @@ tiers but not change them.
 - Sibling guides: [Booking Policies](booking-policies.md),
   [Seasons](seasons.md), [Promo Codes](promo-codes.md).
 - Reference: age-tier invariants in
-  [`DOMAIN_INVARIANTS.md`](../DOMAIN_INVARIANTS.md#membership-lifecycle),
+  [`membership-lifecycle.md`](../invariants/membership-lifecycle.md),
   membership type settings in
   [`CONFIGURATION.md`](../../CONFIGURATION.md#membership-type-settings), and the
   [seasonal membership type policy](../STATE_MACHINES.md#seasonal-membership-type-policy).

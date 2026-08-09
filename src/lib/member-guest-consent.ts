@@ -339,8 +339,8 @@ export interface MemberGuestConsentColumns {
  * writer without any of them having to re-derive the rules — and what lets a
  * reviewer check a new writer against a list instead of against their memory.
  *
- * The table is mirrored in `docs/DOMAIN_INVARIANTS.md`, quoted in the
- * `BookingGuest` schema comment, and pinned by
+ * The table is mirrored in `docs/invariants/member-guest-consent.md`
+ * (`INV-GUEST-017`), quoted in the `BookingGuest` schema comment, and pinned by
  * `src/lib/__tests__/member-guest-consent.test.ts`.
  *
  * `requestedAt` is the discriminator that does the most work: it separates a

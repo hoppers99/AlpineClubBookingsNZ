@@ -52,6 +52,7 @@
     "setup:wizard": "tsx scripts/setup.ts wizard",
     "review:staging:a11y": "bash scripts/run-staging-accessibility-checks.sh",
     "docs:linkcheck": "node scripts/check-doc-links.mjs",
+    "docs:indexcheck": "node scripts/ci/check-doc-index-integrity.mjs",
     "docs:screenshots": "tsx e2e/tools/capture-screenshots.ts",
     "docs:readme-art": "tsx e2e/tools/compose-readme-art.ts",
     "docs:demo-gif": "tsx e2e/tools/capture-demo-gif.ts",

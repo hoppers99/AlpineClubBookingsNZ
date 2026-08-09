@@ -23,9 +23,10 @@ and report files changed, validation, assumptions, and next prompt.
 ## Create Comprehensive Review Plan
 
 ```text
-Read AGENTS.md, docs/agents/CODEX_WORKFLOW.md,
-docs/DOMAIN_INVARIANTS.md, docs/STATE_MACHINES.md, and
-docs/END_TO_END_TEST_MATRIX.md.
+Read AGENTS.md, docs/agents/CODEX_WORKFLOW.md, the docs/DOMAIN_INVARIANTS.md
+index and the INV-* files its routing table sends you to for the surfaces you
+touch, docs/STATE_MACHINES.md, and docs/END_TO_END_TEST_MATRIX.md. Cite INV-*
+ids, never line numbers.
 
 Create a comprehensive review plan for [workstreams]. This is planning only:
 do not edit application code. Identify context files, likely risks, proposed
@@ -92,8 +93,10 @@ exact prompt first, then wait for confirmation before editing code.
 
 ```text
 Use a planning-only security pass. Read AGENTS.md,
-docs/SECURITY-ATTACK-SURFACE.md, docs/DOMAIN_INVARIANTS.md, and
-docs/agents/REVIEW_SEVERITY.md. Do not edit application code. Map likely auth,
+docs/SECURITY-ATTACK-SURFACE.md, the docs/DOMAIN_INVARIANTS.md index and the
+INV-* files its routing table sends you to for the surfaces you touch, and
+docs/agents/REVIEW_SEVERITY.md. Cite INV-* ids, never line numbers.
+Do not edit application code. Map likely auth,
 authorization, public route, webhook, token, logging, secret, and provider
 risks into focused findings or issue candidates. Avoid publishing exploit
 details that should stay private.
@@ -102,8 +105,10 @@ details that should stay private.
 ## Lifecycle Planning Pass
 
 ```text
-Use a planning-only lifecycle pass. Read AGENTS.md, docs/ARCHITECTURE.md,
-docs/DOMAIN_INVARIANTS.md, and docs/STATE_MACHINES.md. Do not edit app code.
+Use a planning-only lifecycle pass. Read AGENTS.md, docs/ARCHITECTURE.md, the
+docs/DOMAIN_INVARIANTS.md index and the INV-* files its routing table sends you
+to for the surfaces you touch, and docs/STATE_MACHINES.md. Cite INV-* ids, never
+line numbers. Do not edit app code.
 Review booking, waitlist, membership application, nomination, family,
 cancellation, archive, delete, email retry, Xero outbox, and cron recovery
 flows for missing terminal states, repair paths, visibility, and tests. Output
@@ -114,8 +119,10 @@ focused issue candidates with validation expectations.
 
 ```text
 Use a planning-only payment and integration pass. Read AGENTS.md,
-docs/ARCHITECTURE.md, docs/DOMAIN_INVARIANTS.md, and
-docs/agents/REVIEW_SEVERITY.md. Do not call live providers. Map risks in
+docs/ARCHITECTURE.md, the docs/DOMAIN_INVARIANTS.md index and the INV-* files
+its routing table sends you to for the surfaces you touch, and
+docs/agents/REVIEW_SEVERITY.md. Cite INV-* ids, never line numbers.
+Do not call live providers. Map risks in
 Stripe PaymentIntent, refunds, member credits, Internet Banking/Xero invoices,
 Xero outbox/reconciliation, SES/SNS, Sentry redaction, and cron idempotency.
 Output findings or issue candidates with safe validation commands.

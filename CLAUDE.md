@@ -7,11 +7,17 @@ interactive Claude Code session and never overrides `AGENTS.md`.
 
 ## Read First
 
-Start with the ordered reading list in `AGENTS.md` ("Read First"):
-`README.md`, `CONFIGURATION.md`, `docs/README.md`, `docs/ARCHITECTURE.md`,
-`docs/agents/CODEX_WORKFLOW.md`, `docs/DOMAIN_INVARIANTS.md`,
-`docs/STATE_MACHINES.md`, `docs/END_TO_END_TEST_MATRIX.md`, and
-`docs/UX_FLOW_MAP.md`.
+`AGENTS.md` → "Read First" is now a small always-read core plus a routing table
+(#2691). The core is `AGENTS.md`, this file, and `docs/DOMAIN_INVARIANTS.md` —
+the invariant **index**, where every rule the system must never break carries a
+permanent id (`INV-CAP-021`) with one line saying what it covers and which file
+under `docs/invariants/` holds it.
+
+Everything else is routed: before you change something, find the row in that
+table that matches it and read what the row names. The nine documents that used
+to be mandatory are all still authoritative and all still in the table — reading
+the row that applies to you is not optional. Cite rules by id, never by line
+number.
 
 ## Finish the job: Completion and Merge
 
@@ -63,7 +69,8 @@ for an interactive Claude Code session:
   coding. The epic body lists the children in **lanes with a merge order** and
   the cross-lane watchpoints.
 - **Claim each issue** as you start it: assign the owner and post a CLAIM comment
-  per repo convention. Comment again when the reviewed, fixed, CI-green PR is
+  per [the convention](docs/agents/ISSUE_WORKFLOW.md#claiming-and-talking-between-lanes).
+  Comment again when the reviewed, fixed, CI-green PR is
   ready — the issue thread is the audit trail.
 - **One worktree per lane**; stack dependent issues (PR base = parent branch).
   Because CI only runs on `main`-based PRs, validate a stacked PR via a
@@ -151,8 +158,9 @@ npm run db:generate
 npm run lint
 npm run typecheck
 npm test -- src/path/to/touched.test.ts # replace with focused test paths
-npm run docs:linkcheck # when docs change
-npm run knip           # when files or exports change
+npm run docs:linkcheck  # when docs change
+npm run docs:indexcheck # when docs change, or when you cite an INV-* id
+npm run knip            # when files or exports change
 ```
 
 GitHub Actions runs the full `npm test`, build, migration-drift, E2E,

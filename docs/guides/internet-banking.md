@@ -68,6 +68,6 @@ member — see the operational-Xero behaviour in
 - Sibling guides: [Payments](payments.md), [Xero Sync](xero.md),
   [Booking Messages](booking-messages.md).
 - Reference: [operational Xero](../ARCHITECTURE.md#operational-xero) and the
-  [payment and settlement](../DOMAIN_INVARIANTS.md#payment-and-settlement) and
-  [booking dates and capacity](../DOMAIN_INVARIANTS.md#booking-dates-and-capacity)
+  [payment and settlement](../invariants/payment-and-settlement.md) and
+  [booking dates and capacity](../invariants/booking-dates-and-capacity.md)
   invariants.
