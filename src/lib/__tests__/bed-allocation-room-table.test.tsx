@@ -83,9 +83,15 @@ describe("RoomTable active drag lane rendering", () => {
     );
 
     const table = container.querySelector("table");
-    expect(table).toHaveStyle({
-      width: `${BED_ALLOCATION_LABEL_COLUMN_WIDTH_REM + nights.length * BED_ALLOCATION_COLUMN_WIDTH_REM}rem`,
-    });
+    // Assert the AUTHORED inline style rather than the computed one. `toHaveStyle`
+    // reads through the CSSOM, and jsdom 30 resolves `rem` to `px` there (36rem ->
+    // 576px), so a computed-style assertion silently stops checking the unit. The
+    // unit is the point: #2150 sizes this board in `rem` so the columns scale with
+    // the root font size, and a `px` width would look identical to that assertion
+    // while breaking the property it exists to protect.
+    expect(table?.getAttribute("style")).toContain(
+      `width: ${BED_ALLOCATION_LABEL_COLUMN_WIDTH_REM + nights.length * BED_ALLOCATION_COLUMN_WIDTH_REM}rem`,
+    );
 
     const cols = container.querySelectorAll("col");
     expect(cols).toHaveLength(nights.length + 1);
