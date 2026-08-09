@@ -378,6 +378,47 @@ A genuinely too-short whole stay is still reported. (The create path evaluates
 each new booking's own range, so a separate contiguous one-night booking is
 still subject to the minimum — deferred as scope B on #2124.)
 
+## INV-MOD-025
+
+An in-progress edit prices, quotes and persists a guest over the nights that
+guest actually holds — the canonical `BookingGuestNight` set — never over the
+`stayStart`/`stayEnd` envelope, which fills a sparse stay's internal gaps
+(#2736). `buildInProgressGuestRangePlan` carries the night set through the
+plan, and each existing guest's proposed nights are the nights they already
+hold that survive the new check-out, plus the genuinely-new nights an extension
+buys, which run contiguously from the morning after their **last held night**
+(read off the night set, not off `stayEnd`, so a drifted envelope cannot
+reopen the gap). Everything downstream reads that list: the future window is
+priced night by night through `calculateBookingPrice`'s explicit-nights branch
+so seasonal, age-tier and rate-membership-type differences still apply per
+night; the per-night split (`splitGuestNightsEvenly`) splits the list rather
+than re-expanding a range, so the `BookingGuestNight` rows written back keep
+the gap and a later edit's locked prices stay honest; the capacity ranges carry
+their nights, so no bed is claimed on a night the guest is not there; and a
+guest is "active for the future" when they hold a future night, not when a
+window is nominally open. Two consequences are load-bearing and must not be
+traded away. First, for a **contiguous** stay every one of those outputs is
+identical to the pre-#2736 envelope arithmetic, to the cent, to the night and
+to the thrown error — that equivalence is what makes the rule safe to apply to
+live bookings, and it is proven by re-implementing the old arithmetic in
+`booking-edit-guest-ranges-sparse.test.ts` rather than asserted. Second, the
+plan reaches the night set through the canonical helpers
+(`getExplicitGuestBedNightKeys`, then `expandStayEnvelopeToNightKeys` as the
+fallback for a guest with no night rows), so the expander's half-open contract
+is untouched (INV-DATE-020) and the bed-allocation planner's one-pseudo-guest-
+per-night feed cannot grow a phantom second night. **History is not repriced.**
+A booking already edited under the envelope arithmetic keeps the rows and the
+price it was given; this rule binds edits from here on, and any correction to a
+member who was charged or refunded for gap nights is an owner decision and a
+separate, audited adjustment.
+
+A guest ADDED during an in-progress edit is a deliberate exception in one
+respect only: they are admitted for the booking's remaining future nights,
+`[editableFrom, newCheckOut)`, and this plan still overrides whatever per-guest
+range or night set the request carried. That window is contiguous by
+construction, so there is no sparse input to preserve; it is materialised as a
+night list anyway so every consumer reads one shape.
+
 ## INV-MOD-020
 
 Minimum-stay is also the first consumer of the booking-policy exception

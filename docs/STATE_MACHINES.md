@@ -817,6 +817,16 @@ adminOverride && role === "ADMIN"   -> "admin-override" (issue #1668: date-windo
                                                          lock still enforced)
 ```
 
+In `"in-progress"` mode the plan that prices the change
+(`buildInProgressGuestRangePlan`) works from each guest's canonical
+`BookingGuestNight` set, not from their `stayStart`/`stayEnd` envelope
+(#2736, `INV-MOD-025`). A guest with a gap in their stay keeps the gap: it is
+not charged, not written back as a night row and not given a bed, while an
+extension still buys contiguous new nights after their last held one. For a
+contiguous stay every number is exactly what it was before. Bookings edited
+before that fix keep the rows and the price they were given — history is not
+repriced.
+
 Self-service cancellation of a **started** stay is blocked (#2029). Once
 `checkIn <= todayNZ`, the member-facing cancel route
 (`enforceStartedStayBlock`) refuses cancellation for a booking owner or Booking
