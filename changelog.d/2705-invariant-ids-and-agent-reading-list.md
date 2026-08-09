@@ -28,3 +28,10 @@
   documentation pages that nothing linked to — a Codex profile example, two
   decision records and the approved lobby-display snapshots — are now linked from
   their nearest hub.
+
+  Everything that referred to the old single document has been re-pointed at the
+  file that now holds the rule. That includes twenty-one links from the operator
+  and member guides — six of which are published to the club wiki, where "see the
+  payment and settlement rules" used to land a reader on a table of one-line
+  summaries — and the reading instruction in six agent prompts, which now says to
+  open the index *and* the rule files it routes to.

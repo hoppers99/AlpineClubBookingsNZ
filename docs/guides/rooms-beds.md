@@ -115,6 +115,6 @@ sees it read-only. The page appears only when the `bedAllocation` module is on.
 - Sibling guides: [Bed Allocation](bed-allocation.md), [Bookings Setup](bookings-setup.md),
   [Chores](chores.md), [Lodges](lodges.md).
 - Reference: the [capacity model](../CAPACITY_MODEL.md#two-distinct-quantities),
-  the [Booking Dates And Capacity](../DOMAIN_INVARIANTS.md#booking-dates-and-capacity)
+  the [Booking Dates And Capacity](../invariants/booking-dates-and-capacity.md)
   invariants, and the [Admin and Lodge](../ARCHITECTURE.md#admin-and-lodge)
   architecture.

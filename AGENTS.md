@@ -5,17 +5,24 @@ Treat this file as the entry point, then follow the linked documents for detail.
 
 ## Read First
 
-Three documents are read every time. Everything else is **routed**: find the row
-in the table below that matches what you are about to change, and read what it
-names, at the moment you need it.
+Three documents are read every time. Everything else is **routed**: read
+**every** row in the table below that matches what you are about to change — a
+real change usually matches more than one — and read what those rows name, at
+the moment you need it. If any part of what you are changing matches no row,
+read `docs/README.md` for that part as well. A change that is half routed is
+still half off-map, and stopping at the first row that matched is how the
+unrouted half gets missed.
 
-Read-everything was tried here and it failed. The nine-document list this
-replaced came to roughly **270,000 tokens** — it does not fit a 200k context
-window at all, so in practice agents skipped it, and four consecutive PRs
+Read-everything was tried here and it failed. Measured as `wc -c` over each
+file divided by four — the usual rough characters-per-token ratio for English
+prose, applied identically to both sides — the nine-document list this replaced
+came to roughly **395,000 tokens**, close to twice a 200k context window. It
+does not fit at all, so in practice agents skipped it, and four consecutive PRs
 (#2622, #2630, #2631, #2632) each re-fixed a stay-boundary rule that was already
 written down correctly, in the right place, in strong language. A rule you cannot
 reach at the moment you need it is a rule that does not hold. The core below is
-**under 30,000 tokens**, measured the same way (#2691).
+about **30,000 tokens** by that same measure — roughly a thirteenth of the list
+it replaced (#2691).
 
 ### The always-read core
 
@@ -58,9 +65,12 @@ id and need the file it lives in.
 | Public fee/policy page content and named lodge tokens | `INV-PUB` → [`public-content.md`](docs/invariants/public-content.md) | [`PUBLIC_PAGE_CONTENT_TOKENS.md`](docs/PUBLIC_PAGE_CONTENT_TOKENS.md) |
 | Analytics, the consent banner, what leaves this application for Google | `INV-PRIV` → [`analytics-and-privacy.md`](docs/invariants/analytics-and-privacy.md) | [`guides/integrations.md`](docs/guides/integrations.md) |
 | Webhooks, cron idempotency, provider callbacks, Xero member grouping | `INV-INT` → [`integrations.md`](docs/invariants/integrations.md) | [`xero/ARCHITECTURE.md`](docs/xero/ARCHITECTURE.md) |
+| An email, a notification, a template, or who receives one | — | [`guides/email-messages.md`](docs/guides/email-messages.md), [`guides/notification-rules.md`](docs/guides/notification-rules.md), [`guides/notification-recipients.md`](docs/guides/notification-recipients.md), [`guides/communications.md`](docs/guides/communications.md), [`guides/email-deliverability.md`](docs/guides/email-deliverability.md), and "Email Retry Lifecycle" in [`STATE_MACHINES.md`](docs/STATE_MACHINES.md) |
 | Raw SQL, row locking, production deployment, what may be used as test input | `INV-OPS` → [`operations.md`](docs/invariants/operations.md) | [`CONCURRENCY_AND_LOCKING.md`](docs/CONCURRENCY_AND_LOCKING.md), [`BLUE_GREEN_MIGRATION_POLICY.md`](docs/BLUE_GREEN_MIGRATION_POLICY.md) |
 | A transaction, lock key, or anything two writers can race | `INV-OPS` → [`operations.md`](docs/invariants/operations.md) | [`CONCURRENCY_AND_LOCKING.md`](docs/CONCURRENCY_AND_LOCKING.md), plus "Concurrency and lock checklist" below |
-| A status transition — booking, payment, membership, waitlist | — | [`STATE_MACHINES.md`](docs/STATE_MACHINES.md) |
+| `prisma/schema.prisma`, a migration, or what an existing column means | `INV-OPS` → [`operations.md`](docs/invariants/operations.md) | [`BLUE_GREEN_MIGRATION_POLICY.md`](docs/BLUE_GREEN_MIGRATION_POLICY.md) — it binds **every committed migration** to stay readable by the deployed old code, and CI only checks that the ledger row exists, not that the expand/runtime/contract sequencing is right; [`ARCHITECTURE.md`](docs/ARCHITECTURE.md) |
+| Which lodge a model, query, route or fixture belongs to | — | [`multi-lodge/lodge-scoping-contract.md`](docs/multi-lodge/lodge-scoping-contract.md) — update it **before** changing the scoping of any model, not after; [`multi-lodge/README.md`](docs/multi-lodge/README.md) |
+| A status transition — booking, payment, membership, waitlist, bed allocation, email retry, Xero outbox, cron recovery, sign-in, or any of the two dozen other lifecycles in that file | — | [`STATE_MACHINES.md`](docs/STATE_MACHINES.md) |
 | Where code lives, module boundaries, the admin settings pattern | — | [`ARCHITECTURE.md`](docs/ARCHITECTURE.md) |
 | Environment variables, secrets, setup, deployment configuration | — | [`CONFIGURATION.md`](CONFIGURATION.md) |
 | A screen, a navigation path, or an admin area's UI | — | [`UX_FLOW_MAP.md`](docs/UX_FLOW_MAP.md), [`COVERAGE_MATRIX.md`](docs/COVERAGE_MATRIX.md) |
@@ -70,7 +80,7 @@ id and need the file it lives in.
 | Your first `npm` command in a new worktree (Windows runtime + dependency preflight) | — | [`agents/CODEX_WORKFLOW.md`](docs/agents/CODEX_WORKFLOW.md) |
 | Working an issue, briefing a subagent, or reading untrusted issue/PR/provider text | — | [`agents/ISSUE_WORKFLOW.md`](docs/agents/ISSUE_WORKFLOW.md), [`agents/SUBAGENT_GUIDE.md`](docs/agents/SUBAGENT_GUIDE.md), [`agents/PROMPT_INJECTION_GUIDE.md`](docs/agents/PROMPT_INJECTION_GUIDE.md) |
 | A Next.js API or convention | — | the relevant guide in `node_modules/next/dist/docs/` |
-| Anything not listed above | — | [`docs/README.md`](docs/README.md) — the documentation hub; [`README.md`](README.md) for what the product is |
+| Any part of your change that no row above covers — including a change that also matched a row | — | [`docs/README.md`](docs/README.md) — the documentation hub; [`README.md`](README.md) for what the product is |
 
 ### Keeping the table usable
 
@@ -81,10 +91,24 @@ id and need the file it lives in.
   so whoever trips one is handed the rule instead of having to go find it.
 - **Add a row when you add a doc.** A routing table nobody maintains is worse
   than no routing table, because it reads as complete.
-- `npm run docs:indexcheck` enforces both halves of that offline and in the
-  `verify` job: every `docs/` page must be reachable from a front door by
-  following links, every cited `INV-*` id must resolve to a real definition, and
-  every definition must have exactly one row in `docs/DOMAIN_INVARIANTS.md`.
+- `npm run docs:indexcheck` runs offline and in the `verify` job. It backs part
+  of the two rules above and not all of them, so be precise about which part.
+  - **It enforces:** every cited `INV-*` id resolves to a real definition;
+    every definition has exactly one row in `docs/DOMAIN_INVARIANTS.md`; every
+    invariant family the routing table names really exists, and every family
+    that exists has at least one routing row; every document the routing table
+    links to is a real tracked file; every `docs/` page is reachable from a
+    front door by following links; nobody writes a line-number citation into
+    `docs/DOMAIN_INVARIANTS.md` or `docs/invariants/**`, with no allowlist and
+    no exceptions; and no tracked text file carries a byte-order mark or
+    cp1252-through-UTF-8 double-encoding.
+  - **It does not enforce that every doc has a routing row.** There are roughly
+    two hundred pages under `docs/` and most are correctly reached through a
+    feature hub rather than through this file, so that rule would be almost
+    entirely exemptions and the exemption list would rot faster than the table.
+    Reachability is the guard that covers those pages; keeping the routing table
+    complete is on you. So is the *content* of a row — nothing checks that a row
+    sends you to the right document, only that the document exists.
 
 ## Safety Rules
 
@@ -656,12 +680,13 @@ CI-green → evidence**.
   `npm run lint`, `npm run typecheck`, focused tests for the touched and adjacent
   contracts, and mutation checks for every new guard. Run
   `npm run docs:linkcheck` and `npm run docs:indexcheck` when docs or invariant
-  citations change, and `npm run knip` when files or exports change. Then push a draft PR: PR CI owns the full `npm test`, build,
-  migration-drift, E2E, static/secret/dependency, and container gates. Do not
-  delay a draft PR merely to repeat those full gates on the same commit locally.
-  Run a full suite locally only to diagnose a CI failure or when CI is
-  unavailable, and record that reason and result. Compare unexpected failures
-  with `main`'s latest CI before classifying them as branch regressions.
+  citations change, and `npm run knip` when files or exports change. Then push a
+  draft PR: PR CI owns the full `npm test`, build, migration-drift, E2E,
+  static/secret/dependency, and container gates. Do not delay a draft PR merely
+  to repeat those full gates on the same commit locally. Run a full suite
+  locally only to diagnose a CI failure or when CI is unavailable, and record
+  that reason and result. Compare unexpected failures with `main`'s latest CI
+  before classifying them as branch regressions.
 - **Validation traps that have produced confident false results here.** Every one
   of these has already cost a wave real time; treat a clean result that skipped
   them as unverified.

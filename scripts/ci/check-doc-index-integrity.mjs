@@ -9,7 +9,7 @@
  * under `docs/invariants/`, each rule carrying a permanent `INV-<PREFIX>-<NNN>`
  * id, and replaced the nine-document "Read First" list in `AGENTS.md` with a
  * small always-read core plus a routing table. Both halves of that only work
- * while two properties hold, and neither is self-maintaining:
+ * while these properties hold, and none of them is self-maintaining:
  *
  *  - **Every cited id resolves.** An id is cited from places this repository
  *    cannot rewrite — merged commits, closed issues, lint strings shipped in a
@@ -20,6 +20,15 @@
  *    the routing table as the part most likely to rot. A doc nothing links to is
  *    a doc nobody finds, which is how `docs/DOMAIN_INVARIANTS.md` became
  *    unreachable-at-the-moment-of-need in the first place.
+ *  - **The routing table points at things that exist.** Every prefix it names is
+ *    a declared prefix, every declared prefix has a row, and every document it
+ *    links to is a real file.
+ *  - **Nobody cites a line number into the invariants.** A `:NN` suffix is stale
+ *    the next time somebody edits above it; the whole point of the id scheme is
+ *    that it is not.
+ *  - **No tracked text file is mojibake or carries a byte-order mark.** One
+ *    invariant file was committed double-encoded and every other gate stayed
+ *    green. See {@link auditEncoding}.
  *
  *   npm run docs:indexcheck                       # check, non-zero on any problem
  *   node scripts/ci/check-doc-index-integrity.mjs  # same
@@ -107,26 +116,29 @@ export const RESERVED_INVOICE_PREFIXES = new Set([
  * and are therefore exempt from the shape guard only — never from citation
  * resolution.
  *
- * `SCHEME.md` is the id scheme itself: it argues for three digits by
- * showing the two-digit form the issue body illustrated, and justifies the shape
- * guard by showing the two near-misses it catches. Those sentences are about the
- * malformed forms, so fencing them would be a worse document. The
- * post-acceptance name is listed alongside so the planned rename cannot silently
- * drop the exemption.
+ * Exactly one: `SCHEME.md` is the id scheme itself. It argues for three digits
+ * by showing the two-digit form the issue body illustrated, and justifies the
+ * shape guard by showing the two near-misses it catches. Those sentences are
+ * about the malformed forms, so fencing them would be a worse document.
+ *
+ * If the file is ever renamed, this entry has to be renamed with it or the
+ * exemption silently stops applying and `SCHEME.md` starts failing. Nothing
+ * enforces that; the failure is at least loud and names the file.
  */
-export const SHAPE_GUARD_EXEMPT_FILES = new Set([
-  "docs/invariants/SCHEME.md",
-  "docs/invariants/SCHEME.md",
-]);
+export const SHAPE_GUARD_EXEMPT_FILES = new Set(["docs/invariants/SCHEME.md"]);
 
 /**
- * Files exempt from the CITATION scan.
+ * Files exempt from the CITATION scan and from the line-number citation scan.
  *
  * Exactly one, and it is this check's own test: its fixtures have to contain
- * unresolvable ids and unrecognised prefixes, because that is what they assert
- * the checker rejects. Nothing else may be added here — an exemption is the one
- * way to make a citation invisible, which is the failure this file exists to
- * prevent.
+ * unresolvable ids, unrecognised prefixes and line-number citations, because
+ * that is what they assert the checker rejects. Nothing else may be added here —
+ * an exemption is the one way to make a citation invisible, which is the failure
+ * this file exists to prevent.
+ *
+ * This file itself is deliberately NOT exempt. Its prose describes the forbidden
+ * forms without writing them, which is the same discipline it asks of everybody
+ * else.
  */
 export const CITATION_EXEMPT_FILES = new Set([
   "scripts/ci/check-doc-index-integrity.test.mjs",
@@ -141,6 +153,7 @@ export const SCANNED_EXTENSIONS = new Set([
   ".jsx",
   ".mjs",
   ".cjs",
+  ".prisma",
   ".sql",
   ".yml",
   ".yaml",
@@ -170,6 +183,94 @@ export const REACHABILITY_ROOTS = [
  * here.
  */
 export const UNREACHABLE_ALLOWLIST = new Set([]);
+
+/**
+ * Where the routing table lives, and how its section is found.
+ *
+ * Anchored on the heading rather than on a line range so the audit survives
+ * every edit above it. If the heading is renamed the audit fails loudly rather
+ * than quietly checking nothing, which is the failure mode that matters: a
+ * routing audit that silently stops running is worse than none, for the same
+ * reason the table itself says a stale table is worse than no table.
+ */
+export const ROUTING_TABLE_FILE = "AGENTS.md";
+export const ROUTING_TABLE_HEADING = /^###\s+Routing table\s*$/;
+
+/**
+ * A routed PREFIX is a bare family name in backticks: `` `INV-CAP` ``.
+ *
+ * Deliberately does not match a full id (`` `INV-CAP-021` ``): the table routes
+ * families, and a row that named a single rule would be a row that goes stale
+ * the moment a second rule joins the family.
+ */
+export const ROUTING_PREFIX_PATTERN = /`INV-([A-Z][A-Z0-9]*)`/g;
+
+/**
+ * A line-number citation INTO the invariants: the index or any domain file,
+ * with or without a leading path, followed by a `:120` or `:35-40` suffix.
+ *
+ * Scoped to the invariants because that is the habit the id scheme replaced.
+ * Line references into other documents are not great either, but they were not
+ * what #2691 was about and a repository-wide ban would be a much larger change
+ * than this check should make on its own.
+ *
+ * There is no allowlist and no grandfather register. Both were considered and
+ * both were rejected: this repository resolves residuals inside the PR rather
+ * than deferring them, and a per-file register has the specific vice that a file
+ * somebody has since CLEANED stays on the list, silently unprotected. The five
+ * pre-existing citations under `src/lib/` were fixed instead — they now cite
+ * INV-CAP-017 (the admin-mediated double-book guard) and INV-PAY-017 (a booking
+ * invoice is raised at the full price and locally-applied credit is never
+ * allocated against it).
+ */
+export const INVARIANT_LINE_CITATION_PATTERN =
+  /\b((?:[A-Za-z0-9_.-]+\/)*(?:DOMAIN_INVARIANTS\.md|invariants\/[A-Za-z0-9_-]+\.md)):(\d+(?:-\d+)?)/g;
+
+/**
+ * The leading character of a cp1252-through-UTF-8 mojibake pair.
+ *
+ * These are what cp1252 renders for the UTF-8 lead bytes C2-C6, CE-D1 and
+ * E1-E7 — the ranges that carry Latin-1 accents, the General Punctuation block
+ * (em dash, curly quotes, ellipsis) and Greek/Cyrillic.
+ *
+ * Built from code points rather than written out, so that this file stays pure
+ * ASCII and cannot trip its own check.
+ */
+const MOJIBAKE_LEAD = String.fromCharCode(
+  0xc2, 0xc3, 0xc4, 0xc5, 0xc6, 0xce, 0xcf, 0xd0, 0xd1,
+  0xe2, 0xe3, 0xe4, 0xe5, 0xe6, 0xe7,
+);
+
+/**
+ * The trailing character of a mojibake pair: what cp1252 renders for a UTF-8
+ * CONTINUATION byte (0x80-0xBF). Bytes 0xA0-0xBF map to themselves; the rest map
+ * into the punctuation cp1252 defines in that range.
+ *
+ * Requiring a lead AND a trail is what keeps this quiet on real text: te reo
+ * macrons, a French name or a stray accented letter are single characters and
+ * never form one of these pairs.
+ */
+const MOJIBAKE_TRAIL =
+  // 0x80-0xBF as a character-class range, then the cp1252 punctuation those
+  // bytes render as when the byte itself is not a printable Latin-1 letter.
+  `${String.fromCharCode(0x80)}-${String.fromCharCode(0xbf)}` +
+  String.fromCharCode(
+    0x20ac, 0x201a, 0x0192, 0x201e, 0x2026, 0x2020, 0x2021, 0x02c6, 0x2030,
+    0x0160, 0x2039, 0x0152, 0x017d, 0x2018, 0x2019, 0x201c, 0x201d, 0x2022,
+    0x2013, 0x2014, 0x02dc, 0x2122, 0x0161, 0x203a, 0x0153, 0x017e, 0x0178,
+  );
+
+/** A cp1252-through-UTF-8 mojibake pair, anywhere in a line. */
+export const MOJIBAKE_PATTERN = new RegExp(
+  `[${MOJIBAKE_LEAD}][${MOJIBAKE_TRAIL}]`,
+  "g",
+);
+
+/** What an em dash looks like after one bad round-trip, for the message. */
+const MOJIBAKE_EXAMPLE = String.fromCharCode(0xe2, 0x20ac, 0x201d);
+
+/** The Unicode byte-order mark, as `fs.readFileSync(path, "utf8")` leaves it. */
+export const BYTE_ORDER_MARK = String.fromCharCode(0xfeff);
 
 // Inline links/images: ![alt](target) and [text](target).
 const INLINE_LINK = /!?\[[^\]]*\]\(\s*(<[^>]+>|[^)\s]+)/g;
@@ -438,6 +539,195 @@ export function auditIndexRows(files) {
 }
 
 /**
+ * The rows of the `AGENTS.md` routing table, as `{ number, text }`.
+ *
+ * Separator rows are dropped; the header row is kept and simply contributes
+ * nothing, because it names no prefix and links to nothing.
+ */
+export function routingTableRows(agentsText) {
+  const rows = [];
+  let inTable = false;
+  for (const line of scannableLines(agentsText)) {
+    if (ROUTING_TABLE_HEADING.test(line.text)) {
+      inTable = true;
+      continue;
+    }
+    if (!inTable) continue;
+    if (/^#{1,6}\s/.test(line.text)) break;
+    if (!line.text.trimStart().startsWith("|")) continue;
+    if (/^\s*\|[\s|:-]*\|?\s*$/.test(line.text)) continue; // `| --- | --- |`
+    rows.push(line);
+  }
+  return rows;
+}
+
+/**
+ * Assertion 7: the routing table resolves.
+ *
+ * Three directions, all of them cheap and none of them needing an exemption:
+ *
+ *  1. every `` `INV-XXX` `` the table routes is a prefix something under
+ *     {@link INVARIANT_DIR} actually declares;
+ *  2. every declared prefix has at least one row, so a new invariant family
+ *     cannot be added without becoming findable;
+ *  3. every document the table links to exists.
+ *
+ * What this deliberately does NOT check is the converse of (3) — that every
+ * document under `docs/` has a row. There are roughly two hundred of them and
+ * most are correctly reached through a feature hub rather than through
+ * `AGENTS.md`, so that rule would be almost entirely exemptions. General
+ * reachability ({@link auditDocReachability}) is the guard that covers those.
+ */
+export function auditRoutingTable(files) {
+  const agentsText = files.get(ROUTING_TABLE_FILE);
+  if (agentsText === undefined) {
+    return [
+      `${ROUTING_TABLE_FILE} is missing. It carries the routing table, which is how ` +
+        "an agent finds the documents that bind the change it is about to make.",
+    ];
+  }
+
+  const rows = routingTableRows(agentsText);
+  if (rows.length === 0) {
+    return [
+      `No routing table found in ${ROUTING_TABLE_FILE}. This audit anchors on the ` +
+        "heading `### Routing table`; if the section was renamed, update " +
+        "ROUTING_TABLE_HEADING in this script so the table keeps being checked " +
+        "rather than silently stopping.",
+    ];
+  }
+
+  const problems = [];
+  const routedPrefixes = new Set();
+
+  for (const { number, text: row } of rows) {
+    for (const match of row.matchAll(ROUTING_PREFIX_PATTERN)) {
+      routedPrefixes.add(match[1]);
+    }
+    for (const target of markdownLinkTargets(ROUTING_TABLE_FILE, row)) {
+      if (!files.has(target)) {
+        problems.push(
+          `The routing table row at ${ROUTING_TABLE_FILE}:${number} links to ${target}, ` +
+            "which is not a tracked file. A row that points at nothing is worse than a " +
+            "missing row: it reads as an answer. Fix the path, or drop the row if the " +
+            "document was retired.",
+        );
+      }
+    }
+  }
+
+  const declaredPrefixes = new Set(
+    [...collectDefinitions(files).keys()].map(prefixOf),
+  );
+
+  for (const prefix of [...routedPrefixes].sort()) {
+    if (!declaredPrefixes.has(prefix)) {
+      problems.push(
+        `The routing table routes INV-${prefix} but nothing under ${INVARIANT_DIR} ` +
+          "declares that prefix. Either the prefix is mistyped, or its file was renamed " +
+          "without the table following.",
+      );
+    }
+  }
+
+  for (const prefix of [...declaredPrefixes].sort()) {
+    if (!routedPrefixes.has(prefix)) {
+      problems.push(
+        `INV-${prefix} is declared under ${INVARIANT_DIR} but no routing table row in ` +
+          `${ROUTING_TABLE_FILE} names it. An agent who does not already know the family ` +
+          "exists will never be sent to it. Add a row saying, in plain English, what kind " +
+          "of change the family binds.",
+      );
+    }
+  }
+
+  return problems;
+}
+
+/**
+ * Assertion 8: nobody cites a line number into the invariants. No exceptions.
+ *
+ * A line reference into a domain file is stale the next time somebody edits
+ * above it, and it fails silently — the reader lands on unrelated text and
+ * believes it. The permanent ids exist precisely so that citation never has to
+ * be written, so the rule is unconditional: no allowlist, no grandfather
+ * register, nothing to keep in step with the tree. The only file that may write
+ * the forbidden form is this check's own test, via
+ * {@link CITATION_EXEMPT_FILES}, because its fixtures are what assert the
+ * rejection.
+ */
+export function auditLineNumberCitations(files) {
+  const problems = [];
+
+  for (const rel of [...files.keys()].sort()) {
+    if (CITATION_EXEMPT_FILES.has(rel)) continue;
+    for (const { number, text: line } of scannableLines(files.get(rel))) {
+      for (const match of line.matchAll(INVARIANT_LINE_CITATION_PATTERN)) {
+        problems.push(
+          `${rel}:${number} cites ${match[1]}:${match[2]} — an invariants document by ` +
+            "LINE NUMBER. That pointer is stale the next time anybody edits above it, " +
+            "and it goes stale silently: the reader lands on unrelated text and believes " +
+            `it. Cite the permanent id instead (INV-CAP-021 style); ${INVARIANT_INDEX} ` +
+            "maps every id to the file it lives in.",
+        );
+      }
+    }
+  }
+
+  return problems;
+}
+
+/**
+ * Assertion 9: no tracked text file is double-encoded or carries a byte-order
+ * mark.
+ *
+ * `docs/invariants/member-guest-consent.md` was once committed with a UTF-8 BOM
+ * and 29 double-encoded em dashes, and NOTHING caught it: lint, typecheck,
+ * linkcheck, knip and every other assertion in this file stayed green, and the
+ * one census test over that document passed because its assertions happened not
+ * to contain an em dash. This repository has been bitten by the same family of
+ * problem before, when migration SQL went CRLF on Windows against an LF seed
+ * source (#2399).
+ *
+ * Fenced blocks are NOT skipped here: corruption inside a fence is still
+ * corruption, and a fence is exactly where a pasted transcript lands.
+ */
+export function auditEncoding(files) {
+  const problems = [];
+
+  for (const rel of [...files.keys()].sort()) {
+    const text = files.get(rel);
+    if (text.startsWith(BYTE_ORDER_MARK)) {
+      problems.push(
+        `${rel} starts with a UTF-8 byte-order mark (U+FEFF). Nothing in this repository ` +
+          "wants one: it breaks shebangs, leading front matter and exact-match assertions, " +
+          "and it is invisible in every editor. It usually arrives from a Windows tool " +
+          'that saved the file as "UTF-8 with BOM" — PowerShell\'s Out-File and Set-Content ' +
+          "on Windows PowerShell 5.1 both do it. Re-save as UTF-8 without a BOM.",
+      );
+    }
+
+    text.split(/\r?\n/).forEach((line, index) => {
+      const hits = [...line.matchAll(MOJIBAKE_PATTERN)];
+      if (hits.length === 0) return;
+      problems.push(
+        `${rel}:${index + 1} contains ${hits.length} double-encoded sequence(s) ` +
+          `(${[...new Set(hits.map((hit) => JSON.stringify(hit[0])))].join(", ")}). This is ` +
+          "mojibake: the file was UTF-8, some tool read it as Windows cp1252 and wrote it " +
+          `back out as UTF-8, so every non-ASCII character became two or three. An em dash ` +
+          `comes back as ${JSON.stringify(MOJIBAKE_EXAMPLE)}, a curly quote and a non-breaking ` +
+          "space have their own signatures. On Windows the usual culprit is a PowerShell " +
+          "redirect, Set-Content without -Encoding utf8, or an editor with a stale " +
+          "encoding setting. Restore the file from git and re-apply the edit with a " +
+          "UTF-8-clean tool rather than hand-repairing the characters.",
+      );
+    });
+  }
+
+  return problems;
+}
+
+/**
  * Every Markdown file under `docs/` is reachable from a front door by following
  * relative Markdown links.
  *
@@ -495,7 +785,10 @@ export function auditDocs(files) {
     ...auditInvariantIds(files),
     ...auditInvariantFilesLinkedFromIndex(files),
     ...auditIndexRows(files),
+    ...auditRoutingTable(files),
+    ...auditLineNumberCitations(files),
     ...auditDocReachability(files),
+    ...auditEncoding(files),
   ];
 }
 
@@ -538,10 +831,13 @@ if (invokedPath === import.meta.url) {
       process.exitCode = 1;
     } else {
       const prefixes = new Set([...definitions.keys()].map(prefixOf));
+      const routedRows = routingTableRows(files.get(ROUTING_TABLE_FILE) ?? "").length;
       console.log(
         `Doc index check passed: ${definitions.size} invariant id(s) across ` +
           `${prefixes.size} prefix(es), every citation resolves, every id is indexed, ` +
-          `and every docs/ page is reachable. Scanned ${files.size} tracked file(s).`,
+          `every docs/ page is reachable, ${routedRows} routing row(s) resolve, no line ` +
+          "number is cited into the invariants, and no file is BOM'd or double-encoded. " +
+          `Scanned ${files.size} tracked file(s).`,
       );
     }
   } catch (error) {

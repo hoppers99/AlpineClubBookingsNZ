@@ -268,6 +268,6 @@ The list is a working roster; its controls:
   [Member Import And Addresses](../../CONFIGURATION.md#member-import-and-addresses)
   and [Merging Duplicate Members](../../CONFIGURATION.md#merging-duplicate-members)
   in `CONFIGURATION.md`; and the
-  [membership lifecycle](../DOMAIN_INVARIANTS.md#membership-lifecycle) and
+  [membership lifecycle](../invariants/membership-lifecycle.md) and
   [member profile merge](../invariants/membership-lifecycle.md#member-profile-merge-e11-1937)
   invariants.

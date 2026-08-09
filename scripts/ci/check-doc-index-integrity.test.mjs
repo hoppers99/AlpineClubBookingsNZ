@@ -1,28 +1,59 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  BYTE_ORDER_MARK,
   auditDocReachability,
   auditDocs,
+  auditEncoding,
   auditIndexRows,
   auditInvariantFilesLinkedFromIndex,
   auditInvariantIds,
+  auditLineNumberCitations,
+  auditRoutingTable,
+  routingTableRows,
   scannableLines,
 } from "./check-doc-index-integrity.mjs";
 
 /**
  * Unit coverage for the pure half of the doc-index gate (#2691 phase 4).
  *
- * This file is the ONE entry in the checker's `CITATION_EXEMPT_FILES`, because
- * its fixtures must contain unresolvable ids and unrecognised prefixes — that is
- * what they assert the checker rejects. Every fixture below is therefore a
- * literal id that would fail the real scan, which is the point.
+ * This file is the ONE entry in the checker's `CITATION_EXEMPT_FILES`, which
+ * covers both the invariant-id scan and the line-number citation scan. Its
+ * fixtures must contain unresolvable ids, unrecognised prefixes and line-number
+ * citations, because that is what they assert the checker rejects. Every fixture
+ * below is therefore a literal that would fail the real scan, which is the
+ * point. Nothing else is exempt — not even the checker itself.
+ *
+ * It is NOT exempt from the encoding audit, so the mojibake fixtures are built
+ * from code points rather than written out: this file stays ASCII and the check
+ * it is testing stays green over it.
  */
+
+/** An em dash after one UTF-8 -> cp1252 -> UTF-8 round-trip. */
+const MOJIBAKE_EM_DASH = String.fromCharCode(0xe2, 0x20ac, 0x201d);
+
+/** A non-breaking space after the same round-trip. */
+const MOJIBAKE_NBSP = String.fromCharCode(0xc2, 0xa0);
 
 /** A minimal repository that satisfies every rule, as a `Map` of path -> text. */
 function repo(overrides = {}) {
   return new Map(
     Object.entries({
       "README.md": "# Repo\n\nSee [docs](docs/README.md).\n",
+      "AGENTS.md": [
+        "# Agent Guidelines",
+        "",
+        "### Routing table",
+        "",
+        "| About to change... | Invariants | Also read |",
+        "| --- | --- |  --- |",
+        "| Anything holding cents | `INV-MONEY` -> [`money.md`](docs/invariants/money.md) | [`hub`](docs/README.md) |",
+        "",
+        "### Something else",
+        "",
+        "| Not | A | Routing row |",
+        "",
+      ].join("\n"),
       "docs/README.md": "# Docs\n\n- [Domain invariants](DOMAIN_INVARIANTS.md)\n",
       "docs/DOMAIN_INVARIANTS.md": [
         "# Domain Invariants",
@@ -269,5 +300,216 @@ describe("auditDocReachability", () => {
 
   it("ignores Markdown outside docs/", () => {
     expect(auditDocReachability(repo({ "notes/scratch.md": "# Scratch\n" }))).toEqual([]);
+  });
+});
+
+describe("routingTableRows", () => {
+  it("takes the rows under the heading and stops at the next heading", () => {
+    const rows = routingTableRows(repo().get("AGENTS.md")).map((row) => row.text);
+
+    // Header row plus the one content row; the separator and the table under the
+    // NEXT heading are both left out.
+    expect(rows).toHaveLength(2);
+    expect(rows[1]).toContain("INV-MONEY");
+    expect(rows.join("\n")).not.toContain("Routing row");
+  });
+});
+
+describe("auditRoutingTable", () => {
+  it("passes a table whose prefixes and documents all resolve", () => {
+    expect(auditRoutingTable(repo())).toEqual([]);
+  });
+
+  it("fails a row that links to a document nobody tracks", () => {
+    const files = repo();
+    files.set(
+      "AGENTS.md",
+      files.get("AGENTS.md").replace("](docs/README.md)", "](docs/gone.md)"),
+    );
+
+    const problems = auditRoutingTable(files);
+
+    expect(problems).toHaveLength(1);
+    expect(problems[0]).toContain("docs/gone.md");
+    expect(problems[0]).toContain("is not a tracked file");
+  });
+
+  it("fails a routed prefix that nothing declares (the typo case)", () => {
+    const files = repo();
+    files.set(
+      "AGENTS.md",
+      files.get("AGENTS.md").replace("`INV-MONEY`", "`INV-MONYE`"),
+    );
+
+    const problems = auditRoutingTable(files);
+
+    // Routed-but-undeclared, and declared-but-unrouted: both directions fire.
+    expect(problems).toHaveLength(2);
+    expect(problems[0]).toContain("routes INV-MONYE");
+    expect(problems[1]).toContain("INV-MONEY is declared");
+  });
+
+  it("fails a declared invariant family that no row sends anybody to", () => {
+    const files = repo({
+      "docs/invariants/beds.md": "# Beds\n\n## INV-CAP-001\n\n- A rule.\n",
+    });
+    files.set(
+      "docs/DOMAIN_INVARIANTS.md",
+      `${files.get("docs/DOMAIN_INVARIANTS.md")}| \`INV-CAP-001\` | A rule |\n`,
+    );
+
+    const problems = auditRoutingTable(files);
+
+    expect(problems).toHaveLength(1);
+    expect(problems[0]).toContain("INV-CAP is declared");
+    expect(problems[0]).toContain("no routing table row");
+  });
+
+  it("fails loudly if the heading it anchors on is renamed away", () => {
+    const files = repo();
+    files.set(
+      "AGENTS.md",
+      files.get("AGENTS.md").replace("### Routing table", "### Where to look"),
+    );
+
+    const problems = auditRoutingTable(files);
+
+    expect(problems).toHaveLength(1);
+    expect(problems[0]).toContain("No routing table found");
+  });
+});
+
+describe("auditLineNumberCitations", () => {
+  it("fails a line-number citation into the invariants index", () => {
+    const problems = auditLineNumberCitations(
+      repo({ "src/lib/money.ts": "// See docs/DOMAIN_INVARIANTS.md:120.\n" }),
+    );
+
+    expect(problems).toHaveLength(1);
+    expect(problems[0]).toContain("src/lib/money.ts:1");
+    expect(problems[0]).toContain("docs/DOMAIN_INVARIANTS.md:120");
+    expect(problems[0]).toContain("LINE");
+  });
+
+  it("fails a line-RANGE citation into a domain file", () => {
+    const problems = auditLineNumberCitations(
+      repo({ "src/lib/money.ts": "// invariants/money.md:35-40 says so.\n" }),
+    );
+
+    expect(problems).toHaveLength(1);
+    expect(problems[0]).toContain("invariants/money.md:35-40");
+  });
+
+  it("fails in the files that used to be grandfathered, like anywhere else", () => {
+    // These three carried the five pre-existing citations. They were fixed
+    // rather than registered, and the register was deleted, so a fresh citation
+    // here is now caught exactly like a fresh citation anywhere — this is the
+    // case an allowlist would have masked.
+    const problems = auditLineNumberCitations(
+      repo({
+        "src/lib/booking-request-quotes.ts": "// DOMAIN_INVARIANTS.md:35-40\n",
+        "src/lib/booking-request-shared.ts": "// DOMAIN_INVARIANTS.md:35-40\n",
+        "src/lib/ib-hold-clearing-audit.ts": "// DOMAIN_INVARIANTS.md:124-128\n",
+      }),
+    );
+
+    expect(problems).toHaveLength(3);
+    expect(problems.map((p) => p.split(" ")[0])).toEqual([
+      "src/lib/booking-request-quotes.ts:1",
+      "src/lib/booking-request-shared.ts:1",
+      "src/lib/ib-hold-clearing-audit.ts:1",
+    ]);
+  });
+
+  it("fails every citation on a line, not just the first", () => {
+    const problems = auditLineNumberCitations(
+      repo({
+        "src/lib/money.ts":
+          "// DOMAIN_INVARIANTS.md:120 and invariants/money.md:900 disagree.\n",
+      }),
+    );
+
+    expect(problems).toHaveLength(2);
+    expect(problems[0]).toContain("DOMAIN_INVARIANTS.md:120");
+    expect(problems[1]).toContain("invariants/money.md:900");
+  });
+
+  it("points the reader at the id scheme rather than just refusing", () => {
+    const [problem] = auditLineNumberCitations(
+      repo({ "src/lib/money.ts": "// DOMAIN_INVARIANTS.md:120\n" }),
+    );
+
+    expect(problem).toContain("INV-CAP-021 style");
+    expect(problem).toContain("docs/DOMAIN_INVARIANTS.md");
+  });
+
+  it("ignores a fenced example", () => {
+    expect(
+      auditLineNumberCitations(
+        repo({ "docs/example.md": "# Example\n\n```\nDOMAIN_INVARIANTS.md:35-40\n```\n" }),
+      ),
+    ).toEqual([]);
+  });
+
+  it("ignores a line reference into a document that is not an invariants file", () => {
+    expect(
+      auditLineNumberCitations(
+        repo({ "src/lib/money.ts": "// See docs/ARCHITECTURE.md:120.\n" }),
+      ),
+    ).toEqual([]);
+  });
+});
+
+describe("auditEncoding", () => {
+  it("passes the clean fixture repository", () => {
+    expect(auditEncoding(repo())).toEqual([]);
+  });
+
+  it("fails a file that starts with a UTF-8 byte-order mark", () => {
+    const problems = auditEncoding(
+      repo({ "docs/example.md": `${BYTE_ORDER_MARK}# Example\n` }),
+    );
+
+    expect(problems).toHaveLength(1);
+    expect(problems[0]).toContain("docs/example.md");
+    expect(problems[0]).toContain("byte-order mark");
+    expect(problems[0]).toContain("UTF-8 without a BOM");
+  });
+
+  it("fails double-encoded text and explains where it comes from", () => {
+    const problems = auditEncoding(
+      repo({
+        "docs/example.md": `# Example\n\nOne rule ${MOJIBAKE_EM_DASH} and no more.\n`,
+      }),
+    );
+
+    expect(problems).toHaveLength(1);
+    expect(problems[0]).toContain("docs/example.md:3");
+    expect(problems[0]).toContain("mojibake");
+    expect(problems[0]).toContain("cp1252");
+  });
+
+  it("catches the non-breaking-space signature too", () => {
+    const problems = auditEncoding(
+      repo({ "docs/example.md": `# Example\n\n$10${MOJIBAKE_NBSP}per night.\n` }),
+    );
+
+    expect(problems).toHaveLength(1);
+    expect(problems[0]).toContain("docs/example.md:3");
+  });
+
+  it("stays quiet on legitimate non-ASCII text", () => {
+    // Real prose in this repository: em dashes, curly quotes, te reo macrons and
+    // the odd accented name. None of them forms a lead+trail pair.
+    const prose = [
+      "# Example",
+      "",
+      "Tokoroa Alpine Club — the club's “house style” uses em dashes.",
+      "Māori place names carry macrons: Whakatāne, Tūrangi.",
+      "A café in Zürich costs £5 – or €6.",
+      "",
+    ].join("\n");
+
+    expect(auditEncoding(repo({ "docs/example.md": prose }))).toEqual([]);
   });
 });
