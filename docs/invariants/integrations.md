@@ -148,7 +148,7 @@ from inside this repository it looks like an oversight and a tidy-up will
 propose deleting it. It is not: the reason cannot be re-derived from the code,
 which is why it is written here rather than left in a closed issue.
 
-Three things follow, and all three are load-bearing:
+Four things follow, and all four are load-bearing:
 
 - **Do not make `lodgeId` required, and do not delete the branch.** Changing the
   mode is a breaking change to a published contract with no internal benefit.
@@ -174,6 +174,14 @@ Three things follow, and all three are load-bearing:
   id. Pinned by
   `src/app/api/bookings/rooms/__tests__/rooms-route-lodge-scope.test.ts`, which
   covers both branches because nothing in `src/` walks the unscoped one.
+- **Describing the mode counts as documenting it.** A comment in `src/` that
+  discusses this endpoint and archived lodges must cite `#2727` or
+  `INV-INT-016`. This exists because #2727's own review caught two comments
+  still asserting, in the present tense, that the unscoped mode has no
+  lodge-`active` filter — after the route and three docs copies had been
+  corrected. A stale description of a leak reads as a live one, and no lint,
+  typecheck or index gate looks at prose. Pinned by the third case in
+  `src/app/api/bookings/__tests__/rooms-unscoped-mode-has-no-internal-caller.test.ts`.
 
 History, because the rule reads as obvious once it is written down and was not:
 until #2727 this listing filtered on `Room.active` and booking restrictions but

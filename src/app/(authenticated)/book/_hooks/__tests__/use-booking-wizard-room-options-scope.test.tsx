@@ -6,11 +6,16 @@
 //
 // `/api/bookings/rooms` has two modes. With `lodgeId` it scopes to that lodge;
 // with no `lodgeId` it lists every ACTIVE ROOM the caller's booking restrictions
-// do not exclude (`src/app/api/bookings/rooms/route.ts:41-66`) — and note there is
-// no lodge-active filter there, so an unrestricted member gets rooms from every
-// lodge, archived ones included. The wizard used to ask that question whenever
-// `lodgeId` was still null, which is every mount, because `lodgeId` starts null and
-// only becomes concrete once `LodgeSelect` normalises the fetched lodge list.
+// do not exclude (the `else` branch of the scoping block in
+// `src/app/api/bookings/rooms/route.ts`). When #2664 was filed that branch did
+// not consult the lodge's own `active` flag either, so an unrestricted member
+// got rooms from every lodge, archived ones included; #2727 has since added the
+// `Lodge.active` filter there and `INV-INT-016` pins it. That does not touch
+// what this file covers — the mode is still cross-lodge, and a wizard booking
+// ONE lodge must not offer another's rooms. The wizard used to ask that question
+// whenever `lodgeId` was still null, which is every mount, because `lodgeId`
+// starts null and only becomes concrete once `LodgeSelect` normalises the
+// fetched lodge list.
 //
 // That alone would be a transient blip. What made it a defect is that the effect
 // had no cancellation guard, so the LAST response to land won. A reply arriving

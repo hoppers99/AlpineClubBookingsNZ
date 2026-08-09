@@ -638,11 +638,15 @@ export function useBookingWizard() {
   //
   //  - `lodgeId` starts null, and the no-`lodgeId` mode of `/api/bookings/rooms`
   //    lists every ACTIVE ROOM the member's booking restrictions do not exclude
-  //    (`rooms/route.ts:41-66`). Note what is NOT in that filter: the lodge's own
-  //    `active` flag. An unrestricted member therefore gets rooms from every
-  //    lodge, archived ones included — so this was never merely "the lodges you
-  //    may book". The first request of every mount asked it, before `LodgeSelect`
-  //    had normalised a selection.
+  //    (the `else` branch of the scoping block in `rooms/route.ts` — no line
+  //    numbers, they rot). When #2664 was filed, what was NOT in that filter was
+  //    the lodge's own `active` flag: an unrestricted member got rooms from every
+  //    lodge, archived ones included, so this was never merely "the lodges you
+  //    may book". #2727 has since added the `Lodge.active` filter to that branch
+  //    and `INV-INT-016` now pins it, so the mode no longer offers an archived
+  //    lodge's rooms — but it is still CROSS-LODGE, which is the part that makes
+  //    it wrong here. The first request of every mount asked it, before
+  //    `LodgeSelect` had normalised a selection.
   //  - The effect had no cancellation guard. Whichever response landed last won,
   //    so a slow cross-lodge reply arriving after the lodge-scoped reply that
   //    superseded it left other lodges' rooms in `roomOptions` for the rest of
