@@ -1022,7 +1022,9 @@ booking detail Admin tools card — read-only detection mirroring the
 stuck-state queries.
 
 Admin settings sections follow one canonical edit model (developer rule, binding
-for new or modified sections; see `AGENTS.md` → Change Discipline). A section
+for new or modified sections; `AGENTS.md` → Change Discipline and its routing
+table both send you here for it, and this page is where it is stated in full).
+A section
 renders read-only on mount and stages every change behind a per-section Edit →
 Save/Cancel step: no individual control auto-persists on toggle, Cancel reverts
 to the last saved snapshot, and Save writes once. Save is **dirty-gated as well
@@ -1039,7 +1041,10 @@ matching `area:edit` permission. The section renders an
 the view-only reason is then stated once, at the top of the section, in a
 permanently-mounted `role="status"` region, rather than on disabled buttons that
 are out of the tab order and whose `title` never fires at all (the shared
-`buttonVariants` set `disabled:pointer-events-none`). "Permanently mounted" is a
+`buttonVariants` set `disabled:pointer-events-none`). That region
+gates only the content, because a polite live region injected already-populated
+is silently dropped by some screen-reader/browser pairings.
+"Permanently mounted" is a
 POSITION rule as much as a rendering one, and it covers `PolicyFeedback`'s
 `role="alert"` / `role="status"` pair too: the section has a FRAME — banner,
 feedback regions, and, where the fetch is scope-keyed, the scope select — that
@@ -1432,7 +1437,9 @@ fields is not narrow enough on its own: it protects the fields the card does not
 own, but a field the card DOES own and the admin never touched still goes out
 from a stale draft and reverts whoever moved it. Send the changed fields only —
 the schema still receives every field, the untouched ones just come from the
-fresh read. This NARROWS the
+fresh read. Where the card owns both halves of a cross-field rule, re-check the
+COMPOSED pair after the fresh read: sending only the changed half can assemble a
+pair the admin never saw. This NARROWS the
 read-modify-write window to the milliseconds between that GET and the PUT; it
 does not close it. There is no ETag or `If-Match` on the route, so two genuinely
 simultaneous writes still resolve last-writer-wins — the same property the
@@ -1581,12 +1588,14 @@ handlers the same pre-update row and the second write becomes a no-op audit
 entry of the #2143 kind. The booking-periods and minimum-night-stay sections are
 the reference for that shape (#2142). Wherever the read endpoint SYNTHESISES
 defaults on a miss — or the editor is creating a row that does not exist yet —
-carry the first-save exception so committing the defaults stays reachable, but
+carry the first-save exception: count the draft as dirty so committing the
+defaults stays reachable, but
 never extend it to a FAILED load, where the same fallback values would let one
 click blind-write over a real stored policy. For the same reason a snapshot is
 authoritative only for the scope it was loaded for: a section whose fetch is
 keyed on something else (a lodge scope) must track that key WITH the snapshot
-and treat a mismatch as unknown, because a failed re-fetch leaves the previous
+and treat a mismatch as unknown — no editor, no destructive affordances, no
+first-save exception — because a failed re-fetch leaves the previous
 key's value in place. That binds LIST sections just as hard — there the stale
 value is a set of rows whose Edit, Delete, and Activate/Deactivate buttons all
 act on a row id belonging to the partition the admin has navigated away from —

@@ -29,6 +29,16 @@
   decision records and the approved lobby-display snapshots — are now linked from
   their nearest hub.
 
+  The longest rule left in that core — how an admin settings screen is built,
+  staged Edit → Save/Cancel, view-only gating, and the counts behind them — has
+  moved out of it as well (#2714). `docs/ARCHITECTURE.md` already carried the
+  same rules in fuller form, so what were two copies free to drift apart are now
+  one, and the always-read instructions keep a pointer and a routing row that
+  fires as soon as somebody is about to add a single toggle to a settings page.
+  Nothing was reworded: the four clauses `docs/ARCHITECTURE.md` did not already
+  state were carried across word for word, and the published control counts were
+  re-measured against the code rather than copied.
+
   Everything that referred to the old single document has been re-pointed at the
   file that now holds the rule. That includes twenty-one links from the operator
   and member guides — six of which are published to the club wiki, where "see the
