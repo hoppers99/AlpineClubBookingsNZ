@@ -369,6 +369,11 @@ describe("calculateChangeFee", () => {
 });
 
 // ==================== FEE-03: Change Fee + Cancellation ====================
+// FEE-01..FEE-03 are the Phase 8a change-fee spec's own acceptance-criteria
+// numbers, kept so this file still reads against that spec. The documented rule
+// FEE-03 states — a billed change fee is excluded from the refundable base when
+// the booking is cancelled — is `INV-PAY-018`
+// (docs/invariants/payment-and-settlement.md); cite that id, not FEE-03.
 
 describe("calculateRefundWithChangeFee (FEE-03)", () => {
   it("AC1: $200 booking + $200 change fee, 100% refund tier -> refunds $200", () => {

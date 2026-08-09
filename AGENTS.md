@@ -195,11 +195,16 @@ id and need the file it lives in.
   `docs/COVERAGE_MATRIX.md`.
 - New or modified admin settings sections are bound by the canonical settings
   pattern — staged per-section editing, and view-only gating of every edit
-  affordance. `docs/ARCHITECTURE.md` → "Admin/member layer" states it in full,
-  with its published call-site counts and the four acknowledged divergent
-  surfaces, and it is binding for a section you write or change. Read it before
-  touching a settings section, a staged-edit form, or a permission-gated
-  control — the routing table above routes there for exactly that.
+  affordance through `ViewOnlyActionButton`, headed by one
+  `AdminViewOnlySectionBanner` per section (the default across the admin tree
+  since #2160; `AdminViewOnlyNotice` is still live and is retained in three named
+  cases, so do not delete one on sight). `docs/ARCHITECTURE.md` →
+  "Admin/member layer" states all of that in full, with its published call-site
+  counts, the banner-versus-Notice distinction and the four acknowledged
+  divergent surfaces, and it is binding for a section you write or change. Read
+  it before touching a settings section, a staged-edit form, or a
+  permission-gated control — the routing table above routes there for exactly
+  that.
 - Security, payment, booking, membership lifecycle, Xero, Stripe, and
   data-integrity work requires high or xhigh reasoning effort and human review
   before merge.

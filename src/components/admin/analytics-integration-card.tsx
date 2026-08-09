@@ -69,8 +69,10 @@ import {
  *
  * ## The settings pattern, and where it deliberately differs
  *
- * `AGENTS.md`'s canonical settings pattern applies: the section loads read-only, a
- * per-section Edit reveals Save/Cancel, no control auto-persists, Cancel restores
+ * The canonical settings pattern applies — `docs/ARCHITECTURE.md` → "Admin/member
+ * layer" states it in full, and `AGENTS.md` routes there rather than restating it.
+ * The section loads read-only, a per-section Edit reveals Save/Cancel, no control
+ * auto-persists, Cancel restores
  * every field from the snapshot and Save persists once — implemented with the shared
  * `useSectionEditState` hook rather than hand-rolled, and re-seeded from the parsed
  * SERVER response (this route normalises: it trims, collapses whitespace, and keeps

@@ -1351,7 +1351,7 @@ async function performBookingCancellation(
     }
 
     // Freeze the refund plan from the LOCKED read. Change fees (from prior
-    // booking modifications) are non-refundable per FEE-03. The refundable
+    // booking modifications) are non-refundable (INV-PAY-018). The refundable
     // base is capped at the booking's current value (#1031): a stale Payment
     // mirror (credit-settled reductions, IB invoices paid at a reduced amount,
     // penalty-window retentions) would otherwise pay out more than the booking

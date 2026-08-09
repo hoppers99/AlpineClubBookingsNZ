@@ -20,7 +20,7 @@ verbatim move from the source document and must not be reworded in place** —
 only the ID heading lines and the bracketed cross-file `[INV-*]` pointers
 registered in the PR were added.
 
-## Chasing an outstanding additional payment (#2350)
+## Additional-payment chasing (#2350), request holds and refund settlement
 
 ### INV-ADDPAY-001
 
@@ -38,6 +38,9 @@ admin surface showed one. These rules now hold:
   amount-only test would show cancelled bookings as owing and would email their
   members a payment demand. It takes the status as a required argument so a
   caller cannot forget it.
+
+### INV-ADDPAY-023
+
 - **Who may PAY one.** The member-facing surfaces use a second, deliberately
   wider list, `ADDITIONAL_PAYABLE_BOOKING_STATUSES` — the owed list plus
   `PAYMENT_PENDING`, which the owed list drops only to keep the two admin queue
@@ -56,6 +59,9 @@ admin surface showed one. These rules now hold:
   extra", fetch a live client secret and complete the charge; the late-capture
   backstop (#1350) auto-refunded and alerted, but the member had still been
   charged for a booking that no longer existed.
+
+### INV-ADDPAY-024
+
 - **What the member is told.** While the stay is still ahead, the member is
   emailed at most twice per obligation: `ADDITIONAL_PAYMENT_REMINDER_DAYS`
   (3) days after the extra was raised, and
@@ -63,6 +69,9 @@ admin surface showed one. These rules now hold:
   check-in. The pre-arrival reminder also names the amount when one is owing.
   Nothing is ever auto-cancelled or auto-expired, and the chase stops the
   moment `checkOut <= today` - a finished stay belongs to the queue above [INV-LOCKOUT-043].
+
+### INV-ADDPAY-025
+
 - **Nothing raised before the chase existed is chased, and the cutover is a
   fact rather than a plan.** An obligation whose episode started before the
   cutover is never emailed about by the cron: on first deploy every pre-existing
@@ -85,6 +94,9 @@ admin surface showed one. These rules now hold:
   forward to the oldest surviving run — still months behind anything this job
   chases three days after it is raised. A read failure sends nothing that pass:
   not knowing where the cutover is must never mean "email everyone".
+
+### INV-ADDPAY-026
+
 - **What makes it idempotent.** Two nullable stamps on `Payment`,
   `additionalReminderSentAt` and `additionalFinalReminderSentAt`, written by a
   guarded `updateMany` BEFORE each send, so a cron rerun (or two runners
@@ -103,6 +115,9 @@ admin surface showed one. These rules now hold:
   while the stamp (written at `now`) counted as the new episode's, burning its
   first reminder for good. A lost claim is re-read and re-decided rather than
   treated as another runner's win.
+
+### INV-ADDPAY-027
+
 - **One clock for automatic and manual, in both directions.** An admin can
   re-send the same email from the booking page (`POST
   /api/admin/bookings/[id]/additional-payment-reminder`, `bookings:edit`,
@@ -122,6 +137,9 @@ admin surface showed one. These rules now hold:
   reminder can slip to the following tick, three hours, not a lost email. On a
   send failure the stamps are given back, so a failed re-send never silently
   disarms the automatic chase.
+
+### INV-ADDPAY-028
+
 - **Only a transmitted message counts as sent, and a stamp is only ever spent on
   a message that went out or one that will be replayed.** `sendEmail` RETURNS
   rather than throws when it withholds a message (a suppressed address, a
@@ -134,6 +152,9 @@ admin surface showed one. These rules now hold:
   the member getting two copies, so the 503 reply says the message is queued and
   tells the admin not to re-send rather than inviting a retry the cooldown would
   refuse.
+
+### INV-ADDPAY-029
+
 - **Silence is refused, not swallowed — and unreachability is checked before
   anything is claimed.** A booking with the "No emails" switch on is skipped by
   the cron with no stamp burned (so the reminder is still due once the switch

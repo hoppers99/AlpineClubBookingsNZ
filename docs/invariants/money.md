@@ -17,9 +17,17 @@ with a one-line description of what it covers. ID scheme and allocation rules:
 Every heading below whose whole text is an `INV-*` ID defines that invariant. IDs
 are permanent: never renumbered, never reused. **The text under each ID is a
 verbatim move from the source document and must not be reworded in place** —
-only the ID heading lines were added.
+only the ID heading lines, and the editorial **Related:** lines directly beneath
+some of them (#2707), were added. A `Related:` line is navigation, never part of
+the rule: it names sibling IDs so a change to one prompts checking the others.
 
 ## INV-MONEY-001
+
+**Related: `INV-MONEY-003`** (the mechanically checkable half — a lint rule can
+catch floating-point arithmetic, where "store as integer cents" is not
+checkable by machine) and **`INV-MONEY-006`** (the reconciliation obligation the
+representation exists to serve). Three facets, not three statements of one rule
+(#2707, owner decision 9 Aug 2026). Change one, check the others.
 
 - Store and calculate money as integer cents.
 
@@ -43,6 +51,11 @@ only the ID heading lines were added.
   only.
 
 ## INV-MONEY-003
+
+**Related: `INV-MONEY-001`** (the representation rule this one makes
+enforceable) and **`INV-MONEY-006`** (reconciling back to cent-based ledger
+records). Three facets, not three statements of one rule (#2707, owner decision
+9 Aug 2026). Change one, check the others.
 
 - Do not introduce floating point money arithmetic.
 
@@ -99,79 +112,100 @@ only the ID heading lines were added.
   invariant removes), and `replacePromoRedemptionAllocations` must count the
   existing rows BEFORE its update (or it counts the trigger's transient row and
   skews the counter delta).
-  - **Reading `currentRedemptions` for a cap check requires the row lock, and a
-    read under it.** Every path that may write the counter for an existing
-    booking — `booking-modify-plan.ts`, the add-guests route,
-    `booking-date-modification-service.ts`,
-    `booking-guest-removal-service.ts` — takes the `FOR UPDATE` promo row lock
-    before its first cap read, and re-reads the counter under that lock, because
-    the `PromoCode` snapshot it carries was loaded with the booking, before the
-    locks. All four reprice call sites do that re-read through
-    `lockAndRefreshPromoCodeUsage` (including `booking-modify-plan.ts` on its
-    no-swap reprice branch; its swap branch re-reads the whole promo row under
-    the same lock instead), and each must then validate against the object the
-    wrapper RETURNS — validating the snapshot that went in reopens the race. See
-    `docs/CONCURRENCY_AND_LOCKING.md` → "Narrow row-lock protocols".
-  - **A reprice narrows a promotion's coverage; it never refuses the edit
-    (#2390).** On the four reprice paths (and the edit preview, which must match
-    them) the cap question is "who does this code still cover?", not "may this
-    booking use it?". Members already holding a **beneficial** allocation on the
-    booking being repriced are counted first and kept unconditionally — even
-    where they alone exceed a cap, which is the stated behaviour when an admin
-    lowers a cap under bookings that already have the discount; everyone else is
-    admitted in the order the promotion applies to them — **most expensive stay
-    first**, the order `selectPromoDiscountGuests` produces — until the
-    allowance runs out. Booking creation and applying a newly-entered code still
-    refuse, because nobody holds a discount from the code yet.
-    - Protection is applied **inside** that selection, not after it: a
-      `maxGuestsPerBooking` cap is spent while the beneficiary list is built, so
-      an expensive newly-added guest would otherwise evict a member who already
-      held the discount before any protection check could see them. Anyone a
-      protected member keeps their slot ahead of is named in the coverage
-      notice, so nobody is left out silently.
-    - A member who has personally used the code up is left out **by the trim**,
-      not filtered away before it, so they reach the notice rather than being
-      priced normally with nothing said.
-    - For a `FREE_NIGHTS` code the lifetime cap is a budget, not a slot, so a
-      protected member's remaining nights are floored at what this booking's own
-      allocation rows already granted them. Keeping them on the list is not
-      enough: a lowered cap would otherwise award them zero nights while still
-      reporting them as covered.
-    - The protected set is read from `PromoRedemptionAllocation` **before the
-      redemption write**, for the same trigger reason as the two orderings
-      above: `PromoRedemption_sync_allocation_update` upserts a booker
-      allocation row, and a protected-set read placed after it would grant
-      protection nobody earned.
-    - An empty covered set is refused explicitly rather than falling through.
-      Downstream an empty beneficiary list means "unassigned promo", which would
-      price the code for every guest on the booking, cap and all.
-  - **A cap check that excludes a booking must exclude it from
-    `currentRedemptions` too.** The counter includes the rows the excluded
-    booking holds right now, and unlike every other cap it cannot be filtered by
-    a `where`. So `excludeBookingId` is paired with an explicit raw count of
-    that booking's own allocation rows, subtracted before the total-redemptions
-    cap is applied. Omitting it makes a booking holding a code's last slot fail
-    its OWN reprice, silently drop the discount, and bill the member the
-    discount back for a date change.
-  - **TRAP: the in-memory `PromoDiscountResult.allocations` is NOT
-    benefit-filtered on the assigned-member path.** `policies/pricing.ts`
-    deliberately emits a zero entry for a `SET_PRICE` guest whose rate already
-    equals the fixed price (`includeWhenZero`), and
-    `calculatePromoDiscountForGuestRates` returns the assigned-member result
-    before `normalizeAllocations` runs. The filter is applied at WRITE time
-    instead, inside `redeemPromoCode` / `replacePromoRedemptionAllocations`.
-    Anything that reads that in-memory list as "who benefited" must apply
-    `isBeneficialPromoAllocation` itself.
-  - **A `SET_PRICE` application whose per-guest adjustments net to exactly zero
-    counts as no use** (deliberate; #2299). In `SET_PRICE` mode every night is
-    re-priced, so a fixed price of $30 against nights of $50 and $10 nets to
-    zero, as does one member owning two guest rows that cancel. The member's
-    total is byte-identical with and without the code, so under the "any price
-    effect" rule there is no effect, and it consumes nothing. The accepted
-    consequence is that such a stay can carry the code indefinitely — which
-    costs nothing, because it gives nothing.
+
+## INV-MONEY-023
+
+- **Reading `currentRedemptions` for a cap check requires the row lock, and a
+  read under it.** Every path that may write the counter for an existing
+  booking — `booking-modify-plan.ts`, the add-guests route,
+  `booking-date-modification-service.ts`,
+  `booking-guest-removal-service.ts` — takes the `FOR UPDATE` promo row lock
+  before its first cap read, and re-reads the counter under that lock, because
+  the `PromoCode` snapshot it carries was loaded with the booking, before the
+  locks. All four reprice call sites do that re-read through
+  `lockAndRefreshPromoCodeUsage` (including `booking-modify-plan.ts` on its
+  no-swap reprice branch; its swap branch re-reads the whole promo row under
+  the same lock instead), and each must then validate against the object the
+  wrapper RETURNS — validating the snapshot that went in reopens the race. See
+  `docs/CONCURRENCY_AND_LOCKING.md` → "Narrow row-lock protocols".
+
+## INV-MONEY-024
+
+- **A reprice narrows a promotion's coverage; it never refuses the edit
+  (#2390).** On the four reprice paths (and the edit preview, which must match
+  them) the cap question is "who does this code still cover?", not "may this
+  booking use it?". Members already holding a **beneficial** allocation on the
+  booking being repriced are counted first and kept unconditionally — even
+  where they alone exceed a cap, which is the stated behaviour when an admin
+  lowers a cap under bookings that already have the discount; everyone else is
+  admitted in the order the promotion applies to them — **most expensive stay
+  first**, the order `selectPromoDiscountGuests` produces — until the
+  allowance runs out. Booking creation and applying a newly-entered code still
+  refuse, because nobody holds a discount from the code yet.
+  - Protection is applied **inside** that selection, not after it: a
+    `maxGuestsPerBooking` cap is spent while the beneficiary list is built, so
+    an expensive newly-added guest would otherwise evict a member who already
+    held the discount before any protection check could see them. Anyone a
+    protected member keeps their slot ahead of is named in the coverage
+    notice, so nobody is left out silently.
+  - A member who has personally used the code up is left out **by the trim**,
+    not filtered away before it, so they reach the notice rather than being
+    priced normally with nothing said.
+  - For a `FREE_NIGHTS` code the lifetime cap is a budget, not a slot, so a
+    protected member's remaining nights are floored at what this booking's own
+    allocation rows already granted them. Keeping them on the list is not
+    enough: a lowered cap would otherwise award them zero nights while still
+    reporting them as covered.
+  - The protected set is read from `PromoRedemptionAllocation` **before the
+    redemption write**, for the same trigger reason as the two orderings
+    above: `PromoRedemption_sync_allocation_update` upserts a booker
+    allocation row, and a protected-set read placed after it would grant
+    protection nobody earned.
+  - An empty covered set is refused explicitly rather than falling through.
+    Downstream an empty beneficiary list means "unassigned promo", which would
+    price the code for every guest on the booking, cap and all.
+
+## INV-MONEY-025
+
+- **A cap check that excludes a booking must exclude it from
+  `currentRedemptions` too.** The counter includes the rows the excluded
+  booking holds right now, and unlike every other cap it cannot be filtered by
+  a `where`. So `excludeBookingId` is paired with an explicit raw count of
+  that booking's own allocation rows, subtracted before the total-redemptions
+  cap is applied. Omitting it makes a booking holding a code's last slot fail
+  its OWN reprice, silently drop the discount, and bill the member the
+  discount back for a date change.
+
+## INV-MONEY-026
+
+- **TRAP: the in-memory `PromoDiscountResult.allocations` is NOT
+  benefit-filtered on the assigned-member path.** `policies/pricing.ts`
+  deliberately emits a zero entry for a `SET_PRICE` guest whose rate already
+  equals the fixed price (`includeWhenZero`), and
+  `calculatePromoDiscountForGuestRates` returns the assigned-member result
+  before `normalizeAllocations` runs. The filter is applied at WRITE time
+  instead, inside `redeemPromoCode` / `replacePromoRedemptionAllocations`.
+  Anything that reads that in-memory list as "who benefited" must apply
+  `isBeneficialPromoAllocation` itself.
+
+## INV-MONEY-027
+
+- **A `SET_PRICE` application whose per-guest adjustments net to exactly zero
+  counts as no use** (deliberate; #2299). In `SET_PRICE` mode every night is
+  re-priced, so a fixed price of $30 against nights of $50 and $10 nets to
+  zero, as does one member owning two guest rows that cancel. The member's
+  total is byte-identical with and without the code, so under the "any price
+  effect" rule there is no effect, and it consumes nothing. The accepted
+  consequence is that such a stay can carry the code indefinitely — which
+  costs nothing, because it gives nothing.
 
 ## INV-MONEY-006
+
+**Related: `INV-MONEY-001`** (money is held as integer cents) and
+**`INV-MONEY-003`** (the lintable form of that). This one is a distinct
+obligation rather than a restatement — the named surfaces must reconcile, not
+merely be represented correctly (#2707, owner decision 9 Aug 2026). Change one,
+check the others.
 
 - Refunds, credits, discounts, Stripe amounts, Xero invoice amounts, and
   membership fees must reconcile back to cent-based ledger records.

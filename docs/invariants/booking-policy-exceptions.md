@@ -39,12 +39,18 @@ pure workflow logic (`src/lib/booking-exception-requests.ts`):
   order-independent, so re-freezing the same facts is byte-identical, and it
   changes if any night, guest or — for a modification — the live base drifts. An
   approval recomputes it to prove it is executing exactly what was reviewed.
+
+### INV-EXCEPT-004
+
 - **The evidence is frozen and authoritative.** `frozenEvidence` is the #2363
   aggregate — every covered structured violation with its reason code, policy
   id/version, resolved scope, exact affected NZ nights, requirements and frozen
   per-policy capacity mode — plus the HOLD-if-any-HOLD aggregate. An approval may
   override ONLY these reviewed violations, and nothing that is not on the #2363
   allowlist can be stored (`freezePolicyExceptionEvidence` refuses it).
+
+### INV-EXCEPT-005
+
 - **A held request's provisional reservation is per-night and directional.**
   Today only the MODIFICATION path writes a reservation; a modification request
   reserves ONLY the incremental beds beyond a capacity-holding live booking
@@ -66,6 +72,9 @@ pure workflow logic (`src/lib/booking-exception-requests.ts`):
   custodian holds — so a pending request cannot be oversold; a held request never
   overbooks because its reservation is claimed under the same per-lodge capacity
   lock the occupancy read takes.)
+
+### INV-EXCEPT-006
+
 - **Drift is set algebra over the frozen and current violations of the SAME
   proposal.** At approval the frozen proposal is re-evaluated against today's
   policy configuration. A reviewed rule that no longer trips (policy switched off
@@ -74,9 +83,15 @@ pure workflow logic (`src/lib/booking-exception-requests.ts`):
   (`violationFingerprint`), or any brand-new violation, is a materially different
   question the member must resubmit — it is never silently overridden. Only
   reviewed violations that still trip unchanged are overridable.
+
+### INV-EXCEPT-007
+
 - **The message is required.** `memberMessage` is trimmed, non-empty and at most
   1000 characters, normalised once at the request boundary so every later surface
   renders exactly the stored value.
+
+### INV-EXCEPT-008
+
 - **Every transition is guarded and single.** Only a `REQUESTED` request may move,
   and only to `APPROVED`/`REJECTED`/`CANCELLED`/`SUPERSEDED`/`EXPIRED`; the guarded
   `updateMany` plus the integer `version` token make a lost claim run no side
@@ -84,6 +99,9 @@ pure workflow logic (`src/lib/booking-exception-requests.ts`):
   `CANCELLED`, `SUPERSEDED` and `EXPIRED` release the provisional reservation;
   `APPROVED` turns it into the executed booking's own beds inside the same
   transaction.
+
+### INV-EXCEPT-009
+
 - **Every held bed is on a deadline, and only a held bed is (#2553).** A
   request that actually reserves beds is stamped at creation with an immutable
   `holdExpiresAt` — `POLICY_EXCEPTION_HOLD_TTL_DAYS` (7) from creation, capped at
@@ -127,6 +145,9 @@ pure workflow logic (`src/lib/booking-exception-requests.ts`):
   capacity release, nor cause one to be re-run, nor stop the reaper closing the
   run's other stranded holds. The one-open-request slot is freed too, so a lapse
   never locks the member out of resubmitting.
+
+### INV-EXCEPT-010
+
 - **Approval is atomic with execution (#2525).** `approveAndExecutePolicyExceptionRequest`
   reauthorizes from fresh DB roles, re-reads under global -> per-lodge locks,
   applies the drift rules above, claims `REQUESTED -> APPROVED` with the `version`
@@ -154,11 +175,17 @@ hold in addition to every #2365 invariant above:
   Both freeze the identical immutable proposal + `proposalHash`, `frozenEvidence`
   + `aggregateCapacityMode`, required `memberMessage`, attempt/conflict metadata
   and integer `version` claim token.
+
+### INV-EXCEPT-011
+
 - **The violations are re-evaluated server-side, never trusted from the client.**
   A request stores exactly the violations `evaluateProposalPartyViolations`
   re-derives from current policy for the proposed party (minimum stay + adult
   member hosting); a proposal that trips none is refused (nothing to review), and
   a non-allowlisted code can never be stored (`freezePolicyExceptionEvidence`).
+
+### INV-EXCEPT-012
+
 - **At most one open request per subject, enforced by the database.** A
   `REQUESTED` row holds a deterministic `openStateKey`
   (`nbpe:{requestedByMemberId}:{proposalHash}` for a new booking,
@@ -166,15 +193,24 @@ hold in addition to every #2365 invariant above:
   unique index; every terminal transition NULLs it. A concurrent duplicate races
   into a unique violation (409), never a second open row, and a `LOCKED_PERIOD`
   row (slot always NULL) is untouched.
+
+### INV-EXCEPT-013
+
 - **Creation never changes a live booking.** A new-booking request creates no
   booking; a modification request writes only its request row and leaves the live
   booking's dates, guests, pricing and payment exactly as they were. The live
   change is #2525's approve-and-execute.
+
+### INV-EXCEPT-014
+
 - **Cancel/supersede are guarded and side-effect-safe.** Member cancel and
   supersede are guarded single `updateMany` transitions on `status = REQUESTED`
   (scoped to the owner, and to `POLICY_EXCEPTION` on the shared table); a lost
   claim runs no side effect — no status change, no notification, no replacement
   request.
+
+### INV-EXCEPT-015
+
 - **The officer is notified after commit, never in-band.** The on-request Booking
   Officer alert is fire-and-forget after the request commits; an alert failure is
   logged and never fails the member's request.
@@ -192,6 +228,9 @@ invariants hold in addition to every #2365/#2524/#2525 invariant above:
   canonical booking service (`modifyBookingBatch` / `createConfirmedBooking`) in
   ONE transaction. There is no mark-approved-then-call-service gap, so a request
   can never end up APPROVED with nothing behind it.
+
+### INV-EXCEPT-016
+
 - **The capacity recheck checks the FULL proposed party and EXCLUDES the live
   booking.** For a modification this makes the full-party check exactly an
   incremental-headroom check against a capacity-holding base, and the correct
@@ -199,6 +238,9 @@ invariants hold in addition to every #2365/#2524/#2525 invariant above:
   then checking only the delta would double-count it and FALSE-KEEP-PENDING an
   approval that should execute (safe direction, wrong answer). A new-booking
   proposal excludes nothing.
+
+### INV-EXCEPT-017
+
 - **The recheck window covers every frozen guest night.** The window is the union
   of the frozen party's envelope AND every night its guests hold, not the
   envelope alone. A stored snapshot is DATA: a guest night outside its own
@@ -209,11 +251,17 @@ invariants hold in addition to every #2365/#2524/#2525 invariant above:
   stricter. Freezing closes the same gap from the other end, expanding the
   proposed envelope to cover every guest night, so the officer's card and the
   engine's window describe the same stay.
+
+### INV-EXCEPT-018
+
 - **Capacity stays a hard refusal.** The approval never passes
   `confirmOverCapacity` and never sets `adminOverride`; an approving officer is
   not a capacity-override actor. `createConfirmedBooking`'s non-throwing
   `capacityExceeded` outcome is THROWN
   (`PolicyExceptionExecutionCapacityError`) so the whole approval rolls back.
+
+### INV-EXCEPT-019
+
 - **Never a false keep-pending.** Every "still pending" answer the route gives is
   true at the moment it is given: the engine's kept-pending outcomes are returned
   before the claim (NO_HOLD) or via a rollback signal (HOLD), and an execution
@@ -227,6 +275,9 @@ invariants hold in addition to every #2365/#2524/#2525 invariant above:
   told nothing happened about a booking that now exists — which sent them either
   to a 409 blaming a third party, or to creating the booking a second time by
   hand. A failure in one deferred phase never skips the other.
+
+### INV-EXCEPT-020
+
 - **A kept-pending capacity conflict is always recorded.** `conflictCount`,
   `lastConflictAt` and `lastConflictReason` are what the officer's card and the
   member's own request list read to tell "the lodge is full" apart from "nobody
@@ -237,6 +288,9 @@ invariants hold in addition to every #2365/#2524/#2525 invariant above:
   transaction that commits. A store that genuinely holds beds is still rechecked
   after the release, and its conflict is written in its own transaction after the
   rollback.
+
+### INV-EXCEPT-021
+
 - **The live proposal is verified by replay, not by trust.** A modification
   request freezes the raw member delta beside the proposal
   (`requestedChanges.delta`). `verifyLiveProposalIntegrity` replays that delta
@@ -249,6 +303,9 @@ invariants hold in addition to every #2365/#2524/#2525 invariant above:
   OWN message, because it is unexecutable while nothing about the booking has
   moved, and blaming a live edit sends the officer and the member looking for an
   edit that never happened.
+
+### INV-EXCEPT-022
+
 - **"What the delta produces" is computed by ONE implementation.** The replay is
   proof only while the frozen party is what the canonical planner will really
   build, so the two are the same arithmetic rather than two that agree by
@@ -271,6 +328,9 @@ invariants hold in addition to every #2365/#2524/#2525 invariant above:
   partial `guestStayRanges` had an officer review three guests on three nights
   and committed 3 + 2 + 2 — a different party, a different price, and a
   minimum-stay/hosting judgement made on a party that never existed.
+
+### INV-EXCEPT-023
+
 - **Only the reviewed rules are overridden, and ADMIN is not borrowed for
   anything else.** Minimum stay is overridden by running the canonical
   modification as an ADMIN actor (the service enforces the rule only for
@@ -298,6 +358,9 @@ invariants hold in addition to every #2365/#2524/#2525 invariant above:
   `role`, so it is untouched. The flag can only ever make the guest rules
   STRICTER, and an ordinary admin edit leaves it unset and behaves exactly as
   before.
+
+### INV-EXCEPT-024
+
 - **An approved hosting exception is recorded as decided.** The canonical
   modification reconciles the hosting hazard from the rows it just wrote and
   deliberately opens it PENDING (an unrelated edit must never auto-approve one).
@@ -307,6 +370,9 @@ invariants hold in addition to every #2365/#2524/#2525 invariant above:
   request never leaves a pending hosting review nobody will action. The
   reason-agnostic check-in block (#1422) [INV-ADDPAY-004] is untouched: any pending admin review
   still gates check-in, and this workflow adds no exemption to it.
+
+### INV-EXCEPT-025
+
 - **The adult-supervision review is never decided by proxy.** A party with a minor
   and no adult (#1372, `requiresAdultSupervisionReview`) is a different rule from
   either policy-exception reason code: the drift gate cannot evaluate it, the
@@ -315,11 +381,17 @@ invariants hold in addition to every #2365/#2524/#2525 invariant above:
   the MEMBER's own words as the justification — exact member parity — rather than
   stamping it APPROVED in the name of an officer who was never shown the hazard.
   The child-safety check-in block stays armed until a human looks.
+
+### INV-EXCEPT-026
+
 - **Reauthorization is from fresh database roles.** The session guard decides
   whether the officer may open the screen; the engine re-reads the officer's
   CURRENT roles inside the approval transaction and requires `bookings: edit`,
   an active login-capable account, and no forced password change. Access revoked
   between opening the queue and clicking Approve refuses with no write.
+
+### INV-EXCEPT-027
+
 - **A decision is explicit, attributable and single-flight.** Approve requires
   `confirm: true`; overriding adult-member hosting and every refusal require a
   written reason; both carry the `expectedVersion` the officer's screen showed,
@@ -330,6 +402,9 @@ invariants hold in addition to every #2365/#2524/#2525 invariant above:
   told the request "changed while you were reviewing it", which blamed a third
   party for their own previous attempt and made "approve it again once beds free
   up" unreachable without a manual reload.
+
+### INV-EXCEPT-028
+
 - **The officer decides a party they were shown.** Approving executes the frozen
   party for real, so `GET /api/admin/booking-exception-requests/[id]` describes
   it — each guest's name, age tier, whether they are a member guest, whether they
@@ -339,6 +414,9 @@ invariants hold in addition to every #2365/#2524/#2525 invariant above:
   somebody else's stay, or a party of minors with no adult, and without the party
   on screen the audit record attributes to the officer a decision they had no way
   to make.
+
+### INV-EXCEPT-029
+
 - **The money question is asked, not discovered.** A change that reduces a settled
   booking's price makes the canonical service demand a card-or-credit choice. That
   choice is not part of the reviewed proposal (the proposal decides WHAT changes;
@@ -347,6 +425,9 @@ invariants hold in addition to every #2365/#2524/#2525 invariant above:
   message. It is never reported as "still pending": that named no action, the
   screen offered none, and it made the archetypal shorten-my-paid-stay
   minimum-stay exception permanently un-approvable through the queue.
+
+### INV-EXCEPT-030
+
 - **The member can read the decision.** Their own request list returns the
   officer's note (so a refusal comes with its reason rather than a bare
   `REJECTED`), the last capacity conflict (so a request still sitting at
@@ -355,6 +436,9 @@ invariants hold in addition to every #2365/#2524/#2525 invariant above:
   and the officer's own field says so — the same text is reused as the audit-grade
   override reason on the booking, so it must never be written believing it is an
   internal aside.
+
+### INV-EXCEPT-031
+
 - **An approved request is announced.** A MODIFICATION is announced by the
   canonical service's own change notice. A NEW booking is not: a members-only
   party resolves to `PAYMENT_PENDING` on the default payment method, for which
@@ -367,6 +451,9 @@ invariants hold in addition to every #2365/#2524/#2525 invariant above:
   (`sendBookingPolicyExceptionApprovedEmail`) naming the stay, what is owed, and
   the officer's note. The two never double up — only the new-booking flavour uses
   it.
+
+### INV-EXCEPT-032
+
 - **Both request tables are decided by the same algorithm.** The engine takes a
   `PolicyExceptionRequestStore` (modification = `POLICY_EXCEPTION`
   `BookingChangeRequest`, new booking = `NewBookingPolicyExceptionRequest`);
@@ -375,6 +462,9 @@ invariants hold in addition to every #2365/#2524/#2525 invariant above:
   new-booking request holds no provisional reservation, so its release is a
   no-op — its safety comes from the approval's own capacity recheck plus the
   canonical create's hard refusal.
+
+### INV-EXCEPT-033
+
 - **A new booking is authorised, not merely created.** `createConfirmedBooking`
   validates guest member links not at all: every other caller runs
   `resolveLinkedBookingMembersWithBoundary` →
@@ -393,6 +483,9 @@ invariants hold in addition to every #2365/#2524/#2525 invariant above:
   a party that cannot be executed. That is a usability gate, not the security
   boundary: the approval's own pass is judged against the LIVE boundary at
   approval time and fails the whole approval closed.
+
+### INV-EXCEPT-034
+
 - **Attempts count.** A supersede carries the predecessor's `attemptCount` forward
   + 1, so the card's "Attempts" is the number of times the member has actually
   asked. Every replacement starting again at 1 told an officer that a request

@@ -21,7 +21,7 @@ verbatim move from the source document and must not be reworded in place** —
 only the ID heading lines and the bracketed cross-file `[INV-*]` pointers
 registered in the PR were added.
 
-## Subscription-lockout booking pricing (#2533)
+## Subscription-lockout pricing (#2533), admin date overrides and member-facing email
 
 ### INV-LOCKOUT-001
 
@@ -576,174 +576,203 @@ override requires an explicit `pricingMode`:
   risks a member arriving for a stay that no longer exists. (All three are
   nonetheless withheld by the per-booking "No emails" switch — see that section
   below — which overrides every always-notify rule on this page.)
-  The #1780/#1769b sweep extends this same per-action choice to every remaining
-  admin-initiated member email — membership application approve/reject (#1786),
-  membership cancellation review (#1787), member archive review and
-  account-deletion reject (#1788), family-group child-request and group-create
-  approve/reject (#1789), booking review approve/reject (#1790), booking-request
-  decline (#1791), and refund-appeal approve/reject (#1792) — each
-  default-notify, admin-only (all `requireAdmin()` routes, so no non-admin can
-  carry the flag), and audited `notifyMember: false` only when a send is truly
-  suppressed (a would-not-send path — e.g. a member with no email on file, or a
-  refund appellant with no address — records no notify field). Five further
-  sends stay **deliberately always-notify** and outside the choice for the same
-  not-strandable-communication reason: the membership-application **induction
-  sign-off requests** (token-bearing signer requests), the family group-create
-  **partner invitation** (token-bearing; the partner cannot join without it),
-  the **account-deletion approval** privacy receipt (the member requested
-  deletion and cannot log in afterward), and the booking-request
-  **approved/quote** emails (they carry the payment/quote link). On a
-  booking-review **rejection** the shared cancellation email above (#1730) is
-  the always-notify send, so a suppressed reject still emails the member the
-  cancellation and withholds only the review-declined explainer (superseded for
-  the per-booking "No emails" switch — see that section below — which withholds
-  the cancellation notice too, so a reject on a silenced booking emails the
-  member nothing at all; #2259's review dialog says exactly that rather than
-  repeating the promise above).
-  An account-deletion approve and reject also have exactly one final winner,
-  but they do not always race for the same transition (#2597, #2627). An
-  approval that has future bookings to cancel commits those cancellations in
-  separately committed transactions before it anonymises anything, so it first
-  claims `PENDING -> APPROVAL_IN_PROGRESS` — durably, before the first
-  cancellation commits — and then finalises only from that claim, inside the
-  anonymisation transaction, so any later privacy failure rolls finalisation
-  back to the claim and sends no receipt. **While that claim stands, a rejection
-  can never become final after an approval-triggered cancellation has
-  committed** — which the single-transition protocol could not guarantee. It is
-  deliberately NOT an absolute: a Full Admin can release the claim (see
-  "`APPROVAL_IN_PROGRESS` is not a one-way door" below), and the request is then
-  decidable again, because the alternative was a request wedged open forever.
-  What holds after a release is a weaker but honest property — **no rejection
-  can be finalised over cancellations an approval already committed without the
-  decider being told**: the release leaves a durable marker on the row, the
-  queue and the reject dialog state what it means, and the route refuses the
-  rejection unless the actor is a Full Admin and confirms it. A repeated approval
-  resumes its own claim rather than being refused, so an interrupted cleanup can
-  always be completed. A losing concurrent reviewer gets a fixed conflict and
-  sends no contradictory message. Cancellations already committed before a lost
-  claim are returned as explicit partial cleanup, never described as
-  anonymisation.
-  **The claim is taken only when there is something irreversible to protect**
-  (#2627). An approval with no future bookings to cancel commits everything it
-  does in the one anonymisation transaction, so it stays `PENDING` and finalises
-  `PENDING -> APPROVED` in a single guarded transition — the pre-#2597 protocol,
-  which is safe precisely because nothing was committed ahead of it. Claiming
-  there would consume the ability to reject in exchange for nothing, and a
-  permanent failure inside that transaction would wedge a request that nobody
-  had acted on. Rejection still claims only `PENDING`, so on this path an
-  approve and a reject do race for the same transition, exactly one wins, and
-  the loser is told the request was already reviewed with nothing destroyed
-  either way.
-  `APPROVAL_IN_PROGRESS` is an OPEN state, not a decided one: it still owes the
-  member their anonymisation, and it **may** already have cancelled their future
-  bookings — the admin UI's "may already be cancelled" is the honest wording,
-  because the claim is now only ever taken when there were bookings to cancel,
-  but it is taken before the first cancellation commits and a resumed claim can
-  outlive them all. Every "is there an outstanding request?" reader — admin
-  queue, pending counts, dashboard, the member's own re-request guard, and the
-  member-merge blocker — must therefore treat it as open via
-  `OPEN_DELETION_REQUEST_STATUSES`.
-  Filtering on `PENDING` alone would hide a half-finished deletion from the
-  queue that has to finish it, and would silently unblock a merge that then
-  re-points the request at the surviving member.
-  **`APPROVAL_IN_PROGRESS` is not a one-way door** (#2627). A Full Admin may
-  release a started approval — `APPROVAL_IN_PROGRESS -> PENDING`, guarded on the
-  claimed status, with a mandatory reason, audited as
-  `member.deletion_approval_claim_released`, anonymising nobody and emailing the
-  member nothing. Without it a permanently blocked approval left the request
-  open forever, and while it is open the member cannot lodge a new deletion
-  request and their duplicate cannot be merged. The release cannot race a
-  finalisation that is already committing: it is the same guarded `updateMany`
-  on the same row (taken under that row's own `FOR UPDATE` — see the attribution
-  paragraph below), so a release arriving mid-commit blocks on the finalisation's
-  row lock and then matches zero rows (`DELETION_REQUEST_CLAIM_NOT_HELD`, 409),
-  while a release that commits first makes the finalisation match zero rows and
-  roll its whole anonymisation transaction back. Both winner orders are forced
-  against real PostgreSQL in `adult-member-hosting-queue-merge.realdb.test.ts`.
-  The release returns the request
-  to `PENDING` rather than straight to `REJECTED` so the decision itself is
-  still made through the ordinary reject path, with its guard, its audit entry
-  and its notify choice.
-  **A released request is marked, and rejecting one is gated and confirmed.**
-  A release re-opens a decision that had been closed to rejection, so the
-  re-opened state cannot look like an ordinary pending request. It is `PENDING`
-  again in the full sense: an approve and a reject race the same guard, and a
-  later approval **may** re-take the claim — it does so whenever the member has
-  future bookings at that moment, which happens if the earlier attempt stopped
-  part-way through cancelling them or the member has booked since (they are not
-  anonymised and their login still works). A re-claim is strictly safer than not
-  re-claiming, because it closes the request to rejection again before the next
-  cancellation commits, and releasing that claim in turn writes the marker again.
-  The fact therefore
-  travels **in the row**: `PENDING` with a `reviewedAt` and no `reviewedBy` is a
-  combination no other writer of the row can produce, so it is a marker and not a
-  heuristic (`deletionApprovalWasReleased`, `src/lib/deletion-request-decision.ts`;
-  it deliberately overloads `reviewedAt` instead of adding a column, and every
-  reader must go through that predicate rather than reading the field). It is
-  written by the same single guarded mutation as the transition, so it cannot lag,
-  cannot be lost and cannot be forged in a free-text note. The admin queue shows
-  it as "approval started and released back to pending" with the release reason,
-  never as a completed review; the reject dialog repeats it; and the route refuses
-  a rejection of a released request unless the actor **is a Full Admin** (403 —
-  the same gate as the release that produced the state, now on the step that does
-  the harm) **and** carries `confirmReleasedApproval: true` (409
-  `DELETION_REJECT_AFTER_RELEASE_CONFIRM_REQUIRED` with the disclosure, so a page
-  loaded before the release cannot finalise one unwarned; the same warn-and-confirm
-  shape as the over-capacity override) **and** gives the member something they are
-  actually told. On this one path the note is **mandatory**, mirroring the release
-  that produced the state, and `notifyMember: false` is **refused** (400
-  `DELETION_REJECT_AFTER_RELEASE_REASON_REQUIRED` /
-  `DELETION_REJECT_AFTER_RELEASE_NOTICE_REQUIRED`). Everything else in this
-  protection is admin-facing — the gate, the row warning, the dialog, the
-  confirmation flag, the audit metadata — so without those two a Full Admin could
-  confirm, leave the note empty, suppress the email, and decline the member over
-  cancelled stays with nothing said at all. Ordinary rejections keep #1788's free,
-  audited notify choice and their optional note: nothing has been destroyed there,
-  so silence is a legitimate option. The applied rejection records
-  `approvalPreviouslyReleased` in its audit entry. Approving a released request is
-  ungated: it completes the deletion the member asked for and destroys nothing the
-  released approval had not already destroyed.
-  **The gate decides what to refuse; the guard decides what can be won.** The
-  Full-Admin check and the confirmation are evaluated against the route's opening
-  read, which is not the serialised point — Prisma queues on an exhausted
-  connection pool, so seconds can pass before the write. A release committing in
-  that window would otherwise turn an ordinary rejection into a
-  reject-after-release with no Full-Admin check and no confirmation: exactly the
-  state this section forbids, produced by a check-then-act. So the flavour of
-  `PENDING` a rejection is authorised against travels into the guarded
-  `updateMany` itself (`DeletionRequestRejectionOrigin`): an unconfirmed rejection
-  guards on `reviewedAt: null` and a confirmed reject-after-release on
-  `reviewedAt: { not: null }`. The two shapes partition `PENDING` exactly, so a
-  rejection can only ever win the flavour it was authorised against, and the loser
-  gets the 409 below and decides the reloaded, warned row instead. Forced against
-  real PostgreSQL — a claim-and-release holding the row while the unwarned
-  rejection blocks on it, then matches nothing — in
-  `adult-member-hosting-queue-merge.realdb.test.ts`.
-  **The release and its audit record commit together.** The transition nulls the
-  claim's own attribution, so the `member.deletion_approval_claim_released` entry
-  is the only surviving record of who held it — which rules out the
-  fire-and-forget `logAudit`. The release takes the row `FOR UPDATE`, reads the
-  previous holder and note through the Prisma model under that lock (so an ABA
-  interleaving cannot record a holder that was never displaced), performs the
-  guarded transition, and the route writes that audit row with the awaited
-  `createAuditLog` on the same transaction client. A failed insert rolls the
-  release back: the operator is told it failed and the claim is still there to
-  release again. The release is also the one transition whose first statement is
-  designed to block, so its transaction runs with an explicit budget larger than
-  the anonymisation transaction it may be waiting behind (`maxWait` 10s /
-  `timeout` 15s) and an exhausted wait is answered
-  `DELETION_REQUEST_RELEASE_CONTENDED` (503, `retryAllowed: true`) rather than a
-  bare 500 — see `docs/CONCURRENCY_AND_LOCKING.md`.
-  **A decision that loses its guard to a release is reported as that.**
-  `PENDING` is reachable when a decision claim matches zero rows, and it is the
-  one state that is known exactly, so the route answers
-  `DELETION_REQUEST_APPROVAL_RELEASED` (409, `retryAllowed: false`,
-  `decisionFinal: false`) with the cancellations that did commit — never
-  `DELETION_REQUEST_DECISION_STATUS_UNCONFIRMED`, whose "its final state could not
-  be confirmed … do not retry" would durably disable a row the admin can and
-  should decide again. Both losers land there: an approval finalising from a claim
-  that has since been released, and an unconfirmed rejection the strict guard
-  above refused.
+
+### INV-LOCKOUT-044
+
+The #1780/#1769b sweep extends this same per-action choice to every remaining
+admin-initiated member email — membership application approve/reject (#1786),
+membership cancellation review (#1787), member archive review and
+account-deletion reject (#1788), family-group child-request and group-create
+approve/reject (#1789), booking review approve/reject (#1790), booking-request
+decline (#1791), and refund-appeal approve/reject (#1792) — each
+default-notify, admin-only (all `requireAdmin()` routes, so no non-admin can
+carry the flag), and audited `notifyMember: false` only when a send is truly
+suppressed (a would-not-send path — e.g. a member with no email on file, or a
+refund appellant with no address — records no notify field). Five further
+sends stay **deliberately always-notify** and outside the choice for the same
+not-strandable-communication reason: the membership-application **induction
+sign-off requests** (token-bearing signer requests), the family group-create
+**partner invitation** (token-bearing; the partner cannot join without it),
+the **account-deletion approval** privacy receipt (the member requested
+deletion and cannot log in afterward), and the booking-request
+**approved/quote** emails (they carry the payment/quote link). On a
+booking-review **rejection** the shared cancellation email above (#1730) is
+the always-notify send, so a suppressed reject still emails the member the
+cancellation and withholds only the review-declined explainer (superseded for
+the per-booking "No emails" switch — see that section below — which withholds
+the cancellation notice too, so a reject on a silenced booking emails the
+member nothing at all; #2259's review dialog says exactly that rather than
+repeating the promise above).
+
+### INV-LOCKOUT-045
+
+An account-deletion approve and reject also have exactly one final winner,
+but they do not always race for the same transition (#2597, #2627). An
+approval that has future bookings to cancel commits those cancellations in
+separately committed transactions before it anonymises anything, so it first
+claims `PENDING -> APPROVAL_IN_PROGRESS` — durably, before the first
+cancellation commits — and then finalises only from that claim, inside the
+anonymisation transaction, so any later privacy failure rolls finalisation
+back to the claim and sends no receipt. **While that claim stands, a rejection
+can never become final after an approval-triggered cancellation has
+committed** — which the single-transition protocol could not guarantee. It is
+deliberately NOT an absolute: a Full Admin can release the claim (see
+"`APPROVAL_IN_PROGRESS` is not a one-way door" below), and the request is then
+decidable again, because the alternative was a request wedged open forever.
+What holds after a release is a weaker but honest property — **no rejection
+can be finalised over cancellations an approval already committed without the
+decider being told**: the release leaves a durable marker on the row, the
+queue and the reject dialog state what it means, and the route refuses the
+rejection unless the actor is a Full Admin and confirms it. A repeated approval
+resumes its own claim rather than being refused, so an interrupted cleanup can
+always be completed. A losing concurrent reviewer gets a fixed conflict and
+sends no contradictory message. Cancellations already committed before a lost
+claim are returned as explicit partial cleanup, never described as
+anonymisation.
+
+### INV-LOCKOUT-046
+
+**The claim is taken only when there is something irreversible to protect**
+(#2627). An approval with no future bookings to cancel commits everything it
+does in the one anonymisation transaction, so it stays `PENDING` and finalises
+`PENDING -> APPROVED` in a single guarded transition — the pre-#2597 protocol,
+which is safe precisely because nothing was committed ahead of it. Claiming
+there would consume the ability to reject in exchange for nothing, and a
+permanent failure inside that transaction would wedge a request that nobody
+had acted on. Rejection still claims only `PENDING`, so on this path an
+approve and a reject do race for the same transition, exactly one wins, and
+the loser is told the request was already reviewed with nothing destroyed
+either way.
+
+### INV-LOCKOUT-047
+
+`APPROVAL_IN_PROGRESS` is an OPEN state, not a decided one: it still owes the
+member their anonymisation, and it **may** already have cancelled their future
+bookings — the admin UI's "may already be cancelled" is the honest wording,
+because the claim is now only ever taken when there were bookings to cancel,
+but it is taken before the first cancellation commits and a resumed claim can
+outlive them all. Every "is there an outstanding request?" reader — admin
+queue, pending counts, dashboard, the member's own re-request guard, and the
+member-merge blocker — must therefore treat it as open via
+`OPEN_DELETION_REQUEST_STATUSES`.
+Filtering on `PENDING` alone would hide a half-finished deletion from the
+queue that has to finish it, and would silently unblock a merge that then
+re-points the request at the surviving member.
+
+### INV-LOCKOUT-048
+
+**`APPROVAL_IN_PROGRESS` is not a one-way door** (#2627). A Full Admin may
+release a started approval — `APPROVAL_IN_PROGRESS -> PENDING`, guarded on the
+claimed status, with a mandatory reason, audited as
+`member.deletion_approval_claim_released`, anonymising nobody and emailing the
+member nothing. Without it a permanently blocked approval left the request
+open forever, and while it is open the member cannot lodge a new deletion
+request and their duplicate cannot be merged. The release cannot race a
+finalisation that is already committing: it is the same guarded `updateMany`
+on the same row (taken under that row's own `FOR UPDATE` — see the attribution
+paragraph below), so a release arriving mid-commit blocks on the finalisation's
+row lock and then matches zero rows (`DELETION_REQUEST_CLAIM_NOT_HELD`, 409),
+while a release that commits first makes the finalisation match zero rows and
+roll its whole anonymisation transaction back. Both winner orders are forced
+against real PostgreSQL in `adult-member-hosting-queue-merge.realdb.test.ts`.
+The release returns the request
+to `PENDING` rather than straight to `REJECTED` so the decision itself is
+still made through the ordinary reject path, with its guard, its audit entry
+and its notify choice.
+
+### INV-LOCKOUT-049
+
+**A released request is marked, and rejecting one is gated and confirmed.**
+A release re-opens a decision that had been closed to rejection, so the
+re-opened state cannot look like an ordinary pending request. It is `PENDING`
+again in the full sense: an approve and a reject race the same guard, and a
+later approval **may** re-take the claim — it does so whenever the member has
+future bookings at that moment, which happens if the earlier attempt stopped
+part-way through cancelling them or the member has booked since (they are not
+anonymised and their login still works). A re-claim is strictly safer than not
+re-claiming, because it closes the request to rejection again before the next
+cancellation commits, and releasing that claim in turn writes the marker again.
+The fact therefore
+travels **in the row**: `PENDING` with a `reviewedAt` and no `reviewedBy` is a
+combination no other writer of the row can produce, so it is a marker and not a
+heuristic (`deletionApprovalWasReleased`, `src/lib/deletion-request-decision.ts`;
+it deliberately overloads `reviewedAt` instead of adding a column, and every
+reader must go through that predicate rather than reading the field). It is
+written by the same single guarded mutation as the transition, so it cannot lag,
+cannot be lost and cannot be forged in a free-text note. The admin queue shows
+it as "approval started and released back to pending" with the release reason,
+never as a completed review; the reject dialog repeats it; and the route refuses
+a rejection of a released request unless the actor **is a Full Admin** (403 —
+the same gate as the release that produced the state, now on the step that does
+the harm) **and** carries `confirmReleasedApproval: true` (409
+`DELETION_REJECT_AFTER_RELEASE_CONFIRM_REQUIRED` with the disclosure, so a page
+loaded before the release cannot finalise one unwarned; the same warn-and-confirm
+shape as the over-capacity override) **and** gives the member something they are
+actually told. On this one path the note is **mandatory**, mirroring the release
+that produced the state, and `notifyMember: false` is **refused** (400
+`DELETION_REJECT_AFTER_RELEASE_REASON_REQUIRED` /
+`DELETION_REJECT_AFTER_RELEASE_NOTICE_REQUIRED`). Everything else in this
+protection is admin-facing — the gate, the row warning, the dialog, the
+confirmation flag, the audit metadata — so without those two a Full Admin could
+confirm, leave the note empty, suppress the email, and decline the member over
+cancelled stays with nothing said at all. Ordinary rejections keep #1788's free,
+audited notify choice and their optional note: nothing has been destroyed there,
+so silence is a legitimate option. The applied rejection records
+`approvalPreviouslyReleased` in its audit entry. Approving a released request is
+ungated: it completes the deletion the member asked for and destroys nothing the
+released approval had not already destroyed.
+
+### INV-LOCKOUT-050
+
+**The gate decides what to refuse; the guard decides what can be won.** The
+Full-Admin check and the confirmation are evaluated against the route's opening
+read, which is not the serialised point — Prisma queues on an exhausted
+connection pool, so seconds can pass before the write. A release committing in
+that window would otherwise turn an ordinary rejection into a
+reject-after-release with no Full-Admin check and no confirmation: exactly the
+state this section forbids, produced by a check-then-act. So the flavour of
+`PENDING` a rejection is authorised against travels into the guarded
+`updateMany` itself (`DeletionRequestRejectionOrigin`): an unconfirmed rejection
+guards on `reviewedAt: null` and a confirmed reject-after-release on
+`reviewedAt: { not: null }`. The two shapes partition `PENDING` exactly, so a
+rejection can only ever win the flavour it was authorised against, and the loser
+gets the 409 below and decides the reloaded, warned row instead. Forced against
+real PostgreSQL — a claim-and-release holding the row while the unwarned
+rejection blocks on it, then matches nothing — in
+`adult-member-hosting-queue-merge.realdb.test.ts`.
+
+### INV-LOCKOUT-051
+
+**The release and its audit record commit together.** The transition nulls the
+claim's own attribution, so the `member.deletion_approval_claim_released` entry
+is the only surviving record of who held it — which rules out the
+fire-and-forget `logAudit`. The release takes the row `FOR UPDATE`, reads the
+previous holder and note through the Prisma model under that lock (so an ABA
+interleaving cannot record a holder that was never displaced), performs the
+guarded transition, and the route writes that audit row with the awaited
+`createAuditLog` on the same transaction client. A failed insert rolls the
+release back: the operator is told it failed and the claim is still there to
+release again. The release is also the one transition whose first statement is
+designed to block, so its transaction runs with an explicit budget larger than
+the anonymisation transaction it may be waiting behind (`maxWait` 10s /
+`timeout` 15s) and an exhausted wait is answered
+`DELETION_REQUEST_RELEASE_CONTENDED` (503, `retryAllowed: true`) rather than a
+bare 500 — see `docs/CONCURRENCY_AND_LOCKING.md`.
+
+### INV-LOCKOUT-052
+
+**A decision that loses its guard to a release is reported as that.**
+`PENDING` is reachable when a decision claim matches zero rows, and it is the
+one state that is known exactly, so the route answers
+`DELETION_REQUEST_APPROVAL_RELEASED` (409, `retryAllowed: false`,
+`decisionFinal: false`) with the cancellations that did commit — never
+`DELETION_REQUEST_DECISION_STATUS_UNCONFIRMED`, whose "its final state could not
+be confirmed … do not retry" would durably disable a row the admin can and
+should decide again. Both losers land there: an approval finalising from a claim
+that has since been released, and an unconfirmed rejection the strict guard
+above refused.
+
+### INV-LOCKOUT-053
 
 - **recalculate** — the existing full-reprice machinery with the locked-period
   clamps lifted, so locked-night pricing semantics are otherwise preserved
@@ -791,6 +820,9 @@ The rules are:
   until its author states which it is. For a concrete booking the context also
   names the recipient category (an explicit member id, public/non-login, or
   aggregate operator), so address matching can never stand in for authority.
+
+### INV-LOCKOUT-054
+
 - **Authenticated booking links follow the booking-detail read gate (#2362).**
   A concrete booking email receives the canonical, encoded
   `/bookings/<booking-id>` URL only when the recipient is active, can sign in,
@@ -801,18 +833,30 @@ The rules are:
   reports, unrelated members, failed authority reads, and templates outside the
   live booking-scoped inventory receive no authenticated booking URL. Bearer
   payment, quote, consent, and response links stay distinct and unchanged.
+
+### INV-LOCKOUT-055
+
 - **Admin-audience mail is never withheld.** The registry's
   `EmailTemplateDefinition.audience` is the authority, so admin/system alerts
   (payment failure, duplicate-capture refund, and the rest) still reach an
   operator even when the booking is silenced.
+
+### INV-LOCKOUT-056
+
 - **The read fails CLOSED.** Unlike the SES bounce check, which deliberately
   fails open, an unreadable switch withholds the send: the mailer records the
   row FAILED (so the retry cron re-evaluates it) and transmits nothing.
+
+### INV-LOCKOUT-057
+
 - **Every withhold is auditable.** The withheld send is written as an `EmailLog`
   row with status `SKIPPED_NO_EMAILS` and the booking's `bookingId`, with no
   retained body — so the booking page can list exactly what was held back
   (#2259), and the retry cron cannot replay it (its query requires a retained
   body, and the status is terminal).
+
+### INV-LOCKOUT-058
+
 - **The retry cron re-evaluates before every replay.** A `FAILED` row can
   predate the moment the switch was turned on, so `cron-email-retry.ts` re-reads
   it from the row's `bookingId` and fails closed the same way. It also repeats
@@ -826,6 +870,9 @@ The rules are:
   without sending. New booking retry bodies live only in the authority-aware
   `bookingRetryHtmlBody` column; legacy `htmlBody` stays null so an application
   rollback to the pre-#2362 worker cannot replay them without these checks.
+
+### INV-LOCKOUT-059
+
 - **Waitlist candidacy excludes a silenced booking.**
   `processWaitlistForDates` filters on `noEmails: false`, so no NEW offer is
   made to a silenced entry and, in the ordinary case, no offer clock starts for
@@ -849,12 +896,18 @@ The rules are:
   already lapsed is the benign `suppressed` state and needs no action. A
   silenced entry that is still `WAITLISTED` produces no EmailLog row at all, so
   the board marks it from the flag ("silenced — will not be offered").
+
+### INV-LOCKOUT-060
+
 - **A silenced waitlist entry keeps its place in the queue.** It is skipped for
   offers but is NOT removed, and it still counts toward the position quoted to
   the members behind it — the position numbers other members see are unchanged
   by anyone's switch. (Deliberate: position is member-visible, and silently
   re-numbering a queue because of an internal admin setting would be a worse
   surprise than a stalled entry an officer can see and fix.)
+
+### INV-LOCKOUT-061
+
 - **Xero-sent invoice emails are gated too, which SUPERSEDES the #1705 carve-out
   above for this switch only.** #1705 decided the Internet Banking invoice email
   is outside the per-action `notifyMember` choice and always sent. D10 says the
@@ -876,6 +929,9 @@ The rules are:
   the organiser's own booking and on nothing else — a joiner's switch does not
   suppress the organiser's bill, and each joiner's own group emails are gated on
   that joiner's child booking.
+
+### INV-LOCKOUT-062
+
 - **Setting it requires an acknowledgement.** `POST
   /api/admin/bookings/[id]/no-emails` is admin-only (403 otherwise) and refuses
   an enable without `acknowledged: true` (400, nothing written). Both set and
@@ -883,6 +939,9 @@ The rules are:
   when, mirroring the `wholeLodgeHold` audit columns. Clearing needs no
   acknowledgement — a stuck switch must always be clearable — and does **not**
   re-send anything withheld while it was on.
+
+### INV-LOCKOUT-063
+
 - **The acknowledgement is a real admin decision, not just a request field
   (#2259).** The control lives in the Admin tools card on the booking detail
   page and is gated on `bookings:edit`. Turning it on opens a two-button dialog
@@ -892,6 +951,9 @@ The rules are:
   member directly. It is deliberately **not** a checkbox: a checkbox is missable
   and the consequence is a member who is never told their booking was cancelled.
   Nothing is written until the dialog is answered.
+
+### INV-LOCKOUT-064
+
 - **The booking carries a persistent warning listing what was ACTUALLY withheld
   (#2259).** Read from the `SKIPPED_NO_EMAILS` audit rows, not a fixed sentence:
   the admin has to know WHICH messages the member never received in order to
@@ -942,6 +1004,9 @@ The rules are:
   structurally absent from it: a send that failed closed on an unreadable
   switch, a withheld send whose own `EmailLog` write failed, and rows queued
   before the feature shipped.
+
+### INV-LOCKOUT-065
+
 - **Two consequences are stated in the acknowledgement dialog because nothing
   can record them.** A **live waitlist offer** can only PREDATE the switch
   (candidacy exclusion prevents new ones), so its offer email already went out:
@@ -955,6 +1020,9 @@ The rules are:
   repeats it, and "waitlist offers" is deliberately absent from the banner's
   withheld-categories sentence, which would otherwise imply an offer was made
   and only its email held back.
+
+### INV-LOCKOUT-066
+
 - **A member must never learn the switch exists.** The booking detail page
   serves members and admins from one file, so the control, the banner, and every
   `noEmails` value the page produces sit behind the page's admin predicate — and
@@ -962,6 +1030,9 @@ The rules are:
   insufficient: a prop threaded unconditionally is serialised into the RSC
   payload, so the switch would be readable off the wire with nothing drawing it.
   `booking-no-emails-ui-contract.test.ts` enforces both over the AST.
+
+### INV-LOCKOUT-067
+
 - **The per-action `notifyMember` prompts are not offered while the switch is
   on (#2259 honesty rule).** The rule behind that prompt family (#1769a) is that
   an admin is only asked a question the system will honour; with the switch on
@@ -972,6 +1043,9 @@ The rules are:
   review queue, the waitlist force-confirm, and the refund-appeal review. The
   same contract test asserts the closed world — a new prompt must be classified
   booking-bound or not, with its reason, rather than silently escaping the rule.
+
+### INV-LOCKOUT-068
+
 - **The silenced path sends NO `notifyMember` flag, never `false`.** This is a
   correctness requirement, not a style choice, and the contract test enforces
   it. `notifyMember: false` tells the ROUTE not to send at all, so the mailer's
@@ -1157,7 +1231,7 @@ helpers so the surfaces can never drift):
   amount-only test reads a cancelled booking as still owing. `PAYMENT_PENDING`
   is deliberately excluded so the two queue counts can be summed without
   double-counting a booking — a narrowing for counting, NOT a claim that such a
-  delta is uncollectable (see "Who may pay one" below [INV-ADDPAY-001]). Deep link:
+  delta is uncollectable (see "Who may pay one" below [INV-ADDPAY-023]). Deep link:
   `/admin/bookings?additionalOwed=owed&checkOutTo=<today>` via the bookings
   list's `additionalOwed` filter (AND-composed, so explicit status/date
   filters in the same URL still narrow).

@@ -1146,6 +1146,46 @@ publishes the exception TOTAL only), in
 `CHANGELOG.md` and in the `ViewOnlyActionButton` JSDoc all need updating
 together.
 
+**Banner or Notice: which component states the reason.** Two components are
+live here and they are not two names for one thing, which is why both appear in
+this page and in `AGENTS.md`. Since #2160 the **`AdminViewOnlySectionBanner` is
+the default for the admin tree**: a section that gates controls through
+`ViewOnlyActionButton` heads them with one banner and passes
+`describeReason={false}`, so the reason is stated once, in the reading order,
+ahead of the controls. `AdminViewOnlyNotice` — the older, per-section notice —
+is **retained deliberately in three cases**, and a developer who deletes one on
+sight removes an explanation nothing else gives:
+
+- **A surface that states view-only access WITHOUT gating a control through
+  `ViewOnlyActionButton`.** With no gated control there is nothing for the
+  banner to head.
+- **A section whose Notice is CONDITIONAL on no ancestor covering it.**
+  `member-lodge-access-card`, `member-committee-assignments-card` and
+  `member-seasonal-membership-card` each render their Notice only when
+  `ancestorRendersViewOnlyBanner` is false (#2168), so the member detail page —
+  which banners the whole page — sees no Notice, while the same card rendered
+  anywhere else still states the reason itself. The lodge-access Notice also
+  covers disabled CHECKBOXES, which are not `ViewOnlyActionButton`s and which no
+  banner rule reaches; that is why it is kept rather than deleted.
+- **A NARROWER permission scope nested inside a section the banner already
+  heads.** The banner states the section's own scope once at the top; a Notice
+  further down carries a DIFFERENT permission's reason for a subset of the
+  controls, so the two are not the same statement and the Notice is not
+  redundant. `fees/_components/hut-fees-section.tsx` (finance inside a lodge
+  section) and `subscription-lockout-settings-panel.tsx` (finance-scoped account
+  and item codes inside a membership section) both do this deliberately, and
+  both render banner AND Notice AND gated buttons.
+
+So "a section with gated controls replaces its Notice with the banner" holds
+only for a Notice covering the SAME scope. Before deleting a Notice from a
+section that has a banner, check which permission its text names — if it is not
+the banner's, it is carrying a reason nothing else states. The nesting rule
+further down is banner-to-banner and does not forbid the third case: a Notice
+under a banner is not the same sentence twice. This distinction is also stated
+next to the code, in `AdminViewOnlySectionBanner`'s JSDoc in
+`src/components/admin/view-only-action.tsx`, which is where a developer meets it
+while writing; the two are the same rule and must be changed together.
+
 **Vouching for a child's coverage (#2168).** The coverage rule below is asserted
 per FILE, which the member detail page cannot satisfy: the owner's decision is
 ONE banner for that page, so the banner is in `page.tsx` and the opt-outs are in
@@ -1330,9 +1370,9 @@ once, in the reading order. Both were also keyed off `!canEdit` rather than
 `canEdit === false`, so both appeared for a moment even for an admin who *can*
 change those settings. Both are deleted; the vouched buttons under them now lean
 on the banner. That is the general rule from #2160's `AdminViewOnlyNotice`
-guidance applied to a wizard step: keep a second sentence only when it names a
-DIFFERENT permission from the banner's (which is exactly what the nine
-exceptions above do).
+guidance — stated above under *Banner or Notice* — applied to a wizard step: keep
+a second sentence only when it names a DIFFERENT permission from the banner's
+(which is exactly what the nine exceptions above do).
 
 Two things were deliberately left alone. `xero/_components/connection-status-panel.tsx`'s
 connect / reconnect / disconnect buttons ARE finance-gated, matching the Xero

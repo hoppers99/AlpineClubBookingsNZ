@@ -156,14 +156,24 @@ The `INV-` namespace is kept anyway, with three load-bearing consequences:
 
 ### 1.5 Prefix ↔ file
 
-> **A prefix lives in exactly one file. A file may host more than one prefix.**
+> **A prefix normally lives in one file, and a file may host more than one
+> prefix. The index, never the prefix, is authoritative for ID → file.**
 
 One-to-many in that direction only. `INV-DATE` and `INV-CAP` share
 [`booking-dates-and-capacity.md`](booking-dates-and-capacity.md) because their
 rules refer to each other positionally ("the stay-boundary invariant above"), and
-splitting them would require editing navigational prose (§4). Splitting a
-*prefix* across two files is never done, because the whole point of a prefix is
+splitting them would require editing navigational prose (§4). A prefix is never
+*deliberately* split across two files, because the whole point of a prefix is
 that "load `INV-CAP`" is a single file read.
+
+**A re-home outranks that, and cannot be tidied away.** A rule that moves file
+keeps its number *and* its prefix (§1.4), so re-homing one ID out of its
+prefix's file leaves that prefix spanning two files, and the no-renumber rule
+leaves no way back. #2706 re-homed `INV-LIFE-062` into
+[`booking-dates-and-capacity.md`](booking-dates-and-capacity.md), so `INV-LIFE`
+spans two files today. That is the rules working rather than a defect to undo:
+a prefix is a key, not a description (§1.2), and the index names the file for
+every ID, so "where does this one live?" is still a single lookup.
 
 ---
 
@@ -184,13 +194,15 @@ block starts at:
 
 Headings and blank lines start no block; they are structure.
 
-**Blocks are never split mid-bullet.** A 149-line bullet gets one ID (see
-`INV-CAP-010`). Splitting it would mean inserting a heading inside a list item,
-which breaks the list, re-indents the prose, and forces every line to be
+**Blocks are never split mid-bullet — inside a transcription.** A 149-line
+bullet gets one ID. Splitting it would mean inserting a heading inside a list
+item, which breaks the list, re-indents the prose, and forces every line to be
 re-wrapped — precisely the churn that hides a changed word. Where a block is
 uncomfortably large, that is recorded as a candidate for a *later, separate*
-issue, which can split it into new IDs without renumbering anything (§1.4). The
-coarse blocks known today are listed in [`_FOLLOW_UPS.md`](_FOLLOW_UPS.md) §1.
+issue, which can split it into new IDs without renumbering anything (§1.4). That
+issue was #2706, which split the ten coarse blocks the restructure left; the two
+splits it declined, because they could not be made without re-wrapping, are named
+in [`_FOLLOW_UPS.md`](_FOLLOW_UPS.md) §1.
 
 ### 2.1 Normative versus non-normative
 
@@ -350,7 +362,7 @@ the sweep.
 
 ## 5. The files
 
-15 files in this directory, 16 prefixes, 360 IDs, plus this scheme and
+15 files in this directory, 16 prefixes, 467 IDs, plus this scheme and
 [`_FOLLOW_UPS.md`](_FOLLOW_UPS.md).
 
 **The index is authoritative for prefix → file and ID → file**, and it is the
@@ -376,13 +388,14 @@ Two consequences a reader will notice:
   bodies now has its own file and prefix, but they are all still listed under
   that one `##` heading in the index, which is what keeps the pre-split anchors
   resolving.
-- **Two section headings stop describing their content partway through**, and
-  moved verbatim anyway. Each file's front matter and prefix describe what is
-  actually in the file; only the transcribed section headings still carry the
-  narrow titles.
+- **Two section headings stopped describing their content partway through**, and
+  moved verbatim anyway, because heading text never changes inside a
+  transcription (§3). Each file's front matter and prefix already described what
+  was actually in the file; #2707 widened the two headings to match, in its own
+  reviewable change.
 
-Both are recorded in [`_FOLLOW_UPS.md`](_FOLLOW_UPS.md) (§5, §6) and filed as
-issues. Re-homing a block later costs nothing and breaks no citation, because
+Both are recorded in [`_FOLLOW_UPS.md`](_FOLLOW_UPS.md) (§5, §6), where they are
+now closed. Re-homing a block later costs nothing and breaks no citation, because
 IDs are location-independent (§1.4).
 
 The two largest files — `membership-lifecycle.md` (65 IDs) and
@@ -591,8 +604,9 @@ rename.
 The restructure found defects in the rule text itself — coarse blocks, a
 citation to an identifier defined nowhere, a navigation pointer that points the
 wrong way, near-duplicate rules, blocks in the wrong file, and passages the text
-itself does not consider settled. **None were fixed in the move, and all are
-filed as issues.**
+itself does not consider settled. **None were fixed in the move, and all were
+filed as issues**; [`_FOLLOW_UPS.md`](_FOLLOW_UPS.md) records which are now
+closed and which are still outstanding.
 
 They are listed in [`_FOLLOW_UPS.md`](_FOLLOW_UPS.md), which is a register of
 filed work rather than a rule: nothing in it is normative and nothing in it has
