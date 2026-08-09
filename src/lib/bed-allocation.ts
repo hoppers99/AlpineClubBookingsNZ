@@ -1,10 +1,10 @@
 import type { AgeTier } from "@prisma/client";
 import {
   addDaysDateOnly,
-  eachDateOnlyInRange,
   formatDateOnly,
   parseDateOnly,
 } from "@/lib/date-only";
+import { expandStayEnvelopeToNightKeys } from "@/lib/booking-guest-stay-ranges";
 import {
   BED_ALLOCATION_PRIORITY_VOCABULARY,
   parseBedAllocationPriorityOrder,
@@ -348,11 +348,31 @@ function roomsForBooking(
   return roomsAtLodge(rooms, booking.lodgeId);
 }
 
+/**
+ * The nights one planner guest entry demands a bed on.
+ *
+ * TWO THINGS HERE ARE LOAD-BEARING AND NEITHER IS OBVIOUS FROM THE CALL SITE.
+ *
+ * 1. `guest.nights !== undefined` — an explicitly EMPTY list means "this entry
+ *    demands nothing", not "fall back to the envelope". Both real callers build
+ *    their entries from `BookingGuestNight` rows, so a guest with no rows must
+ *    contribute no demand; falling back would have the planner place a guest the
+ *    lifecycle then sweeps straight back off the board. That is why this is not
+ *    `getGuestBedNightKeys`, whose empty-set branch is the envelope.
+ *
+ * 2. The envelope branch is HALF-OPEN, and must stay half-open. This function is
+ *    fed ONE PSEUDO-GUEST PER NIGHT — `candidateGuestBookings` in
+ *    `admin-bed-allocation.ts` emits `stayStart = night`, `stayEnd = night + 1`
+ *    for every unallocated guest-night. An inclusive envelope gives each of them
+ *    a phantom second night and the planner claims the morning-after bed, which
+ *    is a double booking (#2628). `expandStayEnvelopeToNightKeys` is the single
+ *    definition of that expansion and says the same thing at greater length.
+ */
 function guestStayNights(guest: BedAllocationGuest): string[] {
   if (guest.nights !== undefined) {
     return [...new Set(guest.nights.map(normalizeStayDate))].sort();
   }
-  return eachDateOnlyInRange(guest.stayStart, guest.stayEnd).map(formatDateOnly);
+  return expandStayEnvelopeToNightKeys(guest.stayStart, guest.stayEnd);
 }
 
 export function isAdultAgeTier(ageTier?: BedAllocationAgeTier | null): boolean {

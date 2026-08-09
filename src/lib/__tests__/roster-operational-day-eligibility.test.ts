@@ -527,6 +527,15 @@ describe("hut-leader roster wizard reaches the generate step (#2622)", () => {
             stayStart: day("2026-07-11"),
             stayEnd: DATE,
             member: null,
+            // #2628: the route loads the night rows and decides from them, so
+            // the fixture has to carry them or it only ever exercises the old
+            // envelope fallback. Two nights, the 11th and the 12th — exactly
+            // what the half-open envelope above describes — so the 13th is the
+            // departure morning this case is about.
+            nights: [
+              { stayDate: day("2026-07-11") },
+              { stayDate: day("2026-07-12") },
+            ],
           },
         ],
       },
@@ -545,9 +554,9 @@ describe("hut-leader roster wizard reaches the generate step (#2622)", () => {
       id: "leaving",
       isDeparting: true,
       isArriving: false,
-      // Their last night was the 12th and `stayEnd` is the 13th, so this is
-      // also the one morning the depart endpoint will accept.
-      isFinalDeparture: true,
+      // Their last night was the 12th, so the 13th is a departure morning and
+      // the depart endpoint will accept a check-out here.
+      canMarkDeparted: true,
     });
   });
 
@@ -609,29 +618,103 @@ describe("hut-leader roster wizard reaches the generate step (#2622)", () => {
     expect(await guestsOn("2026-07-11")).toMatchObject({
       isArriving: true,
       isDeparting: false,
-      isFinalDeparture: false,
+      canMarkDeparted: false,
+      canMarkArrived: true,
     });
-    // THE INTERMEDIATE DEPARTURE MORNING. They really do leave today — the
-    // badge is right — but `stayEnd` is the 15th, so the depart endpoint
-    // (`stayEnd` equality, fenced) can never accept a check-out on the 12th.
-    // The flag the kiosk's button reads therefore stays false here.
+    // THE INTERMEDIATE DEPARTURE MORNING. They really do leave today, and
+    // since #2628 the depart endpoint accepts a check-out here too — it reads
+    // departure mornings per SEGMENT instead of `stayEnd` equality. Before
+    // that this check-out was simply unrecordable.
     expect(await guestsOn("2026-07-12")).toMatchObject({
       isArriving: false,
       isDeparting: true,
-      isFinalDeparture: false,
+      canMarkDeparted: true,
+      canMarkArrived: false,
     });
     // The gap day: nobody at all, and therefore no booking card either.
     expect(await guestsOn("2026-07-13")).toBeNull();
     expect(await guestsOn("2026-07-14")).toMatchObject({
       isArriving: true,
       isDeparting: false,
-      isFinalDeparture: false,
+      canMarkDeparted: false,
+      canMarkArrived: true,
     });
-    // The FINAL departure morning: both flags, and the button appears.
+    // The final departure morning: both flags, and the button appears.
     expect(await guestsOn("2026-07-15")).toMatchObject({
       isArriving: false,
       isDeparting: true,
-      isFinalDeparture: true,
+      canMarkDeparted: true,
+      canMarkArrived: false,
+    });
+  });
+
+  it("still offers check-in on a return, after the first check-out was recorded", async () => {
+    // #2628, the other half of accepting an intermediate departure. Once the
+    // hut leader records the 12th's check-out, `departedAt` is set — and it is
+    // ONE column for the whole stay, so on the 14th the kiosk's old
+    // `isArriving && !departedAt` rule hid the check-in button, while the
+    // check-out button was correctly absent (not a departure morning). The row
+    // had no control on it at all, on a night the guest sleeps at the lodge.
+    const departed = {
+      id: "sparse",
+      firstName: "Sam",
+      lastName: "Sparse",
+      ageTier: "ADULT",
+      isMember: false,
+      arrivedAt: day("2026-07-11"),
+      departedAt: day("2026-07-12"),
+      stayStart: day("2026-07-11"),
+      stayEnd: day("2026-07-15"),
+      member: null,
+      nights: [{ stayDate: day("2026-07-11") }, { stayDate: day("2026-07-14") }],
+    };
+
+    async function guestOn(date: string, guest: Record<string, unknown>) {
+      vi.clearAllMocks();
+      lodgeAuthMocks.checkLodgeAuth.mockResolvedValue({ tier: "hut-leader" });
+      lodgeAuthMocks.resolveKioskLodgeId.mockResolvedValue("lodge-1");
+      mockPrisma.booking.findMany.mockResolvedValue([
+        {
+          id: "booking-1",
+          checkIn: day("2026-07-11"),
+          checkOut: day("2026-07-15"),
+          expectedArrivalTime: null,
+          member: { firstName: "Bev", lastName: "Booker" },
+          guests: [guest],
+        },
+      ]);
+      const { GET } = await import("@/app/api/lodge/guests/[date]/route");
+      const response = await GET(
+        new Request(`http://localhost/api/lodge/guests/${date}`) as never,
+        { params: Promise.resolve({ date }) } as never,
+      );
+      const body = await response.json();
+      return body.bookings[0]?.guests[0] ?? null;
+    }
+
+    expect(await guestOn("2026-07-14", departed)).toMatchObject({
+      isArriving: true,
+      canMarkArrived: true,
+      canMarkDeparted: false,
+    });
+
+    // The rule that keeps every ORDINARY booking where it was: a contiguous
+    // stay has one departure morning and it follows every night, so a recorded
+    // departure still suppresses check-in exactly as it always has.
+    const contiguousDeparted = {
+      ...departed,
+      departedAt: day("2026-07-11"),
+      nights: [
+        { stayDate: day("2026-07-11") },
+        { stayDate: day("2026-07-12") },
+        { stayDate: day("2026-07-13") },
+        { stayDate: day("2026-07-14") },
+      ],
+    };
+    expect(await guestOn("2026-07-11", contiguousDeparted)).toMatchObject({
+      isArriving: true,
+      canMarkArrived: false,
+      canMarkDeparted: false,
     });
   });
 });

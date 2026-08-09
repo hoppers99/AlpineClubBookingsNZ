@@ -4,7 +4,10 @@ import { lodgeNullTolerantScope } from "@/lib/lodges";
 import { checkinNotBlockedByPendingReviewFilter } from "@/lib/booking-review";
 import { OPERATIONALLY_PRESENT_GUEST_WHERE } from "@/lib/member-guest-consent";
 import type { Prisma } from "@prisma/client";
-import { isGuestOperationallyPresentOnDay } from "@/lib/booking-guest-stay-ranges";
+import {
+  isGuestDepartureMorning,
+  isGuestOperationallyPresentOnDay,
+} from "@/lib/booking-guest-stay-ranges";
 
 // PRE-EXISTING DIVERGENCE, PRESERVED ON PURPOSE (#2622): this alias is a
 // separate name for the same list as `OPERATIONAL_STAY_BOOKING_STATUSES`, and
@@ -16,12 +19,23 @@ export const LODGE_VISIBLE_BOOKING_STATUSES = [
 ] as const;
 
 // THE ARRIVE/DEPART ASYMMETRY IS DELIBERATE AND #2622 LEFT IT ALONE.
-// `findLodgeGuestForDate` (arrive) stays NIGHT-only: you can only mark someone
-// arrived for a night they are actually sleeping. `findLodgeGuestDepartingOnDate`
-// (depart) stays pinned to the EXACT departure date: you leave on one specific
-// day, not on any day you happen to be present. Neither is the roster's
-// operational-day question — "was this person in the building this morning?" —
-// so neither moved to the operational-day rule. Do not "unify" them.
+// `findLodgeGuestForDate` (arrive) stays NIGHT-scoped: you can only mark someone
+// arrived for a night they are sleeping, never for the morning they drive home.
+// `findLodgeGuestDepartingOnDate` (depart) stays pinned to a DEPARTURE MORNING:
+// you leave on a specific day, not on any day you happen to be present. #2628
+// changed how many such mornings there are — a sparse stay has ONE PER SEGMENT,
+// not one per stay — and nothing else about the rule. Neither lookup is the
+// roster's operational-day question — "was this person in the building this
+// morning?" — so neither moved to the operational-day rule. Do not "unify" them.
+//
+// PRECISION, so this comment does not over-claim (#2628 review): the arrive
+// lookup's night scope is the SQL ENVELOPE, `[stayStart, stayEnd)`. That is the
+// night set exactly for a contiguous stay, and a superset of it for a sparse
+// one — the internal gap nights are inside the envelope, so the endpoint would
+// accept a check-in on a night the guest is at home. No kiosk surface offers it
+// (`canMarkArrived` is the night-set rule), and closing the gap needs a fixture
+// pass across every suite that mocks this lookup, so it is #2737 rather than a
+// line here. The depart lookup below is the shape that fix takes.
 //
 // lodgeId is optional so existing (pre-phase-5) callers keep club-wide
 // behaviour; kiosk routes pass the resolved lodge to scope the lookup
@@ -62,26 +76,54 @@ export async function findLodgeGuestForDate(
       memberId: true,
       arrivedAt: true,
       departedAt: true,
+      // #2628: the arrive endpoint has to be able to tell a RETURN from a first
+      // arrival, because `arrivedAt`/`departedAt` is one attendance pair for the
+      // whole stay. A guest booked on nights {11, 14} arrives on the 14th
+      // against a record that still says "departed" from the 12th, and only the
+      // night set says which of those two a given date is.
+      stayStart: true,
+      stayEnd: true,
+      nights: { select: { stayDate: true } },
       booking: {
         select: {
           memberId: true,
+          checkIn: true,
+          checkOut: true,
         },
       },
     },
   });
 }
 
+/**
+ * The guest who may be marked departed on exactly this date.
+ *
+ * Still the narrow "you leave on one specific day" rule of the comment above —
+ * it is NOT the roster's "was this person in the building this morning?". What
+ * changed in #2628 is that a stay can have MORE THAN ONE departure day. The
+ * query used to be keyed `stayEnd: date`, and `stayEnd` is the morning after the
+ * guest's LAST night, so a guest booked on nights {10, 12} could only ever be
+ * marked departed on the 13th — the officer had no way to record that they left
+ * on the 11th and came back on the 12th.
+ *
+ * So the SQL filter is now the coarse envelope (which must contain any departure
+ * morning) and the authoritative decision is `isGuestDepartureMorning` applied
+ * to the loaded night rows — the same load-coarse-then-decide-in-code shape
+ * `validateRosterAllocationsForDate` uses below. For a contiguous stay the two
+ * are the same date, and for a guest carrying no night rows the helper falls
+ * back to the envelope and yields `stayEnd` alone, so neither case moves.
+ */
 export async function findLodgeGuestDepartingOnDate(
   bookingGuestId: string,
   date: Date,
   lodgeId?: string,
   db: Prisma.TransactionClient | typeof prisma = prisma,
 ) {
-  return db.bookingGuest.findFirst({
+  const guest = await db.bookingGuest.findFirst({
     where: {
       id: bookingGuestId,
       stayStart: { lte: date },
-      stayEnd: date,
+      stayEnd: { gte: date },
       // D-12 (#2307): the depart endpoint gets the same treatment as arrive —
       // an unconsented guest resolves to null and the endpoint 404s.
       ...OPERATIONALLY_PRESENT_GUEST_WHERE,
@@ -104,13 +146,23 @@ export async function findLodgeGuestDepartingOnDate(
       memberId: true,
       arrivedAt: true,
       departedAt: true,
+      stayStart: true,
+      stayEnd: true,
+      nights: { select: { stayDate: true } },
       booking: {
         select: {
           memberId: true,
+          checkIn: true,
+          checkOut: true,
         },
       },
     },
   });
+
+  if (!guest || !isGuestDepartureMorning(guest, date, guest.booking)) {
+    return null;
+  }
+  return guest;
 }
 
 /**

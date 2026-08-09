@@ -676,9 +676,17 @@ async function loadBookingForBedAllocation(
 }
 
 /**
- * The dates a guest actually stays within a date range (issue #713). Uses the
- * explicit night set when present; otherwise the contiguous stayStart/stayEnd
- * range clamped to the range — the pre-#713 behaviour.
+ * The dates a guest actually stays within a date range (issue #713).
+ *
+ * Reads the explicit `BookingGuestNight` set and NOTHING ELSE. There is no
+ * envelope fallback — the docstring used to promise one and the body never had
+ * it (#2628) — and adding one now would be a behaviour change, not a fix: this
+ * feeds both the auto-placement demand AND `pruneAllocationsForBooking`'s diff,
+ * so a guest with no night rows must contribute no nights on both sides or the
+ * lifecycle would place rows it then immediately sweeps back off.
+ * `getExplicitGuestBedNightKeys` is the same rule in the canonical helper
+ * module; this one stays on `Date` values because its callers key Prisma
+ * `stayDate` filters off them.
  */
 function getGuestNightDatesInRange(
   guest: { stayStart: Date; stayEnd: Date; nights?: { stayDate: Date }[] },
@@ -1660,11 +1668,14 @@ export async function reconcileBedAllocationsForBooking(
 // Placement-time eligibility (mayShareDoubleBed) blocks NEW second occupants
 // once a partner link dissolves or a member stops being an active adult, but
 // rows placed while the pair qualified used to outlive those events. This
-// sweep removes the affected pair's FUTURE (tonight onwards, NZ date-only —
-// the same `stayDate >= getTodayDateOnly()` window as the bed deactivate
-// guard) shared-double second-occupant rows, returning those guest-nights to
-// the awaiting-allocation queue; past lodge nights are history and stay
-// untouched. Only the `isSecondOccupant=true` row is ever deleted — the
+// sweep removes the affected pair's FUTURE (tonight onwards, NZ date-only)
+// shared-double second-occupant rows, returning those guest-nights to the
+// awaiting-allocation queue; past lodge nights are history and stay untouched.
+// That window is deliberately NARROWER than the bed deactivate guard's, which
+// #2628 widened to `getEarliestCurrentBedNightDate()` — last night onwards —
+// because a guard REFUSES and must remember this morning's occupant, while this
+// sweep DELETES and must not touch a night that has already been slept
+// (INV-DATE-020, INV-CAP-010). Do not "align" the two. Only the `isSecondOccupant=true` row is ever deleted — the
 // primary keeps their bed — so the sweep can never orphan a partner and needs
 // no promotion pass (contrast the #1750 primary-removal paths). Callers run it
 // on the same transaction as the event that broke the pair (link delete /

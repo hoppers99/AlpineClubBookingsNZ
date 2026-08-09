@@ -125,6 +125,15 @@ const ORDINARY = { consentStatus: null };
 const AGREED = { consentStatus: "CONFIRMED" };
 const AWAITING = { consentStatus: "PENDING" };
 
+// #2628: the night rows for the stay every fixture in this file uses — the
+// 10th and the 11th, which is exactly what the 10th-to-12th half-open envelope
+// always described. These surfaces load the rows and count from them, so a
+// fixture without them would quietly go on testing the envelope fallback.
+const NIGHTS_10_11 = [
+  { stayDate: dateOnly("2026-07-10") },
+  { stayDate: dateOnly("2026-07-11") },
+];
+
 beforeEach(() => {
   vi.clearAllMocks();
   lodgeAuthMocks.checkLodgeAuth.mockResolvedValue({ tier: "lodge" });
@@ -164,6 +173,10 @@ describe("kiosk arrivals list (D-12)", () => {
       member: null,
       stayStart: dateOnly("2026-07-10"),
       stayEnd: dateOnly("2026-07-12"),
+      // #2628: the arrivals route decides presence from the night rows it
+      // always loads, so the fixture carries them rather than leaning on the
+      // envelope fallback.
+      nights: NIGHTS_10_11,
       ...consent,
     };
   }
@@ -284,7 +297,16 @@ describe("kiosk arrive/depart/roster-confirm enforcement (D-12)", () => {
       memberId: null,
       arrivedAt: null,
       departedAt: null,
-      booking: { memberId: "member-1" },
+      // #2628: the arrive lookup now loads the stay bounds, the night rows and
+      // the booking dates, so the double carries what the real row would.
+      stayStart: dateOnly("2026-07-10"),
+      stayEnd: dateOnly("2026-07-12"),
+      nights: NIGHTS_10_11,
+      booking: {
+        memberId: "member-1",
+        checkIn: dateOnly("2026-07-10"),
+        checkOut: dateOnly("2026-07-12"),
+      },
     });
 
     const found = await findLodgeGuestForDate("guest-1", dateOnly("2026-07-10"));
@@ -336,10 +358,14 @@ describe("chore roster print sheet (D-12)", () => {
           id: "booking-1",
           checkIn: dateOnly("2026-07-10"),
           checkOut: dateOnly("2026-07-12"),
+          // #2628: the print sheet counts off the night rows it loads, so each
+          // guest lists the two nights its envelope describes — the 10th and
+          // the 11th. The headcount is unchanged; only the branch it comes
+          // from is.
           guests: applyGuestWhere(typed.include.guests.where, [
-            { id: "g-ordinary", stayStart: dateOnly("2026-07-10"), stayEnd: dateOnly("2026-07-12"), nights: [], ...ORDINARY },
-            { id: "g-agreed", stayStart: dateOnly("2026-07-10"), stayEnd: dateOnly("2026-07-12"), nights: [], ...AGREED },
-            { id: "g-awaiting", stayStart: dateOnly("2026-07-10"), stayEnd: dateOnly("2026-07-12"), nights: [], ...AWAITING },
+            { id: "g-ordinary", stayStart: dateOnly("2026-07-10"), stayEnd: dateOnly("2026-07-12"), nights: NIGHTS_10_11, ...ORDINARY },
+            { id: "g-agreed", stayStart: dateOnly("2026-07-10"), stayEnd: dateOnly("2026-07-12"), nights: NIGHTS_10_11, ...AGREED },
+            { id: "g-awaiting", stayStart: dateOnly("2026-07-10"), stayEnd: dateOnly("2026-07-12"), nights: NIGHTS_10_11, ...AWAITING },
           ]),
         },
       ];
@@ -381,10 +407,13 @@ describe("lodge week summary (D-12)", () => {
           id: "booking-1",
           checkIn: dateOnly("2026-07-10"),
           checkOut: dateOnly("2026-07-12"),
+          // #2628: the week route counts off the night rows it loads, so each
+          // guest carries them. Everyone's first night is the 10th, so the
+          // arriving count for that day is unchanged.
           guests: applyGuestWhere(typed.select.guests.where, [
-            { stayStart: dateOnly("2026-07-10"), stayEnd: dateOnly("2026-07-12"), ageTier: "ADULT", nights: [], ...ORDINARY },
-            { stayStart: dateOnly("2026-07-10"), stayEnd: dateOnly("2026-07-12"), ageTier: "ADULT", nights: [], ...AGREED },
-            { stayStart: dateOnly("2026-07-10"), stayEnd: dateOnly("2026-07-12"), ageTier: "ADULT", nights: [], ...AWAITING },
+            { stayStart: dateOnly("2026-07-10"), stayEnd: dateOnly("2026-07-12"), ageTier: "ADULT", nights: NIGHTS_10_11, ...ORDINARY },
+            { stayStart: dateOnly("2026-07-10"), stayEnd: dateOnly("2026-07-12"), ageTier: "ADULT", nights: NIGHTS_10_11, ...AGREED },
+            { stayStart: dateOnly("2026-07-10"), stayEnd: dateOnly("2026-07-12"), ageTier: "ADULT", nights: NIGHTS_10_11, ...AWAITING },
           ]),
         },
       ];

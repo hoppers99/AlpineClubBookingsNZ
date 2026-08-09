@@ -400,6 +400,13 @@ describe("Phase 8: Hut Leader & Kiosk Improvements", () => {
             isMember: true,
             arrivedAt: null,
             departedAt: null,
+            // #2628: the guests route always loads the night rows and decides
+            // presence from them, so the fixture states its own stay rather
+            // than borrowing the booking's. One night, the 10th, which is what
+            // the booking's 10th-to-11th envelope always meant.
+            stayStart: new Date("2026-07-10T00:00:00.000Z"),
+            stayEnd: new Date("2026-07-11T00:00:00.000Z"),
+            nights: [{ stayDate: new Date("2026-07-10T00:00:00.000Z") }],
             member: {
               ageTier: "ADULT",
               phoneCountryCode: "64",
@@ -442,6 +449,13 @@ describe("Phase 8: Hut Leader & Kiosk Improvements", () => {
             isMember: true,
             arrivedAt: null,
             departedAt: null,
+            // #2628: the guests route always loads the night rows and decides
+            // presence from them, so the fixture states its own stay rather
+            // than borrowing the booking's. One night, the 10th, which is what
+            // the booking's 10th-to-11th envelope always meant.
+            stayStart: new Date("2026-07-10T00:00:00.000Z"),
+            stayEnd: new Date("2026-07-11T00:00:00.000Z"),
+            nights: [{ stayDate: new Date("2026-07-10T00:00:00.000Z") }],
             member: {
               ageTier: "YOUTH",
               phoneCountryCode: "64",
@@ -492,6 +506,13 @@ describe("Phase 8: Hut Leader & Kiosk Improvements", () => {
             isMember: true,
             arrivedAt: null,
             departedAt: null,
+            // #2628: the guests route always loads the night rows and decides
+            // presence from them, so the fixture states its own stay rather
+            // than borrowing the booking's. One night, the 10th, which is what
+            // the booking's 10th-to-11th envelope always meant.
+            stayStart: new Date("2026-07-10T00:00:00.000Z"),
+            stayEnd: new Date("2026-07-11T00:00:00.000Z"),
+            nights: [{ stayDate: new Date("2026-07-10T00:00:00.000Z") }],
             member: {
               ageTier: "ADULT",
               phoneCountryCode: "64",
@@ -536,6 +557,13 @@ describe("Phase 8: Hut Leader & Kiosk Improvements", () => {
             isMember: true,
             arrivedAt: null,
             departedAt: null,
+            // #2628: the route decides presence from the night rows it always
+            // loads, so the fixture carries the one night the booking envelope
+            // describes — the 10th. That is what makes the 11th this guest's
+            // departure morning, which is the whole point of the case.
+            stayStart: new Date("2026-07-10T00:00:00.000Z"),
+            stayEnd: new Date("2026-07-11T00:00:00.000Z"),
+            nights: [{ stayDate: new Date("2026-07-10T00:00:00.000Z") }],
             member: { ageTier: "ADULT" },
           },
         ],
@@ -608,6 +636,10 @@ describe("Phase 8: Hut Leader & Kiosk Improvements", () => {
         expectedArrivalTime: null,
         member: { firstName: "Booking", lastName: "Owner" },
         guests: [
+          // #2628: each guest carries the night rows the route always loads,
+          // spelling out the nights their half-open envelope already described.
+          // These three differ only in when they stop, and it is the night rows
+          // — not the shared booking dates — that now say so.
           {
             id: "active-guest",
             firstName: "Active",
@@ -616,6 +648,13 @@ describe("Phase 8: Hut Leader & Kiosk Improvements", () => {
             isMember: true,
             stayStart: new Date("2026-07-10T00:00:00.000Z"),
             stayEnd: new Date("2026-07-15T00:00:00.000Z"),
+            nights: [
+              { stayDate: new Date("2026-07-10T00:00:00.000Z") },
+              { stayDate: new Date("2026-07-11T00:00:00.000Z") },
+              { stayDate: new Date("2026-07-12T00:00:00.000Z") },
+              { stayDate: new Date("2026-07-13T00:00:00.000Z") },
+              { stayDate: new Date("2026-07-14T00:00:00.000Z") },
+            ],
             arrivedAt: null,
             departedAt: null,
             member: { ageTier: "ADULT" },
@@ -629,6 +668,10 @@ describe("Phase 8: Hut Leader & Kiosk Improvements", () => {
             isMember: true,
             stayStart: new Date("2026-07-10T00:00:00.000Z"),
             stayEnd: new Date("2026-07-12T00:00:00.000Z"),
+            nights: [
+              { stayDate: new Date("2026-07-10T00:00:00.000Z") },
+              { stayDate: new Date("2026-07-11T00:00:00.000Z") },
+            ],
             arrivedAt: null,
             departedAt: null,
             member: { ageTier: "ADULT" },
@@ -644,6 +687,7 @@ describe("Phase 8: Hut Leader & Kiosk Improvements", () => {
             isMember: true,
             stayStart: new Date("2026-07-10T00:00:00.000Z"),
             stayEnd: new Date("2026-07-11T00:00:00.000Z"),
+            nights: [{ stayDate: new Date("2026-07-10T00:00:00.000Z") }],
             arrivedAt: null,
             departedAt: null,
             member: { ageTier: "ADULT" },
@@ -757,13 +801,20 @@ describe("Phase 8: Hut Leader & Kiosk Improvements", () => {
         checkOut: new Date("2026-04-16T00:00:00.000Z"),
         memberName: "Secret Owner",
         guests: [
+          // #2628: the week route loads these night rows and counts from them,
+          // so each guest lists the nights their envelope describes. On the
+          // 14th that is one person still mid-stay, one arriving and one
+          // leaving — the counts this case has always asserted.
           {
             firstName: "Alice",
             lastName: "Secret",
             stayStart: new Date("2026-04-13T00:00:00.000Z"),
             stayEnd: new Date("2026-04-15T00:00:00.000Z"),
             ageTier: "ADULT",
-            nights: [],
+            nights: [
+              { stayDate: new Date("2026-04-13T00:00:00.000Z") },
+              { stayDate: new Date("2026-04-14T00:00:00.000Z") },
+            ],
           },
           {
             firstName: "Bob",
@@ -771,7 +822,10 @@ describe("Phase 8: Hut Leader & Kiosk Improvements", () => {
             stayStart: new Date("2026-04-14T00:00:00.000Z"),
             stayEnd: new Date("2026-04-16T00:00:00.000Z"),
             ageTier: "YOUTH",
-            nights: [],
+            nights: [
+              { stayDate: new Date("2026-04-14T00:00:00.000Z") },
+              { stayDate: new Date("2026-04-15T00:00:00.000Z") },
+            ],
           },
           {
             firstName: "Cara",
@@ -779,7 +833,10 @@ describe("Phase 8: Hut Leader & Kiosk Improvements", () => {
             stayStart: new Date("2026-04-12T00:00:00.000Z"),
             stayEnd: new Date("2026-04-14T00:00:00.000Z"),
             ageTier: "CHILD",
-            nights: [],
+            nights: [
+              { stayDate: new Date("2026-04-12T00:00:00.000Z") },
+              { stayDate: new Date("2026-04-13T00:00:00.000Z") },
+            ],
           },
         ],
       },
@@ -1116,8 +1173,21 @@ describe("Phase 8: Hut Leader & Kiosk Improvements", () => {
         memberId: "guest-member-1",
         arrivedAt: null,
         departedAt: null,
+        // #2628: the arrive lookup loads the stay bounds, the night rows and
+        // the booking dates so it can tell a first arrival from a RETURN. A
+        // fixture missing them only stays green while `departedAt` is null and
+        // the check short-circuits. Nights the 13th and the 14th, exactly the
+        // envelope below, so the 13th is an ordinary first arrival.
+        stayStart: new Date("2026-04-13T00:00:00.000Z"),
+        stayEnd: new Date("2026-04-15T00:00:00.000Z"),
+        nights: [
+          { stayDate: new Date("2026-04-13T00:00:00.000Z") },
+          { stayDate: new Date("2026-04-14T00:00:00.000Z") },
+        ],
         booking: {
           memberId: "booking-owner-1",
+          checkIn: new Date("2026-04-13T00:00:00.000Z"),
+          checkOut: new Date("2026-04-15T00:00:00.000Z"),
         },
       })
       .mockResolvedValueOnce({
@@ -1128,8 +1198,21 @@ describe("Phase 8: Hut Leader & Kiosk Improvements", () => {
         memberId: null,
         arrivedAt: new Date("2026-04-13T08:00:00.000Z"),
         departedAt: null,
+        // #2628: the depart lookup loads the coarse envelope and then applies
+        // the per-segment departure-morning rule, so this fixture carries the
+        // columns that rule reads. Last night was the 12th, so the 13th is a
+        // departure morning — the same guest the old `stayEnd: date` filter
+        // matched.
+        stayStart: new Date("2026-04-11T00:00:00.000Z"),
+        stayEnd: new Date("2026-04-13T00:00:00.000Z"),
+        nights: [
+          { stayDate: new Date("2026-04-11T00:00:00.000Z") },
+          { stayDate: new Date("2026-04-12T00:00:00.000Z") },
+        ],
         booking: {
           memberId: "booking-owner-2",
+          checkIn: new Date("2026-04-11T00:00:00.000Z"),
+          checkOut: new Date("2026-04-13T00:00:00.000Z"),
         },
       });
     mockPrisma.bookingGuest.update.mockResolvedValue({});
@@ -1231,8 +1314,20 @@ describe("Phase 8: Hut Leader & Kiosk Improvements", () => {
       memberId: null,
       arrivedAt: null,
       departedAt: null,
+      // #2628: same as the audit case above — the arrive lookup reads the
+      // night rows and the booking dates to spot a return, so the fixture
+      // carries the two nights its envelope describes (the 13th and the 14th)
+      // rather than relying on `departedAt` being null to skip the question.
+      stayStart: new Date("2026-04-13T00:00:00.000Z"),
+      stayEnd: new Date("2026-04-15T00:00:00.000Z"),
+      nights: [
+        { stayDate: new Date("2026-04-13T00:00:00.000Z") },
+        { stayDate: new Date("2026-04-14T00:00:00.000Z") },
+      ],
       booking: {
         memberId: "booking-owner-1",
+        checkIn: new Date("2026-04-13T00:00:00.000Z"),
+        checkOut: new Date("2026-04-15T00:00:00.000Z"),
       },
     });
     mockPrisma.bookingGuest.update.mockResolvedValue({});
@@ -1458,12 +1553,17 @@ describe("Phase 8: Hut Leader & Kiosk Improvements", () => {
     expect(content).toContain("Guests Staying");
     expect(content).toContain("Guests Departing Today");
     expect(content).toContain("guest.ageTier === \"ADULT\"");
-    expect(content).toContain("canMarkAttendance && guest.isArriving");
-    // #2631: the check-out BUTTON hangs off `isFinalDeparture`, not off the
-    // Departing badge — the depart endpoint only accepts the morning after the
-    // LAST booked night, so a sparse stay's intermediate departure morning gets
-    // the badge and no button.
-    expect(content).toContain("canMarkAttendance && guest.isFinalDeparture");
+    // #2631/#2628: BOTH attendance buttons hang off a SERVER-derived flag, not
+    // off a badge and not off a rule re-derived in the page. The server owns
+    // them because only it has the guest's night rows loaded: the check-out
+    // button follows the depart endpoint's own predicate, and the check-in
+    // button follows a rule the page's old `isArriving && !departedAt` could not
+    // express — a sparse stay's second arrival lands against a `departedAt` from
+    // its first segment, and the page hid BOTH buttons on a night the guest was
+    // in the building.
+    expect(content).toContain("canMarkAttendance && guest.canMarkArrived");
+    expect(content).toContain("canMarkAttendance && guest.canMarkDeparted");
+    expect(content).not.toContain("canMarkAttendance && guest.isArriving");
     expect(content).not.toContain("canMarkAttendance && guest.isDeparting");
     expect(content).toContain("120000");
     expect(content).toContain("Manage Today's Roster");
@@ -1488,10 +1588,10 @@ describe("Phase 8: Hut Leader & Kiosk Improvements", () => {
     expect(content).toContain("Blocked from Check-In — see Booking Officer");
     // ...and its arrive/depart toggles are suppressed for blocked bookings.
     expect(content).toContain(
-      "canMarkAttendance && guest.isArriving && !guest.departedAt && !booking.blockedFromCheckin"
+      "canMarkAttendance && guest.canMarkArrived && !booking.blockedFromCheckin"
     );
     expect(content).toContain(
-      "canMarkAttendance && guest.isFinalDeparture && !booking.blockedFromCheckin"
+      "canMarkAttendance && guest.canMarkDeparted && !booking.blockedFromCheckin"
     );
   });
 });

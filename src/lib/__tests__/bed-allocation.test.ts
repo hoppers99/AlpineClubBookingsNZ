@@ -5341,3 +5341,165 @@ describe("shared double beds (#2656)", () => {
     ).toEqual(["occ-c"]);
   });
 });
+
+// ---------------------------------------------------------------------------
+// pseudo-guest envelope (#2628)
+// ---------------------------------------------------------------------------
+
+describe("pseudo-guest envelope (#2628)", () => {
+  // THIS IS A MUTATION PROBE, NOT DECORATION.
+  //
+  // Both real callers feed this planner ONE PSEUDO-GUEST PER NIGHT: one entry
+  // per still-unallocated (guest, night) pair, carrying `stayStart = night` and
+  // `stayEnd = night + 1` (`candidateGuestBookings` in `admin-bed-allocation.ts`
+  // and the `plannerBookings` map in `bed-allocation-lifecycle.ts`). #2628 was
+  // about six places expanding a stay into nights and disagreeing, and the
+  // obvious-looking repair — "make the envelope branch inclusive so it stops
+  // dropping the last night" — is catastrophic HERE and nowhere else: every
+  // pseudo-guest grows a phantom second night, so the planner claims the
+  // morning-after bed while its real occupant is still in it.
+  //
+  // `expandStayEnvelopeToNightKeys` (booking-guest-stay-ranges.ts) is the one
+  // definition of that expansion. Change `key < endKey` to `key <= endKey` there
+  // and every test below fails.
+  const NIGHT_1 = "2026-07-01";
+  const NIGHT_2 = "2026-07-02";
+
+  const oneBedRoom: BedAllocationRoom[] = [
+    {
+      id: "room-a",
+      name: "Room A",
+      sortOrder: 1,
+      beds: [{ id: "bed-a1", roomId: "room-a", name: "A1", sortOrder: 1 }],
+    },
+  ];
+
+  /**
+   * Exactly the shape `candidateGuestBookings` emits for one unallocated
+   * guest-night. `withNights: false` drops the explicit night list so the
+   * envelope branch — the hazard — is the code under test.
+   */
+  function pseudoGuestBooking(
+    bookingId: string,
+    createdAt: string,
+    guestId: string,
+    night: string,
+    withNights: boolean,
+  ): BedAllocationBooking {
+    const stayStart = parseDateOnly(night);
+    const stayEnd = parseDateOnly(night);
+    stayEnd.setUTCDate(stayEnd.getUTCDate() + 1);
+    return {
+      id: bookingId,
+      createdAt: new Date(createdAt),
+      requestedRoomId: null,
+      guests: [
+        {
+          id: guestId,
+          bookingId,
+          ageTier: "ADULT",
+          stayStart,
+          stayEnd,
+          ...(withNights ? { nights: [night] } : {}),
+        },
+      ],
+    };
+  }
+
+  for (const withNights of [false, true]) {
+    const label = withNights
+      ? "with the explicit night list the real feed carries"
+      : "on the bare stayStart/stayEnd envelope branch";
+
+    it(`gives a pseudo-guest exactly its own night, ${label}`, () => {
+      const plan = buildFirstFitBedAllocationPlan({
+        enabled: true,
+        rooms: oneBedRoom,
+        bookings: [
+          pseudoGuestBooking("booking-1", "2026-06-01", "guest-1", NIGHT_1, withNights),
+        ],
+      });
+
+      expect(plan.unallocatedGuestNights).toEqual([]);
+      expect(
+        plan.allocations.map((row) => `${row.bookingGuestId}@${row.stayDate}`),
+      ).toEqual([`guest-1@${NIGHT_1}`]);
+      // Said again as the thing that actually matters: no row on the morning
+      // after. `stayEnd` is a departure morning, never an occupied night.
+      expect(plan.allocations.some((row) => row.stayDate === NIGHT_2)).toBe(false);
+    });
+
+    it(`does not claim the morning-after bed out from under its next occupant, ${label}`, () => {
+      // One bed, back-to-back turnover: guest-1 sleeps the 1st, guest-2 the 2nd.
+      // INV-DATE-003 says this needs no special case, precisely because the
+      // check-out date is a departure morning rather than an occupied night.
+      // With an inclusive envelope guest-1 takes bed-a1 on BOTH nights and
+      // guest-2 — a different booking, a real person with a real bed-night —
+      // comes back unallocated. That is the double booking.
+      const plan = buildFirstFitBedAllocationPlan({
+        enabled: true,
+        rooms: oneBedRoom,
+        bookings: [
+          pseudoGuestBooking("booking-1", "2026-06-01", "guest-1", NIGHT_1, withNights),
+          pseudoGuestBooking("booking-2", "2026-06-02", "guest-2", NIGHT_2, withNights),
+        ],
+      });
+
+      expect(plan.unallocatedGuestNights).toEqual([]);
+      expect(
+        plan.allocations.map(
+          (row) => `${row.bookingGuestId}@${row.bedId}:${row.stayDate}`,
+        ),
+      ).toEqual([`guest-1@bed-a1:${NIGHT_1}`, `guest-2@bed-a1:${NIGHT_2}`]);
+    });
+  }
+
+  it("keeps an explicitly EMPTY night list meaning 'no demand', not 'use the envelope'", () => {
+    // The other half of `guestStayNights`'s contract. Both callers build their
+    // entries from BookingGuestNight rows, so a guest with none must contribute
+    // nothing; falling back to the envelope would have the planner place a
+    // guest that `pruneAllocationsForBooking` sweeps straight back off.
+    const plan = buildFirstFitBedAllocationPlan({
+      enabled: true,
+      rooms: oneBedRoom,
+      bookings: [
+        {
+          id: "booking-1",
+          createdAt: new Date("2026-06-01"),
+          requestedRoomId: null,
+          guests: [
+            {
+              id: "guest-1",
+              bookingId: "booking-1",
+              ageTier: "ADULT",
+              stayStart: parseDateOnly(NIGHT_1),
+              stayEnd: parseDateOnly("2026-07-05"),
+              nights: [],
+            },
+          ],
+        },
+      ],
+    });
+
+    expect(plan.allocations).toEqual([]);
+    expect(plan.unallocatedGuestNights).toEqual([]);
+  });
+
+  it("SOURCE CONTRACT: the planner expands an envelope only through the canonical helper", () => {
+    // If a local `eachDateOnlyInRange(guest.stayStart, guest.stayEnd)` ever
+    // comes back into this module, the hazard comment above stops guarding
+    // anything, because the code it describes is no longer the code that runs.
+    const source = readRepoFile("src/lib/bed-allocation.ts");
+    expect(source).toContain("expandStayEnvelopeToNightKeys(guest.stayStart, guest.stayEnd)");
+    expect(source).not.toContain("eachDateOnlyInRange(guest.stayStart, guest.stayEnd)");
+
+    // And the definition itself is half-open. Spelled out here so the probe
+    // fails on the EDIT as well as on the behaviour.
+    const helper = readRepoFile("src/lib/booking-guest-stay-ranges.ts").slice(
+      readRepoFile("src/lib/booking-guest-stay-ranges.ts").indexOf(
+        "export function expandStayEnvelopeToNightKeys(",
+      ),
+    );
+    expect(helper.slice(0, 400)).toContain("key < endKey;");
+  });
+});
