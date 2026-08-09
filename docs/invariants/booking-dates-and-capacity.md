@@ -145,7 +145,9 @@ derivation).
     against an NZ-local-midnight countdown boundary, not nights within it.
     They are not governed by the midday rule; any change there is a money
     change requiring its own issue, its own owner decision, and per-tier
-    evidence — never a side effect of work in this area.
+    evidence — never a side effect of work in this area. A twelve-hour shift in
+    that boundary moves real bookings across a refund-tier threshold: the same
+    cancellation refunds a different amount.
   - The completion cron / unpaid-finished-stays pair keeps its dual check-out
     boundary (#2029, below). Both operate on NZ date-only lodge nights and
     neither is a presence definition; their `<` / `<=` split brackets the
