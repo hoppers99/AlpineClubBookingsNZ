@@ -197,6 +197,15 @@ function dateOnlyKey(value: Date): string {
  * Integer cents throughout: every term is a `pricePerNightCents` integer summed
  * by `calculateBookingPrice` (INV-MONEY-001, INV-MONEY-003). No float, no
  * parse, no rounding.
+ *
+ * Deliberately passes NO `lockedNightPrices`, exactly as `priceGuestRangeCents`
+ * did: every night here is valued at the CURRENT season rate, including the
+ * nights an edit gives back. The other edit paths do pass them
+ * (`lockedNightPricesForGuest`, `booking-modify-plan.ts`), so this plan is the
+ * exception, and after a rate rise it can credit a night back for more than the
+ * member paid for it. Not changed by #2736 — passing them would move contiguous
+ * stays' refunds and give up the equivalence this plan's safety rests on — and
+ * carried as #2744 with the options.
  */
 function priceGuestNightKeysCents(
   nightKeys: readonly string[],
@@ -288,6 +297,12 @@ export function buildInProgressGuestRangePlan(
     // range was, so a contiguous guest is unchanged; for a sparse one the gap
     // nights drop out, which is what stops a mid-stay removal or a shortened
     // check-out from refunding nights the guest never bought.
+    //
+    // WHICH nights, not what they are worth: this leg still values them at
+    // TODAY's season rates, because no `lockedNightPrices` is passed (see
+    // `priceGuestNightKeysCents`). After a rate rise a removal can therefore
+    // credit back more than the member paid. Pre-existing on this line, frozen
+    // here for the same equivalence reason, and carried as #2744.
     const oldFuturePriceCents = priceGuestNightKeysCents(
       heldNightKeys.filter(
         (key) => key >= oldFutureStartKey && key < stayEndKey
@@ -311,6 +326,15 @@ export function buildInProgressGuestRangePlan(
     // future-dated partial-range guest (#713) from being charged before they
     // arrive; whenever editableFrom <= stayEnd this is byte-identical to the
     // prior `maxDate(stayStart, editableFrom)` (the mid-stay / last-night case).
+    //
+    // KNOWN AND FROZEN (#2743): the reach-back is right when the guest's stay
+    // ended one day behind editableFrom and wrong when it ended a week behind —
+    // a #713 partial-stay guest who has already gone home is re-admitted for the
+    // booking's remaining nights and charged for them, on ANY edit, including one
+    // that does not move the check-out. That is what the pre-#2736 arithmetic
+    // did too (the matrix proves the two agree on it), so correcting it here
+    // would trade away the equivalence that makes #2736 safe. It is a money
+    // decision of its own; #2743 carries the options.
     const newFutureStart = maxDate(stayStart, minDate(editableFrom, stayEnd));
 
     // #2736: the night set this edit proposes, in two parts.
@@ -414,6 +438,44 @@ export function buildInProgressGuestRangePlan(
     ).length + proposedAddedGuests.length;
 
   if (newCheckOut > editableFrom && futureActiveGuestCount === 0) {
+    // #2736 makes one refusal this rule never used to make, and it deserves to
+    // say which one it is. A guest whose remaining nights all sit BEHIND the
+    // edit window still has a nominally-open window [futureStart, stayEnd), so
+    // the old count called them future-active and let the edit through — leaving
+    // the booking with future nights nobody occupies. The night test refuses it
+    // instead, which is right, but "must have at least one guest" describes the
+    // rule rather than the problem: the officer's actual mistake is the
+    // check-out date, and the recoverable answer is the morning after the last
+    // night anybody still holds.
+    //
+    // Unreachable for a contiguous stay. A contiguous guest who keeps any
+    // proposed night always holds one from futureStart on (their nights are a
+    // run that starts at or before it), so this branch cannot change the wording
+    // of any refusal the pre-#2736 arithmetic also made — which is what the
+    // 480-case matrix in `booking-edit-guest-ranges-sparse.test.ts` compares.
+    // Removing every guest still lands on the original sentence.
+    //
+    // This string is a LOG line, not operator copy: the quote route replaces it
+    // with "Unable to price the requested future-night changes" and the save
+    // route with "Failed to modify booking" (#1888 keeps raw messages off the
+    // wire). Making the edit panel explain this properly is a UI change, not
+    // this function's to make.
+    const lastRemainingNightKeys = proposedExistingGuests
+      .filter((entry) => !entry.removedFromFuture)
+      .flatMap((entry) => entry.nights.map(dateOnlyKey))
+      .sort();
+    const lastRemainingNightKey =
+      lastRemainingNightKeys[lastRemainingNightKeys.length - 1];
+    if (lastRemainingNightKey !== undefined) {
+      const workableCheckOut = dateOnlyKey(
+        addDaysDateOnly(parseDateOnly(lastRemainingNightKey), 1)
+      );
+      throw new Error(
+        `No remaining guest is booked for a night on or after ${dateOnlyKey(editableFrom)}, ` +
+          `so the nights up to the new check-out ${dateOnlyKey(newCheckOut)} would be unoccupied. ` +
+          `Set the check-out to ${workableCheckOut} instead.`
+      );
+    }
     throw new Error("Booking must have at least one guest for future nights");
   }
 

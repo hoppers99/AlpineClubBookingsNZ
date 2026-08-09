@@ -1118,6 +1118,14 @@ export type PricingResult = {
  *
  * Integer cents only: `Math.floor` over an integer total, remainder distributed
  * one cent at a time (INV-MONEY-001, INV-MONEY-003).
+ *
+ * Still an EVEN split, which #2736 did not change and is not claiming to have
+ * fixed. The rows now cover the right nights, but their per-night amounts are
+ * the guest's total divided by their night count, so an edit spanning a season
+ * boundary stores the average rather than each night's real rate — and
+ * `lockedNightPricesForGuest` hands exactly that column to the next edit. The
+ * sum is always exact, so nothing goes out of balance; the per-night snapshot
+ * is simply not the price list. Carried as #2744.
  */
 function splitGuestNightsEvenly(
   nights: ReadonlyArray<Date>,

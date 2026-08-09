@@ -80,7 +80,11 @@ type TestGuest = {
   rateSource: "OWN_TYPE";
   stayStart: Date;
   stayEnd: Date;
-  nights?: Array<{ stayDate: Date }>;
+  // `priceCents` is on the real `BookingGuestNight` row and is what
+  // `lockedNightPricesForGuest` reads on the other edit paths — carried here so
+  // a test can show whether this plan consults it. Optional, because most cases
+  // do not care.
+  nights?: Array<{ stayDate: Date; priceCents?: number }>;
   priceCents: number;
 };
 
@@ -626,6 +630,63 @@ describe("#2736 a sparse stay", () => {
     expect(entry.priceCents).not.toBe(HIGH);
   });
 
+  it("extends from the guest's real last night when their stored envelope has drifted wider", () => {
+    // The ONE shape where #2736 bills MORE than the envelope arithmetic did, and
+    // the only non-sparse one: a guest whose stored `stayEnd` claims more nights
+    // than their rows do. The rows are canonical (INV-DATE-012), so the extension
+    // starts the morning after their real last night — not after the envelope's
+    // imaginary one. The 480-case matrix cannot reach this, because it derives
+    // every envelope from the rows the way the writer does.
+    const drifted = {
+      ...guestFromNights(["2026-08-20", "2026-08-21"]),
+      // Two nights of rows, an envelope claiming five.
+      stayEnd: D("2026-08-25"),
+    };
+    const plan = buildInProgressGuestRangePlan(
+      planInput({
+        guests: [drifted],
+        editableFrom: "2026-08-22",
+        newCheckOut: "2026-08-27",
+        checkIn: "2026-08-20",
+        checkOut: "2026-08-25",
+      }),
+    );
+    const entry = plan.proposedExistingGuests[0];
+
+    // Nothing of the old stay is left to reprice: the rows stop on the 21st.
+    expect(entry.oldFuturePriceCents).toBe(0);
+    expect(entry.nights.map(key)).toEqual([
+      "2026-08-20",
+      "2026-08-21",
+      "2026-08-22",
+      "2026-08-23",
+      "2026-08-24",
+      "2026-08-25",
+      "2026-08-26",
+    ]);
+    // Five genuinely-new nights (22nd–26th), each at its own season rate.
+    expect(entry.futureDeltaCents).toBe(
+      priceNights([
+        "2026-08-22",
+        "2026-08-23",
+        "2026-08-24",
+        "2026-08-25",
+        "2026-08-26",
+      ]),
+    );
+    // The envelope answer was two nights: it had already counted the 22nd–24th
+    // as the guest's, in both windows, so they cancelled. Charging them once is
+    // the coherent answer — the guest ends up paying for exactly the seven
+    // nights they now hold — but it IS a case where money goes up, so it is
+    // pinned here rather than left to a comment.
+    expect(entry.futureDeltaCents).not.toBe(
+      priceNights(["2026-08-25", "2026-08-26"]),
+    );
+    expect(entry.priceCents).toBe(
+      drifted.priceCents + entry.futureDeltaCents,
+    );
+  });
+
   it("keeps every cent an integer, with no float anywhere in the sum", () => {
     // INV-MONEY-001 / INV-MONEY-003. Every term here is a season rate in cents;
     // the plan only ever adds and subtracts them.
@@ -645,5 +706,139 @@ describe("#2736 a sparse stay", () => {
     }
     expect(Number.isInteger(plan.newTotalPriceCents)).toBe(true);
     expect(Number.isInteger(plan.priceDiffCents)).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 3. The one edit the night test newly refuses.
+// ---------------------------------------------------------------------------
+
+describe("#2736 the edit it now refuses", () => {
+  it("refuses a shortened check-out that would leave nights nobody holds, and names the check-out that works", () => {
+    // The whole booking is one sparse guest on nights {20, 22}. The officer pulls
+    // the check-out back to the 22nd — so the 22nd is dropped, the 20th is behind
+    // the edit window, and the booking would keep the night of the 21st with
+    // nobody in it. The envelope test saw an open [21, 22) window and allowed it.
+    //
+    // The refusal is right; the message has to be the recoverable one, because a
+    // check-out of the 21st is exactly what the officer meant.
+    const build = () =>
+      buildInProgressGuestRangePlan(
+        planInput({
+          guests: [guestFromNights(["2026-08-20", "2026-08-22"])],
+          editableFrom: "2026-08-21",
+          newCheckOut: "2026-08-22",
+        }),
+      );
+
+    expect(build).toThrow(/No remaining guest is booked for a night on or after 2026-08-21/);
+    expect(build).toThrow(/Set the check-out to 2026-08-21 instead/);
+    // And plainly NOT the old sentence, which describes the rule rather than the
+    // mistake — the booking does still have a guest.
+    expect(build).not.toThrow(/at least one guest for future nights/);
+  });
+
+  it("keeps the original wording for the refusal it always made", () => {
+    // Every guest taken off a booking that still has future nights. Nobody holds
+    // anything, so there is no check-out to suggest — and this is the refusal the
+    // pre-#2736 arithmetic made too, word for word.
+    expect(() =>
+      buildInProgressGuestRangePlan(
+        planInput({
+          guests: [
+            guestFromNights(["2026-08-20", "2026-08-21"], "g1"),
+            guestFromNights(["2026-08-20", "2026-08-21"], "g2"),
+          ],
+          editableFrom: "2026-08-21",
+          newCheckOut: "2026-08-24",
+          removeGuestIds: ["g1", "g2"],
+        }),
+      ),
+    ).toThrow("Booking must have at least one guest for future nights");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 4. Money shapes #2736 deliberately did NOT change.
+//
+// Both are pre-existing — the pre-#2736 arithmetic produces the same cents — and
+// both were left alone because correcting them moves ordinary contiguous stays,
+// which is the equivalence the whole change rests on. They are pinned so the
+// behaviour is visible rather than implied, and so whoever answers the issue has
+// a test to rewrite. Neither of these is endorsed; they are frozen.
+// ---------------------------------------------------------------------------
+
+describe("#2736 frozen money behaviour, carried as issues", () => {
+  it("still re-admits a guest whose stay ended before the edit window, and charges them (#2743)", () => {
+    // Booking 18 Aug → 27 Aug. The guest holds two nights, the 18th and 19th, and
+    // went home. It is the 21st, so the window opens on the 22nd, and the officer
+    // saves an edit that does not move the check-out at all.
+    const departed = guestFromNights(["2026-08-18", "2026-08-19"], "g1");
+    const wholeRun = guestFromNights(
+      [
+        "2026-08-18", "2026-08-19", "2026-08-20", "2026-08-21", "2026-08-22",
+        "2026-08-23", "2026-08-24", "2026-08-25", "2026-08-26",
+      ],
+      "g2",
+    );
+    const plan = buildInProgressGuestRangePlan(
+      planInput({
+        guests: [departed, wholeRun],
+        editableFrom: "2026-08-22",
+        newCheckOut: "2026-08-27",
+        checkIn: "2026-08-18",
+        checkOut: "2026-08-27",
+      }),
+    );
+    const entry = plan.proposedExistingGuests[0];
+
+    // Seven nights added to somebody who left a week ago. #2743 decides whether
+    // this should happen at all; until then it must not change by accident.
+    expect(entry.futureDeltaCents).toBe(
+      priceNights([
+        "2026-08-20", "2026-08-21", "2026-08-22", "2026-08-23",
+        "2026-08-24", "2026-08-25", "2026-08-26",
+      ]),
+    );
+    expect(entry.nights.map(key)).toEqual([
+      "2026-08-18", "2026-08-19", "2026-08-20", "2026-08-21", "2026-08-22",
+      "2026-08-23", "2026-08-24", "2026-08-25", "2026-08-26",
+    ]);
+    // The guest who is actually there is charged nothing, which is the giveaway.
+    expect(plan.proposedExistingGuests[1].futureDeltaCents).toBe(0);
+  });
+
+  it("still values the nights a removal gives back at today's rate, not the price they were sold at (#2744)", () => {
+    // Three high-season nights bought at the old low rate: 3 x LOW paid, HIGH on
+    // the table now. The guest sleeps the 23rd and is taken off the rest.
+    const nights = ["2026-08-23", "2026-08-24", "2026-08-25"];
+    const paidCents = 3 * LOW;
+    const boughtBeforeTheRise: TestGuest = {
+      ...guestFromNights(nights, "g1"),
+      // The rows carry what each night was sold for — exactly as the loaded
+      // `BookingGuestNight` rows do — so this case fails the moment the plan
+      // starts honouring them.
+      nights: nights.map((night) => ({ stayDate: D(night), priceCents: LOW })),
+      priceCents: paidCents,
+    };
+    const plan = buildInProgressGuestRangePlan(
+      planInput({
+        guests: [boughtBeforeTheRise, guestFromNights(nights, "g2")],
+        editableFrom: "2026-08-24",
+        newCheckOut: "2026-08-26",
+        removeGuestIds: ["g1"],
+      }),
+    );
+    const entry = plan.proposedExistingGuests[0];
+
+    // The two nights given back are credited at today's HIGH, not the LOW the
+    // member paid, so more comes off than ever went on — and the guest finishes
+    // owing less than nothing despite having slept a night.
+    expect(entry.oldFuturePriceCents).toBe(2 * HIGH);
+    expect(entry.futureDeltaCents).toBe(-2 * HIGH);
+    expect(entry.priceCents).toBe(paidCents - 2 * HIGH);
+    expect(entry.priceCents).toBeLessThan(0);
+    // What it would be if the leg honoured the locked prices: one night's LOW.
+    expect(entry.priceCents).not.toBe(LOW);
   });
 });

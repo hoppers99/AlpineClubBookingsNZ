@@ -21,7 +21,13 @@
   and every capacity answer is exactly what it was, which is what makes this safe
   to apply to bookings already in the diary.
 
+  One edit is now refused that used to go through: pulling the check-out back to
+  a date where nobody is booked for the last night any more. The booking would
+  otherwise keep a night with no one in it. The refusal says which check-out date
+  would work.
+
   **Bookings edited before this fix are left exactly as they are.** If a member
   was charged, or refunded, for gap nights under the old behaviour, that stands
-  on the booking until somebody decides otherwise; it is a money question for the
-  club, not something the software has quietly corrected in the background.
+  on the booking: it is a money question for the club, not something the software
+  has quietly corrected in the background. #2745 is where that decision gets
+  made, with the option of a read-only audit first.

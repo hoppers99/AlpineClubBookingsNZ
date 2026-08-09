@@ -825,7 +825,12 @@ not charged, not written back as a night row and not given a bed, while an
 extension still buys contiguous new nights after their last held one. For a
 contiguous stay every number is exactly what it was before. Bookings edited
 before that fix keep the rows and the price they were given — history is not
-repriced.
+repriced (#2745 carries the decision about whether anything is done about
+them). One edit is newly refused: a check-out pulled back past the last night
+any remaining guest still holds, which would leave the booking with a night
+nobody occupies; the refusal names the check-out that would work. Three money
+shapes on this path are frozen rather than fixed — see `INV-MOD-025` and
+#2743 / #2744.
 
 Self-service cancellation of a **started** stay is blocked (#2029). Once
 `checkIn <= todayNZ`, the member-facing cancel route
