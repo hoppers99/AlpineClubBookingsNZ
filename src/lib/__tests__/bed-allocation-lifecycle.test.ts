@@ -75,11 +75,14 @@ describe("partner-share lock prefix", () => {
  *  - it does NOT take the global cohort `lock(1)`, because a merge holds its
  *    locks for up to 120s and would reject every 5s-budget cohort writer in the
  *    club, and
- *  - it therefore derives the lodge set from the members' future GUEST-NIGHTS as
- *    well as their existing future allocations, so a lodge where a placement
- *    could still land — but no allocation exists yet — is covered.
+ *  - it therefore derives the lodge set from the members' GUEST ROWS as well as
+ *    their existing future allocations, so a lodge where a placement could still
+ *    land — but no allocation exists yet — is covered. Since #2672 that read
+ *    carries no date filter at all: the stay columns are mutable, so a lodge
+ *    holding only past guest-nights today can hold future ones before the merge
+ *    commits.
  *
- * Delete the guest-night half and this describe fails on both counts.
+ * Delete the guest-row half and this describe fails on both counts.
  */
 describe("member-merge partner-share lodge prefix (#2595)", () => {
   function makeMergeLockTx(input: {
@@ -140,27 +143,29 @@ describe("member-merge partner-share lodge prefix (#2595)", () => {
     // absence explicitly rather than relying on the array comparison above.
     expect(events).not.toContain("global");
 
-    // Both members, and future nights only — the immutable request ids are the
-    // only input, and a past stay can hold no future placement.
+    // Both members, and NOTHING ELSE in the filter — the immutable request ids
+    // are the only input.
     //
     // STRICT on `where`, deliberately, and this is load-bearing rather than
     // fussy. `expect.objectContaining` ignores ADDED keys, so it would pass a
-    // query narrowed by `booking: { status: … }` — and narrowing on status is
-    // exactly the hole `futurePartnerShareGuestNightLodgeIds` documents itself as
-    // avoiding: booking-status transitions serialise on the global cohort key,
-    // which merge no longer holds, so a booking that is not allocatable when the
-    // set is derived can become allocatable while the merge runs. With the global
-    // key gone, that narrowing would silently reopen the coverage hole this whole
-    // derivation exists to close, and every other test in the tree would stay
-    // green. Compare the whole object so it cannot.
+    // query narrowed by `booking: { status: … }`, or by the stay dates this
+    // query used to filter on — and every such narrowing is on state a
+    // concurrent writer can change while the merge runs, which is the whole
+    // hole `partnerShareGuestRowLodgeIds` exists to close:
+    //
+    //  - booking-status transitions serialise on the global cohort key, which
+    //    merge no longer holds, so a booking that is not allocatable when the
+    //    set is derived can become allocatable while the merge runs; and
+    //  - `stayStart`/`stayEnd`/`BookingGuestNight` are rewritten by the admin
+    //    date override and by an in-progress check-out extension that needs no
+    //    override and no admin role (#2672), so a lodge holding only PAST
+    //    guest-nights at derivation time can hold future ones minutes later.
+    //
+    // With the global key gone, either narrowing would silently reopen the
+    // coverage hole and every other test in the tree would stay green. Compare
+    // the whole object so it cannot.
     expect(bookingGuestFindMany).toHaveBeenCalledWith({
-      where: {
-        memberId: { in: ["member-2", "member-1"] },
-        OR: [
-          { stayEnd: { gte: expect.any(Date) } },
-          { nights: { some: { stayDate: { gte: expect.any(Date) } } } },
-        ],
-      },
+      where: { memberId: { in: ["member-2", "member-1"] } },
       select: { booking: { select: { lodgeId: true } } },
     });
   });
@@ -3550,12 +3555,25 @@ describe("sweepUnbackedFutureSharedDoublesWithLocksHeld (#2595)", () => {
    * `mayShareDoubleBedWith` reads `member` and `memberPartnerLink` off the same
    * client, so the sweep's mock db has to answer those too. Members default to
    * active adults; only the CONFIRMED link rows decide who may share.
+   *
+   * `bookingGuest.findMany` answers the #2672 coverage re-derivation. It
+   * defaults to a guest row in the ONE locked lodge — i.e. the ordinary case
+   * where the prefix is still complete — so every case below runs that check
+   * for real rather than past a stub that can never fail.
    */
-  function makeSweepDb(confirmedPairs: [string, string][] = []) {
+  function makeSweepDb(
+    confirmedPairs: [string, string][] = [],
+    guestRowLodgeIds: (string | null)[] = [SWEEP_LODGE_ID],
+  ) {
     return {
       bedAllocation: {
         findMany: vi.fn().mockResolvedValue([]),
         deleteMany: vi.fn().mockResolvedValue({ count: 0 }),
+      },
+      bookingGuest: {
+        findMany: vi.fn(async () =>
+          guestRowLodgeIds.map((lodgeId) => ({ booking: { lodgeId } })),
+        ),
       },
       member: {
         findMany: vi.fn(async (args: any) => {
@@ -3943,6 +3961,52 @@ describe("sweepUnbackedFutureSharedDoublesWithLocksHeld (#2595)", () => {
 
     // Refused BEFORE any eligibility read, delete or audit.
     expect(db.memberPartnerLink.findMany).not.toHaveBeenCalled();
+    expect(db.bedAllocation.deleteMany).not.toHaveBeenCalled();
+    expect(db.auditLog.create).not.toHaveBeenCalled();
+  });
+
+  /**
+   * The #2672 coverage proof, and the reason it is a SEPARATE check from the
+   * one above rather than a stricter version of it.
+   *
+   * The candidate check can only fire on a row that already exists. The hazard
+   * this closes is a lodge that holds no shared double YET: one of these members
+   * merely has a guest row there, so a placement could still land in a lodge the
+   * merge holds no capacity key for, between this sweep and the merge's commit.
+   * There is deliberately nothing for the sweep to remove in this case — no
+   * candidate row at all — and it must still refuse.
+   *
+   * Merge calls this after its sorted `Member … FOR UPDATE`, which is what makes
+   * passing the check a statement about the rest of the transaction: no INSERT
+   * of a `BookingGuest` naming these members, and no UPDATE re-pointing one onto
+   * them, can commit while that row lock is held, because the foreign key needs
+   * `FOR KEY SHARE` on the member row.
+   */
+  it("refuses when a member holds a guest row in a lodge the prefix did not lock, with nothing to sweep", async () => {
+    const db = makeSweepDb(
+      [],
+      // The locked lodge, PLUS one that appeared after the prefix derived its
+      // set. No allocation exists there — that is the whole point.
+      [SWEEP_LODGE_ID, "lodge-appeared-after-derivation"],
+    );
+
+    await expect(
+      sweepUnbackedFutureSharedDoublesWithLocksHeld({
+        memberIds: ["member-m", "member-loser"],
+        lockedLodgeIds: [SWEEP_LODGE_ID],
+        reason: "members_merged",
+        db: db as any,
+      }),
+    ).rejects.toThrow(/unlocked lodge\(s\): lodge-appeared-after-derivation/);
+
+    // Re-derived from the members alone — no date filter and no status filter,
+    // because both would be filters on state a racing writer can change.
+    expect(db.bookingGuest.findMany).toHaveBeenCalledWith({
+      where: { memberId: { in: ["member-m", "member-loser"] } },
+      select: { booking: { select: { lodgeId: true } } },
+    });
+    // Refused BEFORE the sweep read a single candidate.
+    expect(db.bedAllocation.findMany).not.toHaveBeenCalled();
     expect(db.bedAllocation.deleteMany).not.toHaveBeenCalled();
     expect(db.auditLog.create).not.toHaveBeenCalled();
   });
