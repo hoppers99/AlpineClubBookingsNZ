@@ -1,17 +1,6 @@
 # Additional Payment Chasing
 
-> **Phase 2 transcription — issue #2691.** Until the index rewrite lands,
-> [`docs/DOMAIN_INVARIANTS.md`](../DOMAIN_INVARIANTS.md) remains the authoritative
-> copy of these rules and this file duplicates its
-> "Chasing an outstanding additional payment (#2350)" subsection of "Booking
-> Modifications".
-> Do not edit either copy independently while both exist. The scheme this
-> file follows is in [`_PHASE1_SCHEME.md`](_PHASE1_SCHEME.md).
-
 Audience: Developer, Agent.
-
-Index: [`docs/DOMAIN_INVARIANTS.md`](../DOMAIN_INVARIANTS.md) · Scheme and
-allocation rules: [`_PHASE1_SCHEME.md`](_PHASE1_SCHEME.md).
 
 Prefix defined in this file: **`INV-ADDPAY`** — an outstanding additional
 payment, who is owed one, who may pay one, and the quote/request holds and
@@ -21,10 +10,15 @@ Read this file when you are changing the additional-payment chase, the unpaid
 finished-stay queues, a booking-request or quote capacity hold, or how a
 reduction, refund or credit note settles.
 
-Every `###` heading below is an invariant ID. IDs are permanent and are never
-renumbered — see the allocation rules in the scheme. The text under each ID is
-copied verbatim from `docs/DOMAIN_INVARIANTS.md`; only the ID heading lines and
-the bracketed cross-file `[INV-*]` pointers registered in the PR were added.
+Index: [`docs/DOMAIN_INVARIANTS.md`](../DOMAIN_INVARIANTS.md) — every `INV-*` ID
+with a one-line description of what it covers. ID scheme and allocation rules:
+[`_PHASE1_SCHEME.md`](_PHASE1_SCHEME.md).
+
+Every heading below whose whole text is an `INV-*` ID defines that invariant. IDs
+are permanent: never renumbered, never reused. **The text under each ID is a
+verbatim move from the source document and must not be reworded in place** —
+only the ID heading lines and the bracketed cross-file `[INV-*]` pointers
+registered in the PR were added.
 
 ## Chasing an outstanding additional payment (#2350)
 

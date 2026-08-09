@@ -269,5 +269,5 @@ The list is a working roster; its controls:
   and [Merging Duplicate Members](../../CONFIGURATION.md#merging-duplicate-members)
   in `CONFIGURATION.md`; and the
   [membership lifecycle](../DOMAIN_INVARIANTS.md#membership-lifecycle) and
-  [member profile merge](../DOMAIN_INVARIANTS.md#member-profile-merge-e11-1937)
+  [member profile merge](../invariants/membership-lifecycle.md#member-profile-merge-e11-1937)
   invariants.

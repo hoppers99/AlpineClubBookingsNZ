@@ -1,17 +1,6 @@
 # Subscription-Lockout Booking Pricing
 
-> **Phase 2 transcription — issue #2691.** Until the index rewrite lands,
-> [`docs/DOMAIN_INVARIANTS.md`](../DOMAIN_INVARIANTS.md) remains the authoritative
-> copy of these rules and this file duplicates its
-> "Subscription-lockout booking pricing (#2533)" subsection of "Booking
-> Modifications".
-> Do not edit either copy independently while both exist. The scheme this
-> file follows is in [`_PHASE1_SCHEME.md`](_PHASE1_SCHEME.md).
-
 Audience: Developer, Agent.
-
-Index: [`docs/DOMAIN_INVARIANTS.md`](../DOMAIN_INVARIANTS.md) · Scheme and
-allocation rules: [`_PHASE1_SCHEME.md`](_PHASE1_SCHEME.md).
 
 Prefix defined in this file: **`INV-LOCKOUT`** — lapsed-subscription pricing
 and the three-way lockout mode, admin date overrides and retroactive
@@ -22,10 +11,15 @@ refused, the `MembershipLockoutSettings.mode` gates, an admin date override or
 on-behalf create, or anything that decides whether a member is emailed about a
 booking.
 
-Every `###` heading below is an invariant ID. IDs are permanent and are never
-renumbered — see the allocation rules in the scheme. The text under each ID is
-copied verbatim from `docs/DOMAIN_INVARIANTS.md`; only the ID heading lines and
-the bracketed cross-file `[INV-*]` pointers registered in the PR were added.
+Index: [`docs/DOMAIN_INVARIANTS.md`](../DOMAIN_INVARIANTS.md) — every `INV-*` ID
+with a one-line description of what it covers. ID scheme and allocation rules:
+[`_PHASE1_SCHEME.md`](_PHASE1_SCHEME.md).
+
+Every heading below whose whole text is an `INV-*` ID defines that invariant. IDs
+are permanent: never renumbered, never reused. **The text under each ID is a
+verbatim move from the source document and must not be reworded in place** —
+only the ID heading lines and the bracketed cross-file `[INV-*]` pointers
+registered in the PR were added.
 
 ## Subscription-lockout booking pricing (#2533)
 

@@ -1,17 +1,6 @@
 # Booking Policy Exceptions
 
-> **Phase 2 transcription — issue #2691.** Until the index rewrite lands,
-> [`docs/DOMAIN_INVARIANTS.md`](../DOMAIN_INVARIANTS.md) remains the authoritative
-> copy of these rules and this file duplicates the three
-> policy-exception subsections of its "Booking Modifications" section
-> (#2365, #2524, #2526).
-> Do not edit either copy independently while both exist. The scheme this
-> file follows is in [`_PHASE1_SCHEME.md`](_PHASE1_SCHEME.md).
-
 Audience: Developer, Agent.
-
-Index: [`docs/DOMAIN_INVARIANTS.md`](../DOMAIN_INVARIANTS.md) · Scheme and
-allocation rules: [`_PHASE1_SCHEME.md`](_PHASE1_SCHEME.md).
 
 Prefix defined in this file: **`INV-EXCEPT`** — the durable member-request
 and officer-decision flow for eligible SOFT booking-policy failures.
@@ -20,10 +9,15 @@ Read this file when you are changing how a member asks for a policy exception,
 what a request freezes, or how a Booking Officer approves, declines or executes
 one.
 
-Every `###` heading below is an invariant ID. IDs are permanent and are never
-renumbered — see the allocation rules in the scheme. The text under each ID is
-copied verbatim from `docs/DOMAIN_INVARIANTS.md`; only the ID heading lines and
-the bracketed cross-file `[INV-*]` pointers registered in the PR were added.
+Index: [`docs/DOMAIN_INVARIANTS.md`](../DOMAIN_INVARIANTS.md) — every `INV-*` ID
+with a one-line description of what it covers. ID scheme and allocation rules:
+[`_PHASE1_SCHEME.md`](_PHASE1_SCHEME.md).
+
+Every heading below whose whole text is an `INV-*` ID defines that invariant. IDs
+are permanent: never renumbered, never reused. **The text under each ID is a
+verbatim move from the source document and must not be reworded in place** —
+only the ID heading lines and the bracketed cross-file `[INV-*]` pointers
+registered in the PR were added.
 
 ## Booking-policy exception requests (#2365, epic decision D-R5)
 

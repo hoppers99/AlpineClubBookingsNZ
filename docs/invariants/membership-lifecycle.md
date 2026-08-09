@@ -1,38 +1,35 @@
 # Membership Lifecycle
 
-> **Phase 2 transcription — issue #2691.** Until the index rewrite lands,
-> [`docs/DOMAIN_INVARIANTS.md`](../DOMAIN_INVARIANTS.md) remains the authoritative
-> copy of these rules and this file duplicates its "Membership Lifecycle"
-> section. Do not edit either copy independently while both exist. The scheme this
-> file follows is in [`_PHASE1_SCHEME.md`](_PHASE1_SCHEME.md).
-
 Audience: Developer, Agent.
 
-Index: [`docs/DOMAIN_INVARIANTS.md`](../DOMAIN_INVARIANTS.md) · Scheme and
-allocation rules: [`_PHASE1_SCHEME.md`](_PHASE1_SCHEME.md).
-
-Prefix defined in this file: **`INV-LIFE`** (membership applications and
+Prefix defined in this file: **`INV-LIFE`** — membership applications and
 nomination, cancellation, archive and deletion, access roles and the admin
 lock-out guards, seasonal membership type and age tier, family groups, partner
 and parent/dependant links, email inheritance, inductions, custodian bed holds,
-and member profile merge).
+and member profile merge.
 
 Read this file when you are changing how a membership starts, changes or ends,
 who may act for whom inside a family, how a member's roles or age tier are
 resolved, or how two member records are merged.
 
-Two blocks here were identified in phase 1 as sitting under the wrong domain
-heading and are deliberately left where the source put them, because re-domaining
-inside a transcription would make both changes unreviewable: the custodian bed
-occupancy block (`INV-LIFE-062`) is a capacity invariant end to end, and the
+Index: [`docs/DOMAIN_INVARIANTS.md`](../DOMAIN_INVARIANTS.md) — every `INV-*` ID
+with a one-line description of what it covers. ID scheme and allocation rules:
+[`_PHASE1_SCHEME.md`](_PHASE1_SCHEME.md).
+
+Two blocks here sit under a domain heading that no longer describes them and are
+deliberately left where the source put them, because re-domaining inside a
+transcription would make both changes unreviewable: the custodian bed-occupancy
+block (`INV-LIFE-062`) is a capacity invariant end to end, and the
 `FamilyGroupMember.role` column-drop narrative nested inside `INV-LIFE-037` is
 migration-policy material. IDs are location-independent and the index is
-authoritative for ID → file, so re-homing either later costs nothing.
+authoritative for ID → file, so re-homing either later costs nothing; both are
+recorded in [`_FOLLOW_UPS.md`](_FOLLOW_UPS.md).
 
-Every `##`/`###` heading below whose whole text is an ID is an invariant ID. IDs
-are permanent and are never renumbered — see the allocation rules in the scheme.
-The text under each ID is copied verbatim from `docs/DOMAIN_INVARIANTS.md`; only
-the ID heading lines were added.
+Every heading below whose whole text is an `INV-*` ID defines that invariant. IDs
+are permanent: never renumbered, never reused. **The text under each ID is a
+verbatim move from the source document and must not be reworded in place** —
+only the ID heading lines and the bracketed cross-file `[INV-*]` pointers
+registered in the PR were added.
 
 ## INV-LIFE-001
 

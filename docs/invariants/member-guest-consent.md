@@ -2,20 +2,21 @@
 
 Audience: Developer, Agent.
 
-Index: [`docs/DOMAIN_INVARIANTS.md`](../DOMAIN_INVARIANTS.md) · Scheme and
-allocation rules: [`_PHASE1_SCHEME.md`](_PHASE1_SCHEME.md).
-
-Prefix defined in this file: **`INV-GUEST`** (when a member added as somebody
+Prefix defined in this file: **`INV-GUEST`** — when a member added as somebody
 else's guest must be asked first, what the answer is recorded as, and what a
-row in each consent state does and does not do).
+row in each consent state does and does not do.
 
 Read this file when you are changing a member bringing a guest, and consent to
 do so.
 
-Every `##` heading below is an invariant ID. IDs are permanent and are never
-renumbered — see the allocation rules in the scheme. The text under each ID is
-copied verbatim from `docs/DOMAIN_INVARIANTS.md`; only the ID heading lines were
-added.
+Index: [`docs/DOMAIN_INVARIANTS.md`](../DOMAIN_INVARIANTS.md) — every `INV-*` ID
+with a one-line description of what it covers. ID scheme and allocation rules:
+[`_PHASE1_SCHEME.md`](_PHASE1_SCHEME.md).
+
+Every heading below whose whole text is an `INV-*` ID defines that invariant. IDs
+are permanent: never renumbered, never reused. **The text under each ID is a
+verbatim move from the source document and must not be reworded in place** —
+only the ID heading lines were added.
 
 ## INV-GUEST-001
 

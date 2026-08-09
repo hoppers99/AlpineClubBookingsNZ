@@ -1,30 +1,25 @@
 # Booking Dates And Capacity
 
-> **Phase 1 specimen — issue #2691.** This file is the worked specimen for the
-> `INV-*` restructure. Until phase 2 lands,
-> [`docs/DOMAIN_INVARIANTS.md`](../DOMAIN_INVARIANTS.md) remains the authoritative
-> copy of these rules and this file duplicates its "Booking Dates And Capacity"
-> section. Do not edit either copy independently while both exist. The scheme this
-> file demonstrates is in [`_PHASE1_SCHEME.md`](_PHASE1_SCHEME.md).
-
 Audience: Developer, Agent.
 
-Index: [`docs/DOMAIN_INVARIANTS.md`](../DOMAIN_INVARIANTS.md) · Scheme and
-allocation rules: [`_PHASE1_SCHEME.md`](_PHASE1_SCHEME.md).
-
-Prefixes defined in this file: **`INV-DATE`** (what a lodge night is, when a stay
-starts and ends, how dates are stored, compared and rendered) and **`INV-CAP`**
-(how many beds exist, who consumes them, and how beds are allocated).
+Prefixes defined in this file: **`INV-DATE`** — what a lodge night is, when a
+stay starts and ends, how dates are stored, compared and rendered — and
+**`INV-CAP`** — how many beds exist, who consumes them, and how beds are
+allocated.
 
 Read this file when you are changing anything that decides which NZ calendar day
 a booking touches, who is present on a day, how many beds a lodge has, or which
 bed a guest is placed in.
 
-Every `###` heading below is an invariant ID. IDs are permanent and are never
-renumbered — see the allocation rules in the scheme. The text under each ID is
-copied verbatim from `docs/DOMAIN_INVARIANTS.md`; only the ID heading lines and
-the relative path of one link (`TESTING.md` → `../TESTING.md`) were added or
-changed.
+Index: [`docs/DOMAIN_INVARIANTS.md`](../DOMAIN_INVARIANTS.md) — every `INV-*` ID
+with a one-line description of what it covers. ID scheme and allocation rules:
+[`_PHASE1_SCHEME.md`](_PHASE1_SCHEME.md).
+
+Every heading below whose whole text is an `INV-*` ID defines that invariant. IDs
+are permanent: never renumbered, never reused. **The text under each ID is a
+verbatim move from the source document and must not be reworded in place** —
+only the ID heading lines were added, and one relative link path was re-pointed
+(`TESTING.md` → `../TESTING.md`).
 
 ## The stay boundary: midday NZ to midday NZ (normative)
 

@@ -1,31 +1,26 @@
 # Integrations
 
-> **Phase 2 transcription — issue #2691.** Until the index rewrite lands,
-> [`docs/DOMAIN_INVARIANTS.md`](../DOMAIN_INVARIANTS.md) remains the authoritative
-> copy of these rules and this file duplicates its "Integrations"
-> section. Do not edit either copy independently while both exist. The scheme this
-> file follows is in [`_PHASE1_SCHEME.md`](_PHASE1_SCHEME.md).
-
 Audience: Developer, Agent.
 
-Index: [`docs/DOMAIN_INVARIANTS.md`](../DOMAIN_INVARIANTS.md) · Scheme and
-allocation rules: [`_PHASE1_SCHEME.md`](_PHASE1_SCHEME.md).
-
-Prefix defined in this file: **`INV-INT`** (webhooks and cron idempotency,
+Prefix defined in this file: **`INV-INT`** — webhooks and cron idempotency,
 provider callback verification, what may appear in logs and webhook records, and
-Xero member contact-group grouping).
+Xero member contact-group grouping.
 
 Read this file when you are changing a webhook, a cron job, a provider callback,
 what is logged about an integration, or Xero contact-group grouping.
+
+Index: [`docs/DOMAIN_INVARIANTS.md`](../DOMAIN_INVARIANTS.md) — every `INV-*` ID
+with a one-line description of what it covers. ID scheme and allocation rules:
+[`_PHASE1_SCHEME.md`](_PHASE1_SCHEME.md).
 
 `INV-XERO` is deliberately not a prefix: the `INV-` namespace already carries
 Xero invoice-number test fixtures, so the Xero grouping rules take `INV-INT`
 alongside the rest of Integrations. See §1.2.1 of the scheme.
 
-Every `##`/`###` heading below whose whole text is an ID is an invariant ID. IDs
-are permanent and are never renumbered — see the allocation rules in the scheme.
-The text under each ID is copied verbatim from `docs/DOMAIN_INVARIANTS.md`; only
-the ID heading lines were added.
+Every heading below whose whole text is an `INV-*` ID defines that invariant. IDs
+are permanent: never renumbered, never reused. **The text under each ID is a
+verbatim move from the source document and must not be reworded in place** —
+only the ID heading lines were added.
 
 ## INV-INT-001
 

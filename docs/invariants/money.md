@@ -1,28 +1,23 @@
 # Money
 
-> **Phase 2 transcription — issue #2691.** Until the index at
-> [`docs/DOMAIN_INVARIANTS.md`](../DOMAIN_INVARIANTS.md) is rewritten, that file
-> remains the authoritative copy of these rules and this file duplicates its
-> "Money" section. Do not edit either copy independently while both exist. The
-> scheme this file follows is in [`_PHASE1_SCHEME.md`](_PHASE1_SCHEME.md).
-
 Audience: Developer, Agent.
 
-Index: [`docs/DOMAIN_INVARIANTS.md`](../DOMAIN_INVARIANTS.md) · Scheme and
-allocation rules: [`_PHASE1_SCHEME.md`](_PHASE1_SCHEME.md).
-
-Prefix defined in this file: **`INV-MONEY`** (how money is represented and where
+Prefix defined in this file: **`INV-MONEY`** — how money is represented and where
 a price comes from: integer cents, fee authorities, whole-lodge pricing, promo
-caps, subscription charges and subscription-invoice selection).
+caps, subscription charges and subscription-invoice selection.
 
 Read this file when you are changing anything that holds cents — fee
 authorities, whole-lodge or promo pricing, membership subscription charges, or
 the Xero invoice identity behind them.
 
-The source section has no subsections, so every `##` heading below is an
-invariant ID. IDs are permanent and are never renumbered — see the allocation
-rules in the scheme. The text under each ID is copied verbatim from
-`docs/DOMAIN_INVARIANTS.md`; only the ID heading lines were added.
+Index: [`docs/DOMAIN_INVARIANTS.md`](../DOMAIN_INVARIANTS.md) — every `INV-*` ID
+with a one-line description of what it covers. ID scheme and allocation rules:
+[`_PHASE1_SCHEME.md`](_PHASE1_SCHEME.md).
+
+Every heading below whose whole text is an `INV-*` ID defines that invariant. IDs
+are permanent: never renumbered, never reused. **The text under each ID is a
+verbatim move from the source document and must not be reworded in place** —
+only the ID heading lines were added.
 
 ## INV-MONEY-001
 

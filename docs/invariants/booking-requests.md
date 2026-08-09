@@ -2,20 +2,21 @@
 
 Audience: Developer, Agent.
 
-Index: [`docs/DOMAIN_INVARIANTS.md`](../DOMAIN_INVARIANTS.md) · Scheme and
-allocation rules: [`_PHASE1_SCHEME.md`](_PHASE1_SCHEME.md).
-
-Prefix defined in this file: **`INV-REQ`** (which of a Booking Officer's two
+Prefix defined in this file: **`INV-REQ`** — which of a Booking Officer's two
 notes a member reads, and what the member's own request area is allowed to say
-about a request's state).
+about a request's state.
 
 Read this file when you are changing booking-request notes and the member's own
 request area.
 
-Every `###` heading below is an invariant ID. IDs are permanent and are never
-renumbered — see the allocation rules in the scheme. The text under each ID is
-copied verbatim from `docs/DOMAIN_INVARIANTS.md`; only the ID heading lines were
-added.
+Index: [`docs/DOMAIN_INVARIANTS.md`](../DOMAIN_INVARIANTS.md) — every `INV-*` ID
+with a one-line description of what it covers. ID scheme and allocation rules:
+[`_PHASE1_SCHEME.md`](_PHASE1_SCHEME.md).
+
+Every heading below whose whole text is an `INV-*` ID defines that invariant. IDs
+are permanent: never renumbered, never reused. **The text under each ID is a
+verbatim move from the source document and must not be reworded in place** —
+only the ID heading lines were added.
 
 ## The officer-note split on booking requests (#2562)
 
