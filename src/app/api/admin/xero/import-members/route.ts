@@ -110,7 +110,30 @@ export async function POST(req: NextRequest) {
         request: getAuditRequestContext(req),
       }
     );
-    logger.info({ result }, "Member import from Xero completed");
+    // INV-PRIV-011 (#2683): log the tallies, never the result object. Its
+    // detail arrays (`createdMembers`, `linkedExistingDetails`,
+    // `skippedNoEmailDetails`, `errorDetails`, …) carry one member NAME and
+    // EMAIL per imported contact, so `{ result }` put the club's membership
+    // roll into the application log on every import. The counts are what an
+    // operator reads here; the per-contact detail is already returned to the
+    // admin UI in the response and recorded against the import's audit rows.
+    logger.info(
+      {
+        created: result.created,
+        createdAsDependent: result.createdAsDependent,
+        skippedExisting: result.skippedExisting,
+        linkedExisting: result.linkedExisting,
+        skippedNoEmail: result.skippedNoEmail,
+        skippedArchived: result.skippedArchived,
+        assignmentsCreated: result.assignmentsCreated,
+        keptExistingAssignments: result.keptExistingAssignments.length,
+        droppedDuplicates: result.droppedDuplicates.length,
+        memberCollisions: result.memberCollisions.length,
+        errors: result.errors,
+        groupsProcessed: result.groupsProcessed.length,
+      },
+      "Member import from Xero completed",
+    );
     return NextResponse.json(result);
   } catch (error) {
     if (error instanceof XeroMemberImportValidationError) {

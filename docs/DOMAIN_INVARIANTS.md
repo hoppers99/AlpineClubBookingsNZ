@@ -31,7 +31,7 @@ description, so you can find the right file without opening more than one.
 | [`subscription-lockout-pricing.md`](invariants/subscription-lockout-pricing.md) | `INV-LOCKOUT` | lapsed-subscription pricing, admin date overrides, retroactive creates, withheld email |
 | [`booking-policy-exceptions.md`](invariants/booking-policy-exceptions.md) | `INV-EXCEPT` | policy-exception requests and officer decisions on them |
 | [`additional-payment-chasing.md`](invariants/additional-payment-chasing.md) | `INV-ADDPAY` | an outstanding additional payment, quote/request holds, refund settlement |
-| [`analytics-and-privacy.md`](invariants/analytics-and-privacy.md) | `INV-PRIV` | analytics loading, the consent banner, the public Analytics preferences control, the analytics route policy, what leaves this application for Google |
+| [`analytics-and-privacy.md`](invariants/analytics-and-privacy.md) | `INV-PRIV` | analytics loading, the consent banner, the public Analytics preferences control, the analytics route policy, what leaves this application for Google, what personal data may appear in a log |
 | [`membership-lifecycle.md`](invariants/membership-lifecycle.md) | `INV-LIFE` (except `INV-LIFE-062`) | applications and nomination, cancellation, archive and deletion, roles and the admin lock-out guards, seasonal membership type and age tier, family groups, partner and parent/dependant links, email inheritance, inductions, member merge |
 | [`integrations.md`](invariants/integrations.md) | `INV-INT` | webhooks, cron idempotency, provider callbacks, Xero member grouping |
 | [`operations.md`](invariants/operations.md) | `INV-OPS` | raw SQL, row locking, deployment, dropping a column, what may be used as test input |
@@ -527,8 +527,8 @@ Prefix `INV-ADDPAY`.
 
 ## Analytics And Privacy
 
-Analytics loading and consent, and what this application is allowed to send to
-Google.
+Analytics loading and consent, what this application is allowed to send to
+Google, and what personal data may appear in a log.
 File:
 [`invariants/analytics-and-privacy.md`](invariants/analytics-and-privacy.md).
 Prefix `INV-PRIV`.
@@ -545,6 +545,7 @@ Prefix `INV-PRIV`.
 | `INV-PRIV-008` | Leaving the public website unmounts the runtime, sets the kill switch and queues a denial |
 | `INV-PRIV-009` | The per-browser choice stores the consent revision and surface; only an explicit action bumps it |
 | `INV-PRIV-010` | Every one of these fails closed, and the public website still renders normally |
+| `INV-PRIV-011` | Person fields are redacted everywhere; first names survive only in audit rows |
 
 ## Membership Lifecycle
 

@@ -183,6 +183,25 @@ function sanitizeAuditDetails(value?: string | null): string | undefined {
   return sanitizeAuditArchiveText(value) ?? undefined;
 }
 
+/**
+ * THIS IS THE ONE PLACE A FIRST NAME SURVIVES REDACTION — INV-PRIV-011 (#2683).
+ *
+ * The log/Sentry redactor (`src/lib/redact-sensitive-json.ts`) strips every
+ * person field: first name, last name, street and postal address, date of
+ * birth, gender and occupation. An `AuditLog` row is different in kind. It is a
+ * permission-gated, retention-classed database record whose job is to say who
+ * did what to whom, and the owner decided on 9 Aug 2026 — against the
+ * blanket-redaction recommendation — that a legible admin-action audit trail is
+ * worth more than a redacted forename in a row nobody can read without the
+ * permission. This schema holds no special-category data, which is what bounds
+ * the exposure.
+ *
+ * The boundary is this module, not anyone's intent: a value keeps its first
+ * name only by being written as an audit row through this file. There is no
+ * flag or "audit context" marker on the redactor for a later change to copy, so
+ * do not add `firstname` here as part of a tidy-up that makes the two key lists
+ * "consistent" — the difference is the decision. A named test pins it.
+ */
 function isSensitiveMetadataKey(key: string): boolean {
   const normalized = key.replace(/[^a-z0-9]/gi, "").toLowerCase();
 

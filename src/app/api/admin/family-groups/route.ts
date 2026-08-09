@@ -166,7 +166,13 @@ export async function POST(req: NextRequest) {
     details: JSON.stringify({ name, memberIds: uniqueIds }),
   });
 
-  logger.info({ groupId: group?.id, name, memberCount: uniqueIds.length }, "Family group created");
+  // INV-PRIV-011 (#2683): a family group's `name` is a household surname, so
+  // the log line carries the group id and the size instead. The name is on the
+  // audit row written just above, where reading it needs the permission.
+  logger.info(
+    { groupId: group?.id, memberCount: uniqueIds.length },
+    "Family group created"
+  );
 
   const response = group
     ? {

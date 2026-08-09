@@ -518,9 +518,26 @@ or provider identifiers from logs.
 
 Current mitigations include `redact-sensitive-json` coverage for known token URL
 patterns, URL-encoded callback paths, and redaction in webhook error recording.
+Since #2683 that redactor also strips person fields — first and last name,
+street and postal address, date of birth, gender and occupation — so a member
+record reaching a log line no longer prints in full. First names survive in one
+place only, the admin-action audit trail written through `src/lib/audit.ts`;
+that carve-out, its owner decision and its boundary are stated in
+[`INV-PRIV-011`](invariants/analytics-and-privacy.md#inv-priv-011). `name` is
+deliberately not redacted — it names lodges, rooms, templates and Xero groups —
+so a call site that records a person logs the id instead.
+
+The same change bounded the walk itself: it caps depth and marks a
+back-reference rather than recursing, because an unbounded walk over a
+self-referencing Prisma relation overflowed the stack from inside a logging
+call and took the process down with it. Truncation is always visible
+(`[TRUNCATED]`, `[Circular]`) so an operator can tell a cut branch from an
+absent one.
+
 Residual risk remains for new token patterns and provider payloads that do not
-pass through the same redaction path. #616 should include explicit provider
-payload log redaction checks.
+pass through the same redaction path — Xero's own `memberName` and bare `City`
+keys are two known examples the key denylist does not cover. #616 should include
+explicit provider payload log redaction checks.
 
 ### Compromised CI Secret Or Deployment Secret
 

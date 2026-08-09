@@ -7,6 +7,7 @@ import {
   getAuditRetentionExpiresAt,
   sanitizeAuditMetadata,
 } from "@/lib/audit";
+import { redactSensitiveJson } from "@/lib/redact-sensitive-json";
 
 vi.mock("@/lib/prisma", () => ({
   prisma: {
@@ -290,6 +291,32 @@ describe("audit helper", () => {
         { AND: [{ subjectMemberId: null }, { memberId: "member-1" }] },
         { AND: [{ subjectMemberId: null }, { targetId: "member-1" }] },
       ],
+    });
+  });
+
+  // INV-PRIV-011 (#2683). This assertion is the whole exception, in both
+  // directions at once: the log/Sentry redactor strips a first name and the
+  // admin-action audit writer keeps one. It fails if a later change makes the
+  // two key lists "consistent" in either direction — adding firstName to
+  // audit.ts's sensitive keys, or dropping it from the log redactor's denylist
+  // so it becomes visible everywhere.
+  it("keeps a first name in an audit row while the log redactor strips it", () => {
+    const person = {
+      firstName: "Jane",
+      lastName: "Doe",
+      streetAddressLine1: "12 Example Street",
+    };
+
+    expect(sanitizeAuditMetadata(person)).toEqual({
+      firstName: "Jane",
+      lastName: "Doe",
+      streetAddressLine1: "12 Example Street",
+    });
+
+    expect(redactSensitiveJson(person)).toEqual({
+      firstName: "[REDACTED]",
+      lastName: "[REDACTED]",
+      streetAddressLine1: "[REDACTED]",
     });
   });
 });

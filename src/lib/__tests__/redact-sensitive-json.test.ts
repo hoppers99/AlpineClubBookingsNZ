@@ -284,6 +284,197 @@ describe("redact-sensitive-json", () => {
     );
   });
 
+  // #2683 problem 1: the walk had no depth limit and no circular guard, so a
+  // Prisma result with a self-referencing relation overflowed the stack from
+  // inside a logging call. Both tests below throw
+  // "Maximum call stack size exceeded" against the pre-fix redactor.
+  describe("recursion guards", () => {
+    function selfReferencingPrismaResult() {
+      const member: Record<string, unknown> = {
+        id: "cmqdxeu50002101n22w2ivcas",
+        firstName: "Jane",
+      };
+      const familyGroup: Record<string, unknown> = {
+        id: "cmp20vk3t00q12345678npunsc",
+        memberships: [member],
+      };
+      member.familyGroup = familyGroup;
+      return member;
+    }
+
+    it("completes on a circular object and marks the back-reference", () => {
+      expect(redactSensitiveJson(selfReferencingPrismaResult())).toEqual({
+        id: "cmqdxeu50002101n22w2ivcas",
+        firstName: "[REDACTED]",
+        familyGroup: {
+          id: "cmp20vk3t00q12345678npunsc",
+          // Visible, not dropped: the reader is told the branch looped back.
+          memberships: ["[Circular]"],
+        },
+      });
+    });
+
+    it("formats a circular object without throwing", () => {
+      expect(
+        formatRedactedJson(selfReferencingPrismaResult())
+      ).toContain('"memberships": [');
+      expect(formatRedactedJson(selfReferencingPrismaResult())).toContain(
+        "[Circular]"
+      );
+    });
+
+    it("truncates below the depth cap and says so in the output", () => {
+      expect(
+        redactSensitiveJson({
+          l0: { l1: { l2: { l3: { l4: { l5: { l6: "too deep" } } } } } },
+        })
+      ).toEqual({
+        l0: { l1: { l2: { l3: { l4: { l5: "[TRUNCATED]" } } } } },
+      });
+    });
+
+    it("keeps a scalar sitting at the cap, truncating only structure", () => {
+      // The value is at the same depth as the truncated object above, but a
+      // leaf carries the error context a log exists to capture, so only the
+      // structure wrapped around one is cut.
+      expect(
+        redactSensitiveJson({
+          l0: { l1: { l2: { l3: { l4: { l5: "still here" } } } } },
+        })
+      ).toEqual({
+        l0: { l1: { l2: { l3: { l4: { l5: "still here" } } } } },
+      });
+    });
+
+    it("renders a shared object twice rather than calling it circular", () => {
+      // Two siblings pointing at one lodge is not a cycle. The guard tracks the
+      // ancestor path, so neither copy is blanked — a repeat-visit guard would
+      // have replaced the second with "[Circular]" and hidden real context.
+      const lodge = { id: "cmp20vk3t00q12345678npunsc", beds: 12 };
+
+      expect(
+        redactSensitiveJson({ arrival: { lodge }, departure: { lodge } })
+      ).toEqual({
+        arrival: { lodge: { id: "cmp20vk3t00q12345678npunsc", beds: 12 } },
+        departure: { lodge: { id: "cmp20vk3t00q12345678npunsc", beds: 12 } },
+      });
+    });
+
+    it("bounds a circular object nested inside a JSON-shaped string", () => {
+      // redactSensitiveText and redactSensitiveJson call each other, so the
+      // depth has to survive the hop through JSON.parse.
+      const payload: Record<string, unknown> = { depth: 1 };
+      payload.self = payload;
+
+      expect(() =>
+        redactSensitiveJson({ note: '500: {"a":{"b":{"c":1}}}', payload })
+      ).not.toThrow();
+    });
+  });
+
+  // #2683 problem 2 (INV-PRIV-011).
+  describe("person fields", () => {
+    it("redacts name, address, date of birth, gender and occupation", () => {
+      expect(
+        redactSensitiveJson({
+          memberId: "cmqdxeu50002101n22w2ivcas",
+          firstName: "Jane",
+          lastName: "Doe",
+          streetAddressLine1: "12 Example Street",
+          streetCity: "Tokoroa",
+          streetPostalCode: "3420",
+          postalAddressLine1: "PO Box 5",
+          dateOfBirth: "1990-04-01",
+          dob: "1990-04-01",
+          gender: "FEMALE",
+          occupation: "Alpine guide",
+        })
+      ).toEqual({
+        memberId: "cmqdxeu50002101n22w2ivcas",
+        firstName: "[REDACTED]",
+        lastName: "[REDACTED]",
+        streetAddressLine1: "[REDACTED]",
+        streetCity: "[REDACTED]",
+        streetPostalCode: "[REDACTED]",
+        postalAddressLine1: "[REDACTED]",
+        dateOfBirth: "[REDACTED]",
+        dob: "[REDACTED]",
+        gender: "[REDACTED]",
+        occupation: "[REDACTED]",
+      });
+    });
+
+    it("catches person fields under a prefix and in Xero's own casing", () => {
+      expect(
+        redactSensitiveJson({
+          memberFirstName: "Jane",
+          actor_last_name: "Doe",
+          Contact: {
+            FirstName: "Jane",
+            LastName: "Doe",
+            Addresses: [
+              { AddressType: "STREET", AddressLine1: "12 Example Street" },
+            ],
+          },
+        })
+      ).toEqual({
+        memberFirstName: "[REDACTED]",
+        actor_last_name: "[REDACTED]",
+        Contact: {
+          FirstName: "[REDACTED]",
+          LastName: "[REDACTED]",
+          Addresses: [
+            { AddressType: "STREET", AddressLine1: "[REDACTED]" },
+          ],
+        },
+      });
+    });
+
+    it("redacts person fields in JSON-shaped text that does not parse", () => {
+      expect(
+        redactSensitiveText(
+          'failed on {"firstName":"Jane","lastName":"Doe","streetAddressLine1":"12 Example Street","dateOfBirth":"1990-04-01"'
+        )
+      ).toBe(
+        'failed on {"firstName":"[REDACTED]","lastName":"[REDACTED]","streetAddressLine1":"[REDACTED]","dateOfBirth":"[REDACTED]"'
+      );
+    });
+
+    it("leaves `name` alone — it is lodges, rooms and templates, not people", () => {
+      // Deliberate, and load-bearing: xero-operation-summaries.ts reads group
+      // names straight out of an already-redacted payload. Person names are
+      // caught by the firstName/lastName fragments instead, and a call site
+      // that wants to record a person logs the id. See INV-PRIV-011.
+      expect(
+        redactSensitiveJson({
+          lodge: { id: "cmp20vk3t00q12345678npunsc", name: "Alpine Lodge" },
+          room: { name: "Bunk Room" },
+          defaultGroup: { name: "Members - Adult" },
+        })
+      ).toEqual({
+        lodge: { id: "cmp20vk3t00q12345678npunsc", name: "Alpine Lodge" },
+        room: { name: "Bunk Room" },
+        defaultGroup: { name: "Members - Adult" },
+      });
+    });
+
+    it("does not let the new person keys mangle identifiers", () => {
+      // The 8+ digit carve-out and the cuid-safety rule still hold with the
+      // person keys added; a key that merely CONTAINS an id stays intact.
+      expect(
+        redactSensitiveJson({
+          originalOperationId: "cmqdxeu50002101n22w2ivcas",
+          firstNameSourceId: "cmp20vk3t00q12345678npunsc",
+        })
+      ).toEqual({
+        originalOperationId: "cmqdxeu50002101n22w2ivcas",
+        // The key contains "firstname", so it is redacted by the denylist —
+        // the point of this assertion is that the OTHER id is untouched.
+        firstNameSourceId: "[REDACTED]",
+      });
+    });
+  });
+
   it("redacts OAuth callback code and state in structured query params", () => {
     expect(
       redactSensitiveQueryParams({
