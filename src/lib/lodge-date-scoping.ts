@@ -4,7 +4,10 @@ import { lodgeNullTolerantScope } from "@/lib/lodges";
 import { checkinNotBlockedByPendingReviewFilter } from "@/lib/booking-review";
 import { OPERATIONALLY_PRESENT_GUEST_WHERE } from "@/lib/member-guest-consent";
 import type { Prisma } from "@prisma/client";
-import { isGuestOperationallyPresentOnDay } from "@/lib/booking-guest-stay-ranges";
+import {
+  isGuestDepartureMorning,
+  isGuestOperationallyPresentOnDay,
+} from "@/lib/booking-guest-stay-ranges";
 
 // PRE-EXISTING DIVERGENCE, PRESERVED ON PURPOSE (#2622): this alias is a
 // separate name for the same list as `OPERATIONAL_STAY_BOOKING_STATUSES`, and
@@ -71,17 +74,35 @@ export async function findLodgeGuestForDate(
   });
 }
 
+/**
+ * The guest who may be marked departed on exactly this date.
+ *
+ * Still the narrow "you leave on one specific day" rule of the comment above —
+ * it is NOT the roster's "was this person in the building this morning?". What
+ * changed in #2628 is that a stay can have MORE THAN ONE departure day. The
+ * query used to be keyed `stayEnd: date`, and `stayEnd` is the morning after the
+ * guest's LAST night, so a guest booked on nights {10, 12} could only ever be
+ * marked departed on the 13th — the officer had no way to record that they left
+ * on the 11th and came back on the 12th.
+ *
+ * So the SQL filter is now the coarse envelope (which must contain any departure
+ * morning) and the authoritative decision is `isGuestDepartureMorning` applied
+ * to the loaded night rows — the same load-coarse-then-decide-in-code shape
+ * `validateRosterAllocationsForDate` uses below. For a contiguous stay the two
+ * are the same date, and for a guest carrying no night rows the helper falls
+ * back to the envelope and yields `stayEnd` alone, so neither case moves.
+ */
 export async function findLodgeGuestDepartingOnDate(
   bookingGuestId: string,
   date: Date,
   lodgeId?: string,
   db: Prisma.TransactionClient | typeof prisma = prisma,
 ) {
-  return db.bookingGuest.findFirst({
+  const guest = await db.bookingGuest.findFirst({
     where: {
       id: bookingGuestId,
       stayStart: { lte: date },
-      stayEnd: date,
+      stayEnd: { gte: date },
       // D-12 (#2307): the depart endpoint gets the same treatment as arrive —
       // an unconsented guest resolves to null and the endpoint 404s.
       ...OPERATIONALLY_PRESENT_GUEST_WHERE,
@@ -104,13 +125,23 @@ export async function findLodgeGuestDepartingOnDate(
       memberId: true,
       arrivedAt: true,
       departedAt: true,
+      stayStart: true,
+      stayEnd: true,
+      nights: { select: { stayDate: true } },
       booking: {
         select: {
           memberId: true,
+          checkIn: true,
+          checkOut: true,
         },
       },
     },
   });
+
+  if (!guest || !isGuestDepartureMorning(guest, date, guest.booking)) {
+    return null;
+  }
+  return guest;
 }
 
 /**

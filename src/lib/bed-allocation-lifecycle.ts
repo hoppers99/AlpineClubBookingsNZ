@@ -676,9 +676,17 @@ async function loadBookingForBedAllocation(
 }
 
 /**
- * The dates a guest actually stays within a date range (issue #713). Uses the
- * explicit night set when present; otherwise the contiguous stayStart/stayEnd
- * range clamped to the range — the pre-#713 behaviour.
+ * The dates a guest actually stays within a date range (issue #713).
+ *
+ * Reads the explicit `BookingGuestNight` set and NOTHING ELSE. There is no
+ * envelope fallback — the docstring used to promise one and the body never had
+ * it (#2628) — and adding one now would be a behaviour change, not a fix: this
+ * feeds both the auto-placement demand AND `pruneAllocationsForBooking`'s diff,
+ * so a guest with no night rows must contribute no nights on both sides or the
+ * lifecycle would place rows it then immediately sweeps back off.
+ * `getExplicitGuestBedNightKeys` is the same rule in the canonical helper
+ * module; this one stays on `Date` values because its callers key Prisma
+ * `stayDate` filters off them.
  */
 function getGuestNightDatesInRange(
   guest: { stayStart: Date; stayEnd: Date; nights?: { stayDate: Date }[] },
