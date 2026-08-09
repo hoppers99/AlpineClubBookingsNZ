@@ -30,20 +30,40 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
  * Closing a task whose subject is resolved moves no money; the refund it
  * records was #1350's behaviour and is not introduced here.
  *
+ * AND THE CLOSE ONLY COVERS ONE ORDERING, WHICH IS WHY THE RAISE IS ALSO
+ * FENCED. The close catches a webhook that arrives after the task exists. The
+ * reverse interleaving is just as producible: the confirm route reads the
+ * transaction's status once, then spends a Stripe round trip in
+ * `getPaymentIntent`, and a webhook that completes entirely inside that window
+ * refunds the capture and returns 200 before the route looks again. The route's
+ * already-captured early return no longer fires, `markPaymentIntentTransaction-
+ * Succeeded` writes SUCCEEDED back over the REFUNDED status, and a raise there
+ * queues an operator to hand back money Stripe already returned — a task that
+ * cannot even be completed, because `applyLocalRefundAllocation` throws "Refund
+ * amount exceeds captured payments". So the raise re-reads the transaction under
+ * the same lock and skips. `refundedAmountCents` is the field that decides it,
+ * not `status`, precisely because the status is the thing that got overwritten.
+ *
  * MUTATION PROOF. Drop the `findFirst` pre-check in
  * `raiseDeletedBookingModificationRefundTask` and "raises exactly one task when
  * the same capture is confirmed twice" fails. Drop `pg_advisory_xact_lock(1)`
  * and "takes the global settlement lock before the find-then-create" fails.
- * Widen the close's `where` to drop `reason` and "never closes an unrelated
- * ManualRefundTask on the same booking" fails; drop `status: OPEN` and "claims
- * nothing on a replay" fails. Change `DISMISSED` to `COMPLETED` and "closes it
- * as DISMISSED, which writes no refund allocation" fails.
+ * Drop the refund fence and "raises nothing for a capture Stripe has already
+ * refunded" fails; fence it on `status` alone instead of `refundedAmountCents`
+ * and "still skips when the status was overwritten back to SUCCEEDED" fails;
+ * move the fence outside the lock and "reads the refund state under the same
+ * lock as the raise" fails. Widen the close's `where` to drop `reason` and
+ * "never closes an unrelated ManualRefundTask on the same booking" fails; drop
+ * `status: OPEN` and "claims nothing on a replay" fails. Change `DISMISSED` to
+ * `COMPLETED` and "closes it as DISMISSED, which writes no refund allocation"
+ * fails.
  */
 
 const mocks = vi.hoisted(() => ({
   manualRefundTaskFindFirst: vi.fn(),
   manualRefundTaskCreate: vi.fn(),
   manualRefundTaskUpdateMany: vi.fn(),
+  paymentTransactionFindUnique: vi.fn(),
   executeRaw: vi.fn(),
   transaction: vi.fn(),
 }));
@@ -75,6 +95,10 @@ const tx = {
     findFirst: (...args: unknown[]) => mocks.manualRefundTaskFindFirst(...args),
     create: (...args: unknown[]) => mocks.manualRefundTaskCreate(...args),
   },
+  paymentTransaction: {
+    findUnique: (...args: unknown[]) =>
+      mocks.paymentTransactionFindUnique(...args),
+  },
 };
 
 function raise() {
@@ -103,13 +127,19 @@ beforeEach(() => {
   mocks.manualRefundTaskFindFirst.mockResolvedValue(null);
   mocks.manualRefundTaskCreate.mockResolvedValue({ id: "task-1" });
   mocks.manualRefundTaskUpdateMany.mockResolvedValue({ count: 1 });
+  // The ordinary state at the moment of the raise: captured, nothing refunded.
+  mocks.paymentTransactionFindUnique.mockResolvedValue({
+    status: "SUCCEEDED",
+    refundedAmountCents: 0,
+    amountCents: AMOUNT_CENTS,
+  });
 });
 
 describe("raiseDeletedBookingModificationRefundTask (#2700)", () => {
   it("raises an OPEN task carrying the booking, payment and captured amount", async () => {
     const result = await raise();
 
-    expect(result).toEqual({ taskId: "task-1", created: true });
+    expect(result).toEqual({ taskId: "task-1", created: true, alreadyRefunded: false });
     expect(mocks.manualRefundTaskCreate).toHaveBeenCalledTimes(1);
     expect(mocks.manualRefundTaskCreate.mock.calls[0][0]).toMatchObject({
       data: {
@@ -165,7 +195,11 @@ describe("raiseDeletedBookingModificationRefundTask (#2700)", () => {
 
     const result = await raise();
 
-    expect(result).toEqual({ taskId: "task-existing", created: false });
+    expect(result).toEqual({
+      taskId: "task-existing",
+      created: false,
+      alreadyRefunded: false,
+    });
     expect(mocks.manualRefundTaskCreate).not.toHaveBeenCalled();
     expect(mocks.manualRefundTaskFindFirst).toHaveBeenCalledWith({
       where: {
@@ -194,6 +228,89 @@ describe("raiseDeletedBookingModificationRefundTask (#2700)", () => {
     expect(
       mocks.executeRaw.mock.invocationCallOrder[0],
     ).toBeLessThan(mocks.manualRefundTaskFindFirst.mock.invocationCallOrder[0]);
+  });
+
+  it("raises nothing for a capture Stripe has already refunded", async () => {
+    // THE REVERSE INTERLEAVING. The webhook refunded the capture inside the
+    // confirm route's own Stripe round trip, so the close ran before there was
+    // a task to close and Stripe will not redeliver. Without this fence the
+    // operator gets an OPEN task for money already returned — and completing it
+    // throws out of `applyLocalRefundAllocation`, so it looks unresolvable.
+    mocks.paymentTransactionFindUnique.mockResolvedValue({
+      status: "REFUNDED",
+      refundedAmountCents: AMOUNT_CENTS,
+      amountCents: AMOUNT_CENTS,
+    });
+
+    const result = await raise();
+
+    expect(result).toEqual({
+      taskId: null,
+      created: false,
+      alreadyRefunded: true,
+    });
+    expect(mocks.manualRefundTaskCreate).not.toHaveBeenCalled();
+  });
+
+  it("still skips when the status was overwritten back to SUCCEEDED", async () => {
+    // The producible shape, and the reason `refundedAmountCents` decides this
+    // rather than `status`: `markPaymentIntentTransactionSucceeded` writes
+    // SUCCEEDED over the REFUNDED status but never touches the refunded total,
+    // so by the time the raise looks, the status is the field that is lying.
+    mocks.paymentTransactionFindUnique.mockResolvedValue({
+      status: "SUCCEEDED",
+      refundedAmountCents: AMOUNT_CENTS,
+      amountCents: AMOUNT_CENTS,
+    });
+
+    const result = await raise();
+
+    expect(result.alreadyRefunded).toBe(true);
+    expect(mocks.manualRefundTaskCreate).not.toHaveBeenCalled();
+  });
+
+  it("still raises for a PARTIAL refund that does not cover the capture", async () => {
+    // The complement. A partial refund leaves money the club is still holding
+    // against a deleted booking, which is exactly what the task is for — and
+    // `PARTIALLY_REFUNDED` alone is not enough to conclude "settled".
+    mocks.paymentTransactionFindUnique.mockResolvedValue({
+      status: "SUCCEEDED",
+      refundedAmountCents: AMOUNT_CENTS - 1,
+      amountCents: AMOUNT_CENTS,
+    });
+
+    const result = await raise();
+
+    expect(result.alreadyRefunded).toBe(false);
+    expect(mocks.manualRefundTaskCreate).toHaveBeenCalledTimes(1);
+  });
+
+  it("reads the refund state under the same lock as the raise", async () => {
+    // Outside the lock it is a stale read: a refund committing between the
+    // check and the create is exactly the interleaving being fenced.
+    await raise();
+
+    expect(mocks.paymentTransactionFindUnique).toHaveBeenCalledWith({
+      where: { stripePaymentIntentId: INTENT_ID },
+      select: { status: true, refundedAmountCents: true, amountCents: true },
+    });
+    expect(mocks.executeRaw.mock.invocationCallOrder[0]).toBeLessThan(
+      mocks.paymentTransactionFindUnique.mock.invocationCallOrder[0],
+    );
+    expect(
+      mocks.paymentTransactionFindUnique.mock.invocationCallOrder[0],
+    ).toBeLessThan(mocks.manualRefundTaskCreate.mock.invocationCallOrder[0]);
+  });
+
+  it("raises normally when there is no transaction row to read", async () => {
+    // A missing row is not evidence of a refund. Refusing to raise there would
+    // trade one silent hole for another.
+    mocks.paymentTransactionFindUnique.mockResolvedValue(null);
+
+    const result = await raise();
+
+    expect(result.created).toBe(true);
+    expect(mocks.manualRefundTaskCreate).toHaveBeenCalledTimes(1);
   });
 
   it("does not confuse another booking's task for this one", async () => {

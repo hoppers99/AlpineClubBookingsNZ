@@ -4,7 +4,7 @@ import {
   PaymentStatus,
   type Prisma,
 } from "@prisma/client";
-import { createAuditLog } from "@/lib/audit";
+import { createAuditLog, logAudit } from "@/lib/audit";
 import { deleteDraftBookingDependents } from "@/lib/draft-booking-cleanup";
 import logger from "@/lib/logger";
 import { markPaymentIntentTransactionFailed } from "@/lib/payment-transactions";
@@ -173,7 +173,11 @@ async function softDeleteCancelledBooking(
   // against it. See `cancelInFlightPaymentIntentsAfterSoftDelete` for why this
   // is here at all and why it runs AFTER the commit.
   if (outcome.result.status === 200) {
-    await cancelInFlightPaymentIntentsAfterSoftDelete(bookingId, outcome.payment);
+    await cancelInFlightPaymentIntentsAfterSoftDelete(
+      bookingId,
+      outcome.payment,
+      actor
+    );
   }
 
   return outcome.result;
@@ -233,10 +237,22 @@ type SoftDeleteOutcome = {
  * transaction FAILED there would write a lie that the confirm endpoint would
  * then have to overwrite. `markPaymentIntentTransactionFailed` additionally
  * refuses to move an already-captured row, so the two guards agree.
+ *
+ * A FAILURE IS AUDITED, NOT ONLY LOGGED. Swallowing the error is right (see
+ * above), but swallowing it into a log line alone left the one outcome anybody
+ * needs to act on — "the window did not close, money may still be capturable
+ * against a booking that no longer exists" — visible only to whoever greps the
+ * server log. The soft-delete's own audit entry is written INSIDE the
+ * transaction, before Stripe is called, so it cannot carry this; a second entry
+ * with `outcome: "failure"` is written here instead, and lands on the same
+ * `/admin/audit-log` screen as the deletion it belongs to. `logAudit` is
+ * fire-and-forget by construction, so auditing the failure cannot itself become
+ * a new way for this best-effort path to throw.
  */
 async function cancelInFlightPaymentIntentsAfterSoftDelete(
   bookingId: string,
-  payment: BookingForDelete["payment"] | null
+  payment: BookingForDelete["payment"] | null,
+  actor: BookingDeleteActor
 ): Promise<void> {
   if (!payment) return;
 
@@ -275,6 +291,26 @@ async function cancelInFlightPaymentIntentsAfterSoftDelete(
         { err, bookingId, paymentIntentId },
         "Soft-deleted booking: FAILED to cancel an in-flight PaymentIntent - money may still be capturable against a deleted booking"
       );
+      logAudit({
+        action: "booking.delete.payment_intent_cancel.failed",
+        memberId: actor.memberId,
+        targetId: bookingId,
+        entityType: "Booking",
+        entityId: bookingId,
+        category: "payment",
+        severity: "critical",
+        outcome: "failure",
+        summary:
+          "Could not cancel an in-flight PaymentIntent after soft-deleting a booking",
+        details:
+          "The booking is deleted, but its Stripe PaymentIntent could not be cancelled, so a capture against the deleted booking is still possible. If one lands it is recorded and raised as a manual refund task (INV-ADDPAY-036); check Stripe for this intent.",
+        metadata: {
+          paymentIntentId,
+          paymentId: payment.id,
+          error: err instanceof Error ? err.message : String(err),
+        },
+        ipAddress: actor.ipAddress ?? undefined,
+      });
     }
   }
 }

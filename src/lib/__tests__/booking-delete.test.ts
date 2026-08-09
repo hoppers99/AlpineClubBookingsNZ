@@ -26,6 +26,10 @@ const mocks = vi.hoisted(() => ({
   // the new behaviour deserves assertions rather than an accident.
   cancelPaymentIntentIfCancellableWithResult: vi.fn(),
   markPaymentIntentTransactionFailed: vi.fn(),
+  // #2700 — a cancellation that FAILS is audited as well as logged. The
+  // soft-delete's own audit entry is written inside the transaction, before
+  // Stripe is called, so it cannot carry this outcome.
+  logAudit: vi.fn(),
 }));
 
 const mockTx = {
@@ -125,6 +129,7 @@ vi.mock("@/lib/prisma", () => ({
 
 vi.mock("@/lib/audit", () => ({
   createAuditLog: mocks.createAuditLog,
+  logAudit: mocks.logAudit,
 }));
 
 vi.mock("@/lib/stripe", () => ({
@@ -876,6 +881,60 @@ describe("deleteBooking — soft-delete cancels in-flight PaymentIntents (#2700)
       status: 200,
       data: { mode: "soft-delete" },
     });
+  });
+
+  it("audits the failure, so a window that did not close is not a log line only", async () => {
+    // Swallowing the error is right — see above — but swallowing it into the
+    // server's own diary left the one outcome anybody needs to act on visible
+    // to nobody: the admin gets a plain 200 and the changelog tells them the
+    // payment was cancelled. The soft-delete's own audit entry is written
+    // inside the transaction, BEFORE Stripe is called, so it cannot carry this;
+    // a second entry does, and lands on the same /admin/audit-log screen.
+    mocks.cancelPaymentIntentIfCancellableWithResult.mockRejectedValue(
+      new Error("Stripe is down")
+    );
+    mocks.bookingFindUnique.mockResolvedValue(
+      makeBooking({
+        status: "CANCELLED",
+        draftExpiresAt: null,
+        payment: paymentWith({ additionalPaymentIntentId: "pi_modification" }),
+      })
+    );
+
+    await softDelete();
+
+    expect(mocks.logAudit).toHaveBeenCalledTimes(1);
+    expect(mocks.logAudit).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: "booking.delete.payment_intent_cancel.failed",
+        outcome: "failure",
+        severity: "critical",
+        category: "payment",
+        entityType: "Booking",
+        entityId: "booking-1",
+        memberId: "admin-1",
+        metadata: expect.objectContaining({
+          paymentIntentId: "pi_modification",
+          paymentId: "payment-1",
+        }),
+      })
+    );
+  });
+
+  it("audits nothing extra when the cancellation succeeds", async () => {
+    // The complement. An audit row for every deletion would bury the one that
+    // matters.
+    mocks.bookingFindUnique.mockResolvedValue(
+      makeBooking({
+        status: "CANCELLED",
+        draftExpiresAt: null,
+        payment: paymentWith({ additionalPaymentIntentId: "pi_modification" }),
+      })
+    );
+
+    await softDelete();
+
+    expect(mocks.logAudit).not.toHaveBeenCalled();
   });
 
   it("cancels intents only AFTER the deletion has committed", async () => {

@@ -214,8 +214,21 @@ export const AUDIT_CENSUS_TOTALS = {
    * `createAuditLog` 108, `auditLog.create` 70, `createStructuredAuditLog` 8,
    * uncategorised 0 — unchanged, because #2670 and #2677 add no audit writer
    * between them. `filesScanned` moved 1894 -> 1895 for #2670's new module.
+   *
+   * 427 -> 428 (#2700): soft-deleting a cancelled booking now asks Stripe to
+   * cancel the booking's in-flight PaymentIntents after the transaction
+   * commits, and a cancellation that FAILS writes
+   * `booking.delete.payment_intent_cancel.failed`. That outcome — the booking is
+   * gone but money can still be captured against it — was previously visible
+   * only in the server log, and the soft-delete's own audit entry is written
+   * inside the transaction BEFORE Stripe is called, so it cannot carry it.
+   * `logAudit`, because the whole cancellation path is deliberately
+   * best-effort and auditing the failure must not become a new way for it to
+   * throw. Categorised `payment` at the site, so it does not join
+   * `UNCATEGORISED_AUDIT_WRITERS` below, and it carries
+   * `entityType`/`entityId` so it correlates to the booking.
    */
-  writeSites: 427,
+  writeSites: 428,
   /**
    * Of those, sites whose event object carries no `category` key.
    *
@@ -236,7 +249,14 @@ export const AUDIT_CENSUS_TOTALS = {
     // see `createAuditLog` below. Fire-and-forget was right while it was only a
     // notification and wrong once a repair depended on it.
     // 240 -> 241 (#2581 child 2): the bulk-update split, above.
-    logAudit: { total: 241, uncategorised: 0 },
+    // 241 -> 242 (#2700): `booking.delete.payment_intent_cancel.failed`, above.
+    // `logAudit` rather than an awaited `createAuditLog` on purpose, and the
+    // reasoning is the inverse of #2649's conversion below: nothing depends on
+    // this row existing before the response is written, and the block it sits
+    // in is the one path in the delete that must never throw — the booking is
+    // already durably deleted, so an error there would tell the admin the
+    // deletion failed and invite a retry that answers 409.
+    logAudit: { total: 242, uncategorised: 0 },
     // 101 -> 102 (#2627): the deletion-approval release, above.
     // 102 -> 104 (#2595): the two reviewed-move writes, above.
     // 104 -> 105 (#2649): the return-to-waitlist repair, above.
@@ -328,7 +348,14 @@ export const AUDIT_CENSUS_TOTALS = {
     // billing, member credit, fee configuration, saved-card charges and the five
     // Stripe webhook outcomes. `payment` is `support` plus `finance`, the
     // narrowest genuine gate for money evidence.
-    payment: 33,
+    // 33 -> 34 (#2700): `booking.delete.payment_intent_cancel.failed`. The row
+    // says money may still be capturable against a booking that no longer
+    // exists, which is finance evidence rather than booking history, so it
+    // takes the same `support` + `finance` gate as the other money rows. It
+    // widens nobody's access: whoever has to act on it — cancel the intent by
+    // hand in Stripe, or wait for the manual refund task the capture would
+    // raise — already holds `finance`.
+    payment: 34,
     // 27 -> 34 (#2581 child 2): the five family-group writers and the two
     // dependants writers. Both dependants writers also moved off a hand-built
     // Prisma literal and onto the audit boundary in the same change.

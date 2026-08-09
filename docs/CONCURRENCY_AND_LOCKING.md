@@ -2167,14 +2167,26 @@ it joins this cohort rather than minting a keyspace — and specifically the coh
 the key because the write is a find-then-create, which is not atomic on its own:
 two simultaneous confirms of one capture would otherwise raise two OPEN tasks,
 and two operators would refund one payment twice. It takes `lock(1)` and
-**nothing else**, holds it across exactly two statements, joins no capacity or
+**nothing else**, holds it across exactly three statements, joins no capacity or
 member-credit tier, and every Stripe call on that path is made by its caller
 outside the transaction — so it composes with nothing and reverses no order.
+
+The third statement is a **refund fence**, and it is why the read must be inside
+this lock rather than beside it. The transaction row for this intent is re-read
+under the key and the raise is skipped when Stripe has already refunded the
+capture — `refundedAmountCents >= amountCents`, which is the field that survives
+`markPaymentIntentTransactionSucceeded` writing `SUCCEEDED` back over a
+`REFUNDED` status. Read outside the lock it would be stale exactly in the
+interleaving it exists to catch: a webhook refund committing between the check
+and the create.
 
 Its counterpart writer takes **no** lock at all and deliberately so:
 `closeDeletedBookingModificationRefundTaskAfterAutomaticRefund` is a
 status-fenced `updateMany` on `OPEN`, which is its own claim. A webhook replay,
-or an operator who closed the task first, simply claims nothing.
+or an operator who closed the task first, simply claims nothing. That close
+covers only one ordering — a webhook arriving after the task exists — which is
+the whole reason the fence above is inside the lock: the reverse interleaving
+has no task for the close to claim.
 
 Note what `softDeleteCancelledBooking` does NOT do here. It cancels the deleted
 booking's in-flight Stripe PaymentIntents **after** its transaction commits,

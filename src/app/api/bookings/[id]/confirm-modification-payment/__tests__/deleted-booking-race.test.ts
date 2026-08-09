@@ -24,18 +24,31 @@ import { NextRequest } from "next/server";
  * than surfacing it. Pinned below by asserting the refund path is never
  * reached.
  *
- * MUTATION PROOF. Delete the `if (payment.booking.deletedAt)` block and
- * "records the payment AND raises an OPEN ManualRefundTask" fails by name.
- * Replace it with a 404 refusal and "records the capture even though the
- * booking is gone" fails. Move the task raise ABOVE
- * `markPaymentIntentTransactionSucceeded` and "records the money before
- * queueing the human decision" fails. Remove the try/catch around the raise and
- * "still reports success when the task cannot be raised" fails.
+ * THE FLAG IS READ TWICE, AND BOTH READS ARE LOAD-BEARING. The opening read
+ * happens before `getPaymentIntent` — a live Stripe round trip — so deciding
+ * from it alone handles only ONE of the two orderings of the very race this
+ * endpoint exists for: booking already deleted when we looked. The other
+ * ordering, deleted WHILE we were talking to Stripe, recorded the capture and
+ * raised nothing, which is the state `INV-ADDPAY-036` promises cannot occur. A
+ * re-read immediately before the decision closes it. Either read seeing a
+ * deletion is enough, because nothing in the tree un-deletes a booking.
+ *
+ * MUTATION PROOF. Delete the `if (deletedAt)` block and "records the payment AND
+ * raises an OPEN ManualRefundTask" fails by name. Replace it with a 404 refusal
+ * and "records the capture even though the booking is gone" fails. Move the task
+ * raise ABOVE `markPaymentIntentTransactionSucceeded` and "records the money
+ * before queueing the human decision" fails. Remove the try/catch and "still
+ * reports success when the task cannot be raised" fails. Drop the re-read and
+ * decide from the opening read alone, and "raises the task when the booking is
+ * deleted DURING the Stripe round trip" fails. Move the re-read above
+ * `markPaymentIntentTransactionSucceeded` and "re-reads the flag only after the
+ * money is recorded" fails.
  */
 const mocks = vi.hoisted(() => ({
   auth: vi.fn(),
   requireActiveSessionUser: vi.fn(),
   paymentFindUnique: vi.fn(),
+  bookingFindUnique: vi.fn(),
   getPaymentIntent: vi.fn(),
   findPaymentTransactionByIntentId: vi.fn(),
   markPaymentIntentTransactionSucceeded: vi.fn(),
@@ -54,6 +67,9 @@ vi.mock("@/lib/prisma", () => ({
   prisma: {
     payment: {
       findUnique: (...args: unknown[]) => mocks.paymentFindUnique(...args),
+    },
+    booking: {
+      findUnique: (...args: unknown[]) => mocks.bookingFindUnique(...args),
     },
   },
 }));
@@ -142,7 +158,14 @@ beforeEach(() => {
     payment_method: "pm_1",
   });
   mocks.markPaymentIntentTransactionSucceeded.mockResolvedValue({});
-  mocks.raiseTask.mockResolvedValue({ taskId: "task-1", created: true });
+  // The re-read's default answer is "still live", so every pre-existing case
+  // below keeps testing exactly what it did before.
+  mocks.bookingFindUnique.mockResolvedValue({ deletedAt: null });
+  mocks.raiseTask.mockResolvedValue({
+    taskId: "task-1",
+    created: true,
+    alreadyRefunded: false,
+  });
   mocks.releaseXero.mockResolvedValue({ released: 0 });
   // Armed to EXPLODE: this route must never issue a refund.
   mocks.refundPaymentTransactions.mockImplementation(() => {
@@ -287,6 +310,83 @@ describe("POST confirm-modification-payment — capture on a deleted booking (#2
     expect(res.status).toBe(200);
     expect(mocks.raiseTask).not.toHaveBeenCalled();
     expect(mocks.markPaymentIntentTransactionSucceeded).not.toHaveBeenCalled();
+  });
+
+  it("raises the task when the booking is deleted DURING the Stripe round trip", async () => {
+    // THE OTHER ORDERING OF THE RACE, and the one that used to be silently
+    // lost. The opening read sees a live booking; the admin's DELETE commits
+    // while this handler is inside `getPaymentIntent`; by the time the capture
+    // is recorded the booking is gone. Deciding from the stale value recorded
+    // the money and told nobody — the exact state INV-ADDPAY-036 promises
+    // cannot happen.
+    mocks.paymentFindUnique.mockResolvedValue(payment(null));
+    mocks.bookingFindUnique.mockResolvedValue({ deletedAt: DELETED_AT });
+
+    const res = await callRoute();
+
+    expect(res.status).toBe(200);
+    expect(mocks.markPaymentIntentTransactionSucceeded).toHaveBeenCalledTimes(1);
+    expect(mocks.raiseTask).toHaveBeenCalledTimes(1);
+    expect(mocks.raiseTask).toHaveBeenCalledWith({
+      bookingId: "booking-1",
+      paymentId: "payment-1",
+      paymentIntentId: INTENT_ID,
+      amountCents: AMOUNT_CENTS,
+    });
+    expect(mocks.bookingFindUnique).toHaveBeenCalledWith({
+      where: { id: "booking-1" },
+      select: { deletedAt: true },
+    });
+  });
+
+  it("re-reads the flag only after the money is recorded", async () => {
+    // The re-read must not become a THIRD reason to refuse before the capture
+    // is on the ledger: recording the money is unconditional, and only the
+    // decision about telling a human depends on this read.
+    mocks.paymentFindUnique.mockResolvedValue(payment(null));
+    mocks.bookingFindUnique.mockResolvedValue({ deletedAt: DELETED_AT });
+
+    await callRoute();
+
+    expect(
+      mocks.markPaymentIntentTransactionSucceeded.mock.invocationCallOrder[0],
+    ).toBeLessThan(mocks.bookingFindUnique.mock.invocationCallOrder[0]);
+  });
+
+  it("does not re-read when the opening read already saw the deletion", async () => {
+    // Nothing un-deletes a booking, so the two reads can only disagree in one
+    // direction and the second query is pure cost once the first has answered.
+    mocks.paymentFindUnique.mockResolvedValue(payment(DELETED_AT));
+
+    await callRoute();
+
+    expect(mocks.bookingFindUnique).not.toHaveBeenCalled();
+    expect(mocks.raiseTask).toHaveBeenCalledTimes(1);
+  });
+
+  it("still reports success when the re-read itself fails", async () => {
+    // Same reasoning as the raise: the capture is already recorded, and a 500
+    // here would invite a retry that takes the already-captured early return
+    // and never reaches this block again.
+    mocks.paymentFindUnique.mockResolvedValue(payment(null));
+    mocks.bookingFindUnique.mockRejectedValue(new Error("database is down"));
+
+    const res = await callRoute();
+
+    expect(res.status).toBe(200);
+    expect(mocks.markPaymentIntentTransactionSucceeded).toHaveBeenCalledTimes(1);
+  });
+
+  it("raises nothing when both reads say the booking is live", async () => {
+    // The complement to the re-read: it must not manufacture a task out of a
+    // null.
+    mocks.paymentFindUnique.mockResolvedValue(payment(null));
+    mocks.bookingFindUnique.mockResolvedValue({ deletedAt: null });
+
+    const res = await callRoute();
+
+    expect(res.status).toBe(200);
+    expect(mocks.raiseTask).not.toHaveBeenCalled();
   });
 
   it("raises nothing when Stripe says the intent has not succeeded", async () => {

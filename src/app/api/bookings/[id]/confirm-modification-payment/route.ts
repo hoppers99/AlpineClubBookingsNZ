@@ -138,17 +138,41 @@ export async function POST(
     // would be on a live booking — and then a human is told, because a ledger
     // row nobody looks at is not "accounted for".
     //
+    // THE FLAG IS RE-READ HERE, NOT TRUSTED FROM THE OPENING READ, and that is
+    // load-bearing rather than defensive. The read at the top of this handler
+    // happens before `getPaymentIntent` — a live Stripe round trip — and before
+    // `markPaymentIntentTransactionSucceeded`. A DELETE committing inside that
+    // window is exactly the race this endpoint exists for, and deciding it from
+    // the stale value handled only ONE of the two orderings: booking already
+    // deleted when we looked. The other ordering — deleted while we were
+    // talking to Stripe — recorded the capture and raised nothing, the precise
+    // state `INV-ADDPAY-036` promises cannot occur. Either read seeing a
+    // deletion is enough, because a booking is never un-deleted (there is one
+    // writer of `deletedAt` in the tree and no restore path), so the two reads
+    // can only disagree in one direction. The raise is idempotent on the
+    // intent, so a redundant one is a no-op.
+    //
     // The task is raised AFTER the record above and before the audit entry, so
     // the audit trail already carries the payment when the queue row appears.
     // Raising it is best-effort in the sense that a failure must not turn a
     // recorded capture into a 500 the member sees — the money IS recorded, and
     // re-confirming would take the already-captured early return above and never
-    // reach here again. A failure is logged loudly instead.
+    // reach here again. A failure is logged loudly instead. The re-read is
+    // inside the same try for the same reason: a database blip while checking
+    // must not undo a recorded capture.
     //
     // Why no automatic refund, and why the webhook may still close this task:
     // `deleted-booking-modification-payment.ts`.
-    if (payment.booking.deletedAt) {
-      try {
+    try {
+      const freshBooking = payment.booking.deletedAt
+        ? null
+        : await prisma.booking.findUnique({
+            where: { id: bookingId },
+            select: { deletedAt: true },
+          });
+      const deletedAt = payment.booking.deletedAt ?? freshBooking?.deletedAt ?? null;
+
+      if (deletedAt) {
         const task = await raiseDeletedBookingModificationRefundTask({
           bookingId,
           paymentId: payment.id,
@@ -162,15 +186,17 @@ export async function POST(
             additionalAmountCents: paymentTransaction.amountCents,
             manualRefundTaskId: task.taskId,
             taskCreated: task.created,
+            alreadyRefunded: task.alreadyRefunded,
+            deletionSeenOnlyOnRecheck: payment.booking.deletedAt === null,
           },
           "Modification payment captured against a deleted booking - recorded and raised for manual decision"
         );
-      } catch (err) {
-        logger.error(
-          { err, bookingId, paymentIntentId: pi.id },
-          "Recorded a modification payment on a deleted booking but FAILED to raise the manual refund task"
-        );
       }
+    } catch (err) {
+      logger.error(
+        { err, bookingId, paymentIntentId: pi.id },
+        "Recorded a modification payment on a deleted booking but FAILED to raise the manual refund task"
+      );
     }
 
     const released = await releaseXeroSupplementaryInvoiceOperationsForPaymentIntent(

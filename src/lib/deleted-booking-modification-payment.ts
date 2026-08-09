@@ -1,4 +1,4 @@
-import { ManualRefundTaskStatus } from "@prisma/client";
+import { ManualRefundTaskStatus, PaymentStatus } from "@prisma/client";
 import logger from "@/lib/logger";
 import { prisma } from "@/lib/prisma";
 
@@ -40,6 +40,11 @@ import { prisma } from "@/lib/prisma";
  *   with a note rather than leaving an operator to complete a task for money
  *   Stripe has already returned — which would write a second refund allocation
  *   through `resolveManualRefundTask` and double-count the refund in the ledger.
+ * - **Interleaved.** The webhook completes entirely inside the confirm route's
+ *   own Stripe round trip, so the route's early return never fires and the
+ *   close ran before there was a task to close. Neither guard above catches
+ *   that one; the raise's own refund fence does. See
+ *   `raiseDeletedBookingModificationRefundTask` below.
  *
  * Closing a task because its subject is resolved is not itself money movement,
  * so it does not contradict the no-automatic-refund decision above; the refund
@@ -71,16 +76,43 @@ export function deletedBookingModificationRefundReason(
  * is the canonical global booking/settlement-money key and is what
  * `booking-cancel.ts` already holds when IT creates a `ManualRefundTask`, so
  * this write joins the same cohort rather than minting a new keyspace. It takes
- * that key and nothing else, and holds it for two statements, so it introduces
- * no new lock ordering. Every Stripe call is made by the caller, outside this
- * transaction.
+ * that key and nothing else, and holds it for three statements, so it
+ * introduces no new lock ordering. Every Stripe call is made by the caller,
+ * outside this transaction.
+ *
+ * FENCED ON THE REFUND, NOT ONLY ON A SECOND RAISE, and that closes the
+ * ordering in BOTH directions. The close counterpart below only catches a
+ * webhook that arrives after the task exists. The reverse interleaving is real:
+ * the confirm route reads the transaction's status once, then makes a Stripe
+ * round trip, and a webhook completing inside that window refunds the capture,
+ * flips the row to REFUNDED, and returns 200 — after which the route's
+ * already-captured early return no longer fires,
+ * `markPaymentIntentTransactionSucceeded` writes SUCCEEDED back over the
+ * status, and a raise here would queue an operator to hand back money Stripe
+ * has already returned. The close cannot save it: it ran before the task
+ * existed and claimed nothing, and Stripe will not redeliver a 200. That task
+ * is not merely noise — completing it throws out of
+ * `applyLocalRefundAllocation` ("Refund amount exceeds captured payments"), so
+ * it looks unresolvable in the operator queue.
+ *
+ * `refundedAmountCents` is the load-bearing field rather than `status`,
+ * deliberately: `markPaymentIntentTransactionSucceeded` overwrites `status` but
+ * never touches `refundedAmountCents`, so on this exact interleaving the status
+ * is a lie by the time we look and the refunded total is not. The status check
+ * is kept beside it for the ordinary case where nothing overwrote it. Read
+ * INSIDE the same lock as the raise, so a refund committing concurrently is
+ * serialised rather than missed.
  */
 export async function raiseDeletedBookingModificationRefundTask(params: {
   bookingId: string;
   paymentId: string;
   paymentIntentId: string;
   amountCents: number;
-}): Promise<{ taskId: string; created: boolean }> {
+}): Promise<{
+  taskId: string | null;
+  created: boolean;
+  alreadyRefunded: boolean;
+}> {
   const { bookingId, paymentId, paymentIntentId, amountCents } = params;
   const reason = deletedBookingModificationRefundReason(paymentIntentId);
 
@@ -92,7 +124,24 @@ export async function raiseDeletedBookingModificationRefundTask(params: {
       select: { id: true },
     });
     if (existing) {
-      return { taskId: existing.id, created: false };
+      return { taskId: existing.id, created: false, alreadyRefunded: false };
+    }
+
+    const settled = await tx.paymentTransaction.findUnique({
+      where: { stripePaymentIntentId: paymentIntentId },
+      select: { status: true, refundedAmountCents: true, amountCents: true },
+    });
+    if (
+      settled &&
+      (settled.refundedAmountCents >= (settled.amountCents || amountCents) ||
+        settled.status === PaymentStatus.REFUNDED ||
+        settled.status === PaymentStatus.PARTIALLY_REFUNDED)
+    ) {
+      logger.info(
+        { bookingId, paymentId, paymentIntentId },
+        "Skipped raising the deleted-booking modification refund task: Stripe had already refunded this capture",
+      );
+      return { taskId: null, created: false, alreadyRefunded: true };
     }
 
     const task = await tx.manualRefundTask.create({
@@ -110,7 +159,7 @@ export async function raiseDeletedBookingModificationRefundTask(params: {
       },
       select: { id: true },
     });
-    return { taskId: task.id, created: true };
+    return { taskId: task.id, created: true, alreadyRefunded: false };
   });
 }
 
