@@ -5,6 +5,7 @@ import { checkinNotBlockedByPendingReviewFilter } from "@/lib/booking-review";
 import { OPERATIONALLY_PRESENT_GUEST_WHERE } from "@/lib/member-guest-consent";
 import type { Prisma } from "@prisma/client";
 import {
+  isGuestActiveOnNight,
   isGuestDepartureMorning,
   isGuestOperationallyPresentOnDay,
 } from "@/lib/booking-guest-stay-ranges";
@@ -28,20 +29,83 @@ export const LODGE_VISIBLE_BOOKING_STATUSES = [
 // roster's operational-day question — "was this person in the building this
 // morning?" — so neither moved to the operational-day rule. Do not "unify" them.
 //
-// PRECISION, so this comment does not over-claim (#2628 review): the arrive
-// lookup's night scope is the SQL ENVELOPE, `[stayStart, stayEnd)`. That is the
-// night set exactly for a contiguous stay, and a superset of it for a sparse
-// one — the internal gap nights are inside the envelope, so the endpoint would
-// accept a check-in on a night the guest is at home. No kiosk surface offers it
-// (`canMarkArrived` is the night-set rule), and closing the gap needs a fixture
-// pass across every suite that mocks this lookup, so it is #2737 rather than a
-// line here. The depart lookup below is the shape that fix takes.
+// BOTH LOOKUPS NOW LOAD COARSE AND DECIDE IN CODE (#2737, INV-DATE-022). A SQL
+// `where` on `stayStart`/`stayEnd` is an ENVELOPE, and an envelope is only ever
+// a SUPERSET of the canonical `BookingGuestNight` set: a sparse stay's internal
+// gap nights sit inside `[stayStart, stayEnd)`, so until #2737 the arrive
+// endpoint would accept a check-in for a night the guest is at home. No kiosk
+// surface ever offered it — `canMarkArrived` has been the night-set rule since
+// #2628 — but "no screen sends it" is not a server guard, and the endpoint is
+// reachable from a stale open page or a direct call. The authoritative answer is
+// now `isGuestActiveOnNight` applied to the loaded night rows, which is exactly
+// the shape the depart lookup takes with `isGuestDepartureMorning`. A guest
+// carrying no night rows still falls back to the envelope, so every pre-#713 row
+// behaves byte-for-byte as it always has.
+//
+// The arrive envelope stays HALF-OPEN (`stayEnd: { gt: date }`) while depart's
+// is checkout-inclusive, and that asymmetry is not an oversight to tidy away. A
+// departure morning is never an occupied night (INV-DATE-003), so widening
+// arrive's coarse filter could only load rows the night rule then refuses: the
+// narrower filter is the cheaper of two answers that agree.
 //
 // lodgeId is optional so existing (pre-phase-5) callers keep club-wide
 // behaviour; kiosk routes pass the resolved lodge to scope the lookup
 // (docs/multi-lodge/lodge-scoping-contract.md — roster/guest lookups are
 // null-tolerant while lodgeId backfill is not yet enforced NOT NULL).
+
+/** The guest row both the arrive lookup and its refusal are decided over. */
+export type LodgeArrivalGuest = NonNullable<
+  Awaited<ReturnType<typeof loadLodgeGuestInArrivalEnvelope>>
+>;
+
+/**
+ * May this guest be marked ARRIVED for this date, and if not, why not?
+ *
+ * THREE outcomes, not two, because the two refusals are different facts and the
+ * kiosk must not report them the same way (#2737):
+ *
+ * - `"not-found"` — nothing matched the scoped lookup at all. Deliberately
+ *   uniform and deliberately uninformative: it is also what an unconsented guest
+ *   (D-12/#2307), a review-blocked booking (#1372/#1422), another lodge's guest
+ *   and a non-operational booking status collapse to, and telling the caller
+ *   which of those it was would leak the answer to a question they were refused.
+ * - `"not-a-booked-night"` — the guest passed EVERY one of those gates and
+ *   failed only the night rule. Nothing is disclosed by saying so that the day
+ *   list does not already show the same operator, and it is the only refusal a
+ *   hut leader can act on: the page is stale, reload it.
+ */
+export type LodgeArrivalLookup =
+  | { outcome: "ok"; guest: LodgeArrivalGuest }
+  | { outcome: "not-found" }
+  | { outcome: "not-a-booked-night" };
+
 export async function findLodgeGuestForDate(
+  bookingGuestId: string,
+  date: Date,
+  lodgeId?: string
+): Promise<LodgeArrivalLookup> {
+  const guest = await loadLodgeGuestInArrivalEnvelope(
+    bookingGuestId,
+    date,
+    lodgeId
+  );
+  if (!guest) {
+    return { outcome: "not-found" };
+  }
+  // THE WHOLE POINT OF #2737, AND IT IS DELIBERATELY NOT IN THE `where` ABOVE.
+  // The where-clause fragments are the ENFORCEMENT gates — consent, pending
+  // review, lodge scope, booking status — and folding the night rule in beside
+  // them would make "you are at home tonight" indistinguishable from "you are
+  // not allowed", both to the caller and to the next reader of this file. It is
+  // a domain fact about the booking, so it is decided here, in code, over the
+  // night rows, and it is reported as its own outcome.
+  if (!isGuestActiveOnNight(guest, date, guest.booking)) {
+    return { outcome: "not-a-booked-night" };
+  }
+  return { outcome: "ok", guest };
+}
+
+function loadLodgeGuestInArrivalEnvelope(
   bookingGuestId: string,
   date: Date,
   lodgeId?: string
@@ -81,6 +145,12 @@ export async function findLodgeGuestForDate(
       // whole stay. A guest booked on nights {11, 14} arrives on the 14th
       // against a record that still says "departed" from the 12th, and only the
       // night set says which of those two a given date is.
+      //
+      // #2737: these three are now load-bearing for the LOOKUP itself, not only
+      // for the route's return-detection. Drop `nights` and the night rule above
+      // silently degrades to the envelope fallback — which is exactly the
+      // gap-night hole this closes, so a fixture that omits them is pinning the
+      // wrong function.
       stayStart: true,
       stayEnd: true,
       nights: { select: { stayDate: true } },
