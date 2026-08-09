@@ -165,7 +165,7 @@ export async function PUT(req: NextRequest) {
     actorMemberId: guard.session.user.id,
     entityType: "Lodge",
     entityId: lodgeId,
-    category: "admin",
+    category: "lodge",
     severity: "important",
     outcome: "success",
     summary: "Lodge display configuration updated",

@@ -507,16 +507,27 @@ export const DIAGNOSTICS_LODGE_CORRELATION_TOOL_ID =
  * own, and it does not partition the platform the way `admin-permissions.ts` does.
  * Three mismatches matter, all verified against the call sites:
  *
- *  - `admin` IS THE CROSS-DOMAIN CATCH-ALL, not a system-only category — 117
- *    production call sites, the largest of the eleven, covering admin-initiated
- *    operations in EVERY domain: member merge and member-lifecycle delete/archive
- *    (`member-merge.ts`, `member-lifecycle-actions.ts`), member import and
- *    lodge-access changes, seasonal membership assignments, the internet-banking
- *    payment settings, `booking_request.settings_updated`, chores, lockers, rooms,
- *    bed allocation and lodge settings. So the system entry, behind `support:view`
- *    alone, DOES see admin-initiated domain actions — as metadata, but it sees them.
- *    That is also why every NEW `admin` assignment needs a written justification
- *    rather than a default: it is the widest gate a category can sit behind.
+ *  - `admin` IS THE CROSS-DOMAIN CATCH-ALL, not a system-only category — 96
+ *    production call sites, still the largest of the eleven, covering
+ *    admin-initiated operations in EVERY domain: member merge and
+ *    member-lifecycle delete/archive (`member-merge.ts`,
+ *    `member-lifecycle-actions.ts`), member import and lodge-access changes,
+ *    seasonal membership assignments, the internet-banking payment settings,
+ *    `booking_request.settings_updated`, chores, lockers, work parties and lodge
+ *    settings. So the system entry, behind `support:view` alone, DOES see
+ *    admin-initiated domain actions — as metadata, but it sees them. That is
+ *    also why every NEW `admin` assignment needs a written justification rather
+ *    than a default: it is the widest gate a category can sit behind.
+ *
+ *    118 -> 96 in #2730, which is the first pass to READ this population rather
+ *    than inherit it. BED ALLOCATION IS NO LONGER HERE: its 21 admin-initiated
+ *    writers now say `lodge`, joining the 7 that always did, so the lodge entry
+ *    finally returns the whole family. `LODGE_DISPLAY_CONFIG_UPDATED` moved with
+ *    them, to sit beside its ten display siblings. Both are NARROWINGS — a
+ *    support-only operator could correlate those 22 sites' rows before and
+ *    cannot now, and needs `lodge:view` as well. The rest of this population was
+ *    read and deliberately KEPT; the per-site record is in
+ *    `docs/ai-diagnostics/audit-admin-category-review.md`.
  *  - `lodge` carries INDUCTION (`induction.ts`, `induction-baseline.ts`), even though
  *    `/admin/induction` is a `membership` surface.
  *  - `privacy` carries the admin ISSUE-REPORT events, even though
@@ -574,7 +585,7 @@ export const DIAGNOSTICS_SUPPORT_CORRELATION_TOOLS: readonly DiagnosticsToolEntr
       requiredAreas: AUDIT_CORRELATION_DOMAIN_AREAS.system,
       categories: SYSTEM_CATEGORIES,
       scope:
-        "System, security and ADMIN-INITIATED events. The `admin` category is the platform's catch-all for actions an administrator took in EVERY domain — member merges and lifecycle decisions, member import, seasonal assignments, payment and booking SETTINGS changes, and lodge operations settings — as metadata only. Communication events (bulk email, notices, delivery suppressions) are NOT here: they are `communication`, which the membership correlation tool covers.",
+        "System, security and ADMIN-INITIATED events. The `admin` category is the platform's catch-all for actions an administrator took in EVERY domain — member merges and lifecycle decisions, member import, seasonal assignments, payment and booking SETTINGS changes, and chores, lockers, work parties and lodge settings — as metadata only. Communication events (bulk email, notices, delivery suppressions) are NOT here: they are `communication`, which the membership correlation tool covers. Neither is BED ALLOCATION, including an administrator's own manual, bulk and range allocations: all of it is `lodge`, which the lodge correlation tool covers.",
       description: `Correlates recent audit events in the categories admin, security and system, optionally for one exact request identifier. Use it to see what the platform recorded around an incident. Note that "admin" is the catch-all for administrator-initiated actions in every domain — member merges, lifecycle decisions, imports and settings changes are recorded here rather than in the domain categories — so this tool is the right one for "what did an administrator do around this time". Email and notice delivery is recorded under "communication", which the membership correlation tool covers, not this one. ${SHARED_DESCRIPTION_TAIL}`,
     }),
     defineCorrelationTool({
@@ -610,7 +621,7 @@ export const DIAGNOSTICS_SUPPORT_CORRELATION_TOOLS: readonly DiagnosticsToolEntr
       requiredAreas: AUDIT_CORRELATION_DOMAIN_AREAS.lodge,
       categories: LODGE_CATEGORIES,
       scope:
-        "Lodge-operations events, including INDUCTION and induction-baseline events even though the induction admin screen sits under Membership. Administrator changes to chores, lockers, rooms, bed allocation and lodge settings are `admin`, which the system correlation tool covers.",
-      description: `Correlates recent audit events in the lodge category, optionally for one exact request identifier. Use it to see what the platform recorded around a rosters, guest arrival/departure, bed-allocation or induction problem. Induction events are recorded here, under "lodge", even though the induction admin screen sits under Membership. Lodge display layouts, templates and devices, and lodge kiosk accounts, are recorded here too. Administrator changes to chores, lockers, rooms, lodge settings, lodge instructions and the lodge display configuration are recorded under "admin", so use the system correlation tool for those. ${SHARED_DESCRIPTION_TAIL}`,
+        "Lodge-operations events, including INDUCTION and induction-baseline events even though the induction admin screen sits under Membership, and ALL bed-allocation events — an administrator's manual, bulk and range allocations as well as the automatic lifecycle ones. Administrator changes to chores, lockers, work parties and lodge settings are `admin`, which the system correlation tool covers.",
+      description: `Correlates recent audit events in the lodge category, optionally for one exact request identifier. Use it to see what the platform recorded around a rosters, guest arrival/departure, bed-allocation or induction problem. Induction events are recorded here, under "lodge", even though the induction admin screen sits under Membership. Lodge display layouts, templates and devices, the lodge display configuration, and lodge kiosk accounts, are recorded here too. Bed allocation is recorded here in full: an administrator's manual, bulk, range and approval actions sit beside the automatic lifecycle promotions and displacements, so this is the right tool for "who put whom in which bed". Administrator changes to chores, lockers, work parties, lodge settings and lodge instructions are recorded under "admin", so use the system correlation tool for those. ${SHARED_DESCRIPTION_TAIL}`,
     }),
   ];

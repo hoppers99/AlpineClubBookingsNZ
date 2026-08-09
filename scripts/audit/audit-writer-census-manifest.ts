@@ -340,7 +340,26 @@ export const AUDIT_CENSUS_TOTALS = {
     // UNCHANGED by #2581 child 2, deliberately: `admin` is the platform's
     // catch-all and is read with `support:view` alone, so classifying anything
     // into it needed a written justification and none of the 82 earned one.
-    admin: 118,
+    //
+    // 118 -> 96 (#2730): the FIRST review of the `admin` population itself.
+    // #2676 classified the 82 that had no category and explicitly did not read
+    // the 118 that already said `admin`; #2581's own readiness note says those
+    // "cannot be assumed correct". Twenty-two of them were not: the twenty-one
+    // admin-initiated bed-allocation writers and `LODGE_DISPLAY_CONFIG_UPDATED`
+    // now say `lodge`, which is what every other writer of the same objects
+    // already said. Two of them wrote an action name that a `lodge` writer also
+    // wrote (`BED_ALLOCATION_PARTNER_PROMOTED`, `BED_ALLOCATION_PARTNERS_PROMOTED`),
+    // so one action was answering to two permission gates.
+    //
+    // THIS IS A NARROWING, and it is the whole behaviour change: those 22 sites'
+    // rows move from `support:view` alone to `support:view` plus `lodge:view`.
+    // Neither category is member-visible, so no row reaches a member who could
+    // not read it before, and `classifyAuditRetention` returns `critical` for
+    // every one of the 22 under both the old and the new value — no row's
+    // retention changes. See `docs/ai-diagnostics/audit-admin-category-review.md`
+    // for the per-site verdict on all 118, including the 96 that were KEPT and
+    // why.
+    admin: 96,
     // 16 -> 19 (#2581 child 2): `member.password-reset-sent` and
     // `member.setup-invite-sent` (decision 3 — the affected domain is the
     // CREDENTIAL, not the mailing), plus the `member.bulk-set-role` branch
@@ -357,7 +376,12 @@ export const AUDIT_CENSUS_TOTALS = {
     // 18 -> 30 (#2581 child 2): the nine lodge-display writers and the three
     // kiosk-account writers. This NARROWS nothing and widens only within the
     // lodge gate (`support` plus `lodge`).
-    lodge: 30,
+    // 30 -> 52 (#2730): the twenty-one admin-initiated bed-allocation writers
+    // and `LODGE_DISPLAY_CONFIG_UPDATED`, moved OUT of `admin` — see the note on
+    // `admin` above for the readership and retention consequences. Bed
+    // allocation is now wholly `lodge`: 28 sites, one gate, no action name
+    // written into two.
+    lodge: 52,
     // 19 -> 34 (#2581 child 2): the fifteen Xero settings, mapping, replay and
     // retry writers. `xero` is `support` plus `finance`.
     xero: 34,
@@ -705,13 +729,19 @@ export const AUDIT_WRITER_WRAPPERS: Readonly<
     sink: "logAudit",
     category: "booking",
   },
+  // `admin` -> `lodge` in #2730, with the other nineteen admin-initiated
+  // bed-allocation writers. This wrapper matters more than most: it stands for
+  // every range assignment the club makes, and `recordRangeAssignAudit#1` writes
+  // `BED_ALLOCATION_PARTNERS_PROMOTED` — an action name the automatic path in
+  // `bed-allocation-move.ts` already wrote as `lodge`, so this one wrapper was
+  // half of a same-action, two-permission-gate split.
   "src/lib/admin-bed-allocation.ts::recordRangeAssignAudit#0": {
     sink: "createAuditLog",
-    category: "admin",
+    category: "lodge",
   },
   "src/lib/admin-bed-allocation.ts::recordRangeAssignAudit#1": {
     sink: "createAuditLog",
-    category: "admin",
+    category: "lodge",
   },
   "src/lib/adult-member-hosting-coverage-incidents.ts::recordIncidentAudit#0": {
     sink: "createAuditLog",

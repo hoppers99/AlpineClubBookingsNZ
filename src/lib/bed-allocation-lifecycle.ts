@@ -213,11 +213,19 @@ async function recordPartnerPromotionAudit(
   promoted: BedAllocation,
 ): Promise<void> {
   // Best-effort, mirroring recordBedDisplacementAudit: an audit-write failure
-  // must never roll back a committed promotion. There is no acting member on the
-  // lifecycle path (the promotion is a system-driven consequence of a prune), so
-  // this is a "lodge" system event rather than an "admin" action, and it is
-  // recorded against the PROMOTED partner's own booking — which may differ from
-  // the booking whose prune triggered it.
+  // must never roll back a committed promotion. It is recorded against the
+  // PROMOTED partner's own booking — which may differ from the booking whose
+  // prune triggered it.
+  //
+  // `lodge` because the AFFECTED DOMAIN is a bed in a lodge room on a lodge
+  // night, not because no member acted here (#2730). That distinction is the
+  // whole of the owner's rule on #2581: category follows what the event
+  // changed, never who started it. This comment used to argue the opposite —
+  // "there is no acting member … so this is a 'lodge' system event rather than
+  // an 'admin' action" — and the three admin-initiated writers of this SAME
+  // action name took it at its word and wrote `admin`, so one action answered
+  // to two permission gates and no operator could correlate the whole set. All
+  // 21 admin-initiated bed-allocation writers now say `lodge` too.
   try {
     await createAuditLog(
       {
