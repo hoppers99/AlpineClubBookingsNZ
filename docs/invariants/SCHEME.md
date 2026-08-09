@@ -507,12 +507,6 @@ the allocation rule working, not a mistake (§1.3). Its internal phrase "see the
 next invariant" still points at `INV-DATE-014`, which is still physically next,
 so no pointer repair is needed.
 
-**That branch has since taken this resolution**: `INV-DATE-019` is defined and
-indexed exactly as set out above, and the phrase now names `INV-DATE-014`
-outright rather than relying on position. The example below is kept because the
-hazard is generic to any branch that predates the split, not because this one is
-outstanding.
-
 **This is also the answer to the merge hazard**, and the same answer applies to
 any other branch still editing the pre-split document. Git presents such a branch
 with a conflict against a file that no longer holds the section, and the wrong

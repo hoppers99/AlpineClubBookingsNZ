@@ -234,7 +234,7 @@ derivation).
     known trap, not a permitted pattern.
   - *The member booking calendar and the admin kiosk deliberately derive today
     from the BROWSER's calendar day* (`src/components/booking-calendar.tsx`,
-    `src/app/(admin)/admin/book/page.tsx`, #2474 — see `INV-DATE-014`), so
+    `src/app/(admin)/admin/book/page.tsx`, #2474 — see the next invariant), so
     "one way to ask" holds for server-side and club-facing derivations, not
     literally everywhere. Any comparison the SERVER then makes is still the club
     day.
