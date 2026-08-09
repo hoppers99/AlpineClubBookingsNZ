@@ -16,11 +16,22 @@ import { NextResponse } from "next/server";
  * and the departure is worth stating precisely because the general rule is the
  * opposite of it.
  *
- * The people who reach these surfaces are following a link from an email the
- * club itself sent — a consent request to a guest, a booking page bookmark to
- * the owner. Handing them "Booking not found" is a dead end that reads as a
+ * Handing an entitled reader "Booking not found" is a dead end that reads as a
  * fault. Telling them the booking was cancelled or removed is an explanation
  * they can act on.
+ *
+ * WHO ACTUALLY SEES IT TODAY, stated honestly because the justification above
+ * is easy to over-claim. It is the stale tab — a client that loaded the booking
+ * before the deletion and acted after it, the same race `INV-ADDPAY-036`
+ * exists for — or a direct API caller. NOT somebody freshly clicking a link in
+ * an old club email: every one of those journeys dead-ends earlier of its own
+ * accord (the booking page `notFound()`s a non-admin on a deleted booking, the
+ * delegate consent page resolves NOT_FOUND above both its target and delegate
+ * branches, the refund-appeal button is not rendered on a deleted booking, and
+ * `change-requests` GET has no client in the product at all).
+ * `INV-ADDPAY-034` records the full list and records that widening it to the
+ * email journey is an owner decision, because it would mean changing the
+ * delegate page's uniform NOT_FOUND — itself a privacy property.
  *
  * THAT IS SAFE ONLY BECAUSE OF WHERE THE GUARD SITS. Every caller of this
  * module places the check AFTER its authorisation check, so to see this

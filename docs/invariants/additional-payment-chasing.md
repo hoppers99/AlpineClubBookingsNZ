@@ -742,6 +742,15 @@ callers import that constant rather than restating it:
 GET. One constant, not three copies, is the rule — three variants that say
 subtly different things about the same event is the failure this prevents.
 
+**Both halves are ENFORCED, not merely written down.**
+`src/lib/__tests__/deleted-booking-refusal-callers.test.ts` sweeps `src/` for
+importers of the refusal module and fails on a fourth, and asserts per surface
+that the guard sits below that surface's own authorisation refusal. Without it
+a later contributor could import the constant — now that an informative body is
+normalised on this hazard — and place it above an ownership check, restoring the
+`send-guest-payment-link` oracle #2674 had to reorder out, with every existing
+test still green.
+
 **This is a deliberate departure from `INV-ADDPAY-031`'s byte-identical-body
 half, and it is worth stating precisely because the general rule is the opposite
 of it.** Disclosing that a record existed and is gone is normally an oracle. It
@@ -753,11 +762,35 @@ the answer they get does not move with the booking's deletion state. Disclosure
 to somebody already entitled to the record is not an oracle. The ordering half
 of `INV-ADDPAY-031` therefore has no exception and is what makes this one safe.
 
-**Why say anything at all.** The people who reach these surfaces are following a
-link from an email the club itself sent — a consent request to a guest, a
-booking-page bookmark to the owner. "Booking not found" is a dead end that reads
-as a fault in the system; "cancelled or removed" is an explanation they can act
-on.
+**Why say anything at all.** "Booking not found" is a dead end that reads as a
+fault in the system; "cancelled or removed" is an explanation the reader can act
+on. The owner's stated purpose (10 Aug 2026) was that somebody arriving from an
+old club email gets the explanation rather than the dead end.
+
+**Who actually reaches it today, stated plainly, because the rule above must not
+claim a journey the product does not have.** The reader is a client that loaded
+the booking BEFORE the deletion and acted AFTER it — the stale tab, which is the
+same race the rest of this rule and `INV-ADDPAY-036` exist for — or a direct API
+caller. **No fresh navigation reaches any of the three bodies**, and every one
+of the four paths dead-ends earlier for its own pre-existing reason:
+
+- The consent card lives on `bookings/[id]/page.tsx`, which calls `notFound()`
+  for any non-admin on a deleted booking before rendering anything.
+- The delegate consent page resolves `{ kind: "NOT_FOUND" }` on
+  `guest.booking.deletedAt` in `member-guest-delegate-page.ts`, **above** both
+  the target and the delegate branches — deliberately, so the neutral page
+  cannot be used to tell a real guest row from a fabricated id.
+- `refund-request` GET's only client is `RefundAppealButton`, which the booking
+  page renders only when the booking is not deleted.
+- `change-requests` GET has **no client at all** in `src/` or `e2e/`; the one
+  fetch of that path is the panel's `POST`.
+
+So the departure below is currently worth its cost for the race, not for the
+email journey. Making the email journey itself explain rather than dead-end
+would mean changing the delegate page's uniform `NOT_FOUND` — which is a
+privacy property with its own Playwright assertion — and is therefore an owner
+decision rather than a tidy-up. Recorded here rather than assumed: do not cite
+the email journey as a live behaviour until that decision is taken.
 
 **What the sentence must NOT carry, and both exclusions are load-bearing:**
 
@@ -834,6 +867,17 @@ it at all. Three obligations follow, and all three are the rule:
   is the one method on this prefix that consults `deletedAt` and deliberately
   writes anyway, which is why the `INV-ADDPAY-030` census counts it separately
   from the eleven that refuse.
+- **It decides from a FRESH read of `deletedAt`, not from the one it opened
+  with.** The handler's opening read happens before `getPaymentIntent` — a live
+  Stripe round trip — so deciding from it covers only the ordering where the
+  booking was already deleted when the handler looked. In the other ordering the
+  DELETE commits while the handler is talking to Stripe, and deciding from the
+  stale value recorded the capture and raised nothing: the exact state this rule
+  says cannot occur. The flag is therefore re-read immediately before the
+  decision, and **either** read seeing a deletion is enough — nothing in the tree
+  un-deletes a booking (one writer of `deletedAt`, no restore path), so the two
+  reads can only disagree in one direction. The re-read is skipped when the first
+  read already answered.
 - **It raises an OPEN `ManualRefundTask`** (`bookingId`, `paymentId`,
   `amountCents`, `reason`, `status: OPEN`) after recording the payment and
   before the audit entry, so a human decides whether to refund. `status: OPEN`
@@ -846,6 +890,18 @@ it at all. Three obligations follow, and all three are the rule:
   Raising it is best-effort in exactly one sense: a failure is logged loudly and
   never turned into a 500, because the money IS recorded and a retry would take
   the already-captured early return and never reach the raise again.
+- **The raise is fenced against a refund that already happened**, under the same
+  `pg_advisory_xact_lock(1)`. The close described below only catches a webhook
+  that arrives after the task exists; a webhook that completes entirely inside
+  the confirm route's own Stripe round trip leaves nothing to close, and the
+  route then writes `SUCCEEDED` back over the `REFUNDED` status and would raise
+  a task for money Stripe has already returned — one an operator cannot even
+  complete, because `applyLocalRefundAllocation` throws "Refund amount exceeds
+  captured payments". So the raise re-reads the transaction row and skips when
+  `refundedAmountCents` covers the capture. That field, not `status`, is what
+  decides it: `markPaymentIntentTransactionSucceeded` overwrites the status but
+  never the refunded total, so on this interleaving the status is the field that
+  is lying.
 - **The deletion path closes the window rather than only handling the fallout.**
   `softDeleteCancelledBooking` cancels the booking's in-flight PaymentIntents —
   both the base and the modification one — **after** the transaction commits, so
@@ -856,7 +912,12 @@ it at all. Three obligations follow, and all three are the rule:
   on its own, possibly `succeeded`, and writing FAILED there would be a lie the
   confirm endpoint would immediately overwrite. The honest claim is that this
   makes the race **rare**, not impossible — the residue is what the task above
-  exists for.
+  exists for. A cancellation that FAILS is **audited**, not only logged
+  (`booking.delete.payment_intent_cancel.failed`, `outcome: "failure"`,
+  category `payment`): the swallow is right, but the one outcome somebody has to
+  act on — the window did not close — must not be visible only in the server
+  log, and the soft-delete's own audit entry is written inside the transaction
+  before Stripe is called, so it cannot carry it.
 
 **No automatic refund from this path**, deliberately: it is a money movement
 triggered by a race, and if the DELETION was itself the mistake, refunding
@@ -879,6 +940,12 @@ orderings must not pay the member twice:
   by hand and is what writes the local refund allocation, so COMPLETED here
   would be untrue AND would write a second allocation for one refund.
   `completedByMemberId` stays null because no member did it.
+- **Interleaved** — the webhook completes entirely inside the confirm route's
+  own Stripe round trip. The route's already-captured early return does not
+  fire (it read the status before the refund) and the close found no task (it
+  ran before the raise), so neither of the two guards above applies. The raise's
+  own refund fence is what covers this one, and it is the reason that fence sits
+  inside the lock rather than beside it.
 
 Closing a task whose subject is already resolved moves no money, so it does not
 contradict the no-automatic-refund rule; the refund it records is #1350's

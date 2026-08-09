@@ -135,9 +135,13 @@ function forbidden(): never {
  * proved they are the guest being asked (or an accepted family delegate
  * answering for them). Telling that person the booking was cancelled or removed
  * discloses nothing they were not already entitled to know, and it is the
- * difference between an explanation and a dead end for somebody clicking the
- * link in a consent-request email weeks later. `deleted-booking-refusal.ts`
- * carries the full reasoning and the wording every surface shares.
+ * difference between an explanation and a dead end. In practice the person who
+ * sees it answered from a page loaded before the deletion — a fresh click on an
+ * old consent email dead-ends earlier, on the booking page's own `notFound()`
+ * or the delegate page's uniform NOT_FOUND. `deleted-booking-refusal.ts`
+ * carries the full reasoning and the wording every surface shares, and
+ * `INV-ADDPAY-034` records that widening it to the email journey is an owner
+ * decision rather than a tidy-up.
  *
  * Anyone who has NOT proved that still hits `forbidden()` first and cannot tell
  * a deleted booking from a live one, which is the property that makes the

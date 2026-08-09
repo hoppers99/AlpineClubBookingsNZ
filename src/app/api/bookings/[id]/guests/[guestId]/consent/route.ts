@@ -22,16 +22,30 @@ import { prisma } from "@/lib/prisma";
  * themselves, or a delegate the resolver accepts (owner decisions D-5/D-10) —
  * so it takes no `EXPECTED_ROUTE_AREAS` pin.
  *
- * EVERY FAILURE IS THE SAME 403 WITH THE SAME BODY, once the `memberGuests`
- * module is on — with it off the proxy's feature-route gate answers 404 ahead of
- * this handler and nothing here runs (#2435), which tells a caller only that the
- * club does not run the module. "No such booking", "no such
+ * EVERY AUTHORISATION FAILURE IS THE SAME 403 WITH THE SAME BODY, once the
+ * `memberGuests` module is on — with it off the proxy's feature-route gate
+ * answers 404 ahead of this handler and nothing here runs (#2435), which tells a
+ * caller only that the club does not run the module. "No such booking", "no such
  * guest row", "that row is not a consent request", "already answered" and "you
  * are not the target or an accepted delegate" are indistinguishable from
  * outside, so neither id can be used as an existence oracle. That uniformity is
  * the point and must not be "improved" into helpful messages: IDOR on this
  * endpoint is the primary security concern, because the two ids it takes are
  * exactly the two an attacker would want to probe.
+ *
+ * EXACTLY ONE ANSWER SITS BELOW THAT LINE, and it is not an exception to the
+ * rule above (#2700). A caller who has passed every check in the paragraph
+ * above — so is provably the target or an accepted delegate for THIS guest row
+ * on THIS booking — gets `404` with `INV-ADDPAY-034`'s shared sentence when the
+ * booking has been soft-deleted, instead of a silent 403. It is safe precisely
+ * because it is unreachable without first satisfying the target/delegate check:
+ * a caller probing two guessed ids never reaches it and still learns nothing.
+ * The guard lives in `member-guest-consent-service.ts`
+ * (`INV-ADDPAY-035`), NOT here, because this handler's pre-read below proves
+ * only that the guest row belongs to the booking — moving it up would hand a
+ * 404-versus-403 oracle to exactly the caller the uniform 403 exists to starve.
+ * Anything ABOVE the target/delegate check stays byte-identical; add nothing
+ * differentiated there.
  *
  * Note what is NOT here: no delegate widening of the booking page. A delegate
  * answering through this endpoint gains no view of the booking; owner decision
