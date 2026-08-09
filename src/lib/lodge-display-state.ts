@@ -540,7 +540,10 @@ export async function buildDisplayState(
       // all: no change to who is SHOWN on the wall can add or remove a night
       // here, in either direction. It is the phantom night that matters — a
       // sole-occupancy count is what decides whether an unauthenticated screen
-      // prints guests' names and phone numbers (INV-DATE-006, issue #58).
+      // prints guests' names and phone numbers (INV-DATE-006, INV-DATE-022,
+      // issue #58). THAT SEPARATION IS WHAT MADE THE #2735 WIDENING SAFE:
+      // couple this back to `visible` and the visibility rule has to narrow
+      // again first.
       //
       // The value is unchanged by both steps: `visible` has always been a
       // superset of the guests active on `date` (a departure morning is added,

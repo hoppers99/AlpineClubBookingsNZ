@@ -478,6 +478,34 @@ describe("buildDisplayState privacy matrix", () => {
     ]);
   });
 
+  it("shows a zero-night booking on no day at all (INV-DATE-008, #2735)", async () => {
+    // BEHAVIOUR CHANGE, and the invariant-correct one. The old rule was the
+    // CLOSED envelope `[stayStart, stayEnd]`, so a guest whose stayStart equals
+    // their stayEnd was visible on that one date and counted as both an arrival
+    // and a departure. Under the operational day they occupy neither half of
+    // any day, so the wall shows nothing — which is what INV-DATE-008 says a
+    // zero-night booking is. The shape is deliberately unrepresentable and
+    // every booking-creating route refuses it; this is the wall agreeing.
+    mockPrisma.booking.findMany.mockResolvedValue([
+      booking(
+        "b1",
+        ADULT_ORGANISER,
+        [guest("Zero", "Nights", "ADULT", { start: "2026-04-14", end: "2026-04-14" })],
+        { checkIn: "2026-04-14", checkOut: "2026-04-14" },
+      ),
+    ]);
+    const { buildDisplayState } = await import("@/lib/lodge-display-state");
+    const state = await buildDisplayState("lodge-a");
+
+    expect(state!.bookings).toEqual([]);
+    expect(state!.occupancy).toEqual([
+      { date: "2026-04-13", arriving: 0, departing: 0, staying: 0 },
+      { date: "2026-04-14", arriving: 0, departing: 0, staying: 0 },
+      { date: "2026-04-15", arriving: 0, departing: 0, staying: 0 },
+    ]);
+    expect(JSON.stringify(state)).not.toContain("Zero");
+  });
+
   it("keeps a guest off the wall when none of their nights touch the window (#2735)", async () => {
     // A sparse stay whose envelope spans the window while its nights sit
     // outside it. The envelope-overlap test this replaced listed them as
