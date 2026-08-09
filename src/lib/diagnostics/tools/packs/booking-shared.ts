@@ -4,7 +4,7 @@
  * built from (#2376, epic #2369).
  *
  * This module holds no registry entry and reads nothing. It exists for the same
- * reason `finance-shared.ts` does: this pack registers fifteen entries across
+ * reason `finance-shared.ts` does: this pack registers sixteen entries across
  * four modules, and several properties have to be identical in every one of them,
  * where a divergence is a security defect rather than an inconsistency.
  *

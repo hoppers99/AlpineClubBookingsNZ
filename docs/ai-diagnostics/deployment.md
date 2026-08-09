@@ -65,8 +65,8 @@ every tool call unless the answer is the least-privilege shape ADR-007 requires:
 - no `TEMPORARY` or `CREATE` on the database, and no `CREATE` on schema `public`;
 - no `INSERT`, `UPDATE`, `DELETE` or `TRUNCATE` on any relation in `public`, at table
   or column level;
-- no `SELECT` on any relation in `public` that the declared allowlist does not name —
-  which in this release is **every** relation, since the allowlist is empty;
+- no `SELECT` on any relation in `public` that the declared 26-relation allowlist
+  does not name, and no undeclared column on a named relation;
 - no membership in **any** other role — not a shortlist of dangerous ones, a total of
   zero. A member of any role is one `SET ROLE` away from that role's privileges, and
   because this role is `NOINHERIT` the membership shows up in nothing else the server
@@ -244,7 +244,7 @@ The script also does not create the database, the app role, or any view.
 The allowlist lives in `SELECT_GRANTS` (`src/lib/diagnostics/tools/provision-role.ts`),
 in public code, so "which relations — and which columns of them — can Diagnostics
 read" is answerable by reading one file. As of AID-6B (#2376) it names
-**twenty-five** relations and **237 columns**, and **every one of them is granted by
+**twenty-six** relations and **242 columns**, and **every one of them is granted by
 column, never wholesale**:
 
 | Relation | Granted | Read by |
@@ -264,7 +264,8 @@ column, never wholesale**:
 | `public."Member"` | **22 columns** — widened by AID-6B from the two AID-6C granted. `email` is projected by one entry and is a search predicate; `phoneAreaCode` and `phoneNumber` are predicates only and are projected by nothing | the Xero contact linkage tool, the member search, the member summary, the family relationships ([tool-pack-booking-membership.md](tool-pack-booking-membership.md)) |
 | `public."Booking"` | 25 columns | the booking search, the booking summary, a member's booking involvement ([tool-pack-booking-membership.md](tool-pack-booking-membership.md)) |
 | `public."Lodge"` | **2 columns**: `id`, `name` | the booking search, a member's booking involvement |
-| `public."BookingGuest"` | 13 columns (a guest's given and family name included — booking evidence under `bookings:view`) | the booking party state, the guest counts, the guest leg of a member's booking involvement |
+| `public."BookingGuest"` | 15 columns (a guest's given and family name included; consent responder and expiry are classifier inputs only) | booking party state, guest counts, member-booking involvement and double-sharing evidence |
+| `public."MemberPartnerLink"` | 3 columns: canonical pair ids and status | the canonical double-bed-sharing verdict; raw pair ids are not projected |
 | `public."BookingGuestNight"` | **2 columns**: `bookingGuestId`, `stayDate` | the booking party state's per-night footprint |
 | `public."BedAllocation"` | 8 columns (`approvedByMemberId` is deliberately not granted) | the bed allocation state |
 | `public."LodgeRoom"` | **2 columns**: `id`, `name` (`notes` is not granted) | the bed allocation state |
@@ -281,7 +282,7 @@ access and refresh tokens, and `FamilyGroupJoinRequest`, which carries requester
 free text and children's dates of birth. The first two are permanently out of scope
 under ADR-007 §1 and no tool pack may grant them.
 
-So is every other **column** of the twenty-five. The grants are by column, so as the
+So is every other **column** of the twenty-six. The grants are by column, so as the
 diagnostics role `SELECT "ipAddress" FROM "AuditLog"`,
 `SELECT "dateOfBirth" FROM "Member"`, `SELECT "notes" FROM "Booking"`,
 `SELECT "internalNotes" FROM "BookingChangeRequest"`,
@@ -306,8 +307,8 @@ They survived two releases because the check that was supposed to catch them nev
 ran — the finance pack's suite built a correctly-keyed set of granted columns and
 never passed it to an assertion. `provision-role.test.ts` now reconciles the
 allowlist against **every registered statement in both directions**, with
-`alias -> relation` resolved per statement, and pins the census (twenty-five
-relations, 237 columns) so this page and the pack pages cannot drift from it again.
+`alias -> relation` resolved per statement, and pins the census (twenty-six
+relations, 242 columns) so this page and the pack pages cannot drift from it again.
 
 **And the same property is now proved a second time against PostgreSQL itself.**
 The real-database suite
@@ -336,9 +337,9 @@ The operator CLI prints the declared grants, columns and all, on every run and o
 `--dry-run`.
 
 **Upgrading to the AID-6B release is a two-step operation: deploy, then re-run
-`npm run diagnostics:provision-role`.** This release adds twelve relations and
+`npm run diagnostics:provision-role`.** This release adds thirteen relations and
 widens `Member` from two columns to twenty-two, so until it is re-run readiness
-reports `over_privileged` — the *previous* release's grants no longer match the
+reports `under_provisioned` — the *previous* release's grants no longer match the
 declared allowlist — and **every SQL-backed tool refuses, by design**. That is
 ADR-007's deliberate friction, and it is the same step AID-6A and AID-6C each
 required. The three `server_owned` entries in AID-6B do not read through this
@@ -352,7 +353,7 @@ in the shipped runtime calls a tool. The pack therefore ships **dormant** — ev
 entry is registered, reviewed and tested, and none of them can be reached by an
 operator until #2378 builds the surface. What *does* change on deploy is the
 database credential: after `npm run diagnostics:provision-role`, `ai_diagnostics_ro`
-holds SELECT on twelve new relations and on a `Member` widened from two columns to
+holds SELECT on thirteen new relations and on a `Member` widened from two columns to
 twenty-two, none of which any tool can use yet. The credential's blast radius
 therefore grows one release ahead of the feature. That is defensible and it is
 ADR-007's own trade — the friction requires the grant to ship with the tool it
@@ -369,7 +370,7 @@ ADR-007's deliberate friction is exactly this — a new relation becoming readab
 Diagnostics is a visible, reviewed, operator action, not a side effect.
 
 **Until you re-run it, the new tools will not work**: readiness reports
-`over_privileged` (the role can read less than the allowlist declares, or more) and
+`under_provisioned` (the role is safe but can read less than the allowlist declares) and
 the affected tool calls are refused. That is the intended failure, not a bug.
 
 Re-provisioning also **narrows**. PostgreSQL's `REVOKE` reference states that revoking
@@ -394,7 +395,8 @@ every restriction at the same time.
 | `not_configured` | `AI_DIAGNOSTICS_DATABASE_URL` is not set. Nothing was contacted. | Provision the role and set the variable. |
 | `misconfigured` | Set, but unusable as configured: not a valid `postgres://` URL, no username, it names the **same role** as `DATABASE_URL`, or it carries one of the refused query parameters above. | Fix the connection string; it must be the dedicated role, with no overriding parameters. |
 | `unverified` | Set, but the server could not be asked — unreachable host, bad password, connection limit, or no answer inside the probe deadline. The role is **not** trusted. | Fix connectivity or credentials, then re-check. |
-| `over_privileged` | Reachable, and the server's answer is not acceptable: the role holds a privilege ADR-007 forbids, can read a relation — or a **column** of a column-restricted relation — that the allowlist does not declare, or is not even the role the connection string names. | Re-run the provisioning script and investigate how it drifted. After a release that added a grant, this is simply the re-provision step not yet run. If the role name in the string does not match `current_user`, fix the string. |
+| `under_provisioned` | Reachable and otherwise safe, but missing at least one declared relation or column grant. | Re-run `npm run diagnostics:provision-role`, then re-check readiness. |
+| `over_privileged` | Reachable, and the role holds a privilege ADR-007 forbids, can read an undeclared relation or column, or is not the configured role. | Re-run provisioning and investigate privilege drift. If the role name does not match `current_user`, fix the string. |
 | `verified` | The server itself confirmed the named role is a non-superuser that can only `SELECT`, and only from the declared allowlist. | Nothing. |
 
 The response never contains the connection string, the password, or the role name.

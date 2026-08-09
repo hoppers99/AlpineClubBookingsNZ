@@ -350,7 +350,7 @@ re-provisioning, and finding it refused.
 
 **Upgrading to this release is a two-step operation: deploy, then re-run
 `npm run diagnostics:provision-role`.** Until it is re-run, readiness reports
-`over_privileged` or the correlation tools fail with a privilege error — the
+`under_provisioned` or the correlation tools fail with a privilege error — the
 deliberate friction ADR-007 asks for.
 
 ## Bounds
@@ -483,7 +483,7 @@ instruction to obey.
 
 | Symptom | Likely cause | What to do |
 | --- | --- | --- |
-| Every correlation tool fails; readiness says `over_privileged` | The release added a grant and provisioning has not been re-run | `npm run diagnostics:provision-role`, then re-check readiness |
+| Every correlation tool fails; readiness says `under_provisioned` | The release added a grant and provisioning has not been re-run | `npm run diagnostics:provision-role`, then re-check readiness |
 | Readiness says `not_configured` for the database role | `AI_DIAGNOSTICS_DATABASE_URL` is unset | Provision the role and set the variable ([deployment.md](deployment.md)) |
 | `diagnostics.readiness` answers, but no other tool will run | The diagnostics credential is the blocker | Read the `databaseRoleState` and `blockerCodes` this tool returns; that is what it is for |
 | A correlation tool returns nothing for a request id you can see in the admin audit log | The event is older than the window | Re-ask with a wider window, up to `7d` |

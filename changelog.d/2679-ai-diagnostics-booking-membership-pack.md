@@ -34,6 +34,11 @@
   shortfall: Diagnostics reports the hard `whole_lodge_held` reason, withholds
   derived spare-bed arithmetic for that night, and never suggests an admin
   over-capacity confirmation could bypass it.
+- A selected parent booking now shows its directly linked child bookings within a
+  fixed limit. Party consent evidence uses the platform's complete legal-state
+  discriminator, and double-bed allocations report whether two occupants satisfy
+  the authoritative rule: distinct active adult members with a confirmed partner
+  link. Missing, pending and corrupt states remain explicit rather than inferred.
 - A search deliberately tells an administrator less than a record does. A member
   search returns names, age tier and lifecycle state, and only *whether* an email
   address and a phone number are on file; the address itself comes back for one
@@ -45,7 +50,7 @@
 - **Operators: this release needs `npm run diagnostics:provision-role` re-run after
   deploy.** It adds relation grants for the booking and membership tables, and until
   provisioning is re-run the diagnostics readiness check reports the credential as
-  over-privileged and every database-backed diagnostics tool refuses by design. That
+  under-provisioned and every database-backed diagnostics tool refuses by design. That
   re-provisioning is the **only** change this release makes to a running system:
   there is no AI Diagnostics screen yet, nothing calls a diagnostics tool, and every
   entry described above is dormant until the assistant surface ships.

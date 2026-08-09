@@ -8,16 +8,17 @@ under issue #2376 of epic #2369.
 Read [tools.md](tools.md) first, and [tool-pack-support.md](tool-pack-support.md)
 and [tool-pack-finance.md](tool-pack-finance.md) for the substrate's first two
 packs. This page covers only what this pack adds — its permissions, its evidence
-sources, its projections, its bounds, the twelve relations it argues for plus the
+sources, its projections, its bounds, the thirteen relations it argues for plus the
 one it widens, and the questions it deliberately **cannot** answer.
 
-Fifteen entries. Each one re-reads its required areas from the database on every
+Sixteen entries. Each one re-reads its required areas from the database on every
 invocation and AND-s them.
 
 | Entry | Areas | Source |
 | --- | --- | --- |
 | `diagnostics.booking_search` | `bookings` | `select_only_sql` |
 | `diagnostics.booking_diagnostic_summary` | `bookings` | `select_only_sql` |
+| `diagnostics.booking_linked_state` | `bookings` | `select_only_sql` |
 | `diagnostics.booking_party_state` | `bookings` | `select_only_sql` |
 | `diagnostics.booking_bed_allocation_state` | `bookings` | `select_only_sql` |
 | `diagnostics.booking_exception_request_state` | `bookings` | `select_only_sql` |
@@ -38,6 +39,7 @@ invocation and AND-s them.
 | --- | --- | --- |
 | Which booking is this? (a booking id, the eight-character reference on a member's confirmation, the owner's member id, or a lodge plus a first night) | `diagnostics.booking_search` | `bookings:view` |
 | What does the platform hold about this booking? | `diagnostics.booking_diagnostic_summary` | `bookings:view` |
+| Which parent or direct child bookings are linked to it? | `diagnostics.booking_linked_state` | `bookings:view` |
 | Who is on it, for which nights, and on what footing? | `diagnostics.booking_party_state` | `bookings:view` |
 | Which guest is in which bed on which night? | `diagnostics.booking_bed_allocation_state` | `bookings:view` |
 | Has anybody asked an officer to allow something, and is that request holding beds? | `diagnostics.booking_exception_request_state` | `bookings:view` |
@@ -61,8 +63,8 @@ writes a row other than its own audit record.
 
 `bookings:view` is the area that already governs Admin > Bookings, the waitlist
 and Admin > Bed Allocation. `membership:view` is the area that already governs
-Admin > Members and Admin > Family Groups. **Thirteen of the fifteen entries
-require exactly one of those two areas and nothing else** — seven on `bookings`,
+Admin > Members and Admin > Family Groups. **Fourteen of the sixteen entries
+require exactly one of those two areas and nothing else** — eight on `bookings`,
 six on `membership`.
 
 **No entry in this pack requires `support:view`.** That is #2376's owner decision
@@ -119,9 +121,9 @@ paid one, and every entry's scope line says so.
 
 ## Record selection comes first, and it is the containment
 
-Thirteen of the fifteen entries take an **exact record id** — a booking id, a
+Fourteen of the sixteen entries take an **exact record id** — a booking id, a
 member id, or a subject plus a record id for the membership audit entry. `{}` does
-not parse for **any** of the fifteen: every argument schema is `.strict()` with a
+not parse for **any** of the sixteen: every argument schema is `.strict()` with a
 required member and no default, so there is no blank call that lists records, and
 a contract test invokes every entry with empty arguments and requires a rejection.
 
@@ -190,7 +192,7 @@ that is usually the reason the lodge is full.
 
 ## The authoritative functions this pack reads through
 
-Twelve of the fifteen entries are `select_only_sql`. Three are `server_owned`, and
+Thirteen of the sixteen entries are `select_only_sql`. Three are `server_owned`, and
 that is #2375's rule rather than convenience: #2376 forbids asking the model to
 recreate booking or membership rules from raw rows where the application already
 has an authoritative service, reason code or evaluator.
@@ -231,10 +233,14 @@ combine. The wrong way to combine them is documented in the schema as a trap —
 value forever, so that filter silently drops every ordinary guest.
 
 **`peekSubscriptionLockoutMode` and not `resolveSubscriptionLockoutMode`**, and the
-difference is load-bearing rather than stylistic: the resolving variant reseeds an
-in-process financial-year cache and can reach Xero. A diagnostics read must contact
-no provider and must not mutate process state. A contract test pins that the
-resolving variant is never named in the pack.
+difference is load-bearing rather than stylistic: the resolving variant reseeds the
+global financial-year decision cache and can reach Xero. Ordinary read-through
+memoization such as the age-tier settings cache is operational, not a domain
+mutation. Diagnostics still mutates no durable/domain or provider state and calls
+no live provider. For the current season it uses a stored override when present,
+the March default only when persisted state proves no Xero tenant is connected,
+and returns evidence unavailable when a connected tenant's unstored month would
+otherwise require cache state or a provider call.
 
 **The write-performing and lock-taking siblings are named here so a future edit
 cannot reach for one by accident.** None of these is used, and none may be:
@@ -250,7 +256,7 @@ sources make is a Prisma `findUnique`, `findFirst`, `findMany`, `count`,
 
 `booking_block_state`, `booking_capacity_by_night` and `member_eligibility_state`
 query application tables on the application's own **full-privilege** Prisma
-connection. So unlike the twelve SQL entries there is no column grant behind them,
+connection. So unlike the thirteen SQL entries there is no column grant behind them,
 and **the registry projections in `booking-state.ts` are the only boundary** — the
 same residual AID-6A records for its four server-owned entries and AID-6C for its
 one.
@@ -317,8 +323,8 @@ capacity invites a conclusion about the half that was shown.
 
 ## The relation grants
 
-This pack adds **twelve** relations to the `SELECT_GRANTS` allowlist — taking it
-from thirteen to **twenty-five** — and **widens `Member`** from the two columns
+This pack adds **thirteen** relations to the `SELECT_GRANTS` allowlist — taking it
+from thirteen to **twenty-six** — and **widens `Member`** from the two columns
 AID-6C granted to twenty-two. Every relation on the allowlist is granted **by
 column**, never wholesale.
 
@@ -339,7 +345,8 @@ column**, never wholesale.
 | `Member` | 22 columns | AID-6C (2), **widened by AID-6B** | Identity and membership lifecycle for a selected member; the name on a family row; the search predicates. Argued below. |
 | `Booking` | 25 columns | **AID-6B** | The pack's booking spine: searched by `booking_search`, returned by `booking_diagnostic_summary`, and the two legs of `member_booking_summary`. |
 | `Lodge` | 2 columns (`id`, `name`) | **AID-6B** | The lodge **name** beside a booking. Nothing else about a lodge — its capacity numbers, settings, instructions or door codes — is a question this pack has. |
-| `BookingGuest` | 13 columns | **AID-6B** | The party, the guest count on two summaries, and the GUEST leg of `member_booking_summary`. Argued below. |
+| `BookingGuest` | 15 columns | **AID-6B** | The party, guest counts, member-booking leg and canonical consent/double-sharing inputs. Responder and expiry values are never projected. |
+| `MemberPartnerLink` | 3 columns | **AID-6B** | Canonical pair and current status for the double-bed-sharing verdict; raw pair ids are never projected by that entry. |
 | `BookingGuestNight` | 2 columns (`bookingGuestId`, `stayDate`) | **AID-6B** | The authoritative per-night footprint. A guest may stay **non-contiguous** nights inside one booking, so these rows and not the envelope are the presence. |
 | `BedAllocation` | 8 columns | **AID-6B** | Which guest is in which bed on which night, plus the denormalised bed type the occupancy guard actually enforces on. `approvedByMemberId` names the officer and is not granted. |
 | `LodgeRoom` | 2 columns (`id`, `name`) | **AID-6B** | The room label on an allocation row. `notes` is officer free text and is not granted. |
@@ -350,7 +357,7 @@ column**, never wholesale.
 | `FamilyGroupMember` | 4 columns — **the whole relation** | **AID-6B** | The authoritative family-group membership join. It is the whole relation because the relation has only four columns, and that is worth recording: it has **no `role` column**. |
 | `FamilyGroup` | 2 columns (`id`, `name`) | **AID-6B** | The group's name beside a co-member. Member-supplied text, stripped and bounded on the way out. Nothing on `FamilyGroupJoinRequest` is granted at all — it carries requester free text and children's dates of birth. |
 
-Twenty-five relations, 237 granted columns, and every omitted column is a
+Twenty-six relations, 242 granted columns, and every omitted column is a
 decision. The operator CLI prints the declared grants, columns and all, on every
 run and on `--dry-run`.
 
@@ -457,9 +464,9 @@ which lists exactly these names for exactly this booking. It is returned only fo
 the party of one explicitly selected booking. Every name goes out through
 `personNameOrNull` — control characters removed, quotes, angle brackets, `;` and
 `=` stripped, whitespace collapsed, 60 characters, marked when clipped — and
-`consentRespondedByMemberId` stays ungranted, which is why a target's own approval
-and a delegate's share one consent code and the catalogue says so rather than
-picking one.
+`consentRespondedByMemberId` is read only to apply the platform's five-column
+legal-shape discriminator and is never projected. A target's own approval and a
+delegate's still share one public consent code rather than exposing the responder.
 
 **`BookingChangeRequest`, the relation with the most free text in the pack.** Not
 granted, and each for its own reason: `requestedChanges`, `proposalSnapshot` and
@@ -506,7 +513,6 @@ merely unprojected: they are **outside the grant**, so PostgreSQL refuses them
   `"wholeLodgeHoldByMemberId"`, `"noEmailsByMemberId"`;
   `BookingChangeRequest."reviewedByMemberId"`;
   `BedAllocation."approvedByMemberId"`;
-  `BookingGuest."consentRespondedByMemberId"`;
   `MemberSubscription."manuallyMarkedPaidByMemberId"`; `AuditLog."memberId"`,
   `"actorMemberId"`, `"subjectMemberId"`, `"targetId"`.
 - **Network and device identifiers.** `AuditLog."ipAddress"`, `"userAgent"`.
@@ -967,7 +973,7 @@ are the only two entries in the pack that declare `surfacesPersonalData: false`.
 | Family-relationship rows | 20, across all five union arms |
 | Single-row entries | `booking_diagnostic_summary`, `member_diagnostic_summary`, `booking_block_state`, `member_eligibility_state` |
 | Fields a row | 24, the substrate's hard ceiling — gate 8 refuses a wider row rather than trimming one. `booking_diagnostic_summary`, `booking_block_state` and `member_eligibility_state` sit **exactly** at it, so adding a field to any of them means removing one |
-| Bytes, multi-row entries | 16 384, except the two measured at 24 576 below |
+| Bytes, multi-row entries | 16 384, except the three measured/guarded at 24 576 below |
 | Bytes, single-row entries | 4 096 |
 | Person's name on the way out | 60 characters, clipping marked |
 | Room and bed label on the way out | 24 characters, clipping marked |
@@ -984,26 +990,27 @@ outright. A registry contract test serialises every entry's own projected shape 
 its own row limit, at the widest values its projection can emit, and fails if the
 ceiling is unachievable.
 
-**Two entries carry a wider ceiling because their own widest result does not fit
+**Three entries carry a wider ceiling because their own widest result does not fit
 under 16 384, and gate 9 REFUSES rather than trims.** `booking_party_state` at its
 30-row limit, every guest carrying a given *and* a family name at the 60-character
 cap, serialises to **18 123** bytes; `booking_capacity_by_night` at its 31-night
 limit, every night carrying four-figure bed counts and a full instant, serialises
 to **16 929**. Leaving them at 16 384 would not have shortened either result — it
 would have refused the whole thing with `result_too_large` and told the operator to
-narrow a question whose only argument is a booking id. Both take
+narrow a question whose only argument is a booking id. All three take
 `AID6B_WIDE_BYTE_LIMIT` (24 576), still well under the substrate's hard 32 768, and
 the model reads no more either way because the rendered block is still clipped at
-8 000 characters with an honest count of how many of how many rows it listed.
+8 000 characters with an honest count of how many of how many rows it listed. The
+allocation entry now uses the same wide ceiling for its canonical sharing verdict.
 
 Two of the ceilings cost the pack fields #2376's plan asked for, and it is worth
 knowing which:
 
-- **The allocation entry's ceiling is provable rather than typical.** Seven fields
-  at a 24-character label cap fit sixty rows for **any** data the schema can hold.
-  Nine fields at `personNameOrNull`'s 60-character cap measured 19.4 kB, so gate 9
-  would have refused every result for an ordinary week-long family booking. Both
-  label columns are `VarChar(100)`; a real bed label is "Bed 3". The allocation's
+- **The allocation entry uses the wide ceiling for its eighth field.** That field
+  is the authoritative double-sharing verdict: two occupants are eligible only
+  when they are distinct active ADULT members with a CONFIRMED partner link;
+  pending, absent, inactive, minor and corrupt states remain distinguishable.
+  Both label columns are capped at 24 characters; a real label is "Bed 3". The allocation's
   own id is not projected either, and costs nothing: the schema's
   `@@unique([bookingGuestId, stayDate])` means a guest plus a night identifies the
   row exactly, and the id is still the final `ORDER BY` term so the ordering stays
@@ -1064,7 +1071,7 @@ instead.
 
 ### `surfacesPersonalData` is declared and not yet enforced
 
-Thirteen of the fifteen entries set `surfacesPersonalData: true`, truthfully: a
+Thirteen of the sixteen entries set `surfacesPersonalData: true`, truthfully: a
 name, an email address, a member id or a booking reference plus a set of nights is
 per-person information.
 
@@ -1080,7 +1087,7 @@ ceilings, and the audit row.
 
 | Symptom | Likely cause | What to do |
 | --- | --- | --- |
-| Every booking and membership tool fails; readiness says `over_privileged` | **This release added twelve relation grants and widened `Member`, and provisioning has not been re-run** | Run `npm run diagnostics:provision-role`, then re-check readiness |
+| Every booking and membership tool fails; readiness says `under_provisioned` | **This release added thirteen relation grants and widened `Member`, and provisioning has not been re-run** | Run `npm run diagnostics:provision-role`, then re-check readiness |
 | A Booking Officer is told no diagnostics tool is available | Their access role has `bookings` but the module or the diagnostics credential is not set up | `diagnostics.readiness` (needs `support:view`) reports the blocker |
 | `booking_block_state` is refused but the other booking tools work | The caller lacks `membership:view` | The denial names the missing area; `booking_capacity_by_night` and the per-booking entries still answer |
 | `member_booking_summary` is refused but the other membership tools work | The caller lacks `bookings:view` | Same — it is the only membership entry that also reads bookings |

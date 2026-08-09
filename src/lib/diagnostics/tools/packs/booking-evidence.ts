@@ -60,10 +60,13 @@
  *    complement so a lapsed member cannot fall between the two.
  *
  * `peekSubscriptionLockoutMode` AND NOT `resolveSubscriptionLockoutMode`, and the
- * difference is load-bearing rather than stylistic: the latter reseeds an
- * in-process financial-year cache and can reach Xero. A diagnostics read must
- * contact no provider and must not mutate process state, so this module uses the
- * peek. A contract test pins that the resolving variant is never named here.
+ * difference is load-bearing rather than stylistic: the latter reseeds the
+ * global financial-year decision cache and can reach Xero. Diagnostics may fill
+ * an ordinary read-through memoization cache (`getAgeTierSettings` does), but it
+ * must not mutate durable/domain or provider state and must never contact a live
+ * provider. The season resolver below therefore uses only persisted override and
+ * connected-tenant presence evidence, and refuses when Xero's unstored month is
+ * required. A contract test pins that the resolving variant is never named here.
  *
  * A `server_owned` entry is NOT a way around the substrate's gates: registry
  * lookup, loop budget, fresh AND-ed authorization, `.strict()` argument parsing

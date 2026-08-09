@@ -585,19 +585,18 @@ export const SELECT_GRANTS: readonly AiDiagnosticsSelectGrant[] = [
      *
      * A GUEST'S NAME IS GRANTED, and it is booking evidence rather than membership
      * evidence: `bookings:view` already governs the admin booking page, which lists
-     * exactly these names. `consentRequestedAt` and `consentRespondedAt` are read and
-     * NEVER projected — they are folded in SQL into one `consentSubState` code from
-     * the platform's own `MEMBER_GUEST_CONSENT_SUB_STATES` table.
+     * exactly these names. All five consent discriminator columns are read and
+     * NEVER projected; the canonical classifier folds them into one stable code.
      *
-     * NOT GRANTED: `consentRespondedByMemberId` (names the person who approved, and
-     * its absence is why a target's own approval and a delegate's share one code),
+     * The responder id is compared only to the target id, and expiry only by
+     * presence; neither raw value is projected. NOT GRANTED:
      * `rateMembershipTypeId` (a pricing snapshot, not evidence about the guest),
-     * `consentExpiresAt`, `arrivedAt`, `departedAt` and `createdAt`.
+     * `arrivedAt`, `departedAt` and `createdAt`.
      *
-     * THREE OF THOSE WERE GRANTED IN AN EARLIER REVISION AND ARE NOT NOW, and the
+     * Some columns were granted in an earlier revision and are not now; the
      * reason is worth recording because it is a property of this allowlist rather
-     * than an oversight: `consentExpiresAt` and `arrivedAt` here, `BedAllocation.`
-     * `"source"` and `LodgeBed."active"` on their own entries, were dropped from the
+     * than an oversight: `arrivedAt` here, `BedAllocation."source"` and
+     * `LodgeBed."active"` on their own entries were dropped from the
      * projections when their entries' byte ceilings were measured against the real
      * serialiser — and a grant whose column no statement reads is reach nobody
      * reviewed. The pack's contract test asserts the allowlist in BOTH directions for

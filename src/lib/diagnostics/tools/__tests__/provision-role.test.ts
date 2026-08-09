@@ -539,6 +539,12 @@ describe("the SELECT-only grant allowlist matches what the statements read", () 
       'n."first_night"',
       'n."last_night"',
     ],
+    // `booking_bed_allocation_state`'s LATERAL aggregate identifies and counts
+    // another occupant without exposing the aggregate as a base-relation grant.
+    "diagnostics.booking_bed_allocation_state": [
+      'co."other_guest_ref"',
+      'co."other_occupant_count"',
+    ],
   };
 
   const grantedPairs = new Set(
@@ -648,11 +654,11 @@ describe("the SELECT-only grant allowlist matches what the statements read", () 
    * kept them together.
    */
   it("grants exactly the census the deployment and pack documents quote", () => {
-    expect(SELECT_GRANTS.length).toBe(25);
+    expect(SELECT_GRANTS.length).toBe(26);
     expect(
       SELECT_GRANTS.reduce((total, grant) => total + (grant.columns?.length ?? 0), 0),
       "update docs/ai-diagnostics/deployment.md and tool-pack-booking-membership.md in the same commit",
-    ).toBe(237);
+    ).toBe(242);
   });
 
   it("grants no relation that no statement reads, and reads none it does not grant", () => {

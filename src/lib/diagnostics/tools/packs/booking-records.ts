@@ -2,12 +2,13 @@
  * AI Diagnostics — AID-6B booking/membership pack, part 2: PER-BOOKING STORED
  * EVIDENCE (#2376, epic #2369).
  *
- * FIVE ENTRIES, each taking the EXACT booking id that `booking-search.ts` had to
+ * SIX ENTRIES, each taking the EXACT booking id that `booking-search.ts` had to
  * produce first. There is no listing tool here, no window that returns "recent
  * bookings", and no argument that widens a predicate — so this half of the pack
  * has no shape that could be walked to extract a guest register.
  *
  *   diagnostics.booking_diagnostic_summary          bookings
+ *   diagnostics.booking_linked_state                bookings
  *   diagnostics.booking_party_state                 bookings
  *   diagnostics.booking_bed_allocation_state        bookings
  *   diagnostics.booking_exception_request_state     bookings
@@ -67,15 +68,17 @@
  *   bookingId (predicate — booking_party_state and the guest count on
  *     booking_diagnostic_summary),
  *   id, firstName, lastName, ageTier, isMember, memberId, stayStart, stayEnd,
- *   priceCents, consentStatus, consentRequestedAt, consentRespondedAt
+ *   priceCents, consentStatus, consentRequestedAt, consentRespondedAt,
+ *   consentRespondedByMemberId, consentExpiresAt
  *   — all booking_party_state.
- *  `consentStatus`, `consentRequestedAt` and `consentRespondedAt` are READ BUT
- *  NEVER PROJECTED: they are folded in SQL into the one `consentSubState` code
- *  and the one `operationallyPresent` boolean (see below).
+ *  All five consent discriminator columns are READ BUT NEVER PROJECTED: the
+ *  canonical `classifyMemberGuestConsent` helper folds them into the one
+ *  `consentSubState` code; status alone also feeds the platform's canonical
+ *  `operationallyPresent` predicate.
  *  NOT READ, NOT GRANTED: `rateMembershipTypeId` (a pricing snapshot that is not
- *  evidence about the guest), `consentRespondedByMemberId` (names a person),
- *  `consentExpiresAt`, `arrivedAt`, `departedAt` and `createdAt` (dropped for the
- *  byte ceiling, see below).
+ *  evidence about the guest), `arrivedAt`, `departedAt` and `createdAt` (dropped
+ *  for the byte ceiling, see below). The responder id is compared only to the
+ *  target id and never emitted; expiry is used only as a presence fact.
  *
  * `public."BookingGuestNight"` — booking_party_state:
  *   bookingGuestId (predicate), stayDate.
@@ -251,17 +254,14 @@
  *   entry                            fields  typical    widest  ceiling
  *   booking_diagnostic_summary        24 × 1    854 B         —   4 096
  *   booking_party_state               15 × 30  14.9 kB   18.0 kB  16 384
- *   booking_bed_allocation_state       7 × 60  13.7 kB   16.0 kB  16 384
+ *   booking_bed_allocation_state       8 × 60  wide result ceiling     24 576
  *   booking_exception_request_state    16 × 18  11.0 kB       —   16 384
  *   booking_record_audit_history        7 × 18   4.7 kB       —   16 384
  *
- * THE ALLOCATION ENTRY'S CEILING IS PROVABLE, not merely typical: seven fields
- * at a 24-character label cap fit sixty rows for ANY data the schema can hold.
- * That is why the room and bed labels go out through a local 24-character
- * validator instead of `personNameOrNull`'s 60 — both columns are `VarChar(100)`,
- * and nine fields at wider labels measured 19.4 kB, so gate 9 would have refused
- * every result for an ordinary week-long family booking. A real bed label is
- * "Bed 3".
+ * THE ALLOCATION ENTRY USES THE WIDE CEILING because its eighth field is the
+ * canonical double-sharing verdict. Room and bed labels still go out through a
+ * local 24-character validator instead of `personNameOrNull`'s 60; a real label
+ * is "Bed 3". Gate 9 refuses rather than silently clipping an oversized result.
  *
  * THE PARTY ENTRY'S CEILING IS TYPICAL WITH A STATED BOUNDARY, because a name is
  * the evidence and capping a name the way a bed label is capped would be a worse
@@ -313,20 +313,19 @@
  *     a confident, actionable falsehood about a healthy record. (The schema's
  *     own comment on `BookingGuest.consentStatus` is stale in the same way.)
  *
- *  2. THREE CONSENT COLUMNS ARE FOLDED INTO TWO DERIVED FIELDS, and no
- *     information is lost. The plan asked for `consentStatus` plus three consent
- *     instants. The schema's `MEMBER_GUEST_CONSENT_SUB_STATES` table is the
- *     platform's own source of truth for which combination means what, so the
- *     statement evaluates that table in SQL and projects one `consentSubState`
+ *  2. FIVE CONSENT COLUMNS ARE FOLDED INTO TWO DERIVED FIELDS. The schema's
+ *     `MEMBER_GUEST_CONSENT_SUB_STATES` table is the platform's own source of
+ *     truth for which combination means what, so the projection calls its
+ *     canonical classifier and emits one `consentSubState`
  *     code from a closed server-owned catalogue, interpolated into the scope line
  *     so the vocabulary actually reaches the model. Alongside it goes
  *     `operationallyPresent` — the platform's OWN predicate
  *     (`OPERATIONALLY_PRESENT_GUEST_WHERE`) evaluated server-side, so a model
  *     never has to build it and can never build it wrongly. Two fields instead
  *     of four, the eight documented shapes distinguishable from seven codes, and
- *     `consentRespondedByMemberId` — which would be needed to tell a target's
- *     own approval from a delegate's — stays ungranted, which is why those two
- *     shapes share one code and the catalogue says so. The raw `consentStatus` is
+ *     `consentRespondedByMemberId` is compared only to the target id and is never
+ *     emitted; target and delegate approvals intentionally share one public code.
+ *     The raw `consentStatus` is
  *     not projected alongside the code deliberately: the code NAMES the null case
  *     (`family_or_legacy`), so the dominant value a model is most likely to
  *     misread as "consent outstanding" is no longer a null it has to interpret.
@@ -921,13 +920,11 @@ const bookingPartyState = defineDiagnosticsTool<BookingIdArgs>({
  * ONE ROW PER `BedAllocation` — one guest, one bed, one night — for THIS booking
  * only.
  *
- * SEVEN FIELDS, AND THE NARROWNESS IS THE POINT — it is the arithmetic in the
- * module docblock, not a style. A guest-night is a row, so this is a party times
- * a stay: six guests over ten nights is sixty rows, which is the entry's whole
- * limit, and seven fields at 24-character labels is exactly what makes sixty rows
- * fit the 16 384-byte ceiling for ANY data the schema can hold. Measured: nine
- * fields came to 17.1 kB at typical widths and 19.4 kB at the widest, so gate 9
- * would have refused every result for an ordinary week-long family booking.
+ * EIGHT FIELDS. A guest-night is a row, so this is a party times a stay: six
+ * guests over ten nights is sixty rows. The eighth is a stable verdict from the
+ * canonical double-sharing rule, and the entry therefore uses the pack's 24 576
+ * byte wide ceiling. Labels remain capped at 24 characters and gate 9 refuses an
+ * oversized full result rather than silently trimming it.
  * Dropped to get here, in the order they were given up: the allocation's own id
  * (the row has a natural key — see below), the room and bed ids, the live bed
  * type (the comparison carries it), the bunk group, the approval instant, the
@@ -970,6 +967,35 @@ const bookingPartyState = defineDiagnosticsTool<BookingIdArgs>({
  * ALLOCATION's own copy, which is the one the guard reads, so it is the value
  * that explains why a second occupant was accepted or refused.
  */
+export const DOUBLE_BED_SHARING_STATE_MEANINGS = {
+  not_double_bed: "not_double_bed: this allocation is not on a DOUBLE bed.",
+  single_occupant: "single_occupant: the DOUBLE currently has no other occupant.",
+  corrupt_occupant_cardinality:
+    "corrupt_occupant_cardinality: more than one other allocation occupies the same bed-night; report a data defect.",
+  ineligible_guest_not_member:
+    "ineligible_guest_not_member: at least one occupant is not linked to a member.",
+  ineligible_same_member:
+    "ineligible_same_member: both guest rows resolve to the same member; report a data defect.",
+  ineligible_member_missing:
+    "ineligible_member_missing: at least one linked member row cannot be read.",
+  ineligible_member_inactive:
+    "ineligible_member_inactive: at least one occupant is not currently active.",
+  ineligible_not_adult:
+    "ineligible_not_adult: at least one occupant is not currently in the ADULT age tier.",
+  eligible_confirmed_partners:
+    "eligible_confirmed_partners: two distinct active ADULT members have a CONFIRMED partner link and may share.",
+  ineligible_partner_link_pending:
+    "ineligible_partner_link_pending: the current partner link is PENDING, which grants no sharing eligibility.",
+  ineligible_partner_link_absent:
+    "ineligible_partner_link_absent: no partner link exists for the pair.",
+  ineligible_partner_link_unrecognised:
+    "ineligible_partner_link_unrecognised: the link has an unknown status; report a data defect.",
+} as const;
+
+const DOUBLE_BED_SHARING_STATE_SENTENCES = Object.values(
+  DOUBLE_BED_SHARING_STATE_MEANINGS,
+).join(" ");
+
 const BOOKING_BED_ALLOCATION_SQL = `SELECT
   ${dateOnly('a."stayDate"')} AS stay_date,
   a."bookingGuestId" AS guest_ref,
@@ -1023,9 +1049,9 @@ const bookingBedAllocationState = defineDiagnosticsTool<BookingIdArgs>({
   id: DIAGNOSTICS_BOOKING_BED_ALLOCATION_TOOL_ID,
   source: "select_only_sql",
   label: "Booking bed allocation state",
-  description: `Lists the bed allocations THIS booking holds, one row per guest per night, at most ${AID6B_ALLOCATION_ROW_LIMIT}, earliest night first then room then bed. Each row carries the night, the booking-guest record id, the room and bed names, the bed type recorded on the allocation, whether that type still matches the bed's own definition, and whether the guest is the SECOND occupant of a double. A guest and a night identify a row exactly — one guest has at most one allocation per night. A DOUBLE bed may hold two occupants for a night; every other bed type holds exactly one. This is THIS booking's allocation only, never the lodge's whole board, so it cannot tell you whether the lodge was full. It returns no approver identity, no room notes, and neither whether a placement was automatic or by hand nor whether the bed is still active — both are on the bed-allocation board. ${AID6B_DESCRIPTION_TAIL}`,
+  description: `Lists the bed allocations THIS booking holds, one row per guest per night, at most ${AID6B_ALLOCATION_ROW_LIMIT}, earliest night first then room then bed. Each row carries the night, booking-guest record id, room and bed names, stored bed type, whether that type still matches the bed, whether the guest is the SECOND occupant, and the platform's current double-bed-sharing verdict. A DOUBLE may hold two occupants only when they are distinct active ADULT members with a CONFIRMED partner link; pending, absent and corrupt link or member facts are reported as ineligible evidence, not guessed. This is THIS booking's allocation only, never the lodge's whole board. It returns no approver identity, room notes, placement source or active-bed flag. ${AID6B_DESCRIPTION_TAIL}`,
   requiredAreas: ["bookings"],
-  evidenceScope: `The bed allocations belonging to ONE booking, one row per guest per night, at most ${AID6B_ALLOCATION_ROW_LIMIT} rows. A DOUBLE bed may hold TWO occupants for a night — one primary and one marked isSecondOccupant — and every other bed type is capped at exactly one occupant a night; that cap is enforced on the bed type stored on the ALLOCATION row, which is a copy taken when the allocation was made, so bedTypeMatchesBed being false is a real data defect worth reporting and null means the bed row could not be read at all. AN UNALLOCATED GUEST-NIGHT IS NOT PROOF THE LODGE WAS FULL. A bed held for a season by a custodian (a hut-leader assignment with a bed) is out of the allocatable pool entirely, with NO allocation row and NO booking anywhere, so it simply does not appear in any tool's evidence; and a guest-night can be unallocated because nobody has placed it yet. Either way the question needs the bed-allocation board, which is Admin > Bed Allocation. THIS TOOL REPORTS ONE BOOKING'S OWN ALLOCATION AND NEVER THE WHOLE BOARD: it cannot see another booking's beds, the custodian holds, or how many beds the lodge has, so never conclude anything about lodge occupancy or availability from it. Seven fields a row is what makes sixty rows fit this tool's size ceiling for any data the schema can hold, so four further facts are deliberately absent and all four are on the same board: whether the placement was made automatically or by an officer, whether the bed is still active, when a manual placement was approved, and the bed's bunk-pairing label. Who approved an allocation and any room notes are not reported and are not readable by any tool here. ${AID6B_SCOPE_TAIL} ${AID6B_UNTRUSTED_EVIDENCE_DISCLOSURE}`,
+  evidenceScope: `The bed allocations belonging to ONE booking, one row per guest per night, at most ${AID6B_ALLOCATION_ROW_LIMIT} rows. Every non-DOUBLE bed is single-occupancy. A DOUBLE may hold a primary plus one second occupant only when the platform's canonical rule says they are two distinct, existing, active ADULT members with a CONFIRMED partner link. doubleBedSharingState means: ${DOUBLE_BED_SHARING_STATE_SENTENCES} The pair ids and responder identity are inputs only and are never projected. bedTypeMatchesBed false is a real data defect and null means the bed row could not be read. AN UNALLOCATED GUEST-NIGHT IS NOT PROOF THE LODGE WAS FULL. Custodian bed holds have no allocation or booking row and are absent here. THIS TOOL REPORTS ONE BOOKING'S OWN ALLOCATION, NEVER THE WHOLE BOARD, so never conclude lodge occupancy or availability from it; use Admin > Bed Allocation. Eight fields a row use the pack's wide result ceiling. Placement source, active-bed state, approval instant, bunk pairing, approver identity and room notes are not reported. ${AID6B_SCOPE_TAIL} ${AID6B_UNTRUSTED_EVIDENCE_DISCLOSURE}`,
   argsSchema: bookingIdArgsSchema,
   inputSchema: bookingIdInputSchema,
   sql: BOOKING_BED_ALLOCATION_SQL,

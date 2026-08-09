@@ -71,7 +71,7 @@ authoritative booking-finance calculation behind `finance:view` **and**
 Xero or a bank. Full reference: [tool-pack-finance.md](tool-pack-finance.md).
 
 AID-6B (#2376) has added the **booking and membership pack**: two bounded record
-searches and five per-booking evidence tools behind `bookings:view`, five
+searches and six per-booking evidence tools behind `bookings:view`, five
 per-member evidence tools behind `membership:view` (one of which also needs
 `bookings:view`, because it reads a member's bookings), and three `server_owned`
 entries returning the application's own authoritative answers — why a booking is
@@ -80,10 +80,10 @@ blocked (`bookings:view` **and** `membership:view`), per-night capacity
 entry in it requires `support:view`.** Full reference:
 [tool-pack-booking-membership.md](tool-pack-booking-membership.md).
 
-The `SELECT` grant allowlist therefore names **twenty-five** relations today, and
+The `SELECT` grant allowlist therefore names **twenty-six** relations today, and
 every one of them is granted **by column, never wholesale**: `public."AuditLog"`
 (nine columns), the twelve finance relations AID-6C argues for one at a time, and
-the twelve booking and membership relations AID-6B argues for one at a time — of
+the thirteen booking and membership relations AID-6B argues for one at a time — of
 which `public."PolicyExceptionReservationNight"` is now the narrowest, at a single
 column. `public."Member"` is the one entry two packs share: AID-6C granted `id` and
 `xeroContactId` for the Xero contact linkage, and AID-6B **widens** it to
@@ -92,7 +92,7 @@ the grant itself and in the pack doc. Everything else in the schema is unreadabl
 by the diagnostics role, including `IntegrationCredential` (encrypted provider
 secrets) and `XeroToken` (**plaintext** OAuth access and refresh tokens), both
 permanently out of scope under ADR-007 §1. And so is every other column of the
-twenty-five: the grants are by column, so `SELECT "ipAddress" FROM "AuditLog"`,
+twenty-six: the grants are by column, so `SELECT "ipAddress" FROM "AuditLog"`,
 `SELECT "dateOfBirth" FROM "Member"`, `SELECT "notes" FROM "Booking"` and
 `SELECT "payload" FROM "XeroInboundEvent"` are each refused by PostgreSQL itself.
 
@@ -399,7 +399,7 @@ Every reason returns no rows and carries a plain-English operator sentence that
 never echoes caller input: `unknown_tool`, `invalid_args`,
 `call_budget_exhausted`, `metering_unavailable`, `actor_unresolved`,
 `actor_blocked`, `actor_read_failed`, `permission_denied`,
-`database_not_configured`, `database_role_unsafe`, `query_failed`,
+`database_not_configured`, `database_role_unsafe`, `database_grants_missing`, `query_failed`,
 `evidence_unavailable`, `result_too_large`, `redaction_failed`,
 `audit_unavailable`, `internal_error`.
 

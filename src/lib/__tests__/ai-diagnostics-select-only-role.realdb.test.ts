@@ -1191,6 +1191,85 @@ describe("diagnostics privilege proof DB safety guard (#2374)", () => {
       });
     });
 
+    it("REFUSES an under-provisioned declared column through the real runtime check", async () => {
+      await withDeclaredGrantsOnly(async () => {
+        try {
+          await admin.query(
+            `REVOKE SELECT ("createdAt") ON public."AuditLog" FROM "${TEST_ROLE}"`,
+          );
+          await closeDiagnosticsDatabase();
+          const handle = await getDiagnosticsDatabase();
+          expect(handle.ok).toBe(false);
+          if (handle.ok) return;
+
+          expect(handle.reason).toBe("database_grants_missing");
+          expect(handle.report?.missingReadableColumns).toBe(1);
+          expect(handle.report?.missingReadableRelations).toBe(0);
+          expect(handle.report?.undeclaredReadableRelations).toBe(0);
+          expect(handle.report?.undeclaredReadableColumns).toBe(0);
+        } finally {
+          // Restore the exact shipped declaration before the next test. This is
+          // deliberately provisioning, not a hand-written inverse, so the recovery
+          // path is proven against the same reviewed allowlist as deployment.
+          await provision();
+          await closeDiagnosticsDatabase();
+        }
+      });
+    });
+
+    it("REFUSES a one-column grant for a declared whole relation", async () => {
+      await withDeclaredGrantsOnly(async () => {
+        // No shipped relation currently uses the whole-relation form. Exercise that
+        // supported declaration shape against PostgreSQL anyway: a future entry must
+        // require table SELECT, not pass merely because one arbitrary column is
+        // readable. Mutating the imported array is a scoped test seam; it is restored
+        // in `finally` before any other assertion can observe it.
+        const mutableSelectGrants = SELECT_GRANTS as unknown as Array<{
+          schema: string;
+          relation: string;
+          columns?: readonly string[];
+        }>;
+        const wholeRelationGrant = {
+          schema: "public",
+          relation: GRANTED_TABLE,
+        };
+        mutableSelectGrants.push(wholeRelationGrant);
+        try {
+          await admin.query(
+            `GRANT SELECT (id) ON public.${GRANTED_TABLE} TO "${TEST_ROLE}"`,
+          );
+          await closeDiagnosticsDatabase();
+          expect(
+            await sqlStateAsRole(`SELECT id FROM public.${GRANTED_TABLE}`),
+          ).toBeNull();
+          expect(
+            await sqlStateAsRole(`SELECT note FROM public.${GRANTED_TABLE}`),
+          ).toBe(INSUFFICIENT_PRIVILEGE);
+
+          const handle = await getDiagnosticsDatabase();
+          expect(handle.ok).toBe(false);
+          if (handle.ok) return;
+
+          expect(handle.reason).toBe("database_grants_missing");
+          expect(handle.report?.missingReadableRelations).toBe(1);
+          expect(handle.report?.missingReadableColumns).toBe(0);
+          expect(handle.report?.undeclaredReadableRelations).toBe(0);
+          expect(handle.report?.undeclaredReadableColumns).toBe(0);
+        } finally {
+          // Remove the process-global declaration first. Even a failed cleanup SQL
+          // statement must not leave later tests believing the scratch table ships.
+          const index = mutableSelectGrants.indexOf(wholeRelationGrant);
+          if (index >= 0) mutableSelectGrants.splice(index, 1);
+          await admin
+            .query(
+              `REVOKE ALL PRIVILEGES ON public.${GRANTED_TABLE} FROM "${TEST_ROLE}"`,
+            )
+            .catch(() => {});
+          await closeDiagnosticsDatabase();
+        }
+      });
+    });
+
     it("REFUSES the same role the moment it holds a write grant or an undeclared read", async () => {
       // The suite's own scratch grants are exactly the drift the self-check exists to
       // catch: SELECT on a table the declared allowlist does not name, and INSERT on
@@ -1700,11 +1779,11 @@ describe("diagnostics privilege proof DB safety guard (#2374)", () => {
         subject: "payment",
         recordId: "clz0000000abcdefghijklmno",
       },
-      // AID-6B (#2376). All twelve, because all twelve refuse `{}` — and without a
+      // AID-6B (#2376). All thirteen, because all thirteen refuse `{}` — and without a
       // row here the loop below does not merely SKIP an entry, it throws on the
       // first one it reaches and never executes a single AID-6B statement against a
-      // real server. That is the failure this file exists to prevent: the twelve new
-      // statements read twenty-five relations by column, and an ungranted column
+      // real server. That is the failure this file exists to prevent: the thirteen
+      // statements read fifteen relations by column, and an ungranted column
       // among them is a 42501 that passes every mock in the repository.
       //
       // The SEARCH arms are chosen for what they exercise on the server rather than
@@ -1724,6 +1803,9 @@ describe("diagnostics privilege proof DB safety guard (#2374)", () => {
       },
       "diagnostics.member_search": { kind: "name_prefix", namePrefix: "smi" },
       "diagnostics.booking_diagnostic_summary": {
+        bookingId: "clz0000000abcdefghijklmno",
+      },
+      "diagnostics.booking_linked_state": {
         bookingId: "clz0000000abcdefghijklmno",
       },
       "diagnostics.booking_party_state": {
@@ -1773,13 +1855,13 @@ describe("diagnostics privilege proof DB safety guard (#2374)", () => {
           (entry) => entry.source === "select_only_sql",
         );
         // The probe, AID-6A's five correlation entries, AID-6C's nine finance
-        // entries and AID-6B's twelve, so this is not vacuous.
+        // entries and AID-6B's thirteen, so this is not vacuous.
         expect(sqlEntries.length).toBeGreaterThan(1);
 
         // THE CENSUS, ASSERTED BEFORE THE LOOP RATHER THAN DISCOVERED INSIDE IT.
         // An entry with no argument row does not skip: `parseArgs({})` fails, the
         // assertion inside the loop throws, and every entry after it — however many
-        // — is never executed against the server at all. That is how twelve
+        // — is never executed against the server at all. That is how thirteen
         // statements reached a review with their real-database proof silently not
         // running. Naming the gap up front turns "expected false to be true" into a
         // sentence that says which entry and what to do about it.

@@ -303,7 +303,10 @@ describe("getDiagnosticsDatabase — the verified pool (#2374, ADR-007)", () => 
     // hand-granted column must still count the relation as missing.
     expect(probe.sql).toContain("expected.relation_key = ANY($5::text[])");
     expect(probe.sql).toMatch(
-      /expected\.relation_key = ANY\(\$5::text\[\]\)[\s\S]*has_table_privilege\(current_user, c\.oid, 'SELECT'\)/,
+      /expected\.relation_key = ANY\(\$5::text\[\]\)\s+AND pg_catalog\.has_table_privilege\(current_user, c\.oid, 'SELECT'\)/,
+    );
+    expect(probe.sql).not.toMatch(
+      /expected\.relation_key = ANY\(\$5::text\[\]\)\s+AND pg_catalog\.has_any_column_privilege/,
     );
   });
 

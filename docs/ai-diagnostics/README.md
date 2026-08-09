@@ -32,9 +32,10 @@ operator setup in [deployment.md](deployment.md). **AID-6A (#2375) has since lan
 the [support tool pack](tool-pack-support.md)** — deployment, configuration and
 readiness evidence behind `support:view`, bounded sanitized audit correlation behind
 `support:view` **and** the affected domain's own `area:view`, one column-restricted
-`AuditLog` grant, and the shared evidence-state and diagnostic-case contracts the
-remaining packs plug into. Those are AID-6B (#2376, booking/membership) and AID-6C
-(#2377, finance/Xero).
+`AuditLog` grant, and the shared evidence-state and diagnostic-case contracts.
+**AID-6B (#2376) and AID-6C (#2377) are now delivered too:** the booking and
+membership pack and the finance/Xero pack are documented below. The product
+shell/answer workflow remains a later implementation child.
 
 ## Governance: these contracts are binding
 
@@ -97,8 +98,8 @@ entries, the twelve relation grants they argue for, and the finance questions th
 platform stores no evidence to answer.
 
 AID-6B is delivered: see
-[tool-pack-booking-membership.md](tool-pack-booking-membership.md) for its fifteen
-entries, the twelve further relation grants plus the widened `Member`, and the
+[tool-pack-booking-membership.md](tool-pack-booking-membership.md) for its sixteen
+entries, thirteen further relation grants plus the widened `Member`, and the
 booking and membership questions this schema cannot answer — including the member
 number it does not store. **No entry in that pack requires `support:view`**; a
 Booking Officer or a Membership Officer uses it under their own area alone.
@@ -414,7 +415,9 @@ accepted; those become positional parameters and nothing else.
   own permission review and its own table grant.
 - **Readiness now verifies the role.** `GET /api/admin/ai-diagnostics/readiness`
   reports a `databaseState` of `not_configured`, `misconfigured`, `unverified`,
-  `over_privileged`, or `verified`, and anything but `verified` blocks readiness.
+  `over_privileged`, `under_provisioned`, or `verified`, and anything but
+  `verified` blocks readiness. Missing declared grants are reported separately
+  from excess privilege so the re-provision action is explicit.
   It never returns the connection string, the password, or the role name.
 
 ### Privilege proof
@@ -436,15 +439,15 @@ dedicated database) and its CI step, environment, and ordering are pinned by
 
 AID-6B adds the third tool pack on the SELECT-only substrate: **bounded booking and
 member selection, per-record booking and membership evidence, and three of the
-application's own authoritative calculations.** Fifteen entries. Full reference:
+application's own authoritative calculations.** Sixteen entries. Full reference:
 [`tool-pack-booking-membership.md`](tool-pack-booking-membership.md).
 
-- **Selection comes first.** Two searches are the only way in, and thirteen of the
-  fifteen entries take an exact record id. `{}` parses for none of them, there is
+- **Selection comes first.** Two searches are the only way in, and fourteen of the
+  sixteen entries take an exact record id. `{}` parses for none of them, there is
   no listing tool, no paging and no `COUNT`, and every predicate is an equality
   except one member-name prefix, which uses `starts_with` over a literal prefix —
   there is no `LIKE`, no regex and no wildcard character anywhere in the pack.
-- **Its own area, and nothing borrowed.** Seven entries need `bookings:view`, six
+- **Its own area, and nothing borrowed.** Eight entries need `bookings:view`, six
   need `membership:view`, and two need both AND-ed. **None requires
   `support:view`** — #2376's owner decision — and no argument can move a call
   between permission sets, because `requiredAreas` is fixed on the entry and
@@ -456,8 +459,8 @@ application's own authoritative calculations.** Fifteen entries. Full reference:
   subscription-settlement rule and adult-member-host predicate. Each returns stable
   codes in an argued priority order, and every code's operator sentence travels to
   the model inside the entry's own scope text.
-- **Twelve more relation grants, plus the widened `Member`.** The allowlist now
-  names **twenty-five** relations, all by column. `Member` goes from two columns to
+- **Thirteen more relation grants, plus the widened `Member`.** The allowlist now
+  names **twenty-six** relations, all by column. `Member` goes from two columns to
   twenty-two — the most scrutinised change the allowlist has had — while the birth
   date, the address, the credentials, the two-factor state and every free-text
   column stay refused by PostgreSQL itself.
@@ -477,7 +480,7 @@ application's own authoritative calculations.** Fifteen entries. Full reference:
 
 ### ADR-004's per-invocation opt-in is declared, not enforced
 
-Thirteen of the fifteen entries set `surfacesPersonalData: true` truthfully, but
+Thirteen of the sixteen entries set `surfacesPersonalData: true` truthfully, but
 **nothing in the shipped code implements a per-invocation operator consent**. The
 flag records that a row can identify a person; it does not gate the entry, and it
 must not be described as a control. Implementing the opt-in is a prerequisite

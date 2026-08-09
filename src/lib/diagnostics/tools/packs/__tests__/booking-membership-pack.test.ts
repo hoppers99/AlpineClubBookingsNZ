@@ -3,7 +3,7 @@
  *
  * This suite is the AID-6C finance pack's sibling and is written to the same
  * rule: every property is asserted against the SHIPPED registry entries — the
- * fifteen objects `registry.ts` actually hands the provider — rather than
+ * sixteen objects `registry.ts` actually hands the provider — rather than
  * against a fixture that would happily agree with a rewritten pack.
  *
  * The eleven properties that decide whether this pack is safe, and why each one
@@ -15,8 +15,8 @@
  *     that a Membership Officer needs `membership:view` on the same terms. A
  *     "contains bookings" test would pass for an entry that demanded every area
  *     in the system, so the assertion is on the exact set.
- *  2. NOTHING LISTS. All fifteen entries refuse `{}`, asserted by iteration over
- *     the pack so a sixteenth entry inherits the property without an edit here.
+ *  2. NOTHING LISTS. All sixteen entries refuse `{}`, asserted by iteration over
+ *     the pack so a seventeenth entry inherits the property without an edit here.
  *  3. THE SEARCH ARGUMENT SCHEMAS ARE TABLE-DRIVEN OVER EVERY ARM. A predicate
  *     checked only against the input that motivated it is how a defect ships:
  *     the eight-character boundary is exercised at 7 and at 9, every arm is
@@ -107,6 +107,7 @@ import {
   DIAGNOSTICS_BOOKING_LINKED_STATE_TOOL_ID,
   DIAGNOSTICS_BOOKING_PARTY_TOOL_ID,
   DIAGNOSTICS_BOOKING_SUMMARY_TOOL_ID,
+  DOUBLE_BED_SHARING_STATE_MEANINGS,
 } from "../booking-records";
 import {
   DIAGNOSTICS_AID6B_SEARCH_TOOLS,
@@ -288,7 +289,7 @@ describe("AID-6B booking/membership pack: permissions (#2376)", () => {
   it("registers exactly the sixteen entries the four pack arrays export", () => {
     // Both directions. Forwards: the registry carries every entry the pack
     // declares. Backwards: the pack's own four arrays carry nothing the table
-    // above has not reviewed a permission for — so a sixteenth entry added to a
+    // above has not reviewed a permission for — so a seventeenth entry added to a
     // pack module fails HERE, before it fails anywhere subtler.
     const exported = [
       ...DIAGNOSTICS_AID6B_SEARCH_TOOLS,
@@ -400,7 +401,7 @@ describe("AID-6B booking/membership pack: permissions (#2376)", () => {
 // ---------------------------------------------------------------------------
 
 describe("AID-6B booking/membership pack: nothing lists (#2376)", () => {
-  it("refuses `{}` on every one of the fifteen entries", () => {
+  it("refuses `{}` on every one of the sixteen entries", () => {
     // The structural half of "no bulk extraction", asserted by ITERATION over the
     // pack rather than entry by entry, so an entry added tomorrow is covered
     // without an edit here. An entry that accepted `{}` would be a listing tool:
@@ -2180,7 +2181,7 @@ describe("AID-6B booking/membership pack: the relation census (#2376)", () => {
 });
 
 // ---------------------------------------------------------------------------
-// 11. The two code catalogues, and whether they reach the model.
+// 11. The code catalogues, and whether they reach the model.
 // ---------------------------------------------------------------------------
 
 describe("AID-6B booking/membership pack: the code catalogues (#2376)", () => {
@@ -2313,6 +2314,26 @@ describe("AID-6B booking/membership pack: the code catalogues (#2376)", () => {
     expect(modelFacing).toContain('Never reason with "consentStatus is not PENDING"');
     expect(sql).toContain(
       `(g."consentStatus" IS NULL OR g."consentStatus" = 'CONFIRMED') AS operationally_present`,
+    );
+  });
+
+  it("ships every double-bed sharing verdict and meaning with the allocation entry", () => {
+    const allocation = entry(DIAGNOSTICS_BOOKING_BED_ALLOCATION_TOOL_ID);
+    const modelFacing = `${allocation.description}\n${allocation.evidenceScope ?? ""}`;
+
+    // Both the closed codes and their operator-facing meanings must reach the
+    // model. Merely projecting a code would invite it to turn PENDING into an
+    // inferred partnership or to treat a missing member row as ordinary absence.
+    for (const [code, meaning] of Object.entries(
+      DOUBLE_BED_SHARING_STATE_MEANINGS,
+    )) {
+      expect(modelFacing, `${code} never reaches the model`).toContain(code);
+      expect(modelFacing, `${code}'s meaning never reaches the model`).toContain(
+        meaning,
+      );
+    }
+    expect(modelFacing).toContain(
+      "two distinct, existing, active ADULT members with a CONFIRMED partner link",
     );
   });
 });
