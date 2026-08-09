@@ -33,6 +33,31 @@
 -- (bookingGuestId, stayDate) constraint plus ON CONFLICT DO NOTHING make a replay
 -- insert nothing. Cancelled/bumped and soft-deleted bookings are skipped, exactly
 -- as #1098 skipped them.
+--
+-- OPERATOR NOTE — RE-RUN THIS AFTER CUTOVER. `prisma migrate deploy` runs at step
+-- 13 of docs/PRODUCTION_UPGRADE_RUNBOOK.md, BEFORE cutover, so the old colour is
+-- still taking booking-request approvals and quote holds while this runs. Every
+-- one of those is written by pre-#2739 code, gets no night rows, and is already
+-- behind this one-shot INSERT — leaving exactly the invisible-guest state the
+-- release claims to have closed. Running the statement again verbatim after
+-- cutover picks those up and inserts nothing anywhere it already ran.
+--
+-- Two more consequences of that same window, stated so they are decisions rather
+-- than surprises:
+--   * THIS IS NOT REVERSIBLE BY ABORTING THE CUTOVER. A data write survives a
+--     rollback of the code; there is no rollback.sql and none is required by the
+--     gates (this migration is not `windowed`), so an aborted release keeps the
+--     rows. They are harmless — they describe the stay the guest already had —
+--     but they do not go away.
+--   * The old colour's in-place held-booking reassignment (reassignHeldBookingGuests)
+--     overwrites stayStart/stayEnd/priceCents WITHOUT rewriting night rows; the
+--     rewrite is part of this release. Harmless while these guests have no rows,
+--     which is why the exposure is created by this backfill: a quote accepted
+--     between `migrate` and cutover at a different option than the hold was taken
+--     at leaves rows describing the hold's dates and total, and
+--     buildInvoiceLineItems prefers stored rows over the guest's flat priceCents.
+--     Remedy: re-raise or refresh the invoice for any request approved in the
+--     window, or take the deploy with quoting paused.
 INSERT INTO "BookingGuestNight" ("id", "bookingGuestId", "stayDate", "priceCents")
 SELECT
   gen_random_uuid()::text,

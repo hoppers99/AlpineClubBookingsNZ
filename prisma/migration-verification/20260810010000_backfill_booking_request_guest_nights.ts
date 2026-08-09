@@ -85,7 +85,7 @@ const ALL_NIGHTS_SQL = `
 `;
 
 const verification: DataMigrationVerification = {
-  migration: "20260810000000_backfill_booking_request_guest_nights",
+  migration: "20260810010000_backfill_booking_request_guest_nights",
   intent:
     "Give every guest on a live booking that came from a booking request the canonical BookingGuestNight set they were created without, over the guest's own stayStart..stayEnd envelope, with the stored price split across those nights to the exact cent — and touch nothing else: no guest that already has rows, no cancelled or soft-deleted booking, and no booking that never came from a request.",
   // A pure INSERT ... SELECT guarded by NOT EXISTS and ON CONFLICT DO NOTHING:
