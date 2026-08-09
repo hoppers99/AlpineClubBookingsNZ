@@ -69,7 +69,8 @@ operational documents (which may carry door/emergency access details).
   `/api/bookings/quote`, and `/api/bookings/rooms` return `403` when a
   restricted lodge is named. `/api/bookings/rooms` also has a no-`lodgeId`
   mode that lists room config across lodges; that listing is **filtered** to
-  the member's eligible lodges (empty when none match) rather than returning
+  the member's eligible lodges **and to lodges that are still `active`** (empty
+  when none match) rather than returning
   `403` — a listing omits what the member cannot see. Both the named-lodge
   gate and the listing filter derive from `getEligibleLodgeIdsForMember`
   (which `isMemberEligibleToBookLodge` also derives from), so the two are the
@@ -85,10 +86,18 @@ operational documents (which may carry door/emergency access details).
   "Preferred room (optional)" picker for the rest of the session, where
   `resolveBookingLodgeId` (`booking-create.ts:153-174`) would then refuse the
   choice. Two consequences are worth stating rather than leaving implicit.
-  First, that mode's filter is `Room.active` and the member's booking
-  restrictions — **not** the lodge's own `active` flag — so an unrestricted
-  member's cross-lodge listing included archived lodges' rooms, which is why it
-  was never safe to describe as "the lodges this member may book". Second, the
+  First, that mode's filter was `Room.active` and the member's booking
+  restrictions — **not** the lodge's own `active` flag — so until #2727 an
+  unrestricted member's cross-lodge listing included archived lodges' rooms,
+  which is why it was never safe to describe as "the lodges this member may
+  book". It is now filtered on `Lodge.active` as well, in both eligibility
+  shapes (a default-open member's club-wide listing, and a restricted member
+  whose `BOOKING_RESTRICTION` rows name a lodge archived afterwards), because
+  eligibility and service state are different questions and a discovery listing
+  must ask both — that exclusion is part of what retaining the mode means, and
+  is stated as a rule in `INV-INT-016`. The named-lodge mode is unchanged and
+  still answers for a lodge the caller names explicitly, archived or not: naming
+  a lodge is not discovery. Second, the
   wizard now offers **nothing** while its selection is null, and that null is
   permanent when `/api/lodges` is down or a club's only lodge is inactive (that
   route filters `active: true`, while `getDefaultLodgeId` deliberately falls

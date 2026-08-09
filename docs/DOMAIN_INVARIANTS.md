@@ -675,7 +675,7 @@ File: [`invariants/integrations.md`](invariants/integrations.md). Prefix
 | `INV-INT-013` | Mode or rule changes never auto-resync the population; members re-group on their next trigger |
 | `INV-INT-014` | The per-member sync keeps Xero calls outside transactions, ledgers each op, and adds before removing |
 | `INV-INT-015` | The bulk re-sync is admin-triggered, dry-run-first, chunked, resumable, and never moves the watermark |
-| `INV-INT-016` | `GET /api/bookings/rooms` keeps its no-`lodgeId` mode for FORKED/EXTERNAL consumers; no `src/` client may use it |
+| `INV-INT-016` | `GET /api/bookings/rooms` keeps its no-`lodgeId` mode for FORKED/EXTERNAL consumers, excluding archived lodges; no `src/` client may use it |
 
 ## Operations
 

@@ -148,7 +148,7 @@ from inside this repository it looks like an oversight and a tidy-up will
 propose deleting it. It is not: the reason cannot be re-derived from the code,
 which is why it is written here rather than left in a closed issue.
 
-Two things follow, and both are load-bearing:
+Three things follow, and all three are load-bearing:
 
 - **Do not make `lodgeId` required, and do not delete the branch.** Changing the
   mode is a breaking change to a published contract with no internal benefit.
@@ -160,9 +160,29 @@ Two things follow, and both are load-bearing:
   lodge is already fixed), and internal reuse of the mode is what made that
   defect possible. Pinned by
   `src/app/api/bookings/__tests__/rooms-unscoped-mode-has-no-internal-caller.test.ts`.
+- **The unscoped listing EXCLUDES ARCHIVED LODGES** (#2727). It filters on
+  `Room.active`, on the member's booking restrictions, and on the LODGE's own
+  `active` flag, in both eligibility shapes: a default-open member's club-wide
+  listing, and a restricted member whose `BOOKING_RESTRICTION` rows name a lodge
+  that was archived afterwards. This is part of what "retained" means, not a
+  separate nicety — the mode is discovery ("where could I book?"), and a club
+  archives a lodge when it is closed, sold, out of service or seasonally shut,
+  so offering its rooms invites a member to try somewhere the club has
+  deliberately withdrawn. Eligibility and service state are different questions
+  and both must be asked. The named-lodge branch is deliberately NOT filtered
+  this way: naming a lodge is not discovery, and the caller already holds the
+  id. Pinned by
+  `src/app/api/bookings/rooms/__tests__/rooms-route-lodge-scope.test.ts`, which
+  covers both branches because nothing in `src/` walks the unscoped one.
 
-Known and deliberately not fixed here: the unscoped listing filters on
-`Room.active` and booking restrictions but not on the LODGE's own `active` flag,
-so an unrestricted member's cross-lodge listing includes archived lodges' rooms
-(`docs/multi-lodge/lodge-scoping-contract.md`). Retaining the mode retains that
-for whoever calls it.
+History, because the rule reads as obvious once it is written down and was not:
+until #2727 this listing filtered on `Room.active` and booking restrictions but
+not on the lodge's `active` flag, so an unrestricted member's cross-lodge
+listing included archived lodges' rooms
+(`docs/multi-lodge/lodge-scoping-contract.md` recorded it as behaviour rather
+than as a defect). Pinning the mode with a rule while it carried that leak meant
+the rule protected the leak too, which is why #2727 amended this rule rather
+than only patching the route. Removing rows from a published response is a
+visible change for an external consumer, and it was taken as a compatibility
+note rather than a breaking change on the ground that no consumer can
+legitimately depend on being offered an out-of-service lodge.
