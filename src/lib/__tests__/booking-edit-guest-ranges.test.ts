@@ -170,8 +170,16 @@ describe("buildInProgressGuestRangePlan — #2029 capacity ranges", () => {
     );
 
     expect(plan.capacityRangeStart).toEqual(D("2026-08-24"));
+    // #2736: the range now also carries the exact nights it occupies. For this
+    // contiguous guest that is the window expanded, night for night, so the
+    // capacity verdict is unchanged.
     expect(plan.capacityGuestRanges).toEqual([
-      { stayStart: D("2026-08-24"), stayEnd: D("2026-08-25"), memberId: "m-g1" },
+      {
+        stayStart: D("2026-08-24"),
+        stayEnd: D("2026-08-25"),
+        nights: [D("2026-08-24")],
+        memberId: "m-g1",
+      },
     ]);
   });
 
@@ -182,7 +190,12 @@ describe("buildInProgressGuestRangePlan — #2029 capacity ranges", () => {
 
     expect(plan.capacityRangeStart).toEqual(D("2026-08-24"));
     expect(plan.capacityGuestRanges).toEqual([
-      { stayStart: D("2026-08-24"), stayEnd: D("2026-08-26"), memberId: "m-g1" },
+      {
+        stayStart: D("2026-08-24"),
+        stayEnd: D("2026-08-26"),
+        nights: [D("2026-08-24"), D("2026-08-25")],
+        memberId: "m-g1",
+      },
     ]);
   });
 

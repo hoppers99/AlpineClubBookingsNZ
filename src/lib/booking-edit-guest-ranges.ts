@@ -4,7 +4,17 @@ import {
   type RateSource,
   type SeasonRateData,
 } from "@/lib/pricing";
-import { normalizeDateOnlyForTimeZone } from "@/lib/date-only";
+import {
+  addDaysDateOnly,
+  formatDateOnlyForTimeZone,
+  normalizeDateOnlyForTimeZone,
+  parseDateOnly,
+} from "@/lib/date-only";
+import {
+  expandStayEnvelopeToNightKeys,
+  getExplicitGuestBedNightKeys,
+  type GuestNightInput,
+} from "@/lib/booking-guest-stay-ranges";
 import type { MemberGuestConsentGuestFields } from "@/lib/member-guest-add-policy";
 
 interface ExistingBookingEditGuest {
@@ -21,6 +31,18 @@ interface ExistingBookingEditGuest {
   rateSource?: RateSource;
   stayStart?: Date | null;
   stayEnd?: Date | null;
+  // The guest's CANONICAL night set — their `BookingGuestNight` rows (#2736).
+  //
+  // `stayStart`/`stayEnd` above is the DERIVED half-open envelope whose
+  // `stayEnd` is the morning after the last night (INV-DATE-012), and for a
+  // SPARSE stay the envelope silently fills the internal gaps. This plan used
+  // to carry no night list at all, so an edit to a booking already under way
+  // priced, persisted and reserved a bed for every gap night the guest is not
+  // there for (INV-MOD-025). Every caller already loads these rows —
+  // `LoadedBookingForModify` includes them — so before #2736 they were present
+  // at runtime and invisible to the type system, which is exactly how the plan
+  // came to be the one edit path that flattens a sparse stay.
+  nights?: ReadonlyArray<GuestNightInput> | null;
   priceCents: number;
 }
 
@@ -45,6 +67,19 @@ interface ProposedExistingGuestRange {
   guest: ExistingBookingEditGuest;
   stayStart: Date;
   stayEnd: Date;
+  // #2736: the nights this guest actually holds after the edit, sorted — the
+  // guest's own canonical nights that survive the edit, plus the genuinely-new
+  // nights a check-out extension adds after their last one. This, NOT
+  // `[stayStart, stayEnd)`, is what gets priced, quoted per night and written
+  // back as `BookingGuestNight` rows, so an internal gap stays a gap
+  // (INV-MOD-025). For a contiguous guest it IS `[stayStart, stayEnd)`, night
+  // for night, which is what makes the change a no-op for every ordinary stay.
+  nights: Date[];
+  // The subset of `nights` from `futureStart` onwards — the nights this edit
+  // actually prices and capacity-checks. Empty means the guest holds no future
+  // night at all, which is how a sparse guest whose remaining nights are all
+  // behind the edit window stops counting as future-active.
+  futureNights: Date[];
   priceCents: number;
   oldFuturePriceCents: number;
   newFuturePriceCents: number;
@@ -63,6 +98,14 @@ interface ProposedAddedGuestRange {
   guest: AddedBookingEditGuest;
   stayStart: Date;
   stayEnd: Date;
+  // #2736: the nights the added guest holds. A guest added to a stay already
+  // under way is admitted for the booking's remaining future nights and nothing
+  // else — this plan deliberately overrides whatever per-guest range or night
+  // set the request carried (see `proposedAddedGuests` below) — so this window
+  // is CONTIGUOUS BY CONSTRUCTION and equals `[stayStart, stayEnd)` exactly.
+  // It is materialised anyway so the write path, the capacity check and the
+  // per-night quote all read one night list whichever kind of guest they hold.
+  nights: Date[];
   priceCents: number;
 }
 
@@ -81,6 +124,12 @@ export interface BookingEditGuestRangePlan {
   capacityGuestRanges: Array<{
     stayStart: Date;
     stayEnd: Date;
+    // #2736: the exact nights this range occupies a bed on. `countActiveGuestsForNight`
+    // reads an explicit night set in preference to the envelope, so a sparse
+    // guest no longer claims a bed on a gap night they are not in the lodge for.
+    // Identical to expanding `[stayStart, stayEnd)` for every contiguous guest
+    // and for every added guest.
+    nights: Date[];
     // Carried so the partner-shared admission check (#1746) can tell a
     // flagged sharer's range from the ordinary ones; null for non-members.
     memberId?: string | null;
@@ -118,29 +167,50 @@ function minDate(a: Date, b: Date): Date {
   return a < b ? a : b;
 }
 
-function priceGuestRangeCents(
-  start: Date,
-  end: Date,
+/** The NZ date-only key of a date-only value, the scheme every night set uses. */
+function dateOnlyKey(value: Date): string {
+  return formatDateOnlyForTimeZone(value);
+}
+
+/**
+ * Price EXACTLY these nights at current season rates, in integer cents.
+ *
+ * #2736 replaced the old `priceGuestRangeCents(start, end, …)`, which handed
+ * `calculateBookingPrice` a bare `[start, end)` envelope and let it expand the
+ * range itself. Passing the night list instead takes the *same* per-night code
+ * path — `calculateBookingPrice` prefers a guest's explicit `nights` over the
+ * envelope (issue #713) and looks the season rate up once per night — so
+ * seasonal, age-tier and member/non-member differentiation still apply night by
+ * night and nothing is ever a rate multiplied by a night count. For a
+ * contiguous night list the two forms price the identical set of nights in the
+ * identical order, which is why every ordinary stay is unchanged to the cent.
+ *
+ * Integer cents throughout: every term is a `pricePerNightCents` integer summed
+ * by `calculateBookingPrice` (INV-MONEY-001, INV-MONEY-003). No float, no
+ * parse, no rounding.
+ */
+function priceGuestNightKeysCents(
+  nightKeys: readonly string[],
   guest: Pick<
     ExistingBookingEditGuest,
     "ageTier" | "isMember" | "rateMembershipTypeId" | "rateSource"
   >,
   seasons: SeasonRateData[]
 ): number {
-  const normalizedStart = normalizeDateOnlyForTimeZone(start);
-  const normalizedEnd = normalizeDateOnlyForTimeZone(end);
-  if (normalizedEnd <= normalizedStart) {
+  if (nightKeys.length === 0) {
     return 0;
   }
+  const nights = nightKeys.map((key) => parseDateOnly(key));
 
   return calculateBookingPrice(
-    normalizedStart,
-    normalizedEnd,
+    nights[0],
+    addDaysDateOnly(nights[nights.length - 1], 1),
     [{
       ageTier: guest.ageTier,
       isMember: guest.isMember,
       rateMembershipTypeId: guest.rateMembershipTypeId,
       rateSource: guest.rateSource,
+      nights,
     }],
     seasons
   ).totalPriceCents;
@@ -169,10 +239,29 @@ export function buildInProgressGuestRangePlan(
   const proposedExistingGuests = input.booking.guests.map((guest) => {
     const stayStart = normalizeDateOnlyForTimeZone(guest.stayStart ?? bookingCheckIn);
     const stayEnd = normalizeDateOnlyForTimeZone(guest.stayEnd ?? bookingCheckOut);
+    // #2736: the nights this guest actually holds today. The explicit
+    // `BookingGuestNight` set wins; the half-open envelope is the fallback for a
+    // guest carrying no night rows at all (a legacy row, or a booking converted
+    // from a request — see #2739). That is `getGuestBedNightKeys`'s own rule,
+    // taken through the canonical helpers rather than re-expanded here
+    // (INV-DATE-020), and for a contiguous guest the two branches agree night
+    // for night.
+    const heldNightKeys =
+      getExplicitGuestBedNightKeys(guest) ??
+      expandStayEnvelopeToNightKeys(stayStart, stayEnd);
+    const stayEndKey = dateOnlyKey(stayEnd);
+
     const oldFutureStart = maxDate(stayStart, editableFrom);
-    const oldFuturePriceCents = priceGuestRangeCents(
-      oldFutureStart,
-      stayEnd,
+    const oldFutureStartKey = dateOnlyKey(oldFutureStart);
+    // The nights of the CURRENT stay this edit is about to reprice. Bounded by
+    // the guest's own stay end exactly as the old `[oldFutureStart, stayEnd)`
+    // range was, so a contiguous guest is unchanged; for a sparse one the gap
+    // nights drop out, which is what stops a mid-stay removal or a shortened
+    // check-out from refunding nights the guest never bought.
+    const oldFuturePriceCents = priceGuestNightKeysCents(
+      heldNightKeys.filter(
+        (key) => key >= oldFutureStartKey && key < stayEndKey
+      ),
       guest,
       input.seasons
     );
@@ -193,15 +282,58 @@ export function buildInProgressGuestRangePlan(
     // arrive; whenever editableFrom <= stayEnd this is byte-identical to the
     // prior `maxDate(stayStart, editableFrom)` (the mid-stay / last-night case).
     const newFutureStart = maxDate(stayStart, minDate(editableFrom, stayEnd));
+
+    // #2736: the night set this edit proposes, in two parts.
+    //
+    //  1. KEPT — every night the guest already holds that survives the new
+    //     check-out. Gaps survive as gaps: this is the whole fix. A shortened
+    //     check-out drops the nights beyond it and nothing else.
+    //  2. ADDED — the genuinely-new nights an extension buys, which run
+    //     contiguously from the morning after the guest's last held night to
+    //     the new check-out. They are new occupancy, so there is no pattern to
+    //     preserve and expanding the envelope is the right answer for them.
+    //
+    // The two parts are disjoint by construction (part 1 is entirely before the
+    // anchor part 2 starts at), and for a CONTIGUOUS guest they compose to
+    // exactly `[stayStart, proposedStayEnd)` — the range this used to expand —
+    // whether the edit extends, shortens, or leaves the check-out alone.
+    const proposedEndKey = dateOnlyKey(proposedStayEnd);
+    const keptNightKeys = heldNightKeys.filter((key) => key < proposedEndKey);
+    // The morning after their last held night. Read off the night set rather
+    // than off `stayEnd` so a guest whose stored envelope has drifted wider than
+    // their rows still extends from where they really stop; identical to
+    // `stayEnd` for every guest whose envelope agrees with their nights
+    // (INV-DATE-012), and for the envelope-fallback guest by construction.
+    const heldEndExclusive =
+      heldNightKeys.length > 0
+        ? addDaysDateOnly(
+            parseDateOnly(heldNightKeys[heldNightKeys.length - 1]),
+            1
+          )
+        : stayEnd;
+    const addedNightKeys = expandStayEnvelopeToNightKeys(
+      maxDate(newFutureStart, heldEndExclusive),
+      proposedStayEnd
+    );
+    const proposedNightKeys = [
+      ...new Set([...keptNightKeys, ...addedNightKeys]),
+    ].sort();
+
+    const newFutureStartKey = dateOnlyKey(newFutureStart);
+    const futureNightKeys = proposedNightKeys.filter(
+      (key) => key >= newFutureStartKey
+    );
     const newFuturePriceCents = removedFromFuture
       ? 0
-      : priceGuestRangeCents(newFutureStart, proposedStayEnd, guest, input.seasons);
+      : priceGuestNightKeysCents(futureNightKeys, guest, input.seasons);
     const futureDeltaCents = newFuturePriceCents - oldFuturePriceCents;
 
     return {
       guest,
       stayStart,
       stayEnd: proposedStayEnd,
+      nights: proposedNightKeys.map((key) => parseDateOnly(key)),
+      futureNights: futureNightKeys.map((key) => parseDateOnly(key)),
       priceCents: guest.priceCents + futureDeltaCents,
       oldFuturePriceCents,
       newFuturePriceCents,
@@ -211,11 +343,27 @@ export function buildInProgressGuestRangePlan(
     };
   });
 
+  // A guest ADDED to a stay already under way is admitted for the booking's
+  // remaining future nights and nothing else: this plan deliberately overrides
+  // whatever per-guest range or night set the request carried, exactly as it
+  // did before #2736. So this window is contiguous by construction and there is
+  // no sparse input to preserve — but it is still materialised as a night list,
+  // so the write path, the capacity check and the per-night quote read one shape
+  // for both kinds of guest.
+  const addedGuestNightKeys = expandStayEnvelopeToNightKeys(
+    editableFrom,
+    newCheckOut
+  );
   const proposedAddedGuests = addGuests.map((guest) => ({
     guest,
     stayStart: editableFrom,
     stayEnd: newCheckOut,
-    priceCents: priceGuestRangeCents(editableFrom, newCheckOut, guest, input.seasons),
+    nights: addedGuestNightKeys.map((key) => parseDateOnly(key)),
+    priceCents: priceGuestNightKeysCents(
+      addedGuestNightKeys,
+      guest,
+      input.seasons
+    ),
   }));
 
   // #2029: a guest is "active in the future window" when its corrected future
@@ -224,9 +372,15 @@ export function buildInProgressGuestRangePlan(
   // `maxDate(stayStart, editableFrom) < stayEnd` test dropped (proposedStayEnd
   // could equal editableFrom on a +1 extension). Byte-identical for mid-stay /
   // last-night edits, where futureStart === editableFrom.
+  //
+  // #2736 states the same test over the night set instead of the window: a
+  // guest is future-active when they hold at least one night from futureStart
+  // on. Identical for a contiguous guest — a non-empty window is exactly a
+  // non-empty run of nights — and correct for a sparse one, whose remaining
+  // nights can all sit behind a window that is still nominally open.
   const futureActiveGuestCount =
     proposedExistingGuests.filter(
-      (entry) => !entry.removedFromFuture && entry.futureStart < entry.stayEnd
+      (entry) => !entry.removedFromFuture && entry.futureNights.length > 0
     ).length + proposedAddedGuests.length;
 
   if (newCheckOut > editableFrom && futureActiveGuestCount === 0) {
@@ -247,7 +401,7 @@ export function buildInProgressGuestRangePlan(
   const capacityGuestRanges = [
     ...proposedExistingGuests
       .filter(
-        (entry) => !entry.removedFromFuture && entry.futureStart < entry.stayEnd
+        (entry) => !entry.removedFromFuture && entry.futureNights.length > 0
       )
       .map((entry) => ({
         // #2029: anchor the checked range at the guest's corrected futureStart,
@@ -256,11 +410,17 @@ export function buildInProgressGuestRangePlan(
         // invisible and overbookable). Unchanged for mid-stay / last-night.
         stayStart: entry.futureStart,
         stayEnd: entry.stayEnd,
+        // #2736: the window still bounds which nights are examined; the night
+        // set decides which of them this guest actually occupies. Expanding to
+        // the same nights for a contiguous guest, so no ordinary edit's capacity
+        // verdict moves.
+        nights: entry.futureNights,
         memberId: entry.guest.memberId ?? null,
       })),
     ...proposedAddedGuests.map((entry) => ({
       stayStart: entry.stayStart,
       stayEnd: entry.stayEnd,
+      nights: entry.nights,
       memberId: entry.guest.memberId ?? null,
     })),
   ];

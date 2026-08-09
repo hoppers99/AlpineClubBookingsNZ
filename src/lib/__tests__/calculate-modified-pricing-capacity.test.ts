@@ -412,3 +412,110 @@ describe("calculateModifiedPricing in-progress check-out-day capacity (#2029)", 
     expect(ranges[0].stayStart).toEqual(D("2026-08-22"));
   });
 });
+
+// #2736: the per-night breakdown an in-progress edit hands to `applyGuestChanges`
+// is what gets written back as `BookingGuestNight` rows, so it decides which
+// nights the guest is recorded as holding after the edit — and therefore which
+// nights the bed board, the roster and every later edit's locked prices see. It
+// used to be built by expanding the plan's envelope, which silently filled a
+// sparse guest's gap. These drive the REAL plan through `calculateModifiedPricing`.
+describe("calculateModifiedPricing in-progress per-night breakdown (#2736)", () => {
+  const MEMBER_TYPE = "type-member";
+  const RATE = 5000;
+  const SEASON = [
+    {
+      seasonId: "s1",
+      startDate: D("2026-08-01"),
+      endDate: D("2026-08-31"),
+      rates: [
+        { ageTier: "ADULT", membershipTypeId: MEMBER_TYPE, pricePerNightCents: RATE },
+      ],
+    },
+  ];
+  const AVAILABLE = { available: true, minAvailable: 5, nightDetails: [] };
+
+  /** Nights 08-20 and 08-22 — home on the 21st. */
+  function sparseArgs(priceCents: number) {
+    const guest = {
+      id: "g1",
+      ageTier: "ADULT",
+      isMember: true,
+      memberId: "m1",
+      rateMembershipTypeId: MEMBER_TYPE,
+      rateSource: "OWN_TYPE",
+      stayStart: D("2026-08-20"),
+      stayEnd: D("2026-08-23"),
+      nights: [{ stayDate: D("2026-08-20") }, { stayDate: D("2026-08-22") }],
+      priceCents,
+    };
+    return {
+      booking: {
+        id: "b1",
+        memberId: "m1",
+        lodgeId: "lodge-1",
+        checkIn: D("2026-08-20"),
+        checkOut: D("2026-08-23"),
+        totalPriceCents: priceCents,
+        discountCents: 0,
+        promoAdjustmentCents: 0,
+        finalPriceCents: priceCents,
+        guests: [guest],
+      } as never,
+      bookingId: "b1",
+      isInProgressEdit: true,
+      editableFrom: D("2026-08-21"),
+      newCheckIn: D("2026-08-20"),
+      newCheckOut: D("2026-08-25"),
+      normalizedAddGuests: undefined,
+      removeGuestIds: undefined,
+      guestsForPricing: [
+        {
+          bookingGuestId: "g1",
+          ageTier: "ADULT" as const,
+          isMember: true,
+          memberId: "m1",
+          stayStart: D("2026-08-20"),
+          stayEnd: D("2026-08-25"),
+        },
+      ],
+      skipBookingLifecycleRules: false,
+      seasonRateData: SEASON as never,
+      partnerSharedGuests: [],
+    };
+  }
+
+  it("writes back the gap, not a continuous run", async () => {
+    h.checkCapacityForGuestRanges.mockResolvedValue(AVAILABLE);
+
+    const result = await calculateModifiedPricing(
+      {} as never,
+      sparseArgs(2 * RATE),
+    );
+
+    // 20 and 22 kept, 21 still an absence, 23 and 24 bought by the extension.
+    expect(result.priceBreakdown.guests[0].nightDates).toEqual([
+      D("2026-08-20"),
+      D("2026-08-22"),
+      D("2026-08-23"),
+      D("2026-08-24"),
+    ]);
+    expect(result.newTotalPriceCents).toBe(4 * RATE);
+  });
+
+  it("splits the total in whole cents that sum back exactly", async () => {
+    // An odd total over four nights: the remainder lands on the earliest nights
+    // one cent at a time and the parts are integers (INV-MONEY-001,
+    // INV-MONEY-003) — no float division, no rounding drift.
+    h.checkCapacityForGuestRanges.mockResolvedValue(AVAILABLE);
+
+    const result = await calculateModifiedPricing({} as never, sparseArgs(1001));
+    const guest = result.priceBreakdown.guests[0];
+
+    expect(guest.perNightCents).toHaveLength(guest.nightDates.length);
+    for (const cents of guest.perNightCents) {
+      expect(Number.isInteger(cents)).toBe(true);
+    }
+    expect(guest.perNightCents.reduce((a, b) => a + b, 0)).toBe(guest.priceCents);
+    expect(guest.priceCents).toBe(1001 + 2 * RATE);
+  });
+});
