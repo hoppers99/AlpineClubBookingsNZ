@@ -17,6 +17,8 @@ import {
   setFinancialYearEndMonth,
 } from "@/lib/financial-year";
 import { loadMembershipLockoutSettings } from "@/lib/membership-lockout-settings";
+import { MEMBERSHIP_LOCKOUT_SETTINGS_ID } from "@/lib/membership-lockout-settings";
+import { prisma } from "@/lib/prisma";
 import { getXeroFinancialYearEndMonth } from "@/lib/xero-organisation";
 
 /**
@@ -46,6 +48,47 @@ export interface FinancialYearResolution {
   xeroMonth: number | null;
   /** The resolved month actually in effect (1-12). */
   effectiveMonth: number;
+}
+
+export type StoredFinancialYearResolution =
+  | {
+      ok: true;
+      effectiveMonth: number;
+      source: "override" | "default_without_xero";
+    }
+  | { ok: false; reason: "connected_xero_month_not_stored" };
+
+/**
+ * Provider-free resolution for read-only diagnostics.
+ *
+ * A stored override is authoritative. With no override, March is authoritative
+ * only when persisted state proves there is no connected Xero tenant. The
+ * organisation month is not persisted locally, so a connected tenant must be
+ * reported as unavailable rather than guessed from the cold process cache or
+ * fetched from Xero. Only the token row's existence is selected; credential
+ * columns never cross this boundary.
+ */
+export async function getStoredFinancialYearResolution(): Promise<StoredFinancialYearResolution> {
+  const settings = await prisma.membershipLockoutSettings.findUnique({
+    where: { id: MEMBERSHIP_LOCKOUT_SETTINGS_ID },
+    select: { financialYearEndMonthOverride: true },
+  });
+  const overrideMonth = settings?.financialYearEndMonthOverride ?? null;
+  if (overrideMonth !== null) {
+    return { ok: true, effectiveMonth: overrideMonth, source: "override" };
+  }
+
+  const connectedTenant = await prisma.xeroToken.findFirst({
+    where: { tenantId: { not: null } },
+    select: { id: true },
+  });
+  return connectedTenant
+    ? { ok: false, reason: "connected_xero_month_not_stored" }
+    : {
+        ok: true,
+        effectiveMonth: DEFAULT_FINANCIAL_YEAR_END_MONTH,
+        source: "default_without_xero",
+      };
 }
 
 export async function getFinancialYearResolution(): Promise<FinancialYearResolution> {

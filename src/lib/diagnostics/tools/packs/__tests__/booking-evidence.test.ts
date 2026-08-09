@@ -135,6 +135,8 @@ const {
     member: { findUnique: vi.fn(), count: vi.fn() },
     memberSubscription: { findUnique: vi.fn() },
     memberInduction: { findFirst: vi.fn() },
+    membershipLockoutSettings: { findUnique: vi.fn() },
+    xeroToken: { findFirst: vi.fn() },
   },
   checkCapacityMock: vi.fn(),
   evaluateProposalPartyViolationsMock: vi.fn(),
@@ -1110,6 +1112,10 @@ beforeEach(() => {
   seedDecoys();
   wirePrisma();
   getAgeTierSettingsMock.mockImplementation(async () => AGE_TIER_SETTINGS);
+  prismaMock.membershipLockoutSettings.findUnique.mockResolvedValue({
+    financialYearEndMonthOverride: DEFAULT_FINANCIAL_YEAR_END_MONTH,
+  });
+  prismaMock.xeroToken.findFirst.mockResolvedValue(null);
 });
 
 // ---------------------------------------------------------------------------
@@ -2087,6 +2093,23 @@ describe("booking capacity by night (#2376)", () => {
     await expect(
       readBookingCapacityEvidence({ bookingId: BOOKING_ID }),
     ).rejects.toThrow(/ceiling/);
+    expect(prismaMock.bookingGuest.findMany).not.toHaveBeenCalled();
+    expect(checkCapacityMock).not.toHaveBeenCalled();
+  });
+
+  it("refuses an oversized block-state span before guest or capacity expansion", async () => {
+    seedBooking({
+      checkIn: "2026-07-10",
+      checkOut: "2026-08-12",
+      guests: [],
+      capacityNights: [],
+    });
+    await expect(
+      readBookingBlockStateEvidence({ bookingId: BOOKING_ID }),
+    ).rejects.toThrow(/ceiling/);
+    expect(prismaMock.bookingGuest.findMany).not.toHaveBeenCalled();
+    expect(checkCapacityMock).not.toHaveBeenCalled();
+    expect(evaluateProposalPartyViolationsMock).not.toHaveBeenCalled();
   });
 
   it("accepts a stay EXACTLY at the ceiling", async () => {
@@ -2727,11 +2750,37 @@ describe("member eligibility: the season year is the SEASON's, not the calendar'
     // belongs to the NEW season year there. A local re-derivation would have to
     // reach for the same configuration to agree, and the point of using the shared
     // helper is that it cannot fail to.
-    __setFinancialYearEndMonthForTesting(12);
+    __setFinancialYearEndMonthForTesting(DEFAULT_FINANCIAL_YEAR_END_MONTH);
+    prismaMock.membershipLockoutSettings.findUnique.mockResolvedValue({
+      financialYearEndMonthOverride: 12,
+    });
     vi.setSystemTime(new Date("2027-01-15T00:00:00.000Z"));
     seedMember({});
     const row = await eligibilityRow();
     expect(row.season_year).toBe(2027);
+  });
+
+  it("uses March only when stored state proves there is no connected Xero tenant", async () => {
+    vi.setSystemTime(new Date("2027-01-15T00:00:00.000Z"));
+    prismaMock.membershipLockoutSettings.findUnique.mockResolvedValue({
+      financialYearEndMonthOverride: null,
+    });
+    prismaMock.xeroToken.findFirst.mockResolvedValue(null);
+    seedMember({});
+    await expect(eligibilityRow()).resolves.toMatchObject({ season_year: 2026 });
+  });
+
+  it("refuses to guess the season from a cold cache when Xero is connected", async () => {
+    vi.setSystemTime(new Date("2027-01-15T00:00:00.000Z"));
+    prismaMock.membershipLockoutSettings.findUnique.mockResolvedValue({
+      financialYearEndMonthOverride: null,
+    });
+    prismaMock.xeroToken.findFirst.mockResolvedValue({ id: "xero-token" });
+    seedMember({});
+    await expect(
+      readMemberEligibilityEvidence({ memberId: MEMBER_ID }),
+    ).rejects.toThrow(/not stored locally/);
+    expect(resolveMembershipTypePolicyForMemberMock).not.toHaveBeenCalled();
   });
 });
 
@@ -2832,7 +2881,7 @@ describe("member eligibility: induction does NOT gate a booking (#2376)", () => 
 });
 
 describe("member eligibility: the adult-member-host predicate (#2376)", () => {
-  it("answers with the hosting policy's own predicate, unpaid subscription included", async () => {
+  it("applies unpaid settlement to host qualification in NON_MEMBER_PRICING", async () => {
     // `operationallyPresent` and `subscriptionSettled` are both `!== false` tests
     // inside the predicate, so leaving them undefined silently answers "present
     // and settled" for a member whose subscription is unpaid — the false-positive
@@ -2841,6 +2890,7 @@ describe("member eligibility: the adult-member-host predicate (#2376)", () => {
     seedMember({
       subscriptionBehavior: "REQUIRED",
       subscription: { status: "UNPAID" },
+      lockoutMode: "NON_MEMBER_PRICING",
     });
     const unpaid = await eligibilityRow();
     expect(unpaid.subscription_unpaid).toBe(true);
@@ -2856,6 +2906,32 @@ describe("member eligibility: the adult-member-host predicate (#2376)", () => {
     expect(paid.subscription_unpaid).toBe(false);
     expect(paid.qualifies_as_adult_member_host).toBe(true);
   });
+
+  it.each(["NO_BLOCK", "HARD_BLOCK"] as const)(
+    "preserves host qualification for an unpaid adult member in %s",
+    async (lockoutMode) => {
+      seedMember({
+        subscriptionBehavior: "REQUIRED",
+        subscription: { status: "UNPAID" },
+        lockoutMode,
+      });
+      const row = await eligibilityRow();
+      expect(row.subscription_unpaid).toBe(true);
+      expect(row.qualifies_as_adult_member_host).toBe(true);
+    },
+  );
+
+  it.each(["NO_BLOCK", "HARD_BLOCK", "NON_MEMBER_PRICING"] as const)(
+    "keeps a paid adult member eligible in %s",
+    async (lockoutMode) => {
+      seedMember({
+        subscriptionBehavior: "REQUIRED",
+        subscription: { status: "PAID" },
+        lockoutMode,
+      });
+      expect((await eligibilityRow()).qualifies_as_adult_member_host).toBe(true);
+    },
+  );
 
   it.each([
     ["a YOUTH", { ageTier: "YOUTH" }],

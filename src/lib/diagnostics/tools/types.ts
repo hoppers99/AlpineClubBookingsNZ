@@ -161,6 +161,8 @@ export type DiagnosticsToolFailureReason =
   | "database_not_configured"
   /** The connected role is NOT the least-privilege shape ADR-007 requires. */
   | "database_role_unsafe"
+  /** The role is otherwise safe but lacks one or more declared SELECT grants. */
+  | "database_grants_missing"
   /** The read failed, or the statement timeout cancelled it. */
   | "query_failed"
   /**
@@ -305,6 +307,8 @@ export const DIAGNOSTICS_TOOL_FAILURE_MESSAGES: Record<
     "The read-only diagnostics database credential is not configured, so no tool was run.",
   database_role_unsafe:
     "The diagnostics database credential does not have the restricted, read-only privileges this feature requires, so no tool was run.",
+  database_grants_missing:
+    "The diagnostics database credential is missing one or more required read-only grants, so no tool was run.",
   query_failed:
     "That diagnostics read did not complete (it may have taken too long), so no results are available.",
   evidence_unavailable:

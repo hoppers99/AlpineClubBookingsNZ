@@ -374,6 +374,8 @@ import type {
 import { z } from "zod";
 
 import { auditCategoriesForCorrelationDomain } from "@/lib/audit-categories";
+import { classifyDoubleBedSharingFacts } from "@/lib/double-bed-sharing";
+import { classifyMemberGuestConsent } from "@/lib/member-guest-consent";
 
 import { defineDiagnosticsTool, type DiagnosticsToolEntry } from "../define";
 import {
@@ -405,6 +407,8 @@ import {
 
 export const DIAGNOSTICS_BOOKING_SUMMARY_TOOL_ID =
   "diagnostics.booking_diagnostic_summary";
+export const DIAGNOSTICS_BOOKING_LINKED_STATE_TOOL_ID =
+  "diagnostics.booking_linked_state";
 export const DIAGNOSTICS_BOOKING_PARTY_TOOL_ID =
   "diagnostics.booking_party_state";
 export const DIAGNOSTICS_BOOKING_BED_ALLOCATION_TOOL_ID =
@@ -629,6 +633,58 @@ const bookingSummary = defineDiagnosticsTool<BookingIdArgs>({
 });
 
 // ---------------------------------------------------------------------------
+// 1b. The bounded linkage around the selected booking.
+// ---------------------------------------------------------------------------
+
+const BOOKING_LINKED_STATE_SQL = `SELECT
+  CASE
+    WHEN related."id" = selected."parentBookingId" THEN 'parent'
+    ELSE 'child'
+  END AS relation_type,
+  related."id" AS booking_ref,
+  pg_catalog.upper(pg_catalog.left(related."id", 8)) AS booking_reference,
+  related."status"::text AS booking_status,
+  ${dateOnly('related."checkIn"')} AS check_in,
+  ${dateOnly('related."checkOut"')} AS check_out,
+  related."wholeLodgeHold" AS whole_lodge_hold,
+  (related."deletedAt" IS NOT NULL) AS is_deleted
+FROM public."Booking" selected
+JOIN public."Booking" related
+  ON related."id" = selected."parentBookingId"
+  OR related."parentBookingId" = selected."id"
+WHERE selected."id" = $1::text
+ORDER BY
+  CASE WHEN related."id" = selected."parentBookingId" THEN 0 ELSE 1 END ASC,
+  related."createdAt" ASC,
+  related."id" ASC`;
+
+const bookingLinkedState = defineDiagnosticsTool<BookingIdArgs>({
+  id: DIAGNOSTICS_BOOKING_LINKED_STATE_TOOL_ID,
+  source: "select_only_sql",
+  label: "Booking linked-record state",
+  description: `Lists the records directly linked to ONE selected booking, at most ${AID6B_HISTORY_ROW_LIMIT}: its parent when it is a child, and its direct children when it is a parent. Each safe summary carries only the relation direction, record id and eight-character reference, status, lodge-night dates, whole-lodge-hold flag and deletion flag. It does not walk grandchildren or siblings and returns no names, prices, notes or actor ids. ${AID6B_DESCRIPTION_TAIL}`,
+  requiredAreas: ["bookings"],
+  evidenceScope: `The direct linkage around ONE selected booking, at most ${AID6B_HISTORY_ROW_LIMIT} rows: a parent record and/or direct child records only. The ordering is parent first, then children by creation order. A clipped result is incomplete and must not be described as the complete child set. This is linkage evidence, not proof that linked bookings share guests, payment, capacity or lifecycle; inspect a returned booking explicitly before making a claim about it. ${AID6B_SCOPE_TAIL} ${AID6B_UNTRUSTED_EVIDENCE_DISCLOSURE}`,
+  argsSchema: bookingIdArgsSchema,
+  inputSchema: bookingIdInputSchema,
+  sql: BOOKING_LINKED_STATE_SQL,
+  bind: (args) => [args.bookingId],
+  project: (row) => ({
+    relationType: stableCodeOrNull(row.relation_type),
+    bookingRef: recordRefOrNull(row.booking_ref) ?? "",
+    bookingReference: recordRefOrNull(row.booking_reference) ?? "",
+    bookingStatus: stableCodeOrNull(row.booking_status),
+    checkIn: dateOnlyOrNull(row.check_in) ?? "",
+    checkOut: dateOnlyOrNull(row.check_out) ?? "",
+    wholeLodgeHold: boolOf(row.whole_lodge_hold),
+    isDeleted: boolOf(row.is_deleted),
+  }),
+  rowLimit: AID6B_HISTORY_ROW_LIMIT,
+  byteLimit: AID6B_BYTE_LIMIT,
+  surfacesPersonalData: false,
+});
+
+// ---------------------------------------------------------------------------
 // 2. The party: who is on the booking, for which nights, and on what footing.
 // ---------------------------------------------------------------------------
 
@@ -680,8 +736,54 @@ type BookingGuestConsentSubStateCode =
  * A sub-state code as a SQL literal, typed so a code that is not in the
  * catalogue is a compile error rather than a value the model cannot interpret.
  */
-function consentSubStateLiteral(code: BookingGuestConsentSubStateCode): string {
-  return `'${code}'`;
+function consentSubStateOf(row: Record<string, unknown>): BookingGuestConsentSubStateCode {
+  const rawStatus = row.consent_status;
+  const status =
+    rawStatus === null ||
+    rawStatus === "PENDING" ||
+    rawStatus === "CONFIRMED" ||
+    rawStatus === "DECLINED" ||
+    rawStatus === "EXPIRED"
+      ? rawStatus
+      : undefined;
+  if (status === undefined) return "unrecognised_consent_shape";
+  const presentDate = (value: unknown): Date | null =>
+    value === null || value === undefined ? null : new Date(0);
+  const memberId =
+    typeof row.guest_member_ref === "string" ? row.guest_member_ref : null;
+  const responder =
+    typeof row.consent_responded_by_member_ref === "string"
+      ? row.consent_responded_by_member_ref
+      : null;
+  const classified = classifyMemberGuestConsent(
+    {
+      consentStatus: status,
+      consentRequestedAt: presentDate(row.consent_requested_at),
+      consentRespondedAt: presentDate(row.consent_responded_at),
+      consentRespondedByMemberId: responder,
+      consentExpiresAt: presentDate(row.consent_expires_at),
+    },
+    memberId,
+  );
+  switch (classified) {
+    case "FAMILY_OR_LEGACY":
+      return "family_or_legacy";
+    case "AWAITING_TARGET":
+      return "awaiting_target";
+    case "TARGET_APPROVED":
+    case "DELEGATE_APPROVED":
+      return "approved_on_request";
+    case "NOTIFY_ONLY_AUTO_CONFIRMED":
+      return "notify_only_auto_confirmed";
+    case "ADMIN_ASSIGNED":
+      return "admin_assigned";
+    case "DECLINED":
+      return "declined";
+    case "EXPIRED":
+      return "consent_expired";
+    default:
+      return "unrecognised_consent_shape";
+  }
 }
 
 /**
@@ -747,25 +849,11 @@ const BOOKING_PARTY_SQL = `SELECT
   ${dateOnly('n."last_night"')} AS last_night,
   g."priceCents" AS price_cents,
   (g."consentStatus" IS NULL OR g."consentStatus" = 'CONFIRMED') AS operationally_present,
-  CASE
-    WHEN g."consentStatus" IS NULL THEN ${consentSubStateLiteral("family_or_legacy")}
-    WHEN g."consentStatus" = 'PENDING' THEN ${consentSubStateLiteral("awaiting_target")}
-    WHEN g."consentStatus" = 'DECLINED' THEN ${consentSubStateLiteral("declined")}
-    WHEN g."consentStatus" = 'EXPIRED' THEN ${consentSubStateLiteral("consent_expired")}
-    WHEN g."consentStatus" = 'CONFIRMED'
-      AND g."consentRequestedAt" IS NOT NULL
-      AND g."consentRespondedAt" IS NOT NULL
-      THEN ${consentSubStateLiteral("approved_on_request")}
-    WHEN g."consentStatus" = 'CONFIRMED'
-      AND g."consentRequestedAt" IS NULL
-      AND g."consentRespondedAt" IS NULL
-      THEN ${consentSubStateLiteral("notify_only_auto_confirmed")}
-    WHEN g."consentStatus" = 'CONFIRMED'
-      AND g."consentRequestedAt" IS NULL
-      AND g."consentRespondedAt" IS NOT NULL
-      THEN ${consentSubStateLiteral("admin_assigned")}
-    ELSE ${consentSubStateLiteral("unrecognised_consent_shape")}
-  END AS consent_sub_state
+  g."consentStatus"::text AS consent_status,
+  g."consentRequestedAt" AS consent_requested_at,
+  g."consentRespondedAt" AS consent_responded_at,
+  g."consentRespondedByMemberId" AS consent_responded_by_member_ref,
+  g."consentExpiresAt" AS consent_expires_at
 FROM public."BookingGuest" g
 CROSS JOIN LATERAL (
   SELECT
@@ -810,7 +898,7 @@ const bookingPartyState = defineDiagnosticsTool<BookingIdArgs>({
     lastNight: dateOnlyOrNull(row.last_night),
     priceCents: centsOrNull(row.price_cents),
     operationallyPresent: boolOf(row.operationally_present),
-    consentSubState: stableCodeOrNull(row.consent_sub_state),
+    consentSubState: consentSubStateOf(row),
   }),
   rowLimit: AID6B_PARTY_ROW_LIMIT,
   // Measured, not chosen: see `AID6B_WIDE_BYTE_LIMIT`. Thirty guests each carrying
@@ -889,10 +977,45 @@ const BOOKING_BED_ALLOCATION_SQL = `SELECT
   bd."name" AS bed_name,
   a."bedType"::text AS bed_type,
   (a."bedType" = bd."bedType") AS bed_type_matches_bed,
-  a."isSecondOccupant" AS is_second_occupant
+  a."isSecondOccupant" AS is_second_occupant,
+  co."other_occupant_count",
+  g."memberId" AS member_a_ref,
+  og."memberId" AS member_b_ref,
+  (ma."id" IS NOT NULL) AS member_a_exists,
+  (mb."id" IS NOT NULL) AS member_b_exists,
+  ma."active" AS member_a_active,
+  mb."active" AS member_b_active,
+  ma."ageTier"::text AS member_a_age_tier,
+  mb."ageTier"::text AS member_b_age_tier,
+  pl."status"::text AS partner_link_status
 FROM public."BedAllocation" a
 LEFT JOIN public."LodgeRoom" r ON r."id" = a."roomId"
 LEFT JOIN public."LodgeBed" bd ON bd."id" = a."bedId" AND bd."roomId" = a."roomId"
+LEFT JOIN public."BookingGuest" g
+  ON g."id" = a."bookingGuestId" AND g."bookingId" = a."bookingId"
+LEFT JOIN LATERAL (
+  SELECT
+    pg_catalog.count(*)::int AS other_occupant_count,
+    pg_catalog.min(other."bookingGuestId") AS other_guest_ref
+  FROM public."BedAllocation" other
+  WHERE other."roomId" = a."roomId"
+    AND other."bedId" = a."bedId"
+    AND other."stayDate" = a."stayDate"
+    AND other."id" <> a."id"
+) co ON true
+LEFT JOIN public."BookingGuest" og ON og."id" = co."other_guest_ref"
+LEFT JOIN public."Member" ma ON ma."id" = g."memberId"
+LEFT JOIN public."Member" mb ON mb."id" = og."memberId"
+LEFT JOIN public."MemberPartnerLink" pl
+  ON g."memberId" IS NOT NULL
+  AND og."memberId" IS NOT NULL
+  AND g."memberId" <> og."memberId"
+  AND pl."memberAId" = CASE
+    WHEN g."memberId" < og."memberId" THEN g."memberId" ELSE og."memberId"
+  END
+  AND pl."memberBId" = CASE
+    WHEN g."memberId" < og."memberId" THEN og."memberId" ELSE g."memberId"
+  END
 WHERE a."bookingId" = $1::text
 ORDER BY a."stayDate" ASC, r."name" ASC, bd."name" ASC, a."id" ASC`;
 
@@ -916,9 +1039,27 @@ const bookingBedAllocationState = defineDiagnosticsTool<BookingIdArgs>({
     bedType: stableCodeOrNull(row.bed_type),
     bedTypeMatchesBed: nullableBoolOf(row.bed_type_matches_bed),
     isSecondOccupant: boolOf(row.is_second_occupant),
+    doubleBedSharingState: classifyDoubleBedSharingFacts({
+      bedType: typeof row.bed_type === "string" ? row.bed_type : null,
+      otherOccupantCount: countOf(row.other_occupant_count),
+      memberIdA: typeof row.member_a_ref === "string" ? row.member_a_ref : null,
+      memberIdB: typeof row.member_b_ref === "string" ? row.member_b_ref : null,
+      memberAExists: row.member_a_exists === true,
+      memberBExists: row.member_b_exists === true,
+      memberAActive: nullableBoolOf(row.member_a_active),
+      memberBActive: nullableBoolOf(row.member_b_active),
+      memberAAgeTier:
+        typeof row.member_a_age_tier === "string" ? row.member_a_age_tier : null,
+      memberBAgeTier:
+        typeof row.member_b_age_tier === "string" ? row.member_b_age_tier : null,
+      partnerLinkStatus:
+        typeof row.partner_link_status === "string"
+          ? row.partner_link_status
+          : null,
+    }),
   }),
   rowLimit: AID6B_ALLOCATION_ROW_LIMIT,
-  byteLimit: AID6B_BYTE_LIMIT,
+  byteLimit: AID6B_WIDE_BYTE_LIMIT,
   // No name and no member id — but a booking-guest id resolves to a named person
   // through `booking_party_state`, under this same permission, so the flag is
   // set conservatively. ADR-004's per-invocation opt-in is DECLARED by it and is
@@ -1177,6 +1318,7 @@ const bookingRecordAuditHistory = defineDiagnosticsTool<BookingIdArgs>({
 export const DIAGNOSTICS_AID6B_BOOKING_RECORD_TOOLS: readonly DiagnosticsToolEntry[] =
   [
     bookingSummary,
+    bookingLinkedState,
     bookingPartyState,
     bookingBedAllocationState,
     bookingExceptionRequestState,

@@ -104,6 +104,7 @@ import {
   DIAGNOSTICS_BOOKING_AUDIT_HISTORY_TOOL_ID,
   DIAGNOSTICS_BOOKING_BED_ALLOCATION_TOOL_ID,
   DIAGNOSTICS_BOOKING_EXCEPTION_REQUEST_TOOL_ID,
+  DIAGNOSTICS_BOOKING_LINKED_STATE_TOOL_ID,
   DIAGNOSTICS_BOOKING_PARTY_TOOL_ID,
   DIAGNOSTICS_BOOKING_SUMMARY_TOOL_ID,
 } from "../booking-records";
@@ -189,6 +190,7 @@ const AID6B_PACK_MODULES = [
 const EXPECTED_AREAS: Record<string, readonly string[]> = {
   [DIAGNOSTICS_BOOKING_SEARCH_TOOL_ID]: ["bookings"],
   [DIAGNOSTICS_BOOKING_SUMMARY_TOOL_ID]: ["bookings"],
+  [DIAGNOSTICS_BOOKING_LINKED_STATE_TOOL_ID]: ["bookings"],
   [DIAGNOSTICS_BOOKING_PARTY_TOOL_ID]: ["bookings"],
   [DIAGNOSTICS_BOOKING_BED_ALLOCATION_TOOL_ID]: ["bookings"],
   [DIAGNOSTICS_BOOKING_EXCEPTION_REQUEST_TOOL_ID]: ["bookings"],
@@ -260,6 +262,7 @@ const VALID_CALL: Record<string, Record<string, unknown>> = {
   [DIAGNOSTICS_BOOKING_SEARCH_TOOL_ID]: { kind: "booking_id", recordId: RECORD },
   [DIAGNOSTICS_MEMBER_SEARCH_TOOL_ID]: { kind: "member_id", recordId: RECORD },
   [DIAGNOSTICS_BOOKING_SUMMARY_TOOL_ID]: { bookingId: RECORD },
+  [DIAGNOSTICS_BOOKING_LINKED_STATE_TOOL_ID]: { bookingId: RECORD },
   [DIAGNOSTICS_BOOKING_PARTY_TOOL_ID]: { bookingId: RECORD },
   [DIAGNOSTICS_BOOKING_BED_ALLOCATION_TOOL_ID]: { bookingId: RECORD },
   [DIAGNOSTICS_BOOKING_EXCEPTION_REQUEST_TOOL_ID]: { bookingId: RECORD },
@@ -282,7 +285,7 @@ const VALID_CALL: Record<string, Record<string, unknown>> = {
 // ---------------------------------------------------------------------------
 
 describe("AID-6B booking/membership pack: permissions (#2376)", () => {
-  it("registers exactly the fifteen entries the four pack arrays export", () => {
+  it("registers exactly the sixteen entries the four pack arrays export", () => {
     // Both directions. Forwards: the registry carries every entry the pack
     // declares. Backwards: the pack's own four arrays carry nothing the table
     // above has not reviewed a permission for — so a sixteenth entry added to a
@@ -293,8 +296,8 @@ describe("AID-6B booking/membership pack: permissions (#2376)", () => {
       ...DIAGNOSTICS_AID6B_MEMBERSHIP_RECORD_TOOLS,
       ...DIAGNOSTICS_AID6B_STATE_TOOLS,
     ];
-    expect(exported).toHaveLength(15);
-    expect(packTools).toHaveLength(15);
+    expect(exported).toHaveLength(16);
+    expect(packTools).toHaveLength(16);
     expect(exported.map((tool) => tool.id).sort()).toEqual(
       [...AID6B_TOOL_IDS].sort(),
     );
@@ -357,6 +360,7 @@ describe("AID-6B booking/membership pack: permissions (#2376)", () => {
     // member-identifying `AuditLog` columns are not granted at all.
     const NOT_IDENTIFYING = [
       DIAGNOSTICS_BOOKING_AUDIT_HISTORY_TOOL_ID,
+      DIAGNOSTICS_BOOKING_LINKED_STATE_TOOL_ID,
       DIAGNOSTICS_MEMBER_AUDIT_HISTORY_TOOL_ID,
     ];
     for (const tool of packTools) {
@@ -1089,6 +1093,7 @@ const FINAL_ORDER_KEY: Record<string, string> = {
   [DIAGNOSTICS_BOOKING_SEARCH_TOOL_ID]: 'b."id"',
   [DIAGNOSTICS_MEMBER_SEARCH_TOOL_ID]: 'm."id"',
   [DIAGNOSTICS_BOOKING_PARTY_TOOL_ID]: 'g."id"',
+  [DIAGNOSTICS_BOOKING_LINKED_STATE_TOOL_ID]: 'related."id"',
   [DIAGNOSTICS_BOOKING_BED_ALLOCATION_TOOL_ID]: 'a."id"',
   [DIAGNOSTICS_BOOKING_EXCEPTION_REQUEST_TOOL_ID]: 'r."id"',
   [DIAGNOSTICS_BOOKING_AUDIT_HISTORY_TOOL_ID]: 'a."id"',
@@ -1108,6 +1113,16 @@ function orderByTerms(sql: string): string[] {
 }
 
 describe("AID-6B booking/membership pack: bounds and determinism (#2376)", () => {
+  it("reads linkage in both directions without walking beyond direct children", () => {
+    const sql = sqlOf(DIAGNOSTICS_BOOKING_LINKED_STATE_TOOL_ID);
+    expect(sql).toContain('related."id" = selected."parentBookingId"');
+    expect(sql).toContain('related."parentBookingId" = selected."id"');
+    expect(sql).not.toMatch(/WITH\s+RECURSIVE/i);
+    expect(entry(DIAGNOSTICS_BOOKING_LINKED_STATE_TOOL_ID).rowLimit).toBe(
+      AID6B_HISTORY_ROW_LIMIT,
+    );
+  });
+
   it.each(packTools.map((tool) => [tool.id, tool] as const))(
     "%s declares ceilings inside the substrate's own",
     (_id, tool) => {
@@ -1154,6 +1169,7 @@ describe("AID-6B booking/membership pack: bounds and determinism (#2376)", () =>
       [DIAGNOSTICS_BOOKING_SEARCH_TOOL_ID]: AID6B_SEARCH_ROW_LIMIT,
       [DIAGNOSTICS_MEMBER_SEARCH_TOOL_ID]: AID6B_SEARCH_ROW_LIMIT,
       [DIAGNOSTICS_BOOKING_SUMMARY_TOOL_ID]: 1,
+      [DIAGNOSTICS_BOOKING_LINKED_STATE_TOOL_ID]: AID6B_HISTORY_ROW_LIMIT,
       [DIAGNOSTICS_BOOKING_PARTY_TOOL_ID]: AID6B_PARTY_ROW_LIMIT,
       [DIAGNOSTICS_BOOKING_BED_ALLOCATION_TOOL_ID]: AID6B_ALLOCATION_ROW_LIMIT,
       [DIAGNOSTICS_BOOKING_EXCEPTION_REQUEST_TOOL_ID]: AID6B_HISTORY_ROW_LIMIT,
@@ -1182,6 +1198,7 @@ describe("AID-6B booking/membership pack: bounds and determinism (#2376)", () =>
     expect(wide.map((tool) => tool.id).sort()).toEqual(
       [
         DIAGNOSTICS_BOOKING_PARTY_TOOL_ID,
+        DIAGNOSTICS_BOOKING_BED_ALLOCATION_TOOL_ID,
         DIAGNOSTICS_BOOKING_CAPACITY_TOOL_ID,
       ].sort(),
     );
@@ -1204,7 +1221,7 @@ describe("AID-6B booking/membership pack: bounds and determinism (#2376)", () =>
     // answer?". The FINAL key is what carries the property; every key before it
     // is presentation.
     const multiRow = sqlEntries.filter((tool) => tool.rowLimit > 1);
-    expect(multiRow).toHaveLength(10);
+    expect(multiRow).toHaveLength(11);
     for (const tool of multiRow) {
       const terms = orderByTerms(tool.sql);
       expect(terms.length, `${tool.id} has no ORDER BY`).toBeGreaterThan(0);
@@ -1449,6 +1466,82 @@ describe("AID-6B booking/membership pack: null is not zero (#2376)", () => {
     // `Boolean` NOT NULL with a default, so absent means false rather than
     // unknown.
     expect(project({ is_second_occupant: null }).isSecondOccupant).toBe(false);
+  });
+
+  it("classifies consent with the platform's complete five-column discriminator", () => {
+    const project = entry(DIAGNOSTICS_BOOKING_PARTY_TOOL_ID).project;
+    const shape = (overrides: Record<string, unknown>) =>
+      project({
+        guest_member_ref: "cm5memberaaaaaaaaaaaaaaaa",
+        consent_status: null,
+        consent_requested_at: null,
+        consent_responded_at: null,
+        consent_responded_by_member_ref: null,
+        consent_expires_at: null,
+        ...overrides,
+      }).consentSubState;
+
+    expect(shape({})).toBe("family_or_legacy");
+    expect(
+      shape({ consent_status: "PENDING", consent_requested_at: new Date("2026-07-01T00:00:00.000Z") }),
+    ).toBe("unrecognised_consent_shape");
+    expect(shape({ consent_responded_at: new Date("2026-07-01T00:00:00.000Z") })).toBe(
+      "unrecognised_consent_shape",
+    );
+    expect(
+      shape({
+        consent_status: "CONFIRMED",
+        consent_requested_at: new Date("2026-07-01T00:00:00.000Z"),
+        consent_responded_at: new Date("2026-07-01T00:00:00.000Z"),
+      }),
+    ).toBe("unrecognised_consent_shape");
+    expect(
+      shape({
+        consent_status: "PENDING",
+        consent_requested_at: new Date("2026-07-01T00:00:00.000Z"),
+        consent_expires_at: new Date("2026-07-02T00:00:00.000Z"),
+      }),
+    ).toBe("awaiting_target");
+    expect(
+      shape({
+        consent_status: "CONFIRMED",
+        consent_requested_at: new Date("2026-07-01T00:00:00.000Z"),
+        consent_responded_at: new Date("2026-07-01T00:00:00.000Z"),
+        consent_responded_by_member_ref: "cm5memberaaaaaaaaaaaaaaaa",
+      }),
+    ).toBe("approved_on_request");
+  });
+
+  it("uses the canonical active-adult confirmed-partner rule for double beds", () => {
+    const project = entry(DIAGNOSTICS_BOOKING_BED_ALLOCATION_TOOL_ID).project;
+    const state = (overrides: Record<string, unknown>) =>
+      project({
+        bed_type: "DOUBLE",
+        other_occupant_count: 1,
+        member_a_ref: "cm5memberaaaaaaaaaaaaaaaa",
+        member_b_ref: "cm5memberbbbbbbbbbbbbbbbb",
+        member_a_exists: true,
+        member_b_exists: true,
+        member_a_active: true,
+        member_b_active: true,
+        member_a_age_tier: "ADULT",
+        member_b_age_tier: "ADULT",
+        partner_link_status: "CONFIRMED",
+        ...overrides,
+      }).doubleBedSharingState;
+
+    expect(state({})).toBe("eligible_confirmed_partners");
+    expect(state({ partner_link_status: "PENDING" })).toBe(
+      "ineligible_partner_link_pending",
+    );
+    expect(state({ partner_link_status: null })).toBe(
+      "ineligible_partner_link_absent",
+    );
+    expect(state({ member_b_active: false })).toBe("ineligible_member_inactive");
+    expect(state({ member_b_age_tier: "YOUTH" })).toBe("ineligible_not_adult");
+    expect(state({ other_occupant_count: 2 })).toBe(
+      "corrupt_occupant_cardinality",
+    );
   });
 
   it("keeps `creditElectionCents` NULL, 0 and positive as three distinguishable states", () => {
@@ -1902,6 +1995,7 @@ const AID6B_PACK_RELATIONS = [
   "LodgeBed",
   "LodgeRoom",
   "Member",
+  "MemberPartnerLink",
   "MemberSubscription",
   "PolicyExceptionReservationNight",
 ];
@@ -1912,7 +2006,6 @@ const AID6B_PACK_RELATIONS = [
  * a relation the pack DOES read, so an accidental reach is one edit away.
  */
 const FORBIDDEN_RELATIONS = [
-  "XeroToken",
   "IntegrationCredential",
   "PasswordResetToken",
   "MagicLinkToken",
@@ -1932,14 +2025,14 @@ describe("AID-6B booking/membership pack: the relation census (#2376)", () => {
     return [...sql.matchAll(/public\."([A-Za-z]+)"/g)].map((match) => match[1]);
   }
 
-  it("reads exactly the fourteen relations this pack argued for", () => {
+  it("reads exactly the fifteen relations this pack argued for", () => {
     // BOTH directions. Forwards: a statement that reaches a relation nobody
     // reviewed fails here. Backwards: a relation left on this list after the
     // statement that read it was rewritten fails too, so the census cannot rot
     // into a list that is wider than the code.
     const read = new Set(sqlEntries.flatMap((tool) => relationsIn(tool.sql)));
     expect([...read].sort()).toEqual([...AID6B_PACK_RELATIONS].sort());
-    expect(read.size).toBe(14);
+    expect(read.size).toBe(15);
   });
 
   it("never names a credential-, token- or secret-bearing relation, in ANY module", () => {
@@ -1961,6 +2054,20 @@ describe("AID-6B booking/membership pack: the relation census (#2376)", () => {
           `${name} reads ${relation} through Prisma`,
         ).toBe(false);
       }
+    }
+  });
+
+  it("uses XeroToken only as a provider-free connected-tenant presence probe", () => {
+    const source = packSource("booking-evidence.ts");
+    expect(source).not.toContain("prisma.xeroToken");
+    const resolver = readFileSync(
+      join(REPO_ROOT, "src", "lib", "financial-year-server.ts"),
+      "utf8",
+    );
+    expect(resolver).toContain("prisma.xeroToken.findFirst");
+    expect(resolver).toContain("select: { id: true }");
+    for (const credential of ["accessToken", "refreshToken", "expiresAt"]) {
+      expect(resolver).not.toContain(`select: { ${credential}`);
     }
   });
 
@@ -2018,7 +2125,6 @@ describe("AID-6B booking/membership pack: the relation census (#2376)", () => {
       "lastConflictReason",
       "reviewedByMemberId",
       "approvedByMemberId",
-      "consentRespondedByMemberId",
       "createdById",
       "deletedById",
       "dateOfBirth",
@@ -2182,13 +2288,6 @@ describe("AID-6B booking/membership pack: the code catalogues (#2376)", () => {
     const party = entry(DIAGNOSTICS_BOOKING_PARTY_TOOL_ID);
     const modelFacing = `${party.description}\n${party.evidenceScope ?? ""}`;
     const sql = sqlOf(DIAGNOSTICS_BOOKING_PARTY_TOOL_ID);
-    // The statement's own literals, read out of the shipped SQL rather than
-    // restated: the `CASE` is BUILT from the catalogue's keys, so a code the
-    // statement can emit and the scope cannot explain is impossible only while
-    // both sides are checked against the same list.
-    const emitted = new Set(
-      [...sql.matchAll(/'([a-z][a-z_]+)'/g)].map((match) => match[1]),
-    );
     const codes = [
       "family_or_legacy",
       "awaiting_target",
@@ -2199,13 +2298,14 @@ describe("AID-6B booking/membership pack: the code catalogues (#2376)", () => {
       "consent_expired",
       "unrecognised_consent_shape",
     ];
-    expect([...emitted].sort()).toEqual([...codes].sort());
     for (const code of codes) {
-      expect(sql, `${code} is not emitted by the statement`).toContain(
-        `'${code}'`,
-      );
       expect(modelFacing, `${code} never reaches the model`).toContain(code);
     }
+    // The raw five columns, including responder and expiry, must reach the
+    // canonical TypeScript discriminator. Removing either makes malformed
+    // shapes look valid; the projection tests above exercise that mutation.
+    expect(sql).toContain('g."consentRespondedByMemberId"');
+    expect(sql).toContain('g."consentExpiresAt"');
     // The trap the platform documents in two places, restated where the model
     // will read it: `consentStatus <> 'PENDING'` is UNKNOWN for a NULL row, and
     // NULL is the dominant value forever, so that filter silently drops every

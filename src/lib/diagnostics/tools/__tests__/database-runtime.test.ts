@@ -55,6 +55,8 @@ const pg = vi.hoisted(() => {
     writable_relations: 0,
     undeclared_readable_relations: 0,
     undeclared_readable_columns: 0,
+    missing_readable_relations: 0,
+    missing_readable_columns: 0,
     executable_security_definer_routines: 0,
   };
 
@@ -296,6 +298,13 @@ describe("getDiagnosticsDatabase — the verified pool (#2374, ADR-007)", () => 
     // Dropped columns keep their `pg_attribute` row; counting them would refuse a
     // deployment for a column that no longer exists.
     expect(probe.sql).toContain("NOT a.attisdropped");
+    // A future whole-relation declaration has no entries in the expected-column
+    // list. It is therefore satisfied only by table-level SELECT; one surviving
+    // hand-granted column must still count the relation as missing.
+    expect(probe.sql).toContain("expected.relation_key = ANY($5::text[])");
+    expect(probe.sql).toMatch(
+      /expected\.relation_key = ANY\(\$5::text\[\]\)[\s\S]*has_table_privilege\(current_user, c\.oid, 'SELECT'\)/,
+    );
   });
 
   it("refuses without connecting when the credential is not configured", async () => {
@@ -361,6 +370,27 @@ describe("getDiagnosticsDatabase — the verified pool (#2374, ADR-007)", () => 
       // connectivity" — two different operator actions.
       expect(handle.report).toBeDefined();
     }
+  });
+
+  it.each([
+    ["a declared relation", { missing_readable_relations: 1 }],
+    ["a declared column", { missing_readable_columns: 1 }],
+  ] as const)("reports under-provisioning when the role lacks %s", async (_label, drift) => {
+    fixture.privilegeRow = { ...SAFE_PRIVILEGE_ROW, ...drift };
+    const handle = await getDiagnosticsDatabase();
+    expect(handle.ok).toBe(false);
+    if (!handle.ok) expect(handle.reason).toBe("database_grants_missing");
+  });
+
+  it("classifies mixed missing and excess privilege as over-privileged", async () => {
+    fixture.privilegeRow = {
+      ...SAFE_PRIVILEGE_ROW,
+      missing_readable_columns: 1,
+      undeclared_readable_columns: 1,
+    };
+    const handle = await getDiagnosticsDatabase();
+    expect(handle.ok).toBe(false);
+    if (!handle.ok) expect(handle.reason).toBe("database_role_unsafe");
   });
 
   it("carries the escalating role NAMES into the report, filtered to our own list", async () => {
@@ -573,6 +603,14 @@ describe("checkDiagnosticsDatabaseReadiness — VERIFY, never trust (#2374)", ()
     fixture.privilegeRow = { ...SAFE_PRIVILEGE_ROW, is_superuser: true };
     expect(await checkDiagnosticsDatabaseReadiness()).toEqual({
       state: "over_privileged",
+      roleName: null,
+    });
+  });
+
+  it("reports under_provisioned when a declared grant is missing", async () => {
+    fixture.privilegeRow = { ...SAFE_PRIVILEGE_ROW, missing_readable_columns: 1 };
+    expect(await checkDiagnosticsDatabaseReadiness()).toEqual({
+      state: "under_provisioned",
       roleName: null,
     });
   });

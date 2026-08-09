@@ -619,7 +619,16 @@ export const SELECT_GRANTS: readonly AiDiagnosticsSelectGrant[] = [
       "consentStatus",
       "consentRequestedAt",
       "consentRespondedAt",
+      "consentRespondedByMemberId",
+      "consentExpiresAt",
     ],
+  },
+  {
+    schema: "public",
+    relation: "MemberPartnerLink",
+    // Predicate-only input to the canonical double-bed sharing classifier. The
+    // pair ids and status are never projected; the tool emits one stable verdict.
+    columns: ["memberAId", "memberBId", "status"],
   },
   {
     schema: "public",

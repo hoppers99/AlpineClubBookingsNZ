@@ -327,6 +327,10 @@ export interface DiagnosticsRolePrivilegeReport {
    * the allowlist track the schema.
    */
   undeclaredReadableColumns: number;
+  /** Declared relations that the connected role cannot SELECT at all. */
+  missingReadableRelations: number;
+  /** Declared column grants that are absent from the connected role. */
+  missingReadableColumns: number;
   /**
    * `SECURITY DEFINER` routines in schema `public` the role may EXECUTE. Such a
    * routine runs with its OWNER's privileges, so one of them is a write path that
@@ -371,6 +375,8 @@ export function isDiagnosticsRolePrivilegeSafe(
     // allowlist declares BY COLUMN is excluded from the relation count, so only this
     // one notices a grant that widened to the whole table.
     report.undeclaredReadableColumns === 0 &&
+    report.missingReadableRelations === 0 &&
+    report.missingReadableColumns === 0 &&
     report.executableSecurityDefinerRoutines === 0
   );
 }
@@ -504,6 +510,49 @@ SELECT
         (n.nspname || '.' || c.relname || '.' || a.attname) = ANY($4::text[])
       )
   )::int                                                              AS undeclared_readable_columns,
+  (
+    SELECT count(*)
+    FROM pg_catalog.unnest($3::text[]) expected(relation_key)
+    WHERE NOT EXISTS (
+      SELECT 1
+      FROM pg_catalog.pg_class c
+      JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
+      WHERE n.nspname = 'public'
+        AND c.relkind = ANY (ARRAY['r','v','m','f','p'])
+        AND (n.nspname || '.' || c.relname) = expected.relation_key
+        AND (
+          -- A whole-relation declaration is satisfied only by a table-level
+          -- grant. One hand-granted column must not make it look provisioned:
+          -- Parameter 4 has no per-column expectations for whole relations.
+          (
+            expected.relation_key = ANY($5::text[])
+            AND pg_catalog.has_table_privilege(current_user, c.oid, 'SELECT')
+          )
+          OR (
+            NOT (expected.relation_key = ANY($5::text[]))
+            AND (
+              pg_catalog.has_table_privilege(current_user, c.oid, 'SELECT')
+              OR pg_catalog.has_any_column_privilege(current_user, c.oid, 'SELECT')
+            )
+          )
+        )
+    )
+  )::int                                                              AS missing_readable_relations,
+  (
+    SELECT count(*)
+    FROM pg_catalog.unnest($4::text[]) expected(column_key)
+    WHERE NOT EXISTS (
+      SELECT 1
+      FROM pg_catalog.pg_class c
+      JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
+      JOIN pg_catalog.pg_attribute a
+        ON a.attrelid = c.oid AND a.attnum > 0 AND NOT a.attisdropped
+      WHERE n.nspname = 'public'
+        AND c.relkind = ANY (ARRAY['r','v','m','f','p'])
+        AND (n.nspname || '.' || c.relname || '.' || a.attname) = expected.column_key
+        AND pg_catalog.has_column_privilege(current_user, c.oid, a.attnum, 'SELECT')
+    )
+  )::int                                                              AS missing_readable_columns,
   (
     SELECT count(*)
     FROM pg_catalog.pg_proc p
@@ -641,6 +690,8 @@ async function readRolePrivileges(
     writableRelations: Number(row.writable_relations ?? 0),
     undeclaredReadableRelations: Number(row.undeclared_readable_relations ?? 0),
     undeclaredReadableColumns: Number(row.undeclared_readable_columns ?? 0),
+    missingReadableRelations: Number(row.missing_readable_relations ?? 0),
+    missingReadableColumns: Number(row.missing_readable_columns ?? 0),
     executableSecurityDefinerRoutines: Number(
       row.executable_security_definer_routines ?? 0,
     ),
@@ -708,7 +759,10 @@ export type DiagnosticsDatabaseHandle =
   | { ok: true; pool: Pool; roleName: string }
   | {
       ok: false;
-      reason: "database_not_configured" | "database_role_unsafe";
+      reason:
+        | "database_not_configured"
+        | "database_role_unsafe"
+        | "database_grants_missing";
       problem?: DiagnosticsDatabaseConfigProblem;
       report?: DiagnosticsRolePrivilegeReport;
     };
@@ -821,7 +875,21 @@ export async function getDiagnosticsDatabase(): Promise<DiagnosticsDatabaseHandl
     // reporting the old answer. Re-probing on every call is the right cost for a
     // deployment that is already being refused.
     discardEntry();
-    return { ok: false, reason: "database_role_unsafe", report };
+    const onlyMissingGrants =
+      report.missingReadableRelations > 0 || report.missingReadableColumns > 0
+        ? isDiagnosticsRolePrivilegeSafe({
+            ...report,
+            missingReadableRelations: 0,
+            missingReadableColumns: 0,
+          })
+        : false;
+    return {
+      ok: false,
+      reason: onlyMissingGrants
+        ? "database_grants_missing"
+        : "database_role_unsafe",
+      report,
+    };
   }
 
   return { ok: true, pool: entry.pool, roleName: report.roleName };
@@ -847,6 +915,8 @@ export type DiagnosticsDatabaseState =
    * the role the connection string names.
    */
   | "over_privileged"
+  /** Reachable and otherwise safe, but one or more declared grants are absent. */
+  | "under_provisioned"
   /**
    * The server itself confirmed the vetted role: a non-superuser that can only
    * SELECT, and only from the declared allowlist.
@@ -882,6 +952,9 @@ export async function checkDiagnosticsDatabaseReadiness(): Promise<DiagnosticsDa
         state: handle.problem === "not_set" ? "not_configured" : "misconfigured",
         roleName: null,
       };
+    }
+    if (handle.reason === "database_grants_missing") {
+      return { state: "under_provisioned", roleName: null };
     }
     // `database_role_unsafe` covers both "the server said no" (a report is
     // present) and "we could not ask" (it is not). They are different operator

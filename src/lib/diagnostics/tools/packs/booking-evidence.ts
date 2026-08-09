@@ -121,6 +121,8 @@ import {
   isDeletedAccountRecord,
 } from "@/lib/deleted-account";
 import { getInductionStatusForMember } from "@/lib/induction";
+import { getSeasonYearForYearEndMonth } from "@/lib/financial-year";
+import { getStoredFinancialYearResolution } from "@/lib/financial-year-server";
 import { peekSubscriptionLockoutMode } from "@/lib/member-subscription-eligibility";
 import { resolveMembershipTypePolicyForMember } from "@/lib/membership-type-policy";
 import { participantQualifiesAsHost } from "@/lib/policies/adult-member-hosting";
@@ -129,7 +131,6 @@ import {
   resolveMemberSubscriptionSettlement,
   subscriptionIsUnpaid,
 } from "@/lib/subscription-lockout-facts";
-import { getSeasonYear } from "@/lib/utils";
 
 import type { DiagnosticsToolRawRow } from "../define";
 
@@ -159,6 +160,37 @@ const AID6B_EVIDENCE_DEADLINE_MS = 10_000;
  * cycle with `booking-state.ts`.
  */
 export const AID6B_CAPACITY_NIGHT_CEILING = 31;
+
+const UTC_DAY_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * Refuse an oversized or corrupt booking envelope BEFORE any collaborator can
+ * expand it into per-night work. `Promise.race` only stops waiting for a loser;
+ * it cannot cancel a `checkCapacity` query already walking an unbounded interval.
+ */
+function assertCapacitySpanWithinCeiling(checkIn: Date, checkOut: Date): number {
+  const start = Date.UTC(
+    checkIn.getUTCFullYear(),
+    checkIn.getUTCMonth(),
+    checkIn.getUTCDate(),
+  );
+  const end = Date.UTC(
+    checkOut.getUTCFullYear(),
+    checkOut.getUTCMonth(),
+    checkOut.getUTCDate(),
+  );
+  const nights = (end - start) / UTC_DAY_MS;
+  if (
+    !Number.isSafeInteger(nights) ||
+    nights < 1 ||
+    nights > AID6B_CAPACITY_NIGHT_CEILING
+  ) {
+    throw new Error(
+      `AI Diagnostics AID-6B: this booking covers ${nights} nights, outside the 1-${AID6B_CAPACITY_NIGHT_CEILING}-night ceiling for a single capacity read`,
+    );
+  }
+  return nights;
+}
 
 /**
  * The booking statuses that make a booking TERMINAL — nothing more can be
@@ -395,6 +427,13 @@ async function readBookingBlockState(
   // fact it was conclusive.
   if (!booking) return [];
 
+  const deleted = booking.deletedAt !== null;
+  const terminal = TERMINAL_BOOKING_STATUSES.includes(booking.status);
+  const waitlisted = WAITLIST_BOOKING_STATUSES.includes(booking.status);
+  if (!deleted && !terminal) {
+    assertCapacitySpanWithinCeiling(booking.checkIn, booking.checkOut);
+  }
+
   const guests = await prisma.bookingGuest.findMany({
     where: { bookingId },
     select: {
@@ -411,10 +450,6 @@ async function readBookingBlockState(
     },
     orderBy: [{ stayStart: "asc" }, { id: "asc" }],
   });
-
-  const deleted = booking.deletedAt !== null;
-  const terminal = TERMINAL_BOOKING_STATUSES.includes(booking.status);
-  const waitlisted = WAITLIST_BOOKING_STATUSES.includes(booking.status);
 
   /**
    * The live per-guest night footprint, from the `BookingGuestNight` rows where
@@ -809,6 +844,10 @@ async function readBookingCapacity(
   });
   if (!booking) return [];
 
+  // This MUST precede the guest-envelope expansion below and `checkCapacity`.
+  // The executor deadline cannot cancel either once started.
+  assertCapacitySpanWithinCeiling(booking.checkIn, booking.checkOut);
+
   const guests = await prisma.bookingGuest.findMany({
     where: { bookingId },
     select: {
@@ -861,19 +900,6 @@ async function readBookingCapacity(
   const allocatedByNight = new Map<string, number>();
   for (const row of bedAllocations) {
     allocatedByNight.set(formatDateOnly(row.stayDate), row._count._all);
-  }
-
-  /**
-   * REFUSE rather than clip. `rowLimit` would truncate honestly and the model would
-   * be told, but a per-night capacity answer that stops in the middle of a stay
-   * invites "the lodge has room" about the half that was shown. A stay longer than
-   * the ceiling is a real answer this tool cannot give, and the entry's scope line
-   * names the bed-allocation board as the place that can.
-   */
-  if (capacity.nightDetails.length > AID6B_CAPACITY_NIGHT_CEILING) {
-    throw new Error(
-      `AI Diagnostics AID-6B: this booking covers ${capacity.nightDetails.length} nights, above the ${AID6B_CAPACITY_NIGHT_CEILING}-night ceiling for a single capacity read`,
-    );
   }
 
   const observedAt = new Date().toISOString();
@@ -1019,7 +1045,16 @@ async function readMemberEligibility(
    * "now" is the right instant here — but the derivation has to be the same one,
    * or the two entries answer one question two ways for a quarter of every year.
    */
-  const seasonYear = getSeasonYear();
+  const financialYear = await getStoredFinancialYearResolution();
+  if (!financialYear.ok) {
+    throw new Error(
+      "AI Diagnostics AID-6B: the connected Xero financial year is not stored locally; member eligibility is unavailable without a provider call",
+    );
+  }
+  const seasonYear = getSeasonYearForYearEndMonth(
+    new Date(),
+    financialYear.effectiveMonth,
+  );
 
   const member = await prisma.member.findUnique({
     where: { id: memberId },
@@ -1139,7 +1174,14 @@ async function readMemberEligibility(
       archivedAt: member.archivedAt,
     },
     operationallyPresent: true,
-    subscriptionSettled: !unpaid,
+    // The canonical predicate treats an ABSENT settlement fact as settled on
+    // purpose. Production supplies the fact only under NON_MEMBER_PRICING,
+    // because that is the sole mode in which an unpaid member is being charged
+    // as a non-member and therefore stops qualifying as the responsible host.
+    // NO_BLOCK and HARD_BLOCK preserve ordinary host qualification.
+    ...(lockoutMode === "NON_MEMBER_PRICING"
+      ? { subscriptionSettled: !unpaid }
+      : {}),
   });
 
   const inductionComplete = inductionStatus === "COMPLETED";
