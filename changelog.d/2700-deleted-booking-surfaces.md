@@ -30,8 +30,11 @@
   Separately, there was a narrow window in which a member could still be
   charged for a change to a booking an administrator was deleting at that
   moment — the member being on the payment page when the deletion happened.
-  Deleting a booking now cancels any payment still in progress against it, which
-  closes most of that window. If a payment does still go through, the club does
+  Deleting a cancelled booking now cancels any payment still in progress
+  against it, which closes most of that window. (Deleting an abandoned
+  half-finished booking works differently and is untouched here — there is
+  never a payment in progress against one.) If a payment does still go
+  through, the club does
   not quietly keep it: the payment is recorded so the money is accounted for,
   and a **manual refund task** is raised so a person knows about it. If the
   cancellation itself fails, that now shows up in the audit log rather than only

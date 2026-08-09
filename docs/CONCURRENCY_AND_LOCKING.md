@@ -2185,11 +2185,12 @@ it joins this cohort rather than minting a keyspace — and specifically the coh
 the key because the write is a find-then-create, which is not atomic on its own:
 two simultaneous confirms of one capture would otherwise raise two OPEN tasks,
 and two operators would refund one payment twice. It takes `lock(1)` and
-**nothing else**, holds it across exactly three statements, joins no capacity or
-member-credit tier, and every Stripe call on that path is made by its caller
-outside the transaction — so it composes with nothing and reverses no order.
+**nothing else**, holds it across a duplicate-task check, a refund-fence read
+and the create, joins no capacity or member-credit tier, and every Stripe call
+on that path is made by its caller outside the transaction — so it composes with
+nothing and reverses no order.
 
-The third statement is a **refund fence**, and it is why the read must be inside
+The middle read is a **refund fence**, and it is why the read must be inside
 this lock rather than beside it. The transaction row for this intent is re-read
 under the key and the raise is skipped when Stripe has already refunded the
 capture — `refundedAmountCents >= amountCents`, which is the field that survives

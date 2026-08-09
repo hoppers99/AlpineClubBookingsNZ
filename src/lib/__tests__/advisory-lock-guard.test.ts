@@ -154,7 +154,8 @@ const GLOBAL_BOOKING_MONEY_LOCK_INVENTORY: Record<string, number> = {
   // INTENT, not the booking), which is not atomic on its own: two simultaneous
   // confirms of one capture would otherwise raise two OPEN tasks, and two
   // operators would refund one payment twice. It takes lock(1) and NOTHING
-  // else, holds it for two statements, touches no capacity or member-credit
+  // else, holds it across a duplicate-task check, a refund-fence read and the
+  // create, touches no capacity or member-credit
   // tier, and every Stripe call is made by the caller outside this
   // transaction — so it composes with nothing and reverses no order.
   "src/lib/deleted-booking-modification-payment.ts": 1,

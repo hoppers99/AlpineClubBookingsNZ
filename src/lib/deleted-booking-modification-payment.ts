@@ -76,8 +76,8 @@ export function deletedBookingModificationRefundReason(
  * is the canonical global booking/settlement-money key and is what
  * `booking-cancel.ts` already holds when IT creates a `ManualRefundTask`, so
  * this write joins the same cohort rather than minting a new keyspace. It takes
- * that key and nothing else, and holds it for three statements, so it
- * introduces no new lock ordering. Every Stripe call is made by the caller,
+ * that key and nothing else, and holds it across a duplicate-task check, a
+ * refund-fence read and the create, so it introduces no new lock ordering. Every Stripe call is made by the caller,
  * outside this transaction.
  *
  * FENCED ON THE REFUND, NOT ONLY ON A SECOND RAISE, and that closes the
