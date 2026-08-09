@@ -17,7 +17,7 @@ import {
 import logger from "@/lib/logger";
 import { requireActiveSessionUser } from "@/lib/session-guards";
 import { copyStreetAddressToPostal } from "@/lib/member-address";
-import { parseDateOnly } from "@/lib/date-only";
+import { getTodayDateOnly, parseDateOnly } from "@/lib/date-only";
 import { evaluateSelfServiceProfilePayload } from "@/lib/member-profile-completeness";
 import {
   buildStructuredAuditLogCreateArgs,
@@ -220,7 +220,13 @@ export async function PUT(req: NextRequest) {
         { status: 422 }
       );
     }
-    if (dob > new Date()) {
+    // "In the future" means a later NZ CALENDAR DAY, not a later instant
+    // (#2682). `dob` is a date-only value at UTC midnight, so comparing it
+    // against the raw clock refuses today's NZ date for the first ~12-13h of
+    // every NZ day — which is exactly the date the form's own `max` offers.
+    // `request-child/route.ts` and `create-group/route.ts` already compare
+    // this way.
+    if (dob > getTodayDateOnly()) {
       return NextResponse.json(
         { error: "Date of birth cannot be in the future" },
         { status: 422 }

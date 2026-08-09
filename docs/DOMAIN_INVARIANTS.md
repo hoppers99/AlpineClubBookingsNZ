@@ -134,6 +134,7 @@ number and prefix, and it is listed at the end of the table below.
 | `INV-DATE-011` | Lodge bookings use NZ date-only nights, not arbitrary timestamps |
 | `INV-DATE-012` | `BookingGuest.stayStart`/`stayEnd` are date-only occupancy in the envelope |
 | `INV-DATE-013` | Compare date columns only against date-only values, never a raw clock |
+| `INV-DATE-019` | Ask the club's calendar for "today", never the UTC clock |
 | `INV-DATE-014` | Client-side a lodge night is an NZ `yyyy-MM-dd` string, carried end to end |
 | `INV-DATE-015` | Rendering has one seam, `nzst-date.ts`; bare `toLocale*` is lint-blocked |
 | `INV-DATE-016` | `formatNZLongDate` is reserved for four named member-facing surfaces |

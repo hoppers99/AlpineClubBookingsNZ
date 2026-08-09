@@ -1,16 +1,13 @@
 import { prisma } from "./prisma";
 import { sendAdminCapacityWarningAlert } from "./email";
-import { getOccupiedBedsForNight } from "./capacity";
-import { buildLodgeCustodianNightCounter } from "./custodian-occupancy";
+import { computeNightOccupancy } from "./capacity";
 import { getLodgeCapacity } from "./lodge-capacity";
-import { lodgeNullTolerantScope } from "@/lib/lodges";
 import {
   addDaysDateOnly,
   eachDateOnlyInRange,
   getTodayDateOnly,
 } from "./date-only";
 import logger from "@/lib/logger";
-import { capacityHoldingBookingFilter } from "@/lib/booking-status";
 
 const WARN_THRESHOLD_BEDS = 5; // Alert when <= 5 beds remaining
 
@@ -50,27 +47,25 @@ export async function checkCapacityWarnings(): Promise<{ alertedDays: number }> 
     const lodgeCapacity = await getLodgeCapacity(lodge.id);
     if (lodgeCapacity <= 0) continue;
 
-    // Overlapping bookings at this lodge only. Booking.lodgeId is NOT NULL
-    // (migration 20260708001100), so lodgeNullTolerantScope is a strict
-    // per-lodge match — no null-lodge rows to count against every lodge.
-    const overlappingBookings = await prisma.booking.findMany({
-      where: {
-        checkIn: { lt: endDate },
-        checkOut: { gt: todayNZ },
-        // Capacity-holding population (issue #1254); per-lodge scope under AND
-        // so the two OR fragments compose rather than clobber.
-        ...capacityHoldingBookingFilter(),
-        AND: [lodgeNullTolerantScope(lodge.id)],
-      },
-      include: { guests: true },
-    });
-
-    // Custodian occupancy (#2286) IS included here: this cron's whole job is
-    // to warn when a lodge is nearly full, and a bed held for a season by a
-    // custodian is genuinely unavailable. Excluding it would under-fire the
-    // warning by the custodian count every night, all season. (The reports
-    // route deliberately goes the other way — see its own note.)
-    const custodianCount = await buildLodgeCustodianNightCounter({
+    // THE occupancy calculation (#2681), shared with the four admission and
+    // availability engines. Until #2681 this cron computed occupancy itself and
+    // was three terms behind them — it missed policy-exception reservations
+    // (#2525), whole-lodge holds (ADR-001 #118), and explicit guest nights
+    // (#713, because it loaded `guests: true` rather than the night rows).
+    //
+    // The first two made it UNDER-report and stay silent about a lodge that was
+    // genuinely close to full. The third went the OTHER way: with no night rows
+    // a sparse, non-contiguous stay fell back to its stayStart/stayEnd
+    // envelope, so the cron OVER-reported on the gap nights and could warn
+    // about a night that was free.
+    //
+    // Custodian occupancy (#2286) is one of the shared terms, so it IS counted
+    // here: this cron's whole job is to warn about fullness, and a bed held for
+    // a season by a custodian is genuinely unavailable — excluding it would
+    // under-fire the warning by the custodian count every night, all season.
+    // (The admin utilisation report deliberately goes the other way; see its
+    // own note and the who-counts-what tables in docs/CAPACITY_MODEL.md.)
+    const occupancy = await computeNightOccupancy({
       lodgeId: lodge.id,
       from: todayNZ,
       toExclusive: endDate,
@@ -84,9 +79,14 @@ export async function checkCapacityWarnings(): Promise<{ alertedDays: number }> 
     }> = [];
 
     for (const night of nights) {
-      const occupiedBeds =
-        getOccupiedBedsForNight(night, overlappingBookings) +
-        custodianCount(night);
+      const reading = occupancy(night);
+      // A whole-lodge-held night is full by definition and is pinned to the
+      // lodge's ceiling, exactly as checkCapacity pins it (ADR-001 decision 6):
+      // an exclusive hold leaves no bookable bed, so the warning must fire even
+      // when the holding booking's own headcount is small.
+      const occupiedBeds = reading.wholeLodgeHeld
+        ? lodgeCapacity
+        : reading.occupiedBeds;
 
       const availableBeds = lodgeCapacity - occupiedBeds;
       if (availableBeds <= WARN_THRESHOLD_BEDS) {

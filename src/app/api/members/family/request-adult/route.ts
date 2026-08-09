@@ -6,7 +6,7 @@ import { prisma } from "@/lib/prisma";
 import { applyRateLimit, rateLimiters } from "@/lib/rate-limit";
 import { computeAgeTier, getSeasonStartDate } from "@/lib/age-tier";
 import { getSeasonYear } from "@/lib/utils";
-import { parseDateOnly } from "@/lib/date-only";
+import { getTodayDateOnly, parseDateOnly } from "@/lib/date-only";
 import { logAudit } from "@/lib/audit";
 import logger from "@/lib/logger";
 import { sendAdminFamilyGroupRequestAlert } from "@/lib/email";
@@ -61,7 +61,9 @@ export async function POST(req: NextRequest) {
   if (Number.isNaN(dateOfBirth.getTime())) {
     return NextResponse.json({ error: "Invalid date of birth" }, { status: 422 });
   }
-  if (dateOfBirth > new Date()) {
+  // A later NZ calendar day, not a later instant (#2682) — the same comparison
+  // `request-child/route.ts` already makes.
+  if (dateOfBirth > getTodayDateOnly()) {
     return NextResponse.json(
       { error: "Date of birth cannot be in the future" },
       { status: 422 }

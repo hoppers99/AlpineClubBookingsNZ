@@ -252,13 +252,24 @@ export async function buildLodgeCustodianNightCounter(input: {
   toExclusive: Date;
   nights: readonly Date[];
   db?: CustodianDb;
+  /**
+   * Ignore one assignment's own hold — used when the caller is evaluating what
+   * occupancy would be with that assignment counted exactly once, by itself
+   * (the custodian write path's over-capacity warning). Filtered in memory for
+   * the same reason `custodianHeldNightsForBed` does it: the exclusion is a
+   * caller concern, not part of the "which beds are held" query.
+   */
+  excludeAssignmentId?: string;
 }): Promise<(night: Date) => number> {
-  const holds = await findCustodianBedHolds({
+  const loaded = await findCustodianBedHolds({
     lodgeId: input.lodgeId,
     from: input.from,
     toExclusive: input.toExclusive,
     db: input.db,
   });
+  const holds = input.excludeAssignmentId
+    ? loaded.filter((hold) => hold.assignmentId !== input.excludeAssignmentId)
+    : loaded;
   const index = buildCustodianNightIndex(holds, input.nights);
   if (index.size === 0) return () => 0;
   return (night: Date) => index.get(formatDateOnly(night)) ?? 0;

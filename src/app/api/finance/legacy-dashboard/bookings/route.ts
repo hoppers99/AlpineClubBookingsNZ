@@ -2,6 +2,7 @@ import { timingSafeEqual } from "crypto";
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 import { requireFinanceViewerApiAccess } from "@/lib/finance-api-auth";
+import { todayDateOnlyForTimeZone } from "@/lib/date-only";
 import { getLegacyDashboardBookingExport } from "@/lib/finance-legacy-dashboard-export";
 import logger from "@/lib/logger";
 
@@ -42,8 +43,14 @@ function safeBearerCompare(provided: string, expected: string) {
   );
 }
 
+/**
+ * Today's date in the CLUB's time zone (#2682) — the default `asOfDate` cut-off
+ * for this export. A UTC "today" is still yesterday in New Zealand for roughly
+ * the first half of every NZ day, so the export would carry the wrong day's
+ * figures every morning. See `src/lib/date-only.ts`.
+ */
 function getCurrentIsoDate() {
-  return new Date().toISOString().slice(0, 10);
+  return todayDateOnlyForTimeZone();
 }
 
 export async function GET(request: NextRequest) {
