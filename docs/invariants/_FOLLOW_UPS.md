@@ -158,16 +158,35 @@ verbatim and kept their flags. Somebody should schedule the confirmations.
   `deletedAt`) at anonymisation time "would make the state structural instead of
   inferred; it is deliberately still open".
 
-## 8. One positional cross-reference whose target has left the file
+## 8. Positional cross-references that crossed a file boundary — closed
 
-`INV-DATE-009` in
-[`booking-dates-and-capacity.md`](booking-dates-and-capacity.md) still reads
-"The custodian bed hold uses deliberate inclusive day semantics (its own section
-below)". That section is now `INV-LIFE-062`, in a different file, so "below" no
-longer navigates. The scheme's registered remedy is edit type 2 — append
-` [INV-LIFE-062]` beside the phrase, deleting and rewording nothing
-(`_PHASE1_SCHEME.md` §3, §4.2). It was not applied to this one occurrence.
+**Nothing outstanding here.** This section records the sweep so a later reader
+does not have to repeat it.
 
-The reciprocal direction is fine: `INV-LIFE-062` names the section by title
-("the stay-boundary invariant in 'Booking Dates And Capacity'"), which survives
-the move.
+The source document navigated itself with "above", "below", "its own section
+below" and "rule (b) above". Where the target stayed in the same destination
+file, the sentence was left completely alone (`_PHASE1_SCHEME.md` §4.2, rule 1)
+— that covers the large majority, and is why the file boundaries follow the
+source's own heading zones. Where a reference crossed a new file boundary, edit
+type 2 was applied: a bracketed ` [INV-*]` pointer **appended** beside the phrase
+that no longer navigates, deleting and rewording nothing.
+
+Every `##`/`###` file was swept for `above`, `below`, `earlier`, `preceding`,
+`its own section`, `this subsection`, `see the … invariant/rule/cluster`,
+`named above/below`, `as described above/below` and `rule (x) above`. Eight
+boundary-crossing references were found and all eight now carry a pointer; the
+complete register is in the pull request body and reproduced nowhere else, so
+that the PR carries the exhaustive list of edits made to transcribed text.
+
+Two classes were deliberately left unpointered, both per the scheme:
+
+- **References that name their target by section title** — "the stay-boundary
+  invariant in 'Booking Dates And Capacity'" (four occurrences) and 'see
+  "Member-Guest Consent"' (one). A title resolves through the index whatever file
+  it lives in, so these navigate correctly without an edit (`_PHASE1_SCHEME.md`
+  §4.1, §4.2).
+- **The one reference that points the wrong way** — `INV-LIFE-035`'s "#2424
+  (above)", whose target `INV-LIFE-038` is below it in the *same* file. That is a
+  pre-existing direction error, not a crossed boundary, so edit type 2 does not
+  apply and a pointer would paper over it. It is recorded in §3 as its own
+  follow-up.

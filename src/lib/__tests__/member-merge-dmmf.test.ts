@@ -19,6 +19,11 @@ const schemaText = readFileSync(
 
 const specKeys = MEMBER_MERGE_RELATION_SPECS.map((s) => s.key);
 
+// The FK-less-scalar census below ENFORCES INV-LIFE-065
+// (`docs/invariants/membership-lifecycle.md`), which names this file. Its
+// failure message repeats the id, so whoever trips it is handed the rule rather
+// than having to go and find it (#2691).
+
 describe("member-merge relation classification completeness", () => {
   it("classifies queued hosting actor attribution as a live FK-less move", () => {
     expect(MEMBER_MERGE_FK_LESS_MOVE_COLUMNS).toContainEqual({
@@ -327,7 +332,16 @@ model AttributeFirstThing {
     const detected = parseFkLessMemberIdColumns(schemaText);
     const documented = new Set(MEMBER_MERGE_SNAPSHOT_SCALAR_COLUMNS);
 
-    expect(detected.filter((c) => !documented.has(c))).toEqual([]);
+    expect(
+      detected.filter((c) => !documented.has(c)),
+      "INV-LIFE-065 (docs/invariants/membership-lifecycle.md): a member merge " +
+        "leaves FK-less scalar member-id columns pointing at the loser's id as " +
+        "immutable history, and every column the schema scan can see must be " +
+        "enumerated in MEMBER_MERGE_SNAPSHOT_SCALAR_COLUMNS. The hand-kept list " +
+        "is how CalendarEvent.createdById and CalendarEventSeries.createdById " +
+        "escaped both the relation walk and the documentation (#2243). Classify " +
+        "the column above — snapshot, or a live move — and add it there.",
+    ).toEqual([]);
   });
 
   it("never silently SHRINKS the detected set (frozen floor, both directions)", () => {

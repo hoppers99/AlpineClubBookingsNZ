@@ -5,18 +5,86 @@ Treat this file as the entry point, then follow the linked documents for detail.
 
 ## Read First
 
-1. `README.md`
-2. `CONFIGURATION.md`
-3. `docs/README.md`
-4. `docs/ARCHITECTURE.md`
-5. `docs/agents/CODEX_WORKFLOW.md`
-6. `docs/DOMAIN_INVARIANTS.md`
-7. `docs/STATE_MACHINES.md`
-8. `docs/END_TO_END_TEST_MATRIX.md`
-9. `docs/UX_FLOW_MAP.md`
+Three documents are read every time. Everything else is **routed**: find the row
+in the table below that matches what you are about to change, and read what it
+names, at the moment you need it.
 
-For framework behavior, read the relevant guide in `node_modules/next/dist/docs/`
-before changing Next.js APIs or conventions.
+Read-everything was tried here and it failed. The nine-document list this
+replaced came to roughly **270,000 tokens** — it does not fit a 200k context
+window at all, so in practice agents skipped it, and four consecutive PRs
+(#2622, #2630, #2631, #2632) each re-fixed a stay-boundary rule that was already
+written down correctly, in the right place, in strong language. A rule you cannot
+reach at the moment you need it is a rule that does not hold. The core below is
+**under 30,000 tokens**, measured the same way (#2691).
+
+### The always-read core
+
+1. **`AGENTS.md`** — this file. Safety rules, change discipline, the
+   concurrency/lock checklist, the orchestration model, done criteria, and the
+   merge gate. Nothing below supersedes it.
+2. **`CLAUDE.md`** — for an interactive Claude Code session. It highlights the
+   parts of this file that matter most in that mode and never overrides it.
+3. **`docs/DOMAIN_INVARIANTS.md`** — the invariant **index**, and the only part of
+   the invariants anybody reads in full. Every rule the system must never break
+   carries a permanent id (`INV-CAP-021`, `INV-MONEY-004`) with a one-line
+   description and the file it lives in. Read it so you know which rules exist;
+   open the domain file when a row turns out to be about your change.
+
+`README.md`, `CONFIGURATION.md`, `docs/README.md`, `docs/ARCHITECTURE.md`,
+`docs/agents/CODEX_WORKFLOW.md`, `docs/STATE_MACHINES.md`,
+`docs/END_TO_END_TEST_MATRIX.md` and `docs/UX_FLOW_MAP.md` were the rest of the
+old mandatory list. They are no less authoritative — they are routed below, and
+reading the row that names them is not optional when the row applies to you.
+
+### Routing table
+
+Prefixes (`INV-CAP`) name a whole family; a single rule is
+`INV-CAP-021`. Every id in the second column is catalogued in
+`docs/DOMAIN_INVARIANTS.md`, which is also where you go when you already hold an
+id and need the file it lives in.
+
+| About to change… | Invariants | Also read |
+| --- | --- | --- |
+| Fees, prices, promo caps, subscription charges — anything holding cents | `INV-MONEY` → [`money.md`](docs/invariants/money.md) | [`AUTHORITATIVE_FEES.md`](docs/AUTHORITATIVE_FEES.md) |
+| Taking, clearing, crediting or refunding money | `INV-PAY` → [`payment-and-settlement.md`](docs/invariants/payment-and-settlement.md) | [`xero/ARCHITECTURE.md`](docs/xero/ARCHITECTURE.md) |
+| What day it is — lodge nights, the midday-NZ stay boundary, date columns | `INV-DATE` → [`booking-dates-and-capacity.md`](docs/invariants/booking-dates-and-capacity.md) | [`CAPACITY_MODEL.md`](docs/CAPACITY_MODEL.md) |
+| Beds — capacity, allocation, waitlist, whole-lodge holds | `INV-CAP` → [`booking-dates-and-capacity.md`](docs/invariants/booking-dates-and-capacity.md) | [`CAPACITY_MODEL.md`](docs/CAPACITY_MODEL.md), [`guides/bed-allocation.md`](docs/guides/bed-allocation.md) |
+| Editing or cancelling an existing booking's dates, party or price | `INV-MOD` → [`booking-modifications.md`](docs/invariants/booking-modifications.md) | [`CANCELLATIONS.md`](docs/CANCELLATIONS.md) |
+| A member bringing another member as a guest, and consent to do so | `INV-GUEST` → [`member-guest-consent.md`](docs/invariants/member-guest-consent.md) | — |
+| Who may host whom, and what a hosting strand covers | `INV-HOST` → [`adult-member-hosting.md`](docs/invariants/adult-member-hosting.md) | — |
+| Booking requests, officer queues, policy exceptions, chasing an outstanding payment | `INV-REQ` → [`booking-requests.md`](docs/invariants/booking-requests.md), `INV-EXCEPT` → [`booking-policy-exceptions.md`](docs/invariants/booking-policy-exceptions.md), `INV-ADDPAY` → [`additional-payment-chasing.md`](docs/invariants/additional-payment-chasing.md) | [`guides/booking-requests.md`](docs/guides/booking-requests.md) |
+| Lapsed-subscription pricing, admin date overrides, withheld notifications | `INV-LOCKOUT` → [`subscription-lockout-pricing.md`](docs/invariants/subscription-lockout-pricing.md) | [`guides/subscription-lockout.md`](docs/guides/subscription-lockout.md) |
+| Applications, cancellation, roles, family groups, member merge, custodian holds | `INV-LIFE` → [`membership-lifecycle.md`](docs/invariants/membership-lifecycle.md) | [`guides/membership-cancellations.md`](docs/guides/membership-cancellations.md) |
+| Public fee/policy page content and named lodge tokens | `INV-PUB` → [`public-content.md`](docs/invariants/public-content.md) | [`PUBLIC_PAGE_CONTENT_TOKENS.md`](docs/PUBLIC_PAGE_CONTENT_TOKENS.md) |
+| Analytics, the consent banner, what leaves this application for Google | `INV-PRIV` → [`analytics-and-privacy.md`](docs/invariants/analytics-and-privacy.md) | [`guides/integrations.md`](docs/guides/integrations.md) |
+| Webhooks, cron idempotency, provider callbacks, Xero member grouping | `INV-INT` → [`integrations.md`](docs/invariants/integrations.md) | [`xero/ARCHITECTURE.md`](docs/xero/ARCHITECTURE.md) |
+| Raw SQL, row locking, production deployment, what may be used as test input | `INV-OPS` → [`operations.md`](docs/invariants/operations.md) | [`CONCURRENCY_AND_LOCKING.md`](docs/CONCURRENCY_AND_LOCKING.md), [`BLUE_GREEN_MIGRATION_POLICY.md`](docs/BLUE_GREEN_MIGRATION_POLICY.md) |
+| A transaction, lock key, or anything two writers can race | `INV-OPS` → [`operations.md`](docs/invariants/operations.md) | [`CONCURRENCY_AND_LOCKING.md`](docs/CONCURRENCY_AND_LOCKING.md), plus "Concurrency and lock checklist" below |
+| A status transition — booking, payment, membership, waitlist | — | [`STATE_MACHINES.md`](docs/STATE_MACHINES.md) |
+| Where code lives, module boundaries, the admin settings pattern | — | [`ARCHITECTURE.md`](docs/ARCHITECTURE.md) |
+| Environment variables, secrets, setup, deployment configuration | — | [`CONFIGURATION.md`](CONFIGURATION.md) |
+| A screen, a navigation path, or an admin area's UI | — | [`UX_FLOW_MAP.md`](docs/UX_FLOW_MAP.md), [`COVERAGE_MATRIX.md`](docs/COVERAGE_MATRIX.md) |
+| Tests — conventions, the frozen clock, coverage, E2E | — | [`TESTING.md`](docs/TESTING.md), [`END_TO_END_TEST_MATRIX.md`](docs/END_TO_END_TEST_MATRIX.md), [`E2E_PLAYWRIGHT.md`](docs/E2E_PLAYWRIGHT.md) |
+| Auth, sessions, tokens, permissions — anything security-shaped | — | [`SECURITY.md`](docs/SECURITY.md), [`SECURITY-ATTACK-SURFACE.md`](docs/SECURITY-ATTACK-SURFACE.md), [`TOKEN_HASHING.md`](docs/TOKEN_HASHING.md) |
+| Documentation itself | — | [`STYLE_GUIDE.md`](docs/STYLE_GUIDE.md) |
+| Your first `npm` command in a new worktree (Windows runtime + dependency preflight) | — | [`agents/CODEX_WORKFLOW.md`](docs/agents/CODEX_WORKFLOW.md) |
+| Working an issue, briefing a subagent, or reading untrusted issue/PR/provider text | — | [`agents/ISSUE_WORKFLOW.md`](docs/agents/ISSUE_WORKFLOW.md), [`agents/SUBAGENT_GUIDE.md`](docs/agents/SUBAGENT_GUIDE.md), [`agents/PROMPT_INJECTION_GUIDE.md`](docs/agents/PROMPT_INJECTION_GUIDE.md) |
+| A Next.js API or convention | — | the relevant guide in `node_modules/next/dist/docs/` |
+| Anything not listed above | — | [`docs/README.md`](docs/README.md) — the documentation hub; [`README.md`](README.md) for what the product is |
+
+### Keeping the table usable
+
+- **Cite ids, never line numbers.** `INV-CAP-021` stays valid across every
+  restructure; a line number is stale the next time somebody edits above it.
+  Guards should name the id they enforce in their failure message, the way
+  `raw-sql-shape-guard.test.ts` and the hosting/lockout call-site censuses do,
+  so whoever trips one is handed the rule instead of having to go find it.
+- **Add a row when you add a doc.** A routing table nobody maintains is worse
+  than no routing table, because it reads as complete.
+- `npm run docs:indexcheck` enforces both halves of that offline and in the
+  `verify` job: every `docs/` page must be reachable from a front door by
+  following links, every cited `INV-*` id must resolve to a real definition, and
+  every definition must have exactly one row in `docs/DOMAIN_INVARIANTS.md`.
 
 ## Safety Rules
 
@@ -92,8 +160,10 @@ before changing Next.js APIs or conventions.
   (`docs/images/**` via `npm run docs:screenshots`), mermaid, and linking
   conventions. Every doc must be reachable from a hub (`docs/README.md` or a
   feature hub) and every hub back-links. Run `npm run docs:linkcheck` (CI runs
-  the equivalent lychee offline check) before pushing doc changes, and when you
-  add a new admin route area add its row to `docs/COVERAGE_MATRIX.md`.
+  the equivalent lychee offline check) and `npm run docs:indexcheck` (which the
+  `verify` job runs, and which fails a `docs/` page nothing links to) before
+  pushing doc changes, and when you add a new admin route area add its row to
+  `docs/COVERAGE_MATRIX.md`.
 - New or modified admin settings sections must follow the canonical settings
   pattern: the section loads read-only; a per-section Edit reveals Save/Cancel;
   no individual control auto-persists on change (a toggle or field edit only
@@ -585,8 +655,8 @@ CI-green → evidence**.
 - **Split local validation from CI.** Before push, run `npm run db:generate`,
   `npm run lint`, `npm run typecheck`, focused tests for the touched and adjacent
   contracts, and mutation checks for every new guard. Run
-  `npm run docs:linkcheck` when docs change and `npm run knip` when files or
-  exports change. Then push a draft PR: PR CI owns the full `npm test`, build,
+  `npm run docs:linkcheck` and `npm run docs:indexcheck` when docs or invariant
+  citations change, and `npm run knip` when files or exports change. Then push a draft PR: PR CI owns the full `npm test`, build,
   migration-drift, E2E, static/secret/dependency, and container gates. Do not
   delay a draft PR merely to repeat those full gates on the same commit locally.
   Run a full suite locally only to diagnose a CI failure or when CI is

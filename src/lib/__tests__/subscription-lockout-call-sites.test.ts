@@ -18,6 +18,12 @@
 //
 // For those three, reading the source is not a shortcut; it is the only honest
 // test. Mirrors the convention in member-guest-add-call-sites.test.ts.
+//
+// ENFORCES INV-LOCKOUT-026 (`docs/invariants/subscription-lockout-pricing.md`),
+// which names this file: every write path passes the booking owner, counted
+// against the evaluation calls file by file. That census repeats the id in its
+// failure message, so whoever trips it is handed the rule rather than having to
+// go and find it (#2691).
 import { describe, expect, it } from "vitest";
 import { readdirSync, readFileSync } from "node:fs";
 import path from "node:path";
@@ -481,13 +487,17 @@ describe("the booking OWNER reaches every evaluation (#2543, owner decision 3 Au
     (name, file, ownerExpression) => {
       const source = readRepoFile(file);
       const calls = paidUpEvaluationCalls(source);
+      // Named in every failure so the rule arrives with the symptom, not after
+      // a search for it (#2691).
+      const why =
+        `INV-LOCKOUT-026 (docs/invariants/subscription-lockout-pricing.md): ${name}`;
 
-      expect(calls.length, name).toBeGreaterThan(0);
+      expect(calls.length, why).toBeGreaterThan(0);
       expect(
         calls.every((call) => call.includes("bookingOwnerMemberId:")),
-        name,
+        why,
       ).toBe(true);
-      expect(calls, name).toEqual(
+      expect(calls, why).toEqual(
         expect.arrayContaining([
           expect.stringContaining(`bookingOwnerMemberId: ${ownerExpression}`),
         ]),

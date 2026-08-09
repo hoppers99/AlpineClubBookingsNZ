@@ -151,7 +151,7 @@ derivation).
     neither is a presence definition; their `<` / `<=` split brackets the
     check-out day deliberately and must not be "aligned" onto one boundary.
   - The custodian bed hold uses deliberate inclusive day semantics (its own
-    section below): an assignment's `endDate` is a covered day, not a
+    section below [INV-LIFE-062]): an assignment's `endDate` is a covered day, not a
     departure morning.
   - The kiosk depart lookup matches only the exact departure date — a status
     action window, not a presence rule.
