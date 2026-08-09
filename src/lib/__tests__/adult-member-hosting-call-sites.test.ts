@@ -1112,11 +1112,14 @@ describe("the participant fence stays switched ON where a suite claims it (#2623
   /**
    * The mode every wired suite actually states, read off the tree.
    *
-   * Belt and braces with the runtime refusal above: that one fires only when the
-   * helper is CALLED with a bad mode, and a suite could instead stop calling it
-   * and hand-roll a `findMany` returning `DISABLED` under the same key. This
-   * reads the literal each suite writes, so the census owns the VALUE as well as
-   * the call.
+   * Belt and braces with the runtime refusal in the helper: that one fires only
+   * when a bad mode reaches it AT RUNTIME, so a call site inside a `describe`
+   * nobody runs in a focused pass, or one behind a branch, can sit wrong for a
+   * while. This reads the literal each suite writes, statically, so the census
+   * owns the VALUE as well as the call. (The third route — dropping the helper
+   * and hand-rolling a `DISABLED` double under the same key — is what the census
+   * above catches: a suite wiring the fence doubles with no
+   * `fenceHostingPolicyFindMany(` call is listed there or it fails.)
    */
   it("states an active mode at every fence-policy call site", () => {
     const root = path.resolve(process.cwd(), "src");
