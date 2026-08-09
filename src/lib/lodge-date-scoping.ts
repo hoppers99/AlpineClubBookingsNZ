@@ -19,14 +19,23 @@ export const LODGE_VISIBLE_BOOKING_STATUSES = [
 ] as const;
 
 // THE ARRIVE/DEPART ASYMMETRY IS DELIBERATE AND #2622 LEFT IT ALONE.
-// `findLodgeGuestForDate` (arrive) stays NIGHT-only: you can only mark someone
-// arrived for a night they are actually sleeping. `findLodgeGuestDepartingOnDate`
-// (depart) stays pinned to a DEPARTURE MORNING: you leave on a specific day, not
-// on any day you happen to be present. #2628 changed how many such mornings
-// there are — a sparse stay has ONE PER SEGMENT, not one per stay — and nothing
-// else about the rule. Neither lookup is the roster's operational-day question —
-// "was this person in the building this morning?" — so neither moved to the
-// operational-day rule. Do not "unify" them.
+// `findLodgeGuestForDate` (arrive) stays NIGHT-scoped: you can only mark someone
+// arrived for a night they are sleeping, never for the morning they drive home.
+// `findLodgeGuestDepartingOnDate` (depart) stays pinned to a DEPARTURE MORNING:
+// you leave on a specific day, not on any day you happen to be present. #2628
+// changed how many such mornings there are — a sparse stay has ONE PER SEGMENT,
+// not one per stay — and nothing else about the rule. Neither lookup is the
+// roster's operational-day question — "was this person in the building this
+// morning?" — so neither moved to the operational-day rule. Do not "unify" them.
+//
+// PRECISION, so this comment does not over-claim (#2628 review): the arrive
+// lookup's night scope is the SQL ENVELOPE, `[stayStart, stayEnd)`. That is the
+// night set exactly for a contiguous stay, and a superset of it for a sparse
+// one — the internal gap nights are inside the envelope, so the endpoint would
+// accept a check-in on a night the guest is at home. No kiosk surface offers it
+// (`canMarkArrived` is the night-set rule), and closing the gap needs a fixture
+// pass across every suite that mocks this lookup, so it is #2737 rather than a
+// line here. The depart lookup below is the shape that fix takes.
 //
 // lodgeId is optional so existing (pre-phase-5) callers keep club-wide
 // behaviour; kiosk routes pass the resolved lodge to scope the lookup
