@@ -190,8 +190,30 @@ more people, not fewer.
 
 `Category` is optional in the database, and **82 of the platform's places that
 record an audit entry used not to set one**. As of this release **none do**: all
-427 now record a category, measured on every build rather than estimated, and a
-new one that forgot would fail the build by name.
+427 now record a category, measured on every build rather than estimated.
+
+**And a new one can no longer forget.** Recording an entry without a category is
+now refused three separate ways, which matters because the previous release
+closed the gap without closing the door — every place had been fixed, but nothing
+stopped the next one being written the same way:
+
+1. **It does not compile.** The category is a required field on both ways the
+   platform records an entry, so a developer who leaves it out gets an error
+   before the code runs at all.
+2. **It is refused at the moment of writing.** If a category reaches the
+   recording step that is not one of the eleven on this page — a typo, an
+   invented name, an empty value — the entry is refused rather than stored
+   unreadable. Where that entry is part of a change being saved, the change is
+   abandoned with it, which is the same thing that already happens if the entry
+   cannot be written for any other reason: the record and the change it describes
+   succeed together or not at all.
+3. **The build still counts them**, for the two kinds of writer the first two
+   cannot see — a database migration writing the table directly, and a
+   maintenance script outside the normal path.
+
+The practical effect for you: the gap that made this section necessary cannot
+re-open for **new** entries. Your **older** history is a different matter, and
+the rest of this section is about that.
 
 **Entries recorded before this release still have no category**, and there is no
 way to tell from the entry itself. Filling those in is a separate change, done

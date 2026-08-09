@@ -391,6 +391,24 @@ export const AUDIT_CENSUS_TOTALS = {
  * entry here instead of a category at the site. An addition to this object is
  * now a regression under review, not a to-do.
  *
+ * WHAT THIS GATE STILL CATCHES NOW THE TYPE IS MANDATORY. `AuditLogParams.category`
+ * and `StructuredAuditEvent.category` are both required and non-null, so an
+ * omitting TypeScript writer no longer compiles — which means this census is no
+ * longer the FIRST thing to notice one, and should not be read as if it were.
+ * It remains the gate for the three cases the compiler cannot see:
+ *
+ *   - raw `INSERT INTO "AuditLog"` in a migration (`APPROVED_MIGRATION_AUDIT_SQL`
+ *     already pins five);
+ *   - a `.mjs`/`.cjs` script or any writer reaching the table outside the typed
+ *     boundary;
+ *   - the type mandate itself being reverted, which would make every omitting
+ *     writer compile again at once.
+ *
+ * So the three layers are: the type refuses omission at compile time, the
+ * runtime assertion in both builders refuses it for anything that reaches the
+ * helper through a cast or from untyped code, and this census refuses it for
+ * writers neither of those can see.
+ *
  * THE RETENTION CONSEQUENCE OF EMPTYING IT, measured rather than assumed,
  * because it is the reason this was not a metadata-only sweep. Adding a category
  * makes `classifyAuditRetention` run, and it falls through to `critical` for

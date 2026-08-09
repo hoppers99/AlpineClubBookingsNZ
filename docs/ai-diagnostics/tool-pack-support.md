@@ -178,6 +178,20 @@ stale. They are measured on every CI run now, and a **new** uncategorised audit 
 fails the census contract with its own symbol named — and because the pinned set is now
 empty, the *first* such writer fails it, with no backlog left to hide in.
 
+**A new writer can no longer omit a category in the first place**, which is a stronger
+statement than the census pin and is the reason the pin is now a backstop rather than the
+only gate. `AuditLogParams.category` and `StructuredAuditEvent.category` are both required
+and non-null, so an omitting TypeScript writer does not compile; and
+`assertCanonicalAuditCategory` runs inside both `buildAuditLogCreateData` and
+`buildStructuredAuditLogCreateData` — between them every one of the four approved
+boundaries — so a value that reaches the helper through a cast, from untyped JavaScript, or
+forwarded out of a stored row is refused before persistence rather than stored unfilterable.
+Failure semantics are unchanged at each boundary: `logAudit` stays fire-and-forget and logs,
+and an awaited call inside a transaction aborts it exactly as a failed insert already does.
+What the census still uniquely catches is the writer the compiler cannot see — raw
+`INSERT INTO "AuditLog"` in a migration, a `.mjs` script, or the type mandate itself being
+reverted.
+
 The census covers all four TypeScript writer forms (`logAudit`, `createAuditLog`,
 `createStructuredAuditLog`, and a direct `auditLog.create`), the fourteen wrapper helpers
 that write on a caller's behalf, and — because a TypeScript-only census would have claimed

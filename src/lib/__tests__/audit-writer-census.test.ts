@@ -111,12 +111,18 @@ describe("audit writer census (#2581)", { timeout: 180_000 }, () => {
     expect(
       ids(census().uncategorised),
       "An audit write site records no category. A row with no category is " +
-        "returned by NO Diagnostics correlation tool, and — because " +
-        "buildAuditLogCreateData derives retention only when a category, severity " +
-        "or retention class is present — it is also written with no expiry and " +
-        "kept forever. Pass a canonical category from @/lib/audit-categories at " +
-        "the site, or, if it genuinely belongs to the #2581 backlog, add it to " +
-        "UNCATEGORISED_AUDIT_WRITERS with the category you propose for it.",
+        "returned by NO Diagnostics correlation tool, and it is kept forever: " +
+        "every branch of pruneExpiredAuditLogs' predicate carries " +
+        "`expiresAt: { lt: now }`, and NULL is not less than anything. Pass a " +
+        "canonical category from @/lib/audit-categories at the site. " +
+        "The #2581 backlog is CLOSED — do not add an entry to " +
+        "UNCATEGORISED_AUDIT_WRITERS to silence this; an addition there is a " +
+        "regression under review. " +
+        "If you are seeing this from TypeScript at all, something is wrong: " +
+        "AuditLogParams.category and StructuredAuditEvent.category are both " +
+        "required, so an omitting TypeScript writer does not compile. Reaching " +
+        "here means the writer is raw migration SQL or a .mjs script (neither of " +
+        "which the compiler sees), or the type mandate has been reverted.",
     ).toEqual(Object.keys(UNCATEGORISED_AUDIT_WRITERS).sort());
   });
 
