@@ -107,6 +107,7 @@ import {
   DIAGNOSTICS_BOOKING_LINKED_STATE_TOOL_ID,
   DIAGNOSTICS_BOOKING_PARTY_TOOL_ID,
   DIAGNOSTICS_BOOKING_SUMMARY_TOOL_ID,
+  BOOKING_GUEST_CONSENT_SUB_STATES,
   DOUBLE_BED_SHARING_STATE_MEANINGS,
 } from "../booking-records";
 import {
@@ -361,7 +362,6 @@ describe("AID-6B booking/membership pack: permissions (#2376)", () => {
     // member-identifying `AuditLog` columns are not granted at all.
     const NOT_IDENTIFYING = [
       DIAGNOSTICS_BOOKING_AUDIT_HISTORY_TOOL_ID,
-      DIAGNOSTICS_BOOKING_LINKED_STATE_TOOL_ID,
       DIAGNOSTICS_MEMBER_AUDIT_HISTORY_TOOL_ID,
     ];
     for (const tool of packTools) {
@@ -369,6 +369,9 @@ describe("AID-6B booking/membership pack: permissions (#2376)", () => {
         !NOT_IDENTIFYING.includes(tool.id),
       );
     }
+    expect(
+      packTools.filter((tool) => !tool.surfacesPersonalData).map((tool) => tool.id),
+    ).toEqual(NOT_IDENTIFYING);
   });
 
   it("tells the model, in every description and scope, what it cannot do", () => {
@@ -773,6 +776,20 @@ describe("AID-6B booking/membership pack: the search argument schemas (#2376)", 
         `${JSON.stringify(spelling)} was accepted`,
       ).toBe(false);
     }
+  });
+
+  it("matches an international mobile against stored country, area and number parts", () => {
+    const params = paramsFor(DIAGNOSTICS_MEMBER_SEARCH_TOOL_ID, {
+      kind: "mobile",
+      mobile: "+64 27 422 4115",
+    });
+    const sql = sqlOf(DIAGNOSTICS_MEMBER_SEARCH_TOOL_ID);
+    expect(params[4]).toBe("64274224115");
+    expect(["64", "27", "4224115"].join("")).toBe(params[4]);
+    expect(sql).toContain(
+      'pg_catalog.concat(m."phoneCountryCode", m."phoneAreaCode", m."phoneNumber") = $5::text',
+    );
+    expect(sql).not.toMatch(/LIKE|ILIKE|SIMILAR TO/);
   });
 
   it("keeps the date window a CLOSED enum with a default, not a range", () => {
@@ -1442,6 +1459,7 @@ describe("AID-6B booking/membership pack: null is not zero (#2376)", () => {
       room_name: "Bunk Room",
       bed_name: "Bed 3",
       bed_type: "DOUBLE",
+      live_bed_type: "DOUBLE",
       bed_type_matches_bed: true,
     };
     const primary = project({
@@ -1518,6 +1536,7 @@ describe("AID-6B booking/membership pack: null is not zero (#2376)", () => {
     const state = (overrides: Record<string, unknown>) =>
       project({
         bed_type: "DOUBLE",
+        live_bed_type: "DOUBLE",
         other_occupant_count: 1,
         member_a_ref: "cm5memberaaaaaaaaaaaaaaaa",
         member_b_ref: "cm5memberbbbbbbbbbbbbbbbb",
@@ -1543,6 +1562,13 @@ describe("AID-6B booking/membership pack: null is not zero (#2376)", () => {
     expect(state({ other_occupant_count: 2 })).toBe(
       "corrupt_occupant_cardinality",
     );
+    expect(state({ bed_type: "SINGLE", live_bed_type: "DOUBLE" })).toBe(
+      "eligible_confirmed_partners",
+    );
+    expect(state({ bed_type: "DOUBLE", live_bed_type: "SINGLE" })).toBe(
+      "not_double_bed",
+    );
+    expect(state({ live_bed_type: null })).toBe("live_bed_missing");
   });
 
   it("keeps `creditElectionCents` NULL, 0 and positive as three distinguishable states", () => {
@@ -2302,6 +2328,10 @@ describe("AID-6B booking/membership pack: the code catalogues (#2376)", () => {
     for (const code of codes) {
       expect(modelFacing, `${code} never reaches the model`).toContain(code);
     }
+    const awaitingMeaning = BOOKING_GUEST_CONSENT_SUB_STATES.awaiting_target;
+    expect(awaitingMeaning).not.toContain("consentExpiresAtUtc");
+    expect(awaitingMeaning).toContain("does not return the exact deadline");
+    expect(awaitingMeaning).toContain("Admin > Booking detail");
     // The raw five columns, including responder and expiry, must reach the
     // canonical TypeScript discriminator. Removing either makes malformed
     // shapes look valid; the projection tests above exercise that mutation.
@@ -2652,6 +2682,31 @@ describe("AID-6B booking/membership pack: the audit subject maps (#2376)", () =>
       expect(scope, id).toContain("the audit category is OPTIONAL");
       expect(scope, id).toContain("matched by no diagnostics tool anywhere");
       expect(scope, id).toContain("Admin > Audit Log");
+    }
+    const bookingScope =
+      entry(DIAGNOSTICS_BOOKING_AUDIT_HISTORY_TOOL_ID).evidenceScope ?? "";
+    expect(bookingScope).toContain("427 row-producing current production writer sites");
+    expect(bookingScope).toContain("zero uncategorised sites");
+    expect(bookingScope).toContain("historical rows");
+    expect(bookingScope).not.toContain("still record that way");
+    expect(bookingScope).not.toContain("actively reclassifying");
+  });
+
+  it("discloses mixed READ COMMITTED instants on every server-owned result", () => {
+    for (const id of [
+      DIAGNOSTICS_BOOKING_BLOCK_STATE_TOOL_ID,
+      DIAGNOSTICS_BOOKING_CAPACITY_TOOL_ID,
+      DIAGNOSTICS_MEMBER_ELIGIBILITY_TOOL_ID,
+    ]) {
+      const scope = entry(id).evidenceScope ?? "";
+      expect(scope, id).toContain("assembly completed, not a database snapshot time");
+      expect(scope, id).toContain("multiple READ COMMITTED statements");
+      expect(scope, id).toContain("can be internally stale");
+      expect(scope, id).toContain(
+        "Rerun it before any action or definitive conclusion",
+      );
+      expect(scope, id).toContain("compare per-source timestamps");
+      expect(scope, id).not.toContain("true as at its own observed instant");
     }
   });
 });

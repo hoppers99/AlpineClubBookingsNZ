@@ -6,6 +6,9 @@
  * (`src/lib/__tests__/ai-diagnostics-select-only-role.realdb.test.ts`) then shows
  * the server agrees.
  */
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
+
 import { describe, expect, it } from "vitest";
 
 import { statementColumnReads } from "@/lib/__tests__/helpers/diagnostics-statement-reads";
@@ -30,6 +33,29 @@ const base = {
   statementTimeoutMs: 5_000,
   connectionLimit: 6,
 };
+
+const REPO_ROOT = join(import.meta.dirname, "..", "..", "..", "..", "..");
+
+function documentedGrantCount(document: string, relation: string): number | null {
+  const rows = document
+    .split(/\r?\n/)
+    .filter((candidate) => candidate.trimStart().startsWith("|"))
+    .filter((candidate) => {
+      const relationCell = candidate.split("|")[1]?.trim();
+      return (
+        relationCell === `\`${relation}\`` ||
+        relationCell === `\`public."${relation}"\``
+      );
+    });
+  if (rows.length !== 1) {
+    throw new Error(
+      `expected exactly one grant-table row for ${relation}, found ${rows.length}`,
+    );
+  }
+  const grantedCell = rows[0]?.split("|")[2];
+  const match = grantedCell?.match(/(\d+)\s+(?:explicitly named\s+)?columns?\b/i);
+  return match ? Number(match[1]) : null;
+}
 
 function sql(overrides: Partial<typeof base> = {}): string {
   return buildAiDiagnosticsRoleSql({ ...base, ...overrides }).join("\n");
@@ -658,7 +684,62 @@ describe("the SELECT-only grant allowlist matches what the statements read", () 
     expect(
       SELECT_GRANTS.reduce((total, grant) => total + (grant.columns?.length ?? 0), 0),
       "update docs/ai-diagnostics/deployment.md and tool-pack-booking-membership.md in the same commit",
-    ).toBe(242);
+    ).toBe(243);
+  });
+
+  it("pins the documented column census for every relation, not only the total", () => {
+    const expected = {
+      AuditLog: 9,
+      Payment: 22,
+      PaymentTransaction: 12,
+      PaymentRefund: 10,
+      PaymentRecoveryOperation: 10,
+      ManualRefundTask: 6,
+      RefundRequest: 7,
+      ProcessedWebhookEvent: 6,
+      WebhookLog: 7,
+      XeroInboundEvent: 9,
+      XeroObjectLink: 10,
+      XeroSyncOperation: 17,
+      Member: 23,
+      Booking: 25,
+      Lodge: 2,
+      BookingGuest: 15,
+      MemberPartnerLink: 3,
+      BookingGuestNight: 2,
+      BedAllocation: 8,
+      LodgeRoom: 2,
+      LodgeBed: 4,
+      BookingChangeRequest: 16,
+      PolicyExceptionReservationNight: 1,
+      MemberSubscription: 11,
+      FamilyGroupMember: 4,
+      FamilyGroup: 2,
+    } as const;
+    expect(
+      Object.fromEntries(
+        SELECT_GRANTS.map((grant) => [grant.relation, grant.columns?.length ?? 0]),
+      ),
+      "update both grant tables in deployment.md and tool-pack-booking-membership.md",
+    ).toEqual(expected);
+
+    const packDoc = readFileSync(
+      join(REPO_ROOT, "docs", "ai-diagnostics", "tool-pack-booking-membership.md"),
+      "utf8",
+    );
+    const deploymentDoc = readFileSync(
+      join(REPO_ROOT, "docs", "ai-diagnostics", "deployment.md"),
+      "utf8",
+    );
+    for (const [relation, count] of Object.entries(expected)) {
+      expect(documentedGrantCount(packDoc, relation), `${relation} pack count`).toBe(
+        count,
+      );
+      expect(
+        documentedGrantCount(deploymentDoc, relation),
+        `${relation} deployment count`,
+      ).toBe(count);
+    }
   });
 
   it("grants no relation that no statement reads, and reads none it does not grant", () => {

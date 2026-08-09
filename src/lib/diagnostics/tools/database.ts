@@ -308,6 +308,13 @@ export interface DiagnosticsRolePrivilegeReport {
    */
   undeclaredReadableRelations: number;
   /**
+   * Column-restricted declarations carrying a table-level SELECT grant. This is
+   * distinct from `undeclaredReadableColumns`: when a declaration currently names
+   * every physical column (FamilyGroupMember), a widened table grant exposes no
+   * extra column today but would silently expose the next schema column.
+   */
+  tableWideSelectOnColumnRestrictedRelations: number;
+  /**
    * COLUMNS in schema `public` the role can SELECT that `SELECT_GRANTS` does not
    * declare — the column-level twin of the count above, and the control that makes a
    * column allowlist real (AID-6A, #2375).
@@ -371,6 +378,7 @@ export function isDiagnosticsRolePrivilegeSafe(
     report.forbiddenRoleNames.length === 0 &&
     report.writableRelations === 0 &&
     report.undeclaredReadableRelations === 0 &&
+    report.tableWideSelectOnColumnRestrictedRelations === 0 &&
     // The column-level twin of the line above. Not redundant with it: a relation the
     // allowlist declares BY COLUMN is excluded from the relation count, so only this
     // one notices a grant that widened to the whole table.
@@ -418,8 +426,10 @@ export function isDiagnosticsRolePrivilegeSafe(
  * `GRANT INSERT (note) ON …` is a write privilege that `has_table_privilege`
  * alone reports as absent.
  *
- * The COLUMN count (`undeclared_readable_columns`, AID-6A #2375) is the one control
- * that can tell a column-restricted grant from a table-wide one. `AuditLog` is
+ * The table-wide count is the direct control that tells a column-restricted grant
+ * from a table-wide one even when the declaration currently names every physical
+ * column. The COLUMN count (`undeclared_readable_columns`, AID-6A #2375) separately
+ * counts fields gained beyond the declaration. `AuditLog` is
  * granted eight columns because the rest of that table is IP addresses, user agents,
  * free text, arbitrary JSON and member ids; a hand-added table-level
  * `GRANT SELECT ON "AuditLog"` leaves every other count in this report unchanged —
@@ -492,6 +502,19 @@ SELECT
       )
       AND NOT ((n.nspname || '.' || c.relname) = ANY($3::text[]))
   )::int                                                              AS undeclared_readable_relations,
+  (
+    SELECT count(*)
+    FROM pg_catalog.pg_class c
+    JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
+    WHERE n.nspname = 'public'
+      AND c.relkind = ANY (ARRAY['r','v','m','f','p'])
+      AND (n.nspname || '.' || c.relname) = ANY($3::text[])
+      -- Parameter 5 contains the deliberately whole-relation declarations. Every
+      -- other declared relation must remain a column ACL even when its current
+      -- declaration happens to enumerate every physical column.
+      AND NOT ((n.nspname || '.' || c.relname) = ANY($5::text[]))
+      AND pg_catalog.has_table_privilege(current_user, c.oid, 'SELECT')
+  )::int                                                              AS table_wide_select_on_column_restricted_relations,
   (
     SELECT count(*)
     FROM pg_catalog.pg_class c
@@ -689,6 +712,9 @@ async function readRolePrivileges(
     ),
     writableRelations: Number(row.writable_relations ?? 0),
     undeclaredReadableRelations: Number(row.undeclared_readable_relations ?? 0),
+    tableWideSelectOnColumnRestrictedRelations: Number(
+      row.table_wide_select_on_column_restricted_relations ?? 0,
+    ),
     undeclaredReadableColumns: Number(row.undeclared_readable_columns ?? 0),
     missingReadableRelations: Number(row.missing_readable_relations ?? 0),
     missingReadableColumns: Number(row.missing_readable_columns ?? 0),

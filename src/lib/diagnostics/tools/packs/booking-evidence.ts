@@ -102,6 +102,13 @@
  * `processWaitlistForDates`, `confirmWaitlistOffer` and
  * `replaceBedAllocationsForBooking` all write and are NOT used.
  *
+ * MULTIPLE READ COMMITTED INSTANTS. Each source composes ordinary Prisma reads
+ * and authoritative helpers without a transaction fence. `observed_at_utc` is
+ * captured only after assembly completes; it is not a shared database snapshot
+ * timestamp. Facts can therefore span instants and be internally stale. The
+ * registry scope tells the model to rerun before acting or reaching a definitive
+ * conclusion and to compare source timestamps where a source supplies them.
+ *
  * BOOKING DATES ARE NZ DATE-ONLY LODGE NIGHTS THROUGHOUT. Every date this module
  * emits goes through `formatDateOnly`, never `toISOString()`, so a night is a
  * calendar day and can never be narrated as a moment. Money stays in integer
@@ -164,6 +171,18 @@ const AID6B_EVIDENCE_DEADLINE_MS = 10_000;
  */
 export const AID6B_CAPACITY_NIGHT_CEILING = 31;
 
+/**
+ * Production booking creation admits at most 30 party rows, and the record pack
+ * uses the same ceiling. A corrupt legacy row above it is refused, never clipped.
+ */
+export const AID6B_BOOKING_GUEST_CEILING = 30;
+
+/**
+ * Keep the open-request population aligned with the pack's bounded history view.
+ * A larger corrupt population cannot support a conclusive aggregate answer.
+ */
+export const AID6B_OPEN_REQUEST_CEILING = 18;
+
 const UTC_DAY_MS = 24 * 60 * 60 * 1000;
 
 /**
@@ -193,6 +212,77 @@ function assertCapacitySpanWithinCeiling(checkIn: Date, checkOut: Date): number 
     );
   }
   return nights;
+}
+
+function assertPopulationWithinCeiling(
+  actual: number,
+  ceiling: number,
+  population: string,
+): void {
+  if (actual > ceiling) {
+    throw new Error(
+      `AI Diagnostics AID-6B: ${population} exceeds the ${ceiling}-row ceiling; refusing an inconclusive answer`,
+    );
+  }
+}
+
+type GuestNightFootprint = {
+  stayStart: Date;
+  stayEnd: Date;
+  nights: readonly { stayDate: Date }[];
+};
+
+/**
+ * Bound both representations before sorting, de-duplicating or expanding them.
+ * Explicit duplicates still count toward the read ceiling: de-duplication must
+ * never turn an oversized source population into an apparently safe one.
+ */
+function boundedGuestNightFootprint(guest: GuestNightFootprint): string[] {
+  assertPopulationWithinCeiling(
+    guest.nights.length,
+    AID6B_CAPACITY_NIGHT_CEILING,
+    "guest-night rows",
+  );
+  if (guest.nights.length > 0) {
+    return [
+      ...new Set(
+        guest.nights
+          .map((night) => formatDateOnly(night.stayDate))
+          .sort(),
+      ),
+    ];
+  }
+
+  const start = Date.UTC(
+    guest.stayStart.getUTCFullYear(),
+    guest.stayStart.getUTCMonth(),
+    guest.stayStart.getUTCDate(),
+  );
+  const end = Date.UTC(
+    guest.stayEnd.getUTCFullYear(),
+    guest.stayEnd.getUTCMonth(),
+    guest.stayEnd.getUTCDate(),
+  );
+  const nights = (end - start) / UTC_DAY_MS;
+  if (
+    !Number.isSafeInteger(nights) ||
+    nights < 0 ||
+    nights > AID6B_CAPACITY_NIGHT_CEILING
+  ) {
+    throw new Error(
+      `AI Diagnostics AID-6B: guest fallback envelope covers ${nights} nights, outside the 0-${AID6B_CAPACITY_NIGHT_CEILING}-night ceiling`,
+    );
+  }
+
+  // Legacy same-day envelopes mean one occupied night. Otherwise the envelope is
+  // half-open, exactly like the booking's date-only lodge-night interval.
+  if (nights === 0) return [formatDateOnly(guest.stayStart)];
+  const footprint: string[] = [];
+  for (let offset = 0; offset < nights; offset += 1) {
+    const night = new Date(start + offset * UTC_DAY_MS);
+    footprint.push(formatDateOnly(night));
+  }
+  return footprint;
 }
 
 /**
@@ -433,9 +523,10 @@ async function readBookingBlockState(
   const deleted = booking.deletedAt !== null;
   const terminal = TERMINAL_BOOKING_STATUSES.includes(booking.status);
   const waitlisted = WAITLIST_BOOKING_STATUSES.includes(booking.status);
-  if (!deleted && !terminal) {
-    assertCapacitySpanWithinCeiling(booking.checkIn, booking.checkOut);
-  }
+  // Bound the booking before status-based suppression. A deleted or terminal row
+  // is still followed by guest/request reads, and corrupt intervals must never
+  // bypass the same fail-closed population fence.
+  assertCapacitySpanWithinCeiling(booking.checkIn, booking.checkOut);
 
   const guests = await prisma.bookingGuest.findMany({
     where: { bookingId },
@@ -449,10 +540,20 @@ async function readBookingBlockState(
       stayStart: true,
       stayEnd: true,
       consentStatus: true,
-      nights: { select: { stayDate: true } },
+      nights: {
+        select: { stayDate: true },
+        orderBy: { stayDate: "asc" },
+        take: AID6B_CAPACITY_NIGHT_CEILING + 1,
+      },
     },
     orderBy: [{ stayStart: "asc" }, { id: "asc" }],
+    take: AID6B_BOOKING_GUEST_CEILING + 1,
   });
+  assertPopulationWithinCeiling(
+    guests.length,
+    AID6B_BOOKING_GUEST_CEILING,
+    "booking guests",
+  );
 
   /**
    * The live per-guest night footprint, from the `BookingGuestNight` rows where
@@ -468,32 +569,30 @@ async function readBookingBlockState(
    */
   const guestNights = new Map<string, string[]>();
   for (const guest of guests) {
-    const explicit = guest.nights
-      .map((night) => formatDateOnly(night.stayDate))
-      .sort();
-    if (explicit.length > 0) {
-      guestNights.set(guest.id, [...new Set(explicit)]);
-      continue;
-    }
-    const envelope: string[] = [];
-    for (
-      let cursor = new Date(guest.stayStart.getTime());
-      cursor < guest.stayEnd;
-      cursor.setUTCDate(cursor.getUTCDate() + 1)
-    ) {
-      envelope.push(formatDateOnly(cursor));
-    }
-    // A single-night guest whose envelope is inclusive rather than half-open still
-    // occupies one night; an empty footprint would silently drop them from every
-    // calculation below.
-    guestNights.set(
-      guest.id,
-      envelope.length > 0 ? envelope : [formatDateOnly(guest.stayStart)],
-    );
+    guestNights.set(guest.id, boundedGuestNightFootprint(guest));
   }
 
   const checkInDay = formatDateOnly(booking.checkIn);
   const checkOutDay = formatDateOnly(booking.checkOut);
+
+  /** The open exception requests, and whether any of them is actually holding beds. */
+  const openRequests = await prisma.bookingChangeRequest.findMany({
+    where: { bookingId, status: "REQUESTED" },
+    select: {
+      id: true,
+      kind: true,
+      holdExpiresAt: true,
+      createdAt: true,
+      _count: { select: { reservationNights: true } },
+    },
+    orderBy: [{ createdAt: "asc" }, { id: "asc" }],
+    take: AID6B_OPEN_REQUEST_CEILING + 1,
+  });
+  assertPopulationWithinCeiling(
+    openRequests.length,
+    AID6B_OPEN_REQUEST_CEILING,
+    "open booking requests",
+  );
 
   /**
    * The party as the policy evaluator wants it. Built from the LIVE rows, so the
@@ -571,19 +670,6 @@ async function readBookingBlockState(
           excludeBookingId: booking.id,
         }),
   ]);
-
-  /** The open exception requests, and whether any of them is actually holding beds. */
-  const openRequests = await prisma.bookingChangeRequest.findMany({
-    where: { bookingId, status: "REQUESTED" },
-    select: {
-      id: true,
-      kind: true,
-      holdExpiresAt: true,
-      createdAt: true,
-      _count: { select: { reservationNights: true } },
-    },
-    orderBy: [{ createdAt: "asc" }, { id: "asc" }],
-  });
 
   const heldNightCount = openRequests.reduce(
     (total, request) => total + request._count.reservationNights,
@@ -857,31 +943,24 @@ async function readBookingCapacity(
       id: true,
       stayStart: true,
       stayEnd: true,
-      nights: { select: { stayDate: true } },
+      nights: {
+        select: { stayDate: true },
+        orderBy: { stayDate: "asc" },
+        take: AID6B_CAPACITY_NIGHT_CEILING + 1,
+      },
     },
+    orderBy: { id: "asc" },
+    take: AID6B_BOOKING_GUEST_CEILING + 1,
   });
+  assertPopulationWithinCeiling(
+    guests.length,
+    AID6B_BOOKING_GUEST_CEILING,
+    "booking guests",
+  );
 
   const demandByNight = new Map<string, number>();
   for (const guest of guests) {
-    const explicit = [
-      ...new Set(guest.nights.map((night) => formatDateOnly(night.stayDate))),
-    ];
-    const nights =
-      explicit.length > 0
-        ? explicit
-        : (() => {
-            const envelope: string[] = [];
-            for (
-              let cursor = new Date(guest.stayStart.getTime());
-              cursor < guest.stayEnd;
-              cursor.setUTCDate(cursor.getUTCDate() + 1)
-            ) {
-              envelope.push(formatDateOnly(cursor));
-            }
-            return envelope.length > 0
-              ? envelope
-              : [formatDateOnly(guest.stayStart)];
-          })();
+    const nights = boundedGuestNightFootprint(guest);
     for (const night of nights) {
       demandByNight.set(night, (demandByNight.get(night) ?? 0) + 1);
     }

@@ -212,6 +212,7 @@ const SAFE: DiagnosticsRolePrivilegeReport = {
   forbiddenRoleNames: [],
   writableRelations: 0,
   undeclaredReadableRelations: 0,
+  tableWideSelectOnColumnRestrictedRelations: 0,
   undeclaredReadableColumns: 0,
   missingReadableRelations: 0,
   missingReadableColumns: 0,
@@ -253,6 +254,16 @@ describe("isDiagnosticsRolePrivilegeSafe (#2374, ADR-007)", () => {
         ...SAFE,
         undeclaredReadableRelations: 0,
         undeclaredReadableColumns: 14,
+      }),
+    ).toBe(false);
+  });
+
+  it("refuses table-wide SELECT even when a column declaration currently names every column", () => {
+    expect(
+      isDiagnosticsRolePrivilegeSafe({
+        ...SAFE,
+        undeclaredReadableColumns: 0,
+        tableWideSelectOnColumnRestrictedRelations: 1,
       }),
     ).toBe(false);
   });

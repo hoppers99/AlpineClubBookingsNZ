@@ -38,7 +38,14 @@
   fixed limit. Party consent evidence uses the platform's complete legal-state
   discriminator, and double-bed allocations report whether two occupants satisfy
   the authoritative rule: distinct active adult members with a confirmed partner
-  link. Missing, pending and corrupt states remain explicit rather than inferred.
+  link. The live bed definition, not an allocation's stale copied type, decides that
+  verdict; a missing bed is unavailable evidence. Missing, pending and corrupt
+  states remain explicit rather than inferred.
+- Server-owned booking evidence now refuses oversized booking spans, parties,
+  per-guest night sets and open-request populations before expanding them or running
+  capacity and policy helpers. Its observed-at time is the end of assembly rather
+  than a claimed database snapshot; the assistant is told that facts may span READ
+  COMMITTED instants and must be refreshed before action.
 - A search deliberately tells an administrator less than a record does. A member
   search returns names, age tier and lifecycle state, and only *whether* an email
   address and a phone number are on file; the address itself comes back for one
@@ -51,7 +58,10 @@
   deploy.** It adds relation grants for the booking and membership tables, and until
   provisioning is re-run the diagnostics readiness check reports the credential as
   under-provisioned and every database-backed diagnostics tool refuses by design. That
-  re-provisioning is the **only** change this release makes to a running system:
+  grant now includes `Member.phoneCountryCode` as a predicate-only field so an
+  accepted `+64` mobile search can match the stored country, area and number parts;
+  the phone value is never projected. The allowlist is 26 relations / 243 columns.
+  This re-provisioning is the **only** change this release makes to a running system:
   there is no AI Diagnostics screen yet, nothing calls a diagnostics tool, and every
   entry described above is dormant until the assistant surface ships.
 - **Seven columns were also removed from what the diagnostics database credential can
@@ -65,3 +75,6 @@
   both directions. PostgreSQL is asked the same question independently, on a real
   database, against the role the shipped provisioning creates: this credential may
   read a column **if and only if** one of the product's own queries reads it.
+- The runtime privilege check now also rejects table-wide SELECT on every
+  column-restricted declaration, including a table whose declaration currently
+  names every column, so a future migration cannot silently widen the credential.

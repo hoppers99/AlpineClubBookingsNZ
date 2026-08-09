@@ -66,7 +66,9 @@ every tool call unless the answer is the least-privilege shape ADR-007 requires:
 - no `INSERT`, `UPDATE`, `DELETE` or `TRUNCATE` on any relation in `public`, at table
   or column level;
 - no `SELECT` on any relation in `public` that the declared 26-relation allowlist
-  does not name, and no undeclared column on a named relation;
+  does not name, no undeclared column on a named relation, and no table-wide
+  `SELECT` on any column-restricted declaration — even when that declaration
+  currently names every physical column;
 - no membership in **any** other role — not a shortlist of dangerous ones, a total of
   zero. A member of any role is one `SET ROLE` away from that role's privileges, and
   because this role is `NOINHERIT` the membership shows up in nothing else the server
@@ -244,7 +246,7 @@ The script also does not create the database, the app role, or any view.
 The allowlist lives in `SELECT_GRANTS` (`src/lib/diagnostics/tools/provision-role.ts`),
 in public code, so "which relations — and which columns of them — can Diagnostics
 read" is answerable by reading one file. As of AID-6B (#2376) it names
-**twenty-six** relations and **242 columns**, and **every one of them is granted by
+**twenty-six** relations and **243 columns**, and **every one of them is granted by
 column, never wholesale**:
 
 | Relation | Granted | Read by |
@@ -261,7 +263,7 @@ column, never wholesale**:
 | `public."XeroInboundEvent"` | 9 columns | the webhook timeline |
 | `public."XeroObjectLink"` | 10 columns | the Xero invoice and contact linkage tools |
 | `public."XeroSyncOperation"` | 17 columns | the Xero invoice and contact linkage tools |
-| `public."Member"` | **22 columns** — widened by AID-6B from the two AID-6C granted. `email` is projected by one entry and is a search predicate; `phoneAreaCode` and `phoneNumber` are predicates only and are projected by nothing | the Xero contact linkage tool, the member search, the member summary, the family relationships ([tool-pack-booking-membership.md](tool-pack-booking-membership.md)) |
+| `public."Member"` | **23 columns** — widened by AID-6B from the two AID-6C granted. `email` is projected by one entry and is a search predicate; `phoneCountryCode`, `phoneAreaCode` and `phoneNumber` are predicates only and are projected by nothing | the Xero contact linkage tool, the member search, the member summary, the family relationships ([tool-pack-booking-membership.md](tool-pack-booking-membership.md)) |
 | `public."Booking"` | 25 columns | the booking search, the booking summary, a member's booking involvement ([tool-pack-booking-membership.md](tool-pack-booking-membership.md)) |
 | `public."Lodge"` | **2 columns**: `id`, `name` | the booking search, a member's booking involvement |
 | `public."BookingGuest"` | 15 columns (a guest's given and family name included; consent responder and expiry are classifier inputs only) | booking party state, guest counts, member-booking involvement and double-sharing evidence |
@@ -273,7 +275,7 @@ column, never wholesale**:
 | `public."BookingChangeRequest"` | 16 columns (no free text, no raw JSON, no reviewing officer) | the booking change and exception request state |
 | `public."PolicyExceptionReservationNight"` | **1 column**: `changeRequestId` — the narrowest grant in the file | the booking change and exception request state |
 | `public."MemberSubscription"` | 11 columns (`manualPaymentNote` is **not** granted) | the member subscription state |
-| `public."FamilyGroupMember"` | **4 columns** — the whole relation, which has no `role` column | the member family relationships |
+| `public."FamilyGroupMember"` | **4 explicitly named columns** — all current columns, but not a table-wide grant; the relation has no `role` column | the member family relationships |
 | `public."FamilyGroup"` | **2 columns**: `id`, `name` | the member family relationships |
 
 Every other relation in the schema is unreadable — including `IntegrationCredential`
@@ -308,7 +310,7 @@ ran — the finance pack's suite built a correctly-keyed set of granted columns 
 never passed it to an assertion. `provision-role.test.ts` now reconciles the
 allowlist against **every registered statement in both directions**, with
 `alias -> relation` resolved per statement, and pins the census (twenty-six
-relations, 242 columns) so this page and the pack pages cannot drift from it again.
+relations, 243 columns) so this page and the pack pages cannot drift from it again.
 
 **And the same property is now proved a second time against PostgreSQL itself.**
 The real-database suite
@@ -338,7 +340,7 @@ The operator CLI prints the declared grants, columns and all, on every run and o
 
 **Upgrading to the AID-6B release is a two-step operation: deploy, then re-run
 `npm run diagnostics:provision-role`.** This release adds thirteen relations and
-widens `Member` from two columns to twenty-two, so until it is re-run readiness
+widens `Member` from two columns to twenty-three, so until it is re-run readiness
 reports `under_provisioned` — the *previous* release's grants no longer match the
 declared allowlist — and **every SQL-backed tool refuses, by design**. That is
 ADR-007's deliberate friction, and it is the same step AID-6A and AID-6C each
@@ -354,7 +356,7 @@ entry is registered, reviewed and tested, and none of them can be reached by an
 operator until #2378 builds the surface. What *does* change on deploy is the
 database credential: after `npm run diagnostics:provision-role`, `ai_diagnostics_ro`
 holds SELECT on thirteen new relations and on a `Member` widened from two columns to
-twenty-two, none of which any tool can use yet. The credential's blast radius
+twenty-three, none of which any tool can use yet. The credential's blast radius
 therefore grows one release ahead of the feature. That is defensible and it is
 ADR-007's own trade — the friction requires the grant to ship with the tool it
 belongs to, not with the page — but it means the grant, and not the pack, is what a

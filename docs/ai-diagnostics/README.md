@@ -458,12 +458,16 @@ application's own authoritative calculations.** Sixteen entries. Full reference:
   engine, member-night conflict scan, edit-window classifier, lifecycle resolver,
   subscription-settlement rule and adult-member-host predicate. Each returns stable
   codes in an argued priority order, and every code's operator sentence travels to
-  the model inside the entry's own scope text.
+  the model inside the entry's own scope text. They compose multiple READ COMMITTED
+  reads rather than one snapshot, so `observedAtUtc` means assembly completion and
+  their scopes require a rerun before action or a definitive conclusion.
 - **Thirteen more relation grants, plus the widened `Member`.** The allowlist now
   names **twenty-six** relations, all by column. `Member` goes from two columns to
-  twenty-two — the most scrutinised change the allowlist has had — while the birth
+  twenty-three — the most scrutinised change the allowlist has had — while the birth
   date, the address, the credentials, the two-factor state and every free-text
-  column stay refused by PostgreSQL itself.
+  column stay refused by PostgreSQL itself. The runtime refuses missing declared
+  grants as under-provisioned and rejects table-wide SELECT on every column
+  declaration as over-privileged, even when it would expose no extra column today.
 - **A presence boolean is not a cheaper grant.** A column privilege covers every
   reference to the column, `notes IS NOT NULL` included, so six presence booleans
   and one predicate-only grant were dropped rather than trade the property that a
@@ -480,7 +484,7 @@ application's own authoritative calculations.** Sixteen entries. Full reference:
 
 ### ADR-004's per-invocation opt-in is declared, not enforced
 
-Thirteen of the sixteen entries set `surfacesPersonalData: true` truthfully, but
+Fourteen of the sixteen entries set `surfacesPersonalData: true` truthfully, but
 **nothing in the shipped code implements a per-invocation operator consent**. The
 flag records that a row can identify a person; it does not gate the entry, and it
 must not be described as a control. Implementing the opt-in is a prerequisite

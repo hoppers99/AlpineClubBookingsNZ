@@ -319,45 +319,57 @@ designed against. The honest outcome is `evidence_unavailable`.
 
 `booking_capacity_by_night` refuses on the same principle for a different reason: a
 stay longer than 31 nights is **refused, not clipped**, because half a stay's
-capacity invites a conclusion about the half that was shown.
+capacity invites a conclusion about the half that was shown. Both booking sources
+also read at most 31 guest-night rows per guest and 30 guests using ceiling-plus-one
+queries before materialising or expanding them; block state similarly reads at most
+18 open requests. An oversized booking, guest envelope, explicit guest-night set or
+request population is refused before the capacity/policy/conflict helpers run. The
+31-night booking envelope guard applies even to deleted, terminal and waitlisted
+records, because status suppression does not make an unbounded source safe.
+
+**These three sources do not run inside one database snapshot.** They compose
+multiple ordinary READ COMMITTED statements and authoritative helpers. Their
+`observedAtUtc` is captured when assembly completes, not when one shared snapshot
+was observed; facts may span instants and can be internally stale. Rerun before an
+action or definitive conclusion, and compare per-source timestamps where present.
 
 ## The relation grants
 
 This pack adds **thirteen** relations to the `SELECT_GRANTS` allowlist — taking it
 from thirteen to **twenty-six** — and **widens `Member`** from the two columns
-AID-6C granted to twenty-two. Every relation on the allowlist is granted **by
+AID-6C granted to twenty-three. Every relation on the allowlist is granted **by
 column**, never wholesale.
 
 | Relation | Granted | Added by | Why |
 | --- | --- | --- | --- |
 | `AuditLog` | 9 columns | AID-6A, `entityId` by AID-6C | Stable codes and an instant for the two per-record audit-history entries. `entityId` is a predicate only. |
 | `Payment` | 22 columns | AID-6C | The finance pack's spine. |
-| `PaymentTransaction` | 13 columns | AID-6C | Charge attempts. |
-| `PaymentRefund` | 12 columns | AID-6C | Refunds Stripe actually made. |
-| `PaymentRecoveryOperation` | 11 columns | AID-6C | The platform's queued refund debt. |
-| `ManualRefundTask` | 7 columns | AID-6C | Money a person must hand back. |
+| `PaymentTransaction` | 12 columns | AID-6C | Charge attempts. |
+| `PaymentRefund` | 10 columns | AID-6C | Refunds Stripe actually made. |
+| `PaymentRecoveryOperation` | 10 columns | AID-6C | The platform's queued refund debt. |
+| `ManualRefundTask` | 6 columns | AID-6C | Money a person must hand back. |
 | `RefundRequest` | 7 columns | AID-6C | The member's refund appeal. |
 | `ProcessedWebhookEvent` | 6 columns | AID-6C | The webhook idempotency lease. |
 | `WebhookLog` | 7 columns | AID-6C | One row per delivery attempt. |
-| `XeroInboundEvent` | 10 columns | AID-6C | Xero's inbound ledger. |
+| `XeroInboundEvent` | 9 columns | AID-6C | Xero's inbound ledger. |
 | `XeroObjectLink` | 10 columns | AID-6C | What is linked in Xero. |
-| `XeroSyncOperation` | 18 columns | AID-6C | What the platform tried in Xero. |
-| `Member` | 22 columns | AID-6C (2), **widened by AID-6B** | Identity and membership lifecycle for a selected member; the name on a family row; the search predicates. Argued below. |
+| `XeroSyncOperation` | 17 columns | AID-6C | What the platform tried in Xero. |
+| `Member` | 23 columns | AID-6C (2), **widened by AID-6B** | Identity and membership lifecycle for a selected member; the name on a family row; the search predicates, including predicate-only country/area/number mobile parts. Argued below. |
 | `Booking` | 25 columns | **AID-6B** | The pack's booking spine: searched by `booking_search`, returned by `booking_diagnostic_summary`, and the two legs of `member_booking_summary`. |
 | `Lodge` | 2 columns (`id`, `name`) | **AID-6B** | The lodge **name** beside a booking. Nothing else about a lodge — its capacity numbers, settings, instructions or door codes — is a question this pack has. |
 | `BookingGuest` | 15 columns | **AID-6B** | The party, guest counts, member-booking leg and canonical consent/double-sharing inputs. Responder and expiry values are never projected. |
 | `MemberPartnerLink` | 3 columns | **AID-6B** | Canonical pair and current status for the double-bed-sharing verdict; raw pair ids are never projected by that entry. |
 | `BookingGuestNight` | 2 columns (`bookingGuestId`, `stayDate`) | **AID-6B** | The authoritative per-night footprint. A guest may stay **non-contiguous** nights inside one booking, so these rows and not the envelope are the presence. |
-| `BedAllocation` | 8 columns | **AID-6B** | Which guest is in which bed on which night, plus the denormalised bed type the occupancy guard actually enforces on. `approvedByMemberId` names the officer and is not granted. |
+| `BedAllocation` | 8 columns | **AID-6B** | Which guest is in which bed on which night, plus the denormalised bed type the index guard enforces on. The live `LodgeBed` type, not this copy, governs the sharing verdict. `approvedByMemberId` names the officer and is not granted. |
 | `LodgeRoom` | 2 columns (`id`, `name`) | **AID-6B** | The room label on an allocation row. `notes` is officer free text and is not granted. |
-| `LodgeBed` | 4 columns | **AID-6B** | The bed label and its live type, so a divergence from the allocation's copy is visible. `bunkGroup` is a free label and is not granted. |
+| `LodgeBed` | 4 columns | **AID-6B** | The bed label and its live type, which authoritatively governs the double-sharing verdict. A missing live bed is unavailable evidence, not `not_double_bed`; divergence from the allocation copy remains a defect. `bunkGroup` is a free label and is not granted. |
 | `BookingChangeRequest` | 16 columns | **AID-6B** | Locked-period and policy-exception requests on one booking. The relation with the most free text in the pack. Argued below. |
 | `PolicyExceptionReservationNight` | 1 column (`changeRequestId`) | **AID-6B** | The narrowest grant in the pack, and the only reliable test of whether an open request is holding beds. `night` and `beds` are not granted: the entry reports how many nights are held, never which or how many beds. |
 | `MemberSubscription` | 11 columns | **AID-6B** | One row per season. `xeroInvoiceId` is a presence test only; `manualPaymentNote`, `xeroOnlineInvoiceUrl` and `manuallyMarkedPaidByMemberId` are not granted. |
-| `FamilyGroupMember` | 4 columns — **the whole relation** | **AID-6B** | The authoritative family-group membership join. It is the whole relation because the relation has only four columns, and that is worth recording: it has **no `role` column**. |
+| `FamilyGroupMember` | 4 explicitly named columns — all current columns | **AID-6B** | The authoritative family-group membership join. It has only four columns and **no `role` column**, but remains a column ACL: table-wide SELECT is refused so a future column cannot become readable silently. |
 | `FamilyGroup` | 2 columns (`id`, `name`) | **AID-6B** | The group's name beside a co-member. Member-supplied text, stripped and bounded on the way out. Nothing on `FamilyGroupJoinRequest` is granted at all — it carries requester free text and children's dates of birth. |
 
-Twenty-six relations, 242 granted columns, and every omitted column is a
+Twenty-six relations, 243 granted columns, and every omitted column is a
 decision. The operator CLI prints the declared grants, columns and all, on every
 run and on `--dry-run`.
 
@@ -372,15 +384,14 @@ registered statement reads it.** Both use one shared resolver
 (`src/lib/__tests__/helpers/diagnostics-statement-reads.ts`), so the declaration
 side and the server side cannot drift into answering different questions.
 
-`FamilyGroupMember` is the one relation granted **in full**, and that case is
-enumerated in the real-database suite with its argument rather than allowed for by
-loosening a comparison. The relation has four columns and the family-relationships
-statement reads all four, so there is nothing left to withhold; narrowing the grant
-would break the tool. The enumeration is asserted as an exact set, so a **second**
-relation reaching that state fails by name and has to have its own argument
-written down — and the if-and-only-if check independently proves the argument is
-true, because a relation can only reach zero withheld columns if a shipped
-statement reads every one of them.
+`FamilyGroupMember` is the one relation whose explicit column declaration names
+**all current columns**, and that case is enumerated in the real-database suite with
+its argument rather than allowed for by loosening a comparison. It is still granted
+as four column privileges, never as table SELECT. The runtime has a separate gate
+that refuses a table-wide grant on every column-restricted declaration, including
+this one where an undeclared-column count alone would be zero. That fail-closed
+shape ensures a future migration cannot expose a new column until source, grant,
+docs and tests deliberately name it.
 
 ### The presence-boolean finding
 
@@ -420,7 +431,8 @@ administration screen that shows the text itself.
 four — when the column is **already granted for an independent reason** and the
 boolean is what keeps the value from being projected:
 
-- `Member."email"` and `"phoneNumber"` are granted as `member_search`
+- `Member."email"` and the three phone parts (`phoneCountryCode`,
+  `phoneAreaCode`, `phoneNumber`) are granted as `member_search`
   **predicates**: the operator pasted in an address or a number they already hold.
   `hasEmail` and `hasPhone` are therefore free, and the phone number is projected
   by nothing at all.
@@ -437,7 +449,7 @@ in the schema. "An operator wrote something down" does not clear that bar.
 
 ### The three grants to scrutinise hardest on any future edit
 
-**`Member`, widened from two columns to twenty-two.** `provision-role.ts` called
+**`Member`, widened from two columns to twenty-three.** `provision-role.ts` called
 the two-column version "the narrowest grant in the file and the one to scrutinise
 hardest on any future edit". This is that edit, so here is the argument rather
 than a diff. #2376's owner decision authorises a member's **name, email address
@@ -1071,7 +1083,7 @@ instead.
 
 ### `surfacesPersonalData` is declared and not yet enforced
 
-Thirteen of the sixteen entries set `surfacesPersonalData: true`, truthfully: a
+Fourteen of the sixteen entries set `surfacesPersonalData: true`, truthfully: a
 name, an email address, a member id or a booking reference plus a set of nights is
 per-person information.
 
@@ -1094,10 +1106,10 @@ ceilings, and the audit row.
 | A search returns several rows for one booking reference | A booking reference is the first eight characters of a cuid and is not unique | Pick the booking by its lodge, nights and party size, then use the exact booking id |
 | A name search returns a whole family | A prefix matches given **and** family names | Ask the operator which member they mean; the tool will not choose |
 | A member quotes a "membership number" and nothing matches | This platform stores no member number | Search by exact email address or mobile instead; the number is probably a Xero contact or invoice number |
-| `booking_capacity_by_night` refuses with `evidence_unavailable` | The stay is longer than 31 nights, or the calculation exceeded its own 10-second deadline | For a long stay, Admin > Bed Allocation answers it; a deadline means the application database is slow or unreachable |
+| A server-owned booking tool refuses with `evidence_unavailable` | The booking exceeds 31 nights, has more than 30 guests, a guest has more than 31 explicit/fallback nights, block state has more than 18 open requests, or the calculation exceeded its own 10-second deadline | Inspect the record on Admin > Booking detail / Bed Allocation; a bounded-population refusal may indicate corrupt legacy data, while a deadline means the application database is slow or unreachable |
 | The party looks smaller than the operator expects | The result was refused as `result_too_large`, or the rendered block listed only some rows | The header says how many of how many were listed; Admin > Booking detail shows the whole party |
 | A guest's stay range looks wrong | The envelope is not the stay — a guest may occupy non-contiguous nights | Read `nightsAreContiguous`: true means no gap, false means there is one, and null means the guest has no per-night rows at all |
-| An audit history is empty for something an operator watched happen | The event carries no category, or is filed under another entity type or another domain | Admin > Audit Log lists uncategorised rows and every category and entity type together |
+| An audit history is empty for something an operator watched happen | A historical pre-categorisation event lacks category, or the event is filed under another entity type or another domain. Current exact-head production writers have 427 row-producing sites and zero uncategorised sites. | Admin > Audit Log lists historical uncategorised rows and every category and entity type together |
 | `booking_block_state` reports no blockers on a booking the member cannot see | The booking is soft-deleted or terminal, so every other check is suppressed by design | Read `bookingLifecycleState` on the same row; its money may still need finance attention |
 
 Incident response is unchanged from AID-6A: the audit trail for tool use is

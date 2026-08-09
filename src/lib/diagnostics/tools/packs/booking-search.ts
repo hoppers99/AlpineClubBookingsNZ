@@ -495,12 +495,13 @@ const MEMBER_SEARCH_COLUMNS = `m."id" AS member_ref,
 /**
  * The four member searches. `$1` selects the arm; `$2..$5` are the terms.
  *
- * THE MOBILE ARM MATCHES THREE STORED SPELLINGS OF ONE NUMBER, and it has to. This
+ * THE MOBILE ARM MATCHES FOUR STORED SPELLINGS OF ONE NUMBER, and it has to. This
  * schema stores a phone as Xero does — `phoneCountryCode` / `phoneAreaCode` /
  * `phoneNumber` — so the digits an operator reads off a message ("0274224115") are
  * spread across two columns with a leading zero that is stored nowhere. The
  * predicate therefore compares the normalised term against the bare number, against
- * area-plus-number, and against a leading zero plus area-plus-number. All three are
+ * area-plus-number, against a leading zero plus area-plus-number, and against the
+ * stored country-plus-area-plus-number form used by an international `+64` input. All four are
  * equalities against a concatenation of granted columns; no term is used as a
  * pattern, and `coalesce` keeps a null column from turning the whole concatenation
  * null and silently matching nothing.
@@ -546,8 +547,9 @@ WHERE (
   ))
   OR ($1::text = 'mobile' AND (
     pg_catalog.concat(m."phoneNumber") = $5::text
-    OR pg_catalog.concat(m."phoneAreaCode", m."phoneNumber") = $5::text
+    OR pg_catalog.concat(m."phoneCountryCode", m."phoneAreaCode", m."phoneNumber") = $5::text
     OR pg_catalog.concat('0', m."phoneAreaCode", m."phoneNumber") = $5::text
+    OR pg_catalog.concat(m."phoneAreaCode", m."phoneNumber") = $5::text
   ))
 )
 ORDER BY m."lastName" ASC, m."firstName" ASC, m."id" ASC`;
@@ -585,7 +587,7 @@ const memberSearch = defineDiagnosticsTool<MemberSearchArgs>({
       mobile: {
         type: "string",
         description:
-          "A phone number. Spaces, brackets, plus and hyphens are ignored; the digits are matched exactly against the stored number, with or without the area code and leading zero (kind=mobile).",
+          "A phone number. Spaces, brackets, plus and hyphens are ignored; the digits are matched exactly against the stored number, national area-code forms, or the stored country-plus-area-plus-number form such as +64 (kind=mobile).",
       },
     },
     required: ["kind"],

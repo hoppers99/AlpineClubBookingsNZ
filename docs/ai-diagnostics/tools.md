@@ -87,7 +87,8 @@ the thirteen booking and membership relations AID-6B argues for one at a time �
 which `public."PolicyExceptionReservationNight"` is now the narrowest, at a single
 column. `public."Member"` is the one entry two packs share: AID-6C granted `id` and
 `xeroContactId` for the Xero contact linkage, and AID-6B **widens** it to
-twenty-two columns of identity and membership lifecycle, argued column by column on
+twenty-three columns of identity and membership lifecycle plus the predicate-only
+phone country code, argued column by column on
 the grant itself and in the pack doc. Everything else in the schema is unreadable
 by the diagnostics role, including `IntegrationCredential` (encrypted provider
 secrets) and `XeroToken` (**plaintext** OAuth access and refresh tokens), both
@@ -147,7 +148,7 @@ typed result carrying **no rows**.
 | 3 | **Authorize** | the caller's freshly re-read matrix lacks `view` on **any** area the tool declares, or their account is locked out |
 | 4 | **Arguments** | the entry's `.strict()` schema rejects them, or they carry a reserved key |
 | 5 | **Metering** | AID-2's metering circuit breaker is open |
-| 6 | **Credential** | (`select_only_sql` only) the dedicated role is absent, malformed, carries a connection parameter that would redirect it, is the app's own role, is unverifiable, or is over-privileged |
+| 6 | **Credential** | (`select_only_sql` only) the dedicated role is absent, malformed, carries a connection parameter that would redirect it, is the app's own role, is unverifiable, under-provisioned, or over-privileged (including table-wide SELECT on a column declaration) |
 | 7 | **Read** | the entry's parameters do not match the `$n` its SQL references, the statement fails, or the statement timeout cancels it — or, for a `server_owned` entry, its source refuses or misses its deadline |
 | 8 | **Project** | the projection returns anything that is not a flat scalar, or too many fields |
 | 9 | **Size** | the projected result exceeds the tool's byte ceiling — a **refusal**, never a silent trim |
@@ -518,8 +519,9 @@ against a real PostgreSQL, connects as that role, and proves:
 - re-provisioning **revokes** a hand-widened column grant, so an allowlist entry can
   be narrowed in a later release and not merely widened;
 - the self-check refuses the role when a column grant widens to the whole relation —
-  the case where the relation-level count stays at zero because the relation is
-  declared;
+  both where extra columns make the undeclared-column count non-zero and on
+  `FamilyGroupMember`, whose explicit declaration currently names every column and
+  therefore needs the separate table-wide-select gate;
 - it can execute no overload of `pg_read_file`, `pg_read_binary_file`, `pg_ls_dir`,
   `pg_stat_file`, `lo_import` or `lo_export`;
 - `INSERT`, `UPDATE`, `DELETE`, and `TRUNCATE` fail with insufficient privilege

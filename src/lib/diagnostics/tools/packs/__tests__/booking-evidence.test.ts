@@ -170,7 +170,9 @@ vi.mock("@/lib/member-subscription-eligibility", async (importOriginal) => ({
 }));
 
 import {
+  AID6B_BOOKING_GUEST_CEILING,
   AID6B_CAPACITY_NIGHT_CEILING,
+  AID6B_OPEN_REQUEST_CEILING,
   BOOKING_BLOCKER_CODES,
   MEMBER_ELIGIBILITY_CODES,
   readBookingBlockStateEvidence,
@@ -506,9 +508,16 @@ function shapeRow(
       const relation = spec.relations?.[key];
       if (relation) {
         const related = relation(row, store);
-        const nested = want as { select?: Row; include?: Row };
-        out[key] = Array.isArray(related)
-          ? related.map((candidate) =>
+        const nested = want as QueryArgs;
+        const relatedRows = Array.isArray(related)
+          ? applyOrderBy(related, nested.orderBy)
+          : null;
+        const limitedRows =
+          relatedRows === null || nested.take === undefined
+            ? relatedRows
+            : relatedRows.slice(0, nested.take);
+        out[key] = limitedRows
+          ? limitedRows.map((candidate) =>
               shapeRow(relationModel(model, key), candidate, nested),
             )
           : related
@@ -2112,6 +2121,107 @@ describe("booking capacity by night (#2376)", () => {
     expect(evaluateProposalPartyViolationsMock).not.toHaveBeenCalled();
   });
 
+  it.each([
+    ["terminal", { status: "CANCELLED" }],
+    ["deleted", { deletedAt: new Date("2026-06-20T00:00:00.000Z") }],
+    ["waitlisted", { status: "WAITLISTED" }],
+  ])("refuses an oversized %s block-state span before any population read", async (_label, state) => {
+    seedBooking({
+      ...state,
+      checkIn: "2026-07-10",
+      checkOut: "2026-08-12",
+      guests: [],
+    });
+    await expect(
+      readBookingBlockStateEvidence({ bookingId: BOOKING_ID }),
+    ).rejects.toThrow(/ceiling/);
+    expect(prismaMock.bookingGuest.findMany).not.toHaveBeenCalled();
+    expect(prismaMock.bookingChangeRequest.findMany).not.toHaveBeenCalled();
+    expect(checkCapacityMock).not.toHaveBeenCalled();
+    expect(evaluateProposalPartyViolationsMock).not.toHaveBeenCalled();
+    expect(findBookingMemberNightConflictsMock).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["block state", readBookingBlockStateEvidence],
+    ["capacity", readBookingCapacityEvidence],
+  ])("refuses excessive guests before authoritative helpers in %s", async (_label, read) => {
+    seedBooking({
+      guests: Array.from(
+        { length: AID6B_BOOKING_GUEST_CEILING + 1 },
+        (_, index) => ({ id: `guest-${index}`, nights: [NIGHT_ONE] }),
+      ),
+    });
+    await expect(read({ bookingId: BOOKING_ID })).rejects.toThrow(
+      /booking guests exceeds/,
+    );
+    expect(checkCapacityMock).not.toHaveBeenCalled();
+    expect(evaluateProposalPartyViolationsMock).not.toHaveBeenCalled();
+    expect(findBookingMemberNightConflictsMock).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["block state", readBookingBlockStateEvidence],
+    ["capacity", readBookingCapacityEvidence],
+  ])("refuses excessive explicit guest-night rows before helpers in %s", async (_label, read) => {
+    seedBooking({
+      guests: [
+        {
+          id: "guest-corrupt-nights",
+          nights: Array.from(
+            { length: AID6B_CAPACITY_NIGHT_CEILING + 1 },
+            () => NIGHT_ONE,
+          ),
+        },
+      ],
+    });
+    await expect(read({ bookingId: BOOKING_ID })).rejects.toThrow(
+      /guest-night rows exceeds/,
+    );
+    expect(checkCapacityMock).not.toHaveBeenCalled();
+    expect(evaluateProposalPartyViolationsMock).not.toHaveBeenCalled();
+    expect(findBookingMemberNightConflictsMock).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["block state", readBookingBlockStateEvidence],
+    ["capacity", readBookingCapacityEvidence],
+  ])("refuses a huge guest fallback envelope on a one-night booking in %s", async (_label, read) => {
+    seedBooking({
+      checkIn: NIGHT_ONE,
+      checkOut: NIGHT_TWO,
+      guests: [
+        {
+          id: "guest-corrupt-envelope",
+          stayStart: NIGHT_ONE,
+          stayEnd: "2026-09-30",
+        },
+      ],
+    });
+    await expect(read({ bookingId: BOOKING_ID })).rejects.toThrow(
+      /guest fallback envelope covers/,
+    );
+    expect(checkCapacityMock).not.toHaveBeenCalled();
+    expect(evaluateProposalPartyViolationsMock).not.toHaveBeenCalled();
+    expect(findBookingMemberNightConflictsMock).not.toHaveBeenCalled();
+  });
+
+  it("refuses excessive open requests before block-state helpers", async () => {
+    seedBooking({
+      guests: [],
+      requests: Array.from(
+        { length: AID6B_OPEN_REQUEST_CEILING + 1 },
+        (_, index) => ({ id: `request-${index}` }),
+      ),
+    });
+    await expect(
+      readBookingBlockStateEvidence({ bookingId: BOOKING_ID }),
+    ).rejects.toThrow(/open booking requests exceeds/);
+    expect(checkCapacityMock).not.toHaveBeenCalled();
+    expect(evaluateProposalPartyViolationsMock).not.toHaveBeenCalled();
+    expect(findBookingMemberNightConflictsMock).not.toHaveBeenCalled();
+  });
+
   it("accepts a stay EXACTLY at the ceiling", async () => {
     // The off-by-one that would silently halve an answer: `>` versus `>=` on the
     // ceiling comparison. A 31-night stay is inside the limit and must return all
@@ -2781,6 +2891,29 @@ describe("member eligibility: the season year is the SEASON's, not the calendar'
       readMemberEligibilityEvidence({ memberId: MEMBER_ID }),
     ).rejects.toThrow(/not stored locally/);
     expect(resolveMembershipTypePolicyForMemberMock).not.toHaveBeenCalled();
+  });
+
+  it("canonicalises an invalid stored override to absent and refuses when Xero is connected", async () => {
+    vi.setSystemTime(new Date("2027-01-15T00:00:00.000Z"));
+    prismaMock.membershipLockoutSettings.findUnique.mockResolvedValue({
+      financialYearEndMonthOverride: 13,
+    });
+    prismaMock.xeroToken.findFirst.mockResolvedValue({ id: "xero-token" });
+    seedMember({});
+    await expect(
+      readMemberEligibilityEvidence({ memberId: MEMBER_ID }),
+    ).rejects.toThrow(/not stored locally/);
+    expect(resolveMembershipTypePolicyForMemberMock).not.toHaveBeenCalled();
+  });
+
+  it("uses the canonical default for an invalid stored override with no Xero tenant", async () => {
+    vi.setSystemTime(new Date("2027-01-15T00:00:00.000Z"));
+    prismaMock.membershipLockoutSettings.findUnique.mockResolvedValue({
+      financialYearEndMonthOverride: 13,
+    });
+    prismaMock.xeroToken.findFirst.mockResolvedValue(null);
+    seedMember({});
+    await expect(eligibilityRow()).resolves.toMatchObject({ season_year: 2026 });
   });
 });
 

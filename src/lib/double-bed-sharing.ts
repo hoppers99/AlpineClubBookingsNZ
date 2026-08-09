@@ -12,6 +12,7 @@ import { isOperationallyPresentConsent } from "@/lib/member-guest-consent";
 type DoubleBedSharingDb = Pick<typeof prisma, "member" | "memberPartnerLink">;
 
 export type DoubleBedSharingEvidenceCode =
+  | "live_bed_missing"
   | "not_double_bed"
   | "single_occupant"
   | "corrupt_occupant_cardinality"
@@ -47,6 +48,7 @@ export interface DoubleBedSharingFacts {
 export function classifyDoubleBedSharingFacts(
   facts: DoubleBedSharingFacts,
 ): DoubleBedSharingEvidenceCode {
+  if (facts.bedType === null) return "live_bed_missing";
   if (facts.bedType !== "DOUBLE") return "not_double_bed";
   if (facts.otherOccupantCount === 0) return "single_occupant";
   if (facts.otherOccupantCount !== 1) return "corrupt_occupant_cardinality";

@@ -770,28 +770,58 @@ describe("diagnostics privilege proof DB safety guard (#2374)", () => {
       const grant = SELECT_GRANTS.find((entry) => entry.columns !== undefined);
       if (!grant?.columns) return;
       const target = `${grant.schema}."${grant.relation}"`;
-      const declaredColumns = grant.columns
-        .map((column) => `"${column}"`)
-        .join(", ");
 
       await withDeclaredGrantsOnly(async () => {
-        await admin.query(`GRANT SELECT ON ${target} TO "${TEST_ROLE}"`);
-        await closeDiagnosticsDatabase();
         try {
+          await admin.query(`GRANT SELECT ON ${target} TO "${TEST_ROLE}"`);
+          await closeDiagnosticsDatabase();
           const handle = await getDiagnosticsDatabase();
           expect(handle.ok).toBe(false);
           if (!handle.ok) {
             expect(handle.reason).toBe("database_role_unsafe");
             expect(handle.report?.undeclaredReadableRelations).toBe(0);
             expect(handle.report?.undeclaredReadableColumns).toBeGreaterThan(0);
+            expect(
+              handle.report?.tableWideSelectOnColumnRestrictedRelations,
+            ).toBe(1);
           }
         } finally {
-          await admin.query(
-            `REVOKE ALL PRIVILEGES ON ${target} FROM "${TEST_ROLE}"`,
-          );
-          await admin.query(
-            `GRANT SELECT (${declaredColumns}) ON ${target} TO "${TEST_ROLE}"`,
-          );
+          // Restore from the reviewed declaration even when GRANT, pool close or
+          // an assertion fails midway; no hand-maintained inverse may leak drift.
+          await provision();
+          await closeDiagnosticsDatabase();
+        }
+      });
+    });
+
+    it("REFUSES table-wide SELECT when a column declaration currently names every column", async () => {
+      const grant = SELECT_GRANTS.find(
+        (entry) => entry.relation === "FamilyGroupMember",
+      );
+      expect(grant?.columns).toBeDefined();
+      if (!grant?.columns) return;
+      const target = `${grant.schema}."${grant.relation}"`;
+
+      await withDeclaredGrantsOnly(async () => {
+        try {
+          await admin.query(`GRANT SELECT ON ${target} TO "${TEST_ROLE}"`);
+          await closeDiagnosticsDatabase();
+          const handle = await getDiagnosticsDatabase();
+          expect(handle.ok).toBe(false);
+          if (handle.ok) return;
+
+          expect(handle.reason).toBe("database_role_unsafe");
+          expect(handle.report?.undeclaredReadableRelations).toBe(0);
+          // FamilyGroupMember currently has no withheld physical column, so the
+          // old undeclared-column detector is intentionally silent here.
+          expect(handle.report?.undeclaredReadableColumns).toBe(0);
+          expect(handle.report?.missingReadableRelations).toBe(0);
+          expect(handle.report?.missingReadableColumns).toBe(0);
+          expect(
+            handle.report?.tableWideSelectOnColumnRestrictedRelations,
+          ).toBe(1);
+        } finally {
+          await provision();
           await closeDiagnosticsDatabase();
         }
       });

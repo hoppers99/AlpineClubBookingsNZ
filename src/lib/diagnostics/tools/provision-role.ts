@@ -188,10 +188,10 @@ export interface AiDiagnosticsSelectGrant {
  *    both refused. This is the narrowest grant in the file and the one to scrutinise
  *    hardest on any future edit.
  *
- * AID-6B (#2376) adds TWELVE MORE relations, all BY COLUMN, and WIDENS `Member`.
+ * AID-6B (#2376) adds THIRTEEN MORE relations, all BY COLUMN, and WIDENS `Member`.
  * The widening is the most scrutinised change this file has had, and the argument
- * for every column of it is on the `Member` entry itself below; the twelve are
- * `Booking`, `Lodge`, `BookingGuest`, `BookingGuestNight`, `BedAllocation`,
+ * for every column of it is on the `Member` entry itself below; the thirteen are
+ * `Booking`, `Lodge`, `BookingGuest`, `MemberPartnerLink`, `BookingGuestNight`, `BedAllocation`,
  * `LodgeRoom`, `LodgeBed`, `BookingChangeRequest`,
  * `PolicyExceptionReservationNight`, `MemberSubscription`, `FamilyGroupMember` and
  * `FamilyGroup`, each argued on its own entry and in
@@ -452,8 +452,8 @@ export const SELECT_GRANTS: readonly AiDiagnosticsSelectGrant[] = [
      *  - `email` is the `member_search` email PREDICATE (an operator pastes in an
      *    address they already hold) and the erasure test's input. It IS projected,
      *    once, by `member_diagnostic_summary`, for one selected member.
-     *  - `phoneAreaCode` and `phoneNumber` are the `member_search` mobile PREDICATE
-     *    and NOTHING ELSE. No entry in either pack returns a phone number: the
+     *  - `phoneCountryCode`, `phoneAreaCode` and `phoneNumber` are the
+     *    `member_search` mobile PREDICATE and NOTHING ELSE. No entry in either pack returns a phone number: the
      *    summary reports only whether one is on file. A diagnostic never needs to
      *    read a number back to an operator who has the member's admin page one click
      *    away.
@@ -486,7 +486,7 @@ export const SELECT_GRANTS: readonly AiDiagnosticsSelectGrant[] = [
      *    `detailsConfirmedByMemberId`, `onboardingConfirmedAt`,
      *    `profileCompletedAt`, `cancelledViaRequestId`,
      *    `archivedViaLifecycleActionRequestId`, `hutLeaderEligibleAt`,
-     *    `phoneCountryCode`.
+     *    No other phone field.
      */
     columns: [
       "id",
@@ -509,6 +509,7 @@ export const SELECT_GRANTS: readonly AiDiagnosticsSelectGrant[] = [
       // Predicate-only: the `member_search` mobile arm. Never projected.
       "phoneAreaCode",
       "phoneNumber",
+      "phoneCountryCode",
       "xeroContactId",
       "createdAt",
       "updatedAt",
@@ -754,8 +755,10 @@ export const SELECT_GRANTS: readonly AiDiagnosticsSelectGrant[] = [
   {
     schema: "public",
     relation: "FamilyGroupMember",
-    // `member_family_state`. This IS the whole relation — and that is the point worth
-    // recording: it has NO `role` column. One was physically dropped by migration
+    // `member_family_state`. These four named columns happen to be the whole current
+    // relation, but this remains a COLUMN grant: the runtime explicitly refuses a
+    // table-wide SELECT so a future schema column cannot become readable by drift.
+    // The current relation has NO `role` column. One was physically dropped by migration
     // `20260803030000_contract_drop_family_group_member_role`, because family-group
     // membership carries no rank and every adult login co-member of a group is equal.
     // A diagnostic reporting a "role in the family group" would be reporting a field

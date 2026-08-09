@@ -17,7 +17,6 @@ import {
   setFinancialYearEndMonth,
 } from "@/lib/financial-year";
 import { loadMembershipLockoutSettings } from "@/lib/membership-lockout-settings";
-import { MEMBERSHIP_LOCKOUT_SETTINGS_ID } from "@/lib/membership-lockout-settings";
 import { prisma } from "@/lib/prisma";
 import { getXeroFinancialYearEndMonth } from "@/lib/xero-organisation";
 
@@ -69,11 +68,12 @@ export type StoredFinancialYearResolution =
  * columns never cross this boundary.
  */
 export async function getStoredFinancialYearResolution(): Promise<StoredFinancialYearResolution> {
-  const settings = await prisma.membershipLockoutSettings.findUnique({
-    where: { id: MEMBERSHIP_LOCKOUT_SETTINGS_ID },
-    select: { financialYearEndMonthOverride: true },
-  });
-  const overrideMonth = settings?.financialYearEndMonthOverride ?? null;
+  // Use the same persisted-settings normalizer as every production membership
+  // path. In particular, an out-of-range raw month canonicalises to null rather
+  // than being accepted as an authoritative override and later normalised by
+  // unrelated season arithmetic.
+  const settings = await loadMembershipLockoutSettings();
+  const overrideMonth = settings.financialYearEndMonthOverride;
   if (overrideMonth !== null) {
     return { ok: true, effectiveMonth: overrideMonth, source: "override" };
   }

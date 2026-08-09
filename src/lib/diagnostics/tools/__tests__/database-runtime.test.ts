@@ -54,6 +54,7 @@ const pg = vi.hoisted(() => {
     forbidden_role_names: [] as string[],
     writable_relations: 0,
     undeclared_readable_relations: 0,
+    table_wide_select_on_column_restricted_relations: 0,
     undeclared_readable_columns: 0,
     missing_readable_relations: 0,
     missing_readable_columns: 0,
@@ -292,6 +293,9 @@ describe("getDiagnosticsDatabase — the verified pool (#2374, ADR-007)", () => 
     const probe = pools[0].poolQueries[0];
     expect(probe.sql).toContain("undeclared_readable_columns");
     expect(probe.sql).toContain(
+      "table_wide_select_on_column_restricted_relations",
+    );
+    expect(probe.sql).toContain(
       "pg_catalog.has_column_privilege(current_user, c.oid, a.attnum, 'SELECT')",
     );
     expect(probe.sql).toContain("pg_catalog.pg_attribute");
@@ -358,6 +362,10 @@ describe("getDiagnosticsDatabase — the verified pool (#2374, ADR-007)", () => 
     ["names an escalating role", { forbidden_role_names: ["pg_read_all_data"] }],
     ["can write to a relation", { writable_relations: 1 }],
     ["can read an undeclared relation", { undeclared_readable_relations: 1 }],
+    [
+      "has table-wide SELECT on a column-restricted relation",
+      { table_wide_select_on_column_restricted_relations: 1 },
+    ],
     [
       "may execute a SECURITY DEFINER routine",
       { executable_security_definer_routines: 1 },

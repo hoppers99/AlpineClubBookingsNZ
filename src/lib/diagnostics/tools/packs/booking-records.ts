@@ -14,7 +14,7 @@
  *   diagnostics.booking_exception_request_state     bookings
  *   diagnostics.booking_record_audit_history        bookings
  *
- * PERMISSION. `bookings:view` and nothing else, on all five. That is #2376's
+ * PERMISSION. `bookings:view` and nothing else, on all six. That is #2376's
  * owner decision in as many words: a Booking Officer investigating a booking is
  * doing their own job, not a support one, so no entry here also demands
  * `support:view`. `requiredAreas` is fixed on the entry and `invoke.ts`
@@ -680,7 +680,9 @@ const bookingLinkedState = defineDiagnosticsTool<BookingIdArgs>({
   }),
   rowLimit: AID6B_HISTORY_ROW_LIMIT,
   byteLimit: AID6B_BYTE_LIMIT,
-  surfacesPersonalData: false,
+  // A booking reference plus lodge nights is still personal data even without a
+  // name. ADR-004's declaration must describe the evidence actually returned.
+  surfacesPersonalData: true,
 });
 
 // ---------------------------------------------------------------------------
@@ -713,7 +715,7 @@ export const BOOKING_GUEST_CONSENT_SUB_STATES = {
   family_or_legacy:
     'family_or_legacy: no consent was ever needed. The guest is inside the booker\'s family group, or is not a member, or the row predates the feature. This is the DOMINANT state and it is not an outstanding request — never describe it as "awaiting consent".',
   awaiting_target:
-    "awaiting_target: the guest is a member outside the booker's family who has been asked and has not answered. The row holds a bed while it waits, and consentExpiresAtUtc is when that hold lapses.",
+    "awaiting_target: the guest is a member outside the booker's family who has been asked and has not answered. The row holds a bed while it waits and an expiry exists, but this tool does not return the exact deadline. Use Admin > Booking detail and its consent surface to see when the hold lapses.",
   approved_on_request:
     "approved_on_request: the guest was asked and the request was approved — either by the guest themself or by a delegate acting for them. Which of the two is not reported, because it would need a column that names a person.",
   notify_only_auto_confirmed:
@@ -947,12 +949,14 @@ const bookingPartyState = defineDiagnosticsTool<BookingIdArgs>({
  * `LodgeBed`, so the "non-double beds are capped at one occupant a night" guard
  * reads the row's own column. A mismatch between the two is therefore a real
  * defect with real consequences, and reporting only one of them would hide it.
- * `bedType` is the denormalised copy — the one the guard uses — and
+ * `bedType` is the denormalised copy — the one the index guard uses — and
  * `bedTypeMatchesBed` is the comparison. The live type is not projected
- * separately: when they match it is the same value, and when they do not, the
- * finding is the mismatch and the bed-allocation board is where an officer sees
- * the current definition. The comparison is NULL when the bed row could not be
- * read at all, which is a third state and not a mismatch.
+ * separately, but it IS the authoritative input to `doubleBedSharingState`: a
+ * stale allocation copy must never decide current sharing eligibility. When the
+ * values match they are the same; when they do not, the mismatch plus the live
+ * verdict is the finding and the bed-allocation board shows the current bed.
+ * The comparison is NULL when the bed row could not be read at all, and the
+ * sharing verdict then says `live_bed_missing` rather than inventing a type.
  *
  * EVERY JOIN IS A LEFT JOIN so a broken foreign key cannot silently remove a
  * guest-night from the answer. The room and bed relations are `Restrict` with
@@ -968,6 +972,8 @@ const bookingPartyState = defineDiagnosticsTool<BookingIdArgs>({
  * that explains why a second occupant was accepted or refused.
  */
 export const DOUBLE_BED_SHARING_STATE_MEANINGS = {
+  live_bed_missing:
+    "live_bed_missing: the current LodgeBed row could not be read, so sharing eligibility is unavailable and must not be inferred from the allocation's copied bed type.",
   not_double_bed: "not_double_bed: this allocation is not on a DOUBLE bed.",
   single_occupant: "single_occupant: the DOUBLE currently has no other occupant.",
   corrupt_occupant_cardinality:
@@ -1002,6 +1008,7 @@ const BOOKING_BED_ALLOCATION_SQL = `SELECT
   r."name" AS room_name,
   bd."name" AS bed_name,
   a."bedType"::text AS bed_type,
+  bd."bedType"::text AS live_bed_type,
   (a."bedType" = bd."bedType") AS bed_type_matches_bed,
   a."isSecondOccupant" AS is_second_occupant,
   co."other_occupant_count",
@@ -1049,9 +1056,9 @@ const bookingBedAllocationState = defineDiagnosticsTool<BookingIdArgs>({
   id: DIAGNOSTICS_BOOKING_BED_ALLOCATION_TOOL_ID,
   source: "select_only_sql",
   label: "Booking bed allocation state",
-  description: `Lists the bed allocations THIS booking holds, one row per guest per night, at most ${AID6B_ALLOCATION_ROW_LIMIT}, earliest night first then room then bed. Each row carries the night, booking-guest record id, room and bed names, stored bed type, whether that type still matches the bed, whether the guest is the SECOND occupant, and the platform's current double-bed-sharing verdict. A DOUBLE may hold two occupants only when they are distinct active ADULT members with a CONFIRMED partner link; pending, absent and corrupt link or member facts are reported as ineligible evidence, not guessed. This is THIS booking's allocation only, never the lodge's whole board. It returns no approver identity, room notes, placement source or active-bed flag. ${AID6B_DESCRIPTION_TAIL}`,
+  description: `Lists the bed allocations THIS booking holds, one row per guest per night, at most ${AID6B_ALLOCATION_ROW_LIMIT}, earliest night first then room then bed. Each row carries the night, booking-guest record id, room and bed names, the allocation's stored bed type, whether that copy still matches the live LodgeBed, whether the guest is the SECOND occupant, and the platform's current double-bed-sharing verdict derived from the LIVE bed type. A live DOUBLE may hold two occupants only when they are distinct active ADULT members with a CONFIRMED partner link; pending, absent, missing-bed and corrupt link or member facts are reported as ineligible or unavailable evidence, not guessed. This is THIS booking's allocation only, never the lodge's whole board. It returns no approver identity, room notes, placement source or active-bed flag. ${AID6B_DESCRIPTION_TAIL}`,
   requiredAreas: ["bookings"],
-  evidenceScope: `The bed allocations belonging to ONE booking, one row per guest per night, at most ${AID6B_ALLOCATION_ROW_LIMIT} rows. Every non-DOUBLE bed is single-occupancy. A DOUBLE may hold a primary plus one second occupant only when the platform's canonical rule says they are two distinct, existing, active ADULT members with a CONFIRMED partner link. doubleBedSharingState means: ${DOUBLE_BED_SHARING_STATE_SENTENCES} The pair ids and responder identity are inputs only and are never projected. bedTypeMatchesBed false is a real data defect and null means the bed row could not be read. AN UNALLOCATED GUEST-NIGHT IS NOT PROOF THE LODGE WAS FULL. Custodian bed holds have no allocation or booking row and are absent here. THIS TOOL REPORTS ONE BOOKING'S OWN ALLOCATION, NEVER THE WHOLE BOARD, so never conclude lodge occupancy or availability from it; use Admin > Bed Allocation. Eight fields a row use the pack's wide result ceiling. Placement source, active-bed state, approval instant, bunk pairing, approver identity and room notes are not reported. ${AID6B_SCOPE_TAIL} ${AID6B_UNTRUSTED_EVIDENCE_DISCLOSURE}`,
+  evidenceScope: `The bed allocations belonging to ONE booking, one row per guest per night, at most ${AID6B_ALLOCATION_ROW_LIMIT} rows. The LIVE LodgeBed type governs current sharing eligibility; bedType is the allocation's denormalised copy and may be stale. Every live non-DOUBLE bed is single-occupancy. A live DOUBLE may hold a primary plus one second occupant only when the platform's canonical rule says they are two distinct, existing, active ADULT members with a CONFIRMED partner link. doubleBedSharingState means: ${DOUBLE_BED_SHARING_STATE_SENTENCES} The pair ids and responder identity are inputs only and are never projected. bedTypeMatchesBed false is a real data defect and null means the bed row could not be read; a missing bed makes sharing evidence unavailable rather than non-double. AN UNALLOCATED GUEST-NIGHT IS NOT PROOF THE LODGE WAS FULL. Custodian bed holds have no allocation or booking row and are absent here. THIS TOOL REPORTS ONE BOOKING'S OWN ALLOCATION, NEVER THE WHOLE BOARD, so never conclude lodge occupancy or availability from it; use Admin > Bed Allocation. Eight fields a row use the pack's wide result ceiling. Placement source, active-bed state, approval instant, bunk pairing, approver identity and room notes are not reported. ${AID6B_SCOPE_TAIL} ${AID6B_UNTRUSTED_EVIDENCE_DISCLOSURE}`,
   argsSchema: bookingIdArgsSchema,
   inputSchema: bookingIdInputSchema,
   sql: BOOKING_BED_ALLOCATION_SQL,
@@ -1066,7 +1073,7 @@ const bookingBedAllocationState = defineDiagnosticsTool<BookingIdArgs>({
     bedTypeMatchesBed: nullableBoolOf(row.bed_type_matches_bed),
     isSecondOccupant: boolOf(row.is_second_occupant),
     doubleBedSharingState: classifyDoubleBedSharingFacts({
-      bedType: typeof row.bed_type === "string" ? row.bed_type : null,
+      bedType: typeof row.live_bed_type === "string" ? row.live_bed_type : null,
       otherOccupantCount: countOf(row.other_occupant_count),
       memberIdA: typeof row.member_a_ref === "string" ? row.member_a_ref : null,
       memberIdB: typeof row.member_b_ref === "string" ? row.member_b_ref : null,
@@ -1311,7 +1318,7 @@ const bookingRecordAuditHistory = defineDiagnosticsTool<BookingIdArgs>({
   // record-scoped audit entry does not require `support` and the pack's contract
   // test for the assertion that reconciles the two.
   requiredAreas: aid6bRecordAuditReaderAreas("booking"),
-  evidenceScope: `Audit events recorded against ONE booking record, in the booking categories ${BOOKING_AUDIT_CATEGORIES.join(" and ")} only, at most ${AID6B_HISTORY_ROW_LIMIT}, newest first. AN EMPTY RESULT IS NOT EVIDENCE THAT NOTHING HAPPENED, and there are two structural reasons rather than one. First, the audit category is OPTIONAL, and a row recorded with no category at all is matched by no diagnostics tool anywhere — a number of production write paths still record that way and another change is actively reclassifying them, so treat the gap as real and current rather than as a fixed list. Second, "Booking" is the ONLY entity type read here: an event recorded against this booking's PAYMENT, its bed allocation, its change request or the member is filed under that record's own type and id, and is not in this result. Never report that something did not happen on the strength of an empty result; say that no categorised booking audit event matched the booking record, and point at Admin > Audit Log, which lists uncategorised rows and every entity type as well. ${AID6B_SCOPE_TAIL} ${AID6B_UNTRUSTED_EVIDENCE_DISCLOSURE}`,
+  evidenceScope: `Audit events recorded against ONE booking record, in the booking categories ${BOOKING_AUDIT_CATEGORIES.join(" and ")} only, at most ${AID6B_HISTORY_ROW_LIMIT}, newest first. AN EMPTY RESULT IS NOT EVIDENCE THAT NOTHING HAPPENED, and there are two structural reasons rather than one. First, the audit category is OPTIONAL for historical compatibility. The exact-head census has 427 row-producing current production writer sites and zero uncategorised sites: no current writer omits category, but historical rows written before categorisation was deployed may lack it and are matched by no diagnostics tool anywhere. Second, "Booking" is the ONLY entity type read here: an event recorded against this booking's PAYMENT, its bed allocation, its change request or the member is filed under that record's own type and id, and is not in this result. Never report that something did not happen on the strength of an empty result; say that no categorised booking audit event matched the booking record, and point at Admin > Audit Log, which lists historical uncategorised rows and every entity type as well. ${AID6B_SCOPE_TAIL} ${AID6B_UNTRUSTED_EVIDENCE_DISCLOSURE}`,
   argsSchema: bookingIdArgsSchema,
   inputSchema: bookingIdInputSchema,
   sql: BOOKING_AUDIT_SQL,
