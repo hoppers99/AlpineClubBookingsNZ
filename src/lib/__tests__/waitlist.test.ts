@@ -9,7 +9,9 @@ import { describe, it, expect, vi, beforeEach, beforeAll } from "vitest";
 import { captureHostTimeZone } from "@/lib/__tests__/helpers/timezone";
 import {
   fenceBookingFindMany,
+  fenceHostingPolicyFindMany,
   fenceMemberFindMany,
+  hostingMemberRow,
   recordingBookingDouble,
 } from "@/lib/__tests__/support/hosting-participant-fence-double";
 import {
@@ -103,7 +105,17 @@ const mockTx = {
   },
   // #2364: the hosting review is reconciled inside the booking write, so
   // every prisma/tx double a booking path runs against needs this client.
-  adultMemberHostingPolicy: { findMany: vi.fn().mockResolvedValue([]) },
+  // #2623 T5 / #2675: an ACTIVE mode, so the gate in front of the participant
+  // fence lets `confirmWaitlistOffer`'s claim reach it. `[]` resolved to
+  // DISABLED and took the gate's early return, so the three confirms that
+  // actually claim an offer never touched the fence the doubles above model.
+  // ADMIN_REVIEW_REQUIRED rather than the helper's ENFORCED default: under
+  // ENFORCED a hosting violation is thrown as a refusal and the confirm answers
+  // 409 instead of transitioning, which would rewrite what these cases assert;
+  // review-only just records a snapshot.
+  adultMemberHostingPolicy: {
+    findMany: fenceHostingPolicyFindMany({ mode: "ADMIN_REVIEW_REQUIRED" }),
+  },
   booking: {
     findMany: (args: unknown) => fenceTxBookingFindMany(args),
     findUnique: (args: unknown) => fenceBooking.findUnique(args),
@@ -127,7 +139,12 @@ vi.mock("@/lib/prisma", () => ({
         : Promise.resolve(fn),
     // #2364: the hosting review is reconciled inside the booking write, so
     // every prisma/tx double a booking path runs against needs this client.
-    adultMemberHostingPolicy: { findMany: vi.fn().mockResolvedValue([]) },
+    // #2675: the SAME active mode as `mockTx` above — one club cannot answer
+    // ADMIN_REVIEW_REQUIRED inside a transaction and DISABLED outside it, and
+    // the post-commit coverage drain reads the policy on this client.
+    adultMemberHostingPolicy: {
+      findMany: fenceHostingPolicyFindMany({ mode: "ADMIN_REVIEW_REQUIRED" }),
+    },
     // #2619: the participant fence can run on this client too, so it needs the
     // raw lock statement and the id-only member re-read. The booking reads
     // below are deliberately NOT wrapped in a recorder: the tests stub
@@ -249,6 +266,14 @@ beforeEach(() => {
   mockReconcileBedAllocations.mockResolvedValue(undefined);
   mockExecuteRaw.mockReset();
   mockTxBookingFindMany.mockReset();
+  // #2675: NO SIBLING BOOKINGS, stated rather than left undefined. `mockReset`
+  // strips the implementation as well as the calls, so an unstubbed
+  // `booking.findMany` used to resolve to `undefined` — which Prisma cannot do,
+  // and which made `loadSiblingHosts` throw on `undefined.filter` the moment an
+  // active hosting mode let the evaluator read siblings at all. `[]` is the same
+  // neutral default `mockBookingFindMany` already carries below, and it is the
+  // truth for every fixture here: none of them is half of a #738 split pair.
+  mockTxBookingFindMany.mockResolvedValue([]);
   mockTxBookingFindUnique.mockReset();
   // A clean recorder per test — see `armParticipantFence`.
   armParticipantFence();
@@ -791,6 +816,68 @@ describe("processWaitlistForDates", () => {
   });
 });
 
+/**
+ * The offer's party as the hosting EVALUATOR reads it (#2675).
+ *
+ * `confirmWaitlistOffer` reconciles the hosting review inside its claiming
+ * transaction, and now that `mockTx` answers an ACTIVE mode the evaluator
+ * genuinely builds participants from these rows rather than bailing out at the
+ * mode gate. `BOOKING_HOSTING_SELECT` is the authority on their shape: names,
+ * the stay envelope, the sparse night set, the D-12 consent status, and — the
+ * crux — the LIVE `member` relation. A row carrying `isMember: true` with no
+ * `member` is a shape production cannot emit (the review's select always
+ * hydrates it) and it does not degrade gracefully: `undefined !== null` is true,
+ * so `memberIsInGoodStanding` reads `undefined.active` and the claim throws.
+ *
+ * `nights: []` is the honest answer here — none of these cases is about a
+ * partial stay — and the evaluator then falls back to stayStart..stayEnd, which
+ * is the whole offered range for everyone on it.
+ */
+function offerGuests(
+  checkIn: Date,
+  checkOut: Date,
+  options: { withNonMember?: boolean } = {},
+) {
+  const stay = {
+    stayStart: checkIn,
+    stayEnd: checkOut,
+    nights: [] as Array<{ stayDate: Date }>,
+    // `null` = no consent was ever needed, i.e. operationally present (D-12).
+    consentStatus: null,
+  };
+  const guests: Array<Record<string, unknown>> = [
+    {
+      id: "g1",
+      firstName: "John",
+      lastName: "Doe",
+      ageTier: "ADULT",
+      isMember: true,
+      memberId: "m1",
+      // The booking owner, an adult member in good standing staying the whole
+      // offer — so the party has a host and an active hosting mode raises no
+      // violation. These cases therefore answer exactly what they answered
+      // while the rule was off, with the fence in front now genuinely run.
+      member: hostingMemberRow("m1"),
+      ...stay,
+    },
+  ];
+  if (options.withNonMember) {
+    guests.push({
+      id: "g2",
+      firstName: "Bob",
+      lastName: "Jones",
+      ageTier: "ADULT",
+      isMember: false,
+      memberId: null,
+      // A true non-member states `member: null` EXPLICITLY. Omitting the key
+      // is the failure mode described above, not a softer version of this.
+      member: null,
+      ...stay,
+    });
+  }
+  return guests;
+}
+
 describe("confirmWaitlistOffer", () => {
   // The service reads the offer once OUTSIDE its claiming transaction to decide
   // which pre-write checks apply, then claims it under the lodge lock. This
@@ -845,7 +932,7 @@ describe("confirmWaitlistOffer", () => {
       waitlistOfferExpiresAt: new Date(Date.now() + 86400000),
       checkIn: new Date("2026-07-01"),
       checkOut: new Date("2026-07-03"),
-      guests: [{ id: "g1", isMember: true }],
+      guests: offerGuests(new Date("2026-07-01"), new Date("2026-07-03")),
     });
     (mockCheckCapacity as ReturnType<typeof vi.fn>).mockResolvedValue({ available: true });
     mockTx.booking.update.mockResolvedValue({});
@@ -874,10 +961,9 @@ describe("confirmWaitlistOffer", () => {
       waitlistOfferExpiresAt: new Date(Date.now() + 86400000),
       checkIn: farFuture,
       checkOut: new Date(farFuture.getTime() + 2 * 86400000),
-      guests: [
-        { id: "g1", isMember: true },
-        { id: "g2", isMember: false },
-      ],
+      guests: offerGuests(farFuture, new Date(farFuture.getTime() + 2 * 86400000), {
+        withNonMember: true,
+      }),
     });
     (mockCheckCapacity as ReturnType<typeof vi.fn>).mockResolvedValue({ available: true });
     mockTx.booking.update.mockResolvedValue({});
@@ -913,10 +999,9 @@ describe("confirmWaitlistOffer", () => {
       nonMemberHoldUntil: new Date("2026-07-01"),
       checkIn: farFuture,
       checkOut: new Date(farFuture.getTime() + 2 * 86400000),
-      guests: [
-        { id: "g1", isMember: true },
-        { id: "g2", isMember: false },
-      ],
+      guests: offerGuests(farFuture, new Date(farFuture.getTime() + 2 * 86400000), {
+        withNonMember: true,
+      }),
     });
     (mockCheckCapacity as ReturnType<typeof vi.fn>).mockResolvedValue({ available: true });
     mockTx.booking.update.mockResolvedValue({});
@@ -949,7 +1034,7 @@ describe("confirmWaitlistOffer", () => {
       waitlistOfferExpiresAt: new Date(Date.now() - 1000),
       checkIn: new Date("2026-07-01"),
       checkOut: new Date("2026-07-03"),
-      guests: [{ id: "g1", isMember: true }],
+      guests: offerGuests(new Date("2026-07-01"), new Date("2026-07-03")),
     });
 
     const result = await confirmWaitlistOffer("booking1", "m1");
@@ -973,7 +1058,7 @@ describe("confirmWaitlistOffer", () => {
         waitlistOfferExpiresAt: null,
         checkIn: new Date("2026-07-01"),
         checkOut: new Date("2026-07-03"),
-        guests: [{ id: "g1", isMember: true }],
+        guests: offerGuests(new Date("2026-07-01"), new Date("2026-07-03")),
       });
 
     const result = await confirmWaitlistOffer("booking1", "m1");
@@ -999,7 +1084,7 @@ describe("confirmWaitlistOffer", () => {
       waitlistOfferExpiresAt: new Date(Date.now() + 86400000),
       checkIn: new Date("2026-07-01"),
       checkOut: new Date("2026-07-03"),
-      guests: [{ id: "g1", isMember: true }],
+      guests: offerGuests(new Date("2026-07-01"), new Date("2026-07-03")),
     });
 
     const result = await confirmWaitlistOffer("booking1", "m2");
@@ -1023,7 +1108,7 @@ describe("confirmWaitlistOffer", () => {
       waitlistOfferExpiresAt: new Date(Date.now() + 86400000),
       checkIn: new Date("2026-07-01"),
       checkOut: new Date("2026-07-03"),
-      guests: [{ id: "g1", isMember: true }],
+      guests: offerGuests(new Date("2026-07-01"), new Date("2026-07-03")),
     });
     (mockCheckCapacity as ReturnType<typeof vi.fn>).mockResolvedValue({ available: false });
     mockTx.booking.update.mockResolvedValue({});
@@ -1048,7 +1133,7 @@ describe("confirmWaitlistOffer", () => {
       waitlistOfferExpiresAt: null,
       checkIn: new Date("2026-07-01"),
       checkOut: new Date("2026-07-03"),
-      guests: [{ id: "g1", isMember: true }],
+      guests: offerGuests(new Date("2026-07-01"), new Date("2026-07-03")),
     });
 
     const result = await confirmWaitlistOffer("booking1", "m1");

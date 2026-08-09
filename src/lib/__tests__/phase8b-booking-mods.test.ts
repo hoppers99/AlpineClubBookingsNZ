@@ -170,7 +170,9 @@ vi.mock("@/lib/booking-batch-modification-service", () => ({
 }));
 
 import {
+  fenceHostingPolicyFindMany,
   fenceMemberFindMany,
+  hostingMemberRow,
   recordingBookingDouble,
 } from "@/lib/__tests__/support/hosting-participant-fence-double";
 import { auth } from "@/lib/auth";
@@ -218,9 +220,72 @@ afterEach(() => {
   vi.useRealTimers();
 });
 
+/**
+ * Complete a fixture's guest rows into the shape the hosting review actually
+ * loads (#2675).
+ *
+ * Beyond the name and id these fixtures already carry, `BOOKING_HOSTING_SELECT`
+ * (adult-member-hosting-review.ts) hydrates five more facts off every booking
+ * guest — `stayStart`, `stayEnd`, `nights`, `consentStatus` and the live `member`
+ * relation — and `toHostingParticipants` reads all five the moment the lodge's
+ * mode is active. No fixture in this file carried any of them, because with the
+ * tx double answering `adultMemberHostingPolicy.findMany -> []` the resolved mode
+ * was DISABLED, the reconciler took its early return, and the evaluator never
+ * ran. Two of the five do NOT degrade gracefully:
+ *
+ *  - `nights` is dereferenced as `guest.nights.length`, so `undefined` throws a
+ *    TypeError. `[]` is legitimate — it is the pre-#713 row shape — and falls
+ *    back to the guest's own `stayStart`..`stayEnd` envelope.
+ *  - `member` is tested with `member !== null && member.active === true`
+ *    (`memberIsInGoodStanding`), and `undefined !== null` is TRUE, so a MISSING
+ *    key reads `undefined.active` and throws rather than treating the guest as a
+ *    non-member.
+ *
+ * `member` is derived from `memberId` and never from the `isMember` snapshot
+ * beside it, because that is the only pairing production can emit: the relation
+ * IS the foreign key. A guest with a `memberId` therefore gets an adult member
+ * row in good standing — the shape that qualifies as a host, so a fixture whose
+ * party is member-linked raises no hosting hazard and behaves exactly as it did
+ * with the rule off — and a guest without one gets an explicit `null`.
+ *
+ * The guest's own values always win: a fixture that states its stay window or
+ * its per-night rows keeps them, and only the absent facts are filled in.
+ *
+ * THE GUEST'S OWN `ageTier` IS CARRIED ONTO THE MEMBER ROW (#2675 review).
+ * `BookingGuest.ageTier` and `Member.ageTier` are separate columns that a real
+ * row always agrees on, and it is the MEMBER's that
+ * `participantQualifiesAsHost` reads. Letting `hostingMemberRow` fall back to
+ * its ADULT default would score a member-linked CHILD or YOUTH guest as an
+ * adult host and quietly suppress a hosting violation production would raise —
+ * an ADULT Member row hanging off a CHILD guest row being precisely the
+ * "shape production cannot emit" this whole helper exists to stop.
+ */
+function completeHostingGuestRows<
+  T extends { memberId?: string | null; ageTier?: string },
+>(guests: readonly T[], checkIn: Date, checkOut: Date) {
+  return guests.map((guest) => ({
+    // A guest with no stay window of its own stays the whole booking, which is
+    // what every route in this file assumes when it reprices the full party.
+    stayStart: checkIn,
+    stayEnd: checkOut,
+    nights: [] as Array<{ stayDate: Date }>,
+    // `null` = no consent was ever needed, which is operationally present (D-12)
+    // and the right default for an ordinary guest row.
+    consentStatus: null as string | null,
+    ...guest,
+    member:
+      typeof guest.memberId === "string"
+        ? hostingMemberRow(
+            guest.memberId,
+            guest.ageTier ? { ageTier: guest.ageTier } : {},
+          )
+        : null,
+  }));
+}
+
 // Helper to make a booking object
 function makeBooking(overrides: Record<string, unknown> = {}) {
-  return {
+  const booking = {
     id: "bk1",
     memberId: "m1",
     // Booking.lodgeId is NOT NULL in the schema, so a real row always carries
@@ -245,6 +310,17 @@ function makeBooking(overrides: Record<string, unknown> = {}) {
     promoRedemption: null,
     ...overrides,
   };
+  // #2675: applied AFTER the overrides, so a scenario that supplies its own
+  // guest list is completed too — otherwise the fixtures that override `guests`
+  // (most of the interesting ones) would still crash the evaluator.
+  return {
+    ...booking,
+    guests: completeHostingGuestRows(
+      booking.guests,
+      booking.checkIn,
+      booking.checkOut,
+    ),
+  };
 }
 
 // Create a mock tx that behaves like prisma inside a transaction
@@ -267,7 +343,19 @@ function makeTx(booking: ReturnType<typeof makeBooking>) {
     lodgeSettings: { findUnique: async () => ({ capacity: 29 }) },
     // #2364: the hosting review is reconciled inside the booking write, so
     // every prisma/tx double a booking path runs against needs this client.
-    adultMemberHostingPolicy: { findMany: vi.fn().mockResolvedValue([]) },
+    // #2623 T5 / #2675: an ACTIVE mode, because the gate now standing in front
+    // of the participant fence returns early on an inactive one. `[]` resolved
+    // to DISABLED, so every booking write in this file took that early return
+    // and the #2619 fence doubles beside it exercised nothing.
+    //
+    // ADMIN_REVIEW_REQUIRED rather than the helper's ENFORCED default: under
+    // ENFORCED a hosting hazard REFUSES the booking write by throwing, which
+    // would change what these scenarios assert; under review-only the hazard is
+    // recorded and the write proceeds, and the fence is owed either way (see
+    // `hostingModeIsActive` at the gate).
+    adultMemberHostingPolicy: {
+      findMany: fenceHostingPolicyFindMany({ mode: "ADMIN_REVIEW_REQUIRED" }),
+    },
     booking: {
       findUnique: fenceBooking.findUnique,
       findMany: fenceBooking.findMany,
@@ -367,6 +455,51 @@ function makeTx(booking: ReturnType<typeof makeBooking>) {
 }
 
 // --- Tests ---
+
+/**
+ * #2675 review — the hosting fixture completion must not invent an ADULT member.
+ *
+ * `completeHostingGuestRows` synthesises the live `Member` relation from
+ * `memberId`, and `hostingMemberRow` defaults to ADULT. Deriving it from the id
+ * alone would score any member-linked CHILD or YOUTH guest as an adult host at
+ * `participantQualifiesAsHost` — which reads the MEMBER's tier, not the guest
+ * row's — and suppress a hosting violation production would raise, with nothing
+ * in this file failing.
+ */
+describe("completeHostingGuestRows (#2675)", () => {
+  it("carries the guest's own age tier onto the Member row it synthesises", () => {
+    const rows = completeHostingGuestRows(
+      [
+        { id: "g1", memberId: "m-adult", ageTier: "ADULT" },
+        { id: "g2", memberId: "m-child", ageTier: "CHILD" },
+        { id: "g3", memberId: null, ageTier: "CHILD" },
+      ],
+      new Date("2026-06-01"),
+      new Date("2026-06-03"),
+    );
+
+    expect(rows[0].member).toEqual(
+      expect.objectContaining({ id: "m-adult", ageTier: "ADULT" }),
+    );
+    expect(rows[1].member).toEqual(
+      expect.objectContaining({ id: "m-child", ageTier: "CHILD" }),
+    );
+    // A true non-member gets an EXPLICIT null, never a partial row: the standing
+    // predicate tests `member !== null`, so an absent key throws instead.
+    expect(rows[2].member).toBeNull();
+  });
+
+  it("still defaults to ADULT for a guest row that states no tier", () => {
+    const [row] = completeHostingGuestRows(
+      [{ id: "g1", memberId: "m1" }],
+      new Date("2026-06-01"),
+      new Date("2026-06-03"),
+    );
+    expect(row.member).toEqual(
+      expect.objectContaining({ id: "m1", ageTier: "ADULT" }),
+    );
+  });
+});
 
 describe("PUT /api/bookings/[id]/modify-dates", () => {
   let PUT: typeof import("@/app/api/bookings/[id]/modify-dates/route").PUT;

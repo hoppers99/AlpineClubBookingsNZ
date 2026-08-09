@@ -976,42 +976,61 @@ describe("the participant fence stays switched ON where a suite claims it (#2623
    *
    * THIS LIST IS THE POINT. The fence doubles' own docstring names "exercised
    * their seams with the fence effectively switched off" as the state to avoid,
-   * and T5 silently put eight suites back into it — silently, because a double
-   * that is never reached looks exactly like a double that passes. An exact
-   * `toEqual` turns that into an enumerated, reviewable list: a NEW suite that
-   * wires the doubles without an active policy fails here, and fixing one of
-   * these means deleting its line.
+   * and T5 silently put eleven suites into it — silently, because a double that
+   * is never reached looks exactly like a double that passes. An exact `toEqual`
+   * turns that into an enumerated, reviewable list: a NEW suite that wires the
+   * doubles without an active policy fails here, and fixing one means deleting
+   * its line.
    *
-   * NONE of them is a one-line fix, which is why they are listed rather than
-   * corrected. Two distinct blockers, both measured:
+   * EIGHT OF THE ELEVEN HAVE NOW BEEN FIXED (#2675) and their lines deleted.
+   * They were the FIXTURE-DEPTH group: supplying an active mode does not merely
+   * re-enable the fence, it runs the hosting EVALUATOR, and their booking
+   * fixtures were not hosting-evaluable. Guest rows carried `isMember: true`
+   * with no nested `member`, and because `memberIsInGoodStanding` tests
+   * `member !== null` — which `undefined` satisfies — the seam did not degrade
+   * to "not a member", it read `undefined.active` and threw. The participant's
+   * member data comes off the booking fixture's own guest rows, never a
+   * `member.findMany` a double could intercept, so the fix was to complete each
+   * fixture: `member` (a row via `hostingMemberRow`, or an explicit `null`),
+   * `consentStatus`, `nights` and the stay window.
    *
-   *   * FIXTURE DEPTH (the first eight, 77 tests). Supplying an active mode runs
-   *     the hosting EVALUATOR, and these suites' booking fixtures are not
-   *     hosting-evaluable: guest rows carry `isMember: true` with no `memberId`
-   *     and no nested member, so `memberIsInGoodStanding` reads
-   *     `undefined.active` and the seam throws. The participant's member data
-   *     comes off the booking fixture's own guest rows, not a `member.findMany`
-   *     a double could intercept, so restoring coverage means reshaping each
-   *     suite's booking fixtures.
-   *   * HOISTING (the last three, 0 tests). Their policy double lives inside a
-   *     `vi.mock` factory, which vitest hoists above the imports, so referencing
-   *     `fenceHostingPolicyFindMany` there is a `ReferenceError: Cannot access
-   *     '__vi_import_N__' before initialization`. Those three lose no coverage —
-   *     measured, no test in them reaches the gate — but they cannot take the
-   *     change in this shape either.
+   * MEASURED, TWICE, IN OPPOSITE DIRECTIONS — because "the fixture no longer
+   * takes the shortcut" and "the fixture now reaches the fence" are different
+   * claims and only the second one is coverage:
+   *
+   *  - a `throw` in the T5 early return (`adult-member-hosting-review.ts`, the
+   *    `!hostingModeIsActive(planned.mode)` branch of
+   *    `reconcileAdultMemberHostingReviewWithSiblings`) failed **77 of these
+   *    eight suites' 198 tests** before the fixture work — 39 / 11 / 7 / 6 / 5 /
+   *    3 / 3 / 3, in the order listed below — and fails **0 of 198** after it;
+   *  - a `throw` inside `acquireOrValidateQueueParticipantProof` itself fails
+   *    **exactly those same 77**, in exactly that per-suite split. The two
+   *    numbers matching is the point: every test that used to skip the fence now
+   *    executes it, rather than merely having stopped taking one branch.
+   *
+   * None of the eight needed an assertion changed. (77, not the 78 an earlier
+   * draft of this docstring carried — that figure was never reproduced and the
+   * issue's own probe table also says 77.)
+   *
+   * THE THREE THAT REMAIN ARE BLOCKED BY HOISTING, not by fixtures, and they
+   * lose no coverage — measured, no test in them reaches the gate at all. Their
+   * policy double lives inside a `vi.mock` factory, which vitest hoists above
+   * the imports, so referencing `fenceHostingPolicyFindMany` there is a
+   * `ReferenceError: Cannot access '__vi_import_N__' before initialization`.
+   * They are recorded here permanently with that reason rather than left to look
+   * like unfinished work.
+   *
+   * A note for whoever fixes the next one: several of the eight ALSO keep a
+   * second, hoisted policy double inside their own `vi.mock("@/lib/prisma")`
+   * factory, and those were deliberately left alone. They are dead weight —
+   * every `reconcileAdultMemberHostingReviewWithSiblings` call site in `src/`
+   * passes `tx`, never the singleton — which was confirmed by making one throw
+   * and observing the suite stay green.
    */
   const FENCE_DOUBLES_WITHOUT_AN_ACTIVE_POLICY = [
-    "src/lib/__tests__/booking-guest-consent-authority.test.ts",
     "src/lib/__tests__/booking-request-quotes.test.ts",
     "src/lib/__tests__/booking-request.test.ts",
-    "src/lib/__tests__/fix-mod-payment.test.ts",
-    "src/lib/__tests__/guest-removal-minors-alert-route.test.ts",
-    "src/lib/__tests__/guests-add-notify-choice.test.ts",
-    "src/lib/__tests__/partial-stay-edit-pricing.test.ts",
-    "src/lib/__tests__/phase8b-booking-mods.test.ts",
     "src/lib/__tests__/school-booking-request.test.ts",
-    "src/lib/__tests__/waitlist-confirm-minimum-stay.test.ts",
-    "src/lib/__tests__/waitlist.test.ts",
   ];
 
   it("lists every suite whose fence doubles the mode gate now bypasses", () => {
@@ -1026,12 +1045,18 @@ describe("the participant fence stays switched ON where a suite claims it (#2623
         }
         if (!/\.test\.tsx?$/.test(entry.name)) continue;
         const rel = path.relative(process.cwd(), full).split(path.sep).join("/");
-        const source = readRepoFile(rel);
+        // COMMENT-STRIPPED, not raw (#2675 review). This file defines
+        // `readRepoCode` precisely because a plain text search reads prose as a
+        // call site, and the suites below carry long comments naming both the
+        // module and the helper. Reading the raw file let an author delete the
+        // wiring, keep the explanation, and stay green.
+        const source = readRepoCode(rel);
         if (!source.includes("hosting-participant-fence-double")) continue;
         // The suite that DEFINES the hosting behaviour sets its own policies per
         // test rather than through the shared double, so it is not in scope.
         if (rel === "src/lib/__tests__/adult-member-hosting-review.test.ts") continue;
-        if (source.includes("fenceHostingPolicyFindMany")) continue;
+        // A real CALL, not the identifier appearing somewhere in the file.
+        if (/fenceHostingPolicyFindMany\s*\(/.test(source)) continue;
         wired.push(rel);
       }
     };
@@ -1043,5 +1068,95 @@ describe("the participant fence stays switched ON where a suite claims it (#2623
         "double `fenceHostingPolicyFindMany()` (and make its booking fixtures " +
         "hosting-evaluable), or add it here with a reason.",
     ).toEqual(FENCE_DOUBLES_WITHOUT_AN_ACTIVE_POLICY);
+  });
+
+  /**
+   * The census above can only see that the helper is CALLED — it cannot see what
+   * mode the call states, and #2675 made `{ mode: ... }` an override eight
+   * suites now write. Changing one of those words back to an inactive mode
+   * restores the exact #2623 T5 bypass with every test in the tree still green,
+   * because the gate returns before the fence and the doubles beside it simply
+   * stop being reached. Nothing throws; coverage just evaporates.
+   *
+   * So the value is guarded where it is WRITTEN, and this pins that guard.
+   */
+  it("refuses to build a policy double in an INACTIVE hosting mode", async () => {
+    const { fenceHostingPolicyFindMany } = await import(
+      "./support/hosting-participant-fence-double"
+    );
+
+    for (const inactive of ["DISABLED", "", "enforced", null, undefined]) {
+      expect(
+        () =>
+          fenceHostingPolicyFindMany({
+            mode: inactive as unknown as "ENFORCED",
+          }),
+        `mode: ${JSON.stringify(inactive)} must be refused`,
+      ).toThrow(/ACTIVE hosting mode/);
+    }
+
+    // Both ACTIVE modes stay available — the choice between refusing a hazard
+    // and recording it is a real one a suite has to make.
+    for (const active of ["ENFORCED", "ADMIN_REVIEW_REQUIRED"] as const) {
+      const double = fenceHostingPolicyFindMany({ mode: active });
+      await expect(double()).resolves.toEqual([
+        expect.objectContaining({ mode: active }),
+      ]);
+    }
+    // And the default, which states no mode at all, is still ENFORCED.
+    await expect(fenceHostingPolicyFindMany()()).resolves.toEqual([
+      expect.objectContaining({ mode: "ENFORCED" }),
+    ]);
+  });
+
+  /**
+   * The mode every wired suite actually states, read off the tree.
+   *
+   * Belt and braces with the runtime refusal in the helper: that one fires only
+   * when a bad mode reaches it AT RUNTIME, so a call site inside a `describe`
+   * nobody runs in a focused pass, or one behind a branch, can sit wrong for a
+   * while. This reads the literal each suite writes, statically, so the census
+   * owns the VALUE as well as the call. (The third route — dropping the helper
+   * and hand-rolling a `DISABLED` double under the same key — is what the census
+   * above catches: a suite wiring the fence doubles with no
+   * `fenceHostingPolicyFindMany(` call is listed there or it fails.)
+   */
+  it("states an active mode at every fence-policy call site", () => {
+    const root = path.resolve(process.cwd(), "src");
+    const offenders: string[] = [];
+    const walk = (dir: string) => {
+      for (const entry of readdirSync(dir, { withFileTypes: true })) {
+        const full = path.join(dir, entry.name);
+        if (entry.isDirectory()) {
+          walk(full);
+          continue;
+        }
+        if (!/\.test\.tsx?$/.test(entry.name)) continue;
+        const rel = path.relative(process.cwd(), full).split(path.sep).join("/");
+        // This census file is the guard, not a subject of it: the test above
+        // calls the helper deliberately with inactive modes to prove it refuses
+        // them, and with a loop variable rather than a literal.
+        if (rel === "src/lib/__tests__/adult-member-hosting-call-sites.test.ts") {
+          continue;
+        }
+        const source = readRepoCode(rel);
+        for (const match of source.matchAll(
+          /fenceHostingPolicyFindMany\s*\(([^)]*)\)/g,
+        )) {
+          const args = match[1];
+          if (!/\bmode\b/.test(args)) continue; // the default is ENFORCED
+          if (/"(ENFORCED|ADMIN_REVIEW_REQUIRED)"/.test(args)) continue;
+          offenders.push(`${rel}: ${match[0]}`);
+        }
+      }
+    };
+    walk(root);
+    expect(
+      offenders.sort(),
+      "A fence policy double naming an INACTIVE mode switches the #2619 " +
+        "participant fence off in the suite that wires it (#2623 T5's gate " +
+        "returns first) while every test stays green — the #2675 bypass, " +
+        "restored by one word. Use ENFORCED or ADMIN_REVIEW_REQUIRED.",
+    ).toEqual([]);
   });
 });

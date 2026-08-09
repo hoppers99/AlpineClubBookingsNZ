@@ -597,3 +597,96 @@ Cancelled-booking soft-delete may hide an operational duplicate only when it
 preserves the booking row and no external money/Xero history needs to remain
 operator-visible by default. Balanced internal modification deltas that net to
 zero are not external financial history by themselves.
+
+### INV-ADDPAY-030
+
+**A soft-deleted booking is always `CANCELLED`, and stays that way** (#2674).
+`Booking.deletedAt` has exactly one writer — `softDeleteCancelledBooking` in
+`src/lib/booking-delete.ts`, which refuses any status other than `CANCELLED` —
+nothing anywhere transitions a booking back out of `CANCELLED`, and `deletedAt`
+is never cleared. Two consequences follow, and both are load-bearing:
+
+- **A fixture carrying `deletedAt` beside a live status models a shape
+  production cannot emit.** Deletion is not an orthogonal "archived" flag layered
+  over any status, which is what the schema shape alone would suggest.
+- **Most booking routes refuse a deleted booking only INCIDENTALLY**, through a
+  status gate that excludes `CANCELLED` rather than through any deletion check.
+  A sweep of all 27 exported methods under `src/app/api/bookings/[id]/**` (#2674)
+  found, **before** the guards added by that issue: **4** consulting `deletedAt`
+  directly (`additional-payment-secret` GET, `requested-room/options` GET,
+  `send-guest-payment-link` POST, `[id]` DELETE); **17** methods refusing a
+  deleted booking only via some other guard; **4** genuinely reaching a write
+  (`confirm-modification-payment` POST, `guests/[guestId]/consent` POST,
+  `exception-requests/[requestId]` PATCH, `refund-request` POST); and **2**
+  read-only GETs that check nothing and will serve a deleted booking's data to
+  its own owner (`change-requests`, `refund-request`).
+  4 + 17 + 4 + 2 = 27. **After** the guards — `arrival-time` PUT and DELETE,
+  `refund-request` POST, and the `booking: { deletedAt: null }` relation filter
+  inside `cancelModificationExceptionRequest` — the split is **8** direct,
+  **15** incidental, **2** still reaching a write, and the same **2** unguarded
+  reads. So "this route is safe" is not the same claim as "this route checks",
+  and a change to a status rule can uncover a write nobody meant to expose. Any
+  NEW booking-scoped write should carry the guard explicitly rather than inherit
+  the coincidence.
+
+  Two earlier revisions of this paragraph were wrong, and both errors are worth
+  naming because each would have sent someone to the wrong place. The first said
+  15 rather than 17 incidental and omitted the reads entirely, so its figures
+  summed to 23 and four methods went unaccounted for. The second counted
+  `cancel-preview` GET among the unguarded reads: it is not one. That route
+  rejects any status outside `PENDING`/`PAYMENT_PENDING`/`CONFIRMED`/`PAID` with
+  a `400` before it builds any payload, and by the first clause of this invariant
+  a soft-deleted booking is always `CANCELLED` — so it refuses every deleted
+  booking, unconditionally, and returns no booking data. It is an incidental
+  refusal, which is exactly the category this invariant exists to distinguish
+  from a real check.
+
+### INV-ADDPAY-031
+
+The house shape for the guard is `requested-room/options` (#2673): select
+`deletedAt` beside the authority fields, return **404 uniformly for every role**
+— no Full Admin exemption, because that exemption belongs to record-*viewing*
+surfaces like `bookings/[id]/page.tsx` and not to writes — and place the check
+**after** the authorisation check, so an unauthorised caller gets `403` either
+way rather than a deleted-or-live oracle. The 404 body must be **byte-identical**
+to the not-found body, so an authorised caller cannot tell a deleted booking from
+one that never existed.
+
+The ordering half is the part that is easy to get wrong, and it was wrong on one
+of the four routes the census above found "consulting `deletedAt` directly".
+`send-guest-payment-link` POST folded the deletion test into its not-found branch
+(`if (!booking || booking.deletedAt)`) **above** its 403, so a caller with no
+claim on the booking got `403` while it was live and `404` the moment an admin
+deleted it — a deleted-or-live oracle on any id whose existence they could
+otherwise establish (a booking they were a guest on, a shared URL). Consulting
+`deletedAt` is therefore not sufficient evidence that a route follows this rule;
+the ordering has to be read. Reordered in #2674 and pinned by
+`src/app/api/bookings/[id]/send-guest-payment-link/__tests__/deleted-booking-ordering.test.ts`.
+
+### INV-ADDPAY-032
+
+Two write paths are known to remain reachable on a soft-deleted booking, and are
+tracked separately because each needs a decision rather than a guard:
+
+- `bookings/[id]/guests/[guestId]/consent` — **both** arms, not just one. The
+  APPROVE arm is the more direct of the two: it takes the claim
+  (`member-guest-consent-service.ts:426-439`) having read neither `status` nor
+  `deletedAt` — the booking is loaded there only to pick a lodge lock — then
+  reconciles beds and emails the booking's owner about a record the club has
+  deleted. The DECLINE arm additionally records a response outside the
+  transaction it rolls back.
+- `bookings/[id]/confirm-modification-payment` — where refusing to record a
+  payment Stripe has already captured is not self-evidently safer than recording
+  it.
+
+### INV-ADDPAY-033
+
+The two unguarded read-only GETs above — `change-requests` and `refund-request` —
+are tracked with them: each reads the booking on `{ memberId }` alone and returns
+a deleted booking's own data to its own owner after the 403, which is a smaller
+problem than a write but is still a surface the booking page itself refuses.
+
+`cancel-preview` GET is **not** one of them, though an earlier revision of
+`INV-ADDPAY-030` listed it as a third: its status gate refuses every deleted
+booking with a `400` before any payload is built. Anyone acting on that earlier
+figure would have gone to add a guard to a route that already refuses.

@@ -47,9 +47,39 @@ export async function GET(req: NextRequest) {
     );
   }
 
+  const assignmentId = searchParams.get("assignmentId") ?? undefined;
+  // #2678 surface 2: A NAMED ASSIGNMENT FIXES THE LODGE, AND THE SERVER OWNS IT.
+  //
+  // Same rule as `requested-room/options` (#2673), the booking wizard (#2677)
+  // and the bed-allocation board (#2678 surface 1), stated in
+  // `docs/multi-lodge/lodge-scoping-contract.md`: a read that feeds an editor on
+  // a row that already exists derives its lodge from that row, never from a
+  // client-supplied `lodgeId`. `HutLeaderAssignment.lodgeId` is NOT NULL, so an
+  // assignment always answers the question.
+  //
+  // Only the EDIT case has an assignment. The create form legitimately passes a
+  // chosen lodge — there is no assignment yet — and is unaffected. A
+  // contradicting `lodgeId` beside an `assignmentId` is IGNORED rather than
+  // rejected, matching the sibling reads: it is not the caller's answer to
+  // anything, so refusing it would report a fault in a value the server does not
+  // use. The writer's own cross-lodge refusal
+  // (`custodian-assignment.ts`, `BED_WRONG_LODGE`) stays as defence in depth.
+  //
+  // An `assignmentId` that resolves to nothing changes nothing: the caller's own
+  // `lodgeId` still applies, and `listCustodianBedOptions` already treats the id
+  // as an exclusion hint that simply matches no hold.
+  const assignmentLodgeId = assignmentId
+    ? (
+        await prisma.hutLeaderAssignment.findUnique({
+          where: { id: assignmentId },
+          select: { lodgeId: true },
+        })
+      )?.lodgeId
+    : undefined;
+
   const lodgeId = await resolveOptionalActiveLodgeId(
     prisma,
-    searchParams.get("lodgeId") ?? undefined,
+    assignmentLodgeId ?? searchParams.get("lodgeId") ?? undefined,
   );
   if (!lodgeId) {
     return NextResponse.json(
@@ -62,7 +92,7 @@ export async function GET(req: NextRequest) {
     lodgeId,
     startDate: parseDateOnly(startDate),
     endDate: parseDateOnly(endDate),
-    assignmentId: searchParams.get("assignmentId") ?? undefined,
+    assignmentId,
   });
 
   // Grouped by room so the picker reads the way the board does.

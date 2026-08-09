@@ -525,6 +525,10 @@ Prefix `INV-ADDPAY`.
 | `INV-ADDPAY-020` | Stepped Stripe refunds settle as per-delta credit notes summing exactly to the refunded total |
 | `INV-ADDPAY-021` | For Stripe payments the local refund ledger is truth; inbound Xero may only raise it |
 | `INV-ADDPAY-022` | Soft-delete may hide a duplicate only when no external money history must stay operator-visible |
+| `INV-ADDPAY-030` | A soft-deleted booking is always CANCELLED and stays so; most routes refuse it only incidentally |
+| `INV-ADDPAY-031` | House shape for a deleted-booking guard: 404 for every role, after the authorisation check |
+| `INV-ADDPAY-032` | Two writes stay reachable on a soft-deleted booking, tracked as decisions not guards |
+| `INV-ADDPAY-033` | Two unguarded GETs still serve a deleted booking's own data to its owner |
 
 ## Analytics And Privacy
 
@@ -671,6 +675,7 @@ File: [`invariants/integrations.md`](invariants/integrations.md). Prefix
 | `INV-INT-013` | Mode or rule changes never auto-resync the population; members re-group on their next trigger |
 | `INV-INT-014` | The per-member sync keeps Xero calls outside transactions, ledgers each op, and adds before removing |
 | `INV-INT-015` | The bulk re-sync is admin-triggered, dry-run-first, chunked, resumable, and never moves the watermark |
+| `INV-INT-016` | `GET /api/bookings/rooms` keeps its no-`lodgeId` mode for FORKED/EXTERNAL consumers; no `src/` client may use it |
 
 ## Operations
 
