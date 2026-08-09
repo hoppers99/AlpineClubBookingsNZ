@@ -6,25 +6,29 @@ import nextTs from "eslint-config-next/typescript";
 // #2264 — the three date-rendering restrictions, named so the "Number
 // formatting only" block below can re-state the two date ones while dropping
 // just `toLocaleString`, instead of switching the whole rule off.
+//
+// All three enforce INV-DATE-015 (`docs/invariants/booking-dates-and-capacity.md`),
+// and each message opens with that id so whoever trips the rule is handed the
+// rule it belongs to rather than only the fix (#2691).
 const NO_BARE_TO_LOCALE_DATE_STRING = {
   selector:
     "CallExpression > MemberExpression.callee[property.name='toLocaleDateString']",
   message:
-    "Use formatNZDate/formatNZDateTime/formatNZLongDate/formatNZWeekdayDate/formatNZMonthYear from @/lib/nzst-date, or a module-level Intl.DateTimeFormat pinned to APP_LOCALE + APP_TIME_ZONE. A bare toLocaleDateString renders in the viewer's zone and locale (#2256, #2264).",
+    "INV-DATE-015: Use formatNZDate/formatNZDateTime/formatNZLongDate/formatNZWeekdayDate/formatNZMonthYear from @/lib/nzst-date, or a module-level Intl.DateTimeFormat pinned to APP_LOCALE + APP_TIME_ZONE. A bare toLocaleDateString renders in the viewer's zone and locale (#2256, #2264).",
 };
 
 const NO_BARE_TO_LOCALE_TIME_STRING = {
   selector:
     "CallExpression > MemberExpression.callee[property.name='toLocaleTimeString']",
   message:
-    "Use formatNZTime/formatNZDateTime from @/lib/nzst-date, or a module-level Intl.DateTimeFormat pinned to APP_LOCALE + APP_TIME_ZONE. A bare toLocaleTimeString renders in the viewer's zone and locale (#2256, #2264).",
+    "INV-DATE-015: Use formatNZTime/formatNZDateTime from @/lib/nzst-date, or a module-level Intl.DateTimeFormat pinned to APP_LOCALE + APP_TIME_ZONE. A bare toLocaleTimeString renders in the viewer's zone and locale (#2256, #2264).",
 };
 
 const NO_BARE_TO_LOCALE_STRING = {
   selector:
     "CallExpression > MemberExpression.callee[property.name='toLocaleString']",
   message:
-    "Use formatNZDateTime/formatNZDate from @/lib/nzst-date, or a module-level Intl.DateTimeFormat pinned to APP_LOCALE + APP_TIME_ZONE. A bare toLocaleString on a Date renders in the viewer's zone and locale (#2256, #2264). Formatting a NUMBER? Add the file to the Number-formatting block in this config with a one-line reason.",
+    "INV-DATE-015: Use formatNZDateTime/formatNZDate from @/lib/nzst-date, or a module-level Intl.DateTimeFormat pinned to APP_LOCALE + APP_TIME_ZONE. A bare toLocaleString on a Date renders in the viewer's zone and locale (#2256, #2264). Formatting a NUMBER? Add the file to the Number-formatting block in this config with a one-line reason.",
 };
 
 // #2289 — the two shapes of raw SQL that can lie about their own result.
@@ -53,11 +57,15 @@ const NO_BARE_TO_LOCALE_STRING = {
 // that only matched the tagged template would leave the exact banned pattern —
 // typed cast, `SELECT *`, `FOR UPDATE` on a read — passing lint in the style the
 // codebase already uses, which is worse than no rule because it reads as covered.
+//
+// Both messages enforce INV-OPS-001 (`docs/invariants/operations.md`), which
+// names these rules and the census test beside them as its two enforcement arms,
+// and both open with that id (#2691).
 const RAW_SQL_METHOD = "/^\\$(queryRaw|executeRaw)(Unsafe)?$/";
 const RESULT_CAST_MESSAGE =
-  "Do not type a raw-SQL result: `$queryRaw<T>` is an unchecked cast and a wrong column name arrives as `undefined`, not as an error (#2289). Taking a row lock? Use `$executeRaw` on a statement selecting a constant (`SELECT 1 … FOR UPDATE`) and read what you need through the Prisma model. Genuinely cannot express it as a model read? Validate the rows with `decodeRawRows` from @/lib/raw-sql-rows.";
+  "INV-OPS-001: Do not type a raw-SQL result: `$queryRaw<T>` is an unchecked cast and a wrong column name arrives as `undefined`, not as an error (#2289). Taking a row lock? Use `$executeRaw` on a statement selecting a constant (`SELECT 1 … FOR UPDATE`) and read what you need through the Prisma model. Genuinely cannot express it as a model read? Validate the rows with `decodeRawRows` from @/lib/raw-sql-rows.";
 const SELECT_STAR_MESSAGE =
-  "Do not `SELECT *` in a raw statement (#2289): the returned column set becomes whatever the database currently has, so a migration changes the result shape with nothing in the source to review. Name the columns — or, if the statement is only there for a row lock, select a constant (`SELECT 1 … FOR UPDATE`).";
+  "INV-OPS-001: Do not `SELECT *` in a raw statement (#2289): the returned column set becomes whatever the database currently has, so a migration changes the result shape with nothing in the source to review. Name the columns — or, if the statement is only there for a row lock, select a constant (`SELECT 1 … FOR UPDATE`).";
 
 // `$queryRaw<T>`…`` — the tagged-template cast.
 const NO_RAW_SQL_RESULT_CAST = {

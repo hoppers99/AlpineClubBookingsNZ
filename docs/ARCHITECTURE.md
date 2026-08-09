@@ -1022,7 +1022,9 @@ booking detail Admin tools card — read-only detection mirroring the
 stuck-state queries.
 
 Admin settings sections follow one canonical edit model (developer rule, binding
-for new or modified sections; see `AGENTS.md` → Change Discipline). A section
+for new or modified sections; `AGENTS.md` → Change Discipline and its routing
+table both send you here for it, and this page is where it is stated in full).
+A section
 renders read-only on mount and stages every change behind a per-section Edit →
 Save/Cancel step: no individual control auto-persists on toggle, Cancel reverts
 to the last saved snapshot, and Save writes once. Save is **dirty-gated as well
@@ -1039,7 +1041,10 @@ matching `area:edit` permission. The section renders an
 the view-only reason is then stated once, at the top of the section, in a
 permanently-mounted `role="status"` region, rather than on disabled buttons that
 are out of the tab order and whose `title` never fires at all (the shared
-`buttonVariants` set `disabled:pointer-events-none`). "Permanently mounted" is a
+`buttonVariants` set `disabled:pointer-events-none`). That region
+gates only the content, because a polite live region injected already-populated
+is silently dropped by some screen-reader/browser pairings.
+"Permanently mounted" is a
 POSITION rule as much as a rendering one, and it covers `PolicyFeedback`'s
 `role="alert"` / `role="status"` pair too: the section has a FRAME — banner,
 feedback regions, and, where the fetch is scope-keyed, the scope select — that
@@ -1140,6 +1145,62 @@ test fails and the numbers here, in `AGENTS.md`, in `docs/STYLE_GUIDE.md` (which
 publishes the exception TOTAL only), in
 `CHANGELOG.md` and in the `ViewOnlyActionButton` JSDoc all need updating
 together.
+
+**Banner or Notice: which component states the reason.** Two components are
+live here and they are not two names for one thing, which is why both appear in
+this page and in `AGENTS.md`. Since #2160 the **`AdminViewOnlySectionBanner` is
+the default for the admin tree**: a section that gates controls through
+`ViewOnlyActionButton` heads them with one banner and passes
+`describeReason={false}`, so the reason is stated once, in the reading order,
+ahead of the controls. `AdminViewOnlyNotice` — the older, per-section notice —
+is **retained deliberately in three cases**, and a developer who deletes one on
+sight removes an explanation nothing else gives:
+
+- **A surface that states view-only access WITHOUT gating a control through
+  `ViewOnlyActionButton`.** With no gated control there is nothing for the
+  banner to head.
+- **A section whose Notice is CONDITIONAL on no ancestor covering it.**
+  `member-lodge-access-card`, `member-committee-assignments-card` and
+  `member-seasonal-membership-card` each render their Notice only when
+  `ancestorRendersViewOnlyBanner` is false (#2168), so the member detail page —
+  which banners the whole page — sees no Notice, while the same card rendered
+  anywhere else still states the reason itself. The lodge-access Notice also
+  covers disabled CHECKBOXES, which are not `ViewOnlyActionButton`s and which no
+  banner rule reaches; that is why it is kept rather than deleted.
+- **A NARROWER permission scope nested inside a section the banner already
+  heads.** The banner states the section's own scope once at the top; a Notice
+  further down carries a DIFFERENT permission's reason for a subset of the
+  controls, so the two are not the same statement and the Notice is not
+  redundant. `backups/backups-client.tsx` is the clearest example — a
+  support-scoped banner heads the page, and the Credentials card carries a
+  Full-Admin-scoped Notice ("Only a Full Admin can set backup credentials") for
+  the fields only a Full Admin may write — and
+  `subscription-lockout-settings-panel.tsx` does the same with a finance-scoped
+  Notice over the subscription account and item codes inside a
+  membership-scoped section. Both render banner AND Notice AND gated buttons at
+  once.
+
+**Having both components in one file does not make it the third case.**
+`fees/_components/hut-fees-section.tsx` is the example to keep straight: its
+banner and its Notice are MUTUALLY EXCLUSIVE by construction
+(`{!forbidden && viewOnlyBanner}` against
+`{forbidden && <AdminViewOnlyNotice canEdit={false}>}`), the Notice is the
+stronger *you cannot even read this section* statement, and the `forbidden`
+branch renders no controls at all — so it is the FIRST case, in a branch, not a
+narrower scope nested under a banner. The file's own comment says showing both
+"would contradict itself". The test to apply is not "does this file have both
+components?" but "can both appear at the same time, naming different
+permissions?".
+
+So "a section with gated controls replaces its Notice with the banner" holds
+only for a Notice covering the SAME scope. Before deleting a Notice from a
+section that has a banner, check which permission its text names — if it is not
+the banner's, it is carrying a reason nothing else states. The nesting rule
+further down is banner-to-banner and does not forbid the third case: a Notice
+under a banner is not the same sentence twice. This distinction is also stated
+next to the code, in `AdminViewOnlySectionBanner`'s JSDoc in
+`src/components/admin/view-only-action.tsx`, which is where a developer meets it
+while writing; the two are the same rule and must be changed together.
 
 **Vouching for a child's coverage (#2168).** The coverage rule below is asserted
 per FILE, which the member detail page cannot satisfy: the owner's decision is
@@ -1325,9 +1386,9 @@ once, in the reading order. Both were also keyed off `!canEdit` rather than
 `canEdit === false`, so both appeared for a moment even for an admin who *can*
 change those settings. Both are deleted; the vouched buttons under them now lean
 on the banner. That is the general rule from #2160's `AdminViewOnlyNotice`
-guidance applied to a wizard step: keep a second sentence only when it names a
-DIFFERENT permission from the banner's (which is exactly what the nine
-exceptions above do).
+guidance — stated above under *Banner or Notice* — applied to a wizard step: keep
+a second sentence only when it names a DIFFERENT permission from the banner's
+(which is exactly what the nine exceptions above do).
 
 Two things were deliberately left alone. `xero/_components/connection-status-panel.tsx`'s
 connect / reconnect / disconnect buttons ARE finance-gated, matching the Xero
@@ -1432,7 +1493,9 @@ fields is not narrow enough on its own: it protects the fields the card does not
 own, but a field the card DOES own and the admin never touched still goes out
 from a stale draft and reverts whoever moved it. Send the changed fields only —
 the schema still receives every field, the untouched ones just come from the
-fresh read. This NARROWS the
+fresh read. Where the card owns both halves of a cross-field rule, re-check the
+COMPOSED pair after the fresh read: sending only the changed half can assemble a
+pair the admin never saw. This NARROWS the
 read-modify-write window to the milliseconds between that GET and the PUT; it
 does not close it. There is no ETag or `If-Match` on the route, so two genuinely
 simultaneous writes still resolve last-writer-wins — the same property the
@@ -1581,12 +1644,14 @@ handlers the same pre-update row and the second write becomes a no-op audit
 entry of the #2143 kind. The booking-periods and minimum-night-stay sections are
 the reference for that shape (#2142). Wherever the read endpoint SYNTHESISES
 defaults on a miss — or the editor is creating a row that does not exist yet —
-carry the first-save exception so committing the defaults stays reachable, but
+carry the first-save exception: count the draft as dirty so committing the
+defaults stays reachable, but
 never extend it to a FAILED load, where the same fallback values would let one
 click blind-write over a real stored policy. For the same reason a snapshot is
 authoritative only for the scope it was loaded for: a section whose fetch is
 keyed on something else (a lodge scope) must track that key WITH the snapshot
-and treat a mismatch as unknown, because a failed re-fetch leaves the previous
+and treat a mismatch as unknown — no editor, no destructive affordances, no
+first-save exception — because a failed re-fetch leaves the previous
 key's value in place. That binds LIST sections just as hard — there the stale
 value is a set of rows whose Edit, Delete, and Activate/Deactivate buttons all
 act on a row id belonging to the partition the admin has navigated away from —

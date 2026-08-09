@@ -1010,10 +1010,12 @@ describe("view-only section banner coverage (#2160)", () => {
 
   it("matches the coverage figures the docs publish", () => {
     /*
-      Four documents and one JSDoc block quote these numbers as fact:
-      `docs/ARCHITECTURE.md`, `AGENTS.md`, `docs/STYLE_GUIDE.md`,
+      Three documents and one JSDoc block quote these numbers as fact:
+      `docs/ARCHITECTURE.md`, `docs/STYLE_GUIDE.md`,
       `CHANGELOG.md`, and `ViewOnlyActionButton`'s own JSDoc in
-      `src/components/admin/view-only-action.tsx`.
+      `src/components/admin/view-only-action.tsx`. `AGENTS.md` published them
+      too until #2714 routed the settings pattern out of the always-read core;
+      it is still scanned for a stale figure, but no longer has to carry one.
 
       They were counted by hand, from raw text, and came out one too high —
       twice, for the same reason both times: a `describeReason={false}` written
@@ -1486,12 +1488,6 @@ describe("view-only section banner coverage (#2160)", () => {
     */
     const f = FIGURES;
     const published: Record<string, string[]> = {
-      "AGENTS.md": [
-        `${f.optOuts} of ${f.callSites} ViewOnlyActionButton call sites now opt out`,
-        `${f.staticOptOuts} covered by a banner in the SAME file`,
-        `${f.vouchedOptOuts} by a verified vouching parent (${f.renderSiteVouchedOptOuts} at a JSX render site, ${f.shellVouchedOptOuts} through the guided-setup shell)`,
-        `and ${f.exceptions} keep the per-button reason`,
-      ],
       "docs/ARCHITECTURE.md": [
         `${f.bannerComponents} components render a banner, and ${f.optOuts} of the ${f.callSites} ViewOnlyActionButton call sites opt out`,
         `${f.staticOptOuts} pass the literal describeReason={false}`,
@@ -1512,6 +1508,24 @@ describe("view-only section banner coverage (#2160)", () => {
         `counts ${f.leafControls} controls here`,
       ],
     };
+    /*
+      #2714 routed the canonical admin-settings pattern out of `AGENTS.md`'s
+      always-read core and into `docs/ARCHITECTURE.md`, which had already carried
+      the same rules in fuller form. `AGENTS.md` now leaves a pointer and a
+      routing row instead, so it publishes none of these figures and is no longer
+      REQUIRED to. It is still scanned, for the reason the shape check below
+      exists: a figure re-introduced there has to be the measured one, not a
+      resurrected copy of a superseded census.
+    */
+    const scannedButNotRequired: Record<string, string[]> = {
+      "AGENTS.md": [
+        `${f.optOuts} of ${f.callSites} ViewOnlyActionButton call sites now opt out`,
+        `${f.staticOptOuts} covered by a banner in the SAME file`,
+        `${f.vouchedOptOuts} by a verified vouching parent (${f.renderSiteVouchedOptOuts} at a JSX render site, ${f.shellVouchedOptOuts} through the guided-setup shell)`,
+        `and ${f.exceptions} keep the per-button reason`,
+      ],
+    };
+
     const changelogPhrases = [
       `${f.callSites} gated admin controls, ${f.optOuts} of them covered by a banner (${f.staticOptOuts} in their own file, ${f.vouchedOptOuts} by a verified vouching parent — ${f.shellVouchedOptOuts} of those through the wizard frame)`,
       `and ${f.exceptions} across ${f.exceptionFiles} files deliberately keeping their own reason`,
@@ -1543,6 +1557,11 @@ describe("view-only section banner coverage (#2160)", () => {
         rel,
         phrases,
         requirePresence: true,
+      })),
+      ...Object.entries(scannedButNotRequired).map(([rel, phrases]) => ({
+        rel,
+        phrases,
+        requirePresence: false,
       })),
       ...(existsSync(fragmentsDir)
         ? readdirSync(fragmentsDir)
@@ -1591,7 +1610,7 @@ describe("view-only section banner coverage (#2160)", () => {
     expect(
       offenders,
       `These documents no longer state the figures the census above measures. ` +
-        `A rollout change moves the numbers; re-measure and update AGENTS.md, ` +
+        `A rollout change moves the numbers; re-measure and update ` +
         `docs/ARCHITECTURE.md, docs/STYLE_GUIDE.md, any changelog.d/ fragment ` +
         `quoting them, and the ` +
         `ViewOnlyActionButton JSDoc together.`,

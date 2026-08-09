@@ -103,4 +103,4 @@ governed by the [cancellation policy](../CANCELLATIONS.md#refund-policy).
   [refund and credit lifecycle](../STATE_MACHINES.md#refund-and-credit-lifecycle),
   the [refund policy](../CANCELLATIONS.md#refund-policy) and
   [GST treatment](../CANCELLATIONS.md#gst-treatment) in `CANCELLATIONS.md`, and
-  the [payment and settlement invariants](../DOMAIN_INVARIANTS.md#payment-and-settlement).
+  the [payment and settlement invariants](../invariants/payment-and-settlement.md).

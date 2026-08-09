@@ -332,7 +332,7 @@ async function assertLinkedMembersExist(links: BookingRequestLinkedGuestMember[]
  *
  * This is display-only. Unlike `assertNoBookingMemberNightConflicts` (which
  * throws a 409 and is the authoritative enforcer at approve/hold time — see
- * DOMAIN_INVARIANTS.md:35-40), this never throws on a conflict: it returns the
+ * INV-CAP-017), this never throws on a conflict: it returns the
  * overlaps so the linking UI can render an advisory. The hard block at
  * approve/hold time is unchanged and remains the only thing that stops a
  * double-book.
@@ -1479,7 +1479,7 @@ export async function holdBookingRequestSlots(input: {
 
       // Block admin-mediated double-books: a request whose guests an admin
       // linked to real members must not put a member on overlapping nights
-      // (issue #1158, invariant DOMAIN_INVARIANTS.md:35-40). A brand-new held
+      // (issue #1158, invariant INV-CAP-017). A brand-new held
       // booking is being created, so there is nothing to exclude.
       await assertNoBookingMemberNightConflicts(tx, {
         actorMemberId: input.adminMemberId,

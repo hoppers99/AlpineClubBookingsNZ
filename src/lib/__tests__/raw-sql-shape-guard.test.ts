@@ -4,6 +4,11 @@ import { describe, expect, it } from "vitest";
 
 // #2289 — the guard that keeps raw SQL honest.
 //
+// ENFORCES INV-OPS-001 (`docs/invariants/operations.md`), which names this file
+// as one of its two enforcement arms. Every census assertion below repeats the
+// id in its failure message, so whoever trips one is handed the rule rather than
+// having to go and find it (#2691).
+//
 // `prisma.$queryRaw<SomeRow[]>` is an UNCHECKED CAST. Raw SQL returns the
 // PHYSICAL column names; the type argument declares whatever the author
 // believed. Nothing verifies the two agree, so where they disagreed every
@@ -272,7 +277,8 @@ describe("raw SQL cannot lie about its result shape (#2289)", () => {
 
     expect(
       found,
-      "Raw-SQL READ sites changed. `$queryRaw`/`$queryRawUnsafe` hand back a " +
+      "INV-OPS-001 (docs/invariants/operations.md): " +
+        "Raw-SQL READ sites changed. `$queryRaw`/`$queryRawUnsafe` hand back a " +
         "result set whose column names are the DATABASE's, not Prisma's, so a " +
         "name the code gets wrong arrives as `undefined` rather than as an " +
         "error (#2289). Only there for a row lock? Use `$executeRaw` on a " +
@@ -310,7 +316,8 @@ describe("raw SQL cannot lie about its result shape (#2289)", () => {
 
     expect(
       unvalidated,
-      `Raw read(s) neither validated with ${DECODER} (${DECODER_MODULE}) nor ` +
+      "INV-OPS-001 (docs/invariants/operations.md): " +
+        `Raw read(s) neither validated with ${DECODER} (${DECODER_MODULE}) nor ` +
         "listed in RAW_READ_OPT_OUTS with a reason. An opt-out is only honest " +
         "when the returned rows are genuinely never read. Note this counts " +
         `${DECODER}() CALLS against raw reads per file: one decoded statement ` +
@@ -405,7 +412,8 @@ describe("raw SQL cannot lie about its result shape (#2289)", () => {
 
     expect(
       offenders,
-      "A row lock must select a CONSTANT through `$executeRaw` and read its " +
+      "INV-OPS-001 (docs/invariants/operations.md): " +
+        "A row lock must select a CONSTANT through `$executeRaw` and read its " +
         "data back through the Prisma model under that same lock (#2289). " +
         "Projecting columns into a raw result is how booking creation ended up " +
         "reading a promo row whose column names it had guessed — silently " +
