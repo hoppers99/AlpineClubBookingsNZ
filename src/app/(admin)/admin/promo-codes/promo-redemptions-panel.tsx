@@ -23,6 +23,7 @@ import { DatasetResetButton } from "@/components/admin/dataset-reset-button";
 import { DateRangeControls } from "@/components/admin/date-range-controls";
 import { auditAndPaymentsDateRangePresets } from "@/lib/date-range-presets";
 import { APP_LOCALE } from "@/config/operational";
+import { todayDateOnlyForTimeZone } from "@/lib/date-only";
 import { formatNZDate } from "@/lib/nzst-date";
 import { formatCents } from "@/lib/utils";
 import { useLodgeOptions } from "@/components/lodge-select";
@@ -149,7 +150,7 @@ function formatCount(value: number): string {
 // UI: the CSV body stays a plain row set, since a trailing "truncated" line
 // would corrupt every spreadsheet and parser that reads it.
 function csvFilename(code: string, truncated: boolean): string {
-  const dateStr = new Date().toISOString().slice(0, 10);
+  const dateStr = todayDateOnlyForTimeZone();
   return `promo-${code}-redemptions-${dateStr}${truncated ? "-partial" : ""}.csv`;
 }
 

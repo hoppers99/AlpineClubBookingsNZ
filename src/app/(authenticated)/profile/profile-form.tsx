@@ -14,6 +14,7 @@ import {
   shouldDefaultPostalSameAsPhysical,
   withDefaultNzCountry,
 } from "@/lib/member-address";
+import { todayDateOnlyForTimeZone } from "@/lib/date-only";
 import { getSafeInternalReturnPath } from "@/lib/internal-return-path";
 
 /*
@@ -293,7 +294,7 @@ export function ProfileForm({
           readOnly={readOnly}
           value={form.dateOfBirth}
           onChange={handleChange}
-          max={new Date().toISOString().substring(0, 10)}
+          max={todayDateOnlyForTimeZone()}
           required
         />
         <p className="text-xs text-muted-foreground">

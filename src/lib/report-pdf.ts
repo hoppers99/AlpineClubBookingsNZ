@@ -1,6 +1,7 @@
 import jsPDF from "jspdf";
 import html2canvas from "html2canvas";
 import { formatNZLongDate } from "@/lib/nzst-date";
+import { todayDateOnlyForTimeZone } from "@/lib/date-only";
 
 /**
  * Force the light palette onto the off-screen document html2canvas renders from
@@ -124,6 +125,6 @@ export async function generateReportPDF(
   }
 
   // Save
-  const dateStr = new Date().toISOString().split("T")[0];
+  const dateStr = todayDateOnlyForTimeZone();
   pdf.save(`tac-report-${dateStr}.pdf`);
 }
