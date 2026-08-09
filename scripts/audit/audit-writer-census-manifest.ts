@@ -265,10 +265,20 @@ export const AUDIT_CENSUS_TOTALS = {
     // Had this change been a pure re-form with no category attached, the total
     // would have merged silently two short. The merged truth is 108, measured.
     createAuditLog: { total: 108, uncategorised: 0 },
-    createStructuredAuditLog: { total: 8, uncategorised: 0 },
+    // 8 -> 9 (#2581 child 2 review): `recordAgeUpParentEmailHandoffAudit`
+    // moved off its hand-built `prisma.auditLog.create`, the last one in `src/`.
+    // Same row, same dedupe keys (`action` + `subjectMemberId` + `outcome`) —
+    // but it now derives `retentionClass: "critical"` and a seven-year
+    // `expiresAt` instead of the NULL/NULL kept-forever shape, and its metadata
+    // (which carries a recipient email address) goes through
+    // `sanitizeAuditMetadata`. Again the row COUNT is unchanged and only the
+    // FORM moved, which is what this per-sink pin exists to surface.
+    createStructuredAuditLog: { total: 9, uncategorised: 0 },
     // 71 -> 72 (#2352 MC-03D): the page-content deletion, above.
     // 72 -> 70 (#2581 child 2): the two dependants writes, above.
-    "auditLog.create": { total: 70, uncategorised: 0 },
+    // 70 -> 69 (#2581 child 2 review): the age-up handoff write, above. No
+    // hand-built `auditLog.create` remains outside a declared wrapper.
+    "auditLog.create": { total: 69, uncategorised: 0 },
   },
   /**
    * Literal category values written, and by how many sites. The three `membership`
@@ -408,6 +418,19 @@ export const AUDIT_CENSUS_TOTALS = {
  * runtime assertion in both builders refuses it for anything that reaches the
  * helper through a cast or from untyped code, and this census refuses it for
  * writers neither of those can see.
+ *
+ * AND THE THIRD LAYER IS A HEURISTIC, not a proof — worth stating here because
+ * the first draft of the docs said the gap "cannot re-open", which was more than
+ * the tree enforced. A review ran the shipped scanner over a synthetic tree and
+ * produced SIX writers it reported clean: a delegate parked in a local, one
+ * renamed out of a destructure, one reached by element access, raw SQL DML from
+ * TypeScript, a `createMany` whose non-first elements omitted the category, a
+ * schema-qualified migration INSERT, and a migration INSERT naming `"category"`
+ * while supplying NULL. All are closed and fixtured in
+ * `src/lib/__tests__/audit-writer-census-scanner.test.ts`; the residuals that
+ * remain open are named in the scanner's own header. Read this gate as "a new
+ * uncategorised writer written the ordinary way fails CI by name", not as a
+ * closure proof.
  *
  * THE RETENTION CONSEQUENCE OF EMPTYING IT, measured rather than assumed,
  * because it is the reason this was not a metadata-only sweep. Adding a category
@@ -662,11 +685,14 @@ export const AUDIT_WRITERS_WITHOUT_ENTITY_IDENTIFIER: Readonly<
  * it. Pinning the wrapper's own category evidence means a change to it is a diff
  * in this file.
  *
- * `recordAgeUpParentEmailHandoffAudit` is the awkward one and the reason the list
- * is fourteen rather than thirteen: it is a hand-built Prisma `create` rather than
- * a helper call, so it bypasses `buildAuditLogCreateData`'s sanitisation and
- * retention derivation while still writing `communication` — and its metadata
- * carries a recipient email address.
+ * `recordAgeUpParentEmailHandoffAudit` used to be the awkward one: a hand-built
+ * Prisma `create` that wrote `communication` but bypassed
+ * `buildAuditLogCreateData`, so its row got no metadata sanitisation and no
+ * retention derivation — kept forever, with a recipient email address in its
+ * metadata. #2581 child 2's review moved it onto `createStructuredAuditLog`.
+ * Every wrapper in this list now reaches the table through the audit boundary,
+ * which is what lets the docs say the boundary decides retention for every row
+ * the platform writes rather than for most of them.
  */
 export const AUDIT_WRITER_WRAPPERS: Readonly<
   Record<string, { sink: string; category: string }>
@@ -732,7 +758,7 @@ export const AUDIT_WRITER_WRAPPERS: Readonly<
     category: "xero",
   },
   "src/lib/cron-age-up.ts::recordAgeUpParentEmailHandoffAudit#0": {
-    sink: "auditLog.create",
+    sink: "createStructuredAuditLog",
     category: "communication",
   },
 };

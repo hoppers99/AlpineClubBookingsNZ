@@ -332,9 +332,12 @@ describe("audit writer census (#2581)", { timeout: 180_000 }, () => {
       pass; a wrapper that stops writing, changes sink, or changes category fails
       here.
 
-      `recordAgeUpParentEmailHandoffAudit` is in the list because it is a hand-built
-      Prisma `create` rather than a helper call, so it bypasses the boundary's
-      sanitisation while putting a recipient email address in its metadata.
+      `recordAgeUpParentEmailHandoffAudit` is the one whose declared SINK moved in
+      this change: it was a hand-built Prisma `create` that bypassed the boundary's
+      sanitisation and retention derivation while putting a recipient email address
+      in its metadata, and it now reaches `createStructuredAuditLog` like the rest.
+      This assertion is what stops it drifting back — a hand-built create would
+      report `auditLog.create` here and fail by name.
     */
     const measured = Object.fromEntries(
       census()
