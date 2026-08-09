@@ -204,8 +204,17 @@ August 2026 they were not: a party that arrived through a booking request was
 invisible on the board and uncounted on the dashboard's Bed Allocation card,
 which an officer discovered when the bus turned up. Existing bookings were
 repaired in the same release, so a request you approved months ago is on the
-board now too. Nothing about the price changed — the total the requester agreed
-is the total they still owe, and their invoice is unchanged.
+board now too. Nobody's total changed — the total the requester agreed is the
+total they still owe, and where you set the price yourself the invoice is
+unchanged to the cent. Each night now also records the rate it was charged at,
+so a stay that crosses a rate change reads as what it really was.
+
+One thing that follows from that is worth knowing before you use it. On a member
+whole-lodge booking, linking a placeholder to a real member re-prices that person
+at the member rate — and it used to re-price **everyone else on the booking** at
+today's rates at the same time, quietly replacing the price you negotiated. It no
+longer does: the rest of the party keeps their negotiated price, and only the
+person you linked is re-rated.
 
 ### Policy Exceptions — allow a booking rule to be broken, once
 

@@ -12,12 +12,29 @@
   months ago is on the board now too; cancelled and deleted bookings were left
   alone.
 
-  **No money moved and no price changed.** The total a requester agreed is still
-  the total they owe, split across their nights so it adds back up to the same
-  cent, and their accounting invoice is unchanged — the same line items, to the
-  cent, as before this release. Two figures do move because they were previously
-  short: the finance revenue reconciliation now counts booking-request hut fees
-  on the club's side of the comparison (it read the per-night records, so these
-  bookings contributed nothing against invoices the accounting system already
-  held), and a member an officer linked to a guest on one of these bookings is
-  now credited with the nights they actually stayed.
+  **Nobody's total changed.** The total a requester agreed is still the total
+  they owe, split across their nights so it adds back up to the same cent. Where
+  an officer set a flat figure, and on every booking repaired by the release, the
+  split is the same one the accounting invoice already used behind the scenes, so
+  those invoices are unchanged to the cent. Where the price came from the club's
+  own rates instead, each night now records the rate that night was actually
+  charged at — so a stay crossing a rate change is written down as what it was,
+  rather than averaged.
+
+  **Three figures do move, all of them because they were previously wrong.** The
+  finance revenue reconciliation now counts booking-request hut fees on the
+  club's side of the comparison (it read the per-night records, so these bookings
+  contributed nothing against invoices the accounting system already held). A
+  member an officer linked to a guest on one of these bookings is now credited
+  with the nights they actually stayed. And on a member whole-lodge booking,
+  linking one placeholder to a real member no longer re-prices everybody ELSE on
+  the booking at today's rates: the rest of the party keeps the price that was
+  negotiated with them, which is what the booking-request edit rules were always
+  meant to protect. That last one changes what that screen charges, so it is
+  called out for the committee rather than buried.
+
+  **For whoever runs the upgrade:** the repair of existing bookings runs before
+  the switch-over, so any request approved in the minutes between the two is not
+  covered by it — re-run the repair afterwards (it is safe to run twice and does
+  nothing where it has already run), or take the deploy with quoting paused. The
+  details are in the migration's own header.

@@ -549,31 +549,69 @@ derivation).
   **This is a creation-path obligation, not a read-path fallback**: the envelope
   fallback in [INV-DATE-003] exists for pre-#713 history and must not be relied
   on to cover a path that could have written rows and did not.
-  The four booking-request write points had exactly that gap until #2739 — the
-  two fresh approval creates, the held-booking reassign, and the quote hold —
-  which is why `HeldBookingGuestInput.nights` is a REQUIRED field and
-  `toPipelineGuestCreateData` is the one place that nests it: a fifth pipeline
-  cannot be added without answering the question.
+  The **five** booking-request write points had exactly that gap until #2739:
+  the public approval create (`approveBookingRequest`, `booking-request.ts`), the
+  school approval create and the member whole-lodge approval create
+  (`approveSchoolBookingRequest` and `approveMemberWholeLodgeRequest`,
+  `school-booking-request.ts`), the held-booking reassign
+  (`reassignHeldBookingGuests`, `booking-request.ts`) and the quote hold
+  (`holdBookingRequestSlots`, `booking-request-quotes.ts`). That is why
+  `HeldBookingGuestInput.nights` is a REQUIRED field, why the quote hold's inline
+  producer is annotated with that type, and why `toPipelineGuestCreateData`
+  requires `nights` with no fallback: a sixth pipeline that supplies no night set
+  is a TYPE ERROR, pinned by the `@ts-expect-error` case in
+  `src/lib/__tests__/booking-request-guest-nights.test.ts`, so it cannot be added
+  without answering the question. Each of the five has a test reading its own
+  Prisma create payload; none of them passes with the night set removed.
 - **The rows are half-open and NZ date-only, like every other night row.** Built
   from the approved envelope through the pricing engine's own night list, so a
   converted booking's encoding is identical to a directly-created one's: nights
   over `[checkIn, checkOut)` [INV-DATE-003] at the storage encoding
   [INV-DATE-013]. A row on the check-out morning would be a phantom night, and
   the planner would claim that bed while its real occupant is still in it.
-- **Writing the rows must not move money.** A pipeline guest's `priceCents` is a
-  share of an officer's negotiated total, not a per-night rate — the distinction
-  #1098 recorded when its backfill skipped these bookings — so the per-night
-  split exists only to divide a number that is already fixed. It divides to the
-  exact cent with the extra cents on the EARLIEST nights, which is deliberately
-  the vector `evenlySplitCents` (`src/lib/xero-booking-invoices.ts`) already
-  synthesises for a guest carrying no rows and bills from. That equality is what
-  keeps a converted booking's Xero line items byte-identical whether the rows
-  exist or not, on a fresh invoice and on an invoice-update diff of a backfilled
-  booking alike; it is pinned by
-  `src/lib/__tests__/booking-request-guest-nights.test.ts`. A split that totals
-  the same but distributes differently still emits different Xero lines, which on
-  an already-raised invoice reads as a change to push.
-- **The backfill for existing rows is `20260810000000_backfill_booking_request_guest_nights`**,
+- **The per-night cents are the engine's where the engine priced the guest, and
+  a division of the total where an officer set it.** Which case applies is
+  decided by the write point, because only it knows where the number came from,
+  and `buildApprovalGuestNights` refuses any supplied vector that does not
+  reconcile to the guest's stored `priceCents` and divides instead.
+  - ENGINE-PRICED (school approval and member whole-lodge approval, whenever the
+    officer set no flat total): the rows store
+    `PriceBreakdown.guests[i].perNightCents` verbatim, which is exactly what the
+    canonical direct-create writer (`buildGuestCreateData`) stores. A season
+    boundary inside the stay, or a per-night group discount, makes those nights
+    genuinely different prices; a flat re-split would carry the right total on
+    the wrong nights, and these rows are what the finance revenue reconciliation
+    sums inside a DATE WINDOW and what a later edit re-uses as #1036 locked
+    prices.
+  - OFFICER-TOTAL (public approval, quote hold, flat whole-lodge or manual
+    override, and the backfill): the number is a negotiated total's share, not a
+    rate — the distinction #1098 recorded when its backfill skipped these
+    bookings — so there is no per-night truth and nothing is re-priced. The share
+    divides to the exact cent with the extra cents on the EARLIEST nights, which
+    is deliberately the vector `evenlySplitCents`
+    (`src/lib/xero-booking-invoices.ts`) already synthesises for a guest carrying
+    no rows and bills from. That equality is what keeps such a booking's Xero
+    line items byte-identical whether the rows exist or not, on a fresh invoice
+    and on an invoice-update diff of a backfilled booking alike; it is pinned by
+    `src/lib/__tests__/booking-request-guest-nights.test.ts`. A split that totals
+    the same but distributes differently still emits different Xero lines, which
+    on an already-raised invoice reads as a change to push.
+- **The rows are the #1036 locked prices on the one edit path that reaches these
+  bookings, and that is deliberate.** Standard edits refuse a booking-request
+  booking outright (`isQuotePricedBooking`, #1032), with one sanctioned
+  exemption: a link-only #2337 placeholder→member request on a member whole-lodge
+  booking. That path reprices, and `prepareGuestPlan` passes
+  `link ? [] : lockedNightPricesForGuest(guest)` — so the LINKED row re-rates at
+  the member rate (its locks are cleared on purpose) while every UNLINKED
+  placeholder is protected only by its stored night rows. While this pipeline
+  wrote none, those placeholders repriced at whatever the season rate happened to
+  be on the day of the link, silently replacing the negotiated whole-lodge basis
+  the #1032 block exists to protect. Writing the rows closes that leak, so the
+  negotiated price now holds; the join is asserted in
+  `src/lib/__tests__/school-booking-request.test.ts` with the real reader and the
+  real engine. **This is a real change to what that path charges**, declared in
+  the changelog and flagged for owner review rather than folded in silently.
+- **The backfill for existing rows is `20260810010000_backfill_booking_request_guest_nights`**,
   the exact complement of #1098's `20260704150000_backfill_booking_guest_nights`.
   It is idempotent (per-guest "has no rows at all" guard plus
   `ON CONFLICT DO NOTHING`), skips cancelled, bumped and soft-deleted bookings,
@@ -583,6 +621,24 @@ derivation).
   night rows, so these bookings contributed zero against invoices Xero already
   held), and a member an officer linked to a converted booking's guest is now
   credited with the nights they really stayed by `countMemberStayNights`.
+- **It is a DATA write taken before cutover, which makes three operator facts
+  true that no schema migration makes true.** `prisma migrate deploy` runs at
+  step 13 of `docs/PRODUCTION_UPGRADE_RUNBOOK.md`, while the old colour is still
+  serving traffic, and this migration is not `windowed` (no ledger row is
+  required, and the blue/green validator matches nothing hot or breaking in it).
+  So: (1) every booking-request approval and quote hold taken between `migrate`
+  and cutover is written by pre-#2739 code, gets no night rows, and is already
+  behind the one-shot `INSERT` — **re-run the statement verbatim after cutover**,
+  which is safe and inserts nothing where the first pass already ran; (2) aborting
+  the cutover un-does the code but NOT the inserted rows, so this is the only
+  irreversible part of the release; and (3) in that same window the old colour's
+  in-place hold reassignment updates `stayStart`/`stayEnd`/`priceCents` without
+  rewriting night rows (this branch is what adds that rewrite), so a quote
+  accepted in the window at a different option than the hold was taken at can
+  leave backfilled rows describing the hold's dates and total — and invoicing
+  prefers stored rows over the guest's flat `priceCents`. Remedy: re-raise or
+  refresh the invoice for any request approved in the window, or take the deploy
+  with quoting paused.
 
 ### INV-CAP-007
 
