@@ -70,11 +70,13 @@ authoritative booking-finance calculation behind `finance:view` **and**
 `bookings:view`. It reads **stored evidence only** — no tool in it contacts Stripe,
 Xero or a bank. Full reference: [tool-pack-finance.md](tool-pack-finance.md).
 
-AID-6B (#2376) has added the **booking and membership pack**: two bounded record
-searches and six per-booking evidence tools behind `bookings:view`, five
-per-member evidence tools behind `membership:view` (one of which also needs
-`bookings:view`, because it reads a member's bookings), and three `server_owned`
-entries returning the application's own authoritative answers — why a booking is
+AID-6B (#2376) has added the **booking and membership pack**. AID-6B permission
+split: 7 booking-only, 6 membership-only, 3 combined. The combined entries are a
+member's booking summary, authoritative booking block state, and booking
+bed-allocation state. `booking_bed_allocation_state` is combined: it requires
+`bookings:view` and `membership:view` because its double-bed verdict reads live
+membership and partner-link facts for both occupants. The three `server_owned`
+entries return the application's own authoritative answers — why a booking is
 blocked (`bookings:view` **and** `membership:view`), per-night capacity
 (`bookings:view`), and a member's eligibility standing (`membership:view`). **No
 entry in it requires `support:view`.** Full reference:

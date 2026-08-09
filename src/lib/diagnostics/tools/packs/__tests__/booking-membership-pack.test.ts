@@ -166,6 +166,14 @@ function packSource(name: string): string {
   return readFileSync(join(PACK_DIR, name), "utf8");
 }
 
+function normalizedContractSource(...segments: string[]): string {
+  return readFileSync(join(REPO_ROOT, ...segments), "utf8")
+    .replaceAll("**", "")
+    .replaceAll("`", "")
+    .replace(/\s+\*\s+/g, " ")
+    .replace(/\s+/g, " ");
+}
+
 /**
  * Every module the pack ships. `booking-evidence.ts` is in this list on purpose
  * and is the one that matters most in the read-only sweep below: it is the only
@@ -316,6 +324,47 @@ describe("AID-6B booking/membership pack: permissions (#2376)", () => {
     expect(areas).toEqual([...EXPECTED_AREAS[id]].sort());
   });
 
+  it("derives the 7/6/3 permission summary from the registry and pins every overview", () => {
+    const counts = { bookingOnly: 0, membershipOnly: 0, combined: 0 };
+    for (const tool of packTools) {
+      const areaKey = [...tool.requiredAreas].sort().join("+");
+      if (areaKey === "bookings") counts.bookingOnly += 1;
+      else if (areaKey === "membership") counts.membershipOnly += 1;
+      else if (areaKey === "bookings+membership") counts.combined += 1;
+      else throw new Error(`${tool.id} has an unreviewed permission set: ${areaKey}`);
+    }
+
+    expect(counts).toEqual({ bookingOnly: 7, membershipOnly: 6, combined: 3 });
+    expect(
+      [...entry(DIAGNOSTICS_BOOKING_BED_ALLOCATION_TOOL_ID).requiredAreas].sort(),
+    ).toEqual(["bookings", "membership"]);
+
+    const summary = `AID-6B permission split: ${counts.bookingOnly} booking-only, ${counts.membershipOnly} membership-only, ${counts.combined} combined.`;
+    const allocation =
+      "booking_bed_allocation_state is combined: it requires bookings:view and membership:view";
+    const sources = [
+      [
+        "ADR-002",
+        normalizedContractSource(
+          "docs",
+          "ai-diagnostics",
+          "decisions",
+          "ADR-002-admission-and-per-tool-authorization-lattice.md",
+        ),
+      ],
+      ["README", normalizedContractSource("docs", "ai-diagnostics", "README.md")],
+      ["tools guide", normalizedContractSource("docs", "ai-diagnostics", "tools.md")],
+      [
+        "registry overview",
+        normalizedContractSource("src", "lib", "diagnostics", "tools", "registry.ts"),
+      ],
+    ] as const;
+    for (const [name, source] of sources) {
+      expect(source, `${name} permission summary`).toContain(summary);
+      expect(source, `${name} allocation classification`).toContain(allocation);
+    }
+  });
+
   it("never requires `support:view` for a booking or membership tool", () => {
     // #2376's owner decision and its first two acceptance criteria: a Booking
     // Officer investigating a booking is doing their own job, not a support one.
@@ -349,6 +398,32 @@ describe("AID-6B booking/membership pack: permissions (#2376)", () => {
       expect(areas, id).toContain("bookings");
       expect(areas, id).toContain("membership");
     }
+  });
+
+  it("pins the guide's whole-lodge names to the actual capacity projection", () => {
+    const capacity = entry(DIAGNOSTICS_BOOKING_CAPACITY_TOOL_ID);
+    const projected = capacity.project({
+      this_booking_effectively_holds_whole_lodge: true,
+      this_booking_has_whole_lodge_hold_flag: false,
+    });
+    const selectedBookingHoldKeys = Object.keys(projected)
+      .filter(
+        (key) => key.startsWith("thisBooking") || key === "wholeLodgeHoldFlagStored",
+      )
+      .sort();
+    expect(selectedBookingHoldKeys).toEqual([
+      "thisBookingHoldsWholeLodge",
+      "wholeLodgeHoldFlagStored",
+    ]);
+
+    const guide = normalizedContractSource(
+      "docs",
+      "ai-diagnostics",
+      "tool-pack-booking-membership.md",
+    );
+    for (const key of selectedBookingHoldKeys) expect(guide).toContain(key);
+    expect(guide).not.toContain("thisBookingEffectivelyHoldsWholeLodge");
+    expect(guide).not.toContain("thisBookingHasWholeLodgeHoldFlag");
   });
 
   it("marks every entry that can identify a person, and only those", () => {

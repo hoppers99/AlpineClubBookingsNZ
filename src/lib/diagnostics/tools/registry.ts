@@ -27,13 +27,19 @@
  *  - the AID-6B booking/membership pack (`packs/booking-search.ts`,
  *    `packs/booking-records.ts`, `packs/membership-records.ts`,
  *    `packs/booking-state.ts`): bounded booking and member selection, per-record
- *    booking evidence (party and stay ranges, bed allocation, exception requests,
- *    audit history) behind `bookings:view`, per-record membership evidence
- *    (identity, subscription rows, family and dependent links, audit history)
- *    behind `membership:view`, a member's booking involvement behind BOTH, and
- *    three `server_owned` entries returning the application's own authoritative
- *    answers: why a booking is blocked (`bookings` AND `membership`), per-night
- *    capacity (`bookings`), and a member's eligibility standing (`membership`).
+ *    booking evidence (party and stay ranges, exception requests, audit history)
+ *    behind `bookings:view`, per-record membership evidence (identity,
+ *    subscription rows, family and dependent links, audit history) behind
+ *    `membership:view`, and three combined entries. AID-6B permission split: 7
+ *    booking-only, 6 membership-only, 3 combined.
+ *
+ *    `booking_bed_allocation_state` is combined: it requires `bookings:view` and
+ *    `membership:view` because its double-bed verdict reads live membership and
+ *    partner-link facts for both occupants. The other combined entries are a
+ *    member's booking involvement and the authoritative booking blocker. The
+ *    three `server_owned` answers are booking blockers (`bookings` AND
+ *    `membership`), per-night capacity (`bookings`), and member eligibility
+ *    (`membership`).
  *
  * Still to come in their own children: AID-7 (#2378, the permission-aware
  * Diagnostics UI and conversation surface, which also owns ADR-004's

@@ -85,13 +85,19 @@ admission, AND across cross-area tools, fail-closed) in
 | Tool pack / child | Required (fresh) permission |
 | --- | --- |
 | Config/readiness + sanitized correlation (AID-6A, #2375) | `support:view` |
-| Booking search, per-booking evidence, per-night capacity (AID-6B, #2376) | `bookings:view` |
+| Booking search, booking summary/link/party/request/audit evidence, per-night capacity (AID-6B, #2376) | `bookings:view` |
+| Booking bed-allocation and double-bed-sharing state (AID-6B, #2376) | `bookings:view` **and** `membership:view` |
 | Member search, per-member evidence, member eligibility (AID-6B, #2376) | `membership:view` |
 | A member's booking involvement (AID-6B, #2376) | `membership:view` **and** `bookings:view` |
 | Authoritative booking block state (AID-6B, #2376) | `bookings:view` **and** `membership:view` |
 | Finance & Xero-linkage tools (AID-6C, #2377) | `finance:view` |
 | Member↔Xero contact linkage (AID-6C, #2377) | `finance:view` **and** `membership:view` |
 | Authoritative booking-finance state (AID-6C, #2377) | `finance:view` **and** `bookings:view` |
+
+**AID-6B permission split: 7 booking-only, 6 membership-only, 3 combined.**
+`booking_bed_allocation_state` is combined: it requires `bookings:view` and
+`membership:view` because its double-bed verdict reads live membership and partner
+facts for both occupants.
 
 AID-6C is delivered: see [tool-pack-finance.md](tool-pack-finance.md) for its ten
 entries, the twelve relation grants they argue for, and the finance questions this
@@ -101,8 +107,9 @@ AID-6B is delivered: see
 [tool-pack-booking-membership.md](tool-pack-booking-membership.md) for its sixteen
 entries, thirteen further relation grants plus the widened `Member`, and the
 booking and membership questions this schema cannot answer — including the member
-number it does not store. **No entry in that pack requires `support:view`**; a
-Booking Officer or a Membership Officer uses it under their own area alone.
+number it does not store. **No entry in that pack requires `support:view`**.
+Single-area tools stay available under their own area; the three cross-domain
+entries require both of their named domain permissions.
 
 ## Architecture decision records
 
@@ -447,11 +454,15 @@ application's own authoritative calculations.** Sixteen entries. Full reference:
   no listing tool, no paging and no `COUNT`, and every predicate is an equality
   except one member-name prefix, which uses `starts_with` over a literal prefix —
   there is no `LIKE`, no regex and no wildcard character anywhere in the pack.
-- **Its own area, and nothing borrowed.** Eight entries need `bookings:view`, six
-  need `membership:view`, and two need both AND-ed. **None requires
-  `support:view`** — #2376's owner decision — and no argument can move a call
-  between permission sets, because `requiredAreas` is fixed on the entry and
-  authorization runs before argument parsing.
+- **Its own areas, and nothing borrowed.** AID-6B permission split: 7 booking-only,
+  6 membership-only, 3 combined. The combined entries are a member's booking
+  summary, authoritative booking block state, and booking bed-allocation state.
+  `booking_bed_allocation_state` is combined: it requires `bookings:view` and
+  `membership:view` because the double-bed verdict reads live member and partner
+  facts for both occupants. **None requires `support:view`** — #2376's owner
+  decision — and no argument can move a call between permission sets, because
+  `requiredAreas` is fixed on the entry and authorization runs before argument
+  parsing.
 - **Three authoritative answers rather than a second reading of the columns.**
   `booking_block_state`, `booking_capacity_by_night` and `member_eligibility_state`
   run the platform's own soft-policy evaluator, review-reason derivation, capacity

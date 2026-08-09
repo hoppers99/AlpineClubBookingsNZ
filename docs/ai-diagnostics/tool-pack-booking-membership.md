@@ -880,11 +880,11 @@ negative number. `booking_block_state` likewise counts the night only in
 over-capacity confirmation cannot bypass the hold.
 
 The selected booking's own hold has two deliberately separate facts.
-`thisBookingEffectivelyHoldsWholeLodge` is the current authoritative answer: the
-stored flag is true, the booking is not deleted, and its canonical lifecycle state
-still holds capacity. `thisBookingHasWholeLodgeHoldFlag` is the raw historical
-column. A cancelled, bumped, deleted or otherwise non-capacity-holding row may
-retain that raw flag, but it never reports an effective hold.
+`thisBookingHoldsWholeLodge` is the current authoritative answer: the stored flag
+is true, the booking is not deleted, and its canonical lifecycle state still holds
+capacity. `wholeLodgeHoldFlagStored` is the raw historical column. A cancelled,
+bumped, deleted or otherwise non-capacity-holding row may retain that raw flag, but
+it never reports an effective hold.
 
 **`waitlistPosition` is one-based, so `booking_search` reports it as absent rather
 than 0.** Every writer assigns from 1 (`booking-create.ts` counts the queue ahead
