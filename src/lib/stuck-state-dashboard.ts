@@ -10,6 +10,10 @@ import { getAdminAlertDeliveryEscalations } from "@/lib/email-admin-alert-escala
 import { getExhaustedEmailFailureReviewQueue } from "@/lib/email-failure-review";
 import { getEmailDeliverabilityTelemetry } from "@/lib/email-suppression";
 import { getUnassignedHutLeaderDates } from "@/lib/hut-leader-coverage";
+import {
+  getUnreachableMemberSummary,
+  UNREACHABLE_MEMBER_REASON_LABEL,
+} from "@/lib/member-email-inheritance";
 import { countBookingsWithUnnamedPlaceholderGuests } from "@/lib/placeholder-guest-name-reminders";
 import { countUnconfirmedSchoolAttendeeLists } from "@/lib/school-attendee-confirmation";
 import { loadHutLeaderLookaheadDays } from "@/lib/lodge-settings";
@@ -131,6 +135,7 @@ export interface StuckStateDashboardDependencies {
   getExhaustedEmailFailureReviewQueue: typeof getExhaustedEmailFailureReviewQueue;
   getAdminAlertDeliveryEscalations: typeof getAdminAlertDeliveryEscalations;
   getTokenEmailRecoveryQueue: typeof getTokenEmailRecoveryQueue;
+  getUnreachableMemberSummary: typeof getUnreachableMemberSummary;
   getWaitlistOfferEmailDeliveries: typeof getWaitlistOfferEmailDeliveries;
   countUnconfirmedSchoolAttendeeLists: typeof countUnconfirmedSchoolAttendeeLists;
   countBookingsWithUnnamedPlaceholderGuests: typeof countBookingsWithUnnamedPlaceholderGuests;
@@ -173,6 +178,7 @@ const defaultDependencies: StuckStateDashboardDependencies = {
   getExhaustedEmailFailureReviewQueue,
   getAdminAlertDeliveryEscalations,
   getTokenEmailRecoveryQueue,
+  getUnreachableMemberSummary,
   getWaitlistOfferEmailDeliveries,
   countUnconfirmedSchoolAttendeeLists,
   countBookingsWithUnnamedPlaceholderGuests,
@@ -472,12 +478,48 @@ async function addEmailItems(
     exhaustedFailures,
     adminAlertDelivery,
     tokenRecovery,
+    unreachableMembers,
   ] = await Promise.all([
     deps.getEmailDeliverabilityTelemetry(),
     deps.getExhaustedEmailFailureReviewQueue(),
     deps.getAdminAlertDeliveryEscalations(),
     deps.getTokenEmailRecoveryQueue(),
+    deps.getUnreachableMemberSummary(),
   ]);
+
+  // #2716: the accepted cost of direct-parent-only email inheritance, made
+  // findable. Where a middle generation has no address the descendant inherits
+  // nobody — the correct failure direction, because a gap somebody can see beats
+  // a message going somewhere nobody chose, but ONLY while somebody can see it.
+  // This is the seeing.
+  //
+  // WARNING rather than critical, and deliberately so. Nothing is stuck or
+  // corrupt: the club simply has no way to reach these members, and the remedy
+  // is to ask a person for an address rather than to repair a record. Ranking it
+  // beside a failed payment would train admins to scroll past the criticals.
+  addItem(items, {
+    id: "email-unreachable-members",
+    domain: "email",
+    title: "Members with no reachable email address",
+    severity: "warning",
+    owner: "Admin",
+    count: unreachableMembers.total,
+    href: "/admin/members?contactability=unreachable",
+    summary: `${unreachableMembers.total} active ${plural(
+      unreachableMembers.total,
+      "member",
+    )} ${plural(unreachableMembers.total, "has", "have")} no email address the club can send to${
+      unreachableMembers.inheritanceUnresolved > 0
+        ? `, ${unreachableMembers.inheritanceUnresolved} of them waiting on a parent's address to inherit`
+        : ""
+    }.`,
+    details: unreachableMembers.members.map((member) => ({
+      id: member.id,
+      title: member.name,
+      summary: UNREACHABLE_MEMBER_REASON_LABEL[member.reason],
+      href: `/admin/members/${member.id}`,
+    })),
+  });
 
   addItem(items, {
     id: "email-admin-alert-delivery",

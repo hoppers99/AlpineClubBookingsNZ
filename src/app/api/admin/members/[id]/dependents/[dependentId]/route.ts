@@ -52,8 +52,9 @@ export async function DELETE(
           secondaryParentId: true,
           inheritParentEmail: true,
           inheritEmailFromId: true,
-          // Only the id is used — the transitive resolver reads the rest of the
-          // chain itself, from the transaction's own view.
+          inheritEmailChoiceId: true,
+          // Only the id is used — the resolver reads the parent's own row
+          // itself, from the transaction's own view.
           parent: { select: { id: true } },
           secondaryParent: { select: { id: true } },
         },
@@ -86,8 +87,17 @@ export async function DELETE(
       // sets it false. So a DERIVED pointer is re-resolved on unlink whatever
       // it names, and a MANUAL one is left alone — the distinction the manual
       // case in dependent-unlink.test.ts pins.
+      //
+      // #2716: the CHOICE counts, not just the pointer. A dependant whose
+      // chosen parent has temporarily lost their address holds a live choice
+      // beside a NULL pointer, and unlinking that parent has to retire the
+      // decision — testing the pointer alone would leave the choice naming a
+      // member who is no longer a parent, which resolves to nobody forever
+      // while the audit entry reports nothing was cleared.
       const shouldClearEmailInheritance =
-        dependent.inheritParentEmail && dependent.inheritEmailFromId !== null;
+        dependent.inheritParentEmail &&
+        (dependent.inheritEmailFromId !== null ||
+          dependent.inheritEmailChoiceId !== null);
       const remainingParent = isPrimaryParent
         ? dependent.secondaryParent
         : dependent.parent;
@@ -110,15 +120,23 @@ export async function DELETE(
               }
             : { parent: { disconnect: true } }
           : { secondaryParent: { disconnect: true } }),
+        // #2716: the CHOICE moves with the pointer. Unlinking a parent retires
+        // the decision that named them, and the remaining parent — if there is
+        // one and they can receive mail — becomes the new choice. Where nobody
+        // remains, both columns clear: a derived choice must name a current
+        // parent, so keeping one that names the parent just removed would leave
+        // a decision that can never resolve.
         ...(shouldClearEmailInheritance
           ? nextEmailSourceId
             ? {
                 inheritParentEmail: true,
                 inheritEmailFrom: { connect: { id: nextEmailSourceId } },
+                inheritEmailChoice: { connect: { id: nextEmailSourceId } },
               }
             : {
                 inheritParentEmail: false,
                 inheritEmailFrom: { disconnect: true },
+                inheritEmailChoice: { disconnect: true },
               }
           : {}),
       };

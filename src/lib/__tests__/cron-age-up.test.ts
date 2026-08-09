@@ -146,45 +146,85 @@ function familyRow(
     ageTier: "ADULT",
     archivedAt: null,
     inheritEmailFromId: null,
+    inheritEmailChoiceId: null,
     parentMemberId: null,
     secondaryParentId: null,
+    firstName: overrides.id,
+    lastName: "Member",
     ...overrides,
   };
 }
 
 /**
  * #2282: the legacy parent handoff no longer mails the raw parent link — it
- * resolves the family's actual contact of record with `resolveInheritedEmail
- * SourceId`, the same walk every write path uses. That walk reads through
- * `prisma.member.findMany`, which is also the mock the candidate query uses, so
- * these tests dispatch on the `where` shape: the walk always asks for
- * `{ id: { in: [...] } }`, the candidate query never does.
+ * resolves the family's actual contact of record with
+ * `resolveInheritedEmailSourceId`, the same rule every write path uses.
+ *
+ * #2716 changed how that reads. One-hop resolution reads ONE row through
+ * `prisma.member.findUnique` instead of walking levels through `findMany`, so
+ * the family is served from `findUnique` here. The candidate query keeps
+ * `findMany` to itself, which makes the two unambiguous.
  */
 function mockCandidatesAndFamily(
   candidates: unknown[],
   family: Record<string, ReturnType<typeof familyRow>>,
 ) {
-  mockedFindMany.mockImplementation((async (args: unknown) => {
-    const ids = (args as { where?: { id?: { in?: string[] } } })?.where?.id?.in;
-    if (!ids) return candidates;
-    return ids.map((id) => family[id]).filter(Boolean);
+  mockedFindMany.mockResolvedValue(candidates as never);
+  mockedMemberFindUnique.mockImplementation((async (args: unknown) => {
+    const id = (args as { where?: { id?: string } })?.where?.id;
+    return (id ? (family[id] ?? null) : null) as never;
   }) as never);
 }
 
 describe("checkAgeUpMembers", () => {
   /**
-   * #2255 (M3). Age-up is the one AUTOMATIC event that leaves a derived email
-   * pointer aimed at the wrong person. Clearing the aged-up member's own
-   * inheritance gives them an address and a login of their own — but their
-   * dependants' pointers had walked PAST them precisely because they had
-   * neither, so those pointers still name the grandparent, and a parent who now
-   * has a mailbox would never receive their own child's notifications.
+   * #2255 (M3), rewritten by #2716. Age-up moves a member across the line
+   * between "can receive mail" and "cannot", in the helpful direction: until
+   * this morning they were a non-login minor with no address of their own, so
+   * any dependant who had chosen them as their contact of record resolved to
+   * nobody.
+   *
+   * WHAT CHANGED. The job used to run a sweep of its own, because the only
+   * record of a dependant's routing was a flat pointer plus `inheritParentEmail`
+   * — a flag that says "derived" but cannot say "derived from whom", and that
+   * carries `@default(true)` besides. It approximated the answer with "does the
+   * pointer name this member or one of their own ancestors", and the tests here
+   * pinned that approximation. The choice column removes the guess, so this now
+   * calls the same reconciliation every other writer calls, and a dependant is
+   * re-resolved exactly when they NAMED this member.
    */
-  describe("dependants' inherited email follows the member up (#2255)", () => {
-    function agingMemberWithDependant(
-      dependants: Array<{ id: string; inheritEmailFromId?: string }>,
-      ancestorsOfAgingMember: string[] = [],
+  describe("dependants' inherited email follows the member up (#2716)", () => {
+    /**
+     * The aged-up member plus a family, served through the reconciliation's two
+     * query shapes: "these ids" (the subjects, and their chosen sources) and the
+     * `OR` fan-out that finds everyone depending on a member.
+     */
+    function agingMemberWithFamily(
+      family: Array<{
+        id: string;
+        email?: string;
+        ageTier?: string;
+        inheritParentEmail?: boolean;
+        parentMemberId?: string | null;
+        secondaryParentId?: string | null;
+        inheritEmailFromId?: string | null;
+        inheritEmailChoiceId?: string | null;
+      }>,
     ) {
+      const rows = family.map((row) => ({
+        email: `${row.id}@example.com`,
+        ageTier: "ADULT",
+        archivedAt: null,
+        active: true,
+        inheritParentEmail: true,
+        parentMemberId: null,
+        secondaryParentId: null,
+        inheritEmailFromId: null,
+        inheritEmailChoiceId: null,
+        ...row,
+      }));
+      const byId = new Map(rows.map((row) => [row.id, row]));
+
       mockedFindMany.mockResolvedValue([
         {
           id: "m1",
@@ -193,6 +233,7 @@ describe("checkAgeUpMembers", () => {
           lastName: "Smith",
           dateOfBirth: dobForAge(18),
           inheritEmailFromId: null,
+          inheritEmailChoiceId: null,
           inheritEmailFrom: null,
         },
       ] as any);
@@ -200,136 +241,108 @@ describe("checkAgeUpMembers", () => {
       mockedUpdate.mockResolvedValue({} as any);
       mockedCreateToken.mockResolvedValue({} as any);
       mockedSendEmail.mockResolvedValue(undefined);
+
+      // The upgrade write happens through `member.update`, and reconciliation
+      // reads AFTER it — so the fake applies it, exactly as the database would.
+      // Without that the aged-up member would still read as a minor and every
+      // assertion below would be about the wrong world.
+      mockedUpdate.mockImplementation((async ({ where, data }: any) => {
+        const row = byId.get(where.id);
+        if (row) Object.assign(row, data);
+        return {};
+      }) as never);
+
       mockTxMemberFindMany.mockImplementation(async ({ where }: any) => {
-        // The derived-dependant lookup, now additionally scoped to pointers
-        // that could only have been resolved through this member.
-        if (where?.inheritParentEmail === true) {
-          // Models the DATABASE, not the intent: an ABSENT `inheritEmailFromId`
-          // clause is no constraint at all, so every dependant matches. Getting
-          // this backwards (filtering when the clause is missing) makes the
-          // regression this scoping exists to fix look fixed — the mutation
-          // that deletes the clause would return nothing and the test would
-          // pass for exactly the wrong reason.
-          const allowedSources: string[] | null =
-            where.inheritEmailFromId?.in ?? null;
-          if (!allowedSources) return dependants;
-          return dependants.filter((dependant: any) =>
-            allowedSources.includes(dependant.inheritEmailFromId),
-          );
-        }
-        // Two readers of the "these ids" shape: the ancestor walk that builds
-        // the allowed-source set, and the email resolver walking up from the
-        // aged-up member, who now qualifies as a source in their own right.
         if (where?.id?.in) {
-          return where.id.in.map((id: string) => ({
-            id,
-            email: "youth@example.com",
-            ageTier: "ADULT",
-            archivedAt: null,
-            inheritEmailFromId: null,
-            parentMemberId:
-              id === "m1" ? (ancestorsOfAgingMember[0] ?? null) : null,
-            secondaryParentId: null,
-          }));
+          return where.id.in
+            .map((id: string) => byId.get(id))
+            .filter(Boolean)
+            .map((row: any) => ({ ...row }));
+        }
+        if (where?.OR) {
+          const ids = new Set<string>(
+            where.OR.flatMap((clause: any) => [
+              ...(clause.inheritEmailChoiceId?.in ?? []),
+              ...(clause.inheritEmailFromId?.in ?? []),
+              ...(clause.parentMemberId?.in ?? []),
+              ...(clause.secondaryParentId?.in ?? []),
+            ]),
+          );
+          return rows
+            .filter(
+              (row) =>
+                (row.inheritEmailChoiceId && ids.has(row.inheritEmailChoiceId)) ||
+                (row.inheritEmailFromId && ids.has(row.inheritEmailFromId)) ||
+                (row.inheritEmailChoiceId &&
+                  ((row.parentMemberId && ids.has(row.parentMemberId)) ||
+                    (row.secondaryParentId && ids.has(row.secondaryParentId)))),
+            )
+            .map((row) => ({ ...row }));
         }
         return [];
       });
+
+      return byId;
     }
 
-    it("re-points a dependant's derived pointer at the newly-adult parent", async () => {
-      agingMemberWithDependant([
-        { id: "kid-1", inheritEmailFromId: "m1" },
-        { id: "kid-2", inheritEmailFromId: "m1" },
+    /** Every `member.update` that wrote the effective pointer. */
+    function pointerWrites() {
+      return mockedUpdate.mock.calls
+        .map(([args]: any) => args)
+        .filter((args: any) => args?.data?.inheritEmailFromId !== undefined
+          && args?.data?.ageTier === undefined);
+    }
+
+    it("re-points a dependant who chose this member, now that they can receive mail", async () => {
+      agingMemberWithFamily([
+        { id: "m1", email: "youth@example.com", ageTier: "YOUTH" },
+        {
+          id: "kid-1",
+          ageTier: "CHILD",
+          email: "walk-in-1@no-email.invalid",
+          parentMemberId: "m1",
+          inheritEmailChoiceId: "m1",
+          inheritEmailFromId: null,
+        },
       ]);
 
       await checkAgeUpMembers();
 
-      expect(mockTxMemberUpdateMany).toHaveBeenCalledWith({
-        where: { id: { in: ["kid-1", "kid-2"] } },
-        data: { inheritEmailFromId: "m1", inheritParentEmail: true },
-      });
+      expect(pointerWrites()).toEqual([
+        { where: { id: "kid-1" }, data: { inheritEmailFromId: "m1" } },
+      ]);
     });
 
-    it("only looks at DERIVED pointers, never hand-picked ones", async () => {
-      agingMemberWithDependant([{ id: "kid-1", inheritEmailFromId: "m1" }]);
+    it("leaves a dependant who chose the OTHER parent alone", async () => {
+      // The consent question the old heuristic had to reason about, and now
+      // simply does not arise: the child named parent-q, so parent-q they keep.
+      agingMemberWithFamily([
+        { id: "m1", email: "youth@example.com", ageTier: "YOUTH" },
+        { id: "parent-q", email: "q@example.com" },
+        {
+          id: "kid-1",
+          ageTier: "CHILD",
+          email: "walk-in-1@no-email.invalid",
+          parentMemberId: "m1",
+          secondaryParentId: "parent-q",
+          inheritEmailChoiceId: "parent-q",
+          inheritEmailFromId: "parent-q",
+        },
+      ]);
 
       await checkAgeUpMembers();
 
-      // A manually-chosen source is the admin's decision; the query must not
-      // be able to pick one up in the first place.
-      const derivedLookup = mockTxMemberFindMany.mock.calls
-        .map(([args]: any) => args?.where)
-        .find((where: any) => where?.inheritParentEmail !== undefined);
-      expect(derivedLookup).toMatchObject({ inheritParentEmail: true });
+      expect(pointerWrites()).toEqual([]);
     });
 
     it("writes nothing when the member has no dependants", async () => {
-      agingMemberWithDependant([]);
+      agingMemberWithFamily([
+        { id: "m1", email: "youth@example.com", ageTier: "YOUTH" },
+      ]);
 
       await checkAgeUpMembers();
 
-      const inheritanceWrites = mockTxMemberUpdateMany.mock.calls.filter(
-        ([args]: any) => args?.data?.inheritEmailFromId !== undefined,
-      );
-      expect(inheritanceWrites).toEqual([]);
-    });
-
-    /**
-     * A dependant of the aged-up member is not automatically a dependant whose
-     * pointer came THROUGH them. With two parents recorded, the pointer may name
-     * the other parent — either because resolution went that way, or because an
-     * admin picked that parent explicitly. `inheritParentEmail` cannot tell those
-     * two apart (both store `true`), so the selection is scoped by WHERE the
-     * pointer currently points instead: only a member this one's own chain could
-     * have produced is re-pointed.
-     */
-    it("re-points a pointer at its own grandparent", async () => {
-      agingMemberWithDependant(
-        [{ id: "kid-1", inheritEmailFromId: "gran-1" }],
-        ["gran-1"],
-      );
-
-      await checkAgeUpMembers();
-
-      expect(mockTxMemberUpdateMany).toHaveBeenCalledWith({
-        where: { id: { in: ["kid-1"] } },
-        data: { inheritEmailFromId: "m1", inheritParentEmail: true },
-      });
-    });
-
-    it("leaves a pointer at the OTHER parent alone", async () => {
-      // Q is the child's second parent and is not in m1's own chain, so the
-      // pointer was resolved through Q's side (or chosen by an admin) — either
-      // way it is not this job's to move.
-      agingMemberWithDependant(
-        [{ id: "kid-1", inheritEmailFromId: "parent-q" }],
-        ["gran-1"],
-      );
-
-      await checkAgeUpMembers();
-
-      const inheritanceWrites = mockTxMemberUpdateMany.mock.calls.filter(
-        ([args]: any) => args?.data?.inheritEmailFromId !== undefined,
-      );
-      expect(inheritanceWrites).toEqual([]);
-    });
-
-    it("scopes the lookup to sources this member's own chain could produce", async () => {
-      agingMemberWithDependant(
-        [{ id: "kid-1", inheritEmailFromId: "gran-1" }],
-        ["gran-1"],
-      );
-
-      await checkAgeUpMembers();
-
-      const derivedLookup = mockTxMemberFindMany.mock.calls
-        .map(([args]: any) => args?.where)
-        .find((where: any) => where?.inheritParentEmail !== undefined);
-      expect(derivedLookup).toEqual({
-        inheritParentEmail: true,
-        inheritEmailFromId: { in: ["m1", "gran-1"] },
-        OR: [{ parentMemberId: "m1" }, { secondaryParentId: "m1" }],
-      });
+      expect(pointerWrites()).toEqual([]);
     });
   });
 
@@ -364,6 +377,10 @@ describe("checkAgeUpMembers", () => {
         canLogin: true,
         ageTier: "ADULT",
         inheritEmailFromId: null,
+        // #2716: the CHOICE clears with the pointer. Leaving it would have the
+        // reconciliation that runs immediately afterwards hand the pointer
+        // straight back, undoing the upgrade's own write.
+        inheritEmailChoiceId: null,
         inheritParentEmail: false,
       },
     });
@@ -468,6 +485,7 @@ describe("checkAgeUpMembers", () => {
         canLogin: true,
         ageTier: "ADULT",
         inheritEmailFromId: null,
+        inheritEmailChoiceId: null,
         inheritParentEmail: false,
       },
     });
@@ -850,16 +868,22 @@ describe("checkAgeUpMembers", () => {
   });
 
   /**
-   * #2282 review. The legacy branch mailed `member.parent.email` outright, which
-   * was only ever safe because a parent link implied an active adult — the rule
-   * this issue removed. A minor parent, an archived one, or one whose only
-   * address is a club-internal placeholder would now receive (or silently fail
-   * to receive) another member's age-up notice.
+   * #2282 review, narrowed by #2716. The legacy branch mailed
+   * `member.parent.email` outright, which was only ever safe because a parent
+   * link implied an active adult — the rule #2282 removed. A minor parent, an
+   * archived one, or one whose only address is a club-internal placeholder would
+   * otherwise receive (or silently fail to receive) another member's age-up
+   * notice.
+   *
+   * What #2716 changed is the REMEDY, not the gate. The branch used to route on
+   * up to the grandparent; now it declines, and the age-up falls through to the
+   * shared-login recipient or to nobody. A grandparent who supplies an email for
+   * one grandchild does not thereby expect another member's lifecycle mail.
    *
    * Mutation probe: put `member.parent?.email` back in place of the resolved
-   * source and this test mails the 16-year-old instead of the grandparent.
+   * source and this test mails the 16-year-old.
    */
-  it("routes the legacy handoff PAST a young parent to the contact of record", async () => {
+  it("declines the legacy handoff rather than mailing a young parent, or anyone above them", async () => {
     const member = {
       id: "m-young-parent",
       email: "kid@example.com",
@@ -887,25 +911,12 @@ describe("checkAgeUpMembers", () => {
       }),
       nan: familyRow({ id: "nan", email: "nan@example.com" }),
     });
-    mockedMemberFindUnique.mockResolvedValue({
-      id: "nan",
-      email: "nan@example.com",
-      firstName: "Nan",
-      lastName: "Rangi",
-    } as never);
     mockedSendHandoffEmail.mockResolvedValue(undefined);
 
     const result = await checkAgeUpMembers();
 
-    expect(result.handoff).toBe(1);
-    expect(mockedSendHandoffEmail).toHaveBeenCalledWith(
-      "nan@example.com",
-      expect.objectContaining({ recipientName: "Nan Rangi" }),
-    );
-    expect(mockedSendHandoffEmail).not.toHaveBeenCalledWith(
-      "tui@example.com",
-      expect.anything(),
-    );
+    expect(result.handoff).toBe(0);
+    expect(mockedSendHandoffEmail).not.toHaveBeenCalled();
   });
 
   it("declines the legacy handoff when the family reaches nobody", async () => {

@@ -544,6 +544,17 @@ export function getAdminCronJobDefinitions(
     ),
     defineCronJob(
       {
+        jobName: "email-inheritance-reconcile",
+        label: "Email inheritance reconciliation",
+        schedule: "45 6 * * *",
+        timezone: nzTimezone,
+        expectedLocalTime: "06:45 NZT/NZDT daily",
+        staleAfterMinutes: DAILY_STALE_AFTER_MINUTES,
+      },
+      globalDisabledReason
+    ),
+    defineCronJob(
+      {
         jobName: "credit-reconciliation",
         label: "Credit reconciliation",
         schedule: "0 5 * * *",

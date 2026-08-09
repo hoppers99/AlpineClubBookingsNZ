@@ -150,13 +150,17 @@ function findManyFor(targets: Array<Record<string, unknown>>) {
     if (args?.where?.id?.in) {
       const wanted = args.where.id.in;
       const byId = new Map(targets.map((row) => [row.id as string, row]));
-      // #2255: the family-link depth walk and the email resolver both read
-      // "these ids", and both are asked about the APPLICANT, who is created in
-      // this transaction and is not one of the mapping targets. Returning
-      // nothing for them made the applicant look like a member with no email at
-      // all, and the approval 422'd on "nothing to inherit". Anyone not in
-      // `targets` is therefore modelled as what the applicant is: an ordinary
-      // parentless adult with a real address.
+      // #2255: the family-link depth walk reads "these ids", and is asked about
+      // the APPLICANT, who is created in this transaction and is not one of the
+      // mapping targets. Returning nothing for them made the applicant look
+      // like a member with no email at all, and the approval 422'd on "nothing
+      // to inherit". Anyone not in `targets` is therefore modelled as what the
+      // applicant is: an ordinary parentless adult with a real address.
+      //
+      // #2716: the email resolver no longer reads this at all — it reads the
+      // chosen parent's single row through `findUnique` (see `makeTx`). This
+      // stub now serves only the four-generation LINK depth walk, which the
+      // one-hop decision left untouched.
       return wanted.map(
         (id) =>
           byId.get(id) ?? {
@@ -202,6 +206,14 @@ function makeTx(overrides: {
         // before it is stored. Answering both with the admin row made the
         // source look like a member with no age tier and failed the approval on
         // "must point to an adult member".
+        //
+        // #2716 made this the reader that DECIDES the mailbox as well: with the
+        // walk up the family retired, `resolveInheritedEmailSourceId` reads the
+        // chosen parent here and asks `isUsableEmailSource`, which now also
+        // requires `inheritEmailChoiceId` to be NULL — a member who has CHOSEN
+        // to inherit is never a mailbox, even while their own pointer is NULL.
+        // Omitting the column left it `undefined`, which is not `null`, so the
+        // applicant read as an inheritor and the approval 422'd.
         findUnique: vi.fn(async ({ where }: { where: { id: string } }) => {
           if (where.id === "admin-1") {
             return overrides.actingAdmin === undefined
@@ -214,6 +226,7 @@ function makeTx(overrides: {
             ageTier: "ADULT",
             archivedAt: null,
             inheritEmailFromId: null,
+            inheritEmailChoiceId: null,
           };
         }),
         create: vi.fn().mockResolvedValue({ id: "member-1", email: "jane@test.com", firstName: "Jane", lastName: "Doe" }),
@@ -872,6 +885,10 @@ describe("family MAP", () => {
       parentMemberId: "member-1",
       inheritParentEmail: true,
       inheritEmailFromId: "member-1",
+      // #2716: the mapping writer records WHO WAS CHOSEN beside the mailbox the
+      // choice resolves to. One hop means both name the newly created
+      // applicant — the dependant's direct parent — and never anyone further up.
+      inheritEmailChoiceId: "member-1",
     });
     expect(tx.familyGroupMember.upsert).toHaveBeenCalled();
     expect(result.createdMemberIds).toEqual(["member-1"]);

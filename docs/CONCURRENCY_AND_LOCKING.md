@@ -1156,9 +1156,11 @@ mispricing a booking.
   stays fixed either way: the stale FK value is detected from the fresh read and
   never handed to Postgres, so the failure mode is a plain 409, not a bare 500.
 
-  **The same refusal covers the family links (#2437).** The four Member
+  **The same refusal covers the family links (#2437).** The five Member
   self-relation columns (`parentMemberId`, `secondaryParentId`,
-  `inheritEmailFromId`, `detailsConfirmedByMemberId`) are written by admin
+  `inheritEmailFromId`, `inheritEmailChoiceId` — added by #2716, and moved by
+  the same generic mechanism as its sibling — and
+  `detailsConfirmedByMemberId`) are written by admin
   paths outside the `member-lifecycle` lock (`admin-members-service.ts`, the
   dependents link route). #2445's exclusion of the master's own row from the
   self-relation moves stopped a mid-merge link write corrupting the graph (the

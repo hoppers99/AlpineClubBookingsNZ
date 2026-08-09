@@ -867,9 +867,18 @@ async function cleanupArchivedMemberLinks(
     where: { secondaryParentId: memberId },
     data: { secondaryParentId: null },
   });
+  // #2716: the CHOICE goes with the pointer here. Nothing in the product clears
+  // `archivedAt` — the archive state machine has no reverse edge — so a choice
+  // naming an archived member can never resolve again, and keeping it would
+  // report these dependants as waiting on an address that is never coming.
   const inheritance = await tx.member.updateMany({
-    where: { inheritEmailFromId: memberId },
-    data: { inheritEmailFromId: null },
+    where: {
+      OR: [
+        { inheritEmailFromId: memberId },
+        { inheritEmailChoiceId: memberId },
+      ],
+    },
+    data: { inheritEmailFromId: null, inheritEmailChoiceId: null },
   });
   // Billing-family removal sweep (#1932, E6): the archived member is leaving all
   // families in this transaction, so clear any billing-family selection they hold.
@@ -1288,10 +1297,16 @@ export async function reviewMemberDeleteRequest({
     await tx.member.delete({ where: { id: request.memberId } });
 
     if (orphanedByDelete.emailInheritors.length > 0) {
+      // #2716: both self-relations carry `onDelete: SetNull`, so the deleted
+      // row takes the CHOICE with it as well as the pointer — which is why the
+      // stranded-flag repair is scoped on both being NULL. A member who kept a
+      // choice would still have a live decision and must keep the flag that
+      // records where it came from.
       await tx.member.updateMany({
         where: {
           id: { in: orphanedByDelete.emailInheritors.map((row) => row.id) },
           inheritEmailFromId: null,
+          inheritEmailChoiceId: null,
         },
         data: { inheritParentEmail: false },
       });

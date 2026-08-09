@@ -43,6 +43,7 @@ import {
   type SweptPartnerSharedAllocation,
 } from "@/lib/bed-allocation-lifecycle";
 import logger from "@/lib/logger";
+import { reconcileEmailInheritanceForMemberChange } from "@/lib/member-email-inheritance";
 import { acquireMemberLifecycleLocks } from "@/lib/member-lifecycle-lock";
 import {
   claimDeletionRequestApproval,
@@ -944,6 +945,9 @@ export async function POST(
           twoFactorLockedUntil: null,
           xeroContactId: null,
           inheritEmailFromId: null,
+          // #2716: the choice goes with the pointer. An anonymised member's mail
+          // has nowhere to be forwarded to and no decision left to honour.
+          inheritEmailChoiceId: null,
           // Billing-family removal sweep (#1932, E6): the member is leaving all
           // families here, so clear any billing-family selection they hold.
           billingFamilyGroupId: null,
@@ -998,10 +1002,31 @@ export async function POST(
       // though the person's details are gone. It is only the mailbox that has
       // to stop being used.
       detachedFamilyLinks = await readFamilyLinkOrphans(tx, member.id);
+      // #2716: clear the CHOICE too, not just the pointer. Anonymisation is the
+      // one address REMOVAL that is permanent — the `@deleted.invalid` address
+      // hard-bounces and nothing in the product ever writes a real one back —
+      // so leaving the choice standing would keep a decision on file that can
+      // never resolve again, and would make these members read as "waiting for
+      // a parent's address" on the admin surface rather than as what they are:
+      // members who need a new contact of record chosen.
       await tx.member.updateMany({
-        where: { inheritEmailFromId: member.id },
-        data: { inheritEmailFromId: null, inheritParentEmail: false },
+        where: {
+          OR: [
+            { inheritEmailFromId: member.id },
+            { inheritEmailChoiceId: member.id },
+          ],
+        },
+        data: {
+          inheritEmailFromId: null,
+          inheritEmailChoiceId: null,
+          inheritParentEmail: false,
+        },
       });
+      // The member being anonymised may themselves have inherited somebody
+      // else's address; their own pointer goes with the rest of their contact
+      // details. Reconciling rather than nulling by hand keeps one rule in one
+      // place, and catches any pointer the clauses above did not name.
+      await reconcileEmailInheritanceForMemberChange(tx, [member.id]);
 
       // 5. Anonymise BookingGuest names for this member's guest appearances
       await tx.bookingGuest.updateMany({

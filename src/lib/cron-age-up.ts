@@ -14,7 +14,7 @@ import logger from "./logger";
 import { createStructuredAuditLog } from "./audit";
 import { issueActionToken } from "./action-tokens";
 import { triggerMemberXeroContactGroupSync } from "./xero-contact-groups";
-import { describeParentSideDepth } from "@/lib/member-family-link-depth";
+import { reconcileEmailInheritanceForMemberChange } from "@/lib/member-email-inheritance";
 import { resolveInheritedEmailSourceId } from "@/lib/member-parent-links";
 
 const AGE_UP_PARENT_EMAIL_HANDOFF_AUDIT_ACTION =
@@ -25,6 +25,7 @@ type AgeUpUpgradeResult = {
   tokenHash: string;
   previousAgeTier: AgeTier;
   previousInheritEmailFromId: string | null;
+  previousInheritEmailChoiceId: string | null;
   previousInheritParentEmail: boolean;
 };
 
@@ -35,6 +36,7 @@ async function rollbackAgeUpUpgrade(
     | "tokenHash"
     | "previousAgeTier"
     | "previousInheritEmailFromId"
+    | "previousInheritEmailChoiceId"
     | "previousInheritParentEmail"
   >
 ) {
@@ -57,9 +59,20 @@ async function rollbackAgeUpUpgrade(
         canLogin: false,
         ageTier: upgrade.previousAgeTier,
         inheritEmailFromId: upgrade.previousInheritEmailFromId,
+        // #2716: the CHOICE is part of what a rollback has to put back. Without
+        // it the compensating write would restore the pointer beside an empty
+        // choice, and the next reconciliation would clear the pointer again —
+        // so a failed age-up email would silently cost the member the mailbox
+        // the rollback exists to preserve.
+        inheritEmailChoiceId: upgrade.previousInheritEmailChoiceId,
         inheritParentEmail: upgrade.previousInheritParentEmail,
       },
     });
+    // The aged-up member's dependants were re-resolved through them when the
+    // upgrade landed; putting the member back a tier has to put those pointers
+    // back too, and reconciliation does it from the same rule rather than by
+    // replaying a remembered list.
+    await reconcileEmailInheritanceForMemberChange(tx, [memberId]);
   });
 }
 
@@ -77,6 +90,7 @@ type AgeUpCandidate = {
   lastName: string;
   dateOfBirth: Date | null;
   parentMemberId: string | null;
+  inheritEmailChoiceId: string | null;
   inheritParentEmail: boolean;
   inheritEmailFromId: string | null;
   inheritEmailFrom: EmailHandoffSource | null;
@@ -316,6 +330,7 @@ export async function checkAgeUpMembers(): Promise<{
       parentMemberId: true,
       inheritParentEmail: true,
       inheritEmailFromId: true,
+      inheritEmailChoiceId: true,
       inheritEmailFrom: {
         select: { id: true, email: true, firstName: true, lastName: true },
       },
@@ -408,6 +423,7 @@ export async function checkAgeUpMembers(): Promise<{
             canLogin: true,
             ageTier: true,
             inheritEmailFromId: true,
+            inheritEmailChoiceId: true,
             inheritParentEmail: true,
             parentMemberId: true,
           },
@@ -432,62 +448,35 @@ export async function checkAgeUpMembers(): Promise<{
             canLogin: true,
             ageTier: "ADULT",
             inheritEmailFromId: null,
+            // #2716: the choice clears with the pointer. The member now has an
+            // address and a login of their own, so the decision that routed
+            // their mail to a parent is spent — and leaving it would have the
+            // reconciliation below hand the pointer straight back.
+            inheritEmailChoiceId: null,
             inheritParentEmail: false,
           },
         });
 
-        // #2255: age-up is the one AUTOMATIC event that can leave a derived
-        // pointer pointing at the wrong person. Clearing this member's own
-        // inheritance makes them stand alone with their own address and login —
-        // but their dependants' pointers were resolved THROUGH them, and had to
-        // walk past them precisely because they had no address of their own.
-        // Those pointers still name the grandparent, so a parent who now has
-        // both a mailbox and a login would never receive their own child's
-        // notifications, and nothing on any screen would say so.
+        // #2716: age-up is one of the events that moves a member across the
+        // line between "can receive mail" and "cannot" — in the helpful
+        // direction, for once. Until this moment they were a non-login minor
+        // with no address of their own, so any dependant who had chosen them as
+        // their contact of record resolved to nobody. Now they qualify, and
+        // those pointers must follow.
         //
-        // SCOPED TO POINTERS THAT ACTUALLY CAME THROUGH THIS MEMBER. Being a
-        // dependant of the aged-up member is not enough on its own: a child with
-        // two parents may hold a pointer resolved through the OTHER parent, or
-        // one an admin explicitly chose. `inheritParentEmail` cannot tell those
-        // apart — "derived by default" and "the admin picked parent Q" both
-        // store `true` — so selecting on the flag alone would silently move the
-        // family's contact of record off Q and onto this member, which is
-        // exactly the consent question this job must not answer by itself.
+        // This replaces a bespoke sweep that had to GUESS which dependants came
+        // through this member, because the only record was a flat pointer plus
+        // `inheritParentEmail` — a flag that says "derived" but cannot say
+        // "derived from whom", and that carries DEFAULT true besides. The old
+        // code approximated the answer with "does the pointer name this member
+        // or one of their own ancestors", and was careful to say why a wrong
+        // guess would silently move a family's contact of record.
         //
-        // What IS knowable is where a pointer resolved through this member could
-        // possibly point. Before age-up they were a non-login minor, so the walk
-        // could never stop on them; it climbed to one of their own ancestors.
-        // Anything naming a member outside that set was resolved through some
-        // other branch of the family and is left alone.
-        const ownSourceCandidates = [
-          member.id,
-          ...(await describeParentSideDepth(tx, member.id)).ancestorIds,
-        ];
-        const derivedDependants = await tx.member.findMany({
-          where: {
-            inheritParentEmail: true,
-            inheritEmailFromId: { in: ownSourceCandidates },
-            OR: [
-              { parentMemberId: member.id },
-              { secondaryParentId: member.id },
-            ],
-          },
-          select: { id: true },
-        });
-        if (derivedDependants.length > 0) {
-          // One resolution for the whole set: every one of them inherits
-          // through THIS member, so they all land on the same mailbox. It is
-          // read after the update above, so the walk sees the aged-up member as
-          // an adult and normally stops on them — unless their own address is a
-          // placeholder, in which case it keeps climbing, which is right.
-          const { sourceId } = await resolveInheritedEmailSourceId(tx, member.id);
-          if (sourceId) {
-            await tx.member.updateMany({
-              where: { id: { in: derivedDependants.map((row) => row.id) } },
-              data: { inheritEmailFromId: sourceId, inheritParentEmail: true },
-            });
-          }
-        }
+        // The choice column removes the guess. A dependant is re-resolved
+        // exactly when they NAMED this member, so a child with two parents whose
+        // choice is the other parent is untouched — not because the heuristic
+        // happens to miss them, but because the question is now answerable.
+        await reconcileEmailInheritanceForMemberChange(tx, [member.id]);
 
         const { token, tokenHash } = issueActionToken();
         const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
@@ -505,6 +494,7 @@ export async function checkAgeUpMembers(): Promise<{
           tokenHash,
           previousAgeTier: currentMember.ageTier,
           previousInheritEmailFromId: currentMember.inheritEmailFromId,
+          previousInheritEmailChoiceId: currentMember.inheritEmailChoiceId,
           previousInheritParentEmail: currentMember.inheritParentEmail,
         };
       });

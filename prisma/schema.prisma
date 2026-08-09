@@ -598,9 +598,27 @@ model Member {
   // Flexible email inheritance: dependents can reuse a primary adult's email for communications.
   // The source must be an adult primary member who is not inheriting from someone else.
   // Takes precedence over the inheritParentEmail + parentMemberId mechanism.
+  //
+  // EFFECTIVE source (#2716). Never written by hand: it is a pure function of
+  // `inheritEmailChoiceId` below — the choice while the chosen member can still
+  // receive mail, and NULL the moment they cannot. `src/lib/member-email-inheritance.ts`
+  // owns that function; every writer goes through it.
   inheritEmailFromId  String?
   inheritEmailFrom    Member?  @relation("EmailInheritance", fields: [inheritEmailFromId], references: [id], onDelete: SetNull)
   emailInheritanceFor Member[] @relation("EmailInheritance")
+
+  // CHOSEN source (#2716). Who the club decided this member's notifications go
+  // to: for a derived pointer (`inheritParentEmail = true`) it is a DIRECT
+  // PARENT and nobody else — inheritance is one hop, never through an
+  // addressless middle generation; for a hand-picked pointer it is the adult an
+  // admin named. It outlives the address: when the chosen member's mailbox goes
+  // away the effective pointer above clears while this column keeps the
+  // decision, so the pointer restores itself if that mailbox comes back.
+  // Without it a removed address would erase the record of who was chosen, and
+  // "re-resolve when an address is ADDED" would have nothing to re-resolve to.
+  inheritEmailChoiceId      String?
+  inheritEmailChoice        Member?  @relation("EmailInheritanceChoice", fields: [inheritEmailChoiceId], references: [id], onDelete: SetNull)
+  emailInheritanceChoiceFor Member[] @relation("EmailInheritanceChoice")
 
   detailsConfirmedBy                Member?                        @relation("MemberDetailsConfirmedBy", fields: [detailsConfirmedByMemberId], references: [id], onDelete: SetNull)
   detailsConfirmedFor               Member[]                       @relation("MemberDetailsConfirmedBy")
@@ -731,6 +749,7 @@ model Member {
   @@index([familyGroupId])
   @@index([billingFamilyGroupId])
   @@index([inheritEmailFromId])
+  @@index([inheritEmailChoiceId])
   @@index([detailsConfirmedByMemberId])
   @@index([cancelledViaRequestId])
   @@index([cancelledAt])

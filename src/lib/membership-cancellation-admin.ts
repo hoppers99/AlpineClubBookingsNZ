@@ -872,6 +872,10 @@ export async function reviewMembershipCancellationParticipant({
           parentMemberId: null,
           secondaryParentId: null,
           inheritEmailFromId: null,
+          // #2716: the cancelled member's own recorded choice goes with their
+          // pointer and their parent links — they are leaving the club, so there
+          // is no decision left to honour.
+          inheritEmailChoiceId: null,
         },
       });
 
@@ -887,9 +891,20 @@ export async function reviewMembershipCancellationParticipant({
           where: { secondaryParentId: participant.memberId },
           data: { secondaryParentId: null },
         }),
+        // #2716: dependants who named the cancelled member lose the choice as
+        // well as the pointer. A cancelled member is deactivated and de-logged
+        // in the same write, so a choice naming them could only ever resolve to
+        // nobody; clearing it is what puts these dependants on the admin
+        // surface as "no contact of record chosen" rather than as "waiting for
+        // an address that is not coming".
         tx.member.updateMany({
-          where: { inheritEmailFromId: participant.memberId },
-          data: { inheritEmailFromId: null },
+          where: {
+            OR: [
+              { inheritEmailFromId: participant.memberId },
+              { inheritEmailChoiceId: participant.memberId },
+            ],
+          },
+          data: { inheritEmailFromId: null, inheritEmailChoiceId: null },
         }),
       ]);
 

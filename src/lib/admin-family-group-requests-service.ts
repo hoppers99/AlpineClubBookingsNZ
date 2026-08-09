@@ -522,6 +522,7 @@ export async function reviewAdminFamilyGroupRequest(params: {
       parentMemberId: string;
       inheritParentEmail: boolean;
       inheritEmailFromId: string | null;
+      inheritEmailChoiceId: string | null;
       passwordHash: string;
       emailVerified: true;
       phoneCountryCode: string | null;
@@ -678,6 +679,9 @@ export async function reviewAdminFamilyGroupRequest(params: {
           parentMemberId: request.requesterId,
           inheritParentEmail: !optedOutOfInheritance,
           inheritEmailFromId,
+          // #2716: pointer and CHOICE written together. Under one hop the
+          // resolved mailbox IS the requester, who is this child's parent.
+          inheritEmailChoiceId: inheritEmailFromId,
           passwordHash: await hash(randomBytes(32).toString("hex"), 13),
           emailVerified: true,
           phoneCountryCode: cleanOptionalString(request.requester.phoneCountryCode),
@@ -898,11 +902,12 @@ export async function reviewAdminFamilyGroupRequest(params: {
           if (selectedNotificationParentId === undefined) {
             throw new ReviewRequestError("Notification email recipient must be one of the linked parents.");
           }
-          // #2255: resolve transitively from the chosen parent, storing the
-          // terminal mailbox. `null` here is the deliberate "use the child's own
-          // email" option (an empty `inheritEmailFromId`, see the schema note);
-          // a chosen parent with no reachable mailbox anywhere above them is a
-          // refusal, not a silent fallback to the same thing.
+          // #2716: resolve ONE HOP from the chosen parent. `null` here is the
+          // deliberate "use the child's own email" option (an empty
+          // `inheritEmailFromId`, see the schema note); a chosen parent with no
+          // address of their own is a refusal, not a silent fallback to the same
+          // thing — and no longer a reason to look further up the family, which
+          // is what the retired transitive walk did.
           const resolvedInheritEmailFromId = selectedNotificationParentId
             ? (await resolveInheritedEmailSourceId(tx, selectedNotificationParentId))
                 .sourceId
@@ -933,6 +938,10 @@ export async function reviewAdminFamilyGroupRequest(params: {
                 : {}),
               inheritParentEmail: Boolean(resolvedInheritEmailFromId),
               inheritEmailFrom: resolvedInheritEmailFromId
+                ? { connect: { id: resolvedInheritEmailFromId } }
+                : { disconnect: true },
+              // #2716: the CHOICE travels with the pointer on every write.
+              inheritEmailChoice: resolvedInheritEmailFromId
                 ? { connect: { id: resolvedInheritEmailFromId } }
                 : { disconnect: true },
             },

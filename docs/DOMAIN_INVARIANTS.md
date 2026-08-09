@@ -640,17 +640,17 @@ is now `INV-OPS-005` to `INV-OPS-011` in
 | `INV-LIFE-041` | Candidate search and write-time guards are one predicate on identity only; request options, including the last-Full-Admin guard, are validated separately |
 | `INV-LIFE-042` | Parent-candidate ranking puts non-minors first: a re-order of the eligible set, never a filter |
 | `INV-LIFE-043` | Three load-bearing rules: nullable columns, required graph facts, no no-op unsatisfiable clauses |
-| `INV-LIFE-044` | Two decisions here were agent-taken and are flagged for owner confirmation |
+| `INV-LIFE-044` | Four generations confirmed; transitive email inheritance dropped (owner, 9 Aug 2026) |
 | `INV-LIFE-045` | Delete eligibility counts direct dependants only, which stays correct at four generations |
 | `INV-LIFE-046` | Family links grant no billing or fee coverage, and a source contract enforces the isolation |
-| `INV-LIFE-047` | Email inheritance is resolved transitively but stored flat (flagged for owner confirmation) |
-| `INV-LIFE-048` | The walk is nearest-first, primary-parent-preferring, cycle-safe, bounded and adult-gated |
-| `INV-LIFE-049` | The stored pointer is always the terminal mailbox; every writer must go through the resolver |
+| `INV-LIFE-047` | Email inheritance is DIRECT-PARENT ONLY: a member inherits from a parent or from nobody |
+| `INV-LIFE-048` | The accepted gap is surfaced: one definition of unreachable, read by both admin surfaces |
+| `INV-LIFE-049` | Two columns: the choice that was made, and the terminal mailbox derived from it |
 | `INV-LIFE-050` | An inherit source must be an adult with a real address who does not itself inherit, or it is refused |
-| `INV-LIFE-051` | The resolver re-reads the member a stored pointer names, and walks on if it is now unusable |
+| `INV-LIFE-051` | A stored pointer is re-read before it is trusted; a member who inherits is not a mailbox |
 | `INV-LIFE-052` | Provenance, not identity, decides what unlinking clears |
-| `INV-LIFE-053` | Exactly one automatic event re-points derived inheritance pointers: age-up |
-| `INV-LIFE-054` | That sweep is scoped by where the pointer points; the general case is NOT handled (owner-flagged) |
+| `INV-LIFE-053` | Pointers re-resolve on every address add, change or remove, in the write's own transaction |
+| `INV-LIFE-054` | A daily convergence sweep is the guarantee behind those calls, and is safe to re-run |
 | `INV-LIFE-055` | All four removal paths detach links aimed at the member, and never re-parent the dependants |
 | `INV-LIFE-056` | All four read who they detach before nulling, through one shared helper, and audit the same members |
 | `INV-LIFE-057` | The detach notice does not claim those members now receive club email at a working address |

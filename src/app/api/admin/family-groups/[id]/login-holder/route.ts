@@ -15,7 +15,10 @@ import {
   isLoginEmailUniqueConflict,
   MEMBER_LOGIN_EMAIL_TAKEN_MESSAGE,
 } from "@/lib/member-email";
-import { validateInheritEmailSource } from "@/lib/member-email-inheritance";
+import {
+  reconcileEmailInheritanceForMemberChange,
+  validateInheritEmailSource,
+} from "@/lib/member-email-inheritance";
 import { hasMemberCompletedAccountSetup } from "@/lib/password-reset";
 import { prisma } from "@/lib/prisma";
 import { requireAdmin } from "@/lib/session-guards";
@@ -235,7 +238,15 @@ export async function POST(
           data: {
             canLogin: false,
             email: requestedEmail,
+            // #2716: pointer and CHOICE together. These are adults sharing one
+            // login, pointed at the holder BY HAND — none of them is anyone's
+            // parent here, so the one-hop rule (which constrains a pointer
+            // DERIVED from a parent link) has nothing to say about them. What it
+            // does mean is that if the holder's address is ever removed, the
+            // cluster's pointers clear and this choice is what brings them back.
             inheritEmailFromId:
+              currentHolder.id === newHolderId ? null : newHolderId,
+            inheritEmailChoiceId:
               currentHolder.id === newHolderId ? null : newHolderId,
           },
         });
@@ -246,6 +257,7 @@ export async function POST(
         data: {
           canLogin: true,
           inheritEmailFromId: null,
+          inheritEmailChoiceId: null,
           email: requestedEmail,
         },
       });
@@ -269,9 +281,19 @@ export async function POST(
             canLogin: false,
             email: requestedEmail,
             inheritEmailFromId: newHolderId,
+            inheritEmailChoiceId: newHolderId,
           },
         });
       }
+
+      // #2716: this transfer rewrites the ADDRESS on every member of the
+      // cluster, so anyone outside it who inherits from one of them — a
+      // dependant of a cluster member, say — has to be re-resolved in the same
+      // transaction. The cluster's own pointers are recomputed too, which is
+      // what proves the writes above are self-consistent rather than assumed to
+      // be: if the new holder were not a usable source, the cluster would be
+      // cleared here rather than left pointing at a mailbox nobody reads.
+      await reconcileEmailInheritanceForMemberChange(tx, clusterIds);
 
       // Last-admin end-state guard (issue #1604/#1622). Counted after the
       // writes above so the read view already reflects both changes this

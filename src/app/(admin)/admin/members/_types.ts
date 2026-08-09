@@ -133,6 +133,14 @@ export interface Filters {
   xeroLinked: string;
   subscription: string;
   xeroContactGroup: string;
+  /**
+   * #2716: who the club cannot reach. `unreachable` is both reasons together —
+   * a member waiting on a chosen parent's address, or one holding only a
+   * club-internal placeholder address of their own — and the two narrower
+   * values pick one. Linked to directly from the stuck-states dashboard, so the
+   * value strings are part of that contract and not merely internal.
+   */
+  contactability: string;
 }
 
 export interface ImportResult {

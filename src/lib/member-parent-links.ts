@@ -1,6 +1,8 @@
 import type { Prisma } from "@prisma/client";
-import { isPlaceholderContactEmail } from "@/lib/placeholder-contact-email";
-import { MAX_PARENT_LINK_CHAIN_LENGTH } from "@/lib/member-family-link-depth";
+import {
+  EMAIL_SOURCE_SELECT,
+  isUsableEmailSource,
+} from "@/lib/member-email-inheritance";
 import type { prisma } from "@/lib/prisma";
 
 type ParentLinkKind = "PRIMARY" | "SECONDARY";
@@ -28,10 +30,16 @@ export type ParentLinkSummary = {
  * the parent is itself a usable source. NOTHING GUARANTEES THAT ANY MORE: the
  * admin link route used to require an active, non-archived ADULT parent, and
  * #2282 removed the adult half — parentage is recorded at any age. A parent may
- * now be a minor, so this one-hop reading is correct only where the caller has
- * already established that the parent can receive mail. Everywhere else — and
- * in every WRITE path without exception — use the async resolver, which walks up
- * to the nearest ancestor who actually qualifies.
+ * now be a minor, so this reading is correct only where the caller has already
+ * established that the parent can receive mail. Everywhere else — and in every
+ * WRITE path without exception — use the async resolver, which applies the full
+ * usable-source test.
+ *
+ * #2716: since inheritance is one hop, a parent who themselves inherits is not a
+ * source at all, and the `parent.inheritEmailFromId` branch below survives only
+ * as a SELECTION alias — the admin UI shows a mailbox where the parent has one,
+ * and {@link matchParentLinkIdForNotification} has to be able to map that back
+ * to the parent it came from. It never decides a mailbox.
  */
 export function getParentEmailSourceId(
   parent: { id: string; inheritEmailFromId?: string | null } | null | undefined
@@ -41,38 +49,20 @@ export function getParentEmailSourceId(
 }
 
 /**
- * A member who can actually receive a dependant's notifications: an adult, not
- * archived, with a real address rather than a club-internal placeholder — a
- * walk-in contact's `@no-email.invalid` (#1935) or a deletion-anonymised
- * `@deleted.invalid` (#2255). `sendEmail` silently drops the first and the
- * second hard-bounces, so neither can be a family's contact of record.
- *
- * The adult gate is deliberate and survives #2282 ("parentage may be recorded
- * at any age"): recording that a 16-year-old is a parent is a fact about the
- * family, whereas being the club's contact of record for someone else's
- * notifications is a responsibility function, and those stay adult-gated.
- */
-function isUsableEmailSource(member: {
-  ageTier: string;
-  email: string;
-  archivedAt: Date | null;
-}): boolean {
-  return (
-    member.ageTier === "ADULT" &&
-    !member.archivedAt &&
-    !isPlaceholderContactEmail(member.email)
-  );
-}
-
-/**
  * What every writer says when a dependant was meant to inherit a parent's email
- * and no ancestor in reach has a real address. Refused rather than silently
- * stored as "no inheritance": the admin asked for the mail to reach a parent,
- * and quietly leaving it on the dependant's own (often placeholder) address is
- * how a family stops receiving anything without anyone noticing.
+ * and that parent has no real address. Refused rather than silently stored as
+ * "no inheritance": the admin asked for the mail to reach a parent, and quietly
+ * leaving it on the dependant's own (often placeholder) address is how a family
+ * stops receiving anything without anyone noticing.
+ *
+ * #2716 rewrote the sentence with the rule. It used to offer "no parent OR
+ * ANCESTOR in this family has a real email address", which described a walk that
+ * no longer happens: inheritance is one hop, so the only member whose address
+ * can fix this is the parent themselves. Naming the grandparent as a possible
+ * remedy would send an admin to record an address that changes nothing.
  */
 export const NO_INHERITABLE_EMAIL_SOURCE_MESSAGE =
-  "No parent or ancestor in this family has a real email address to inherit. Record an email address for the parent first, or link without inheriting.";
+  "This parent has no email address the club can send to, so there is nothing for the dependant to inherit. Record an email address for the parent first, or link without inheriting.";
 
 export type InheritedEmailSourceResolution = {
   /** The member whose address the dependant should inherit; null if none. */
@@ -80,124 +70,50 @@ export type InheritedEmailSourceResolution = {
 };
 
 /**
- * TRANSITIVE email inheritance (#2255, owner decision D9).
+ * DIRECT-PARENT email inheritance (#2716, owner decision on #2708, 9 Aug 2026).
  *
- * With links capped at four generations rather than two, a dependant's direct
- * parent can be a middle generation with no address of their own — a non-login
- * child who grew up and had children, say. Resolving strictly one hop would
- * leave that middle generation's own children with no reachable contact at all,
- * so resolution now walks UP to the nearest ancestor who can actually receive
- * mail, bounded by the same depth cap as the links themselves.
+ * Given the parent an admin chose, this answers "whose mailbox does the
+ * dependant's mail go to?" — and the answer is now **that parent or nobody**.
  *
- * DETERMINISM / TIE-BREAK. The walk is nearest-first (level order), so a closer
- * ancestor always beats a further one. Within one level, ancestors are visited
- * in the order their descendants were dequeued, and each member contributes its
- * PRIMARY parent before its SECONDARY parent — so where two ancestors are
- * equally near, the one reached through primary-parent edges wins. Every node is
- * visited at most once, which makes the walk cycle-safe even on data that
- * predates the cap.
+ * It used to be a level-order walk UP the family tree to the nearest ancestor
+ * who could receive mail, bounded by the four-generation link cap (#2255, D9).
+ * That was an agent-taken decision flagged for the owner, and the owner narrowed
+ * it: an address that travels an arbitrary number of hops is unpredictable to
+ * the person whose address it is, and a grandparent who supplies an email for
+ * one grandchild does not thereby expect notifications for a branch of the
+ * family they may have no involvement with. One hop is explainable to a member
+ * in a sentence; three is not.
  *
- * WHAT IT RETURNS is a TERMINAL source — a member who does not themselves
- * inherit. Stored inheritance therefore stays FLAT: `Member.inheritEmailFromId`
- * always points straight at the mailbox. That is what lets every reader
- * (`getMemberEmail`, `member-email.ts`, the roster, the age-up cron, Xero
- * contact sync) keep its single `inheritEmailFrom` join and stay correct at any
- * depth. Do not "simplify" this by storing a pointer at the direct parent.
+ * THE DEPTH CAP IS UNCHANGED. Four generations still governs how deep family
+ * links may run (`member-family-link-depth.ts`); it never governed the address
+ * hop, and this function no longer has any reason to consult it — which is why
+ * `MAX_PARENT_LINK_CHAIN_LENGTH` is gone from this module rather than merely
+ * left unused.
+ *
+ * THE ACCEPTED COST, which no caller may hide: where the chosen parent has no
+ * address of their own, this returns `null` and the dependant inherits NOBODY.
+ * Callers either refuse the write with
+ * {@link NO_INHERITABLE_EMAIL_SOURCE_MESSAGE} or record the choice and leave the
+ * member on the admin "no reachable email address" surface
+ * (`unreachableMemberWhere`). A gap somebody can see beats a message going
+ * somewhere nobody chose.
+ *
+ * WHAT IT RETURNS is still a TERMINAL source — a member who does not themselves
+ * inherit — so stored inheritance stays FLAT and every reader keeps its single
+ * `inheritEmailFrom` join. Terminality is now trivially true rather than
+ * carefully arranged: a parent who inherits is not a usable source, so there is
+ * nothing left to chain through.
  */
 export async function resolveInheritedEmailSourceId(
   db: ParentLinkClient,
   parentId: string,
 ): Promise<InheritedEmailSourceResolution> {
-  const visited = new Set<string>([parentId]);
-  let frontier: string[] = [parentId];
-
-  // `< MAX_PARENT_LINK_CHAIN_LENGTH + 1` reads as MAX+1 LEVELS: level 0 is the
-  // parent themselves and levels 1..MAX are their ancestors, so the walk covers
-  // exactly the chain the cap permits above a parent and no further. The
-  // previous `<=` ran one level past that, reaching a fifth generation the link
-  // rules would never have allowed to exist.
-  for (let level = 0; level < MAX_PARENT_LINK_CHAIN_LENGTH + 1; level += 1) {
-    if (frontier.length === 0) break;
-
-    // Ordered by the queue, then re-ordered to the queue's order below: Prisma
-    // returns rows in whatever order the database chooses, so the level's own
-    // deterministic order has to be re-imposed rather than assumed.
-    const rows = await db.member.findMany({
-      where: { id: { in: frontier } },
-      select: {
-        id: true,
-        email: true,
-        ageTier: true,
-        archivedAt: true,
-        inheritEmailFromId: true,
-        parentMemberId: true,
-        secondaryParentId: true,
-      },
-    });
-    const rowById = new Map(rows.map((row) => [row.id, row]));
-    const nextFrontier: string[] = [];
-
-    for (const id of frontier) {
-      const row = rowById.get(id);
-      if (!row) continue;
-
-      // An already-flattened pointer is itself terminal, so it short-circuits
-      // the walk: this is the hop that keeps a non-login middle generation's
-      // children pointed at the same mailbox as the middle generation.
-      //
-      // TRUSTED ONLY IF STILL VALID. A stored pointer is a snapshot of a past
-      // decision, and the member it names can have been archived, aged into a
-      // placeholder address, deleted, or — the case terminality catches —
-      // themselves been linked as an inheriting dependant since. Following it
-      // blindly would propagate a dead or CHAINED mailbox to a new dependant and
-      // call it resolved, so the target is re-read and, if it no longer
-      // qualifies, the walk carries on upward as though the pointer were absent.
-      //
-      // Terminality is checked here and nowhere else in this branch because it
-      // is only reachable here: the `else` below runs on rows whose own
-      // `inheritEmailFromId` is null, so those are terminal by construction.
-      // Without it the resolver hands back a chaining source, and the two
-      // callers fail differently and both badly — a validating writer 422s with
-      // "cannot chain through another inherited member", naming a member the
-      // admin never chose, while the unlink route (which has no validator)
-      // simply STORES it and breaks the flat-terminal invariant every one-hop
-      // reader depends on.
-      if (row.inheritEmailFromId) {
-        const storedSource = await db.member.findUnique({
-          where: { id: row.inheritEmailFromId },
-          select: {
-            id: true,
-            email: true,
-            ageTier: true,
-            archivedAt: true,
-            inheritEmailFromId: true,
-          },
-        });
-        if (
-          storedSource &&
-          !storedSource.inheritEmailFromId &&
-          isUsableEmailSource(storedSource)
-        ) {
-          return { sourceId: storedSource.id };
-        }
-        // Falls through to the parents rather than to this row's own address: a
-        // member who inherits is not a source, and their `email` column is
-        // typically a stale copy of the very mailbox just rejected.
-      } else if (isUsableEmailSource(row)) {
-        return { sourceId: row.id };
-      }
-
-      for (const nextId of [row.parentMemberId, row.secondaryParentId]) {
-        if (!nextId || visited.has(nextId)) continue;
-        visited.add(nextId);
-        nextFrontier.push(nextId);
-      }
-    }
-
-    frontier = nextFrontier;
-  }
-
-  return { sourceId: null };
+  const parent = await db.member.findUnique({
+    where: { id: parentId },
+    select: EMAIL_SOURCE_SELECT,
+  });
+  if (!parent) return { sourceId: null };
+  return { sourceId: isUsableEmailSource(parent) ? parent.id : null };
 }
 
 export function buildParentLinks(member: {
@@ -309,7 +225,7 @@ export function buildMemberFacingParentLinks(
 /**
  * Which of a member's linked parents an admin's "notification email" selection
  * names. Selection-matching only — it deliberately does not decide the mailbox,
- * because that is a walk up the family chain (#2255,
+ * because that needs the chosen parent's own row (#2716,
  * {@link resolveInheritedEmailSourceId}) and this runs on plain arrays.
  *
  * Three outcomes, all meaningful:

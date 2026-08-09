@@ -1304,6 +1304,43 @@ export async function register() {
 
     logger.info({ job: "age-up" }, "Scheduled age-up check (daily at 6:30 AM NZST)");
 
+    // Email-inheritance reconciliation (daily at 6:45 AM NZST) — #2716.
+    // Scheduled immediately AFTER age-up deliberately: age-up is the other job
+    // that moves members across the "can receive mail" line, and running the
+    // sweep behind it means a member who aged up this morning has their
+    // dependants' pointers settled within the same quarter hour even if the
+    // age-up transaction's own re-resolution had failed.
+    let isEmailInheritanceReconcileRunning = false;
+    cron.default.schedule("45 6 * * *", async () => {
+      if (isEmailInheritanceReconcileRunning) {
+        logger.info({ job: "email-inheritance-reconcile" }, "Already running, skipping");
+        return;
+      }
+      isEmailInheritanceReconcileRunning = true;
+      const startedAt = new Date();
+      const checkInId = Sentry.captureCheckIn(
+        { monitorSlug: "email-inheritance-reconcile", status: "in_progress" },
+        sentryCronMonitorConfig("45 6 * * *", { checkinMargin: 10, maxRuntime: 15 })
+      );
+      logger.info({ job: "email-inheritance-reconcile" }, "Reconciling email inheritance pointers");
+
+      try {
+        const { reconcileEmailInheritanceSweep } = await import("./lib/cron-email-inheritance-reconcile");
+        const result = await reconcileEmailInheritanceSweep();
+        await recordCronRun("email-inheritance-reconcile", startedAt, "SUCCESS", result);
+        Sentry.captureCheckIn({ checkInId, monitorSlug: "email-inheritance-reconcile", status: "ok" });
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        reportCronError({ tag: "email-inheritance-reconcile", err, message: "Error in email inheritance reconciliation" });
+        await recordCronRun("email-inheritance-reconcile", startedAt, "FAILURE", undefined, message);
+        Sentry.captureCheckIn({ checkInId, monitorSlug: "email-inheritance-reconcile", status: "error" });
+      } finally {
+        isEmailInheritanceReconcileRunning = false;
+      }
+    }, { timezone: CRON_TIMEZONE });
+
+    logger.info({ job: "email-inheritance-reconcile" }, "Scheduled email inheritance reconciliation (daily at 6:45 AM NZST)");
+
     // ── Credit reconciliation (daily at 5:00 AM NZST) ──────────────────
 
     let isCreditReconRunning = false;

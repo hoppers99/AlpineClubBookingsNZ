@@ -84,7 +84,8 @@ export function MemberFilterToolbar({
     (filters.inviteStatus ? 1 : 0) +
     (filters.xeroLinked ? 1 : 0) +
     (filters.subscription ? 1 : 0) +
-    (filters.xeroContactGroup ? 1 : 0)
+    (filters.xeroContactGroup ? 1 : 0) +
+    (filters.contactability ? 1 : 0)
 
   // Active-filter chips — one per set filter param, in the interface's field
   // order, exactly as before. Each × calls onSetFilter(key, "") to clear just
@@ -246,6 +247,30 @@ export function MemberFilterToolbar({
               <SelectItem value="all">All Xero</SelectItem>
               <SelectItem value="true">Linked</SelectItem>
               <SelectItem value="false">Not Linked</SelectItem>
+            </SelectContent>
+          </Select>
+          {/*
+            #2716: the accepted cost of direct-parent-only email inheritance,
+            findable. Where a middle generation has no address the descendant
+            inherits nobody, and a gap is only the right failure direction while
+            an admin can see it. The stuck-states dashboard links straight to
+            `?contactability=unreachable`, so these option values are a contract
+            with that screen rather than local naming.
+          */}
+          <Select
+            value={filters.contactability || "all"}
+            onValueChange={(value) => onSetFilter("contactability", value === "all" ? "" : value)}
+          >
+            <SelectTrigger className="w-[200px]" aria-label="Filter by contactability">
+              <SelectValue placeholder="Contactable" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">All Contactable</SelectItem>
+              <SelectItem value="unreachable">No reachable email</SelectItem>
+              <SelectItem value="inheritance-unresolved">
+                Waiting on a parent&apos;s email
+              </SelectItem>
+              <SelectItem value="placeholder-address">No email on record</SelectItem>
             </SelectContent>
           </Select>
           <Select

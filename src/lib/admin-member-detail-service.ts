@@ -35,7 +35,10 @@ import {
   isLoginEmailUniqueConflict,
   MEMBER_LOGIN_EMAIL_TAKEN_MESSAGE,
 } from "@/lib/member-email";
-import { validateInheritEmailSource } from "@/lib/member-email-inheritance";
+import {
+  reconcileEmailInheritanceForMemberChange,
+  validateInheritEmailSource,
+} from "@/lib/member-email-inheritance";
 import {
   buildParentLinks,
   resolveInheritedEmailSourceId,
@@ -1123,7 +1126,13 @@ export async function updateAdminMember(params: {
   if (data.requiresInduction !== undefined)
     updateData.requiresInduction = data.requiresInduction;
   if (data.inheritEmailFromId !== undefined) {
+    // #2716: the CHOICE and the effective pointer are written together, always.
+    // The admin's pick here is a hand-picked source (`inheritParentEmail` is not
+    // touched by this edit), so it is exempt from the one-hop parent test but
+    // not from the deliverability test: the reconciliation below re-derives the
+    // pointer from the choice and will clear it the day that mailbox goes away.
     updateData.inheritEmailFromId = data.inheritEmailFromId?.trim() || null;
+    updateData.inheritEmailChoiceId = updateData.inheritEmailFromId;
   }
 
   if (data.postalSameAsPhysical) {
@@ -1385,6 +1394,17 @@ export async function updateAdminMember(params: {
           actorMemberId: currentAdminMemberId,
         });
       }
+
+      // #2716: an admin edit is the single richest way to move a member across
+      // the line between "can receive mail" and "cannot" — it can add, change or
+      // REMOVE an address, flip the age tier, and set or clear a hand-picked
+      // inheritance source, all in one write. Re-resolving here, inside the same
+      // transaction, is what makes that a guarantee rather than a best effort: a
+      // rolled-back edit rolls the re-resolution back with it, and a committed
+      // one cannot commit without it. Unconditional rather than gated on which
+      // fields changed — the function recomputes what should be true instead of
+      // asking what happened, and a gate is one more thing that can be wrong.
+      await reconcileEmailInheritanceForMemberChange(tx, [id]);
 
       // #1756: sweep the member's future shared-double placements in the same
       // transaction as the deactivate / tier change; the removed second

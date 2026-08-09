@@ -16,6 +16,12 @@ vi.mock("@/lib/prisma", () => ({
       findFirst: vi.fn(),
       update: vi.fn(),
       create: vi.fn(),
+      // #2716: a profile or admin edit can add, change or REMOVE an address, so
+      // it re-resolves email inheritance inside the same transaction — the
+      // member's own pointer, then everyone who inherits from them — and both
+      // halves read members with `findMany`. Defaulted to no rows: these
+      // fixtures describe one member with nobody inheriting from them.
+      findMany: vi.fn().mockResolvedValue([]),
     },
     booking: { findMany: vi.fn(), aggregate: vi.fn() },
     auditLog: { create: vi.fn().mockResolvedValue({}), findMany: vi.fn() },
@@ -116,6 +122,9 @@ describe("Profile API: structured phone and address fields", () => {
           update: prisma.member.update,
           // #1604 last-admin guard counts active Full Admins inside the tx.
           count: prisma.member.count,
+          // #2716: the same transaction re-resolves email inheritance, which
+          // reads the subjects and then their chosen sources with `findMany`.
+          findMany: prisma.member.findMany,
         },
         memberAccessRole: {
           createMany: vi.fn().mockResolvedValue({ count: 1 }),
