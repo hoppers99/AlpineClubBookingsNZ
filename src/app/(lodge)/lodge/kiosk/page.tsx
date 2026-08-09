@@ -497,7 +497,23 @@ export default function KioskPage() {
         body: JSON.stringify({ bookingGuestId: guestId }),
       });
       if (!res.ok) {
-        showActionError("Failed to update arrival");
+        // #2737: one refusal here is actionable and the rest are not. A 409
+        // `GUEST_NOT_BOOKED_THIS_NIGHT` means this page is stale — the guest is
+        // not staying tonight — so pass the server's own sentence through
+        // instead of "Failed to update arrival", which sends the hut leader
+        // looking for a fault that is not there. Only that one code is
+        // whitelisted: every other status keeps the generic line rather than
+        // rendering arbitrary server text on the kiosk screen.
+        const refusal = await res
+          .json()
+          .catch(() => null as { code?: string; error?: string } | null);
+        showActionError(
+          res.status === 409 &&
+            refusal?.code === "GUEST_NOT_BOOKED_THIS_NIGHT" &&
+            typeof refusal.error === "string"
+            ? refusal.error
+            : "Failed to update arrival"
+        );
         return;
       }
       const data = await res.json();
