@@ -712,6 +712,34 @@ export async function evaluateProposalPartyViolations(
     bookingId?: string | null;
   },
 ): Promise<PolicyExceptionViolation[]> {
+  return evaluatePartyViolations(db, lodgeId, party, presence, true);
+}
+
+/**
+ * Evaluate the non-hosting soft policies for a party already persisted on one
+ * booking. Hosting is deliberately absent here: persisted hosting evidence must
+ * use `evaluatePersistedBookingAdultMemberHostingReadOnly`, whose canonical
+ * snapshot includes sparse nights, operational consent, split siblings and
+ * same-owner exclusions that a proposal cannot represent.
+ */
+export async function evaluatePersistedBookingNonHostingPolicyViolations(
+  db: PolicyEvaluationDb,
+  lodgeId: string,
+  party: ProposalParty,
+  presence: { requestedByMemberId?: string | null; bookingId: string },
+): Promise<PolicyExceptionViolation[]> {
+  return evaluatePartyViolations(db, lodgeId, party, presence, false);
+}
+
+async function evaluatePartyViolations(
+  db: PolicyEvaluationDb,
+  lodgeId: string,
+  party: ProposalParty,
+  presence:
+    | { requestedByMemberId?: string | null; bookingId?: string | null }
+    | undefined,
+  includeProposedHosting: boolean,
+): Promise<PolicyExceptionViolation[]> {
   const checkIn = parseDateOnly(party.checkIn);
   const checkOut = parseDateOnly(party.checkOut);
 
@@ -723,18 +751,20 @@ export async function evaluateProposalPartyViolations(
   }
 
   const bookingOwnerMemberId = await resolveProposalBookingOwner(db, presence);
-  const hosting = await evaluateProposedAdultMemberHosting(db, {
-    bookingOwnerMemberId,
-    lodgeId,
-    checkIn,
-    checkOut,
-    guests: party.guests.map((guest) => ({
-      firstName: guest.firstName,
-      lastName: guest.lastName,
-      memberId: guest.memberId,
-      nights: guest.nights,
-    })),
-  });
+  const hosting = includeProposedHosting
+    ? await evaluateProposedAdultMemberHosting(db, {
+        bookingOwnerMemberId,
+        lodgeId,
+        checkIn,
+        checkOut,
+        guests: party.guests.map((guest) => ({
+          firstName: guest.firstName,
+          lastName: guest.lastName,
+          memberId: guest.memberId,
+          nights: guest.nights,
+        })),
+      })
+    : null;
   if (hosting) {
     violations.push(hosting);
   }

@@ -118,7 +118,7 @@ import { getSeasonYear } from "@/lib/utils";
  * quietly could not read them would silently restore the unpaid member as a
  * host — a rule that is off when nobody notices is worse than no rule.
  */
-export type AdultMemberHostingReviewDb = Pick<
+export type AdultMemberHostingReadDb = Pick<
   PrismaClient,
   | "booking"
   | "adultMemberHostingPolicy"
@@ -127,6 +127,10 @@ export type AdultMemberHostingReviewDb = Pick<
   | "memberSubscription"
   | "seasonalMembershipAssignment"
   | "membershipType"
+>;
+
+export type AdultMemberHostingReviewDb = AdultMemberHostingReadDb & Pick<
+  PrismaClient,
   // #2576: the same-owner coverage machinery. The incident and the queue row are
   // written INSIDE the caller's transaction alongside the change that caused them
   // (§8), and the audit row with them, so they are part of the required shape
@@ -341,7 +345,7 @@ function hostingSiblingWhere(
 
 async function loadSiblingHosts(
   booking: LoadedHostingBooking,
-  db: AdultMemberHostingReviewDb,
+  db: AdultMemberHostingReadDb,
 ): Promise<{ participants: HostingParticipant[]; siblingIds: string[] }> {
   const siblings = (await db.booking.findMany({
     where: hostingSiblingWhere(booking),
@@ -528,10 +532,10 @@ async function loadHostingSiblingIds(
  * `db` follows the same composition rule as `validateMinimumStay`: a caller
  * already inside `prisma.$transaction` MUST pass its own `tx`.
  */
-export async function evaluateBookingAdultMemberHosting(
+async function evaluateLoadedBookingAdultMemberHosting(
   booking: LoadedHostingBooking,
-  db: AdultMemberHostingReviewDb,
-  failFastCoverageOwner = false,
+  db: AdultMemberHostingReadDb,
+  acquireCoverageOwnerLock: (() => Promise<void>) | null,
 ): Promise<{
   violation: AdultMemberHostingPolicyExceptionViolation | null;
   resolved: ResolvedAdultMemberHostingPolicy;
@@ -569,14 +573,8 @@ export async function evaluateBookingAdultMemberHosting(
     // §9: hold the per-owner key before reading another booking as cover, so a
     // concurrent removal of that cover cannot interleave with this evaluation.
     // Re-entrant, so a caller that already took it (the settle step) pays nothing.
-    if (resolved.hostScopes.sameBookingOwner) {
-      if (failFastCoverageOwner) {
-        if (!(await tryLockHostingCoverageOwner(db, booking.memberId))) {
-          throw new HostingCoverageParticipantRetryError();
-        }
-      } else {
-        await lockHostingCoverageOwner(db, booking.memberId);
-      }
+    if (resolved.hostScopes.sameBookingOwner && acquireCoverageOwnerLock) {
+      await acquireCoverageOwnerLock();
     }
     participants = await withSubscriptionSettlement(
       [
@@ -592,6 +590,57 @@ export async function evaluateBookingAdultMemberHosting(
   }
   const violation = evaluateAdultMemberHostingWithPolicy(participants, resolved);
   return { violation, resolved };
+}
+
+/**
+ * Evaluate a booking already loaded by a mutation path.
+ *
+ * This is the lock-owning form used by reconcilers. Read-only consumers must use
+ * `evaluatePersistedBookingAdultMemberHostingReadOnly` below instead of acquiring
+ * an advisory lock merely to inspect current evidence.
+ */
+export async function evaluateBookingAdultMemberHosting(
+  booking: LoadedHostingBooking,
+  db: AdultMemberHostingReviewDb,
+  failFastCoverageOwner = false,
+): Promise<{
+  violation: AdultMemberHostingPolicyExceptionViolation | null;
+  resolved: ResolvedAdultMemberHostingPolicy;
+}> {
+  return evaluateLoadedBookingAdultMemberHosting(booking, db, async () => {
+    if (!failFastCoverageOwner) {
+      await lockHostingCoverageOwner(db, booking.memberId);
+      return;
+    }
+    if (!(await tryLockHostingCoverageOwner(db, booking.memberId))) {
+      throw new HostingCoverageParticipantRetryError();
+    }
+  });
+}
+
+/**
+ * Pure read-only persisted-booking evaluation for evidence surfaces.
+ *
+ * This is not a second hosting rule. It loads the exact canonical persisted
+ * snapshot and delegates to the same participant construction, split-sibling
+ * borrow, same-owner exclusion, subscription bridge and pure policy evaluator as
+ * the lock-owning reconciler above. It deliberately takes no advisory lock: a
+ * diagnostic read may span READ COMMITTED instants and must report that limitation,
+ * but it must never join a writer lock cohort or mutate database state.
+ */
+export async function evaluatePersistedBookingAdultMemberHostingReadOnly(
+  bookingId: string,
+  db: AdultMemberHostingReadDb = prisma,
+): Promise<{
+  violation: AdultMemberHostingPolicyExceptionViolation | null;
+  resolved: ResolvedAdultMemberHostingPolicy;
+} | null> {
+  const booking = (await db.booking.findUnique({
+    where: { id: bookingId },
+    select: BOOKING_HOSTING_SELECT,
+  })) as LoadedHostingBooking | null;
+  if (!booking) return null;
+  return evaluateLoadedBookingAdultMemberHosting(booking, db, null);
 }
 
 

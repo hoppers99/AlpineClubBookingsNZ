@@ -682,8 +682,8 @@ const EXAMPLE_RAW_ROWS: Record<string, Record<string, unknown>> = {
     hosting_review_pending: true,
     // Every review reason at once, as `bookingReviewReasonCodes` joins them.
     review_reason_codes: "ADULT_SUPERVISION,ADULT_MEMBER_HOSTING_REQUIRED",
-    // Every soft-policy violation `evaluateProposalPartyViolations` can raise, in
-    // the sorted order this source joins them in.
+    // Every persisted policy violation the non-hosting and canonical hosting
+    // evaluators can raise, in the sorted order this source joins them in.
     policy_violation_codes:
       "ADULT_MEMBER_HOSTING_REQUIRED,MINIMUM_STAY,PAID_UP_ADULT_MEMBER_REQUIRED",
     policy_capacity_mode: "NO_HOLD",
@@ -714,7 +714,8 @@ const EXAMPLE_RAW_ROWS: Record<string, Record<string, unknown>> = {
     spare_beds_after_this_booking: -999,
     fits_this_night: true,
     whole_lodge_held_by_another_booking: true,
-    this_booking_holds_whole_lodge: true,
+    this_booking_effectively_holds_whole_lodge: true,
+    this_booking_has_whole_lodge_hold_flag: true,
     capacity_overridden: true,
     allocated_bed_nights: 999,
     observed_at_utc: WIDEST_INSTANT,

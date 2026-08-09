@@ -19,15 +19,13 @@
  * and re-deriving any of them in SQL would create a SECOND definition that can
  * drift from the screen a Booking Officer trusts:
  *
- *  - `evaluateProposalPartyViolations` (`booking-exception-request-service.ts`) is
- *    the ONE server-side evaluator of the exception-eligible soft policies. It
- *    composes `validateMinimumStay`, `evaluateProposedAdultMemberHosting` and
- *    `evaluateProposedPaidUpAdultPresence` and returns structured
- *    `PolicyExceptionViolation` records carrying `reasonCode`, `policyId`,
- *    `policyVersion`, `resolvedScope`, `affectedNights` and `capacityMode`. It is
- *    the same call the officer queue and the member's own request path make, so a
- *    diagnostic and the request the member submits cannot disagree about whether
- *    a rule is broken.
+ *  - `evaluatePersistedBookingNonHostingPolicyViolations` reuses the proposal
+ *    service's canonical minimum-stay and paid-up-adult rules without asking its
+ *    proposal hosting path to invent a persisted booking. Hosting instead comes
+ *    from `evaluatePersistedBookingAdultMemberHostingReadOnly`, the canonical
+ *    persisted snapshot/evaluator used by the reconciler: sparse nights,
+ *    operational consent, split siblings, subscription settlement and same-owner
+ *    exclusions therefore stay identical to the booking lifecycle.
  *  - `bookingReviewReasonCodes` (`booking-review.ts`) is the ONE derivation of why
  *    a booking is in admin review, and it is deliberately derived at read time
  *    rather than stored. `isCheckinBlockedByPendingReview` is the ONE predicate
@@ -91,19 +89,25 @@
  * verdict — that is the point of delegating to them — and none of their return
  * values carries one.
  *
- * READ ONLY, AND NO PROVIDER, AND NO LOCK. Every call below is a Prisma
+ * READ ONLY, AND NO PROVIDER, AND NO LOCK. Every data call below is a Prisma
  * `findUnique`, `findFirst`, `findMany`, `count` or a read-only helper built from
- * those. There is no write, no `$transaction`, no `$executeRaw`, no advisory lock
- * and no HTTP request of any kind. The lock-taking and write-performing siblings of
- * several helpers used here are named in the pack doc precisely so a future edit
- * cannot reach for one by accident: `evaluateBookingAdultMemberHosting` takes an
- * advisory lock and is NOT used; `reconcileAdultMemberHostingReview`,
+ * those. The bounded BedAllocation count runs in the one short interactive
+ * transaction: its first command makes PostgreSQL refuse writes, its second sets
+ * a server-side statement timeout, and then it issues one bounded `findMany`.
+ * Those two fixed tagged-template controls are the only raw executions here.
+ * There is no data write, advisory lock or HTTP request of any kind. The
+ * lock-taking and write-performing siblings of several helpers used here are
+ * named in the pack doc precisely so a future edit cannot reach for one by
+ * accident: `evaluateBookingAdultMemberHosting` takes an advisory lock and is NOT
+ * used; `reconcileAdultMemberHostingReview`,
  * `createModificationExceptionRequest`, `approveAndExecutePolicyExceptionRequest`,
  * `processWaitlistForDates`, `confirmWaitlistOffer` and
  * `replaceBedAllocationsForBooking` all write and are NOT used.
  *
  * MULTIPLE READ COMMITTED INSTANTS. Each source composes ordinary Prisma reads
- * and authoritative helpers without a transaction fence. `observed_at_utc` is
+ * and authoritative helpers without one shared transaction fence. The bounded
+ * allocation sub-read has its own read-only transaction, but it does not turn the
+ * rest of capacity assembly into one snapshot. `observed_at_utc` is
  * captured only after assembly completes; it is not a shared database snapshot
  * timestamp. Facts can therefore span instants and be internally stale. The
  * registry scope tells the model to rerun before acting or reaching a definitive
@@ -117,13 +121,17 @@
 
 import "server-only";
 
+import type { Prisma } from "@prisma/client";
+
+import { evaluatePersistedBookingAdultMemberHostingReadOnly } from "@/lib/adult-member-hosting-review";
 import { getLifecycleStatusConfig } from "@/lib/admin-member-badges";
 import { getAgeTierSettings } from "@/lib/age-tier";
 import { getBookingEditPolicy } from "@/lib/booking-edit-policy";
-import { evaluateProposalPartyViolations } from "@/lib/booking-exception-request-service";
+import { evaluatePersistedBookingNonHostingPolicyViolations } from "@/lib/booking-exception-request-service";
 import { findBookingMemberNightConflicts } from "@/lib/booking-member-night-conflicts";
 import { formatBookingReference } from "@/lib/booking-reference";
 import { bookingReviewReasonCodes, isCheckinBlockedByPendingReview } from "@/lib/booking-review";
+import { bookingHoldsCapacity } from "@/lib/booking-status";
 import { checkCapacity } from "@/lib/capacity";
 import { formatDateOnly } from "@/lib/date-only";
 import {
@@ -162,6 +170,7 @@ import type { DiagnosticsToolRawRow } from "../define";
  * the honest outcome and the executor's own message tells the operator so.
  */
 const AID6B_EVIDENCE_DEADLINE_MS = 10_000;
+const AID6B_DATABASE_STATEMENT_TIMEOUT_MS = 5_000;
 
 /**
  * How many nights one capacity read may report. Kept in step with
@@ -176,6 +185,9 @@ export const AID6B_CAPACITY_NIGHT_CEILING = 31;
  * uses the same ceiling. A corrupt legacy row above it is refused, never clipped.
  */
 export const AID6B_BOOKING_GUEST_CEILING = 30;
+
+const AID6B_ALLOCATION_COUNT_CEILING =
+  AID6B_BOOKING_GUEST_CEILING * AID6B_CAPACITY_NIGHT_CEILING;
 
 /**
  * Keep the open-request population aligned with the pack's bounded history view.
@@ -274,9 +286,14 @@ function boundedGuestNightFootprint(guest: GuestNightFootprint): string[] {
     );
   }
 
-  // Legacy same-day envelopes mean one occupied night. Otherwise the envelope is
-  // half-open, exactly like the booking's date-only lodge-night interval.
-  if (nights === 0) return [formatDateOnly(guest.stayStart)];
+  // A half-open [start,end) interval with equal endpoints contains ZERO nights.
+  // Persisted guest rows are required to contain at least one night, so refuse the
+  // corrupt evidence instead of fabricating occupancy on the departure day.
+  if (nights === 0) {
+    throw new Error(
+      "AI Diagnostics AID-6B: guest fallback envelope contains zero nights; refusing corrupt persisted stay evidence",
+    );
+  }
   const footprint: string[] = [];
   for (let offset = 0; offset < nights; offset += 1) {
     const night = new Date(start + offset * UTC_DAY_MS);
@@ -625,17 +642,26 @@ async function readBookingBlockState(
    * row shows its working for rather than a boolean the engine returns for a
    * headcount that ignores non-contiguous stays.
    */
-  const [violations, capacity, conflicts] = await Promise.all([
+  const [nonHostingViolations, hostingEvaluation, capacity, conflicts] =
+    await Promise.all([
     // Terminal and deleted bookings skip the policy evaluation entirely. It is not
     // an optimisation: evaluating a cancelled booking's party would produce
     // violations that are true of the rows and false of the world, and the
     // suppression below would then have to be trusted to drop every one of them.
     deleted || terminal
       ? Promise.resolve([])
-      : evaluateProposalPartyViolations(prisma, booking.lodgeId, party, {
+      : evaluatePersistedBookingNonHostingPolicyViolations(
+          prisma,
+          booking.lodgeId,
+          party,
+          {
           requestedByMemberId: booking.memberId,
           bookingId: booking.id,
-        }),
+          },
+        ),
+    deleted || terminal
+      ? Promise.resolve(null)
+      : evaluatePersistedBookingAdultMemberHostingReadOnly(booking.id, prisma),
     deleted || terminal
       ? Promise.resolve(null)
       : checkCapacity(
@@ -669,7 +695,17 @@ async function readBookingBlockState(
           })),
           excludeBookingId: booking.id,
         }),
-  ]);
+    ]);
+
+  if (!deleted && !terminal && hostingEvaluation === null) {
+    throw new Error(
+      "AI Diagnostics AID-6B: booking disappeared while persisted hosting evidence was being assembled",
+    );
+  }
+  const violations = [
+    ...nonHostingViolations,
+    ...(hostingEvaluation?.violation ? [hostingEvaluation.violation] : []),
+  ];
 
   const heldNightCount = openRequests.reduce(
     (total, request) => total + request._count.reservationNights,
@@ -896,6 +932,51 @@ async function readBookingBlockState(
 // 2. Per-night capacity, as the booking engine computes it.
 // ---------------------------------------------------------------------------
 
+async function readBoundedAllocationCounts(args: {
+  bookingId: string;
+  checkIn: Date;
+  checkOut: Date;
+}): Promise<Map<string, number>> {
+  const allocations = await prisma.$transaction(
+    async (tx: Prisma.TransactionClient) => {
+      // The outer diagnostics deadline only stops waiting; it cannot cancel a
+      // database statement. Put this bounded read under PostgreSQL's own refusal
+      // and cancellation controls instead. Both statements are fixed literals.
+      await tx.$executeRaw`SET TRANSACTION READ ONLY`;
+      await tx.$executeRaw`SET LOCAL statement_timeout = '5s'`;
+      return tx.bedAllocation.findMany({
+        where: {
+          bookingId: args.bookingId,
+          stayDate: { gte: args.checkIn, lt: args.checkOut },
+          // A corrupt allocation whose guest belongs to another booking is not
+          // evidence about this selected booking. Keep it out structurally rather
+          // than counting it and later trying to explain the inconsistency away.
+          bookingGuest: { is: { bookingId: args.bookingId } },
+        },
+        select: { stayDate: true },
+        orderBy: [{ stayDate: "asc" }, { id: "asc" }],
+        take: AID6B_ALLOCATION_COUNT_CEILING + 1,
+      });
+    },
+    {
+      maxWait: 2_000,
+      timeout: AID6B_DATABASE_STATEMENT_TIMEOUT_MS + 2_000,
+    },
+  );
+  assertPopulationWithinCeiling(
+    allocations.length,
+    AID6B_ALLOCATION_COUNT_CEILING,
+    "in-envelope booking bed allocations",
+  );
+
+  const byNight = new Map<string, number>();
+  for (const allocation of allocations) {
+    const night = formatDateOnly(allocation.stayDate);
+    byNight.set(night, (byNight.get(night) ?? 0) + 1);
+  }
+  return byNight;
+}
+
 /**
  * One row per lodge night of a booking's stay: what the rest of the lodge occupies
  * that night, what is left, whether the night is exclusively held, and what this
@@ -928,6 +1009,8 @@ async function readBookingCapacity(
       checkOut: true,
       deletedAt: true,
       wholeLodgeHold: true,
+      adminCapacityHoldAt: true,
+      originBookingRequest: { select: { id: true } },
       capacityOverriddenAt: true,
     },
   });
@@ -974,15 +1057,11 @@ async function readBookingCapacity(
     booking.id,
   );
 
-  const bedAllocations = await prisma.bedAllocation.groupBy({
-    by: ["stayDate"],
-    where: { bookingId },
-    _count: { _all: true },
+  const allocatedByNight = await readBoundedAllocationCounts({
+    bookingId,
+    checkIn: booking.checkIn,
+    checkOut: booking.checkOut,
   });
-  const allocatedByNight = new Map<string, number>();
-  for (const row of bedAllocations) {
-    allocatedByNight.set(formatDateOnly(row.stayDate), row._count._all);
-  }
 
   const observedAt = new Date().toISOString();
   /**
@@ -1008,7 +1087,16 @@ async function readBookingCapacity(
       ? "deleted"
       : TERMINAL_BOOKING_STATUSES.includes(booking.status)
         ? "terminal"
-        : "live";
+         : "live";
+  const rawWholeLodgeHold = booking.wholeLodgeHold;
+  const effectiveWholeLodgeHold =
+    booking.deletedAt === null &&
+    rawWholeLodgeHold &&
+    bookingHoldsCapacity({
+      status: booking.status,
+      isRequestConverted: booking.originBookingRequest !== null,
+      hasAdminCapacityHold: booking.adminCapacityHoldAt !== null,
+    });
   return capacity.nightDetails.map((detail) => {
     const night = formatDateOnly(detail.date);
     const demand = demandByNight.get(night) ?? 0;
@@ -1052,7 +1140,8 @@ async function readBookingCapacity(
       fits_this_night:
         !wholeLodgeHeld && detail.availableBeds - demand >= 0,
       whole_lodge_held_by_another_booking: wholeLodgeHeld,
-      this_booking_holds_whole_lodge: booking.wholeLodgeHold,
+      this_booking_effectively_holds_whole_lodge: effectiveWholeLodgeHold,
+      this_booking_has_whole_lodge_hold_flag: rawWholeLodgeHold,
       capacity_overridden: booking.capacityOverriddenAt !== null,
       allocated_bed_nights: allocatedByNight.get(night) ?? 0,
       observed_at_utc: observedAt,

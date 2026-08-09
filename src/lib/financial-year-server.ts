@@ -16,7 +16,11 @@ import {
   DEFAULT_FINANCIAL_YEAR_END_MONTH,
   setFinancialYearEndMonth,
 } from "@/lib/financial-year";
-import { loadMembershipLockoutSettings } from "@/lib/membership-lockout-settings";
+import {
+  loadMembershipLockoutSettings,
+  MEMBERSHIP_LOCKOUT_SETTINGS_ID,
+  normalizeMembershipLockoutSettings,
+} from "@/lib/membership-lockout-settings";
 import { prisma } from "@/lib/prisma";
 import { getXeroFinancialYearEndMonth } from "@/lib/xero-organisation";
 
@@ -68,11 +72,24 @@ export type StoredFinancialYearResolution =
  * columns never cross this boundary.
  */
 export async function getStoredFinancialYearResolution(): Promise<StoredFinancialYearResolution> {
-  // Use the same persisted-settings normalizer as every production membership
-  // path. In particular, an out-of-range raw month canonicalises to null rather
-  // than being accepted as an authoritative override and later normalised by
-  // unrelated season arithmetic.
-  const settings = await loadMembershipLockoutSettings();
+  // Read this row STRICTLY. `loadMembershipLockoutSettings` intentionally treats
+  // every database error as a migration-era missing table and returns defaults;
+  // that is acceptable for the product fallback but not for evidence. A rejected
+  // read must propagate so Diagnostics reports `evidence_unavailable` rather than
+  // claiming the March default was observed.
+  const persisted = await prisma.membershipLockoutSettings.findUnique({
+    where: { id: MEMBERSHIP_LOCKOUT_SETTINGS_ID },
+    select: {
+      mode: true,
+      financialYearEndMonthOverride: true,
+      textFallbackEnabled: true,
+      useFeeScheduleItemCodes: true,
+    },
+  });
+  // A genuinely absent singleton row still has the product's documented defaults.
+  // Keep the canonical normalizer so malformed persisted values fail closed in the
+  // same direction as every membership path.
+  const settings = normalizeMembershipLockoutSettings(persisted);
   const overrideMonth = settings.financialYearEndMonthOverride;
   if (overrideMonth !== null) {
     return { ok: true, effectiveMonth: overrideMonth, source: "override" };

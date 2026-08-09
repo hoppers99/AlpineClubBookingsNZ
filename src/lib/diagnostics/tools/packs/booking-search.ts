@@ -499,12 +499,14 @@ const MEMBER_SEARCH_COLUMNS = `m."id" AS member_ref,
  * schema stores a phone as Xero does — `phoneCountryCode` / `phoneAreaCode` /
  * `phoneNumber` — so the digits an operator reads off a message ("0274224115") are
  * spread across two columns with a leading zero that is stored nowhere. The
- * predicate therefore compares the normalised term against the bare number, against
+ * predicate therefore strips punctuation from EACH STORED fragment, then compares
+  * the normalised term against the bare number, against
  * area-plus-number, against a leading zero plus area-plus-number, and against the
  * stored country-plus-area-plus-number form used by an international `+64` input. All four are
- * equalities against a concatenation of granted columns; no term is used as a
- * pattern, and `coalesce` keeps a null column from turning the whole concatenation
- * null and silently matching nothing.
+  * equalities against a concatenation of granted columns; no CALLER term is used as
+ * a pattern. The fixed `translate(..., '+ -()', '')` expression has no pattern
+ * language and only canonicalises the stored punctuation the schema permits in
+ * practice: a leading plus, spaces, hyphens and parentheses.
  *
  * The name arm case-folds BOTH sides. `Member."firstName"`/`"lastName"` are stored
  * as entered, and an officer typing a surname in lower case is the normal case, not
@@ -546,10 +548,10 @@ WHERE (
     OR pg_catalog.starts_with(pg_catalog.lower(m."firstName"), pg_catalog.lower($4::text))
   ))
   OR ($1::text = 'mobile' AND (
-    pg_catalog.concat(m."phoneNumber") = $5::text
-    OR pg_catalog.concat(m."phoneCountryCode", m."phoneAreaCode", m."phoneNumber") = $5::text
-    OR pg_catalog.concat('0', m."phoneAreaCode", m."phoneNumber") = $5::text
-    OR pg_catalog.concat(m."phoneAreaCode", m."phoneNumber") = $5::text
+    pg_catalog.translate(pg_catalog.concat(m."phoneNumber"), '+ -()', '') = $5::text
+    OR pg_catalog.translate(pg_catalog.concat(m."phoneCountryCode", m."phoneAreaCode", m."phoneNumber"), '+ -()', '') = $5::text
+    OR pg_catalog.translate(pg_catalog.concat('0', m."phoneAreaCode", m."phoneNumber"), '+ -()', '') = $5::text
+    OR pg_catalog.translate(pg_catalog.concat(m."phoneAreaCode", m."phoneNumber"), '+ -()', '') = $5::text
   ))
 )
 ORDER BY m."lastName" ASC, m."firstName" ASC, m."id" ASC`;

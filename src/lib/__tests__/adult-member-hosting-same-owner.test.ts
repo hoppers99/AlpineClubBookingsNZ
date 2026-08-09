@@ -27,6 +27,7 @@ vi.mock("@/lib/member-subscription-eligibility", () => ({
 
 import {
   evaluateBookingAdultMemberHosting,
+  evaluatePersistedBookingAdultMemberHostingReadOnly,
   enqueueHostingCoverageReevaluationForMember,
   reconcileSameOwnerCoverageIncident,
   reconcileAdultMemberHostingReviewWithSiblings,
@@ -367,6 +368,38 @@ async function uncoveredNights(rows: FakeBooking[], policies?: unknown[]) {
   );
   return violation?.affectedNights ?? [];
 }
+
+describe("persisted read-only same-owner evidence (#2376)", () => {
+  it("cannot use this booking itself as SAME_BOOKING_OWNER cover", async () => {
+    const rows = [
+      booking({
+        guests: [
+          guestRow("kid", ["2026-07-03"]),
+          guestRow("adult", ["2026-07-03"], memberRow()),
+        ],
+      }),
+    ];
+    const { db } = makeStore(rows, {
+      policies: [
+        policyRow({
+          hostScopeSameBooking: false,
+          hostScopeSameBookingOwner: true,
+        }),
+      ],
+    });
+
+    const result = await evaluatePersistedBookingAdultMemberHostingReadOnly(
+      "b-main",
+      db,
+    );
+    expect(result?.violation).toMatchObject({
+      reasonCode: "ADULT_MEMBER_HOSTING_REQUIRED",
+      affectedNights: ["2026-07-03"],
+    });
+    // Read-only evidence does not join the per-owner advisory-lock cohort.
+    expect(db.$executeRaw).not.toHaveBeenCalled();
+  });
+});
 
 describe("the relationship is the exact Booking.memberId and nothing else (#2576 §1)", () => {
   it("names only the owner, the lodge, the lifecycle and the dates", () => {

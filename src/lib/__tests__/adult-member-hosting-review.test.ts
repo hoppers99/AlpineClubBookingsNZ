@@ -12,6 +12,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 vi.mock("server-only", () => ({}));
 
 import {
+  evaluatePersistedBookingAdultMemberHostingReadOnly,
   evaluateProposedAdultMemberHosting,
   reconcileAdultMemberHostingReview,
   reconcileAdultMemberHostingReviewWithSiblings,
@@ -423,6 +424,50 @@ describe("hosting review reconciliation (#2364)", () => {
       reconcileAdultMemberHostingReview("booking-1", confirmed.db),
     ).resolves.toMatchObject({ action: "none" });
     expect(confirmed.update).not.toHaveBeenCalled();
+  });
+});
+
+describe("persisted read-only hosting evidence (#2376)", () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  it("uses the split parent's accepted adult member as child-booking coverage", async () => {
+    const child = bookingRow({
+      id: "child-1",
+      parentBookingId: "parent-1",
+      guests: [guest("child-guest", ["2026-07-04"])],
+    });
+    const parent = bookingRow({
+      id: "parent-1",
+      guests: [guest("parent-adult", ["2026-07-04"], member())],
+    });
+    const { db, update } = makeDb(child, [CLUB_ON], [parent]);
+
+    await expect(
+      evaluatePersistedBookingAdultMemberHostingReadOnly("child-1", db),
+    ).resolves.toMatchObject({ violation: null });
+    expect(update).not.toHaveBeenCalled();
+  });
+
+  it("does not let a PENDING adult-member guest cover the persisted booking", async () => {
+    const { db, update } = makeDb(
+      bookingRow({
+        guests: [
+          guest("non-member", ["2026-07-04"]),
+          guest("pending-adult", ["2026-07-04"], member(), "PENDING"),
+        ],
+      }),
+      [CLUB_ON],
+    );
+
+    const result = await evaluatePersistedBookingAdultMemberHostingReadOnly(
+      "booking-1",
+      db,
+    );
+    expect(result?.violation).toMatchObject({
+      reasonCode: "ADULT_MEMBER_HOSTING_REQUIRED",
+      affectedNights: ["2026-07-04"],
+    });
+    expect(update).not.toHaveBeenCalled();
   });
 });
 

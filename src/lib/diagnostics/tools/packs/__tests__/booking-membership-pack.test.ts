@@ -186,7 +186,7 @@ const AID6B_PACK_MODULES = [
  *
  * Written out per entry rather than derived, because this table IS the owner
  * decision: seven booking entries at `bookings` alone, six membership entries at
- * `membership` alone, and the two cross-domain entries at both. Nothing here
+ * `membership` alone, and the three cross-domain entries at both. Nothing here
  * requires `support`.
  */
 const EXPECTED_AREAS: Record<string, readonly string[]> = {
@@ -194,7 +194,7 @@ const EXPECTED_AREAS: Record<string, readonly string[]> = {
   [DIAGNOSTICS_BOOKING_SUMMARY_TOOL_ID]: ["bookings"],
   [DIAGNOSTICS_BOOKING_LINKED_STATE_TOOL_ID]: ["bookings"],
   [DIAGNOSTICS_BOOKING_PARTY_TOOL_ID]: ["bookings"],
-  [DIAGNOSTICS_BOOKING_BED_ALLOCATION_TOOL_ID]: ["bookings"],
+  [DIAGNOSTICS_BOOKING_BED_ALLOCATION_TOOL_ID]: ["bookings", "membership"],
   [DIAGNOSTICS_BOOKING_EXCEPTION_REQUEST_TOOL_ID]: ["bookings"],
   [DIAGNOSTICS_BOOKING_AUDIT_HISTORY_TOOL_ID]: ["bookings"],
   [DIAGNOSTICS_BOOKING_CAPACITY_TOOL_ID]: ["bookings"],
@@ -335,11 +335,13 @@ describe("AID-6B booking/membership pack: permissions (#2376)", () => {
     // `invoke.ts` AND-s `requiredAreas` and re-reads the caller's matrix fresh on
     // every invocation, so a single-area entry here would be an accidental OR:
     // `booking_block_state` composes booking evidence with the paid-up-adult and
-    // hosting rules, which read live `Member` rows, and `member_booking_summary`
-    // joins who a member is to what they booked. Either at one area hands half
-    // the join to an officer entitled to neither half.
+    // hosting rules, `booking_bed_allocation_state` classifies the other occupant
+    // from live member/partner facts (and that occupant may be on another booking),
+    // and `member_booking_summary` joins who a member is to what they booked.
+    // Either at one area hands half the join to an officer entitled to neither half.
     for (const id of [
       DIAGNOSTICS_BOOKING_BLOCK_STATE_TOOL_ID,
+      DIAGNOSTICS_BOOKING_BED_ALLOCATION_TOOL_ID,
       DIAGNOSTICS_MEMBER_BOOKING_SUMMARY_TOOL_ID,
     ]) {
       const areas = entry(id).requiredAreas;
@@ -750,11 +752,11 @@ describe("AID-6B booking/membership pack: the search argument schemas (#2376)", 
   });
 
   it("normalises a phone term to digits ON THE ARGUMENT, before it is hashed", () => {
-    // The transform is on the argument rather than in the statement on purpose:
+    // The argument is canonical before hashing. The statement separately strips
+    // the fixed punctuation accepted in persisted legacy fragments; neither side
+    // receives pattern language.
     // the ACCEPTED, canonical argument is what `argsHash` records, so two calls
-    // that mean the same lookup hash identically — and the statement compares two
-    // digit strings rather than carrying a `translate()` a later edit could drop
-    // from one side of the equality.
+    // that mean the same lookup hash identically.
     for (const spelling of [
       "0274224115",
       "027 422 4115",
@@ -787,8 +789,9 @@ describe("AID-6B booking/membership pack: the search argument schemas (#2376)", 
     expect(params[4]).toBe("64274224115");
     expect(["64", "27", "4224115"].join("")).toBe(params[4]);
     expect(sql).toContain(
-      'pg_catalog.concat(m."phoneCountryCode", m."phoneAreaCode", m."phoneNumber") = $5::text',
+      'pg_catalog.translate(pg_catalog.concat(m."phoneCountryCode", m."phoneAreaCode", m."phoneNumber"), \'+ -()\', \'\') = $5::text',
     );
+    expect(sql.match(/pg_catalog\.translate\(/g)).toHaveLength(4);
     expect(sql).not.toMatch(/LIKE|ILIKE|SIMILAR TO/);
   });
 
@@ -952,6 +955,7 @@ const ALLOWED_PG_CATALOG_FUNCTIONS = [
   "min",
   "starts_with",
   "to_char",
+  "translate",
   "upper",
 ];
 
@@ -1038,7 +1042,7 @@ describe("AID-6B booking/membership pack: no pattern language (#2376)", () => {
         ).toBe(true);
       }
     }
-    // Non-vacuous, and a census: nine functions, and a tenth needs review.
+    // Non-vacuous, and a census: ten functions, and an eleventh needs review.
     expect([...called].sort()).toEqual([...ALLOWED_PG_CATALOG_FUNCTIONS].sort());
   });
 
@@ -1947,9 +1951,7 @@ describe("AID-6B booking/membership pack: read-only (#2376)", () => {
       ".upsert(",
       ".delete(",
       ".deleteMany(",
-      ".$executeRaw",
       ".$queryRaw",
-      ".$transaction(",
       "pg_advisory",
     ];
     for (const name of AID6B_PACK_MODULES) {
@@ -1959,6 +1961,20 @@ describe("AID-6B booking/membership pack: read-only (#2376)", () => {
         expect(source.includes(call), `${name} contains ${call}`).toBe(false);
       }
     }
+
+    // The one interactive transaction is a refusal boundary around the bounded
+    // BedAllocation read, not a mutation: PostgreSQL is told READ ONLY before the
+    // first data statement and receives its own statement timeout. The tagged
+    // templates are fixed, carry no interpolation, and are the only raw execution
+    // controls permitted in a server-owned pack source.
+    const evidence = packSource("booking-evidence.ts");
+    expect(evidence.match(/\.\$transaction\(/g)).toHaveLength(1);
+    expect(evidence.match(/\.\$executeRaw`/g)).toHaveLength(2);
+    expect(evidence).toContain("await tx.$executeRaw`SET TRANSACTION READ ONLY`");
+    expect(evidence).toContain(
+      "await tx.$executeRaw`SET LOCAL statement_timeout = '5s'`",
+    );
+    expect(evidence).not.toContain("$executeRawUnsafe");
   });
 
   it("makes no provider call — no client is imported and nothing calls fetch", () => {

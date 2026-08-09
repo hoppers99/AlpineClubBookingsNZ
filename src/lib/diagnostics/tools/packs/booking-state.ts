@@ -319,7 +319,7 @@ const bookingCapacityByNight = defineDiagnosticsTool<BookingIdArgs>({
   id: DIAGNOSTICS_BOOKING_CAPACITY_TOOL_ID,
   source: "server_owned",
   label: "Booking capacity by night",
-  description: `Returns ONE row per New Zealand lodge night of a booking's stay, computed by the SAME capacity engine every booking path checks against — not a count of bookings. For each night it gives the beds the rest of the lodge occupies and the beds left (both with THIS booking excluded, so the figures answer "what room is there for it"), how many beds this booking's own party needs that night, the spare beds that would remain, whether it fits, whether another booking holds sole occupancy of the lodge that night, whether this booking itself holds the whole lodge, whether it carries a deliberate admin over-capacity override, how many bed-nights are actually allocated to it, and whether the booking itself is still live, terminal or deleted. The occupancy figure already includes custodian bed holds and beds held by pending policy-exception requests, neither of which has a booking to show for it. At most ${AID6B_NIGHT_ROW_LIMIT} nights. ${AID6B_DESCRIPTION_TAIL}`,
+  description: `Returns ONE row per New Zealand lodge night of a booking's stay, computed by the SAME capacity engine every booking path checks against — not a count of bookings. For each night it gives the beds the rest of the lodge occupies and the beds left (both with THIS booking excluded, so the figures answer "what room is there for it"), how many beds this booking's own party needs that night, the spare beds that would remain, whether it fits, whether another booking holds sole occupancy of the lodge that night, whether this booking EFFECTIVELY holds the whole lodge now, whether its raw whole-lodge flag is stored for history, whether it carries a deliberate admin over-capacity override, how many bed-nights are actually allocated to it, and whether the booking itself is still live, terminal or deleted. The occupancy figure already includes custodian bed holds and beds held by pending policy-exception requests, neither of which has a booking to show for it. At most ${AID6B_NIGHT_ROW_LIMIT} nights. ${AID6B_DESCRIPTION_TAIL}`,
   requiredAreas: ["bookings"],
   evidenceScope: `Per-night capacity for ONE booking's own nights, from the platform's own capacity engine. ${AID6B_MIXED_INSTANT_DISCLOSURE}
 
@@ -332,6 +332,8 @@ ON A WHOLE-LODGE-HELD NIGHT occupiedBedsExcludingThisBooking AND spareBedsAfterT
 WHAT IS ALREADY COUNTED, and why a booking query would get it wrong: a custodian bed hold (a hut-leader assignment holding a specific bed for a season) takes a bed out of the pool with NO booking and NO bed-allocation row; a pending policy-exception request in HOLD mode reserves real bed-nights while it waits; and a whole-lodge exclusive hold pins available beds to zero regardless of headcount and cannot be punched through by an admin over-capacity override. All three are in these numbers.
 
 THIS ENTRY DOES NOT SUPPRESS ON A CANCELLED OR DELETED BOOKING, and bookingLifecycleState on every row is why it does not have to. "What room was there on those nights" is a fair and answerable question about a booking that is over — it is often the question an officer is asking BECAUSE it is over — so the figures stand and the row carries the fact that qualifies them. When bookingLifecycleState is "terminal" or "deleted", fitsThisNight is a statement about the LODGE and not an invitation to confirm anything; say the booking is cancelled or deleted first. diagnostics.booking_block_state is the entry that suppresses, and it uses the same three values with the same precedence.
+
+thisBookingHoldsWholeLodge is the CURRENT EFFECTIVE fact: the raw flag must be set, the booking must not be deleted, and the canonical capacity-holding predicate must say its lifecycle still holds capacity. wholeLodgeHoldFlagStored is the raw historical flag only. A terminal or deleted row may retain that raw flag; never call it an active hold when thisBookingHoldsWholeLodge is false.
 
 ALLOCATION IS NOT CAPACITY. allocatedBedNights counts the bed-allocation rows this booking has for that night. A booking can fit the lodge and have none — allocation is a separate, later step on the bed-allocation board — so a zero here is not evidence the lodge was full. A stay longer than ${AID6B_NIGHT_ROW_LIMIT} nights is REFUSED rather than clipped, because half a stay's capacity invites a conclusion about the half that was shown; the bed-allocation board answers it for a long stay. ${AID6B_SCOPE_TAIL} ${AID6B_UNTRUSTED_EVIDENCE_DISCLOSURE}`,
   argsSchema: bookingIdArgsSchema,
@@ -378,7 +380,10 @@ ALLOCATION IS NOT CAPACITY. allocatedBedNights counts the bed-allocation rows th
     spareBedsAfterThisBooking: signedIntegerOrNull(row.spare_beds_after_this_booking),
     fitsThisNight: boolOf(row.fits_this_night),
     wholeLodgeHeldByAnotherBooking: boolOf(row.whole_lodge_held_by_another_booking),
-    thisBookingHoldsWholeLodge: boolOf(row.this_booking_holds_whole_lodge),
+    thisBookingHoldsWholeLodge: boolOf(
+      row.this_booking_effectively_holds_whole_lodge,
+    ),
+    wholeLodgeHoldFlagStored: boolOf(row.this_booking_has_whole_lodge_hold_flag),
     capacityOverridden: boolOf(row.capacity_overridden),
     allocatedBedNights: countOf(row.allocated_bed_nights),
     observedAtUtc: instantOrNull(row.observed_at_utc) ?? "",

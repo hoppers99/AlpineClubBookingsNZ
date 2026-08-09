@@ -19,7 +19,7 @@
  * all `findUnique({ where: { id } })`, and it is NOT survivable here: this module's
  * reads are FILTERS. `bookingGuest.findMany({ where: { bookingId } })`,
  * `bookingChangeRequest.findMany({ where: { bookingId, status: "REQUESTED" } })`,
- * `bedAllocation.groupBy({ where: { bookingId } })` and — the sharpest one —
+ * `bedAllocation.findMany({ where: { bookingId, stayDate, bookingGuest } })` and — the sharpest one —
  * `member.count({ where: { id, passwordHash: DELETED_ACCOUNT_PASSWORD_HASH } })`
  * all mean something only because of their predicate. Under a `where`-blind mock a
  * predicate that selected the WRONG rows would return the right ones anyway, and
@@ -30,7 +30,7 @@
  * So this file builds a small in-memory store — Booking, BookingGuest,
  * BookingGuestNight, BookingChangeRequest, PolicyExceptionReservationNight,
  * BedAllocation, Member, MemberSubscription, MemberInduction — and implements
- * `findUnique`, `findFirst`, `findMany`, `count` and `groupBy` doubles that
+ * `findUnique`, `findFirst`, `findMany` and `count` doubles that
  * actually APPLY the `where` they are given. Unsupported operators and unknown
  * field names THROW rather than being ignored, because a filter the double
  * silently drops is worse than no double at all.
@@ -76,7 +76,8 @@
  * takes advisory-lock-adjacent reads across four tables; the policy evaluator
  * composes three more) and because several assertions here are about a call NOT
  * HAPPENING, which can only be observed on a spy: `checkCapacity`,
- * `evaluateProposalPartyViolations`, `findBookingMemberNightConflicts`,
+ * the persisted non-hosting and canonical hosting evaluators,
+ * `findBookingMemberNightConflicts`,
  * `resolveMembershipTypePolicyForMember`, `getAgeTierSettings` and
  * `peekSubscriptionLockoutMode`. `getInductionForMember` is deliberately NOT
  * stubbed — it is a one-line `findFirst` and letting it run proves its
@@ -121,7 +122,8 @@ import {
 const {
   prismaMock,
   checkCapacityMock,
-  evaluateProposalPartyViolationsMock,
+  evaluatePersistedNonHostingViolationsMock,
+  evaluatePersistedHostingMock,
   findBookingMemberNightConflictsMock,
   resolveMembershipTypePolicyForMemberMock,
   getAgeTierSettingsMock,
@@ -131,15 +133,18 @@ const {
     booking: { findUnique: vi.fn() },
     bookingGuest: { findMany: vi.fn() },
     bookingChangeRequest: { findMany: vi.fn() },
-    bedAllocation: { groupBy: vi.fn() },
+    bedAllocation: { findMany: vi.fn() },
     member: { findUnique: vi.fn(), count: vi.fn() },
     memberSubscription: { findUnique: vi.fn() },
     memberInduction: { findFirst: vi.fn() },
     membershipLockoutSettings: { findUnique: vi.fn() },
     xeroToken: { findFirst: vi.fn() },
+    $executeRaw: vi.fn(),
+    $transaction: vi.fn(),
   },
   checkCapacityMock: vi.fn(),
-  evaluateProposalPartyViolationsMock: vi.fn(),
+  evaluatePersistedNonHostingViolationsMock: vi.fn(),
+  evaluatePersistedHostingMock: vi.fn(),
   findBookingMemberNightConflictsMock: vi.fn(),
   resolveMembershipTypePolicyForMemberMock: vi.fn(),
   getAgeTierSettingsMock: vi.fn(),
@@ -149,7 +154,11 @@ const {
 vi.mock("@/lib/prisma", () => ({ prisma: prismaMock }));
 vi.mock("@/lib/capacity", () => ({ checkCapacity: checkCapacityMock }));
 vi.mock("@/lib/booking-exception-request-service", () => ({
-  evaluateProposalPartyViolations: evaluateProposalPartyViolationsMock,
+  evaluatePersistedBookingNonHostingPolicyViolations:
+    evaluatePersistedNonHostingViolationsMock,
+}));
+vi.mock("@/lib/adult-member-hosting-review", () => ({
+  evaluatePersistedBookingAdultMemberHostingReadOnly: evaluatePersistedHostingMock,
 }));
 vi.mock("@/lib/booking-member-night-conflicts", () => ({
   findBookingMemberNightConflicts: findBookingMemberNightConflictsMock,
@@ -188,6 +197,7 @@ type Row = Record<string, unknown>;
 
 interface Store {
   booking: Row[];
+  bookingRequest: Row[];
   bookingGuest: Row[];
   bookingGuestNight: Row[];
   bookingChangeRequest: Row[];
@@ -240,6 +250,15 @@ const MODELS: Record<ModelName, ModelSpec> = {
       "adminReviewNotes",
       "deletedReason",
     ],
+    relations: {
+      originBookingRequest: (row) =>
+        row.originBookingRequest && typeof row.originBookingRequest === "object"
+          ? (row.originBookingRequest as Row)
+          : null,
+    },
+  },
+  bookingRequest: {
+    columns: ["id"],
   },
   bookingGuest: {
     columns: [
@@ -264,6 +283,13 @@ const MODELS: Record<ModelName, ModelSpec> = {
   bookingGuestNight: {
     columns: ["id", "bookingGuestId", "stayDate"],
   },
+  bedAllocation: {
+    columns: ["id", "bookingId", "bookingGuestId", "stayDate"],
+    relations: {
+      bookingGuest: (row, state) =>
+        state.bookingGuest.find((guest) => guest.id === row.bookingGuestId) ?? null,
+    },
+  },
   bookingChangeRequest: {
     columns: [
       "id",
@@ -284,9 +310,6 @@ const MODELS: Record<ModelName, ModelSpec> = {
   },
   policyExceptionReservationNight: {
     columns: ["id", "requestId", "stayDate"],
-  },
-  bedAllocation: {
-    columns: ["id", "bookingId", "bedId", "stayDate"],
   },
   member: {
     columns: [
@@ -327,6 +350,7 @@ let store: Store;
 function emptyStore(): Store {
   return {
     booking: [],
+    bookingRequest: [],
     bookingGuest: [],
     bookingGuestNight: [],
     bookingChangeRequest: [],
@@ -440,15 +464,33 @@ function matchesWhere(
       const related = relation(row, store);
       const rows = Array.isArray(related) ? related : related ? [related] : [];
       const filter = condition as Record<string, Row>;
+      const relatedModel = relationModel(model, key);
       // Only the relation predicates the sources could reach; anything else
       // throws below rather than silently passing.
+      if (filter.is !== undefined) {
+        if (
+          rows.length !== 1 ||
+          !matchesWhere(relatedModel, rows[0], filter.is)
+        ) {
+          return false;
+        }
+        continue;
+      }
       if (filter.some !== undefined) {
-        if (!rows.some((candidate) => matchesWhere(model, candidate, filter.some)))
+        if (
+          !rows.some((candidate) =>
+            matchesWhere(relatedModel, candidate, filter.some),
+          )
+        )
           return false;
         continue;
       }
       if (filter.none !== undefined) {
-        if (rows.some((candidate) => matchesWhere(model, candidate, filter.none)))
+        if (
+          rows.some((candidate) =>
+            matchesWhere(relatedModel, candidate, filter.none),
+          )
+        )
           return false;
         continue;
       }
@@ -555,6 +597,12 @@ function shapeRow(
 
 function relationModel(model: ModelName, relation: string): ModelName {
   if (model === "bookingGuest" && relation === "nights") return "bookingGuestNight";
+  if (model === "booking" && relation === "originBookingRequest") {
+    return "bookingRequest";
+  }
+  if (model === "bedAllocation" && relation === "bookingGuest") {
+    return "bookingGuest";
+  }
   throw new Error(
     `booking-evidence test double: no model registered for ${model}.${relation}`,
   );
@@ -592,8 +640,6 @@ interface QueryArgs {
   include?: Row;
   orderBy?: unknown;
   take?: number;
-  by?: string[];
-  _count?: Row;
 }
 
 function findMany(model: ModelName, args: QueryArgs = {}): Row[] {
@@ -621,24 +667,6 @@ function count(model: ModelName, args: QueryArgs = {}): number {
   return store[model].filter((row) => matchesWhere(model, row, args.where)).length;
 }
 
-function groupBy(model: ModelName, args: QueryArgs): Row[] {
-  const by = args.by ?? [];
-  const matched = store[model].filter((row) => matchesWhere(model, row, args.where));
-  const groups = new Map<string, { key: Row; rows: Row[] }>();
-  for (const row of matched) {
-    const key: Row = {};
-    for (const field of by) key[field] = row[field];
-    const signature = by.map((field) => String(comparable(row[field]))).join("|");
-    const existing = groups.get(signature);
-    if (existing) existing.rows.push(row);
-    else groups.set(signature, { key, rows: [row] });
-  }
-  return [...groups.values()].map((group) => ({
-    ...group.key,
-    _count: { _all: group.rows.length },
-  }));
-}
-
 function wirePrisma(): void {
   prismaMock.booking.findUnique.mockImplementation(
     async (args: QueryArgs) => findUnique("booking", args),
@@ -649,8 +677,8 @@ function wirePrisma(): void {
   prismaMock.bookingChangeRequest.findMany.mockImplementation(
     async (args: QueryArgs) => findMany("bookingChangeRequest", args),
   );
-  prismaMock.bedAllocation.groupBy.mockImplementation(
-    async (args: QueryArgs) => groupBy("bedAllocation", args),
+  prismaMock.bedAllocation.findMany.mockImplementation(
+    async (args: QueryArgs) => findMany("bedAllocation", args),
   );
   prismaMock.member.findUnique.mockImplementation(
     async (args: QueryArgs) => findUnique("member", args),
@@ -663,6 +691,11 @@ function wirePrisma(): void {
   );
   prismaMock.memberInduction.findFirst.mockImplementation(
     async (args: QueryArgs) => findFirst("memberInduction", args),
+  );
+  prismaMock.$executeRaw.mockResolvedValue(0);
+  prismaMock.$transaction.mockImplementation(
+    async (callback: (tx: typeof prismaMock) => Promise<unknown>) =>
+      callback(prismaMock),
   );
 }
 
@@ -762,6 +795,8 @@ interface BookingScenario {
   adminReviewStatus?: string | null;
   adultMemberHostingReviewStatus?: string | null;
   wholeLodgeHold?: boolean;
+  isRequestConverted?: boolean;
+  adminCapacityHoldAt?: Date | null;
   capacityOverriddenAt?: Date | null;
   guests?: GuestSpec[];
   requests?: RequestSpec[];
@@ -824,6 +859,7 @@ function seedDecoys(): void {
     waitlistOfferExpiresAt: null,
     wholeLodgeHold: true,
     adminCapacityHoldAt: null,
+    originBookingRequest: null,
     capacityOverriddenAt: day(CHECK_IN),
     parentBookingId: null,
     draftExpiresAt: null,
@@ -873,6 +909,7 @@ function seedDecoys(): void {
       store.bedAllocation.push({
         id: `decoy-alloc-${night}-${index}`,
         bookingId: DECOY_BOOKING_ID,
+        bookingGuestId: `decoy-guest-${index}`,
         bedId: `bed-${index}`,
         stayDate: day(night),
       });
@@ -936,7 +973,10 @@ function seedBooking(scenario: BookingScenario = {}): void {
       waitlistPosition: null,
       waitlistOfferExpiresAt: null,
       wholeLodgeHold: scenario.wholeLodgeHold ?? false,
-      adminCapacityHoldAt: null,
+      adminCapacityHoldAt: scenario.adminCapacityHoldAt ?? null,
+      originBookingRequest: scenario.isRequestConverted
+        ? { id: "origin-request-1" }
+        : null,
       capacityOverriddenAt: scenario.capacityOverriddenAt ?? null,
       parentBookingId: null,
       draftExpiresAt: null,
@@ -999,6 +1039,7 @@ function seedBooking(scenario: BookingScenario = {}): void {
     store.bedAllocation.push({
       id: `alloc-${index}`,
       bookingId: BOOKING_ID,
+      bookingGuestId: scenario.guests?.[0]?.id ?? "guest-1",
       bedId: `bed-${index}`,
       stayDate: day(night),
     });
@@ -1016,14 +1057,24 @@ function seedBooking(scenario: BookingScenario = {}): void {
       wholeLodgeHeld: spec.held ?? false,
     })),
   }));
-  evaluateProposalPartyViolationsMock.mockImplementation(async () =>
-    (scenario.violations ?? []).map((violation) => ({
+  const preparedViolations = (scenario.violations ?? []).map((violation) => ({
       reasonCode: violation.reasonCode,
       capacityMode: violation.capacityMode ?? "NO_HOLD",
       policyId: "policy-1",
       policyVersion: 1,
-    })),
+    }));
+  evaluatePersistedNonHostingViolationsMock.mockImplementation(async () =>
+    preparedViolations.filter(
+      (violation) => violation.reasonCode !== "ADULT_MEMBER_HOSTING_REQUIRED",
+    ),
   );
+  evaluatePersistedHostingMock.mockResolvedValue({
+    violation:
+      preparedViolations.find(
+        (violation) => violation.reasonCode === "ADULT_MEMBER_HOSTING_REQUIRED",
+      ) ?? null,
+    resolved: {},
+  });
   findBookingMemberNightConflictsMock.mockImplementation(
     async () => scenario.conflicts ?? [],
   );
@@ -1225,7 +1276,11 @@ describe("booking block state: absence and refusal (#2376)", () => {
   });
 
   it.each([
-    ["the policy evaluation", () => evaluateProposalPartyViolationsMock],
+    [
+      "the non-hosting policy evaluation",
+      () => evaluatePersistedNonHostingViolationsMock,
+    ],
+    ["the persisted hosting evaluation", () => evaluatePersistedHostingMock],
     ["the capacity engine", () => checkCapacityMock],
     ["the person-night conflict scan", () => findBookingMemberNightConflictsMock],
   ])("REJECTS rather than returning a partial row when %s fails", async (
@@ -1266,7 +1321,8 @@ describe("booking block state: terminal and deleted suppression (#2376)", () => 
       });
       const row = await blockStateRow();
 
-      expect(evaluateProposalPartyViolationsMock).not.toHaveBeenCalled();
+    expect(evaluatePersistedNonHostingViolationsMock).not.toHaveBeenCalled();
+    expect(evaluatePersistedHostingMock).not.toHaveBeenCalled();
       expect(checkCapacityMock).not.toHaveBeenCalled();
       expect(findBookingMemberNightConflictsMock).not.toHaveBeenCalled();
 
@@ -1285,7 +1341,8 @@ describe("booking block state: terminal and deleted suppression (#2376)", () => 
       conflicts: [{ memberId: MEMBER_ID }],
     });
     const row = await blockStateRow();
-    expect(evaluateProposalPartyViolationsMock).not.toHaveBeenCalled();
+    expect(evaluatePersistedNonHostingViolationsMock).not.toHaveBeenCalled();
+    expect(evaluatePersistedHostingMock).not.toHaveBeenCalled();
     expect(checkCapacityMock).not.toHaveBeenCalled();
     expect(findBookingMemberNightConflictsMock).not.toHaveBeenCalled();
     expect(blockers(row)).toEqual(["booking_deleted"]);
@@ -1880,20 +1937,19 @@ describe("booking block state: reviews and the party footprint (#2376)", () => {
     expect(blockers(row)).toContain("capacity_exceeded");
   });
 
-  it("still counts a guest whose envelope is a single inclusive day", async () => {
-    // `stayStart === stayEnd` makes the half-open loop produce nothing. Without
-    // the one-night fallback the guest silently disappears from every calculation
-    // below — demand, hosting coverage and the conflict scan alike.
+  it.each([
+    ["block state", readBookingBlockStateEvidence],
+    ["capacity", readBookingCapacityEvidence],
+  ])("refuses a zero-night guest envelope in %s", async (_label, read) => {
+    // [start,end) with equal endpoints contains no lodge night. Fabricating an
+    // occupied night here would contradict every canonical stay-boundary rule.
     seedBooking({
-      guests: [{ id: "single-night", stayStart: NIGHT_ONE, stayEnd: NIGHT_ONE }],
-      capacityNights: [
-        { night: NIGHT_ONE, available: 0 },
-        { night: NIGHT_TWO, available: 8 },
-      ],
+      guests: [{ id: "zero-night", stayStart: NIGHT_ONE, stayEnd: NIGHT_ONE }],
     });
-    const row = await blockStateRow();
-    expect(row.shortfall_night_count).toBe(1);
-    expect(row.tightest_spare_beds).toBe(-1);
+    await expect(read({ bookingId: BOOKING_ID })).rejects.toThrow(/zero nights/);
+    expect(checkCapacityMock).not.toHaveBeenCalled();
+    expect(evaluatePersistedNonHostingViolationsMock).not.toHaveBeenCalled();
+    expect(evaluatePersistedHostingMock).not.toHaveBeenCalled();
   });
 
   it("calls the capacity engine with a guest count of ZERO and this booking excluded", async () => {
@@ -2078,12 +2134,34 @@ describe("booking capacity by night (#2376)", () => {
     const rows = (await readBookingCapacityEvidence({
       bookingId: BOOKING_ID,
     })) as unknown as Row[];
-    expect(rows[0].this_booking_holds_whole_lodge).toBe(true);
+    expect(rows[0].this_booking_effectively_holds_whole_lodge).toBe(true);
+    expect(rows[0].this_booking_has_whole_lodge_hold_flag).toBe(true);
     expect(rows[0].whole_lodge_held_by_another_booking).toBe(false);
     expect(rows[0].occupied_beds_excluding_this_booking).toBe(4);
     expect(rows[0].spare_beds_after_this_booking).toBe(6);
     expect(rows[0].fits_this_night).toBe(true);
   });
+
+  it.each([
+    ["generic pending", { status: "PENDING" }, false],
+    ["converted pending", { status: "PENDING", isRequestConverted: true }, true],
+    ["cancelled", { status: "CANCELLED" }, false],
+    [
+      "deleted confirmed",
+      { deletedAt: new Date("2026-06-20T00:00:00.000Z") },
+      false,
+    ],
+  ] satisfies [string, BookingScenario, boolean][])(
+    "reports a stored hold flag honestly for %s while effective is %s",
+    async (_label, scenario, effective) => {
+      seedBooking({ ...scenario, wholeLodgeHold: true });
+      const rows = (await readBookingCapacityEvidence({
+        bookingId: BOOKING_ID,
+      })) as unknown as Row[];
+      expect(rows[0].this_booking_has_whole_lodge_hold_flag).toBe(true);
+      expect(rows[0].this_booking_effectively_holds_whole_lodge).toBe(effective);
+    },
+  );
 
   it("REFUSES a stay longer than the night ceiling rather than clipping it", async () => {
     // A per-night capacity answer that stops in the middle of a stay invites "the
@@ -2118,7 +2196,8 @@ describe("booking capacity by night (#2376)", () => {
     ).rejects.toThrow(/ceiling/);
     expect(prismaMock.bookingGuest.findMany).not.toHaveBeenCalled();
     expect(checkCapacityMock).not.toHaveBeenCalled();
-    expect(evaluateProposalPartyViolationsMock).not.toHaveBeenCalled();
+    expect(evaluatePersistedNonHostingViolationsMock).not.toHaveBeenCalled();
+    expect(evaluatePersistedHostingMock).not.toHaveBeenCalled();
   });
 
   it.each([
@@ -2138,7 +2217,8 @@ describe("booking capacity by night (#2376)", () => {
     expect(prismaMock.bookingGuest.findMany).not.toHaveBeenCalled();
     expect(prismaMock.bookingChangeRequest.findMany).not.toHaveBeenCalled();
     expect(checkCapacityMock).not.toHaveBeenCalled();
-    expect(evaluateProposalPartyViolationsMock).not.toHaveBeenCalled();
+    expect(evaluatePersistedNonHostingViolationsMock).not.toHaveBeenCalled();
+    expect(evaluatePersistedHostingMock).not.toHaveBeenCalled();
     expect(findBookingMemberNightConflictsMock).not.toHaveBeenCalled();
   });
 
@@ -2156,7 +2236,8 @@ describe("booking capacity by night (#2376)", () => {
       /booking guests exceeds/,
     );
     expect(checkCapacityMock).not.toHaveBeenCalled();
-    expect(evaluateProposalPartyViolationsMock).not.toHaveBeenCalled();
+    expect(evaluatePersistedNonHostingViolationsMock).not.toHaveBeenCalled();
+    expect(evaluatePersistedHostingMock).not.toHaveBeenCalled();
     expect(findBookingMemberNightConflictsMock).not.toHaveBeenCalled();
   });
 
@@ -2179,7 +2260,8 @@ describe("booking capacity by night (#2376)", () => {
       /guest-night rows exceeds/,
     );
     expect(checkCapacityMock).not.toHaveBeenCalled();
-    expect(evaluateProposalPartyViolationsMock).not.toHaveBeenCalled();
+    expect(evaluatePersistedNonHostingViolationsMock).not.toHaveBeenCalled();
+    expect(evaluatePersistedHostingMock).not.toHaveBeenCalled();
     expect(findBookingMemberNightConflictsMock).not.toHaveBeenCalled();
   });
 
@@ -2202,7 +2284,8 @@ describe("booking capacity by night (#2376)", () => {
       /guest fallback envelope covers/,
     );
     expect(checkCapacityMock).not.toHaveBeenCalled();
-    expect(evaluateProposalPartyViolationsMock).not.toHaveBeenCalled();
+    expect(evaluatePersistedNonHostingViolationsMock).not.toHaveBeenCalled();
+    expect(evaluatePersistedHostingMock).not.toHaveBeenCalled();
     expect(findBookingMemberNightConflictsMock).not.toHaveBeenCalled();
   });
 
@@ -2218,7 +2301,8 @@ describe("booking capacity by night (#2376)", () => {
       readBookingBlockStateEvidence({ bookingId: BOOKING_ID }),
     ).rejects.toThrow(/open booking requests exceeds/);
     expect(checkCapacityMock).not.toHaveBeenCalled();
-    expect(evaluateProposalPartyViolationsMock).not.toHaveBeenCalled();
+    expect(evaluatePersistedNonHostingViolationsMock).not.toHaveBeenCalled();
+    expect(evaluatePersistedHostingMock).not.toHaveBeenCalled();
     expect(findBookingMemberNightConflictsMock).not.toHaveBeenCalled();
   });
 
@@ -2263,6 +2347,70 @@ describe("booking capacity by night (#2376)", () => {
     // in either figure.
     expect(store.bedAllocation.filter((row) => row.bookingId === DECOY_BOOKING_ID))
       .toHaveLength(4);
+  });
+
+  it("bounds allocation rows to this booking, its stay and its own guests", async () => {
+    seedBooking({ allocatedNights: [NIGHT_ONE] });
+    store.bedAllocation.push(
+      {
+        id: "outside-stay",
+        bookingId: BOOKING_ID,
+        bookingGuestId: "guest-1",
+        stayDate: day("2026-07-20"),
+      },
+      {
+        id: "foreign-guest",
+        bookingId: BOOKING_ID,
+        bookingGuestId: "decoy-guest-0",
+        stayDate: day(NIGHT_ONE),
+      },
+    );
+
+    const rows = (await readBookingCapacityEvidence({
+      bookingId: BOOKING_ID,
+    })) as unknown as Row[];
+    expect(rows[0].allocated_bed_nights).toBe(1);
+    expect(rows[1].allocated_bed_nights).toBe(0);
+    expect(prismaMock.bedAllocation.findMany).toHaveBeenCalledWith({
+      where: {
+        bookingId: BOOKING_ID,
+        stayDate: { gte: day(CHECK_IN), lt: day(CHECK_OUT) },
+        bookingGuest: { is: { bookingId: BOOKING_ID } },
+      },
+      select: { stayDate: true },
+      orderBy: [{ stayDate: "asc" }, { id: "asc" }],
+      take:
+        AID6B_BOOKING_GUEST_CEILING * AID6B_CAPACITY_NIGHT_CEILING + 1,
+    });
+    expect(prismaMock.$transaction).toHaveBeenCalledWith(
+      expect.any(Function),
+      expect.objectContaining({ timeout: 7_000 }),
+    );
+    expect(prismaMock.$executeRaw).toHaveBeenCalledTimes(2);
+    expect(prismaMock.$executeRaw.mock.calls[0]?.[0]?.[0]).toBe(
+      "SET TRANSACTION READ ONLY",
+    );
+    expect(prismaMock.$executeRaw.mock.calls[1]?.[0]?.[0]).toBe(
+      "SET LOCAL statement_timeout = '5s'",
+    );
+  });
+
+  it("refuses a corrupt in-envelope allocation population above the ceiling", async () => {
+    seedBooking();
+    const ceiling =
+      AID6B_BOOKING_GUEST_CEILING * AID6B_CAPACITY_NIGHT_CEILING;
+    store.bedAllocation.push(
+      ...Array.from({ length: ceiling + 1 }, (_, index) => ({
+        id: `corrupt-allocation-${index}`,
+        bookingId: BOOKING_ID,
+        bookingGuestId: "guest-1",
+        stayDate: day(NIGHT_ONE),
+      })),
+    );
+
+    await expect(
+      readBookingCapacityEvidence({ bookingId: BOOKING_ID }),
+    ).rejects.toThrow(/in-envelope booking bed allocations exceeds/);
   });
 
   it("reports the admin over-capacity override as its own fact", async () => {
@@ -2878,6 +3026,20 @@ describe("member eligibility: the season year is the SEASON's, not the calendar'
     prismaMock.xeroToken.findFirst.mockResolvedValue(null);
     seedMember({});
     await expect(eligibilityRow()).resolves.toMatchObject({ season_year: 2026 });
+  });
+
+  it("propagates a rejected persisted-settings read instead of inventing defaults", async () => {
+    vi.setSystemTime(new Date("2027-01-15T00:00:00.000Z"));
+    prismaMock.membershipLockoutSettings.findUnique.mockRejectedValueOnce(
+      new Error("settings database unavailable"),
+    );
+    seedMember({});
+
+    await expect(
+      readMemberEligibilityEvidence({ memberId: MEMBER_ID }),
+    ).rejects.toThrow("settings database unavailable");
+    expect(prismaMock.xeroToken.findFirst).not.toHaveBeenCalled();
+    expect(resolveMembershipTypePolicyForMemberMock).not.toHaveBeenCalled();
   });
 
   it("refuses to guess the season from a cold cache when Xero is connected", async () => {
