@@ -312,6 +312,51 @@ describe("Phase 4 contact sync and cached import", () => {
     );
   });
 
+  // INV-PRIV-011 (#2683 review finding 2). Xero's API REQUIRES `Name` on a
+  // contact, so the request that goes to Xero has to carry the member's full
+  // name — but the very same object was handed to startXeroSyncOperation, so it
+  // was also written into XeroSyncOperation.requestPayload and kept there.
+  // firstName/lastName/emailAddress/address lines are stripped by the redactor;
+  // `name` is not, and cannot be, because `name` also keys lodges, rooms and
+  // Xero contact groups that the admin panel reads back out of these payloads.
+  it("sends Xero the contact name but does not store it on the operation", async () => {
+    mocks.prisma.member.findUnique.mockResolvedValue({
+      id: "member_1",
+      firstName: "Jane",
+      lastName: "Doe",
+      email: "jane@example.com",
+      passwordHash: "not-deleted",
+      xeroContactId: "contact_1",
+    });
+
+    await updateXeroContact(
+      "contact_1",
+      { firstName: "Jane", lastName: "Doe", email: "jane@example.com" },
+      { localModel: "Member", localId: "member_1", preserveXeroName: false }
+    );
+
+    const sent = (mocks.accountingApi.updateContact.mock.calls as unknown as Array<
+      [string, string, { contacts: Array<Record<string, unknown>> }, string]
+    >)[0][2];
+    expect(sent.contacts[0].name).toBe("Jane Doe");
+
+    const stored = (mocks.startXeroSyncOperation.mock.calls as unknown as Array<
+      [{ requestPayload: { contacts: Array<Record<string, unknown>> } }]
+    >)[0][0].requestPayload;
+    expect(stored.contacts[0]).not.toHaveProperty("name");
+    // Everything else the operation needs to be replayable is still there.
+    expect(stored.contacts[0]).toEqual(
+      expect.objectContaining({ contactID: "contact_1", firstName: "Jane" })
+    );
+
+    // The idempotency key is computed from the OUTBOUND request, so stripping
+    // the stored copy cannot change an operation's identity.
+    const hashed = (mocks.buildXeroPayloadHash.mock.calls as unknown as Array<
+      [{ contacts: Array<Record<string, unknown>> }]
+    >)[0][0];
+    expect(hashed.contacts[0].name).toBe("Jane Doe");
+  });
+
   it("closes a committed member-update reservation when Xero authentication fails", async () => {
     mocks.prisma.member.findUnique.mockResolvedValue({
       id: "member_1",

@@ -287,6 +287,21 @@ describe("the per-owner coverage lock (#2576 §9)", () => {
       "await applyLateHostingCoverageMoves(",
       // #2595 step 3b: after the moves and every drift refusal, before the Xero
       // teardown, and its alert strictly after the transaction commits.
+      //
+      // #2672 made one more thing about this position load-bearing, and it is
+      // NOT the same reason: the sweep now opens with
+      // `assertPartnerShareLodgeCoverageWithLocksHeld`, which re-derives the
+      // members' whole guest-row lodge set and 409s if the prefix no longer
+      // covers it. That is only a FENCE because it sits below
+      // `lockMemberMergeHostingCoverageParticipants` — `BookingGuest.memberId`
+      // is a foreign key to `Member`, so PostgreSQL takes `FOR KEY SHARE` on the
+      // member row for every INSERT naming it and every UPDATE re-pointing one
+      // onto it, and that conflicts with the sorted `Member … FOR UPDATE` the
+      // participant lock takes. Below it, the set is frozen for the rest of the
+      // transaction. Moved above it, the same call is a visibility check that
+      // proves nothing about the future — the exact criticism #2641 drew. The
+      // explicit paired assertion after this array states that reason in its own
+      // failure message, because "markers out of order" would not.
       "sweptShares = await sweepUnbackedFutureSharedDoublesWithLocksHeld({",
       "await enqueueMemberMergeHostingCoveragePlan(",
       "await tx.member.delete({ where: { id: loserId } })",
@@ -297,9 +312,44 @@ describe("the per-owner coverage lock (#2576 §9)", () => {
     expect(positions.every((position) => position >= 0), markers.join(" -> ")).toBe(
       true,
     );
+    // #2672 — ONE pair out of that array, restated on its own and asserted
+    // FIRST so the failure text carries the reason. Order matters here: the
+    // generic `positions` comparison below reports only "markers out of order",
+    // which a future editor moving step 3b up to sit beside the
+    // member-lifecycle pair would satisfy by reordering the array. This fires
+    // before it and says why the pair exists.
+    const participantLockMarker = "await lockMemberMergeHostingCoverageParticipants(tx,";
+    const sweepMarker = "sweptShares = await sweepUnbackedFutureSharedDoublesWithLocksHeld({";
+    expect(
+      body.indexOf(sweepMarker),
+      "The partner-share sweep must stay BELOW lockMemberMergeHostingCoverageParticipants. " +
+        "It opens with assertPartnerShareLodgeCoverageWithLocksHeld, which re-derives the " +
+        "members' guest-row lodge set; BookingGuest.memberId is an FK to Member, so a guest-row " +
+        "INSERT or re-point needs FOR KEY SHARE on the member row and cannot commit against the " +
+        "sorted `Member … FOR UPDATE` that participant lock takes. Below it the set is FROZEN for " +
+        "the rest of the transaction and the check is a fence. Above it, it is only a visibility " +
+        "check about that instant and #2672 is reopened.",
+    ).toBeGreaterThan(body.indexOf(participantLockMarker));
+
     expect(positions).toEqual([...positions].sort((a, b) => a - b));
     expect(body).toMatch(
       /const residualLoserGuestRows = await tx\.bookingGuest\.findMany\([\s\S]*?where: \{ memberId: loserId \}[\s\S]*?driftFields: \["BookingGuest\.member"\]/,
+    );
+
+    // #2672 — and the fence is only real on merge's OWN connection. The sweep's
+    // `db` parameter is typed `BedAllocationLifecycleDb`, to which the global
+    // `PrismaClient` is structurally assignable, so neither the compiler nor the
+    // marker above (which stops at the opening brace) would reject a refactor
+    // passing `db: prisma`. That would run the coverage re-derivation on a fresh
+    // connection outside the `Member … FOR UPDATE`, silently downgrading the
+    // fence back to a visibility check with every suite still green.
+    expect(
+      body,
+      "sweepUnbackedFutureSharedDoublesWithLocksHeld must be handed the merge's own " +
+        "transaction client (`db: tx`). On any other client the coverage re-derivation runs " +
+        "outside merge's `Member … FOR UPDATE`, so the #2672 FK fence does not apply to it.",
+    ).toMatch(
+      /sweptShares = await sweepUnbackedFutureSharedDoublesWithLocksHeld\(\{[\s\S]*?db: tx,[\s\S]*?\}\)/,
     );
   });
 });

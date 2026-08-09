@@ -584,7 +584,17 @@ export async function syncManagedXeroContactGroupForMember(
       name: group.name,
     })),
   };
+  // The hash runs on the payload as composed, INCLUDING memberName, so the
+  // idempotency key is byte-identical to the one this code has always produced
+  // and no in-flight operation is orphaned by this change.
   const payloadHash = buildXeroPayloadHash(requestPayload);
+  // INV-PRIV-011 (#2683): but the STORED copy drops it. `memberName` here is a
+  // composed first+last name that is never sent to Xero — it existed only so
+  // the admin operations panel could label the row — and it went into
+  // `XeroSyncOperation.requestPayload` on every managed-group sync. The panel
+  // now labels the row with `memberId`, which it already stores.
+  const storedRequestPayload: Record<string, unknown> = { ...requestPayload };
+  delete storedRequestPayload.memberName;
   const idempotencyKey = buildXeroIdempotencyKey(
     "member",
     memberId,
@@ -600,7 +610,7 @@ export async function syncManagedXeroContactGroupForMember(
     localId: memberId,
     idempotencyKey,
     correlationKey: idempotencyKey,
-    requestPayload,
+    requestPayload: storedRequestPayload,
     createdByMemberId: options?.createdByMemberId ?? null,
   });
 

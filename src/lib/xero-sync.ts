@@ -5,7 +5,7 @@ import { getXeroErrorStatusCode } from "./xero-error-shape";
 import { asRecord, readString } from "./xero-json";
 import { buildXeroObjectUrl, stripXeroOrgShortCode } from "./xero-links";
 import {
-  redactSensitiveJson,
+  redactSensitiveRecord,
   redactSensitiveText,
 } from "./redact-sensitive-json";
 import logger from "@/lib/logger";
@@ -69,13 +69,26 @@ const SINGLE_ACTIVE_CANONICAL_LINK_SCOPES = [
   { localModel: "MemberSubscription", role: "SUBSCRIPTION_INVOICE" },
 ] as const;
 
+/**
+ * The writer for `XeroSyncOperation.requestPayload` / `responsePayload` at
+ * ~20 call sites, and for the metadata on `XeroObjectLink`.
+ *
+ * These are PERSISTED RECORDS, not log lines, and several of the callers are
+ * read-modify-write cycles (`xero-applied-credit-deallocation.ts`,
+ * `xero-contacts.ts`'s contact-repair requeue) that read the stored payload back
+ * and persist it again — so anything cut here is cut permanently and cut again
+ * on every subsequent pass. It therefore takes `redactSensitiveRecord`, which
+ * applies the same redaction rules and the same circular guard (this function
+ * had NO cycle protection at all before #2683) without the log depth cap that
+ * was measured deleting `lineItems[].tracking` from an invoice update.
+ */
 export function sanitizeForJson(value: unknown): Prisma.InputJsonValue | undefined {
   if (value === undefined) {
     return undefined;
   }
 
   return JSON.parse(
-    JSON.stringify(redactSensitiveJson(value))
+    JSON.stringify(redactSensitiveRecord(value))
   ) as Prisma.InputJsonValue;
 }
 

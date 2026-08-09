@@ -85,7 +85,7 @@ jobs:
       # gate on findings so the alerts still publish.
       - name: Upload Semgrep SARIF to code scanning
         if: always()
-        uses: github/codeql-action/upload-sarif@v4.37.3
+        uses: github/codeql-action/upload-sarif@v4.37.4
         with:
           sarif_file: ${{ runner.temp }}/semgrep-output/semgrep-results.sarif
           category: semgrep
@@ -256,7 +256,10 @@ jobs:
   migration-drift:
     name: Migration drift check
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    # #2672 raised this from 15: this job also hosts every opt-in real-Postgres
+    # lock harness, and the member-merge shared-double suite added below drives
+    # ten real merge/writer interleavings whose own describe budget is 120s each.
+    timeout-minutes: 30
     permissions:
       contents: read
     services:
@@ -341,6 +344,23 @@ jobs:
           RUN_CONCURRENCY_RACE_TESTS: "1"
           CONCURRENCY_RACE_DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:55442/concurrency_race_1881
         run: npx vitest run src/lib/__tests__/concurrency-lock-races.realdb.test.ts
+
+      # #2672: the member-merge partner-share safety case is a set of claims
+      # about PostgreSQL itself — that a widened lodge derivation really makes a
+      # concurrent `adminShiftBookingDates` queue on merge's capacity key, and
+      # that `BookingGuest.memberId`'s FK really fences a guest-row insert behind
+      # merge's `Member … FOR UPDATE`. A mock can pin the SHAPE of those queries
+      # and the EXISTENCE of the refusal; only this suite can pin the behaviour.
+      # It self-skips without the env vars (same #1881 harness and database as
+      # the step above), so it MUST stay wired or the whole proof silently
+      # becomes a no-op — `review-findings-contracts.test.ts` fails if it goes
+      # missing. Its describe carries a 120s per-test budget of its own, so no
+      # --testTimeout override is needed here.
+      - name: Test member-merge shared-double races against dedicated PostgreSQL
+        env:
+          RUN_CONCURRENCY_RACE_TESTS: "1"
+          CONCURRENCY_RACE_DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:55442/concurrency_race_1881
+        run: npx vitest run src/lib/__tests__/member-merge-shared-double-races.realdb.test.ts
 
       # #2374 (AID-5): PROVE the dedicated SELECT-only AI Diagnostics database
       # role cannot write, cannot run DDL, cannot create a TEMP table, cannot read
@@ -590,7 +610,7 @@ jobs:
           echo "KNOWLEDGE_BUNDLE_OBSERVED_AT=$(git show -s --format=%cI HEAD)" >> "$GITHUB_ENV"
 
       - name: Log in to GHCR
-        uses: docker/login-action@v4.5.1
+        uses: docker/login-action@v4.6.0
         with:
           registry: ghcr.io
           username: ${{ github.actor }}

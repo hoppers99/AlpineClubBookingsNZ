@@ -181,7 +181,9 @@ vi.mock("@/lib/booking-events", () => ({
 import { auth } from "@/lib/auth";
 import { checkCapacity, checkCapacityForGuestRanges } from "@/lib/capacity";
 import {
+  fenceHostingPolicyFindMany,
   fenceMemberFindMany,
+  hostingMemberRow,
   recordingBookingDouble,
 } from "@/lib/__tests__/support/hosting-participant-fence-double";
 
@@ -248,6 +250,16 @@ function makeBooking(overrides: Record<string, unknown> = {}) {
         ageTier: "ADULT",
         isMember: true,
         memberId: "m1",
+        // #2675: the hosting evaluator reads the LIVE Member row off this
+        // relation, never the `isMember` snapshot beside it, and treats a null
+        // consentStatus as "no consent was ever needed", i.e. operationally
+        // present. A guest row claiming membership without a `member` relation
+        // is a shape production cannot emit — the review's select always
+        // hydrates it — and it does not degrade gracefully: `undefined !== null`
+        // is true, so `memberIsInGoodStanding` reads `undefined.active` and the
+        // seam throws the moment an active hosting mode lets the evaluator run.
+        consentStatus: null,
+        member: hostingMemberRow("m1"),
         priceCents: 20000,
         stayStart: CHECK_IN,
         stayEnd: CHECK_OUT,
@@ -265,6 +277,13 @@ function makeBooking(overrides: Record<string, unknown> = {}) {
         // as a non-member. Give this member guest a memberId so it keeps the
         // member rate on reprice (see the note flagged to the orchestrator).
         memberId: "m2",
+        // #2675, as for g1 — and the sparse night set above is what the hosting
+        // evaluator counts for her, exactly as it is what the pricing engine
+        // counts. `toHostingParticipants` prefers `nights` over the
+        // stayStart..stayEnd envelope precisely so a gap stay is not credited
+        // with the Aug 2 night she is not here for.
+        consentStatus: null,
+        member: hostingMemberRow("m2"),
         priceCents: 10000,
         stayStart: CHECK_IN,
         stayEnd: new Date("2026-08-04T00:00:00.000Z"),
@@ -341,7 +360,17 @@ function makeTx(
     },
     // #2364: the hosting review is reconciled inside the booking write, so
     // every prisma/tx double a booking path runs against needs this client.
-    adultMemberHostingPolicy: { findMany: vi.fn().mockResolvedValue([]) },
+    // #2623 T5 / #2675: an ACTIVE mode, so the gate in front of the participant
+    // fence lets these seams reach it. `[]` resolved to DISABLED and took the
+    // gate's early return, switching the fence off in every scenario here.
+    // ADMIN_REVIEW_REQUIRED rather than the helper's ENFORCED default: under
+    // ENFORCED a hosting violation REFUSES the booking write outright and
+    // `settleSameOwnerDependentCoverage` fans out into coverage-incident and
+    // queue writes this harness models nothing of, whereas review-only records a
+    // snapshot and leaves every money assertion below untouched.
+    adultMemberHostingPolicy: {
+      findMany: fenceHostingPolicyFindMany({ mode: "ADMIN_REVIEW_REQUIRED" }),
+    },
     // #2619: the participant fence re-reads the locked Member rows and each
     // source booking's owner/lodge under the lock. An empty booking.findMany
     // made it report drift on data that never changed.

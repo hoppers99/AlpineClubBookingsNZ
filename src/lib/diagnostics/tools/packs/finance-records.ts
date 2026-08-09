@@ -1047,9 +1047,15 @@ const FINANCE_AUDIT_ROW_LIMIT = 18;
  *
  * THE CATEGORY FILTER IS THE PERMISSION BOUNDARY, and it carries AID-6A's
  * disclosure with it: an audit row written with NO category is matched by nothing
- * here, and 82 production write sites still write that way — several of them
- * money-adjacent (subscription billing, member-credit adjustments, fee
- * configuration, Xero settings and retries). So an empty result here is not
+ * here. #2581's second child classified all 82 previously-uncategorised write
+ * sites at the source, so the census now reads 427 write sites and ZERO
+ * uncategorised (`scripts/audit/audit-writer-census-manifest.ts`, pinned by
+ * `src/lib/__tests__/audit-writer-census.test.ts`) and no NEW row is born
+ * invisible here. The gap has stopped growing, not closed: every row written
+ * before that runtime deployed still carries `category = NULL`, including
+ * money-adjacent ones (subscription billing, member-credit adjustments, fee
+ * configuration, Xero settings and retries), and the historical backfill is
+ * #2581's third child, outstanding. So an empty result here is still not
  * evidence that nothing happened, and the scope line says so in as many words.
  */
 const FINANCE_AUDIT_SQL = `SELECT
@@ -1072,7 +1078,7 @@ const financeAuditHistory = defineDiagnosticsTool<FinanceAuditArgs>({
   label: "Finance audit history for a record",
   description: `Returns the platform's own finance audit events for ONE record — a payment, booking, manual refund task or membership subscription — newest first. Each row carries only stable codes and an instant: the event reference, the action code, the audit category, severity and outcome, what kind of record it concerned, and when it happened in UTC. Use it to see what the platform recorded happening to this record and in what order. The recordId is this platform's own record id, not a Xero identifier: there is no Xero-object subject here, because Xero work is recorded as sync operations rather than audit events — use the Xero invoice or contact linkage tools for that. It searches ONLY the finance audit categories (${FINANCE_AUDIT_CATEGORIES.join(", ")}); an administrator's change to payment SETTINGS is recorded under "admin" and is not here. It never returns who did it, event descriptions, stored metadata, IP addresses or error text. ${FINANCE_DESCRIPTION_TAIL}`,
   requiredAreas: ["finance"],
-  evidenceScope: `Audit events recorded against ONE record, in the finance categories ${FINANCE_AUDIT_CATEGORIES.join(" and ")} only, at most ${FINANCE_AUDIT_ROW_LIMIT}, newest first. Nothing matching means nothing in THOSE categories matched — not that nothing happened. Two gaps make that qualification necessary rather than polite: an administrator's change to payment or internet-banking SETTINGS is recorded under the "admin" category, which this tool cannot read; and the audit category is optional, so a row recorded with NO category is matched by no diagnostics tool at all, and 82 production write paths still record that way — subscription billing, member-credit adjustments and fee configuration among them. Never report that something did not happen on the strength of an empty result here; say that no categorised finance audit event matched, and point at Admin > Audit Log, which lists uncategorised rows as well. ${STORED_EVIDENCE_DISCLOSURE}`,
+  evidenceScope: `Audit events recorded against ONE record, in the finance categories ${FINANCE_AUDIT_CATEGORIES.join(" and ")} only, at most ${FINANCE_AUDIT_ROW_LIMIT}, newest first. Nothing matching means nothing in THOSE categories matched — not that nothing happened. Two gaps make that qualification necessary rather than polite: an administrator's change to payment or internet-banking SETTINGS is recorded under the "admin" category, which this tool cannot read; and the audit category is optional, so a row recorded with NO category is matched by no diagnostics tool at all. Every write site now sets one, so no NEW row is born invisible — but every row written before that change deployed still carries no category, money-adjacent ones included (subscription billing, member-credit adjustments, fee configuration, Xero settings and retries), and backfilling them is outstanding. Never report that something did not happen on the strength of an empty result here; say that no categorised finance audit event matched, and point at Admin > Audit Log, which lists uncategorised rows as well. ${STORED_EVIDENCE_DISCLOSURE}`,
   argsSchema: financeAuditArgsSchema,
   inputSchema: {
     type: "object",

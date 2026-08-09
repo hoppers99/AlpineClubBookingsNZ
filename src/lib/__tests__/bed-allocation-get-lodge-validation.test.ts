@@ -7,12 +7,14 @@ import { NextRequest } from "next/server";
 // left un-mocked so the real validation runs against the mocked prisma.
 const {
   mockLodgeFindUnique,
+  mockBookingFindUnique,
   mockRequireBedAllocationRead,
   mockRequireBedInventoryRead,
   mockGetBedAllocationDashboard,
   mockGetRoomsAndBedsConfiguration,
 } = vi.hoisted(() => ({
   mockLodgeFindUnique: vi.fn(),
+  mockBookingFindUnique: vi.fn(),
   mockRequireBedAllocationRead: vi.fn(),
   mockRequireBedInventoryRead: vi.fn(),
   mockGetBedAllocationDashboard: vi.fn(),
@@ -20,7 +22,11 @@ const {
 }));
 
 vi.mock("@/lib/prisma", () => ({
-  prisma: { lodge: { findUnique: mockLodgeFindUnique } },
+  prisma: {
+    lodge: { findUnique: mockLodgeFindUnique },
+    // #2678: the board read resolves a named booking's own lodge.
+    booking: { findUnique: mockBookingFindUnique },
+  },
 }));
 
 // #2352 slice-1 review: these writers now clear the STORED public pages, not just
@@ -102,6 +108,112 @@ describe("GET /api/admin/bed-allocation lodge validation (Low 2)", () => {
     expect(mockLodgeFindUnique).not.toHaveBeenCalled();
     expect(mockGetBedAllocationDashboard).toHaveBeenCalledWith(
       expect.objectContaining({ lodgeId: undefined }),
+    );
+  });
+});
+
+/**
+ * #2678 — a named booking fixes the lodge, and the server owns it.
+ *
+ * The lodge-scoping contract already said so for booking-scoped reads ("derives
+ * its lodge from `Booking.lodgeId` server-side ... never from a client-supplied
+ * `lodgeId`"); this board read was the last one still taking it from the caller,
+ * after #2673 and #2677 closed the requested-room picker and the wizard.
+ *
+ * The path that mattered was not a hand-crafted request: `AdminBookingToolsCard`
+ * deep-linked this board with `bookingId` and no `lodgeId`, so the board opened
+ * CLUB-WIDE with the booking focused and its bed pickers offered every lodge's
+ * beds for that booking's guests — the #2664 symptom, two clicks from a booking
+ * page, with the write then refused by `assertGuestAndBedForAllocation`.
+ */
+describe("GET /api/admin/bed-allocation booking-scoped lodge (#2678)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockRequireBedAllocationRead.mockResolvedValue({
+      ok: true,
+      session: { user: { id: "admin-1" } },
+    });
+    mockGetBedAllocationDashboard.mockResolvedValue({ ok: true });
+  });
+
+  it("derives the lodge from a named booking when the caller supplies none", async () => {
+    mockBookingFindUnique.mockResolvedValue({ lodgeId: "lodge-1" });
+
+    const { GET } = await import("@/app/api/admin/bed-allocation/route");
+    const res = await GET(
+      new NextRequest(
+        "http://localhost/api/admin/bed-allocation?from=2026-04-01&to=2026-04-14&bookingId=booking-1",
+      ),
+    );
+
+    expect(res.status).toBe(200);
+    expect(mockBookingFindUnique).toHaveBeenCalledWith({
+      where: { id: "booking-1" },
+      select: { lodgeId: true },
+    });
+    expect(mockGetBedAllocationDashboard).toHaveBeenCalledWith(
+      expect.objectContaining({ lodgeId: "lodge-1", bookingId: "booking-1" }),
+    );
+  });
+
+  it("ignores a lodgeId a caller tries to smuggle in past a named booking", async () => {
+    // The same property `requested-room/options` pins by that name (#2673). The
+    // booking's lodge wins; the query string is not consulted for scope at all.
+    mockBookingFindUnique.mockResolvedValue({ lodgeId: "lodge-1" });
+
+    const { GET } = await import("@/app/api/admin/bed-allocation/route");
+    const res = await GET(
+      new NextRequest(
+        "http://localhost/api/admin/bed-allocation?from=2026-04-01&to=2026-04-14&bookingId=booking-1&lodgeId=lodge-2",
+      ),
+    );
+
+    expect(res.status).toBe(200);
+    expect(mockGetBedAllocationDashboard).toHaveBeenCalledWith(
+      expect.objectContaining({ lodgeId: "lodge-1" }),
+    );
+    // The overridden value is never validated either: reporting a fault in a
+    // value we ignore would be a new failure mode for no gain.
+    expect(mockLodgeFindUnique).not.toHaveBeenCalled();
+  });
+
+  it("falls back to the caller's own scope when the bookingId resolves to nothing", async () => {
+    // A stale deep link must not turn a valid lodge-scoped board load into an
+    // error; the focus lookup inside the dashboard already returns nothing.
+    mockBookingFindUnique.mockResolvedValue(null);
+    mockLodgeFindUnique.mockResolvedValue({ id: "lodge-2", active: true });
+
+    const { GET } = await import("@/app/api/admin/bed-allocation/route");
+    const res = await GET(
+      new NextRequest(
+        "http://localhost/api/admin/bed-allocation?from=2026-04-01&to=2026-04-14&bookingId=gone&lodgeId=lodge-2",
+      ),
+    );
+
+    expect(res.status).toBe(200);
+    expect(mockGetBedAllocationDashboard).toHaveBeenCalledWith(
+      expect.objectContaining({ lodgeId: "lodge-2" }),
+    );
+  });
+
+  it("does not filter the lodge lookup by status, so a cancelled booking's board still scopes", async () => {
+    // The lodge is a fact about the row whatever its status. `focusedBooking`
+    // keeps its own stricter allocatable/non-deleted filter for the window it
+    // snaps onto; scoping must not inherit it, or a cancelled booking's board
+    // would silently reopen club-wide.
+    mockBookingFindUnique.mockResolvedValue({ lodgeId: "lodge-3" });
+
+    const { GET } = await import("@/app/api/admin/bed-allocation/route");
+    await GET(
+      new NextRequest(
+        "http://localhost/api/admin/bed-allocation?from=2026-04-01&to=2026-04-14&bookingId=cancelled-1",
+      ),
+    );
+
+    const where = mockBookingFindUnique.mock.calls[0]?.[0]?.where;
+    expect(where).toEqual({ id: "cancelled-1" });
+    expect(mockGetBedAllocationDashboard).toHaveBeenCalledWith(
+      expect.objectContaining({ lodgeId: "lodge-3" }),
     );
   });
 });

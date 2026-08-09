@@ -148,8 +148,23 @@ interface PanelPayload {
 
 export interface BookingBedAllocationPanelProps {
   bookingId: string;
-  /** ADR-003 board scope; null keeps the read club-wide, as the board does. */
-  lodgeId: string | null;
+  /**
+   * ADR-003 board scope — THIS BOOKING'S LODGE, and deliberately not nullable
+   * (#2678).
+   *
+   * It used to read `string | null`, documented as "null keeps the read
+   * club-wide, as the board does". That was true and it was a trap: this panel
+   * was safe only because its single caller passes `booking.lodgeId`, a NOT NULL
+   * column, so a future caller passing `null` would have silently turned a
+   * booking-scoped bed picker into a club-wide one — offering another lodge's
+   * beds for this booking's guests — with no test to catch it. A booking always
+   * has a lodge, so the type now says so.
+   *
+   * Defence in depth, not the boundary: the API derives the scope from
+   * `bookingId` server-side regardless of what a client sends (#2678), and the
+   * writer refuses a cross-lodge allocation outright.
+   */
+  lodgeId: string;
   /** Human-readable lodge label for the shared removal review dialog. */
   lodgeName: string;
   memberName: string;
@@ -338,8 +353,11 @@ export function BookingBedAllocationPanel({
         from: fromDate,
         to: toDate,
         bookingId,
+        // #2678: the server derives the scope from `bookingId` and ignores this,
+        // so it is a hint the two agree rather than the thing that scopes the
+        // read. Sent unconditionally now that the prop cannot be null.
+        lodgeId,
       });
-      if (lodgeId) params.set("lodgeId", lodgeId);
       const response = await fetch(
         `/api/admin/bed-allocation?${params.toString()}`,
       );
@@ -603,7 +621,9 @@ export function BookingBedAllocationPanel({
       from: fromDate,
       to: toDate,
       bookingId,
-      ...(lodgeId ? { lodgeId } : {}),
+      // #2678: always named, so the board's lodge selector agrees with the scope
+      // the API derives from `bookingId`.
+      lodgeId,
     }).toString()}`,
     `/bookings/${bookingId}`,
   );

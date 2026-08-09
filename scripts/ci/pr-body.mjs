@@ -83,19 +83,21 @@ export async function fetchLivePrBody(label) {
  * fail OPEN, silently, on exactly the kind of file whose name nobody inspects.
  * With the flag the bytes are emitted verbatim and the patterns match again.
  *
- * `nameStatus` picks `--name-status` (the changelog gate needs A/M/D to tell an
- * added fragment from a deleted one) over `--name-only`.
+ * `--name-status` is the ONLY shape offered, and that is deliberate. It used to
+ * be opt-in, with `--name-only` as the default, and `--name-only` prints only
+ * the DESTINATION of a detected rename: a PR that moves
+ * `src/lib/payment-settlement.ts` to `src/lib/ledger.ts` and edits the lock
+ * order on the way arrives as one non-sensitive path, so the concurrency gate
+ * stops asking for a declaration on money code. `parseNameStatus` expands `R`
+ * back into the delete + add pair it is, which puts BOTH endpoints back in front
+ * of the sensitive-path test. Status is also what lets the changelog gate tell
+ * an added fragment from the ones a release compile deletes. Every caller runs
+ * the output through `parseNameStatus`.
  */
-export function gitDiffChangedFiles(base, head, { nameStatus = false, cwd } = {}) {
+export function gitDiffChangedFiles(base, head, { cwd } = {}) {
   return execFileSync(
     "git",
-    [
-      "-c",
-      "core.quotePath=false",
-      "diff",
-      nameStatus ? "--name-status" : "--name-only",
-      `${base}...${head}`,
-    ],
+    ["-c", "core.quotePath=false", "diff", "--name-status", `${base}...${head}`],
     { encoding: "utf8", ...(cwd ? { cwd } : {}) },
   );
 }

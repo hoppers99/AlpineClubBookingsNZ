@@ -142,7 +142,9 @@ import {
 } from "@/lib/booking-guest-removal-service";
 import { SELF_REMOVABLE_GUEST_BOOKING_STATUSES } from "@/lib/booking-guest-self-removal";
 import {
+  fenceHostingPolicyFindMany,
   fenceMemberFindMany,
+  hostingMemberRow,
   recordingBookingDouble,
 } from "@/lib/__tests__/support/hosting-participant-fence-double";
 
@@ -220,6 +222,28 @@ function guestRow(
     stayStart: CHECK_IN,
     stayEnd: CHECK_OUT,
     nights: [night("2", 6000), night("3", 6000)],
+    /*
+      #2675: the LIVE Member relation, which is what the hosting evaluator reads
+      — never the `isMember` snapshot above. Every row this builder makes is a
+      member guest, so every one carries a member row.
+
+      It matters that this is not merely tidiness. `memberIsInGoodStanding` tests
+      `member !== null`, and `undefined !== null` is TRUE, so a MISSING key does
+      not read as "not a member": the predicate goes on to read
+      `undefined.active` and throws a TypeError. That never showed while the tx
+      double below answered `[]` for the hosting policy, because the evaluator
+      builds no participants at all unless the mode is active.
+
+      ADULT and in good standing, which is the shape that leaves this suite's
+      assertions exactly as they were: the party is then all members, nobody is a
+      non-member guest, and no hosting hazard exists to record on the bookings
+      these removals reprice. Note the CONSENT status beside it is independent —
+      `participantQualifiesAsHost` refuses a member whose invite is not
+      operationally present (D-12), so the EXPIRED/PENDING/DECLINED target
+      deliberately does NOT count as a host, while the consent-free companion
+      does.
+    */
+    member: hostingMemberRow(memberId),
     consentStatus,
     consentRequestedAt: consentStatus === null ? null : new Date("2026-10-01T00:00:00.000Z"),
     consentRespondedAt: null,
@@ -295,7 +319,22 @@ function makeTx(
     $executeRawUnsafe: vi.fn().mockResolvedValue(undefined),
     // #2364: the hosting review is reconciled inside the booking write, so
     // every prisma/tx double a booking path runs against needs this client.
-    adultMemberHostingPolicy: { findMany: vi.fn().mockResolvedValue([]) },
+    // #2623 T5 / #2675: an ACTIVE mode. `[]` resolves to DISABLED, and the mode
+    // gate that now stands in front of the participant fence would take its
+    // early return — switching the #2619 fence off in the seven removals this
+    // file actually completes, while the fence doubles beside it still looked
+    // like coverage.
+    //
+    // ADMIN_REVIEW_REQUIRED rather than the helper's ENFORCED default: under
+    // ENFORCED a hosting violation THROWS out of the reconciler and would roll
+    // the removal back, turning a success case in this file into a refusal for a
+    // reason that has nothing to do with the consent authority under test. Under
+    // review-only the worst a violation could do is record a review. (These
+    // fixtures raise none either way — every guest is a member in good standing,
+    // so nobody on them needs hosting.)
+    adultMemberHostingPolicy: {
+      findMany: fenceHostingPolicyFindMany({ mode: "ADMIN_REVIEW_REQUIRED" }),
+    },
     booking: {
       findUnique: fenceBooking.findUnique,
       findMany: fenceBooking.findMany,
@@ -574,6 +613,14 @@ describe("consentAuthority applies only to the target it names", () => {
     // no authority can be about it.
     const booking = makeBooking({ targetConsent: "EXPIRED" });
     booking.guests[0].memberId = null as unknown as string;
+    // #2675: the live Member relation goes with the column. `memberId` is the
+    // guest's own foreign key and `member` is the row it resolves to, so a
+    // production read can never serve one without the other — and leaving an
+    // adult member row on the guest this test declares a PLAIN NAMED GUEST would
+    // hand the hosting evaluator a party the fixture does not describe (a host
+    // who is not there, and one fewer person needing cover).
+    booking.guests[0].member =
+      null as unknown as ReturnType<typeof hostingMemberRow>;
     const tx = makeTx(booking);
     await expect(
       remove(tx, {

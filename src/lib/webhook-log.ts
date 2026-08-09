@@ -20,7 +20,25 @@ export async function recordWebhookLog(data: {
     };
     await prisma.webhookLog.create({ data: createData });
   } catch (err) {
-    logger.error({ err, ...data }, "Failed to record webhook log");
+    // INV-PRIV-011 (#2683): log the webhook's identifiers, not the payload
+    // wrapper. `...data` spread the caller's RAW `error` string — the one field
+    // this function redacts before it is allowed near the database — straight
+    // into the application log, so the write path was stricter than the
+    // failure path it falls back to. It is redacted here too now, and the
+    // remaining fields are named one by one so a field added to the argument
+    // later cannot join the log line by accident.
+    logger.error(
+      {
+        err,
+        source: data.source,
+        eventType: data.eventType,
+        eventId: data.eventId,
+        status: data.status,
+        durationMs: data.durationMs,
+        ...(data.error ? { error: redactSensitiveText(data.error) } : {}),
+      },
+      "Failed to record webhook log"
+    );
   }
 }
 

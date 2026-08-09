@@ -9,6 +9,7 @@ const mocks = vi.hoisted(() => ({
   createContactGroupContacts: vi.fn(),
   deleteContactGroupContact: vi.fn(),
   startXeroSyncOperation: vi.fn(),
+  buildXeroPayloadHash: vi.fn(() => "hash"),
   completeXeroSyncOperation: vi.fn(),
   completeMemberContactOperation: vi.fn(),
   failXeroSyncOperation: vi.fn(),
@@ -39,7 +40,7 @@ vi.mock("@/lib/xero-sync", () => ({
       .filter((p): p is string | number | boolean => p !== null && p !== undefined && p !== "")
       .map((p) => String(p))
       .join(":"),
-  buildXeroPayloadHash: () => "hash",
+  buildXeroPayloadHash: mocks.buildXeroPayloadHash,
   startXeroSyncOperation: mocks.startXeroSyncOperation,
   completeXeroSyncOperation: mocks.completeXeroSyncOperation,
   failXeroSyncOperation: mocks.failXeroSyncOperation,
@@ -194,6 +195,38 @@ describe("syncManagedXeroContactGroupForMember (mode-driven engine)", () => {
     expect(result.removedGroupIds).toEqual(["g_youth"]);
     expect(result.alreadyAbsentGroupIds).toEqual([]);
     expect(mocks.completeMemberContactOperation).toHaveBeenCalled();
+  });
+
+  // INV-PRIV-011 (#2683 review). The enqueued payload carried
+  // `memberName: "${firstName} ${lastName}"` — never sent to Xero, present only
+  // so the admin operations panel could label the row — and it was written into
+  // XeroSyncOperation.requestPayload on every managed-group sync. The panel now
+  // labels the row with the member id it already stores.
+  it("does not store the member's composed name on the ledger operation", async () => {
+    mocks.resolveMemberGroupingForMember.mockResolvedValue(
+      resolution({
+        managedGroup: { id: "g_adult", name: "Adults" },
+        acceptedGroupIds: ["g_adult"],
+        managedUniverse: ["g_adult", "g_youth"],
+      }),
+    );
+    mocks.getContact.mockResolvedValue(contactWithGroups([{ contactGroupID: "g_youth", name: "Youth" }]));
+
+    await syncManagedXeroContactGroupForMember("member_1");
+
+    const stored = (mocks.startXeroSyncOperation.mock.calls as unknown as Array<
+      [{ requestPayload: Record<string, unknown> }]
+    >)[0][0].requestPayload;
+    expect(stored).not.toHaveProperty("memberName");
+    expect(JSON.stringify(stored)).not.toContain("Lovelace");
+    // The member id is still there, which is what the panel labels the row with.
+    expect(stored.memberId).toBe("member_1");
+
+    // The idempotency key is built from the payload as composed, INCLUDING the
+    // name, so stripping the stored copy cannot orphan an in-flight operation.
+    expect(mocks.buildXeroPayloadHash).toHaveBeenCalledWith(
+      expect.objectContaining({ memberName: "Ada Lovelace" }),
+    );
   });
 
   it("suppresses the add when already in an accepted group (no-op, no ledger)", async () => {

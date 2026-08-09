@@ -523,6 +523,23 @@ describe("hut leader auto-assign (D-12)", () => {
     };
     expect(args.where.guests.some.OR).toEqual(PRESENT_OR);
     expect(args.select.guests.where?.OR).toEqual(PRESENT_OR);
+
+    // INV-PRIV-011 (#2683 review finding 4). This job runs nightly across every
+    // lodge night and logged `memberName` composed from first + last, so it
+    // wrote a stream of members' full names into the application log on a
+    // completely ordinary success path. The member id identifies the assignment.
+    const loggerModule = await import("@/lib/logger");
+    const logged = JSON.stringify(vi.mocked(loggerModule.default.info).mock.calls);
+    expect(logged).not.toContain("Anna");
+    expect(logged).not.toContain("Adult");
+    expect(logged).toContain("m-anna");
+    // The name is not even selected from the database any more.
+    const guestSelect = (
+      args.select.guests as unknown as {
+        select: { member: { select: Record<string, boolean> } };
+      }
+    ).select;
+    expect(guestSelect.member.select).toEqual({ id: true, active: true });
   });
 });
 

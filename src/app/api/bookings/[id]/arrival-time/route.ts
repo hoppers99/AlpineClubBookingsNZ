@@ -53,6 +53,43 @@ const arrivalTimeSchema = z.object({
 });
 
 /**
+ * #2674 — a soft-deleted booking is not a booking this route will write to.
+ *
+ * WHAT THIS DOES AND DOES NOT FIX, stated plainly because the issue that filed
+ * it assumed more than was true. It does NOT close a live hole: `deletedAt` has
+ * exactly one writer in the repo, `softDeleteCancelledBooking`
+ * (`src/lib/booking-delete.ts`), which refuses anything whose status is not
+ * `CANCELLED`, and nothing anywhere transitions a booking back out of
+ * `CANCELLED`. So every soft-deleted booking is a cancelled one, and the status
+ * gate below already answered these requests — with `400 Cannot update arrival
+ * time for cancelled or completed bookings`, before the transaction. No write
+ * landed and no audit row was written.
+ *
+ * What it fixes is the ANSWER and the contract. A record the club considers
+ * gone should read as gone, not as "cancelled": `page.tsx` will not show it,
+ * and the two neighbours that already carry this guard —
+ * `send-guest-payment-link` and `additional-payment-secret` — both answer 404.
+ * And it stops the route's correctness resting on a coincidence: today the
+ * status gate covers it, but that gate is about status, and a future change to
+ * either rule would silently uncover the write.
+ *
+ * PLACED AFTER THE AUTHORISATION CHECK, and BEFORE the status gate. After the
+ * 403, because checking deletion first would hand a caller with no claim on the
+ * booking a deleted-or-live oracle — the reasoning `requested-room/options`
+ * (#2673) wrote down and this follows. Before the status gate, because
+ * otherwise the 400 answers first and the deleted booking never reaches this at
+ * all, which is precisely the state being corrected.
+ *
+ * NO FULL ADMIN EXEMPTION, unlike `bookings/[id]/page.tsx`. That exemption
+ * exists because the page is a record-VIEWING surface where an admin has a
+ * legitimate reason to inspect a deleted booking. This is a write.
+ */
+function refuseDeletedBooking(booking: { deletedAt: Date | null }) {
+  if (!booking.deletedAt) return null;
+  return NextResponse.json({ error: "Booking not found" }, { status: 404 });
+}
+
+/**
  * PUT /api/bookings/[id]/arrival-time
  * Set or update the expected arrival time on a booking.
  */
@@ -82,6 +119,8 @@ export async function PUT(
       memberId: true,
       checkIn: true,
       status: true,
+      // #2674: see `refuseDeletedBooking` below.
+      deletedAt: true,
     },
   });
 
@@ -99,6 +138,9 @@ export async function PUT(
   ) {
     return NextResponse.json({ error: "Forbidden" }, { status: 403 });
   }
+
+  const deleted = refuseDeletedBooking(booking);
+  if (deleted) return deleted;
 
   if (booking.status === "CANCELLED" || booking.status === "COMPLETED") {
     return NextResponse.json(
@@ -224,6 +266,10 @@ export async function DELETE(
       memberId: true,
       checkIn: true,
       status: true,
+      // #2674: see `refuseDeletedBooking` above. The clear needs it as much as
+      // the set — it DESTROYS the previous value, so it is the half where a
+      // write on a record the club considers gone would be least recoverable.
+      deletedAt: true,
     },
   });
 
@@ -240,6 +286,9 @@ export async function DELETE(
   ) {
     return NextResponse.json({ error: "Forbidden" }, { status: 403 });
   }
+
+  const deleted = refuseDeletedBooking(booking);
+  if (deleted) return deleted;
 
   if (booking.status === "CANCELLED" || booking.status === "COMPLETED") {
     return NextResponse.json(

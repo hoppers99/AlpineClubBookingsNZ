@@ -320,6 +320,24 @@ At the successful end of a meaningful piece of work:
    The check runs both gates offline in about a second. Copy the headings and
    field labels verbatim (they are matched exactly) and keep each field's value
    on the same line as its label.
+
+   Both gates decide what they ask for from the **diff**, never from who opened
+   the PR. The changelog gate asks for an entry only when a non-test file under
+   `src/` or `prisma/` changed; the concurrency gate asks for
+   `## Concurrency And Lock Impact` only when a non-test file on a sensitive
+   path changed (money, capacity, lifecycle, webhook/cron, Xero/Stripe modules,
+   `prisma/schema.prisma`, `prisma/migrations/`), and on such a PR that section
+   cannot be `N/A`. A PR touching neither surface — a dependency bump, a
+   docs-only change — is asked for neither and passes with no template at all
+   (#2726). Fill the template in regardless: these gates are a floor, not the
+   standard, and the concurrency checklist below is a thinking tool, not
+   paperwork.
+
+   Because both answers come from the diff, `npm run pr:check` needs to be able
+   to READ the diff: if it cannot resolve the base (an unfetched `origin/main`,
+   a `--base` ref that does not exist) it reports failure rather than a green it
+   has no evidence for, and a ticked `N/A` is refused there too. Run
+   `git fetch origin main`, or pass `--base <ref>`, and run it again.
 2. Monitor CI to green. Fix any failure (lint, typecheck, the `npm run knip`
    dead-code gate, `npm test`, build, migration-drift, and the
    dependency/secret/static scans) and push fixes until every required check

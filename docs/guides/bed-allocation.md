@@ -57,6 +57,12 @@ year in one go).
    longer than 31 nights, the board shows the first 31 nights and says it is
    showing part of the stay.
 
+   Arriving from a booking's "Bed allocation" link also opens the board **on
+   that booking's own lodge**, so the bed pickers only offer beds the booking's
+   guests can actually be put in. The server works the lodge out from the
+   booking itself, so a link naming a different lodge is ignored rather than
+   obeyed (#2678).
+
    ![Bed Allocation board: the date controls, allocation preferences, the "Bookings approved, awaiting allocation" pool with Run Auto Allocation, and the room-by-night Allocation Board](../images/admin/admin-bed-allocation.png)
 
 ### Set this lodge's allocation preferences
@@ -359,7 +365,7 @@ that booking, so the booking's own **Audit log** link finds it.
 | Refresh | Reload the board | — | — |
 | Bed allocation card (on a booking) | Assign, remove and confirm this booking's beds without leaving it | — | Admin-only; needs bookings edit access; long stays are paged 31 nights at a time |
 | Confirm draft beds (on a booking) | Approve every draft bed night on that booking | — | Never touches another booking's drafts; locks the member's room request |
-| Lodge selector | Which lodge's board is shown | first/only lodge | Only shown with more than one active lodge |
+| Lodge selector | Which lodge's board is shown | the focused booking's lodge, otherwise the first/only lodge | Only shown with more than one active lodge. While a booking is focused, changing the lodge **drops the focus** — the "Focused booking" badge disappears and you get the lodge you chose (#2678) |
 
 Notes: bed types (single, bunk top/bottom, double) are descriptive and do not
 change capacity; a double bed-night can hold two occupants (declared partners).
