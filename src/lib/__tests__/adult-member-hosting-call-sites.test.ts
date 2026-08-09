@@ -1,5 +1,13 @@
 // #2569 — the hosting policy's call sites, read off the real source files.
 //
+// ENFORCES INV-HOST-020 and INV-HOST-030
+// (`docs/invariants/adult-member-hosting.md`), both of which name this file:
+// INV-HOST-020 pins the school/organisation REVIEW_ONLY exemption to one site
+// tree-wide, and INV-HOST-030 asserts who uses each confirming seam and that no
+// confirming write uses neither. The census assertions for those two repeat the
+// id in their failure message, so whoever trips one is handed the rule rather
+// than having to go and find it (#2691).
+//
 // WHY STRUCTURAL AND NOT BEHAVIOURAL. Four of this issue's requirements are claims
 // about a SET OF FILES rather than about an answer, and a behavioural test of the
 // sites that exist today passes just as green when a new one is added:
@@ -264,7 +272,13 @@ describe("the school and organisation carve-out, and only that (#2569 §13)", ()
     // service itself rather than at a flow, and the position assertion below pins
     // it to that one function, so it cannot become a way for a booking path to opt
     // out of an enforcing club's rule.
-    expect(sourceFilesNaming('enforcement: "REVIEW_ONLY"')).toEqual([
+    expect(
+      sourceFilesNaming('enforcement: "REVIEW_ONLY"'),
+      "INV-HOST-020 (docs/invariants/adult-member-hosting.md): school and " +
+        "organisation workflows are excluded from the hosting refusal, and only " +
+        "they. A third file passing REVIEW_ONLY exempts a member-owned flow from " +
+        "an enforcing club's rule by a one-line argument rather than by a decision.",
+    ).toEqual([
       "src/lib/adult-member-hosting-review.ts",
       "src/lib/school-booking-request.ts",
     ]);
@@ -536,7 +550,12 @@ describe("the same-owner refusal and the escalation seam (#2576 §6, §8, §9)",
       const usesASeam =
         source.includes("enqueueOwnHostingCoverageReevaluation(") ||
         source.includes("reconcileAdultMemberHostingReviewWithSiblings(");
-      expect(usesASeam, file).toBe(true);
+      expect(
+        usesASeam,
+        `INV-HOST-030 (docs/invariants/adult-member-hosting.md): ${file} claims a ` +
+          "booking into a confirmed-or-paid state without reaching the hosting rule " +
+          "by either seam — reconcile (refuse) or enqueue (escalate).",
+      ).toBe(true);
     }
   });
 

@@ -230,4 +230,4 @@ That is the intended correction, not a fault.
 - Reference: promo application in the
   [booking/payment flow](../ARCHITECTURE.md#booking-and-payment-flow), the
   [payment lifecycle](../STATE_MACHINES.md#payment-lifecycle), and money rules in
-  [`DOMAIN_INVARIANTS.md`](../DOMAIN_INVARIANTS.md#money).
+  [`money.md`](../invariants/money.md).

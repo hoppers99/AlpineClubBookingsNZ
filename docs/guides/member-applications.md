@@ -120,4 +120,4 @@ second is refused (409) and must re-preview.
   and [nomination lifecycle](../STATE_MACHINES.md#nomination-lifecycle), the
   application-approval mapping in
   [`CONFIGURATION.md`](../../CONFIGURATION.md#application-approval-mapping), and
-  the [membership lifecycle invariants](../DOMAIN_INVARIANTS.md#membership-lifecycle).
+  the [membership lifecycle invariants](../invariants/membership-lifecycle.md).

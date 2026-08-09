@@ -9,7 +9,10 @@ description: Lifecycle planning and review workflow for AlpineClubBookingsNZ. Us
 
 - `AGENTS.md`
 - `docs/agents/CODEX_WORKFLOW.md`
-- `docs/DOMAIN_INVARIANTS.md`
+- `docs/DOMAIN_INVARIANTS.md` — the invariant index; then the domain files this
+  review actually needs: `docs/invariants/membership-lifecycle.md` (`INV-LIFE`),
+  `docs/invariants/booking-modifications.md` (`INV-MOD`), and
+  `docs/invariants/booking-dates-and-capacity.md` (`INV-DATE`, `INV-CAP`)
 - `docs/STATE_MACHINES.md`
 - `docs/END_TO_END_TEST_MATRIX.md`
 - `docs/ARCHITECTURE.md`

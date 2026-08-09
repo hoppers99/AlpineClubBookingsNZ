@@ -391,6 +391,9 @@ Larger subsystems keep their own hub. Each links back to this page.
   [`config-transfer/README.md`](config-transfer/README.md).
 - **Exclusive whole-lodge hold (design)** —
   [`exclusive-booking/decisions/ADR-001-exclusive-whole-lodge-hold.md`](exclusive-booking/decisions/ADR-001-exclusive-whole-lodge-hold.md).
+- **Member photos (design)** — storage, visibility, and what a member merge does
+  to a photo:
+  [`member-photos/decisions/ADR-001-member-photos.md`](member-photos/decisions/ADR-001-member-photos.md).
 - **AI Diagnostics (design/foundation)** — the admin-only, read-only diagnostics
   assistant's security, privacy, authority, and evidence contracts: ADRs, the
   STRIDE threat model, the permission matrix, and the documentation plan. Start

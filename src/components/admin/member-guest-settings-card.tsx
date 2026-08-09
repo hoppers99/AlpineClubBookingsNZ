@@ -38,10 +38,10 @@ import { PolicyFeedback } from "@/components/admin/booking-policies/policy-feedb
  * switch the feature on. View-only is a real third state (the shared
  * banner + ViewOnlyActionButton pattern), never a Save that 403s.
  *
- * Follows the canonical settings-section pattern (`AGENTS.md`;
- * `group-discount-section.tsx` is the reference): loads read-only, Edit
- * reveals Save/Cancel, Cancel reverts to the saved snapshot, Save persists
- * once and re-seeds from the server response.
+ * Follows the canonical settings-section pattern (`docs/ARCHITECTURE.md` →
+ * "Admin/member layer", where it is stated in full; `group-discount-section.tsx`
+ * is the reference): loads read-only, Edit reveals Save/Cancel, Cancel reverts to
+ * the saved snapshot, Save persists once and re-seeds from the server response.
  *
  * The two name-search toggles carry the privacy warnings the owner accepted
  * verbatim on the mockup pack, and per D-18 neither value ever travels in club
