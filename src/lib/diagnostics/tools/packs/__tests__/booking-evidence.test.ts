@@ -509,20 +509,20 @@ function shapeRow(
       if (relation) {
         const related = relation(row, store);
         const nested = want as QueryArgs;
-        const relatedRows = Array.isArray(related)
-          ? applyOrderBy(related, nested.orderBy)
-          : null;
-        const limitedRows =
-          relatedRows === null || nested.take === undefined
-            ? relatedRows
-            : relatedRows.slice(0, nested.take);
-        out[key] = limitedRows
-          ? limitedRows.map((candidate) =>
-              shapeRow(relationModel(model, key), candidate, nested),
-            )
-          : related
+        if (Array.isArray(related)) {
+          const relatedRows = applyOrderBy(related, nested.orderBy);
+          const limitedRows =
+            nested.take === undefined
+              ? relatedRows
+              : relatedRows.slice(0, nested.take);
+          out[key] = limitedRows.map((candidate) =>
+            shapeRow(relationModel(model, key), candidate, nested),
+          );
+        } else {
+          out[key] = related
             ? shapeRow(relationModel(model, key), related, nested)
             : null;
+        }
         continue;
       }
       throw new Error(
