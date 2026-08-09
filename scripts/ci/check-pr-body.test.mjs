@@ -147,4 +147,57 @@ describe("pr:check offline gate runner", () => {
     expect(output).toContain("PASS  Changelog fragment");
     expect(status).toBe(0);
   });
+
+  /*
+    #2726: this runner has to reach the SAME verdict as CI, and CI no longer
+    fails a non-sensitive diff for a missing concurrency section. A Dependabot
+    body — package table, none of the template headings — over a dependency-only
+    diff is exactly that case, and it is the case that failed every bot PR.
+  */
+  const DEPENDABOT_BODY = [
+    "Bumps [next](https://github.com/vercel/next.js) from 15.5.0 to 15.5.1.",
+    "",
+    "| Package | From | To |",
+    "| --- | --- | --- |",
+    "| next | 15.5.0 | 15.5.1 |",
+    "",
+  ].join("\n");
+
+  it("passes a dependency-only diff whose body has no concurrency section", () => {
+    root = makeRepo({ "package.json": '{ "name": "x" }\n' });
+    const { status, output } = runGate(root, DEPENDABOT_BODY);
+    expect(output).toContain("PASS  Concurrency declaration");
+    expect(status).toBe(0);
+  });
+
+  it("fails the same sectionless body once the diff touches a sensitive path", () => {
+    root = makeRepo({ "src/lib/booking-capacity.ts": "export const beds = 1;\n" });
+    const { status, output } = runGate(root, DEPENDABOT_BODY);
+    expect(output).toContain("FAIL  Concurrency declaration");
+    expect(output).toContain("src/lib/booking-capacity.ts");
+    expect(status).toBe(1);
+  });
+
+  /*
+    No diff context at all. `--base` names a ref that does not exist, so
+    `git merge-base` fails and the runner cannot see what changed. It must NOT
+    read that as "changed nothing" and hand out the #2726 waiver — an unresolved
+    base is the state a fresh clone with an unfetched `origin/main` is in, and a
+    runner that printed PASS for any body there would be worse than useless.
+  */
+  it("keeps the section required when it cannot resolve the diff at all", () => {
+    root = makeRepo({ "package.json": '{ "name": "x" }\n' });
+    const bodyPath = join(root, "body.md");
+    writeFileSync(bodyPath, DEPENDABOT_BODY);
+    const result = spawnSync(
+      process.execPath,
+      [script, bodyPath, "--base", "refs/heads/no-such-branch"],
+      { cwd: root, encoding: "utf8" },
+    );
+    const output = `${result.stdout ?? ""}${result.stderr ?? ""}`;
+    expect(output).toContain("Could not diff against");
+    expect(output).toContain("FAIL  Concurrency declaration");
+    expect(output).toContain("no diff context");
+    expect(result.status).toBe(1);
+  });
 });

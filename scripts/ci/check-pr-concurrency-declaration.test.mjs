@@ -96,6 +96,14 @@ describe("PR concurrency declaration gate", () => {
         "src/lib/booking-cancel.ts",
       ]),
     ).toThrow(/cannot use N\/A/);
+    // The message must NAME the offending files, or an author on a 40-file PR
+    // has no way to tell which one made N/A untrue.
+    expect(() =>
+      validateConcurrencyDeclaration(`${heading}\n\n- [x] N/A — no impact.\n`, [
+        "docs/README.md",
+        "src/lib/booking-cancel.ts",
+      ]),
+    ).toThrow(/sensitive paths: src\/lib\/booking-cancel\.ts/);
   });
 
   it("rejects template placeholders and unnumbered compatibility claims", () => {
@@ -187,6 +195,76 @@ describe("PR concurrency declaration gate", () => {
         "src/lib/booking-cancel.ts",
       ]),
     ).toThrow(/cannot use N\/A/);
+  });
+
+  /*
+    #2726. The gate used to demand the heading UNCONDITIONALLY and only then
+    consult the diff — at which point it accepted a ticked `N/A` for any PR
+    touching no sensitive path. So for a non-sensitive PR it already agreed there
+    was nothing to declare; it just refused to say so until the author pasted in
+    a heading. Every Dependabot PR failed there permanently, because Dependabot
+    writes its own body and cannot use `.github/pull_request_template.md`.
+
+    The three tests below pin the whole enforcement boundary. Deleting the
+    `diffKnown && sensitiveFiles.length === 0` short-circuit turns the first one
+    red; the other two stay green either way, which is the point — they are the
+    proof that the short-circuit took no enforcement with it.
+  */
+  it("waives a missing section for a known diff with no sensitive path (#2726)", () => {
+    // A real Dependabot body: a package table, no template headings anywhere.
+    const dependabotBody = [
+      "Bumps [next](https://github.com/vercel/next.js) from 15.5.0 to 15.5.1.",
+      "",
+      "| Package | From | To |",
+      "| --- | --- | --- |",
+      "| next | 15.5.0 | 15.5.1 |",
+      "",
+    ].join("\n");
+
+    expect(() =>
+      validateConcurrencyDeclaration(dependabotBody, [
+        "package.json",
+        "package-lock.json",
+        ".github/workflows/ci.yml",
+      ]),
+    ).not.toThrow();
+  });
+
+  it("still demands the section when a known diff touches a sensitive path (#2726)", () => {
+    // The same bodyless PR, now bumping a dependency that also edits a payment
+    // writer. This is the case the gate was written for and it must still fail.
+    expect(() =>
+      validateConcurrencyDeclaration("Bumps stripe from 18.0.0 to 18.1.0.", [
+        "package.json",
+        "src/lib/payment-settlement.ts",
+      ]),
+    ).toThrow(/PR body must include ## Concurrency And Lock Impact/);
+  });
+
+  it("names the sensitive files when it demands the section (#2726)", () => {
+    expect(() =>
+      validateConcurrencyDeclaration("no headings here", [
+        "src/app/api/webhooks/stripe/route.ts",
+        "docs/README.md",
+      ]),
+    ).toThrow(/src\/app\/api\/webhooks\/stripe\/route\.ts/);
+  });
+
+  /*
+    Fail closed on an UNKNOWN diff. `changedFiles` omitted means the caller could
+    not resolve one (no PR_BASE_SHA/PR_HEAD_SHA, no local merge base) — not that
+    the PR changed nothing. Reading unknown as empty would hand the #2726 waiver
+    to every PR the moment the diff range went missing, which is a far larger
+    hole than the one #2726 closed. Deleting the `diffKnown &&` half of the
+    short-circuit turns this red.
+  */
+  it("still demands the section when the diff is unknown rather than empty (#2726)", () => {
+    expect(() => validateConcurrencyDeclaration("no headings here")).toThrow(
+      /PR body must include ## Concurrency And Lock Impact/,
+    );
+    expect(() => validateConcurrencyDeclaration("no headings here", null)).toThrow(
+      /PR body must include ## Concurrency And Lock Impact/,
+    );
   });
 
   /*

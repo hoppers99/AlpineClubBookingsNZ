@@ -59,6 +59,13 @@ function parseArgs(argv) {
  *
  * Status is also what distinguishes an ADDED fragment from the deletions a
  * release-compile PR makes, so `--name-status` is required, not a nicety.
+ *
+ * Returns `null` — NOT `[]` — when the diff cannot be resolved. Since #2726 the
+ * concurrency gate waives a missing section for a diff it can see is
+ * non-sensitive, so "I could not look" and "I looked and found nothing" have to
+ * stay distinguishable: collapsing them would make this runner print PASS for
+ * any body at all the moment `origin/main` is unfetched, which is the same
+ * hollow-PASS failure #2666 fixed on the changelog gate.
  */
 function changesAgainst(base) {
   try {
@@ -71,9 +78,10 @@ function changesAgainst(base) {
   } catch {
     console.warn(
       `! Could not diff against ${base}; checking the body shape only.\n` +
-        "  The sensitive-path and code-bearing rules are NOT exercised.",
+        "  The sensitive-path and code-bearing rules are NOT exercised, so the\n" +
+        "  concurrency section is required here even though CI may not ask for it.",
     );
-    return [];
+    return null;
   }
 }
 
@@ -98,15 +106,25 @@ try {
 }
 
 const changes = changesAgainst(base);
+const diffKnown = changes !== null;
 // The concurrency gate keys on paths alone; the changelog gate needs the status
 // as well. `parseNameStatus` expands a rename into its delete + add pair, so the
 // path list is deduped before the concurrency gate counts or matches it.
-const changedFiles = [...new Set(changes.map((change) => change.path))];
+//
+// `null` is passed straight through when the diff could not be resolved: that is
+// the concurrency gate's "diff unknown" input, and it keeps the section required
+// rather than granting the #2726 waiver on evidence this runner does not have.
+// This is the SAME verdict CI reaches in the same state — `PR_BASE_SHA` and
+// `PR_HEAD_SHA` missing makes the CI entrypoint pass `null` too.
+const changedFiles = diffKnown ? [...new Set(changes.map((change) => change.path))] : null;
+const diffSummary = diffKnown
+  ? `${changedFiles.length} changed file(s) vs ${base}`
+  : "no diff context, so body shape only";
 const failures = [];
 
 for (const [label, run] of [
   ["Concurrency declaration", () => validateConcurrencyDeclaration(body, changedFiles)],
-  ["Changelog fragment", () => validateChangelogFragment(body, changes)],
+  ["Changelog fragment", () => validateChangelogFragment(body, changes ?? [])],
 ]) {
   try {
     run();
@@ -122,12 +140,8 @@ for (const [label, run] of [
 
 if (failures.length > 0) {
   console.error(`\n${failures.map((f) => `- ${f}`).join("\n\n")}`);
-  console.error(
-    `\nChecked against ${changedFiles.length} changed file(s) vs ${base}.`,
-  );
+  console.error(`\nChecked against ${diffSummary}.`);
   process.exit(1);
 }
 
-console.log(
-  `\nPR body passes both gates (${changedFiles.length} changed file(s) vs ${base}).`,
-);
+console.log(`\nPR body passes both gates (${diffSummary}).`);
