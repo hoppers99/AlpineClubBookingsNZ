@@ -61,10 +61,25 @@ an admin review is not in its numbers. The day list counts who is **in the
 building**, so it does show that booking, marked "Blocked from Check-In". A
 day can therefore read as empty on the strip and open onto a flagged party.
 
-**Mark Departed** appears only on a guest's *final* departure — the morning
-after their last booked night. On a stay with a gap in it, the earlier
-departure morning shows the **Departing** badge without the button, because
-check-out can only be recorded once, at the end of the booking.
+**Mark Departed** appears on every morning a guest actually leaves. On a stay
+with a gap in it, that is more than once: someone booked in for Friday and again
+for Monday leaves on Saturday morning and again on Tuesday morning, and each
+check-out can be recorded on the day it happens. Until #2628 only the last one
+could be — the earlier morning showed the **Departing** badge with no button —
+so a guest who left and came back was recorded as leaving once, at the end.
+
+**Mark Arrived** appears again when they come back. The kiosk holds one arrival
+and one departure per guest — where they are *now*, not a diary of every trip —
+so tapping **Mark Arrived** on the night they return records the new arrival and
+clears the earlier check-out at the same time. Their name stops being greyed out
+and the next **Mark Departed** records their next check-out. If the return
+arrival is never recorded, the card still reads **Departed** on the following
+departure morning: tap it once to clear that, and again to record the departure.
+
+Checking someone out clears the **suggested** chores they can no longer do —
+only up to the next night they are booked in for. Chores rostered for a later
+part of the same stay are left alone, and any chore already **confirmed** is
+never touched.
 
 The **Who's at the lodge** panel that sits under an admin calendar counts
 guest-**nights** rather than lodge days. On the chore roster calendar, whose

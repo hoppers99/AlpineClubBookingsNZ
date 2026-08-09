@@ -27,6 +27,10 @@ import {
   type BedAllocationRoom,
   type UnallocatedGuestNight,
 } from "@/lib/bed-allocation";
+import {
+  getEarliestCurrentBedNightDate,
+  getExplicitGuestBedNightKeys,
+} from "@/lib/booking-guest-stay-ranges";
 import { reportBedAllocationInvariantViolation } from "@/lib/bed-allocation-diagnostics";
 import {
   BED_ALLOCATABLE_BOOKING_STATUSES,
@@ -1101,6 +1105,36 @@ export async function updateBedAllocationBedWithLocksHeld(input: {
   });
 }
 
+/**
+ * Refuse to deactivate or delete a bed that guests are allocated to.
+ *
+ * The two actions take DIFFERENT windows, exactly like their custodian-hold
+ * sibling below, and for the same two reasons (#2628):
+ *
+ * - DEACTIVATE only cares about occupancy that has not finished. That window
+ *   starts at LAST NIGHT, not today: night N runs to midday NZ on date N+1
+ *   (INV-DATE-002), so at any moment on day D the person who slept on night D-1
+ *   is still in the lodge or has only just left it. `stayDate >= today` forgot
+ *   them, which let an admin retire a bed somebody was lying in.
+ *   `getEarliestCurrentBedNightDate` is the shared name for that boundary.
+ * - DELETE refuses on ANY allocation, past included. `BedAllocation.bed` is
+ *   `onDelete: Restrict`, so a bed with historic rows used to pass this guard
+ *   and then fail deep in the driver with a raw P2003 the admin cannot act on.
+ *
+ * Either way the message names the guest, because "clear those dates" is not
+ * actionable until you know whose booking to open.
+ *
+ * THE MESSAGE IS CAPPED AND THE QUERY IS BOUNDED. The delete branch has no date
+ * predicate at all, so it can match every night a bed has ever held — several
+ * seasons of them on a bed in long service. Enumerating all of those would put a
+ * page of dates and a page of past guests' names into one 409 body and into the
+ * audit trail, for what is a yes/no answer. Only the first few are loaded and
+ * named; the rest become "and more". The room-level sibling
+ * (`assertNoRoomAllocationHistory`) does not even name a date for this reason —
+ * it is the same refusal, one level up.
+ */
+const BED_ALLOCATION_GUARD_MESSAGE_ROWS = 5;
+
 async function assertNoFutureBedAllocations(input: {
   bedId: string;
   db: BedAllocationDb;
@@ -1109,26 +1143,44 @@ async function assertNoFutureBedAllocations(input: {
   const blockingAllocations = await input.db.bedAllocation.findMany({
     where: {
       bedId: input.bedId,
-      stayDate: { gte: getTodayDateOnly() },
+      ...(input.action === "delete"
+        ? {}
+        : { stayDate: { gte: getEarliestCurrentBedNightDate() } }),
     },
-    select: { stayDate: true },
+    select: {
+      stayDate: true,
+      bookingGuest: { select: { firstName: true, lastName: true } },
+    },
     orderBy: { stayDate: "asc" },
+    // One more than we will name, which is all it takes to know there are more.
+    take: BED_ALLOCATION_GUARD_MESSAGE_ROWS + 1,
   });
 
   if (blockingAllocations.length === 0) {
     return;
   }
 
+  const truncated =
+    blockingAllocations.length > BED_ALLOCATION_GUARD_MESSAGE_ROWS;
+  const named = blockingAllocations.slice(0, BED_ALLOCATION_GUARD_MESSAGE_ROWS);
+
   const blockingDates = [
+    ...new Set(named.map((allocation) => formatDateOnly(allocation.stayDate))),
+  ];
+  const occupants = [
     ...new Set(
-      blockingAllocations.map((allocation) =>
-        formatDateOnly(allocation.stayDate),
-      ),
+      named.map((allocation) => guestName(allocation.bookingGuest)).filter(Boolean),
     ),
   ];
+  const dateList = `${blockingDates.join(", ")}${truncated ? " and more" : ""}`;
+  const occupied =
+    occupants.length > 0
+      ? ` (${occupants.join(", ")}${truncated ? " and others" : ""})`
+      : "";
+  const window = input.action === "delete" ? "allocations" : "current or future allocations";
 
   throw new BedAllocationAdminError(
-    `Cannot ${input.action} this bed while future allocations exist on ${blockingDates.join(", ")}. Clear those dates on the bed allocation page first.`,
+    `Cannot ${input.action} this bed while ${window} exist on ${dateList}${occupied}. Clear those dates on the bed allocation page first.`,
     409,
   );
 }
@@ -2311,8 +2363,17 @@ export async function countGuestsAwaitingBed(input: {
           },
           select: {
             id: true,
-            stayStart: true,
-            stayEnd: true,
+            // The board builds its awaiting-allocation set from these rows and
+            // nothing else (`buildGuestNightRows`), so this counter must too
+            // (#2628). It used to expand `stayStart`/`stayEnd` instead, which
+            // filled a sparse stay's internal gaps with nights no allocator will
+            // ever place — reporting that guest as awaiting a bed forever, on a
+            // card the board itself does not list. Window-scoped exactly like
+            // `loadBookingRecords`' own night load.
+            nights: {
+              where: { stayDate: { gte: from, lt: to } },
+              select: { stayDate: true },
+            },
           },
         },
       },
@@ -2338,9 +2399,11 @@ export async function countGuestsAwaitingBed(input: {
   const awaitingGuestIds = new Set<string>();
   for (const booking of bookings) {
     for (const guest of booking.guests) {
-      const clamped = clampGuestToRange(guest, { from, to });
-      for (const date of eachDateOnlyInRange(clamped.stayStart, clamped.stayEnd)) {
-        if (!allocatedGuestNights.has(guestNightKey(guest.id, formatDateOnly(date)))) {
+      // `?? []` is the board's rule, stated (#2628): a guest carrying no
+      // `BookingGuestNight` rows has no placeable nights, so the board never
+      // lists them and this card must not count them either.
+      for (const night of getExplicitGuestBedNightKeys(guest) ?? []) {
+        if (!allocatedGuestNights.has(guestNightKey(guest.id, night))) {
           awaitingGuestIds.add(guest.id);
           // One unallocated night makes the guest awaiting; count them once.
           break;

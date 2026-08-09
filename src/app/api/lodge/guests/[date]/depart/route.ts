@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { checkLodgeAuth, getLodgeAuthActorMemberId, kioskLodgeAuthErrorResponse, resolveKioskLodgeId } from "@/lib/lodge-auth";
 import { findLodgeGuestDepartingOnDate } from "@/lib/lodge-date-scoping";
+import { getNextGuestBedNightAfter } from "@/lib/booking-guest-stay-ranges";
 import { parseDateOnly } from "@/lib/date-only";
 import { prisma } from "@/lib/prisma";
 import { z } from "zod";
@@ -20,6 +21,16 @@ const bodySchema = z.object({
  * Mark a guest as departed (sets departedAt timestamp).
  * Sending again toggles off (clears departedAt).
  * Requires tier >= lodge (staying-guest cannot mark departures).
+ *
+ * ONE ATTENDANCE PAIR PER STAY, NOT A LOG (#2628). `departedAt` means "this
+ * person has left and has not come back", not "these are the check-outs that
+ * happened". A sparse stay leaves once per SEGMENT and the endpoint now accepts
+ * every one of them, so the pair is kept honest from the other side: marking the
+ * RETURN arrival clears the superseded departure (see the arrive route), which
+ * is what leaves this toggle free to record the next check-out. Skip the return
+ * arrival and the row still reads "Departed" on the later morning — pressing the
+ * button clears that stale state first and a second press records the real
+ * departure. Nothing is lost, because there was only ever one state to hold.
  */
 export async function PUT(
   req: NextRequest,
@@ -77,11 +88,30 @@ export async function PUT(
 
       // Toggle from the post-lock row, never from the pre-transaction display.
       const departedAt = guest.departedAt ? null : new Date();
+      // THE SWEEP IS BOUNDED BY THE SEGMENT, NOT BY "AFTER TODAY" (#2628).
+      // Checking a guest out clears the suggested chores they can no longer do.
+      // Until this issue the endpoint only ever accepted the morning after the
+      // LAST booked night, so "everything after today" WAS "the rest of this
+      // segment" and the unbounded sweep was correct. It is not correct now: a
+      // guest booked on nights {11, 14} who checks out on the 12th is back on
+      // the 14th, and an unbounded sweep would silently delete the roster
+      // somebody generated for their second segment. Stop at the next night
+      // they hold a bed for; a final departure has none and sweeps everything
+      // after it, exactly as before. CONFIRMED rows are never touched either
+      // way — only a roster nobody has confirmed yet.
+      const nextBookedNight = getNextGuestBedNightAfter(
+        guest,
+        date,
+        guest.booking,
+      );
+      const sweptDates = nextBookedNight
+        ? { gt: date, lt: nextBookedNight }
+        : { gt: date };
       const futureSuggested = departedAt
         ? await tx.choreAssignment.findMany({
             where: {
               bookingGuestId: parsed.data.bookingGuestId,
-              date: { gt: date },
+              date: sweptDates,
               status: "SUGGESTED",
               booking: lodgeNullTolerantScope(lodgeId),
               choreTemplate: lodgeNullTolerantScope(lodgeId),
@@ -99,7 +129,7 @@ export async function PUT(
         await tx.choreAssignment.deleteMany({
           where: {
             bookingGuestId: parsed.data.bookingGuestId,
-            date: { gt: date },
+            date: sweptDates,
             status: "SUGGESTED",
             booking: lodgeNullTolerantScope(lodgeId),
             choreTemplate: lodgeNullTolerantScope(lodgeId),

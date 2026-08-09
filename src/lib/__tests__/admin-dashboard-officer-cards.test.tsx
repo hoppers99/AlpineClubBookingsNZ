@@ -57,8 +57,15 @@ function mockStats() {
   // days needing chores (#2631: the three nights plus the checkout morning,
   // when the beds get stripped and the kitchen shut down); three guests each
   // have an unallocated bed-night in the window → 3 guests awaiting a bed.
+  //
+  // #2628: BOTH helpers expand the canonical `BookingGuestNight` rows, not the
+  // derived stayStart/stayEnd envelope, so every guest below carries the night
+  // rows a real guest has. The envelope stays alongside them because it is what
+  // the Prisma where-clauses select on, and because the two must agree for a
+  // contiguous stay — which is the whole point of writing both out here.
   const today = getTodayDateOnly();
   const plus1 = addDaysDateOnly(today, 1);
+  const plus2 = addDaysDateOnly(today, 2);
   const plus3 = addDaysDateOnly(today, 3);
 
   const rosterBookings = [
@@ -66,16 +73,45 @@ function mockStats() {
       id: "rb1",
       checkIn: today,
       checkOut: plus3,
-      guests: [{ stayStart: today, stayEnd: plus3, ageTier: null, nights: [] }],
+      guests: [
+        {
+          stayStart: today,
+          stayEnd: plus3,
+          ageTier: null,
+          // The three nights the envelope [today, plus3) describes. This used to
+          // be `[]`, which made the count come out right only by falling through
+          // to the legacy envelope branch — the branch a guest with real night
+          // rows never reaches — so the fixture agreed with the assertion while
+          // exercising none of the code the roster card actually runs (#2628).
+          nights: [{ stayDate: today }, { stayDate: plus1 }, { stayDate: plus2 }],
+        },
+      ],
     },
   ];
   const bedBookings = [
+    // One night each (the envelope [today, plus1) is a single night), none of
+    // them allocated below, so all three guests are awaiting a bed.
     {
       id: "bb1",
       guests: [
-        { id: "g1", stayStart: today, stayEnd: plus1 },
-        { id: "g2", stayStart: today, stayEnd: plus1 },
-        { id: "g3", stayStart: today, stayEnd: plus1 },
+        {
+          id: "g1",
+          stayStart: today,
+          stayEnd: plus1,
+          nights: [{ stayDate: today }],
+        },
+        {
+          id: "g2",
+          stayStart: today,
+          stayEnd: plus1,
+          nights: [{ stayDate: today }],
+        },
+        {
+          id: "g3",
+          stayStart: today,
+          stayEnd: plus1,
+          nights: [{ stayDate: today }],
+        },
       ],
     },
   ];

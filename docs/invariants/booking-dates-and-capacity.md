@@ -119,6 +119,79 @@ derivation).
   above (issue #58). The same statement lives beside the code in
   `booking-guest-stay-ranges.ts`. No surface may grow a second call.
 
+### INV-DATE-020
+
+- **One place turns a stay into nights, and its envelope branch is half-open**
+  (#2628). `BookingGuestNight` is the canonical night set;
+  `BookingGuest.stayStart`/`stayEnd` is a DERIVED envelope whose `stayEnd` is the
+  morning after the last night [INV-DATE-012]. They agree for a contiguous stay;
+  for a sparse one the envelope silently fills the internal gaps, so an expander
+  that reads it reports nights the guest is not there. Six sites expanded a stay
+  independently and disagreed. The named helpers in
+  `src/lib/booking-guest-stay-ranges.ts` are now the one definition and every
+  read surface routes at them: `expandStayEnvelopeToNightKeys` (the raw
+  half-open expansion), `getGuestBedNightKeys` (night set when the guest has
+  one, else the envelope — the set form of `isGuestActiveOnNight`, and agreeing
+  with it night for night), `getExplicitGuestBedNightKeys` (explicit rows only,
+  `null` when the guest carries none, for the bed-allocation surfaces that
+  place only listed nights), `getGuestDepartureMorningKeys` /
+  `isGuestDepartureMorning` (one departure per SEGMENT, not one per stay),
+  `getNextGuestBedNightAfter` / `isGuestReturningOnDay` (the bounds anything
+  scoped to ONE segment needs), and `getEarliestCurrentBedNightDate`. Do not
+  write another `eachDateOnlyInRange(guest.stayStart, guest.stayEnd)`;
+  `guest-stay-expansion-census.test.ts` counts them per site, so a second copy
+  inside an already-declared file fails too.
+  **`expandStayEnvelopeToNightKeys` must stay half-open.** Both bed-allocation
+  planners are fed ONE PSEUDO-GUEST PER NIGHT, each carrying
+  `stayStart = night` and `stayEnd = night + 1`; an inclusive expansion gives
+  every one of them a phantom second night and the planner claims the
+  morning-after bed while its occupant is still in it — a double booking, on the
+  automatic path, silently. `bed-allocation.test.ts` →
+  "pseudo-guest envelope (#2628)" is the mutation probe for that and the reason
+  the rule is written here rather than only in a comment. Two deliberate
+  non-callers: the lifecycle's `getGuestNightDatesInRange` reads the explicit
+  night rows and has NO envelope fallback (its output feeds both placement and
+  the prune diff, so a fallback would place rows the next reconcile sweeps), and
+  the planner's `guestStayNights` treats an explicitly EMPTY night list as "no
+  demand" rather than falling back. A guard on whether a bed is still spoken for
+  starts at LAST NIGHT, not today: night N runs to midday NZ on date N+1
+  [INV-DATE-002], so `stayDate >= today` forgets this morning's occupant and
+  lets an admin retire a bed somebody is lying in. That widening is for
+  REFUSALS only — the partner-share sweeps DELETE rows and stay at
+  `stayDate >= today`, because night D-1 is occupancy that has already happened
+  and past lodge nights are history and stay untouched [INV-CAP-010]. A refusal
+  built on this rule states only WHAT blocks, never the whole history: the bed
+  guard names the first few dates and occupants and says "and more", because the
+  delete branch has no date predicate at all and would otherwise put every night
+  a bed has ever held into one error string and into the audit trail.
+
+### INV-DATE-021
+
+- **A guest's kiosk attendance is one CURRENT state per stay, and every rule
+  keyed on "the end of the stay" has to be re-read per segment** (#2628).
+  `BookingGuest.arrivedAt` / `departedAt` is a single pair of timestamps meaning
+  "where is this person now", not a log of check-ins. A stay with a gap in it
+  arrives and leaves once per SEGMENT, so three consequences are load-bearing and
+  none of them may be dropped:
+  - The kiosk's check-in and check-out buttons BOTH ride on server-derived flags
+    (`canMarkArrived`, `canMarkDeparted`) computed where the guest's night rows
+    are loaded, never on a rule re-derived in the page from `isArriving` and
+    `departedAt`. Those two fields cannot see the night set, and the combination
+    they produce on a return night — check-in hidden because a departure is
+    recorded, check-out hidden because the night is not a departure morning —
+    leaves a hut leader with no control at all on a night the guest is in the
+    building.
+  - Marking a RETURN arrival (`isGuestReturningOnDay`, which is false for every
+    day of every contiguous stay) always marks arrived and CLEARS the superseded
+    departure, rather than toggling. That is what keeps the next check-out
+    recordable instead of un-recording the previous one, and it is why "Arrived"
+    and the faded row read `arrivedAt && !departedAt` rather than `arrivedAt`.
+  - The departure chore sweep is bounded by `getNextGuestBedNightAfter`, not by
+    "every date after today". Unbounded was correct only while the endpoint
+    accepted a single, final departure; on a sparse stay it silently deletes the
+    suggested roster generated for a segment the guest is still booked for, and
+    toggling the departure back off restores nothing.
+
 ### INV-DATE-006
 
 - **The lobby wall is deliberately mixed and stays fenced** (issue #58): its
