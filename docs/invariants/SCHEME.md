@@ -200,9 +200,9 @@ item, which breaks the list, re-indents the prose, and forces every line to be
 re-wrapped — precisely the churn that hides a changed word. Where a block is
 uncomfortably large, that is recorded as a candidate for a *later, separate*
 issue, which can split it into new IDs without renumbering anything (§1.4). That
-issue was #2706, which split the ten coarse blocks the restructure left; the two
-splits it declined, because they could not be made without re-wrapping, are named
-in [`_FOLLOW_UPS.md`](_FOLLOW_UPS.md) §1.
+issue was #2706, which split the ten coarse blocks the restructure left; the
+three splits it declined, because they could not be made without re-wrapping, are
+named in [`_FOLLOW_UPS.md`](_FOLLOW_UPS.md) §1.
 
 ### 2.1 Normative versus non-normative
 
@@ -337,15 +337,25 @@ own section below" and "this subsection". Rules, in order:
 3. **Only where (2) is impossible**, append the bracketed ID pointer of edit
    type 2:
 
-   ```
-   before:  - The custodian bed hold uses deliberate inclusive day semantics (its own
-              section below): an assignment's `endDate` is a covered day, not a
-              departure morning.
+   In `additional-payment-chasing.md`, where "rule (b) above" names a rule that
+   now lives in `booking-dates-and-capacity.md`:
 
-   after:   - The custodian bed hold uses deliberate inclusive day semantics (its own
-              section below [INV-LIFE-062]): an assignment's `endDate` is a covered
-              day, not a departure morning.
    ```
+   before:  moves AWAITING_REVIEW → PENDING, which keeps holding via rule (b) above, so an
+            accepted-but-unpaid quote does not lose its bed before payment.
+
+   after:   moves AWAITING_REVIEW → PENDING, which keeps holding via rule (b) above [INV-CAP-004], so an
+            accepted-but-unpaid quote does not lose its bed before payment.
+   ```
+
+   The example this section used to give — the custodian bed hold's "its own
+   section below [INV-LIFE-062]" — is no longer one, and is worth knowing about
+   as a trap. #2706 re-homed `INV-LIFE-062` into the same file as the sentence
+   that points at it, so that case is now governed by rule 1 above and a pointer
+   there would be the edit rule 1 forbids. A re-home can turn a rule-3 pointer
+   into a rule-1 sentence; it does not license removing a pointer already merged
+   (nothing is deleted inside a transcription, §3), but do not add a fresh one
+   without re-checking which file the target is in today.
 
 4. **Every insertion is registered.** The PR body carries a table of
    `reference → inserted pointer`, and nothing else in the diff may add text.
@@ -354,9 +364,10 @@ A reference that names its target by **section title** rather than by position
 needs no pointer: a title resolves through the index whatever file it lives in.
 
 The restructure's own sweep is closed — eight boundary-crossing references were
-found and all eight carry a pointer; see [`_FOLLOW_UPS.md`](_FOLLOW_UPS.md) §8
-for the classes deliberately left unpointered, so a later reader does not repeat
-the sweep.
+found and all eight carry a pointer, though only seven still cross a boundary:
+#2706's re-home of `INV-LIFE-062` brought the eighth target into the same file
+as its sentence. See [`_FOLLOW_UPS.md`](_FOLLOW_UPS.md) §8 for the classes
+deliberately left unpointered, so a later reader does not repeat the sweep.
 
 ---
 
@@ -398,10 +409,13 @@ Both are recorded in [`_FOLLOW_UPS.md`](_FOLLOW_UPS.md) (§5, §6), where they a
 now closed. Re-homing a block later costs nothing and breaks no citation, because
 IDs are location-independent (§1.4).
 
-The two largest files — `membership-lifecycle.md` (65 IDs) and
-`subscription-lockout-pricing.md` (43) — are kept whole. Splitting either would
+The two largest files — `membership-lifecycle.md` (82 IDs) and
+`subscription-lockout-pricing.md` (68) — are kept whole. Splitting either would
 require inventing headings the source does not have and would break internal
-positional pointers; both are named as split candidates in `_FOLLOW_UPS.md`.
+positional pointers. Neither is a filed split candidate:
+[`_FOLLOW_UPS.md`](_FOLLOW_UPS.md) §1 registers over-coarse *blocks*, not
+over-large files, and splitting a file is a decision on the record (§9) rather
+than an outstanding item.
 
 ### 5.2 Size, and why the split exists at all
 

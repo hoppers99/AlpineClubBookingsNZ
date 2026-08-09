@@ -529,7 +529,7 @@ name field submitted alongside the flags ("Admin override edits change dates
 only"), and status eligibility (`canModifyBookingStatusForRole`) plus the
 per-lodge capacity lock still apply. Members and officers-without-`bookings:edit`
 see byte-for-byte unchanged behaviour whether or not the flag is present. An
-override requires an explicit `pricingMode`:
+override requires an explicit `pricingMode` [INV-LOCKOUT-053]:
 
 - **shift** — a pure relocation: the night count is held constant (a provided
   single bound derives the other), every cent is frozen (booking totals,
@@ -774,7 +774,7 @@ above refused.
 
 ### INV-LOCKOUT-053
 
-- **recalculate** — the existing full-reprice machinery with the locked-period
+- **recalculate** [INV-LOCKOUT-037] — the existing full-reprice machinery with the locked-period
   clamps lifted, so locked-night pricing semantics are otherwise preserved
   (a night the guest already bought keeps its stored `BookingGuestNight` price).
 

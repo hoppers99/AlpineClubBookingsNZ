@@ -150,7 +150,7 @@ number and prefix, and it is listed at the end of the table below.
 | `INV-CAP-009` | Automated placement never mixes one booking's minors with another's adult; the manual board warns only |
 | `INV-CAP-010` | A DOUBLE may hold two confirmed partners; breaking that precondition sweeps future shared rows |
 | `INV-CAP-030` | Member merge sweeps only the future shared bed-nights its own validity re-check refuses |
-| `INV-CAP-031` | Placement, planner keys, DB indexes, partner-shared headroom, and auto-promotion of a stranded partner |
+| `INV-CAP-031` | Cancellation and archive need no sweep; placement, planner keys, indexes, headroom, partner auto-promotion |
 | `INV-CAP-011` | Waitlisted and offered bookings hold no capacity until confirmed |
 | `INV-CAP-012` | A waitlist offer reprices at current rates and states what will be paid |
 | `INV-CAP-013` | A member may be present on only one live booking per lodge night |
@@ -411,7 +411,7 @@ Prefix `INV-LOCKOUT`.
 | `INV-LOCKOUT-034` | Config transfer maps the legacy bundle key; unmapped, it would silently drop a real decision |
 | `INV-LOCKOUT-035` | That hook derives only into an absent mode, and runs before the field-validation loop |
 | `INV-LOCKOUT-036` | Reversal is a mode change: no migration, no code change, no already-taken booking repriced |
-| `INV-LOCKOUT-037` | The admin-only date override lifts the edit-window locks: date-only, `shift` mode, per-action notify |
+| `INV-LOCKOUT-037` | The admin-only date override: date-only, per-action notify, `pricingMode` `shift` — `recalculate` is `INV-LOCKOUT-053` |
 | `INV-LOCKOUT-044` | The #1780 sweep extends the per-action notify choice to the remaining admin emails |
 | `INV-LOCKOUT-045` | An account-deletion approval with bookings to cancel claims `APPROVAL_IN_PROGRESS` before cancelling |
 | `INV-LOCKOUT-046` | That claim is taken only when there is something irreversible to protect |
@@ -421,7 +421,7 @@ Prefix `INV-LOCKOUT`.
 | `INV-LOCKOUT-050` | The flavour of `PENDING` a rejection was authorised against travels into the guarded claim |
 | `INV-LOCKOUT-051` | The release and its audit record commit together, under that row's own lock |
 | `INV-LOCKOUT-052` | A decision that loses its guard to a release is reported as exactly that |
-| `INV-LOCKOUT-053` | `recalculate` — a full reprice with the locked-period clamps lifted, locked nights preserved |
+| `INV-LOCKOUT-053` | The override's other `pricingMode` (`INV-LOCKOUT-037`): `recalculate` reprices in full, clamps lifted |
 | `INV-LOCKOUT-038` | Under an override an over-capacity target is warn-and-confirm, recorded and audited |
 | `INV-LOCKOUT-039` | Per-booking "No emails" withholds everything about that booking, enforced at the mailer |
 | `INV-LOCKOUT-054` | Authenticated booking links follow the booking-detail read gate |
@@ -549,7 +549,7 @@ Prefix `INV-PRIV`.
 ## Membership Lifecycle
 
 How a membership starts, changes and ends; who may act for whom inside a family;
-roles, age tiers, inductions, custodian bed holds and member merge.
+roles, age tiers, inductions and member merge.
 File:
 [`invariants/membership-lifecycle.md`](invariants/membership-lifecycle.md).
 Prefix `INV-LIFE`, with one exception: `INV-LIFE-062`, the custodian bed hold,

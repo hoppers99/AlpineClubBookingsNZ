@@ -5,8 +5,8 @@ Audience: Developer, Agent.
 Prefix defined in this file: **`INV-LIFE`** — membership applications and
 nomination, cancellation, archive and deletion, access roles and the admin
 lock-out guards, seasonal membership type and age tier, family groups, partner
-and parent/dependant links, email inheritance, inductions, custodian bed holds,
-and member profile merge.
+and parent/dependant links, email inheritance, inductions, and member profile
+merge.
 
 One `INV-LIFE` rule does not live here: `INV-LIFE-062`, the custodian bed hold,
 was re-homed to
@@ -928,7 +928,8 @@ apply to every non-login member whatever their age.
 
 ## INV-LIFE-037
 
-The four powers over a non-login member, and how #2284 settled each:
+The four powers over a non-login member, and how #2284 settled each
+[INV-LIFE-074, INV-LIFE-075, INV-LIFE-076]:
 
 - **Requesting cancellation of their membership (S1, owner decision: flag, not a
   second signature).** A non-login member is written already-confirmed on a

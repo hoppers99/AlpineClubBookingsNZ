@@ -1171,10 +1171,26 @@ sight removes an explanation nothing else gives:
   heads.** The banner states the section's own scope once at the top; a Notice
   further down carries a DIFFERENT permission's reason for a subset of the
   controls, so the two are not the same statement and the Notice is not
-  redundant. `fees/_components/hut-fees-section.tsx` (finance inside a lodge
-  section) and `subscription-lockout-settings-panel.tsx` (finance-scoped account
-  and item codes inside a membership section) both do this deliberately, and
-  both render banner AND Notice AND gated buttons.
+  redundant. `backups/backups-client.tsx` is the clearest example — a
+  support-scoped banner heads the page, and the Credentials card carries a
+  Full-Admin-scoped Notice ("Only a Full Admin can set backup credentials") for
+  the fields only a Full Admin may write — and
+  `subscription-lockout-settings-panel.tsx` does the same with a finance-scoped
+  Notice over the subscription account and item codes inside a
+  membership-scoped section. Both render banner AND Notice AND gated buttons at
+  once.
+
+**Having both components in one file does not make it the third case.**
+`fees/_components/hut-fees-section.tsx` is the example to keep straight: its
+banner and its Notice are MUTUALLY EXCLUSIVE by construction
+(`{!forbidden && viewOnlyBanner}` against
+`{forbidden && <AdminViewOnlyNotice canEdit={false}>}`), the Notice is the
+stronger *you cannot even read this section* statement, and the `forbidden`
+branch renders no controls at all — so it is the FIRST case, in a branch, not a
+narrower scope nested under a banner. The file's own comment says showing both
+"would contradict itself". The test to apply is not "does this file have both
+components?" but "can both appear at the same time, naming different
+permissions?".
 
 So "a section with gated controls replaces its Notice with the banner" holds
 only for a Notice covering the SAME scope. Before deleting a Notice from a

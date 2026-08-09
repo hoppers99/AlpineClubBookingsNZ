@@ -46,7 +46,7 @@ heading.
 | ID | ≈lines | Why it is coarse |
 | --- | ---: | --- |
 | `INV-PAY-001` | 254 | Manual mark-paid: provenance, three invoice fences, the reciprocal inbound fence, duplicate-capture, cancellation, reversal, the #2397 uncollected-extra contract and the generalised ledger mirror — each independently normative |
-| `INV-LOCKOUT-037` | 231 | Starts as the admin date override and its two pricing modes, then absorbs the whole per-action `notifyMember` regime and the entire account-deletion approve/reject/release protocol |
+| `INV-LOCKOUT-037` | 231 | Starts as the admin date override and its two pricing modes — split so that `INV-LOCKOUT-037` keeps `shift` and `recalculate` becomes `INV-LOCKOUT-053` — then absorbs the whole per-action `notifyMember` regime and the entire account-deletion approve/reject/release protocol |
 | `INV-LOCKOUT-039` | 225 | The per-booking "No emails" switch: mailer enforcement, the booking-link authority gate, waitlist interaction, Xero invoice email, the acknowledgement dialog, the withheld-list banner and the prompt-suppression contract |
 | `INV-EXCEPT-001` / `-002` / `-003` | 117 / 39 / 217 | Three ids for the whole policy-exception feature (≈373 lines): request store, reservation, approval, execution, capacity recheck, member surfaces and officer decision |
 | `INV-LIFE-037` | 179 | The four powers over a non-login member, plus the `FamilyGroupMember.role` column-drop narrative (see §6) |
@@ -61,9 +61,9 @@ part that keeps the original meaning keeps the id and the new parts take fresh
 numbers, so no existing citation moves. It just must not happen inside a
 transcription.
 
-**Two splits were declined, and both are recorded here rather than left to be
-rediscovered.** Inside `INV-PAY-046` the #2397 uncollected-extra contract and
-inside `INV-PAY-047` the generalised ledger mirror are each a single unbroken
+**Three splits were declined, and all three are recorded here rather than left
+to be rediscovered.** Inside `INV-PAY-046` the #2397 uncollected-extra contract
+and inside `INV-PAY-047` the generalised ledger mirror are each a single unbroken
 paragraph, so every sentence boundary inside them falls mid-line. Splitting
 either would mean re-wrapping the prose, which is exactly how a word changes
 unnoticed, so both stay whole at 97 and 55 lines. The same is true of the point
@@ -71,6 +71,21 @@ where `INV-LOCKOUT-037` stops being about the date override and starts being
 about the `notifyMember` regime: that sentence begins mid-line, so the first
 clean boundary is the #1780 sweep (`INV-LOCKOUT-044`) and the earlier
 `notifyMember` rules stay under `INV-LOCKOUT-037`.
+
+**One consequence of that third boundary is worth stating, because the ids do
+not show it.** The `pricingMode` enumeration is two top-level bullets, and the
+source put all of the `notifyMember` and account-deletion prose *inside* the
+first one as indented continuation — so `- **recalculate**` sits about 240 lines
+below `- **shift**`, with `INV-LOCKOUT-044` to `INV-LOCKOUT-052` between them.
+Splitting on the clean boundaries therefore left `INV-LOCKOUT-037` holding the
+lead-in and `shift`, and made `recalculate` `INV-LOCKOUT-053`. Moving the
+`recalculate` bullet up to close the gap was rejected: it would reorder text the
+source itself ordered that way and strand `INV-LOCKOUT-044`'s "this same
+per-action choice" from its antecedent. Instead the enumeration is kept
+navigable from both ends — the lead-in carries ` [INV-LOCKOUT-053]` and the
+`recalculate` bullet carries ` [INV-LOCKOUT-037]`, and both index rows name
+`pricingMode` and the sibling id — so a reader cannot land on one mode and take
+it for the only one.
 
 ## 2. A citation to an identifier that is defined nowhere in `docs/` — closed by #2707
 
@@ -82,8 +97,19 @@ as a comment token in `src/lib/booking-cancel.ts` and two test files.
 The rule it named turned out to have a real home, and it is `INV-PAY-018` itself:
 the very sentence carrying the dangling citation states the refundable-base
 formula and the exclusion. So the identifier went rather than being re-pointed
-(a rule does not cite itself), and the surviving code and test tokens now name
-`INV-PAY-018`, which `npm run docs:indexcheck` can resolve.
+(a rule does not cite itself), and the two tokens that CITED it as a rule — the
+comment in `src/lib/booking-cancel.ts` and the one in
+`src/lib/__tests__/booking-cancel.test.ts` — now name `INV-PAY-018`, which
+`npm run docs:indexcheck` can resolve.
+
+**`FEE-0x` still appears, deliberately, in one file.**
+`src/lib/__tests__/phase8a-change-fee.test.ts` keeps its `FEE-01` / `FEE-02` /
+`FEE-03` section banners and describe title, because there they are the Phase 8a
+change-fee spec's own acceptance-criterion numbers and the file is organised to
+read against that spec. A comment at the `FEE-03` section says so and names
+`INV-PAY-018` as the documented rule to cite instead. So a `FEE-03` grep still
+finds tokens: what went is the identifier's use as a *rule citation*, not the
+string.
 
 ## 3. A navigation pointer that points the wrong way — closed by #2707
 
@@ -227,6 +253,13 @@ Every `##`/`###` file was swept for `above`, `below`, `earlier`, `preceding`,
 boundary-crossing references were found and all eight now carry a pointer; the
 complete register is in the pull request body and reproduced nowhere else, so
 that the PR carries the exhaustive list of edits made to transcribed text.
+
+Seven of the eight still cross a file boundary. The exception is the custodian
+bed hold's "its own section below [INV-LIFE-062]", whose target #2706 re-homed
+into the very file the sentence sits in (§6), so that pointer now names a rule
+one screen away. It stays: a merged pointer is not deleted to tidy it up, and it
+still resolves to the right rule. `SCHEME.md` §4.2 records the same fact, because
+the example it taught the convention with was that one.
 
 Two classes were deliberately left unpointered, both per the scheme:
 
