@@ -40,6 +40,9 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
   canRespondForTarget: vi.fn(),
+  // Part of the resolver contract but only consulted when an answer actually
+  // lands, so every case here leaves it unused — asserted below.
+  resolveNotificationRecipients: vi.fn(),
 }));
 
 // The service is reached through its injected `db` and `delegateResolver`
@@ -116,7 +119,10 @@ function respond(
     actorMemberId,
     action,
     db,
-    delegateResolver: { canRespondForTarget: mocks.canRespondForTarget },
+    delegateResolver: {
+      canRespondForTarget: mocks.canRespondForTarget,
+      resolveNotificationRecipients: mocks.resolveNotificationRecipients,
+    },
   });
 }
 
@@ -148,8 +154,12 @@ describe("respondToMemberGuestConsent — soft-deleted booking (#2700)", () => {
       expect(err.message).toBe(DELETED_BOOKING_MESSAGE);
       // Nothing recorded: the refusal lands before the transaction is opened at
       // all, so there is no claim, no bed reconcile, no hosting-queue drain and
-      // no email to the booking's owner.
+      // no email to the booking's owner. The recipient resolver is the thing
+      // the owner-notification path would consult, so its never having been
+      // called is the closest direct evidence a unit test can offer that no
+      // email was addressed.
       expect(db.$transaction).not.toHaveBeenCalled();
+      expect(mocks.resolveNotificationRecipients).not.toHaveBeenCalled();
     },
   );
 

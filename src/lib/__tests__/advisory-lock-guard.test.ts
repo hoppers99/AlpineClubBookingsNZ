@@ -145,6 +145,19 @@ const GLOBAL_BOOKING_MONEY_LOCK_INVENTORY: Record<string, number> = {
   "src/lib/cron-group-settlement-reaper.ts": 2,
   "src/lib/cron-quote-expiry-reminders.ts": 2,
   "src/lib/cron-waitlist.ts": 1,
+  // #2700: raising the OPEN ManualRefundTask for a modification payment
+  // captured against an already-deleted booking. A SETTLEMENT-MONEY writer, so
+  // it joins the global cohort — and specifically the same cohort
+  // `booking-cancel.ts` is already in when IT creates a ManualRefundTask, which
+  // is why this reuses lock(1) rather than minting a keyspace. The key is
+  // needed because the write is a find-then-create (idempotent on the payment
+  // INTENT, not the booking), which is not atomic on its own: two simultaneous
+  // confirms of one capture would otherwise raise two OPEN tasks, and two
+  // operators would refund one payment twice. It takes lock(1) and NOTHING
+  // else, holds it for two statements, touches no capacity or member-credit
+  // tier, and every Stripe call is made by the caller outside this
+  // transaction — so it composes with nothing and reverses no order.
+  "src/lib/deleted-booking-modification-payment.ts": 1,
   "src/lib/group-cancel.ts": 3,
   "src/lib/group-settlement.ts": 6,
   "src/lib/internet-banking-payment-cron.ts": 1,
