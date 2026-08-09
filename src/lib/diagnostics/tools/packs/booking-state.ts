@@ -16,11 +16,16 @@
  * adult-member hosting rule both read live `Member` rows and season subscription
  * facts), which is exactly the combination the epic says requires every relevant
  * area. A Booking Officer without `membership:view` is denied it and told which area
- * is missing; they can still use every other booking entry in the pack, which needs
- * `bookings:view` alone. `booking_capacity_by_night` needs `bookings:view` only —
- * capacity and bed allocation are governed by the `bookings` area, which is what
- * `/admin/bed-allocation` and `/api/admin/bed-allocation` resolve to in the route
- * matrix. `member_eligibility_state` needs `membership:view` only.
+ * is missing. AID-6B permission split: 7 booking-only, 6 membership-only, 3
+ * combined. The seven booking-only entries remain available.
+ *
+ * `booking_bed_allocation_state` is combined: it requires `bookings:view` and
+ * `membership:view` because its double-bed verdict reads live membership and
+ * partner-link facts for both occupants. Without membership access it is withheld
+ * and, if named anyway, denied before any member or partner-link row is read.
+ * `booking_capacity_by_night` needs `bookings:view` only. The admin allocation route
+ * itself is bookings-scoped, but this diagnostic allocation classifier crosses into
+ * membership evidence. `member_eligibility_state` needs `membership:view` only.
  *
  * NEITHER REQUIRES `support:view`, which is #2376's owner decision and its first two
  * acceptance criteria. An argument can never move an entry between permission sets:

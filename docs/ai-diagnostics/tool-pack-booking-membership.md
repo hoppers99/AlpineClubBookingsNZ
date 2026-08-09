@@ -63,9 +63,9 @@ writes a row other than its own audit record.
 
 `bookings:view` is the area that already governs Admin > Bookings, the waitlist
 and Admin > Bed Allocation. `membership:view` is the area that already governs
-Admin > Members and Admin > Family Groups. **Thirteen of the sixteen entries
-require exactly one of those two areas and nothing else** — seven on `bookings`,
-six on `membership`.
+Admin > Members and Admin > Family Groups. **AID-6B permission split: 7
+booking-only, 6 membership-only, 3 combined.** Thirteen of the sixteen entries
+require exactly one of those two areas and nothing else.
 
 **No entry in this pack requires `support:view`.** That is #2376's owner decision
 and its first two acceptance criteria, and it is the same rule AID-6C states:
@@ -85,7 +85,7 @@ tool that spans two domains rather than a judgement call:
   exception queue) with membership facts — the paid-up-adult requirement and the
   adult-member hosting rule both read live `Member` rows and season subscription
   state.
-- **`booking_bed_allocation_state` requires `bookings:view` AND
+- **`booking_bed_allocation_state` is combined: it requires `bookings:view` and
   `membership:view`.** The allocation rows belong to the selected booking, but
   double-bed eligibility reads both occupants' live membership state and partner
   link. The other occupant can belong to another booking. Their member, guest and
@@ -1152,7 +1152,7 @@ ceilings, and the audit row.
 | --- | --- | --- |
 | Every booking and membership tool fails; readiness says `under_provisioned` | **This release added thirteen relation grants and widened `Member`, and provisioning has not been re-run** | Run `npm run diagnostics:provision-role`, then re-check readiness |
 | A Booking Officer is told no diagnostics tool is available | Their access role has `bookings` but the module or the diagnostics credential is not set up | `diagnostics.readiness` (needs `support:view`) reports the blocker |
-| `booking_block_state` is refused but the other booking tools work | The caller lacks `membership:view` | The denial names the missing area; `booking_capacity_by_night` and the per-booking entries still answer |
+| `booking_block_state` is refused while booking summary and capacity still work | The caller lacks `membership:view` | The denial names the missing area. The seven bookings-only entries continue; `booking_bed_allocation_state` is combined too, so it is withheld and denied without membership access |
 | `booking_bed_allocation_state` is refused while booking summary works | The sharing verdict needs live facts about both occupants, and the caller lacks `membership:view` | The denial names the missing area; no member or partner-link row was queried |
 | `member_booking_summary` is refused but the other membership tools work | The caller lacks `bookings:view` | Same — it is the only membership entry that also reads bookings |
 | A search returns several rows for one booking reference | A booking reference is the first eight characters of a cuid and is not unique | Pick the booking by its lodge, nights and party size, then use the exact booking id |

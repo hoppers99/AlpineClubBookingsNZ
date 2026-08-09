@@ -342,6 +342,19 @@ describe("AID-6B booking/membership pack: permissions (#2376)", () => {
     const summary = `AID-6B permission split: ${counts.bookingOnly} booking-only, ${counts.membershipOnly} membership-only, ${counts.combined} combined.`;
     const allocation =
       "booking_bed_allocation_state is combined: it requires bookings:view and membership:view";
+    const stateOverview = normalizedContractSource(
+      "src",
+      "lib",
+      "diagnostics",
+      "tools",
+      "packs",
+      "booking-state.ts",
+    );
+    const packGuide = normalizedContractSource(
+      "docs",
+      "ai-diagnostics",
+      "tool-pack-booking-membership.md",
+    );
     const sources = [
       [
         "ADR-002",
@@ -358,10 +371,29 @@ describe("AID-6B booking/membership pack: permissions (#2376)", () => {
         "registry overview",
         normalizedContractSource("src", "lib", "diagnostics", "tools", "registry.ts"),
       ],
+      ["booking-state overview", stateOverview],
+      ["booking/membership pack guide", packGuide],
     ] as const;
     for (const [name, source] of sources) {
       expect(source, `${name} permission summary`).toContain(summary);
       expect(source, `${name} allocation classification`).toContain(allocation);
+    }
+
+    for (const [name, source, staleClaim] of [
+      ["booking-state overview", stateOverview, "every other booking entry in the pack"],
+      [
+        "booking-state overview",
+        stateOverview,
+        "capacity and bed allocation are governed by the bookings area",
+      ],
+      ["booking/membership pack guide", packGuide, "the other booking tools work"],
+      [
+        "booking/membership pack guide",
+        packGuide,
+        "the per-booking entries still answer",
+      ],
+    ] as const) {
+      expect(source, `${name} retained stale broad claim`).not.toContain(staleClaim);
     }
   });
 
