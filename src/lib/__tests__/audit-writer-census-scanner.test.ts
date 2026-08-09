@@ -1,0 +1,259 @@
+/**
+ * The audit-writer census SCANNER, exercised against synthetic trees (#2581).
+ *
+ * WHY THIS FILE EXISTS SEPARATELY from `audit-writer-census.test.ts`. That file
+ * is the CONTRACT: it scans the real repository and compares the answer against
+ * the reviewed manifest. It can only ever prove things about writers that exist.
+ * It cannot prove the walk would NOTICE a writer that does not exist yet — and
+ * that is the whole claim #2581's documentation makes to operators ("a new one
+ * can no longer forget").
+ *
+ * A review of this branch tested that claim by running the shipped scanner over
+ * a synthetic tree and got a CLEAN report for six different writers that each
+ * produce a real, unreadable, kept-forever audit row. Every one of those six is
+ * a fixture below. They are the reason the scanner grew delegate-alias
+ * tracking, element-access handling, raw-SQL detection, whole-array
+ * `createMany` resolution, a schema-qualified table pattern, and a NULL check on
+ * the category column.
+ *
+ * WHAT EACH TEST WOULD CATCH: reverting any one of those six changes turns its
+ * fixture from "reported" back to "invisible", and only this file notices —
+ * the real-tree contract stays green either way, because the real tree contains
+ * none of these shapes. That is precisely the false assurance this file removes.
+ *
+ * The last test states the opposite direction, and it matters just as much: a
+ * scanner that flagged the Diagnostics packs' raw `SELECT … FROM "AuditLog"`
+ * reads would be turned off within a week.
+ */
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
+import { afterEach, describe, expect, it } from "vitest";
+
+import {
+  describeCategory,
+  scanAuditWriterCensus,
+} from "../../../scripts/audit/audit-writer-census";
+
+const roots: string[] = [];
+
+afterEach(() => {
+  while (roots.length) {
+    const root = roots.pop();
+    if (root) rmSync(root, { recursive: true, force: true });
+  }
+});
+
+/**
+ * A minimal repository: the three roots the census walks, plus whichever files
+ * the fixture needs. Anything not written stays empty, so a fixture's report
+ * contains only what the fixture put there.
+ */
+function tree(files: Record<string, string>) {
+  const root = mkdtempSync(join(tmpdir(), "audit-census-"));
+  roots.push(root);
+  for (const dir of ["src", "scripts", "prisma"]) {
+    mkdirSync(join(root, dir), { recursive: true });
+  }
+  for (const [path, contents] of Object.entries(files)) {
+    const full = join(root, path);
+    mkdirSync(join(full, ".."), { recursive: true });
+    writeFileSync(full, contents, "utf8");
+  }
+  return scanAuditWriterCensus(root);
+}
+
+function report(census: ReturnType<typeof scanAuditWriterCensus>) {
+  return [...census.sites, ...census.nonProducingDml].map((site) => ({
+    sink: site.sink,
+    category: describeCategory(site.category),
+  }));
+}
+
+describe("audit writer census scanner: the bypasses a review demonstrated (#2581)", () => {
+  it("counts a delegate parked in a local (`const log = tx.auditLog`)", () => {
+    // Bypass 1. The receiver is `log`, not `<something>.auditLog`, so the
+    // property-access check alone saw nothing at all.
+    const census = tree({
+      "src/lane.ts": `
+        export async function write(tx: any) {
+          const log = tx.auditLog;
+          await log.create({ data: { action: "aliased.write" } });
+        }
+      `,
+    });
+
+    expect(report(census)).toEqual([
+      { sink: "auditLog.create", category: "(absent)" },
+    ]);
+    expect(census.uncategorised).toHaveLength(1);
+  });
+
+  it("counts a delegate renamed out of a destructure (`const { auditLog: log } = tx`)", () => {
+    const census = tree({
+      "src/lane.ts": `
+        export async function write(tx: any) {
+          const { auditLog: log } = tx;
+          await log.create({ data: { action: "renamed.write" } });
+        }
+      `,
+    });
+
+    expect(report(census)).toEqual([
+      { sink: "auditLog.create", category: "(absent)" },
+    ]);
+  });
+
+  it("counts a delegate reached by element access (`tx[\"auditLog\"]`)", () => {
+    // Bypass 2.
+    const census = tree({
+      "src/lane.ts": `
+        export async function write(tx: any) {
+          await tx["auditLog"].create({ data: { action: "bracket.write" } });
+        }
+      `,
+    });
+
+    expect(report(census)).toEqual([
+      { sink: "auditLog.create", category: "(absent)" },
+    ]);
+  });
+
+  it("counts raw SQL DML from TypeScript, which the migration walk never sees", () => {
+    // Bypass 3, in both the forms Prisma offers: a tagged template and an
+    // `Unsafe` string argument. The migration arm only walks `prisma/**/*.sql`,
+    // so before this a route could INSERT audit rows and the census reported the
+    // tree clean.
+    const census = tree({
+      "src/lane.ts": `
+        export async function write(prisma: any) {
+          await prisma.$executeRawUnsafe(
+            'INSERT INTO "AuditLog" ("id", "action") VALUES ($1, $2)',
+          );
+          await prisma.$executeRaw\`DELETE FROM "AuditLog" WHERE "id" = \${1}\`;
+        }
+      `,
+    });
+
+    expect(report(census)).toEqual([
+      { sink: "raw.$executeRawUnsafe", category: "(absent)" },
+      { sink: "raw.$executeRaw", category: "(absent)" },
+    ]);
+    // The INSERT produces rows, so it lands in the uncategorised gate; the
+    // DELETE mutates existing evidence, so it lands in the approved-DML gate.
+    // Both fail closed — neither can be added to the tree without a declaration.
+    expect(census.uncategorised).toHaveLength(1);
+    expect(census.uncategorised[0].sink).toBe("raw.$executeRawUnsafe");
+    expect(census.nonProducingDml).toHaveLength(1);
+    expect(census.nonProducingDml[0].sink).toBe("raw.$executeRaw");
+  });
+
+  it("reads EVERY element of a createMany array, not just the first", () => {
+    // Bypass 4. A categorised first element used to vouch for every row after
+    // it, which is the most easily-written of the six.
+    const census = tree({
+      "src/lane.ts": `
+        export async function write(prisma: any) {
+          await prisma.auditLog.createMany({
+            data: [
+              { action: "bulk.first", category: "admin" },
+              { action: "bulk.second" },
+            ],
+          });
+        }
+      `,
+    });
+
+    expect(report(census)).toEqual([
+      { sink: "auditLog.createMany", category: "(absent)" },
+    ]);
+  });
+
+  it("reports a createMany whose elements disagree as a conditional, not a literal", () => {
+    // The same walk, one step weaker: every row IS categorised, but the site
+    // writes into two different permission gates, which is the shape the owner's
+    // domain rule refuses. It must not read as a single literal.
+    const census = tree({
+      "src/lane.ts": `
+        export async function write(prisma: any) {
+          await prisma.auditLog.createMany({
+            data: [
+              { action: "bulk.first", category: "admin" },
+              { action: "bulk.second", category: "lodge" },
+            ],
+          });
+        }
+      `,
+    });
+
+    expect(report(census)).toEqual([
+      { sink: "auditLog.createMany", category: "conditional:admin|lodge" },
+    ]);
+  });
+
+  it("matches a schema-qualified migration INSERT", () => {
+    // Bypass 5. Postgres executes `"public"."AuditLog"` identically; the
+    // unqualified pattern did not match it at all.
+    const census = tree({
+      "prisma/migrations/20260101000000_x/migration.sql": `
+        INSERT INTO "public"."AuditLog" ("id", "action") VALUES ('a', 'b');
+      `,
+    });
+
+    expect(census.sqlStatements).toHaveLength(1);
+    expect(census.sqlStatements[0].producesRow).toBe(true);
+    expect(census.sqlStatements[0].namesCategory).toBe(false);
+  });
+
+  it("refuses a migration INSERT that names \"category\" and then supplies NULL", () => {
+    // Bypass 6. Naming the column was the whole check, so this passed while
+    // writing exactly the row the check exists to refuse.
+    const census = tree({
+      "prisma/migrations/20260101000000_x/migration.sql": `
+        INSERT INTO "AuditLog" ("id", "action", "category")
+        VALUES ('a', 'b', 'admin'), ('c', 'd', NULL);
+      `,
+    });
+
+    expect(census.sqlStatements[0].namesCategory).toBe(false);
+  });
+
+  it("accepts a migration INSERT that supplies a real category, in either source form", () => {
+    // The other direction, so the NULL check cannot be satisfied by refusing
+    // everything. The SELECT form is the one the committed email-override
+    // migration uses, brackets and all.
+    const census = tree({
+      "prisma/migrations/20260101000000_values/migration.sql": `
+        INSERT INTO "AuditLog" ("id", "action", "category")
+        VALUES (gen_random_uuid()::text, 'x', 'admin');
+      `,
+      "prisma/migrations/20260101000001_select/migration.sql": `
+        INSERT INTO "AuditLog" ("id", "action", "category")
+        SELECT gen_random_uuid()::text, changed."name", 'admin' FROM changed;
+      `,
+    });
+
+    expect(census.sqlStatements.map((s) => s.namesCategory)).toEqual([
+      true,
+      true,
+    ]);
+  });
+
+  it("leaves raw SELECTs against AuditLog alone, so the Diagnostics packs stay quiet", () => {
+    // The inverse claim, and the one that decides whether the gate survives
+    // contact with the codebase: the correlation packs read the table with
+    // `$queryRaw`, and a census that flagged reads as writes would be disabled.
+    // `"AuditLogArchive"` is a different table and must not match either.
+    const census = tree({
+      "src/lane.ts": `
+        export async function read(prisma: any) {
+          await prisma.$queryRaw\`SELECT "id" FROM "AuditLog" WHERE "category" = ANY(\${[]})\`;
+          await prisma.$executeRaw\`INSERT INTO "AuditLogArchive" ("id") VALUES ('a')\`;
+        }
+      `,
+    });
+
+    expect(report(census)).toEqual([]);
+  });
+});

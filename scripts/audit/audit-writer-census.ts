@@ -51,6 +51,32 @@
  * row-producing and its column list is checked for `"category"`; `UPDATE` and
  * `DELETE` cannot carry one and are recorded as mutations of existing evidence.
  *
+ * SIX MEASURED BYPASSES WERE CLOSED IN #2581's REVIEW, because "the census sees
+ * every writer" was asserted in the docs before it was true. A reviewer ran this
+ * scanner against a synthetic tree and got a clean report for each of these;
+ * `audit-writer-census-scanner.test.ts` now runs the same fixtures on every CI
+ * run, so a regression in the walk fails by name rather than by silence:
+ *
+ *  1. `const log = tx.auditLog; log.create(…)` — a delegate parked in a local.
+ *  2. `tx["auditLog"].create(…)` — the same delegate reached by element access.
+ *  3. `prisma.$executeRawUnsafe('INSERT INTO "AuditLog" …')` — raw SQL from
+ *     TypeScript, which the `prisma/**​/*.sql` arm never walks.
+ *  4. `createMany({ data: [ {category}, {no category} ] })` — only the FIRST
+ *     element used to be read, so a categorised first row hid the rest.
+ *  5. `INSERT INTO "public"."AuditLog"` — a schema qualifier used to defeat the
+ *     migration regex, and (6) an INSERT naming `"category"` while supplying
+ *     `NULL` for it passed the column-list check while writing the very row the
+ *     check exists to prevent.
+ *
+ * WHAT IS STILL NOT COVERED, stated because the alternative is another false
+ * completeness claim: a delegate reached through a helper's return value
+ * (`clientFor(tx).auditLog.create(…)`), an alias assigned outside a variable
+ * declaration (`let log; log = tx.auditLog`), raw SQL assembled from fragments
+ * at runtime so no single expression contains the DML keyword and the table
+ * name, and an `INSERT … SELECT` whose category expression is computed rather
+ * than literal. Those are the reason the TYPE and the RUNTIME assertion in
+ * `src/lib/audit.ts` are the primary defences and this census is the backstop.
+ *
  * Run it: `npm run audit:census` prints a deterministic TSV of every site.
  */
 import { readdirSync, readFileSync } from "node:fs";
@@ -87,7 +113,28 @@ const NON_PRODUCING_DML = new Set([
   "deleteMany",
 ]);
 
-export type AuditWriteSink = AuditHelperSink | `auditLog.${string}`;
+/**
+ * Prisma's raw-SQL escape hatches. They reach the table without touching the
+ * `auditLog` delegate, so no amount of delegate tracking sees them, and the
+ * `prisma/**​/*.sql` arm never walks TypeScript. A template or argument whose
+ * text performs DML against `"AuditLog"` is counted as a site here.
+ *
+ * READS are deliberately not counted: the Diagnostics correlation packs select
+ * from `"AuditLog"` with `$queryRaw`, and a census that flagged those would be
+ * noise. Only `INSERT`/`UPDATE`/`DELETE` against the table qualifies, which is
+ * the same predicate the migration arm uses.
+ */
+const RAW_SQL_METHODS = new Set([
+  "$executeRaw",
+  "$executeRawUnsafe",
+  "$queryRaw",
+  "$queryRawUnsafe",
+]);
+
+export type AuditWriteSink =
+  | AuditHelperSink
+  | `auditLog.${string}`
+  | `raw.${string}`;
 
 /**
  * What the call site says about the row's category.
@@ -299,13 +346,20 @@ function findTopLevelProperty(
 }
 
 /**
- * The event/params object a write site passes, unwrapped through the structured
+ * The event/params objects a write site passes, unwrapped through the structured
  * argument builder and through a Prisma `{ data: … }` envelope. Returns null
  * when the payload is not an inline literal — the `forwarded` case.
+ *
+ * PLURAL because of `createMany({ data: [ …, … ] })`: one syntactic site, one
+ * row PER ELEMENT. This used to read `elements[0]` only, which a reviewer
+ * demonstrated is a bypass — a first element carrying `category: "admin"` made
+ * the site read as categorised while every element after it wrote a row no
+ * reader can filter for. Every element is resolved now, and the combination
+ * rule below takes the weakest answer.
  */
-function resolveEventObject(
+function resolveEventObjects(
   argument: ts.Expression | undefined,
-): ts.ObjectLiteralExpression | null {
+): ts.ObjectLiteralExpression[] | null {
   if (!argument) return null;
   const inner = unwrap(argument);
 
@@ -313,9 +367,9 @@ function resolveEventObject(
     // A Prisma create envelope: `{ data: { … } }`.
     const data = findTopLevelProperty(resolveObjectLiteral(inner), "data");
     if (data?.kind === "assignment") {
-      return resolveEventObject(data.value);
+      return resolveEventObjects(data.value);
     }
-    return inner;
+    return [inner];
   }
 
   if (ts.isCallExpression(inner)) {
@@ -326,30 +380,70 @@ function resolveEventObject(
         ? callee.name.text
         : null;
     if (name === STRUCTURED_ARG_BUILDER) {
-      return resolveEventObject(inner.arguments[0]);
+      return resolveEventObjects(inner.arguments[0]);
     }
     return null;
   }
 
   if (ts.isArrayLiteralExpression(inner)) {
-    // `createMany({ data: [ … ] })`. One row-producing site; take the first
-    // element so its category is still read, and the caller's `forwarded`
-    // fallback covers a heterogeneous array.
-    const [first] = inner.elements;
-    return first ? resolveEventObject(first) : null;
+    const resolved: ts.ObjectLiteralExpression[] = [];
+    for (const element of inner.elements) {
+      const objects = resolveEventObjects(element);
+      // Fail closed: one unreadable element makes the whole site `forwarded`,
+      // which has to be declared, rather than letting its readable siblings
+      // vouch for it.
+      if (!objects) return null;
+      resolved.push(...objects);
+    }
+    return resolved.length ? resolved : null;
   }
 
   return null;
 }
 
-function resolveCategory(
-  event: ResolvedObject | null,
+/**
+ * The category evidence for a whole site, across every row it writes.
+ *
+ * The weakest element decides, in this order: an element with no category makes
+ * the SITE uncategorised (it writes an unreadable row); then an element whose
+ * category is decided elsewhere makes it forwarded; then two or more distinct
+ * literals make it conditional, which is the shape the owner's domain rule
+ * refuses. A single-element site — every site in the tree today — resolves
+ * exactly as it did before.
+ */
+function combineCategory(
+  events: readonly ResolvedObject[] | null,
   fallbackExpression: string,
 ): AuditCategoryEvidence {
-  if (!event) {
+  if (!events || events.length === 0) {
     return { kind: "forwarded", expression: fallbackExpression };
   }
 
+  const each = events.map((event) => resolveCategory(event));
+  if (each.length === 1) return each[0];
+
+  const absent = each.find((evidence) => evidence.kind === "absent");
+  if (absent) return absent;
+  const forwarded = each.find((evidence) => evidence.kind === "forwarded");
+  if (forwarded) return forwarded;
+
+  const values = [
+    ...new Set(
+      each.flatMap((evidence) =>
+        evidence.kind === "literal"
+          ? [evidence.value]
+          : evidence.kind === "conditional"
+            ? [...evidence.values]
+            : [],
+      ),
+    ),
+  ].sort();
+  return values.length === 1
+    ? { kind: "literal", value: values[0] }
+    : { kind: "conditional", values };
+}
+
+function resolveCategory(event: ResolvedObject): AuditCategoryEvidence {
   const property = findTopLevelProperty(event, "category");
   if (!property) {
     return event.opaqueSpread
@@ -379,13 +473,18 @@ function collapse(text: string): string {
   return text.replace(/\s+/g, " ").trim();
 }
 
-function resolveAction(event: ResolvedObject | null): string {
-  if (!event) return "(forwarded)";
+function resolveOneAction(event: ResolvedObject): string {
   const property = findTopLevelProperty(event, "action");
   if (!property) return "(none)";
   if (property.kind === "opaque") return "(forwarded)";
   const direct = literalText(property.value);
   return direct ?? `(dynamic) ${collapse(property.value.getText())}`;
+}
+
+function resolveAction(events: readonly ResolvedObject[] | null): string {
+  if (!events || events.length === 0) return "(forwarded)";
+  const actions = [...new Set(events.map(resolveOneAction))].sort();
+  return actions.length === 1 ? actions[0] : `(mixed) ${actions.join("|")}`;
 }
 
 /**
@@ -417,7 +516,69 @@ function symbolChain(node: ts.Node): string {
   return names.length ? names.join(".") : "<module>";
 }
 
-function sinkNameOf(call: ts.CallExpression): AuditWriteSink | null {
+/**
+ * True for an expression that IS the `auditLog` delegate: `db.auditLog`,
+ * `db["auditLog"]`, or a bare `auditLog` destructured off a client.
+ *
+ * Element access is here because a reviewer demonstrated `tx["auditLog"].create`
+ * as a silent bypass of the property-access-only check that preceded it.
+ */
+function isAuditDelegateExpression(expression: ts.Expression): boolean {
+  const inner = unwrap(expression);
+  if (ts.isPropertyAccessExpression(inner)) {
+    return inner.name.text === "auditLog";
+  }
+  if (ts.isElementAccessExpression(inner)) {
+    return literalText(inner.argumentExpression) === "auditLog";
+  }
+  return ts.isIdentifier(inner) && inner.text === "auditLog";
+}
+
+/**
+ * Locals that hold the `auditLog` delegate, so `const log = tx.auditLog;
+ * log.create(…)` is still counted.
+ *
+ * A per-file name set rather than a type-checker symbol table: the census parses
+ * 1,896 files with `createSourceFile` and a full program would cost minutes. The
+ * trade is stated in the header — an alias created by assignment rather than by
+ * declaration, or handed back from a helper, is still invisible.
+ */
+function collectAuditDelegateAliases(ast: ts.SourceFile): Set<string> {
+  const aliases = new Set<string>();
+
+  eachNode(ast, (node) => {
+    if (!ts.isVariableDeclaration(node)) return;
+
+    if (ts.isIdentifier(node.name)) {
+      if (node.initializer && isAuditDelegateExpression(node.initializer)) {
+        aliases.add(node.name.text);
+      }
+      return;
+    }
+
+    // `const { auditLog } = tx` already reads as a delegate by name; this is for
+    // `const { auditLog: log } = tx`, which does not.
+    if (ts.isObjectBindingPattern(node.name)) {
+      for (const element of node.name.elements) {
+        const source = element.propertyName ?? element.name;
+        if (
+          ts.isIdentifier(source) &&
+          source.text === "auditLog" &&
+          ts.isIdentifier(element.name)
+        ) {
+          aliases.add(element.name.text);
+        }
+      }
+    }
+  });
+
+  return aliases;
+}
+
+function sinkNameOf(
+  call: ts.CallExpression,
+  aliases: ReadonlySet<string>,
+): AuditWriteSink | null {
   const callee = unwrap(call.expression);
 
   if (ts.isIdentifier(callee)) {
@@ -429,17 +590,43 @@ function sinkNameOf(call: ts.CallExpression): AuditWriteSink | null {
 
   if (!ts.isPropertyAccessExpression(callee)) return null;
   const method = callee.name.text;
+
+  // `prisma.$executeRawUnsafe("INSERT INTO \"AuditLog\" …")` — no delegate
+  // involved, so the checks below never see it.
+  if (RAW_SQL_METHODS.has(method)) {
+    return rawSqlDmlKind(call) ? (`raw.${method}` as AuditWriteSink) : null;
+  }
+
   if (!ROW_PRODUCING_DML.has(method) && !NON_PRODUCING_DML.has(method)) {
     return null;
   }
 
-  // `<anything>.auditLog.<method>(…)` or a destructured `auditLog.<method>(…)`.
+  // `<anything>.auditLog.<method>(…)`, a destructured `auditLog.<method>(…)`,
+  // `<anything>["auditLog"].<method>(…)`, or a local holding the delegate.
   const receiver = unwrap(callee.expression);
   const isAuditDelegate =
-    (ts.isPropertyAccessExpression(receiver) &&
-      receiver.name.text === "auditLog") ||
-    (ts.isIdentifier(receiver) && receiver.text === "auditLog");
+    isAuditDelegateExpression(receiver) ||
+    (ts.isIdentifier(receiver) && aliases.has(receiver.text));
   return isAuditDelegate ? (`auditLog.${method}` as AuditWriteSink) : null;
+}
+
+/**
+ * The DML kind a raw-SQL call performs against `"AuditLog"`, or null when it
+ * touches the table only to READ it (or not at all).
+ *
+ * The text is read from the tagged template or the first argument, so a query
+ * assembled from runtime fragments is not seen — which the header states rather
+ * than papers over.
+ */
+function rawSqlDmlKind(call: ts.CallExpression): "insert" | "mutation" | null {
+  const text = collapse(call.arguments[0]?.getText() ?? "");
+  return classifyRawSqlText(text);
+}
+
+function classifyRawSqlText(text: string): "insert" | "mutation" | null {
+  const match = new RegExp(SQL_AUDIT_DML_SOURCE, "i").exec(text);
+  if (!match) return null;
+  return match[1].toUpperCase().startsWith("INSERT") ? "insert" : "mutation";
 }
 
 /**
@@ -460,21 +647,18 @@ function isDeclarationName(call: ts.CallExpression): boolean {
 function scanFile(file: string, repoRoot: string): AuditWriteSite[] {
   const relativePath = toPosix(relative(repoRoot, file));
   const ast = parse(file);
+  const aliases = collectAuditDelegateAliases(ast);
   const found: AuditWriteSite[] = [];
   const ordinals = new Map<string, number>();
 
-  eachNode(ast, (node) => {
-    if (!ts.isCallExpression(node)) return;
-    if (isDeclarationName(node)) return;
-    const sink = sinkNameOf(node);
-    if (!sink) return;
-    if (isBoundaryOwnWrite(relativePath, sink)) return;
-
-    const method = sink.startsWith("auditLog.") ? sink.slice("auditLog.".length) : null;
-    const producesRow = method === null || ROW_PRODUCING_DML.has(method);
-
-    const literal = producesRow ? resolveEventObject(node.arguments[0]) : null;
-    const event = literal ? resolveObjectLiteral(literal) : null;
+  const record = (
+    node: ts.Node,
+    sink: AuditWriteSink,
+    producesRow: boolean,
+    action: string,
+    category: AuditCategoryEvidence,
+    events: readonly ResolvedObject[] | null,
+  ) => {
     const symbol = symbolChain(node);
     const key = `${relativePath}::${symbol}`;
     const ordinal = ordinals.get(key) ?? 0;
@@ -487,22 +671,90 @@ function scanFile(file: string, repoRoot: string): AuditWriteSite[] {
       line: ast.getLineAndCharacterOfPosition(node.getStart(ast)).line + 1,
       sink,
       producesRow,
-      action: producesRow ? resolveAction(event) : "(dml)",
-      category: producesRow
-        ? resolveCategory(event, collapse(node.arguments[0]?.getText() ?? "(no argument)"))
-        : { kind: "absent" },
+      action,
+      category,
+      // ANY element omitting retention inputs flags the site, and EVERY element
+      // must name an entity before the site counts as identified: both take the
+      // pessimistic reading of a multi-row write, and both are unchanged for the
+      // single-object sites that make up the whole tree today.
       omitsRetentionInputs:
         producesRow &&
-        event !== null &&
-        !findTopLevelProperty(event, "severity") &&
-        !findTopLevelProperty(event, "retentionClass"),
+        events !== null &&
+        events.some(
+          (event) =>
+            !findTopLevelProperty(event, "severity") &&
+            !findTopLevelProperty(event, "retentionClass"),
+        ),
       hasEntityIdentifier:
         producesRow &&
-        event !== null &&
-        (findTopLevelProperty(event, "entityType") !== null ||
-          findTopLevelProperty(event, "entityId") !== null ||
-          findTopLevelProperty(event, "entity") !== null),
+        events !== null &&
+        events.every(
+          (event) =>
+            findTopLevelProperty(event, "entityType") !== null ||
+            findTopLevelProperty(event, "entityId") !== null ||
+            findTopLevelProperty(event, "entity") !== null,
+        ),
     });
+  };
+
+  eachNode(ast, (node) => {
+    // `prisma.$executeRaw`INSERT INTO "AuditLog" …`` is a tagged template, not a
+    // call, so the call branch below never sees it.
+    if (ts.isTaggedTemplateExpression(node)) {
+      const tag = unwrap(node.tag);
+      if (!ts.isPropertyAccessExpression(tag)) return;
+      if (!RAW_SQL_METHODS.has(tag.name.text)) return;
+      const kind = classifyRawSqlText(collapse(node.template.getText()));
+      if (!kind) return;
+      record(
+        node,
+        `raw.${tag.name.text}` as AuditWriteSink,
+        kind === "insert",
+        kind === "insert" ? "(raw sql)" : "(dml)",
+        { kind: "absent" },
+        null,
+      );
+      return;
+    }
+
+    if (!ts.isCallExpression(node)) return;
+    if (isDeclarationName(node)) return;
+    const sink = sinkNameOf(node, aliases);
+    if (!sink) return;
+    if (isBoundaryOwnWrite(relativePath, sink)) return;
+
+    if (sink.startsWith("raw.")) {
+      const kind = rawSqlDmlKind(node);
+      record(
+        node,
+        sink,
+        kind === "insert",
+        kind === "insert" ? "(raw sql)" : "(dml)",
+        { kind: "absent" },
+        null,
+      );
+      return;
+    }
+
+    const method = sink.startsWith("auditLog.") ? sink.slice("auditLog.".length) : null;
+    const producesRow = method === null || ROW_PRODUCING_DML.has(method);
+
+    const literals = producesRow ? resolveEventObjects(node.arguments[0]) : null;
+    const events = literals ? literals.map(resolveObjectLiteral) : null;
+
+    record(
+      node,
+      sink,
+      producesRow,
+      producesRow ? resolveAction(events) : "(dml)",
+      producesRow
+        ? combineCategory(
+            events,
+            collapse(node.arguments[0]?.getText() ?? "(no argument)"),
+          )
+        : { kind: "absent" },
+      events,
+    );
   });
 
   return found;
@@ -598,8 +850,148 @@ function stripSqlComments(sql: string): string {
   return out;
 }
 
-const SQL_AUDIT_DML =
-  /\b(INSERT\s+INTO|UPDATE|DELETE\s+FROM)\s+"AuditLog"/gi;
+/**
+ * DML against the audit table, with an OPTIONAL schema qualifier.
+ *
+ * The qualifier is not decoration: a reviewer showed that
+ * `INSERT INTO "public"."AuditLog"` — which Postgres executes identically —
+ * slipped past the unqualified pattern entirely, so a migration could write
+ * uncategorised rows and the census would report the tree clean.
+ *
+ * `"AuditLogArchive"` deliberately does NOT match: the closing quote is part of
+ * the pattern, and the archive table is a different (already-categorised) copy
+ * handled by the retention seam.
+ */
+const SQL_AUDIT_DML_SOURCE =
+  String.raw`\b(INSERT\s+INTO|UPDATE|DELETE\s+FROM)\s+(?:"[^"]+"\s*\.\s*)?"AuditLog"`;
+
+const SQL_AUDIT_DML = new RegExp(SQL_AUDIT_DML_SOURCE, "gi");
+
+/**
+ * A parenthesised group at the start of `text` (after optional whitespace),
+ * returned with the offset just past its closing bracket.
+ *
+ * Bracket-aware rather than `indexOf(")")`, because an INSERT's VALUES tuple can
+ * contain `gen_random_uuid()` or `jsonb_build_object(…)`; a naive scan stops at
+ * the first inner bracket and reads a truncated tuple.
+ */
+function readParenGroup(text: string): { inner: string; end: number } | null {
+  const open = text.search(/\S/);
+  if (open === -1 || text[open] !== "(") return null;
+
+  let depth = 0;
+  let inString = false;
+  for (let index = open; index < text.length; index += 1) {
+    const char = text[index];
+    if (inString) {
+      if (char === "'") inString = false;
+      continue;
+    }
+    if (char === "'") {
+      inString = true;
+      continue;
+    }
+    if (char === "(") depth += 1;
+    else if (char === ")") {
+      depth -= 1;
+      if (depth === 0) {
+        return { inner: text.slice(open + 1, index), end: index + 1 };
+      }
+    }
+  }
+  return null;
+}
+
+/** Split on commas that are not inside brackets or a string literal. */
+function splitTopLevel(text: string): string[] {
+  const parts: string[] = [];
+  let depth = 0;
+  let current = "";
+  let inString = false;
+
+  for (const char of text) {
+    if (inString) {
+      current += char;
+      if (char === "'") inString = false;
+      continue;
+    }
+    if (char === "'") {
+      inString = true;
+      current += char;
+      continue;
+    }
+    if (char === "(") depth += 1;
+    if (char === ")") depth -= 1;
+    if (char === "," && depth === 0) {
+      parts.push(current.trim());
+      current = "";
+      continue;
+    }
+    current += char;
+  }
+  if (current.trim()) parts.push(current.trim());
+  return parts;
+}
+
+/**
+ * True when an INSERT that NAMES `"category"` supplies a literal `NULL` for it.
+ *
+ * Naming the column used to be the whole check, and a reviewer showed that
+ * `INSERT INTO "AuditLog" (…, "category") VALUES (…, NULL)` therefore passed
+ * while writing exactly the unreadable, kept-forever row the check exists to
+ * refuse. Both source forms the migrations use are read: a `VALUES` list (every
+ * tuple, so one bad row among many still fails) and an `INSERT … SELECT`
+ * projection, which is what the committed email-override migration uses.
+ *
+ * A projection whose category expression is computed — a `CASE`, a joined
+ * column — reads as "not statically NULL" and passes. That residual is named in
+ * the header rather than hidden here.
+ */
+function insertSuppliesNullCategory(rest: string, columnIndex: number): boolean {
+  const positionIsNull = (expressions: readonly string[]) =>
+    (expressions[columnIndex] ?? "").trim().toUpperCase() === "NULL";
+
+  const values = /^\s*VALUES\s*/i.exec(rest);
+  if (values) {
+    let cursor = rest.slice(values[0].length);
+    for (;;) {
+      const tuple = readParenGroup(cursor);
+      if (!tuple) return false;
+      if (positionIsNull(splitTopLevel(tuple.inner))) return true;
+      const next = /^\s*,\s*/.exec(cursor.slice(tuple.end));
+      if (!next) return false;
+      cursor = cursor.slice(tuple.end + next[0].length);
+    }
+  }
+
+  const select = /^\s*SELECT\s+/i.exec(rest);
+  if (select) {
+    const projection = rest.slice(select[0].length);
+    // The projection ends at the first `FROM` outside brackets and strings.
+    let depth = 0;
+    let inString = false;
+    for (let index = 0; index < projection.length; index += 1) {
+      const char = projection[index];
+      if (inString) {
+        if (char === "'") inString = false;
+        continue;
+      }
+      if (char === "'") inString = true;
+      else if (char === "(") depth += 1;
+      else if (char === ")") depth -= 1;
+      else if (
+        depth === 0 &&
+        /^from\b/i.test(projection.slice(index, index + 5)) &&
+        !/[A-Za-z0-9_"]/.test(projection[index - 1] ?? " ")
+      ) {
+        return positionIsNull(splitTopLevel(projection.slice(0, index)));
+      }
+    }
+    return positionIsNull(splitTopLevel(projection));
+  }
+
+  return false;
+}
 
 function scanSqlFile(file: string, repoRoot: string): AuditSqlStatement[] {
   const relativePath = toPosix(relative(repoRoot, file));
@@ -622,13 +1014,22 @@ function scanSqlFile(file: string, repoRoot: string): AuditSqlStatement[] {
     // The column list is the first parenthesised group after the table name; an
     // INSERT that omits it is relying on positional columns, which cannot be read
     // here, so it counts as NOT naming a category and has to be declared.
+    //
+    // Naming it is necessary but NOT sufficient: the value in that position must
+    // not be a literal NULL, or the row is born uncategorised while the column
+    // list says otherwise.
     let namesCategory = false;
     if (kind === "insert") {
       const rest = sql.slice(at + match[0].length);
-      const open = rest.indexOf("(");
-      const close = rest.indexOf(")");
-      if (open !== -1 && close > open && rest.slice(0, open).trim() === "") {
-        namesCategory = /"category"/i.test(rest.slice(open, close));
+      const columnGroup = readParenGroup(rest);
+      if (columnGroup) {
+        const columns = splitTopLevel(columnGroup.inner).map((column) =>
+          column.replace(/"/g, "").trim().toLowerCase(),
+        );
+        const columnIndex = columns.indexOf("category");
+        namesCategory =
+          columnIndex !== -1 &&
+          !insertSuppliesNullCategory(rest.slice(columnGroup.end), columnIndex);
       }
     }
 
