@@ -430,6 +430,9 @@ export async function respondToMemberGuestConsent(params: {
 
   // #2700 — a SOFT-DELETED booking takes no consent answer, from anybody.
   //
+  // The rule is `INV-ADDPAY-035`; `INV-ADDPAY-032`, which tracked this as an
+  // open decision, is now a superseded stub pointing there.
+  //
   // BOTH ARMS reached a write before this. `INV-ADDPAY-032` recorded the shape:
   // the booking was loaded below purely to pick a lodge lock (`{ id, lodgeId }`),
   // so neither `status` nor `deletedAt` was ever read, and an APPROVE went on to

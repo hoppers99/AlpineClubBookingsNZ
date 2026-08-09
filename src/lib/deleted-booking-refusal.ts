@@ -3,6 +3,10 @@ import { NextResponse } from "next/server";
 /**
  * The ONE sentence every deleted-booking refusal says (#2700).
  *
+ * The rule this module IS: `INV-ADDPAY-034`. Read that for the full statement,
+ * including which three surfaces may use this constant and why a fourth needs a
+ * decision rather than an import.
+ *
  * WHY A MESSAGE AND NOT A BARE 404. `INV-ADDPAY-031` — the house shape for a
  * deleted-booking guard, set by `requested-room/options` (#2673) and
  * `refund-request` POST (#2674) — says the 404 body must be byte-identical to

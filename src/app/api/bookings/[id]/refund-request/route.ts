@@ -224,6 +224,12 @@ export async function GET(
     return NextResponse.json({ error: "Forbidden" }, { status: 403 });
   }
 
+  // The rule is `INV-ADDPAY-034`; `INV-ADDPAY-033`, which tracked this as an
+  // open decision, is now a superseded stub pointing there. Note the POST above
+  // deliberately keeps `INV-ADDPAY-031`'s byte-identical body while this GET
+  // carries the shared sentence — both are correct, and the difference is
+  // asserted in this route's deleted-booking test rather than accidental.
+  //
   // #2700 — one of the two reads `INV-ADDPAY-033` tracked: it served a deleted
   // booking's own refund appeals to its owner, while the booking page that links
   // here refuses the record outright. Owner decision, 10 Aug 2026: refuse, with

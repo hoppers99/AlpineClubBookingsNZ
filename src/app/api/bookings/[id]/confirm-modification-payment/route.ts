@@ -125,6 +125,12 @@ export async function POST(
 
     // #2700 — the booking was deleted while this payment was in flight.
     //
+    // The rule is `INV-ADDPAY-036`; `INV-ADDPAY-032`, which tracked this as an
+    // open decision, is now a superseded stub pointing there. Read -036 before
+    // changing anything below: it also records that the older #1350 webhook
+    // path already auto-refunds an additional capture on a CANCELLED booking,
+    // and closes the task raised here when it does.
+    //
     // THIS IS NOT A REFUSAL, and that is the decision. Stripe has already
     // captured the money by the time this endpoint is called; a 404 here would
     // leave a captured payment with no ledger row, which is worse than a ledger

@@ -522,6 +522,9 @@ export async function GET(
     return NextResponse.json({ error: "Forbidden" }, { status: 403 });
   }
 
+  // The rule is `INV-ADDPAY-034`; `INV-ADDPAY-033`, which tracked this as an
+  // open decision, is now a superseded stub pointing there.
+  //
   // #2700 — the other read `INV-ADDPAY-033` tracked. It listed a deleted
   // booking's change requests (policy-exception rows among them) to its owner,
   // while `bookings/[id]/page.tsx` refuses the record to that same member. Owner

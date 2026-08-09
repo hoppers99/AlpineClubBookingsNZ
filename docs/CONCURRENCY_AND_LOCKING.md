@@ -2157,6 +2157,31 @@ captured (`payment_intent.succeeded` → settle) must still become `SUCCEEDED`, 
 settle legitimately overwrites `FAILED` → `SUCCEEDED`. `lock(1)` guarantees the
 two run whole-before-whole; it is not a veto on that transition.
 
+**#2700 adds one more, and it is the smallest participant in this cohort.**
+`raiseDeletedBookingModificationRefundTask`
+(`src/lib/deleted-booking-modification-payment.ts`) creates the OPEN
+`ManualRefundTask` for a booking-modification payment Stripe captured against an
+already-deleted booking (`INV-ADDPAY-036`). It is a settlement-money writer, so
+it joins this cohort rather than minting a keyspace — and specifically the cohort
+`booking-cancel.ts` is already in when IT creates a `ManualRefundTask`. It needs
+the key because the write is a find-then-create, which is not atomic on its own:
+two simultaneous confirms of one capture would otherwise raise two OPEN tasks,
+and two operators would refund one payment twice. It takes `lock(1)` and
+**nothing else**, holds it across exactly two statements, joins no capacity or
+member-credit tier, and every Stripe call on that path is made by its caller
+outside the transaction — so it composes with nothing and reverses no order.
+
+Its counterpart writer takes **no** lock at all and deliberately so:
+`closeDeletedBookingModificationRefundTaskAfterAutomaticRefund` is a
+status-fenced `updateMany` on `OPEN`, which is its own claim. A webhook replay,
+or an operator who closed the task first, simply claims nothing.
+
+Note what `softDeleteCancelledBooking` does NOT do here. It cancels the deleted
+booking's in-flight Stripe PaymentIntents **after** its transaction commits,
+never inside it, so no provider round trip happens while `lock(1)` is held and a
+provider timeout cannot roll back a committed deletion. That ordering is the
+bounded-exception rule applied rather than waived.
+
 #### Three-tier composition: global → lodge → member-credit (#2262)
 
 The manual mark-paid path in `payment-reconciliation.ts` is the settlement body's
