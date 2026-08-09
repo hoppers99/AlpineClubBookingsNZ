@@ -1897,6 +1897,12 @@ export async function applyGuestChanges(
   // Re-sync a guest's BookingGuestNight rows to the priced nights (issue #713),
   // and return the matching stayStart/stayEnd envelope. Called on every guest
   // write so a guest's gaps are persisted and stale nights never linger.
+  //
+  // #2736: that promise used to be broken on the IN-PROGRESS branch below, which
+  // is the one place the priced nights did not come from a real night set — the
+  // plan expanded its envelope, so this deleted a sparse guest's rows and wrote
+  // back a continuous run, filling the gap for good. The plan now carries the
+  // night list (INV-MOD-025) and this is the only writer that needs to know.
   const syncGuestNights = async (
     bookingGuestId: string,
     bg: BreakdownGuest | undefined,

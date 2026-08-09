@@ -53,6 +53,15 @@ interface ExistingBookingEditGuest {
 // type system, which is how an in-progress add would quietly become the one path
 // that writes a consent-free cross-family guest row. Type-only import: nothing is
 // pulled into this module at runtime.
+// Deliberately declares NO stay range and NO night set. A guest added to a stay
+// already under way is admitted for the booking's remaining future nights,
+// `[editableFrom, newCheckOut)`, and this plan overrides whatever per-guest
+// range or `nights` the request carried — which callers DO pass at runtime, from
+// the shared stay-range resolver. That is unchanged by #2736 and is why the
+// added-guest window is contiguous by construction: honouring a narrower or
+// sparser requested set here would move the price of edits that have nothing to
+// do with a gap. Leaving the fields undeclared keeps the override deliberate
+// rather than accidental; see INV-MOD-025.
 interface AddedBookingEditGuest extends MemberGuestConsentGuestFields {
   firstName: string;
   lastName: string;
@@ -216,6 +225,27 @@ function priceGuestNightKeysCents(
   ).totalPriceCents;
 }
 
+/**
+ * The plan behind an edit to a booking that is already UNDER WAY: what each
+ * guest ends up holding, what that costs, and what capacity must be checked.
+ * Shared by the modify-quote preview and the modify-charge apply, so a quote and
+ * a charge can never disagree.
+ *
+ * **Price the nights, never the envelope (INV-MOD-025).** A guest's nights are
+ * `BookingGuestNight` rows; `stayStart`/`stayEnd` is a derived half-open
+ * envelope (INV-DATE-012) that silently fills a sparse stay's internal gaps.
+ * This plan used to carry only the envelope, so a guest booked on nights
+ * {20, 22} was priced, quoted, given a bed and written back as if the 21st were
+ * theirs — and because the charge is a delta against their stored price, a
+ * mid-stay REMOVAL or a SHORTENED check-out subtracted those phantom nights and
+ * refunded money the member had never paid (#2736).
+ *
+ * For a contiguous stay every output here is identical to that envelope
+ * arithmetic — to the cent, to the night, to the capacity range and to the
+ * thrown error. That equivalence is the property that makes the rule safe on
+ * live bookings, and `booking-edit-guest-ranges-sparse.test.ts` proves it by
+ * re-implementing the old maths and comparing, rather than asserting it.
+ */
 export function buildInProgressGuestRangePlan(
   input: BuildInProgressGuestRangePlanInput
 ): BookingEditGuestRangePlan {
