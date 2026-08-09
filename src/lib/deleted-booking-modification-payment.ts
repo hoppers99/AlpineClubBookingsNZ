@@ -96,7 +96,18 @@ export async function raiseDeletedBookingModificationRefundTask(params: {
     }
 
     const task = await tx.manualRefundTask.create({
-      data: { bookingId, paymentId, amountCents, reason },
+      // `status: OPEN` is written EXPLICITLY even though the schema defaults to
+      // it. The owner's acceptance criterion is that this path produces an OPEN
+      // task, and a default that lives only in the database cannot be asserted
+      // without one — stating it here makes the property the code's, and lets a
+      // test prove it rather than trust it.
+      data: {
+        bookingId,
+        paymentId,
+        amountCents,
+        reason,
+        status: ManualRefundTaskStatus.OPEN,
+      },
       select: { id: true },
     });
     return { taskId: task.id, created: true };
