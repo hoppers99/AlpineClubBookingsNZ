@@ -3077,9 +3077,10 @@ rule result.
 - Logs, Sentry events, and webhook records should be redacted before storing or
   emitting sensitive values. `src/lib/redact-sensitive-json.ts` is the one
   chokepoint: it strips credentials, tokens, payment identifiers and person
-  fields, and bounds its own walk so a self-referencing record cannot overflow
-  the stack from inside a logging call. First names survive only in the
-  admin-action audit trail — see
+  fields BY KEY NAME, and bounds its own walk so a self-referencing record
+  cannot overflow the stack from inside a logging call. Because coverage is by
+  key spelling it is a floor rather than a guarantee, and the admin-action audit
+  trail deliberately keeps more than a log line does — see
   [`INV-PRIV-011`](invariants/analytics-and-privacy.md#inv-priv-011).
 - Mutation routes should validate inputs with structured schemas and enforce
   role/session checks close to the route boundary.

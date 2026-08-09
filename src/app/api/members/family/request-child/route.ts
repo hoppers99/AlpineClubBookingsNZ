@@ -148,8 +148,12 @@ export async function POST(req: NextRequest) {
     },
   });
 
+  // INV-PRIV-011 (#2683): this is a MINOR's full name on an ordinary
+  // member-facing self-service route, so it fires on normal use rather than on
+  // an error path. The request id identifies the row, and the child's name is on
+  // the audit row written just above, where reading it needs the permission.
   logger.info(
-    { requestId: request.id, requesterId: session.user.id, familyGroupId, childName: `${firstName} ${lastName}` },
+    { requestId: request.id, requesterId: session.user.id, familyGroupId },
     "Infant/child/youth family group request submitted"
   );
 

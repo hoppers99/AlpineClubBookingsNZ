@@ -294,13 +294,15 @@ describe("audit helper", () => {
     });
   });
 
-  // INV-PRIV-011 (#2683). This assertion is the whole exception, in both
-  // directions at once: the log/Sentry redactor strips a first name and the
-  // admin-action audit writer keeps one. It fails if a later change makes the
-  // two key lists "consistent" in either direction — adding firstName to
-  // audit.ts's sensitive keys, or dropping it from the log redactor's denylist
-  // so it becomes visible everywhere.
-  it("keeps a first name in an audit row while the log redactor strips it", () => {
+  // INV-PRIV-011 (#2683). The two key lists deliberately differ, and this pins
+  // the difference in both directions at once: the log/Sentry redactor strips
+  // first name, last name AND street address, while the admin-action audit
+  // writer keeps all three, because an evidence record that cannot say who stops
+  // being evidence (owner decision, 10 Aug 2026). It fails if a later change
+  // makes the two lists "consistent" in either direction — adding person fields
+  // to audit.ts's sensitive keys, or dropping them from the log redactor's
+  // denylist so they become visible everywhere.
+  it("keeps name and street address in an audit row while the log redactor strips them", () => {
     const person = {
       firstName: "Jane",
       lastName: "Doe",

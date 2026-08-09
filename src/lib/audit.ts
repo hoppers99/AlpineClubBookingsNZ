@@ -184,23 +184,27 @@ function sanitizeAuditDetails(value?: string | null): string | undefined {
 }
 
 /**
- * THIS IS THE ONE PLACE A FIRST NAME SURVIVES REDACTION — INV-PRIV-011 (#2683).
+ * THIS LIST DELIBERATELY REDACTS LESS THAN THE LOG REDACTOR — INV-PRIV-011
+ * (#2683).
  *
- * The log/Sentry redactor (`src/lib/redact-sensitive-json.ts`) strips every
- * person field: first name, last name, street and postal address, date of
- * birth, gender and occupation. An `AuditLog` row is different in kind. It is a
- * permission-gated, retention-classed database record whose job is to say who
- * did what to whom, and the owner decided on 9 Aug 2026 — against the
- * blanket-redaction recommendation — that a legible admin-action audit trail is
- * worth more than a redacted forename in a row nobody can read without the
- * permission. This schema holds no special-category data, which is what bounds
- * the exposure.
+ * It redacts credentials, tokens, card numbers and long HTML. It does NOT
+ * redact person fields, so an `AuditLog` row keeps first name, last name and
+ * street address where the caller recorded them. That is the decision, not an
+ * oversight: the log/Sentry redactor
+ * (`src/lib/redact-sensitive-json.ts`) strips all of those, and an `AuditLog`
+ * row is different in kind — a permission-gated, retention-classed evidence
+ * record whose job is to say who did what to whom, which stops being evidence
+ * if "who" is unreadable. The owner confirmed it on 10 Aug 2026 against the
+ * blanket-redaction recommendation. This schema holds no special-category data,
+ * which is what bounds the exposure, and the ARCHIVE MODE note above records
+ * what over-redaction had already cost once.
  *
- * The boundary is this module, not anyone's intent: a value keeps its first
- * name only by being written as an audit row through this file. There is no
- * flag or "audit context" marker on the redactor for a later change to copy, so
- * do not add `firstname` here as part of a tidy-up that makes the two key lists
- * "consistent" — the difference is the decision. A named test pins it.
+ * The boundary is this module, not anyone's intent: a value keeps a person field
+ * only by being written as an audit row through this file. There is no flag or
+ * "audit context" marker on the redactor for a later change to copy, so do not
+ * add person fields here as part of a tidy-up that makes the two key lists
+ * "consistent" — the difference IS the decision. `audit.test.ts` pins all three
+ * fields in both directions at once, so a change to either side fails it.
  */
 function isSensitiveMetadataKey(key: string): boolean {
   const normalized = key.replace(/[^a-z0-9]/gi, "").toLowerCase();

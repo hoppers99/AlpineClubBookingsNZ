@@ -545,7 +545,7 @@ Prefix `INV-PRIV`.
 | `INV-PRIV-008` | Leaving the public website unmounts the runtime, sets the kill switch and queues a denial |
 | `INV-PRIV-009` | The per-browser choice stores the consent revision and surface; only an explicit action bumps it |
 | `INV-PRIV-010` | Every one of these fails closed, and the public website still renders normally |
-| `INV-PRIV-011` | Person fields are redacted everywhere; first names survive only in audit rows |
+| `INV-PRIV-011` | Which person fields the log/Sentry redactor strips by key, that key coverage is not exhaustive, and that audit rows deliberately keep name and street address |
 
 ## Membership Lifecycle
 
