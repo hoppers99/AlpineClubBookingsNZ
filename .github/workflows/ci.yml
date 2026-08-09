@@ -580,7 +580,7 @@ jobs:
           echo "KNOWLEDGE_BUNDLE_OBSERVED_AT=$(git show -s --format=%cI HEAD)" >> "$GITHUB_ENV"
 
       - name: Log in to GHCR
-        uses: docker/login-action@v4.5.1
+        uses: docker/login-action@v4.6.0
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
