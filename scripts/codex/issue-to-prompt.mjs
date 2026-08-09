@@ -102,7 +102,7 @@ try {
     "",
     "Required workflow:",
     "1. Read the issue and all context files it names.",
-    "2. Read relevant repo docs, especially docs/DOMAIN_INVARIANTS.md and docs/agents/ISSUE_WORKFLOW.md.",
+    "2. Read relevant repo docs, especially the docs/DOMAIN_INVARIANTS.md index and the INV-* files its routing table sends you to for the surfaces you touch, plus docs/agents/ISSUE_WORKFLOW.md. Cite INV-* ids, never line numbers.",
     "3. Stop if the issue conflicts with code or repo policy.",
     "4. Keep the diff inside allowed scope.",
     "5. Run required safe validation.",

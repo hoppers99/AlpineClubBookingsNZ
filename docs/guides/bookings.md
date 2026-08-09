@@ -13,7 +13,8 @@ manage it. Find it at **Admin → Bookings & Beds → Bookings**
 
 Money is shown in dollars but stored as integer cents; every date is an NZ
 date-only lodge night (no times), matching the rules in
-[`DOMAIN_INVARIANTS.md`](../DOMAIN_INVARIANTS.md#money).
+[`money.md`](../invariants/money.md) and
+[`booking-dates-and-capacity.md`](../invariants/booking-dates-and-capacity.md).
 
 ## When you'd use it
 

@@ -1525,7 +1525,7 @@ concurrent conflicting write.
 #### Merge joins the bed-allocation cohort — lodge BEFORE member, and no global key (#2595)
 
 Merge invalidates future partner-shared double-bed placements (see
-docs/DOMAIN_INVARIANTS.md → "Double-bed shared occupancy": dropping the
+`INV-CAP-010` in docs/invariants/booking-dates-and-capacity.md: dropping the
 duplicate's CONFIRMED partner link leaves the master sharing a double with
 somebody it has no partnership with). Repairing that inside the merge
 transaction means merge is a bed-allocation writer, so it takes a
@@ -1948,7 +1948,8 @@ displacement down with it. The exclusion is keyed
 a MOVEd row still exists at its NEW bed and a guest-night-only key would forgive
 it there, making the MOVE's destination read as free. The same apply also
 promotes any second occupant its displacements orphan, on the same client, so
-the shared-double invariant in DOMAIN_INVARIANTS.md holds on this path like
+the shared-double invariant `INV-CAP-010`
+(docs/invariants/booking-dates-and-capacity.md) holds on this path like
 every other.
 `existingAllocations` is ordered `(stayDate, bedId, id)` for the same family of
 reasons: the planner is pure and deterministic, so its input must be too, and

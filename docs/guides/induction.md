@@ -133,4 +133,4 @@ register remains the right workflow for individual inductions.
 - Reference: the
   [lodge induction lifecycle](../STATE_MACHINES.md#lodge-induction-lifecycle)
   and [nomination lifecycle](../STATE_MACHINES.md#nomination-lifecycle), and the
-  [membership lifecycle invariants](../DOMAIN_INVARIANTS.md#membership-lifecycle).
+  [membership lifecycle invariants](../invariants/membership-lifecycle.md).

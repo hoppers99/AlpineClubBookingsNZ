@@ -187,4 +187,4 @@ idempotent — retrying the same work never double-charges.
   the [Xero member grouping runbook](../XERO_MEMBER_GROUPING_RUNBOOK.md),
   [operational Xero](../ARCHITECTURE.md#operational-xero) and the
   [Xero member grouping](../../CONFIGURATION.md#xero-member-grouping) reference,
-  and the [Xero member grouping invariants](../DOMAIN_INVARIANTS.md#xero-member-grouping-e8-1934).
+  and the [Xero member grouping invariants](../invariants/integrations.md#xero-member-grouping-e8-1934).

@@ -118,7 +118,7 @@ export async function claimAlreadyConvertedBookingRequest(
  * pre-write guards both approval pipelines share:
  *   - membership-type booking policy (assertMembershipTypeBookingAllowed)
  *   - admin-mediated double-book prevention across overlapping nights
- *     (assertNoBookingMemberNightConflicts, #1158 / DOMAIN_INVARIANTS.md:35-40),
+ *     (assertNoBookingMemberNightConflicts, #1158 / INV-CAP-017),
  *     excluding the held booking's own soon-to-be-deleted guests on the reuse path.
  * Runs inside the caller's approval transaction (tx holds the advisory lock).
  */
@@ -192,7 +192,7 @@ export async function buildApprovalGuestCreates(
 
   // Block admin-mediated double-books: a request whose guests an admin
   // linked to real members must not put a member on overlapping nights
-  // (issue #1158, invariant DOMAIN_INVARIANTS.md:35-40). On the reuse path
+  // (issue #1158, invariant INV-CAP-017). On the reuse path
   // exclude the held booking's own soon-to-be-deleted guests.
   await assertNoBookingMemberNightConflicts(tx, {
     actorMemberId: adminMemberId,
