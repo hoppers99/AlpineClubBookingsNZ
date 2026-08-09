@@ -219,6 +219,7 @@ import {
   AID6B_SCOPE_TAIL,
   AID6B_SINGLE_ROW_BYTE_LIMIT,
   AID6B_UNTRUSTED_EVIDENCE_DISCLOSURE,
+  aid6bRecordAuditReaderAreas,
   dateOnly,
   dateOnlyOrNull,
   emailOrNull,
@@ -961,7 +962,11 @@ const memberAuditHistory = defineDiagnosticsTool<MembershipAuditArgs>({
   source: "select_only_sql",
   label: "Membership audit history for a record",
   description: `Returns the platform's own membership audit events for ONE record — a member, a family join request, a partner link or a membership cancellation request — newest first, at most ${AID6B_HISTORY_ROW_LIMIT}. Each row carries only stable codes and an instant: the event reference, the action code, the audit category, severity and outcome, what kind of record it concerned, and when it happened in UTC. Use it to see what the platform recorded happening to this record and in what order. It searches ONLY the membership audit categories (${MEMBERSHIP_AUDIT_CATEGORIES.join(", ")}), so many real events on the same record are outside it: a member's Xero sync is recorded under "xero", an administrator's member import under "admin", a lodge PIN login under "lodge", a membership INDUCTION under "lodge", a subscription payment under "payment", and a lifecycle (archive or erase) request under "admin" — none of those can appear here. It never returns who did it, event descriptions, stored metadata, IP addresses or error text. ${AID6B_DESCRIPTION_TAIL}`,
-  requiredAreas: ["membership"],
+  // DERIVED from the platform's correlation lattice minus the one named carve-out,
+  // never written out here. See `aid6bRecordAuditReaderAreas` for why a
+  // record-scoped audit entry does not require `support` and the pack's contract
+  // test for the assertion that reconciles the two.
+  requiredAreas: aid6bRecordAuditReaderAreas("membership"),
   evidenceScope: `Audit events recorded against ONE record, in the membership categories ${MEMBERSHIP_AUDIT_CATEGORIES.join(", ")} only, at most ${AID6B_HISTORY_ROW_LIMIT}, newest first. Nothing matching means nothing in THOSE categories matched — not that nothing happened — and there are three structural reasons an empty result is not evidence of absence. First, the audit category is OPTIONAL on the row, and a row written with NO category at all is matched by no diagnostics tool anywhere, so a real event can exist and be invisible to every one of these tools. Second, several kinds of event on these very records are deliberately filed in OTHER domains and cannot be read here whatever the subject: INDUCTION events are recorded under the "lodge" category, which is not in the membership correlation domain, so induction sign-off, expiry and reminder events will NOT appear here at all and need the lodge tools; subscription events are recorded under "payment" and need the finance tools; member archive and erase LIFECYCLE requests are recorded under "admin" and need the system tools; and Xero contact sync on a member is recorded under "xero". Third, the same member record is written by paths in four different domains, so a member's history is genuinely split across tools. Never report that something did not happen on the strength of an empty result here: say that no categorised membership audit event matched, name the domain the event would be filed under, and point at Admin > Audit Log, which lists uncategorised rows and every category together. ${AID6B_SCOPE_TAIL} ${AID6B_UNTRUSTED_EVIDENCE_DISCLOSURE}`,
   argsSchema: membershipAuditArgsSchema,
   inputSchema: {

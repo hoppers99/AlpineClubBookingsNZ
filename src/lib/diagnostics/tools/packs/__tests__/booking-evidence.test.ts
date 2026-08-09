@@ -47,10 +47,19 @@
  * A named `select` returns ONLY the named fields. AID-6C's blocker #1 was a
  * projection reading a column its `select` did not name — which in a
  * `mockResolvedValue` world reads back fine and in production reads `undefined`.
- * Here it reads `undefined` in the test too. `select` is strict (an unknown field
- * name throws); `include` is lenient (unknown relations resolve to `null`), because
- * `getInductionForMember`'s `include` names five relations this module never
- * looks at and materialising them would test Prisma rather than this source.
+ * Here it reads `undefined` in the test too. `select` is strict: an unknown field
+ * name throws.
+ *
+ * `include` THROWS OUTRIGHT, and that is a control rather than a gap in the
+ * double. Every read this module makes is a named `select`, because the module's
+ * own header says those clauses are the ONLY boundary between it and
+ * `Booking."notes"`, `Member."comments"` and the rest. The one read that was not —
+ * `getInductionForMember`, whose `include` pulls the induction's `finalComments`,
+ * every sign-off's `comments` and `signerName`, the template prompts and the
+ * assigned signers' names into this process — was narrowed to
+ * `getInductionStatusForMember` in #2679's security review. Making the double
+ * refuse an `include` is what stops a later edit from quietly widening it back:
+ * the wide call now fails this suite instead of passing it.
  *
  * ## WHAT IS MOCKED, AND WHY EXACTLY THAT LINE
  *
@@ -77,13 +86,31 @@
  *
  * The repo-wide frozen clock (#2481) pins "now" at 2026-07-01T00:00:00Z, which is
  * midday 1 July 2026 in the club's zone, so NZ and UTC agree on the calendar day.
- * `currentSeasonYear()` is therefore 2026 and `getTodayDateOnly()` is 2026-07-01.
+ * `getSeasonYear()` is therefore 2026 and `getTodayDateOnly()` is 2026-07-01.
  * Every fixture date below is written relative to that and nothing here reads the
  * real calendar.
+ *
+ * THAT INSTANT IS ALSO WHY THIS SUITE COULD NOT SEE #2679's SEASON-YEAR BLOCKER,
+ * and the fix is a fixture rather than a stricter assertion. 1 July is inside the
+ * season under BOTH the correct rule and the wrong one — the calendar year and the
+ * season year agree for nine months of every year — and every subscription fixture
+ * here is seeded at `seasonYear: 2026`, so the year was never the discriminating
+ * predicate and three assertions pinning the literal 2026 passed either way. The
+ * season starts on the first of the month AFTER the club's financial year-end
+ * (April by default, the NZ 31-March convention), so January, February and March
+ * are the months where the two answers differ. The eligibility suite therefore
+ * pins its OWN instant on both sides of that boundary with `vi.setSystemTime`,
+ * which runs after the freeze is installed and so wins, and restores the frozen
+ * instant afterwards.
  */
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+import { frozenTestNow } from "@/lib/__tests__/helpers/clock";
 import { DELETED_ACCOUNT_PASSWORD_HASH } from "@/lib/deleted-account";
+import {
+  DEFAULT_FINANCIAL_YEAR_END_MONTH,
+  __setFinancialYearEndMonthForTesting,
+} from "@/lib/financial-year";
 
 // ---------------------------------------------------------------------------
 // The doubles. Created in a hoisted block so the `vi.mock` factories below can
@@ -494,18 +521,23 @@ function shapeRow(
     return out;
   }
 
+  if (args?.include) {
+    // REFUSED, not resolved. Every read this module makes is a named `select`,
+    // and an `include` is how the one read that was not — `getInductionForMember`,
+    // which materialises the induction's free text, its sign-offs' comments and
+    // signer names, the template prompts and the assigned signers' names — got
+    // into a module whose header calls the `select` clauses its only boundary.
+    // Failing here is the guard against that being widened back.
+    throw new Error(
+      `booking-evidence test double: ${model} was read with an \`include\` ` +
+        `(${Object.keys(args.include).join(", ")}). This module reads with named ` +
+        "`select` clauses only — they are its projection boundary. Narrow the read.",
+    );
+  }
+
   const out: Row = {};
   for (const column of spec.columns) {
     out[column] = row[column] === undefined ? null : row[column];
-  }
-  if (args?.include) {
-    // LENIENT on purpose: `getInductionForMember`'s include names five relations
-    // this module never reads. Resolving the ones the store models and nulling
-    // the rest keeps the test about `booking-evidence.ts`, not about Prisma.
-    for (const key of Object.keys(args.include)) {
-      const relation = spec.relations?.[key];
-      out[key] = relation ? relation(row, store) : null;
-    }
   }
   return out;
 }
@@ -1033,7 +1065,12 @@ function seedMember(scenario: MemberScenario = {}): void {
           memberRole: "USER",
           memberAgeTier: scenario.ageTier ?? "ADULT",
           seasonYear: 2026,
-          source: "SEASONAL_ASSIGNMENT",
+          // The resolver's OWN value, not an invented one. `MembershipTypePolicySource`
+          // is "assignment" | "role_default" | "built_in_default", and the entry's
+          // scope line tells the model that the two default sources mean NO
+          // assignment exists for the season — so a fixture that returned a source
+          // the resolver cannot return would leave that sentence untested.
+          source: "assignment",
           membershipType: { key: "FULL", name: "Full Member" },
           bookingBehavior: scenario.bookingBehavior ?? "MEMBER_RATE",
           subscriptionBehavior: scenario.subscriptionBehavior ?? "NOT_REQUIRED",
@@ -1460,6 +1497,33 @@ describe("booking block state: every blocker code, ranked (#2376)", () => {
       expect(blockers(row)[0]).toBe(expected[0]);
       expect(blockers(row)).toContain(code);
       expect(row.blocker_count).toBe(expected.length);
+    },
+  );
+
+  it.each([
+    ["non-zero", {}],
+    ["zero", { guests: [] }],
+  ] satisfies [string, BookingScenario][])(
+    "reports an exclusive hold, not an ordinary shortfall, with %s demand",
+    async (_demandLabel, scenario) => {
+      // One held night and no ordinary night makes the absence contract
+      // observable. Under the old subtraction, demand 2 manufactured a -2
+      // shortfall and a second blocker; demand 0 manufactured a measured spare
+      // of 0. Neither figure exists: availability 0 is the hold policy's pin.
+      seedBooking({
+        ...scenario,
+        checkIn: NIGHT_ONE,
+        checkOut: NIGHT_TWO,
+        capacityNights: [
+          { night: NIGHT_ONE, occupied: 20, available: 0, held: true },
+        ],
+      });
+
+      const row = await blockStateRow();
+      expect(blockers(row)).toEqual(["whole_lodge_held"]);
+      expect(row.shortfall_night_count).toBe(0);
+      expect(row.whole_lodge_held_night_count).toBe(1);
+      expect(row.tightest_spare_beds).toBeNull();
     },
   );
 
@@ -1950,6 +2014,7 @@ describe("booking capacity by night (#2376)", () => {
     // night, and 0 is the true answer to "how much room is there" — so it is
     // reported as it stands, beside the fact that explains it.
     expect(held.available_beds_excluding_this_booking).toBe(0);
+    expect(held.spare_beds_after_this_booking).toBeNull();
     expect(held.whole_lodge_held_by_another_booking).toBe(true);
     expect(held.fits_this_night).toBe(false);
 
@@ -1960,6 +2025,33 @@ describe("booking capacity by night (#2376)", () => {
     expect(ordinary.whole_lodge_held_by_another_booking).toBe(false);
     expect(ordinary.fits_this_night).toBe(true);
   });
+
+  it.each([
+    ["non-zero", {}, 2],
+    ["zero", { guests: [] }, 0],
+  ] satisfies [string, BookingScenario, number][])(
+    "withholds held-night spare arithmetic and refuses fit with %s demand",
+    async (_demandLabel, scenario, expectedDemand) => {
+      seedBooking({
+        ...scenario,
+        checkIn: NIGHT_ONE,
+        checkOut: NIGHT_TWO,
+        capacityNights: [
+          { night: NIGHT_ONE, occupied: 20, available: 0, held: true },
+        ],
+      });
+
+      const rows = (await readBookingCapacityEvidence({
+        bookingId: BOOKING_ID,
+      })) as unknown as Row[];
+      expect(rows).toHaveLength(1);
+      expect(rows[0].party_beds_this_night).toBe(expectedDemand);
+      expect(rows[0].available_beds_excluding_this_booking).toBe(0);
+      expect(rows[0].spare_beds_after_this_booking).toBeNull();
+      expect(rows[0].fits_this_night).toBe(false);
+      expect(rows[0].whole_lodge_held_by_another_booking).toBe(true);
+    },
+  );
 
   it("keeps 'another booking holds the lodge' apart from 'this booking holds it'", async () => {
     // Two different facts about the same night, and merging them would tell an
@@ -1974,6 +2066,8 @@ describe("booking capacity by night (#2376)", () => {
     expect(rows[0].this_booking_holds_whole_lodge).toBe(true);
     expect(rows[0].whole_lodge_held_by_another_booking).toBe(false);
     expect(rows[0].occupied_beds_excluding_this_booking).toBe(4);
+    expect(rows[0].spare_beds_after_this_booking).toBe(6);
+    expect(rows[0].fits_this_night).toBe(true);
   });
 
   it("REFUSES a stay longer than the night ceiling rather than clipping it", async () => {
@@ -2044,6 +2138,71 @@ describe("booking capacity by night (#2376)", () => {
       bookingId: BOOKING_ID,
     })) as unknown as Row[];
     expect(rows[0].capacity_overridden).toBe(true);
+  });
+
+  it("passes a NEGATIVE bed count through on an over-capacity night", async () => {
+    // THE FIXTURE THIS SUITE DID NOT HAVE. Every capacity fixture in this file
+    // used `spec.available ?? 8` and none of them was negative, so the one case
+    // where `availableBeds` is signed was never produced at all.
+    //
+    // `checkCapacity` computes `lodgeCapacity - occupiedBeds` and does NOT clamp
+    // it, deliberately: a negative value is what puts a night into the
+    // over-capacity confirm set (`capacity.ts`, ADR-001 decision 5). It happens on
+    // an admin over-capacity confirmation (#1668) and on a custodian bed hold
+    // taken against a night already full — which is why this entry projects
+    // `capacityOverridden` on every row. Three beds over with a party of four is
+    // seven beds short after this booking, and every figure on the row has to say
+    // so consistently: the clamped version handed the model "0 available, 4
+    // needed, -7 spare", where the subtraction the scope line asks for gives -4.
+    seedBooking({
+      capacityOverriddenAt: new Date("2026-06-30T00:00:00.000Z"),
+      capacityNights: [
+        { night: NIGHT_ONE, occupied: 23, available: -3 },
+        { night: NIGHT_TWO, occupied: 12, available: 8 },
+      ],
+    });
+    const rows = (await readBookingCapacityEvidence({
+      bookingId: BOOKING_ID,
+    })) as unknown as Row[];
+
+    const over = rows[0];
+    expect(over.available_beds_excluding_this_booking).toBe(-3);
+    expect(over.party_beds_this_night).toBe(2);
+    expect(over.spare_beds_after_this_booking).toBe(-5);
+    // The identity the entry's scope line asks the model to compute, on the row.
+    expect(
+      Number(over.available_beds_excluding_this_booking) -
+        Number(over.party_beds_this_night),
+    ).toBe(over.spare_beds_after_this_booking);
+    expect(over.fits_this_night).toBe(false);
+    // Not a held night: the lodge is genuinely over, which is a different fact
+    // from the pinned zero of an exclusive hold and must not be reported as one.
+    expect(over.whole_lodge_held_by_another_booking).toBe(false);
+    expect(over.occupied_beds_excluding_this_booking).toBe(23);
+    expect(over.capacity_overridden).toBe(true);
+
+    // …and the ordinary night beside it is unaffected.
+    expect(rows[1].available_beds_excluding_this_booking).toBe(8);
+    expect(rows[1].spare_beds_after_this_booking).toBe(6);
+    expect(rows[1].fits_this_night).toBe(true);
+  });
+
+  it("carries the same negative night into booking_block_state's shortfall", async () => {
+    // The two entries answer the same question about the same night and must
+    // agree. `tightestSpareBeds` was signed from the start, so an over-capacity
+    // night that read "exactly full" on the per-night entry and "-5" here was the
+    // shape of the contradiction: one tool said the lodge was full, the other said
+    // it was five beds short, and neither reader could tell which to believe.
+    seedBooking({
+      capacityNights: [
+        { night: NIGHT_ONE, occupied: 23, available: -3 },
+        { night: NIGHT_TWO, occupied: 12, available: 8 },
+      ],
+    });
+    const row = await blockStateRow();
+    expect(row.tightest_spare_beds).toBe(-5);
+    expect(row.shortfall_night_count).toBe(1);
+    expect(blockers(row)).toContain("capacity_exceeded");
   });
 
   it("emits nights as NZ date-only lodge nights, never as instants", async () => {
@@ -2451,6 +2610,10 @@ describe("member eligibility: three different subscription facts (#2376)", () =>
   });
 
   it("resolves the membership type for the CURRENT season year", async () => {
+    // Pinned explicitly rather than leaning on the file's default instant, so the
+    // assertion says which July it means and the rollover canary cannot turn a
+    // correct implementation red by winding the machine clock forward a year.
+    vi.setSystemTime(new Date("2026-07-01T00:00:00.000Z"));
     seedMember({});
     const row = await eligibilityRow();
     expect(row.season_year).toBe(2026);
@@ -2463,6 +2626,112 @@ describe("member eligibility: three different subscription facts (#2376)", () =>
     expect(subscriptionArgs.where).toEqual({
       memberId_seasonYear: { memberId: MEMBER_ID, seasonYear: 2026 },
     });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 8a. member_eligibility_state — the SEASON year is not the calendar year.
+// ---------------------------------------------------------------------------
+
+describe("member eligibility: the season year is the SEASON's, not the calendar's (#2376)", () => {
+  // Every test here pins its own instant. The root re-freeze only ever converts a
+  // REAL clock back to the frozen one, so a pin made here would outlive the
+  // describe if it were not undone; this hands the file's default instant back.
+  afterEach(() => {
+    __setFinancialYearEndMonthForTesting(DEFAULT_FINANCIAL_YEAR_END_MONTH);
+    vi.setSystemTime(frozenTestNow());
+  });
+
+  it("reports a paid-up member as PAID in January, when the calendar year has moved on and the season has not", async () => {
+    // THE FIXTURE THE SUITE DID NOT HAVE, and the reason a blocker survived it.
+    // This entry derived the season year as `new Date().getUTCFullYear()`, which
+    // is right for nine months of every year. The season starts on the first of
+    // the month AFTER the club's financial year-end — April, for the NZ 31-March
+    // convention — so through January, February and March the season year is the
+    // PREVIOUS calendar year, and the whole suite ran at 1 July, where the two
+    // agree.
+    //
+    // Everything below is one member: an ADULT whose type REQUIRES a subscription
+    // and who has PAID it for the 2026 season. On 15 January 2027 the wrong
+    // derivation asks for season 2027 — `resolveMembershipTypePolicyForMember`
+    // finds no assignment, the `memberId_seasonYear` lookup misses the row, and
+    // the settlement rule concludes an unpaid subscription. That is a false and
+    // directly actionable finding about a fully paid-up member, delivered to a
+    // Finance or Membership officer through a language model, and it is what these
+    // assertions now fail on.
+    vi.setSystemTime(new Date("2027-01-15T00:00:00.000Z"));
+    seedMember({
+      subscriptionBehavior: "REQUIRED",
+      subscription: {
+        status: "PAID",
+        paidAt: new Date("2026-05-02T03:04:05.000Z"),
+      },
+    });
+
+    const row = await eligibilityRow();
+
+    // The season year itself, projected to the model.
+    expect(row.season_year).toBe(2026);
+    // …and the two reads it keys, which is where the damage happened.
+    expect(resolveMembershipTypePolicyForMemberMock).toHaveBeenCalledWith(
+      expect.anything(),
+      { memberId: MEMBER_ID, seasonYear: 2026 },
+    );
+    const subscriptionArgs = prismaMock.memberSubscription.findUnique.mock
+      .calls[0]?.[0] as { where?: Row };
+    expect(subscriptionArgs.where).toEqual({
+      memberId_seasonYear: { memberId: MEMBER_ID, seasonYear: 2026 },
+    });
+
+    // The member's actual standing: paid, settled, no finding.
+    expect(row.subscription_status).toBe("PAID");
+    expect(row.subscription_required).toBe(true);
+    expect(row.subscription_paid).toBe(true);
+    expect(row.subscription_unpaid).toBe(false);
+    expect(row.subscription_paid_at_utc).toBe("2026-05-02T03:04:05.000Z");
+    expect(eligibilityCodes(row)).toEqual([]);
+    // The knock-on the wrong year also caused: `participantQualifiesAsHost` is
+    // called with `subscriptionSettled: !unpaid`, so a phantom unpaid subscription
+    // disqualified the member as an adult-member host too.
+    expect(row.qualifies_as_adult_member_host).toBe(true);
+    // And the membership type resolved from a real assignment rather than falling
+    // back — the scope line tells the model that a fallback source means NO
+    // assignment exists for this season.
+    expect(row.membership_type_key).toBe("FULL");
+    expect(row.membership_type_source).toBe("assignment");
+  });
+
+  it.each([
+    ["the last night of the calendar year, 2026-12-31, in season 2026", "2026-12-31T11:00:00.000Z", 2026],
+    ["New Year's Day 2027 in season 2026", "2027-01-01T00:00:00.000Z", 2026],
+    ["the eve of the new season, 2027-03-31, in season 2026", "2027-03-31T00:00:00.000Z", 2026],
+    ["the first day of the new season, 2027-04-01, in season 2027", "2027-04-01T00:00:00.000Z", 2027],
+  ] as const)(
+    "puts %s",
+    async (_label, instant, expected) => {
+      // The boundary, both sides of it, with the season year written out rather
+      // than derived — a test that computed the expectation with the same helper
+      // the source uses would pass for any helper at all.
+      vi.setSystemTime(new Date(instant));
+      seedMember({});
+      const row = await eligibilityRow();
+      expect(row.season_year).toBe(expected);
+    },
+  );
+
+  it("moves the boundary with the CLUB's financial year-end rather than assuming April", async () => {
+    // The assertion that separates "calls the platform's helper" from "hard-codes
+    // the NZ default". `getSeasonYear` reads `getSeasonStartMonth()`, which is the
+    // month after the club's configured `financialYearEndMonth`; a club on a
+    // December year-end starts its season in January, so the same January instant
+    // belongs to the NEW season year there. A local re-derivation would have to
+    // reach for the same configuration to agree, and the point of using the shared
+    // helper is that it cannot fail to.
+    __setFinancialYearEndMonthForTesting(12);
+    vi.setSystemTime(new Date("2027-01-15T00:00:00.000Z"));
+    seedMember({});
+    const row = await eligibilityRow();
+    expect(row.season_year).toBe(2027);
   });
 });
 
@@ -2515,7 +2784,7 @@ describe("member eligibility: induction does NOT gate a booking (#2376)", () => 
   });
 
   it("reads THIS member's induction and not the decoy's", async () => {
-    // `getInductionForMember` runs for real over the store, so its
+    // `getInductionStatusForMember` runs for real over the store, so its
     // `where: { memberId }` is under test here too. The decoy member has an
     // IN_PROGRESS induction; if the filter were dropped, this member would be
     // reported as mid-induction and — with `requiresInduction` true — as having an
@@ -2525,6 +2794,40 @@ describe("member eligibility: induction does NOT gate a booking (#2376)", () => 
     expect(row.induction_status).toBe("COMPLETED");
     expect(row.induction_complete).toBe(true);
     expect(eligibilityCodes(row)).toEqual([]);
+  });
+
+  it("reads the induction with a NAMED select and never the whole record", async () => {
+    // THE MOST SENSITIVE DATA CLASS THIS PACK TOUCHES, and the one read in this
+    // module that did not honour the claim its own header makes. This entry needs
+    // exactly one field — the status — and it used to get it from
+    // `getInductionForMember`, whose `include` materialises the induction's
+    // `finalComments` and `voidedReason`, every sign-off's `comments` and
+    // `signerName`, the template's `competencyPrompt`, `notesPrompt` and
+    // `legacySourceText`, the assigned signers' names and the inductee's own name
+    // — health, safety and competency text, pulled into the diagnostics process on
+    // the application's FULL-PRIVILEGE connection.
+    //
+    // Nothing ever leaked: the projection consumed `.status` and has no field for
+    // any of the rest. But that is the argument the nine dropped columns on
+    // `BLOCK_STATE_BOOKING_SELECT` already refused — an unused wide read is the
+    // same defect as a wide `select`, one field name away from a projected row, in
+    // the file whose header calls the named `select` clauses its only boundary.
+    seedMember({ requiresInduction: true, inductionStatus: "IN_PROGRESS" });
+    await eligibilityRow();
+    const args = prismaMock.memberInduction.findFirst.mock.calls[0]?.[0] as {
+      select?: Row;
+      include?: Row;
+      where?: Row;
+      orderBy?: Row;
+    };
+    expect(args).toBeDefined();
+    expect(args.include).toBeUndefined();
+    expect(Object.keys(args.select ?? {})).toEqual(["status"]);
+    // The narrow read is still the SAME record the wide one returned — newest by
+    // `createdAt` across every induction kind — so the answer did not change with
+    // the projection.
+    expect(args.where).toEqual({ memberId: MEMBER_ID });
+    expect(args.orderBy).toEqual({ createdAt: "desc" });
   });
 });
 

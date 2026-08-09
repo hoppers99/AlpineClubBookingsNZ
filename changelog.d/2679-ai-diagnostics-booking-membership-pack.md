@@ -30,6 +30,10 @@
   reads it in this release. And there is **no member number** in this platform, so a
   member quoting one is quoting something else — the assistant says so instead of
   searching for a field that does not exist.
+- An exclusive whole-lodge hold is now kept distinct from an ordinary capacity
+  shortfall: Diagnostics reports the hard `whole_lodge_held` reason, withholds
+  derived spare-bed arithmetic for that night, and never suggests an admin
+  over-capacity confirmation could bypass it.
 - A search deliberately tells an administrator less than a record does. A member
   search returns names, age tier and lifecycle state, and only *whether* an email
   address and a phone number are on file; the address itself comes back for one
@@ -41,7 +45,10 @@
 - **Operators: this release needs `npm run diagnostics:provision-role` re-run after
   deploy.** It adds relation grants for the booking and membership tables, and until
   provisioning is re-run the diagnostics readiness check reports the credential as
-  over-privileged and every database-backed diagnostics tool refuses by design.
+  over-privileged and every database-backed diagnostics tool refuses by design. That
+  re-provisioning is the **only** change this release makes to a running system:
+  there is no AI Diagnostics screen yet, nothing calls a diagnostics tool, and every
+  entry described above is dormant until the assistant surface ships.
 - **Seven columns were also removed from what the diagnostics database credential can
   read**, tightening a boundary this release did not widen. All seven belong to the
   earlier finance release and no diagnostic query ever read one; two of them — a link

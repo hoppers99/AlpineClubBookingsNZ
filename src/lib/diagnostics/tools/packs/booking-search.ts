@@ -94,6 +94,7 @@ import {
   NAME_SEARCH_TERM,
   NZ_DATE_ONLY,
   PHONE_SEARCH_TERM,
+  countOrNull,
   dateOnly,
   dateOnlyOrNull,
   personNameOrNull,
@@ -284,7 +285,15 @@ function projectBookingSearchRow(row: Record<string, unknown>) {
     requiresAdminReview: boolOf(row.requires_admin_review),
     adminReviewStatus: stableCodeOrNull(row.admin_review_status),
     hostingReviewStatus: stableCodeOrNull(row.hosting_review_status),
-    waitlistPosition: countOf(row.waitlist_position),
+    // `countOrNull` and NOT `countOf`: `Booking."waitlistPosition"` is `Int?` and
+    // the platform's positions are ONE-BASED — every writer assigns from 1
+    // (`booking-create.ts`, `waitlist.ts`) and every exit writes `null`. So `0` is
+    // a value this platform never stores, and `countOf(null) = 0` printed it on
+    // every ordinary booking in the result. The damaging direction is the
+    // genuinely waitlisted booking whose position has not been recomputed: `null`
+    // through `countOf` reads as position 0, the FRONT of the queue, on a booking
+    // that has no place in it.
+    waitlistPosition: countOrNull(row.waitlist_position),
     wholeLodgeHold: boolOf(row.whole_lodge_hold),
     adminCapacityHold: boolOf(row.admin_capacity_hold),
     capacityOverridden: boolOf(row.capacity_overridden),
@@ -300,7 +309,7 @@ const bookingSearch = defineDiagnosticsTool<BookingSearchArgs>({
   label: "Find a booking",
   description: `Finds a booking one of four ways: by its exact record id, by the eight-character booking reference a member sees on their confirmation, by the exact record id of the member who OWNS it, or by a lodge plus a first night and a short window (1d, 7d or 30d — 7d by default). Use it FIRST: every other booking tool needs the exact booking id this returns. Exact matches only — there are no partial, wildcard or blank searches, and it returns at most ${AID6B_SEARCH_ROW_LIMIT} rows, latest nights first. Each row carries the booking id and reference, the owner's member id (not their name — that needs membership access), the lodge id and name, the status, the check-in and check-out nights, the number of guests, the final price in integer cents, whether the party includes non-members, whether it is a linked child booking, the review and hosting-review state, the waitlist position, the whole-lodge, admin-capacity-hold and capacity-override flags, and when it was deleted, created and last changed. The booking reference is NOT unique — if several rows come back, ask the operator which booking they mean rather than choosing one. ${AID6B_DESCRIPTION_TAIL}`,
   requiredAreas: ["bookings"],
-  evidenceScope: `Bookings matching ONE exact identifier, or present at one lodge across a short window of nights. The lodge-night search is an OVERLAP test — it returns every booking PRESENT on those nights, including one that checked in earlier — which is the population the capacity engine counts. A booking reference is only the first eight characters of the booking id and is NOT unique, so more than one row can legitimately match. ${AID6B_SCOPE_TAIL} ${AID6B_UNTRUSTED_EVIDENCE_DISCLOSURE}`,
+  evidenceScope: `Bookings matching ONE exact identifier, or present at one lodge across a short window of nights. The lodge-night search is an OVERLAP test — it returns every booking PRESENT on those nights, including one that checked in earlier — which is the population the capacity engine counts. A booking reference is only the first eight characters of the booking id and is NOT unique, so more than one row can legitimately match. waitlistPosition is ONE-BASED and is ABSENT on every booking that does not hold a place in a waitlist queue — there is no position 0, so never read an absent position as the front of the queue. ${AID6B_SCOPE_TAIL} ${AID6B_UNTRUSTED_EVIDENCE_DISCLOSURE}`,
   argsSchema: bookingSearchArgsSchema,
   inputSchema: {
     type: "object",
@@ -549,7 +558,7 @@ const memberSearch = defineDiagnosticsTool<MemberSearchArgs>({
   label: "Find a member",
   description: `Finds a member one of four ways: by their exact record id, by their exact email address, by the START of their given or family name (at least ${AID6B_MIN_NAME_SEARCH_CHARS} characters, case-insensitive), or by their mobile number. Use it FIRST: every other membership tool needs the exact member id this returns. There is NO member-number search, because this platform stores no member number — the record id, the email address and the Xero contact link are the identifiers it has. At most ${AID6B_SEARCH_ROW_LIMIT} rows, family name then given name then id. Each row carries the member id, the given and family name, the age tier, whether the account is active, can log in, is cancelled or is archived, whether an email address and a phone number are ON FILE (the values themselves are NOT returned by a search — use the member summary for one selected member), whether a Xero contact is linked, whether a parent link exists, whether an induction is required of them, the joined date and the created and last-changed instants. A name prefix matches families — if several rows come back, ask the operator which member they mean rather than choosing one. ${AID6B_DESCRIPTION_TAIL}`,
   requiredAreas: ["membership"],
-  evidenceScope: `Members matching ONE exact identifier, or whose given or family name STARTS WITH the term. It searches the whole membership roll including inactive, cancelled and archived members, because a question about a member who cannot book is usually a question about one of those. A search row deliberately reports only WHETHER an email address and a phone number are on file, never the values. There is no member number in this platform, so a member who quotes one is quoting something else — probably a Xero contact number or an invoice number, which are finance records this tool does not search. An "active = false" member with neither a cancellation nor an archival instant may be an ERASED account rather than a merely inactive one; the lifecycleDeleted flag marks that shape and diagnostics.member_eligibility_state gives the platform's own authoritative label. ${AID6B_SCOPE_TAIL} ${AID6B_UNTRUSTED_EVIDENCE_DISCLOSURE}`,
+  evidenceScope: `Members matching ONE exact identifier, or whose given or family name STARTS WITH the term. It searches the whole membership roll including inactive, cancelled and archived members, because a question about a member who cannot book is usually a question about one of those. A search row deliberately reports only WHETHER an email address and a phone number are on file, never the values. There is no member number in this platform, so a member who quotes one is quoting something else — probably a Xero contact number or an invoice number, which are finance records this tool does not search. An "active = false" member with neither a cancellation nor an archival instant may be an ERASED account rather than a merely inactive one; the lifecycleDeleted flag marks that shape and diagnostics.member_eligibility_state gives the platform's own authoritative label. joinedDate is a CALENDAR DAY taken from a stored timestamp, not a lodge night: it is the day the membership record began, and it must never be compared against a booking night or narrated as a moment. ${AID6B_SCOPE_TAIL} ${AID6B_UNTRUSTED_EVIDENCE_DISCLOSURE}`,
   argsSchema: memberSearchArgsSchema,
   inputSchema: {
     type: "object",

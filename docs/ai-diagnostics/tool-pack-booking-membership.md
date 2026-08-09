@@ -214,7 +214,8 @@ from the screen a Booking Officer trusts.
 | What an unsettled subscription costs the member | `peekSubscriptionLockoutMode` | `member-subscription-eligibility.ts` |
 | Whether the age-tier rule requires a subscription | `getAgeTierSettings` | `age-tier.ts` |
 | Whether a member qualifies as the adult-member host | `participantQualifiesAsHost` | `policies/adult-member-hosting.ts` |
-| The member's induction record | `getInductionForMember` | `induction.ts` |
+| The status of the member's newest induction | `getInductionStatusForMember` | `induction.ts` |
+| Which membership SEASON a calendar date falls in | `getSeasonYear` | `utils.ts` |
 | Whether a guest counts as operationally present | `OPERATIONALLY_PRESENT_GUEST_WHERE` | `member-guest-consent.ts` |
 | What a combination of consent columns means | `MEMBER_GUEST_CONSENT_SUB_STATES` | `member-guest-consent.ts` |
 | The eight-character booking reference | `formatBookingReference` | `booking-reference.ts` |
@@ -273,6 +274,23 @@ those projections is therefore a security-relevant change** and needs the review
 grant would get. The authoritative helpers do read some of those columns
 internally to reach their verdict — that is the point of delegating to them — and
 none of their return values carries one.
+
+**The induction read is narrow because everything else in that file is.**
+`member_eligibility_state` needs one field — the induction's status — and it used
+to get it from `getInductionForMember`, the function the member's own induction
+page calls, whose `include` materialises the induction's `finalComments` and
+`voidedReason`, every sign-off's `comments` and `signerName`, the template's
+`competencyPrompt`, `notesPrompt` and `legacySourceText`, the assigned signers'
+names and the inductee's name. Health, safety and competency text, pulled into the
+diagnostics process on the full-privilege connection. Nothing leaked — only
+`.status` was ever read and the projection has no field for the rest — but that is
+precisely the argument the nine dropped columns above already lost: an unused wide
+read is the same defect as a wide `select`, one field name away from a projected
+row, in the module whose only boundary is the projection. `induction.ts` now
+exports `getInductionStatusForMember`, which is the same record (newest by
+`createdAt`, any induction kind) under a named `select` of one column. The pack's
+own test double **refuses an `include` outright**, so a later edit that reaches for
+the wide function fails the suite rather than passing it.
 
 **One credential column is used as a predicate and never as a projection**, and it
 is the only place in any tool pack where that pattern is applied to a secret.
@@ -572,7 +590,16 @@ model reads as "there is no problem" — is the failure mode the whole
   other direction, `booking_bed_allocation_state` reports **one booking's own**
   allocation and never the whole board — it cannot see another booking's beds, a
   custodian's seasonal bed hold, or how many beds the lodge has, so nothing about
-  lodge occupancy may be concluded from it.
+  lodge occupancy may be concluded from it. The derivation an adversarial reader
+  reaches for first is worth stating rather than leaving implicit: joined on the
+  booking-guest id, `booking_bed_allocation_state` and `booking_party_state`
+  together resolve **named guest → bed → night**, including which two guests share
+  a double (the `isSecondOccupant` flag distinguishes them) and each guest's age
+  tier, under `bookings:view` alone. That is deliberate and it is not a widening —
+  it is exactly what `/admin/bed-allocation` shows the same officer, from the same
+  rows, under the same permission — and it is confined to **one booking** at a
+  time, because both entries take a booking id and neither can be run over a lodge,
+  a night or a range.
 - **The audit category is optional, so an empty audit result is not evidence that
   nothing happened.** A row recorded with no category at all is matched by no
   diagnostics tool anywhere. Re-measured by RUNNING the census on the merged tree
@@ -722,7 +749,7 @@ member is double-booked sends them to the wrong screen.
 | 2 | `booking_lifecycle_terminal` | As above — `CANCELLED` or `BUMPED`. |
 | 3 | `booking_waitlisted` | **The waitlist next**, because it explains the capacity shortfall that would otherwise be reported as the primary fault. A waitlisted booking does not fit by definition. |
 | 4 | `member_night_conflict` | **The hard stops.** A member already staying that night under another booking; the platform refuses to double-book a member's night. |
-| 5 | `capacity_exceeded` | A party that needs more beds than the lodge has left. Only a deliberate admin over-capacity confirmation can admit it. |
+| 5 | `capacity_exceeded` | A party that needs more beds than the lodge has left on an ordinary-capacity night. Only a deliberate admin over-capacity confirmation can admit it; an exclusive whole-lodge hold is deliberately excluded and reported only by the next code. |
 | 6 | `whole_lodge_held` | Another booking holds sole occupancy of a night — and this one is **not** bypassable by the admin over-capacity override, which is why it sits with the hard stops. |
 | 7 | `admin_review_pending` | **The child-safety gate.** A pending Booking Officer review blocks arrival at the door, which is more urgent than a membership rule. Today its only cause is a party of under-18s with no adult. |
 | 8 | `hosting_review_pending` | **The hosting review**, which deliberately does **not** block arrival: it is a club membership rule an administrator may accept, and it clears itself the moment an adult member covers the nights. |
@@ -764,6 +791,44 @@ projection both had to change or the fix would have held on one side only.
 deliberately. Their query runs on every booking including a cancelled one, so a 0
 there is a real measurement and reporting it as absent would lose information.
 
+**Three bed figures are SIGNED, and clamping any one of them turns a finding into
+a reassurance.** `checkCapacity` computes `lodgeCapacity - occupiedBeds` with no
+clamp, deliberately: a negative value is exactly what puts a night into the
+over-capacity confirm set (ADR-001 decision 5). It happens for real, on an admin
+over-capacity confirmation (#1668) and on a custodian bed hold taken against a
+night already full, which is why `booking_capacity_by_night` projects
+`capacityOverridden` on every row. So `tightestSpareBeds`,
+`spareBedsAfterThisBooking` **and** `availableBedsExcludingThisBooking` all use
+`signedIntegerOrNull`. The last of those three was the one that did not, and the
+result was a row that contradicted itself: on a night three beds over with a party
+of four the model was handed `availableBeds: 0`, `partyBedsThisNight: 4` and
+`spareBedsAfterThisBooking: -7`, so the subtraction the entry's own scope line asks
+it to perform gave -4 while the field beside it said -7 — and the clamped 0 read as
+"the lodge is exactly full" about a lodge already over. `booking_block_state` was
+signed throughout, so the two entries disagreed about the same night. Say "three
+beds over"; never "full", and never "zero".
+
+**A whole-lodge hold is not an ordinary numeric shortfall.** The capacity engine
+pins availability to 0 when another booking holds sole occupancy, regardless of
+headcount. On that night `wholeLodgeHeldByAnotherBooking` is the authoritative
+fact, `fitsThisNight` is false even when this booking has zero demand, and the
+derived `spareBedsAfterThisBooking` is absent rather than a misleading zero or
+negative number. `booking_block_state` likewise counts the night only in
+`wholeLodgeHeldNightCount`: it does not raise `capacity_exceeded`, add to
+`shortfallNightCount`, or use that policy pin for `tightestSpareBeds`. An admin
+over-capacity confirmation cannot bypass the hold.
+
+**`waitlistPosition` is one-based, so `booking_search` reports it as absent rather
+than 0.** Every writer assigns from 1 (`booking-create.ts` counts the queue ahead
+and adds one; `waitlist.ts` renumbers each lodge's queue from 1) and every exit —
+force-confirm, return-to-waitlist, cancellation, the cross-lodge mover, the
+waitlist cron — writes `null`. There is no position 0 in this platform, so
+`countOf`'s absent-becomes-zero was wrong in both directions: it printed a position
+on every ordinary booking, and on a genuinely waitlisted booking whose position had
+not been recomputed it read as **the front of the queue**. `countOrNull` is the
+helper; the entry's scope line tells the model that an absent position is not a
+place in a queue.
+
 Two more fields are worth reading carefully. `exceptionHeldNightCount` is the
 **only** reliable test of whether an open request is holding beds — never infer it
 from a hold deadline, because a row written before that column existed can be
@@ -785,7 +850,7 @@ always yes-with-an-override and would tell an operator nothing.
 | 6 | `subscription_unpaid` | A **fact** whose consequence depends on the club's lockout mode, reported beside it. |
 | 7 | `not_adult_age_tier` | Why they cannot act as the responsible adult member for a party. |
 | 8 | `cannot_log_in` | Why they cannot act for themselves. |
-| 9 | `induction_outstanding` | **Last, and a warning rather than a booking blocker** — see "What this pack cannot answer". |
+| 9 | `induction_outstanding` | **Last, and a warning rather than a booking blocker** — see "What this pack cannot answer". It is the member's **newest** induction record of **any** kind that decides, matching the member's own dashboard card: an earlier completed induction does not clear the code once a later one is under way. The code's own sentence says so, because "no completed induction exists" did not. |
 
 **The fact and the consequence are separate fields, and conflating them is the
 most likely way to get this wrong.** `subscriptionUnpaid` is the fact that a
@@ -805,6 +870,32 @@ from: `assignment` is a real seasonal assignment, while `role_default` and
 back — worth saying out loud, because an officer expecting an explicit type will
 not find one.
 
+**The season year is not the calendar year, and `member_eligibility_state` reads
+the platform's own derivation of it.** `getSeasonYear` (`utils.ts`) is the one
+definition, shared by roughly forty call sites including the admin member detail
+screen this entry mirrors: a season starts on the first of the month **after** the
+club's financial year-end, which is April for the NZ 31-March convention and is
+club-configurable through `financialYearEndMonth`. So from 1 January until the
+season starts, the season year is the **previous** calendar year.
+
+This entry computed it as the calendar year until #2679's review, which was right
+for nine months of every year and wrong for the other three — and the three did not
+degrade gracefully. `resolveMembershipTypePolicyForMember` found no assignment for
+a season that had not started, so `membershipTypeSource` fell back to a default,
+which this entry's own scope line tells the model means *no assignment exists*; the
+`memberId_seasonYear` lookup missed the row, so `subscriptionStatus` went null,
+which the same scope line calls *no season row exists at all*; and the settlement
+rule then raised `subscription_unpaid`, and with it `qualifiesAsAdultMemberHost:
+false`, against a fully paid-up adult member. It also made two entries in this pack
+contradict each other for a quarter of the year: `booking_block_state` reaches the
+same question through `evaluateProposedPaidUpAdultPresence`, which already uses the
+canonical helper keyed on the **booking's own check-in night**, because a stay is
+judged in the season it falls in. `member_eligibility_state` is member-scoped with
+no booking to key on, so "now" is the right instant there — but the derivation has
+to be the same one. The suite could not see it because the repo-wide frozen clock
+sits at 1 July, inside the season under both rules; it now pins its own instants on
+both sides of the boundary, including a club on a December year-end.
+
 ## Audit categories
 
 Both audit entries derive their category filter from
@@ -819,6 +910,30 @@ neither can ever read a category its domain does not own.
 is why writing the list out by hand would be duplicating an authorisation
 decision: it is the reason a `membership:view` officer cannot reach a `security`
 or `admin` event through it.
+
+**The required AREAS are derived from the same taxonomy, minus one named
+carve-out.** `AUDIT_CORRELATION_DOMAIN_AREAS` is the platform's single declared
+answer to who may read a categorised audit row, and every domain in it begins with
+`support`. AID-6A's correlation entries read their areas straight off it; the three
+record-scoped audit entries — this pack's two and AID-6C's finance one — wrote
+theirs out as literals beside it, so **two live declared answers existed with
+nothing reconciling them**. The literals were correct; being correct and unpinned
+is how a taxonomy change silently invalidates one of two answers and how the next
+pack copies the wrong one.
+
+So the lattice is now the source and the divergence is a single subtraction,
+`aid6bRecordAuditReaderAreas` (`booking-shared.ts`), asserted from both directions
+by the pack's contract test: what remains matches the domain's declared areas, and
+the only thing removed is `support`. **Why the carve-out is right:** a correlation
+entry sweeps a *window* of recent events across a whole domain with no record to
+anchor it — that is the Admin > Audit Log question, and Admin > Audit Log is a
+support screen. A record-scoped entry is keyed to one exact record id supplied by
+an operator who already holds the domain area, projects strictly fewer columns (no
+request id at all), and answers the per-record history already shown on the booking
+and member admin screens the same area governs. Requiring `support` on top would
+leave a Booking Officer able to read a booking's every other fact and not its own
+event list. AID-6C's finance entry made the same choice before this pack existed
+and is pinned by the same test rather than left as a third unreconciled literal.
 
 `member_record_audit_history` takes a **normalised subject word**, never a column
 value: `bind` closes over the server-owned array of `AuditLog."entityType"` values

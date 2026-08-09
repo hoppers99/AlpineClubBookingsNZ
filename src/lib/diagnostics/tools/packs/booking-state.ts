@@ -116,7 +116,7 @@ export const BOOKING_BLOCKER_DESCRIPTIONS: Record<
   member_night_conflict:
     "A member on this booking is already staying on one of these nights under another booking. The platform refuses to double-book a member's night, and one of the two bookings has to change.",
   capacity_exceeded:
-    "On at least one night this booking's party needs more beds than the lodge has left. Only a deliberate admin over-capacity confirmation can admit it, and the shortfall is per night — see the capacity tool.",
+    "On at least one ordinary-capacity night this booking's party needs more beds than the lodge has left. Only a deliberate admin over-capacity confirmation can admit that shortfall. A night held exclusively by another booking is not counted here because that is the separate whole_lodge_held hard block and cannot be bypassed — see the capacity tool.",
   whole_lodge_held:
     "Another booking holds SOLE OCCUPANCY of the lodge on at least one of these nights. That is a hard block on any other admission and an admin over-capacity override cannot punch through it.",
   admin_review_pending:
@@ -162,7 +162,7 @@ export const MEMBER_ELIGIBILITY_DESCRIPTIONS: Record<
   cannot_log_in:
     "This member has no login, so they cannot act for themselves: an administrator has to do it on their behalf.",
   induction_outstanding:
-    "An administrator has flagged that this member must complete a lodge induction, and no completed induction exists. In THIS release that does NOT block any booking — it gates nomination and shows on their dashboard. Do not report it as the reason a booking is refused.",
+    "An administrator has flagged that this member must complete a lodge induction, and their MOST RECENT induction record — of any kind — is not COMPLETED. It is the newest record that decides, so an earlier completed induction does not clear the code: a member who finished a new-member induction and has since started a hut-leader one raises it, which is exactly what their own dashboard card shows. In THIS release it does NOT block any booking — it gates nomination and shows on their dashboard. Do not report it as the reason a booking is refused.",
 };
 
 /**
@@ -227,7 +227,7 @@ const bookingBlockState = defineDiagnosticsTool<BookingIdArgs>({
 
 WHAT EACH FIELD MEANS WHERE IT IS NOT OBVIOUS. bookingLifecycleState is "live", "terminal" (CANCELLED or BUMPED) or "deleted" (soft-deleted). ON A TERMINAL OR DELETED BOOKING EVERY OTHER CHECK IS SUPPRESSED — no policy is evaluated, no capacity is read, no conflict is scanned, and blockerCodes carries only the lifecycle code. That is deliberate: a cancelled booking cannot break a minimum stay or exceed capacity, and reporting that it does would be a false and actionable finding about a booking that is simply over. Such a booking's MONEY may still need attention and this tool cannot see it — that needs finance access and the finance diagnostics tools.
 
-tightestSpareBeds is the WORST night's beds remaining AFTER this booking's own party is counted, with this booking excluded from the occupancy figure; a negative value is a shortfall. It is null on a terminal or deleted booking, where no capacity read was performed — null means "not measured", never "it fits". The same is true of memberNightConflictCount, shortfallNightCount and wholeLodgeHeldNightCount: all four are ABSENT rather than 0 whenever the calculation behind them did not run, so a 0 in any of them is a measurement and an absence is not. openExceptionRequestCount and exceptionHeldNightCount are read on every booking including a cancelled one, so a 0 there IS a measurement. shortfallNightCount is 0 on a WAITLISTED or WAITLIST_OFFERED booking's blocker list by design: a waitlisted booking does not fit by definition, so the waitlist status is reported as the reason and the shortfall as a supporting fact rather than as a separate fault.
+tightestSpareBeds is the WORST ORDINARY-CAPACITY night's beds remaining AFTER this booking's own party is counted, with this booking excluded from the occupancy figure; a negative value is a shortfall. A night another booking holds exclusively is not ordinary capacity: the engine's zero availability is a hard policy pin, not a measured spare-bed figure, so that night contributes only to wholeLodgeHeldNightCount and never to shortfallNightCount or tightestSpareBeds. If every night is exclusively held, tightestSpareBeds is null because no ordinary spare measurement exists; whole_lodge_held remains the authoritative blocker and cannot be bypassed by an over-capacity confirmation. tightestSpareBeds is also null on a terminal or deleted booking, where no capacity read was performed — null means "not measured", never "it fits". The same is true of memberNightConflictCount, shortfallNightCount and wholeLodgeHeldNightCount: all four are ABSENT rather than 0 whenever the calculation behind them did not run, so a 0 in any of them is a measurement and an absence is not. openExceptionRequestCount and exceptionHeldNightCount are read on every booking including a cancelled one, so a 0 there IS a measurement. capacity_exceeded is deliberately ABSENT from a WAITLISTED or WAITLIST_OFFERED booking's blockerCodes: a waitlisted booking does not fit by definition, so the waitlist status is reported as the reason rather than as a second, separate fault. shortfallNightCount and tightestSpareBeds are STILL COMPUTED AND STILL REPORTED on those two statuses — only the blocker code is withheld — so a non-zero shortfall beside booking_waitlisted is the expected shape and is how far off the booking is, not a contradiction.
 
 exceptionHeldNightCount is the ONLY reliable test of whether an open request is holding real beds. Never infer it from exceptionHoldExpiresAtUtc being present: a request written before that column existed can be holding beds with no deadline recorded, and the platform's own schema warns against exactly that inference. memberCanModify answers whether the MEMBER could change this booking themselves, not whether an administrator could — an administrator always can, with an override.
 
@@ -317,7 +317,9 @@ const bookingCapacityByNight = defineDiagnosticsTool<BookingIdArgs>({
 
 WHY THE FIGURES EXCLUDE THIS BOOKING. occupiedBedsExcludingThisBooking and availableBedsExcludingThisBooking are computed with this booking taken out of the population, so availableBeds minus partyBedsThisNight is the honest answer to "does it fit". If you want the lodge's total occupancy INCLUDING this booking, add partyBedsThisNight back.
 
-ON A WHOLE-LODGE-HELD NIGHT occupiedBedsExcludingThisBooking IS ABSENT, and absent means "not reportable", never "zero" and never "empty". The capacity engine deliberately pins that figure to the lodge's full capacity on a held night so that a MEMBER reading the public availability payload cannot tell a held night from a genuinely full one. That is right for a member and wrong for you: an operator told "occupied 20 of 20" would conclude the lodge is full when in fact one booking has reserved sole occupancy and the beds are empty, and their next step — chase the other bookings, or over-capacity confirm — would be wrong twice, because an admin over-capacity override cannot punch into a held night at all. So the count is withheld rather than passed off as real, availableBeds is honestly 0, and wholeLodgeHeldByAnotherBooking is the fact that explains it. Say that the lodge is exclusively held, not that it is full.
+availableBedsExcludingThisBooking IS SIGNED AND CAN BE NEGATIVE, and a negative value is a real state rather than an error: the lodge is that many beds OVER capacity for that night, which happens when an administrator has deliberately over-capacity-confirmed a booking or a custodian holds a bed on a night already full. Say "three beds over", never "full" and never "zero". spareBedsAfterThisBooking is that figure minus this booking's own party, so the two always agree — if they ever do not, report the discrepancy rather than choosing one.
+
+ON A WHOLE-LODGE-HELD NIGHT occupiedBedsExcludingThisBooking AND spareBedsAfterThisBooking ARE ABSENT, and absent means "not reportable", never "zero" and never "empty". The capacity engine deliberately pins occupancy to the lodge's full capacity and availability to zero on a held night so that a MEMBER reading the public availability payload cannot tell a held night from a genuinely full one. That is right for a member and wrong for you: an operator told "occupied 20 of 20" or handed a negative ordinary shortfall would conclude the lodge is full or over capacity when in fact one booking has reserved sole occupancy, and their next step — chase the other bookings, or over-capacity confirm — would be wrong twice, because an admin over-capacity override cannot punch into a held night at all. availableBeds remains the authoritative 0 — no room is usable — but no spare-bed arithmetic is derived from that policy pin, and fitsThisNight is false even when this booking has zero demand that night. wholeLodgeHeldByAnotherBooking is the fact that explains the refusal. Say that the lodge is exclusively held, not that it is full or over capacity.
 
 WHAT IS ALREADY COUNTED, and why a booking query would get it wrong: a custodian bed hold (a hut-leader assignment holding a specific bed for a season) takes a bed out of the pool with NO booking and NO bed-allocation row; a pending policy-exception request in HOLD mode reserves real bed-nights while it waits; and a whole-lodge exclusive hold pins available beds to zero regardless of headcount and cannot be punched through by an admin over-capacity override. All three are in these numbers.
 
@@ -346,7 +348,20 @@ ALLOCATION IS NOT CAPACITY. allocatedBedNights counts the bed-allocation rows th
     occupiedBedsExcludingThisBooking: signedIntegerOrNull(
       row.occupied_beds_excluding_this_booking,
     ),
-    availableBedsExcludingThisBooking: countOf(
+    // `signedIntegerOrNull` and NOT `countOf`, for the same reason as the field
+    // above it and the field below it — this one was the last to get it.
+    // `checkCapacity` computes `lodgeCapacity - occupiedBeds` and does NOT clamp
+    // it (`capacity.ts`), deliberately: a NEGATIVE value is what puts a night into
+    // the over-capacity confirm set, so the sign is load-bearing rather than
+    // incidental. It goes negative on an admin over-capacity confirmation (#1668)
+    // and on a custodian bed hold taken against a full night — cases this entry
+    // expects to meet, because it projects `capacityOverridden` on every row.
+    // `countOf` clamped that to 0, which reads as "the lodge is exactly full" on a
+    // lodge already over, and left the row self-contradictory: the scope line asks
+    // the model to compute availableBeds − partyBedsThisNight, and a clamped 0
+    // beside a signed `spareBedsAfterThisBooking` makes that arithmetic disagree
+    // with the field printed next to it.
+    availableBedsExcludingThisBooking: signedIntegerOrNull(
       row.available_beds_excluding_this_booking,
     ),
     partyBedsThisNight: countOf(row.party_beds_this_night),

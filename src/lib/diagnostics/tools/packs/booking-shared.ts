@@ -76,7 +76,79 @@ import "server-only";
 
 import { z } from "zod";
 
+import {
+  AUDIT_CORRELATION_DOMAIN_AREAS,
+  type AuditCorrelationDomain,
+} from "@/lib/audit-categories";
+import type { AdminPermissionArea } from "@/lib/admin-permissions";
+
 import { FINANCE_UNPARSEABLE_VALUE } from "./finance-shared";
+
+/**
+ * The area a CORRELATION entry requires and a RECORD-SCOPED audit entry does not.
+ *
+ * `AUDIT_CORRELATION_DOMAIN_AREAS` is the platform's single declared answer to
+ * "who may read a categorised audit row", and every domain in it begins with
+ * `support`. That is right for AID-6A's correlation entries, which sweep a WINDOW
+ * of recent events across a whole domain with no record to anchor them: that is
+ * the Admin > Audit Log question, and Admin > Audit Log is a support screen.
+ *
+ * It is not the question a record-scoped audit entry asks. `booking_record_audit_
+ * history` and `member_record_audit_history` are keyed to ONE exact record id
+ * supplied by an operator who already holds the domain area, project strictly
+ * fewer columns than the correlation entries do (no request id at all), and answer
+ * "what did this platform record about THIS booking / THIS member" — which is the
+ * per-record history already on the booking and member admin screens the same area
+ * governs. Requiring `support` on top would mean a Booking Officer could read a
+ * booking's every other fact and not its own event list.
+ */
+const AID6B_RECORD_AUDIT_AREA_CARVE_OUT: AdminPermissionArea = "support";
+
+/**
+ * A record-scoped reader must retain at least one business-domain permission
+ * after the `support` carve-out. The system domain is support-only, so accepting
+ * it here would produce an empty requirement and leave authorization dependent
+ * on every caller remembering that empty currently fails closed.
+ */
+type Aid6bRecordAuditDomain = Exclude<AuditCorrelationDomain, "system">;
+
+/**
+ * The areas a RECORD-SCOPED audit entry requires, derived from the platform's own
+ * correlation lattice rather than written out beside it.
+ *
+ * TWO DECLARED ANSWERS TO ONE AUTHORIZATION QUESTION IS THE DEFECT THIS CLOSES.
+ * Before #2679's security review the three record-scoped audit entries each wrote
+ * their area out as a literal — `["bookings"]`, `["membership"]`, `["finance"]` —
+ * beside a helper (`auditCategoryReaderAreas`) written to be the one answer, with
+ * nothing reconciling the two. Both were live, neither was pinned, and the next
+ * pack had two places to copy from. The literals were CORRECT; being correct and
+ * unpinned is exactly the state in which a taxonomy change silently invalidates
+ * one of them.
+ *
+ * So the domain lattice stays the source, the divergence is a single named
+ * subtraction, and the pack's contract test asserts both halves: that what is left
+ * matches the domain's declared areas, and that the only thing removed is
+ * `support`. A domain reclassified in `audit-categories.ts` now moves these
+ * entries with it, and a domain that gained a second area could not be dropped by
+ * accident.
+ */
+export function aid6bRecordAuditReaderAreas(
+  domain: Aid6bRecordAuditDomain,
+): readonly AdminPermissionArea[] {
+  const areas = AUDIT_CORRELATION_DOMAIN_AREAS[domain].filter(
+    (area) => area !== AID6B_RECORD_AUDIT_AREA_CARVE_OUT,
+  );
+  if (areas.length === 0) {
+    throw new Error(
+      `Record-scoped audit domain ${domain} has no business-domain reader permission`,
+    );
+  }
+  return areas;
+}
+
+/** Exported for the contract test that pins the carve-out to exactly this area. */
+export const AID6B_RECORD_AUDIT_CARVE_OUT_AREAS: readonly AdminPermissionArea[] =
+  [AID6B_RECORD_AUDIT_AREA_CARVE_OUT];
 
 /**
  * The number of rows a SEARCH may return. Ten is #2376's recommended default and

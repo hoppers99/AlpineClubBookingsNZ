@@ -386,6 +386,7 @@ import {
   AID6B_SINGLE_ROW_BYTE_LIMIT,
   AID6B_UNTRUSTED_EVIDENCE_DISCLOSURE,
   AID6B_WIDE_BYTE_LIMIT,
+  aid6bRecordAuditReaderAreas,
   dateOnly,
   dateOnlyOrNull,
   personNameOrNull,
@@ -537,11 +538,21 @@ function lodgeLabelOrNull(value: unknown): string | null {
  * is finance evidence this pack cannot read, and the scope line says so.
  *
  * `totalPriceCents` and `finalPriceCents` use `centsOrNull` rather than
- * `centsOrZero`, DELIBERATELY DIVERGING from `booking-search.ts`, which coerces
- * `finalPriceCents` to zero. Both columns are `Int` NOT NULL with no `@default`,
- * so an absent value is impossible and can only mean the projection read
- * something it did not expect — and reporting a booking as costing nothing is
- * worse in every direction than reporting that the amount is unknown.
+ * `centsOrZero`, DELIBERATELY DIVERGING from the two LISTING entries that project
+ * the same column — `booking_search` (`booking-search.ts`) and
+ * `member_booking_summary` (`membership-records.ts`) — both of which coerce
+ * `finalPriceCents` to zero. Three entries, two helpers, and the split is by the
+ * kind of answer rather than by module.
+ *
+ * Both columns are `Int` NOT NULL with no `@default`, so an absent value is
+ * impossible either way and the divergence is unreachable on real data. It is
+ * about which wrong answer is safer if it ever becomes reachable. THIS entry is
+ * the per-booking money answer an officer acts on, so an unexpected read must say
+ * "unknown": reporting a booking as costing nothing is worse in every direction.
+ * The listing entries exist for RECOGNITION — pick the right booking out of ten —
+ * where a `null` in a price column beside nine numbers reads as a data fault in
+ * the tool and sends the reader to the wrong question; they hold a number, and the
+ * entry an operator drills into carries the honest absence.
  */
 const BOOKING_SUMMARY_SQL = `SELECT
   b."id" AS booking_ref,
@@ -1128,7 +1139,11 @@ const bookingRecordAuditHistory = defineDiagnosticsTool<BookingIdArgs>({
   source: "select_only_sql",
   label: "Booking audit history for a record",
   description: `Returns the platform's own booking audit events for ONE booking, newest first, at most ${AID6B_HISTORY_ROW_LIMIT}. Each row carries only stable codes and an instant: the event reference, the action code, the audit category, severity and outcome, the kind of record it concerned, and when it happened in UTC. Use it to see what the platform recorded happening to this booking and in what order. It searches ONLY the booking audit categories (${BOOKING_AUDIT_CATEGORIES.join(", ")}) and only events recorded against the BOOKING record itself — a payment, bed-allocation or change-request event is recorded against that record instead. It never returns who did it, event descriptions, stored metadata, IP addresses or error text. ${AID6B_DESCRIPTION_TAIL}`,
-  requiredAreas: ["bookings"],
+  // DERIVED from the platform's correlation lattice minus the one named carve-out,
+  // never written out here. See `aid6bRecordAuditReaderAreas` for why a
+  // record-scoped audit entry does not require `support` and the pack's contract
+  // test for the assertion that reconciles the two.
+  requiredAreas: aid6bRecordAuditReaderAreas("booking"),
   evidenceScope: `Audit events recorded against ONE booking record, in the booking categories ${BOOKING_AUDIT_CATEGORIES.join(" and ")} only, at most ${AID6B_HISTORY_ROW_LIMIT}, newest first. AN EMPTY RESULT IS NOT EVIDENCE THAT NOTHING HAPPENED, and there are two structural reasons rather than one. First, the audit category is OPTIONAL, and a row recorded with no category at all is matched by no diagnostics tool anywhere — a number of production write paths still record that way and another change is actively reclassifying them, so treat the gap as real and current rather than as a fixed list. Second, "Booking" is the ONLY entity type read here: an event recorded against this booking's PAYMENT, its bed allocation, its change request or the member is filed under that record's own type and id, and is not in this result. Never report that something did not happen on the strength of an empty result; say that no categorised booking audit event matched the booking record, and point at Admin > Audit Log, which lists uncategorised rows and every entity type as well. ${AID6B_SCOPE_TAIL} ${AID6B_UNTRUSTED_EVIDENCE_DISCLOSURE}`,
   argsSchema: bookingIdArgsSchema,
   inputSchema: bookingIdInputSchema,

@@ -345,6 +345,20 @@ required. The three `server_owned` entries in AID-6B do not read through this
 credential and are unaffected, so a deployment that has not been re-provisioned can
 still be misread as partly working: check readiness rather than a single tool.
 
+**THE ONLY PRODUCTION CHANGE THIS RELEASE MAKES IS THE GRANT, and it is worth
+stating plainly rather than leaving it to be inferred.** `invokeDiagnosticsTool`
+has no production call site: there is no `/admin/ai-diagnostics` page and nothing
+in the shipped runtime calls a tool. The pack therefore ships **dormant** — every
+entry is registered, reviewed and tested, and none of them can be reached by an
+operator until #2378 builds the surface. What *does* change on deploy is the
+database credential: after `npm run diagnostics:provision-role`, `ai_diagnostics_ro`
+holds SELECT on twelve new relations and on a `Member` widened from two columns to
+twenty-two, none of which any tool can use yet. The credential's blast radius
+therefore grows one release ahead of the feature. That is defensible and it is
+ADR-007's own trade — the friction requires the grant to ship with the tool it
+belongs to, not with the page — but it means the grant, and not the pack, is what a
+production incident in this release could touch.
+
 ### Adding a relation grant later
 
 A tool pack (AID-6A/B/C) that needs a new relation adds its grant to `SELECT_GRANTS`

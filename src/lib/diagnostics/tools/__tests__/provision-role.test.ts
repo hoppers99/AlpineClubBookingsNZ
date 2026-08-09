@@ -588,20 +588,6 @@ describe("the SELECT-only grant allowlist matches what the statements read", () 
   });
 
   /**
-   * THE SIZE OF THE ALLOWLIST, PINNED.
-   *
-   * Not a ceiling and not a preference — a census, in the same spirit as
-   * `AUDIT_CENSUS_TOTALS`. Two documents quote these figures as the reach of the
-   * credential (`docs/ai-diagnostics/deployment.md` and
-   * `docs/ai-diagnostics/tool-pack-booking-membership.md`), and both were stale by
-   * four before #2376 re-measured them: an earlier revision of AID-6B trimmed four
-   * granted-but-unread columns and the prose kept saying 248.
-   *
-   * A pull request that widens or narrows the grant has to change this number and
-   * the two documents in the same commit, which is the only mechanism that has ever
-   * kept them together.
-   */
-  /**
    * NO STATEMENT MAY QUALIFY A SQL CONSTRUCT AS IF IT WERE A FUNCTION.
    *
    * Over EVERY registered statement, not just one pack's, because the mistake is a
@@ -647,6 +633,20 @@ describe("the SELECT-only grant allowlist matches what the statements read", () 
     },
   );
 
+  /**
+   * THE SIZE OF THE ALLOWLIST, PINNED.
+   *
+   * Not a ceiling and not a preference — a census, in the same spirit as
+   * `AUDIT_CENSUS_TOTALS`. Two documents quote these figures as the reach of the
+   * credential (`docs/ai-diagnostics/deployment.md` and
+   * `docs/ai-diagnostics/tool-pack-booking-membership.md`), and both were stale by
+   * four before #2376 re-measured them: an earlier revision of AID-6B trimmed four
+   * granted-but-unread columns and the prose kept saying 248.
+   *
+   * A pull request that widens or narrows the grant has to change this number and
+   * the two documents in the same commit, which is the only mechanism that has ever
+   * kept them together.
+   */
   it("grants exactly the census the deployment and pack documents quote", () => {
     expect(SELECT_GRANTS.length).toBe(25);
     expect(

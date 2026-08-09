@@ -120,7 +120,7 @@ import {
   DELETED_ACCOUNT_PASSWORD_HASH,
   isDeletedAccountRecord,
 } from "@/lib/deleted-account";
-import { getInductionForMember } from "@/lib/induction";
+import { getInductionStatusForMember } from "@/lib/induction";
 import { peekSubscriptionLockoutMode } from "@/lib/member-subscription-eligibility";
 import { resolveMembershipTypePolicyForMember } from "@/lib/membership-type-policy";
 import { participantQualifiesAsHost } from "@/lib/policies/adult-member-hosting";
@@ -129,6 +129,7 @@ import {
   resolveMemberSubscriptionSettlement,
   subscriptionIsUnpaid,
 } from "@/lib/subscription-lockout-facts";
+import { getSeasonYear } from "@/lib/utils";
 
 import type { DiagnosticsToolRawRow } from "../define";
 
@@ -318,11 +319,6 @@ async function withDeadline<T>(work: Promise<T>, label: string): Promise<T> {
   } finally {
     if (timer !== undefined) clearTimeout(timer);
   }
-}
-
-/** The current season year, as every subscription surface in this platform means it. */
-function currentSeasonYear(): number {
-  return new Date().getUTCFullYear();
 }
 
 // ---------------------------------------------------------------------------
@@ -623,12 +619,30 @@ async function readBookingBlockState(
   for (const detail of nightDetails) {
     const night = formatDateOnly(detail.date);
     const demand = demandByNight.get(night) ?? 0;
+
+    /**
+     * An exclusive hold is a POLICY refusal, not a numeric capacity shortfall.
+     * `checkCapacity` pins `availableBeds` to zero for that refusal regardless of
+     * occupancy or this booking's demand. Subtracting demand from that pin would
+     * manufacture a negative spare figure, raise `capacity_exceeded` beside the
+     * authoritative `whole_lodge_held` reason, and suggest that an admin
+     * over-capacity confirmation could admit the booking when that path expressly
+     * cannot bypass an exclusive hold.
+     *
+     * Count the hold, then withhold ordinary spare/shortfall arithmetic for this
+     * night. If every night is held, `tightestSpareBeds` remains honestly absent:
+     * there was no ordinary capacity measurement from which to derive it.
+     */
+    if (detail.wholeLodgeHeld === true) {
+      wholeLodgeHeldNights += 1;
+      continue;
+    }
+
     const spare = detail.availableBeds - demand;
     if (tightestSpareBeds === null || spare < tightestSpareBeds) {
       tightestSpareBeds = spare;
     }
     if (spare < 0) shortfallNights += 1;
-    if (detail.wholeLodgeHeld === true) wholeLodgeHeldNights += 1;
   }
 
   /**
@@ -732,6 +746,15 @@ async function readBookingBlockState(
       // `null` and not `0` when the capacity engine did not run: on a terminal or
       // deleted booking there is no shortfall to report, and a zero would read as
       // "it fits", which is a claim about a booking that no longer exists.
+      //
+      // THIS GUARD IS DELIBERATELY REDUNDANT and no mutation can detect it: the
+      // accumulator is initialised to `null` and only assigned inside a loop over
+      // `capacity?.nightDetails ?? []`, so a null capacity already yields null.
+      // It is kept because the three fields above it are the same claim and are
+      // NOT redundant, and a reader comparing the four should not have to
+      // reconstruct which one leans on an initialiser to be correct. Removing it
+      // would make this field's correctness depend on a declaration eighty lines
+      // away rather than on the line itself.
       tightest_spare_beds: capacity === null ? null : tightestSpareBeds,
       open_exception_request_count: openRequests.length,
       exception_held_night_count: heldNightCount,
@@ -903,18 +926,23 @@ async function readBookingCapacity(
        * confirm) would be the wrong one twice over, because an admin override
        * cannot punch into a held night at all.
        *
-       * `availableBeds` is NOT pinned in the same way — it is honestly 0 on a held
-       * night, and 0 is the true answer to "how much room is there" — so it is
-       * reported as it stands, beside `wholeLodgeHeldByAnotherBooking`, which is
-       * the fact that explains it.
+       * `availableBeds` is the engine's authoritative 0 on a held night: there is
+       * no room another booking may use. But subtracting this booking's demand
+       * from that policy pin would manufacture an ordinary negative shortfall,
+       * and zero demand would manufacture `fits: true`. Therefore the derived
+       * spare figure is absent and `fits` is false regardless of demand; the hold
+       * fact is the only reason an operator should act on.
        */
       occupied_beds_excluding_this_booking: wholeLodgeHeld
         ? null
         : detail.occupiedBeds,
       available_beds_excluding_this_booking: detail.availableBeds,
       party_beds_this_night: demand,
-      spare_beds_after_this_booking: detail.availableBeds - demand,
-      fits_this_night: detail.availableBeds - demand >= 0,
+      spare_beds_after_this_booking: wholeLodgeHeld
+        ? null
+        : detail.availableBeds - demand,
+      fits_this_night:
+        !wholeLodgeHeld && detail.availableBeds - demand >= 0,
       whole_lodge_held_by_another_booking: wholeLodgeHeld,
       this_booking_holds_whole_lodge: booking.wholeLodgeHold,
       capacity_overridden: booking.capacityOverriddenAt !== null,
@@ -964,7 +992,34 @@ export async function readMemberEligibilityEvidence(args: {
 async function readMemberEligibility(
   memberId: string,
 ): Promise<readonly DiagnosticsToolRawRow[]> {
-  const seasonYear = currentSeasonYear();
+  /**
+   * THE SEASON YEAR IS NOT THE CALENDAR YEAR, and this entry computed it as if it
+   * were until #2679's review.
+   *
+   * `getSeasonYear` (`utils.ts`) is the platform's ONE derivation and ~40 call
+   * sites share it, including the admin member detail screen this entry mirrors. A
+   * season starts on the first of the month AFTER the club's financial year-end —
+   * April by default (the NZ 31-March convention) and club-configurable through
+   * `financialYearEndMonth` — so from 1 January until the season starts, the
+   * season year is the PREVIOUS calendar year. `new Date().getUTCFullYear()` was
+   * right for nine months and wrong for three, and the three were not a rounding
+   * error: `resolveMembershipTypePolicyForMember` found no assignment for a season
+   * that had not started (so `membershipTypeSource` fell back to a default, which
+   * this entry's scope line tells the model means NO assignment exists), the
+   * `memberId_seasonYear` lookup missed the row entirely (so `subscriptionStatus`
+   * went null, which the same scope line calls "no season row exists at all"), and
+   * the settlement rule then raised `subscription_unpaid` — and with it
+   * `qualifiesAsAdultMemberHost: false` — against a fully paid-up adult member.
+   *
+   * IT ALSO MADE TWO ENTRIES IN THIS PACK CONTRADICT EACH OTHER.
+   * `booking_block_state` reaches the same question through
+   * `evaluateProposedPaidUpAdultPresence`, which already calls the canonical
+   * helper keyed on the BOOKING's check-in night, because a stay is judged in the
+   * season it falls in. This entry is MEMBER-scoped with no booking to key on, so
+   * "now" is the right instant here — but the derivation has to be the same one,
+   * or the two entries answer one question two ways for a quarter of every year.
+   */
+  const seasonYear = getSeasonYear();
 
   const member = await prisma.member.findUnique({
     where: { id: memberId },
@@ -988,7 +1043,7 @@ async function readMemberEligibility(
   });
   if (!member) return [];
 
-  const [typePolicy, subscription, ageTierSettings, lockoutMode, induction] =
+  const [typePolicy, subscription, ageTierSettings, lockoutMode, inductionStatus] =
     await Promise.all([
       resolveMembershipTypePolicyForMember(prisma, { memberId, seasonYear }),
       prisma.memberSubscription.findUnique({
@@ -997,7 +1052,26 @@ async function readMemberEligibility(
       }),
       getAgeTierSettings(),
       peekSubscriptionLockoutMode(),
-      getInductionForMember(memberId),
+      /**
+       * THE NARROW READ, and not `getInductionForMember`, which is the wide one.
+       *
+       * Both return the newest `MemberInduction` for the member by `createdAt`,
+       * across every `InductionKind`. The difference is what comes back with it:
+       * `getInductionForMember` is built for the member's own induction page and
+       * its `include` materialises `finalComments`, `voidedReason`, every
+       * sign-off's `comments` and `signerName`, the template's `competencyPrompt`,
+       * `notesPrompt` and `legacySourceText`, the assigned signers' names and the
+       * inductee's own name — health, safety and competency text, pulled into this
+       * process on the application's FULL-PRIVILEGE connection, in the one module
+       * whose header says the named `select` clauses ARE the boundary.
+       *
+       * Nothing ever leaked: only `.status` is read, twice, and the projection has
+       * no field for any of the rest. But an unread wide read is the same defect
+       * with none of the friction, exactly as the nine dropped columns on
+       * `BLOCK_STATE_BOOKING_SELECT` were — one field name away from a projected
+       * row, in a file where that distance is the whole control.
+       */
+      getInductionStatusForMember(memberId),
     ]);
 
   const settlement = resolveMemberSubscriptionSettlement({
@@ -1068,7 +1142,7 @@ async function readMemberEligibility(
     subscriptionSettled: !unpaid,
   });
 
-  const inductionComplete = induction?.status === "COMPLETED";
+  const inductionComplete = inductionStatus === "COMPLETED";
 
   const raised: Record<MemberEligibilityCode, boolean> = {
     member_erased: erased,
@@ -1117,7 +1191,7 @@ async function readMemberEligibility(
       subscription_lockout_mode: lockoutMode,
       qualifies_as_adult_member_host: qualifiesAsHost,
       requires_induction: member.requiresInduction,
-      induction_status: induction?.status ?? null,
+      induction_status: inductionStatus,
       induction_complete: inductionComplete,
       // Stated on the row itself, not only in the scope line, because this is the
       // field most likely to be read as a booking blocker.

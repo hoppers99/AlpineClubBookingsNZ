@@ -82,7 +82,9 @@ import { describe, expect, it } from "vitest";
 import { bookingAttendanceIsTerminal } from "@/lib/adult-member-hosting-review";
 import {
   AUDIT_CATEGORY_CORRELATION_DOMAIN,
+  AUDIT_CORRELATION_DOMAIN_AREAS,
   auditCategoriesForCorrelationDomain,
+  auditCategoryReaderAreas,
 } from "@/lib/audit-categories";
 
 import {
@@ -119,9 +121,11 @@ import {
   AID6B_PARTY_ROW_LIMIT,
   AID6B_SEARCH_ROW_LIMIT,
   AID6B_SEARCH_WINDOWS,
+  AID6B_RECORD_AUDIT_CARVE_OUT_AREAS,
   AID6B_SINGLE_ROW_BYTE_LIMIT,
   AID6B_WIDE_BYTE_LIMIT,
   PERSON_NAME_MAX_CHARS,
+  aid6bRecordAuditReaderAreas,
   personNameOrNull,
 } from "../booking-shared";
 import {
@@ -132,6 +136,7 @@ import {
   DIAGNOSTICS_MEMBER_ELIGIBILITY_TOOL_ID,
   MEMBER_ELIGIBILITY_DESCRIPTIONS,
 } from "../booking-state";
+import { DIAGNOSTICS_FINANCE_AUDIT_HISTORY_TOOL_ID } from "../finance-records";
 import { FINANCE_UNPARSEABLE_VALUE, countOf } from "../finance-shared";
 import {
   DIAGNOSTICS_AID6B_MEMBERSHIP_RECORD_TOOLS,
@@ -1318,12 +1323,132 @@ describe("AID-6B booking/membership pack: null is not zero (#2376)", () => {
       project({ occupied_beds_excluding_this_booking: 12 })
         .occupiedBedsExcludingThisBooking,
     ).toBe(12);
-    // The available count beside it is a genuine non-negative count and stays
-    // one: on a held night it is honestly 0.
+    // The available count beside it is honestly 0 on a held night, and 0 is what
+    // the row carries. THAT ZERO IS NOT EVIDENCE THE FIELD IS A NON-NEGATIVE
+    // COUNT — see the test below, which is the correction to a belief this
+    // assertion used to state.
     expect(
       project({ available_beds_excluding_this_booking: 0 })
         .availableBedsExcludingThisBooking,
     ).toBe(0);
+  });
+
+  it("lets `availableBedsExcludingThisBooking` go NEGATIVE on an over-capacity night", () => {
+    // THE CORRECTED BELIEF. This field used to go through `countOf` and this
+    // suite used to call it "a genuine non-negative count", reading the pinned
+    // ZERO of a whole-lodge-held night as proof of the general case. It is not
+    // one. The value is `checkCapacity`'s own `availableBeds` passed straight
+    // through, and `capacity.ts` computes it as `lodgeCapacity - occupiedBeds`
+    // with NO clamp — deliberately, because a negative value is exactly what puts
+    // a night into the over-capacity confirm set. It goes below zero on an admin
+    // over-capacity confirmation (#1668) and on a custodian bed hold taken against
+    // a night already full, and this entry projects `capacityOverridden` on every
+    // row precisely because it expects to meet that case.
+    //
+    // Clamped, the row contradicted itself. On a night three beds over with a
+    // party of four the model was handed `availableBeds: 0`,
+    // `partyBedsThisNight: 4` and `spareBedsAfterThisBooking: -7`: the subtraction
+    // the entry's own scope line asks it to perform gives -4, the field beside it
+    // says -7, and the clamped field reads as "the lodge is exactly full" about a
+    // lodge that is already over. `booking_block_state`'s `tightestSpareBeds` was
+    // signed throughout, so the two entries disagreed about the same night.
+    const project = entry(DIAGNOSTICS_BOOKING_CAPACITY_TOOL_ID).project;
+    const overCapacity = project({
+      available_beds_excluding_this_booking: -3,
+      party_beds_this_night: 4,
+      spare_beds_after_this_booking: -7,
+      fits_this_night: false,
+    });
+    expect(overCapacity.availableBedsExcludingThisBooking).toBe(-3);
+    // The identity the scope line asks the model to compute now holds on the row.
+    expect(
+      Number(overCapacity.availableBedsExcludingThisBooking) -
+        Number(overCapacity.partyBedsThisNight),
+    ).toBe(overCapacity.spareBedsAfterThisBooking);
+    expect(overCapacity.fitsThisNight).toBe(false);
+    // …and the helper that was wrong, shown doing the wrong thing: "three beds
+    // over" became "exactly full".
+    expect(countOf(-3), "countOf would have clamped it").toBe(0);
+    // A non-integer is still refused rather than rounded, and an absent value is
+    // still absent rather than zero — the two properties `signedIntegerOrNull`
+    // adds beside the sign.
+    expect(
+      project({ available_beds_excluding_this_booking: 2.5 })
+        .availableBedsExcludingThisBooking,
+    ).toBeNull();
+    expect(
+      project({ available_beds_excluding_this_booking: "" })
+        .availableBedsExcludingThisBooking,
+    ).toBeNull();
+    expect(
+      project({ available_beds_excluding_this_booking: "-3" })
+        .availableBedsExcludingThisBooking,
+    ).toBe(-3);
+  });
+
+  it("keeps `waitlistPosition` ABSENT rather than reporting position 0", () => {
+    // `Booking."waitlistPosition"` is `Int?` and the platform's positions are
+    // ONE-BASED: `booking-create.ts` assigns `count(...) + 1` and `waitlist.ts`
+    // renumbers each lodge's queue from 1, while force-confirm, return-to-
+    // waitlist, cancellation, the cross-lodge mover and the waitlist cron all
+    // write `null`. So 0 is a value this platform never stores — and `countOf`
+    // printed it on every ordinary booking in a search result. The damaging
+    // direction is the genuinely waitlisted booking whose position has not been
+    // recomputed: through `countOf` it read as position 0, the FRONT of the
+    // queue, on a booking that holds no place in it at all.
+    const project = entry(DIAGNOSTICS_BOOKING_SEARCH_TOOL_ID).project;
+    expect(project({ waitlist_position: null }).waitlistPosition).toBeNull();
+    expect(project({ waitlist_position: undefined }).waitlistPosition).toBeNull();
+    expect(project({ waitlist_position: "" }).waitlistPosition).toBeNull();
+    expect(project({ waitlist_position: 1 }).waitlistPosition).toBe(1);
+    expect(project({ waitlist_position: 12 }).waitlistPosition).toBe(12);
+    // A negative or fractional position did not come from this platform, so it is
+    // refused rather than clamped into a plausible one.
+    expect(project({ waitlist_position: -2 }).waitlistPosition).toBeNull();
+    expect(project({ waitlist_position: 1.5 }).waitlistPosition).toBeNull();
+    expect(countOf(null), "countOf would have said position 0").toBe(0);
+  });
+
+  it("can represent BOTH occupants of one double bed on one night", () => {
+    // #2669's flattening, in the one place this pack could reintroduce it. A
+    // DOUBLE bed may hold two occupants for a night — one primary and one marked
+    // `isSecondOccupant` — and the schema's `@@unique([bedId, stayDate,
+    // isSecondOccupant])` is what allows the pair. The entry emits one row per
+    // `BedAllocation` and keys nothing by bed, so both survive; the flag is the
+    // only thing that tells them apart, and it had no assertion anywhere until
+    // this one. A projection that collapsed them would report a couple as a
+    // single guest and send an officer to fill a bed that is already taken twice.
+    const project = entry(DIAGNOSTICS_BOOKING_BED_ALLOCATION_TOOL_ID).project;
+    const sameBedSameNight = {
+      stay_date: "2026-08-14",
+      room_name: "Bunk Room",
+      bed_name: "Bed 3",
+      bed_type: "DOUBLE",
+      bed_type_matches_bed: true,
+    };
+    const primary = project({
+      ...sameBedSameNight,
+      guest_ref: "cm5guestaaaaaaaaaaaaaaaaa",
+      is_second_occupant: false,
+    });
+    const second = project({
+      ...sameBedSameNight,
+      guest_ref: "cm5guestbbbbbbbbbbbbbbbbb",
+      is_second_occupant: true,
+    });
+    expect(primary.isSecondOccupant).toBe(false);
+    expect(second.isSecondOccupant).toBe(true);
+    // Same bed, same room, same night — and two rows, told apart by the flag and
+    // by the guest.
+    expect(primary.bedName).toBe(second.bedName);
+    expect(primary.roomName).toBe(second.roomName);
+    expect(primary.stayDate).toBe(second.stayDate);
+    expect(primary.guestRef).not.toBe(second.guestRef);
+    expect(primary.guestRef).not.toBe(FINANCE_UNPARSEABLE_VALUE);
+    // `boolOf` is right here and not a three-valued helper: the column is
+    // `Boolean` NOT NULL with a default, so absent means false rather than
+    // unknown.
+    expect(project({ is_second_occupant: null }).isSecondOccupant).toBe(false);
   });
 
   it("keeps `creditElectionCents` NULL, 0 and positive as three distinguishable states", () => {
@@ -2302,6 +2427,90 @@ describe("AID-6B booking/membership pack: the audit subject maps (#2376)", () =>
         `${category} is in both domains`,
       ).toBe(false);
     }
+  });
+
+  it("RECONCILES its required areas with the platform's correlation lattice", () => {
+    // TWO DECLARED ANSWERS TO ONE AUTHORIZATION QUESTION, and until #2679's
+    // security review nothing reconciled them. `AUDIT_CORRELATION_DOMAIN_AREAS`
+    // is the platform's single declared answer to "who may read a categorised
+    // audit row" and AID-6A's correlation entries read their areas straight off
+    // it; the three record-scoped audit entries — this pack's two and AID-6C's
+    // finance one — wrote theirs out as literals beside it. The literals were
+    // correct. Being correct and unpinned is how a taxonomy change quietly
+    // invalidates one of two live answers, and how the next pack copies the wrong
+    // one.
+    //
+    // So the lattice is the source, the divergence is ONE named subtraction, and
+    // both halves are asserted: what remains matches the domain's declared areas,
+    // and the only thing removed is `support`.
+    //
+    // WHY THE CARVE-OUT IS RIGHT. A correlation entry sweeps a WINDOW of recent
+    // events across a whole domain with no record to anchor it — that is the
+    // Admin > Audit Log question, and Admin > Audit Log is a support screen. A
+    // record-scoped entry is keyed to one exact record id supplied by an operator
+    // who already holds the domain area, projects strictly fewer columns (no
+    // request id at all), and answers the per-record history that is already on
+    // the booking and member admin screens the same area governs. Requiring
+    // `support` on top would leave a Booking Officer able to read a booking's
+    // every other fact and not its own event list.
+    const cases = [
+      [DIAGNOSTICS_BOOKING_AUDIT_HISTORY_TOOL_ID, "booking"],
+      [DIAGNOSTICS_MEMBER_AUDIT_HISTORY_TOOL_ID, "membership"],
+      // AID-6C's finance audit entry made the same choice before this pack
+      // existed, so it is pinned here too rather than left as the third
+      // unreconciled literal.
+      [DIAGNOSTICS_FINANCE_AUDIT_HISTORY_TOOL_ID, "finance"],
+    ] as const;
+    for (const [id, domain] of cases) {
+      const declared = [...entry(id).requiredAreas];
+      const lattice = [...AUDIT_CORRELATION_DOMAIN_AREAS[domain]];
+      expect(lattice, `${domain} lost its own area`).toContain(
+        domain === "booking" ? "bookings" : domain,
+      );
+      // What the entry requires is exactly the lattice minus the carve-out…
+      expect(declared, id).toEqual(
+        lattice.filter(
+          (area) => !AID6B_RECORD_AUDIT_CARVE_OUT_AREAS.includes(area),
+        ),
+      );
+      // …and the carve-out really is only `support`: every other area the lattice
+      // names for this domain survives into the requirement.
+      for (const area of lattice) {
+        if (AID6B_RECORD_AUDIT_CARVE_OUT_AREAS.includes(area)) {
+          expect(declared, `${id} still requires ${area}`).not.toContain(area);
+          continue;
+        }
+        expect(declared, `${id} dropped ${area}`).toContain(area);
+      }
+      // And every category the entry can actually read belongs to that domain, so
+      // the areas and the category filter cannot describe different populations.
+      for (const category of auditCategoriesForCorrelationDomain(domain)) {
+        expect(auditCategoryReaderAreas(category), category).toEqual(lattice);
+      }
+    }
+    expect(AID6B_RECORD_AUDIT_CARVE_OUT_AREAS).toEqual(["support"]);
+    // The helper is what the entries call, so it is asserted rather than the
+    // arithmetic being re-done here.
+    expect([...aid6bRecordAuditReaderAreas("membership")]).toEqual(["membership"]);
+    expect([...aid6bRecordAuditReaderAreas("booking")]).toEqual(["bookings"]);
+
+    // Every business domain remains non-empty after the carve-out. This includes
+    // lodge, which has no AID-6B record reader today: pinning it now makes future
+    // registry composition fail here rather than silently inheriting an empty
+    // permission requirement.
+    for (const domain of ["booking", "membership", "finance", "lodge"] as const) {
+      expect(aid6bRecordAuditReaderAreas(domain), domain).not.toHaveLength(0);
+    }
+
+    // `system` is support-only. The public type rejects it, while this deliberate
+    // unsafe cast proves the runtime assertion still fails closed for JavaScript,
+    // a stale build, or a future caller that erases the type.
+    const unsafeRecordAreas = aid6bRecordAuditReaderAreas as unknown as (
+      domain: string,
+    ) => readonly unknown[];
+    expect(() => unsafeRecordAreas("system")).toThrow(
+      /no business-domain reader permission/,
+    );
   });
 
   it("tells the model that an empty audit result is not evidence of absence", () => {

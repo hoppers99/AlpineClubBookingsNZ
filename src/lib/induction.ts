@@ -422,6 +422,35 @@ export async function getInductionForMember(
   });
 }
 
+/**
+ * The STATUS of the member's most recent induction, and nothing else.
+ *
+ * Same record `getInductionForMember` returns — the newest by `createdAt` of ANY
+ * `InductionKind`, one derivation of "most recent" shared by both — but projected
+ * down to the one column a caller that only needs the state can use.
+ *
+ * It exists for AI Diagnostics (#2376). `getInductionForMember` is written for the
+ * member's own induction page and its `include` pulls the whole record graph:
+ * `finalComments`, `voidedReason`, every sign-off's `comments` and `signerName`,
+ * the template's `competencyPrompt`, `notesPrompt` and `legacySourceText`, the
+ * assigned signers' names and the inductee's name. That is health, safety and
+ * competency data, and the diagnostics evidence source that needed only `.status`
+ * documents its named `select` clauses as the only boundary between it and columns
+ * like those. Nothing leaked — the projection consumed one field — but the read
+ * did not honour the claim the module is reviewed against, so the narrow read
+ * lives here rather than the wide one being trusted there.
+ */
+export async function getInductionStatusForMember(
+  memberId: string,
+): Promise<InductionStatus | null> {
+  const induction = await prisma.memberInduction.findFirst({
+    where: { memberId },
+    orderBy: { createdAt: "desc" },
+    select: { status: true },
+  });
+  return induction?.status ?? null;
+}
+
 export async function getInductionById(
   inductionId: string,
 ): Promise<MemberInductionWithDetail | null> {
