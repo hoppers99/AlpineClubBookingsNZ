@@ -79,9 +79,9 @@ describe("pr:check offline gate runner", () => {
    * makes every path `undefined`: `isCodeBearing` sees nothing, the gate returns
    * `not-code-bearing`, and PASS is printed for a body that CI will reject.
    *
-   * Reverting `changesAgainst` to `--name-only` (or dropping `parseNameStatus`)
-   * turns this assertion red, which is the point — the previous shape reported a
-   * hollow PASS on every local run.
+   * Dropping `parseNameStatus` from `changesAgainst` turns this assertion red,
+   * which is the point — the previous shape reported a hollow PASS on every
+   * local run.
    */
   it("fails a code-bearing diff that adds no fragment and carries no marker", () => {
     root = makeRepo({ "src/lib/thing.ts": "export const value = 1;\n" });
@@ -111,8 +111,9 @@ describe("pr:check offline gate runner", () => {
   });
 
   /**
-   * A deleted fragment must not be credited as an added one — that is the whole
-   * reason the gate needs `--name-status` rather than `--name-only`.
+   * A deleted fragment must not be credited as an added one — one of the two
+   * reasons the shared diff helper only ever runs `--name-status`. (The other is
+   * that `--name-only` hides the source path of a rename.)
    */
   it("does not credit a code-bearing diff for deleting somebody else's fragment", () => {
     root = mkdtempSync(join(tmpdir(), "pr-body-gate-"));
@@ -185,19 +186,64 @@ describe("pr:check offline gate runner", () => {
     base is the state a fresh clone with an unfetched `origin/main` is in, and a
     runner that printed PASS for any body there would be worse than useless.
   */
-  it("keeps the section required when it cannot resolve the diff at all", () => {
-    root = makeRepo({ "package.json": '{ "name": "x" }\n' });
+  function runGateWithUnresolvableBase(root, body) {
     const bodyPath = join(root, "body.md");
-    writeFileSync(bodyPath, DEPENDABOT_BODY);
+    writeFileSync(bodyPath, body);
     const result = spawnSync(
       process.execPath,
       [script, bodyPath, "--base", "refs/heads/no-such-branch"],
       { cwd: root, encoding: "utf8" },
     );
-    const output = `${result.stdout ?? ""}${result.stderr ?? ""}`;
+    return { ...result, output: `${result.stdout ?? ""}${result.stderr ?? ""}` };
+  }
+
+  it("keeps the section required when it cannot resolve the diff at all", () => {
+    root = makeRepo({ "package.json": '{ "name": "x" }\n' });
+    const { status, output } = runGateWithUnresolvableBase(root, DEPENDABOT_BODY);
     expect(output).toContain("Could not diff against");
     expect(output).toContain("FAIL  Concurrency declaration");
     expect(output).toContain("no diff context");
-    expect(result.status).toBe(1);
+    expect(status).toBe(1);
+  });
+
+  /*
+    The same unresolved-diff state, with the body shape agents actually write:
+    the template's ticked `N/A` and no fragment. Both gates decide from the diff,
+    so with no diff neither can reach CI's verdict — and this runner used to
+    print "PR body passes both gates" and exit 0 for exactly this input, because
+    an empty sensitive-file list read as "nothing sensitive changed" and an empty
+    change list read as "not code-bearing". A green here is worse than no answer:
+    it is the answer CI will contradict.
+  */
+  it("refuses to green a ticked N/A and a missing fragment with no diff to check", () => {
+    root = makeRepo({ "src/lib/booking-capacity.ts": "export const beds = 1;\n" });
+    const { status, output } = runGateWithUnresolvableBase(root, BODY_WITHOUT_FRAGMENT);
+    expect(output).toContain("FAIL  Concurrency declaration");
+    expect(output).toContain("FAIL  Changelog fragment");
+    expect(output).not.toContain("passes both gates");
+    expect(status).toBe(1);
+  });
+
+  /*
+    An unresolved diff must not become an unpassable gate either: a body that
+    carries a COMPLETE declaration needs no diff evidence, so that half still
+    passes and only the undecidable changelog question fails.
+  */
+  it("still passes a complete declaration with no diff, failing only the changelog half", () => {
+    root = makeRepo({ "src/lib/booking-capacity.ts": "export const beds = 1;\n" });
+    const complete = [
+      "## Concurrency And Lock Impact",
+      "",
+      "- Writer class(es), canonical lock key(s), and acquisition order: cancel; global -> lodge",
+      "- Immutable pre-lock key source and mutable under-lock re-read: immutable lodgeId; full re-read",
+      "- Status-guarded claim and proof that a lost claim runs no side effect: updateMany; count=0 exits",
+      "- Relevant open/last-10 PR numbers, counterpart writers/tests, and compatibility evidence: #1911 shares the lodge helper",
+      "- Provider calls inside a transaction (write `None`, or justify the bounded exception from `docs/CONCURRENCY_AND_LOCKING.md`): None",
+      "",
+    ].join("\n");
+    const { status, output } = runGateWithUnresolvableBase(root, complete);
+    expect(output).toContain("PASS  Concurrency declaration");
+    expect(output).toContain("FAIL  Changelog fragment");
+    expect(status).toBe(1);
   });
 });

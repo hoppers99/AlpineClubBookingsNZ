@@ -200,3 +200,9 @@ cause nearly every failure: the headings and field labels are matched **exactly*
 (copy them from `.github/pull_request_template.md`, do not reword), and each
 field's value must sit on the **same line as its label** — a value wrapped onto
 the next line reads as empty.
+
+It does need to be able to read the diff, because that is what both gates key
+on. If it cannot resolve the base — an unfetched `origin/main`, a `--base` ref
+that does not exist — it reports failure instead of a green it cannot stand
+behind, and refuses a ticked `N/A` on the same grounds. Run `git fetch origin
+main` (or pass `--base <ref>`) and check again.

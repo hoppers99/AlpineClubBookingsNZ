@@ -1,6 +1,11 @@
 import { pathToFileURL } from "node:url";
 
-import { fetchLivePrBody, gitDiffChangedFiles, selectPrBody } from "./pr-body.mjs";
+import {
+  fetchLivePrBody,
+  gitDiffChangedFiles,
+  parseNameStatus,
+  selectPrBody,
+} from "./pr-body.mjs";
 
 const HEADING = "## Concurrency And Lock Impact";
 
@@ -50,8 +55,10 @@ function fieldValuePattern(field) {
  * Unknown is NOT the same as empty, and conflating the two is what would turn
  * the #2726 short-circuit below into a hole: an unknown diff would look
  * non-sensitive and waive the section for every PR. Unknown is therefore
- * treated as possibly sensitive — the section stays required, exactly as it was
- * before #2726.
+ * treated as possibly sensitive, on BOTH paths that consult the diff — the
+ * section stays required, and a ticked `N/A` is refused rather than taken on
+ * trust, because "I could not look" is not evidence that nothing sensitive
+ * changed. Only a complete declaration passes on an unknown diff.
  */
 export function validateConcurrencyDeclaration(body, changedFiles = null) {
   const diffKnown = Array.isArray(changedFiles);
@@ -104,6 +111,19 @@ export function validateConcurrencyDeclaration(body, changedFiles = null) {
   const section = nextHeadingIndex >= 0 ? afterHeading.slice(0, nextHeadingIndex) : afterHeading;
 
   if (/^\s*-\s*\[[xX]\]\s*N\/A\b/m.test(section)) {
+    // Same three-state reading as the waiver above. `N/A` is a claim ABOUT the
+    // diff, so it can only be accepted against a diff that was actually read;
+    // with an unknown diff `sensitiveFiles` is empty for want of evidence, not
+    // because nothing sensitive changed, and accepting it here would leave the
+    // gate's most consequential answer resting on a list nobody produced.
+    if (!diffKnown) {
+      throw new Error(
+        "Concurrency declaration cannot use N/A here: the PR diff could not be resolved, " +
+          "so there is no evidence that no sensitive path changed. Make the diff readable " +
+          "(fetch the base branch, or pass --base <ref> to npm run pr:check), or complete " +
+          "the declaration fields instead.",
+      );
+    }
     if (sensitiveFiles.length > 0) {
       throw new Error(
         `Concurrency declaration cannot use N/A for sensitive paths: ${sensitiveFiles.join(", ")}`,
@@ -167,11 +187,20 @@ if (invokedPath === import.meta.url) {
     // UNKNOWN, and an unknown diff must not be read as "changed nothing" — that
     // is the one classification that waives the section (#2726). Fail closed and
     // keep asking for the declaration instead.
+    //
+    // The diff goes through `parseNameStatus`, exactly as the changelog gate and
+    // the offline `npm run pr:check` runner do, so a RENAME arrives as its
+    // delete + add pair. A bare `--name-only` listing prints only the rename's
+    // destination, which let a PR move `src/lib/payment-settlement.ts` to
+    // `src/lib/ledger.ts`, edit it, and match no sensitive path at all — and
+    // made CI and the offline runner reach opposite verdicts on one diff.
     const changedFiles =
       base && head
-        ? gitDiffChangedFiles(base, head)
-            .split(/\r?\n/)
-            .filter(Boolean)
+        ? [
+            ...new Set(
+              parseNameStatus(gitDiffChangedFiles(base, head)).map((change) => change.path),
+            ),
+          ]
         : null;
     const fetchedBody = await fetchLivePrBody(GATE_LABEL);
     const body = selectPrBody({ fetchedBody, eventBody: process.env.PR_BODY });

@@ -20,3 +20,10 @@
   the change touches, never off who opened it, so an automated pull request that
   bumps a payments or database dependency is held to exactly the same standard as
   a human's.
+
+  Two ways of slipping past that rule were closed at the same time. The check now
+  follows a file that has been RENAMED, so moving a payments file to a
+  plainer-sounding name no longer hides it; and when the check cannot work out
+  what a pull request changed at all, it now says so and fails, instead of
+  reading "I could not look" as "nothing sensitive changed" and quietly waving
+  the pull request through.

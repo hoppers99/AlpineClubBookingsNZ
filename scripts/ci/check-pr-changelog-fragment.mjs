@@ -117,7 +117,7 @@ if (invokedPath === import.meta.url) {
         "PR_BASE_SHA and PR_HEAD_SHA must both be set so the changed files can be classified.",
       );
     }
-    const changes = parseNameStatus(gitDiffChangedFiles(base, head, { nameStatus: true }));
+    const changes = parseNameStatus(gitDiffChangedFiles(base, head));
     const fetchedBody = await fetchLivePrBody(GATE_LABEL);
     const body = selectPrBody({ fetchedBody, eventBody: process.env.PR_BODY });
     const { outcome } = validateChangelogFragment(body, changes);

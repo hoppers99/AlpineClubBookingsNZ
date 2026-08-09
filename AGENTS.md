@@ -332,6 +332,12 @@ At the successful end of a meaningful piece of work:
    (#2726). Fill the template in regardless: these gates are a floor, not the
    standard, and the concurrency checklist below is a thinking tool, not
    paperwork.
+
+   Because both answers come from the diff, `npm run pr:check` needs to be able
+   to READ the diff: if it cannot resolve the base (an unfetched `origin/main`,
+   a `--base` ref that does not exist) it reports failure rather than a green it
+   has no evidence for, and a ticked `N/A` is refused there too. Run
+   `git fetch origin main`, or pass `--base <ref>`, and run it again.
 2. Monitor CI to green. Fix any failure (lint, typecheck, the `npm run knip`
    dead-code gate, `npm test`, build, migration-drift, and the
    dependency/secret/static scans) and push fixes until every required check

@@ -1,4 +1,4 @@
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
@@ -11,9 +11,38 @@ import {
 // `selectPrBody` moved to the shared PR-body module when the changelog fragment
 // gate (#2452) needed the same live-body behaviour; its contract is unchanged.
 // `gitDiffChangedFiles` is the shared diff invocation both gates now use.
-import { gitDiffChangedFiles, selectPrBody } from "./pr-body.mjs";
+import { gitDiffChangedFiles, parseNameStatus, selectPrBody } from "./pr-body.mjs";
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
+const gateScript = join(repoRoot, "scripts", "ci", "check-pr-concurrency-declaration.mjs");
+
+/**
+ * Run the gate's REAL command-line entrypoint over a throwaway repo, the way the
+ * `verify` job runs it. Unit-calling `validateConcurrencyDeclaration` cannot see
+ * the entrypoint's own job — turning a git range into the changed-path list —
+ * and that is exactly where the rename blindness below lived.
+ *
+ * The GitHub API inputs are blanked so `fetchLivePrBody` returns null and the
+ * gate reads `PR_BODY`; otherwise a run inside Actions would try to fetch a live
+ * body for whatever PR happened to be in the environment.
+ */
+function runGateEntrypoint(root, { body, base, head }) {
+  const result = spawnSync(process.execPath, [gateScript], {
+    cwd: root,
+    encoding: "utf8",
+    env: {
+      ...process.env,
+      PR_BODY: body,
+      PR_BASE_SHA: base,
+      PR_HEAD_SHA: head,
+      PR_NUMBER: "",
+      GITHUB_TOKEN: "",
+      GH_TOKEN: "",
+      GITHUB_REPOSITORY: "",
+    },
+  });
+  return { ...result, output: `${result.stdout ?? ""}${result.stderr ?? ""}` };
+}
 
 /**
  * A throwaway two-commit repo whose second commit adds `relPath`. `core.quotePath`
@@ -268,6 +297,108 @@ describe("PR concurrency declaration gate", () => {
   });
 
   /*
+    The other half of the same contract, and the half that was missing. `N/A` is
+    a claim ABOUT the diff — "nothing sensitive changed" — so it can only be
+    accepted against a diff that was read. With an unknown diff `sensitiveFiles`
+    is empty for want of evidence, and taking `N/A` on trust there let the
+    offline runner print "PR body passes both gates" for a body shape agents
+    actually write, in the exact state (unfetched `origin/main`) the docstring
+    claimed was covered. Deleting the `if (!diffKnown)` guard in the N/A branch
+    turns this red.
+  */
+  it("refuses a ticked N/A when the diff could not be resolved at all", () => {
+    const naBody = `${heading}\n\n- [x] N/A — no impact.\n`;
+    expect(() => validateConcurrencyDeclaration(naBody, null)).toThrow(
+      /cannot use N\/A here: the PR diff could not be resolved/,
+    );
+    expect(() => validateConcurrencyDeclaration(naBody)).toThrow(/could not be resolved/);
+    // A KNOWN-empty diff is a different answer and still passes: the point is
+    // that "I looked and found nothing" stays distinguishable from "I could not
+    // look", not that N/A gets harder to use.
+    expect(() => validateConcurrencyDeclaration(naBody, [])).not.toThrow();
+    // And a complete declaration needs no diff evidence at all, so it still
+    // passes — an unknown diff must not become an unpassable gate.
+    expect(() => validateConcurrencyDeclaration(complete, null)).not.toThrow();
+  });
+
+  /*
+    A RENAME is the one diff shape that can hide a sensitive file from the gate.
+    `git diff --name-only` prints only the DESTINATION of a rename git detects,
+    so moving `src/lib/payment-settlement.ts` to `src/lib/ledger.ts` — a path
+    holding none of the sensitive keywords — and editing the lock order on the
+    way produced a one-file, non-sensitive-looking diff. The gate then WAIVED the
+    section entirely for a bodyless PR on money code, while `npm run pr:check`
+    over the identical diff failed it, because the offline runner and the
+    changelog gate both went through `--name-status`.
+
+    This drives the real entrypoint, not the validator, because the defect is in
+    how the entrypoint reads git. Reverting it to `--name-only` (or dropping
+    `parseNameStatus`) makes the gate exit 0 here and turns this red.
+  */
+  it("still sees a sensitive file that a rename moved to an innocuous path", () => {
+    const root = mkdtempSync(join(tmpdir(), "renamed-path-gate-"));
+    try {
+      const git = (...args) => execFileSync("git", args, { cwd: root, encoding: "utf8" });
+      git("init", "--quiet");
+      git("config", "user.email", "gate-test@example.invalid");
+      git("config", "user.name", "Gate Test");
+      git("config", "commit.gpgsign", "false");
+      git("config", "core.autocrlf", "false");
+      mkdirSync(join(root, "src", "lib"), { recursive: true });
+      // Long enough that git scores the move as a rename rather than a
+      // delete + add, which is the case that hides the source path.
+      const source = Array.from({ length: 60 }, (_, i) => `export const value${i} = ${i};`).join(
+        "\n",
+      );
+      writeFileSync(join(root, "src", "lib", "payment-settlement.ts"), `${source}\n`);
+      git("add", "-A");
+      git("commit", "--quiet", "-m", "seed");
+      const base = git("rev-parse", "HEAD").trim();
+
+      git("mv", "src/lib/payment-settlement.ts", "src/lib/ledger.ts");
+      writeFileSync(join(root, "src", "lib", "ledger.ts"), `${source}\n// lock order changed\n`);
+      git("add", "-A");
+      git("commit", "--quiet", "-m", "move the settlement writer");
+      const head = git("rev-parse", "HEAD").trim();
+
+      // Sanity-check the fixture: git really did record this as a rename, so the
+      // test is exercising the blind spot rather than an ordinary delete + add.
+      expect(gitDiffChangedFiles(base, head, { cwd: root })).toMatch(/^R\d*\t/m);
+
+      const { status, output } = runGateEntrypoint(root, {
+        body: "Bumps a dependency. No template headings anywhere.",
+        base,
+        head,
+      });
+      expect(output).toContain("src/lib/payment-settlement.ts");
+      expect(output).toContain("PR body must include ## Concurrency And Lock Impact");
+      expect(status).toBe(1);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  /*
+    The waiver still has to work through the same entrypoint, or the fix above
+    would be indistinguishable from simply re-breaking every Dependabot PR.
+  */
+  it("waives the section end to end for a dependency-only diff (#2726)", () => {
+    const root = makeRepoAdding("package.json");
+    try {
+      const git = (...args) => execFileSync("git", args, { cwd: root, encoding: "utf8" });
+      const { status, output } = runGateEntrypoint(root, {
+        body: "Bumps [next](https://github.com/vercel/next.js) from 15.5.0 to 15.5.1.",
+        base: git("rev-parse", "HEAD~1").trim(),
+        head: git("rev-parse", "HEAD").trim(),
+      });
+      expect(output).toContain("no non-test file on a concurrency-sensitive path changed");
+      expect(status).toBe(0);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  /*
     The sharper half of the same defect as in the changelog gate: git quotes any
     path holding a non-ASCII byte by default, so a booking/payment file named
     `src/lib/booking-café.ts` reaches this gate as `"src/lib/booking-caf\303\251.ts"`.
@@ -279,9 +410,9 @@ describe("PR concurrency declaration gate", () => {
   it("sees a non-ASCII sensitive path instead of failing open on git's quoting", () => {
     const root = makeRepoAdding("src/lib/booking-café.ts");
     try {
-      const changedFiles = gitDiffChangedFiles("HEAD~1", "HEAD", { cwd: root })
-        .split(/\r?\n/)
-        .filter(Boolean);
+      const changedFiles = parseNameStatus(
+        gitDiffChangedFiles("HEAD~1", "HEAD", { cwd: root }),
+      ).map((change) => change.path);
       expect(changedFiles).toEqual(["src/lib/booking-café.ts"]);
       expect(() =>
         validateConcurrencyDeclaration(
