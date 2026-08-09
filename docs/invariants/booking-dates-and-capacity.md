@@ -209,9 +209,18 @@ derivation).
     [#1372/#1422], lodge scope and booking status — and they collapse to one
     deliberately uninformative "nothing matched" precisely so a refused caller
     learns nothing. "You are not booked in tonight" is a fact about the booking,
-    not about the caller's rights; keeping it separate is what lets the endpoint
-    answer `409 GUEST_NOT_BOOKED_THIS_NIGHT` with a sentence a hut leader can act
-    on while `403` stays authorisation and `404` stays uniform.
+    not about the caller's rights; keeping it separate is what lets the arrive
+    endpoint answer `409 GUEST_NOT_BOOKED_THIS_NIGHT` with a sentence a hut
+    leader can act on while `403` stays authorisation and `404` stays uniform.
+    **Depart deliberately keeps the uniform `404` for "not a departure
+    morning".** It is already correct — no wrong write is reachable — so the
+    difference is copy, not safety, and buying that copy means widening the
+    return type of a lookup that runs inside the depart transaction's advisory
+    locks. It is also not the same clean fact: a guest refused a check-out
+    mid-stay is refused because they are STAYING tonight, which is a different
+    sentence from "not booked in", and choosing it is a decision rather than a
+    port. Anyone who does add it must not do so by folding the rule into the
+    `where`, for the reason above.
   - **The coarse filters stay as narrow as each rule allows and are not
     unified.** Arrive's is half-open (`stayEnd: { gt: date }`) because a
     departure morning is never an occupied night [INV-DATE-003]; depart's is
