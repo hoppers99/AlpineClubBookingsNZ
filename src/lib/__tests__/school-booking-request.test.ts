@@ -38,6 +38,9 @@ vi.mock("@/lib/prisma", () => ({
       update: vi.fn(),
       deleteMany: vi.fn(),
       createMany: vi.fn(),
+      // #2739: the reassign recreate branch creates one guest at a time, so it
+      // can nest each guest's BookingGuestNight set.
+      create: vi.fn(),
     },
     payment: { create: vi.fn() },
     // #2263: stubbed so "no PaymentLink is created" is a REAL assertion. Left
@@ -1527,7 +1530,10 @@ describe("approveSchoolBookingRequest", () => {
     // Guest counts differ → reassign uses delete+recreate (both mocked).
     vi.mocked(prisma.bookingGuest.findMany).mockResolvedValue([] as never);
     vi.mocked(prisma.bookingGuest.deleteMany).mockResolvedValue({ count: 0 } as never);
-    vi.mocked(prisma.bookingGuest.createMany).mockResolvedValue({ count: 3 } as never);
+    vi.mocked(prisma.bookingGuest.create).mockResolvedValue({
+      id: "recreated-guest",
+      memberId: null,
+    } as never);
     vi.mocked(prisma.booking.update).mockResolvedValue({ id: "held-1" } as never);
 
     const result = await approveSchoolBookingRequest({
@@ -1670,7 +1676,10 @@ describe("approveSchoolBookingRequest", () => {
     } as never);
     vi.mocked(prisma.bookingGuest.findMany).mockResolvedValue([] as never);
     vi.mocked(prisma.bookingGuest.deleteMany).mockResolvedValue({ count: 0 } as never);
-    vi.mocked(prisma.bookingGuest.createMany).mockResolvedValue({ count: 5 } as never);
+    vi.mocked(prisma.bookingGuest.create).mockResolvedValue({
+      id: "recreated-guest",
+      memberId: null,
+    } as never);
     vi.mocked(prisma.booking.update).mockResolvedValue({ id: "held-1" } as never);
 
     const result = await approveSchoolBookingRequest({
@@ -1715,7 +1724,10 @@ describe("approveSchoolBookingRequest", () => {
     } as never);
     vi.mocked(prisma.bookingGuest.findMany).mockResolvedValue([] as never);
     vi.mocked(prisma.bookingGuest.deleteMany).mockResolvedValue({ count: 0 } as never);
-    vi.mocked(prisma.bookingGuest.createMany).mockResolvedValue({ count: 3 } as never);
+    vi.mocked(prisma.bookingGuest.create).mockResolvedValue({
+      id: "recreated-guest",
+      memberId: null,
+    } as never);
     vi.mocked(prisma.booking.update).mockResolvedValue({ id: "held-1" } as never);
 
     const result = await approveSchoolBookingRequest({

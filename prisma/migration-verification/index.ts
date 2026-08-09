@@ -1,3 +1,4 @@
+import backfillBookingRequestGuestNights from "./20260810000000_backfill_booking_request_guest_nights";
 import clearStarterFooterAffiliations from "./20260802140000_clear_starter_footer_affiliations";
 import clearWaldvogelLodgeAddress from "./20260802110000_clear_waldvogel_lodge_address";
 import contractSubscriptionLockoutDropEnabled from "./20260803010000_contract_subscription_lockout_drop_enabled";
@@ -26,4 +27,5 @@ export const DATA_MIGRATION_VERIFICATIONS: DataMigrationVerification[] = [
   clearStarterFooterAffiliations,
   updateStarterHomeGuestCopy,
   contractSubscriptionLockoutDropEnabled,
+  backfillBookingRequestGuestNights,
 ];
