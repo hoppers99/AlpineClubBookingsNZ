@@ -535,6 +535,55 @@ derivation).
   is already bed-allocatable (locked by
   `booking-status-bed-allocation-ownership.test.ts`, #813).
 
+### INV-CAP-032
+
+- **Every path that creates a booking guest writes their `BookingGuestNight`
+  rows (#2739).** `BookingGuestNight` is the canonical night set — the whole
+  bed-allocation surface reads it and only it, and since #2628 the officer card
+  reads it too ("a guest carrying no night rows has no placeable nights, so the
+  board never lists them and this card must not count them either"). A guest
+  created with no rows is therefore not a guest with an unknown night set; they
+  are a guest the system believes is nowhere. They are not listed on the board,
+  not placed by the planner, and not counted as awaiting a bed, while being a
+  real person on a confirmed booking who turns up at the lodge.
+  **This is a creation-path obligation, not a read-path fallback**: the envelope
+  fallback in [INV-DATE-003] exists for pre-#713 history and must not be relied
+  on to cover a path that could have written rows and did not.
+  The four booking-request write points had exactly that gap until #2739 — the
+  two fresh approval creates, the held-booking reassign, and the quote hold —
+  which is why `HeldBookingGuestInput.nights` is a REQUIRED field and
+  `toPipelineGuestCreateData` is the one place that nests it: a fifth pipeline
+  cannot be added without answering the question.
+- **The rows are half-open and NZ date-only, like every other night row.** Built
+  from the approved envelope through the pricing engine's own night list, so a
+  converted booking's encoding is identical to a directly-created one's: nights
+  over `[checkIn, checkOut)` [INV-DATE-003] at the storage encoding
+  [INV-DATE-013]. A row on the check-out morning would be a phantom night, and
+  the planner would claim that bed while its real occupant is still in it.
+- **Writing the rows must not move money.** A pipeline guest's `priceCents` is a
+  share of an officer's negotiated total, not a per-night rate — the distinction
+  #1098 recorded when its backfill skipped these bookings — so the per-night
+  split exists only to divide a number that is already fixed. It divides to the
+  exact cent with the extra cents on the EARLIEST nights, which is deliberately
+  the vector `evenlySplitCents` (`src/lib/xero-booking-invoices.ts`) already
+  synthesises for a guest carrying no rows and bills from. That equality is what
+  keeps a converted booking's Xero line items byte-identical whether the rows
+  exist or not, on a fresh invoice and on an invoice-update diff of a backfilled
+  booking alike; it is pinned by
+  `src/lib/__tests__/booking-request-guest-nights.test.ts`. A split that totals
+  the same but distributes differently still emits different Xero lines, which on
+  an already-raised invoice reads as a change to push.
+- **The backfill for existing rows is `20260810000000_backfill_booking_request_guest_nights`**,
+  the exact complement of #1098's `20260704150000_backfill_booking_guest_nights`.
+  It is idempotent (per-guest "has no rows at all" guard plus
+  `ON CONFLICT DO NOTHING`), skips cancelled, bumped and soft-deleted bookings,
+  and is proven against a real PostgreSQL by its #2418 verification fixture. Two
+  consequences of filling the gap are intended, not incidental: booking-request
+  hut fees now reach the finance revenue reconciliation's booking side (it summed
+  night rows, so these bookings contributed zero against invoices Xero already
+  held), and a member an officer linked to a converted booking's guest is now
+  credited with the nights they really stayed by `countMemberStayNights`.
+
 ### INV-CAP-007
 
 - Auto-allocated stays are **room-continuous per booking** (issue #1677): the

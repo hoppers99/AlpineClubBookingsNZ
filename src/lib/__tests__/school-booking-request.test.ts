@@ -750,6 +750,36 @@ describe("approveSchoolBookingRequest", () => {
     ]);
   });
 
+  it("gives every school guest their canonical night set (#2739)", async () => {
+    // A school party is the sharpest form of the defect: thirty children on a
+    // confirmed booking, none of them on the bed-allocation board, discovered
+    // when the bus arrives.
+    mockedFindUnique.mockResolvedValue(schoolRequest() as never);
+
+    await approveSchoolBookingRequest({
+      requestId: "req-school",
+      adminMemberId: "admin-1",
+    });
+
+    const bookingArgs = vi.mocked(prisma.booking.create).mock.calls[0][0].data as {
+      guests: { create: Array<Record<string, unknown>> };
+    };
+    const guestCreates = bookingArgs.guests.create;
+    expect(guestCreates).toHaveLength(3);
+    for (const guest of guestCreates) {
+      const nights = (guest.nights as { create: Array<{ stayDate: Date; priceCents: number }> })
+        .create;
+      // Two nights for 1 Aug → 3 Aug. Not three — the check-out morning is a
+      // departure, not a night (INV-DATE-003).
+      expect(nights.map((night) => night.stayDate)).toEqual([CHECK_IN, new Date("2026-08-02T00:00:00.000Z")]);
+      // Money does not move: the split is exact against the guest's own share of
+      // the officer's total.
+      expect(nights.reduce((sum, night) => sum + night.priceCents, 0)).toBe(
+        guest.priceCents,
+      );
+    }
+  });
+
   it("tells nobody on an ordinary school request with no linked members", async () => {
     // Every guest a free-text name. Nothing is planned, so the dispatcher is
     // never even imported — the state of nearly every school approval.
