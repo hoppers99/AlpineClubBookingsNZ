@@ -436,6 +436,37 @@ describe("admin bed allocation", () => {
     expect(findMany.mock.calls[0][0].where).toEqual({ bedId: "bed-1" });
   });
 
+  it("CAPS the refusal instead of listing a bed's whole history (#2628)", async () => {
+    // The delete branch has no date predicate at all, so on a bed in long
+    // service it matches every night it has ever held. Naming them all put a
+    // page of dates and a page of past guests' names into one 409 body and into
+    // the audit trail, for a yes/no answer. The query asks for one more row than
+    // it will name — enough to know there are more — and the message says so.
+    const rows = Array.from({ length: 6 }, (_, index) => ({
+      stayDate: parseDateOnly(`2026-06-0${index + 1}`),
+      bookingGuest: {
+        firstName: `Guest${index + 1}`,
+        lastName: "Historic",
+      },
+    }));
+    const findMany = vi.fn().mockResolvedValue(rows);
+    const db = {
+      bedAllocation: { findMany },
+      lodgeBed: { delete: vi.fn() },
+      hutLeaderAssignment: { findMany: vi.fn().mockResolvedValue([]) },
+    };
+
+    await expect(
+      deleteBedAllocationBedWithLocksHeld({ id: "bed-1", db: db as never }),
+    ).rejects.toThrow(
+      "Cannot delete this bed while allocations exist on 2026-06-01, 2026-06-02, 2026-06-03, 2026-06-04, 2026-06-05 and more (Guest1 Historic, Guest2 Historic, Guest3 Historic, Guest4 Historic, Guest5 Historic and others). Clear those dates on the bed allocation page first.",
+    );
+    // The DATABASE is bounded too, not just the string — an unbounded findMany
+    // over a decade of allocations inside the guard's transaction is the part a
+    // longer message would only be a symptom of.
+    expect(findMany.mock.calls[0][0].take).toBe(6);
+  });
+
   it("adds persistent admin-only mode settings", () => {
     const schema = readRepoFile("prisma/schema.prisma");
     const migration = readRepoFile(

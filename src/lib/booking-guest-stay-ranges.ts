@@ -3,6 +3,7 @@ import {
   formatDateOnlyForTimeZone,
   getTodayDateOnly,
   isDateOnlyString,
+  parseDateOnly,
 } from "@/lib/date-only";
 
 /**
@@ -413,6 +414,63 @@ export function isGuestDepartureMorning(
 }
 
 /**
+ * The next lodge night this guest holds a bed for AFTER `day`, or `null` when
+ * `day` is inside or after their last segment.
+ *
+ * The bound anything scoped to "the segment that just ended" needs. The kiosk's
+ * departure sweep is the reason it exists: marking a guest departed clears the
+ * chores they can no longer do, and before #2628 the endpoint only ever fired on
+ * the morning after the LAST night, so "everything after today" and "the rest of
+ * this segment" were the same set. They are not the same set on a sparse stay —
+ * a guest booked on nights {11, 14} who checks out on the 12th is BACK on the
+ * 14th, and a sweep with no upper bound takes their 14th and 15th with it.
+ */
+export function getNextGuestBedNightAfter(
+  guest: GuestStayRange,
+  day: Date,
+  booking: BookingStayRange
+): Date | null {
+  const dayKey = dateOnlyKey(day);
+  const nextKey = getGuestBedNightKeys(guest, booking).find(
+    (nightKey) => nightKey > dayKey
+  );
+  return nextKey ? parseDateOnly(nextKey) : null;
+}
+
+/**
+ * Is `day` a RETURN — an arrival evening that follows an earlier departure
+ * morning of the same stay?
+ *
+ * Only a sparse stay can have one. For a contiguous stay the single departure
+ * morning is `stayEnd`, which is after every booked night, so no arrival evening
+ * can follow it and this is false for every day of every contiguous stay —
+ * deliberately, because it is what keeps the kiosk's attendance controls exactly
+ * where they have always been for the ordinary case.
+ *
+ * It exists because `BookingGuest.arrivedAt` / `departedAt` is ONE attendance
+ * pair for the whole stay: "where is this person now", not a log. A guest who
+ * checks out on the 12th and comes back on the 14th arrives against a record
+ * that still says "departed", and without this the kiosk hides the arrive button
+ * (`!departedAt`) and offers no depart button (not a departure morning), leaving
+ * the officer with no control at all on a night the guest is in the building.
+ * Marking the return arrival clears the stale departure, so the NEXT check-out
+ * records rather than toggling the first one off (#2628).
+ */
+export function isGuestReturningOnDay(
+  guest: GuestStayRange,
+  day: Date,
+  booking: BookingStayRange
+): boolean {
+  const dayKey = dateOnlyKey(day);
+  if (!getGuestOperationalDayPresence(guest, day, booking).isArriving) {
+    return false;
+  }
+  return getGuestDepartureMorningKeys(guest, booking).some(
+    (morningKey) => morningKey < dayKey
+  );
+}
+
+/**
  * The earliest lodge night whose occupant may still be in the lodge right now:
  * YESTERDAY, not today.
  *
@@ -430,14 +488,6 @@ export function getEarliestCurrentBedNightDate(
   today: Date = getTodayDateOnly()
 ): Date {
   return addDaysDateOnly(today, -1);
-}
-
-/** Is this bed-night still running or yet to start? See the helper above. */
-export function isCurrentOrFutureBedNight(
-  stayDate: Date,
-  today: Date = getTodayDateOnly()
-): boolean {
-  return dateOnlyKey(stayDate) >= dateOnlyKey(getEarliestCurrentBedNightDate(today));
 }
 
 /**

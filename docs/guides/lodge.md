@@ -68,6 +68,19 @@ check-out can be recorded on the day it happens. Until #2628 only the last one
 could be — the earlier morning showed the **Departing** badge with no button —
 so a guest who left and came back was recorded as leaving once, at the end.
 
+**Mark Arrived** appears again when they come back. The kiosk holds one arrival
+and one departure per guest — where they are *now*, not a diary of every trip —
+so tapping **Mark Arrived** on the night they return records the new arrival and
+clears the earlier check-out at the same time. Their name stops being greyed out
+and the next **Mark Departed** records their next check-out. If the return
+arrival is never recorded, the card still reads **Departed** on the following
+departure morning: tap it once to clear that, and again to record the departure.
+
+Checking someone out clears the **suggested** chores they can no longer do —
+only up to the next night they are booked in for. Chores rostered for a later
+part of the same stay are left alone, and any chore already **confirmed** is
+never touched.
+
 The **Who's at the lodge** panel that sits under an admin calendar counts
 guest-**nights** rather than lodge days. On the chore roster calendar, whose
 day colours *are* lodge days, the panel spells that difference out on screen;

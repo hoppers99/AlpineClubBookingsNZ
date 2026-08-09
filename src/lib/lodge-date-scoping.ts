@@ -21,10 +21,12 @@ export const LODGE_VISIBLE_BOOKING_STATUSES = [
 // THE ARRIVE/DEPART ASYMMETRY IS DELIBERATE AND #2622 LEFT IT ALONE.
 // `findLodgeGuestForDate` (arrive) stays NIGHT-only: you can only mark someone
 // arrived for a night they are actually sleeping. `findLodgeGuestDepartingOnDate`
-// (depart) stays pinned to the EXACT departure date: you leave on one specific
-// day, not on any day you happen to be present. Neither is the roster's
-// operational-day question — "was this person in the building this morning?" —
-// so neither moved to the operational-day rule. Do not "unify" them.
+// (depart) stays pinned to a DEPARTURE MORNING: you leave on a specific day, not
+// on any day you happen to be present. #2628 changed how many such mornings
+// there are — a sparse stay has ONE PER SEGMENT, not one per stay — and nothing
+// else about the rule. Neither lookup is the roster's operational-day question —
+// "was this person in the building this morning?" — so neither moved to the
+// operational-day rule. Do not "unify" them.
 //
 // lodgeId is optional so existing (pre-phase-5) callers keep club-wide
 // behaviour; kiosk routes pass the resolved lodge to scope the lookup
@@ -65,9 +67,19 @@ export async function findLodgeGuestForDate(
       memberId: true,
       arrivedAt: true,
       departedAt: true,
+      // #2628: the arrive endpoint has to be able to tell a RETURN from a first
+      // arrival, because `arrivedAt`/`departedAt` is one attendance pair for the
+      // whole stay. A guest booked on nights {11, 14} arrives on the 14th
+      // against a record that still says "departed" from the 12th, and only the
+      // night set says which of those two a given date is.
+      stayStart: true,
+      stayEnd: true,
+      nights: { select: { stayDate: true } },
       booking: {
         select: {
           memberId: true,
+          checkIn: true,
+          checkOut: true,
         },
       },
     },

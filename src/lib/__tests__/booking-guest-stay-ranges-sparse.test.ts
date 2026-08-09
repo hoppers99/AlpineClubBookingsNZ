@@ -11,6 +11,8 @@
  * segments, one gap day. Frozen clock discipline — "today" is 2026-07-01, so
  * these are near-future dates, permanently.
  */
+import fs from "node:fs";
+import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { parseDateOnly } from "@/lib/date-only";
 import {
@@ -19,9 +21,10 @@ import {
   getExplicitGuestBedNightKeys,
   getGuestBedNightKeys,
   getGuestDepartureMorningKeys,
-  isCurrentOrFutureBedNight,
+  getNextGuestBedNightAfter,
   isGuestActiveOnNight,
   isGuestDepartureMorning,
+  isGuestReturningOnDay,
 } from "@/lib/booking-guest-stay-ranges";
 
 const booking = {
@@ -191,6 +194,62 @@ describe("departure mornings", () => {
   });
 });
 
+describe("returning on a later segment (#2628)", () => {
+  // The kiosk's whole attendance model rides on this: `arrivedAt`/`departedAt`
+  // is ONE pair for the stay, so a guest arriving for a second time lands
+  // against a record that still says "departed". A contiguous stay can never be
+  // in that position, which is what keeps the ordinary kiosk path untouched.
+  it("is TRUE on a sparse stay's later arrival evening", () => {
+    expect(isGuestReturningOnDay(sparseGuest, parseDateOnly("2026-07-12"), booking)).toBe(true);
+  });
+
+  it("is FALSE on the FIRST arrival, when nothing has been departed yet", () => {
+    expect(isGuestReturningOnDay(sparseGuest, parseDateOnly("2026-07-10"), booking)).toBe(false);
+  });
+
+  it("is FALSE on a departure morning and on a gap day", () => {
+    expect(isGuestReturningOnDay(sparseGuest, parseDateOnly("2026-07-11"), booking)).toBe(false);
+    expect(isGuestReturningOnDay(sparseGuest, parseDateOnly("2026-07-13"), booking)).toBe(false);
+  });
+
+  it("is FALSE on EVERY day of a contiguous or legacy stay", () => {
+    // The safety property, not a coincidence: the kiosk keeps its shipped
+    // behaviour for every ordinary booking because this can never fire on one.
+    for (const guest of [contiguousGuest, legacyGuest]) {
+      for (const day of ["2026-07-09", "2026-07-10", "2026-07-11", "2026-07-12", "2026-07-13"]) {
+        expect(isGuestReturningOnDay(guest, parseDateOnly(day), booking)).toBe(false);
+      }
+    }
+  });
+});
+
+describe("the next booked night after a date (#2628)", () => {
+  // The bound the kiosk's chore sweep needs. Marking a guest departed clears the
+  // suggested chores they can no longer do; without this the sweep is "every
+  // date after today" and takes the chores of the segment they come back for.
+  it("finds the night a sparse guest comes back for", () => {
+    expect(getNextGuestBedNightAfter(sparseGuest, parseDateOnly("2026-07-11"), booking)).toEqual(
+      parseDateOnly("2026-07-12"),
+    );
+  });
+
+  it("is null once the stay has no nights left", () => {
+    expect(
+      getNextGuestBedNightAfter(sparseGuest, parseDateOnly("2026-07-13"), booking),
+    ).toBeNull();
+    expect(
+      getNextGuestBedNightAfter(contiguousGuest, parseDateOnly("2026-07-13"), booking),
+    ).toBeNull();
+    expect(getNextGuestBedNightAfter(legacyGuest, parseDateOnly("2026-07-13"), booking)).toBeNull();
+  });
+
+  it("never returns the date itself, only a LATER night", () => {
+    expect(getNextGuestBedNightAfter(contiguousGuest, parseDateOnly("2026-07-11"), booking)).toEqual(
+      parseDateOnly("2026-07-12"),
+    );
+  });
+});
+
 describe("the current-or-future bed night boundary", () => {
   // The frozen clock puts "today" at 2026-07-01 (docs/TESTING.md).
   const TODAY = parseDateOnly("2026-07-01");
@@ -207,10 +266,20 @@ describe("the current-or-future bed night boundary", () => {
     expect(getEarliestCurrentBedNightDate()).toEqual(parseDateOnly("2026-06-30"));
   });
 
-  it("admits last night and tonight, and refuses the night before last", () => {
-    expect(isCurrentOrFutureBedNight(parseDateOnly("2026-06-29"), TODAY)).toBe(false);
-    expect(isCurrentOrFutureBedNight(parseDateOnly("2026-06-30"), TODAY)).toBe(true);
-    expect(isCurrentOrFutureBedNight(parseDateOnly("2026-07-01"), TODAY)).toBe(true);
-    expect(isCurrentOrFutureBedNight(parseDateOnly("2026-08-01"), TODAY)).toBe(true);
+  it("is the ONLY form of the boundary: no unused predicate rides beside it", () => {
+    // #2628 review: an `isCurrentOrFutureBedNight(stayDate, today)` predicate
+    // shipped here beside the date, and nothing in `src/` ever called it — the
+    // one guard that moved needs the DATE, as a SQL lower bound
+    // (`stayDate: { gte: getEarliestCurrentBedNightDate() }`), not a per-row
+    // test. An exported helper with only a test for a caller reads as a
+    // supported API and invites a second, in-memory copy of a boundary that has
+    // to stay identical to the query's. If a real caller ever needs the
+    // predicate form, add it back WITH that caller.
+    const source = fs.readFileSync(
+      path.resolve(process.cwd(), "src/lib/booking-guest-stay-ranges.ts"),
+      "utf8",
+    );
+    expect(source).toContain("export function getEarliestCurrentBedNightDate(");
+    expect(source).not.toContain("isCurrentOrFutureBedNight");
   });
 });

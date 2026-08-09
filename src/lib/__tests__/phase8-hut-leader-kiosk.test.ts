@@ -1471,13 +1471,17 @@ describe("Phase 8: Hut Leader & Kiosk Improvements", () => {
     expect(content).toContain("Guests Staying");
     expect(content).toContain("Guests Departing Today");
     expect(content).toContain("guest.ageTier === \"ADULT\"");
-    expect(content).toContain("canMarkAttendance && guest.isArriving");
-    // #2631/#2628: the check-out BUTTON hangs off `canMarkDeparted`, not off
-    // the Departing badge. The server derives that flag from the depart
-    // endpoint's own predicate, so the kiosk offers the button exactly where
-    // the server accepts it — on every departure morning a sparse stay has
-    // since #2628, and never anywhere the endpoint would refuse.
+    // #2631/#2628: BOTH attendance buttons hang off a SERVER-derived flag, not
+    // off a badge and not off a rule re-derived in the page. The server owns
+    // them because only it has the guest's night rows loaded: the check-out
+    // button follows the depart endpoint's own predicate, and the check-in
+    // button follows a rule the page's old `isArriving && !departedAt` could not
+    // express — a sparse stay's second arrival lands against a `departedAt` from
+    // its first segment, and the page hid BOTH buttons on a night the guest was
+    // in the building.
+    expect(content).toContain("canMarkAttendance && guest.canMarkArrived");
     expect(content).toContain("canMarkAttendance && guest.canMarkDeparted");
+    expect(content).not.toContain("canMarkAttendance && guest.isArriving");
     expect(content).not.toContain("canMarkAttendance && guest.isDeparting");
     expect(content).toContain("120000");
     expect(content).toContain("Manage Today's Roster");
@@ -1502,7 +1506,7 @@ describe("Phase 8: Hut Leader & Kiosk Improvements", () => {
     expect(content).toContain("Blocked from Check-In — see Booking Officer");
     // ...and its arrive/depart toggles are suppressed for blocked bookings.
     expect(content).toContain(
-      "canMarkAttendance && guest.isArriving && !guest.departedAt && !booking.blockedFromCheckin"
+      "canMarkAttendance && guest.canMarkArrived && !booking.blockedFromCheckin"
     );
     expect(content).toContain(
       "canMarkAttendance && guest.canMarkDeparted && !booking.blockedFromCheckin"

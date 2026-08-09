@@ -328,13 +328,15 @@ describe("buildDisplayState privacy matrix", () => {
 
   it("PRIVACY: a sparse stay's gap morning is no night here, so an unrelated sole-night blockout holds (#2622)", async () => {
     // The lobby wall derives its NIGHT counts from the checkout-inclusive
-    // visible list by subtracting only the envelope end
-    // (`getGuestStayEnd(...) !== date`). If `getLodgeVisibleGuestsForDate`'s
-    // `includeDepartureDate` branch ever gains D-M4 per-segment presence, the
-    // gap morning of the sparse booking below starts counting as a PHANTOM
-    // NIGHT on the 14th, the eight-guest booking stops being the sole occupant,
-    // its whole-lodge blockout drops, and eight guest names appear on an
-    // unauthenticated public screen. This is why that branch stays legacy.
+    // visible list. If `getLodgeVisibleGuestsForDate`'s `includeDepartureDate`
+    // branch ever gains D-M4 per-segment presence WITHOUT the night filter
+    // below being a real night question, the gap morning of the sparse booking
+    // below starts counting as a PHANTOM NIGHT on the 14th, the eight-guest
+    // booking stops being the sole occupant, its whole-lodge blockout drops,
+    // and eight guest names appear on an unauthenticated public screen. #2628
+    // moved that filter onto `isGuestActiveOnNight` (see the source contract
+    // below) so half of that coupling is gone; the visibility branch itself is
+    // still legacy, and #2735 carries the rest.
     const sparse = {
       ...guest("Gappy", "Guest", "ADULT", { start: "2026-04-13", end: "2026-04-16" }),
       // Nights 13 and 15 only — the 14th is NOT booked.
@@ -371,6 +373,30 @@ describe("buildDisplayState privacy matrix", () => {
     // ...and the gap morning is not an occupancy either: only the eight are here.
     const gapDay = state!.occupancy.find((entry) => entry.date === "2026-04-14")!;
     expect(gapDay.staying).toBe(8);
+  });
+
+  it("PRIVACY: the wall's night count asks the NIGHT MODEL, not 'everyone except whoever ends today' (#2628)", async () => {
+    // A source contract because the two forms agree night for night on every
+    // stay in the tree today — so no fixture can tell them apart, and reverting
+    // this would break nothing while quietly restoring the coupling.
+    //
+    // The old form subtracted the booking's envelope END from the visible list.
+    // That is only the night set because the visibility rule happens to add
+    // exactly one departure morning per stay, which is precisely the rule #2735
+    // is asked to change. Anyone who changes it would silently invent a night
+    // here, and a phantom night is what turns a sole-occupancy blockout off and
+    // publishes guest names on a screen with no login in front of it
+    // (INV-DATE-006, issue #58). Asking the night model directly cannot.
+    const fs = await import("node:fs");
+    const path = await import("node:path");
+    const source = fs.readFileSync(
+      path.resolve(process.cwd(), "src/lib/lodge-display-state.ts"),
+      "utf8",
+    );
+    expect(source).toContain("isGuestActiveOnNight(guest, date, booking)");
+    expect(source).not.toContain(
+      "getGuestStayEnd(guest, booking).getTime() !== date.getTime()",
+    );
   });
 
   it("does not blockout a lone sole-occupancy guest (whole-lodge threshold)", async () => {

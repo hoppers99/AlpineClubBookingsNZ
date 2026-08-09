@@ -60,7 +60,20 @@ const FINAL_DEPARTURE = {
   openLabel: "Open Wednesday, 15 July",
 };
 
-function guestPayload(opts: { isDeparting: boolean; canMarkDeparted: boolean }) {
+/** The guest's return night, in the same stay: back on the 14th. */
+const RETURN_NIGHT = {
+  dateKey: "2026-07-14",
+  openLabel: "Open Tuesday, 14 July",
+};
+
+function guestPayload(opts: {
+  isDeparting: boolean;
+  canMarkDeparted: boolean;
+  isArriving?: boolean;
+  canMarkArrived?: boolean;
+  arrivedAt?: string | null;
+  departedAt?: string | null;
+}) {
   return {
     bookings: [
       {
@@ -76,6 +89,7 @@ function guestPayload(opts: { isDeparting: boolean; canMarkDeparted: boolean }) 
             ageTier: "ADULT",
             isMember: false,
             isArriving: false,
+            canMarkArrived: false,
             arrivedAt: null,
             departedAt: null,
             phone: null,
@@ -200,6 +214,36 @@ describe("kiosk Mark Departed follows the check-out flag, not the badge (#2631)"
     expect(
       within(row).getByRole("button", { name: "Mark Departed" }),
     ).toBeVisible();
+  });
+
+  it("leaves a control on the row when the guest comes BACK (#2628)", async () => {
+    // The dead end an intermediate check-out used to create. `departedAt` is
+    // one column for the whole stay, so on the return night it still holds the
+    // 12th's departure: the row was faded, the check-in button was hidden on
+    // `!departedAt`, and the check-out button was correctly absent because the
+    // 14th is a night, not a departure morning. The hut leader was left with
+    // NOTHING to press for a guest standing in front of them.
+    installFetchMock(
+      guestPayload({
+        isDeparting: false,
+        canMarkDeparted: false,
+        isArriving: true,
+        canMarkArrived: true,
+        arrivedAt: "2026-07-11T06:00:00.000Z",
+        departedAt: "2026-07-12T22:00:00.000Z",
+      }),
+    );
+
+    const row = await openGuestRow(RETURN_NIGHT);
+
+    expect(within(row).getByText("Arriving")).toBeVisible();
+    // Offered, and offered as an ACTION — a stale `arrivedAt` from the first
+    // segment must not render as "Arrived" for a guest who has not checked back
+    // in yet.
+    expect(within(row).getByRole("button", { name: "Mark Arrived" })).toBeVisible();
+    expect(within(row).queryByRole("button", { name: "Arrived" })).toBeNull();
+    // And the row is not greyed out as departed while they are standing there.
+    expect(row.className).not.toContain("opacity-60");
   });
 
   it("STILL WITHHOLDS the button where the server would refuse", async () => {

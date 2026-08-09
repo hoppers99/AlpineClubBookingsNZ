@@ -12,6 +12,7 @@ import { isCheckinBlockedByPendingReview } from "@/lib/booking-review";
 import {
   getGuestOperationalDayPresence,
   isGuestDepartureMorning,
+  isGuestReturningOnDay,
   getOperationallyPresentGuestsForDay,
 } from "@/lib/booking-guest-stay-ranges";
 
@@ -53,6 +54,15 @@ const dateSchema = z.string().regex(/^\d{4}-\d{2}-\d{2}$/);
  * predicate by name. The two flags now coincide, and that is a consequence of
  * the rule rather than a licence to delete one: they answer different
  * questions and the endpoint is free to narrow again.
+ *
+ * `canMarkArrived` is the same idea for the CHECK-IN button, and it is here for
+ * the same reason: the page used to derive it as `isArriving && !departedAt`
+ * from two fields that cannot see the night set. A sparse stay arrives more than
+ * once, and its second arrival lands against a `departedAt` recorded on an
+ * earlier segment — so the page hid the arrive button on a night the guest was
+ * genuinely in the building, while the depart button was correctly absent,
+ * leaving the hut leader nothing at all to press. Deriving it here, where the
+ * night rows are loaded, is the only place that distinction can be made.
  */
 export async function GET(
   req: NextRequest,
@@ -194,6 +204,20 @@ export async function GET(
             // "the server accepts it" are the same condition by construction
             // (#2628).
             canMarkDeparted: isGuestDepartureMorning(g, date, b),
+            // The check-IN button's flag, and the other half of the same rule.
+            // It used to be computed in the page as
+            // `isArriving && !departedAt`, which is right until a stay has more
+            // than one arrival: a guest booked on nights {11, 14} is marked
+            // departed on the 12th, and on the 14th the page then hid the
+            // arrive button (departed) AND the depart button (not a departure
+            // morning), leaving the hut leader no control at all on a night the
+            // guest is in the building. `isGuestReturningOnDay` is false for
+            // every day of every contiguous stay, so this is the same flag it
+            // has always been except on the segments that could not be recorded
+            // before (#2628).
+            canMarkArrived:
+              presence.isArriving &&
+              (!g.departedAt || isGuestReturningOnDay(g, date, b)),
             arrivedAt: g.arrivedAt?.toISOString() ?? null,
             departedAt: g.departedAt?.toISOString() ?? null,
             phone:

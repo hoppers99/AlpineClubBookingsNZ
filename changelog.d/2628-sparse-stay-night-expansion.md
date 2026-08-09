@@ -15,12 +15,22 @@
   recorded, so the earlier one was shown on the kiosk with no way to check them
   out.
 
+  The kiosk keeps up with them for the rest of the stay too. When such a guest
+  comes back, **Mark Arrived** is offered again and records the new arrival,
+  clearing the earlier check-out as it does — before this the card was greyed out
+  with no button at all on a night the guest was standing at the desk. Checking
+  someone out still clears the **suggested** chores they can no longer do, but
+  only up to the next night they are booked in for, so a roster prepared for the
+  later part of their stay is no longer wiped by an earlier check-out.
+
   Two smaller safety fixes came with it. Deactivating a bed is now refused while
   **last night's** guest is still in it — they are at the lodge until midday, and
   the old check only looked at tonight onwards. Deleting a bed that has ever held
   a guest now gives a plain refusal naming the occupant and pointing at the bed
   allocation page, instead of the database error it used to raise; deactivate the
-  bed instead, which keeps the history.
+  bed instead, which keeps the history. That refusal names the first few dates
+  and guests and then says "and more", so a bed with seasons of history gives a
+  message an officer can actually read.
 
   Nothing about capacity, pricing or whole-lodge bookings changed — those already
   read the night list correctly, and their behaviour is unchanged night for

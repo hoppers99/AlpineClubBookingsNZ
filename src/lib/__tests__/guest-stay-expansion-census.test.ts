@@ -25,10 +25,22 @@ import { describe, expect, it } from "vitest";
  *
  * It is a SOURCE-TEXT census over `src/`. It guarantees that no expansion
  * written with `eachDateOnlyInRange` over a `stay*` bound can appear without
- * being declared. It cannot see an expansion that inlines its own day loop, and
- * it does not reach `scripts/` or `prisma/`. That residue is stated rather than
- * implied — but every expansion in the tree today is written the declared way,
- * so the census covers the whole current inventory.
+ * being declared — and it counts them PER SITE, not per file, so a SECOND
+ * expansion added to an already-declared file fails too. That distinction is the
+ * whole guard for `src/lib/admin-bed-allocation.ts`, which is declared for an
+ * unrelated whole-lodge booking envelope and is also the file the original
+ * `countGuestsAwaitingBed` defect lived in. It matches across line breaks, so
+ * wrapping the call over several lines does not hide it, and it treats
+ * `clampGuestToRange` as a stay bound by another name.
+ *
+ * What it still cannot see: an expansion that inlines its own day loop, one that
+ * reaches the envelope through locals named nothing like a stay bound
+ * (`const { start, end } = somethingElse(guest); eachDateOnlyInRange(start, end)`
+ * — the `clampGuestToRange` clause closes today's only such route, not the
+ * general shape), and anything outside `src/`, so `scripts/` and `prisma/` are
+ * out of scope. That residue is stated rather than implied — every expansion in
+ * the tree today is written the declared way, so the census covers the whole
+ * current inventory.
  */
 
 const SRC_ROOT = path.resolve(process.cwd(), "src");
@@ -47,33 +59,55 @@ function allSourceFiles(directory: string): string[] {
   });
 }
 
-/** `eachDateOnlyInRange(<anything mentioning a stay bound>, …)`, code only. */
-const ENVELOPE_EXPANSION = /eachDateOnlyInRange\([^)\n]*stay(?:Start|End)/i;
+/**
+ * `eachDateOnlyInRange(<anything mentioning a guest stay bound>, …)`.
+ *
+ * `[^)]*` deliberately spans line breaks, so a call Prettier has wrapped over
+ * four lines still matches — the per-line form this replaced could see neither
+ * half of one. It still cannot run past the call's own first `)`, so it cannot
+ * reach forward into unrelated code. `clampGuestToRange` counts as a stay bound:
+ * it RETURNS one, under whatever local name the caller picks, which is the only
+ * way in the tree today to hold an envelope without naming it.
+ */
+const ENVELOPE_EXPANSION =
+  /eachDateOnlyInRange\([^)]*(?:stay(?:Start|End)|clampGuestToRange)/gi;
 
 /**
- * Does any CODE line expand a stay envelope?
+ * The code of a file with whole-line comments removed.
  *
  * Line-based on purpose. A whole-file comment strip is not safe here: `src/`
  * holds regex literals and JSX strings containing `/*`, and one of them will
  * happily swallow a real call site and make this census silently pass. Skipping
  * lines that are themselves a comment costs nothing and cannot misfire — the
  * only thing it lets through would be a call sharing a line with a trailing
- * `//`, which is a call, not a comment.
+ * `//`, which is a call, not a comment. Blank-lining rather than deleting them
+ * keeps a comment from joining two unrelated statements into one apparent call.
  */
-function expandsStayEnvelope(source: string): boolean {
+function codeOnly(source: string): string {
   return source
     .split("\n")
-    .some((line) => {
+    .map((line) => {
       const trimmed = line.trim();
-      if (trimmed.startsWith("//") || trimmed.startsWith("*") || trimmed.startsWith("/*")) {
-        return false;
-      }
-      return ENVELOPE_EXPANSION.test(line);
-    });
+      return trimmed.startsWith("//") ||
+        trimmed.startsWith("*") ||
+        trimmed.startsWith("/*")
+        ? ""
+        : line;
+    })
+    .join("\n");
+}
+
+/** How many stay-envelope expansions this file's code contains. */
+function countStayEnvelopeExpansions(source: string): number {
+  return [...codeOnly(source).matchAll(ENVELOPE_EXPANSION)].length;
 }
 
 /**
  * Every declared site, with the evidence that proves what it is.
+ *
+ * `expansions` is how many expansions that file is allowed to contain. It is
+ * declared rather than inferred so that adding a SECOND one to a file already on
+ * this list fails the census instead of hiding behind the first.
  *
  * `kind` is the classification and it is the whole point of the table:
  *
@@ -86,50 +120,82 @@ function expandsStayEnvelope(source: string): boolean {
  *                    `getGuestBedNightKeys`'s own rule. Correct as written;
  *                    each one is a local copy that could be routed at the
  *                    helper later, and none may lose its night-set branch.
+ *  - `plan-range`  — expands a PLAN's own `[stayStart, stayEnd)` window, which
+ *                    is contiguous by construction: the shape it comes from has
+ *                    no night field at all. Nothing sparse can be lost because
+ *                    nothing sparse ever reaches it. That the plan flattens a
+ *                    sparse guest to their envelope BEFORE this point is a
+ *                    pricing question, not an expansion one — see #2736.
  */
 const EXPANSION_SITES = [
   {
     file: "src/lib/booking-guest-stay-ranges.ts",
     kind: "canonical",
+    expansions: 0,
     what: "expandStayEnvelopeToNightKeys — the one definition, half-open by contract",
     evidence: ["export function expandStayEnvelopeToNightKeys("],
   },
   {
     file: "src/lib/admin-bed-allocation.ts",
     kind: "booking",
+    expansions: 1,
     what: "an exclusive whole-lodge hold's own booking envelope, clamped to the board window",
     evidence: ["{ stayStart: booking.checkIn, stayEnd: booking.checkOut }"],
   },
   {
     file: "src/app/(authenticated)/bookings/[id]/page.tsx",
     kind: "night-set-first",
+    expansions: 1,
     what: "the nights quoted on a member's own consent card",
     evidence: ["viewerConsentGuest.nights.length > 0"],
   },
   {
     file: "src/lib/adult-member-hosting-review.ts",
     kind: "night-set-first",
+    expansions: 1,
     what: "hosting participants' nights (INV-HOST-005 states this fallback)",
     evidence: ["guest.nights.length > 0"],
   },
   {
     file: "src/lib/member-guest-consent-notifications.ts",
     kind: "night-set-first",
+    expansions: 1,
     what: "the nights named in a member-guest consent email",
     evidence: ["guest.nights.length > 0"],
   },
   {
     file: "src/lib/member-guest-delegate-page.ts",
     kind: "night-set-first",
+    expansions: 1,
     what: "the nights shown on the delegate consent page",
     evidence: ["guest.nights.length > 0"],
+  },
+  {
+    // FOUND BY THIS CENSUS, not by the audit that filed #2628: the call is
+    // wrapped over three lines, so the per-line regex the census shipped with
+    // could not see it. `ProposedExistingGuestRange` / `ProposedAddedGuestRange`
+    // carry `stayStart`/`stayEnd` and no nights, and the whole in-progress edit
+    // path prices every guest as a contiguous range (`priceGuestRangeCents` ->
+    // `calculateBookingPrice`), so this split cannot lose a night the plan still
+    // had. Whether the PLAN should keep sparse guests sparse is #2736.
+    file: "src/lib/booking-modify-plan.ts",
+    kind: "plan-range",
+    expansions: 1,
+    what: "splitContiguousNights — an edit plan's own contiguous range, split into per-night cents",
+    evidence: [
+      "function splitContiguousNights(",
+      "Build a per-night breakdown for a contiguous range",
+    ],
   },
 ] as const;
 
 describe("guest stay expansion census (#2628)", () => {
   it("declares every expansion site in the tree", () => {
     const found = allSourceFiles(SRC_ROOT)
-      .filter((absolute) => expandsStayEnvelope(fs.readFileSync(absolute, "utf8")))
+      .filter(
+        (absolute) =>
+          countStayEnvelopeExpansions(fs.readFileSync(absolute, "utf8")) > 0,
+      )
       .map((absolute) => path.relative(process.cwd(), absolute).replaceAll("\\", "/"))
       .sort();
 
@@ -138,6 +204,50 @@ describe("guest stay expansion census (#2628)", () => {
         .map((site) => site.file)
         .sort(),
     );
+  });
+
+  it("counts them per SITE, so a second copy in a declared file fails too", () => {
+    // The gap this closes: the first test compares a SET of file paths, so a
+    // brand-new envelope expansion dropped into `admin-bed-allocation.ts` — the
+    // very file `countGuestsAwaitingBed`'s defect lived in, and one that is
+    // legitimately on the list for an unrelated BOOKING envelope — used to walk
+    // straight back in undetected.
+    const perFile = EXPANSION_SITES.map((site) => ({
+      file: site.file,
+      expansions: countStayEnvelopeExpansions(readRepoFile(site.file)),
+    }));
+
+    expect(perFile).toEqual(
+      EXPANSION_SITES.map((site) => ({
+        file: site.file,
+        expansions: site.expansions,
+      })),
+    );
+  });
+
+  it("MUTATION PROBE: the census sees a wrapped call and a clamped one", () => {
+    // Both shapes escaped the per-line, name-shaped regex this replaced: the
+    // first has the callee and the stay bound on different lines, the second
+    // never names a stay bound at all.
+    const wrapped = [
+      "const nights = eachDateOnlyInRange(",
+      "  clampedGuest.stayStart,",
+      "  clampedGuest.stayEnd,",
+      ");",
+    ].join("\n");
+    const clamped =
+      "const nights = eachDateOnlyInRange(clampGuestToRange(guest, range).from, end);";
+    const innocent = [
+      "// eachDateOnlyInRange(guest.stayStart, guest.stayEnd) is banned here",
+      "const days = eachDateOnlyInRange(",
+      "  booking.checkIn,",
+      "  booking.checkOut,",
+      ");",
+    ].join("\n");
+
+    expect(countStayEnvelopeExpansions(wrapped)).toBe(1);
+    expect(countStayEnvelopeExpansions(clamped)).toBe(1);
+    expect(countStayEnvelopeExpansions(innocent)).toBe(0);
   });
 
   it("keeps each declared site doing what it says it does", () => {

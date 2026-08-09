@@ -1123,7 +1123,18 @@ export async function updateBedAllocationBedWithLocksHeld(input: {
  *
  * Either way the message names the guest, because "clear those dates" is not
  * actionable until you know whose booking to open.
+ *
+ * THE MESSAGE IS CAPPED AND THE QUERY IS BOUNDED. The delete branch has no date
+ * predicate at all, so it can match every night a bed has ever held — several
+ * seasons of them on a bed in long service. Enumerating all of those would put a
+ * page of dates and a page of past guests' names into one 409 body and into the
+ * audit trail, for what is a yes/no answer. Only the first few are loaded and
+ * named; the rest become "and more". The room-level sibling
+ * (`assertNoRoomAllocationHistory`) does not even name a date for this reason —
+ * it is the same refusal, one level up.
  */
+const BED_ALLOCATION_GUARD_MESSAGE_ROWS = 5;
+
 async function assertNoFutureBedAllocations(input: {
   bedId: string;
   db: BedAllocationDb;
@@ -1141,31 +1152,35 @@ async function assertNoFutureBedAllocations(input: {
       bookingGuest: { select: { firstName: true, lastName: true } },
     },
     orderBy: { stayDate: "asc" },
+    // One more than we will name, which is all it takes to know there are more.
+    take: BED_ALLOCATION_GUARD_MESSAGE_ROWS + 1,
   });
 
   if (blockingAllocations.length === 0) {
     return;
   }
 
+  const truncated =
+    blockingAllocations.length > BED_ALLOCATION_GUARD_MESSAGE_ROWS;
+  const named = blockingAllocations.slice(0, BED_ALLOCATION_GUARD_MESSAGE_ROWS);
+
   const blockingDates = [
-    ...new Set(
-      blockingAllocations.map((allocation) =>
-        formatDateOnly(allocation.stayDate),
-      ),
-    ),
+    ...new Set(named.map((allocation) => formatDateOnly(allocation.stayDate))),
   ];
   const occupants = [
     ...new Set(
-      blockingAllocations
-        .map((allocation) => guestName(allocation.bookingGuest))
-        .filter(Boolean),
+      named.map((allocation) => guestName(allocation.bookingGuest)).filter(Boolean),
     ),
   ];
-  const occupied = occupants.length > 0 ? ` (${occupants.join(", ")})` : "";
+  const dateList = `${blockingDates.join(", ")}${truncated ? " and more" : ""}`;
+  const occupied =
+    occupants.length > 0
+      ? ` (${occupants.join(", ")}${truncated ? " and others" : ""})`
+      : "";
   const window = input.action === "delete" ? "allocations" : "current or future allocations";
 
   throw new BedAllocationAdminError(
-    `Cannot ${input.action} this bed while ${window} exist on ${blockingDates.join(", ")}${occupied}. Clear those dates on the bed allocation page first.`,
+    `Cannot ${input.action} this bed while ${window} exist on ${dateList}${occupied}. Clear those dates on the bed allocation page first.`,
     409,
   );
 }

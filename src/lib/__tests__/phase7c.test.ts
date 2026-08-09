@@ -500,8 +500,19 @@ describe("F9: PUT /api/lodge/guests/[date]/depart", () => {
       lastName: "Guest",
       memberId: "member-1",
       departedAt: null,
+      // #2628: the depart lookup decides in code, not in SQL — the coarse
+      // `where` loads anything whose envelope touches the date and
+      // `isGuestDepartureMorning` then asks whether this really IS a departure
+      // morning for these nights. A fixture without the night rows or the
+      // envelope is a guest the endpoint cannot resolve, so it must carry both:
+      // one night on the 9th, leaving on the morning of the 10th.
+      stayStart: new Date("2026-07-09T00:00:00.000Z"),
+      stayEnd: new Date("2026-07-10T00:00:00.000Z"),
+      nights: [{ stayDate: new Date("2026-07-09T00:00:00.000Z") }],
       booking: {
         memberId: "booking-owner-1",
+        checkIn: new Date("2026-07-09T00:00:00.000Z"),
+        checkOut: new Date("2026-07-10T00:00:00.000Z"),
       },
     });
     mockPrisma.bookingGuest.update.mockResolvedValue({});
@@ -553,8 +564,14 @@ describe("F9: PUT /api/lodge/guests/[date]/depart", () => {
       lastName: "Guest",
       memberId: "member-1",
       departedAt: new Date(),
+      // Same one-night stay as above (#2628) — see the note there.
+      stayStart: new Date("2026-07-09T00:00:00.000Z"),
+      stayEnd: new Date("2026-07-10T00:00:00.000Z"),
+      nights: [{ stayDate: new Date("2026-07-09T00:00:00.000Z") }],
       booking: {
         memberId: "booking-owner-1",
+        checkIn: new Date("2026-07-09T00:00:00.000Z"),
+        checkOut: new Date("2026-07-10T00:00:00.000Z"),
       },
     });
     mockPrisma.bookingGuest.update.mockResolvedValue({});
