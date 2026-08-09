@@ -173,10 +173,14 @@ typecheck-clean PR can still fail on them:
 - **Changelog entry** — fails a PR that changes a non-test file under `src/` or
   `prisma/` and carries neither a `changelog.d/` fragment nor the
   `changelog: none — <reason>` marker in the PR body.
-- **Concurrency declaration** — cannot be `N/A` when the diff touches a non-test
-  file on a sensitive path (money, capacity, lifecycle, webhook/cron, Xero or
-  Stripe modules, `prisma/schema.prisma`, `prisma/migrations/`), even for a
-  read-only change.
+- **Concurrency declaration** — keyed entirely on the diff. The
+  `## Concurrency And Lock Impact` section is **required, and cannot be `N/A`**,
+  when the diff touches a non-test file on a sensitive path (money, capacity,
+  lifecycle, webhook/cron, Xero or Stripe modules, `prisma/schema.prisma`,
+  `prisma/migrations/`) — even for a read-only change. When the diff touches no
+  such file the section is not asked for at all and may be omitted (#2726),
+  which is how a Dependabot PR passes without the template. Fill the template in
+  anyway; the gate is a floor, not the standard.
 
 Both parse the PR body, so **editing the body alone does not re-run Actions** —
 push an empty commit after fixing one. That makes a wrong body expensive: each
