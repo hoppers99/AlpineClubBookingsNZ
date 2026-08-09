@@ -67,14 +67,15 @@ const CORE_CONDITIONS: DisplayConditionDefinition[] = [
     name: "occupancy:whole-lodge-today",
     family: "occupancy",
     description: "A whole-lodge booking occupies the lodge tonight.",
-    // Sole-occupancy on today's NIGHT: today falls on or after the stay start
-    // and strictly before the departure date (departure day is not a night).
+    // Today's NIGHT, asked of the row's own night set (#2735). It used to be
+    // `stayStart <= today < stayEnd`, which is the same nights for a contiguous
+    // row and fills the gaps of one that is not: a row whose guests are here
+    // Friday and Monday but not Saturday claimed the lodge on the Saturday.
+    // A departure morning is still not a night either way.
     evaluate: (state) =>
       state.bookings.some(
         (booking) =>
-          booking.wholeLodge &&
-          booking.stayStart <= state.window.start &&
-          state.window.start < booking.stayEnd
+          booking.wholeLodge && booking.nights.includes(state.window.start)
       ),
   },
   {

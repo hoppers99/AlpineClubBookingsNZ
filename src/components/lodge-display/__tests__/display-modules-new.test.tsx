@@ -2,7 +2,11 @@
 
 import { describe, expect, it } from "vitest";
 import { render, screen, within } from "@testing-library/react";
-import type { DisplayState, DisplayStateBooking } from "@/lib/lodge-display-state";
+import type {
+  DisplayState,
+  DisplayStateBooking,
+  DisplayStateGuest,
+} from "@/lib/lodge-display-state";
 import { RoomCards } from "@/components/lodge-display/modules/room-cards";
 import { NightColumns } from "@/components/lodge-display/modules/night-columns";
 import { StatusBoard } from "@/components/lodge-display/modules/status-board";
@@ -13,13 +17,42 @@ import { StatusBoard } from "@/components/lodge-display/modules/status-board";
 
 const WINDOW = ["2026-04-13", "2026-04-14", "2026-04-15"];
 
-function row(overrides: Partial<DisplayStateBooking>): DisplayStateBooking {
-  return {
+/** Expand a half-open envelope into night keys — the payload's own rule. */
+function envelopeNights(stayStart: string, stayEnd: string): string[] {
+  const nights: string[] = [];
+  for (let key = stayStart; key < stayEnd; ) {
+    nights.push(key);
+    const next = new Date(`${key}T00:00:00.000Z`);
+    next.setUTCDate(next.getUTCDate() + 1);
+    key = next.toISOString().slice(0, 10);
+  }
+  return nights;
+}
+
+/**
+ * A fixture row or guest may leave `nights` out, and gets the expanded envelope
+ * (#2735).
+ *
+ * `nights` is REQUIRED on the real payload, and for every CONTIGUOUS stay the
+ * serialiser emits exactly the expanded envelope — so a fixture that says
+ * nothing about nights is handed the payload it would really receive. A case
+ * about a stay with a GAP in it states `nights` explicitly, which is the only
+ * way to express one.
+ */
+type GuestFixture = Omit<DisplayStateGuest, "nights"> & { nights?: string[] };
+type RowFixture = Partial<Omit<DisplayStateBooking, "guests">> & {
+  guests?: GuestFixture[] | null;
+};
+
+function row(overrides: RowFixture): DisplayStateBooking {
+  const merged = {
     key: "row-1-0",
     label: "Olive O",
     wholeLodge: false,
     roomId: null,
-    guests: [{ label: "Jane S", stayStart: "2026-04-13", stayEnd: "2026-04-15" }],
+    guests: [
+      { label: "Jane S", stayStart: "2026-04-13", stayEnd: "2026-04-15" },
+    ] as GuestFixture[] | null,
     guestCount: 1,
     stayStart: "2026-04-13",
     stayEnd: "2026-04-15",
@@ -27,6 +60,16 @@ function row(overrides: Partial<DisplayStateBooking>): DisplayStateBooking {
     // has none; the cases that exercise the chip set it explicitly.
     arrivalTime: null,
     ...overrides,
+  };
+  return {
+    ...merged,
+    guests:
+      merged.guests?.map((guest) => ({
+        ...guest,
+        nights: guest.nights ?? envelopeNights(guest.stayStart, guest.stayEnd),
+      })) ?? null,
+    nights:
+      overrides.nights ?? envelopeNights(merged.stayStart, merged.stayEnd),
   };
 }
 
@@ -232,5 +275,69 @@ describe("StatusBoard (mock O4, closes #114)", () => {
     const { container } = render(<StatusBoard state={withRooms} />);
     expect(screen.getByText("Jane S")).toBeDefined();
     expect(container.querySelectorAll(".display-status-group").length).toBe(3);
+  });
+});
+
+describe("a stay with a gap, per segment (#2735)", () => {
+  // Gappy holds nights 13 and 15 and NOT the 14th. On the morning of the 14th
+  // they are in the lodge until midday and then gone; on the evening of the
+  // 15th they are back. The envelope alone cannot say any of that — it reads as
+  // one unbroken stay from the 13th to the 16th — so before #2735 every board
+  // below called them "staying" on all three days.
+  const gappy = (label: string) => ({
+    label,
+    stayStart: "2026-04-13",
+    stayEnd: "2026-04-16",
+    nights: ["2026-04-13", "2026-04-15"],
+  });
+  const gapRow = row({
+    key: "gap",
+    roomId: "r1",
+    guests: [gappy("Gappy G")],
+    stayStart: "2026-04-13",
+    stayEnd: "2026-04-16",
+    nights: ["2026-04-13", "2026-04-15"],
+  });
+
+  it("RoomCards: tonight they are arriving, exactly as an ordinary first night", () => {
+    const { container } = render(
+      <RoomCards state={state({ rooms: [{ id: "r1", name: "Kea" }], bookings: [gapRow] })} />
+    );
+    expect(
+      statusOf(container as unknown as HTMLElement, "Gappy G", "display-room-dot")
+    ).toBe("arriving");
+  });
+
+  it("NightColumns: they leave on the gap morning and arrive again on their return night", () => {
+    const { container } = render(
+      <NightColumns state={state({ bookings: [gapRow] })} />
+    );
+    const columns = Array.from(
+      container.querySelectorAll(".display-night-col")
+    ) as HTMLElement[];
+    expect(columns).toHaveLength(3);
+    const statusIn = (column: HTMLElement) =>
+      column.querySelector(".display-night-dot")?.getAttribute("data-status") ?? null;
+    expect(statusIn(columns[0])).toBe("arriving"); // 13th: in tonight
+    expect(statusIn(columns[1])).toBe("departing"); // 14th: here until midday
+    expect(statusIn(columns[2])).toBe("arriving"); // 15th: back for the night
+  });
+
+  it("keeps a contiguous stay's three statuses exactly as they were", () => {
+    // The no-regression half: the same three columns for a plain 13→15 stay.
+    const { container } = render(
+      <NightColumns
+        state={state({
+          bookings: [
+            row({ key: "plain", guests: [{ label: "Anna A", stayStart: "2026-04-13", stayEnd: "2026-04-15" }] }),
+          ],
+        })}
+      />
+    );
+    const statuses = Array.from(container.querySelectorAll(".display-night-col")).map(
+      (column) =>
+        column.querySelector(".display-night-dot")?.getAttribute("data-status") ?? null
+    );
+    expect(statuses).toEqual(["arriving", "staying", "departing"]);
   });
 });

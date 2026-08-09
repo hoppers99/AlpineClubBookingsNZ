@@ -27,20 +27,52 @@ export const DISPLAY_SHORT_WEEKDAY = new Intl.DateTimeFormat(APP_LOCALE, {
 export type StayStatus = "arriving" | "staying" | "departing";
 
 /**
- * Classify a stay on one window date `date` (date-only string compare):
- * - `arriving`   — the stay starts on `date` (`stayStart === date`);
- * - `departing`  — `date` is the check-out morning (`stayEnd === date`);
- * - `staying`    — already in and staying again (`stayStart < date < stayEnd`);
- * - `null`       — the stay does not touch `date` at all.
+ * Shift an NZ date-only key by whole days.
  *
- * Arrival wins over departure for a same-day edge (a stay can't both start and
- * check out on the same date given an exclusive end, but the order is explicit
- * so the classification is total and deterministic).
+ * Re-anchored at UTC midnight, which is midday NZ (UTC+12/+13), so the shift
+ * can never land on a daylight-saving transition and roll the calendar day the
+ * wrong way — the same reason `shortDay` hands its dates over at UTC midnight.
+ */
+export function shiftDateOnly(date: string, days: number): string {
+  const day = new Date(`${date}T00:00:00Z`);
+  day.setUTCDate(day.getUTCDate() + days);
+  return day.toISOString().slice(0, 10);
+}
+
+/**
+ * Classify a stay on one window date `date`.
+ *
+ * A stay occupies the MORNING half of `date` when night `date - 1` is one of
+ * its nights, and the EVENING half when night `date` is (INV-DATE-004). The
+ * three statuses are nothing but which halves those are:
+ *
+ * - `arriving`   — evening only: they come in this afternoon;
+ * - `departing`  — morning only: they are here until midday and then gone;
+ * - `staying`    — both: already in, and in again tonight;
+ * - `null`       — neither: the stay does not touch `date` at all.
+ *
+ * `nights` (#2735) is the authoritative per-night set the payload now carries,
+ * and it is what makes this per SEGMENT: a guest booked on nights {10, 12} is
+ * `departing` on the 11th and `arriving` again on the 12th, instead of reading
+ * as one unbroken stay that leaves only once.
+ *
+ * When `nights` is absent the same rule is evaluated against the half-open
+ * envelope `[stayStart, stayEnd)`, which is the classification this function
+ * has always made: evening-only is `stayStart` and nothing else, morning-only
+ * is `stayEnd` and nothing else, and both is strictly between them. So the two
+ * branches agree on every contiguous stay and differ only where an envelope
+ * cannot say what a night set can.
  */
 export function stayStatusOn(
-  stay: { stayStart: string; stayEnd: string },
+  stay: { stayStart: string; stayEnd: string; nights?: readonly string[] },
   date: string
 ): StayStatus | null {
+  if (stay.nights) {
+    const evening = stay.nights.includes(date);
+    const morning = stay.nights.includes(shiftDateOnly(date, -1));
+    if (evening) return morning ? "staying" : "arriving";
+    return morning ? "departing" : null;
+  }
   if (stay.stayStart === date) return "arriving";
   if (stay.stayEnd === date) return "departing";
   if (stay.stayStart < date && stay.stayEnd > date) return "staying";

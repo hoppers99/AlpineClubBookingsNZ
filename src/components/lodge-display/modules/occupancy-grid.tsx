@@ -12,6 +12,7 @@ import {
   barMeta,
   barNames,
   computeBarLayout,
+  computeBarSegments,
   splitRoomName,
   windowDatesOf,
 } from "./arrivals-board";
@@ -139,6 +140,11 @@ export function OccupancyGrid({
     state.rooms.length === 0
   ) {
     const maxStaying = Math.max(1, ...state.occupancy.map((day) => day.staying));
+    // The blockout panel spans the whole-lodge row's ENVELOPE, deliberately —
+    // not its segments (#2735). It carries the kicker, the group label, the
+    // headcount, the dates and the note, so it is one panel per blockout by
+    // construction; splitting it would print that block twice. A whole-lodge
+    // hold is a contiguous exclusive hold, so the two spans are the same span.
     const blockLayout = computeBarLayout(wholeLodgeRow, windowDates);
     return (
       <div className="display-occupancy-grid display-blockout-statement">
@@ -172,12 +178,13 @@ export function OccupancyGrid({
   }
 
   // --- board variant: grid chrome + block spanning the booked nights -------
+  // Envelope, not segments — same reason as the statement variant above.
   const blockLayout = computeBarLayout(wholeLodgeRow, windowDates);
   const rooms = state.rooms;
   const roomsWithBars = new Set(
     state.bookings
       .filter((row) => !row.wholeLodge && row.roomId !== null)
-      .filter((row) => computeBarLayout(row, windowDates) !== null)
+      .filter((row) => computeBarSegments(row, windowDates).length > 0)
       .map((row) => row.roomId)
   );
 
@@ -227,14 +234,16 @@ export function OccupancyGrid({
           (part-week, mock option C). Rows without a room can't be placed. */}
       {state.bookings
         .filter((row) => !row.wholeLodge && row.roomId !== null)
-        .map((row) => {
-          const layout = computeBarLayout(row, windowDates);
+        .flatMap((row) => {
           const roomIndex = rooms.findIndex((room) => room.id === row.roomId);
-          if (!layout || roomIndex === -1) return null;
+          if (roomIndex === -1) return [];
           const { names, overflow } = barNames(row, maxNames);
-          return (
+          // One bar per contiguous run of the row's nights (#2735), same as the
+          // everyday board — a part-week booking beside a blockout can have a
+          // gap in it too.
+          return computeBarSegments(row, windowDates).map((layout, segmentIndex) => (
             <div
-              key={row.key}
+              key={`${row.key}-${segmentIndex}`}
               className="display-bar"
               data-group={row.guests === null || undefined}
               data-departing={layout.departing || undefined}
@@ -250,9 +259,9 @@ export function OccupancyGrid({
                   <span className="display-bar-overflow"> +{overflow}</span>
                 )}
               </span>
-              <span className="display-bar-out">{barMeta(row, layout)}</span>
+              <span className="display-bar-out">{barMeta(layout)}</span>
             </div>
-          );
+          ));
         })}
       {blockLayout && (
         <div

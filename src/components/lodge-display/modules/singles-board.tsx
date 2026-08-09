@@ -7,7 +7,7 @@ import {
 } from "./module-options";
 import {
   barMeta,
-  computeBarLayout,
+  computeBarSegments,
   splitRoomName,
   windowDatesOf,
 } from "./arrivals-board";
@@ -26,6 +26,8 @@ interface SinglesRow {
   label: string;
   stayStart: string;
   stayEnd: string;
+  /** The row's own nights — one bar per contiguous run of them (#2735). */
+  nights: string[];
 }
 
 interface SinglesGroup {
@@ -41,6 +43,7 @@ function rowsOf(booking: DisplayState["bookings"][number]): SinglesRow[] {
         label: `${booking.label} · ${booking.guestCount}`,
         stayStart: booking.stayStart,
         stayEnd: booking.stayEnd,
+        nights: booking.nights,
       },
     ];
   }
@@ -49,6 +52,7 @@ function rowsOf(booking: DisplayState["bookings"][number]): SinglesRow[] {
     label: guest.label,
     stayStart: guest.stayStart,
     stayEnd: guest.stayEnd,
+    nights: guest.nights,
   }));
 }
 
@@ -134,7 +138,10 @@ export function SinglesBoard({
             )}
             {group.rows.map((row, index) => {
               const gridRow = startRow + index;
-              const layout = computeBarLayout(row, windowDates);
+              // One bar per contiguous run of this person's nights (#2735):
+              // four people in one room can already leave on three different
+              // days, and one of them can also go home mid-stay and come back.
+              const segments = computeBarSegments(row, windowDates);
               return (
                 <div style={{ display: "contents" }} key={row.key}>
                   <span
@@ -150,8 +157,9 @@ export function SinglesBoard({
                       gridColumn: `${hasRooms ? 3 : 2} / -1`,
                     }}
                   />
-                  {layout && (
+                  {segments.map((layout, segmentIndex) => (
                     <span
+                      key={`${row.key}-${segmentIndex}`}
                       className="display-singles-bar"
                       data-departing={layout.departing || undefined}
                       style={{
@@ -160,9 +168,9 @@ export function SinglesBoard({
                         gridColumnEnd: `span ${layout.spanColumns}`,
                       }}
                     >
-                      {barMeta(row, layout)}
+                      {barMeta(layout)}
                     </span>
-                  )}
+                  ))}
                 </div>
               );
             })}

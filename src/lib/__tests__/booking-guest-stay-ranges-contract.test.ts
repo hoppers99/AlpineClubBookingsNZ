@@ -85,40 +85,46 @@ describe("stay-range model contract (#2622)", () => {
     expect(stayRanges).not.toMatch(/arrivalTime|departureTime|getHours|setHours/);
   });
 
-  it("keeps the deprecated flag on LEGACY semantics, never the operational day", () => {
-    // PRIVACY CONTRACT. `lodge-display-state.ts` (fenced, issue #58) subtracts
-    // only the envelope end from this list to get its NIGHT counts, so giving
-    // the flag D-M4 per-segment presence turns a sparse stay's gap morning into
-    // a phantom night, breaks sole-occupancy detection and puts guest names and
-    // phone numbers on the unauthenticated lobby wall. The per-segment rule
-    // belongs to the named helpers only.
+  it("keeps the lobby-wall wrapper a pure delegation, defining nothing of its own", () => {
+    // #2735. The wrapper used to hold the LEGACY lodge-date rule as its own
+    // third definition — night-set membership plus the single morning after the
+    // FINAL listed night — which is how a sparse stay's intermediate departure
+    // mornings went missing from the wall. Both branches now delegate to a named
+    // model, so there is still exactly one operational-day rule and one night
+    // rule in this file and the wall cannot drift out of step with either.
+    //
+    // A THIRD BRANCH IS THE REGRESSION. If a date comparison ever reappears
+    // between these two markers, somebody has started defining lodge-date
+    // visibility here again.
+    const predicate = stayRanges.slice(
+      stayRanges.indexOf("function isGuestVisibleOnLodgeDate("),
+      stayRanges.indexOf("export function getLodgeVisibleGuestsForDate<"),
+    );
+    expect(predicate).toContain(
+      "return isGuestActiveOnNight(guest, date, booking);",
+    );
+    expect(predicate).toContain(
+      "return isGuestOperationallyPresentOnDay(guest, date, booking);",
+    );
+    const predicateCode = predicate
+      .replace(/\/\*[\s\S]*?\*\//g, "")
+      .replace(/^\s*\/\/.*$/gm, "");
+    expect(predicateCode).not.toMatch(/dateKey|stayStartKey|stayEndKey|maxKey/);
+
     const wrapper = stayRanges.slice(
       stayRanges.indexOf("export function getLodgeVisibleGuestsForDate<"),
     );
     expect(wrapper).toContain("isGuestVisibleOnLodgeDate(guest, date, booking, options)");
-    expect(wrapper).not.toContain("getOperationallyPresentGuestsForDay(");
-
-    // The legacy true-branch, byte-for-byte: night-set membership OR the single
-    // morning after the FINAL listed night; otherwise the closed envelope.
-    const legacyBranch = stayRanges.slice(
-      stayRanges.indexOf("function isGuestVisibleOnLodgeDate("),
-      stayRanges.indexOf("export function getLodgeVisibleGuestsForDate<"),
-    );
-    expect(legacyBranch).toContain("if (maxKey === null || key > maxKey) maxKey = key;");
-    expect(legacyBranch).toContain("return dateKey === shiftDateOnlyKey(maxKey, 1);");
-    expect(legacyBranch).toContain(
-      "return stayStartKey <= dateKey && dateKey <= stayEndKey;",
-    );
   });
 
   it("freezes the deprecated includeDepartureDate flag to the lobby wall alone", () => {
     // #2631 converted the two kiosk read surfaces (`api/lodge/week` and
     // `api/lodge/guests/[date]`) onto the named operational-day helpers, so the
     // flag has ONE caller left: `lodge-display-state.ts`, the unauthenticated
-    // lobby wall. That one is permanent, not pending — it needs the LEGACY
-    // final-morning-only semantics to derive its night counts, and the test
-    // above spells out why giving it D-M4 per-segment presence would put guest
-    // names on a public screen (issue #58). No caller may be added back.
+    // lobby wall. It stays the only one. The wall keeps a single named entry
+    // point so this census can fence it and so the privacy-load-bearing file has
+    // one import to audit; every other surface calls the named model directly
+    // (INV-DATE-005). No caller may be added back.
     const callers = allSourceFiles(path.join(ROOT, "src"))
       .filter((file) => !file.includes(`${path.sep}__tests__${path.sep}`))
       .filter((file) => /includeDepartureDate/.test(fs.readFileSync(file, "utf8")))

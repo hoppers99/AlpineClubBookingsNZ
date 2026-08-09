@@ -39,6 +39,11 @@ const WHOLE_LODGE_ROW = {
   guestCount: 14,
   stayStart: "2026-04-13",
   stayEnd: "2026-04-15",
+  // #2735: the row's own nights — the expanded envelope for this contiguous
+  // stay. `occupancy:whole-lodge-today` asks this rather than re-deriving a
+  // night from the envelope, so a row whose nights have a gap in them no
+  // longer claims the lodge on the gap night.
+  nights: ["2026-04-13", "2026-04-14"],
   // #2621: no expected arrival time in this fixture.
   arrivalTime: null,
 } as const;
@@ -86,7 +91,12 @@ describe("condition engine (namespaced registry — ADR-003 §3)", () => {
     // departure day, so it is in the window but not occupying tonight.
     const departingToday = stateWith({
       bookings: [
-        { ...WHOLE_LODGE_ROW, stayStart: "2026-04-12", stayEnd: "2026-04-13" },
+        {
+          ...WHOLE_LODGE_ROW,
+          stayStart: "2026-04-12",
+          stayEnd: "2026-04-13",
+          nights: ["2026-04-12"],
+        },
       ],
       occupancy: [
         { date: "2026-04-13", arriving: 0, departing: 14, staying: 14 },
@@ -334,6 +344,7 @@ describe("rotation eligibility (AC4/AC5)", () => {
             guestCount: 14,
             stayStart: "2026-04-13",
             stayEnd: "2026-04-15",
+            nights: ["2026-04-13", "2026-04-14"],
             // #2621: no expected arrival time in this fixture.
             arrivalTime: null,
           },

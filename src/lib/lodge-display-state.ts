@@ -1,10 +1,13 @@
 import type { AgeTier, DisplayNameGranularity } from "@prisma/client";
 import { isValidArrivalTime } from "./arrival-time";
 import {
+  getActiveGuestsForNight,
+  getGuestBedNightKeys,
   getGuestStayEnd,
   getGuestStayStart,
   getLodgeVisibleGuestsForDate,
-  isGuestActiveOnNight,
+  isGuestArrivingOnDay,
+  isGuestDepartingOnDay,
 } from "./booking-guest-stay-ranges";
 import { OPERATIONAL_STAY_BOOKING_STATUSES } from "./booking-status";
 import {
@@ -61,6 +64,21 @@ export interface DisplayStateGuest {
   label: string;
   stayStart: string;
   stayEnd: string;
+  /**
+   * Every lodge night this guest holds a bed for, sorted (#2735).
+   *
+   * `stayStart`/`stayEnd` is a half-open ENVELOPE and cannot express a gap: a
+   * guest in on Friday, home on Saturday and back on Monday has the same
+   * envelope as one who never left. This is the authoritative per-night
+   * presence the bars are drawn from, so a stay with a gap draws as two bars
+   * and the guest reads as leaving — and coming back — on the days they really
+   * do. For a contiguous stay it is exactly `[stayStart, stayEnd)` expanded and
+   * changes nothing.
+   *
+   * No new disclosure: the envelope already published the span, and the row
+   * carrying this is already one the wall may name (`namesAllowed`).
+   */
+  nights: string[];
   /** Adult member phone number — present ONLY when the two-sided consent gate
    * allows it (#125 / #37); omitted otherwise, so the default payload carries
    * no contact field. */
@@ -78,6 +96,20 @@ export interface DisplayStateBooking {
   guestCount: number;
   stayStart: string;
   stayEnd: string;
+  /**
+   * The union of this row's guests' lodge nights, sorted (#2735) — see
+   * {@link DisplayStateGuest.nights}.
+   *
+   * Present on EVERY row, including one whose names are withheld: a bar has to
+   * be drawn for a family, an organisation and a whole-lodge blockout too, and
+   * the row's `stayStart`/`stayEnd` already published the same span. It names
+   * nobody — it is the same group-level occupancy fact the envelope was.
+   *
+   * This CHANGES NO COUNT. The occupancy buckets, the night counts and the
+   * whole-lodge heuristic are all derived above, from the guest rows, before
+   * any row is built.
+   */
+  nights: string[];
   /**
    * The booking's expected arrival time as stored, `"HH:mm"` — display-only
    * information so the wall can say when tonight's arrivals are due (#2621,
@@ -318,6 +350,11 @@ export async function buildDisplayState(
   const endExclusive = addDaysDateOnly(startDate, days);
   const endInclusive = addDaysDateOnly(endExclusive, -1);
   const windowDates = eachDateOnlyInRange(startDate, endExclusive).slice(0, days);
+  // The nights whose occupants can appear anywhere in this window. Night
+  // `startDate - 1` counts: its occupant is still in the lodge on the window's
+  // first morning (INV-DATE-002).
+  const windowFirstNightKey = formatDateOnly(addDaysDateOnly(startDate, -1));
+  const windowLastNightKey = formatDateOnly(endInclusive);
 
   const [lodge, flags] = await Promise.all([
     prisma.lodge.findUnique({
@@ -494,18 +531,22 @@ export async function buildDisplayState(
         }
         dayMap.set(dateKey, visible.length);
       }
-      // NIGHTS, asked as a night question (#2628). This used to subtract the
-      // envelope end — "everyone visible except whoever's `stayEnd` is today" —
-      // which is the same set only because the visibility rule above happens to
-      // add exactly one departure morning per stay. Reading the night model
-      // directly is byte-identical today for every stay, contiguous or sparse,
-      // and it means a later change to who is VISIBLE on the wall can no longer
-      // silently invent a night here. It is the phantom night that matters: a
+      // NIGHTS, asked as a night question of the WHOLE guest list (#2628,
+      // finished in #2735). This started life as "everyone visible except
+      // whoever's `stayEnd` is today"; #2628 made it a real night question but
+      // still asked it of `visible`, which left the count bounded above by the
+      // visibility rule. #2735 makes the visibility rule per-segment, so the
+      // count is now taken from `booking.guests` and shares nothing with it at
+      // all: no change to who is SHOWN on the wall can add or remove a night
+      // here, in either direction. It is the phantom night that matters — a
       // sole-occupancy count is what decides whether an unauthenticated screen
-      // prints guests' names (INV-DATE-006, issue #58).
-      const nightGuests = visible.filter((guest) =>
-        isGuestActiveOnNight(guest, date, booking)
-      );
+      // prints guests' names and phone numbers (INV-DATE-006, issue #58).
+      //
+      // The value is unchanged by both steps: `visible` has always been a
+      // superset of the guests active on `date` (a departure morning is added,
+      // never a night removed), so filtering it by the night model and filtering
+      // the whole list by the night model give the same guests.
+      const nightGuests = getActiveGuestsForNight(booking.guests, date, booking);
       if (nightGuests.length > 0) {
         let nightMap = perBookingNightCounts.get(booking.id);
         if (!nightMap) {
@@ -515,12 +556,27 @@ export async function buildDisplayState(
         nightMap.set(dateKey, nightGuests.length);
         nightTotals.set(dateKey, (nightTotals.get(dateKey) ?? 0) + nightGuests.length);
       }
+      // ARRIVING / DEPARTING, per SEGMENT (#2735). These used to compare the
+      // guest's overall envelope ends against the date, so a guest who goes
+      // home mid-stay and comes back arrived once and left once no matter how
+      // many times they really did either. `isGuestArrivingOnDay` /
+      // `isGuestDepartingOnDay` are the named operational-day labels — which
+      // half of the day the guest occupies — so nights {10, 12} arrives on the
+      // 10th AND the 12th and leaves on the 11th AND the 13th.
+      //
+      // Unchanged for every contiguous stay: "occupies the evening half only"
+      // is `stayStart` and nothing else, and "occupies the morning half only"
+      // is `stayEnd` and nothing else. Counted over `visible`, which is exactly
+      // the guests occupying either half, so neither label can fall outside it.
+      //
+      // NEITHER OF THESE IS A NIGHT COUNT. `nightTotals` above is the only
+      // input to sole-occupancy detection and is derived independently.
       staying += visible.length;
-      arriving += visible.filter(
-        (guest) => getGuestStayStart(guest, booking).getTime() === date.getTime()
+      arriving += visible.filter((guest) =>
+        isGuestArrivingOnDay(guest, date, booking)
       ).length;
-      departing += visible.filter(
-        (guest) => getGuestStayEnd(guest, booking).getTime() === date.getTime()
+      departing += visible.filter((guest) =>
+        isGuestDepartingOnDay(guest, date, booking)
       ).length;
     }
 
@@ -571,11 +627,34 @@ export async function buildDisplayState(
       granularity,
     });
 
+    // The nights each guest actually holds a bed for (INV-DATE-020): the
+    // explicit `BookingGuestNight` set when they carry one, the half-open
+    // envelope when they do not. Derived once per guest and reused for the
+    // in-window test, the row's own night set and the per-guest payload, so
+    // those three can never disagree about which nights a guest is here.
+    const nightKeysByGuest = new Map<string, string[]>(
+      booking.guests.map((guest) => [
+        guest.id,
+        getGuestBedNightKeys(guest, booking),
+      ])
+    );
+
     const byRoom = new Map<string | null, typeof booking.guests>();
     for (const guest of booking.guests) {
-      const inWindow =
-        getGuestStayStart(guest, booking).getTime() <= endInclusive.getTime() &&
-        getGuestStayEnd(guest, booking).getTime() >= startDate.getTime();
+      // In the window if the guest is in the lodge on any of its days. A guest
+      // occupies day D when night D or night D-1 is theirs (INV-DATE-004), so
+      // that is exactly one booked night in `[startDate - 1, endInclusive]`.
+      //
+      // Identical to the envelope-overlap test it replaces for every contiguous
+      // stay — `[stayStart, stayEnd)` meets `[startDate - 1, endInclusive]`
+      // exactly when `[stayStart, stayEnd]` meets `[startDate, endInclusive]`.
+      // It differs only for a SPARSE stay whose nights all fall outside the
+      // window while its envelope spans it, which the envelope test listed on
+      // the wall as present (#2735).
+      const nightKeys = nightKeysByGuest.get(guest.id) ?? [];
+      const inWindow = nightKeys.some(
+        (key) => key >= windowFirstNightKey && key <= windowLastNightKey
+      );
       if (!inWindow) continue;
       const roomId =
         rooms === null ? null : guest.bedAllocations[0]?.roomId ?? null;
@@ -589,6 +668,18 @@ export async function buildDisplayState(
       const stayStarts = guests.map((g) => getGuestStayStart(g, booking).getTime());
       const stayEnds = guests.map((g) => getGuestStayEnd(g, booking).getTime());
       const rowStayStart = Math.min(...stayStarts);
+      // The row's own night set: the union of its guests' nights, sorted. For
+      // every contiguous stay this is exactly `[stayStart, stayEnd)` expanded,
+      // so the bars it draws are the bars drawn today. It exists so a stay with
+      // a GAP in it draws as two bars rather than one unbroken one (#2735) —
+      // `stayStart`/`stayEnd` alone cannot express a gap, and a guest booked in
+      // on Friday, home on Saturday and back on Monday was shown to the lobby
+      // as though they never left.
+      const rowNights = [
+        ...new Set(
+          guests.flatMap((g) => nightKeysByGuest.get(g.id) ?? [])
+        ),
+      ].sort();
       // #2621 — the expected arrival time, and the four things that must all be
       // true before an unauthenticated wall may print it.
       //
@@ -657,6 +748,7 @@ export async function buildDisplayState(
                   reduceName(guest.firstName, guest.lastName, granularity) ?? "",
                 stayStart: formatDateOnly(getGuestStayStart(guest, booking)),
                 stayEnd: formatDateOnly(getGuestStayEnd(guest, booking)),
+                nights: nightKeysByGuest.get(guest.id) ?? [],
                 ...(phone ? { phone } : {}),
               };
             })
@@ -664,6 +756,7 @@ export async function buildDisplayState(
         guestCount: guests.length,
         stayStart: formatDateOnly(new Date(rowStayStart)),
         stayEnd: formatDateOnly(new Date(Math.max(...stayEnds))),
+        nights: rowNights,
         arrivalTime,
       });
     }

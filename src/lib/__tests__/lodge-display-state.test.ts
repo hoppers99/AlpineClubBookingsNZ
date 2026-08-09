@@ -326,17 +326,18 @@ describe("buildDisplayState privacy matrix", () => {
     expect(zoeRow.wholeLodge).toBe(false);
   });
 
-  it("PRIVACY: a sparse stay's gap morning is no night here, so an unrelated sole-night blockout holds (#2622)", async () => {
-    // The lobby wall derives its NIGHT counts from the checkout-inclusive
-    // visible list. If `getLodgeVisibleGuestsForDate`'s `includeDepartureDate`
-    // branch ever gains D-M4 per-segment presence WITHOUT the night filter
-    // below being a real night question, the gap morning of the sparse booking
-    // below starts counting as a PHANTOM NIGHT on the 14th, the eight-guest
-    // booking stops being the sole occupant, its whole-lodge blockout drops,
-    // and eight guest names appear on an unauthenticated public screen. #2628
-    // moved that filter onto `isGuestActiveOnNight` (see the source contract
-    // below) so half of that coupling is gone; the visibility branch itself is
-    // still legacy, and #2735 carries the rest.
+  it("PRIVACY: a sparse stay's gap morning is NOT a night, so an unrelated sole-night blockout holds (#2735)", async () => {
+    // THE ACCEPTANCE TEST FOR #2735, and the one whose failure mode is a
+    // member's name and phone number on a public screen.
+    //
+    // The sparse guest holds nights 13 and 15 and NOT the 14th, so on the
+    // morning of the 14th they are in the lodge until midday — which #2735 now
+    // shows on the wall — and on the NIGHT of the 14th they are not. The eight
+    // Blockout guests hold the 14th alone. If the wall's night count is ever
+    // derived from its visible list again, the gap morning re-enters it as a
+    // PHANTOM NIGHT on the 14th, the eight-guest booking stops being the sole
+    // occupant, its whole-lodge blockout drops, and eight guest names appear on
+    // an unauthenticated public screen (INV-DATE-006, INV-DATE-022, issue #58).
     const sparse = {
       ...guest("Gappy", "Guest", "ADULT", { start: "2026-04-13", end: "2026-04-16" }),
       // Nights 13 and 15 only — the 14th is NOT booked.
@@ -370,33 +371,148 @@ describe("buildDisplayState privacy matrix", () => {
     expect(blockout.guests).toBeNull();
     expect(JSON.stringify(state)).not.toContain("Blocker");
 
-    // ...and the gap morning is not an occupancy either: only the eight are here.
+    // The sparse guest IS on the wall on the 14th — that is the whole point of
+    // #2735 — and is still not one of the 14th's nine sleepers: nine people are
+    // in the building at some point that day, eight of them in a bed that night.
     const gapDay = state!.occupancy.find((entry) => entry.date === "2026-04-14")!;
-    expect(gapDay.staying).toBe(8);
+    expect(gapDay.staying).toBe(9);
+    // They leave on the morning of the 14th and come back on the evening of the
+    // 15th: per SEGMENT, not once per stay.
+    expect(gapDay.departing).toBe(1);
+    expect(gapDay.arriving).toBe(8);
+    const returnDay = state!.occupancy.find((entry) => entry.date === "2026-04-15")!;
+    expect(returnDay.arriving).toBe(1);
+    expect(returnDay.departing).toBe(8);
+
+    // The bar carries the gap, so the wall cannot draw them through the 14th.
+    const gappyRow = state!.bookings.find((row) => row.label === "Olive O")!;
+    expect(gappyRow.nights).toEqual(["2026-04-13", "2026-04-15"]);
+    expect(gappyRow.guests![0].nights).toEqual(["2026-04-13", "2026-04-15"]);
   });
 
-  it("PRIVACY: the wall's night count asks the NIGHT MODEL, not 'everyone except whoever ends today' (#2628)", async () => {
-    // A source contract because the two forms agree night for night on every
-    // stay in the tree today — so no fixture can tell them apart, and reverting
-    // this would break nothing while quietly restoring the coupling.
+  it("PRIVACY: the wall's night count is taken from the guest list, never the visible list (#2735)", async () => {
+    // A source contract because the forms agree night for night on every stay in
+    // the tree today — no fixture can tell them apart, so reverting this would
+    // break nothing while quietly restoring the coupling that #2735 removed.
     //
-    // The old form subtracted the booking's envelope END from the visible list.
-    // That is only the night set because the visibility rule happens to add
-    // exactly one departure morning per stay, which is precisely the rule #2735
-    // is asked to change. Anyone who changes it would silently invent a night
-    // here, and a phantom night is what turns a sole-occupancy blockout off and
-    // publishes guest names on a screen with no login in front of it
-    // (INV-DATE-006, issue #58). Asking the night model directly cannot.
+    // Three shapes are refused, in the order they were actually written here:
+    // subtracting the envelope end from the visible list (pre-#2628), filtering
+    // the visible list by the night model (#2628, which left the count bounded
+    // above by visibility), and any other re-derivation of `nightGuests` from
+    // `visible`. The count must read `booking.guests` (INV-DATE-022).
     const fs = await import("node:fs");
     const path = await import("node:path");
     const source = fs.readFileSync(
       path.resolve(process.cwd(), "src/lib/lodge-display-state.ts"),
       "utf8",
     );
-    expect(source).toContain("isGuestActiveOnNight(guest, date, booking)");
-    expect(source).not.toContain(
+    const code = source
+      .replace(/\/\*[\s\S]*?\*\//g, "")
+      .replace(/^\s*\/\/.*$/gm, "");
+    expect(code).toContain(
+      "const nightGuests = getActiveGuestsForNight(booking.guests, date, booking);",
+    );
+    expect(code).not.toContain(
       "getGuestStayEnd(guest, booking).getTime() !== date.getTime()",
     );
+    expect(code).not.toMatch(/nightGuests\s*=\s*visible/);
+  });
+
+  it("shows a guest on every morning they leave, and draws the gap (#2735)", async () => {
+    // The reported bug, in isolation and with nobody else in the lodge: in on
+    // the 13th, home on the 14th, back on the 15th. The wall used to drop them
+    // from the board on the morning of the 14th, while they were physically at
+    // the lodge until midday, and to draw one unbroken bar across all three
+    // days as though they had never gone.
+    const sparse = {
+      ...guest("Gappy", "Guest", "ADULT", { start: "2026-04-13", end: "2026-04-16" }),
+      nights: [
+        { stayDate: parseDateOnly("2026-04-13") },
+        { stayDate: parseDateOnly("2026-04-15") },
+      ],
+    };
+    mockPrisma.booking.findMany.mockResolvedValue([
+      booking("b1", ADULT_ORGANISER, [sparse], {
+        checkIn: "2026-04-13",
+        checkOut: "2026-04-16",
+      }),
+    ]);
+    const { buildDisplayState } = await import("@/lib/lodge-display-state");
+    const state = await buildDisplayState("lodge-a");
+
+    expect(
+      state!.occupancy.map((entry) => [entry.date, entry.staying]),
+    ).toEqual([
+      ["2026-04-13", 1], // arrives
+      ["2026-04-14", 1], // here until midday, then gone — used to read 0
+      ["2026-04-15", 1], // back for the night
+    ]);
+    const row = state!.bookings[0];
+    expect(row.nights).toEqual(["2026-04-13", "2026-04-15"]);
+    // The envelope is unchanged and still describes the whole stay.
+    expect(row.stayStart).toBe("2026-04-13");
+    expect(row.stayEnd).toBe("2026-04-16");
+  });
+
+  it("leaves a contiguous stay's counters and nights exactly as they were (#2735)", async () => {
+    // The no-regression half. Every ordinary booking — envelope-only, no night
+    // rows — must produce the same occupancy buckets and the same span it
+    // always did, with `nights` simply the expanded envelope.
+    mockPrisma.booking.findMany.mockResolvedValue([
+      booking("b1", ADULT_ORGANISER, [
+        guest("Anna", "Adult", "ADULT", { start: "2026-04-13", end: "2026-04-15" }),
+      ]),
+    ]);
+    const { buildDisplayState } = await import("@/lib/lodge-display-state");
+    const state = await buildDisplayState("lodge-a");
+
+    expect(state!.occupancy).toEqual([
+      { date: "2026-04-13", arriving: 1, departing: 0, staying: 1 },
+      { date: "2026-04-14", arriving: 0, departing: 0, staying: 1 },
+      { date: "2026-04-15", arriving: 0, departing: 1, staying: 1 },
+    ]);
+    expect(state!.bookings[0].nights).toEqual(["2026-04-13", "2026-04-14"]);
+    expect(state!.bookings[0].guests![0].nights).toEqual([
+      "2026-04-13",
+      "2026-04-14",
+    ]);
+  });
+
+  it("keeps a guest off the wall when none of their nights touch the window (#2735)", async () => {
+    // A sparse stay whose envelope spans the window while its nights sit
+    // outside it. The envelope-overlap test this replaced listed them as
+    // present all week; presence is now asked per night. The other guest keeps
+    // the booking on the board, so this is the guest filter and not the
+    // booking filter being tested.
+    const away = {
+      ...guest("Away", "Guest", "ADULT", { start: "2026-04-11", end: "2026-04-20" }),
+      // Night 11 (before the window) and night 17 (after it). Nothing in
+      // [12, 15], so they are in the lodge on no day of a 13–15 window.
+      nights: [
+        { stayDate: parseDateOnly("2026-04-11") },
+        { stayDate: parseDateOnly("2026-04-17") },
+      ],
+    };
+    const here = {
+      ...guest("Here", "Guest", "ADULT", { start: "2026-04-13", end: "2026-04-15" }),
+      nights: [
+        { stayDate: parseDateOnly("2026-04-13") },
+        { stayDate: parseDateOnly("2026-04-14") },
+      ],
+    };
+    mockPrisma.booking.findMany.mockResolvedValue([
+      booking("b1", ADULT_ORGANISER, [away, here], {
+        checkIn: "2026-04-11",
+        checkOut: "2026-04-20",
+      }),
+    ]);
+    const { buildDisplayState } = await import("@/lib/lodge-display-state");
+    const state = await buildDisplayState("lodge-a");
+
+    const row = state!.bookings[0];
+    expect(row.guestCount).toBe(1);
+    expect(row.guests!.map((entry) => entry.label)).toEqual(["Here G"]);
+    expect(row.nights).toEqual(["2026-04-13", "2026-04-14"]);
   });
 
   it("does not blockout a lone sole-occupancy guest (whole-lodge threshold)", async () => {
