@@ -929,6 +929,8 @@ describe("consent columns have exactly one writer", () => {
         "AID-6B: derives one closed consent sub-state label for booking_party_state; writes nothing",
       "src/lib/diagnostics/tools/packs/booking-evidence.ts":
         "AID-6B: reads stored consent state to decide whether a guest is operationally present; writes nothing",
+      "src/lib/diagnostics/tools/packs/membership-records.ts":
+        "AID-6B: member_booking_summary computes memberOperationallyPresent in SQL from the platform's own consent predicate (consentStatus IS NULL OR = 'CONFIRMED'); writes nothing",
       "src/lib/diagnostics/tools/provision-role.ts":
         "AID-6B: the SELECT-only role's column grant, which must name every column the statements read",
     };
