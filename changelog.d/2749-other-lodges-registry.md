@@ -11,6 +11,12 @@
   history), or delete entries, and the same **lodge edit** permission that governs
   your own lodges governs this panel.
 
+  The registry ships **pre-populated** with the recognised Ruapehu-area clubs and
+  lodges (names, and where known, location, booking-officer email, and bed
+  capacity), so the list is there on first use; you can edit, add to, or remove
+  from it freely. The seeding is idempotent — it never overwrites an entry you
+  have since changed.
+
   This is the groundwork for an upcoming feature: the names entered here will
   populate a drop-down so a non-member can indicate which other lodge they belong
   to when booking.
