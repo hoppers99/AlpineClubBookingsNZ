@@ -40,7 +40,8 @@ const {
   mockMarkGroupSettlementIntentFailed,
   mockMarkGroupSettlementIntentRefunded,
   mockGroupBookingFindUnique,
-  mockCloseDeletedBookingModificationRefundTask,
+  mockRecordAutomaticCancelledBookingRefundTask,
+  mockSendAdminLateCaptureAutoRefundAlert,
 } = vi.hoisted(() => ({
   mockConstructWebhookEvent: vi.fn(),
   mockProcessedWebhookCreate: vi.fn(),
@@ -107,14 +108,20 @@ const {
   mockMarkGroupSettlementIntentFailed: vi.fn().mockResolvedValue(undefined),
   mockMarkGroupSettlementIntentRefunded: vi.fn().mockResolvedValue(undefined),
   mockGroupBookingFindUnique: vi.fn().mockResolvedValue(null),
-  // #2700
-  mockCloseDeletedBookingModificationRefundTask: vi.fn().mockResolvedValue(0),
+  // #2700 close, #2760 close-or-write
+  mockRecordAutomaticCancelledBookingRefundTask: vi.fn().mockResolvedValue({
+    closed: 0,
+    created: true,
+    alreadyRecorded: false,
+  }),
+  // #2761: this path's own unmuteable alert, in place of the generic
+  // payment-failure mail.
+  mockSendAdminLateCaptureAutoRefundAlert: vi.fn().mockResolvedValue(undefined),
 }));
 
 vi.mock("@/lib/deleted-booking-modification-payment", () => ({
-  closeDeletedBookingModificationRefundTaskAfterAutomaticRefund: (
-    ...args: unknown[]
-  ) => mockCloseDeletedBookingModificationRefundTask(...args),
+  recordAutomaticCancelledBookingRefundTask: (...args: unknown[]) =>
+    mockRecordAutomaticCancelledBookingRefundTask(...args),
 }));
 
 vi.mock("@/lib/stripe", () => ({
@@ -228,6 +235,9 @@ vi.mock("@/lib/xero-error-alert", () => ({
 vi.mock("@/lib/email", () => ({
   sendBookingConfirmedEmail: (...args: unknown[]) => mockSendBookingConfirmedEmail(...args),
   sendAdminPaymentFailureAlert: (...args: unknown[]) => mockSendAdminPaymentFailureAlert(...args),
+  // #2761: the late-capture path's own unmuteable alert.
+  sendAdminLateCaptureAutoRefundAlert: (...args: unknown[]) =>
+    mockSendAdminLateCaptureAutoRefundAlert(...args),
   sendSetupIntentFailedEmail: (...args: unknown[]) => mockSendSetupIntentFailedEmail(...args),
 }));
 
@@ -1258,10 +1268,21 @@ describe("Stripe webhook Xero alerting", () => {
       } as any;
     }
 
-    function armCancelledBooking(xeroInvoiceId: string | null = null) {
+    /**
+     * #2760: `deletedAt` is now part of what this handler reads, because the
+     * record and the alert both name which population the capture belonged to.
+     * Defaults to the DELETED population — a soft-deleted booking is always
+     * CANCELLED (`INV-ADDPAY-030`), which is the case #2700 and #2750 were about —
+     * and the merely-cancelled population passes `deletedAt: null` explicitly.
+     */
+    function armCancelledBooking(
+      xeroInvoiceId: string | null = null,
+      deletedAt: Date | null = new Date("2026-06-20"),
+    ) {
       mockBookingFindUnique.mockResolvedValue({
         id: "booking-9",
         status: "CANCELLED",
+        deletedAt,
         checkIn: new Date("2026-08-01"),
         checkOut: new Date("2026-08-03"),
         member: { firstName: "Alice", lastName: "Example" },
@@ -1308,12 +1329,19 @@ describe("Stripe webhook Xero alerting", () => {
         },
         idempotencyKeyPrefix: "late_cancel_refund_booking-9_pi_additional_late",
       });
-      expect(mockSendAdminPaymentFailureAlert).toHaveBeenCalledWith(
+      // #2761: its own alert, not the generic "Payment Failed" mail. Exactly one
+      // notification for the event — the old sender is not called on this path at
+      // all.
+      expect(mockSendAdminLateCaptureAutoRefundAlert).toHaveBeenCalledWith(
         expect.objectContaining({
           amountCents: 2500,
           paymentIntentId: "pi_additional_late",
+          bookingId: "booking-9",
+          bookingDeleted: true,
         }),
       );
+      expect(mockSendAdminLateCaptureAutoRefundAlert).toHaveBeenCalledTimes(1);
+      expect(mockSendAdminPaymentFailureAlert).not.toHaveBeenCalled();
       expect(mockLogAudit).toHaveBeenCalledWith(
         expect.objectContaining({
           action: "booking.payment.refunded_after_cancellation",
@@ -1343,7 +1371,7 @@ describe("Stripe webhook Xero alerting", () => {
      * MUTATION PROOF: delete the close call from
      * `handleCancelledBookingAdditionalPaymentSucceeded` and this fails by name.
      */
-    it("closes any deleted-booking modification refund task after refunding (#2700)", async () => {
+    it("records the automatic refund after refunding, with the amount and the population (#2700 / #2760)", async () => {
       mockConstructWebhookEvent.mockReturnValue(
         additionalSucceededEvent("evt_add_cancelled_task_close"),
       );
@@ -1359,23 +1387,70 @@ describe("Stripe webhook Xero alerting", () => {
       const response = await POST(makeRequest());
 
       expect(response.status).toBe(200);
-      expect(mockCloseDeletedBookingModificationRefundTask).toHaveBeenCalledWith(
-        {
-          bookingId: "booking-9",
-          paymentId: "payment-9",
-          paymentIntentId: "pi_additional_late",
-        },
-      );
-      // Closed AFTER the money actually went back, never before.
+      expect(
+        mockRecordAutomaticCancelledBookingRefundTask,
+      ).toHaveBeenCalledWith({
+        bookingId: "booking-9",
+        paymentId: "payment-9",
+        paymentIntentId: "pi_additional_late",
+        // #2760: the captured cents, so the row the webhook may have to CREATE
+        // states the amount that went back. Integer cents, straight from the
+        // intent — nothing recomputes a refund.
+        amountCents: 2500,
+        bookingDeleted: true,
+      });
+      // Recorded AFTER the money actually went back, never before.
       expect(
         mockRefundPaymentTransactions.mock.invocationCallOrder[0],
       ).toBeLessThan(
-        mockCloseDeletedBookingModificationRefundTask.mock
+        mockRecordAutomaticCancelledBookingRefundTask.mock
           .invocationCallOrder[0],
       );
     });
 
-    it("still returns 200 when closing that task fails (#2700)", async () => {
+    it("records and alerts the cancelled-but-not-deleted population too (#2760)", async () => {
+      /*
+        The population the owner widened this to, deliberately over the narrower
+        recommendation. #1350's refund fires on `status === "CANCELLED"`, not on
+        `deletedAt`, so this capture was already being auto-refunded — it simply
+        left no operator record anywhere, because the confirm route's raise is
+        gated on `deletedAt`.
+      */
+      mockConstructWebhookEvent.mockReturnValue(
+        additionalSucceededEvent("evt_add_cancelled_live_booking"),
+      );
+      mockFindPaymentTransactionByIntentId.mockResolvedValue({
+        id: "txn-9",
+        paymentId: "payment-9",
+        kind: "ADDITIONAL",
+        amountCents: 2500,
+        status: "FAILED",
+      });
+      armCancelledBooking(null, null);
+
+      const response = await POST(makeRequest());
+
+      expect(response.status).toBe(200);
+      expect(
+        mockRecordAutomaticCancelledBookingRefundTask,
+      ).toHaveBeenCalledWith(
+        expect.objectContaining({ bookingDeleted: false, amountCents: 2500 }),
+      );
+      expect(mockSendAdminLateCaptureAutoRefundAlert).toHaveBeenCalledWith(
+        expect.objectContaining({ bookingDeleted: false }),
+      );
+      // The refund itself is unchanged by the population.
+      expect(mockRefundPaymentTransactions).toHaveBeenCalledWith(
+        expect.objectContaining({
+          paymentId: "payment-9",
+          amountCents: 2500,
+          idempotencyKeyPrefix:
+            "late_cancel_refund_booking-9_pi_additional_late",
+        }),
+      );
+    });
+
+    it("still returns 200 when recording that task fails (#2700 / #2760)", async () => {
       // The money is already back with the member. A 500 here would clear the
       // processed-event marker and replay the whole refund path for the sake of
       // a bookkeeping row.
@@ -1390,7 +1465,7 @@ describe("Stripe webhook Xero alerting", () => {
         status: "FAILED",
       });
       armCancelledBooking();
-      mockCloseDeletedBookingModificationRefundTask.mockRejectedValueOnce(
+      mockRecordAutomaticCancelledBookingRefundTask.mockRejectedValueOnce(
         new Error("database is down"),
       );
 

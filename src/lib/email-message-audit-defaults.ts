@@ -275,6 +275,17 @@ const EMAIL_AUDIT_DEFAULTS_BASE = {
     "defaultSubject": "Manual refund needed - cash booking cancelled: {{memberName}}",
     "defaultBody": "Manual Refund Needed - Cash Booking Cancelled\n\nA booking settled in cash (or by an off-Xero bank transfer) has been cancelled. The refund has to be paid back by hand - nothing was refunded automatically.\n\nThe member's cancellation refund has been worked out under the club's normal policy, but there is no card charge to reverse and no Xero invoice to credit, so the system has raised a hand-back task instead of pretending money moved. The member has been told the club will arrange the refund.\n\nPay the member back, then mark the task complete on the payments board so the ledger records the refund. If the member declines it, or it was settled another way, dismiss the task with a note.\n\nMember: {{memberName}}\nCheck-in: {{checkIn}}\nCheck-out: {{checkOut}}\nBooking: {{bookingId}}\nAmount to refund: {{refundAmount}}\nReason: {{reason}}\n\nView Payments: {{reviewUrl}}"
   },
+  // #2761: the alert for an automatically refunded late capture. Its OWN entry
+  // rather than a variant of admin-payment-failure, so an admin's override of the
+  // routine payment-failure wording cannot rewrite this notice and muting that
+  // one cannot mute this one. Delivery-locked (see LOCKED_DELIVERY_TEMPLATE_NAMES)
+  // because it reports an automatic money movement. {{refundOutcomeNote}} carries
+  // the sentence that differs between a deleted and a merely cancelled booking, so
+  // an override keeps both cases correct without needing conditional syntax.
+  "admin-late-capture-auto-refund": {
+    "defaultSubject": "Payment refunded automatically - booking {{bookingStateLabel}}: {{memberName}}",
+    "defaultBody": "Payment Refunded Automatically\n\nA booking-change payment was captured after the booking had already been cancelled, and it has been refunded in full automatically. There is nothing to pay back.\n\nNothing failed and no money is missing. The member paid for a booking change while the booking was on its way out, so the charge was returned to them as soon as Stripe told us about it. The supplementary Xero invoice for the change was not released.\n\n{{refundOutcomeNote}}\n\nMember: {{memberName}}\nCheck-in: {{checkIn}}\nCheck-out: {{checkOut}}\nAmount refunded: {{amount}}\nBooking status when the payment arrived: {{bookingStateLabel}}\nBooking: {{bookingId}}\nStripe PI: {{paymentIntentId}}\n\nView Payments: {{reviewUrl}}"
+  },
   "admin-pending-deadline": {
     "defaultSubject": "{{count}} Pending Booking{{s}} Approaching Deadline",
     "defaultBody": "Pending Bookings Approaching Deadline\n\n{{count}} pending booking(s) will reach their hold deadline within 48 hours.\n\nMember | Dates | Guests | Deadline | Remaining\n{{memberName}} | {{checkIn}} – {{checkOut}} | {{guestCount}} | {{deadline}} | {{hoursRemaining}}h\n...\n\nView Bookings: {{BASE_URL}}/admin/bookings"

@@ -44,19 +44,33 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
  * the same lock and skips. `refundedAmountCents` is the field that decides it,
  * not `status`, precisely because the status is the thing that got overwritten.
  *
+ * AND SINCE #2760 THE WEBHOOK WRITES THE ROW WHEN NOTHING RAISED ONE (owner
+ * decision 10 Aug 2026, taken over the narrower recommendation). The close alone
+ * left a record on exactly one ordering, and none at all for a late capture on a
+ * booking that is cancelled but not deleted — the raise never fires there. So
+ * `recordAutomaticCancelledBookingRefundTask` closes an OPEN task if there is one
+ * and otherwise creates the row already DISMISSED, for either population, keyed on
+ * the intent across both population sentences. Never OPEN, no allocation, no
+ * operator queued, and no change to the refund itself.
+ *
  * MUTATION PROOF. Drop the `findFirst` pre-check in
  * `raiseDeletedBookingModificationRefundTask` and "raises exactly one task when
  * the same capture is confirmed twice" fails. Drop `pg_advisory_xact_lock(1)`
- * and "takes the global settlement lock before the find-then-create" fails.
- * Drop the refund fence and "raises nothing for a capture Stripe has already
- * refunded" fails; fence it on `status` alone instead of `refundedAmountCents`
- * and "still skips when the status was overwritten back to SUCCEEDED" fails;
- * move the fence outside the lock and "reads the refund state under the same
- * lock as the raise" fails. Widen the close's `where` to drop `reason` and
- * "never closes an unrelated ManualRefundTask on the same booking" fails; drop
- * `status: OPEN` and "claims nothing on a replay" fails. Change `DISMISSED` to
- * `COMPLETED` and "closes it as DISMISSED, which writes no refund allocation"
- * fails.
+ * and "takes the global settlement lock before the find-then-create" fails —
+ * and, in the writer, "takes the global settlement lock before it reads or writes
+ * anything". Drop the refund fence and "raises nothing for a capture Stripe has
+ * already refunded" fails; fence it on `status` alone instead of
+ * `refundedAmountCents` and "still skips when the status was overwritten back to
+ * SUCCEEDED" fails; move the fence outside the lock and "reads the refund state
+ * under the same lock as the raise" fails. Widen the writer's `where` to drop
+ * `reason` and "never touches an unrelated ManualRefundTask on the same booking"
+ * fails; drop `status: OPEN` from the close and "claims nothing on a replay"
+ * fails. Change `DISMISSED` to `COMPLETED` and "closes an OPEN task as DISMISSED"
+ * fails. Delete the create and "writes the record itself, already DISMISSED, when
+ * no task was raised" fails; write it OPEN and the same test fails; share one
+ * reason sentence between the populations and "stores the cancelled-population
+ * sentence for a booking that is not deleted" fails; narrow either lookup to one
+ * population and "finds a row of EITHER population" fails.
  */
 
 const mocks = vi.hoisted(() => ({
@@ -70,18 +84,20 @@ const mocks = vi.hoisted(() => ({
 
 vi.mock("@/lib/prisma", () => ({
   prisma: {
-    manualRefundTask: {
-      updateMany: (...args: unknown[]) =>
-        mocks.manualRefundTaskUpdateMany(...args),
-    },
+    // Both writers open a transaction since #2760: the record-or-close became a
+    // find-then-write and took the same global lock the raise already held, so
+    // there is no bare `prisma.manualRefundTask` call left in the module.
     $transaction: (...args: unknown[]) => mocks.transaction(...args),
   },
 }));
 
 import {
-  closeDeletedBookingModificationRefundTaskAfterAutomaticRefund,
+  automaticCancelledBookingRefundNote,
+  automaticCancelledBookingRefundTaskReasons,
+  cancelledBookingModificationRefundReason,
   deletedBookingModificationRefundReason,
   raiseDeletedBookingModificationRefundTask,
+  recordAutomaticCancelledBookingRefundTask,
 } from "@/lib/deleted-booking-modification-payment";
 
 const BOOKING_ID = "booking-1";
@@ -94,6 +110,8 @@ const tx = {
   manualRefundTask: {
     findFirst: (...args: unknown[]) => mocks.manualRefundTaskFindFirst(...args),
     create: (...args: unknown[]) => mocks.manualRefundTaskCreate(...args),
+    updateMany: (...args: unknown[]) =>
+      mocks.manualRefundTaskUpdateMany(...args),
   },
   paymentTransaction: {
     findUnique: (...args: unknown[]) =>
@@ -110,11 +128,18 @@ function raise() {
   });
 }
 
-function close() {
-  return closeDeletedBookingModificationRefundTaskAfterAutomaticRefund({
+/**
+ * The webhook's writer. `bookingDeleted` defaults to the deleted population,
+ * which is the one #2700 shipped and every pre-#2760 assertion here was written
+ * against; the merely-cancelled population passes `false` explicitly.
+ */
+function record(bookingDeleted = true) {
+  return recordAutomaticCancelledBookingRefundTask({
     bookingId: BOOKING_ID,
     paymentId: PAYMENT_ID,
     paymentIntentId: INTENT_ID,
+    amountCents: AMOUNT_CENTS,
+    bookingDeleted,
   });
 }
 
@@ -205,7 +230,11 @@ describe("raiseDeletedBookingModificationRefundTask (#2700)", () => {
       where: {
         bookingId: BOOKING_ID,
         paymentId: PAYMENT_ID,
-        reason: deletedBookingModificationRefundReason(INTENT_ID),
+        // #2760: BOTH population sentences. The webhook may already have written
+        // the cancelled-population row for this capture and the booking may have
+        // been deleted afterwards, so matching only this path's own sentence
+        // would raise a duplicate OPEN task for money already returned.
+        reason: { in: automaticCancelledBookingRefundTaskReasons(INTENT_ID) },
       },
       select: { id: true },
     });
@@ -322,16 +351,16 @@ describe("raiseDeletedBookingModificationRefundTask (#2700)", () => {
   });
 });
 
-describe("closeDeletedBookingModificationRefundTaskAfterAutomaticRefund (#2700)", () => {
-  it("closes it as DISMISSED, which writes no refund allocation", async () => {
+describe("recordAutomaticCancelledBookingRefundTask (#2700 close, #2760 write)", () => {
+  it("closes an OPEN task as DISMISSED, which writes no refund allocation", async () => {
     // In `manual-booking-payment.ts` COMPLETED means "an operator handed the
     // money back by hand" and is what writes the local refund allocation.
     // Stripe refunded this one and `refundPaymentTransactions` already wrote the
     // allocation, so COMPLETED here would be both untrue and a second allocation
     // for one refund.
-    const closed = await close();
+    const outcome = await record();
 
-    expect(closed).toBe(1);
+    expect(outcome).toEqual({ closed: 1, created: false, alreadyRecorded: false });
     const call = mocks.manualRefundTaskUpdateMany.mock.calls[0][0] as {
       data: Record<string, unknown>;
     };
@@ -340,46 +369,183 @@ describe("closeDeletedBookingModificationRefundTaskAfterAutomaticRefund (#2700)"
     // No member did it, so no member is named as having done it.
     expect(call.data.completedByMemberId).toBeUndefined();
     expect(call.data.note).toContain(INTENT_ID);
+    // Nothing was created: the row already existed and was claimed.
+    expect(mocks.manualRefundTaskCreate).not.toHaveBeenCalled();
   });
 
-  it("claims nothing on a replay, because it is fenced on OPEN", async () => {
+  it("claims nothing on a replay, because the close is fenced on OPEN", async () => {
     // A webhook retry, or an operator who got there first, must claim nothing.
-    const call = await close().then(
-      () => mocks.manualRefundTaskUpdateMany.mock.calls[0][0] as {
-        where: Record<string, unknown>;
-      },
-    );
+    await record();
 
+    const call = mocks.manualRefundTaskUpdateMany.mock.calls[0][0] as {
+      where: Record<string, unknown>;
+    };
     expect(call.where.status).toBe("OPEN");
   });
 
-  it("never closes an unrelated ManualRefundTask on the same booking", async () => {
+  it("never touches an unrelated ManualRefundTask on the same booking", async () => {
     // `booking-cancel.ts` raises a cash/manual settlement task on the same
     // booking and payment. Only the reason distinguishes them, so the reason is
-    // part of the match.
-    await close();
+    // part of the match — for the close AND for the duplicate check behind it.
+    await record();
 
     expect(mocks.manualRefundTaskUpdateMany.mock.calls[0][0]).toMatchObject({
       where: {
         bookingId: BOOKING_ID,
         paymentId: PAYMENT_ID,
-        reason: deletedBookingModificationRefundReason(INTENT_ID),
+        reason: { in: automaticCancelledBookingRefundTaskReasons(INTENT_ID) },
         status: "OPEN",
       },
     });
   });
 
-  it("needs no lock of its own", async () => {
-    // A status-fenced updateMany is its own claim, so this takes no advisory
-    // lock and cannot participate in a lock ordering.
-    await close();
+  it("takes the global settlement lock before it reads or writes anything", async () => {
+    /*
+      #2760 REPLACES "needs no lock of its own", and the replacement is the point.
 
-    expect(mocks.executeRaw).not.toHaveBeenCalled();
-  });
-
-  it("reports zero when there was no task to close", async () => {
+      Until #2760 this was one status-fenced `updateMany`, which is its own atomic
+      claim and needed no lock. It is now close-or-create — a find-then-write —
+      and two Stripe deliveries of one capture landing together would each find no
+      row and each write one, putting a single refund on the card twice. It takes
+      `pg_advisory_xact_lock(1)`, the same canonical global key the raise above
+      holds and the one `booking-cancel.ts` holds when IT creates a
+      ManualRefundTask, and nothing else. Every Stripe call is the caller's and is
+      already finished before this runs.
+    */
     mocks.manualRefundTaskUpdateMany.mockResolvedValue({ count: 0 });
 
-    await expect(close()).resolves.toBe(0);
+    await record();
+
+    expect(mocks.executeRaw).toHaveBeenCalledTimes(1);
+    expect(mocks.executeRaw.mock.calls[0][0].join("?")).toContain(
+      "pg_advisory_xact_lock(1)",
+    );
+    expect(mocks.executeRaw.mock.invocationCallOrder[0]).toBeLessThan(
+      mocks.manualRefundTaskUpdateMany.mock.invocationCallOrder[0],
+    );
+    expect(mocks.executeRaw.mock.invocationCallOrder[0]).toBeLessThan(
+      mocks.manualRefundTaskCreate.mock.invocationCallOrder[0],
+    );
+  });
+
+  it("writes the record itself, already DISMISSED, when no task was raised", async () => {
+    /*
+      #2760, and the whole reason the issue exists. Three of the four orderings
+      never reach the confirm route's raise, so the close claimed nothing and the
+      refund reached no screen. The row is now written here instead.
+    */
+    mocks.manualRefundTaskUpdateMany.mockResolvedValue({ count: 0 });
+
+    const outcome = await record();
+
+    expect(outcome).toEqual({ closed: 0, created: true, alreadyRecorded: false });
+    const created = mocks.manualRefundTaskCreate.mock.calls[0][0] as {
+      data: Record<string, unknown>;
+    };
+    expect(created.data.status).toBe("DISMISSED");
+    // NEVER OPEN. An OPEN row is work, and there is none: completing one would
+    // write a second refund allocation for money Stripe has already returned.
+    expect(created.data.status).not.toBe("OPEN");
+    expect(created.data.status).not.toBe("COMPLETED");
+    expect(created.data.bookingId).toBe(BOOKING_ID);
+    expect(created.data.paymentId).toBe(PAYMENT_ID);
+    // The captured cents, as they were captured. Nothing recomputes a refund.
+    expect(created.data.amountCents).toBe(AMOUNT_CENTS);
+    expect(created.data.note).toBe(
+      automaticCancelledBookingRefundNote(INTENT_ID),
+    );
+    // No acting member, which is the claim the finance card makes on screen.
+    expect(created.data.completedByMemberId).toBeUndefined();
+    // `completedAt` is written: the card's 30-day window and its ordering both
+    // read it, so a row without one would be invisible on the surface it exists
+    // for.
+    expect(created.data.completedAt).toBeInstanceOf(Date);
+  });
+
+  it("stores the deleted-population sentence for a deleted booking", async () => {
+    mocks.manualRefundTaskUpdateMany.mockResolvedValue({ count: 0 });
+
+    await record(true);
+
+    const created = mocks.manualRefundTaskCreate.mock.calls[0][0] as {
+      data: { reason: string };
+    };
+    expect(created.data.reason).toBe(
+      deletedBookingModificationRefundReason(INTENT_ID),
+    );
+  });
+
+  it("stores the cancelled-population sentence for a booking that is not deleted", async () => {
+    /*
+      #2760's second population, and why it needs its own sentence rather than
+      sharing the deleted one: the deleted sentence says the booking "had already
+      been deleted" and asks an operator to decide whether to refund. Both are
+      false on a booking that is merely cancelled, and the card prints the
+      sentence.
+    */
+    mocks.manualRefundTaskUpdateMany.mockResolvedValue({ count: 0 });
+
+    await record(false);
+
+    const created = mocks.manualRefundTaskCreate.mock.calls[0][0] as {
+      data: { reason: string };
+    };
+    expect(created.data.reason).toBe(
+      cancelledBookingModificationRefundReason(INTENT_ID),
+    );
+    expect(created.data.reason).not.toContain("deleted");
+    expect(created.data.reason).toContain(INTENT_ID);
+    // `ManualRefundTask.reason` is VarChar(500).
+    expect(created.data.reason.length).toBeLessThanOrEqual(500);
+  });
+
+  it("leaves an already-recorded row exactly as it is", async () => {
+    // Stripe redelivery, or a row an operator closed by hand first. Nothing is
+    // re-dated, re-noted, or duplicated — and a COMPLETED row is emphatically not
+    // reopened or rewritten.
+    mocks.manualRefundTaskUpdateMany.mockResolvedValue({ count: 0 });
+    mocks.manualRefundTaskFindFirst.mockResolvedValue({ id: "task-existing" });
+
+    const outcome = await record();
+
+    expect(outcome).toEqual({ closed: 0, created: false, alreadyRecorded: true });
+    expect(mocks.manualRefundTaskCreate).not.toHaveBeenCalled();
+  });
+
+  it("finds a row of EITHER population, so a deletion between deliveries writes no second row", async () => {
+    /*
+      The producible duplicate this guards. Delivery 1 sees a cancelled booking
+      and writes the cancelled-population row; an admin then deletes the booking;
+      Stripe redelivers and this writer now sees the deleted population. Keyed per
+      population, that redelivery finds nothing and writes a second row for one
+      refund.
+    */
+    mocks.manualRefundTaskUpdateMany.mockResolvedValue({ count: 0 });
+    const rows = [
+      {
+        id: "task-cancelled-population",
+        reason: cancelledBookingModificationRefundReason(INTENT_ID),
+      },
+    ];
+    mocks.manualRefundTaskFindFirst.mockImplementation(
+      async (args: { where: { reason: { in: string[] } } }) =>
+        rows.find((row) => args.where.reason.in.includes(row.reason)) ?? null,
+    );
+
+    const outcome = await record(true);
+
+    expect(outcome.created).toBe(false);
+    expect(outcome.alreadyRecorded).toBe(true);
+    expect(mocks.manualRefundTaskCreate).not.toHaveBeenCalled();
+  });
+
+  it("reports the close rather than creating when a task was claimed", async () => {
+    mocks.manualRefundTaskUpdateMany.mockResolvedValue({ count: 1 });
+
+    const outcome = await record();
+
+    expect(outcome.closed).toBe(1);
+    expect(mocks.manualRefundTaskFindFirst).not.toHaveBeenCalled();
+    expect(mocks.manualRefundTaskCreate).not.toHaveBeenCalled();
   });
 });
