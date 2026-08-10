@@ -112,7 +112,76 @@ and per party size on that night: a partial-stay guest's absent nights do not
 count toward the minimum. The modify-quote preview prices with the same
 config so previews match what the mutating paths charge. The guest-add route
 therefore prices the whole post-add party in one pass — the added guest's
-stored price and night rows are their slice of the combined breakdown.
+stored price and night rows are their slice of the combined breakdown. Since
+#2770 "the default group discount" an edit path passes means the value
+`toEditTimeGroupDiscountConfig` resolves, which is absent when the club has
+switched `GroupDiscountSetting.applyToEdits` off — the one club-controlled
+qualification on this rule, stated in full as INV-MOD-026. Nothing else here
+moves: every edit path still passes the SAME resolved value, and locks still win
+over it in both states of the switch.
+
+## INV-MOD-026
+
+A club decides whether a booking **edited later** earns its group discount on
+the nights that edit newly buys, and that decision is one stored value governing
+every edit path (#2770, owner decision on #2756, 10 Aug 2026).
+`GroupDiscountSetting.applyToEdits` is the switch — it belongs to the discount,
+not to a code path — and `toEditTimeGroupDiscountConfig` in
+`src/lib/policies/booking-route-decisions.ts` is the only place it is applied.
+Every edit path resolves its config there and nowhere else: the ordinary planner
+(`calculateModifiedPricing`), the date-modification service, the guest-add
+route, the single-guest-removal service, and the modify-quote preview, whose
+answer must be the one the save path then charges (#1095). There is deliberately
+no second gate, because the defect this switch was added alongside was one
+planner reading a different config from every other path (#2756) — a two-tier
+price for the same night at the same club — and one chokepoint is the only shape
+that stays true as paths are added.
+`group-discount-edit-switch-census.test.ts` scans the tree and fails the build
+when an edit path resolves the discount through the creation mapper
+(`toGroupDiscountConfig`) instead, and when any caller of
+`buildInProgressGuestRangePlan` is not an edit path, because the two mappers
+differ by one boolean and nothing in the type system can tell a mistake from a
+choice.
+
+**The default is ON, and the default is what every club already had.** Every
+edit path already passed the discount into pricing (INV-MOD-006), so the column
+defaults to `true`, the migration installs that constant default on the existing
+singleton row, and no club's prices move because the switch exists. Turning it
+off is a deliberate club act.
+
+**Off is the absence of a discount, not a second discount rule.** The mapper
+returns `undefined`, so the nights an edit buys travel the same code path, with
+the same absent config, as they do at a club that never enabled the discount at
+all — which is what makes an off club price byte-identically to today's
+undiscounted answer rather than approximately.
+
+**Neither state re-rates a night anybody already bought.** A night a guest holds
+carries its stored `BookingGuestNight.priceCents` as a locked price
+(INV-MOD-005), and pricing honours a lock regardless of any config passed here,
+so flipping the switch — in either direction — changes no price already charged
+and reprices no history. The one place the switch is observable on a night
+nobody is buying is the degradation INV-MOD-005 and INV-MOD-025 already name: a
+legacy guest with no stored night rows prices at current rates, and with the
+switch off those rates are undiscounted. That is the club's stated intent for
+the edit rather than a reprice — no stored price is overwritten — and it is why
+the removal service is gated with the rest rather than left on the creation
+mapper: one value per edit is the invariant, so a club cannot have its add
+priced one way and its removal another.
+
+**A first purchase is not a later edit, and is not gated.** Booking creation,
+the public quote, a group booking, a school or booking-request approval, and the
+waitlist offer reprice that re-bases a booking at current rates before the
+member confirms all keep using `toGroupDiscountConfig`. None of them is an edit
+to nights somebody already holds; the offer email must quote the price the
+confirm will charge, and the switch is about what an edit *adds*.
+
+**When it is off, the quote says so.** The modify-quote response carries
+`groupDiscountEditNotice`, and the edit panel renders it beside the number in the
+same slot as the subscription-rate notice — non-null only when the club runs a
+group discount AND has switched it off for edits, because a club with no
+discount has nothing to explain and a club with the switch on is getting the
+discount. The admin control states the same thing where it is set, so the person
+who turned it off can see what they turned off.
 
 ## INV-MOD-007
 

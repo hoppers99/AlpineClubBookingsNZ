@@ -27,7 +27,7 @@ import {
 } from "@/lib/membership-type-policy";
 import {
   calculateBookingHoldDecision,
-  toGroupDiscountConfig,
+  toEditTimeGroupDiscountConfig,
 } from "@/lib/policies/booking-route-decisions";
 import {
   deletePromoRedemptionAndAdjustCount,
@@ -575,7 +575,14 @@ export async function POST(
           checkOut: booking.checkOut,
           guests: allGuestsForPricing,
           seasons: seasonRateData,
-          groupDiscount: toGroupDiscountConfig(groupDiscountSetting),
+          // Edit-time mapper (#2770, INV-MOD-026): adding a guest to an
+          // existing booking is the archetypal later edit, so the club's
+          // `applyToEdits` switch decides whether the added guest's nights earn
+          // the discount. Off resolves to no config, so the added guest prices
+          // exactly as they would at a club with no group discount; the party
+          // already on the booking keeps its locked nightly prices either way
+          // (#1036, INV-MOD-005).
+          groupDiscount: toEditTimeGroupDiscountConfig(groupDiscountSetting),
           seasonYear,
           // #2543 — the mode this request already resolved. This call runs inside
           // the transaction holding the per-lodge capacity lock, so being handed

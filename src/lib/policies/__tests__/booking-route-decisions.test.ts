@@ -4,7 +4,10 @@ import {
   calculateBookingCreditApplication,
   calculateBookingHoldDecision,
   calculateCancellationPreview,
+  GROUP_DISCOUNT_EDIT_OFF_NOTICE,
+  groupDiscountEditNotice,
   isGroupDiscountAppliedToBooking,
+  toEditTimeGroupDiscountConfig,
   toGroupDiscountConfig,
   toSeasonRateData,
   type CancellationRule,
@@ -26,6 +29,112 @@ describe("booking route policy decisions", () => {
     expect(
       toGroupDiscountConfig({ enabled: false, minGroupSize: 5, summerOnly: true })
     ).toBeUndefined();
+  });
+
+  // #2770 (INV-MOD-026). The edit-time mapper is the ONE place the club's
+  // `applyToEdits` switch is applied, so these four cases are the whole
+  // semantics of the switch: on, it is the creation answer verbatim; off, it is
+  // the SAME `undefined` a disabled discount produces, which is what makes an
+  // off club price byte-identically to a club that never enabled the discount
+  // rather than through some second rule.
+  describe("toEditTimeGroupDiscountConfig — the edit-time switch (#2770)", () => {
+    const enabled = {
+      enabled: true,
+      minGroupSize: 5,
+      summerOnly: true,
+      rateMembershipTypeId: "type-full",
+    };
+
+    it("passes the discount through unchanged when the switch is on", () => {
+      expect(
+        toEditTimeGroupDiscountConfig({ ...enabled, applyToEdits: true }),
+      ).toEqual(toGroupDiscountConfig(enabled));
+      // Not merely equal to the creation answer — equal to the REAL config, so a
+      // future edit to either mapper cannot make both wrong together.
+      expect(
+        toEditTimeGroupDiscountConfig({ ...enabled, applyToEdits: true }),
+      ).toEqual({
+        enabled: true,
+        minGroupSize: 5,
+        summerOnly: true,
+        rateMembershipTypeId: "type-full",
+      });
+    });
+
+    it("resolves to the same absent config as a disabled discount when the switch is off", () => {
+      expect(
+        toEditTimeGroupDiscountConfig({ ...enabled, applyToEdits: false }),
+      ).toBeUndefined();
+      expect(
+        toEditTimeGroupDiscountConfig({ ...enabled, applyToEdits: false }),
+      ).toEqual(
+        toGroupDiscountConfig({
+          enabled: false,
+          minGroupSize: 5,
+          summerOnly: true,
+        }),
+      );
+    });
+
+    it("stays undefined when the discount itself is off, whatever the switch says", () => {
+      // The switch cannot turn a discount ON. A club that has not enabled the
+      // group discount is untouched by #2770 in either position.
+      expect(
+        toEditTimeGroupDiscountConfig({
+          enabled: false,
+          minGroupSize: 5,
+          summerOnly: true,
+          applyToEdits: true,
+        }),
+      ).toBeUndefined();
+      expect(
+        toEditTimeGroupDiscountConfig({
+          enabled: false,
+          minGroupSize: 5,
+          summerOnly: true,
+          applyToEdits: false,
+        }),
+      ).toBeUndefined();
+    });
+
+    it("treats a missing row as no discount, exactly like the creation mapper", () => {
+      expect(toEditTimeGroupDiscountConfig(null)).toBeUndefined();
+      expect(toEditTimeGroupDiscountConfig(undefined)).toBeUndefined();
+    });
+
+    // #2770 D2. The note is DERIVED from the mapper, so it cannot contradict the
+    // price: it is present exactly when the club runs a discount and the edit
+    // does not get it. These four cases are the complete truth table.
+    it("explains the withheld discount exactly when there is one to withhold", () => {
+      expect(groupDiscountEditNotice({ ...enabled, applyToEdits: false })).toBe(
+        GROUP_DISCOUNT_EDIT_OFF_NOTICE,
+      );
+      expect(
+        groupDiscountEditNotice({ ...enabled, applyToEdits: true }),
+      ).toBeNull();
+      expect(
+        groupDiscountEditNotice({
+          enabled: false,
+          minGroupSize: 5,
+          summerOnly: true,
+          applyToEdits: false,
+        }),
+      ).toBeNull();
+      expect(groupDiscountEditNotice(null)).toBeNull();
+    });
+
+    it("never states a note while the same setting still yields a discount config", () => {
+      // The property the derivation exists for: note and config are mutually
+      // exclusive, so a quote can never show one and charge the other.
+      for (const applyToEdits of [true, false]) {
+        for (const isEnabled of [true, false]) {
+          const setting = { ...enabled, enabled: isEnabled, applyToEdits };
+          const config = toEditTimeGroupDiscountConfig(setting);
+          const note = groupDiscountEditNotice(setting);
+          expect(config !== undefined && note !== null).toBe(false);
+        }
+      }
+    });
   });
 
   it("detects group-discount application using the route response contract", () => {

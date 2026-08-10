@@ -51,7 +51,7 @@ import {
   MembershipTypeBookingPolicyError,
   priceBookingGuestsWithMembershipTypePolicy,
 } from "@/lib/membership-type-policy";
-import { toGroupDiscountConfig } from "@/lib/policies/booking-route-decisions";
+import { toEditTimeGroupDiscountConfig } from "@/lib/policies/booking-route-decisions";
 import {
   deletePromoRedemptionAndAdjustCount,
   lockAndRefreshPromoCodeUsage,
@@ -1429,7 +1429,16 @@ export async function calculateModifiedPricing(
           seasons: seasonRateData,
           // Group discount applies to the newly priced nights (#1095); locked
           // nights keep their booked (discount-inclusive) prices regardless.
-          groupDiscount: toGroupDiscountConfig(
+          //
+          // Read through the EDIT-time mapper (#2770, INV-MOD-026): this is an
+          // edit, so the club's `applyToEdits` switch decides whether the
+          // nights this edit buys earn the discount. Off resolves to no config
+          // at all, which is byte-identical to a club that never enabled the
+          // discount. The in-progress branch above passes no config today
+          // (#2756 is what makes it price as a party); when it does, its config
+          // must come from this same mapper — the census test enforces that, so
+          // the two branches can never disagree about one night's price again.
+          groupDiscount: toEditTimeGroupDiscountConfig(
             await tx.groupDiscountSetting.findUnique({
               where: { id: "default" },
             }),

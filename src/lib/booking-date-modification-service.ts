@@ -101,7 +101,7 @@ import {
 } from "@/lib/membership-type-policy";
 import {
   calculateBookingHoldDecision,
-  toGroupDiscountConfig,
+  toEditTimeGroupDiscountConfig,
 } from "@/lib/policies/booking-route-decisions";
 import {
   lockRosterDateRangesAndDates,
@@ -552,7 +552,11 @@ export async function modifyBookingDates({
         seasons: seasonRateData,
         // Group discount applies to the nights the new range adds (#1095);
         // nights kept across the date change stay at their locked prices.
-        groupDiscount: toGroupDiscountConfig(groupDiscountSetting),
+        // Edit-time mapper (#2770, INV-MOD-026): a date change is a later edit,
+        // so the club's `applyToEdits` switch governs the nights it buys. Off
+        // resolves to no config, so the added nights price exactly as they
+        // would at a club with no group discount at all.
+        groupDiscount: toEditTimeGroupDiscountConfig(groupDiscountSetting),
         seasonYear,
         skipAuthorization: actor.role === "ADMIN",
       });

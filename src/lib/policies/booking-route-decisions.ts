@@ -32,6 +32,23 @@ export interface GroupDiscountSettingLike {
   rateMembershipTypeId?: string | null;
 }
 
+/**
+ * The same setting, read by an EDIT path, where `applyToEdits` is load-bearing
+ * (#2770, INV-MOD-026).
+ *
+ * It is REQUIRED here rather than optional-with-a-default, and that is the
+ * point. `GroupDiscountSetting` is read with a narrow `select` in at least one
+ * place already (the public fee-page tokens select `enabled`/`minGroupSize`/
+ * `summerOnly` only), so an optional field would let a future narrow select
+ * disarm the club's switch silently — the switch would read as ON because the
+ * column was never fetched, which is exactly the failure mode a money setting
+ * cannot have. Requiring it makes that a typecheck failure instead.
+ */
+export interface EditTimeGroupDiscountSettingLike
+  extends GroupDiscountSettingLike {
+  applyToEdits: boolean;
+}
+
 export interface SeasonRateSource {
   id: string;
   startDate: Date;
@@ -61,6 +78,18 @@ export interface GuestPricingSource {
   nights?: ReadonlyArray<GuestNightInput> | null;
 }
 
+/**
+ * The group-discount config for a FIRST purchase: booking creation, the public
+ * quote, a group booking, a school/booking-request approval, and the waitlist
+ * offer reprice that re-bases a booking at current rates before the member
+ * confirms. None of those is a later edit to nights somebody already holds, so
+ * none of them consults the #2770 switch.
+ *
+ * An EDIT path must call {@link toEditTimeGroupDiscountConfig} instead, and
+ * `group-discount-edit-switch-census.test.ts` fails the build if it does not:
+ * the two mappers differ only by one boolean, so nothing in the type system can
+ * tell a mistake here from a deliberate choice.
+ */
 export function toGroupDiscountConfig(
   setting: GroupDiscountSettingLike | null | undefined
 ): GroupDiscountConfig | undefined {
@@ -74,6 +103,62 @@ export function toGroupDiscountConfig(
     enabled: true,
     rateMembershipTypeId: setting.rateMembershipTypeId ?? null,
   };
+}
+
+/**
+ * The group-discount config for an EDIT to an existing booking — the ONE place
+ * the club's `applyToEdits` switch is applied (#2770, INV-MOD-026).
+ *
+ * Every edit path resolves its config here: the ordinary planner
+ * (`calculateModifiedPricing`), the date-modification service, the guest-add
+ * route, the single-guest-removal service, and the modify-quote preview. There
+ * is deliberately no second gate anywhere else. The rule the switch exists to
+ * protect is that no edit path can price a night differently from another
+ * (#2756 was one planner reading a different config from the rest), and one
+ * chokepoint is the only shape that keeps that true as paths are added.
+ *
+ * Returning `undefined` when the switch is off is what makes an off club price
+ * byte-identically to a club with the discount disabled: it is the same absent
+ * config, down the same code path, not a second discount rule with a zero rate.
+ * Nights a guest already bought are untouched in both states — they carry their
+ * stored `BookingGuestNight.priceCents` as locked prices (INV-MOD-005), which
+ * pricing honours regardless of any config passed here.
+ */
+export function toEditTimeGroupDiscountConfig(
+  setting: EditTimeGroupDiscountSettingLike | null | undefined
+): GroupDiscountConfig | undefined {
+  if (!setting?.applyToEdits) {
+    return undefined;
+  }
+
+  return toGroupDiscountConfig(setting);
+}
+
+/**
+ * What a member or officer is told when the club runs a group discount but has
+ * switched it off for later edits (#2770 D2, INV-MOD-026).
+ *
+ * Derived FROM the mapper rather than from a second reading of the column, on
+ * purpose: the quote can then never say "these nights are not discounted" while
+ * the same request discounts them, or stay silent while it does not. One
+ * condition, one answer, quote and charge in lockstep (#1095).
+ *
+ * `null` in both of the other states, because neither has anything to explain: a
+ * club with no group discount is not withholding one, and a club whose switch is
+ * on is giving it.
+ */
+export const GROUP_DISCOUNT_EDIT_OFF_NOTICE =
+  "Group discount does not apply to nights added after booking. Nights already booked keep the price they were booked at.";
+
+export function groupDiscountEditNotice(
+  setting: EditTimeGroupDiscountSettingLike | null | undefined
+): string | null {
+  if (!setting?.enabled) {
+    return null;
+  }
+  return toEditTimeGroupDiscountConfig(setting)
+    ? null
+    : GROUP_DISCOUNT_EDIT_OFF_NOTICE;
 }
 
 export function toSeasonRateData(seasons: SeasonRateSource[]): SeasonRateData[] {

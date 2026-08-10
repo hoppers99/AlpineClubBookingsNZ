@@ -11,6 +11,13 @@ const groupDiscountSchema = z.object({
   minGroupSize: z.number().int().min(2).max(200),
   summerOnly: z.boolean(),
   enabled: z.boolean(),
+  // #2770 (INV-MOD-026): whether a later edit earns the discount on the nights
+  // it newly buys. REQUIRED rather than optional-with-a-default, because the
+  // section stages the whole policy and PUTs it whole: an optional field would
+  // let a partial body silently re-arm a switch the club had turned off, and
+  // this one decides what a member is charged. The schema default lives in the
+  // database and in `DEFAULT_GROUP_DISCOUNT_SETTING`, not here.
+  applyToEdits: z.boolean(),
 });
 
 export async function GET() {
@@ -98,7 +105,7 @@ export async function PUT(req: NextRequest) {
     memberId: session.user.id,
     entityType: "GroupDiscountSetting",
     entityId: result.id,
-    details: `Group discount: minSize=${parsed.data.minGroupSize}, summerOnly=${parsed.data.summerOnly}, enabled=${parsed.data.enabled}`,
+    details: `Group discount: minSize=${parsed.data.minGroupSize}, summerOnly=${parsed.data.summerOnly}, enabled=${parsed.data.enabled}, applyToEdits=${parsed.data.applyToEdits}`,
   });
 
   revalidatePublicPageContent();

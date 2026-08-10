@@ -483,6 +483,15 @@ interface QuoteResult {
   // so the refusal already lands in the quote-error slot via
   // `quoteRefusalMessage`, and there is no quote body to carry a flag on.
   subscriptionMemberRateNotice?: string | null;
+  /**
+   * #2770 D2. Non-null only when the club runs a group discount and has turned
+   * it off for later edits (`GroupDiscountSetting.applyToEdits = false`,
+   * INV-MOD-026), so the person looking at the price is told the nights this
+   * edit adds are deliberately not discounted. Absent — not "false" — in every
+   * other state: a club with no discount has nothing to explain, and a club
+   * whose switch is on is getting the discount.
+   */
+  groupDiscountEditNotice?: string | null;
 }
 
 /**
@@ -3307,6 +3316,24 @@ export function EditBookingPanel({
                 data-testid="subscription-member-rate-notice"
               >
                 {quote.subscriptionMemberRateNotice}
+              </div>
+            ) : null}
+
+            {/* #2770 D2 — "tell them why" for the edit-time group discount
+                switch, in the same slot and with the same lifecycle as the
+                subscription notice above: gated on `quote` alone so it survives
+                a render where capacity hides the money summary, and dropped
+                whenever the quote it came from is replaced or cleared. Rendered
+                as a plain note rather than a warning, because nothing is wrong
+                — it is the club's policy, stated where the officer is reading
+                the number it explains. */}
+            {quote?.groupDiscountEditNotice ? (
+              <div
+                className="rounded-md bg-muted p-3 text-sm text-muted-foreground"
+                role="status"
+                data-testid="group-discount-edit-notice"
+              >
+                {quote.groupDiscountEditNotice}
               </div>
             ) : null}
 

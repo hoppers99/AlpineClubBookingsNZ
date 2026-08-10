@@ -18,7 +18,10 @@ import {
   MembershipTypeBookingPolicyError,
   priceBookingGuestsWithMembershipTypePolicy,
 } from "@/lib/membership-type-policy";
-import { toGroupDiscountConfig } from "@/lib/policies/booking-route-decisions";
+import {
+  groupDiscountEditNotice,
+  toEditTimeGroupDiscountConfig,
+} from "@/lib/policies/booking-route-decisions";
 import { calculateChangeFee } from "@/lib/change-fee";
 import {
   daysUntilDate,
@@ -1318,9 +1321,24 @@ export async function POST(
 
   // The preview must quote what the mutating paths will charge (#1095): the
   // group discount applies to newly priced nights on every pricing pass below.
-  const groupDiscount = toGroupDiscountConfig(
-    await prisma.groupDiscountSetting.findUnique({ where: { id: "default" } }),
-  );
+  //
+  // Read the row once and resolve it through the EDIT-time mapper (#2770,
+  // INV-MOD-026), because this route is a preview OF AN EDIT. Quoting through
+  // the creation mapper would show a discount the save path then refuses to
+  // give — the same quote/charge divergence #1095 exists to prevent. The raw
+  // row is kept so the response can tell the member WHY the number is not
+  // discounted, which is the other half of the switch.
+  const groupDiscountSetting = await prisma.groupDiscountSetting.findUnique({
+    where: { id: "default" },
+  });
+  const groupDiscount = toEditTimeGroupDiscountConfig(groupDiscountSetting);
+  /**
+   * Plain-English note shown beside the number when the club HAS a group
+   * discount but has switched it off for later edits (#2770 D2). Derived from
+   * the same mapper the pricing passes above use, so the note and the number
+   * can never disagree; null in every other state.
+   */
+  const editDiscountNotice = groupDiscountEditNotice(groupDiscountSetting);
 
   // Resolve each guest's rate membership type + rateSource once (#1930, E4);
   // the rated guests feed every pricing pass below and carry the snapshot.
@@ -1896,6 +1914,11 @@ export async function POST(
     // is looking at the higher number on this very screen, so the explanation
     // travels with it. Null in every other mode and for every paid-up party.
     subscriptionMemberRateNotice,
+    // #2770 D2 — the same "tell them why" rule for the edit-time group discount
+    // switch. Non-null only when the club runs a group discount AND has turned
+    // it off for later edits, so the officer reading the price knows the higher
+    // number is the club's policy rather than a mispricing.
+    groupDiscountEditNotice: editDiscountNotice,
     minimumStayValid: minimumStayViolations.length === 0,
     minimumStayViolations,
     exceptionReview,

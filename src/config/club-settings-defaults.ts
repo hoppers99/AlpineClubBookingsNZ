@@ -114,6 +114,13 @@ export const DEFAULT_GROUP_DISCOUNT_SETTING = {
   minGroupSize: 5,
   summerOnly: true,
   enabled: false,
+  /**
+   * Whether a later edit to an existing booking earns the discount on the
+   * nights it newly buys (#2770, INV-MOD-026). `true` is the historical
+   * behaviour of every edit path (INV-MOD-006), so the switch existing moves no
+   * club's prices; a club must opt out deliberately.
+   */
+  applyToEdits: true,
 } as const;
 
 /** `MembershipNominationSettings` — read by `normalizeMembershipNominationSettings`. */

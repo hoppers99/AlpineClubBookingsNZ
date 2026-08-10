@@ -287,6 +287,7 @@ Prefix `INV-MOD`.
 | `INV-MOD-004` | Guest stay ranges sit inside the booking envelope; an outside range auto-expands the dates |
 | `INV-MOD-005` | Nightly prices lock at booking time; only changed guests and nights price at current rates |
 | `INV-MOD-006` | Every edit path passes the default group discount into pricing; locked nights win over it |
+| `INV-MOD-026` | One club switch, applied at one chokepoint, decides whether a later edit's new nights earn the group discount; default on, locked nights untouched either way |
 | `INV-MOD-007` | Hut nightly rates key on membership type and optional age tier, never a member boolean |
 | `INV-MOD-008` | An unpaid member repriced under `NON_MEMBER_PRICING` is `NON_MEMBER_DEFAULT`, not forced |
 | `INV-MOD-009` | Membership, not the subscription, gates member-only promotions; a repriced member stays eligible |
