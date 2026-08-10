@@ -1904,7 +1904,10 @@ export function PublicBookingRequestsPanel({
                         />
                       ) : null}
 
-                      {memberWholeLodge ? null : (
+                      {/* Only GENERAL public requests are asked the "other
+                          lodge" question on the form; SCHOOL and member
+                          whole-lodge requests never carry it (#2749). */}
+                      {memberWholeLodge || request.type === "SCHOOL" ? null : (
                         <p className="text-sm">
                           <span className="font-medium">
                             Member of another Lodge :
