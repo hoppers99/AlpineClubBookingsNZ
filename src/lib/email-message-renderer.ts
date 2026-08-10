@@ -41,6 +41,7 @@ interface EmailTemplateValidationIssue {
     | "disallowed_token"
     | "missing_required_token"
     | "missing_required_subject_token"
+    | "forbidden_subject_phrase"
     | "sign_prefixed_token"
     | "sensitive_subject_token"
     | "subject_line_break"
@@ -52,6 +53,9 @@ interface EmailTemplateValidationIssue {
   tokens?: string[];
   links?: string[];
   annotations?: string[];
+  // #2774: the subject wording that has to come out. Not `annotations`, which the
+  // #2320 banner surface reads as "[only when ...]" markers the editor strips.
+  phrases?: string[];
 }
 
 export interface EmailTemplateValidationResult {
@@ -61,6 +65,7 @@ export interface EmailTemplateValidationResult {
   disallowedTokens: string[];
   missingRequiredTokens: string[];
   missingRequiredSubjectTokens: string[];
+  forbiddenSubjectPhrases: string[];
   signPrefixedTokens: string[];
   sensitiveSubjectTokens: string[];
   unsafeLinks: string[];
@@ -102,6 +107,36 @@ const REQUIRED_SUBJECT_TOKEN_GUIDANCE: Record<string, string> = {
   handBackConflictLabel:
     "this email is sent in two opposite directions — a refund that was withheld, and one that may have paid a member twice — so its subject must keep {{handBackConflictLabel}}, which fills in whichever happened. A subject with the wording typed in by hand would title every double payment as a withheld refund",
 };
+
+/**
+ * The other half of the same rule (#2774). Keeping the token is not enough: a subject
+ * that keeps it AND states a direction beside it — "Automatic refund withheld -
+ * {{handBackConflictLabel}}" — renders the wrong claim in the words an inbox truncates
+ * to. The phrases themselves are derived from the sender's own labels in
+ * `email-message-registry.ts`; this is only the plain-English reason shown to the
+ * admin whose save is refused, because "remove the phrase 'withheld'" on its own
+ * teaches nothing about why.
+ */
+const FORBIDDEN_SUBJECT_PHRASE_GUIDANCE: Record<string, string> = {
+  "admin-late-capture-hand-back-conflict":
+    "This alert goes out in two opposite directions about money — a refund this system WITHHELD, and one that may have paid a member TWICE — and {{handBackConflictLabel}} already fills in whichever happened for each send. Wording of your own beside it would title the other case wrongly, and an operator who files by subject would file a suspected double payment as nothing to do. Say what the email is about and leave the direction to the token",
+};
+
+/**
+ * #2774: compare subject prose the way a reader sees it, not byte for byte. Tokens are
+ * removed first (the direction is ALLOWED to arrive through `{{handBackConflictLabel}}`
+ * — that is the whole mechanism, and a future token whose NAME contained a forbidden
+ * word must not be mistaken for prose), then case and every kind of dash or run of
+ * whitespace are flattened, so an admin who types a hyphen where the label carries an
+ * em dash is treated the same as one who copies it exactly.
+ */
+function normaliseSubjectProse(value: string): string {
+  return value
+    .replace(/\{\{[^{}]*\}\}/g, " ")
+    .toLowerCase()
+    .replace(/[-‐-―\s]+/g, " ")
+    .trim();
+}
 
 function findSignPrefixedTokens(value: string): string[] {
   return Array.from(
@@ -294,6 +329,35 @@ export function validateEmailTemplateContent({
     });
   }
 
+  // #2774, the other half: a subject that KEEPS the direction token and states a
+  // direction beside it in its own words. The presence check above passes such a
+  // subject, and the stored subject replaces the sender's computed one whole, so the
+  // double-payment arm would go out titled "Automatic refund withheld …". Same
+  // empty-value rule as every other subject rule: a blank stored subject means "use
+  // the built-in wording", which is the token alone.
+  const normalisedSubjectProse =
+    subject.trim().length > 0 ? normaliseSubjectProse(subject) : "";
+  const forbiddenSubjectPhrases = (definition?.forbiddenSubjectPhrases ?? []).filter(
+    (phrase) => {
+      const normalisedPhrase = normaliseSubjectProse(phrase);
+      return (
+        normalisedPhrase.length > 0 &&
+        normalisedSubjectProse.includes(normalisedPhrase)
+      );
+    },
+  );
+  if (forbiddenSubjectPhrases.length > 0) {
+    const guidance = FORBIDDEN_SUBJECT_PHRASE_GUIDANCE[templateName];
+    issues.push({
+      code: "forbidden_subject_phrase",
+      field: "subject",
+      message: guidance
+        ? `Take this wording out of the subject: "${forbiddenSubjectPhrases.join('", "')}". ${guidance}`
+        : `Take this wording out of the subject: "${forbiddenSubjectPhrases.join('", "')}"`,
+      phrases: forbiddenSubjectPhrases,
+    });
+  }
+
   const signPrefixedByField = {
     subject: findSignPrefixedTokens(subject),
     bodyText: findSignPrefixedTokens(bodyText),
@@ -388,6 +452,7 @@ export function validateEmailTemplateContent({
     disallowedTokens,
     missingRequiredTokens,
     missingRequiredSubjectTokens,
+    forbiddenSubjectPhrases,
     signPrefixedTokens,
     sensitiveSubjectTokens,
     unsafeLinks,

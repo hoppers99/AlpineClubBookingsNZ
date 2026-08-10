@@ -1443,12 +1443,14 @@ the interleaved ordering the raise's own refund fence declines all refunded the
 capture and left nothing for the close to claim, and the raise never fired at all
 for a booking that is CANCELLED but not deleted. The webhook now writes the
 DISMISSED row itself when its OPEN-fenced close claims nothing, for both
-populations (`recordAutomaticCancelledBookingRefundTask`, owner decision 10 Aug
-2026) — and #2773 (an orchestrator decision the owner has not ruled on; authority
-line under `INV-ADDPAY-039`) routed the SIBLING handler for a
-booking's OWN payment, `handleCancelledBookingPaymentSucceeded`, through the same
-writer, so every automatic refund of a late capture inside the card's window is on
-the card. The card groups the deleted rows apart from the merely cancelled ones so
+populations (`recordAutomaticCancelledBookingRefundTask`, #2760 — owner decision
+10 Aug 2026). #2773 then routed the SIBLING handler for a booking's OWN payment,
+`handleCancelledBookingPaymentSucceeded`, through the same writer, so every
+automatic refund of a late capture inside the card's window is on the card — an
+orchestrator decision the owner has not ruled on, reversible, with the authority
+line under `INV-ADDPAY-039`. The two are stated as separate sentences on purpose:
+a real owner decision and an unruled one sitting inside one clause is what made
+this branch's fabricated attribution credible in the first place. The card groups the deleted rows apart from the merely cancelled ones so
 normal operation cannot bury the interesting case. What is still bounded is the
 window, not the record: the row and the
 `booking.payment.refunded_after_cancellation` audit entry are permanent.

@@ -48,6 +48,15 @@
   deliberately does neither: it asks Stripe to send the notification again shortly
   rather than guess between refunding twice and never refunding at all.
 
+- **Those two emails cannot be given a subject that says the wrong one happened.**
+  They share one message in Admin → Settings → Email Messages, and the subject fills
+  in which of the two it is as you send. If you rewrite that subject, the editor now
+  refuses a version that removes the fill-in, and also one that keeps it but types a
+  direction of your own beside it — "Automatic refund withheld — …" in front would
+  have titled every *possible double payment* as a refund that never went out, which
+  is the line an operator triages the inbox on. Wording that says what the email is
+  about is fine; it is only the direction that has to be left to the fill-in.
+
 - **Unchanged in both:** no refund amount, timing or decision moved; nothing already
   refunded was recalculated; one refund task per payment still holds; and one email
   per event still holds — the withheld and double-payment notices replace the

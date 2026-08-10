@@ -1441,6 +1441,19 @@ the member may have been paid twice.
   withheld arm and the opposite of the truth on the other, and one editable body
   cannot be correct about a refund that happened AND one that did not. Delivery-
   locked and unmuteable on the same grounds as `INV-ADDPAY-038`, and more so.
+- **The direction survives an admin rewriting the subject, in both directions of
+  editing.** A stored subject override REPLACES the sender's computed subject whole, so
+  the direction rides in the subject as the `{{handBackConflictLabel}}` token and the
+  saved copy is refused if it **drops** that token (`REQUIRED_SUBJECT_TEMPLATE_TOKENS`)
+  **or if it states a direction beside it in its own words**
+  (`FORBIDDEN_SUBJECT_PHRASES`, derived from the sender's own two labels so the two
+  cannot drift). Both halves are needed and neither implies the other: a subject that
+  keeps the token and prepends "Automatic refund withheld" renders the wrong claim in
+  the leading words an inbox truncates to, which is the part an operator triages on. A
+  free-text subject cannot be made paraphrase-proof, and is not claimed to be — the
+  guarantee that holds whatever the admin writes is the BODY, which states the
+  direction in its heading, its alert box, its required `{{handBackConflictNote}}`
+  paragraph and an explicit "Automatic refund sent: Yes / No" row.
 
 **NO ROW IS WRITTEN AND NO PARTIAL TOP-UP IS REFUNDED on the fenced path.** The
 operator's `COMPLETED` row already IS the record of that capture, and a second row

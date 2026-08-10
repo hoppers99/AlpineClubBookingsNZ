@@ -35,7 +35,11 @@ vi.mock("@/lib/email/admin-alerts-shared", () => ({
 
 import { sendAdminLateCaptureHandBackConflictAlert } from "@/lib/email/admin-alerts-finance";
 import { EMAIL_AUDIT_DEFAULTS } from "@/lib/email-message-audit-defaults";
-import { getSensitiveEmailSubjectTokens } from "@/lib/email-message-registry";
+import {
+  getEmailTemplateDefinition,
+  getSensitiveEmailSubjectTokens,
+} from "@/lib/email-message-registry";
+import { lateCaptureHandBackConflictSubjectLabel } from "@/lib/email-message-notes";
 import {
   neutraliseSensitiveSubjectContent,
   renderTemplateString,
@@ -352,6 +356,126 @@ describe("sendAdminLateCaptureHandBackConflictAlert (#2774)", () => {
         bodyText:
           EMAIL_AUDIT_DEFAULTS["admin-late-capture-auto-refund"].defaultBody,
       }).missingRequiredSubjectTokens,
+    ).toEqual([]);
+  });
+
+  /**
+   * AND KEEPING THE TOKEN IS NOT ENOUGH ON ITS OWN (#2774, review finding).
+   *
+   * The requirement above only checks the token is PRESENT. A subject that keeps it
+   * and states a direction beside it passed everything:
+   * "Automatic refund withheld - {{handBackConflictLabel}}: {{memberName}}" validated
+   * clean and rendered, on the double-payment arm, as "Automatic refund withheld -
+   * Payment may have been refunded TWICE - reconcile: Alice Example". The leading
+   * words are what an inbox truncates to and what an operator triages on, so the mail
+   * saying a member may have been paid twice arrived titled as one where no money
+   * moved. Prepending a phrase to a pre-populated subject is an ordinary admin edit.
+   *
+   * The forbidden phrases are DERIVED from `lateCaptureHandBackConflictSubjectLabel`,
+   * so rewording an arm moves them with it; the first assertion here is what makes
+   * that structural rather than a claim in a comment.
+   *
+   * MUTATION PROOF: delete the template's entry from `FORBIDDEN_SUBJECT_PHRASES`, or
+   * drop the renderer's check, and "refuses a subject that states the direction
+   * itself" fails with `valid: true`. Reword one arm's label so a listed phrase is no
+   * longer part of either arm, or so it appears in BOTH, and "every forbidden phrase
+   * is one arm's own wording" fails.
+   */
+  it("refuses a subject that states the direction itself, keeping the token or not", () => {
+    const conflictBody =
+      EMAIL_AUDIT_DEFAULTS["admin-late-capture-hand-back-conflict"].defaultBody;
+    const definition = getEmailTemplateDefinition(
+      "admin-late-capture-hand-back-conflict",
+    );
+    const phrases = definition?.forbiddenSubjectPhrases ?? [];
+
+    // Derived, not re-typed: each phrase is part of exactly ONE arm's wording, so a
+    // phrase that is really shared vocabulary (or no longer said at all) fails here
+    // instead of quietly refusing a subject nobody objects to.
+    const normalise = (value: string) =>
+      value.toLowerCase().replace(/[-‐-―\s]+/g, " ").trim();
+    const labels = [true, false].map((refundSent) =>
+      normalise(lateCaptureHandBackConflictSubjectLabel(refundSent)),
+    );
+    expect(phrases.length).toBeGreaterThan(0);
+    for (const phrase of phrases) {
+      expect(
+        labels.filter((label) => label.includes(normalise(phrase))),
+        `"${phrase}" must be one arm's wording and not the other's`,
+      ).toHaveLength(1);
+    }
+
+    // The exact subject the review found: token kept, direction typed in front of it.
+    const prepended = validateEmailTemplateContent({
+      templateName: "admin-late-capture-hand-back-conflict",
+      subject:
+        "Automatic refund withheld - {{handBackConflictLabel}}: {{memberName}}",
+      bodyText: conflictBody,
+    });
+    expect(prepended.valid).toBe(false);
+    expect(prepended.forbiddenSubjectPhrases).toContain("withheld");
+    const issue = prepended.issues.find(
+      (candidate) => candidate.code === "forbidden_subject_phrase",
+    );
+    expect(issue?.field).toBe("subject");
+    // The message has to say why, not just name the words: an admin told "remove
+    // 'withheld'" learns nothing about the other case this subject would mistitle.
+    expect(issue?.message).toContain("two opposite directions about money");
+    expect(issue?.phrases).toContain("withheld");
+
+    // The other arm's wording, and the short form of it, are refused the same way —
+    // the defect is stating a direction at all, not one particular direction.
+    for (const subject of [
+      "Payment may have been refunded TWICE - {{handBackConflictLabel}}: {{memberName}}",
+      "Refund withheld — {{handBackConflictLabel}}",
+      "{{handBackConflictLabel}} (already paid back by hand): {{memberName}}",
+    ]) {
+      expect(
+        validateEmailTemplateContent({
+          templateName: "admin-late-capture-hand-back-conflict",
+          subject,
+          bodyText: conflictBody,
+        }).valid,
+        subject,
+      ).toBe(false);
+    }
+
+    // A subject that says what the email is ABOUT and leaves the direction to the
+    // token is accepted, so the rule is satisfiable in an admin's own words.
+    const reworded = validateEmailTemplateContent({
+      templateName: "admin-late-capture-hand-back-conflict",
+      subject: "Late capture needs reconciling — {{handBackConflictLabel}}",
+      bodyText: conflictBody,
+    });
+    expect(reworded.forbiddenSubjectPhrases).toEqual([]);
+    expect(reworded.valid).toBe(true);
+
+    // The shipped default and a blank subject both pass, so no club is nagged for
+    // never having customised the message.
+    for (const subject of [
+      EMAIL_AUDIT_DEFAULTS["admin-late-capture-hand-back-conflict"]
+        .defaultSubject,
+      "   ",
+    ]) {
+      expect(
+        validateEmailTemplateContent({
+          templateName: "admin-late-capture-hand-back-conflict",
+          subject,
+          bodyText: conflictBody,
+        }).forbiddenSubjectPhrases,
+        subject,
+      ).toEqual([]);
+    }
+
+    // Scoped to the one template sent in two directions: the sibling alert may say
+    // "withheld" in its subject all it likes.
+    expect(
+      validateEmailTemplateContent({
+        templateName: "admin-late-capture-auto-refund",
+        subject: "Nothing withheld, refunded twice over: {{memberName}}",
+        bodyText:
+          EMAIL_AUDIT_DEFAULTS["admin-late-capture-auto-refund"].defaultBody,
+      }).forbiddenSubjectPhrases,
     ).toEqual([]);
   });
 });

@@ -33,6 +33,9 @@ export interface EmailTemplateDefinition {
   // requiredTokens, which is body-only by design — see
   // REQUIRED_SUBJECT_TEMPLATE_TOKENS for why one template needs this.
   requiredSubjectTokens: string[];
+  // #2774: wording an override may not ADD to the subject, because it states a
+  // direction the token already fills in — see FORBIDDEN_SUBJECT_PHRASES.
+  forbiddenSubjectPhrases: string[];
   // #2267: per required token, the other tokens an override may use instead
   // and still satisfy the requirement (see REQUIRED_TOKEN_ALTERNATIVES).
   requiredTokenAlternatives: Record<string, string[]>;
@@ -652,6 +655,56 @@ const REQUIRED_SUBJECT_TEMPLATE_TOKENS: Partial<
   Record<EmailAuditTemplateName, string[]>
 > = {
   "admin-late-capture-hand-back-conflict": ["handBackConflictLabel"],
+};
+
+/**
+ * Wording an override may not put IN the subject of a template whose subject has to
+ * state which way money went (#2774, second half).
+ *
+ * WHY REQUIRING THE TOKEN WAS NOT ENOUGH. `REQUIRED_SUBJECT_TEMPLATE_TOKENS` above
+ * refuses a subject that DROPS `{{handBackConflictLabel}}`. It says nothing about a
+ * subject that KEEPS it and types a direction beside it — "Automatic refund withheld
+ * - {{handBackConflictLabel}}: {{memberName}}" satisfied every check and renders, on
+ * the double-payment arm, as "Automatic refund withheld - Payment may have been
+ * refunded TWICE - reconcile: Alice Example". The leading words are the ones an inbox
+ * truncates to, so the mail that says money may have gone out twice arrives titled as
+ * one that did not go out at all. Prepending a phrase to a pre-populated subject is an
+ * ordinary admin edit, and the obvious phrase to reach for is the wording of the last
+ * such email they received.
+ *
+ * DERIVED FROM THE LABELS, NOT RE-TYPED. The clauses come from
+ * `lateCaptureHandBackConflictSubjectLabel` itself, split on its em dash, so rewording
+ * an arm moves this table with it and the two cannot drift. Single-word clauses are
+ * dropped ("reconcile" is a topic, not a claim, and an admin may legitimately write
+ * "Reconcile a late capture"), and the two decisive direction WORDS are added back
+ * explicitly because "Refund withheld - {{handBackConflictLabel}}" is the same defect
+ * in fewer words. `email-message-notes.ts` is the single source for both, and
+ * `admin-late-capture-hand-back-conflict-alert.test.ts` pins every phrase here to
+ * exactly one arm, so a phrase that stops being one arm's wording fails there.
+ *
+ * SCOPE, STATED HONESTLY: this catches the shipped wordings and their obvious short
+ * forms, not every possible paraphrase. A free-text subject cannot be made
+ * paraphrase-proof; the guarantee that does not depend on the admin's wording is the
+ * BODY, which states the direction four times over required tokens of its own.
+ */
+const DECISIVE_SUBJECT_DIRECTION_WORDS = ["withheld", "twice"] as const;
+
+function handBackConflictSubjectDirectionPhrases(): string[] {
+  const clauses = [true, false]
+    .map((refundSent) => lateCaptureHandBackConflictSubjectLabel(refundSent))
+    .flatMap((label) => label.split(/\s*[–—]\s*/))
+    .map((clause) => clause.trim())
+    .filter((clause) => clause.split(/\s+/).length > 1);
+  return Array.from(
+    new Set([...clauses, ...DECISIVE_SUBJECT_DIRECTION_WORDS]),
+  );
+}
+
+const FORBIDDEN_SUBJECT_PHRASES: Partial<
+  Record<EmailAuditTemplateName, string[]>
+> = {
+  "admin-late-capture-hand-back-conflict":
+    handBackConflictSubjectDirectionPhrases(),
 };
 
 const TEMPLATE_TRIGGER_METADATA: Partial<
@@ -1483,6 +1536,7 @@ export const EMAIL_TEMPLATE_DEFINITIONS: EmailTemplateDefinition[] = (
     allowedTokens,
     requiredTokens: REQUIRED_TEMPLATE_TOKENS[key] ?? [],
     requiredSubjectTokens: REQUIRED_SUBJECT_TEMPLATE_TOKENS[key] ?? [],
+    forbiddenSubjectPhrases: FORBIDDEN_SUBJECT_PHRASES[key] ?? [],
     requiredTokenAlternatives: REQUIRED_TOKEN_ALTERNATIVES[key] ?? {},
     sampleData: Object.fromEntries(
       allowedTokens.map((token) => [
