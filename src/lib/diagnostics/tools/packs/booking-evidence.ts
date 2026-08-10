@@ -80,6 +80,15 @@
  * cache, so a diagnostic cannot report a five-minute-old value as freshly observed
  * and cannot change what any other request in the process computes.
  *
+ * AND THE STRICT AGE-TIER READ IS THREADED INTO THE RULES, not merely used beside
+ * them. Calling it here was necessary and was not sufficient: the paid-up-adult rule
+ * and the #2364 hosting bridge both reach the tier flag through
+ * `loadMemberSubscriptionSettlements`, which read it through the CACHED reader on its
+ * own. Those two rules now receive this pack's strict reader (see
+ * `readAgeTierSettings` in `readBookingBlockState`), so a failed settings read
+ * reaches the caller as a failure on every path that consults the club's tier policy
+ * rather than on only the one this file happened to call directly.
+ *
  * A `server_owned` entry is NOT a way around the substrate's gates: registry
  * lookup, loop budget, fresh AND-ed authorization, `.strict()` argument parsing
  * with the reserved-key scan, the metering breaker, the fixed projection with
@@ -111,8 +120,23 @@
  * the reads follow. Those two fixed tagged-template controls are the only raw
  * executions here — the second one binds its value as an ordinary parameter
  * through `set_config`, so neither is string-built SQL.
- * There is no data write, advisory lock or HTTP request of any kind. The
- * lock-taking and write-performing siblings of several helpers used here are
+ * There is no data write, advisory lock or HTTP request of any kind.
+ *
+ * THE ONE CALL THAT COULD NOT SIMPLY BE HANDED THE CLIENT, named because the claim
+ * above is only as good as its hardest case. Threading works because every
+ * canonical seam TAKES a client — but `getAgeTierSettings` takes none at all: it
+ * dynamic-imports the global client, serves a five-minute cache and swallows a
+ * failure into `AGE_TIER_DEFAULTS`, and `loadMemberSubscriptionSettlements` called
+ * it. So on a `NON_MEMBER_PRICING` club one input to this row's subscription
+ * findings ran outside the snapshot, outside the statement timeout and outside
+ * `READ ONLY`, with nothing at any call site to pass. The loader now accepts a
+ * READER as well as a client, and this pack passes one bound to its own transaction
+ * (`getAgeTierSettingsStrict(tx)`, memoised per invocation); every writer omits it
+ * and keeps the cached reader byte-for-byte. A collaborator with no client
+ * parameter is the shape this rule cannot express, so the rule is a threading
+ * CONTRACT with a named exception rather than a convention.
+ *
+ * THE LOCK-TAKING AND WRITE-PERFORMING SIBLINGS of several helpers used here are
  * named in the pack doc precisely so a future edit cannot reach for one by
  * accident: `evaluateBookingAdultMemberHosting` takes an advisory lock and is NOT
  * used; `reconcileAdultMemberHostingReview`,
@@ -121,8 +145,9 @@
  * `replaceBedAllocationsForBooking` all write and are NOT used.
  *
  * ONE SNAPSHOT PER INVOCATION, AND NOTHING WIDER THAN THAT. Each source runs its
- * whole read graph — ordinary Prisma reads and authoritative helpers alike —
- * inside one `REPEATABLE READ` read-only transaction, so the facts on one row were
+ * whole read graph — ordinary Prisma reads, authoritative helpers, and the SETTINGS
+ * reads those helpers consult on their own way to a verdict — inside one
+ * `REPEATABLE READ` read-only transaction, so the facts on one row were
  * all read at one committed instant and a row can no longer report a party
  * measured at instant A against occupancy measured at instant B. What that does
  * NOT buy: `observed_at_utc` is captured after assembly completes and is not the
@@ -144,7 +169,10 @@ import type { AgeTier, Prisma } from "@prisma/client";
 
 import { evaluatePersistedBookingAdultMemberHostingReadOnly } from "@/lib/adult-member-hosting-review";
 import { getLifecycleStatusConfig } from "@/lib/admin-member-badges";
-import { getAgeTierSettingsStrict } from "@/lib/age-tier";
+import {
+  getAgeTierSettingsStrict,
+  type AgeTierSettingData,
+} from "@/lib/age-tier";
 import { getBookingEditPolicy } from "@/lib/booking-edit-policy";
 import { evaluatePersistedBookingNonHostingPolicyViolations } from "@/lib/booking-exception-request-service";
 import { findBookingMemberNightConflicts } from "@/lib/booking-member-night-conflicts";
@@ -387,6 +415,21 @@ function requireResolvedLockoutMode(
     );
   }
   return mode;
+}
+
+/**
+ * ONE READ AT MOST, ON FIRST USE — the shape a strict settings read has to take to
+ * be threadable into a rule that may not consult it.
+ *
+ * Memoises the PROMISE rather than the value, so two collaborators that reach the
+ * same rule inside one invocation share one observation and one round trip even when
+ * they run concurrently in the same `Promise.all`. A rejection is memoised too, and
+ * deliberately: a failed evidence read must reach every consumer as the same failure
+ * rather than being retried into a different answer half a row later.
+ */
+function readOnce<T>(read: () => Promise<T>): () => Promise<T> {
+  let pending: Promise<T> | null = null;
+  return () => (pending ??= read());
 }
 
 async function resolveStoredSeasonYear(
@@ -949,6 +992,13 @@ async function readOwnerSubscriptionHardBlock(
     memberId: string;
     seasonYear: number;
     ageTier: AgeTier | null;
+    /**
+     * The row's ONE strict, transaction-bound age-tier observation, shared with the
+     * policy evaluator and the hosting bridge so all three subscription rules on a
+     * row are judged against the same club policy. See its declaration in
+     * `readBookingBlockState`.
+     */
+    readAgeTierSettings: () => Promise<AgeTierSettingData[]>;
   },
 ): Promise<boolean> {
   const [typePolicy, subscription, ageTierSettings] = await Promise.all([
@@ -965,7 +1015,7 @@ async function readOwnerSubscriptionHardBlock(
       },
       select: { status: true },
     }),
-    getAgeTierSettingsStrict(tx),
+    input.readAgeTierSettings(),
   ]);
   return subscriptionIsUnpaid(
     resolveMemberSubscriptionSettlement({
@@ -1105,6 +1155,43 @@ async function readBookingBlockState(
   const subscriptionLockoutMode =
     deleted || terminal ? null : await peekSubscriptionLockoutModeStrict(tx);
 
+  /**
+   * HOW EVERY SUBSCRIPTION RULE ON THIS ROW READS THE CLUB'S AGE-TIER SETTINGS —
+   * once, strictly, and inside this transaction.
+   *
+   * THE HOLE THIS CLOSES. The per-tier `subscriptionRequiredForBooking` flag is what
+   * decides whether a named member owes a subscription, and three rules on this row
+   * consult it: the club's own `HARD_BLOCK` refusal below, the `NON_MEMBER_PRICING`
+   * paid-up-adult rule inside the policy evaluator, and the #2364 hosting bridge.
+   * The first read it strictly already. The other two reach it through
+   * `loadMemberSubscriptionSettlements`, which called `getAgeTierSettings()` — a
+   * reader with NO client parameter at all, dynamic-importing the global Prisma
+   * client, serving a five-minute cache, and CATCHING every database error to return
+   * `AGE_TIER_DEFAULTS`. So on a `NON_MEMBER_PRICING` club one input to this row's
+   * subscription findings ran outside the snapshot, outside the statement timeout and
+   * outside `READ ONLY`, and a transient failure of that one read produced
+   * `policy_paid_up_adult_member` — and, through the bridge,
+   * `policy_adult_member_hosting` — against a named member on the strength of the
+   * PLATFORM's default tier rule rather than the club's. A fabricated financial
+   * accusation, and the exact reader this file's own header cites as its reason for
+   * refusing `requiresPaidSubscriptionForMemberForBooking`.
+   *
+   * A READER, NOT AN ARRAY, and that is the whole reason this can be threaded at all.
+   * Both rules consult the tier rule only under `NON_MEMBER_PRICING` and only for a
+   * non-empty member set; the refusal consults it only on a gated draft under
+   * `HARD_BLOCK`. Reading the settings eagerly here would pay for a read most
+   * invocations do not need and — much worse — would make a failed read REFUSE a row
+   * that had no subscription finding in it. `readOnce` therefore reads on FIRST USE
+   * and memoises the promise, so a row that consults the rule twice (evaluator and
+   * bridge) observes one set of settings, and a row that never consults it never
+   * reads.
+   *
+   * The same value also serves the `HARD_BLOCK` refusal below, so all three rules on
+   * one row are judged against ONE observation of the club's tier policy — the same
+   * consistency argument as the single mode read above.
+   */
+  const readAgeTierSettings = readOnce(() => getAgeTierSettingsStrict(tx));
+
   /** The open exception requests, and whether any of them is actually holding beds. */
   const openRequests = await tx.bookingChangeRequest.findMany({
     where: { bookingId, status: "REQUESTED" },
@@ -1186,6 +1273,10 @@ async function readBookingBlockState(
             subscriptionLockoutMode: requireResolvedLockoutMode(
               subscriptionLockoutMode,
             ),
+            // And the third swallowing read the rule would otherwise reach on its
+            // own: the CACHED age-tier settings inside
+            // `loadMemberSubscriptionSettlements`. See the declaration above.
+            readAgeTierSettings,
           },
         ),
     deleted || terminal
@@ -1220,6 +1311,11 @@ async function readBookingBlockState(
           subscriptionLockoutMode: requireResolvedLockoutMode(
             subscriptionLockoutMode,
           ),
+          // Same third reader, for the #2543 bridge inside the hosting rule: the
+          // bridge reaches the same settlement loader, so without this it read the
+          // club's tier rule through the cache that answers a failed read with the
+          // platform's defaults.
+          readAgeTierSettings,
         }),
     deleted || terminal
       ? Promise.resolve(null)
@@ -1282,6 +1378,7 @@ async function readBookingBlockState(
           memberId: booking.memberId,
           seasonYear: requireResolvedSeasonYear(seasonYear),
           ageTier: booking.member?.ageTier ?? null,
+          readAgeTierSettings,
         }),
     ]);
 

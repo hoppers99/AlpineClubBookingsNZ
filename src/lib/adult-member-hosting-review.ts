@@ -78,6 +78,7 @@ import {
   loadUnpaidSubscriptionMemberIds,
   type SubscriptionLockoutDb,
 } from "@/lib/subscription-lockout-enforcement";
+import type { AgeTierSettingsReader } from "@/lib/subscription-lockout-facts";
 import { getSeasonYear } from "@/lib/utils";
 
 /**
@@ -659,6 +660,14 @@ async function evaluateLoadedBookingAdultMemberHosting(
    * holding many bookings at one lodge are different data problems.
    */
   sameOwnerSourceCeiling?: number,
+  /**
+   * How the #2543 subscription bridge reads the club's age-tier rule. Omitted by
+   * every writer, which takes the cached reader that falls back to
+   * `AGE_TIER_DEFAULTS`; supplied by a read-only evidence caller, whose strict
+   * reader rejects a failed read rather than judging a named member's hosting
+   * qualification against a tier rule nobody observed. See `AgeTierSettingsReader`.
+   */
+  readAgeTierSettings?: AgeTierSettingsReader,
 ): Promise<{
   violation: AdultMemberHostingPolicyExceptionViolation | null;
   resolved: ResolvedAdultMemberHostingPolicy;
@@ -715,6 +724,7 @@ async function evaluateLoadedBookingAdultMemberHosting(
       db,
       seasonYear ?? getSeasonYear(booking.checkIn),
       subscriptionLockoutMode,
+      readAgeTierSettings,
     );
   }
   const violation = evaluateAdultMemberHostingWithPolicy(participants, resolved);
@@ -787,6 +797,13 @@ export async function evaluatePersistedBookingAdultMemberHostingReadOnly(
      * towards a FABRICATED blocker for evidence.
      */
     sameOwnerSourceCeiling?: number;
+    /**
+     * How the subscription bridge reads the age-tier rule. Same split as
+     * `seasonYear` and `subscriptionLockoutMode`: this form has no gated request
+     * behind it, so it cannot accept a reader that answers a failed database read
+     * with the platform's default tiers. See `AgeTierSettingsReader`.
+     */
+    readAgeTierSettings?: AgeTierSettingsReader;
   },
 ): Promise<{
   violation: AdultMemberHostingPolicyExceptionViolation | null;
@@ -805,6 +822,7 @@ export async function evaluatePersistedBookingAdultMemberHostingReadOnly(
     options?.subscriptionLockoutMode,
     options?.siblingCeiling,
     options?.sameOwnerSourceCeiling,
+    options?.readAgeTierSettings,
   );
 }
 
@@ -872,11 +890,13 @@ async function withSubscriptionSettlement(
   db: SubscriptionLockoutDb,
   seasonYear: number,
   mode?: SubscriptionLockoutMode,
+  readAgeTierSettings?: AgeTierSettingsReader,
 ): Promise<HostingParticipant[]> {
   const unpaid = await loadUnpaidSubscriptionMemberIds(db, {
     memberIds: participants.map((participant) => participant.member?.id),
     seasonYear,
     mode,
+    ...(readAgeTierSettings ? { readAgeTierSettings } : {}),
   });
   if (unpaid.size === 0) return participants;
   return participants.map((participant) => {

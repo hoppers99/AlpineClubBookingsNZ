@@ -77,10 +77,16 @@
   `evidence_unavailable` with the remedy named, never a guess.
 
   Two settings reads that qualify every subscription finding — the age-tier rule and
-  the club's lockout mode — are now read strictly for evidence. A genuinely absent
-  row still means the documented default applies; a failed read becomes
-  `evidence_unavailable` instead of a confident answer nobody observed. Ordinary
-  booking screens keep their existing fallbacks unchanged.
+  the club's lockout mode — are now read strictly for evidence, and handed to the
+  rules rather than merely read beside them. The age-tier rule decides whether a named
+  member owes a subscription, and the rules that report it reached it through a cached
+  reader that answers an unreachable database with the platform's own default tiers —
+  so a club that exempts a tier could have a member reported as unfinancial on the
+  strength of settings nobody observed. A genuinely absent row still means the
+  documented default applies; a failed read becomes `evidence_unavailable` instead of a
+  confident answer nobody observed, and every rule on one row now judges the member
+  against one observation of the club's policy. Ordinary booking screens keep their
+  existing fallbacks unchanged.
 
   Being named on somebody else's booking is no longer reported as having been there.
   A member invited as a guest on another member's booking keeps that record even

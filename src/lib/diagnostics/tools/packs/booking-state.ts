@@ -116,6 +116,18 @@ export const DIAGNOSTICS_MEMBER_ELIGIBILITY_TOOL_ID =
  * transaction existed — and it was ALSO false in the interval when the transaction
  * existed without an explicit isolation level, in the other direction, because the
  * docblock beside it claimed a snapshot the default isolation does not give.
+ *
+ * IT IS A CLAIM ABOUT THE WHOLE GRAPH, WHICH IS WHY IT TOOK A SECOND FIX TO EARN.
+ * When this sentence was written, one input to `booking_block_state`'s subscription
+ * findings still ran outside the transaction: the club's age-tier rule, which the
+ * paid-up-adult rule and the hosting bridge reach through
+ * `loadMemberSubscriptionSettlements`, which read it through a cached global reader
+ * that takes no client and swallows a database failure into the platform's default
+ * tiers. A sentence telling a model the facts "are consistent with each other" is
+ * exactly the sentence that stops it hedging, so it may not be asserted while any
+ * reachable input is outside the snapshot. That loader now accepts a READER; the
+ * pack passes a strict one bound to its own transaction, and `booking-evidence.ts`
+ * names it as the one collaborator the client-threading rule could not reach.
  */
 const AID6B_SNAPSHOT_AND_STALENESS_DISCLOSURE =
   "This tool's reads share ONE REPEATABLE READ snapshot, so its facts are consistent with each other — but not necessarily current: observedAtUtc is when assembly completed, not a database snapshot time, and a later invocation reads a different snapshot, so a row can be internally consistent and still stale. Rerun it before any action or definitive conclusion, and compare per-source timestamps where they are present.";

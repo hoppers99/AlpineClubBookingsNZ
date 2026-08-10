@@ -2175,6 +2175,58 @@ describe("booking block state: the club's HARD_BLOCK subscription refusal (#2376
     },
   );
 
+  it("hands BOTH canonical rules the same strict, transaction-bound age-tier reader", async () => {
+    /**
+     * THE READ THE CLIENT-THREADING RULE COULD NOT REACH.
+     *
+     * Under `NON_MEMBER_PRICING` the paid-up-adult rule and the #2364 hosting bridge
+     * both decide "does this member owe a subscription" through
+     * `loadMemberSubscriptionSettlements`, which read the club's per-tier flag via
+     * `getAgeTierSettings` — a function with NO client parameter, which dynamic-
+     * imports the global client, serves a five-minute cache and CATCHES every
+     * database error to return `AGE_TIER_DEFAULTS`. So one input to this row's
+     * subscription findings ran outside the snapshot, the statement timeout and
+     * `READ ONLY`, and a transient failure produced `policy_paid_up_adult_member` —
+     * and through the bridge `policy_adult_member_hosting` — against a named member
+     * from the platform's defaults rather than the club's rule.
+     *
+     * The loader now takes a READER, and this asserts the four properties the fix
+     * rests on: both collaborators get one, it is the SAME one, it reads through the
+     * transaction client, and it is memoised so the row observes the club's tier
+     * policy once.
+     */
+    seedBooking({
+      status: "DRAFT",
+      finalPriceCents: FREE_BOOKING_CENTS,
+      lockoutMode: "NON_MEMBER_PRICING",
+      ownerSubscriptionStatus: "UNPAID",
+    });
+    await blockStateRow();
+
+    const nonHostingOptions = evaluatePersistedNonHostingViolationsMock.mock
+      .calls[0]?.[4] as { readAgeTierSettings?: () => Promise<unknown> };
+    const hostingOptions = evaluatePersistedHostingMock.mock.calls[0]?.[2] as {
+      readAgeTierSettings?: () => Promise<unknown>;
+    };
+    expect(typeof nonHostingOptions?.readAgeTierSettings).toBe("function");
+    expect(hostingOptions?.readAgeTierSettings).toBe(
+      nonHostingOptions?.readAgeTierSettings,
+    );
+
+    // LAZY. A row whose rules never consult the tier flag performs no settings read,
+    // which is what keeps a failed read from refusing a row that had no subscription
+    // finding in it. Under this mode the pack's own refusal is not evaluated, and the
+    // two collaborators are doubles here, so nothing has called it yet.
+    expect(getAgeTierSettingsMock).not.toHaveBeenCalled();
+
+    await nonHostingOptions.readAgeTierSettings?.();
+    await hostingOptions.readAgeTierSettings?.();
+    // ONE read for both consumers, and it went through the transaction client.
+    expect(getAgeTierSettingsMock).toHaveBeenCalledTimes(1);
+    expect(getAgeTierSettingsMock.mock.calls[0]?.[0]).toBe(txMock);
+    expect(getAgeTierSettingsMock.mock.calls[0]?.[0]).not.toBe(prismaMock);
+  });
+
   it("reads the owner's settlement inside the entry's own transaction client", async () => {
     // Not the global client: this read joins the same read-only REPEATABLE READ
     // snapshot and the same statement timeout as every other read on the graph, or

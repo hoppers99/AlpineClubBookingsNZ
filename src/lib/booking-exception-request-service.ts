@@ -7,6 +7,7 @@ import { getStayNights } from "@/lib/policies/pricing";
 import { validateMinimumStay } from "@/lib/booking-policies";
 import { evaluateProposedAdultMemberHosting } from "@/lib/adult-member-hosting-review";
 import { evaluateProposedPaidUpAdultPresence } from "@/lib/subscription-lockout-enforcement";
+import type { AgeTierSettingsReader } from "@/lib/subscription-lockout-facts";
 import type { SubscriptionLockoutMode } from "@/lib/membership-lockout-settings";
 import { computeMemberGuestBoundary } from "@/lib/booking-guests";
 import { isOperationallyPresentConsent } from "@/lib/member-guest-consent";
@@ -746,6 +747,16 @@ export async function evaluatePersistedBookingNonHostingPolicyViolations(
      * direction for a booking write and a fabricated answer for evidence.
      */
     subscriptionLockoutMode?: SubscriptionLockoutMode;
+    /**
+     * How the paid-up-adult rule reads the club's age-tier settings. Same split and
+     * the same reason as the two above: left to itself the rule reads them through
+     * the CACHED reader, which swallows a database failure into `AGE_TIER_DEFAULTS`
+     * — the platform's own tier rule standing in for the club's, with nothing
+     * marking the answer as unobserved. A read-only evidence caller passes a strict
+     * reader bound to its transaction; every product caller omits it and is
+     * unchanged. See `AgeTierSettingsReader`.
+     */
+    readAgeTierSettings?: AgeTierSettingsReader;
   },
 ): Promise<PolicyExceptionViolation[]> {
   return evaluatePartyViolations(
@@ -756,6 +767,7 @@ export async function evaluatePersistedBookingNonHostingPolicyViolations(
     false,
     options?.seasonYear,
     options?.subscriptionLockoutMode,
+    options?.readAgeTierSettings,
   );
 }
 
@@ -769,6 +781,7 @@ async function evaluatePartyViolations(
   includeProposedHosting: boolean,
   seasonYear?: number,
   subscriptionLockoutMode?: SubscriptionLockoutMode,
+  readAgeTierSettings?: AgeTierSettingsReader,
 ): Promise<PolicyExceptionViolation[]> {
   const checkIn = parseDateOnly(party.checkIn);
   const checkOut = parseDateOnly(party.checkOut);
@@ -822,6 +835,7 @@ async function evaluatePartyViolations(
     })),
     seasonYear,
     mode: subscriptionLockoutMode,
+    ...(readAgeTierSettings ? { readAgeTierSettings } : {}),
   });
   if (paidUpAdult) {
     violations.push(paidUpAdult);

@@ -288,7 +288,7 @@ from the screen a Booking Officer trusts.
 | The membership type for the season, and what it does | `resolveMembershipTypePolicyForMember` | `membership-type-policy.ts` |
 | Whether a season subscription is owed and settled | `resolveMemberSubscriptionSettlement`, `subscriptionIsUnpaid` | `subscription-lockout-facts.ts` |
 | What an unsettled subscription costs the member | `peekSubscriptionLockoutMode` | `member-subscription-eligibility.ts` |
-| Whether the age-tier rule requires a subscription | `getAgeTierSettings` | `age-tier.ts` |
+| Whether the age-tier rule requires a subscription | `getAgeTierSettingsStrict` (the pack's reader, threaded into the rules) | `age-tier.ts` |
 | Whether a member qualifies as the adult-member host | `participantQualifiesAsHost` | `policies/adult-member-hosting.ts` |
 | The status of the member's newest induction | `getInductionStatusForMember` | `induction.ts` |
 | Which membership SEASON a calendar date falls in | `getSeasonYear` | `utils.ts` |
@@ -339,6 +339,17 @@ instead, which:
 
 The ordinary readers are unchanged, and a test asserts they still swallow: #2376 may
 not alter what a booking screen does.
+
+**And the strict tier read is HANDED TO the rules, not merely called beside them.**
+Calling `getAgeTierSettingsStrict` for the pack's own refusal was necessary and was
+not sufficient: the paid-up-adult rule and the hosting bridge both reach the tier flag
+through `loadMemberSubscriptionSettlements`, which read it through the cached reader
+on its own — so a club in `NON_MEMBER_PRICING` could still have a named member
+reported as unfinancial on the strength of the platform's default tiers after one
+transient failure. That loader now takes a **reader** beside its client;
+`booking_block_state` passes a strict one bound to its transaction, memoised so the
+row's three subscription rules share one observation and a row that consults no tier
+rule performs no settings read at all. Product callers pass nothing and are unchanged.
 
 `booking_block_state` reads the mode **once**, strictly, and hands it to both the
 paid-up-adult rule and the hosting subscription bridge through their `mode` seams —
@@ -425,6 +436,25 @@ SELECT pg_catalog.set_config('statement_timeout', $1, true)
   sub-read joins its caller's transaction rather than opening a second: a nested
   interactive transaction is a second pool connection, which is the pool-starvation
   shape `docs/CONCURRENCY_AND_LOCKING.md` forbids.
+- **One collaborator had no client to be given, and it is named rather than
+  assumed.** Threading a client only works where a helper accepts one.
+  `getAgeTierSettings` does not: it dynamic-imports the global client, serves a
+  five-minute cache, and catches every database error to return `AGE_TIER_DEFAULTS` —
+  and `loadMemberSubscriptionSettlements` called it, so on a `NON_MEMBER_PRICING` club
+  the club's own **tier rule** — the flag that decides whether a named member owes a
+  subscription — reached the paid-up-adult rule and the #2364 hosting bridge from
+  outside the snapshot, outside the statement timeout and outside `READ ONLY`. A
+  transient failure of that one read therefore produced
+  `policy_paid_up_adult_member`, and through the bridge
+  `policy_adult_member_hosting`, against a named member on the strength of the
+  platform's defaults rather than the club's: a fabricated financial finding, from the
+  exact reader this pack cites as its reason for not calling
+  `requiresPaidSubscriptionForMemberForBooking`. The loader now takes a **reader** as
+  well as a client; `booking_block_state` passes a strict one bound to its own
+  transaction and memoised per invocation, so the three subscription rules on a row
+  share one observation of the tier policy and a failed read reaches the caller as a
+  failure. Every product caller omits it and keeps the cached reader unchanged, which
+  is the right behaviour for a booking screen and the wrong one for evidence.
 - **Both host populations have a deterministic ceiling, and they are separate
   ceilings.** The sibling fan-out is the widest read in either pack, because each
   sibling arrives with its guests and their night rows. It stays **unbounded for a
@@ -1086,6 +1116,9 @@ reimplemented:
   answer one question one way;
 - the **mode** is the strictly-read club setting already in hand, so a failed
   settings read stays `evidence_unavailable` rather than becoming `NO_BLOCK`;
+- the **tier rule** is the row's one strict, transaction-bound age-tier observation,
+  shared with the paid-up-adult rule and the hosting bridge so all three judge the
+  same member against the same club policy;
 - the **season** is the stored one keyed on the booking's own check-in night.
 
 It deliberately does **not** call `requiresPaidSubscriptionForMemberForBooking`,

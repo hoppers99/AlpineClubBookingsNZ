@@ -35,6 +35,7 @@ vi.mock("@/lib/age-tier", () => ({
   ]),
 }));
 
+import { getAgeTierSettings, type AgeTierSettingData } from "@/lib/age-tier";
 import { parseDateOnly } from "@/lib/date-only";
 import { violationFingerprint } from "@/lib/booking-exception-requests";
 import {
@@ -1048,6 +1049,116 @@ describe("loadUnpaidSubscriptionMemberIds — the hosting bridge (#2543 <-> #236
     });
     expect(unpaid.size).toBe(0);
     expect(mocks.peekSubscriptionLockoutMode).not.toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Whose age-tier reader decides (#2376, AI Diagnostics).
+// ---------------------------------------------------------------------------
+
+describe("the age-tier reader seam (#2376)", () => {
+  /**
+   * THE RULE THIS SEAM PROTECTS, and why an optional parameter is the whole fix.
+   *
+   * `loadMemberSubscriptionSettlements` decides whether a member OWES a season
+   * subscription, and for a `BASED_ON_AGE_TIER`/`REQUIRED` member the answer comes
+   * from the club's per-tier `subscriptionRequiredForBooking` flag. It read that
+   * flag through `getAgeTierSettings`, which serves a five-minute cache, dynamic-
+   * imports the global Prisma client, and CATCHES every database error to return
+   * `AGE_TIER_DEFAULTS`.
+   *
+   * For a booking write that is right: default tiers beat an error. For AI
+   * Diagnostics it is a fabricated financial accusation — a club that exempts a tier
+   * gets `policy_paid_up_adult_member` raised against a named member after one
+   * transient failure, with a fresh observed-at beside it — and the read also sat
+   * outside the evidence transaction's snapshot, statement timeout and `READ ONLY`.
+   *
+   * So the reader is a parameter. The assertions below are in both directions: the
+   * writer path must be untouched, and the evidence path must actually decide the
+   * answer and must propagate its own failure.
+   */
+  const cachedReader = () => vi.mocked(getAgeTierSettings);
+
+  /** An evidence reader whose club exempts ADULT — the opposite of the default. */
+  const adultExemptReader = vi.fn(async () => [
+    { tier: "INFANT", subscriptionRequiredForBooking: false },
+    { tier: "CHILD", subscriptionRequiredForBooking: false },
+    { tier: "YOUTH", subscriptionRequiredForBooking: true },
+    { tier: "ADULT", subscriptionRequiredForBooking: false },
+  ]) as unknown as () => Promise<AgeTierSettingData[]>;
+
+  it("uses the CACHED product reader when none is passed, and that answer is unchanged", async () => {
+    const requirements = await evaluate([UNPAID_ADULT]);
+    expect(requirements?.repricedMemberIds).toEqual(["adult-unpaid"]);
+    expect(cachedReader()).toHaveBeenCalledTimes(1);
+  });
+
+  it("lets a supplied reader decide, and never touches the cached one", async () => {
+    // The discriminating fixture: the same unpaid adult, judged against a club whose
+    // ADULT tier owes nothing. If the loader had kept reading the cached settings the
+    // member would still be repriced, and this assertion would fail on the value
+    // rather than on a spy.
+    const requirements = await evaluateNonMemberPricingRequirements(
+      makeDb([UNPAID_ADULT]),
+      {
+        mode: "NON_MEMBER_PRICING",
+        lodgeId: "lodge-1",
+        seasonYear: SEASON,
+        checkIn: CHECK_IN,
+        checkOut: CHECK_OUT,
+        participants: participantsFor([UNPAID_ADULT]),
+        readAgeTierSettings: adultExemptReader,
+      },
+    );
+    expect(requirements?.repricedMemberIds).toEqual([]);
+    expect(requirements?.violation ?? null).toBeNull();
+    expect(cachedReader()).not.toHaveBeenCalled();
+  });
+
+  it("propagates a FAILED evidence read instead of falling back to the defaults", async () => {
+    // The whole point of the strict reader: the caller reports
+    // `evidence_unavailable` rather than a confident finding derived from the
+    // platform's default tiers. The cached reader would have swallowed this.
+    await expect(
+      evaluateNonMemberPricingRequirements(makeDb([UNPAID_ADULT]), {
+        mode: "NON_MEMBER_PRICING",
+        lodgeId: "lodge-1",
+        seasonYear: SEASON,
+        checkIn: CHECK_IN,
+        checkOut: CHECK_OUT,
+        participants: participantsFor([UNPAID_ADULT]),
+        readAgeTierSettings: async () => {
+          throw new Error("age tier settings unavailable");
+        },
+      }),
+    ).rejects.toThrow("age tier settings unavailable");
+    expect(cachedReader()).not.toHaveBeenCalled();
+  });
+
+  it("threads it through the PROPOSAL form, so the exception door judges the same rule", async () => {
+    await expect(
+      evaluateProposedPaidUpAdultPresence(makeDb([UNPAID_ADULT]), {
+        lodgeId: "lodge-1",
+        checkIn: CHECK_IN,
+        checkOut: CHECK_OUT,
+        guests: [{ isMember: true, memberId: "adult-unpaid" }],
+        readAgeTierSettings: adultExemptReader,
+      }),
+    ).resolves.toBeNull();
+    expect(cachedReader()).not.toHaveBeenCalled();
+  });
+
+  it("threads it through the HOSTING BRIDGE, which is the second reachable path", async () => {
+    // `loadUnpaidSubscriptionMemberIds` reaches the same loader, so a fix that
+    // covered only the paid-up-adult rule would still have let
+    // `policy_adult_member_hosting` be raised from unobserved settings.
+    const unpaid = await loadUnpaidSubscriptionMemberIds(makeDb([UNPAID_ADULT]), {
+      memberIds: ["adult-unpaid"],
+      seasonYear: SEASON,
+      readAgeTierSettings: adultExemptReader,
+    });
+    expect([...unpaid]).toEqual([]);
+    expect(cachedReader()).not.toHaveBeenCalled();
   });
 });
 

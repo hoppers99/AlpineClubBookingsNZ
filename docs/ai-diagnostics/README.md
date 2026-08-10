@@ -488,7 +488,12 @@ application's own authoritative calculations.** Sixteen entries. Full reference:
   transaction, so the facts on a row are consistent with each other;
   `observedAtUtc` is still assembly completion rather than the snapshot's own
   timestamp, and their scopes require a rerun before action or a definitive
-  conclusion.
+  conclusion. "Whole read graph" includes the settings reads a canonical rule
+  consults on its own way to a verdict: the one collaborator that took no client —
+  the cached age-tier reader inside `loadMemberSubscriptionSettlements` — now takes
+  a reader instead, and the pack passes a strict one bound to its transaction. The
+  pack doc records why an unthreaded settings read is not a small caveat but a
+  fabricated finding about a named member.
 - **Thirteen more relation grants, plus the widened `Member`.** The allowlist now
   names **twenty-six** relations, all by column. `Member` goes from two columns to
   twenty-three — the most scrutinised change the allowlist has had — while the birth
