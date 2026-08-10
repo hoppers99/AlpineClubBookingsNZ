@@ -278,11 +278,12 @@ describe("audit writer census (#2581)", { timeout: 180_000 }, () => {
       "The inventory of runtime/docs current audit-census claims changed. Keep " +
         "the wording recognisable, and review every new or removed copy here.",
     ).toEqual([
-      // The fenced `audit:census` paste, and the "site total is unchanged at N"
-      // sentence beside it. Both were unmatched by the five original patterns, and
-      // an unmatched copy was invisible to this inventory as well — which is how
-      // 8/12 could look like "every".
-      "docs/ai-diagnostics/audit-admin-category-review.md",
+      // The fenced `audit:census` paste. It was unmatched by the five original
+      // patterns, and an unmatched copy was invisible to this inventory as well —
+      // which is how 8/12 could look like "every". The "site total is unchanged
+      // at N" sentence that used to sit beside it became a historical statement
+      // when #2760's new payment writer made it untrue (the paste block above it
+      // carries the current figure), so it is deliberately unmatched now.
       "docs/ai-diagnostics/audit-admin-category-review.md",
       "docs/ai-diagnostics/tool-pack-booking-membership.md",
       "docs/ai-diagnostics/tool-pack-booking-membership.md",
@@ -310,9 +311,11 @@ describe("audit writer census (#2581)", { timeout: 180_000 }, () => {
         uncategorised: uncategorised === null ? null : totals.uncategorised,
       })),
     );
-    // Non-vacuous in both directions: the twelve claims must include at least one
+    // Non-vacuous in both directions: the eleven claims must include at least one
     // of each kind, or a future regex change could quietly retire a whole shape.
-    expect(claims.filter((claim) => claim.uncategorised === null).length).toBe(3);
+    // (Twelve became eleven when #2760's new writer made the "site total is
+    // unchanged at N" sentence historical; the paste block still pins that page.)
+    expect(claims.filter((claim) => claim.uncategorised === null).length).toBe(2);
     expect(claims.filter((claim) => claim.uncategorised !== null).length).toBe(9);
   });
 
