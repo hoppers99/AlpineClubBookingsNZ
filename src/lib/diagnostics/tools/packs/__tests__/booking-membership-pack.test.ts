@@ -3066,11 +3066,11 @@ describe("AID-6B booking/membership pack: the code catalogues (#2376)", () => {
       order.indexOf("hosting_review_pending"),
     );
     // The club's own flat subscription refusal outranks the exception-eligible
-    // subscription rule, because no officer can except it — the only remedy is
-    // payment — and the two sit ADJACENT so an operator reading one sees the
-    // other's sentence beside it. They belong to different lockout modes and are
-    // mutually exclusive in practice, which is exactly why the difference has to be
-    // legible in the catalogue rather than inferred.
+    // subscription rule, because there is no exception request for it, and the two
+    // sit ADJACENT so an operator reading one sees the other's sentence beside it.
+    // They belong to different lockout modes and are mutually exclusive in practice,
+    // which is exactly why the difference has to be legible in the catalogue rather
+    // than inferred.
     expect(order.indexOf("subscription_unpaid_hard_block")).toBe(
       order.indexOf("policy_paid_up_adult_member") - 1,
     );
@@ -3086,6 +3086,72 @@ describe("AID-6B booking/membership pack: the code catalogues (#2376)", () => {
     expect(
       entry(DIAGNOSTICS_MEMBER_ELIGIBILITY_TOOL_ID).evidenceScope,
     ).toContain("INDUCTION DOES NOT GATE A BOOKING IN THIS RELEASE");
+  });
+
+  it("tells ONE story about the club's HARD_BLOCK refusal, in all four places", () => {
+    /**
+     * FOUR TEXTS AND ONE MECHANISM, and the delta review found them disagreeing on
+     * both halves of it.
+     *
+     * (1) THE DOOR. `confirm-draft` is a two-condition gate: it 400s on any status
+     * but `DRAFT`, and then 400s again on any draft whose `finalPriceCents` is not
+     * zero — "Use the payment flow to complete non-zero bookings" — BEFORE its
+     * subscription refusal. A priced draft is completed through
+     * `create-payment-intent`. The entry read only the status, so it raised the
+     * club's flat refusal against a priced draft the member pays for and confirms:
+     * a fabricated blocker, which is the failure this whole entry exists to avoid.
+     *
+     * (2) THE REMEDIES. The route's refusal carries `!isAdmin`, so an administrator
+     * confirming on the member's behalf is a real second remedy. The model-facing
+     * description said so; the operator-facing pack doc and the source catalogue
+     * both said "the remedy is payment", and the doc is the one an officer reads.
+     *
+     * So the assertion is over all four texts together, in both directions: each
+     * must carry the zero-price scope and the administrator bypass, and none may
+     * still claim a single remedy.
+     */
+    const blockState = entry(DIAGNOSTICS_BOOKING_BLOCK_STATE_TOOL_ID);
+    const texts: Record<string, string> = {
+      "the model-facing blocker description":
+        BOOKING_BLOCKER_DESCRIPTIONS.subscription_unpaid_hard_block,
+      "the source catalogue docblock": packSource("booking-evidence.ts"),
+      "the pack doc": normalizedContractSource(
+        "docs",
+        "ai-diagnostics",
+        "tool-pack-booking-membership.md",
+      ),
+    };
+    for (const [where, text] of Object.entries(texts)) {
+      expect(text.toLowerCase(), `${where} omits the zero-price scope`).toContain(
+        "zero-price",
+      );
+      expect(
+        text.toLowerCase(),
+        `${where} omits the administrator bypass`,
+      ).toContain("administrator");
+      expect(text, `${where} still claims a single remedy`).not.toMatch(
+        /only remedy/i,
+      );
+    }
+    // The entry's own scope line carries the limit as well, because a model that
+    // reads the absence of this code on a priced draft as "the owner is financial"
+    // has been misled by the field rather than by a paraphrase.
+    expect(blockState.evidenceScope).toContain("ZERO-PRICE DRAFT");
+
+    // AND THE CODE AGREES WITH ALL THREE. The predicate is the route's own, and the
+    // column is read as a predicate only — money on this booking belongs to
+    // `booking_summary`, and this entry's projection is at its field ceiling anyway.
+    const source = packSource("booking-evidence.ts");
+    expect(source).toContain("finalPriceCents: true");
+    expect(source).toContain("booking.finalPriceCents === 0");
+    for (const projected of Object.keys(
+      blockState.project({ booking_id: RECORD }),
+    )) {
+      expect(
+        projected,
+        "the block-state projection must carry no money field",
+      ).not.toMatch(/price|cents/i);
+    }
   });
 
   it("ships the consent vocabulary with the entry that emits the codes", () => {

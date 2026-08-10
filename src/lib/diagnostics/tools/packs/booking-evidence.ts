@@ -568,8 +568,10 @@ const WAITLIST_BOOKING_STATUSES: readonly string[] = [
  *  11.  THE CLUB'S OWN SUBSCRIPTION REFUSAL, immediately ABOVE the
  *       exception-eligible subscription rule it is otherwise easy to confuse with.
  *       Under `HARD_BLOCK` — the platform and database DEFAULT — an owner who owes
- *       an unpaid season subscription cannot confirm their own draft at all, and no
- *       officer can except it: the only remedy is payment. It therefore outranks
+ *       an unpaid season subscription cannot confirm their own zero-price draft, and
+ *       there is no exception request for it: the remedies are payment or an
+ *       ADMINISTRATOR confirming on the member's behalf, which the route's own
+ *       `!isAdmin` condition lets through. It therefore outranks
  *       `policy_paid_up_adult_member`, which has an exception door and is a
  *       `NON_MEMBER_PRICING`-only rule. The two are mutually exclusive in practice
  *       because each belongs to a different mode, and putting them adjacent is
@@ -789,6 +791,24 @@ const BLOCK_STATE_BOOKING_SELECT = {
   adminReviewStatus: true,
   adultMemberHostingReviewStatus: true,
   /**
+   * THE SECOND HALF OF THE CLUB'S OWN SUBSCRIPTION GATE, and it is a predicate
+   * input rather than a projected figure.
+   *
+   * `POST /api/bookings/[id]/confirm-draft` returns 400 ("Use the payment flow to
+   * complete non-zero bookings") on any priced draft BEFORE it reaches its
+   * subscription refusal, so the refusal stands in front of a ZERO-PRICE draft's
+   * confirm and nothing else. Without this column the entry could not tell the two
+   * drafts apart and raised the club's refusal against a priced one, which the
+   * member completes through the payment flow — a fabricated blocker of exactly the
+   * kind this pack exists to avoid. See
+   * `subscriptionHardBlockGatesThisBooking`.
+   *
+   * It is deliberately NOT projected: money on this booking is a finance question
+   * and `booking_summary` is where the figure belongs. The value never leaves this
+   * module.
+   */
+  finalPriceCents: true,
+  /**
    * THE OWNER'S LIVE AGE TIER, AND NOTHING ELSE OFF `Member`.
    *
    * `resolveMemberSubscriptionSettlement` takes the tier as an input and treats an
@@ -824,8 +844,10 @@ const BLOCK_STATE_BOOKING_SELECT = {
  * suppression; `checkIn`/`checkOut` are the capacity window and the edit policy;
  * `requiresAdminReview`, `adminReviewStatus` and
  * `adultMemberHostingReviewStatus` are the three fields the platform's own review
- * predicates are called with, field by field; and `member.ageTier` is the one
- * input the club's own subscription refusal needs about the owner.
+ * predicates are called with, field by field; `finalPriceCents` and
+ * `member.ageTier` are the two inputs the club's own subscription refusal needs —
+ * which door the booking's confirm actually uses, and what the owner's tier owes.
+ * Neither of those two is projected.
  */
 
 /**
@@ -849,6 +871,41 @@ const BLOCK_STATE_BOOKING_SELECT = {
  * route so the two cannot drift silently.
  */
 const SUBSCRIPTION_HARD_BLOCK_GATED_STATUSES: readonly string[] = ["DRAFT"];
+
+/**
+ * DOES THE GATED DOOR BELONG TO THIS BOOKING AT ALL — status AND price.
+ *
+ * The status list above is necessary and was not sufficient, and the missing half
+ * cost this entry a fabricated refusal. `confirm-draft` is a TWO-CONDITION door:
+ * it 400s on any status but `DRAFT`, and then, at
+ * `confirm-draft/route.ts` ("Use the payment flow to complete non-zero
+ * bookings"), it 400s again on any draft whose `finalPriceCents` is not zero —
+ * BEFORE the subscription refusal below it. A priced draft is completed through
+ * `POST /api/payments/create-payment-intent`, which takes it `DRAFT ->
+ * PAYMENT_PENDING -> PAID`; the booking page renders the confirm button only for a
+ * zero-price draft and the Stripe component for every other one.
+ *
+ * So the club's flat refusal stands in front of exactly one member-facing step: the
+ * FREE confirm. Raising the code on a priced draft told an officer the club had
+ * refused a booking the member then paid for and confirmed — the same class of
+ * false actionable finding as raising it on a `CONFIRMED` booking, and forbidden by
+ * this entry's own contract in the same words.
+ *
+ * WHAT THIS DOES NOT CLAIM. Nothing about whether the club's policy OUGHT to reach
+ * the payment flow. This entry reports the enforcement the platform has, and where
+ * it has none it says nothing rather than inventing a refusal;
+ * `member_eligibility_state` still reports the member-level `subscription_unpaid`
+ * fact with the mode beside it, on any status and any price.
+ */
+function subscriptionHardBlockGatesThisBooking(booking: {
+  status: string;
+  finalPriceCents: number;
+}): boolean {
+  return (
+    SUBSCRIPTION_HARD_BLOCK_GATED_STATUSES.includes(booking.status) &&
+    booking.finalPriceCents === 0
+  );
+}
 
 /**
  * Does the club's own `HARD_BLOCK` refusal stand against this booking's OWNER?
@@ -1206,9 +1263,10 @@ async function readBookingBlockState(
      * THE CLUB'S OWN `HARD_BLOCK` REFUSAL, and the one gate in this list that is
      * skipped for a reason other than suppression.
      *
-     * Three conditions, all of them the enforcement site's own: the booking is on a
-     * status whose member-facing next step is gated (see
-     * `SUBSCRIPTION_HARD_BLOCK_GATED_STATUSES`), the club's strictly-read mode is
+     * Three conditions, all of them the enforcement site's own: the gated door is
+     * this booking's own next step — a zero-price draft, both halves of what
+     * `confirm-draft` checks before its refusal, see
+     * `subscriptionHardBlockGatesThisBooking` — the club's strictly-read mode is
      * `HARD_BLOCK`, and only then is the owner's settlement read at all. The routes
      * short-circuit in exactly that order — `subscriptionLockoutMode ===
      * "HARD_BLOCK" && await requiresPaidSubscriptionForMemberForBooking(...)` — so
@@ -1217,7 +1275,7 @@ async function readBookingBlockState(
      */
     deleted ||
     terminal ||
-    !SUBSCRIPTION_HARD_BLOCK_GATED_STATUSES.includes(booking.status) ||
+    !subscriptionHardBlockGatesThisBooking(booking) ||
     requireResolvedLockoutMode(subscriptionLockoutMode) !== "HARD_BLOCK"
       ? Promise.resolve(false)
       : readOwnerSubscriptionHardBlock(tx, {

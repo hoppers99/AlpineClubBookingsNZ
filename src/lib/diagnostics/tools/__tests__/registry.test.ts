@@ -1363,8 +1363,8 @@ describe("diagnostics tool registry contract (#2374)", () => {
       // The bound, stated as the thing that actually breaks: the fixed cost plus ONE
       // of this entry's widest rows, plus 400 characters of slack so the guard fires
       // BEFORE the cliff rather than on it. Measured at this head, the two tightest
-      // entries are `booking_block_state` (6,347 + 1,101 = 7,448) and
-      // `booking_capacity_by_night` (6,629 + 451 = 7,080), so the slack is real and
+      // entries are `booking_block_state` (6,412 + 1,101 = 7,513) and
+      // `booking_capacity_by_night` (6,666 + 451 = 7,117), so the slack is real and
       // the guard is not vacuous for anything else either.
       expect(
         fixedCost + rowCost,

@@ -461,7 +461,7 @@ one.
 
 Nothing leaks today. Every read uses a named `select` clause rather than a bare
 `findUnique`, and every raw row is built field by field — and the `select` is now
-also as narrow as the projection, which it was not. Nine columns
+also as narrow as what the module actually consumes, which it was not. Nine columns
 (`adminReviewedAt`, `adultMemberHostingReviewedAt`, `waitlistPosition`,
 `waitlistOfferExpiresAt`, `wholeLodgeHold`, `adminCapacityHoldAt`,
 `capacityOverriddenAt`, `parentBookingId` and `draftExpiresAt`) were selected by
@@ -469,7 +469,12 @@ also as narrow as the projection, which it was not. Nine columns
 grant somebody has to argue for; here there is no grant, so it is the same defect
 with none of the friction — nine fields one typo away from a projection whose only
 boundary is the projection. They are gone, and every column that remains has a
-named consumer. But these columns sit one
+named consumer. Two of those consumers are PREDICATES and appear in no projected
+field: `Booking."finalPriceCents"`, which decides whether the club's
+subscription refusal has a door in front of this booking at all (see "the blocker
+the evaluator cannot produce" — money itself is `booking_summary`'s job), and
+`Member."ageTier"`, which is what the owner's tier owes. A predicate-only column is
+the narrowest form a needed input can take. But these columns sit one
 `select` away and must never be added: `Booking."notes"`, `"adminReviewNotes"`,
 `"memberReviewJustification"`, `"deletedReason"`, `"adultMemberHostingReview"` (a
 frozen policy JSON snapshot), `Member."comments"`, `"dateOfBirth"`,
@@ -1037,7 +1042,7 @@ member is double-booked sends them to the wrong screen.
 | 8 | `hosting_review_pending` | **The hosting review**, which deliberately does **not** block arrival: it is a club membership rule an administrator may accept, and it clears itself the moment an adult member covers the nights. |
 | 9 | `policy_minimum_stay` | **The soft policies that are not about a subscription**, in the order the platform's own `sortPolicyExceptionViolations` already puts them. Each is exception-eligible, which is what makes it softer than a hard stop. |
 | 10 | `policy_adult_member_hosting` | As above. |
-| 11 | `subscription_unpaid_hard_block` | **The club's own refusal**, and the only code here the soft-policy evaluator structurally cannot produce. Under `HARD_BLOCK` an owner who owes an unpaid season subscription cannot confirm their own draft at all, and no officer can except it — the remedy is payment. It therefore outranks the exception-eligible rule below, and sits adjacent to it so the difference is legible. See "the blocker the evaluator cannot produce". |
+| 11 | `subscription_unpaid_hard_block` | **The club's own refusal**, and the only code here the soft-policy evaluator structurally cannot produce. Under `HARD_BLOCK` an owner who owes an unpaid season subscription cannot confirm their own **zero-price** draft, and there is no exception request for it — the two remedies are payment and **an administrator confirming on the member's behalf**, which the route deliberately allows. It therefore outranks the exception-eligible rule below, and sits adjacent to it so the difference is legible. See "the blocker the evaluator cannot produce". |
 | 12 | `policy_paid_up_adult_member` | As above (rows 9-10). An adult member whose season subscription is unsettled does not count. A `NON_MEMBER_PRICING`-only rule, so it and row 11 are mutually exclusive in practice. |
 | 13 | `exception_request_open` | **The officer's own queue.** The ball is with an officer and nothing has been granted. |
 | 14 | `exception_hold_expiring` | An open request is holding real beds with a deadline; if nobody decides, the reaper releases them and the member loses their place. Urgent — but only after the reason they asked. |
@@ -1093,17 +1098,40 @@ two swallowing reads; the Xero-off bypass it also carries is covered here by the
 mode itself, because the strict mode reader already answers `NO_BLOCK` when the
 Xero module is effectively off.
 
-**It is scoped to a `DRAFT`, and that scope is part of the fix.** The refusal sits
-on the draft's confirm and on creation; creation has no persisted booking to
-diagnose, and on an already-confirmed booking the owner's unpaid subscription
-blocks nothing about that booking, so raising it there would be a fabricated
-blocker of the kind this pack exists to avoid. The entry's scope line therefore
-says in as many words that the code's absence on a confirmed booking is not a
-statement about the owner's subscription — `member_eligibility_state` answers that
-on any status. What a **future** change to the booking would be refused is also
-outside it: under `HARD_BLOCK`, adding a member guest who owes an unpaid
-subscription is refused at the add and modify paths, which is a fact about that
-edit rather than about this booking, and the entry's description says so.
+**It is scoped to a ZERO-PRICE `DRAFT`, and that scope is the fix rather than a
+detail of it.** `confirm-draft` is a two-condition door and the code originally read
+only the first. It 400s on any status but `DRAFT`; then, before its subscription
+refusal, it 400s again on any draft whose `finalPriceCents` is not zero — *"Use the
+payment flow to complete non-zero bookings"*. A priced draft is completed through
+`POST /api/payments/create-payment-intent`, which takes it `DRAFT ->
+PAYMENT_PENDING -> PAID`, and the booking page renders the confirm button only for a
+free draft and the Stripe component for every other one. So the club's flat refusal
+stands in front of exactly one member-facing step: the free confirm.
+
+Raising the code on a **priced** draft therefore told an officer the club had
+refused a booking the member could pay for and confirm — the same fabricated-blocker
+failure as raising it on a `CONFIRMED` booking, and forbidden by this entry's own
+contract in the same words. `booking_block_state` now reads `finalPriceCents` as a
+predicate (it is not projected — money belongs to `booking_summary`) and raises the
+code only where the gate is.
+
+**Two remedies, not one.** The route's refusal carries `!isAdmin`, and an
+administrator may act on any member's booking, so an administrator confirming on the
+member's behalf is a real second remedy beside settling the subscription. There is
+no *exception request* for this code — that is what makes it harder than row 12 —
+but "no exception door" is not "no way through", and the blocker's own description
+and the row above both name the bypass so an officer is never told a booking is
+stuck when their own account can complete it.
+
+Creation is outside the scope for a different reason: it has no persisted booking to
+diagnose. On an already-confirmed booking the owner's unpaid subscription blocks
+nothing about that booking. The entry's scope line therefore says in as many words
+that the code's absence — on a priced draft or on a confirmed booking — is not a
+statement about the owner's subscription; `member_eligibility_state` answers that on
+any status and any price. What a **future** change to the booking would be refused is
+also outside it: under `HARD_BLOCK`, adding a member guest who owes an unpaid
+subscription is refused at the add and modify paths, which is a fact about that edit
+rather than about this booking, and the entry's description says so.
 
 #### One code, not two, on a deleted booking
 

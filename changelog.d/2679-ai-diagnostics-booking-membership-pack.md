@@ -61,9 +61,12 @@
   reuses had nothing to report, so the tool answered "nothing is blocking" about a
   booking the club would refuse. It now names the refusal, in the club's own terms,
   using the platform's single definition of an unsettled subscription so the booking
-  answer and the member answer cannot disagree. It is reported only on a draft,
-  because a draft's confirm is the door the policy gates; for the member-level fact
-  on any other booking, the member eligibility tool answers on any status.
+  answer and the member answer cannot disagree. It is reported only on a draft that
+  costs nothing to confirm, because that free confirm is the one member-facing door
+  the policy actually gates — a draft with a price is completed through the payment
+  flow — and it names both ways through: settling the subscription, or an
+  administrator confirming on the member's behalf. For the member-level fact on any
+  other booking or any price, the member eligibility tool answers on any status.
 
   Membership seasons are resolved from stored settings rather than from whatever the
   process happens to have cached. The paid-up-adult rule and the hosting

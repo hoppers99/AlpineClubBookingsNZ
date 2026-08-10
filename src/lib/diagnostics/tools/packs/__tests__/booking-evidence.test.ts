@@ -288,6 +288,9 @@ const MODELS: Record<ModelName, ModelSpec> = {
       "capacityOverriddenAt",
       "parentBookingId",
       "draftExpiresAt",
+      // The club's own subscription refusal reads this as a PREDICATE and projects
+      // nothing from it: `confirm-draft` gates only a zero-price draft.
+      "finalPriceCents",
       // Present on the model and NEVER selectable without this test noticing:
       // the pack doc names these as the columns that sit one `select` away.
       "notes",
@@ -774,6 +777,19 @@ const NIGHT_TWO = "2026-07-11";
  */
 const BOOKING_SEASON_YEAR = 2026;
 
+/**
+ * What an ordinary booking COSTS, in integer cents, and it is the fixture default.
+ *
+ * `booking-create.ts` prices every draft, so a priced draft is the normal record
+ * and the free one is the exception — which is the shape the club's `HARD_BLOCK`
+ * refusal turns on, because `confirm-draft` sends a priced draft to the payment
+ * flow before it reaches its subscription gate.
+ */
+const PRICED_BOOKING_CENTS = 42_000;
+
+/** A draft that costs nothing: the one confirm door the club's refusal gates. */
+const FREE_BOOKING_CENTS = 0;
+
 function day(dateOnly: string): Date {
   return new Date(`${dateOnly}T00:00:00.000Z`);
 }
@@ -885,6 +901,18 @@ interface BookingScenario {
    * unpaid case.
    */
   ownerSubscriptionStatus?: string;
+  /**
+   * `Booking."finalPriceCents"`, and the DEFAULT IS A PRICED BOOKING on purpose.
+   *
+   * It is the second half of what `confirm-draft` checks before its subscription
+   * refusal: that route 400s on any draft whose price is not zero ("Use the payment
+   * flow to complete non-zero bookings"), so the club's `HARD_BLOCK` refusal stands
+   * in front of a FREE confirm and nothing else. A suite that defaulted this to 0
+   * could not see the difference — every draft would be the gated one — which is
+   * exactly how the entry came to report the club's refusal against a $420 draft the
+   * member pays for through Stripe and confirms.
+   */
+  finalPriceCents?: number;
 }
 
 interface MemberScenario {
@@ -1058,6 +1086,7 @@ function seedBooking(scenario: BookingScenario = {}): void {
       capacityOverriddenAt: scenario.capacityOverriddenAt ?? null,
       parentBookingId: null,
       draftExpiresAt: null,
+      finalPriceCents: scenario.finalPriceCents ?? PRICED_BOOKING_CENTS,
       notes: "PRIVATE booking notes about Jane Tramper",
       adminReviewNotes: "PRIVATE officer note",
       deletedReason: "PRIVATE deletion reason",
@@ -1677,6 +1706,7 @@ const BLOCKER_FIXTURES: [string, BookingScenario, string[]][] = [
     "subscription_unpaid_hard_block",
     {
       status: "DRAFT",
+      finalPriceCents: FREE_BOOKING_CENTS,
       lockoutMode: "HARD_BLOCK",
       ownerSubscriptionStatus: "UNPAID",
     },
@@ -1903,16 +1933,20 @@ describe("booking block state: every blocker code, ranked (#2376)", () => {
  * booking was clear; the member's confirm then returned "Your membership
  * subscription for the 2026/2027 season is not paid".
  *
- * WHAT IS ASSERTED. Not just that the code appears, but the four boundaries that
+ * WHAT IS ASSERTED. Not just that the code appears, but the five boundaries that
  * keep it from becoming a fabricated blocker of its own: it is scoped to the status
- * whose confirm is gated, it is scoped to the mode that refuses, it honours the
- * CANONICAL settlement rule rather than a local re-reading of the rows, and it
- * fails closed on an unreadable input instead of guessing.
+ * whose confirm is gated, it is scoped to the ZERO PRICE that makes that confirm the
+ * door the member actually uses (a priced draft goes to the payment flow, and
+ * `confirm-draft` 400s on it before its subscription refusal), it is scoped to the
+ * mode that refuses, it honours the CANONICAL settlement rule rather than a local
+ * re-reading of the rows, and it fails closed on an unreadable input instead of
+ * guessing.
  */
 describe("booking block state: the club's HARD_BLOCK subscription refusal (#2376)", () => {
-  it("raises it on a DRAFT whose owner owes an unpaid season subscription", async () => {
+  it("raises it on a FREE DRAFT whose owner owes an unpaid season subscription", async () => {
     seedBooking({
       status: "DRAFT",
+      finalPriceCents: FREE_BOOKING_CENTS,
       lockoutMode: "HARD_BLOCK",
       ownerSubscriptionStatus: "UNPAID",
     });
@@ -1926,7 +1960,11 @@ describe("booking block state: the club's HARD_BLOCK subscription refusal (#2376
   });
 
   it("does not raise it for an owner who has PAID", async () => {
-    seedBooking({ status: "DRAFT", lockoutMode: "HARD_BLOCK" });
+    seedBooking({
+      status: "DRAFT",
+      finalPriceCents: FREE_BOOKING_CENTS,
+      lockoutMode: "HARD_BLOCK",
+    });
     const row = await blockStateRow();
     expect(blockers(row)).toEqual([]);
     expect(row.blocker_count).toBe(0);
@@ -1941,11 +1979,56 @@ describe("booking block state: the club's HARD_BLOCK subscription refusal (#2376
       // blocker. The reads are asserted absent as well, because the enforcement
       // sites short-circuit on the mode in exactly this order and a diagnostic that
       // read the rows anyway would be paying for an answer it must discard.
-      seedBooking({ status: "DRAFT", lockoutMode, ownerSubscriptionStatus: "UNPAID" });
+      seedBooking({
+        status: "DRAFT",
+        finalPriceCents: FREE_BOOKING_CENTS,
+        lockoutMode,
+        ownerSubscriptionStatus: "UNPAID",
+      });
       const row = await blockStateRow();
       expect(blockers(row)).toEqual([]);
       expect(resolveMembershipTypePolicyForMemberMock).not.toHaveBeenCalled();
       expect(getAgeTierSettingsMock).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each([
+    ["a fully priced draft", PRICED_BOOKING_CENTS],
+    // ONE CENT, because the boundary is zero rather than "cheap": the route's own
+    // condition is `finalPriceCents !== 0`.
+    ["a draft priced at one cent", 1],
+  ])(
+    "does not raise it on %s, whose confirm the route never reaches",
+    async (_label, finalPriceCents) => {
+    /**
+     * THE OTHER HALF OF THE DOOR, and the entry read only the first half.
+     *
+     * `confirm-draft` 400s on any draft whose `finalPriceCents` is not zero — "Use
+     * the payment flow to complete non-zero bookings" — BEFORE its subscription
+     * refusal. A priced draft is completed through
+     * `POST /api/payments/create-payment-intent` (`DRAFT -> PAYMENT_PENDING ->
+     * PAID`), and the booking page renders the confirm button only for a free draft.
+     *
+     * So the club's flat refusal never stood in front of a priced draft, and raising
+     * it there told an officer the club had refused a booking the member pays for and
+     * confirms — the fabricated blocker this entry's own contract forbids in as many
+     * words. Everything else here is the shape that DOES raise it: DRAFT, HARD_BLOCK,
+     * owner owing.
+     */
+    seedBooking({
+      status: "DRAFT",
+      finalPriceCents,
+      lockoutMode: "HARD_BLOCK",
+      ownerSubscriptionStatus: "UNPAID",
+    });
+    const row = await blockStateRow();
+    expect(blockers(row)).toEqual([]);
+    expect(row.blocker_count).toBe(0);
+    // And it asks nothing about the owner, on the same short-circuit reasoning as
+    // the mode: a diagnostic that read the rows anyway would be paying for an answer
+    // it must discard.
+    expect(resolveMembershipTypePolicyForMemberMock).not.toHaveBeenCalled();
+    expect(getAgeTierSettingsMock).not.toHaveBeenCalled();
     },
   );
 
@@ -1959,7 +2042,14 @@ describe("booking block state: the club's HARD_BLOCK subscription refusal (#2376
       // the owner's unpaid subscription blocks nothing about THAT booking, so
       // raising it would be exactly the false actionable finding this pack exists
       // to avoid. `member_eligibility_state` is where the member-level fact lives.
-      seedBooking({ status, lockoutMode: "HARD_BLOCK", ownerSubscriptionStatus: "UNPAID" });
+      // Zero-price, so the STATUS is the only reason the code is absent — a
+      // priced fixture would pass this test for the wrong reason.
+      seedBooking({
+        status,
+        finalPriceCents: FREE_BOOKING_CENTS,
+        lockoutMode: "HARD_BLOCK",
+        ownerSubscriptionStatus: "UNPAID",
+      });
       const row = await blockStateRow();
       expect(blockers(row)).not.toContain("subscription_unpaid_hard_block");
       expect(resolveMembershipTypePolicyForMemberMock).not.toHaveBeenCalled();
@@ -1987,7 +2077,12 @@ describe("booking block state: the club's HARD_BLOCK subscription refusal (#2376
   ] satisfies [string, BookingScenario][])(
     "honours the canonical settlement rule: %s owes nothing",
     async (_label, scenario) => {
-      seedBooking({ status: "DRAFT", lockoutMode: "HARD_BLOCK", ...scenario });
+      seedBooking({
+        status: "DRAFT",
+        finalPriceCents: FREE_BOOKING_CENTS,
+        lockoutMode: "HARD_BLOCK",
+        ...scenario,
+      });
       const row = await blockStateRow();
       expect(blockers(row)).toEqual([]);
     },
@@ -1998,7 +2093,11 @@ describe("booking block state: the club's HARD_BLOCK subscription refusal (#2376
     // does not resolve must never silently price at member rates. For evidence the
     // same direction is right — a booking whose owner cannot be read is not a
     // booking anyone should be told is clear.
-    seedBooking({ status: "DRAFT", lockoutMode: "HARD_BLOCK" });
+    seedBooking({
+      status: "DRAFT",
+      finalPriceCents: FREE_BOOKING_CENTS,
+      lockoutMode: "HARD_BLOCK",
+    });
     // The whole owner, gone: no `Member` row and therefore no season subscription
     // either, which is the only shape a cascading delete could leave behind. The
     // tier is then unresolvable, and the canonical rule requires a subscription of
@@ -2017,6 +2116,7 @@ describe("booking block state: the club's HARD_BLOCK subscription refusal (#2376
     // from a club rule nobody observed. `evidence_unavailable` is the honest answer.
     seedBooking({
       status: "DRAFT",
+      finalPriceCents: FREE_BOOKING_CENTS,
       lockoutMode: "HARD_BLOCK",
       ownerSubscriptionStatus: "UNPAID",
     });
@@ -2037,6 +2137,7 @@ describe("booking block state: the club's HARD_BLOCK subscription refusal (#2376
     // must not settle the owner.
     seedBooking({
       status: "DRAFT",
+      finalPriceCents: FREE_BOOKING_CENTS,
       lockoutMode: "HARD_BLOCK",
       ownerSubscriptionStatus: "UNPAID",
     });
@@ -2063,6 +2164,7 @@ describe("booking block state: the club's HARD_BLOCK subscription refusal (#2376
     async (_label, scenario) => {
       seedBooking({
         ...scenario,
+        finalPriceCents: FREE_BOOKING_CENTS,
         lockoutMode: "HARD_BLOCK",
         ownerSubscriptionStatus: "UNPAID",
       });
@@ -2079,6 +2181,7 @@ describe("booking block state: the club's HARD_BLOCK subscription refusal (#2376
     // the newest read on the entry is the one the database cannot cancel.
     seedBooking({
       status: "DRAFT",
+      finalPriceCents: FREE_BOOKING_CENTS,
       lockoutMode: "HARD_BLOCK",
       ownerSubscriptionStatus: "UNPAID",
     });
