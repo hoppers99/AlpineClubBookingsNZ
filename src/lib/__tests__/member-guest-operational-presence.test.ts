@@ -309,8 +309,15 @@ describe("kiosk arrive/depart/roster-confirm enforcement (D-12)", () => {
       },
     });
 
+    // #2737: the lookup answers with an OUTCOME now, so "let through" has to be
+    // asserted as `ok` — a fixture whose night rows did not cover the date would
+    // otherwise come back `not-a-booked-night` and a truthiness check would read
+    // that as a pass.
     const found = await findLodgeGuestForDate("guest-1", dateOnly("2026-07-10"));
-    expect(found?.id).toBe("guest-1");
+    expect(found).toEqual({
+      outcome: "ok",
+      guest: expect.objectContaining({ id: "guest-1" }),
+    });
     // The predicate that let them through admits NULL explicitly.
     const args = mockPrisma.bookingGuest.findFirst.mock.calls[0][0] as {
       where: { OR: Array<{ consentStatus: string | null }> };
