@@ -79,12 +79,14 @@ before a pair, pair set, or aggregate can complete.
   scan, manifest, and completion files so the immutable raw run can be retried.
   A complete but failed, unverified, or owner-disposition-needed chain cannot
   enter timing, and no check outside the exact Phase 2-owned set may be deferred.
-- `MC-03D` (CMS deletion invalidation) currently has no product endpoint and no
-  direct owner disposition. The current-image example must therefore remain
-  `OWNER_DISPOSITION_NEEDED`; absence of an endpoint is never fabricated as a
-  pass or N/A. Final timing is intentionally blocked until that real
-  disposition or implementation exists and every other required producer
-  passes.
+- `MC-03D` (CMS deletion invalidation) is a measured check. It was blocked as
+  `OWNER_DISPOSITION_NEEDED` for as long as the product had no supported way to
+  delete a CMS page, because an absent endpoint is never fabricated as a pass or
+  an N/A. PR #2637 shipped `DELETE /api/admin/page-content`, so the block was
+  resolved by implementation rather than by disposition: `source-census` binds
+  the endpoint and its canonical invalidation structurally, and `cms-lifecycle`
+  exercises it against the running image. Final timing still cannot start until
+  it and every other required producer passes.
 
 ## One-time canonical database preparation
 
@@ -152,7 +154,7 @@ classification). `verify-binding.mjs` compares the manifest to the image,
 archives, and completion chain before any samples. The immutable correctness
 inputs also bind the same side, image ID, OCI revision, and source/database
 archive checksums. `correctness-report.example.json` deliberately illustrates
-the current blocked state; it is not permission to substitute a scalar pass.
+a not-yet-derived state; it is not permission to substitute a scalar pass.
 `verify-http-proof.mjs` checks exact
 status/body/ETag/classification immediately before and after every CPU block.
 
@@ -172,7 +174,10 @@ node measurement/phase2/bin/finalize-correctness-evidence.mjs \
 Each command refuses an existing derived seal, verifies the complete live and
 archived producer-source set at both boundaries, scans the exact evidence tree,
 and writes the required `COMPLETED.json`. A completed result that is failed,
-unverified or `OWNER_DISPOSITION_NEEDED` remains ineligible for timing.
+unverified or `OWNER_DISPOSITION_NEEDED` remains ineligible for timing. No
+check carries that last outcome any more; it stays in the vocabulary so a future
+genuinely blocked check can be reported honestly instead of being forced into a
+PASS or FAIL that does not fit.
 
 ## Exact run order
 
@@ -193,7 +198,7 @@ export QUIET_HOST_ATTESTED=YES
 
 bash measurement/phase2/bin/orchestrate-pairs.sh \
   --manifest C:/Users/jorda/AppData/Local/Temp/issue-2352/correctness-manifest.json \
-  --output-id post2591-final
+  --output-id post2637-final
 ```
 
 The wrapper first copies `.env.measure` byte-for-byte to a restrictive private
@@ -288,8 +293,8 @@ subset:
 
 ```bash
 node measurement/phase2/bin/aggregate-pairs.mjs \
-  --orchestration measurement/phase2/results/orchestration-post2591-final \
-  --label "#2352 post-#2591 four-pair evidence" \
+  --orchestration measurement/phase2/results/orchestration-post2637-final \
+  --label "#2352 post-#2637 four-pair evidence" \
   --out-prefix C:/Users/jorda/AppData/Local/Temp/issue-2352/phase2-aggregate
 ```
 

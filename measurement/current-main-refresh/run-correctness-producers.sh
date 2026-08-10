@@ -43,7 +43,7 @@ done
 [[ "$RUN_ID" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$ ]] || { echo "invalid run id" >&2; exit 1; }
 [[ "$SIDE" == current || "$SIDE" == baseline ]] || { echo "invalid side" >&2; exit 1; }
 [[ "$PRODUCER_SOURCE_COMMIT" =~ ^[a-f0-9]{40,64}$ ]] || { echo "invalid producer source commit" >&2; exit 1; }
-if [[ "$SIDE" == current ]]; then EXPECTED_APP_SOURCE_COMMIT="bfe53aeab6dd54ed5bfcf3636a1643451f277bef"; else EXPECTED_APP_SOURCE_COMMIT="f442e389e0e5d4c2e18fa330b2fb155550b12871"; fi
+if [[ "$SIDE" == current ]]; then EXPECTED_APP_SOURCE_COMMIT="555113fb3c2d23d4d6e3622523baf66464263f28"; else EXPECTED_APP_SOURCE_COMMIT="f442e389e0e5d4c2e18fa330b2fb155550b12871"; fi
 [[ "$APP_SOURCE_COMMIT" == "$EXPECTED_APP_SOURCE_COMMIT" ]] || { echo "$SIDE application source commit is not the approved target" >&2; exit 1; }
 [[ "$PRODUCER_SOURCE_COMMIT" != "$APP_SOURCE_COMMIT" && "$PRODUCER_SOURCE_SHA" != "$APP_SOURCE_SHA" ]] || { echo "producer and application source authorities must be distinct" >&2; exit 1; }
 GIT_TOP="$(cd "$(git rev-parse --show-toplevel)" && pwd -P)"

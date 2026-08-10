@@ -10,7 +10,11 @@ phase-2 finalizer enumerates and hashes all evidence, scans it for secrets,
 combines these observations with timing evidence, and creates the final seal.
 
 The intended current-side **application** source and OCI revision is
-`bfe53aeab6dd54ed5bfcf3636a1643451f277bef`, the merge commit for PR #2591.
+`555113fb3c2d23d4d6e3622523baf66464263f28`, the merge commit for PR #2757 and
+the `main` revision frozen for the completed run under #2663. It replaced the
+earlier `bfe53aeab` (PR #2591) target, which predated the supported
+`DELETE /api/admin/page-content` writer that MC-03D now measures. The target is
+frozen for the whole run: it does not follow `main` as `main` advances.
 That is a target identity, not a claim that a measurement has run. The runner
 fails closed unless the supplied Git archive revision, source commit, OCI
 revision, inspected image ID, running app image, and isolated stack agree.
@@ -96,13 +100,13 @@ bash measurement/stack/measure-stack.sh with-private-env -- \
   --side current \
   --app-source-archive /absolute/inputs/current-app-source.tar \
   --app-source-sha256 <lowercase-sha256> \
-  --app-source-commit bfe53aeab6dd54ed5bfcf3636a1643451f277bef \
+  --app-source-commit 555113fb3c2d23d4d6e3622523baf66464263f28 \
   --producer-source-archive /absolute/inputs/producer-integration-source.tar \
   --producer-source-sha256 <lowercase-sha256> \
   --producer-source-commit <reviewed-producer-integration-commit> \
   --image-reference <repository>@sha256:<digest> \
   --image-id sha256:<docker-image-id> \
-  --oci-revision bfe53aeab6dd54ed5bfcf3636a1643451f277bef \
+  --oci-revision 555113fb3c2d23d4d6e3622523baf66464263f28 \
   --database-archive /absolute/inputs/canonical.dump \
   --database-sha256 <lowercase-sha256> \
   --database-fingerprint <lowercase-logical-fingerprint> \
@@ -137,8 +141,10 @@ node measurement/phase2/bin/finalize-correctness-evidence.mjs \
 ```
 
 Repeat with a different create-only root for the baseline and finalize that
-root too. `OWNER_DISPOSITION_NEEDED`, including the unresolved `MC-03D`, may be
-sealed honestly but cannot enter timing as a pass.
+root too. `OWNER_DISPOSITION_NEEDED` may be sealed honestly but cannot enter
+timing as a pass. No check carries that outcome any more: `MC-03D` was the last
+one, and it became measurable when PR #2637 shipped the supported
+`DELETE /api/admin/page-content` writer.
 
 Use a different create-only run root for the baseline. The baseline side runs
 only the route-manifest and CMS route-response bindings required on both sides;
@@ -150,12 +156,13 @@ The current side runs these producer IDs in a fixed single-flight order:
 
 - `route-manifests`: source/image route ownership (`BND-01`)
 - `cms-lifecycle`: anonymous/authenticated cache reuse, edit, unpublish,
-  republish, and typed route-response evidence (`MC-02`, `MC-03A-C`, `BND-02`)
+  republish, supported deletion, and typed route-response evidence (`MC-02`,
+  `MC-03A-D`, `BND-02`)
 - `cache-fault`: actual 64 MiB cache tmpfs saturation and recovery (`MC-07`,
   `MC-08A`)
 - `source-census`: application-archive-derived 39-writer canonical-invalidation
   contract, focused test-source evidence, representative-runtime policy, and the
-  missing CMS deletion applicability finding (`MC-03D`, `MC-04D`)
+  structural half of the CMS deletion writer (`MC-03D`, `MC-04D`)
 - `browser-suite`: exact public-route browser, form, accessibility, metadata,
   canonical, identity-marker, and access coverage (`MC-01A-B`, `MC-06`,
   `MC-11A-E`)
@@ -220,9 +227,6 @@ The finalizer must seal those files before it writes `COMPLETED.json`.
 
 The suite reports what is observed and does not manufacture a passing result:
 
-- `MC-03D` remains `OWNER_DISPOSITION_NEEDED`: current source has no CMS
-  page-content deletion endpoint, so deletion applicability needs a direct owner
-  disposition.
 - `MC-08B` and `BND-09` belong to the independently repeated phase-2 timing and
   concurrency producer and are not emitted here.
 

@@ -121,7 +121,7 @@ try {
   if (runnerSource.indexOf("validate-orchestrator-inputs.mjs") < 0 || runnerSource.indexOf("validate-orchestrator-inputs.mjs") > runnerSource.indexOf("resolve-measure-container.mjs")) {
     throw new Error("orchestrator safety arguments are not rejected before the first Docker-backed identity resolution");
   }
-  if (!runnerSource.includes("bfe53aeab6dd54ed5bfcf3636a1643451f277bef") || !runnerSource.includes("f442e389e0e5d4c2e18fa330b2fb155550b12871") || !runnerSource.includes("producer and application source authorities must be distinct")) {
+  if (!runnerSource.includes("555113fb3c2d23d4d6e3622523baf66464263f28") || !runnerSource.includes("f442e389e0e5d4c2e18fa330b2fb155550b12871") || !runnerSource.includes("producer and application source authorities must be distinct")) {
     throw new Error("orchestrator does not pin distinct approved application and producer source authorities");
   }
   if (!/runtime-provenance\.mjs"? --root/.test(runnerSource) || runnerSource.search(/runtime-provenance\.mjs"? --root/) > runnerSource.indexOf("docker exec")) {

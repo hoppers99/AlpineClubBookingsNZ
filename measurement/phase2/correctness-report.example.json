@@ -1,8 +1,8 @@
 {
   "schema_version": 2,
-  "run_id": "illustrative-current-blocked",
+  "run_id": "illustrative-current-unverified",
   "side": "current",
-  "result": "owner_disposition_needed",
+  "result": "unverified",
   "bindings": {
     "immutable_inputs_sha256": "replace-with-64-lowercase-hex",
     "check_census_sha256": "replace-with-64-lowercase-hex",
@@ -30,7 +30,7 @@
     { "id": "MC-03A", "requirement_class": "mandatory_pass", "applicability": "required", "outcome": "UNVERIFIED", "producer_ids": [], "evidence": [], "owner_disposition": null },
     { "id": "MC-03B", "requirement_class": "mandatory_pass", "applicability": "required", "outcome": "UNVERIFIED", "producer_ids": [], "evidence": [], "owner_disposition": null },
     { "id": "MC-03C", "requirement_class": "mandatory_pass", "applicability": "required", "outcome": "UNVERIFIED", "producer_ids": [], "evidence": [], "owner_disposition": null },
-    { "id": "MC-03D", "requirement_class": "owner_disposition", "applicability": "owner_disposition_needed", "outcome": "OWNER_DISPOSITION_NEEDED", "producer_ids": [], "evidence": [], "owner_disposition": null },
+    { "id": "MC-03D", "requirement_class": "mandatory_pass", "applicability": "required", "outcome": "UNVERIFIED", "producer_ids": [], "evidence": [], "owner_disposition": null },
     { "id": "MC-04A", "requirement_class": "mandatory_pass", "applicability": "required", "outcome": "UNVERIFIED", "producer_ids": [], "evidence": [], "owner_disposition": null },
     { "id": "MC-04B", "requirement_class": "mandatory_pass", "applicability": "required", "outcome": "UNVERIFIED", "producer_ids": [], "evidence": [], "owner_disposition": null },
     { "id": "MC-04C", "requirement_class": "mandatory_pass", "applicability": "required", "outcome": "UNVERIFIED", "producer_ids": [], "evidence": [], "owner_disposition": null },
