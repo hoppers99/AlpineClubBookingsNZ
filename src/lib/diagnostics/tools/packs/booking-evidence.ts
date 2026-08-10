@@ -57,14 +57,28 @@
  *    adult-member-host predicate, and `participantIsNonMemberGuest` is its exact
  *    complement so a lapsed member cannot fall between the two.
  *
- * `peekSubscriptionLockoutMode` AND NOT `resolveSubscriptionLockoutMode`, and the
- * difference is load-bearing rather than stylistic: the latter reseeds the
- * global financial-year decision cache and can reach Xero. Diagnostics may fill
- * an ordinary read-through memoization cache (`getAgeTierSettings` does), but it
+ * `peekSubscriptionLockoutModeStrict` AND NOT `resolveSubscriptionLockoutMode`, and
+ * the difference is load-bearing rather than stylistic: the resolving variant
+ * reseeds the global financial-year decision cache and can reach Xero. Diagnostics
  * must not mutate durable/domain or provider state and must never contact a live
  * provider. The season resolver below therefore uses only persisted override and
  * connected-tenant presence evidence, and refuses when Xero's unstored month is
  * required. A contract test pins that the resolving variant is never named here.
+ *
+ * THE `Strict` SUFFIXES ARE THE OTHER HALF OF THAT, and they are about EVIDENCE
+ * AUTHORITY rather than about mutation. `getAgeTierSettings` swallows a database
+ * failure into `AGE_TIER_DEFAULTS`; `peekSubscriptionLockoutMode` reads through two
+ * functions that each turn one into a safe-looking default, composing to `NO_BLOCK`.
+ * Both are correct for a product path -- a booking screen with the documented
+ * defaults beats a booking screen with an error -- and both are wrong here: on a
+ * cold cache, one transient failure would hand this pack the club's tier rule and
+ * lockout policy as though they had been observed, and those two are the qualifiers
+ * on every subscription finding it makes. The strict variants distinguish "the row
+ * is genuinely absent, so the documented default is what governs this club" from
+ * "the read failed", and the second becomes `evidence_unavailable` rather than an
+ * authoritative-looking answer. Neither strict reader reads or writes the shared
+ * cache, so a diagnostic cannot report a five-minute-old value as freshly observed
+ * and cannot change what any other request in the process computes.
  *
  * A `server_owned` entry is NOT a way around the substrate's gates: registry
  * lookup, loop budget, fresh AND-ed authorization, `.strict()` argument parsing
@@ -125,7 +139,7 @@ import type { Prisma } from "@prisma/client";
 
 import { evaluatePersistedBookingAdultMemberHostingReadOnly } from "@/lib/adult-member-hosting-review";
 import { getLifecycleStatusConfig } from "@/lib/admin-member-badges";
-import { getAgeTierSettings } from "@/lib/age-tier";
+import { getAgeTierSettingsStrict } from "@/lib/age-tier";
 import { getBookingEditPolicy } from "@/lib/booking-edit-policy";
 import { evaluatePersistedBookingNonHostingPolicyViolations } from "@/lib/booking-exception-request-service";
 import { findBookingMemberNightConflicts } from "@/lib/booking-member-night-conflicts";
@@ -141,7 +155,8 @@ import {
 import { getInductionStatusForMember } from "@/lib/induction";
 import { getSeasonYearForYearEndMonth } from "@/lib/financial-year";
 import { getStoredFinancialYearResolution } from "@/lib/financial-year-server";
-import { peekSubscriptionLockoutMode } from "@/lib/member-subscription-eligibility";
+import type { SubscriptionLockoutMode } from "@/lib/membership-lockout-settings";
+import { peekSubscriptionLockoutModeStrict } from "@/lib/member-subscription-eligibility";
 import { resolveMembershipTypePolicyForMember } from "@/lib/membership-type-policy";
 import { participantQualifiesAsHost } from "@/lib/policies/adult-member-hosting";
 import { prisma } from "@/lib/prisma";
@@ -271,6 +286,24 @@ function assertPopulationWithinCeiling(
  * and which the owner's result contract names explicitly. Setting the override in
  * membership settings is the operator's remedy, so the message says so.
  */
+/**
+ * The mode, or a refusal — the fence the season has, for the same reason.
+ *
+ * A future edit that un-suppresses a subscription-sensitive rule without reading
+ * the mode strictly first refuses here, rather than silently letting the rule peek
+ * it through the swallowing readers.
+ */
+function requireResolvedLockoutMode(
+  mode: SubscriptionLockoutMode | null,
+): SubscriptionLockoutMode {
+  if (mode === null) {
+    throw new Error(
+      "AI Diagnostics AID-6B: a subscription-sensitive rule was reached before the club's lockout mode was read strictly; refusing rather than letting it fall back to NO_BLOCK on a failed read",
+    );
+  }
+  return mode;
+}
+
 async function resolveStoredSeasonYear(date: Date): Promise<number> {
   const financialYear = await getStoredFinancialYearResolution();
   if (!financialYear.ok) {
@@ -671,6 +704,32 @@ async function readBookingBlockState(
   const seasonYear =
     deleted || terminal ? null : await resolveStoredSeasonYear(booking.checkIn);
 
+  /**
+   * The club's subscription-lockout mode, read ONCE and STRICTLY, then handed to
+   * both rules below.
+   *
+   * TWO REASONS, and the second is the one a reviewer should check.
+   *
+   * AUTHORITY. Left to themselves, the paid-up-adult rule and the hosting
+   * subscription bridge each peek the mode through readers that turn a database
+   * failure into "every optional module off" — which composes to `NO_BLOCK`, "this
+   * club does not block unfinancial members". For a booking write that is a safe
+   * direction to fail; for evidence it is a fabricated statement about the club's
+   * own policy, and the mode is the qualifier on every subscription finding this row
+   * makes. The strict reader lets the failure through and the executor reports
+   * `evidence_unavailable`.
+   *
+   * CONSISTENCY. Two independent reads in one invocation can disagree if an
+   * administrator saves the settings panel between them, and this row would then
+   * report a policy violation judged under one regime beside a hosting answer judged
+   * under another. One read, handed to both, cannot.
+   *
+   * Resolved only for a live booking, on exactly the same reasoning as the season
+   * above: a suppressed booking runs neither rule.
+   */
+  const subscriptionLockoutMode =
+    deleted || terminal ? null : await peekSubscriptionLockoutModeStrict();
+
   /** The open exception requests, and whether any of them is actually holding beds. */
   const openRequests = await prisma.bookingChangeRequest.findMany({
     where: { bookingId, status: "REQUESTED" },
@@ -737,16 +796,26 @@ async function readBookingBlockState(
           requestedByMemberId: booking.memberId,
           bookingId: booking.id,
           },
-          // The paid-up-adult rule reads `MemberSubscription` by
-          // `(memberId, seasonYear)`. Left to itself it would take the season from
-          // the process-level financial-year cache no diagnostics path seeds.
-          { seasonYear: requireResolvedSeasonYear(seasonYear) },
+          {
+            // The paid-up-adult rule reads `MemberSubscription` by
+            // `(memberId, seasonYear)`. Left to itself it would take the season from
+            // the process-level financial-year cache no diagnostics path seeds, and
+            // the mode from a reader that swallows a failure into `NO_BLOCK`.
+            seasonYear: requireResolvedSeasonYear(seasonYear),
+            subscriptionLockoutMode: requireResolvedLockoutMode(
+              subscriptionLockoutMode,
+            ),
+          },
         ),
     deleted || terminal
       ? Promise.resolve(null)
       : evaluatePersistedBookingAdultMemberHostingReadOnly(booking.id, prisma, {
-          // Same reason, for #2543's subscription bridge inside the hosting rule.
+          // Same two reasons, for #2543's subscription bridge inside the hosting
+          // rule — and the same single mode value, so the two rules cannot disagree.
           seasonYear: requireResolvedSeasonYear(seasonYear),
+          subscriptionLockoutMode: requireResolvedLockoutMode(
+            subscriptionLockoutMode,
+          ),
         }),
     deleted || terminal
       ? Promise.resolve(null)
@@ -1361,8 +1430,21 @@ async function readMemberEligibility(
         where: { memberId_seasonYear: { memberId, seasonYear } },
         select: { status: true, paidAt: true, manuallyMarkedPaidAt: true },
       }),
-      getAgeTierSettings(),
-      peekSubscriptionLockoutMode(),
+      /**
+       * THE STRICT READERS, and this is an evidence path's whole difference from a
+       * product path. `getAgeTierSettings` swallows a database failure into
+       * `AGE_TIER_DEFAULTS`, and `peekSubscriptionLockoutMode` reads through two
+       * functions that each turn one into a safe-looking default -- composed,
+       * `NO_BLOCK`. Both are right for a booking screen and wrong here: on a cold
+       * cache one transient failure would report a club's own configured tier rule
+       * and lockout policy as observed when nothing observed them, and those two are
+       * the qualifiers on every subscription finding this row makes. The strict
+       * variants let the rejection through so the executor says
+       * `evidence_unavailable`; a genuinely absent row still resolves to the
+       * platform's documented default, which is what actually governs such a club.
+       */
+      getAgeTierSettingsStrict(),
+      peekSubscriptionLockoutModeStrict(),
       /**
        * THE NARROW READ, and not `getInductionForMember`, which is the wide one.
        *

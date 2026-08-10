@@ -169,13 +169,19 @@ vi.mock("@/lib/membership-type-policy", () => ({
 // PARTIAL mocks: both modules are imported by real code left running here
 // (`subscription-lockout-facts` reads `getAgeTierSettings`), so only the one
 // export each is replaced and the rest of the module stays genuine.
+//
+// THE `Strict` VARIANTS ARE THE ONES REPLACED, because the strict variants are the
+// ones this pack calls. Doubling the swallowing readers instead would have made
+// every assertion below about a code path the pack no longer uses -- and would have
+// hidden the whole point of the strict seams, which is that a failed read reaches
+// the caller.
 vi.mock("@/lib/age-tier", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@/lib/age-tier")>()),
-  getAgeTierSettings: getAgeTierSettingsMock,
+  getAgeTierSettingsStrict: getAgeTierSettingsMock,
 }));
 vi.mock("@/lib/member-subscription-eligibility", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@/lib/member-subscription-eligibility")>()),
-  peekSubscriptionLockoutMode: peekSubscriptionLockoutModeMock,
+  peekSubscriptionLockoutModeStrict: peekSubscriptionLockoutModeMock,
 }));
 
 import {
@@ -3142,18 +3148,33 @@ describe("booking block state: the season comes from STORED state, not the proce
     });
   }
 
-  /** The season each evaluator was actually handed. */
-  function seasonsPassed(): { nonHosting: unknown; hosting: unknown } {
+  /** The options each evaluator was actually handed. */
+  function optionsPassed(): {
+    nonHosting: { seasonYear?: number; subscriptionLockoutMode?: string } | undefined;
+    hosting: { seasonYear?: number; subscriptionLockoutMode?: string } | undefined;
+  } {
     const nonHostingArgs = evaluatePersistedNonHostingViolationsMock.mock
-      .calls[0] as [unknown, unknown, unknown, unknown, { seasonYear?: number }?];
+      .calls[0] as [
+      unknown,
+      unknown,
+      unknown,
+      unknown,
+      { seasonYear?: number; subscriptionLockoutMode?: string }?,
+    ];
     const hostingArgs = evaluatePersistedHostingMock.mock.calls[0] as [
       unknown,
       unknown,
-      { seasonYear?: number }?,
+      { seasonYear?: number; subscriptionLockoutMode?: string }?,
     ];
+    return { nonHosting: nonHostingArgs?.[4], hosting: hostingArgs?.[2] };
+  }
+
+  /** The season each evaluator was actually handed. */
+  function seasonsPassed(): { nonHosting: unknown; hosting: unknown } {
+    const passed = optionsPassed();
     return {
-      nonHosting: nonHostingArgs?.[4]?.seasonYear,
-      hosting: hostingArgs?.[2]?.seasonYear,
+      nonHosting: passed.nonHosting?.seasonYear,
+      hosting: passed.hosting?.seasonYear,
     };
   }
 
@@ -3253,6 +3274,58 @@ describe("booking block state: the season comes from STORED state, not the proce
       expect(row.booking_id).toBe(BOOKING_ID);
       expect(prismaMock.membershipLockoutSettings.findUnique).not.toHaveBeenCalled();
       expect(prismaMock.xeroToken.findFirst).not.toHaveBeenCalled();
+    },
+  );
+
+  // -------------------------------------------------------------------------
+  // The club's lockout MODE, on the same terms as the season.
+  // -------------------------------------------------------------------------
+
+  it("hands both rules the ONE strictly-read lockout mode", async () => {
+    // ONE read, handed to both. Two independent peeks in one invocation can
+    // disagree if an administrator saves the settings panel between them, and this
+    // row would then report a policy violation judged under one regime beside a
+    // hosting answer judged under another.
+    peekSubscriptionLockoutModeMock.mockResolvedValue("NON_MEMBER_PRICING");
+    seedSeasonBoundaryBooking();
+    await blockStateRow();
+    expect(peekSubscriptionLockoutModeMock).toHaveBeenCalledTimes(1);
+    const passed = optionsPassed();
+    expect(passed.nonHosting?.subscriptionLockoutMode).toBe("NON_MEMBER_PRICING");
+    expect(passed.hosting?.subscriptionLockoutMode).toBe("NON_MEMBER_PRICING");
+  });
+
+  it("REFUSES when the strict mode read fails, rather than judging the party under NO_BLOCK", async () => {
+    // The swallowing readers would have answered `NO_BLOCK` here — "this club does
+    // not block unfinancial members" — which is a confident statement about the
+    // club's own policy that nobody observed, and the qualifier on every
+    // subscription finding this row makes.
+    peekSubscriptionLockoutModeMock.mockRejectedValueOnce(
+      new Error("module settings unavailable"),
+    );
+    seedSeasonBoundaryBooking();
+    await expect(
+      readBookingBlockStateEvidence({ bookingId: BOOKING_ID }),
+    ).rejects.toThrow("module settings unavailable");
+    expect(evaluatePersistedNonHostingViolationsMock).not.toHaveBeenCalled();
+    expect(evaluatePersistedHostingMock).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["terminal", { status: "CANCELLED" }],
+    [
+      "deleted",
+      {
+        status: "CANCELLED",
+        deletedAt: new Date("2026-12-20T00:00:00.000Z"),
+      },
+    ],
+  ] satisfies [string, BookingScenario][])(
+    "reads no lockout mode at all on a %s booking",
+    async (_label, scenario) => {
+      seedSeasonBoundaryBooking(scenario);
+      await blockStateRow();
+      expect(peekSubscriptionLockoutModeMock).not.toHaveBeenCalled();
     },
   );
 });

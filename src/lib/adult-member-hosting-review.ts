@@ -73,6 +73,7 @@ import {
   type HostingParticipant,
   type ResolvedAdultMemberHostingPolicy,
 } from "@/lib/policies/adult-member-hosting";
+import type { SubscriptionLockoutMode } from "@/lib/membership-lockout-settings";
 import {
   loadUnpaidSubscriptionMemberIds,
   type SubscriptionLockoutDb,
@@ -544,6 +545,13 @@ async function evaluateLoadedBookingAdultMemberHosting(
    * `evaluatePersistedBookingAdultMemberHostingReadOnly`.
    */
   seasonYear?: number,
+  /**
+   * The club's lockout mode, when the caller has read it authoritatively. Same
+   * reason as `seasonYear`: the bridge otherwise peeks it through readers that turn
+   * a database failure into `NO_BLOCK`, so an evidence caller would report a
+   * fabricated hosting answer for an enforcing club after one transient failure.
+   */
+  subscriptionLockoutMode?: SubscriptionLockoutMode,
 ): Promise<{
   violation: AdultMemberHostingPolicyExceptionViolation | null;
   resolved: ResolvedAdultMemberHostingPolicy;
@@ -594,6 +602,7 @@ async function evaluateLoadedBookingAdultMemberHosting(
       ],
       db,
       seasonYear ?? getSeasonYear(booking.checkIn),
+      subscriptionLockoutMode,
     );
   }
   const violation = evaluateAdultMemberHostingWithPolicy(participants, resolved);
@@ -650,7 +659,10 @@ export async function evaluateBookingAdultMemberHosting(
 export async function evaluatePersistedBookingAdultMemberHostingReadOnly(
   bookingId: string,
   db: AdultMemberHostingReadDb = prisma,
-  options?: { seasonYear?: number },
+  options?: {
+    seasonYear?: number;
+    subscriptionLockoutMode?: SubscriptionLockoutMode;
+  },
 ): Promise<{
   violation: AdultMemberHostingPolicyExceptionViolation | null;
   resolved: ResolvedAdultMemberHostingPolicy;
@@ -665,6 +677,7 @@ export async function evaluatePersistedBookingAdultMemberHostingReadOnly(
     db,
     null,
     options?.seasonYear,
+    options?.subscriptionLockoutMode,
   );
 }
 
@@ -731,10 +744,12 @@ async function withSubscriptionSettlement(
   participants: HostingParticipant[],
   db: SubscriptionLockoutDb,
   seasonYear: number,
+  mode?: SubscriptionLockoutMode,
 ): Promise<HostingParticipant[]> {
   const unpaid = await loadUnpaidSubscriptionMemberIds(db, {
     memberIds: participants.map((participant) => participant.member?.id),
     seasonYear,
+    mode,
   });
   if (unpaid.size === 0) return participants;
   return participants.map((participant) => {

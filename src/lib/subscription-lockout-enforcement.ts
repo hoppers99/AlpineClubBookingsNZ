@@ -695,9 +695,21 @@ export async function evaluateProposedPaidUpAdultPresence(
      * `resolveMembershipTypePolicy`'s own `seasonYear` input.
      */
     seasonYear?: number;
+    /**
+     * The club's lockout mode, when the caller has already read it.
+     *
+     * Omitted, `evaluateNonMemberPricingRequirements` peeks it -- through readers
+     * that swallow a database failure into "every optional module off", i.e. into
+     * `NO_BLOCK`. For a booking write that is a safe direction to fail. For a
+     * read-only EVIDENCE caller it is a fabricated answer about the club's own
+     * policy, and the mode is the qualifier on every subscription finding such a
+     * caller reports, so it reads the mode strictly itself and passes it here.
+     */
+    mode?: SubscriptionLockoutMode;
   },
 ): Promise<PaidUpAdultMemberPolicyExceptionViolation | null> {
   const requirements = await evaluateNonMemberPricingRequirements(db, {
+    mode: input.mode,
     lodgeId: input.lodgeId,
     seasonYear: input.seasonYear ?? getSeasonYear(input.checkIn),
     checkIn: input.checkIn,

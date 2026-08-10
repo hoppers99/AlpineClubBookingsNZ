@@ -975,6 +975,28 @@ describe("evaluateProposedPaidUpAdultPresence (#2543 <-> #2365)", () => {
     expect(seasonAsked()).toBe(SEASON);
   });
 
+  it("uses the lockout mode the caller read, without peeking for itself (#2376)", async () => {
+    // Same seam, same reason: the peek reads through two functions that each turn a
+    // database failure into "every optional module off", composing to NO_BLOCK. A
+    // read-only evidence caller reads the mode STRICTLY and passes it, so a failed
+    // read becomes evidence-unavailable rather than "nothing is blocking them".
+    mocks.peekSubscriptionLockoutMode.mockRejectedValue(
+      new Error("the evaluator must not peek"),
+    );
+    const violation = await evaluateProposedPaidUpAdultPresence(
+      makeDb([UNPAID_ADULT]),
+      {
+        lodgeId: "lodge-1",
+        checkIn: CHECK_IN,
+        checkOut: CHECK_OUT,
+        guests: [{ isMember: true, memberId: "adult-unpaid", nights: ["2026-07-04"] }],
+        mode: "NON_MEMBER_PRICING",
+      },
+    );
+    expect(violation?.reasonCode).toBe("PAID_UP_ADULT_MEMBER_REQUIRED");
+    expect(mocks.peekSubscriptionLockoutMode).not.toHaveBeenCalled();
+  });
+
   it("uses the season the caller resolved, when it resolved one (#2376)", async () => {
     // THE SEAM AI DIAGNOSTICS NEEDS. A read-only evidence caller has no gated
     // request behind it, so nothing has seeded that cache: on a cold process it is

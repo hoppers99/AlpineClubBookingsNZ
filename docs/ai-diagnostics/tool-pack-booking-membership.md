@@ -274,12 +274,46 @@ combine. The wrong way to combine them is documented in the schema as a trap —
 `consentStatus <> 'PENDING'` is UNKNOWN for a NULL row, and NULL is the dominant
 value forever, so that filter silently drops every ordinary guest.
 
-**`peekSubscriptionLockoutMode` and not `resolveSubscriptionLockoutMode`**, and the
-difference is load-bearing rather than stylistic: the resolving variant reseeds the
-global financial-year decision cache and can reach Xero. Ordinary read-through
-memoization such as the age-tier settings cache is operational, not a domain
-mutation. Diagnostics still mutates no durable/domain or provider state and calls
-no live provider. For the current season it uses a stored override when present,
+**`peekSubscriptionLockoutModeStrict` and not `resolveSubscriptionLockoutMode`**, and
+the difference is load-bearing rather than stylistic: the resolving variant reseeds
+the global financial-year decision cache and can reach Xero. Diagnostics still
+mutates no durable/domain or provider state and calls no live provider.
+
+#### Two settings readers are strict here, and nowhere else
+
+`getAgeTierSettings` swallows a database failure and returns `AGE_TIER_DEFAULTS`.
+`peekSubscriptionLockoutMode` reads through two functions that each turn one into a
+safe-looking default — "every optional module off" and "the documented lockout
+settings" — which compose to `NO_BLOCK`. Both are the right product behaviour: a
+booking screen with the documented defaults beats a booking screen with an error, and
+failing toward "no enforcement" is the safe direction for a write.
+
+For EVIDENCE they are the wrong behaviour, and quietly so. The tier rule decides
+whether a member's tier owes a subscription at all, and the lockout mode is the
+qualifier on every subscription finding this pack makes. On a cold cache, one
+transient failure would hand the pack both as though they had been observed — a
+confident, directly actionable finding with a fresh `observedAt` beside it. So the
+pack calls `getAgeTierSettingsStrict` and `peekSubscriptionLockoutModeStrict`
+instead, which:
+
+- **propagate a failed read**, so the executor reports `evidence_unavailable`
+  (`INV-LOCKOUT-009`..`INV-LOCKOUT-011`);
+- **still return the documented default for a genuinely absent row**, because that is
+  what actually governs a club which has never saved the panel — an observation, not
+  a fallback;
+- **neither read nor write the shared cache**, so a five-minute-old value cannot be
+  reported as freshly observed and a diagnostics read cannot change what any other
+  request in the process computes.
+
+The ordinary readers are unchanged, and a test asserts they still swallow: #2376 may
+not alter what a booking screen does.
+
+`booking_block_state` reads the mode **once**, strictly, and hands it to both the
+paid-up-adult rule and the hosting subscription bridge through their `mode` seams —
+so neither can peek it through the swallowing path, and the two cannot disagree
+because an administrator saved the settings panel between two independent reads. As
+with the season, it is read only for a live booking, because a suppressed one runs
+neither rule. For the current season it uses a stored override when present,
 the March default only when persisted state proves no Xero tenant is connected,
 and returns evidence unavailable when a connected tenant's unstored month would
 otherwise require cache state or a provider call. The settings row is read

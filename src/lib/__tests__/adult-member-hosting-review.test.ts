@@ -1079,6 +1079,27 @@ describe("the read-only form's season basis (#2376)", () => {
     expect(seasonAsked()).toBe(2026);
   });
 
+  it("passes the caller's lockout mode to the bridge instead of letting it peek", async () => {
+    // The bridge otherwise reads the mode through functions that swallow a database
+    // failure into NO_BLOCK, so an evidence caller would report a fabricated hosting
+    // answer for an enforcing club after one transient failure.
+    const { db } = makeDb(bookingRow(), [CLUB_ON]);
+    await evaluatePersistedBookingAdultMemberHostingReadOnly("booking-1", db, {
+      subscriptionLockoutMode: "NON_MEMBER_PRICING",
+    });
+    const call = subscriptionBridge.loadUnpaidSubscriptionMemberIds.mock
+      .calls[0] as [unknown, { mode?: string }] | undefined;
+    expect(call?.[1]?.mode).toBe("NON_MEMBER_PRICING");
+  });
+
+  it("leaves the mode absent when no caller supplies one, so the bridge peeks as before", async () => {
+    const { db } = makeDb(bookingRow(), [CLUB_ON]);
+    await evaluatePersistedBookingAdultMemberHostingReadOnly("booking-1", db);
+    const call = subscriptionBridge.loadUnpaidSubscriptionMemberIds.mock
+      .calls[0] as [unknown, { mode?: string }] | undefined;
+    expect(call?.[1]?.mode).toBeUndefined();
+  });
+
   it("uses the season the caller resolved, when it resolved one", async () => {
     // THE SEAM #2376 NEEDS. A read-only evidence caller has no gated request
     // behind it, so nothing has seeded that cache and a club whose financial year

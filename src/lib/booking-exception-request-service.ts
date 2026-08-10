@@ -7,6 +7,7 @@ import { getStayNights } from "@/lib/policies/pricing";
 import { validateMinimumStay } from "@/lib/booking-policies";
 import { evaluateProposedAdultMemberHosting } from "@/lib/adult-member-hosting-review";
 import { evaluateProposedPaidUpAdultPresence } from "@/lib/subscription-lockout-enforcement";
+import type { SubscriptionLockoutMode } from "@/lib/membership-lockout-settings";
 import { computeMemberGuestBoundary } from "@/lib/booking-guests";
 import { isOperationallyPresentConsent } from "@/lib/member-guest-consent";
 import { acquireLodgeCapacityLock, checkCapacityForGuestRanges } from "@/lib/capacity";
@@ -738,6 +739,13 @@ export async function evaluatePersistedBookingNonHostingPolicyViolations(
      * product caller, whose gated request has already seeded it.
      */
     seasonYear?: number;
+    /**
+     * The club's subscription-lockout mode, read authoritatively by the caller. Same
+     * reason as `seasonYear`: left to itself the paid-up-adult rule peeks it through
+     * readers that turn a database failure into `NO_BLOCK`, which is a safe
+     * direction for a booking write and a fabricated answer for evidence.
+     */
+    subscriptionLockoutMode?: SubscriptionLockoutMode;
   },
 ): Promise<PolicyExceptionViolation[]> {
   return evaluatePartyViolations(
@@ -747,6 +755,7 @@ export async function evaluatePersistedBookingNonHostingPolicyViolations(
     presence,
     false,
     options?.seasonYear,
+    options?.subscriptionLockoutMode,
   );
 }
 
@@ -759,6 +768,7 @@ async function evaluatePartyViolations(
     | undefined,
   includeProposedHosting: boolean,
   seasonYear?: number,
+  subscriptionLockoutMode?: SubscriptionLockoutMode,
 ): Promise<PolicyExceptionViolation[]> {
   const checkIn = parseDateOnly(party.checkIn);
   const checkOut = parseDateOnly(party.checkOut);
@@ -811,6 +821,7 @@ async function evaluatePartyViolations(
       operationallyPresent: operationallyPresentFor(guest.memberId),
     })),
     seasonYear,
+    mode: subscriptionLockoutMode,
   });
   if (paidUpAdult) {
     violations.push(paidUpAdult);
