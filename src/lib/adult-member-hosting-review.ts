@@ -17,8 +17,22 @@ import {
 import {
   lockHostingCoverageOwner,
   lockHostingCoverageOwners,
+  tryLockHostingCoverageOwner,
+  tryLockHostingCoverageOwners,
 } from "@/lib/adult-member-hosting-coverage-lock";
-import { enqueueHostingCoverageReevaluation } from "@/lib/adult-member-hosting-coverage-queue";
+import { lockAdultMemberHostingPolicySet } from "@/lib/adult-member-hosting-policy-set";
+import {
+  enqueueHostingCoverageReevaluation,
+  type HostingCoverageReevaluationInput,
+} from "@/lib/adult-member-hosting-coverage-queue";
+import {
+  acquireHostingCoverageQueueParticipantProof,
+  assertHostingCoverageQueueParticipantsLocked,
+  HostingCoverageParticipantRetryError,
+  lockHostingCoverageMemberLifecycleTarget,
+  type HostingCoverageQueueParticipantProof,
+  type HostingCoverageSourceParticipant,
+} from "@/lib/adult-member-hosting-queue-participants";
 import {
   SameOwnerCoverageOverrideRequiredError,
   SameOwnerCoverageWouldBreakError,
@@ -122,6 +136,7 @@ export type AdultMemberHostingReviewDb = Pick<
   | "hostingCoverageIncident"
   | "hostingCoverageReevaluation"
   | "auditLog"
+  | "$executeRaw"
 >;
 
 /** The narrow client the policy read needs on its own. */
@@ -516,6 +531,7 @@ async function loadHostingSiblingIds(
 export async function evaluateBookingAdultMemberHosting(
   booking: LoadedHostingBooking,
   db: AdultMemberHostingReviewDb,
+  failFastCoverageOwner = false,
 ): Promise<{
   violation: AdultMemberHostingPolicyExceptionViolation | null;
   resolved: ResolvedAdultMemberHostingPolicy;
@@ -554,7 +570,13 @@ export async function evaluateBookingAdultMemberHosting(
     // concurrent removal of that cover cannot interleave with this evaluation.
     // Re-entrant, so a caller that already took it (the settle step) pays nothing.
     if (resolved.hostScopes.sameBookingOwner) {
-      await lockHostingCoverageOwner(db, booking.memberId);
+      if (failFastCoverageOwner) {
+        if (!(await tryLockHostingCoverageOwner(db, booking.memberId))) {
+          throw new HostingCoverageParticipantRetryError();
+        }
+      } else {
+        await lockHostingCoverageOwner(db, booking.memberId);
+      }
     }
     participants = await withSubscriptionSettlement(
       [
@@ -586,7 +608,7 @@ export async function evaluateBookingAdultMemberHosting(
  * JUDGED rather than for the bookings supplying evidence — the two questions are
  * different and both need answering.
  */
-function bookingAttendanceIsTerminal(
+export function bookingAttendanceIsTerminal(
   booking: Pick<LoadedHostingBooking, "status" | "deletedAt">,
 ): boolean {
   if (booking.deletedAt != null) return true;
@@ -594,6 +616,31 @@ function bookingAttendanceIsTerminal(
     booking.status === BookingStatus.CANCELLED ||
     booking.status === BookingStatus.BUMPED
   );
+}
+
+/**
+ * Read whether the queued SOURCE booking is no longer attending (#2596).
+ *
+ * This is deliberately a direct id lookup rather than an inference from
+ * `loadSameOwnerCoverageDependentIds`: that list is capped, so an active source
+ * can legitimately sort beyond its first 25 rows. A missing row is a hard-deleted
+ * booking and therefore terminal for the same purpose as the soft-delete and
+ * terminal lifecycle states handled by `bookingAttendanceIsTerminal`.
+ *
+ * The drain passes its existing transaction client after taking the policy-set,
+ * member-lifecycle and Member-row locks, so this authoritative lifecycle read is
+ * made in the same reconciliation transaction as the bounded dependent read and
+ * incident writes.
+ */
+export async function isHostingCoverageSourceBookingTerminal(
+  bookingId: string,
+  db: AdultMemberHostingReviewDb,
+): Promise<boolean> {
+  const booking = await db.booking.findUnique({
+    where: { id: bookingId },
+    select: { status: true, deletedAt: true },
+  });
+  return booking === null || bookingAttendanceIsTerminal(booking);
 }
 
 /**
@@ -930,6 +977,11 @@ export async function reconcileAdultMemberHostingReview(
   bookingId: string,
   db: AdultMemberHostingReviewDb,
   options: HostingReconcileOptions = {},
+  failFastCoverageOwner = false,
+  participantContext?: {
+    proof: HostingCoverageQueueParticipantProof;
+    actorMemberId: string | null;
+  },
 ): Promise<HostingReviewOutcome> {
   const booking = (await db.booking.findUnique({
     where: { id: bookingId },
@@ -944,10 +996,19 @@ export async function reconcileAdultMemberHostingReview(
   if (!Array.isArray(booking.guests)) {
     return { action: "none", violation: null, mode: null };
   }
+  if (participantContext) {
+    assertHostingCoverageQueueParticipantsLocked(participantContext.proof, {
+      memberId: booking.memberId,
+      lodgeId: booking.lodgeId,
+      sourceBookingId: booking.id,
+      actorMemberId: participantContext.actorMemberId,
+    });
+  }
 
   const { violation, resolved } = await evaluateBookingAdultMemberHosting(
     booking,
     db,
+    failFastCoverageOwner,
   );
   const mode = resolved.mode;
 
@@ -1064,16 +1125,88 @@ export async function reconcileAdultMemberHostingReview(
  * belongs to the booking they were making, never to a row reached through it, so
  * a hazard that appears on a sibling always opens PENDING.
  *
- * Costs nothing while the rule is off: the mode reported by the first
- * reconciliation is the same one it evaluated under, so a club that has not
- * turned the policy on pays no extra query on any booking write.
+ * Costs no extra SIBLING work while the rule is off: the mode reported by the
+ * first reconciliation is the same one it evaluated under, so a club that has
+ * not turned the policy on never fans out.
+ *
+ * AND IT NOW COSTS NO FENCE EITHER (#2623 T5). This used to acquire the
+ * participant proof BEFORE reading the policy mode, so a club with hosting
+ * disabled paid the `FOR KEY SHARE NOWAIT` statement and its two under-lock
+ * re-reads on every booking write — and could still be refused with the fixed
+ * `HOSTING_COVERAGE_PARTICIPANT_RETRY` 409 by a concurrent member-lifecycle
+ * writer, for a rule it does not use. That 409 tells a member to reload and to
+ * check their payment status, which at such a club is a scary, payment-flavoured
+ * refusal produced entirely by a switched-off feature guarding a queue row that
+ * would never be written.
+ *
+ * The mode is therefore read FIRST, as the sibling seam
+ * `enqueueOwnHostingCoverageReevaluation` also does, and an inactive mode returns
+ * through the plain single-booking reconciler — which is what the fenced path did
+ * anyway once `outcome.mode` came back inactive, minus the lock. The single-id
+ * reconciler still runs, because clearing a snapshot left behind by a lodge that
+ * has since switched the rule off is exactly its job.
+ *
+ * THE THRESHOLD IS NOT THE SIBLING'S, and the difference is deliberate rather than
+ * drift (#2623 F5). That seam gates on `resolved.mode !== "ENFORCED"`, because all
+ * it does is enqueue queue work that only an ENFORCED lodge can ever act on. This
+ * one gates on `hostingModeIsActive` — ENFORCED *or* ADMIN_REVIEW_REQUIRED —
+ * because under review-only the dependants still have to be re-read and a review
+ * snapshot still has to be written, so the fence is genuinely owed. Narrowing this
+ * to the sibling's test skips the fence at a review-only lodge that needs it, and
+ * the `ADMIN_REVIEW_REQUIRED` case in `adult-member-hosting-same-owner.test.ts`
+ * fails if you try it.
+ *
+ * SKIPPING THE FENCE HERE IS SAFE, not merely cheap: with the mode inactive
+ * `evaluateBookingAdultMemberHosting` takes no coverage-owner advisory key, so
+ * there is no coverage-owner → Member ordering left to protect, and neither the
+ * sibling fan-out nor `settleSameOwnerDependentCoverage` — the two things that
+ * consume the proof — is reachable. A club that turns the rule ON between this
+ * read and the reconciler's own read is covered the same way every other mode
+ * gate in this module is: the policy write holds the policy-set key and enqueues
+ * re-evaluation for the affected bookings itself.
  */
 export async function reconcileAdultMemberHostingReviewWithSiblings(
   bookingId: string,
   db: AdultMemberHostingReviewDb,
   options: HostingReconcileOptions = {},
 ): Promise<HostingReviewOutcome> {
-  const outcome = await reconcileAdultMemberHostingReview(bookingId, db, options);
+  // #2597: acquire the exact queue owner/actor Member rows BEFORE the first
+  // evaluation can take a coverage-owner advisory key. Acquiring only inside
+  // the later settle step would invert coverage-owner -> Member against merge.
+  const plannedBooking = (await db.booking.findUnique({
+    where: { id: bookingId },
+    select: {
+      id: true,
+      memberId: true,
+      lodgeId: true,
+      checkIn: true,
+      checkOut: true,
+    },
+  })) as CoverageOwnerFacts | null;
+  if (!plannedBooking) {
+    return { action: "none", violation: null, mode: null };
+  }
+  // #2623 T5: the mode gate comes BEFORE the fence. See the docstring above for
+  // why an inactive lodge must not pay a row lock, and why skipping it here
+  // cannot leave a coverage-owner key held out of order.
+  const planned = await loadAdultMemberHostingPolicy(plannedBooking.lodgeId, db);
+  if (!hostingModeIsActive(planned.mode)) {
+    return reconcileAdultMemberHostingReview(bookingId, db, options, true);
+  }
+  const actorMemberId = options.coverageChange?.actorMemberId ?? null;
+  const participantProof = await acquireOrValidateQueueParticipantProof(
+    [sourceParticipant(plannedBooking)],
+    actorMemberId,
+    db,
+  );
+
+  const outcome = await reconcileAdultMemberHostingReview(
+    bookingId,
+    db,
+    options,
+    true,
+    { proof: participantProof, actorMemberId },
+  );
   if (outcome.mode === null || !hostingModeIsActive(outcome.mode)) return outcome;
 
   for (const siblingId of await loadHostingSiblingIds(bookingId, db)) {
@@ -1082,15 +1215,25 @@ export async function reconcileAdultMemberHostingReviewWithSiblings(
     // never to a row reached through it, but a school booking's §13 carve-out
     // has to reach its split sibling too — otherwise one half of a #738 pair is
     // exempt and the other is refused, for the same party.
-    await reconcileAdultMemberHostingReview(siblingId, db, {
-      ...(options.enforcement ? { enforcement: options.enforcement } : {}),
-    });
+    await reconcileAdultMemberHostingReview(
+      siblingId,
+      db,
+      {
+        ...(options.enforcement ? { enforcement: options.enforcement } : {}),
+      },
+      true,
+    );
   }
 
   // #2576 §6 to §8: this booking's rows can also decide whether ANOTHER booking on
   // the same account is compliant. Last, and after the siblings, because it is a
   // question about the resulting state of the whole account at this lodge.
-  await settleSameOwnerDependentCoverage(bookingId, db, options);
+  await settleSameOwnerDependentCoverage(
+    bookingId,
+    db,
+    options,
+    participantProof,
+  );
   return outcome;
 }
 
@@ -1112,10 +1255,32 @@ export async function recordAdultMemberHostingReviewForNewBooking(
   tx: AdultMemberHostingReviewDb,
   admin: { reason: string; byMemberId: string } | null,
 ): Promise<HostingReviewOutcome> {
-  return reconcileAdultMemberHostingReview(bookingId, tx, {
+  const options: HostingReconcileOptions = {
     openedStatus: admin ? AdminReviewStatus.APPROVED : AdminReviewStatus.PENDING,
     decision: admin,
+  };
+  const booking = await tx.booking.findUnique({
+    where: { id: bookingId },
+    select: { status: true, deletedAt: true },
   });
+
+  // A newly-created CONFIRMED/PAID booking is immediately authoritative cover
+  // for its split siblings and same-owner dependants. Route that live source
+  // through the fenced high-level seam so the review snapshot, sibling
+  // restoration and any durable re-evaluation obligation commit atomically.
+  // Draft, waitlist and provisional states still receive their own review
+  // snapshot, but cannot supply cover and therefore must not fan out queue work.
+  if (
+    booking?.deletedAt == null &&
+    isHostingCoverageSourceBookingStatus(String(booking?.status))
+  ) {
+    return reconcileAdultMemberHostingReviewWithSiblings(
+      bookingId,
+      tx,
+      options,
+    );
+  }
+  return reconcileAdultMemberHostingReview(bookingId, tx, options);
 }
 
 /**
@@ -1329,6 +1494,39 @@ type CoverageOwnerFactsWithOutcome = CoverageOwnerFacts & {
   adultMemberHostingReviewStatus: AdminReviewStatus | null;
 };
 
+function sourceParticipant(
+  booking: Pick<CoverageOwnerFacts, "id" | "memberId" | "lodgeId">,
+): HostingCoverageSourceParticipant {
+  return {
+    bookingId: booking.id,
+    ownerMemberId: booking.memberId,
+    lodgeId: booking.lodgeId,
+  };
+}
+
+async function acquireOrValidateQueueParticipantProof(
+  sources: readonly HostingCoverageSourceParticipant[],
+  actorMemberId: string | null,
+  db: AdultMemberHostingReviewDb,
+  suppliedProof?: HostingCoverageQueueParticipantProof,
+): Promise<HostingCoverageQueueParticipantProof> {
+  if (!suppliedProof) {
+    return acquireHostingCoverageQueueParticipantProof(
+      { sources, actorMemberId },
+      db,
+    );
+  }
+  for (const source of sources) {
+    assertHostingCoverageQueueParticipantsLocked(suppliedProof, {
+      memberId: source.ownerMemberId,
+      lodgeId: source.lodgeId,
+      sourceBookingId: source.bookingId,
+      actorMemberId,
+    });
+  }
+  return suppliedProof;
+}
+
 const COVERAGE_OWNER_FACTS_SELECT = {
   id: true,
   memberId: true,
@@ -1465,6 +1663,7 @@ async function settleSameOwnerDependentCoverage(
   bookingId: string,
   db: AdultMemberHostingReviewDb,
   options: HostingReconcileOptions,
+  participantProof: HostingCoverageQueueParticipantProof,
 ): Promise<void> {
   const booking = (await db.booking.findUnique({
     where: { id: bookingId },
@@ -1476,6 +1675,16 @@ async function settleSameOwnerDependentCoverage(
   if (resolved.mode !== "ENFORCED" && resolved.mode !== "ADMIN_REVIEW_REQUIRED") {
     return;
   }
+
+  // Exact queue attribution only. An on-behalf review decision is a separate
+  // Booking FK and must never be substituted for a missing coverage-change actor.
+  const actorMemberId = options.coverageChange?.actorMemberId ?? null;
+  assertHostingCoverageQueueParticipantsLocked(participantProof, {
+    memberId: booking.memberId,
+    lodgeId: booking.lodgeId,
+    sourceBookingId: booking.id,
+    actorMemberId,
+  });
 
   // Before any coverage read, and held to commit — see the concurrency note above.
 
@@ -1507,15 +1716,19 @@ async function settleSameOwnerDependentCoverage(
         nights,
         cause: context.cause,
         sourceBookingId: booking.id,
-        actorMemberId: context.actorMemberId ?? null,
+        actorMemberId,
         reason: context.reason ?? null,
       },
+      participantProof,
       db,
     );
     return;
   }
 
   // Before any cross-booking coverage read, and held to commit.
+  if (!(await tryLockHostingCoverageOwner(db, booking.memberId))) {
+    throw new HostingCoverageParticipantRetryError();
+  }
   await lockHostingCoverageOwner(db, booking.memberId);
 
   if (resolved.mode === "ADMIN_REVIEW_REQUIRED") {
@@ -1533,9 +1746,10 @@ async function settleSameOwnerDependentCoverage(
         nights,
         cause: "SYSTEM_CHANGE",
         sourceBookingId: booking.id,
-        actorMemberId: options.coverageChange?.actorMemberId ?? null,
+        actorMemberId,
         reason: null,
       },
+      participantProof,
       db,
     );
     return;
@@ -1637,9 +1851,10 @@ async function settleSameOwnerDependentCoverage(
       nights,
       cause: context.cause,
       sourceBookingId: booking.id,
-      actorMemberId: context.actorMemberId ?? null,
+      actorMemberId,
       reason: context.reason ?? null,
     },
+    participantProof,
     db,
   );
 }
@@ -1720,8 +1935,9 @@ export async function enqueueOwnHostingCoverageReevaluation(
   bookingId: string,
   db: AdultMemberHostingReviewDb,
   context: HostingCoverageChangeContext = { cause: "SYSTEM_CHANGE" },
+  suppliedParticipantProof?: HostingCoverageQueueParticipantProof,
 ): Promise<string | null> {
-  const booking = (await db.booking.findUnique({
+  const plannedBooking = (await db.booking.findUnique({
     where: { id: bookingId },
     select: {
       id: true,
@@ -1731,15 +1947,43 @@ export async function enqueueOwnHostingCoverageReevaluation(
       checkOut: true,
     },
   })) as CoverageOwnerFacts | null;
-  if (!booking) return null;
+  if (!plannedBooking) return null;
 
-  const resolved = await loadAdultMemberHostingPolicy(booking.lodgeId, db);
+  const resolved = await loadAdultMemberHostingPolicy(plannedBooking.lodgeId, db);
   if (resolved.mode !== "ENFORCED") return null;
+
+  const actorMemberId = context.actorMemberId ?? null;
+  const participantProof = await acquireOrValidateQueueParticipantProof(
+    [sourceParticipant(plannedBooking)],
+    actorMemberId,
+    db,
+    suppliedParticipantProof,
+  );
+  const booking = (await db.booking.findUnique({
+    where: { id: plannedBooking.id },
+    select: {
+      id: true,
+      memberId: true,
+      lodgeId: true,
+      checkIn: true,
+      checkOut: true,
+    },
+  })) as CoverageOwnerFacts | null;
+  if (!booking) throw new HostingCoverageParticipantRetryError();
+  assertHostingCoverageQueueParticipantsLocked(participantProof, {
+    memberId: booking.memberId,
+    lodgeId: booking.lodgeId,
+    sourceBookingId: booking.id,
+    actorMemberId,
+  });
 
   // §9. Confirming paths use this seam instead of evaluating, so this is where they
   // join the owner-key discipline: the queue row and the confirmation commit
   // together, and a concurrent removal of the cover cannot slip between them.
   if (resolved.hostScopes.sameBookingOwner) {
+    if (!(await tryLockHostingCoverageOwner(db, booking.memberId))) {
+      throw new HostingCoverageParticipantRetryError();
+    }
     await lockHostingCoverageOwner(db, booking.memberId);
   }
 
@@ -1752,9 +1996,10 @@ export async function enqueueOwnHostingCoverageReevaluation(
       ),
       cause: context.cause,
       sourceBookingId: booking.id,
-      actorMemberId: context.actorMemberId ?? null,
+      actorMemberId,
       reason: context.reason ?? null,
     },
+    participantProof,
     db,
   );
 }
@@ -1767,7 +2012,148 @@ export async function enqueueOwnHostingCoverageReevaluation(
  * fifty live stays for one member is already far beyond a club member's real
  * footprint. Truncation is warned about for the same reason the dependent reads warn.
  */
-const HOSTING_COVERAGE_MEMBER_FANOUT_LIMIT = 50;
+export const HOSTING_COVERAGE_MEMBER_FANOUT_LIMIT = 50;
+
+/** The deterministic bounded candidate set shared by ordinary fan-out and merge. */
+export async function loadHostingCoverageMemberFanoutCandidates(
+  memberId: string,
+  db: AdultMemberHostingReviewDb,
+): Promise<CoverageOwnerFacts[]> {
+  const today = getTodayDateOnly();
+  return (await db.booking.findMany({
+    where: {
+      deletedAt: null,
+      status: { in: [...ACTIVE_BOOKING_STATUSES] },
+      // Current or future stays only — a checkout on or after today still has
+      // nights the rule can judge.
+      checkOut: { gte: today },
+      guests: { some: { memberId } },
+    },
+    orderBy: [{ checkIn: "asc" }, { id: "asc" }],
+    take: HOSTING_COVERAGE_MEMBER_FANOUT_LIMIT,
+    select: {
+      id: true,
+      memberId: true,
+      lodgeId: true,
+      checkIn: true,
+      checkOut: true,
+    },
+  })) as CoverageOwnerFacts[];
+}
+
+export type MemberMergeHostingCoveragePlan = Readonly<{
+  items: readonly HostingCoverageReevaluationInput[];
+  sources: readonly HostingCoverageSourceParticipant[];
+  coverageOwnerIds: readonly string[];
+}>;
+
+/**
+ * Plan the merge's exact actorless SYSTEM_CHANGE fan-out after relation moves.
+ * The policy-set lock held by merge keeps the ENFORCED decisions stable while
+ * the Member participant rows are acquired and this plan is re-read.
+ */
+export async function buildMemberMergeHostingCoveragePlan(
+  params: {
+    masterId: string;
+    capturedLoserOwnedBookingIds: readonly string[];
+  },
+  db: AdultMemberHostingReviewDb,
+): Promise<MemberMergeHostingCoveragePlan> {
+  const [attended, movedOwnerBookings] = await Promise.all([
+    loadHostingCoverageMemberFanoutCandidates(params.masterId, db),
+    params.capturedLoserOwnedBookingIds.length > 0
+      ? (db.booking.findMany({
+          where: { id: { in: [...params.capturedLoserOwnedBookingIds] } },
+          orderBy: { id: "asc" },
+          select: {
+            id: true,
+            memberId: true,
+            lodgeId: true,
+            checkIn: true,
+            checkOut: true,
+          },
+        }) as Promise<CoverageOwnerFacts[]>)
+      : Promise.resolve([]),
+  ]);
+  const candidatesById = new Map<string, CoverageOwnerFacts>();
+  for (const booking of [...attended, ...movedOwnerBookings]) {
+    candidatesById.set(booking.id, booking);
+  }
+  const candidates = [...candidatesById.values()].sort((a, b) =>
+    a.id.localeCompare(b.id),
+  );
+  const policyByLodge = new Map<string, ResolvedAdultMemberHostingPolicy>();
+  for (const booking of candidates) {
+    if (!policyByLodge.has(booking.lodgeId)) {
+      const policy = await loadAdultMemberHostingPolicy(booking.lodgeId, db);
+      policyByLodge.set(booking.lodgeId, policy);
+    }
+  }
+  const included = candidates.filter(
+    (booking) => policyByLodge.get(booking.lodgeId)?.mode === "ENFORCED",
+  );
+  const items = included.map((booking) => ({
+    memberId: booking.memberId,
+    lodgeId: booking.lodgeId,
+    nights: eachDateOnlyInRange(booking.checkIn, booking.checkOut).map(
+      formatDateOnly,
+    ),
+    cause: "SYSTEM_CHANGE" as const,
+    sourceBookingId: booking.id,
+    actorMemberId: null,
+    reason: null,
+  }));
+  const sourcesByBooking = new Map<string, HostingCoverageSourceParticipant>();
+  for (const booking of included) {
+    sourcesByBooking.set(booking.id, sourceParticipant(booking));
+  }
+  return Object.freeze({
+    items: Object.freeze(items.map((item) => Object.freeze(item))),
+    sources: Object.freeze(
+      [...sourcesByBooking.values()].sort((a, b) =>
+        a.bookingId.localeCompare(b.bookingId),
+      ),
+    ),
+    coverageOwnerIds: Object.freeze(
+      [...new Set(
+        included
+          .filter(
+            (booking) =>
+              policyByLodge.get(booking.lodgeId)?.hostScopes.sameBookingOwner ===
+              true,
+          )
+          .map((booking) => booking.memberId),
+      )].sort(),
+    ),
+  });
+}
+
+export function memberMergeHostingCoveragePlanFingerprint(
+  plan: MemberMergeHostingCoveragePlan,
+): string {
+  return JSON.stringify(
+    plan.items.map((item) => ({
+      memberId: item.memberId,
+      lodgeId: item.lodgeId,
+      nights: [...item.nights],
+      cause: item.cause,
+      sourceBookingId: item.sourceBookingId ?? null,
+    })),
+  ) + JSON.stringify(plan.coverageOwnerIds);
+}
+
+export async function enqueueMemberMergeHostingCoveragePlan(
+  plan: MemberMergeHostingCoveragePlan,
+  proof: HostingCoverageQueueParticipantProof,
+  db: AdultMemberHostingReviewDb,
+): Promise<number> {
+  let queued = 0;
+  for (const item of plan.items) {
+    assertHostingCoverageQueueParticipantsLocked(proof, item);
+    if (await enqueueHostingCoverageReevaluation(item, proof, db)) queued += 1;
+  }
+  return queued;
+}
 
 /**
  * Record the re-evaluation a change to ONE PERSON's standing implies (#2576 §8).
@@ -1807,35 +2193,47 @@ const HOSTING_COVERAGE_MEMBER_FANOUT_LIMIT = 50;
  * scope would have left an enforcing single-booking club with no lapse detection at
  * all, for no reason.
  *
+ * THE PARTICIPANT FENCE IS ALREADY MODE-GATED HERE and always was: the per-lodge
+ * `ENFORCED` filter below returns 0 before any proof is acquired, so #2623 T5's
+ * report that this seam takes the participant lock ungated does not hold against
+ * this code. The subject barrier ABOVE it is ungated, and deliberately — see the
+ * comment at that lock.
+ *
  * Returns the number of items recorded, so a caller can log the truth.
  */
 export async function enqueueHostingCoverageReevaluationForMember(
   memberId: string,
   db: AdultMemberHostingReviewDb,
   context: HostingCoverageChangeContext = { cause: "SYSTEM_CHANGE" },
+  suppliedParticipantProof?: HostingCoverageQueueParticipantProof,
 ): Promise<number> {
-  const today = getTodayDateOnly();
-  const attended = (await db.booking.findMany({
-    where: {
-      deletedAt: null,
-      status: { in: [...ACTIVE_BOOKING_STATUSES] },
-      // Current or future stays only — a checkout on or after today still has
-      // nights the rule can judge.
-      checkOut: { gte: today },
-      guests: { some: { memberId } },
-    },
-    orderBy: [{ checkIn: "asc" }, { id: "asc" }],
-    take: HOSTING_COVERAGE_MEMBER_FANOUT_LIMIT,
-    select: {
-      id: true,
-      memberId: true,
-      lodgeId: true,
-      checkIn: true,
-      checkOut: true,
-    },
-  })) as CoverageOwnerFacts[];
-  if (attended.length === 0) return 0;
-  if (attended.length >= HOSTING_COVERAGE_MEMBER_FANOUT_LIMIT) {
+  // Freeze the standing subject before even deciding that the fan-out is
+  // empty. A linked-guest hold takes KEY SHARE on this same row after its lodge
+  // lock, so one side wins cleanly: the hold is included in the candidate
+  // snapshot, or the hold resumes after this standing change and refuses its
+  // now-inactive member. NOWAIT keeps repeated bulk fan-outs fail-fast.
+  //
+  // DELIBERATELY NOT GATED ON THE HOSTING POLICY, and #2623 T5 is where that was
+  // tested rather than assumed. Gating the enqueue seams on the mode is right —
+  // see `reconcileAdultMemberHostingReviewWithSiblings` — but this barrier is not
+  // one of them. It is the SHARED standing-subject fence: account deletion and
+  // every other standing writer reach it through this function, and it is what
+  // makes a concurrent booking-request linked-member hold and a deactivation
+  // mutually exclusive. `docs/CONCURRENCY_AND_LOCKING.md` states the contract in
+  // as many words — the hold's refusal "is independent of the lodge's hosting
+  // consequence (DISABLED, ADMIN_REVIEW_REQUIRED, or ENFORCED), so review policy
+  // is not an identity-safety backstop" — and
+  // `adult-member-hosting-queue-merge.realdb.test.ts` proves both winner orders
+  // against real PostgreSQL in all three modes. A club-wide `ENFORCED` gate here
+  // was written, and those six interleavings failed for DISABLED and
+  // ADMIN_REVIEW_REQUIRED: a deletion could deactivate the member and unlink the
+  // guest underneath a hold that had already read them as active. The spurious
+  // retry a non-enforcing club can still see on a standing write is the price of
+  // that fence, and it is a price this repository has decided to pay.
+  await lockHostingCoverageMemberLifecycleTarget(db, memberId);
+  const plannedAttended = await loadHostingCoverageMemberFanoutCandidates(memberId, db);
+  if (plannedAttended.length === 0) return 0;
+  if (plannedAttended.length >= HOSTING_COVERAGE_MEMBER_FANOUT_LIMIT) {
     logger.warn(
       { memberId, limit: HOSTING_COVERAGE_MEMBER_FANOUT_LIMIT },
       "Hosting coverage member fan-out hit its ceiling; a booking this member attends may not have been re-evaluated",
@@ -1846,7 +2244,7 @@ export async function enqueueHostingCoverageReevaluationForMember(
   // already the hot path on every booking write and this can touch several stays.
   const enforcingByLodge = new Map<string, boolean>();
   const sameOwnerByLodge = new Map<string, boolean>();
-  for (const booking of attended) {
+  for (const booking of plannedAttended) {
     if (enforcingByLodge.has(booking.lodgeId)) continue;
     const resolved = await loadAdultMemberHostingPolicy(booking.lodgeId, db);
     enforcingByLodge.set(booking.lodgeId, resolved.mode === "ENFORCED");
@@ -1855,15 +2253,62 @@ export async function enqueueHostingCoverageReevaluationForMember(
       resolved.hostScopes.sameBookingOwner,
     );
   }
+  const plannedQueueOwners = plannedAttended
+    .filter((booking) => enforcingByLodge.get(booking.lodgeId) === true)
+    .map((booking) => booking.memberId);
+  if (plannedQueueOwners.length === 0) return 0;
+
+  const actorMemberId = context.actorMemberId ?? null;
+  const plannedSources = plannedAttended
+    .filter((booking) => enforcingByLodge.get(booking.lodgeId) === true)
+    .map(sourceParticipant);
+  const participantProof = await acquireOrValidateQueueParticipantProof(
+    plannedSources,
+    actorMemberId,
+    db,
+    suppliedParticipantProof,
+  );
+
+  // Re-query after the Member locks. Every final owner must already belong to
+  // the one planned set; a changed owner or new booking outside it is a safe
+  // retry, never a late participant acquisition.
+  const attended = await loadHostingCoverageMemberFanoutCandidates(memberId, db);
+  const plannedById = new Map(plannedAttended.map((booking) => [booking.id, booking]));
+  if (attended.length !== plannedAttended.length) {
+    throw new HostingCoverageParticipantRetryError();
+  }
+  for (const booking of attended) {
+    const planned = plannedById.get(booking.id);
+    if (
+      !planned ||
+      planned.memberId !== booking.memberId ||
+      planned.lodgeId !== booking.lodgeId
+    ) {
+      throw new HostingCoverageParticipantRetryError();
+    }
+    if (enforcingByLodge.get(booking.lodgeId) === true) {
+      assertHostingCoverageQueueParticipantsLocked(participantProof, {
+        memberId: booking.memberId,
+        lodgeId: booking.lodgeId,
+        sourceBookingId: booking.id,
+        actorMemberId,
+      });
+    }
+  }
+
+  const sameOwnerQueueOwners = attended
+    .filter(
+      (booking) =>
+        enforcingByLodge.get(booking.lodgeId) === true &&
+        sameOwnerByLodge.get(booking.lodgeId) === true,
+    )
+    .map((booking) => booking.memberId);
+  if (!(await tryLockHostingCoverageOwners(db, sameOwnerQueueOwners))) {
+    throw new HostingCoverageParticipantRetryError();
+  }
   await lockHostingCoverageOwners(
     db,
-    attended
-      .filter(
-        (booking) =>
-          enforcingByLodge.get(booking.lodgeId) === true &&
-          sameOwnerByLodge.get(booking.lodgeId) === true,
-      )
-      .map((booking) => booking.memberId),
+    sameOwnerQueueOwners,
   );
   let queued = 0;
   for (const booking of attended) {
@@ -1881,9 +2326,10 @@ export async function enqueueHostingCoverageReevaluationForMember(
         ),
         cause: context.cause,
         sourceBookingId: booking.id,
-        actorMemberId: context.actorMemberId ?? null,
+        actorMemberId,
         reason: context.reason ?? null,
       },
+      participantProof,
       db,
     );
     if (id) queued += 1;
@@ -2060,7 +2506,9 @@ export async function loadSameOwnerCoverageDependentIds(
  *    closed rather than left standing, and no loss-of-cover message is sent;
  *  - a hazard, no incident or a materially different one → open or update, and
  *    report the state key so the caller can notify ONCE for that transition;
- *  - a hazard identical to the recorded one → `unchanged`, and no notification.
+ *  - a hazard identical to the recorded one → `unchanged`, with no incident write;
+ *    the caller still checks the delivery lease because a prior transient transport
+ *    failure may have left this exact state unnotified.
  *
  * The review snapshot is reconciled first, with `REVIEW_ONLY`. That is not a
  * carve-out from the enforced consequence: the booking already exists and was
@@ -2082,6 +2530,50 @@ export async function reconcileSameOwnerCoverageIncident(
   // `incidentId` without a cast.
   { action: "none" } | { action: "resolved" } | HostingCoverageIncidentOutcome
 > {
+  // Serialise the effective-policy read and every resulting incident write with
+  // policy administration. Without this, a drain could read ENFORCED, race a
+  // demotion to Review/Disabled, and open a fresh urgent incident after the
+  // policy writer had already enumerated the active rows it needed to close.
+  // The policy-set key is first here; an optional actor Member KEY SHARE comes
+  // next, and the evaluator's coverage-owner key is taken after that. The
+  // direct-call order is policy-set -> Member KEY SHARE -> coverage-owner.
+  // The queue drain has a stronger outer handshake: policy-set -> sorted claimed
+  // lifecycle keys -> sorted claimed Member rows -> exact typed queue refresh,
+  // then re-enters here with the refreshed actor. Neither layer locks the queue
+  // row, so there is no queue -> Member inversion.
+  await lockAdultMemberHostingPolicySet(db);
+
+  // Queue attribution is intentionally FK-less so the work survives ordinary
+  // member deletion. A merge re-points it (member-merge.ts), but an exceptional
+  // hard deletion between enqueue and drain can still leave a dangling id.
+  // Incident attribution IS a real FK, so verify at the promotion seam and
+  // degrade to anonymous officer attribution rather than retrying a poison item.
+  // The mandatory reason is independent evidence and is preserved below.
+  // `FOR KEY SHARE` closes the existence-check/FK-write race: a present actor
+  // cannot be hard-deleted until this reconciliation transaction commits.
+  let actorMemberId: string | null = null;
+  if (params.actorMemberId) {
+    // Lock raw, read typed (#2289). The row count matters: at READ COMMITTED a
+    // zero-match lock followed by a model read could see a newly inserted row
+    // that this transaction never locked. Member ids are immutable, but keeping
+    // the zero-match guard makes this split read exactly match one locked read.
+    const locked = await db.$executeRaw`
+      SELECT 1
+      FROM "Member"
+      WHERE "id" = ${params.actorMemberId}
+      FOR KEY SHARE
+    `;
+    actorMemberId =
+      locked > 0
+        ? (
+            await db.member.findUnique({
+              where: { id: params.actorMemberId },
+              select: { id: true },
+            })
+          )?.id ?? null
+        : null;
+  }
+
   const outcome = await reconcileAdultMemberHostingReview(params.bookingId, db, {
     enforcement: "REVIEW_ONLY",
   });
@@ -2101,7 +2593,7 @@ export async function reconcileSameOwnerCoverageIncident(
       {
         bookingId: params.bookingId,
         resolution: "COVERAGE_RESTORED",
-        actorMemberId: params.actorMemberId ?? null,
+        actorMemberId,
       },
       db,
     );
@@ -2138,7 +2630,7 @@ export async function reconcileSameOwnerCoverageIncident(
       {
         bookingId: params.bookingId,
         resolution: "EXCEPTION_APPROVED",
-        actorMemberId: params.actorMemberId ?? null,
+        actorMemberId,
       },
       db,
     );
@@ -2179,9 +2671,8 @@ export async function reconcileSameOwnerCoverageIncident(
       violation: outcome.violation,
       override:
         params.cause === "OFFICER_OVERRIDE" &&
-        params.actorMemberId &&
         params.reason?.trim()
-          ? { byMemberId: params.actorMemberId, reason: params.reason }
+          ? { byMemberId: actorMemberId, reason: params.reason }
           : null,
     },
     db,

@@ -88,6 +88,37 @@ idempotent — retrying the same work never double-charges.
 4. Before a brand-new contact is created the app checks for **similar existing
    Xero contacts** and asks you to confirm if any are found, so link an existing
    contact where one already exists.
+5. If Xero creates the contact, or the local link/import/unlink commits, but a later
+   bookkeeping or subscription step fails, the page says exactly which part is
+   already complete. **Do not repeat Create, Link, Unlink, or Import.** Check the
+   reloaded member and follow the displayed **Member Status Repair Backfill** remedy
+   when refresh or cleanup remains pending.
+6. That recovery warning stays visible while the current view reloads and if the
+   reload fails. On member detail, use **Try again** from the warning. The members
+   list refreshes its current results automatically; Contact Sync and diagnostics
+   direct you to reload the status or open the affected member before another
+   Xero action.
+7. Linking a member to the contact Xero already created is the remedy for the
+   "contact created, link unconfirmed" case, and it now also **closes that
+   operation**, so the member can be merged and deleted again straight away. If
+   Xero turns out to hold a *different* contact for the member, the operation
+   deliberately stays open — that is a duplicate for someone to look at — and the
+   member's Xero panel says which operation is blocking their merge and deletion,
+   and where to clear it.
+7. If the app can prove only that a contact create is still running or awaiting
+   recovery, it says exactly that and hides **Create in Xero** without claiming a
+   contact was created. Resetting the stale operation does not make Create safe:
+   reload the member, then explicitly resolve the operation only after checking
+   Xero and the member's current link.
+8. Profile/contact updates reserve the current member and Xero contact before
+   sending anything. A failed member update retry is rebuilt from the member's
+   current profile and link; it never replays the stored request if that member
+   was deleted, merged, or unlinked.
+9. Account deletion and Xero contact writes exclude one another. If either page
+   asks you to reload and retry, check the member and deletion request first; do
+   not repeat Create or Link while deletion or contact recovery remains pending.
+   A deleted/anonymised member cannot be sent to or re-linked with Xero, and its
+   former active contact ledger is retired with anonymisation.
 
 ### Set up mappings and import (Xero Setup)
 
@@ -140,6 +171,9 @@ idempotent — retrying the same work never double-charges.
 | A member's grouping looks wrong | The mode/rules changed but existing members were not re-grouped automatically | Run the **dry-run diff**, then **bulk re-sync** per the [runbook](../XERO_MEMBER_GROUPING_RUNBOOK.md) |
 | A bulk re-sync halted | The daily Xero API limit was reached | Use **Resume re-sync** the next day |
 | Subscription paid-status isn't updating | The member has no Xero contact link | Link/create a contact, then run a membership refresh |
+| Create/link/unlink/import says the action completed only in part | The provider or canonical member change committed before a later local step failed | Do not repeat the action; reload/try again from the persistent warning, check the current link, then run **Member Status Repair Backfill** when directed. The message also names anything else left unfinished — the member's **Xero record links may still be active** (check them on the member and deactivate any that remain), and the **audit entry may be missing** so the action may not appear in the member's history |
+| **Member merge** or **account deletion** is refused for a member whose Xero contact looks fine | An open member CONTACT operation still blocks both, most often a create whose Xero contact was made under a different id | The member's Xero panel and the refusal both name the operation. Open **Xero → Operations**, find it, and either wait for it to finish or use **Resolve (fixed in Xero)** once the contact is correct in Xero. Linking the member to the contact that create actually made closes it by itself |
+| **Force sync → Contact** for a walk-in owner | Walk-in owners have a placeholder email, so Xero cannot be searched by email for them | It works: the re-sync asks Xero by exact name instead. A live contact with that name is re-linked; only when Xero has no live contact of that name is a new one created |
 
 ## Related links
 
@@ -153,4 +187,4 @@ idempotent — retrying the same work never double-charges.
   the [Xero member grouping runbook](../XERO_MEMBER_GROUPING_RUNBOOK.md),
   [operational Xero](../ARCHITECTURE.md#operational-xero) and the
   [Xero member grouping](../../CONFIGURATION.md#xero-member-grouping) reference,
-  and the [Xero member grouping invariants](../DOMAIN_INVARIANTS.md#xero-member-grouping-e8-1934).
+  and the [Xero member grouping invariants](../invariants/integrations.md#xero-member-grouping-e8-1934).

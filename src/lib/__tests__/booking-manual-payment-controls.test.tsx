@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 
-import { fireEvent, render, screen } from "@testing-library/react";
+import "@testing-library/jest-dom/vitest";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("next/navigation", () => ({
@@ -18,10 +19,13 @@ vi.mock("@/hooks/use-admin-area-edit-access", async (importOriginal) => ({
   useAdminAreaEditAccess: () => true,
 }));
 
+import { toast } from "sonner";
 import {
   BookingManualPaymentControls,
   type BookingManualPaymentState,
 } from "@/components/admin/booking-manual-payment-controls";
+import { unverifiedWriteMessage } from "@/lib/unverified-write-copy";
+import { expectRecoveryAlertToHoldFocus } from "@/lib/__tests__/helpers/focus";
 
 function settledState(
   overrides: Partial<BookingManualPaymentState> = {}
@@ -300,5 +304,118 @@ describe("BookingManualPaymentControls — the outstanding-extra question (#2397
     await Promise.resolve();
 
     expect(requestBody(fetchMock)).not.toHaveProperty("additionalCoverage");
+  });
+});
+
+/**
+ * #2668 — the browser is not entitled to say the ledger did not move.
+ *
+ * This control used to answer a rejected `fetch` with "Could not reach the
+ * server. Nothing was recorded." `fetch` rejects both when the POST never
+ * arrived and when it arrived, wrote the manual payment and the booking event,
+ * and lost only its answer. Of everywhere in the app that made this guess, this
+ * is the one where being wrong costs the most: an admin told nothing happened
+ * records the same cash a second time.
+ */
+describe("BookingManualPaymentControls — an outcome the browser never read (#2668)", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.mocked(toast.error).mockClear();
+  });
+
+  const UNVERIFIED = unverifiedWriteMessage(
+    "this payment was recorded",
+    "Reload the booking and check before recording it again."
+  );
+
+  function openAndFailTheRecording() {
+    const fetchMock = vi.fn(async () => {
+      throw new TypeError("Failed to fetch");
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    openMarkPaidDialog({
+      amountOwingCents: 12000,
+      storedCreditElectionCents: null,
+      outstandingAdditionalCents: 0,
+      canMarkPaid: true,
+      markPaidBlockedReason: null,
+      manuallyMarkedPaidAt: null,
+      manuallyMarkedPaidByName: null,
+      manualPaymentNote: null,
+      canReverse: false,
+      reverseBlockedReason: null,
+    });
+    fireEvent.click(
+      screen.getByRole("button", { name: "Record and email member" })
+    );
+    return fetchMock;
+  }
+
+  it("reports what it could not verify instead of claiming nothing was recorded", async () => {
+    openAndFailTheRecording();
+
+    const notice = await screen.findByText(UNVERIFIED);
+    expect(notice.textContent).toBe(UNVERIFIED);
+    // The specific claim about the ledger the client cannot make, and the
+    // instruction that keeps a duplicate cash entry from being the next step.
+    expect(notice.textContent).not.toContain("Nothing was recorded");
+    expect(notice.textContent).toContain("check before recording it again");
+  });
+
+  /**
+   * Review SF-5. The message being right is only half of it: on this surface the
+   * operator's likeliest next act is a second press on the same button, and a
+   * toast that has already faded cannot stop it. So the sentence is HELD in the
+   * open dialog, the recording buttons are disarmed behind it, and the way out
+   * is named "Close" rather than "Cancel" — there may be nothing left to cancel.
+   */
+  it("holds the message in the dialog and disarms the recording buttons behind it", async () => {
+    const fetchMock = openAndFailTheRecording();
+
+    const notice = await screen.findByText(UNVERIFIED);
+
+    // Not a toast: the region is the house recovery alert, it stays on screen,
+    // and it TAKES FOCUS — the button just pressed is disabled behind it, and a
+    // control disabled in the same turn cannot hold focus, so without this the
+    // operator would be dropped to <body> with no explanation in reach.
+    expect(toast.error).not.toHaveBeenCalled();
+    expect(screen.getByRole("alert").textContent).toBe(UNVERIFIED);
+    await expectRecoveryAlertToHoldFocus(notice);
+    // The dialog did not close out from under the message.
+    expect(
+      screen.getByText(/Record \$120\.00 as paid for Ada Lovelace\?/)
+    ).toBeTruthy();
+
+    const record = screen.getByRole("button", {
+      name: "Record and email member",
+    });
+    expect(record).toBeDisabled();
+    expect(
+      screen.getByRole("button", { name: "Record without emailing" })
+    ).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Close and check" })).toBeTruthy();
+
+    // A reflexive second press sends nothing — the one attempt is all that was
+    // made, so the booking cannot collect a duplicate cash record from here.
+    fireEvent.click(record);
+    await Promise.resolve();
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("clears the notice when the dialog is reopened", async () => {
+    openAndFailTheRecording();
+    await screen.findByText(UNVERIFIED);
+
+    fireEvent.click(screen.getByRole("button", { name: "Close and check" }));
+    await waitFor(() => expect(screen.queryByText(UNVERIFIED)).toBeNull());
+
+    fireEvent.click(
+      screen.getByRole("button", { name: /Record manual payment/i })
+    );
+    // A stale notice over a fresh dialog would read as this press's outcome.
+    expect(screen.queryByText(UNVERIFIED)).toBeNull();
+    expect(
+      screen.getByRole("button", { name: "Record and email member" })
+    ).toBeEnabled();
   });
 });

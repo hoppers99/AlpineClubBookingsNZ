@@ -43,7 +43,7 @@ import { createAuditLog, logAudit } from "@/lib/audit";
 import { formatDateOnly } from "@/lib/date-only";
 import {
   MAX_AUDITED_PRUNED_ALLOCATIONS,
-  reconcileBedAllocationsForBooking,
+  reconcileBedAllocationsForBookingWithLodgeLockHeld,
 } from "@/lib/bed-allocation-lifecycle";
 import {
   assertMappableOwnerContact,
@@ -681,12 +681,19 @@ export async function approveSchoolBookingRequest(input: {
 
   let totalPriceCents: number;
   let guestPriceCents: number[];
+  // #2739: set ONLY on the branch where the engine priced each guest, so the
+  // written BookingGuestNight rows carry the rates it really resolved (a season
+  // boundary or a per-night group discount makes those nights genuinely
+  // different prices) instead of a flat re-split of the guest's total. Left
+  // undefined on the officer-total branches, which have no per-night truth.
+  let guestPerNightCents: Array<readonly number[] | undefined> | undefined;
   if (request.priceCents != null) {
     totalPriceCents = request.priceCents;
     guestPriceCents = splitPriceAcrossGuests(totalPriceCents, guests.length);
   } else if (price && price.guests.length === guests.length) {
     totalPriceCents = price.totalPriceCents;
     guestPriceCents = price.guests.map((guest) => guest.priceCents);
+    guestPerNightCents = price.guests.map((guest) => guest.perNightCents);
   } else if (price) {
     totalPriceCents = price.totalPriceCents;
     guestPriceCents = splitPriceAcrossGuests(totalPriceCents, guests.length);
@@ -764,15 +771,11 @@ export async function approveSchoolBookingRequest(input: {
 
   try {
     conversion = await prisma.$transaction(async (tx) => {
-      // A held conversion is both a lifecycle transition (the same
-      // AWAITING_REVIEW row can be cancelled/released) and a capacity write.
-      // Compose the canonical locks in global -> lodge order so approval
-      // cannot resurrect a hold that a global-lock cancellation just won.
-      // A fresh approval creates a new booking and therefore remains
-      // lodge-only; do not unnecessarily serialise unrelated lodges.
-      if (expectedHeldBookingId) {
-        await tx.$executeRaw`SELECT pg_advisory_xact_lock(1)`;
-      }
+      await tx.$executeRaw`SELECT pg_advisory_xact_lock(1)`;
+      // Both fresh creation and held reuse reconcile bed allocations in this
+      // transaction. Take the canonical global tier once, then the concrete
+      // lodge tier below: global fences cancellation/pruning while lodge
+      // fences capacity and allocation writers.
 
       // Held reuse locks the concrete lodge stamped onto the booking when the
       // hold was created. A null request lodge must not be re-resolved through
@@ -915,6 +918,7 @@ export async function approveSchoolBookingRequest(input: {
         guests,
         linkedMembers,
         guestPriceCents,
+        guestPerNightCents,
         checkIn: request.checkIn,
         checkOut: request.checkOut,
         adminMemberId: input.adminMemberId,
@@ -1155,7 +1159,7 @@ export async function approveSchoolBookingRequest(input: {
           take: MAX_AUDITED_PRUNED_ALLOCATIONS + 1,
         });
 
-        const reconcile = await reconcileBedAllocationsForBooking({
+        const reconcile = await reconcileBedAllocationsForBookingWithLodgeLockHeld({
           bookingId: booking.id,
           db: tx,
         });
@@ -1869,6 +1873,10 @@ export async function approveMemberWholeLodgeRequest(input: {
 
   let totalPriceCents: number;
   let guestPriceCents: number[];
+  // #2739: see the school approval — set only where the engine priced each
+  // guest, so the night rows store the engine's own per-night vector rather than
+  // a flat re-split of a total that was itself built out of varying rates.
+  let guestPerNightCents: Array<readonly number[] | undefined> | undefined;
   if (priceOverrideCents != null) {
     // Officer's manual total wins over BOTH flat and per-guest, split in integer
     // cents with the remainder on the first guest (splitPriceAcrossGuests) — no
@@ -1884,6 +1892,7 @@ export async function approveMemberWholeLodgeRequest(input: {
   } else if (price && price.guests.length === guests.length) {
     totalPriceCents = price.totalPriceCents;
     guestPriceCents = price.guests.map((guest) => guest.priceCents);
+    guestPerNightCents = price.guests.map((guest) => guest.perNightCents);
   } else if (price) {
     totalPriceCents = price.totalPriceCents;
     guestPriceCents = splitPriceAcrossGuests(totalPriceCents, guests.length);
@@ -1924,10 +1933,10 @@ export async function approveMemberWholeLodgeRequest(input: {
 
   try {
     conversion = await prisma.$transaction(async (tx) => {
-      // Fresh create only (no held booking is reachable here, guarded above), so
-      // the per-lodge capacity lock alone is the right scope — exactly as the
-      // school fresh-create branch does. Taking the global lifecycle lock too
-      // would needlessly serialise unrelated lodges.
+      // Whole-lodge conversion composes a booking lifecycle transition with
+      // allocation pruning, so it joins the global cohort before the booking's
+      // lodge capacity key. The held reconcile below reuses that lock prefix.
+      await tx.$executeRaw`SELECT pg_advisory_xact_lock(1)`;
       const bookingLodgeId = request.lodgeId ?? (await getDefaultLodgeId(tx));
       await acquireLodgeCapacityLock(tx, bookingLodgeId);
 
@@ -2062,6 +2071,7 @@ export async function approveMemberWholeLodgeRequest(input: {
         // (OD-A).
         linkedMembers: new Map<number, string>(),
         guestPriceCents,
+        guestPerNightCents,
         checkIn: request.checkIn,
         checkOut: request.checkOut,
         adminMemberId: input.adminMemberId,
@@ -2085,7 +2095,11 @@ export async function approveMemberWholeLodgeRequest(input: {
           notes: request.message,
           createdById: input.adminMemberId,
           ...exclusiveHoldData,
-          guests: { create: guestCreates },
+          // #2739: routed through the same shaper as the other pipeline write
+          // points. It is what nests each guest's canonical night set, and this
+          // create used to hand `guestCreates` to Prisma raw — the one write
+          // point that would have kept producing night-less guests.
+          guests: { create: guestCreates.map(toPipelineGuestCreateData) },
         },
         select: { id: true },
       });
@@ -2109,7 +2123,7 @@ export async function approveMemberWholeLodgeRequest(input: {
         orderBy: [{ stayDate: "asc" }, { bedId: "asc" }],
         take: MAX_AUDITED_PRUNED_ALLOCATIONS + 1,
       });
-      const reconcile = await reconcileBedAllocationsForBooking({
+      const reconcile = await reconcileBedAllocationsForBookingWithLodgeLockHeld({
         bookingId: booking.id,
         db: tx,
       });

@@ -12,6 +12,11 @@ import {
   lockAdultMemberHostingPolicySet,
 } from "@/lib/adult-member-hosting-policy-set";
 import {
+  HOSTING_POLICY_RECONCILIATION_SELECT,
+  enqueueActiveHostingIncidentPolicyReconciliation,
+} from "@/lib/adult-member-hosting-policy-reconciliation";
+import { settleHostingCoverageAfterCommit } from "@/lib/adult-member-hosting-coverage-drain";
+import {
   describeAdultMemberHostingPolicy,
   hostScopeSetIsEmpty,
   resolveAdultMemberHostingPolicy,
@@ -232,7 +237,11 @@ export async function PUT(request: NextRequest) {
     // would still fire — which is the thing the guard inside exists to prevent.
     const result = await prisma.$transaction<
       | { kind: "unchanged"; policy: AdultMemberHostingPolicy }
-      | { kind: "written"; policy: AdultMemberHostingPolicy }
+      | {
+          kind: "written";
+          policy: AdultMemberHostingPolicy;
+          coverageReevaluationsQueued: number;
+        }
     >(async (tx) => {
       // Before the first read, so the row this write compare-and-swaps against
       // cannot move underneath it. The migration's statement trigger re-enters
@@ -247,6 +256,15 @@ export async function PUT(request: NextRequest) {
         if (!lodge || !lodge.active) throw new InactivePolicyLodgeError();
       }
 
+      // Snapshot the complete tiny policy set under its advisory lock. A
+      // club-wide edit can change mode inheritance for one lodge and host-scope
+      // inheritance for another, so only a before/after effective comparison is
+      // complete. The helper below queues accepted future bookings plus active
+      // incident bookings only at lodges whose effective mode/scopes moved.
+      const beforePolicies = await tx.adultMemberHostingPolicy.findMany({
+        select: HOSTING_POLICY_RECONCILIATION_SELECT,
+      });
+
       const existing = await tx.adultMemberHostingPolicy.findUnique({
         where: { scopeKey },
       });
@@ -256,18 +274,26 @@ export async function PUT(request: NextRequest) {
         // that has since been deleted (a configuration import can do that).
         // Creating one anyway would resurrect a policy the club removed.
         if (data.version !== undefined) throw new StalePolicyError();
+        const policy = await tx.adultMemberHostingPolicy.create({
+          data: {
+            scopeKey,
+            lodgeId,
+            mode: data.mode,
+            capacityMode: data.capacityMode,
+            ...scopeColumns,
+            version: 1,
+          },
+        });
         return {
           kind: "written",
-          policy: await tx.adultMemberHostingPolicy.create({
-            data: {
-              scopeKey,
-              lodgeId,
-              mode: data.mode,
-              capacityMode: data.capacityMode,
-              ...scopeColumns,
-              version: 1,
-            },
-          }),
+          policy,
+          coverageReevaluationsQueued:
+            await enqueueActiveHostingIncidentPolicyReconciliation(
+              {
+                beforePolicies,
+              },
+              tx,
+            ),
         };
       }
 
@@ -307,7 +333,17 @@ export async function PUT(request: NextRequest) {
         where: { scopeKey },
       });
       if (!reloaded) throw new StalePolicyError();
-      return { kind: "written", policy: reloaded };
+      return {
+        kind: "written",
+        policy: reloaded,
+        coverageReevaluationsQueued:
+          await enqueueActiveHostingIncidentPolicyReconciliation(
+            {
+              beforePolicies,
+            },
+            tx,
+          ),
+      };
     });
 
     const policy = result.policy;
@@ -324,8 +360,11 @@ export async function PUT(request: NextRequest) {
 
     logAudit({
       action: "adult-member-hosting-policy.update",
+      category: "booking",
       memberId: session.user.id,
       targetId: policy.id,
+      entityType: "AdultMemberHostingPolicy",
+      entityId: policy.id,
       details: JSON.stringify({
         scopeKey,
         lodgeId,
@@ -335,6 +374,13 @@ export async function PUT(request: NextRequest) {
         version: policy.version,
       }),
     });
+
+    // The durable obligation committed with the policy write above. Re-read and
+    // reconcile only now: provider delivery must never run in the policy
+    // transaction, and a failed inline drain leaves the rows for the cron.
+    if (result.coverageReevaluationsQueued > 0) {
+      await settleHostingCoverageAfterCommit({ limit: 5 });
+    }
 
     revalidatePublicPageContent();
     return NextResponse.json(await savedPolicyBody(policy, lodgeId));

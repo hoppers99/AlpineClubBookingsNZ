@@ -4,6 +4,11 @@ import { describe, expect, it } from "vitest";
 
 // #2289 — the guard that keeps raw SQL honest.
 //
+// ENFORCES INV-OPS-001 (`docs/invariants/operations.md`), which names this file
+// as one of its two enforcement arms. Every census assertion below repeats the
+// id in its failure message, so whoever trips one is handed the rule rather than
+// having to go and find it (#2691).
+//
 // `prisma.$queryRaw<SomeRow[]>` is an UNCHECKED CAST. Raw SQL returns the
 // PHYSICAL column names; the type argument declares whatever the author
 // believed. Nothing verifies the two agree, so where they disagreed every
@@ -64,6 +69,14 @@ const RAW_READ_INVENTORY: Record<string, number> = {
   // or the read-modify-write race it exists to close reopens. Its result goes
   // through `decodeRawRows`.
   "src/lib/rate-limit.ts": 1,
+  // The non-blocking adult-hosting policy-set lock reads the one boolean
+  // returned by `pg_try_advisory_xact_lock`; the row is schema-decoded before
+  // the worker decides whether it may proceed.
+  "src/lib/adult-member-hosting-policy-set.ts": 1,
+  // The hosting coverage participant protocol's fail-fast owner lock reads the
+  // boolean returned by pg_try_advisory_xact_lock and schema-decodes it before
+  // deciding whether the outer transaction must retry.
+  "src/lib/adult-member-hosting-coverage-lock.ts": 1,
 };
 
 /**
@@ -164,6 +177,12 @@ function rawStatements(
   return found;
 }
 
+function rawReadCount(source: string): number {
+  return rawStatements(source).filter((statement) =>
+    statement.tag.startsWith("$queryRaw"),
+  ).length;
+}
+
 const sources = SCANNED_DIRS.flatMap((dir) => {
   const full = path.join(process.cwd(), dir);
   return fs.existsSync(full) ? walk(full) : [];
@@ -252,13 +271,14 @@ describe("raw SQL cannot lie about its result shape (#2289)", () => {
   it("keeps every raw READ inside the reviewed inventory", () => {
     const found: Record<string, number> = {};
     for (const { rel, code } of sources) {
-      const count = (code.match(/\$queryRaw(Unsafe)?\b/g) ?? []).length;
+      const count = rawReadCount(code);
       if (count > 0) found[rel] = count;
     }
 
     expect(
       found,
-      "Raw-SQL READ sites changed. `$queryRaw`/`$queryRawUnsafe` hand back a " +
+      "INV-OPS-001 (docs/invariants/operations.md): " +
+        "Raw-SQL READ sites changed. `$queryRaw`/`$queryRawUnsafe` hand back a " +
         "result set whose column names are the DATABASE's, not Prisma's, so a " +
         "name the code gets wrong arrives as `undefined` rather than as an " +
         "error (#2289). Only there for a row lock? Use `$executeRaw` on a " +
@@ -284,7 +304,7 @@ describe("raw SQL cannot lie about its result shape (#2289)", () => {
       .filter(({ rel }) => !(rel in RAW_READ_OPT_OUTS))
       .map(({ rel, code }) => ({
         rel,
-        reads: (code.match(/\$queryRaw(Unsafe)?\b/g) ?? []).length,
+        reads: rawReadCount(code),
         decodes: (code.match(new RegExp(`\\b${DECODER}\\s*\\(`, "g")) ?? []).length,
       }))
       .filter(({ reads }) => reads > 0)
@@ -296,7 +316,8 @@ describe("raw SQL cannot lie about its result shape (#2289)", () => {
 
     expect(
       unvalidated,
-      `Raw read(s) neither validated with ${DECODER} (${DECODER_MODULE}) nor ` +
+      "INV-OPS-001 (docs/invariants/operations.md): " +
+        `Raw read(s) neither validated with ${DECODER} (${DECODER_MODULE}) nor ` +
         "listed in RAW_READ_OPT_OUTS with a reason. An opt-out is only honest " +
         "when the returned rows are genuinely never read. Note this counts " +
         `${DECODER}() CALLS against raw reads per file: one decoded statement ` +
@@ -368,13 +389,20 @@ describe("raw SQL cannot lie about its result shape (#2289)", () => {
     const offenders: string[] = [];
     for (const { rel, code } of sources) {
       for (const template of rawStatements(code)) {
-        if (!/FOR UPDATE/i.test(template.sql)) continue;
+        // #2623 T9(d): every row-lock strength, not just FOR UPDATE. A
+        // `FOR KEY SHARE` lock was exempt from this rule AND from the counted
+        // inventory in advisory-lock-guard, so a new one written as `$queryRaw`
+        // projecting columns would have passed every gate — the exact #2289
+        // failure mode this rule exists to stop.
+        if (!/FOR (UPDATE|KEY SHARE|NO KEY UPDATE|SHARE)/i.test(template.sql)) {
+          continue;
+        }
         if (template.tag !== "$executeRaw") {
-          offenders.push(`${rel}: FOR UPDATE issued through ${template.tag}`);
+          offenders.push(`${rel}: row lock issued through ${template.tag}`);
         }
         if (!/^\s*SELECT\s+1\b/i.test(template.sql)) {
           offenders.push(
-            `${rel}: FOR UPDATE projects columns instead of a constant — ${template.sql
+            `${rel}: row lock projects columns instead of a constant — ${template.sql
               .trim()
               .slice(0, 60)}`,
           );
@@ -384,12 +412,55 @@ describe("raw SQL cannot lie about its result shape (#2289)", () => {
 
     expect(
       offenders,
-      "A row lock must select a CONSTANT through `$executeRaw` and read its " +
+      "INV-OPS-001 (docs/invariants/operations.md): " +
+        "A row lock must select a CONSTANT through `$executeRaw` and read its " +
         "data back through the Prisma model under that same lock (#2289). " +
         "Projecting columns into a raw result is how booking creation ended up " +
         "reading a promo row whose column names it had guessed — silently " +
         "disabling a redemption cap and a discount. See " +
         "docs/CONCURRENCY_AND_LOCKING.md -> 'Lock raw, read typed'.",
+    ).toEqual([]);
+  });
+
+  /**
+   * #2623 T9(b). `rawStatements` only matches a raw call whose SQL is a literal
+   * immediately after the method or after `(`. That is deliberate — it is what
+   * lets the shape assertions above read the SQL — but it means a composed form
+   * like `tx.$queryRaw(composedSql)` matches NOTHING and silently counts zero.
+   *
+   * Counting zero is not neutral: it drops the file out of RAW_READ_INVENTORY
+   * and out of the `reads > 0` filter that forces the decoder, so a raw read
+   * could reach production covered by neither. The narrowing that introduced
+   * this arrived with the hosting participant fence work, whose module mentions
+   * `$queryRaw` in type positions the old identifier count miscounted — a
+   * motivated change that over-corrected.
+   *
+   * So: assert the matcher SEES every raw call, and fail loudly on a form it
+   * cannot read rather than scoring it zero.
+   */
+  it("never scores a raw call zero just because it cannot read its SQL", () => {
+    // Only the RESULT-SET forms. `$executeRaw*` returns an affected-row count
+    // and cannot lie about column names, so a composed one is not a shape risk
+    // and is inventoried nowhere by design.
+    const invocation = /\$queryRaw(?:Unsafe)?\s*(?:<[^>]*>)?\s*[(`]/g;
+    const unreadable: string[] = [];
+
+    for (const { rel, code } of sources) {
+      const seen = rawStatements(code).filter((statement) =>
+        statement.tag.startsWith("$queryRaw"),
+      ).length;
+      const invoked = (code.match(invocation) ?? []).length;
+      if (invoked > seen) {
+        unreadable.push(`${rel}: ${invoked} raw read(s), ${seen} readable`);
+      }
+    }
+
+    expect(
+      unreadable,
+      "A raw call whose SQL this guard cannot read is invisible to the raw-read " +
+        "census and to the decoder rule, so it would ship covered by neither. " +
+        "Inline the SQL as a literal at the call site (which is also what makes " +
+        "it reviewable), or extend `rawStatements` to read the new form.",
     ).toEqual([]);
   });
 

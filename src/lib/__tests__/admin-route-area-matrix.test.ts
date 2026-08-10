@@ -116,9 +116,13 @@ const EXPECTED_ROUTE_AREAS: Record<string, AdminPermissionArea> = {
   "/api/admin/backups/status": "support",
   "/api/admin/bed-allocation": "bookings",
   "/api/admin/bed-allocation/allocations": "bookings",
-  "/api/admin/bed-allocation/allocations/[id]": "bookings",
   "/api/admin/bed-allocation/allocations/bulk": "bookings",
+  // #2595's reviewed-move preview. `bookings` like every other allocation
+  // route: it reads the board's own rows and returns an authoritative preview,
+  // and the apply half stays on the plural `allocations` route above.
+  "/api/admin/bed-allocation/allocations/move": "bookings",
   "/api/admin/bed-allocation/allocations/range": "bookings",
+  "/api/admin/bed-allocation/allocations/removal": "bookings",
   "/api/admin/bed-allocation/approve": "bookings",
   "/api/admin/bed-allocation/auto-allocate": "bookings",
   "/api/admin/bed-allocation/beds": "bookings",
@@ -188,6 +192,10 @@ const EXPECTED_ROUTE_AREAS: Record<string, AdminPermissionArea> = {
   "/api/admin/bookings/[id]/member-guest-candidates": "bookings",
   "/api/admin/bookings/[id]/no-emails": "bookings",
   "/api/admin/bookings/[id]/requested-room": "bookings",
+  // #2649: the stranded zero-dollar waitlist confirm repair. It moves booking
+  // status, so path inference gives it bookings:edit, and the route declares
+  // that permission explicitly rather than relying on inference.
+  "/api/admin/bookings/[id]/return-to-waitlist": "bookings",
   "/api/admin/bookings/[id]/review": "bookings",
   "/api/admin/bookings/eligible-family": "bookings",
   "/api/admin/bookings/non-member-contact": "bookings",

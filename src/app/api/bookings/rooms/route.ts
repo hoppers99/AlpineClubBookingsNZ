@@ -38,7 +38,10 @@ export async function GET(request: NextRequest) {
   // lodges (a listing omits what the member cannot see, never 403 — matching
   // /api/lodges). The two sets are identical by construction because both
   // derive from getEligibleLodgeIdsForMember.
-  let lodgeScope: { lodgeId?: string | { in: string[] } } = {};
+  let lodgeScope: {
+    lodgeId?: string | { in: string[] };
+    lodge?: { active: true };
+  } = {};
   if (lodgeId) {
     if (!(await isMemberEligibleToBookLodge(prisma, session.user.id, lodgeId))) {
       return NextResponse.json(
@@ -52,12 +55,22 @@ export async function GET(request: NextRequest) {
       prisma,
       session.user.id
     );
-    // An unrestricted member (default-open) sees every lodge's rooms as before;
-    // a restricted member sees only their eligible lodges (empty when none of
+    // An unrestricted member (default-open) sees every active lodge's rooms; a
+    // restricted member sees only their eligible lodges (empty when none of
     // those lodges have active rooms).
     if (!eligible.allLodges) {
       lodgeScope = { lodgeId: { in: eligible.lodgeIds } };
     }
+    // ARCHIVED LODGES ARE NEVER OFFERED HERE (#2727, INV-INT-016). This branch
+    // is discovery — "where could I book?" — and a club archives a lodge when
+    // it is closed, sold, out of service or seasonally shut, so listing its
+    // rooms invites a member to try somewhere the club has deliberately taken
+    // out of service. It applies to BOTH eligibility shapes above: a
+    // default-open member's club-wide listing, and a restricted member whose
+    // BOOKING_RESTRICTION rows happen to name a lodge that was later archived.
+    // It is deliberately NOT applied to the named-lodge branch above, which is
+    // scoped by an id the caller already holds rather than a discovery listing.
+    lodgeScope.lodge = { active: true };
   }
   const rooms = await prisma.lodgeRoom.findMany({
     where: {

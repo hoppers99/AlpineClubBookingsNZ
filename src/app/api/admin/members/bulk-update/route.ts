@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { hostingCoverageParticipantRetryResponse } from "@/lib/adult-member-hosting-retry-response";
 import type { AgeTier } from "@prisma/client";
 import { z } from "zod";
 import { settleHostingCoverageAfterCommit } from "@/lib/adult-member-hosting-coverage-drain";
@@ -44,13 +45,19 @@ import {
   getAdminPermissionMatrix,
 } from "@/lib/admin-permissions";
 import {
+  acquireFuturePartnerSharedAllocationLocks,
   describePartnerSharedSweepReason,
   partnerShareSweepCounterpartNames,
   partnerShareSweepNights,
-  sweepFuturePartnerSharedAllocations,
+  sweepFuturePartnerSharedAllocationsWithLocksHeld,
   type SweptPartnerSharedAllocation,
 } from "@/lib/bed-allocation-lifecycle";
 import { sendAdminPartnerShareSweptAlert } from "@/lib/email";
+import { acquireMemberLifecycleLocks } from "@/lib/member-lifecycle-lock";
+import {
+  DELETED_ACCOUNT_BULK_REACTIVATE_MESSAGE,
+  isDeletedAccountRecord,
+} from "@/lib/deleted-account";
 
 const bulkUpdateSchema = z.object({
   ids: z.array(z.string()).min(1, "At least one member ID is required").max(100),
@@ -147,6 +154,12 @@ export async function POST(req: NextRequest) {
         archivedAt: true,
         ageTier: true,
         dateOfBirth: true,
+        // #2620: the anonymisation marker the reactivate guard below reads. An
+        // approved deletion rewrites the password hash to a sentinel and the
+        // email to `@deleted.invalid` and stamps NEITHER cancelledAt nor
+        // archivedAt, so without these two columns the guard cannot see that
+        // the selected row is an erased account.
+        passwordHash: true,
         accessRoles: { select: MEMBER_ACCESS_ROLE_SELECT },
       },
     });
@@ -155,6 +168,26 @@ export async function POST(req: NextRequest) {
     const notFound = ids.filter((id) => !existingIds.has(id)).length;
 
     if (action === "reactivate") {
+      // #2620, checked FIRST because it is the terminal state and the refusal
+      // must name it: an approved deletion request anonymises the member and
+      // leaves `active: false` as the ONLY thing between the erased person and
+      // a working session (canLogin, googleSub, emailVerified and the access
+      // roles all survive today). It writes neither archivedAt nor cancelledAt,
+      // so the refusal below never covered it — and because a deleted row is
+      // `active: false, cancelledAt: null` it lands in the members list's
+      // Inactive filter alongside genuinely deactivated members, so an officer
+      // undoing a mistaken bulk deactivate could restore an erased account by
+      // accident. Deletion is never reversible from a bulk action.
+      const deletedMember = existingMembers.find((member) =>
+        isDeletedAccountRecord(member),
+      );
+      if (deletedMember) {
+        return NextResponse.json(
+          { error: DELETED_ACCOUNT_BULK_REACTIVATE_MESSAGE },
+          { status: 409 },
+        );
+      }
+
       const blockedMember = existingMembers.find(
         (member) => member.archivedAt || member.cancelledAt,
       );
@@ -364,9 +397,26 @@ export async function POST(req: NextRequest) {
       reason: "member_deactivated" | "member_age_tier_changed";
       swept: SweptPartnerSharedAllocation[];
     }> = [];
+    const sweepLockMemberIds =
+      action === "deactivate"
+        ? idsToUpdate
+        : setRoleTargets
+            .filter(({ member }) => {
+              const reconciledAgeTier = ageTierReconById.get(member.id);
+              return (
+                reconciledAgeTier !== undefined &&
+                member.ageTier === "ADULT" &&
+                reconciledAgeTier !== "ADULT"
+              );
+            })
+            .map(({ member }) => member.id);
 
     // Perform update in transaction
     const result = await prisma.$transaction(async (tx) => {
+      if (sweepLockMemberIds.length > 0) {
+        await acquireFuturePartnerSharedAllocationLocks(tx, sweepLockMemberIds);
+        await acquireMemberLifecycleLocks(tx, sweepLockMemberIds);
+      }
       // Last-admin end-state guard (issue #1604): evaluate the whole set, not
       // per row, so a bulk deactivate that collectively removes every
       // remaining Full Admin fails as a whole. Counted inside the transaction
@@ -446,7 +496,7 @@ export async function POST(req: NextRequest) {
             member.ageTier === "ADULT" &&
             reconciledAgeTier !== "ADULT"
           ) {
-            const swept = await sweepFuturePartnerSharedAllocations({
+            const swept = await sweepFuturePartnerSharedAllocationsWithLocksHeld({
               memberId: member.id,
               reason: "member_age_tier_changed",
               db: tx,
@@ -496,7 +546,7 @@ export async function POST(req: NextRequest) {
         // The removed second occupants return to the awaiting-allocation
         // queue; admins are alerted per affected member after commit.
         for (const memberId of idsToUpdate) {
-          const swept = await sweepFuturePartnerSharedAllocations({
+          const swept = await sweepFuturePartnerSharedAllocationsWithLocksHeld({
             memberId,
             reason: "member_deactivated",
             db: tx,
@@ -543,15 +593,45 @@ export async function POST(req: NextRequest) {
       await settleHostingCoverageAfterCommit({ limit: 50 });
     }
 
-    // Audit log for each affected member
+    // Audit log for each affected member.
+    //
+    // #2581 decision 6: this is ONE call site standing for several affected
+    // domains. `member.bulk-set-role` changes what a member is permitted to do,
+    // which is `security`; `member.bulk-deactivate` and `member.bulk-reactivate`
+    // change the account itself, which is `account`. The route's zod enum bounds
+    // the family to exactly those three, so the split below is exhaustive.
+    //
+    // Written as two calls with LITERAL categories rather than one call with a
+    // conditional, deliberately. The census contract pins that no production
+    // writer picks its category with a conditional expression, because the one
+    // that used to do so picked by WHO ACTED (`actor.onBehalf ? "admin" :
+    // "account"`) — the exact thing the owner rule forbids. Splitting keeps the
+    // rule "one literal category per site" intact while still letting the
+    // affected domain decide, and both branches remain member-visible, so no
+    // row moves across the member self-timeline boundary.
     for (const member of existingMembers) {
       if (idsToUpdate.includes(member.id)) {
-        logAudit({
-          action: `member.bulk-${action}`,
-          memberId: currentUserId,
-          targetId: member.id,
-          details: `Bulk ${action}: ${member.firstName} ${member.lastName} (${member.email})${action === "set-role" ? ` -> ${accessRoles?.join(", ") ?? role}` : ""}`,
-        });
+        if (action === "set-role") {
+          logAudit({
+            action: `member.bulk-${action}`,
+            category: "security",
+            memberId: currentUserId,
+            targetId: member.id,
+            entityType: "Member",
+            entityId: member.id,
+            details: `Bulk ${action}: ${member.firstName} ${member.lastName} (${member.email}) -> ${accessRoles?.join(", ") ?? role}`,
+          });
+        } else {
+          logAudit({
+            action: `member.bulk-${action}`,
+            category: "account",
+            memberId: currentUserId,
+            targetId: member.id,
+            entityType: "Member",
+            entityId: member.id,
+            details: `Bulk ${action}: ${member.firstName} ${member.lastName} (${member.email})`,
+          });
+        }
       }
     }
 
@@ -563,6 +643,8 @@ export async function POST(req: NextRequest) {
       blockedLinkedGuests: blockedLinkedGuestMembers,
     });
   } catch (error) {
+    const hostingRetry = hostingCoverageParticipantRetryResponse(error);
+    if (hostingRetry) return hostingRetry;
     if (error instanceof AdminAccountGuardError) {
       return NextResponse.json(
         { error: error.message },

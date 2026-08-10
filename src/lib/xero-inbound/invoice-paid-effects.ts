@@ -16,7 +16,7 @@ import {
   type ManualSettlementConflictEventSnapshot,
 } from "@/lib/manual-settlement-reversal-event";
 import { applyGroupSettlementSucceededFromInvoice } from "@/lib/group-settlement";
-import { reconcileBedAllocationsForBooking } from "@/lib/bed-allocation-lifecycle";
+import { reconcileBedAllocationsForBookingWithLodgeLockHeld } from "@/lib/bed-allocation-lifecycle";
 import { settleHostingCoverageAfterCommit } from "@/lib/adult-member-hosting-coverage-drain";
 import { enqueueOwnHostingCoverageReevaluation } from "@/lib/adult-member-hosting-review";
 import {
@@ -663,9 +663,12 @@ export async function syncInternetBankingPaymentsForPaidInvoice(
       // inside the lodge-lock wait window). Cash that arrived for a cancelled
       // booking becomes member credit — resurrecting it to PAID would be a
       // phantom capacity claim + inconsistent money state. The body is
-      // byte-identical to the pre-#1587 arm and closes over tx/fresh/
+      // byte-identical to the pre-#1587 arm and closes over tx/payment context/
       // paymentWasPending and the invoice-scoped cash context lexically.
-      const runAlreadyCancelledCreditMintArm = async () => {
+      const runAlreadyCancelledCreditMintArm = async (
+        settlementPayment = fresh,
+        originalPaymentStatus = fresh.status,
+      ) => {
         // A member paying the stale open invoice of an already-cancelled
         // booking (#1357, F17) must not land silently — but this branch is
         // reachable for EVERY cancelled booking whose invoice reports PAID,
@@ -685,9 +688,9 @@ export async function syncInternetBankingPaymentsForPaidInvoice(
         //     descriptions — never by amount, which collides with unrelated
         //     cancellation-flow rows and misses policy-tiered ones).
         const paymentNeverSettled =
-          fresh.status === PaymentStatus.PENDING ||
-          fresh.status === PaymentStatus.FAILED;
-        const bookingLabel = fresh.bookingId.slice(0, 8);
+          originalPaymentStatus === PaymentStatus.PENDING ||
+          originalPaymentStatus === PaymentStatus.FAILED;
+        const bookingLabel = settlementPayment.bookingId.slice(0, 8);
 
         // #1459: size the mint by the invoice's quantified CASH, never by the
         // payment's face amount alone. On a mixed invoice — the member
@@ -703,17 +706,21 @@ export async function syncInternetBankingPaymentsForPaidInvoice(
         // lock), which keeps the cap stable across replays.
         const otherMintedCents = await sumInternetBankingMintedCentsForBookings(
           tx,
-          matchedBookingIds.filter((id) => id !== fresh.bookingId)
+          matchedBookingIds.filter((id) => id !== settlementPayment.bookingId)
         );
         const { mintableCents, mintPartial, cashUnverified, aggregateCapped } =
-          resolveMintableCents(fresh.amountCents, invoiceCash, otherMintedCents);
+          resolveMintableCents(
+            settlementPayment.amountCents,
+            invoiceCash,
+            otherMintedCents,
+          );
 
         // Looked up unconditionally (amount included): the dedup gate needs
         // its existence, and the later-cash detection below needs its size.
         const existingCredit = await tx.memberCredit.findFirst({
           where: {
-            memberId: fresh.booking.memberId,
-            sourceBookingId: fresh.bookingId,
+            memberId: settlementPayment.booking.memberId,
+            sourceBookingId: settlementPayment.bookingId,
             type: CreditType.CANCELLATION_REFUND,
             description: {
               in: [
@@ -757,17 +764,29 @@ export async function syncInternetBankingPaymentsForPaidInvoice(
           paymentNeverSettled &&
           !existingCredit &&
           mintableCents === 0 &&
-          fresh.amountCents > 0;
+          settlementPayment.amountCents > 0;
         if (zeroCashAnomaly) {
           logger.warn(
-            { invoiceId, paymentId: fresh.id, bookingId: fresh.bookingId, aggregateCapped },
+            {
+              invoiceId,
+              paymentId: settlementPayment.id,
+              bookingId: settlementPayment.bookingId,
+              aggregateCapped,
+            },
             aggregateCapped
               ? "Xero PAID invoice's cash was already fully minted for other Internet Banking payments on the same invoice; no further member credit minted for this cancelled booking (#1505)"
               : "Xero PAID invoice classified as cash-settled but its cash quantified to zero; no member credit minted for the cancelled booking"
           );
         } else if (aggregateCapped && credited) {
           logger.warn(
-            { invoiceId, paymentId: fresh.id, bookingId: fresh.bookingId, mintableCents, otherMintedCents, invoiceCashCents: invoiceCash.knownCents },
+            {
+              invoiceId,
+              paymentId: settlementPayment.id,
+              bookingId: settlementPayment.bookingId,
+              mintableCents,
+              otherMintedCents,
+              invoiceCashCents: invoiceCash.knownCents,
+            },
             "Internet Banking credit mint reduced by the per-invoice aggregate cap: other payments on this invoice already claimed part of its cash (#1505)"
           );
         }
@@ -775,11 +794,11 @@ export async function syncInternetBankingPaymentsForPaidInvoice(
         if (credited) {
           await tx.memberCredit.create({
             data: {
-              memberId: fresh.booking.memberId,
+              memberId: settlementPayment.booking.memberId,
               amountCents: mintableCents,
               type: CreditType.CANCELLATION_REFUND,
               description: `Internet Banking payment credit for cancelled booking ${bookingLabel}`,
-              sourceBookingId: fresh.bookingId,
+              sourceBookingId: settlementPayment.bookingId,
             },
           });
           // Real cash arrived, so the hold-expiry release's still-pending
@@ -790,27 +809,29 @@ export async function syncInternetBankingPaymentsForPaidInvoice(
           await tx.xeroSyncOperation.updateMany({
             where: {
               localModel: "Payment",
-              localId: fresh.id,
+              localId: settlementPayment.id,
               direction: "OUTBOUND",
               entityType: "CREDIT_NOTE",
               operationType: "CREATE",
               status: "PENDING",
               correlationKey: {
-                startsWith: `payment:${fresh.id}:refund-credit-note:`,
+                startsWith: `payment:${settlementPayment.id}:refund-credit-note:`,
               },
             },
             data: {
               status: "CANCELLED",
             },
           });
-          await enqueueXeroAccountCreditNoteOperation(fresh.id, mintableCents, {
-            store: tx,
-          });
+          await enqueueXeroAccountCreditNoteOperation(
+            settlementPayment.id,
+            mintableCents,
+            { store: tx },
+          );
         }
 
         return {
           type: "alreadyCancelled" as const,
-          payment: fresh,
+          payment: settlementPayment,
           paymentWasPending,
           credited,
           creditedCents: mintableCents,
@@ -819,7 +840,9 @@ export async function syncInternetBankingPaymentsForPaidInvoice(
           aggregateCapped,
           laterCashCents,
           zeroCashAnomaly,
-          clearingNoteAlreadyIssued: Boolean(fresh.xeroRefundCreditNoteId),
+          clearingNoteAlreadyIssued: Boolean(
+            settlementPayment.xeroRefundCreditNoteId,
+          ),
         };
       };
 
@@ -827,9 +850,41 @@ export async function syncInternetBankingPaymentsForPaidInvoice(
         return runAlreadyCancelledCreditMintArm();
       }
 
+      // Reconciliation writes bed allocations even for an already-held
+      // CONFIRMED booking. Acquire the immutable lodge key for every branch
+      // that can reach PAID, then consume only this post-lock snapshot.
+      await acquireLodgeCapacityLock(tx, fresh.booking.lodgeId);
+      const locked = await tx.payment.findUnique({
+        where: { id: fresh.id },
+        include: {
+          booking: {
+            include: {
+              member: true,
+              guests: { include: { nights: true } },
+              promoRedemption: { include: { promoCode: true } },
+            },
+          },
+        },
+      });
+      if (!locked || locked.source !== PaymentSource.INTERNET_BANKING) {
+        throw new Error(
+          "Internet Banking payment disappeared during Xero reconciliation",
+        );
+      }
+      if (locked.booking.status === BookingStatus.PAID) {
+        return {
+          type: "alreadyPaid" as const,
+          payment: fresh,
+          paymentWasPending,
+        };
+      }
+      if (locked.booking.status === BookingStatus.CANCELLED) {
+        return runAlreadyCancelledCreditMintArm(locked, fresh.status);
+      }
+
       if (
-        fresh.booking.status === BookingStatus.PAYMENT_PENDING &&
-        !fresh.internetBankingHoldSlots
+        locked.booking.status === BookingStatus.PAYMENT_PENDING &&
+        !locked.internetBankingHoldSlots
       ) {
         // Two-lock composition (multi-lodge). The outer pg_advisory_xact_lock(1)
         // above sequences Internet Banking webhook/reconciliation processing;
@@ -838,20 +893,6 @@ export async function syncInternetBankingPaymentsForPaidInvoice(
         // PAID here is a net-new capacity claim, so it must ALSO take the
         // booking's per-lodge lock to serialize against those creators. lodgeId
         // is immutable, so keying the lock from the pre-lock read is safe.
-        await acquireLodgeCapacityLock(tx, fresh.booking.lodgeId);
-
-        // Re-read under the lodge lock before claiming: a concurrent holder of
-        // that lock (a date/guest modification, or a switch-to-Internet-Banking
-        // that sets internetBankingHoldSlots) may have changed the branch
-        // inputs since the pre-lock read, which was taken under lock(1) only.
-        // The capacity check consumes ONLY this post-lock snapshot.
-        const locked = await tx.payment.findUnique({
-          where: { id: fresh.id },
-          include: {
-            booking: { include: { guests: { include: { nights: true } } } },
-          },
-        });
-
         // #1587: a concurrent actor may have CANCELLED this booking while we
         // waited on the lodge lock — the pre-lock branch decision above was
         // taken under lock(1) only, so a cancellation that landed inside the
@@ -862,36 +903,26 @@ export async function syncInternetBankingPaymentsForPaidInvoice(
         // cancellation had been observed before the payment landed. Only the
         // post-lock-CANCELLED path changes; every other post-lock state falls
         // through to the capacity gate / PAID flip below unchanged.
-        if (locked && locked.booking.status === BookingStatus.CANCELLED) {
-          return runAlreadyCancelledCreditMintArm();
-        }
-
         // Only an unheld PAYMENT_PENDING booking still needs the capacity gate.
         // If the post-lock read shows it moved on (already CONFIRMED/PAID by a
         // concurrent path, or a switch-to-Internet-Banking now holds its
         // slots), skip the gate and fall through to the PAID flip below: those
         // states already hold their beds, so there is no net-new claim to
         // serialize.
-        const capacity =
-          locked &&
-          locked.booking.status === BookingStatus.PAYMENT_PENDING &&
-          !locked.internetBankingHoldSlots
-            ? await checkCapacityForGuestRanges(
-                locked.booking.lodgeId,
-                locked.booking.checkIn,
-                locked.booking.checkOut,
-                locked.booking.guests,
-                locked.booking.id,
-                tx,
-              )
-            : { available: true };
+        const capacity = await checkCapacityForGuestRanges(
+          locked.booking.lodgeId,
+          locked.booking.checkIn,
+          locked.booking.checkOut,
+          locked.booking.guests,
+          locked.booking.id,
+          tx,
+        );
 
         // Persisted capacity override (#1771): read off the post-lock snapshot
         // (locked is non-null whenever capacity was actually checked, but guard
         // it so TS stays happy on the { available: true } branch). The marker is
         // immutable, so the pre- vs post-lock read cannot disagree.
-        const lockedHasOverride =
-          locked != null && bookingHasCapacityOverride(locked.booking);
+        const lockedHasOverride = bookingHasCapacityOverride(locked.booking);
 
         if (!capacity.available && lockedHasOverride) {
           // The booking was deliberately admitted above the ceiling by an admin,
@@ -910,15 +941,23 @@ export async function syncInternetBankingPaymentsForPaidInvoice(
           // carries a stale election. Nothing is lost — the election never
           // moved money, and the cash the member did send is minted as credit
           // just below.
-          await clearStaleCreditElection(tx, fresh.booking);
-          await tx.booking.update({
-            where: { id: fresh.bookingId },
+          await clearStaleCreditElection(tx, locked.booking);
+          const cancelled = await tx.booking.updateMany({
+            where: {
+              id: fresh.bookingId,
+              status: locked.booking.status,
+            },
             data: {
               status: BookingStatus.CANCELLED,
               draftExpiresAt: null,
             },
           });
-          await reconcileBedAllocationsForBooking({
+          if (cancelled.count === 0) {
+            throw new Error(
+              "Xero reconciliation lost its capacity-failure cancellation claim",
+            );
+          }
+          await reconcileBedAllocationsForBookingWithLodgeLockHeld({
             bookingId: fresh.bookingId,
             db: tx,
           });
@@ -999,17 +1038,23 @@ export async function syncInternetBankingPaymentsForPaidInvoice(
       // reasoning and for who can still reach here carrying one.
       const staleCreditElectionCents = await clearStaleCreditElection(
         tx,
-        fresh.booking
+        locked.booking
       );
 
-      await tx.booking.update({
-        where: { id: fresh.bookingId },
+      const claimed = await tx.booking.updateMany({
+        where: {
+          id: fresh.bookingId,
+          status: locked.booking.status,
+        },
         data: {
           status: BookingStatus.PAID,
           draftExpiresAt: null,
         },
       });
-      await reconcileBedAllocationsForBooking({
+      if (claimed.count === 0) {
+        throw new Error("Xero reconciliation lost its booking status claim");
+      }
+      await reconcileBedAllocationsForBookingWithLodgeLockHeld({
         bookingId: fresh.bookingId,
         db: tx,
       });

@@ -1,0 +1,62 @@
+-- Operational rollback for 20260806010000_fence_hosting_coverage_delivery_claims.
+--
+-- INTENTIONALLY NO-OP. This migration is windowed because old and new hosting
+-- workers use incompatible claim protocols, not because its three nullable
+-- columns break the old Prisma client. Dropping the columns would make the live
+-- schema disagree with the still-applied _prisma_migrations history and would
+-- complicate the next roll-forward without making the old-only release safer.
+--
+-- TO RETURN TO THE OLD-ONLY RELEASE. The order is load-bearing because policy
+-- demotion is what makes the new runtime enqueue/drain the final reconciliation
+-- and close every incident the old runtime cannot manage:
+--
+--   1. Keep public traffic removed.
+--   2. KEEP the new runtime and its cron/drain workers available. Through the new
+--      Booking Policies UI, demote the club-wide ENFORCED row AND every explicit
+--      lodge ENFORCED override to the operator-approved ADMIN_REVIEW_REQUIRED or
+--      DISABLED fallback. Do not stop after changing only the club row: an explicit
+--      lodge override remains authoritative for that lodge.
+--   3. After the LAST override change, let the new hosting drain settle all work.
+--      The following query must return zero rows:
+--
+--        SELECT "id", "memberId", "lodgeId", "attempts", "lastError",
+--               "claimToken", "claimExpiresAt"
+--        FROM "HostingCoverageReevaluation"
+--        WHERE "processedAt" IS NULL
+--        ORDER BY "enqueuedAt", "id";
+--
+--      Any row is a blocker. In particular, a row at the maximum attempt count or
+--      carrying lastError is not permission to continue: it may no longer be
+--      automatically claimable, so diagnose/recover it with the new runtime or a
+--      separately reviewed repair and repeat the query.
+--   4. The following query must also return zero rows:
+--
+--        SELECT "id", "bookingId", "lodgeId", "stateKey", "openedAt"
+--        FROM "HostingCoverageIncident"
+--        WHERE "resolvedAt" IS NULL
+--        ORDER BY "openedAt", "id";
+--
+--      An unresolved incident is a blocker even when the queue is empty.
+--   5. AFTER the last override change, repeat all three proofs: no club-wide or
+--      explicit-lodge ENFORCED policy row, no unprocessed re-evaluation, and no
+--      unresolved incident. The exact policy query is:
+--
+--        SELECT "id", "scopeKey", "lodgeId", "mode"
+--        FROM "AdultMemberHostingPolicy"
+--        WHERE "mode" = 'ENFORCED'
+--        ORDER BY "scopeKey", "lodgeId", "id";
+--
+--   6. Only now stop the new web colour and EVERY new worker, scheduler, cron
+--      runner and queue consumer. Verify no new connection remains. A mixed
+--      old/new fleet is the defect this window prevents.
+--   7. Start only the previous release's web and workers, then restore traffic
+--      after its smoke checks pass.
+--
+-- The old client ignores HostingCoverageReevaluation.claimToken,
+-- HostingCoverageReevaluation.claimExpiresAt, and
+-- HostingCoverageIncident.ownerNotificationClaimToken. Leave those nullable
+-- columns and the applied migration-history row intact. A future roll-forward is
+-- therefore operational only: stop every old worker again, deploy the new-only
+-- runtime, and keep the already-applied schema/history unchanged.
+--
+-- There are deliberately no executable SQL statements in this file.

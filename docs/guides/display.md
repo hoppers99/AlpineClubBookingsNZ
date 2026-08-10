@@ -7,7 +7,14 @@ Audience: Operator
 The admin area behind the club's **lobby TV display** — a live, self-updating
 noticeboard you hang on the lodge wall that shows arrivals, departures, who's in
 which room, today's chores, and arrival information, all driven by data the system
-already holds. This hub is where you pair screens, author what they show, and look
+already holds. Where a member has recorded an **expected arrival time** on their
+booking, the arrivals board shows it beside their names, so whoever is at the
+lodge knows roughly when to expect them — but only on rows the wall is already
+allowed to name (the guest-name granularity rules in
+[the lobby-display design note](../lobby-display/design.md#settled-naming-rules-issue-28-2026-07-11)):
+a booking shown as a family, a group or a whole-lodge blockout carries no time,
+because a time next to a withheld name is still a fact about identifiable people
+on a screen anyone can read. This hub is where you pair screens, author what they show, and look
 up the display vocabulary. Find it at **Admin → Lodge Operations → Lobby Display**
 (`/admin/display`).
 
@@ -69,6 +76,8 @@ actually happens:
    keeps your place). Nothing is bound to a screen yet, so browsing is safe.
 4. **Lodge details** — fill in the handful of values the boards print (Wi-Fi
    name and password, checkout time, door code) and the on-screen notice. The
+   checkout time is free text; the natural value is **midday**, since a lodge
+   stay runs midday to midday and the checkout date is a departure morning. The
    footer also prints **who is in residence tonight** on its own, whenever a hut
    leader has been given a bed on the [Hut Leaders](hut-leaders.md) page — you do
    not configure that anywhere. It always reads **Custodian** (or *Custodians*

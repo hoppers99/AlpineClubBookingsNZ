@@ -18,7 +18,10 @@ import {
   isSubscriptionNotRequiredForMembershipType,
 } from "@/lib/membership-types";
 import { UNASSIGNED_MEMBERSHIP_TYPE_VALUE } from "@/lib/membership-type-filter";
-import { formatDateOnlyForTimeZone } from "@/lib/date-only";
+import {
+  formatDateOnlyForTimeZone,
+  todayDateOnlyForTimeZone,
+} from "@/lib/date-only";
 import { escapeCsvCell } from "@/lib/csv";
 
 const AGE_TIER_VALUES = Object.values(AgeTier);
@@ -456,7 +459,7 @@ export async function GET(req: NextRequest) {
     const csv = [headers.join(","), ...rows.map((r) => r.join(","))].join(
       "\r\n",
     );
-    const today = new Date().toISOString().split("T")[0];
+    const today = todayDateOnlyForTimeZone();
 
     // Privacy audit: record that a members CSV was exported. Only the applied
     // filters and the row count are stored — never member row contents.

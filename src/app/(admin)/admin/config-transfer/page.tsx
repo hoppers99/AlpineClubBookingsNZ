@@ -5,6 +5,7 @@ import { useSession } from "next-auth/react";
 import { ArrowRightLeft, Download, Upload, AlertTriangle, ShieldAlert } from "lucide-react";
 
 import { isFullAdmin } from "@/lib/access-roles";
+import { todayDateOnlyForTimeZone } from "@/lib/date-only";
 import { Button } from "@/components/ui/button";
 import {
   Card,
@@ -146,7 +147,7 @@ export default function ConfigTransferPage() {
       }
       downloadBlob(
         await res.blob(),
-        `config-transfer-${new Date().toISOString().slice(0, 10)}.zip`,
+        `config-transfer-${todayDateOnlyForTimeZone()}.zip`,
       );
     } catch (err) {
       setExportError(err instanceof Error ? err.message : "Export failed.");
@@ -236,7 +237,7 @@ export default function ConfigTransferPage() {
       }
       downloadBlob(
         await res.blob(),
-        `config-transfer-resealed-${new Date().toISOString().slice(0, 10)}.zip`,
+        `config-transfer-resealed-${todayDateOnlyForTimeZone()}.zip`,
       );
     } catch (err) {
       setImportError(err instanceof Error ? err.message : "Reseal failed.");

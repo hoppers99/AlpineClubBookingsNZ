@@ -61,7 +61,7 @@ function loadIssues(inputPath) {
         body: [
           "Planning-only review issue.",
           "",
-          "Read `AGENTS.md`, `docs/DOMAIN_INVARIANTS.md`, `docs/STATE_MACHINES.md`, and `docs/END_TO_END_TEST_MATRIX.md`.",
+          "Read `AGENTS.md`, then the `docs/DOMAIN_INVARIANTS.md` index and the `INV-*` files its routing table sends you to for the surfaces you touch, plus `docs/STATE_MACHINES.md` and `docs/END_TO_END_TEST_MATRIX.md`. Cite `INV-*` ids, never line numbers.",
           "",
           "Do not edit application code. Verify state-machine assumptions and propose focused implementation issues.",
         ].join("\n"),

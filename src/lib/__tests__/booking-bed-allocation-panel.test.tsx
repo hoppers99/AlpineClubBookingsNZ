@@ -181,6 +181,41 @@ function jsonResponse(body: unknown, ok = true, status = 200) {
   return { ok, status, json: async () => body };
 }
 
+function removalPreview(reopened = false, matchedRowCount = 1) {
+  return {
+    digestVersion: "v1",
+    digest: "reviewed-digest",
+    scope: {
+      type: "ALLOCATION",
+      allocationId: "alloc-1",
+      lodgeId: "lodge-1",
+      stayDate: "2026-06-01",
+    },
+    context: {
+      lodgeId: "lodge-1",
+      lodgeName: "Test Lodge",
+      from: "2026-06-01",
+      to: "2026-06-02",
+      bookingId: "booking-1",
+      bookingGuestId: "guest-1",
+      guestName: "Ada Guest",
+      anchorNight: "2026-06-01",
+    },
+    categories: {
+      AUTO_DRAFT: 0,
+      MANUAL_DRAFT: 0,
+      APPROVED: matchedRowCount,
+    },
+    matchedRowCount,
+    affectedBookingCount: matchedRowCount > 0 ? 1 : 0,
+    affectedNights: matchedRowCount > 0 ? ["2026-06-01"] : [],
+    promotions: [],
+    reopenedBookings: reopened
+      ? [{ bookingId: "booking-1", memberName: "Ada Member" }]
+      : [],
+  };
+}
+
 // The panel (and the shared range dialog inside it) reads the club's own word
 // for a hut leader (#2286); the provider is always mounted above it in the app
 // shell, so the tests mount it too.
@@ -190,6 +225,7 @@ function panelElement(overrides: Record<string, unknown> = {}) {
       <BookingBedAllocationPanel
         bookingId="booking-1"
         lodgeId="lodge-1"
+        lodgeName="Test Lodge"
         memberName="Ada Member"
         checkIn="2026-06-01"
         checkOut="2026-06-04"
@@ -197,7 +233,6 @@ function panelElement(overrides: Record<string, unknown> = {}) {
         bookingStatus="CONFIRMED"
         isDeleted={false}
         canHoldBeds
-        approvedBedNightCount={0}
         guests={[{ id: "guest-1", name: "Ada Guest" }]}
         {...overrides}
       />
@@ -291,30 +326,25 @@ describe("BookingBedAllocationPanel", () => {
     expect(body.allocationIds).toBeUndefined();
   });
 
-  it("keeps the approval club-wide when the booking has no lodge", async () => {
-    // Null lodgeId is the pre-backfill tolerance the board keeps too: scoping to
-    // a lodge the booking does not have would approve nothing at all.
-    renderPanel({ lodgeId: null });
+  it("names the booking's lodge on every board link it builds (#2678)", async () => {
+    // REPLACES "keeps the approval club-wide when the booking has no lodge".
+    //
+    // That test rendered the panel with `lodgeId: null` and called it the
+    // "pre-backfill tolerance". There is no such state: `Booking.lodgeId` is NOT
+    // NULL in the schema, so a booking without a lodge is a shape production
+    // cannot emit, and the tolerance was really a latent second instance of
+    // #2664 waiting for a caller to pass null. The prop is now `string`, and
+    // what is worth pinning is the opposite property — that the lodge travels
+    // on the deep link, so the board does not open club-wide over a booking
+    // that has a lodge.
+    renderPanel();
 
-    const confirm = await screen.findByRole("button", {
-      name: "Confirm draft beds",
+    const boardLink = await screen.findByRole("link", {
+      name: "Open on the board",
     });
-    fetchMock.mockResolvedValueOnce(jsonResponse({ approvedCount: 2 }));
-    fireEvent.click(confirm);
-
-    await waitFor(() => {
-      expect(
-        fetchMock.mock.calls.some(
-          (call) => String(call[0]) === "/api/admin/bed-allocation/approve",
-        ),
-      ).toBe(true);
-    });
-    const approveCall = fetchMock.mock.calls.find(
-      (call) => String(call[0]) === "/api/admin/bed-allocation/approve",
-    );
-    expect(JSON.parse(String(approveCall?.[1]?.body))).toEqual({
-      bookingId: "booking-1",
-    });
+    const href = boardLink.getAttribute("href") ?? "";
+    expect(href).toContain("bookingId=booking-1");
+    expect(href).toContain("lodgeId=lodge-1");
   });
 
   it("says plainly that confirming does not place the nights nobody is on a bed for", async () => {
@@ -339,10 +369,14 @@ describe("BookingBedAllocationPanel", () => {
     renderPanel();
 
     fireEvent.click(await screen.findByRole("button", { name: "Remove" }));
+    fetchMock.mockResolvedValueOnce(jsonResponse(removalPreview(true)));
+    fireEvent.click(
+      await screen.findByRole("button", { name: "Preview removal" }),
+    );
 
     expect(
-      await screen.findByTestId("bed-remove-reopens-lock"),
-    ).toHaveTextContent("re-opens the member's room request");
+      await screen.findByText(/The final approved allocation will be removed/),
+    ).toBeInTheDocument();
   });
 
   it("does not claim the lock re-opens when confirmed nights remain elsewhere", async () => {
@@ -370,9 +404,13 @@ describe("BookingBedAllocationPanel", () => {
     });
     fireEvent.click(removeButtons[0]);
 
-    await screen.findByRole("dialog");
+    fetchMock.mockResolvedValueOnce(jsonResponse(removalPreview(false)));
+    fireEvent.click(
+      await screen.findByRole("button", { name: "Preview removal" }),
+    );
+    await screen.findByText(/matching allocation/);
     expect(
-      screen.queryByTestId("bed-remove-reopens-lock"),
+      screen.queryByText("Requested-room editing will re-open"),
     ).not.toBeInTheDocument();
   });
 
@@ -547,18 +585,55 @@ describe("BookingBedAllocationPanel", () => {
     expect(link.getAttribute("href")).toContain("bookingId=booking-1");
   });
 
-  it("shows a view-only admin the reason and no usable controls", async () => {
+  it("lets a view-only admin preview removal but never apply it", async () => {
     editAccess.mockReturnValue(false);
+    fetchMock.mockResolvedValue(
+      jsonResponse(
+        payload({
+          allocations: [
+            allocation({
+              id: "alloc-1",
+              approvedAt: "2026-05-01T00:00:00.000Z",
+            }),
+          ],
+          unallocatedGuestNights: [],
+        }),
+      ),
+    );
     renderPanel();
 
     await screen.findByText("Ada Guest");
     expect(screen.getByTestId("admin-view-only-banner")).toHaveTextContent(
-      "not assign, remove, or confirm beds",
+      "preview removals, but not assign, apply removals, or confirm beds",
     );
     expect(screen.getByRole("button", { name: "Assign…" })).toBeDisabled();
     expect(
       screen.getByRole("button", { name: "Confirm draft beds" }),
     ).toBeDisabled();
+
+    fireEvent.click(screen.getByRole("button", { name: "Remove" }));
+    fetchMock.mockResolvedValueOnce(jsonResponse(removalPreview(false)));
+    const previewButton = await screen.findByRole("button", {
+      name: "Preview removal",
+    });
+    await waitFor(() => expect(previewButton).toBeEnabled());
+    fireEvent.click(previewButton);
+
+    await screen.findByText(/matching allocation/);
+    expect(fetchMock).toHaveBeenLastCalledWith(
+      "/api/admin/bed-allocation/allocations/removal",
+      expect.objectContaining({ method: "POST" }),
+    );
+    expect(
+      screen.getByRole("button", { name: "Remove reviewed allocations" }),
+    ).toBeDisabled();
+    expect(
+      fetchMock.mock.calls.some(([, init]) =>
+        typeof init === "object" && init !== null && "method" in init
+          ? init.method === "PUT"
+          : false,
+      ),
+    ).toBe(false);
   });
 
   it("does not claim the lock re-opens when the booking's other pages hold confirmed nights", async () => {
@@ -578,11 +653,6 @@ describe("BookingBedAllocationPanel", () => {
               stayDate: "2026-06-01",
               approvedAt: "2026-05-01T00:00:00.000Z",
             }),
-            allocation({
-              id: "alloc-2",
-              stayDate: "2026-06-02",
-              approvedAt: "2026-05-01T00:00:00.000Z",
-            }),
           ],
           unallocatedGuestNights: [],
         }),
@@ -591,14 +661,17 @@ describe("BookingBedAllocationPanel", () => {
     renderPanel({
       checkIn: "2026-06-01",
       checkOut: "2026-08-01",
-      approvedBedNightCount: 4,
     });
 
     fireEvent.click(await screen.findByRole("button", { name: "Remove" }));
 
-    await screen.findByRole("dialog");
+    fetchMock.mockResolvedValueOnce(jsonResponse(removalPreview(false)));
+    fireEvent.click(
+      await screen.findByRole("button", { name: "Preview removal" }),
+    );
+    await screen.findByText(/matching allocation/);
     expect(
-      screen.queryByTestId("bed-remove-reopens-lock"),
+      screen.queryByText("Requested-room editing will re-open"),
     ).not.toBeInTheDocument();
   });
 
@@ -620,14 +693,17 @@ describe("BookingBedAllocationPanel", () => {
     renderPanel({
       checkIn: "2026-06-01",
       checkOut: "2026-08-01",
-      approvedBedNightCount: 1,
     });
 
     fireEvent.click(await screen.findByRole("button", { name: "Remove" }));
+    fetchMock.mockResolvedValueOnce(jsonResponse(removalPreview(true)));
+    fireEvent.click(
+      await screen.findByRole("button", { name: "Preview removal" }),
+    );
 
     expect(
-      await screen.findByTestId("bed-remove-reopens-lock"),
-    ).toHaveTextContent("re-opens the member's room request");
+      await screen.findByText(/The final approved allocation will be removed/),
+    ).toBeInTheDocument();
   });
 
   it("drops a superseded window read rather than painting its rows under the current one", async () => {
@@ -750,7 +826,7 @@ describe("BookingBedAllocationPanel", () => {
     expect(badge.textContent).not.toContain("this page");
   });
 
-  it("marks a part-suggested run as suggested in part, not wholly suggested", async () => {
+  it("splits displayed runs at removal-category boundaries", async () => {
     fetchMock.mockResolvedValue(
       jsonResponse(
         payload({
@@ -768,16 +844,17 @@ describe("BookingBedAllocationPanel", () => {
     );
     renderPanel();
 
-    expect(await screen.findByText("Suggested in part")).toBeInTheDocument();
+    expect(await screen.findByText("Suggested")).toBeInTheDocument();
+    expect(screen.getAllByRole("button", { name: "Remove" })).toHaveLength(2);
+    expect(screen.queryByText("Suggested in part")).not.toBeInTheDocument();
   });
 
-  it("reports how many nights actually went when a removal stops part way", async () => {
+  it("reports the server's committed reviewed-removal count", async () => {
     fetchMock.mockResolvedValue(
       jsonResponse(
         payload({
           allocations: [
             allocation({ id: "alloc-1", stayDate: "2026-06-01" }),
-            allocation({ id: "alloc-2", stayDate: "2026-06-02" }),
           ],
           unallocatedGuestNights: [],
         }),
@@ -786,24 +863,32 @@ describe("BookingBedAllocationPanel", () => {
     renderPanel();
 
     fireEvent.click(await screen.findByRole("button", { name: "Remove" }));
-    const dialog = await screen.findByRole("dialog");
-
-    // First night deletes, second refuses: the toast must not claim the run is
-    // gone. There is no bulk-remove endpoint, so a partial outcome is real.
-    fetchMock.mockResolvedValueOnce(jsonResponse({}));
     fetchMock.mockResolvedValueOnce(
-      jsonResponse({ error: "Not found" }, false, 404),
+      jsonResponse({
+        ...removalPreview(false),
+        categories: { AUTO_DRAFT: 1, MANUAL_DRAFT: 0, APPROVED: 0 },
+      }),
     );
+    fireEvent.click(
+      await screen.findByRole("button", { name: "Preview removal" }),
+    );
+    await screen.findByText(/matching allocation/);
 
-    const buttons = Array.from(dialog.querySelectorAll("button"));
-    const confirmRemove = buttons.find(
-      (button) => button.textContent?.trim() === "Remove",
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse({
+        removedRowCount: 1,
+        promotedRowCount: 0,
+        affectedBookingCount: 1,
+        affectedNights: ["2026-06-01"],
+      }),
     );
-    fireEvent.click(confirmRemove as HTMLButtonElement);
+    fireEvent.click(
+      screen.getByRole("button", { name: "Remove reviewed allocations" }),
+    );
 
     await waitFor(() => {
-      expect(toastError).toHaveBeenCalledWith(
-        expect.stringContaining("1 of 2 nights were removed"),
+      expect(toastSuccess).toHaveBeenCalledWith(
+        expect.stringContaining("1 reviewed bed night removed"),
       );
     });
   });

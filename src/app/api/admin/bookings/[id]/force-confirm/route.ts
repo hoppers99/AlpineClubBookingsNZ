@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { hostingCoverageParticipantRetryResponse } from "@/lib/adult-member-hosting-retry-response";
 import { requireAdmin } from "@/lib/session-guards";
 import { prisma } from "@/lib/prisma";
 import { AdminReviewStatus, BookingStatus } from "@prisma/client";
@@ -15,9 +16,9 @@ import { getTodayDateOnly } from "@/lib/date-only";
 import { sendBookingConfirmedEmail } from "@/lib/email";
 import { getProvisionalNonMemberChildSummary } from "@/lib/booking-split-summary";
 import logger from "@/lib/logger";
-import { reconcileBedAllocationsForBooking } from "@/lib/bed-allocation-lifecycle";
 import { settleHostingCoverageAfterCommit } from "@/lib/adult-member-hosting-coverage-drain";
 import { enqueueOwnHostingCoverageReevaluation } from "@/lib/adult-member-hosting-review";
+import { reconcileBedAllocationsForBookingWithGlobalLockHeld } from "@/lib/bed-allocation-lifecycle";
 import { z } from "zod";
 
 const forceConfirmSchema = z.object({
@@ -67,6 +68,7 @@ export async function POST(
 
   try {
     const result = await prisma.$transaction(async (tx) => {
+      await tx.$executeRaw`SELECT pg_advisory_xact_lock(1)`;
       const booking = await tx.booking.findUnique({
         where: { id: bookingId },
         include: { guests: { include: { nights: true } }, member: true, promoRedemption: { include: { promoCode: true } } },
@@ -185,7 +187,7 @@ export async function POST(
           },
         });
       }
-      await reconcileBedAllocationsForBooking({
+      await reconcileBedAllocationsForBookingWithGlobalLockHeld({
         bookingId,
         db: tx,
         previousRange: {
@@ -353,6 +355,8 @@ export async function POST(
       unpaidFinishedStay,
     });
   } catch (err) {
+    const hostingRetry = hostingCoverageParticipantRetryResponse(err);
+    if (hostingRetry) return hostingRetry;
     logger.error({ err, bookingId }, "Failed to force-confirm waitlisted booking");
     return NextResponse.json({ error: "Failed to force-confirm booking" }, { status: 500 });
   }

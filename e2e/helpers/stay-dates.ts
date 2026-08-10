@@ -74,6 +74,95 @@ export type StayWindow = {
   nights: string[]; // occupied lodge nights: checkIn inclusive, checkOut exclusive
 };
 
+const PAST_RETRY_OFFSETS_DAYS = [-7, -11, -15] as const;
+
+/**
+ * Select a two-night past stay for a Playwright attempt.
+ *
+ * CI retries reuse the seeded database, so an attempt that persisted its
+ * booking before a later navigation failure must not retry against the same
+ * member nights. Each retry moves into a disjoint band while remaining inside
+ * the relative seeded Winter season. Callers provide booking windows owned by
+ * their chosen member; overlap fails closed rather than borrowing another
+ * attempt's window.
+ */
+export function pastStayWindowForAttempt(
+  retry: number,
+  blockedRanges: ReadonlyArray<readonly [string, string]> = [],
+): StayWindow {
+  if (!Number.isInteger(retry) || retry < 0 || retry > 2) {
+    throw new Error("retroactive retry must be an integer from 0 to 2");
+  }
+
+  const offsetDays = PAST_RETRY_OFFSETS_DAYS[retry];
+  if (offsetDays === undefined) {
+    throw new Error("retroactive retry must be an integer from 0 to 2");
+  }
+  const checkInDate = addDays(new Date(), offsetDays);
+  const checkOutDate = addDays(checkInDate, 2);
+  const checkIn = toDateOnly(checkInDate);
+  const checkOut = toDateOnly(checkOutDate);
+  const nights = [checkIn, toDateOnly(addDays(checkInDate, 1))];
+  const overlapsBlockedRange = blockedRanges.some(
+    ([start, end]) => checkIn < end && checkOut > start,
+  );
+
+  if (overlapsBlockedRange || !isWindowInSeededSeason(nights)) {
+    throw new Error(
+      `No conflict-free seeded past window for Playwright retry ${retry}`,
+    );
+  }
+
+  return { checkIn, checkOut, nights };
+}
+
+/**
+ * Every check-in date a leftover retroactive booking can sit on that would still
+ * block one of THIS run's three attempt windows (#2625).
+ *
+ * The retroactive spec creates a real PENDING booking and, unlike every other
+ * date-based spec, used to leave it behind — so it self-blocked on the second run
+ * against one seeded database, and could block the NEXT DAY's run too. The
+ * windows above are derived from the RUN DATE and therefore slide one day per
+ * day, while a leftover stays on the absolute date it was created on; yesterday's
+ * attempt-0 booking is today's -8, and it still occupies one of today's
+ * attempt-0 nights.
+ *
+ * Which check-ins can collide is exact rather than guessed. A two-night stay
+ * checking in on `c` occupies nights `c` and `c + 1`, so it overlaps the attempt
+ * window at offset `o` (nights `o` and `o + 1`) exactly when `c` is `o - 1`, `o`,
+ * or `o + 1`. Sweeping the contiguous band from the oldest offset minus a day to
+ * the newest offset plus a day therefore covers every leftover that can wedge
+ * this run — today's own, yesterday's, and an attempt/retry pair that straddled
+ * NZ midnight — and it is derived from PAST_RETRY_OFFSETS_DAYS, so it cannot
+ * drift if those offsets ever move.
+ *
+ * A leftover older than the band has slid clear of all three windows and holds
+ * no night this run wants, so it is deliberately NOT swept: the sweep stays the
+ * narrowest thing that makes the spec re-runnable.
+ *
+ * The band is -16…-6 on any run date. `admin-override-dates.spec.ts` sweeps
+ * -6…+1 for the same member, so the two touch at -6 only — and -6 is a CHECK-IN
+ * for neither spec on any run date, which is all a check-in sweep can act on. It
+ * is the day of slack each band adds at its near edge: this spec's newest
+ * check-in is -7 and the override spec's oldest is -5. (-6 is not unbooked — it
+ * is attempt 0's second night, since a check-in on -7 occupies -7 and -6 — but a
+ * booking is only ever swept by its check-in.) Overlapping there is
+ * harmless anyway: `playwright.config.ts` runs one worker with
+ * `fullyParallel: false`, so no two specs are ever in flight together, and each
+ * clears its own leftovers in its own `beforeAll` before it creates anything.
+ */
+export function pastStayLeftoverCheckIns(): string[] {
+  const oldest = Math.min(...PAST_RETRY_OFFSETS_DAYS) - 1;
+  const newest = Math.max(...PAST_RETRY_OFFSETS_DAYS) + 1;
+  const today = new Date();
+  const checkIns: string[] = [];
+  for (let offset = oldest; offset <= newest; offset += 1) {
+    checkIns.push(toDateOnly(addDays(today, offset)));
+  }
+  return checkIns;
+}
+
 function toDateOnly(date: Date): string {
   const y = date.getFullYear();
   const m = String(date.getMonth() + 1).padStart(2, "0");

@@ -110,7 +110,37 @@ export async function POST(req: NextRequest) {
         request: getAuditRequestContext(req),
       }
     );
-    logger.info({ result }, "Member import from Xero completed");
+    // INV-PRIV-011 (#2683): log the tallies, never the result object. Its
+    // detail arrays (`createdMembers`, `linkedExistingDetails`,
+    // `skippedNoEmailDetails`, `errorDetails`, …) carry one member NAME and
+    // EMAIL per imported contact, so `{ result }` put the club's membership
+    // roll into the application log on every import. The counts are what an
+    // operator reads here; the per-contact detail is already returned to the
+    // admin UI in the response and recorded against the import's audit rows.
+    //
+    // Every length is read defensively even though the type declares these
+    // arrays as required. This statement sits INSIDE the route's try block and
+    // AFTER the import has already committed, so a TypeError here would report a
+    // completed import to the admin as a 500 — the work done, the response a
+    // server error. A logging call must never be able to fail the request it is
+    // describing, which is the whole of #2683.
+    logger.info(
+      {
+        created: result.created,
+        createdAsDependent: result.createdAsDependent,
+        skippedExisting: result.skippedExisting,
+        linkedExisting: result.linkedExisting,
+        skippedNoEmail: result.skippedNoEmail,
+        skippedArchived: result.skippedArchived,
+        assignmentsCreated: result.assignmentsCreated,
+        keptExistingAssignments: result.keptExistingAssignments?.length ?? 0,
+        droppedDuplicates: result.droppedDuplicates?.length ?? 0,
+        memberCollisions: result.memberCollisions?.length ?? 0,
+        errors: result.errors,
+        groupsProcessed: result.groupsProcessed?.length ?? 0,
+      },
+      "Member import from Xero completed",
+    );
     return NextResponse.json(result);
   } catch (error) {
     if (error instanceof XeroMemberImportValidationError) {

@@ -86,7 +86,8 @@ vi.mock("@/lib/booking-modification-settlement", () => ({
     mocks.createModificationAdditionalPaymentIntent,
 }));
 vi.mock("@/lib/bed-allocation-lifecycle", () => ({
-  reconcileBedAllocationsForBooking: mocks.reconcileBedAllocationsForBooking,
+  reconcileBedAllocationsForBookingWithLodgeLockHeld:
+    mocks.reconcileBedAllocationsForBooking,
 }));
 vi.mock("@/lib/xero-booking-edit-settlement", () => ({
   queueXeroBookingEditSettlement: mocks.queueXeroBookingEditSettlement,
@@ -100,6 +101,12 @@ vi.mock("@/lib/logger", () => ({
   default: { error: vi.fn(), warn: vi.fn(), info: vi.fn(), debug: vi.fn() },
 }));
 
+import {
+  fenceHostingPolicyFindMany,
+  fenceMemberFindMany,
+  hostingMemberRow,
+  recordingBookingDouble,
+} from "@/lib/__tests__/support/hosting-participant-fence-double";
 import { DELETE } from "@/app/api/bookings/[id]/guests/[guestId]/route";
 
 const CHECK_IN = new Date("2027-07-15");
@@ -158,8 +165,35 @@ function preEditBooking(guests: Guest[]) {
       ...g,
       stayStart: CHECK_IN,
       stayEnd: CHECK_OUT,
+      // An array, not absent: `toHostingParticipants` reads `.length`. Empty is
+      // the honest value here — this fixture persists no BookingGuestNight rows,
+      // so the evaluator falls back to the stayStart..stayEnd envelope above.
       nights: [],
       priceCents: 4000,
+      // No consent was ever asked for on this booking, which is one of the two
+      // values `isOperationallyPresentConsent` counts as present (D-12).
+      consentStatus: null,
+      /*
+        #2675: the LIVE Member relation, which is what the hosting evaluator
+        reads — never the `isMember` snapshot beside it. The adult IS a member
+        (an ADULT in good standing, so they qualify as a host); the child is not,
+        and gets an EXPLICIT null rather than a missing key. The difference is
+        load-bearing: `memberIsInGoodStanding` tests `member !== null`, and
+        `undefined !== null` is TRUE, so an absent key is not read as "not a
+        member" — the predicate reads `undefined.active` and throws.
+
+        Together they describe exactly the party these tests are about: one
+        non-member minor, covered on both nights by the adult member beside them,
+        so removing the adult is a MINORS-ONLY question and not a hosting one.
+
+        The guest's own `ageTier` is carried onto the member row rather than
+        letting `hostingMemberRow` default to ADULT. This is the MINORS suite:
+        a member-linked minor is exactly the fixture the next test here will
+        add, and `participantQualifiesAsHost` reads the MEMBER's tier — so the
+        default would score that child as an adult host and suppress a hosting
+        violation production would raise, with nothing failing anywhere.
+      */
+      member: g.memberId ? hostingMemberRow(g.memberId, { ageTier: g.ageTier }) : null,
     })),
     payment: null,
     member: {
@@ -172,23 +206,60 @@ function preEditBooking(guests: Guest[]) {
   };
 }
 
-function buildTx(guests: Guest[]) {
+function buildTx(
+  guests: Guest[],
+  // Overrides the pre-edit booking this tx serves. Pass it here rather than
+  // re-stubbing tx.booking.findUnique: that would replace the recording
+  // wrapper below and the fence would then see no source booking at all.
+  // Deliberately loose: the fixture types several review fields as literal
+  // null, so a Partial<> of it would reject the non-null values these tests
+  // exist to set.
+  bookingOverride?: Record<string, unknown>,
+) {
+  // #2619: the participant fence re-reads the locked Member rows and each
+  // source booking's owner/lodge under the lock. Replay what this tx's own
+  // findUnique served so the no-drift case matches by construction.
+  const fenceBooking = recordingBookingDouble(async () => ({
+    ...preEditBooking(guests),
+    ...bookingOverride,
+  }));
   return {
     $executeRawUnsafe: vi.fn().mockResolvedValue(undefined),
+    member: { findMany: fenceMemberFindMany() },
     // Per-lodge advisory capacity lock (acquireLodgeCapacityLock) uses
     // $executeRaw, not $executeRawUnsafe — pg_advisory_xact_lock returns void
     // so $queryRaw can't deserialize it; every advisory lock uses $executeRaw.
     $executeRaw: vi.fn().mockResolvedValue(undefined),
     // #2364: the hosting review is reconciled inside the booking write, so
     // every prisma/tx double a booking path runs against needs this client.
-    adultMemberHostingPolicy: { findMany: vi.fn().mockResolvedValue([]) },
+    // #2623 T5 / #2675: an ACTIVE mode. `[]` resolves to DISABLED, and the mode
+    // gate that now stands in front of the participant fence would take its
+    // early return — switching the #2619 fence off in all five removals this
+    // file runs a transaction for, while the fence doubles beside it still
+    // looked like coverage.
+    //
+    // ADMIN_REVIEW_REQUIRED rather than the helper's ENFORCED default: this
+    // fixture deliberately carries a non-member child, so it is exactly the
+    // shape a hosting violation could arise on. Under ENFORCED a violation
+    // THROWS and rolls the removal back — a 500 in place of the 200 these tests
+    // assert, for a reason unrelated to the minors alert they exist to pin.
+    // Under review-only the worst case is a review row. (Neither fires here: the
+    // adult member covers the child on every night of the stay.)
+    adultMemberHostingPolicy: {
+      findMany: fenceHostingPolicyFindMany({ mode: "ADMIN_REVIEW_REQUIRED" }),
+    },
     booking: {
-      findUnique: vi.fn().mockResolvedValue(preEditBooking(guests)),
+      findUnique: fenceBooking.findUnique,
+      findMany: fenceBooking.findMany,
       // Echo the written review fields + status so the service's real
       // minorsReviewAlertShouldFire reads the actual computed state.
       update: vi.fn(async ({ data }: { data: Record<string, unknown> }) => ({
         id: "b1",
         memberId: "m1",
+        // A real update returns the row's lodgeId. Omitting it made the
+        // hosting participant fence compare a source planned with an
+        // undefined lodge against a re-read that had one, and refuse (#2619).
+        lodgeId: "lodge-1",
         checkIn: CHECK_IN,
         checkOut: CHECK_OUT,
         payment: null,
@@ -321,16 +392,15 @@ describe("DELETE guest removal — minors-only admin alert wiring (#1372)", () =
   it("does not double-fire the alert when the booking was already under review", async () => {
     // Pre-edit booking already carried a pending minors-only review: removing a
     // further guest that keeps it minors-only must not re-alert (#1372).
-    mocks.transaction.mockImplementation((cb: (tx: unknown) => unknown) => {
-      const tx = buildTx([ADULT, CHILD]);
-      tx.booking.findUnique.mockResolvedValue({
-        ...preEditBooking([ADULT, CHILD]),
-        requiresAdminReview: true,
-        adminReviewStatus: AdminReviewStatus.PENDING,
-        adminReviewReason: ADULT_SUPERVISION_REVIEW_REASON,
-      });
-      return cb(tx);
-    });
+    mocks.transaction.mockImplementation((cb: (tx: unknown) => unknown) =>
+      cb(
+        buildTx([ADULT, CHILD], {
+          requiresAdminReview: true,
+          adminReviewStatus: AdminReviewStatus.PENDING,
+          adminReviewReason: ADULT_SUPERVISION_REVIEW_REASON,
+        }),
+      ),
+    );
 
     const res = await DELETE(makeRequest(), {
       params: Promise.resolve({ id: "b1", guestId: "g-adult" }),
@@ -338,6 +408,44 @@ describe("DELETE guest removal — minors-only admin alert wiring (#1372)", () =
 
     expect(res.status).toBe(200);
     expect(mocks.sendAdminMinorsOnlyReviewAlert).not.toHaveBeenCalled();
+  });
+
+  /**
+   * #2675 review — the fixture builder must not invent an ADULT member.
+   *
+   * `preEditBooking` synthesises the live `Member` relation from `memberId`, and
+   * `hostingMemberRow` defaults to ADULT. A member-linked CHILD or YOUTH guest
+   * would therefore arrive at `participantQualifiesAsHost` — which reads the
+   * MEMBER's tier, not the guest row's — as an adult host, suppressing a hosting
+   * violation production would raise. Nothing else in this suite would notice,
+   * and this is the MINORS suite: a member-linked minor is exactly the fixture
+   * the next test added here will need.
+   */
+  it("gives a member-linked minor a Member row at the guest's OWN age tier", () => {
+    const memberChild: Guest = {
+      ...CHILD,
+      id: "g-child-member",
+      isMember: true,
+      memberId: "m-child",
+    };
+
+    const guests = preEditBooking([ADULT, memberChild]).guests;
+
+    expect(guests.find((g) => g.id === "g-child-member")?.member).toEqual({
+      id: "m-child",
+      ageTier: "CHILD",
+      active: true,
+      cancelledAt: null,
+      archivedAt: null,
+    });
+    // The adult beside them is unchanged, so the pin is about the tier being
+    // CARRIED, not about the default being wrong.
+    expect(guests.find((g) => g.id === "g-adult")?.member).toEqual(
+      expect.objectContaining({ id: "m1", ageTier: "ADULT" }),
+    );
+    // And a true non-member still gets an explicit null, not a partial row.
+    expect(guests.find((g) => g.id === "g-child")).toBeUndefined();
+    expect(preEditBooking([CHILD]).guests[0]?.member).toBeNull();
   });
 });
 

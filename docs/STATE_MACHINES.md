@@ -55,10 +55,14 @@ into review.
 
 ### Adult-member hosting review (#2364)
 
-An adult-member hosting hazard causes **no booking-state transition**. The
-booking is made, held, paid and completed exactly as it would have been; what
-changes is a review that lives beside the lifecycle, in its own columns, with its
-own small state machine:
+In `ADMIN_REVIEW_REQUIRED`, an adult-member hosting hazard causes **no
+booking-state transition**: the booking exists and a review lives beside its
+lifecycle in dedicated columns. In `ENFORCED`, the non-compliant create or
+modification instead rolls back with the waivable 409 and may enter the shared
+policy-exception request lifecycle; no booking transition is invented for a
+write that did not commit. Once a booking exists through review mode, an approved
+exception, or an explicit admin on-behalf reason, its hosting review has this
+small state machine:
 
 ```
 (none) -> PENDING            a hazard appears on a booking that had none
@@ -75,12 +79,13 @@ PENDING|APPROVED|REJECTED -> PENDING
 ```
 
 Two of those edges are the whole point. Clearing is automatic and needs no admin:
-adding an adult member to the booking, removing the last uncovered guest, moving
-the nights, reinstating a cancelled member, switching the policy off, or moving
-the booking to a lodge that never had the rule all end the hazard the next time
-any booking path touches it. Reopening is deliberately NARROW: a renamed guest,
-or an extra host on an already-covered night, is the same hazard and does not
-re-prompt an admin who has already decided.
+adding an adult member to the booking, adding eligible same-owner cover at that
+lodge/night, removing the last uncovered guest, moving the nights, reinstating a
+cancelled member, switching the policy off, or moving the booking to a lodge that
+never had the rule all end the hazard the next time a relevant path touches it.
+Reopening is deliberately NARROW: a renamed guest, or an extra host on an
+already-covered night, is the same hazard and does not re-prompt an admin who has
+already decided.
 
 "Touches it" includes touching its #738 SPLIT SIBLING. The child borrows its
 parent's adults, so the parent's own nights and guests move the child's answer;
@@ -89,10 +94,64 @@ sibling always enters at PENDING — the `(none) -> APPROVED` edge needs an
 explicit reason from the admin who was asked, and nobody was asked about a
 booking they only reached through another one.
 
-There is no transition into the shared `AWAITING_REVIEW` booking status and no
-check-in block, unlike the minors-only rule (#1372/#1422). Capacity is not
-reserved from the frozen `HOLD` value; that, the member request state and the
-approval/revalidation edges belong to #2365.
+An accepted booking that later loses same-owner cover has a separate durable
+incident lifecycle, still without changing `Booking.status`:
+
+```text
+(none) -> OPEN                 committed cover loss is reconciled after the write
+OPEN -> RESOLVED               COVERAGE_RESTORED | BOOKING_AMENDED |
+                               EXCEPTION_APPROVED | BOOKING_CANCELLED
+RESOLVED -> OPEN               a later materially different uncovered state appears
+```
+
+Adding a new active covering booking therefore resolves the existing incident as
+`COVERAGE_RESTORED`; it does not cancel or recreate the dependent booking. The
+queue item that drives this transition is part of the mutation transaction. Under
+#2597, a member-standing fan-out first locks its subject `FOR UPDATE NOWAIT`, then
+an ordinary producer locks its exact owner/actor Member participants with sorted
+`FOR KEY SHARE NOWAIT`. A booking-request hold takes its lodge key and the exact
+linked members `FOR KEY SHARE`, then re-reads every row as active and unarchived
+before its versioned claim or any guest creation. Hold-first makes the standing
+mutation retry; standing-first makes the hold wait and then refuse the now-inactive
+member in every hosting consequence mode. Member merge takes one sorted blocking
+`FOR UPDATE` set, re-plans, and sweeps late owner and actor rows before deleting the
+loser. If either side cannot prove the exact attribution, the complete mutation
+returns the safe retry outcome and none of the booking, member, queue or incident
+states advance. Merge-generated work is actorless; the critical `MEMBER_MERGED`
+audit remains its human attribution.
+
+The “complete mutation” above means the database transaction that contains the
+queue write; it is not a promise that an earlier provider or workflow phase can be
+undone. Two interactive boundaries expose that distinction explicitly:
+
+```text
+Stripe capture succeeded -> confirm-payment participant retry
+  -> paymentReceived=true, finalisationPending=true
+  -> keep payment UI in place; check booking/payment status before retrying
+
+Xero contact fetched -> local member created -> Xero contact linked
+  -> subscription refresh participant retry
+  -> memberImported=true, xeroContactLinked=true,
+     subscriptionRefreshPending=true
+  -> select the created member; repair subscription history; do not import again
+```
+
+Booking-approval (including admin waitlist force-confirm), member draft-confirm,
+public-request and Xero action consumers announce the fixed 409 in a permanently
+mounted alert and focus/scroll the action failure. A participant-fence retry that
+proved rollback may restore its control. A network or unreadable waitlist
+response cannot prove that, so the member-facing offer suppresses another
+confirm and offers only **Reload booking status** until canonical state is read;
+the zero-dollar draft and admin waitlist surfaces likewise describe the outcome
+as unverified and require reload/status verification before retry. Ordinary Xero
+subscription-history failures still complete the import with the existing repair
+warning; only the participant-fence code takes the fixed 409 path.
+
+The hosting review itself never reuses the shared `AWAITING_REVIEW` booking status
+or the minors-only check-in block. An enforced refusal may instead enter the
+durable booking-policy exception lifecycle, whose frozen capacity choice,
+approval/revalidation transitions, and member/officer actions are documented in
+the policy-exception sections above.
 
 `DRAFT -> PAYMENT_PENDING` is also where a stored account-credit election is
 spent (#2265). A draft carries the member's election on
@@ -325,8 +384,11 @@ is reason-agnostic (#1422): any pending admin review gates check-in — today
 adult-supervision is the only such reason, but a future review type inherits the
 gate automatically. Enforcement is a single shared where-fragment
 (`checkinNotBlockedByPendingReviewFilter` in `src/lib/booking-review.ts`) applied
-to the arrive/depart and roster generate/confirm queries, so a blocked booking's
-guest resolves to null server-side (arrive returns 404, roster-confirm 400) — the
+to the arrive/depart and roster generate/confirm queries — since #2622 the roster
+side is one shared query (`getOperationalRosterGuestsForDate` in
+`src/lib/roster-eligibility.ts`) rather than a copy per surface, so the admin
+roster and the hut-leader wizard cannot drift on who is blocked — so a blocked
+booking's guest resolves to null server-side (arrive returns 404, roster-confirm 400) — the
 block is safe because every lodge query already restricts to the operational
 stay statuses (PAID/COMPLETED), so no parked `AWAITING_REVIEW` booking is
 over-blocked. The lodge guest list (the check-in roster staff read on the kiosk)
@@ -514,6 +576,18 @@ status change. Explicit overbook overrides use the
 `waitlist.force_confirmed_overbook` action with critical severity, preserved
 retention, overbooked date-only nights, and an admin waitlist completion report
 linking directly to the filtered audit record.
+
+The admin `PAYMENT_PENDING -> WAITLISTED` repair (#2649) is recorded the same
+way: `waitlist.returned_to_waitlist`, `booking` category, written with the
+booking status change in one transaction, and carrying the id of the
+`waitlist.confirm_offer_release_failed` row it resolves so the strand and its
+repair link in both directions. It is offered only where that row exists and is
+unresolved — the booking's own columns retain no waitlist provenance, and the
+free / `PAYMENT_PENDING` / no-payment-record shape is reached by several
+ordinary paths that were never on a waitlist. Of the four conditions, the two
+scalar ones (`status: PAYMENT_PENDING` and `finalPriceCents: 0`) are re-asserted
+inside the guarded `updateMany`; the absence of a `Payment` row and the strand
+report are read under the same two locks immediately above it.
 
 ## Booking Modification Lifecycle
 
@@ -743,6 +817,40 @@ adminOverride && role === "ADMIN"   -> "admin-override" (issue #1668: date-windo
                                                          lock still enforced)
 ```
 
+In `"in-progress"` mode the plan that prices the change
+(`buildInProgressGuestRangePlan`) works from each guest's canonical
+`BookingGuestNight` set, not from their `stayStart`/`stayEnd` envelope
+(#2736, `INV-MOD-025`). A guest with a gap in their stay keeps the gap: it is
+not charged, not written back as a night row and not given a bed, while an
+extension still buys contiguous new nights after their last held one. The edit
+also sells only the nights it creates (#2743): a night is added to an existing
+guest only when the check-out actually moves, and only past the OLD check-out,
+so an edit that leaves the dates alone — a guest added or removed, a promo or
+member-link change — cannot add a night to anybody. (A name-only edit never
+reaches this plan: it is identity-only on both routes and takes the
+price-preserving echo.) The discriminator is whether a guest's held nights reach
+the BOOKING'S own check-out, not whether they have gone home, so a guest who is
+in the lodge tonight but leaves before the booking does gets the same gap and the
+same smaller bill as one who left a week ago. Extending the check-out does still
+admit every remaining guest for the nights it adds — this plan overrides
+`guestStayRanges` for existing guests and the panel offers no per-guest end date
+on an in-progress edit, so an API caller that sends one is ignored rather than
+refused, and the officer sees the cost as one aggregate quote line for the whole
+party. Because nobody is back-filled, a removal can leave `Booking.checkOut`
+ahead of the last night anybody holds; that is accepted rather than guarded.
+For an ordinary stay that runs to the booking's check-out, every number is
+exactly what it was before. Bookings edited before those fixes keep the rows and
+the price they were given — history is not repriced (#2745 carries the decision
+about whether anything is done about them). Two edits are newly refused, both
+because the booking would be left with NOBODY in the future window: a check-out
+pulled back past the last night any remaining guest still holds, and a save on a
+booking whose check-out is still ahead but whose guests have all finished their
+stays. Both name a check-out the plan will actually accept — the suggestion is
+clamped at the edit window, without which #2743's own shape would name a date
+every guard rejects and the booking would be editable by no route at all. Two
+money shapes on this path are frozen rather than fixed — see `INV-MOD-025` and
+#2744.
+
 Self-service cancellation of a **started** stay is blocked (#2029). Once
 `checkIn <= todayNZ`, the member-facing cancel route
 (`enforceStartedStayBlock`) refuses cancellation for a booking owner or Booking
@@ -807,6 +915,23 @@ credit-note id) no longer blocks — and the coincident `payment.creditAppliedCe
 mirror is waived with it — but an `ADMIN_ADJUSTMENT`/`BOOKING_MODIFICATION_REFUND`
 row, a net-non-zero ledger, or any Xero-linked credit note still blocks, as does
 any independently captured/refunded payment.
+
+Soft-delete also reaches out to Stripe, **after** its transaction commits
+(#2700, `INV-ADDPAY-036`). The blockers above count CAPTURED payment history, so
+an intent that has not captured yet is exactly the state they permit — and
+exactly the state that can capture a moment later, because deleting a booking
+does not by itself touch Stripe. The delete therefore cancels the booking's
+in-flight PaymentIntents, both the base one and the modification one, once the
+booking row is durably deleted: outside the transaction so no provider round
+trip is made while `pg_advisory_xact_lock(1)` is held, and never throwing, so a
+Stripe outage cannot turn a completed deletion into an error the admin would
+retry. The local `PaymentTransaction` is marked FAILED **only** when Stripe
+confirms the cancel; `canceled: false` means the intent reached a terminal state
+on its own — possibly `succeeded` — and writing FAILED there would be a lie.
+A cancellation that fails is audited as
+`booking.delete.payment_intent_cancel.failed` (`outcome: "failure"`) as well as
+logged. This makes the race rare rather than impossible; a capture that still
+lands is handled by the manual refund task lifecycle above.
 
 ## Public Booking Request Quote Lifecycle
 
@@ -1274,10 +1399,29 @@ OPEN -> COMPLETED   (finance:edit; writes the local refund allocation and a
                      REFUNDED BookingEvent — the ONLY moment the ledger says
                      the money went back)
 OPEN -> DISMISSED   (finance:edit; requires a note; moves no money)
+OPEN -> DISMISSED   (#2700: the Stripe webhook, with NO acting member at all —
+                     `completedByMemberId` stays null and no operator note is
+                     required. Fires only on a task raised by the deleted-booking
+                     modification-payment path, matched on that exact payment
+                     intent, when `handleCancelledBookingAdditionalPaymentSucceeded`
+                     has already refunded the capture, so the task's question is
+                     answered. Status-fenced on OPEN, so a replay or an operator
+                     who got there first claims nothing. Moves no money —
+                     COMPLETED here would write a SECOND refund allocation for
+                     one refund. See `INV-ADDPAY-036`.)
 ```
 
-Created atomically with the CANCELLED claim when a cash-settled booking is
-cancelled with a non-zero policy refund. A zero-refund outcome creates no task.
+There are TWO creators, and the second is on a completely different path from
+the first:
+
+- Created atomically with the CANCELLED claim when a **cash-settled** booking is
+  cancelled with a non-zero policy refund. A zero-refund outcome creates no task.
+- Created by `confirm-modification-payment` when a **card** modification payment
+  is captured against a booking the club has already soft-deleted (#2700,
+  `INV-ADDPAY-036`): the capture is recorded rather than refused, and an OPEN
+  task asks a person to decide. Raised under `pg_advisory_xact_lock(1)`,
+  idempotent on the payment intent, and fenced against a refund that already
+  happened, so it is never raised for money Stripe has already returned.
 The transition is a status-fenced conditional update, so a double click can
 never double-apply the allocation, and the row is never processed by any cron —
 it deliberately is not a `PaymentRecoveryOperation`. (That dispatcher's final
@@ -1446,6 +1590,7 @@ capacity unavailable -> WAITLISTED
 capacity opens/admin offers -> WAITLIST_OFFERED
 offer accepted -> confirmed or paid booking
 offer expires/declined -> WAITLISTED or CANCELLED
+stranded free confirm, admin repair -> WAITLISTED
 ```
 
 Cross-lodge offers (ADR-004, `waitlistOfferedLodgeId` set) accept
@@ -1481,6 +1626,7 @@ Known allocation source: `AUTO` or `MANUAL`.
 booking confirmed/paid -> auto allocation proposal
 admin manually adjusts -> MANUAL allocation
 admin approves -> approved allocation metadata set
+admin previews + applies removal -> selected rows deleted; causal partner promoted
 booking modified/cancelled/completed/deleted -> allocation reconciliation
 exclusive whole-lodge hold SET -> allocation reconciliation (pure prune)
 exclusive whole-lodge hold CLEARED -> allocation reconciliation (re-plan)
@@ -1537,6 +1683,20 @@ reported `NO_BOOKING_ADULT` and removed from demand):
    its adults room together (one room when they fit) and its students take
    their own rooms.
 
+The selected lodge's `BedAllocationSettings` governs both the explicit board
+run and this lifecycle reconcile (#2593). After placement count and the hard
+school/age-mix rules, feasible layouts are compared lexicographically in the
+saved top-to-bottom order: booking cohesion, stay continuity, requested room,
+and direct-family cohesion by default. Any subset — including `[]` — is valid;
+omitted settings use the default. The split planner executes at most 24
+deterministic matching-layout candidates, including connected-family,
+direct-group, direct-pair, capacity-aware high-affinity room packing, and
+maximum-cardinality direct-edge pairing orders; whole-room, legacy, and
+displacement trials are additional. This is a bounded
+heuristic rather than a global optimum. Saving a different order is not a
+lifecycle transition and rewrites no allocation: it changes only plans made
+after the save.
+
 **Cross-booking age-mix invariant (#1768, all phases and both placement
 directions):** a room-night holding minors from booking X never also holds an
 adult from a DIFFERENT booking — the planner neither places a minor beside
@@ -1569,30 +1729,42 @@ the reconcile range (`min(checkIn) .. max(checkOut)` union the range) so the
 planner sees whole stays, while the set of bookings planned stays restricted
 to those overlapping the original range (no cascade).
 
-On the admin allocation board, dragging or menu-moving the first visible
-allocated night for a guest reassigns that guest's visible allocated nights to
-the target bed while preserving each date-only lodge night. The hovered date
-column never changes an existing allocation's night: pointer preview and
-keyboard announcement name the destination bed plus the snapped original
-night(s). Later-night moves remain single-night adjustments, same-bed drops are
-no-ops with no request or audit, and cancel sends no request.
+On the admin allocation board, every existing-chip drag/drop and nested
+**Move to bed** choice opens one reviewed move dialog. The hovered date column
+never changes an existing allocation's night. Pointer and keyboard interactions
+name the destination and original night, then stop at confirmation; cancel sends
+no request and restores focus. The current bed stays selectable so the admin can
+review a person-wide consolidation or an all-noop outcome.
 
-The existing-allocation move endpoint accepts allocation ids plus a destination
-bed, never a target date. It resolves only the destination's immutable lodge key
-before the transaction, then takes global booking `lock(1)` followed by that
-lodge's capacity lock and re-reads the source rows, original dates,
-guest/booking state, active destination room/bed, custodian holds and sharing
-state under both. Cancellation prunes allocations under the same global key, so
-either the move finishes first or the post-cancel move sees no source row and
-cannot resurrect it. A first-chip multi-night move is all-or-nothing: one
-conflict rolls back every row, partner promotion and audit entry. Successful
-row changes, shared-double promotions and their causally attributed audit
-records commit in that same transaction. Bucket-to-board bulk placement keeps
-its older per-night conflict semantics.
+The dialog starts at `ALLOCATION_NIGHT` and may widen to `BOOKING_GUEST`, which
+resolves every existing row for that guest on the booking (including sparse and
+off-screen rows, up to 366) without creating any. Its read-only preview separates
+changed and unchanged rows, exact NZ nights, approval-to-draft consequences,
+shared-double promotions, and hard conflicts. Apply carries that scope plus the
+anchor, destination and digest — never a target date — and takes global booking
+`lock(1)`, the complete sorted lodge union, sorted member-lifecycle and
+member-partner-link families, then deterministic allocation-row locks before an
+authoritative re-preview. Cancellation uses the same global key, so a post-cancel
+move cannot resurrect a row.
+
+A matching apply writes every changed row with one guarded bulk statement,
+preserving dates and making approved rows unapproved `MANUAL` drafts. Partner
+promotions and their cross-booking causal audit attribution commit in that same
+transaction. Any conflict or stale fact refuses the whole move; digest drift
+returns a refreshed preview and requires a second confirmation. Unchanged rows
+are never re-drafted, promoted, written, or audited, and an all-noop confirmation
+succeeds audit-free. Bucket-to-board bulk placement keeps its older per-night
+conflict semantics. The legacy allocation-id/destination request remains capped
+at 31 rows for older callers but is no longer the board's existing-chip seam.
 
 The board's "Run Auto Allocation" uses the same whole-stay planner without
-displacement, and the board raises a
-stay-level `ROOM_SWITCH` warning when a booking's rooms change between nights,
+displacement. Its displayed suggestions are only a preview: the action takes
+global booking `lock(1)` then the selected lodge lock, authoritatively rebuilds
+only after confirming that lodge is still active, then rebuilds the scoped
+inventory/booking/occupancy/hold plan through that transaction and constructs
+and inserts AUTO rows. A room or bed deactivated/retyped
+after preview therefore cannot be written from the stale plan. The board raises
+a stay-level `ROOM_SWITCH` warning when a booking's rooms change between nights,
 plus a `MINOR_ADULT_MIX` warning on any persisted room-night that mixes one
 booking's minors with another booking's adults (#1768).
 
@@ -1635,6 +1807,32 @@ confirmation step; the assign dialog says so before the admin commits. Manual
 allocation of a whole-lodge-held booking is refused outright at the write
 chokepoint, matching the lifecycle prune (#2285).
 
+**Reviewed removal (#2594).** Removal is an explicit PREVIEW → APPLY transition,
+not a one-click row delete. Preview writes nothing and classifies a non-empty
+selection as Auto draft, Manual draft, and/or Approved within exactly one scope:
+the anchored allocation, that person on that booking, the whole booking, or the
+selected lodge's visible half-open window (maximum 31 nights). Person and
+booking scope include matching rows outside the page; window scope does not.
+The preview states category counts, affected bookings/nights, causal
+shared-double promotions, and which bookings will have no approved row left and
+therefore re-open requested-room editing.
+
+APPLY must carry that preview's `v1:<sha256>` digest. Under global `lock(1)` →
+the sorted immutable booking/anchor lodge locks → sorted selected/causal
+allocation-row locks, it rebuilds the same state and refuses any historical
+third-lodge anomaly. Drift produces a 409 refreshed preview and no
+transition. A match atomically deletes every selected row, changes each
+surviving causal shared-double occupant from second to primary, and records
+`BED_ALLOCATION_REMOVAL_APPLIED` plus the bounded
+`BED_ALLOCATION_PARTNERS_PROMOTED` audit when needed. There is deliberately no
+edge from APPLY to auto-allocation: freed nights stay unallocated until a later
+manual placement or explicit **Run Auto Allocation**. Preview requires
+`bookings:view`; APPLY requires `bookings:edit`; the retired direct
+`DELETE /api/admin/bed-allocation/allocations/[id]` is no longer a transition.
+When only the opening row of a booking/person scope disappeared, the 409 preview
+re-anchors to the lowest-id matching survivor; the current apply still writes
+nothing, while a newly reviewed apply is no longer trapped on a dead row id.
+
 Draft rows still arise constantly, which is why a confirmation step remains a
 real affordance rather than a legacy one: board single-night and drag placements
 create them, auto-allocation writes `source: "AUTO"` suggestions as drafts, and a
@@ -1649,12 +1847,14 @@ matches the lodge-scoped read the card displayed. That approval audits
 audit deep link finds it.
 
 The room-request lock is therefore **two-way**, and the surfaces say so. No
-un-approve action exists or is invented, but two existing paths take a booking's
-last approved row away and re-open the member's editor: the move re-draft above,
-and `deleteBedAllocation`. The in-booking panel warns before removing the last
-approved row for exactly that reason — deciding it from the booking's own
-approved-night count rather than the window on screen, because the panel pages a
-stay longer than 31 nights and cannot see the rest of it.
+un-approve action exists or is invented, but two paths can take a booking's last
+approved row away and re-open the member's editor: the move re-draft above and
+reviewed removal. The removal preview decides that from the booking's complete
+approved-row set rather than the window on screen, because the panel pages a
+stay longer than 31 nights and cannot see the rest of it. Approval, removal, and
+member requested-room writes share the global serialization boundary and use
+row locks/guarded predicates so a concurrent winner changes the authoritative
+answer rather than crossing this transition stale.
 
 To verify: approval status representation, conflict handling, per-night guest
 uniqueness, room continuity and whole-booking displacement behavior, range
@@ -1779,6 +1979,7 @@ either CONFIRMED partner removes the link -> row hard-deleted, other partner ema
 admin removes any link -> row hard-deleted, both partners emailed when it was CONFIRMED unless the admin chose not to notify (#1769a); a PENDING removal emails no one
 CONFIRMED link deleted (either dissolve path) -> pair's FUTURE shared double-bed second-occupant allocations swept back to the awaiting-allocation queue in the same transaction (#1756; both bookings audited, admins alerted post-commit)
 member deactivated / anonymised / re-tiered off ADULT -> same sweep, single-member scope (either side of the shared bed)
+CONFIRMED link DROPPED by a member merge (the master already had its one confirmed partner) -> the merge's own validity-driven reconciliation instead of the sweep above (#2595): every future shared bed-night involving the master or the duplicate is re-judged against mayShareDoubleBedWith and only the ones that no longer qualify are swept, so the master's own still-confirmed share survives
 ```
 
 To verify: canonical pair ordering (`memberAId < memberBId` CHECK), the
@@ -1786,9 +1987,10 @@ one-CONFIRMED-partner-per-member invariant (advisory locks + partial unique
 indexes), ADULT-only + no-self-partner guards, pending pruning on confirm,
 one outstanding outgoing request per member, the memberId-target
 shared-family-group guard on the member API, and the stale-share sweep
-invariant (#1756): no future `isSecondOccupant` allocation may outlive its
-partner link or the active-adult precondition (see
-docs/DOMAIN_INVARIANTS.md, "Double-bed shared occupancy").
+invariant (#1756, extended to merge by #2595): no future `isSecondOccupant`
+allocation may outlive its partner link or the active-adult precondition (see
+`INV-CAP-010` for the #1756 sweep and `INV-CAP-030` for the merge form, both in
+docs/invariants/booking-dates-and-capacity.md).
 
 ## Member Guest Consent Lifecycle ("+ Add Member Guest", #2305 / MG2 #2307, MG4 #2309)
 
@@ -1822,6 +2024,19 @@ any state -> (row deleted)   the booker or an officer takes the guest off the bo
                              The member is told once (member-guest-request-withdrawn); the
                              consent record goes with the row. NOT a status transition.
 ```
+
+**A soft-deleted booking answers nothing at all, and that outranks every
+PENDING edge above** (#2700, `INV-ADDPAY-035`). `respondToMemberGuestConsent`
+refuses before any transition is attempted, for **every** actor — the target and
+an accepted delegate alike — so `PENDING -> CONFIRMED` and `PENDING -> DECLINED`
+are both unreachable once the club has deleted the booking. Nothing is recorded:
+no claim, no bed reconcile, no hosting-queue drain, and no email to the booking
+owner about a record the club has deleted. The refusal is asserted twice — once
+unlocked to answer cheaply, and again inside the transaction under
+`pg_advisory_xact_lock(1)`, which is the same key `softDeleteCancelledBooking`
+takes, so a deletion committing between the two reads is serialised behind the
+consent transaction and seen. The nightly `PENDING -> EXPIRED` sweep is
+unaffected; it is not an answer.
 
 **No EDIT transitions this machine, and that is owner decision D-13 rather than
 an omission.** Changing a booking's dates, its lodge, its price, or the rest of
@@ -1974,7 +2189,7 @@ and the last active login-enabled Full Admin can never be cancelled, both
 evaluated inside the approval transaction. A self-raised cancellation is
 allowed but cannot be self-approved — including one raised from the profile
 panel, where the requester is recorded as the member themselves. See
-[`DOMAIN_INVARIANTS.md`](DOMAIN_INVARIANTS.md#membership-lifecycle) and
+[`membership-lifecycle.md`](invariants/membership-lifecycle.md) and
 [`CANCELLATIONS.md`](CANCELLATIONS.md#who-can-be-cancelled).
 
 Approval blockers (#2392): `loadMembershipCancellationBlockersByMemberId` is the
@@ -2329,44 +2544,3 @@ admin edits the banner -> updatedAt changes -> dismissal invalidated, banner re-
 To verify: the admin page's current/upcoming/past split, the inclusive
 date-only comparison in NZ time, and dismissal invalidation keyed on
 `updatedAt`.
-
-## Member-Guest Consent Lifecycle (provisioned, unreachable until MG2)
-
-`BookingGuest.consentStatus` (`MemberGuestConsentStatus`) records whether a
-MEMBER added as somebody else's guest agreed to it ("+ Add Member Guest", epic
-#2305, decision D-7). The enum, its five companion columns, and the partial
-index the expiry sweep needs are all provisioned by MG1 (#2306).
-
-**Nothing in the MG1 release can reach any state below except the null one.**
-Cross-family adds are still refused (`MEMBER_GUEST_WIDENING_ENABLED` is `false`
-in `src/lib/member-guest-consent.ts`), so no code path writes a non-null
-`consentStatus` — the labels are registered a release ahead of the code that
-uses them. The transitions are documented here only once MG2 (#2307) implements
-them; do not treat the arrows below as live behaviour in this release.
-
-```text
-(null) = no consent was ever needed: a family-scope add (D-6) or a legacy row.
-         NOT the same value as CONFIRMED, and the two must stay distinguishable.
-
-cross-family add, approval-required policy  -> PENDING   (holds the bed until consentExpiresAt)
-cross-family add, notify-only policy        -> CONFIRMED (never solicited: requestedAt/respondedAt/respondedBy all null)
-admin add, admin booking-copy, pipeline row -> CONFIRMED (never solicited: respondedBy = the acting admin, requestedAt null)
-
-PENDING -> CONFIRMED  target (or their delegate) approves; respondedBy records WHICH
-PENDING -> DECLINED   target (or their delegate) refuses
-PENDING -> EXPIRED    the hold lapses with no answer; MG2's sweep releases the bed
-```
-
-Consent is **not transitive across bookings**: copying a booking re-stamps the
-copied guest as an admin assignment against the copying admin, and never
-inherits the source row's approval.
-
-The full column-by-column discriminator table — which of the five columns is set
-in each shape — is in `docs/DOMAIN_INVARIANTS.md` and is the single source of
-truth in `MEMBER_GUEST_CONSENT_SUB_STATES`
-(`src/lib/member-guest-consent.ts`), pinned by
-`src/lib/__tests__/member-guest-consent.test.ts`.
-
-To verify: `MEMBER_GUEST_WIDENING_ENABLED === false`, the classifier's refusal
-to name any shape the table does not define, and the dark-guarantee matrix in
-`src/lib/__tests__/member-guest-dark-guarantee.test.ts`.

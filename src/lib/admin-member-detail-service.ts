@@ -4,6 +4,10 @@ import { z } from "zod";
 import { prisma } from "@/lib/prisma";
 import { settleHostingCoverageAfterCommit } from "@/lib/adult-member-hosting-coverage-drain";
 import { enqueueHostingCoverageReevaluationForMember } from "@/lib/adult-member-hosting-review";
+import {
+  HOSTING_COVERAGE_RETRY_BODY,
+  isHostingCoverageParticipantRetry,
+} from "@/lib/adult-member-hosting-queue-participants";
 import { computeAgeTier, getSeasonStartDate } from "@/lib/age-tier";
 import { getSeasonYear } from "@/lib/utils";
 import {
@@ -18,6 +22,10 @@ import {
   shouldRepairXeroContactNameOrder,
 } from "@/lib/xero-contact-sync";
 import { getXeroApiErrorInfo } from "@/lib/xero-api-errors";
+import {
+  findMemberContactChangeMergeBlocker,
+  getMemberContactCreateRecoveryState,
+} from "@/lib/xero-contact-create-recovery";
 import logger from "@/lib/logger";
 import {
   copyStreetAddressToPostal,
@@ -100,13 +108,19 @@ import {
 } from "@/lib/admin-permissions";
 import { serializeSeasonalMembershipAssignment } from "@/lib/seasonal-membership-assignments";
 import {
+  acquireFuturePartnerSharedAllocationLocks,
   describePartnerSharedSweepReason,
   partnerShareSweepCounterpartNames,
   partnerShareSweepNights,
-  sweepFuturePartnerSharedAllocations,
+  sweepFuturePartnerSharedAllocationsWithLocksHeld,
   type SweptPartnerSharedAllocation,
 } from "@/lib/bed-allocation-lifecycle";
 import { sendAdminPartnerShareSweptAlert } from "@/lib/email";
+import { acquireMemberLifecycleLocks } from "@/lib/member-lifecycle-lock";
+import {
+  DELETED_ACCOUNT_EDIT_REACTIVATE_MESSAGE,
+  isDeletedAccountRecord,
+} from "@/lib/deleted-account";
 
 const maxStr = (len: number) => z.string().max(len).optional().nullable();
 
@@ -579,12 +593,26 @@ export async function getAdminMemberDetail(params: {
     return jsonResult({ error: "Member not found" }, { status: 404 });
   }
 
-  const [deleteEligibility, deleteLifecycleActionRequests] = await Promise.all([
+  const [
+    deleteEligibility,
+    deleteLifecycleActionRequests,
+    xeroContactCreateRecoveryState,
+    xeroContactLifecycleBlocker,
+  ] = await Promise.all([
     getMemberDeleteEligibility({
       memberId: id,
       currentAdminMemberId,
     }),
     getMemberDeleteLifecycleRequests(id),
+    getMemberContactCreateRecoveryState({
+      memberId: id,
+      xeroContactId: member.xeroContactId,
+    }),
+    // #2623 T7: the SAME reader member merge and account deletion refuse on.
+    // The create-recovery state above deliberately reports nothing once the
+    // member is linked, so on its own it let a linked-but-still-blocked member
+    // look completely clean here while both lifecycle operations refused them.
+    findMemberContactChangeMergeBlocker(id),
   ]);
   const lifecycleActionRequests = [
     ...deleteLifecycleActionRequests,
@@ -718,6 +746,10 @@ export async function getAdminMemberDetail(params: {
     auditLogs: auditLogsWithActors,
     xeroContactGroups,
     xeroContactGroupsLoaded,
+    xeroContactCreateRecoveryState,
+    xeroContactCreateRecoveryPending:
+      xeroContactCreateRecoveryState === "PROVIDER_CREATED_LINK_PENDING",
+    xeroContactLifecycleBlocker,
     deleteEligibility,
     lifecycleActionRequests,
     openCancellationRequest: openCancellationParticipant
@@ -826,6 +858,31 @@ export async function updateAdminMember(params: {
         { status: 400 },
       );
     }
+  }
+
+  // #2620: an approved deletion request anonymises the member in place and
+  // stamps NEITHER archivedAt nor cancelledAt, so the archived/cancelled
+  // refusal below never covered an erased account — yet everything else it
+  // needs to sign in (canLogin, googleSub, emailVerified, the second factor and
+  // the access roles) survives anonymisation, leaving `active: false` as the
+  // only barrier. Checked first, and named separately, because deletion is
+  // terminal in a way an archive is not.
+  //
+  // Keyed on a real TRANSITION rather than the submitted value, matching the
+  // no-op-echo handling below and `enablesLogin` further down: the edit dialog
+  // re-submits the current active/canLogin on every save, and a deleted row
+  // still carries `canLogin: true` today, so a blunt `data.canLogin === true`
+  // test would refuse ordinary contact upkeep on an anonymised record while
+  // catching nothing extra.
+  if (
+    isDeletedAccountRecord(existing) &&
+    ((data.active === true && !existing.active) ||
+      (data.canLogin === true && !existing.canLogin))
+  ) {
+    return jsonResult(
+      { error: DELETED_ACCOUNT_EDIT_REACTIVATE_MESSAGE },
+      { status: 409 },
+    );
   }
 
   if (
@@ -1257,6 +1314,10 @@ export async function updateAdminMember(params: {
       auditUpdateData,
     );
     const updated = await prisma.$transaction(async (tx) => {
+      if (deactivatesTarget || tierLeavesAdult) {
+        await acquireFuturePartnerSharedAllocationLocks(tx, [id]);
+        await acquireMemberLifecycleLocks(tx, [id]);
+      }
       // Last-admin guard (issue #1604): counted inside the mutation
       // transaction so it sees this transaction's read view. Only a real
       // deactivate/de-login can strand the club; role demotion of another
@@ -1330,7 +1391,7 @@ export async function updateAdminMember(params: {
       // occupants return to the awaiting-allocation queue (audited against
       // both bookings inside the sweep) and admins are alerted post-commit.
       if (deactivatesTarget || tierLeavesAdult) {
-        sweptShares = await sweepFuturePartnerSharedAllocations({
+        sweptShares = await sweepFuturePartnerSharedAllocationsWithLocksHeld({
           memberId: id,
           reason: deactivatesTarget
             ? "member_deactivated"
@@ -1358,6 +1419,26 @@ export async function updateAdminMember(params: {
         }
       }
 
+      // `admin`, KEPT PENDING AN OWNER DECISION rather than settled (#2730).
+      //
+      // Read against the owner's rule this is the weakest `admin` left in the
+      // tree, and the comparison is inside the platform: the identical acts
+      // performed from the bulk screen write `account` (`member.bulk-deactivate`
+      // / `-reactivate`) and `security` (`member.bulk-set-role`), and the member's
+      // own edit of the same fields writes `account` (`/api/profile`). So today
+      // the same business act is filed three ways depending on the SCREEN — which
+      // is initiator reasoning wearing a different hat, and `bulk-update/route.ts`
+      // names it as "the exact thing the owner rule forbids".
+      //
+      // It was not moved here because both destinations are MEMBER-VISIBLE
+      // (`MEMBER_VISIBLE_AUDIT_CATEGORIES`), so the move publishes this row on the
+      // subject member's own activity page. That is a widening, and #2730's rule
+      // is that a widening is the owner's to take, not a lane's — it is on the
+      // issue beside the `member_lifecycle.delete_*` and family-suggestion
+      // questions. If it is approved, the fix is the split
+      // `bulk-update/route.ts` already uses: `security` when the change set is
+      // access roles, `account` otherwise, written as two calls with LITERAL
+      // categories (the census contract forbids a conditional category).
       await tx.auditLog.create(
         buildStructuredAuditLogCreateArgs({
           action: auditAction.action,
@@ -1502,6 +1583,9 @@ export async function updateAdminMember(params: {
 
     return jsonResult(updated);
   } catch (error) {
+    if (isHostingCoverageParticipantRetry(error)) {
+      return jsonResult(HOSTING_COVERAGE_RETRY_BODY, { status: 409 });
+    }
     if (error instanceof AdminAccountGuardError) {
       return jsonResult(
         { error: error.message },

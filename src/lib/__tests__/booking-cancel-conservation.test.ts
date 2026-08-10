@@ -156,6 +156,11 @@ vi.mock("@/lib/payment-recovery", () => ({
   })),
 }));
 
+import {
+  fenceHostingPolicyFindMany,
+  fenceMemberFindMany,
+  recordingBookingDouble,
+} from "@/lib/__tests__/support/hosting-participant-fence-double";
 import { cancelBooking } from "@/lib/booking-cancel";
 
 const POLICY: CancellationRule[] = [
@@ -215,6 +220,7 @@ async function runCancel({
   mocks.bookingFindUnique.mockResolvedValue({
     id: "booking_m",
     memberId: "member_1",
+    lodgeId: "lodge_1",
     status: "PAID",
     finalPriceCents: FINAL_CENTS,
     checkIn: new Date("2026-08-10"),
@@ -261,10 +267,20 @@ describe("cancel-after-reduction conservation matrix (#1031)", () => {
         arg: ((tx: unknown) => Promise<unknown>) | Array<Promise<unknown>>,
       ) => {
         if (typeof arg === "function") {
+          // #2619: model the participant fence's under-lock re-reads.
+          const fenceBooking = recordingBookingDouble((args) =>
+            mocks.bookingFindUnique(args),
+          );
           const mockTx = {
             $executeRaw: vi.fn().mockResolvedValue(undefined),
+            member: { findMany: fenceMemberFindMany() },
+            // #2623 T5: the seam reads the lodge's hosting mode before the fence, so
+            // the double answers with an ACTIVE one and the fence above stays on the
+            // path. See `fenceHostingPolicyFindMany`.
+            adultMemberHostingPolicy: { findMany: fenceHostingPolicyFindMany() },
             booking: {
-              findUnique: mocks.bookingFindUnique,
+              findUnique: fenceBooking.findUnique,
+              findMany: fenceBooking.findMany,
               update: mocks.bookingUpdate,
               updateMany: mocks.bookingUpdateMany,
             },
@@ -460,6 +476,7 @@ describe("cancel-after-reduction conservation matrix (#1031)", () => {
     mocks.bookingFindUnique.mockResolvedValue({
       id: "booking_nc",
       memberId: "member_1",
+      lodgeId: "lodge_1",
       status: "PAYMENT_PENDING",
       finalPriceCents: 20000,
       checkIn: new Date("2026-08-10"),

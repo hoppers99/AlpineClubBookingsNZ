@@ -688,6 +688,83 @@ the components gained the names to make that possible — including a per-device
 name on the display pairing box and a named group per guest card, both of which
 also keep the selector unambiguous once a second row exists.
 
+### What a browser may say about a write it never saw an answer to (#2668)
+
+`fetch` rejects for two situations a client cannot tell apart: the request never
+reached the server, and the request reached the server, was processed, and the
+connection dropped before the response came back. A message that states the
+first one as fact — "your room request was not saved", "nothing was recorded" —
+is therefore a guess about the database made by the one party that cannot see
+it, and on a flaky mobile connection it is wrong often enough to send someone
+back to redo a write that already happened. For a non-idempotent write (cash
+recorded by hand, a refund task closed) that invites a duplicate. The same
+applies to a response that ARRIVES and cannot be read: the server has already
+done whatever it was going to do.
+
+**The line is between the attempt and the record.** Reporting that the attempt
+failed is honest and stays as it is — `arrival-time-editor.tsx`'s "Failed to
+save arrival time" claims nothing about the stored row. Reporting that the
+record did not move is the claim a client is not entitled to make. A refusal the
+SERVER reported (403, 409, a validation 400) is unaffected: there the server is
+making the claim, and it knows.
+
+The wording is built by `unverifiedWriteMessage()`
+(`src/lib/unverified-write-copy.ts`), which produces the sentence the waitlist
+offer card shipped first (#2623 T8): *"The service response could not be read,
+so we could not verify whether …"* plus a second sentence routing the person at
+the server's own value rather than at the screen in front of them. Six surfaces
+were converted with it in #2668 — the requested-room and roster editors, the
+manual cash-payment control, the manual-refund queue, the reviewed
+bed-allocation removal dialog, and the built-in-board restore. Every other
+surface that speaks this sentence reads it from the same builder rather than
+typing it out: the waitlist offer card, the waitlist force-confirm action, the
+draft-confirm button, and the display wizard's board bind. Nine in all, and
+membership is pinned, because "one wording" that four files happen to agree on
+is a coincidence waiting to be broken by the first re-wording.
+
+Three behaviours follow from the copy rather than merely accompanying it. An
+unread outcome must **not revert a control** to a value the server may no longer
+hold (that is screen-versus-row drift reintroduced on the path with the least
+information), and it must not be **re-baselined** as though it were confirmed:
+the admin notification panel keeps such a card exactly as the operator left it
+and leaves Save live, while a card the server actually refused still rolls back.
+Re-baselining is the half that fails silently — a re-baselined card is clean, so
+the next Save sends nothing and the panel leaves edit mode as though the guess
+were confirmed — so it is pinned behaviourally: after an unread outcome, pressing
+Save again must send a second request. And on the **two money surfaces** (the
+manual cash-payment control and the manual-refund queue) the sentence is *held*
+in the open dialog with the confirming button disarmed behind it, rather than
+thrown as a transient toast: the operator's likeliest next act is a second press
+on a still-armed button, which is the act the message exists to prevent. The
+server refuses the duplicate in both cases, so the ledger is safe either way; the
+delivery is about the operator doing the right thing rather than about the ledger.
+
+Enforced on the current tree by
+`src/lib/__tests__/unverified-write-copy-contract.test.ts`, which walks `src/`,
+bounds every `catch` body and every falsy guard on a name bound to a `fetch`
+result in a `"use client"` file, resolves module-scope constants (the house style
+for this copy — two of the converted surfaces hold their sentence in one), and
+fails if any of those branches asserts the stored record did not move. A guard
+must be on the binding (`if (!res)`) or through an optional chain
+(`if (!res?.ok)`) to count: `if (!res.ok)` means a response is in hand, so the
+server answered, and its refusals keep their confident wording.
+
+It is a **floor, not a proof**, and the gaps are known and deliberate rather than
+undiscovered: a claim rendered from error state in JSX rather than written in the
+branch, a `fetch` behind an imported helper module, a message assembled at run
+time, and browser code in a file carrying no `"use client"` marker of its own
+(`src/lib/admin-member-xero-actions.ts` is one; its copy is honest today, and the
+walk is not what keeps it so) all pass. That is why every converted surface has a
+behavioural test as well — see the "Client honesty" row of
+`docs/END_TO_END_TEST_MATRIX.md`.
+
+Allowlist entries are scoped to **one branch, not a file**. The single entry is
+the display setup wizard's module-settings GET, whose "nothing was changed" is a
+fact about the client's own control flow because the function returns before its
+PUT is built; the five write fetches in that same file — the module-settings
+PUT, the lodge-config PUT, the device create, the board bind and the pairing
+arm — are walked like anything else.
+
 ## Module Boundaries
 
 This application is intentionally still a single Next.js monolith. The
@@ -752,7 +829,7 @@ Use these ownership boundaries when adding new code:
 | Route-private page UI | `src/app/(admin)/admin/xero/_components`, `src/app/(admin)/admin/xero/_hooks`, `src/app/(admin)/admin/members/**/_components`, `src/app/(admin)/admin/members/**/_hooks`, `src/app/(authenticated)/book/_components` | Large routes should be route shells plus local components/hooks before moving anything to shared UI. |
 | Shared UI | `src/components/` | Reusable view pieces live here; route-specific view state can stay beside the page until it is reused. |
 | Booking lifecycle | `src/lib/booking-create.ts`, `src/lib/booking-create-types.ts`, `src/lib/booking-create-promo.ts`, `src/lib/booking-create-guests.ts`, `src/lib/booking-modify.ts` (barrel over `booking-modify-validation` / `booking-modify-plan` / `booking-modify-settlement`), `src/lib/booking-payment-cleanup.ts`, `src/lib/payment-recovery.ts` | Keep route handlers thin; booking orchestration and durable payment recovery live behind these services. |
-| Bed allocation | `src/lib/bed-allocation.ts`, `src/lib/bed-allocation-lifecycle.ts`, `src/lib/admin-bed-allocation.ts` | Room/bed inventory, family-aware allocation planning, lifecycle reconciliation, manual admin allocation, and approval state live behind focused services. Each `LodgeBed` carries a descriptive **bed type** (`SINGLE` / `BUNK_TOP` / `BUNK_BOTTOM` / `DOUBLE`) and an optional `bunkGroup` label; a group holds at most two beds — one top and one bottom — enforced in `admin-bed-allocation.ts` (serialised by a room-row lock, no partial index) and shown as an icon on the setup list and allocation board (#1675). Bed type is mostly descriptive, with one capacity exception (#1701): a **DOUBLE** bed may hold **two** occupants for a night when they are declared partners (two `ADULT` members holding a **CONFIRMED** `MemberPartnerLink` (#1742/#1744), the single-source `mayShareDoubleBed()` rule in `double-bed-sharing.ts`), added by an admin on the board onto a bed whose primary already holds capacity. Every other bed type stays one person per night. The bed-night uniqueness is `@@unique([bedId, stayDate, isSecondOccupant])` (≤1 primary + ≤1 second occupant) plus a raw-SQL partial unique index capping non-DOUBLE beds at exactly one (`WHERE "bedType" <> 'DOUBLE'`, in `prisma/partial-unique-indexes.tsv`); `BedAllocation.bedType` is a denormalized copy the partial index reads. The **base** capacity figure is unchanged — a shared double is still **one bed** of `activeBedCount` and each occupant is a full person-night — but each active DOUBLE adds one reserved, bounded **partner-shared admission slot** above it (#1745: `getLodgePartnerSharedCapacityStatus` + `checkCapacityForPartnerSharedAdmission`, admin-initiated only, never visible to public availability; see docs/CAPACITY_MODEL.md); auto-allocation never creates a second occupant. Beds may be pre-assigned on provisional statuses (`BED_ALLOCATABLE_BOOKING_STATUSES`) before a booking holds capacity, so the admin board tags each bed **Held** vs **Provisional** (#1251). The state is a server-computed flag from `bookingHoldsCapacity` (booking-status.ts) — not a per-row status check — because holding is no longer purely status-based: an accepted-but-unpaid quote is `PENDING` but holds (#1254). In the AUTOMATIC on-payment/confirmation reconcile (`bed-allocation-lifecycle.ts` → the planner's `prioritizeCapacityHolding` mode), **capacity-holding bookings get first claim**: they are allocated before provisional ones, and a held booking blocked only by a **Provisional** allocation moves that provisional aside (to a free bed) — or, if the night is otherwise full, unallocates it back to the awaiting-allocation queue — then takes the freed bed. A **Held** or admin-**approved** (#776 lock) allocation is never displaced, and displacement never strands a same-booking minor; each displacement is applied atomically and writes a `lodge` audit row on the displaced provisional booking (#1387). The planner enforces the cross-booking age-mix invariant on every placement path (#1768): a room-night holding one booking's minors never also holds another booking's adult (in either direction), minors may fill rooms of their own once the booking has an adult on-site that night (the adult count no longer caps the rooms a large group fills), a SCHOOL-request booking rooms its adults together and its students separately (`isSchoolGroup`), and persisted violations surface as `MINOR_ADULT_MIX` board warnings. That automatic reconcile auto-places **only the reconciled booking's own** guests on its current nights (#1686): editing, confirming, promoting, or cancelling one booking never opportunistically drafts *other* bookings' guests into idle or freed beds — a cancellation's freed beds stay in the awaiting-allocation queue rather than being auto-refilled. It still loads lodge-wide occupancy so it can seat that booking whole-stay and displace blocking provisionals to seat a held booking (#1387/#1677); opportunistic lodge-wide re-planning of *everyone* is exclusively the explicit board action below. The manual board **Run auto-allocation** button (`runAutoBedAllocation`) runs pure first-fit and does NOT displace — only the automatic reconcile does. One further occupancy class has **no `BedAllocation` row at all** (#2286): a `HutLeaderAssignment` carrying a `bedId` is a **custodian bed hold**, which takes that bed out of both the bookable and the allocatable pool for every night from `startDate` to `endDate` *inclusive*, with no `Booking`, no `BookingGuest` and no allocation row anywhere (`src/lib/custodian-occupancy.ts` read side, `src/lib/custodian-assignment.ts` write side). It is counted as an **occupant** rather than as a smaller lodge, so `occupiedBeds + availableBeds === lodgeCapacity` still holds; it is fed to the planner as a #1768 blocking, never-evictable unknown occupant; and because nothing in the database enforces it, every placing write re-reads the live holds on its own client immediately before writing, inside the per-lodge advisory lock where it owns the transaction. `custodian-write-path-contract.test.ts` scans the whole `src/` tree and fails CI when a `bedAllocation.create*` site appears undeclared. See docs/CAPACITY_MODEL.md and DOMAIN_INVARIANTS.md. |
+| Bed allocation | `src/lib/bed-allocation.ts`, `src/lib/bed-allocation-lifecycle.ts`, `src/lib/admin-bed-allocation.ts`, `src/lib/bed-allocation-removal.ts` | Room/bed inventory, family-aware allocation planning, lifecycle reconciliation, manual admin allocation, reviewed removal, and approval state live behind focused services. Each `LodgeBed` carries a descriptive **bed type** (`SINGLE` / `BUNK_TOP` / `BUNK_BOTTOM` / `DOUBLE`) and an optional `bunkGroup` label; a group holds at most two beds — one top and one bottom — enforced in `admin-bed-allocation.ts` (serialised by a room-row lock, no partial index) and shown as an icon on the setup list and allocation board (#1675). Bed type is mostly descriptive, with one capacity exception (#1701): a **DOUBLE** bed may hold **two** occupants for a night when they are declared partners (two `ADULT` members holding a **CONFIRMED** `MemberPartnerLink` (#1742/#1744), the single-source `mayShareDoubleBed()` rule in `double-bed-sharing.ts`), added by an admin on the board onto a bed whose primary already holds capacity. Every other bed type stays one person per night. The bed-night uniqueness is `@@unique([bedId, stayDate, isSecondOccupant])` (≤1 primary + ≤1 second occupant) plus a raw-SQL partial unique index capping non-DOUBLE beds at exactly one (`WHERE "bedType" <> 'DOUBLE'`, in `prisma/partial-unique-indexes.tsv`); `BedAllocation.bedType` is a denormalized copy the partial index reads. The **base** capacity figure is unchanged — a shared double is still **one bed** of `activeBedCount` and each occupant is a full person-night — but each active DOUBLE adds one reserved, bounded **partner-shared admission slot** above it (#1745: `getLodgePartnerSharedCapacityStatus` + `checkCapacityForPartnerSharedAdmission`, admin-initiated only, never visible to public availability; see docs/CAPACITY_MODEL.md); auto-allocation never creates a second occupant. Beds may be pre-assigned on provisional statuses (`BED_ALLOCATABLE_BOOKING_STATUSES`) before a booking holds capacity, so the admin board tags each bed **Held** vs **Provisional** (#1251). The state is a server-computed flag from `bookingHoldsCapacity` (booking-status.ts) — not a per-row status check — because holding is no longer purely status-based: an accepted-but-unpaid quote is `PENDING` but holds (#1254). In the AUTOMATIC on-payment/confirmation reconcile (`bed-allocation-lifecycle.ts` → the planner's `prioritizeCapacityHolding` mode), **capacity-holding bookings get first claim**: they are allocated before provisional ones, and a held booking blocked only by a **Provisional** allocation moves that provisional aside (to a free bed) — or, if the night is otherwise full, unallocates it back to the awaiting-allocation queue — then takes the freed bed. A **Held** or admin-**approved** (#776 lock) allocation is never displaced, and displacement never strands a same-booking minor; each displacement is applied atomically and writes a `lodge` audit row on the displaced provisional booking (#1387). The planner keeps bed-night **capacity** (`bedId:stayDate` — is this bed taken?) separate from occupant **identity** (`bedId:stayDate:bookingGuestId` — who is in it?), because a shared DOUBLE holds two occupant rows on one bed-night, possibly from two different bookings (#2656): an eviction releases the physical bed-night only when no occupant remains, displacement credit is counted in beds actually freed rather than rows or bookings displaced, a bed-night whose occupants span two bookings is never a *single-bed* displacement target (the whole-stay room path instead makes every occupant a candidate and gains the bed only once ALL of them are being evicted — so both bookings on a shared double go together or the room is not chosen; see docs/CAPACITY_MODEL.md rule 3), and the apply path promotes any second occupant its displacements orphan and refuses to write onto a bed-night the database still shows as occupied rather than relying on `skipDuplicates`. The planner enforces the cross-booking age-mix invariant on every placement path (#1768): a room-night holding one booking's minors never also holds another booking's adult (in either direction), minors may fill rooms of their own once the booking has an adult on-site that night (the adult count no longer caps the rooms a large group fills), a SCHOOL-request booking rooms its adults together and its students separately (`isSchoolGroup`), and persisted violations surface as `MINOR_ADULT_MIX` board warnings. That automatic reconcile auto-places **only the reconciled booking's own** guests on its current nights (#1686): editing, confirming, promoting, or cancelling one booking never opportunistically drafts *other* bookings' guests into idle or freed beds — a cancellation's freed beds stay in the awaiting-allocation queue rather than being auto-refilled. It still loads lodge-wide occupancy so it can seat that booking whole-stay and displace blocking provisionals to seat a held booking (#1387/#1677); opportunistic lodge-wide re-planning of *everyone* is exclusively the explicit board action below. The manual board **Run auto-allocation** button (`runAutoBedAllocation`) runs pure first-fit and does NOT displace — only the automatic reconcile does. One further occupancy class has **no `BedAllocation` row at all** (#2286): a `HutLeaderAssignment` carrying a `bedId` is a **custodian bed hold**, which takes that bed out of both the bookable and the allocatable pool for every night from `startDate` to `endDate` *inclusive*, with no `Booking`, no `BookingGuest` and no allocation row anywhere (`src/lib/custodian-occupancy.ts` read side, `src/lib/custodian-assignment.ts` write side). It is counted as an **occupant** rather than as a smaller lodge, so `occupiedBeds + availableBeds === lodgeCapacity` still holds; it is fed to the planner as a #1768 blocking, never-evictable unknown occupant; and because nothing in the database enforces it, every placing write re-reads the live holds on its own client immediately before writing, inside the per-lodge advisory lock where it owns the transaction. `custodian-write-path-contract.test.ts` scans the whole `src/` tree and fails CI when a `bedAllocation.create*` site appears undeclared. See docs/CAPACITY_MODEL.md and DOMAIN_INVARIANTS.md. |
 | Member-guest consent | `src/lib/member-guest-consent.ts`, `src/lib/member-guest-settings.ts`, `src/lib/booking-guests.ts` | Adding another club member as a guest ("+ Add Member Guest", epic #2305). `member-guest-consent.ts` is the pure model: the named widening predicate `MEMBER_GUEST_WIDENING_ENABLED`, the `FAMILY` / `BEYOND_FAMILY` boundary types, and the eight-shape consent sub-state table with its classifier. `booking-guests.ts` computes each prospective guest's boundary scope on **every** path — the admin `skipAuthorization` paths included — so no caller can end up persisting a consent-free cross-family row by default. Policy lives in the `MemberGuestSettings` singleton (`member-guest-settings.ts`, lazily created, read through the shared defaults in `src/config/club-settings-defaults.ts`) alongside the other club-settings singletons; its two open-search privacy toggles are excluded from config transfer. **The feature is live behind the `memberGuests` module** (MG2 #2307 turned MG1's dark constant into the per-club flag; MG3 #2308 added the finder; MG4 #2309 covered the edit path, admin parity and the booking-request pipeline). With the module off — the shipped default — a cross-family add is refused with the byte-for-byte pre-existing error and nothing writes a non-null `BookingGuest.consentStatus`, so a club that never opts in sees no change. Every persisting path plans its consent columns through the single writer in `member-guest-consent.ts` by way of `member-guest-add-policy.ts`, and every one of them dispatches its notifications AFTER the transaction commits. |
 | Policy rules | `src/lib/policies/` | Pricing, age-tier, cancellation, change-fee, minimum-stay, member-credit, and booking-route decisions live as testable policy helpers. |
 | Operational Xero | `src/lib/xero-*.ts`, `src/lib/xero.ts` | `src/lib/xero.ts` is a compatibility facade. New code should import from the focused module that owns the behavior, not from the facade. |
@@ -760,6 +837,127 @@ Use these ownership boundaries when adding new code:
 | Business logic | `src/lib/` | Keep money in integer cents, dates as New Zealand date-only lodge nights, and external calls outside long database transactions where practical. |
 | Database | `prisma/schema.prisma`, `prisma/migrations/` | Schema changes must include deployable migrations and respect the blue/green migration policy. |
 | Operations | `scripts/`, `deploy/`, Compose files | Deployment helpers should be reusable by forks through environment overrides. |
+
+### Bed-allocation preference resolution
+
+`src/lib/bed-allocation-settings.ts` is the closed-vocabulary boundary and the
+single effective-settings resolver for the board, explicit board run, and
+booking-lifecycle reconcile. `BedAllocationSettings.id = lodgeId` is the
+authoritative per-lodge row. During the expand-compatible transition, the
+legacy `id = "default"` row applies only when it is unlinked or linked to the
+same lodge; otherwise the resolver uses code defaults. A lodge never inherits
+another lodge's row, and the settings API requires one active `lodgeId` for
+both reads and writes. Reads require `bookings:view`; writes require
+`bookings:edit` and use the standard per-section Edit → dirty Save/Cancel UI.
+
+The ordered values are `BOOKING_COHESION`, `STAY_CONTINUITY`,
+`REQUESTED_ROOM`, and `FAMILY_COHESION`. Missing settings use that historical
+order; an explicitly saved empty array is valid neutral ordering. Invalid,
+unknown, or duplicate persisted values fail closed instead of silently
+changing planner behavior. Preferences are lexicographic after hard placement
+count and invariant scores: the split matcher maximizes guest-night cardinality
+for each bounded candidate, and at most 24 matching-layout candidates are
+executed per booking. Those candidates include a capacity-aware, direct-family
+high-affinity packing order as well as connected-component, direct-group,
+direct-pair, and maximum-cardinality pairing orders. Whole-room, legacy, and
+displacement trials remain
+separate and may scale with room count. The overall booking-first planner is a
+bounded deterministic heuristic, not a global optimum across all bookings.
+Changing preferences affects future suggestions and lifecycle reconciliation;
+it never rewrites existing allocation rows by itself.
+
+Migration `20260806020000_add_bed_allocation_priority_order` is an additive
+EXPAND on the cold settings table: one non-null `TEXT[]` column with the
+historical constant default. Old-colour clients omit and ignore it; old-colour
+inserts receive that default; no `BedAllocation` row is touched or replanned.
+The exact lock/rollback and migration-prefix coordination statement is recorded
+in [`BLUE_GREEN_MIGRATION_SAFETY.tsv`](BLUE_GREEN_MIGRATION_SAFETY.tsv).
+
+### Reviewed bed-allocation removal
+
+`src/lib/bed-allocation-removal.ts` owns the destructive #2594 contract. The
+single `/api/admin/bed-allocation/allocations/removal` route uses `POST` for a
+read-only preview (`bookings:view`) and `PUT` to apply exactly that preview
+(`bookings:edit`). The four scopes are one anchored allocation, one person on
+one booking, a whole booking, and one lodge's half-open visible window (at most
+31 NZ lodge nights). Person and booking scopes intentionally include off-screen
+rows; window scope never does. The three mutually exclusive row categories are
+unapproved `AUTO`, unapproved `MANUAL`, and approved regardless of source.
+
+The `v1:<sha256>` digest binds the canonical scope and sorted categories to the
+mutable identity of every matching row, every approved row on an affected
+booking, and every surviving shared-double second occupant whose primary would
+be removed. Apply first resolves the booking's immutable lodge plus the
+reviewed anchor lodge, then takes global `lock(1)` → sorted lodge locks →
+sorted `BedAllocation` row locks. Expanded bed-night, row-lock, delete, and
+promotion queries are split into deterministic 10,000-value chunks so supported
+booking scopes cannot cross PostgreSQL's 65,535 bind-parameter ceiling; all
+chunks remain in the same transaction and sorted lock order. An authoritative under-lock check refuses any
+historical third-lodge anomaly rather than deleting it without that lodge's
+lock. Apply rebuilds the preview under those locks and refuses with a refreshed
+preview when the anchor or digest drifted; an aggregate booking/person preview
+whose opening row disappeared is re-anchored to the lowest-id matching survivor
+so the refreshed preview can be reviewed and applied. A successful transaction deletes the exact
+rows, promotes causal shared-double occupants, and writes the bounded
+`BED_ALLOCATION_REMOVAL_APPLIED` plus (when needed)
+`BED_ALLOCATION_PARTNERS_PROMOTED` audits together. It does not call either
+planner: freed nights stay unallocated until a later explicit admin action.
+
+Approval is a lock-compatible counterpart. A lodge-scoped approval locks that
+one immutable lodge; the supported legacy club-wide selector conservatively
+locks the sorted immutable superset of all lodge ids before it locks matching
+allocation rows, then re-applies its `approvedAt: null` selector. Requested-room
+writes take the same global key plus the booking row, re-read the requested room
+after those locks and the authority check, and keep a guarded
+"no approved allocation exists" predicate for member writes. Consequently a
+removal cannot race an approval or room-request edit into an outcome no actor
+reviewed: one transaction wins, and the other re-reads or fails its guard.
+
+The old `DELETE /api/admin/bed-allocation/allocations/[id]` route is retired.
+The board chip/pool drop, board **Reset allocations…**, and booking-detail
+**Remove** action all open the shared
+`src/components/admin/bed-allocation-removal-dialog.tsx`; none keeps an
+optimistic or per-night delete path.
+
+### Reviewed bed-allocation moves
+
+`src/lib/bed-allocation-move.ts` owns the #2595 move contract. Read-only
+`POST /api/admin/bed-allocation/allocations/move` requires `bookings:view` and
+returns an authoritative preview. `PATCH
+/api/admin/bed-allocation/allocations` accepts an exclusive union: the reviewed
+shape carries `anchorAllocationId`, `destinationBedId`, `scope`, and
+`previewDigest`; the unchanged legacy `{ allocationIds, bedId }` path remains
+available to older callers and remains capped at the 31-night board window.
+Reviewed apply requires `bookings:edit`.
+
+The reviewed scopes are exactly one existing allocation night or every
+existing row for the same booking guest (up to 366), including sparse and
+off-screen rows. They never create a missing guest-night or allocation. The
+preview separates changed and unchanged rows, shows approval-to-draft and
+shared-double promotion consequences, and reports every hard refusal without
+exposing counterpart guest identities. Its `v1:<sha256>` digest binds the
+scope, anchor, destination, complete selected and relevant occupant sets,
+exact guest nights, booking and consent state, active/member age facts,
+confirmed partner links, custodian and whole-lodge holds, promotions, and the
+derived conflict result.
+
+Apply takes global -> complete sorted lodge union -> sorted member-lifecycle ->
+sorted member-partner-link -> deterministic allocation-row locks, then rebuilds
+and compares that preview. It uses guarded updates and one transaction for
+every move, shared-double promotion, and bounded aggregate audit. Changed rows
+are applied by one guarded `UPDATE ... FROM (VALUES ...)` statement under an
+explicit 30-second transaction/10-second acquisition budget, and become
+unapproved `MANUAL` drafts while unchanged rows remain byte-for-byte
+untouched. An all-noop confirmation is successful and audit-free. Drift returns
+a refreshed 409 preview and requires a second confirmation; no planner runs.
+
+Every drag/drop destination and chip **Move to bed** item opens
+`src/components/admin/bed-allocation-move-dialog.tsx`. That is the only board
+move write seam: there is no optimistic or direct typed move. One pointer or
+keyboard interaction opens one dialog, the current bed remains selectable for
+person-scope consolidation/noop review, and closing or succeeding restores
+focus to the originating chip/menu control. The in-booking allocation panel
+does not expose these move scopes.
 
 The largest current files are historical consolidation points rather than a
 preferred style. When changing them, extract focused helpers around the code
@@ -824,7 +1022,9 @@ booking detail Admin tools card — read-only detection mirroring the
 stuck-state queries.
 
 Admin settings sections follow one canonical edit model (developer rule, binding
-for new or modified sections; see `AGENTS.md` → Change Discipline). A section
+for new or modified sections; `AGENTS.md` → Change Discipline and its routing
+table both send you here for it, and this page is where it is stated in full).
+A section
 renders read-only on mount and stages every change behind a per-section Edit →
 Save/Cancel step: no individual control auto-persists on toggle, Cancel reverts
 to the last saved snapshot, and Save writes once. Save is **dirty-gated as well
@@ -841,7 +1041,10 @@ matching `area:edit` permission. The section renders an
 the view-only reason is then stated once, at the top of the section, in a
 permanently-mounted `role="status"` region, rather than on disabled buttons that
 are out of the tab order and whose `title` never fires at all (the shared
-`buttonVariants` set `disabled:pointer-events-none`). "Permanently mounted" is a
+`buttonVariants` set `disabled:pointer-events-none`). That region
+gates only the content, because a polite live region injected already-populated
+is silently dropped by some screen-reader/browser pairings.
+"Permanently mounted" is a
 POSITION rule as much as a rendering one, and it covers `PolicyFeedback`'s
 `role="alert"` / `role="status"` pair too: the section has a FRAME — banner,
 feedback regions, and, where the fetch is scope-keyed, the scope select — that
@@ -855,24 +1058,25 @@ Booking Policies sections (#2142) and is now the **default across the admin
 tree** (#2160, extended by #2168 and #2324) — not a claim that nothing is left.
 Measured
 on the current tree by `view-only-banner-contract.test.ts`, which asserts these
-figures rather than trusting a hand count: **83 components render a banner, and
-261 of the 310 `ViewOnlyActionButton` call sites opt out** of the per-button
+figures rather than trusting a hand count: **84 components render a banner, and
+264 of the 315 `ViewOnlyActionButton` call sites opt out** of the per-button
 reason. (Earlier revisions of this page published 76/232/264/211 — those were
 upstream-historical and had drifted; the numbers here are the ones the contract
-test currently pins, which is the only authority.) Those 261 split by WHICH rule
-covers them: **234** pass the literal
+test currently pins, which is the only authority.) Those 264 split by WHICH rule
+covers them: **237** pass the literal
 `describeReason={false}` and are covered by a banner in the same file, and **27**
 pass `describeReason={!ancestorRendersViewOnlyBanner}` and are covered by a
 verified vouching parent — 22 by a parent's own JSX render site (#2168), 5 by the
 guided-setup shell (#2324); see *Vouching for a child's coverage* and *Vouching
 through the wizard shell* below. The
-remaining **49 controls across 26 files deliberately keep the per-button
+remaining **51 controls across 28 files deliberately keep the per-button
 default** (`describeReason` left at `true`), in three shapes:
 
 - **Controls inside a dialog, sheet, popover, or dropdown menu.** These live in
   a separate accessibility container — focus is trapped and the page behind is
   commonly inert — so a banner rendered in the page body does not reach them.
-  (9 controls across 4 files, which the test enumerates by name; three further
+  (10 controls across 5 files, including the confirmed bed-allocation move
+  dialog, which the test enumerates by name; three further
   controls of this shape live in files counted under the next bucket, see
   there.)
 - **Leaf components with no section of their own**, which a parent drops into
@@ -880,7 +1084,7 @@ default** (`describeReason` left at `true`), in three shapes:
   the booking capacity/exclusive hold controls, the family-group login-holder
   and request-review sub-sections, and the non-member contact form). Nothing
   local proves an ancestor renders a banner above them, so the reason stays on
-  the control. (36 controls across 21 files.) Nine of those 36 sit inside a
+  the control. (37 controls across 22 files.) Nine of those 37 sit inside a
   setup wizard and are **scope** exceptions rather than indirection ones: each is
   gated on a permission NARROWER than the banner its shell renders, so an admin
   who has the wizard's area but not that narrower one meets no banner at all.
@@ -899,9 +1103,9 @@ default** (`describeReason` left at `true`), in three shapes:
   Payments page with no banner of its own. Read that
   bucket as the
   REMAINDER — everything that is neither a member detail card nor one of the
-  four dialog-only files — rather than as a claim that all 34 are leaves. Twelve
-  of the twenty files are (22 controls); six are the wizard step files just
-  described (9 controls); and the last two, `page-content-panel.tsx`
+  five dialog-only files — rather than as a claim that all 36 are leaves.
+  Thirteen of the twenty-one files are (24 controls); six are the wizard step
+  files just described (9 controls); and the last two, `page-content-panel.tsx`
   and `site-banners-panel.tsx`, are full banner-bearing panels whose last 3
   controls sit inside their own edit/create `Dialog`, so those 3 are really the
   first shape occurring inside a file that also has the third. Nothing is
@@ -941,6 +1145,62 @@ test fails and the numbers here, in `AGENTS.md`, in `docs/STYLE_GUIDE.md` (which
 publishes the exception TOTAL only), in
 `CHANGELOG.md` and in the `ViewOnlyActionButton` JSDoc all need updating
 together.
+
+**Banner or Notice: which component states the reason.** Two components are
+live here and they are not two names for one thing, which is why both appear in
+this page and in `AGENTS.md`. Since #2160 the **`AdminViewOnlySectionBanner` is
+the default for the admin tree**: a section that gates controls through
+`ViewOnlyActionButton` heads them with one banner and passes
+`describeReason={false}`, so the reason is stated once, in the reading order,
+ahead of the controls. `AdminViewOnlyNotice` — the older, per-section notice —
+is **retained deliberately in three cases**, and a developer who deletes one on
+sight removes an explanation nothing else gives:
+
+- **A surface that states view-only access WITHOUT gating a control through
+  `ViewOnlyActionButton`.** With no gated control there is nothing for the
+  banner to head.
+- **A section whose Notice is CONDITIONAL on no ancestor covering it.**
+  `member-lodge-access-card`, `member-committee-assignments-card` and
+  `member-seasonal-membership-card` each render their Notice only when
+  `ancestorRendersViewOnlyBanner` is false (#2168), so the member detail page —
+  which banners the whole page — sees no Notice, while the same card rendered
+  anywhere else still states the reason itself. The lodge-access Notice also
+  covers disabled CHECKBOXES, which are not `ViewOnlyActionButton`s and which no
+  banner rule reaches; that is why it is kept rather than deleted.
+- **A NARROWER permission scope nested inside a section the banner already
+  heads.** The banner states the section's own scope once at the top; a Notice
+  further down carries a DIFFERENT permission's reason for a subset of the
+  controls, so the two are not the same statement and the Notice is not
+  redundant. `backups/backups-client.tsx` is the clearest example — a
+  support-scoped banner heads the page, and the Credentials card carries a
+  Full-Admin-scoped Notice ("Only a Full Admin can set backup credentials") for
+  the fields only a Full Admin may write — and
+  `subscription-lockout-settings-panel.tsx` does the same with a finance-scoped
+  Notice over the subscription account and item codes inside a
+  membership-scoped section. Both render banner AND Notice AND gated buttons at
+  once.
+
+**Having both components in one file does not make it the third case.**
+`fees/_components/hut-fees-section.tsx` is the example to keep straight: its
+banner and its Notice are MUTUALLY EXCLUSIVE by construction
+(`{!forbidden && viewOnlyBanner}` against
+`{forbidden && <AdminViewOnlyNotice canEdit={false}>}`), the Notice is the
+stronger *you cannot even read this section* statement, and the `forbidden`
+branch renders no controls at all — so it is the FIRST case, in a branch, not a
+narrower scope nested under a banner. The file's own comment says showing both
+"would contradict itself". The test to apply is not "does this file have both
+components?" but "can both appear at the same time, naming different
+permissions?".
+
+So "a section with gated controls replaces its Notice with the banner" holds
+only for a Notice covering the SAME scope. Before deleting a Notice from a
+section that has a banner, check which permission its text names — if it is not
+the banner's, it is carrying a reason nothing else states. The nesting rule
+further down is banner-to-banner and does not forbid the third case: a Notice
+under a banner is not the same sentence twice. This distinction is also stated
+next to the code, in `AdminViewOnlySectionBanner`'s JSDoc in
+`src/components/admin/view-only-action.tsx`, which is where a developer meets it
+while writing; the two are the same rule and must be changed together.
 
 **Vouching for a child's coverage (#2168).** The coverage rule below is asserted
 per FILE, which the member detail page cannot satisfy: the owner's decision is
@@ -1126,9 +1386,9 @@ once, in the reading order. Both were also keyed off `!canEdit` rather than
 `canEdit === false`, so both appeared for a moment even for an admin who *can*
 change those settings. Both are deleted; the vouched buttons under them now lean
 on the banner. That is the general rule from #2160's `AdminViewOnlyNotice`
-guidance applied to a wizard step: keep a second sentence only when it names a
-DIFFERENT permission from the banner's (which is exactly what the nine
-exceptions above do).
+guidance — stated above under *Banner or Notice* — applied to a wizard step: keep
+a second sentence only when it names a DIFFERENT permission from the banner's
+(which is exactly what the nine exceptions above do).
 
 Two things were deliberately left alone. `xero/_components/connection-status-panel.tsx`'s
 connect / reconnect / disconnect buttons ARE finance-gated, matching the Xero
@@ -1233,7 +1493,9 @@ fields is not narrow enough on its own: it protects the fields the card does not
 own, but a field the card DOES own and the admin never touched still goes out
 from a stale draft and reverts whoever moved it. Send the changed fields only —
 the schema still receives every field, the untouched ones just come from the
-fresh read. This NARROWS the
+fresh read. Where the card owns both halves of a cross-field rule, re-check the
+COMPOSED pair after the fresh read: sending only the changed half can assemble a
+pair the admin never saw. This NARROWS the
 read-modify-write window to the milliseconds between that GET and the PUT; it
 does not close it. There is no ETag or `If-Match` on the route, so two genuinely
 simultaneous writes still resolve last-writer-wins — the same property the
@@ -1382,12 +1644,14 @@ handlers the same pre-update row and the second write becomes a no-op audit
 entry of the #2143 kind. The booking-periods and minimum-night-stay sections are
 the reference for that shape (#2142). Wherever the read endpoint SYNTHESISES
 defaults on a miss — or the editor is creating a row that does not exist yet —
-carry the first-save exception so committing the defaults stays reachable, but
+carry the first-save exception: count the draft as dirty so committing the
+defaults stays reachable, but
 never extend it to a FAILED load, where the same fallback values would let one
 click blind-write over a real stored policy. For the same reason a snapshot is
 authoritative only for the scope it was loaded for: a section whose fetch is
 keyed on something else (a lodge scope) must track that key WITH the snapshot
-and treat a mismatch as unknown, because a failed re-fetch leaves the previous
+and treat a mismatch as unknown — no editor, no destructive affordances, no
+first-save exception — because a failed re-fetch leaves the previous
 key's value in place. That binds LIST sections just as hard — there the stale
 value is a set of rows whose Edit, Delete, and Activate/Deactivate buttons all
 act on a row id belonging to the partition the admin has navigated away from —
@@ -1579,21 +1843,26 @@ the soft allowlist structurally.
 
 ### Adult-member hosting policy
 
-The second consumer of that foundation, and the first that does not block
-anybody. A club may ask that every non-member guest-night overlaps an adult
-member staying on the same booking; `AdultMemberHostingPolicy` holds one row per
-scope (club-wide plus per-lodge overrides that may also say `Inherit`), with
-scope identity pinned by a CHECK on `scopeKey`, an explicit `capacityMode`
-carrying no database default, and a revision that every write compare-and-swaps
-on under the `adult-member-hosting-policy-set` advisory key.
+The second consumer of that foundation now has two independently inherited
+dimensions. The CONSEQUENCE is `DISABLED`, `ADMIN_REVIEW_REQUIRED`, or
+`ENFORCED`; the host-scope set enables `SAME_BOOKING`,
+`SAME_BOOKING_OWNER`, or both. `AdultMemberHostingPolicy` holds one row per
+configuration scope (club-wide plus per-lodge override), with scope identity
+pinned by a CHECK on `scopeKey`, an explicit `capacityMode` carrying no database
+default, and a revision that every write compare-and-swaps on under the
+`adult-member-hosting-policy-set` advisory key. A lodge may inherit either
+dimension while overriding the other. Existing NULL scope columns resolve to
+same-booking only, so the expansion does not broaden an existing club's policy.
 
-The evaluator in `src/lib/policies/adult-member-hosting.ts` is pure: it takes
-resolved policy rows and participant facts and returns the frozen
-`ADULT_MEMBER_HOSTING_REQUIRED` violation, extended with the exact uncovered
-guest+night pairs and the qualifying member ids for every candidate night.
-Booking ownership is never an input, so it can never be mistaken for attendance,
-and the live `Member` row — not the guest row's `isMember` snapshot — decides who
-qualifies.
+The evaluator in `src/lib/policies/adult-member-hosting.ts` is pure: it takes a
+resolved consequence/scope set and participant facts stamped with the scope by
+which they may qualify, then returns the frozen
+`ADULT_MEMBER_HOSTING_REQUIRED` violation with exact uncovered guest+night pairs
+and qualifying member ids. Same-owner candidates come only from another
+eligible booking with the exact same `Booking.memberId`, lodge, and night;
+ownership alone never proves attendance. The live `Member` row — not the guest
+row's `isMember` snapshot — decides who qualifies, and unrelated members,
+shared emails, and Family Groups never supply cover.
 
 `src/lib/adult-member-hosting-review.ts` is the only module that turns a
 persisted booking into evaluator input and the answer back into review state.
@@ -1621,15 +1890,19 @@ reconciler.
 The review is deliberately NOT folded into `requiresAdminReview` /
 `adminReviewStatus`: those carry the minors-only rule, several paths wipe them
 when it stops applying, and a hosting hazard has a different lifecycle. The two
-are reported together as structured codes at read time instead. The only
-enforcement that refuses anything is D-R4's on-behalf seam on create: an admin
-booking for somebody else is stopped with 409
-`ADULT_MEMBER_HOSTING_CONFIRM_REQUIRED` until they give a reason, which is stored
-with their id against the approval — `/admin/book` renders the reason panel that
-answers it, on the confirm and the save-as-draft path alike, because the check
-runs ahead of the draft fork. `adultMemberHostingReviewedById` is a real
-`SetNull` relation to `Member` with a `member-merge.ts` spec, so that attribution
-survives a merge and does not dangle after a deletion.
+are reported together as structured codes at read time instead. In review mode
+the booking exists while an officer decides; in enforced mode a non-compliant
+member create or modification throws the waivable 409 inside its transaction,
+so the write rolls back and the signed-in exception-request flow becomes the
+door forward. School and organisation approval stays review-only, while
+member-owned flows — including member whole-lodge approval — remain enforced.
+An admin booking for somebody else may supply an explicit reason, which records
+an attributable APPROVED review; `/admin/book` renders that reason panel for
+confirm and save-as-draft. `adultMemberHostingReviewedById` is a real `SetNull`
+relation to `Member` with a `member-merge.ts` spec, so that attribution survives
+a merge and does not dangle after deletion. Once an accepted booking loses
+same-owner cover, a separate urgent incident opens without changing
+`Booking.status` and resolves automatically when cover returns.
 
 1. A member selects a lodge (implicit when only one active lodge exists) and
    check-in and check-out dates.
@@ -1665,9 +1938,19 @@ survives a merge and does not dangle after a deletion.
    date. Mixed member/non-member parties split only in this pending case; inside
    the window or under First Paid, First In they stay one normal booking.
 7. `BookingGuest.stayStart` and `BookingGuest.stayEnd` record the actual
-   date-only range for each guest inside the parent booking envelope. Capacity,
-   lodge lists, rosters, and booking-derived finance metrics count a guest only
-   on nights in that individual range.
+   date-only range for each guest inside the parent booking envelope, with
+   `BookingGuestNight` rows as the authoritative night set when present.
+   Capacity and booking-derived finance metrics count a guest only on nights in
+   that individual range — the NIGHT model. Operational surfaces that ask "who
+   is in the lodge today" read the OPERATIONAL-DAY model instead (#2622): a
+   guest occupies a day's morning half if the previous night was theirs and its
+   evening half if the day itself is, so someone checking out this morning is
+   present for the morning. Chore-roster generation, roster validation and chore
+   cleanup all read one named rule in
+   `src/lib/booking-guest-stay-ranges.ts` through a single eligibility query
+   (`src/lib/roster-eligibility.ts`), and the allocator's arriving/departing
+   routing is a derived label off that rule, never separate data.
+   `docs/DOMAIN_INVARIANTS.md` owns which surfaces belong to which model.
 8. Capacity-sensitive writes use a PostgreSQL advisory transaction lock keyed
    per lodge (`acquireLodgeCapacityLock`), so overlapping booking decisions at
    the same lodge serialise while bookings at different lodges never contend.
@@ -1691,16 +1974,19 @@ survives a merge and does not dangle after a deletion.
    reconciled booking **only** (#1686) — it never opportunistically re-plans
    other bookings into idle or freed beds; lodge-wide re-planning is the
    explicit admin "Run auto-allocation" board action. Admins can also manually
-   move or approve allocations.
-   Existing-chip moves are bed-only operations: `PATCH
-   /api/admin/bed-allocation/allocations` carries allocation ids and the
-   destination bed, never a target date. The service takes global booking
-   `lock(1)` first and the destination-lodge capacity lock second, re-reads each
-   source row and its original NZ lodge night under both, then commits all
-   selected row moves, shared-double partner promotions and audit rows in one
-   transaction. Sharing cancellation's global key prevents a move from
-   resurrecting an allocation after cancellation pruned it. A conflict rolls a
-   grouped move back wholesale; bucket-to-board bulk placement retains its
+   move, approve, or reviewed-remove allocations. Reviewed removal never invokes
+   either planner, so its freed nights remain in the awaiting-allocation pool.
+   Existing-chip moves are bed-only operations: the reviewed request carries an
+   anchor allocation, destination bed, night-or-person scope, and preview digest,
+   never a target date. Person scope resolves every existing row for that guest
+   on the booking, including sparse and off-screen nights, but creates none. The
+   service takes global booking `lock(1)` first, then the complete sorted lodge,
+   member-lifecycle, member-partner-link and allocation-row tiers before its
+   authoritative re-read. It commits all changed rows, shared-double partner
+   promotions and audit rows in one transaction; unchanged rows are digest-bound
+   noops. Sharing cancellation's global key prevents a move from resurrecting an
+   allocation after cancellation pruned it. A stale preview or conflict rolls a
+   reviewed move back wholesale; bucket-to-board bulk placement retains its
    separate per-night partial-conflict contract.
 
 In-progress member self-service edits are limited to future unused nights from
@@ -2789,7 +3075,13 @@ rule result.
   grants Treasurer edit access to finance admin routes.
 - Public bearer tokens are stored hashed or encrypted according to use case.
 - Logs, Sentry events, and webhook records should be redacted before storing or
-  emitting sensitive values.
+  emitting sensitive values. `src/lib/redact-sensitive-json.ts` is the one
+  chokepoint: it strips credentials, tokens, payment identifiers and person
+  fields BY KEY NAME, and bounds its own walk so a self-referencing record
+  cannot overflow the stack from inside a logging call. Because coverage is by
+  key spelling it is a floor rather than a guarantee, and the admin-action audit
+  trail deliberately keeps more than a log line does — see
+  [`INV-PRIV-011`](invariants/analytics-and-privacy.md#inv-priv-011).
 - Mutation routes should validate inputs with structured schemas and enforce
   role/session checks close to the route boundary.
 - External service callbacks and webhooks must verify signatures, state, or

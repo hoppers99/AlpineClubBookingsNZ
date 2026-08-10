@@ -14,6 +14,7 @@ import {
 import { z } from "zod";
 import { hashActionToken, issueActionToken } from "@/lib/action-tokens";
 import { settleHostingCoverageAfterCommit } from "@/lib/adult-member-hosting-coverage-drain";
+import { lockActiveBookingRequestLinkedMembers } from "@/lib/adult-member-hosting-queue-participants";
 import { reconcileAdultMemberHostingReviewWithSiblings } from "@/lib/adult-member-hosting-review";
 import { logAudit } from "@/lib/audit";
 import {
@@ -28,12 +29,14 @@ import {
   splitPriceAcrossGuests,
   type BookingRequestLinkedGuestMember,
 } from "@/lib/booking-request";
-import { reconcileBedAllocationsForBooking } from "@/lib/bed-allocation-lifecycle";
+import { reconcileBedAllocationsForBookingWithGlobalLockHeld } from "@/lib/bed-allocation-lifecycle";
 import {
+  buildApprovalGuestNights,
   collectNotifiedMemberGuestIds,
   notifyMemberGuestsHoldReleased,
   planBookingRequestGuestConsent,
   toPipelineGuestCreateData,
+  type HeldBookingGuestInput,
 } from "@/lib/booking-request-shared";
 import {
   loadMemberGuestAddPolicy,
@@ -331,7 +334,7 @@ async function assertLinkedMembersExist(links: BookingRequestLinkedGuestMember[]
  *
  * This is display-only. Unlike `assertNoBookingMemberNightConflicts` (which
  * throws a 409 and is the authoritative enforcer at approve/hold time — see
- * DOMAIN_INVARIANTS.md:35-40), this never throws on a conflict: it returns the
+ * INV-CAP-017), this never throws on a conflict: it returns the
  * overlaps so the linking UI can render an advisory. The hard block at
  * approve/hold time is unchanged and remains the only thing that stops a
  * double-book.
@@ -898,6 +901,7 @@ export async function respondToBookingRequestQuote(input: {
     // must NOT overwrite DECLINED/CONVERTED/etc. -> CANCELLED — it claims nothing
     // and touches neither the quote nor the hold.
     const cancelled = await prisma.$transaction(async (tx) => {
+      await tx.$executeRaw`SELECT pg_advisory_xact_lock(1)`;
       const claimed = await tx.bookingRequest.updateMany({
         where: {
           id: quote.bookingRequestId,
@@ -944,7 +948,7 @@ export async function respondToBookingRequestQuote(input: {
         // (issue #1254). Locking the Booking row after the BookingRequest row
         // adds no new cycle — decline releases its hold in a SEPARATE self-locked
         // cancelBooking tx, outside decline's claim transaction.
-        await reconcileBedAllocationsForBooking({ bookingId: heldBookingId, db: tx });
+        await reconcileBedAllocationsForBookingWithGlobalLockHeld({ bookingId: heldBookingId, db: tx });
         await tx.bookingRequest.update({
           where: { id: quote.bookingRequestId },
           data: { heldBookingId: null, version: { increment: 1 } },
@@ -1309,6 +1313,7 @@ export async function holdBookingRequestSlots(input: {
       data: { heldBookingId: null, version: { increment: 1 } },
     });
     request.heldBookingId = null;
+    request.version += 1;
   }
 
   const guests = parseBookingRequestGuests(request.guests);
@@ -1350,7 +1355,11 @@ export async function holdBookingRequestSlots(input: {
   // unlinked guests record the built-in NON_MEMBER type. Snapshot-only — the
   // quoted per-guest split above stays exactly as stored. rateSource is
   // resolver-internal and never persisted.
-  const guestCreates = (
+  // Annotated (#2739) so this producer is type-checked against the same shape
+  // `buildApprovalGuestCreates` returns: the hold is the one write point that
+  // builds its guest rows inline rather than through that helper, so without the
+  // annotation nothing would check that it supplies a night set at all.
+  const guestCreates: HeldBookingGuestInput[] = (
     await resolveGuestRateMembershipTypes(prisma, {
       seasonYear: getSeasonYear(request.checkIn),
       guests: guests.map((guest, index) => {
@@ -1377,6 +1386,16 @@ export async function holdBookingRequestSlots(input: {
     stayEnd: guest.stayEnd,
     priceCents: guest.priceCents,
     rateMembershipTypeId: guest.rateMembershipTypeId,
+    // #2739. A hold is a capacity-holding booking that an officer can already
+    // place beds on, so its guests need the canonical night set for exactly the
+    // reason a converted booking's do — without it the board shows an
+    // AWAITING_REVIEW booking with nobody on it. Built from the request's own
+    // envelope, which is what the guest rows above take.
+    nights: buildApprovalGuestNights({
+      checkIn: request.checkIn,
+      checkOut: request.checkOut,
+      priceCents: guest.priceCents,
+    }),
   }));
 
   let capacityFullNights: string[] | null = null;
@@ -1387,9 +1406,50 @@ export async function holdBookingRequestSlots(input: {
       const bookingLodgeId = request.lodgeId ?? (await getDefaultLodgeId(tx));
       await acquireLodgeCapacityLock(tx, bookingLodgeId);
 
+      // Re-read the exact linked-member snapshot after the canonical lodge
+      // lock. The versioned claim below makes this read authoritative: if a
+      // link changes before the claim, its version changes and the whole hold
+      // rolls back. Lock the sorted/deduplicated ids before any guest is
+      // created, then require the rows to remain active and unarchived under
+      // that lock. This protects membership identity independently of whether
+      // hosting enforcement is disabled, review-only, or enforced.
+      const currentRequest = await tx.bookingRequest.findUnique({
+        where: { id: request.id },
+        select: { version: true, linkedGuestMembers: true },
+      });
+      if (!currentRequest || currentRequest.version !== request.version) {
+        throw new BookingRequestError(
+          "This booking request changed while beds were being held; review it and try again",
+          409,
+        );
+      }
+      const currentLinkedMembers = linkedGuestMemberMap(
+        currentRequest.linkedGuestMembers,
+      );
+      const expectedLinkedEntries = [...linkedMembers.entries()].sort(
+        ([left], [right]) => left - right,
+      );
+      const currentLinkedEntries = [...currentLinkedMembers.entries()].sort(
+        ([left], [right]) => left - right,
+      );
+      if (
+        JSON.stringify(currentLinkedEntries) !==
+        JSON.stringify(expectedLinkedEntries)
+      ) {
+        throw new BookingRequestError(
+          "This booking request changed while beds were being held; review it and try again",
+          409,
+        );
+      }
+      await lockActiveBookingRequestLinkedMembers(
+        tx,
+        [...currentLinkedMembers.values()],
+      );
+
       const claimed = await tx.bookingRequest.updateMany({
         where: {
           id: request.id,
+          version: request.version,
           heldBookingId: null,
           status: { in: [...holdableStatuses] },
         },
@@ -1435,7 +1495,7 @@ export async function holdBookingRequestSlots(input: {
 
       // Block admin-mediated double-books: a request whose guests an admin
       // linked to real members must not put a member on overlapping nights
-      // (issue #1158, invariant DOMAIN_INVARIANTS.md:35-40). A brand-new held
+      // (issue #1158, invariant INV-CAP-017). A brand-new held
       // booking is being created, so there is nothing to exclude.
       await assertNoBookingMemberNightConflicts(tx, {
         actorMemberId: input.adminMemberId,

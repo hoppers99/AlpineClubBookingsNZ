@@ -69,11 +69,51 @@ operational documents (which may carry door/emergency access details).
   `/api/bookings/quote`, and `/api/bookings/rooms` return `403` when a
   restricted lodge is named. `/api/bookings/rooms` also has a no-`lodgeId`
   mode that lists room config across lodges; that listing is **filtered** to
-  the member's eligible lodges (empty when none match) rather than returning
+  the member's eligible lodges **and to lodges that are still `active`** (empty
+  when none match) rather than returning
   `403` — a listing omits what the member cannot see. Both the named-lodge
   gate and the listing filter derive from `getEligibleLodgeIdsForMember`
   (which `isMemberEligibleToBookLodge` also derives from), so the two are the
-  same eligibility set by construction. Admin on-behalf bookings and quotes
+  same eligibility set by construction. Those two modes serve **discovery**:
+  a member choosing where to book. They are not the right shape once a booking
+  exists — see the booking-scoped read below. **No production surface asks the
+  no-`lodgeId` mode any more** (#2664, create side): the booking wizard always
+  names the lodge it is booking, because `LodgeSelect` normalises even a
+  single-lodge club to a concrete id on the wizard's opening step. It used to
+  fire the unscoped request on every mount while waiting for that
+  normalisation, and — with no cancellation guard on the effect — a reply
+  landing after the one that superseded it left the wrong lodge's rooms in the
+  "Preferred room (optional)" picker for the rest of the session, where
+  `resolveBookingLodgeId` (`booking-create.ts:153-174`) would then refuse the
+  choice. Two consequences are worth stating rather than leaving implicit.
+  First, that mode's filter was `Room.active` and the member's booking
+  restrictions — **not** the lodge's own `active` flag — so until #2727 an
+  unrestricted member's cross-lodge listing included archived lodges' rooms,
+  which is why it was never safe to describe as "the lodges this member may
+  book". It is now filtered on `Lodge.active` as well, in both eligibility
+  shapes (a default-open member's club-wide listing, and a restricted member
+  whose `BOOKING_RESTRICTION` rows name a lodge archived afterwards), because
+  eligibility and service state are different questions and a discovery listing
+  must ask both — that exclusion is part of what retaining the mode means, and
+  is stated as a rule in `INV-INT-016`. The named-lodge mode is unchanged and
+  still answers for a lodge the caller names explicitly, archived or not: naming
+  a lodge is not discovery. Second, the
+  wizard now offers **nothing** while its selection is null, and that null is
+  permanent when `/api/lodges` is down or a club's only lodge is inactive (that
+  route filters `active: true`, while `getDefaultLodgeId` deliberately falls
+  through to a lodge of any state). Offering nothing there is the deliberate
+  choice: a client that cannot know which lodge the server will stamp on the
+  booking must not guess at an optional preference. The unscoped mode is
+  retained **because consumers outside this repository need it** — see
+  `INV-INT-016`. It is the pre-multi-lodge signature, and forked booking wizards
+  and external integrations still call it that way, so requiring `lodgeId` would
+  break them for no internal gain; the eligibility filtering is what makes
+  retaining it safe, not the reason for retaining it. (An earlier revision of
+  this sentence said the opposite — "retained as an eligibility-filtered
+  discovery contract, not because a client needs it" — which reads as an
+  invitation to delete a branch a fork depends on.) No client in `src/` may use
+  the mode, which is a separate rule and is pinned by a test; see
+  `INV-INT-016`. Admin on-behalf bookings and quotes
   bypass it as the audited override path. `STAFF` rows bind a kiosk account to its lodge;
   exactly one grant binds, zero grants fall back to the default lodge, and
   **two or more grants are ambiguous and denied** (`getStaffLodgeBinding`
@@ -84,6 +124,108 @@ operational documents (which may carry door/emergency access details).
   Hut-leader assignments carry their own `lodgeId` and PINs match only at
   the bound lodge's kiosk. `ADMIN` access is club-wide and never
   lodge-filtered.
+- **Editing a booking that already exists is scoped by that booking, not by
+  the editor's own eligibility** (#2664). A booking already has a lodge and the
+  server owns it, so a read that feeds an editor on that booking derives its
+  lodge from `Booking.lodgeId` server-side and authorises on the booking's own
+  boundary — never from a client-supplied `lodgeId`, and never from the caller's
+  personal `isMemberEligibleToBookLodge` result. The requested-room picker is
+  the worked example: `GET /api/bookings/[id]/requested-room/options` resolves
+  the booking, refuses anyone who is not its owner, a Full Admin, or a
+  `bookings:edit` Booking Officer, and returns only **that lodge's active
+  rooms**. Reusing the discovery-shaped eligibility here got it wrong in both
+  directions — it offered another lodge's rooms to a member eligible for both (a
+  choice `writeRequestedRoom()` then refused under its lock, so the control
+  looked broken), and it filtered a Booking Officer's choices by that officer's
+  own booking restrictions even though their write runs under `bookings:edit`.
+  The writer's same-lodge validation stays authoritative regardless: the scoped
+  read is UX correctness, not a substitute for the write guard.
+  One consequence is deliberate and worth stating plainly: a member who owns a
+  booking at a lodge they are **later** restricted away from can still read that
+  booking's room names through this route, where the discovery endpoint would
+  now filter them out. That is correct. `writeRequestedRoom()` never consults
+  `assertMemberMayBookLodge`, so the member can still change the requested room
+  on the booking they already hold — and refusing the read while permitting the
+  write would recreate the exact broken control this contract exists to remove.
+  A booking restriction governs making NEW bookings, not operating one the club
+  already accepted. Any future read added under this rule inherits the same
+  reasoning: match the read to the write it feeds, not to the discovery gate.
+- **The admin bed-allocation board obeys the same rule when a booking is named**
+  (#2678). `GET /api/admin/bed-allocation` still supports a genuine club-wide
+  mode — `ADMIN` access is club-wide and never lodge-filtered, so an omitted
+  `lodgeId` legitimately means "the whole club" and that is unchanged. **No board
+  selector currently offers that mode**, though: with two or more lodges
+  `LodgeSelect` forces a null value to `lodges[0].id`, so the API mode is
+  exercised only by the transient/outage null state described further down this
+  entry — making club-wide an explicit, selectable option is #2701. But when
+  the request names a `bookingId`, the lodge now comes from that booking's
+  `Booking.lodgeId` server-side and **any `lodgeId` on the query string is
+  ignored**, exactly as `requested-room/options` does. This was the last
+  booking-scoped read still taking its lodge from the caller, after #2673 (the
+  requested-room picker) and #2677 (the booking wizard).
+  The path that made it worth fixing was not a hand-crafted request. Because
+  `ADMIN` is club-wide, a caller pairing booking A with lodge B learned nothing
+  they could not have asked for outright, and every cross-lodge write was
+  already refused (`assertGuestAndBedForAllocation`, and `LODGE_MISMATCH` in
+  `bed-allocation-move.ts`). The reachable problem was that
+  `AdminBookingToolsCard` deep-linked the board with `bookingId` and **no**
+  `lodgeId`, so an admin two clicks from a booking page landed on a club-wide
+  board focused on that booking, whose four bed pickers — the bucket "Select
+  bed", the allocation chip's "Move to bed", drag-and-drop onto a cell, and
+  `BedRangeAssignDialog` — all offered every lodge's beds for that booking's
+  guests. Offer-then-refuse is the same broken control #2664 is about.
+  Two details are deliberate. The booking lookup does **not** filter on status:
+  the lodge is a fact about the row whatever its status, and a cancelled
+  booking's board still has to be readable, while `focusedBooking` keeps its own
+  stricter allocatable/non-deleted filter for the window it snaps onto. And an
+  unresolvable `bookingId` changes nothing — the caller's own scope still
+  applies, because a stale deep link must not turn a valid board load into an
+  error.
+  `BookingBedAllocationPanel.lodgeId` is now `string`, not `string | null`. It
+  was safe only because its single caller passes `booking.lodgeId`, a NOT NULL
+  column; the nullable type invited a future caller to turn a booking-scoped bed
+  picker into a club-wide one with nothing to catch it.
+  **The client half is load-bearing and is now pinned.** Server-side derivation
+  reaches the board only because the board names the booking on its own request
+  (`admin/bed-allocation/page.tsx`, `fetchDashboard`); delete that one line and
+  every server-side test still passes while the four pickers go club-wide again,
+  so `src/lib/__tests__/bed-allocation-board-booking-scope.test.tsx` asserts it
+  directly.
+  **A focused booking pins the lodge, so choosing another lodge drops the
+  focus.** Because the API ignores a `lodgeId` sent beside a `bookingId`, an
+  admin who arrived on the deep link and then picked a different lodge from the
+  board's own selector would have been served the *booking's* lodge under a
+  selector reading the lodge they chose. The board therefore clears the focused
+  booking when the admin replaces one non-null lodge with a different one — the
+  "Focused booking" badge goes with it, so the change is visible. `LodgeSelect`'s
+  own `onChange` calls are deliberately excluded: `onChange(null)` on an options
+  outage, and `onChange(lodges[0].id)` from a null value, are not the admin
+  browsing away, and the null case is precisely the state in which derivation
+  from `bookingId` is the only thing keeping the board off a club-wide read.
+  **Still open:** the board can hold `lodgeId === null` without any booking being
+  named — transiently on every mount before `/api/admin/lodges` resolves, and
+  permanently if that endpoint fails, since `useLodgeOptions` then sets
+  `lodges = []` and `LodgeSelect` reports `null`. In that state the same four
+  pickers are club-wide again, and writes are **not** disabled for them (only
+  Run Auto Allocation, Reset allocations and the preferences section gate on
+  `lodgeId`). That is tracked separately because it needs a decision about what
+  a club-wide board should offer, not just where the lodge comes from (#2701).
+- **The hut-leader bed picker obeys the same rule when an assignment is named**
+  (#2678). `GET /api/admin/hut-leaders/available-beds` took `assignmentId` and
+  `lodgeId` as unrelated parameters and never reconciled them, so a request
+  naming assignment A at lodge B was answerable and returned lodge B's beds.
+  `HutLeaderAssignment.lodgeId` is NOT NULL, so a named assignment already fixes
+  the lodge: it is now derived server-side and a contradicting `lodgeId` is
+  **ignored**, matching `requested-room/options` and the board above. The
+  CREATE form is untouched — it has no `assignmentId`, so the lodge the admin
+  chooses is the lodge it uses — and the writer's own cross-lodge refusal
+  (`custodian-assignment.ts`, `BED_WRONG_LODGE`) stays as defence in depth. A
+  derived lodge is still validated as active, which is identical to what the
+  honest caller already got, because the row-edit form was already sending that
+  same lodge. Pinned by
+  `src/app/api/admin/hut-leaders/available-beds/__tests__/assignment-lodge-scope.test.ts`.
+  Nothing here was exploitable: the reason it was safe was a guard on the write
+  rather than the read being correct, which is the shape #2664 was filed about.
 
 ## Club-Wide Models (No Lodge Dimension)
 
@@ -140,13 +282,23 @@ record the outcome here when decided:
 - **`LodgeSettings` / `BedAllocationSettings` per-lodge rows.** A lodge's
   row is keyed by its lodge id (`id = lodgeId`); the legacy "default" row
   keeps serving the lodge it was soft-linked to in the phase-2 backfill
-  (and single-lodge clubs), and an unlinked legacy row is claimed on
-  first per-lodge write. Resolution: own row → legacy row when unlinked
-  or linked to the same lodge → code defaults; one lodge's values never
-  leak to another. `hutLeaderLookaheadDays` stays a club-wide knob on the
-  legacy row. No migration needed — these settings soft-links keep a nullable
-  `lodgeId` by design (the `NOT NULL` tightening applies only to the six entity
-  tables; see `contract-release.md`).
+  (and single-lodge clubs). Resolution is own row → legacy row when unlinked
+  or linked to the same lodge → code defaults; a legacy row linked elsewhere
+  is never inherited, so one lodge's values cannot leak to another.
+  `LodgeSettings` retains its existing first-write compatibility behavior and
+  `hutLeaderLookaheadDays` remains a club-wide knob on its legacy row.
+  `BedAllocationSettings` reads the same compatibility chain, but its admin
+  API always requires one active lodge: a write updates `default` only when no
+  lodge-id row exists and that legacy row is already linked to this lodge;
+  otherwise it creates/updates the lodge-id row and leaves the legacy fallback
+  untouched. Its
+  `autoAllocationEnabled` and strict ordered `allocationPriorityOrder` apply to
+  that lodge's board and booking lifecycle only; `[]` is a valid explicit
+  neutral order. Config transfer writes authoritative per-lodge settings by
+  lodge slug and keeps the legacy singleton path for older bundles. These
+  settings soft-links keep a nullable `lodgeId` by design (the `NOT NULL`
+  tightening applies only to the six entity tables; see
+  `contract-release.md`).
 - **CMS `{{lodge-capacity}}` token.** Gains an optional slug parameter
   (`{{lodge-capacity:lodge-slug}}`) for per-lodge figures; the bare token
   keeps resolving the default lodge. No cross-lodge total token — the

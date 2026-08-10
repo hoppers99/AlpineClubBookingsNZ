@@ -1391,6 +1391,15 @@ export function preArrivalReminderTemplate(params: {
   // stay is about to start and it has not been collected. Zero/absent for the
   // ordinary case, which renders exactly as before.
   outstandingAdditionalAmountCents?: number;
+  // #2621 (owner decision D-M5): the checkout-day chore sentence, composed by
+  // the sender with `checkoutDayChoreNote` and EMPTY for a club that does not
+  // run a chore roster — the chores module defaults OFF. Handed in rather than
+  // written here so this HTML and the admin-editable body's
+  // {{checkoutChoreNote}} cannot say different things (the
+  // {{namingUrgencyNote}} convention). Omitted reads as empty, which is the
+  // fail-quiet direction: a member never sees a roster instruction the club may
+  // not mean.
+  checkoutChoreNote?: string;
 }): string {
   const rows: Array<{ label: string; value: string }> = [
     { label: "Check-in", value: formatNZDate(params.checkIn) },
@@ -1409,6 +1418,7 @@ export function preArrivalReminderTemplate(params: {
     ${heading("Upcoming Lodge Stay")}
     ${paragraph("Hi " + escapeHtml(params.firstName) + ", your lodge stay is coming up.")}
     ${infoTable(rows)}
+    ${params.checkoutChoreNote ? paragraph(escapeHtml(params.checkoutChoreNote)) : ""}
     ${outstandingAdditionalPaymentNote(params.outstandingAdditionalAmountCents)}
     ${arrivalInstructionsSection({
       travelNote: params.lodgeTravelNote,
@@ -3531,6 +3541,37 @@ export function waitlistOfferExpiredTemplate(
       { label: "New Position", value: "#" + String(position) },
     ])}
     ${paragraph("You've been returned to the waitlist. We'll notify you again if another spot opens up.")}
+    ${button("View Booking", BASE_URL + "/bookings")}
+  `);
+}
+
+/**
+ * The RESTORED sibling of `waitlistOfferExpiredTemplate` (#2649).
+ *
+ * Same shape, same arguments, same rows — the only difference is the copy, and
+ * the copy is the whole point. A member whose free waitlist confirmation got
+ * stranded in PAYMENT_PENDING did NOT let their offer lapse: they confirmed
+ * inside the window and the club's own code failed to finish the job. Sending
+ * them the expiry notice states the opposite of what happened, and it
+ * contradicts the "your confirmation is stuck, please don't retry" message
+ * (#2648) they were already sent. So this template says what is true — their
+ * place is back, nothing they did caused it, and they need do nothing.
+ */
+export function waitlistPlaceRestoredTemplate(
+  firstName: string,
+  checkIn: Date,
+  checkOut: Date,
+  position: number
+): string {
+  return layout(`
+    ${heading("Your Waitlist Place Is Back")}
+    ${paragraph("Hi " + escapeHtml(firstName) + ", your booking for the dates below could not be finished, so we have put you back on the waitlist. This was not something you did wrong, and your offer did not run out — you confirmed in time and our system could not complete it.")}
+    ${infoTable([
+      { label: "Check-in", value: formatNZDate(checkIn) },
+      { label: "Check-out", value: formatNZDate(checkOut) },
+      { label: "New Position", value: "#" + String(position) },
+    ])}
+    ${paragraph("You do not need to do anything. We will email you again as soon as a spot opens up for these nights.")}
     ${button("View Booking", BASE_URL + "/bookings")}
   `);
 }

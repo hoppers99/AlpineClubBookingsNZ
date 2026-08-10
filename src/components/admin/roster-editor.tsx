@@ -7,6 +7,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import { ViewOnlyActionButton } from "@/components/admin/view-only-action"
 import { useSectionEditState } from "@/hooks/use-section-edit-state"
+import { unverifiedWriteMessage } from "@/lib/unverified-write-copy"
 
 export interface RosterGuest {
   id: string
@@ -15,6 +16,11 @@ export interface RosterGuest {
   firstName: string
   lastName: string
   ageTier: string
+  // #2622: which half of the operational day this person occupies. Arriving is
+  // "here from midday", departing is "here until midday" — i.e. LEAVES TODAY.
+  // Derived server-side from the booked nights; no time is ever shown.
+  isArriving?: boolean
+  isDeparting?: boolean
 }
 
 export interface RosterAssignment {
@@ -67,8 +73,42 @@ type RosterDraft = { assignments: DraftAssignment[] }
 
 const PERMISSION_COPY =
   "Roster not saved. Your account no longer has Lodge edit access. Ask a full admin to update it."
+/**
+ * The SERVER's own words for "the roster service could not be reached", which
+ * it returns as `ROSTER_SERVICE_UNAVAILABLE` (see
+ * `src/app/api/admin/roster/[date]/route.ts`). It is entitled to say the roster
+ * was not saved, because it is the side that knows.
+ */
 const NETWORK_COPY =
   "Roster not saved because the service could not be reached. Your draft is still here; try Save again."
+/**
+ * A refusal the server ANSWERED but gave no reason for — a 4xx whose body
+ * carries no `error` field.
+ *
+ * "Not saved" is honest here: the route refuses before it writes. What was not
+ * honest was the fallback this replaced. `NETWORK_COPY` was used for it, so a
+ * reason-less 400 or 404 told the operator the service could not be reached
+ * when it had just answered — the wrong reason attached to a real refusal,
+ * which sends them to check their connection instead of their draft.
+ */
+const REFUSED_COPY =
+  "Roster not saved. The server refused the save and did not say why. Your draft is still here; reload the roster to see what it holds, then try again."
+/**
+ * #2668 — what the BROWSER may say when it never read an answer.
+ *
+ * `NETWORK_COPY` used to cover this too, so a save whose request landed and
+ * whose response was lost — and a save the server answered `200 OK` with a body
+ * this client could not parse — both told the operator "Roster not saved". The
+ * second of those is flatly wrong: the server had already committed and said
+ * so. The draft is retained in every branch either way, so a re-save is still
+ * one press; it is now a press made knowing the first one may have taken.
+ * Retrying is safe: the PUT carries `baseRevision`, so a save that did land is
+ * refused as stale rather than applied twice.
+ */
+const UNVERIFIED_COPY = unverifiedWriteMessage(
+  "the roster was saved",
+  "Your draft is still here. Reload the roster to see what it holds before saving again.",
+)
 
 function draftFromRoster(roster: RosterData): RosterDraft {
   return {
@@ -113,7 +153,9 @@ export function isRosterData(value: unknown): value is RosterData {
       typeof guest.bookingGroupLabel === "string" &&
       typeof guest.firstName === "string" &&
       typeof guest.lastName === "string" &&
-      typeof guest.ageTier === "string") &&
+      typeof guest.ageTier === "string" &&
+      (guest.isArriving === undefined || typeof guest.isArriving === "boolean") &&
+      (guest.isDeparting === undefined || typeof guest.isDeparting === "boolean")) &&
     Array.isArray(value.assignments) &&
     value.assignments.every((assignment) => isRecord(assignment) &&
       typeof assignment.id === "string" &&
@@ -147,6 +189,26 @@ function groupedGuests(guests: RosterGuest[]) {
     label: members[0]?.bookingGroupLabel ?? "Booking group",
     guests: members,
   }))
+}
+
+/**
+ * The one-word half-day label, or null for someone here all day.
+ *
+ * #2622: "Departing" means they leave today and are here this morning, so they
+ * are on the roster — the opposite of what the old flag meant. No time of day
+ * is displayed anywhere; the midday boundary is definitional.
+ */
+function operationalDayLabel(guest: RosterGuest): "Arriving" | "Departing" | null {
+  if (guest.isArriving) return "Arriving"
+  if (guest.isDeparting) return "Departing"
+  return null
+}
+
+/** Plain-text form of the same label, for a `<select>` option. */
+function guestOptionLabel(guest: RosterGuest) {
+  const label = operationalDayLabel(guest)
+  const name = `${guest.firstName} ${guest.lastName}`
+  return label ? `${name} (${label.toLowerCase()} today)` : name
 }
 
 function assignmentSummary(names: string[]) {
@@ -199,14 +261,17 @@ export function RosterEditor({
           }),
         })
       } catch {
-        throw new Error(NETWORK_COPY)
+        // #2668: the request may or may not have arrived. Only the server knows.
+        throw new Error(UNVERIFIED_COPY)
       }
 
       let body: unknown
       try {
         body = await response.json()
       } catch {
-        throw new Error(NETWORK_COPY)
+        // #2668: the server ANSWERED — it just answered with something this
+        // client could not read. Whatever it did, it has already done.
+        throw new Error(UNVERIFIED_COPY)
       }
       const errorBody = isRecord(body) ? body : {}
       const details = isRecord(errorBody.details) ? errorBody.details : {}
@@ -215,7 +280,7 @@ export function RosterEditor({
           ? PERMISSION_COPY
           : response.status >= 500
             ? NETWORK_COPY
-            : (typeof errorBody.error === "string" ? errorBody.error : NETWORK_COPY)
+            : (typeof errorBody.error === "string" ? errorBody.error : REFUSED_COPY)
         if (typeof details.rowKey === "string") {
           const rowKey = details.rowKey
           setRowErrors({ [rowKey]: message })
@@ -225,7 +290,10 @@ export function RosterEditor({
         }
         throw new Error(message)
       }
-      if (!isRosterData(body)) throw new Error(NETWORK_COPY)
+      // #2668: a 2xx whose body is not the roster. The server called the save a
+      // success; this client simply cannot show the result. Telling the
+      // operator it was "not saved" contradicts the only party that knows.
+      if (!isRosterData(body)) throw new Error(UNVERIFIED_COPY)
       const authoritative = body
       onRosterUpdate(authoritative)
       setAcknowledgeCompletedReset(false)
@@ -384,7 +452,7 @@ export function RosterEditor({
       </Card>
 
       {roster.guests.length === 0 && (
-        <Card><CardContent className="py-8 text-center text-muted-foreground">No eligible guests are staying on this date.</CardContent></Card>
+        <Card><CardContent className="py-8 text-center text-muted-foreground">No one is in the lodge on this date.</CardContent></Card>
       )}
 
       {roster.templates.map((template) => {
@@ -443,7 +511,7 @@ export function RosterEditor({
                                   <option value="">Choose a person</option>
                                   {guestGroups.map((group) => (
                                     <optgroup key={group.key} label={group.label}>
-                                      {group.guests.map((option) => <option key={option.id} value={option.id}>{option.firstName} {option.lastName}</option>)}
+                                      {group.guests.map((option) => <option key={option.id} value={option.id}>{guestOptionLabel(option)}</option>)}
                                     </optgroup>
                                   ))}
                                 </select>
@@ -485,7 +553,7 @@ export function RosterEditor({
       </Card>
 
       <Card>
-        <CardHeader><CardTitle role="heading" aria-level={2} className="text-base">Guest assignment check</CardTitle><CardDescription>Every eligible guest, kept with their booking or family group.</CardDescription></CardHeader>
+        <CardHeader><CardTitle role="heading" aria-level={2} className="text-base">Guest assignment check</CardTitle><CardDescription>Everyone in the lodge today, kept with their booking or family group. Someone leaving today is here this morning and can be given morning or anytime chores.</CardDescription></CardHeader>
         <CardContent className="space-y-4">
           {guestGroups.map((group) => (
             <section key={group.key} aria-label={group.label}>
@@ -495,12 +563,19 @@ export function RosterEditor({
                   const choreNames = draftAssignments
                     .filter((assignment) => assignment.bookingGuestId === guest.id)
                     .map((assignment) => templateById.get(assignment.choreTemplateId)?.name ?? "Unknown chore")
-                  return <li key={guest.id}><span className="font-medium">{guest.firstName} {guest.lastName}:</span> {assignmentSummary(choreNames)}</li>
+                  const dayLabel = operationalDayLabel(guest)
+                  return (
+                    <li key={guest.id}>
+                      <span className="font-medium">{guest.firstName} {guest.lastName}:</span>
+                      {dayLabel && <Badge variant="outline" className="mx-1 align-middle">{dayLabel}</Badge>}
+                      {" "}{assignmentSummary(choreNames)}
+                    </li>
+                  )
                 })}
               </ul>
             </section>
           ))}
-          {guestGroups.length === 0 && <p className="text-muted-foreground">No eligible guests are staying on this date.</p>}
+          {guestGroups.length === 0 && <p className="text-muted-foreground">No one is in the lodge on this date.</p>}
         </CardContent>
       </Card>
     </div>

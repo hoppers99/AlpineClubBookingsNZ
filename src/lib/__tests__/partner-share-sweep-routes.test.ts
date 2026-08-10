@@ -24,6 +24,7 @@ vi.mock("@/lib/prisma", () => ({
     deletionRequest: {
       findUnique: vi.fn(),
       update: vi.fn(),
+      updateMany: vi.fn().mockResolvedValue({ count: 1 }),
     },
     booking: { findMany: vi.fn().mockResolvedValue([]) },
     bookingGuest: {
@@ -44,6 +45,9 @@ vi.mock("@/lib/prisma", () => ({
     },
     auditLog: { create: vi.fn().mockResolvedValue({}) },
     xeroContactCache: { findUnique: vi.fn().mockResolvedValue(null) },
+    xeroSyncOperation: { findFirst: vi.fn().mockResolvedValue(null) },
+    xeroObjectLink: { updateMany: vi.fn().mockResolvedValue({ count: 0 }) },
+    $executeRaw: vi.fn().mockResolvedValue(1),
     $transaction: vi.fn(),
   },
 }));
@@ -175,11 +179,18 @@ const piotrPrimaryRow = {
 /** Serve the sweep's queries: Uma is a second occupant; Piotr her primary. */
 function mockSharedDoubleForUser2() {
   vi.mocked(prisma.bedAllocation.findMany).mockImplementation((async (args: {
-    where?: { isSecondOccupant?: boolean; OR?: unknown };
+    where?: {
+      isSecondOccupant?: boolean;
+      OR?: unknown;
+      bookingGuest?: { memberId?: { in?: string[] } };
+    };
   }) => {
     const where = args?.where ?? {};
     if (where.isSecondOccupant === true) return [umaSecondOccupantRow];
     if (where.isSecondOccupant === false && where.OR) return [piotrPrimaryRow];
+    if (where.bookingGuest?.memberId?.in) {
+      return [{ room: { lodgeId: "lodge-1" } }];
+    }
     return [];
   }) as never);
   vi.mocked(prisma.bedAllocation.deleteMany).mockResolvedValue({ count: 1 } as never);
@@ -203,7 +214,9 @@ function putMember(id: string, body: Record<string, unknown>) {
 function mockTransaction() {
   vi.mocked(prisma.$transaction).mockImplementation((async (op: any) =>
     op({
+      $executeRaw: prisma.$executeRaw,
       member: {
+        findUnique: prisma.member.findUnique,
         update: prisma.member.update,
         updateMany: prisma.member.updateMany,
         count: prisma.member.count,
@@ -219,8 +232,26 @@ function mockTransaction() {
       },
       familyGroupMember: { deleteMany: prisma.familyGroupMember.deleteMany },
       bookingGuest: { updateMany: prisma.bookingGuest.updateMany },
+      // #2620: anonymisation revokes every outstanding credential artefact in
+      // the same commit — each authenticates on its own, and deletion used to
+      // leave them all live.
+      magicLinkToken: { deleteMany: vi.fn().mockResolvedValue({ count: 0 }) },
+      passwordResetToken: { deleteMany: vi.fn().mockResolvedValue({ count: 0 }) },
+      emailChangeToken: { deleteMany: vi.fn().mockResolvedValue({ count: 0 }) },
+      twoFactorEmailCode: { deleteMany: vi.fn().mockResolvedValue({ count: 0 }) },
+      twoFactorRecoveryCode: {
+        deleteMany: vi.fn().mockResolvedValue({ count: 0 }),
+      },
+      twoFactorSessionChallenge: {
+        deleteMany: vi.fn().mockResolvedValue({ count: 0 }),
+      },
       bedAllocation: prisma.bedAllocation,
-      deletionRequest: { update: prisma.deletionRequest.update },
+      deletionRequest: {
+        update: prisma.deletionRequest.update,
+        updateMany: prisma.deletionRequest.updateMany,
+      },
+      xeroSyncOperation: prisma.xeroSyncOperation,
+      xeroObjectLink: prisma.xeroObjectLink,
       auditLog: { create: prisma.auditLog.create },
     })) as never,
   );
@@ -230,6 +261,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   mockRequireAdmin.mockResolvedValue(fullAdminGuard);
   vi.mocked(prisma.member.count).mockResolvedValue(0);
+  vi.mocked(prisma.deletionRequest.updateMany).mockResolvedValue({ count: 1 });
   vi.mocked(prisma.booking.findMany).mockResolvedValue([] as never);
   vi.mocked(prisma.bedAllocation.findMany).mockResolvedValue([] as never);
   vi.mocked(prisma.bedAllocation.deleteMany).mockResolvedValue({ count: 0 } as never);

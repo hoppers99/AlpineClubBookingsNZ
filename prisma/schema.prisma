@@ -1946,12 +1946,12 @@ model BookingGuest {
   // The full sub-state discriminator table (which columns are set in each
   // reachable combination) is the single source of truth in
   // MEMBER_GUEST_CONSENT_SUB_STATES (src/lib/member-guest-consent.ts) and is
-  // mirrored in docs/DOMAIN_INVARIANTS.md. The eight lines below are GENERATED
-  // from that table by src/lib/__tests__/member-guest-consent.test.ts, which
-  // fails unless this comment contains each of them verbatim — so they cannot
-  // go stale. "null" = the column must be NULL, "set" = it must be non-NULL,
-  // "any" = either is legal, and target / other / admin say WHO the responder
-  // is:
+  // mirrored in docs/invariants/member-guest-consent.md (INV-GUEST-017). The
+  // eight lines below are GENERATED from that table by
+  // src/lib/__tests__/member-guest-consent.test.ts, which fails unless this
+  // comment contains each of them verbatim — so they cannot go stale. "null" =
+  // the column must be NULL, "set" = it must be non-NULL, "any" = either is
+  // legal, and target / other / admin say WHO the responder is:
   //   FAMILY_OR_LEGACY: status NULL / requestedAt null / respondedAt null / respondedBy null / expiresAt null
   //   AWAITING_TARGET: status PENDING / requestedAt set / respondedAt null / respondedBy null / expiresAt set
   //   TARGET_APPROVED: status CONFIRMED / requestedAt set / respondedAt set / respondedBy target / expiresAt any
@@ -2527,14 +2527,16 @@ model BedAllocation {
 }
 
 model BedAllocationSettings {
-  id                    String   @id @default("default")
-  autoAllocationEnabled Boolean  @default(true)
-  // Soft link for the phase-7 singleton-to-per-lodge conversion
-  // (docs/multi-lodge/implementation-plan.md); unused by runtime reads today.
-  lodgeId               String?
-  updatedByMemberId     String?
-  createdAt             DateTime @default(now())
-  updatedAt             DateTime @updatedAt
+  id                      String   @id @default("default")
+  autoAllocationEnabled   Boolean  @default(true)
+  allocationPriorityOrder String[] @default(["BOOKING_COHESION", "STAY_CONTINUITY", "REQUESTED_ROOM", "FAMILY_COHESION"])
+  // Compatibility link for the historical `id = "default"` row. Runtime
+  // settings are now resolved per lodge: a lodge-id row wins, then the legacy
+  // row only when it is unlinked or linked to that lodge, then code defaults.
+  lodgeId                 String?
+  updatedByMemberId       String?
+  createdAt               DateTime @default(now())
+  updatedAt               DateTime @updatedAt
 
   @@index([updatedByMemberId])
 }
@@ -3362,6 +3364,7 @@ model HostingCoverageIncident {
   /// sender releases this claim so the durable re-evaluation can retry.
   ownerNotificationClaimStateKey String?   @db.VarChar(300)
   ownerNotificationClaimedAt     DateTime?
+  ownerNotificationClaimToken    String?   @db.VarChar(64)
 
   openedAt   DateTime  @default(now())
   updatedAt  DateTime  @updatedAt
@@ -3422,6 +3425,8 @@ model HostingCoverageReevaluation {
   processedAt DateTime?
   attempts    Int       @default(0)
   lastError   String?   @db.VarChar(1000)
+  claimToken     String?   @db.VarChar(64)
+  claimExpiresAt DateTime?
 
   member Member @relation("HostingCoverageReevaluations", fields: [memberId], references: [id], onDelete: Cascade)
 
@@ -4820,7 +4825,8 @@ model BookingChangeRequest {
   // surfaces (the officer queue and its detail endpoint). No member-facing
   // projection, route select, email template or notification may name it; the
   // member DTO in src/lib/member-exception-requests.ts is a strict allowlist
-  // that has no slot for it, and DOMAIN_INVARIANTS records the rule.
+  // that has no slot for it, and INV-REQ-003 in
+  // docs/invariants/booking-requests.md records the rule.
   internalNotes        String?                    @db.VarChar(2000)
   reviewedByMemberId   String?
   reviewedAt           DateTime?
@@ -5673,6 +5679,7 @@ model AgeTierSetting {
 
 enum DeletionRequestStatus {
   PENDING
+  APPROVAL_IN_PROGRESS
   APPROVED
   REJECTED
 }
@@ -5872,8 +5879,11 @@ model PublicContentSettings {
   // until an admin ticks it back on. When target is
   // PAGE, bookNowPageId names a published PageContent; getBookNowConfig() fails
   // open to the booking flow if the page is missing/unpublished, so the button
-  // is never dead. The FK is SetNull so deleting the target page reverts the
-  // button to the booking flow rather than dangling.
+  // is never dead. The FK is SetNull so an out-of-band delete cannot leave a
+  // dangling id — but SetNull alone would leave the PAIR at PAGE + null, which
+  // the settings PUT refuses to save, so the supported page delete
+  // (app/api/admin/page-content/route.ts DELETE) writes bookNowTarget back to
+  // BOOKING_FLOW in the same transaction (#2352, first review finding 1).
   showBookNow          Boolean       @default(false)
   bookNowTarget        BookNowTarget @default(BOOKING_FLOW)
   bookNowPageId        String?

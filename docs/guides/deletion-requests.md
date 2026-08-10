@@ -90,6 +90,6 @@ inputs.
   [membership cancellation, archive, and delete lifecycle](../STATE_MACHINES.md#membership-cancellation-archive-and-delete-lifecycle),
   the [Member Deletion Requests page](../../CONFIGURATION.md#member-deletion-requests-page)
   in `CONFIGURATION.md`, and the
-  [membership lifecycle](../DOMAIN_INVARIANTS.md#membership-lifecycle) and
-  [analytics and privacy](../DOMAIN_INVARIANTS.md#analytics-and-privacy)
+  [membership lifecycle](../invariants/membership-lifecycle.md) and
+  [analytics and privacy](../invariants/analytics-and-privacy.md)
   invariants.

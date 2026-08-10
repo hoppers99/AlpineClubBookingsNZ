@@ -6,13 +6,13 @@ import {
 } from "@/lib/admin-bed-allocation";
 import {
   bedAllocationErrorResponse,
-  requireBedAllocationAdmin,
+  requireBedAllocationWrite,
 } from "@/lib/admin-bed-allocation-routes";
 import { parseJsonRequestBody } from "@/lib/api-json";
 import { createAuditLog } from "@/lib/audit";
 import { formatDateOnly } from "@/lib/date-only";
 
-// requireAdmin() is enforced by requireBedAllocationAdmin().
+// requireAdmin() is enforced by requireBedAllocationWrite().
 const bulkAllocationSchema = z
   .object({
     bookingGuestId: z.string().min(1),
@@ -25,7 +25,7 @@ const bulkAllocationSchema = z
   .strict();
 
 export async function POST(request: Request) {
-  const guard = await requireBedAllocationAdmin();
+  const guard = await requireBedAllocationWrite();
   if (!guard.ok) return guard.response;
 
   try {
@@ -48,7 +48,7 @@ export async function POST(request: Request) {
         memberId: guard.session.user.id,
         targetId: result.allocations[0].bookingId,
         entityType: "BedAllocation",
-        category: "admin",
+        category: "lodge",
         outcome: "success",
         summary: "Bed allocation set across multiple nights",
         metadata: {
@@ -73,7 +73,7 @@ export async function POST(request: Request) {
         targetId: promotedPartner.bookingId,
         entityType: "BedAllocation",
         entityId: promotedPartner.id,
-        category: "admin",
+        category: "lodge",
         outcome: "success",
         summary:
           "Second occupant auto-promoted to primary after the shared double's primary was moved to another bed",

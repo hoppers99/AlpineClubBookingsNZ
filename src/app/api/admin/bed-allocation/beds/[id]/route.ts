@@ -7,13 +7,13 @@ import {
 } from "@/lib/admin-bed-allocation";
 import {
   bedAllocationErrorResponse,
-  requireBedAllocationAdmin,
+  requireBedInventoryWrite,
 } from "@/lib/admin-bed-allocation-routes";
 import { parseJsonRequestBody } from "@/lib/api-json";
 import { logAudit } from "@/lib/audit";
 import { revalidatePublicSite } from "@/lib/public-content-revalidation";
 
-// requireAdmin() is enforced by requireBedAllocationAdmin().
+// requireAdmin() is enforced by requireBedInventoryWrite().
 const bedPatchSchema = z
   .object({
     name: z.string().trim().min(1).max(100).optional(),
@@ -30,7 +30,7 @@ export async function PATCH(
   request: Request,
   { params }: { params: Promise<{ id: string }> },
 ) {
-  const guard = await requireBedAllocationAdmin();
+  const guard = await requireBedInventoryWrite();
   if (!guard.ok) return guard.response;
 
   try {
@@ -53,7 +53,7 @@ export async function PATCH(
       memberId: guard.session.user.id,
       entityType: "LodgeBed",
       entityId: bed.id,
-      category: "admin",
+      category: "lodge",
       outcome: "success",
       summary: "Bed allocation bed updated",
       metadata: { bedId: bed.id, changes: body.data },
@@ -69,7 +69,7 @@ export async function DELETE(
   _request: Request,
   { params }: { params: Promise<{ id: string }> },
 ) {
-  const guard = await requireBedAllocationAdmin();
+  const guard = await requireBedInventoryWrite();
   if (!guard.ok) return guard.response;
 
   try {
@@ -81,7 +81,7 @@ export async function DELETE(
       memberId: guard.session.user.id,
       entityType: "LodgeBed",
       entityId: bed.id,
-      category: "admin",
+      category: "lodge",
       outcome: "success",
       summary: "Bed allocation bed deleted",
       metadata: {

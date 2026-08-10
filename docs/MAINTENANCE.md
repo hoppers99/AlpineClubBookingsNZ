@@ -180,6 +180,87 @@ extraction over expanding this table casually.
 
 ## Operational Repair Tools
 
+### Recover a stranded $0 waitlist confirm (#2623)
+
+Admin -> Audit log, filtered to action `waitlist.confirm_offer_release_failed`
+(category `booking`, severity `critical`), lists free bookings whose waitlist
+confirm got half-way and could not undo itself. It is rare by construction and
+needs no script, but it will not clear on its own — no cron sweeps
+`PAYMENT_PENDING`, and the member has no offer left to retry.
+
+What happened: the confirm's first phase committed the booking to
+`PAYMENT_PENDING` and consumed the waitlist offer; its second phase (the $0
+`PAYMENT_PENDING -> PAID` claim) then lost its locks, and the compensating
+release back to `WAITLISTED` lost its locks too. The booking therefore holds no
+bed, has no payment path (it costs nothing) and has no offer to replay. The
+member was told exactly this and told **not** to confirm again.
+
+The audit row's metadata carries the lodge, the stay dates, `finalPriceCents`
+and both underlying error codes (`claimErrorCode`, `releaseErrorCode`). Open the
+booking from Admin -> Bookings and pick the outcome:
+
+- **Put them back in the queue** — the repair the failed compensation would have
+  made, and the one that keeps the promise the member was given. Open the
+  booking from Admin -> Bookings and press **Return to waitlist** in the Admin
+  tools card (#2649). Correct whenever the bed that prompted the offer has since
+  gone. It needs `bookings: edit`, the same access Force Confirm needs.
+
+  In one locked transaction it sets the booking back to `WAITLISTED`, clears the
+  consumed offer (`waitlistOfferedAt`, `waitlistOfferExpiresAt`,
+  `waitlistOfferedLodgeId`, `waitlistOfferedPriceCents`) and the stale queue
+  position, releases any admin capacity hold or exclusive whole-lodge hold on the
+  booking, and reconciles the bed allocations. Afterwards it hands the freed
+  nights back to the ordinary offer worker and tells the member their waitlist
+  place is back at position N — unless the booking's **No emails** switch is on,
+  in which case the send is withheld and listed on the booking for you to relay.
+  The member's email says their place was restored and that their offer did
+  **not** run out; it is a separate message from the offer-expiry one, because
+  they confirmed in time and it was our system that failed.
+  It records a `waitlist.returned_to_waitlist` audit row whose metadata names
+  the `waitlist.confirm_offer_release_failed` row it resolves — closing the trail
+  at both ends — plus anything it released (`releasedAdminCapacityHold`,
+  `releasedWholeLodgeHold`), so freed nights are never a silent side effect.
+  If the booking carried a hold, the confirmation dialog says so before you
+  press: set the hold again afterwards if you still need it.
+
+  **The button appears only where the audit log proves a waitlist confirmation
+  stranded the booking** — an unresolved `waitlist.confirm_offer_release_failed`
+  report — on top of `PAYMENT_PENDING`, free, and no payment record. Those last
+  three are deliberately not enough: **six** ordinary paths leave a free booking
+  in Payment pending with no payment row — a date change that reprices to
+  nothing, an admin date shift or a guest being added that releases a free
+  booking's non-member hold, an admin approving a booking that was waiting on
+  review, the group settlement reaper reverting a never-billed group member, and
+  a free booking created between April and May 2026 that the May status backfill
+  moved. None of those members was ever in a queue, so returning one of them to
+  the waitlist would un-confirm a booking that was simply waiting to be paid.
+  The
+  route re-checks every condition under its locks, so a booking that someone else
+  confirms or cancels in the same moment is refused in plain words rather than
+  clobbered. If it reports that something else is holding the booking, nothing
+  was changed — wait a moment and press it again.
+
+  **Finding them.** There is no dashboard card for this state; it is rare enough
+  that the audit log is the queue. Filter Admin -> Audit log to action
+  `waitlist.confirm_offer_release_failed`, and treat any entry with no later
+  `waitlist.returned_to_waitlist` on the same booking as outstanding. A booking
+  stranded before #2648 shipped has no report and so no button — that one still
+  needs a database session, and is the only remaining case that does. (The report
+  is written and awaited inside the failing request, so a live strand cannot
+  lose it to process teardown; if the write itself fails, the server log carries
+  "the admin repair button will not appear for this booking".)
+- **Cancel and have them rejoin** — reachable entirely from the admin UI, and the
+  right choice when nobody can safely touch the database. Cancel the booking from
+  Admin -> Bookings and ask the member to rejoin the waitlist for those nights.
+
+Do **not** try Record payment: the dialog deliberately refuses a booking with
+nothing owing ("use Force confirm / Confirm pending guests instead"), and do not
+hand-write a `Payment` row — a $0 confirm mints its own and `Payment.bookingId`
+is unique, so a hand-written row permanently blocks the real one.
+
+Either way, tell the member. Their offer is gone, and their place in the queue is
+the outcome they were promised.
+
 ### Record a trusted legacy induction baseline (#2361)
 
 `npm run induction:baseline` is a one-off, dry-run-first maintenance command

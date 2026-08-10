@@ -10,6 +10,7 @@ import {
   BookingManualPaymentControls,
   type BookingManualPaymentState,
 } from "@/components/admin/booking-manual-payment-controls";
+import { AdminReturnToWaitlistControls } from "@/components/admin/admin-return-to-waitlist-controls";
 import { ConfirmPendingGuestsButton } from "@/components/admin/confirm-pending-guests-button";
 import { CopyBookingButton } from "@/components/admin/copy-booking-button";
 import type { BookingProviderMismatch } from "@/lib/booking-provider-mismatches";
@@ -28,6 +29,7 @@ export function AdminBookingToolsCard({
   bookingId,
   memberId,
   memberName,
+  lodgeId,
   checkIn,
   checkOut,
   copyProps,
@@ -42,10 +44,21 @@ export function AdminBookingToolsCard({
   exclusiveHold,
   noEmails,
   manualPayment,
+  showReturnToWaitlist = false,
+  returnToWaitlistReleasesHold = false,
 }: {
   bookingId: string;
   memberId: string;
   memberName: string;
+  /**
+   * The booking's own lodge (#2678). NOT NULL in the schema, and deliberately
+   * not nullable here: it travels on the bed-allocation deep link so the board
+   * opens on the lodge the booking is actually at. The server derives the same
+   * lodge from `bookingId` regardless — this keeps the board's own lodge
+   * selector agreeing with the scope it was served, rather than showing "all
+   * lodges" over a single lodge's data.
+   */
+  lodgeId: string;
   checkIn: Date;
   checkOut: Date;
   copyProps: { sourceCheckIn: string; sourceCheckOut: string; minCheckIn: string };
@@ -98,12 +111,36 @@ export function AdminBookingToolsCard({
    * booking, which settles nothing.
    */
   manualPayment?: BookingManualPaymentState;
+  /**
+   * #2649: offer the stranded-zero-dollar-waitlist-confirm repair. The page
+   * sets this only for a booking the audit log PROVES was stranded by a waitlist
+   * confirmation — an unresolved `waitlist.confirm_offer_release_failed` report
+   * — on top of the `waitlist` module, not deleted, `PAYMENT_PENDING`,
+   * `finalPriceCents === 0` and no `Payment` row. Those last four are a shape
+   * ordinary bookings reach, so provenance is what keeps an operator from
+   * meeting a button that can only refuse. Advisory: the route re-derives every
+   * one of these facts under its own locks.
+   */
+  showReturnToWaitlist?: boolean;
+  /**
+   * #2649 review S3: this booking also carries an admin capacity hold or an
+   * exclusive whole-lodge hold, which the repair releases with the transition.
+   * Surfaced in the confirmation dialog so freeing those nights is a stated
+   * consequence rather than something the officer reads in the audit log later.
+   */
+  returnToWaitlistReleasesHold?: boolean;
 }) {
   const returnTo = `/bookings/${bookingId}`;
   const bedAllocationParams = new URLSearchParams({
     from: formatDateOnly(checkIn),
     to: formatDateOnly(checkOut),
     bookingId,
+    // #2678: without this the board opened CLUB-WIDE with this booking focused,
+    // and its bed pickers offered every lodge's beds for this booking's guests
+    // — a choice the writer then refused. The API derives the lodge from
+    // `bookingId` too, so this is what keeps the board's lodge selector honest
+    // about the scope it was served, not the thing that scopes the read.
+    lodgeId,
   });
   const bedAllocationHref = buildHrefWithReturnTo(
     `/admin/bed-allocation?${bedAllocationParams.toString()}`,
@@ -178,6 +215,16 @@ export function AdminBookingToolsCard({
               memberName={memberName}
               state={manualPayment}
               noEmails={noEmails?.noEmails ?? false}
+            />
+          )}
+          {/* #2649: the repair for a free waitlist confirm that got half-way.
+              It sits with the other booking-state controls rather than on the
+              waitlist queue, because a stranded booking is no longer waitlisted
+              and so never appears there. */}
+          {showReturnToWaitlist && (
+            <AdminReturnToWaitlistControls
+              bookingId={bookingId}
+              releasesHold={returnToWaitlistReleasesHold}
             />
           )}
           {!isDeleted && (

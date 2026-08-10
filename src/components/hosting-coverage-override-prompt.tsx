@@ -24,41 +24,58 @@ export function HostingCoverageOverridePrompt({
   onReasonChange: (reason: string) => void;
 }) {
   // Permanently mounted live region: inserting an already-populated role=alert is
-  // missed by some screen-reader/browser pairs.
+  // missed by some screen-reader/browser pairs. Keep the form controls outside
+  // the assertive, implicitly atomic region so typing does not re-announce the
+  // complete warning and evidence on every controlled-field update.
+  const reasonHintId = `${idPrefix}-reason-hint`;
+
   return (
-    <div role="alert" aria-busy={busy}>
+    <div
+      className={
+        prompt
+          ? "space-y-3 rounded-md border border-warning-7 bg-warning-2 p-3 text-sm"
+          : undefined
+      }
+    >
+      <div role="alert" aria-atomic="true" aria-busy={busy}>
+        {prompt ? (
+          <>
+            <div className="space-y-1">
+              <p className="font-semibold text-warning-11">
+                Separate hosting coverage override required
+              </p>
+              <p>{prompt.message}</p>
+            </div>
+            <ul className="mt-3 space-y-2">
+              {prompt.strandedBookings.map((booking) => (
+                <li
+                  key={booking.bookingId}
+                  className="rounded border border-warning-6 bg-background p-2"
+                >
+                  <span className="font-semibold">{booking.reference}</span>
+                  {` at ${booking.lodgeName}`}
+                  <div className="text-xs text-muted-foreground">
+                    Nights: {booking.nights.join(", ")}
+                  </div>
+                </li>
+              ))}
+            </ul>
+          </>
+        ) : null}
+      </div>
       {prompt ? (
-        <div className="space-y-3 rounded-md border border-warning-7 bg-warning-2 p-3 text-sm">
-          <div className="space-y-1">
-            <p className="font-semibold text-warning-11">
-              Separate hosting coverage override required
-            </p>
-            <p>{prompt.message}</p>
-          </div>
-          <ul className="space-y-2">
-            {prompt.strandedBookings.map((booking) => (
-              <li
-                key={booking.bookingId}
-                className="rounded border border-warning-6 bg-background p-2"
-              >
-                <span className="font-semibold">{booking.reference}</span>
-                {` at ${booking.lodgeName}`}
-                <div className="text-xs text-muted-foreground">
-                  Nights: {booking.nights.join(", ")}
-                </div>
-              </li>
-            ))}
-          </ul>
+        <div className="space-y-3">
           <div className="space-y-1">
             <Label htmlFor={`${idPrefix}-reason`}>
               Private hosting override reason (required)
             </Label>
-            <p className="text-xs text-muted-foreground">
+            <p id={reasonHintId} className="text-xs text-muted-foreground">
               Only admins see this operational reason. It must be at least 10
               characters and is separate from member-facing notes.
             </p>
             <Textarea
               id={`${idPrefix}-reason`}
+              aria-describedby={reasonHintId}
               value={reason}
               disabled={disabled}
               minLength={10}

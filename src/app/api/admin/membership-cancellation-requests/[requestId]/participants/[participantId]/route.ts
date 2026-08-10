@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { hostingCoverageParticipantRetryResponse } from "@/lib/adult-member-hosting-retry-response";
 import { z } from "zod";
 import {
   MembershipCancellationAdminError,
@@ -50,6 +51,8 @@ export async function POST(
 
     return NextResponse.json(result);
   } catch (err) {
+    const hostingRetry = hostingCoverageParticipantRetryResponse(err);
+    if (hostingRetry) return hostingRetry;
     if (err instanceof MembershipCancellationAdminError) {
       return NextResponse.json(
         { error: err.message, ...(err.details ?? {}) },

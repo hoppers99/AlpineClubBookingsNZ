@@ -256,7 +256,9 @@ describe("summarizeXeroOperation — persisted Xero API shapes", () => {
       operationType: "SYNC_MANAGED_MEMBERSHIP",
       requestPayload: {
         memberId: "m1",
-        memberName: "Pat Example",
+        // No `memberName`: the writer stopped storing a composed person name
+        // in the payload (INV-PRIV-011, #2683), and the panel labels the row
+        // with the member id it already stores.
         ageTier: "ADULT",
         xeroContactId: "xc1",
         defaultGroup: { id: "g1", name: "Adult Members" },
@@ -270,7 +272,7 @@ describe("summarizeXeroOperation — persisted Xero API shapes", () => {
       },
     });
     expect(summary?.title).toBe("Sync managed Xero contact groups");
-    expect(factValue(summary!, "Member")).toBe("Pat Example");
+    expect(factValue(summary!, "Member")).toBe("m1");
     expect(factValue(summary!, "Age tier")).toBe("ADULT");
     expect(factValue(summary!, "Default group")).toBe("Adult Members");
     expect(factValue(summary!, "Groups added")).toBe("1");

@@ -16,6 +16,15 @@
  *   diagnostics.finance_event_correlation     support + finance
  *   diagnostics.lodge_event_correlation       support + lodge
  *
+ * THE CATEGORY SETS ARE NO LONGER WRITTEN OUT HERE (#2581). Each entry derives
+ * its own set from `AUDIT_CATEGORY_CORRELATION_DOMAIN` in `audit-categories.ts`,
+ * which maps every canonical category to exactly one of these five domains. That
+ * makes disjointness and total coverage structural rather than assertions checked
+ * after the fact: a new category cannot be added without classifying it, and it
+ * cannot be classified into two entries. It also fixed a real hole — `family` was
+ * written by 27 production sites and named in NO set here, so family evidence was
+ * readable through no correlation tool at all.
+ *
  * A caller holding only `support:view` is offered — and can only run — the system
  * entry. Asking for `diagnostics.finance_event_correlation` without `finance:view`
  * is denied server-side with `permission_denied` and the missing area named, and the
@@ -27,24 +36,31 @@
  *
  * "AT MOST ONE" IS EXACT, AND IT COSTS COVERAGE RATHER THAN CONTAINMENT.
  * `AuditLog.category` is `String?` with no default, and `audit.ts` writes the column
- * only when a caller supplies one — so a row with NO category exists and is common. A
- * census of this repository's non-test audit writes: 81 of ~350 call sites pass no
- * category (11 `createAuditLog`, 69 `logAudit`, 1 `createStructuredAuditLog`),
- * including money-adjacent ones — subscription-billing settings/retry/mark-family/
- * unmark-family/reconcile, the subscription charge confirm, all three member-credit
- * adjustment steps, fee configuration and the family login-holder change — plus
- * booking-policy edits, bulk communications and deletion-request decisions.
- * `WHERE "category" = ANY ($1)` is NULL for such a row, so it is returned by NONE of the
- * five entries. The containment argument is unharmed (a row nobody can reach is not a way
- * around a denial); what is harmed is any reading of an empty result as an absence, which
- * is why every `evidenceScope` and every description now names this gap in as many words.
- * See `DIAGNOSTICS_CORRELATION_CATEGORY_SETS` for why the alternative — routing the null
- * case to the system entry — is an owner decision rather than a fix.
+ * only when a caller supplies one — so a row with NO category is possible, and it was
+ * common. The executable census of this repository's production audit writes
+ * (`scripts/audit/audit-writer-census.ts`, pinned by
+ * `src/lib/__tests__/audit-writer-census.test.ts`) counted 82 uncategorised write
+ * sites when #2581 opened — 69 `logAudit`, 11 `createAuditLog`, 2 hand-built Prisma
+ * writes, none through `createStructuredAuditLog` — and `main` still measured those
+ * same 82 immediately before this change, out of 426 write sites in total. #2581's
+ * second child classified all 82 at the source, so the census now reads 427 write
+ * sites and ZERO uncategorised: no NEW row is born invisible to these five entries.
+ *
+ * THE GAP HAS NOT CLOSED, IT HAS STOPPED GROWING, and the distinction is the whole
+ * reason the declarations below stay. Every row written BEFORE that runtime deployed
+ * still carries `category = NULL`, and `WHERE "category" = ANY ($1)` is NULL for such
+ * a row, so it is returned by NONE of the five entries. The historical backfill is
+ * #2581's third child and has not run. The containment argument is unharmed (a row
+ * nobody can reach is not a way around a denial); what is harmed is any reading of an
+ * empty result as an absence, which is why every `evidenceScope` and every description
+ * still names this gap in as many words. See `DIAGNOSTICS_CORRELATION_CATEGORY_SETS`
+ * for why the alternative — routing the null case to the system entry — is an owner
+ * decision rather than a fix, and was refused.
  *
  * ONE HONEST QUALIFICATION, because "the domain requirement is what stands between a
  * support-only admin and any domain evidence" would be too strong a claim. The `admin`
  * category is this platform's catch-all for ADMINISTRATOR-INITIATED operations across
- * every domain (see `DIAGNOSTICS_CORRELATION_CATEGORY_SETS`), so the system entry does
+ * every domain (see `AUDIT_CATEGORY_CORRELATION_DOMAIN`), so the system entry does
  * report that a member merge, a lifecycle decision or an internet-banking settings
  * change occurred — as an action code, a severity, an entity TYPE and an instant, and
  * nothing else. That is not an escalation: `support` is already the area that governs
@@ -126,6 +142,11 @@ import "server-only";
 import { z } from "zod";
 
 import type { AdminPermissionArea } from "@/lib/admin-permissions";
+import {
+  AUDIT_CORRELATION_DOMAIN_AREAS,
+  auditCategoriesForCorrelationDomain,
+  type AuditCategory,
+} from "@/lib/audit-categories";
 
 import { defineDiagnosticsTool, type DiagnosticsToolEntry } from "../define";
 
@@ -353,7 +374,7 @@ function defineCorrelationTool(input: {
   id: string;
   label: string;
   requiredAreas: readonly AdminPermissionArea[];
-  categories: readonly string[];
+  categories: readonly AuditCategory[];
   description: string;
   /** What this entry covers, in plain English, for the block's `scope:` line. */
   scope: string;
@@ -370,8 +391,10 @@ function defineCorrelationTool(input: {
     //  - MISMATCH. The audit `category` taxonomy is not the admin-area partition (see
     //    `DIAGNOSTICS_CORRELATION_CATEGORY_SETS`), so a membership question can
     //    legitimately return nothing here while the events sit in another entry's set.
-    //  - ABSENT. A row written with no category at all is matched by no entry's filter,
-    //    and 81 non-test call sites write that way. Naming it is the fail-closed remedy:
+    //  - ABSENT. A row written with no category at all is matched by no entry's filter.
+    //    No production writer does that any more (#2581 child 2 closed all 82), but
+    //    every row written before that runtime deployed still does, and the historical
+    //    backfill is #2581's third child. Naming it is the fail-closed remedy:
     //    without the sentence, a Finance Officer asking about a subscription reconcile
     //    gets zero rows, the state `not_found` ("there is no evidence of this to
     //    report"), and prose steering them to the other four entries — none of which can
@@ -423,21 +446,41 @@ export const DIAGNOSTICS_LODGE_CORRELATION_TOOL_ID =
   "diagnostics.lodge_event_correlation";
 
 /**
- * The audit categories each entry may read. DISJOINT and CLOSED, and both
- * properties are pinned by `support-correlation.test.ts`:
+ * The audit categories each entry may read — DERIVED, not listed (#2581).
+ *
+ * `AUDIT_CATEGORY_CORRELATION_DOMAIN` in `audit-categories.ts` maps every
+ * canonical category to exactly one of these five domains, so the two properties
+ * this pack depends on are now structural rather than checked afterwards (the
+ * contract test still pins both, as a regression alarm rather than as the only
+ * guarantee):
  *
  *  - DISJOINT, so a row is reachable through at most one permission set. A row carries
- *    at most one category, so these five sets are a partition of the CATEGORISED audit
- *    trail rather than five overlapping views of it.
- *  - CLOSED, so a category no entry declares is reachable by NO correlation tool.
- *    `AuditCategory` is an open union (`… | (string & {})`), so a future feature can
- *    write a category nobody here has reviewed; the fail-closed answer is that it
- *    stays invisible to Diagnostics until a pull request adds it to a declared set,
- *    which is the same deliberate friction ADR-007 puts on a table grant.
+ *    at most one category and a category maps to one domain, so these five sets are a
+ *    partition of the CATEGORISED audit trail rather than five overlapping views of it.
+ *  - TOTAL, so no canonical category is silently readable by nobody. That was not true
+ *    before: `family` was written by 27 production sites and named in no set here, so
+ *    every family-domain audit event was invisible to Diagnostics. Adding a category to
+ *    the taxonomy without classifying it here no longer compiles.
+ *
+ * WHAT CHANGED, AND WHO GAINS OR LOSES EVIDENCE (#2581 decisions 1, 2 and 7). Both
+ * directions are real behaviour changes and are named in the changelog rather than
+ * folded into a refactor:
+ *
+ *  - `communication` LEFT the system entry for the membership entry. Reading
+ *    bulk-communication, notice-delivery and age-up-handoff evidence now needs
+ *    `membership:view` as well as `support:view`. Those payloads carry recipient email
+ *    addresses, and a support-only operator can read them today; that is the narrowing.
+ *  - `family` JOINED the membership entry, so 27 sites' evidence moves from
+ *    unreadable-by-Diagnostics to `support:view` plus `membership:view`.
+ *  - The three nomination writers that wrote the invented `membership` now write
+ *    `account`, and the auth-bounce writer that wrote the invented `auth` now writes
+ *    `security` — so both populations move from unreadable to their domain's entry
+ *    (membership-gated and support-only respectively).
  *
  * THE ABSENT CATEGORY IS THE SAME FAIL-CLOSED DEFAULT, ONE STEP FURTHER OUT, and it is
- * not hypothetical: 81 non-test audit write call sites pass no category at all (see this
- * file's docblock for the census and the money-adjacent members of it), and the admin
+ * not hypothetical: no production writer omits a category any more (#2581 child 2), but
+ * every row written before that runtime deployed does, and the historical backfill is
+ * #2581's third child. The admin
  * audit-log screen already treats the null case as ordinary — `audit-query.ts` infers a
  * category from the action for display (`inferAuditCategoryFromAction`) and its category
  * filter matches `{ category: null }` against a table of legacy action patterns
@@ -451,30 +494,58 @@ export const DIAGNOSTICS_LODGE_CORRELATION_TOOL_ID =
  * record, which is the same remedy already applied to the category MISMATCH class above.
  * The alternative is to give the SYSTEM entry the null case explicitly
  * (`"category" IS NULL OR "category" = ANY(…)`), which would keep the five sets disjoint
- * and make the evidence complete — but it routes those 81 call sites' rows, including
+ * and make the evidence complete — but it routes every historical null row, including
  * booking-policy and communications events, to an entry behind `support:view` alone, and
  * it needs a fresh look at the `(category, createdAt)` index against a 5-second statement
- * timeout. Widening who can read part of the audit trail is an owner decision, so it is
- * filed as one rather than taken here.
+ * timeout. The owner refused that route on #2581: the rows get a category at the SOURCE
+ * instead (#2581 child 2, done), and the historical rows get one only through a reviewed
+ * exact-action mapping (#2581 child 3, outstanding).
  *
  * WHAT THESE SETS ARE NOT, stated plainly because an earlier revision of this comment
  * claimed otherwise and AID-6B/6C are told to extend the taxonomy on this reasoning.
- * `AuditCategory` IS NOT THE ADMIN AREA MAP. It is an older, coarser taxonomy of its
+ * The audit taxonomy IS NOT THE ADMIN AREA MAP. It is an older, coarser taxonomy of its
  * own, and it does not partition the platform the way `admin-permissions.ts` does.
  * Three mismatches matter, all verified against the call sites:
  *
- *  - `admin` IS THE CROSS-DOMAIN CATCH-ALL, not a system-only category — 115
- *    non-test call sites, the largest of the ten, covering admin-initiated operations
- *    in EVERY domain: member merge and member-lifecycle delete/archive
- *    (`member-merge.ts`, `member-lifecycle-actions.ts`), member import and
- *    lodge-access changes, seasonal membership assignments, the internet-banking
- *    payment settings, `booking_request.settings_updated`, chores, lockers, rooms,
- *    bed allocation and lodge settings. So the system entry, behind `support:view`
- *    alone, DOES see admin-initiated domain actions — as metadata, but it sees them.
+ *  - `admin` IS THE CROSS-DOMAIN CATCH-ALL, not a system-only category — 96
+ *    production call sites, still the largest of the eleven, covering
+ *    admin-initiated operations in EVERY domain: member merge and
+ *    member-lifecycle delete/archive (`member-merge.ts`,
+ *    `member-lifecycle-actions.ts`), member import and lodge-access changes,
+ *    seasonal membership assignments, the internet-banking payment settings,
+ *    `booking_request.settings_updated`, chores, lockers, work parties, lodge
+ *    instructions, lodge settings and the `LODGE_*` lodge records themselves. So
+ *    the system entry, behind `support:view` alone, DOES see admin-initiated
+ *    domain actions — as metadata, but it sees them. That is also why every NEW
+ *    `admin` assignment needs a written justification rather than a default: it
+ *    is the widest gate a category can sit behind.
+ *
+ *    118 -> 96 in #2730, which is the first pass to READ this population rather
+ *    than inherit it. BED ALLOCATION IS NO LONGER WRITTEN HERE: its 21
+ *    admin-initiated writers now say `lodge`, joining the 7 that always did, so
+ *    the lodge entry returns the whole family from this release onwards.
+ *    `LODGE_DISPLAY_CONFIG_UPDATED` moved with them, to sit beside its ten
+ *    display siblings. Both are NARROWINGS — a support-only operator could
+ *    correlate those 22 sites' NEW rows before and cannot now, and needs
+ *    `lodge:view` as well. The rest of this population was read and deliberately
+ *    KEPT; the per-site record is in
+ *    `docs/ai-diagnostics/audit-admin-category-review.md`.
+ *
+ *    #2730 CHANGED THE WRITERS, NOT THE STORED ROWS, and both entries' prose has
+ *    to carry that or it lies to the model. A row already in `AuditLog` keeps the
+ *    `admin` it was written with: `buildAuditCategoryWhere` only ORs the legacy
+ *    action-name guess in for rows whose category IS NULL, so a stored `"admin"`
+ *    bed-allocation row is returned by the SYSTEM entry and by no other, forever.
+ *    Bed-allocation evidence is therefore split by DATE across the two entries
+ *    until a reviewed backfill runs (#2751), which is why the lodge entry does not
+ *    claim to hold it "in full" and the system entry says it still holds the older
+ *    half. The `SHARED_DESCRIPTION_TAIL` warning does not cover this case: it is
+ *    about rows with NO category, and these rows have one.
  *  - `lodge` carries INDUCTION (`induction.ts`, `induction-baseline.ts`), even though
  *    `/admin/induction` is a `membership` surface.
  *  - `privacy` carries the admin ISSUE-REPORT events, even though
- *    `/admin/issue-reports` is a `support` surface.
+ *    `/admin/issue-reports` is a `support` surface. Re-mapping them to `admin` to match
+ *    the surface would WIDEN them to support-only, so #2581 decision 5 keeps them here.
  *
  * WHY THAT IS NOT AN ESCALATION, and why the fix is honesty rather than a re-map.
  * `support` is already the area that governs `/admin/audit-log` and
@@ -492,15 +563,15 @@ export const DIAGNOSTICS_LODGE_CORRELATION_TOOL_ID =
  * searched, and its description names them too, so an empty result cannot be read as
  * "this did not happen" when the events are simply recorded under another category.
  */
-const SYSTEM_CATEGORIES = ["system", "security", "admin", "communication"] as const;
-const BOOKING_CATEGORIES = ["booking"] as const;
-const MEMBERSHIP_CATEGORIES = ["account", "privacy"] as const;
-const FINANCE_CATEGORIES = ["payment", "xero"] as const;
-const LODGE_CATEGORIES = ["lodge"] as const;
+const SYSTEM_CATEGORIES = auditCategoriesForCorrelationDomain("system");
+const BOOKING_CATEGORIES = auditCategoriesForCorrelationDomain("booking");
+const MEMBERSHIP_CATEGORIES = auditCategoriesForCorrelationDomain("membership");
+const FINANCE_CATEGORIES = auditCategoriesForCorrelationDomain("finance");
+const LODGE_CATEGORIES = auditCategoriesForCorrelationDomain("lodge");
 
 /** Exported for the contract test that pins disjointness and coverage. */
 export const DIAGNOSTICS_CORRELATION_CATEGORY_SETS: Readonly<
-  Record<string, readonly string[]>
+  Record<string, readonly AuditCategory[]>
 > = {
   [DIAGNOSTICS_SYSTEM_CORRELATION_TOOL_ID]: SYSTEM_CATEGORIES,
   [DIAGNOSTICS_BOOKING_CORRELATION_TOOL_ID]: BOOKING_CATEGORIES,
@@ -517,53 +588,53 @@ export const DIAGNOSTICS_CORRELATION_CATEGORY_SETS: Readonly<
  * completeness flag is read as an authoritative "this never happened".
  */
 const SHARED_DESCRIPTION_TAIL =
-  "Returns only stable codes and timestamps: the event reference, action code, category, severity, outcome, what kind of record it concerned, the request identifier, and when it happened in UTC. It never returns which record, which member, event descriptions, stored metadata, IP addresses, user agents or error text. Newest first, at most 22 events, and the window always applies — widen it if the event you are looking for is older. It searches only the audit categories listed above: if nothing matches, say that nothing matched IN THOSE CATEGORIES rather than that the event did not happen, and consider whether a related event would have been recorded under another category by another correlation tool. The audit category is optional, and some administrative operations record without one — subscription billing, member credit adjustments, fee configuration, booking-policy changes, bulk communications and deletion-request decisions among them. A row with no category is invisible to every correlation tool, so never report that something did not happen on the strength of an empty correlation result; say that no categorised audit event matched, and suggest Admin > Audit Log, which lists those rows as well.";
+  "Returns only stable codes and timestamps: the event reference, action code, category, severity, outcome, what kind of record it concerned, the request identifier, and when it happened in UTC. It never returns which record, which member, event descriptions, stored metadata, IP addresses, user agents or error text. Newest first, at most 22 events, and the window always applies — widen it if the event you are looking for is older. It searches only the audit categories listed above: if nothing matches, say that nothing matched IN THOSE CATEGORIES rather than that the event did not happen, and consider whether a related event would have been recorded under another category by another correlation tool. Every current write path records a category, but audit rows created before that change do not, and they have not yet been given one. A row with no category is invisible to every correlation tool, so never report that something did not happen on the strength of an empty correlation result; say that no categorised audit event matched, and suggest Admin > Audit Log, which lists those rows as well.";
 
 export const DIAGNOSTICS_SUPPORT_CORRELATION_TOOLS: readonly DiagnosticsToolEntry[] =
   [
     defineCorrelationTool({
       id: DIAGNOSTICS_SYSTEM_CORRELATION_TOOL_ID,
       label: "System and security event correlation",
-      requiredAreas: ["support"],
+      requiredAreas: AUDIT_CORRELATION_DOMAIN_AREAS.system,
       categories: SYSTEM_CATEGORIES,
       scope:
-        "System, security, communication and ADMIN-INITIATED events. The `admin` category is the platform's catch-all for actions an administrator took in EVERY domain — member merges and lifecycle decisions, member import, seasonal assignments, payment and booking SETTINGS changes, and lodge operations settings — as metadata only.",
-      description: `Correlates recent audit events in the categories system, security, admin and communication, optionally for one exact request identifier. Use it to see what the platform recorded around an incident. Note that "admin" is the catch-all for administrator-initiated actions in every domain — member merges, lifecycle decisions, imports and settings changes are recorded here rather than in the domain categories — so this tool is the right one for "what did an administrator do around this time". ${SHARED_DESCRIPTION_TAIL}`,
+        "System, security and ADMIN-INITIATED events. The `admin` category is the platform's catch-all for actions an administrator took in EVERY domain — member merges and lifecycle decisions, member import, seasonal assignments, payment and booking SETTINGS changes, and chores, lockers, work parties, lodge instructions, lodge settings and the lodge records themselves — as metadata only. Communication events (bulk email, notices, delivery suppressions) are NOT here: they are `communication`, which the membership correlation tool covers. BED ALLOCATION is `lodge` from the #2730 release onwards and the lodge correlation tool covers it, but rows recorded BEFORE that release still carry `admin` and ARE returned here.",
+      description: `Correlates recent audit events in the categories admin, security and system, optionally for one exact request identifier. Use it to see what the platform recorded around an incident. Note that "admin" is the catch-all for administrator-initiated actions in every domain — member merges, lifecycle decisions, imports and settings changes are recorded here rather than in the domain categories — so this tool is the right one for "what did an administrator do around this time". Email and notice delivery is recorded under "communication", which the membership correlation tool covers, not this one. ${SHARED_DESCRIPTION_TAIL}`,
     }),
     defineCorrelationTool({
       id: DIAGNOSTICS_BOOKING_CORRELATION_TOOL_ID,
       label: "Booking event correlation",
-      requiredAreas: ["support", "bookings"],
+      requiredAreas: AUDIT_CORRELATION_DOMAIN_AREAS.booking,
       categories: BOOKING_CATEGORIES,
       scope:
         "Member-facing and system booking events only. An administrator's change to booking SETTINGS is recorded under `admin`, which the system correlation tool covers.",
-      description: `Correlates recent audit events in the booking category, optionally for one exact request identifier. Use it to see what the platform recorded around a booking problem. Administrator changes to booking settings are recorded under "admin" rather than "booking", so use the system correlation tool for those. ${SHARED_DESCRIPTION_TAIL}`,
+      description: `Correlates recent audit events in the booking category, optionally for one exact request identifier. Use it to see what the platform recorded around a booking problem. Administrator changes to the booking RULES are recorded here too, under "booking": booking policies, booking periods, age tiers, seasons and promotional codes. Booking message wording and booking-request settings are still recorded under "admin", so use the system correlation tool for those. ${SHARED_DESCRIPTION_TAIL}`,
     }),
     defineCorrelationTool({
       id: DIAGNOSTICS_MEMBERSHIP_CORRELATION_TOOL_ID,
       label: "Membership event correlation",
-      requiredAreas: ["support", "membership"],
+      requiredAreas: AUDIT_CORRELATION_DOMAIN_AREAS.membership,
       categories: MEMBERSHIP_CATEGORIES,
       scope:
-        "Member self-service account events (profile edits, notification preferences, membership cancellation) and privacy events (deletion requests, member export, issue reports). It does NOT cover member merges, member-lifecycle delete/archive decisions, member import or lodge-access changes — those are `admin` — nor induction, which is `lodge`.",
-      description: `Correlates recent audit events in the categories account and privacy, optionally for one exact request identifier. Use it to see what the platform recorded around a member's own account changes, a deletion request or an issue report. It does NOT cover member merges, member-lifecycle delete or archive decisions, member import or lodge-access changes (recorded under "admin", see the system correlation tool) or induction (recorded under "lodge"). ${SHARED_DESCRIPTION_TAIL}`,
+        "Member self-service account events (profile edits, notification preferences, membership cancellation, member photos, membership applications), FAMILY events (family groups, partner links, login-holder changes, dependents), COMMUNICATION events (bulk email, notices, delivery suppressions, credential-email reissues) and privacy events (deletion requests, member export, issue reports). It does NOT cover member merges, member-lifecycle delete/archive decisions, member import or lodge-access changes — those are `admin` — nor induction, which is `lodge`.",
+      description: `Correlates recent audit events in the categories account, family, communication and privacy, optionally for one exact request identifier. Use it to see what the platform recorded around a member's own account changes, a family-group, dependant or partner-link change, membership applications and nominations, an email or notice the club sent, a deletion request or an issue report. It does NOT cover member merges, member-lifecycle delete or archive decisions, member import or lodge-access changes (recorded under "admin", see the system correlation tool), induction (recorded under "lodge"), or password resets, setup invites and bulk role changes (recorded under "security", also the system correlation tool). ${SHARED_DESCRIPTION_TAIL}`,
     }),
     defineCorrelationTool({
       id: DIAGNOSTICS_FINANCE_CORRELATION_TOOL_ID,
       label: "Finance and Xero event correlation",
-      requiredAreas: ["support", "finance"],
+      requiredAreas: AUDIT_CORRELATION_DOMAIN_AREAS.finance,
       categories: FINANCE_CATEGORIES,
       scope:
         "Payment and Xero events. An administrator's change to payment or internet-banking SETTINGS is recorded under `admin`, which the system correlation tool covers.",
-      description: `Correlates recent audit events in the categories payment and xero, optionally for one exact request identifier. Use it to see what the platform recorded around a payment or invoicing problem. Administrator changes to payment or internet-banking settings are recorded under "admin" rather than "payment", so use the system correlation tool for those. ${SHARED_DESCRIPTION_TAIL}`,
+      description: `Correlates recent audit events in the categories payment and xero, optionally for one exact request identifier. Use it to see what the platform recorded around a payment or invoicing problem. Subscription-billing changes, member credit adjustments and fee configuration are recorded here under "payment", and Xero settings, mappings, replays and retries under "xero". Administrator changes to internet-banking settings are still recorded under "admin" rather than "payment", so use the system correlation tool for those. ${SHARED_DESCRIPTION_TAIL}`,
     }),
     defineCorrelationTool({
       id: DIAGNOSTICS_LODGE_CORRELATION_TOOL_ID,
       label: "Lodge operations event correlation",
-      requiredAreas: ["support", "lodge"],
+      requiredAreas: AUDIT_CORRELATION_DOMAIN_AREAS.lodge,
       categories: LODGE_CATEGORIES,
       scope:
-        "Lodge-operations events, including INDUCTION and induction-baseline events even though the induction admin screen sits under Membership. Administrator changes to chores, lockers, rooms, bed allocation and lodge settings are `admin`, which the system correlation tool covers.",
-      description: `Correlates recent audit events in the lodge category, optionally for one exact request identifier. Use it to see what the platform recorded around a rosters, guest arrival/departure, bed-allocation or induction problem. Induction events are recorded here, under "lodge", even though the induction admin screen sits under Membership. Administrator changes to chores, lockers, rooms and lodge settings are recorded under "admin", so use the system correlation tool for those. ${SHARED_DESCRIPTION_TAIL}`,
+        "Lodge-operations events, including INDUCTION and induction-baseline events even though the induction admin screen sits under Membership, and bed-allocation events — an administrator's manual, bulk and range allocations as well as the automatic lifecycle ones — but ONLY those recorded from the release that shipped #2730 onwards. Bed-allocation rows recorded BEFORE that release still carry `admin` and are returned by the system correlation tool instead, so an older bed question needs that tool as well. Administrator changes to chores, lockers, work parties, lodge instructions, lodge settings and the lodge records themselves are `admin`, which the system correlation tool covers.",
+      description: `Correlates recent audit events in the lodge category, optionally for one exact request identifier. Use it to see what the platform recorded around a rosters, guest arrival/departure, bed-allocation or induction problem. Induction events are recorded here, under "lodge", even though the induction admin screen sits under Membership. Lodge display layouts, templates and devices, the lodge display configuration, and lodge kiosk accounts, are recorded here too. Bed allocation is recorded here from the release that shipped #2730 onwards: an administrator's manual, bulk, range and approval actions sit beside the automatic lifecycle promotions and displacements, so this is the right tool for "who put whom in which bed". Bed-allocation rows recorded BEFORE that release still say "admin" — no stored row was rewritten — so for anything older use the system correlation tool too, and never report a bed-allocation absence on this tool alone. Administrator changes to chores, lockers, work parties, lodge settings, lodge instructions and the lodge records themselves are recorded under "admin", so use the system correlation tool for those. ${SHARED_DESCRIPTION_TAIL}`,
     }),
   ];

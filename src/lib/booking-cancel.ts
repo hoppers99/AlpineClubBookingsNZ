@@ -44,7 +44,7 @@ import {
   RELEASE_ADMIN_CAPACITY_HOLD_UPDATE,
   RELEASE_WHOLE_LODGE_HOLD_UPDATE,
 } from "@/lib/booking-status";
-import { reconcileBedAllocationsForBooking } from "@/lib/bed-allocation-lifecycle";
+import { reconcileBedAllocationsForBookingWithLodgeLockHeld } from "@/lib/bed-allocation-lifecycle";
 import { revokePaymentLinksForBooking } from "@/lib/payment-link";
 import { settleGroupBookingOnOrganiserCancel } from "@/lib/group-cancel";
 import { repairLegacyAppliedCreditNoteAllocationsForBooking } from "@/lib/xero-applied-credit-allocation-repair";
@@ -99,9 +99,9 @@ interface CancelBookingResult {
 
 async function reconcileCancelledBookingBedAllocations(
   booking: { id: string; checkIn: Date; checkOut: Date },
-  db: Parameters<typeof reconcileBedAllocationsForBooking>[0]["db"] = prisma,
+  db: Prisma.TransactionClient,
 ) {
-  await reconcileBedAllocationsForBooking({
+  await reconcileBedAllocationsForBookingWithLodgeLockHeld({
     bookingId: booking.id,
     db,
     previousRange: {
@@ -546,6 +546,7 @@ async function performBookingCancellation(
       if (!fresh || !NO_PAYMENT_CANCELLABLE_STATUSES.includes(fresh.status)) {
         return { claimed: false as const };
       }
+      if (fresh.lodgeId) await acquireLodgeCapacityLock(tx, fresh.lodgeId);
 
       const wasOffered = fresh.status === "WAITLIST_OFFERED";
       const wasAwaitingReview = fresh.status === "AWAITING_REVIEW";
@@ -746,6 +747,7 @@ async function performBookingCancellation(
       if (!fresh || fresh.status !== "PENDING") {
         return { claimed: false as const };
       }
+      if (fresh.lodgeId) await acquireLodgeCapacityLock(tx, fresh.lodgeId);
       if (fresh.payment) {
         await tx.payment.update({
           where: { id: fresh.payment.id },
@@ -931,6 +933,7 @@ async function performBookingCancellation(
       if (await paymentEligibleForPaidCancelPath(fresh.payment, tx)) {
         return { claimed: false as const };
       }
+      if (fresh.lodgeId) await acquireLodgeCapacityLock(tx, fresh.lodgeId);
 
       // #1881 lock topology: this path already holds global lock(1); take the
       // member-ledger lock second before inspecting deallocation state or
@@ -1288,6 +1291,7 @@ async function performBookingCancellation(
     ) {
       return { claimed: false as const };
     }
+    if (fresh.lodgeId) await acquireLodgeCapacityLock(tx, fresh.lodgeId);
     // #1491: the same paid-path eligibility as the outer gate, re-derived
     // under the lock (the outer read is stale by definition here). A
     // genuinely captured PARTIALLY_REFUNDED payment claims; the folded-mirror
@@ -1347,7 +1351,7 @@ async function performBookingCancellation(
     }
 
     // Freeze the refund plan from the LOCKED read. Change fees (from prior
-    // booking modifications) are non-refundable per FEE-03. The refundable
+    // booking modifications) are non-refundable (INV-PAY-018). The refundable
     // base is capped at the booking's current value (#1031): a stale Payment
     // mirror (credit-settled reductions, IB invoices paid at a reduced amount,
     // penalty-window retentions) would otherwise pay out more than the booking

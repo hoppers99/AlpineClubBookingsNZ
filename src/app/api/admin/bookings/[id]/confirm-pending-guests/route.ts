@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { hostingCoverageParticipantRetryResponse } from "@/lib/adult-member-hosting-retry-response";
 import {
   BookingStatus,
   PaymentStatus,
@@ -13,7 +14,11 @@ import { markBookingPaymentSucceeded } from "@/lib/payment-reconciliation";
 import { upsertPaymentIntentTransaction } from "@/lib/payment-transactions";
 import { settleHostingCoverageAfterCommit } from "@/lib/adult-member-hosting-coverage-drain";
 import { enqueueOwnHostingCoverageReevaluation } from "@/lib/adult-member-hosting-review";
-import { reconcileBedAllocationsForBooking } from "@/lib/bed-allocation-lifecycle";
+import {
+  reconcileBedAllocationsForBooking,
+  reconcileBedAllocationsForBookingWithGlobalLockHeld,
+  reconcileBedAllocationsForBookingWithLodgeLockHeld,
+} from "@/lib/bed-allocation-lifecycle";
 import {
   acquireLodgeCapacityLock,
   checkCapacityForGuestRanges,
@@ -252,6 +257,16 @@ export async function POST(
           return { error: "Booking is no longer pending" as const, status: 409 };
         }
 
+        await reconcileBedAllocationsForBookingWithLodgeLockHeld({
+          bookingId,
+          db: tx,
+          previousRange,
+        });
+        await enqueueOwnHostingCoverageReevaluation(bookingId, tx, {
+          cause: "SYSTEM_CHANGE",
+          actorMemberId: session.user.id,
+        });
+
         return { ok: true as const };
       });
 
@@ -271,7 +286,7 @@ export async function POST(
         );
       }
 
-      await reconcileBedAllocationsForBooking({ bookingId, previousRange });
+      await settleHostingCoverageAfterCommit({ bookingId });
       await prisma.payment.upsert({
         where: { bookingId },
         create: { bookingId, amountCents: 0, status: PaymentStatus.SUCCEEDED },
@@ -393,7 +408,7 @@ export async function POST(
       if (claimed.count === 0) {
         return { error: "Booking is no longer pending" as const, status: 409 };
       }
-      await reconcileBedAllocationsForBooking({
+      await reconcileBedAllocationsForBookingWithLodgeLockHeld({
         bookingId,
         db: tx,
         previousRange,
@@ -455,6 +470,7 @@ export async function POST(
     // CONFIRMED keeps holding the beds the member just paid for.
     const releaseChargeClaim = async () => {
       await prisma.$transaction(async (tx) => {
+        await tx.$executeRaw`SELECT pg_advisory_xact_lock(1)`;
         await acquireLodgeCapacityLock(tx, booking.lodgeId);
         const released = await tx.booking.updateMany({
           where: { id: bookingId, status: BookingStatus.CONFIRMED },
@@ -464,7 +480,7 @@ export async function POST(
           },
         });
         if (released.count > 0) {
-          await reconcileBedAllocationsForBooking({
+          await reconcileBedAllocationsForBookingWithGlobalLockHeld({
             bookingId,
             db: tx,
             previousRange,
@@ -611,11 +627,20 @@ export async function POST(
         )
       );
       await audit("charged_finalisation_pending", true);
+      const hostingRetry = hostingCoverageParticipantRetryResponse(
+        reconcileErr,
+        {
+          paymentReceived: true,
+          finalisationPending: true,
+        },
+      );
+      if (hostingRetry) return hostingRetry;
       return NextResponse.json(
         {
           error:
             "The charge succeeded but the booking could not be finalised yet; it stays confirmed and admins have been alerted.",
-          paymentIntentId: paymentIntent.id,
+          paymentReceived: true,
+          finalisationPending: true,
         },
         { status: 500 }
       );
@@ -663,21 +688,27 @@ export async function POST(
       });
     }
 
-    if (reconciliation.outcome !== "paid" && reconciliation.outcome !== "already_paid") {
-      // cancelled_refund_failed (the reconciler has already alerted the refund
-      // failure) or an unexpected outcome: surface an accurate error.
+    if (reconciliation.outcome === "cancelled_refund_failed") {
+      // The final capacity claim failed and the reconciler has already
+      // committed the cancellation together with a durable refund-recovery
+      // operation. This is not booking finalisation pending: the booking is
+      // definitively CANCELLED and only the captured charge's refund remains
+      // unresolved.
       logger.error(
         { bookingId, outcome: reconciliation.outcome },
-        "Admin confirm-pending-guests: payment succeeded but reconciliation did not settle"
+        "Admin confirm-pending-guests: booking cancelled and captured-charge refund recovery is pending"
       );
       await audit(`charged_${reconciliation.outcome}`, true);
       return NextResponse.json(
         {
           error:
-            "Payment succeeded but the booking could not be finalised; admins have been alerted.",
-          paymentIntentId: paymentIntent.id,
+            "The booking was cancelled because lodge capacity was no longer available. The saved-card charge was captured, but its refund could not be confirmed; automatic refund recovery is pending and admins have been alerted.",
+          status: "CANCELLED",
+          refunded: false,
+          refundRecoveryPending: true,
+          paymentReceived: true,
         },
-        { status: 500 }
+        { status: 409 }
       );
     }
 
@@ -699,6 +730,8 @@ export async function POST(
     }
     return NextResponse.json({ success: true, status: "PAID", charged: true });
   } catch (err) {
+    const hostingRetry = hostingCoverageParticipantRetryResponse(err);
+    if (hostingRetry) return hostingRetry;
     logger.error({ err, bookingId }, "Failed to confirm pending guests");
     return NextResponse.json(
       { error: "Failed to confirm pending guests" },

@@ -5,7 +5,7 @@ import { requireActiveSessionUser } from "@/lib/session-guards";
 import { prisma } from "@/lib/prisma";
 import { computeAgeTier, getSeasonStartDate } from "@/lib/age-tier";
 import { getSeasonYear } from "@/lib/utils";
-import { parseDateOnly } from "@/lib/date-only";
+import { getTodayDateOnly, parseDateOnly } from "@/lib/date-only";
 import { logAudit } from "@/lib/audit";
 import {
   isXeroConnected,
@@ -202,7 +202,9 @@ export async function PUT(
   if (Number.isNaN(dob.getTime())) {
     return NextResponse.json({ error: "Invalid date of birth" }, { status: 422 });
   }
-  if (dob > new Date()) {
+  // A later NZ calendar day, not a later instant (#2682) — the same comparison
+  // `request-child/route.ts` already makes.
+  if (dob > getTodayDateOnly()) {
     return NextResponse.json(
       { error: "Date of birth cannot be in the future" },
       { status: 422 }

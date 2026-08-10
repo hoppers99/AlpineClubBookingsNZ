@@ -12,7 +12,10 @@ description: Security planning and review workflow for AlpineClubBookingsNZ. Use
 - `docs/agents/REVIEW_SEVERITY.md`
 - `docs/agents/PROMPT_INJECTION_GUIDE.md`
 - `docs/SECURITY-ATTACK-SURFACE.md`
-- `docs/DOMAIN_INVARIANTS.md`
+- `docs/DOMAIN_INVARIANTS.md` — the invariant index; then the domain files this
+  review actually needs: `docs/invariants/analytics-and-privacy.md`
+  (`INV-PRIV`), `docs/invariants/operations.md` (`INV-OPS`), and
+  `docs/invariants/membership-lifecycle.md` (`INV-LIFE`)
 
 ## Allowed Actions
 

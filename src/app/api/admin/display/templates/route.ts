@@ -154,6 +154,7 @@ export async function POST(req: NextRequest) {
 
     logAudit({
       action: "DISPLAY_TEMPLATE_CREATED",
+      category: "lodge",
       entityType: "DisplayTemplate",
       entityId: template.id,
       targetId: template.id,

@@ -53,6 +53,7 @@ vi.mock("@/lib/prisma", () => ({
     bookingModification: { count: vi.fn().mockResolvedValue(0) },
     bookingChangeRequest: { count: vi.fn().mockResolvedValue(0) },
     deletionRequest: { count: vi.fn().mockResolvedValue(0) },
+    xeroSyncOperation: { findFirst: vi.fn().mockResolvedValue(null) },
     memberLifecycleActionRequest: {
       count: vi.fn().mockResolvedValue(0),
       findMany: vi.fn().mockResolvedValue([]),
@@ -1980,6 +1981,7 @@ describe("Phase 3: Admin Member Management", () => {
       ] as any);
       vi.mocked(prisma.$transaction).mockImplementation(async (fn: any) => {
         const tx = {
+          $executeRaw: vi.fn().mockResolvedValue(1),
           member: {
             create: vi.fn().mockResolvedValue({
               id: "new1",
@@ -2256,6 +2258,7 @@ describe("Phase 3: Admin Member Management", () => {
       ] as any);
       vi.mocked(prisma.$transaction).mockImplementation(async (fn: any) => {
         const tx = {
+          $executeRaw: vi.fn().mockResolvedValue(1),
           member: {
             updateMany: vi.fn().mockResolvedValue({ count: 1 }),
             // #1604 last-admin end-state guard counts active Full Admins

@@ -125,6 +125,15 @@ const ORDINARY = { consentStatus: null };
 const AGREED = { consentStatus: "CONFIRMED" };
 const AWAITING = { consentStatus: "PENDING" };
 
+// #2628: the night rows for the stay every fixture in this file uses — the
+// 10th and the 11th, which is exactly what the 10th-to-12th half-open envelope
+// always described. These surfaces load the rows and count from them, so a
+// fixture without them would quietly go on testing the envelope fallback.
+const NIGHTS_10_11 = [
+  { stayDate: dateOnly("2026-07-10") },
+  { stayDate: dateOnly("2026-07-11") },
+];
+
 beforeEach(() => {
   vi.clearAllMocks();
   lodgeAuthMocks.checkLodgeAuth.mockResolvedValue({ tier: "lodge" });
@@ -164,6 +173,10 @@ describe("kiosk arrivals list (D-12)", () => {
       member: null,
       stayStart: dateOnly("2026-07-10"),
       stayEnd: dateOnly("2026-07-12"),
+      // #2628: the arrivals route decides presence from the night rows it
+      // always loads, so the fixture carries them rather than leaning on the
+      // envelope fallback.
+      nights: NIGHTS_10_11,
       ...consent,
     };
   }
@@ -172,7 +185,7 @@ describe("kiosk arrivals list (D-12)", () => {
     const { GET } = await import("@/app/api/lodge/guests/[date]/route");
     return GET(
       new Request(
-        "http://localhost/api/lodge/guests/2026-07-10?scope=lodge-list",
+        "http://localhost/api/lodge/guests/2026-07-10",
       ) as never,
       routeParams({ date: "2026-07-10" }),
     );
@@ -284,11 +297,27 @@ describe("kiosk arrive/depart/roster-confirm enforcement (D-12)", () => {
       memberId: null,
       arrivedAt: null,
       departedAt: null,
-      booking: { memberId: "member-1" },
+      // #2628: the arrive lookup now loads the stay bounds, the night rows and
+      // the booking dates, so the double carries what the real row would.
+      stayStart: dateOnly("2026-07-10"),
+      stayEnd: dateOnly("2026-07-12"),
+      nights: NIGHTS_10_11,
+      booking: {
+        memberId: "member-1",
+        checkIn: dateOnly("2026-07-10"),
+        checkOut: dateOnly("2026-07-12"),
+      },
     });
 
+    // #2737: the lookup answers with an OUTCOME now, so "let through" has to be
+    // asserted as `ok` — a fixture whose night rows did not cover the date would
+    // otherwise come back `not-a-booked-night` and a truthiness check would read
+    // that as a pass.
     const found = await findLodgeGuestForDate("guest-1", dateOnly("2026-07-10"));
-    expect(found?.id).toBe("guest-1");
+    expect(found).toEqual({
+      outcome: "ok",
+      guest: expect.objectContaining({ id: "guest-1" }),
+    });
     // The predicate that let them through admits NULL explicitly.
     const args = mockPrisma.bookingGuest.findFirst.mock.calls[0][0] as {
       where: { OR: Array<{ consentStatus: string | null }> };
@@ -297,7 +326,7 @@ describe("kiosk arrive/depart/roster-confirm enforcement (D-12)", () => {
   });
 });
 
-// --- 3. Kiosk chore roster generate (the admin service's duplicate) ----------
+// --- 3. Kiosk chore roster generate (shares the admin selector since #2622) --
 describe("kiosk roster generate (D-12)", () => {
   it("carries the predicate on both the booking match and the guest include", async () => {
     lodgeAuthMocks.checkLodgeAuth.mockResolvedValue({ tier: "hut-leader" });
@@ -336,10 +365,14 @@ describe("chore roster print sheet (D-12)", () => {
           id: "booking-1",
           checkIn: dateOnly("2026-07-10"),
           checkOut: dateOnly("2026-07-12"),
+          // #2628: the print sheet counts off the night rows it loads, so each
+          // guest lists the two nights its envelope describes — the 10th and
+          // the 11th. The headcount is unchanged; only the branch it comes
+          // from is.
           guests: applyGuestWhere(typed.include.guests.where, [
-            { id: "g-ordinary", stayStart: dateOnly("2026-07-10"), stayEnd: dateOnly("2026-07-12"), nights: [], ...ORDINARY },
-            { id: "g-agreed", stayStart: dateOnly("2026-07-10"), stayEnd: dateOnly("2026-07-12"), nights: [], ...AGREED },
-            { id: "g-awaiting", stayStart: dateOnly("2026-07-10"), stayEnd: dateOnly("2026-07-12"), nights: [], ...AWAITING },
+            { id: "g-ordinary", stayStart: dateOnly("2026-07-10"), stayEnd: dateOnly("2026-07-12"), nights: NIGHTS_10_11, ...ORDINARY },
+            { id: "g-agreed", stayStart: dateOnly("2026-07-10"), stayEnd: dateOnly("2026-07-12"), nights: NIGHTS_10_11, ...AGREED },
+            { id: "g-awaiting", stayStart: dateOnly("2026-07-10"), stayEnd: dateOnly("2026-07-12"), nights: NIGHTS_10_11, ...AWAITING },
           ]),
         },
       ];
@@ -381,10 +414,13 @@ describe("lodge week summary (D-12)", () => {
           id: "booking-1",
           checkIn: dateOnly("2026-07-10"),
           checkOut: dateOnly("2026-07-12"),
+          // #2628: the week route counts off the night rows it loads, so each
+          // guest carries them. Everyone's first night is the 10th, so the
+          // arriving count for that day is unchanged.
           guests: applyGuestWhere(typed.select.guests.where, [
-            { stayStart: dateOnly("2026-07-10"), stayEnd: dateOnly("2026-07-12"), ageTier: "ADULT", nights: [], ...ORDINARY },
-            { stayStart: dateOnly("2026-07-10"), stayEnd: dateOnly("2026-07-12"), ageTier: "ADULT", nights: [], ...AGREED },
-            { stayStart: dateOnly("2026-07-10"), stayEnd: dateOnly("2026-07-12"), ageTier: "ADULT", nights: [], ...AWAITING },
+            { stayStart: dateOnly("2026-07-10"), stayEnd: dateOnly("2026-07-12"), ageTier: "ADULT", nights: NIGHTS_10_11, ...ORDINARY },
+            { stayStart: dateOnly("2026-07-10"), stayEnd: dateOnly("2026-07-12"), ageTier: "ADULT", nights: NIGHTS_10_11, ...AGREED },
+            { stayStart: dateOnly("2026-07-10"), stayEnd: dateOnly("2026-07-12"), ageTier: "ADULT", nights: NIGHTS_10_11, ...AWAITING },
           ]),
         },
       ];
@@ -523,6 +559,23 @@ describe("hut leader auto-assign (D-12)", () => {
     };
     expect(args.where.guests.some.OR).toEqual(PRESENT_OR);
     expect(args.select.guests.where?.OR).toEqual(PRESENT_OR);
+
+    // INV-PRIV-011 (#2683 review finding 4). This job runs nightly across every
+    // lodge night and logged `memberName` composed from first + last, so it
+    // wrote a stream of members' full names into the application log on a
+    // completely ordinary success path. The member id identifies the assignment.
+    const loggerModule = await import("@/lib/logger");
+    const logged = JSON.stringify(vi.mocked(loggerModule.default.info).mock.calls);
+    expect(logged).not.toContain("Anna");
+    expect(logged).not.toContain("Adult");
+    expect(logged).toContain("m-anna");
+    // The name is not even selected from the database any more.
+    const guestSelect = (
+      args.select.guests as unknown as {
+        select: { member: { select: Record<string, boolean> } };
+      }
+    ).select;
+    expect(guestSelect.member.select).toEqual({ id: true, active: true });
   });
 });
 
@@ -558,9 +611,14 @@ describe("no site uses the NULL-hostile `not: PENDING` form", () => {
     const FILTERED_FILES = [
       "src/app/api/lodge/guests/[date]/route.ts",
       "src/lib/lodge-date-scoping.ts",
-      "src/lib/admin-roster-service.ts",
-      "src/app/api/lodge/roster/[date]/generate/route.ts",
-      "src/app/api/chores/roster/[date]/print/route.ts",
+      // #2622: `admin-roster-service.ts` and the kiosk generate route used to
+      // carry one copy of this predicate each. They are now one shared chore-
+      // eligibility selector, so the predicate is asserted where it lives.
+      "src/lib/roster-eligibility.ts",
+      // #2631: the roster calendar and the dashboard's needs-roster headline
+      // used to be consent-BLIND, so a day could paint "needs roster" and open
+      // empty. Both DB entry points in roster-status now carry the predicate.
+      "src/lib/roster-status.ts",
       "src/lib/bed-allocation-lifecycle.ts",
       "src/lib/admin-bed-allocation.ts",
       "src/lib/cron-hut-leader-auto-assign.ts",
@@ -588,5 +646,78 @@ describe("no site uses the NULL-hostile `not: PENDING` form", () => {
         `${relativePath} must not filter consent by hand — the not: form is UNKNOWN for NULL`,
       ).not.toMatch(/consentStatus: \{ not:/);
     }
+  });
+
+  it("the roster-status entry points and the week strip also carry the REVIEW block (#2631)", async () => {
+    // Consent is one of two exclusions the roster's own population applies
+    // (`roster-eligibility.ts`); the other is #1372 / #1422's pending-admin-
+    // review block. A surface that counts "days needing a roster" has to apply
+    // BOTH, or it reports work the roster will refuse to let anyone do — the
+    // same "reads needs-roster, opens empty" defect as an unfiltered consent
+    // predicate, one axis over.
+    //
+    // Asserted per FUNCTION rather than per file: `roster-status.ts` has two
+    // independent DB entry points and dropping the filter from either one is a
+    // live defect, which a whole-file `toContain` would not notice.
+    const { readFileSync } = await import("node:fs");
+    const path = await import("node:path");
+
+    const rosterStatus = readFileSync(
+      path.resolve(process.cwd(), "src/lib/roster-status.ts"),
+      "utf8",
+    );
+    const monthEntry = rosterStatus.slice(
+      rosterStatus.indexOf("export async function getRosterMonthStatus("),
+      rosterStatus.indexOf("export async function countRosterDaysNeedingChores("),
+    );
+    const countEntry = rosterStatus.slice(
+      rosterStatus.indexOf("export async function countRosterDaysNeedingChores("),
+    );
+    const weekRoute = readFileSync(
+      path.resolve(process.cwd(), "src/app/api/lodge/week/route.ts"),
+      "utf8",
+    );
+
+    for (const [name, body] of [
+      ["getRosterMonthStatus", monthEntry],
+      ["countRosterDaysNeedingChores", countEntry],
+      ["api/lodge/week", weekRoute],
+    ] as const) {
+      expect(body.length, name).toBeGreaterThan(0);
+      expect(
+        body,
+        `${name} must spread checkinNotBlockedByPendingReviewFilter()`,
+      ).toContain("checkinNotBlockedByPendingReviewFilter()");
+    }
+
+    // The guest LIST is the deliberate exception and must stay one: #1422 flags
+    // a blocked booking rather than hiding it, so staff can see who was turned
+    // away at the door.
+    const guestList = readFileSync(
+      path.resolve(process.cwd(), "src/app/api/lodge/guests/[date]/route.ts"),
+      "utf8",
+    );
+    expect(guestList).not.toContain("checkinNotBlockedByPendingReviewFilter");
+    expect(guestList).toContain("isCheckinBlockedByPendingReview");
+  });
+
+  it("the printed chore sheet inherits the predicate from the shared selector (#2631)", async () => {
+    // This route used to carry its own copy of the consent filter. It now has
+    // no booking query of its own at all: its headcount is the roster's own
+    // population, read through `getOperationalRosterGuestsForDate` (asserted
+    // above). Keeping it in the list would demand a predicate that is correctly
+    // no longer there, so the coverage moves here instead.
+    const { readFileSync } = await import("node:fs");
+    const path = await import("node:path");
+    const source = readFileSync(
+      path.resolve(
+        process.cwd(),
+        "src/app/api/chores/roster/[date]/print/route.ts",
+      ),
+      "utf8",
+    );
+    expect(source).toContain("getOperationalRosterGuestsForDate");
+    expect(source).not.toMatch(/prisma\.booking\.findMany/);
+    expect(source.replace(/\s+/g, " ")).not.toMatch(/consentStatus: \{ not:/);
   });
 });

@@ -239,6 +239,12 @@ import { calculateBookingPrice } from "@/lib/pricing";
 import { calculateChangeFee } from "@/lib/change-fee";
 import { processRefund, createPaymentIntent, findOrCreateCustomer, getPaymentIntent, constructWebhookEvent } from "@/lib/stripe";
 import { calculateDualRefundAmounts } from "@/lib/cancellation";
+import {
+  fenceHostingPolicyFindMany,
+  fenceMemberFindMany,
+  hostingMemberRow,
+  recordingBookingDouble,
+} from "@/lib/__tests__/support/hosting-participant-fence-double";
 
 const mockedAuth = vi.mocked(auth);
 const mockedCalcDualRefund = vi.mocked(calculateDualRefundAmounts);
@@ -275,6 +281,10 @@ function makeBooking(overrides: Record<string, unknown> = {}) {
   return {
     id: "bk1",
     memberId: "m1",
+    // Booking.lodgeId is NOT NULL in the schema, so a real row always carries
+    // one. Omitting it here let the hosting participant fence compare
+    // "bk1:m1:undefined" on both sides and pass vacuously (#2619).
+    lodgeId: "lodge-1",
     checkIn: new Date("2026-08-01"),
     checkOut: new Date("2026-08-03"),
     status: "CONFIRMED",
@@ -284,7 +294,46 @@ function makeBooking(overrides: Record<string, unknown> = {}) {
     hasNonMembers: false,
     nonMemberHoldUntil: null,
     guests: [
-      { id: "g1", bookingId: "bk1", firstName: "Alice", lastName: "Smith", ageTier: "ADULT", isMember: true, memberId: "m1", priceCents: 5000 },
+      {
+        id: "g1",
+        bookingId: "bk1",
+        firstName: "Alice",
+        lastName: "Smith",
+        ageTier: "ADULT",
+        isMember: true,
+        memberId: "m1",
+        priceCents: 5000,
+        /*
+          #2675: with an ACTIVE hosting mode on the tx double below, the
+          reconciler's EVALUATOR now runs against this row rather than bailing
+          out at the mode gate, and `BOOKING_HOSTING_SELECT` /
+          `toHostingParticipants` are the authority on the shape it reads. Every
+          field below is one of theirs.
+
+          `nights` must be an ARRAY — `toHostingParticipants` reads
+          `guest.nights.length`, so an absent one is a TypeError, not a graceful
+          "no nights". Empty is the honest value for this fixture: it persists no
+          `BookingGuestNight` rows, so the evaluator falls back to the guest's own
+          stayStart..stayEnd envelope. It is also inert for the date path, whose
+          `lockedNightPricesForGuest` reads the same field and already treated the
+          absent one as "this guest locked no prices".
+        */
+        stayStart: new Date("2026-08-01"),
+        stayEnd: new Date("2026-08-03"),
+        nights: [],
+        // No consent was ever needed for an ordinary guest, and `null` is one of
+        // the two values `isOperationallyPresentConsent` treats as present (D-12).
+        consentStatus: null,
+        /*
+          The LIVE Member relation, never the `isMember` snapshot beside it. A
+          guest row claiming membership without one is a shape production cannot
+          emit — the review's select always hydrates `member` — and it does not
+          degrade gracefully: `undefined !== null` is TRUE, so
+          `memberIsInGoodStanding` goes on to read `undefined.active` and the
+          seam throws the moment an active mode lets the evaluator run.
+        */
+        member: hostingMemberRow("m1"),
+      },
     ],
     payment: {
       id: "p1",
@@ -308,6 +357,21 @@ function makeBooking(overrides: Record<string, unknown> = {}) {
 }
 
 function makeTx(booking: ReturnType<typeof makeBooking>) {
+  /*
+    #2619: the hosting participant fence runs inside this very transaction. It
+    locks the source booking's owner/actor Member rows FOR KEY SHARE NOWAIT and
+    then, UNDER that lock, re-reads (1) those Member rows and (2) each source
+    booking's owner and lodge, refusing unless the second read still fingerprints
+    identically to what the caller planned.
+
+    This tx had no `booking.findMany` at all, so the re-read could not even be
+    attempted. The recorder replays exactly what this tx's own `findUnique`
+    served the planner — including an ABSENT lodgeId left absent, since the
+    fingerprint interpolates it and a re-read normalised to null would read as
+    drift against a plan that printed "undefined". So the no-drift case matches
+    by construction, and real drift is still refused.
+  */
+  const fenceBooking = recordingBookingDouble(async () => booking);
   return {
     $executeRawUnsafe: vi.fn().mockResolvedValue(undefined),
     // F1 (#1887): the date path now reads the applied-credit ledger for every
@@ -349,9 +413,25 @@ function makeTx(booking: ReturnType<typeof makeBooking>) {
     lodgeSettings: { findUnique: async () => ({ capacity: 100 }) },
     // #2364: the hosting review is reconciled inside the booking write, so
     // every prisma/tx double a booking path runs against needs this client.
-    adultMemberHostingPolicy: { findMany: vi.fn().mockResolvedValue([]) },
+    // #2623 T5 / #2675: an ACTIVE mode, so the gate that now stands in front of
+    // the participant fence lets these seams reach it. `[]` here resolved to
+    // DISABLED and took the gate's early return, which switched the #2619 fence
+    // off in all eleven modify-dates/guest-add cases below while the fence
+    // doubles beside it still looked like coverage.
+    //
+    // ADMIN_REVIEW_REQUIRED rather than the helper's ENFORCED default: under
+    // ENFORCED a hosting violation REFUSES the booking write outright, which
+    // would change what these money assertions mean; under review-only a
+    // violation would merely queue a review. Neither happens on these fixtures
+    // (their only guest is an adult member in good standing, so nobody needs
+    // hosting), but the weaker consequence is the one that cannot rewrite the
+    // scenario if a fixture ever gains a non-member guest.
+    adultMemberHostingPolicy: {
+      findMany: fenceHostingPolicyFindMany({ mode: "ADMIN_REVIEW_REQUIRED" }),
+    },
     booking: {
-      findUnique: vi.fn().mockResolvedValue(booking),
+      findUnique: fenceBooking.findUnique,
+      findMany: fenceBooking.findMany,
       update: vi.fn().mockImplementation(({ data }) => {
         return Promise.resolve({ ...booking, ...data, guests: booking.guests, payment: booking.payment });
       }),
@@ -397,8 +477,11 @@ function makeTx(booking: ReturnType<typeof makeBooking>) {
     // policy-db delegates so the resolver sees the built-in types (member guests
     // -> FULL/member rate, true non-members -> NON_MEMBER) instead of throwing.
     member: {
-      findMany: vi.fn().mockImplementation(async (args: { where?: { id?: { in?: string[] } } }) =>
-        (args?.where?.id?.in ?? []).map((id) => ({
+      // #2619: the fence's own id-only re-read is answered by the shared helper
+      // — every locked id back, in sorted order. Every OTHER member.findMany
+      // (the rate resolver's, below) still gets exactly the rows it always did.
+      findMany: fenceMemberFindMany([], async (args) =>
+        ((args as { where?: { id?: { in?: string[] } } })?.where?.id?.in ?? []).map((id) => ({
           id,
           firstName: "Member",
           lastName: "Test",

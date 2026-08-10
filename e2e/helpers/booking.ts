@@ -1,4 +1,12 @@
 import { expect, type Page } from "@playwright/test";
+import {
+  type BookingCreateIsolation,
+  withBookingCreateClientIp,
+} from "./booking-create-client-ip";
+import {
+  CALENDAR_CLICK_TIMEOUT_MS,
+  walkCalendarToMonth,
+} from "./calendar-navigation";
 import type { Persona } from "./personas";
 import { calendarDayLabel, type StayWindow } from "./stay-dates";
 
@@ -49,6 +57,18 @@ export async function completeMemberDetailsGateIfShown(page: Page): Promise<void
   const dialog = page.getByRole("dialog");
 
   const saveAndContinue = dialog.getByRole("button", { name: "Save and continue" });
+  const confirmCorrect = dialog.getByRole("button", {
+    name: "Confirm details are correct",
+  });
+  // The title and the current step do not mount in the same commit. Sampling
+  // Save immediately after the title can therefore see neither step, skip the
+  // profile form, and wait until the whole test times out for Confirm. Wait for
+  // either legitimate step action before deciding which branch is active.
+  await dialog
+    .getByRole("button", {
+      name: /Save and continue|Confirm details are correct/,
+    })
+    .waitFor({ state: "visible", timeout: 5_000 });
   if (await saveAndContinue.isVisible().catch(() => false)) {
     const dob = dialog.getByLabel(/date of birth/i);
     if ((await dob.inputValue().catch(() => "")) === "") {
@@ -67,12 +87,16 @@ export async function completeMemberDetailsGateIfShown(page: Page): Promise<void
     await fillIfEmpty(/address line 1/i, "12 Mountain Rd");
     await fillIfEmpty(/city|town/i, "Alpine Village");
     await fillIfEmpty(/postcode|postal code/i, "3420");
+    const postalAddressMissing = dialog.getByText("Postal Address Line 1", {
+      exact: true,
+    });
+    if (await postalAddressMissing.isVisible().catch(() => false)) {
+      await dialog.getByRole("button", { name: "Postal address" }).click();
+      await dialog.getByLabel("Postal same as physical").check();
+    }
     await saveAndContinue.click();
   }
 
-  const confirmCorrect = dialog.getByRole("button", {
-    name: "Confirm details are correct",
-  });
   await confirmCorrect.waitFor({ state: "visible" });
   await confirmCorrect.click();
 
@@ -106,33 +130,31 @@ export async function completeMemberDetailsGateIfShown(page: Page): Promise<void
 const MAX_MONTH_HOPS = 24;
 
 export async function selectCalendarDay(page: Page, dateOnly: string): Promise<void> {
-  const [year, month] = dateOnly.split("-").map(Number);
-  const monthHeading = new Date(year, month - 1).toLocaleDateString("en-NZ", {
-    month: "long",
-    year: "numeric",
-  });
-  // getByRole, not getByText: the streamed (hidden) copy of a Suspense boundary
-  // is out of the accessibility tree, so this cannot resolve to the template.
-  const heading = page.getByRole("heading", { name: monthHeading });
-  for (let hops = 0; hops < MAX_MONTH_HOPS; hops += 1) {
-    if (await heading.isVisible().catch(() => false)) {
-      break;
-    }
-    await page.getByRole("button", { name: /Next/ }).click();
-  }
-  // Assert ARRIVAL before clicking the day. Without this the final hop is
-  // unverified and a miss surfaces as `locator.click: Timeout … getByRole(
-  // 'button', { name: /^Monday, 2 August 2027,/ })` — the reported error being
-  // the symptom rather than the cause, which is the whole pathology #2302 is
-  // about.
-  await expect(
-    heading,
-    `calendar never reached ${monthHeading} within ${MAX_MONTH_HOPS} "Next" ` +
-      `hops of the run date's month (target day ${dateOnly}) — see ` +
+  // The walk itself lives in `e2e/helpers/calendar-navigation.ts` (#2626), shared
+  // with the retroactive spec's backwards walks. It asserts ARRIVAL before the
+  // caller clicks a day — without that the final hop is unverified and a miss
+  // surfaces as `locator.click: Timeout … getByRole('button', { name: /^Monday,
+  // 2 August 2027,/ })`, the reported error being the symptom rather than the
+  // cause, which is the whole pathology #2302 is about — and it bounds each
+  // "Next" click, because a hop-bounded loop with unbounded clicks in it has no
+  // time bound at all (#2626, where one such click ate a whole 90 s test budget).
+  await walkCalendarToMonth(page, {
+    target: dateOnly,
+    direction: "next",
+    maxHops: MAX_MONTH_HOPS,
+    context:
+      `stay day ${dateOnly}, walking forward from the run date's month — see ` +
       `MAX_MONTH_HOPS in e2e/helpers/booking.ts and RETRY_WINDOW_STRIDE in ` +
       `e2e/helpers/stay-dates.ts`,
-  ).toBeVisible();
-  await page.getByRole("button", { name: calendarDayLabel(dateOnly) }).click();
+  });
+  // Bounded with the walk's own per-click budget. Arrival is asserted above, so
+  // the month is right — but a day that RESOLVES and is not actionable (out of
+  // season, disabled as past, availability still loading) would otherwise wait
+  // out the whole test budget and report `Target page, context or browser has
+  // been closed` instead of naming the day (#2302, #2626).
+  await page
+    .getByRole("button", { name: calendarDayLabel(dateOnly) })
+    .click({ timeout: CALENDAR_CLICK_TIMEOUT_MS });
 }
 
 // Drives the /book wizard through dates → guests (booking the signed-in member
@@ -166,13 +188,20 @@ export async function bookSelfToReviewStep(
 
 // Confirms the reviewed booking. Member bookings owe payment immediately, so
 // the wizard continues to the in-wizard card payment step (step 4).
-export async function confirmBookingToPaymentStep(page: Page): Promise<void> {
-  await page
-    .getByRole("button", { name: /Continue to Payment|Confirm Booking/ })
-    .click();
-  // "Complete Payment" appears both as the step-4 indicator and as the card
-  // title, so match loosely and just require the payment step to be showing.
-  await expect(page.getByText("Complete Payment").first()).toBeVisible({
-    timeout: 30_000,
+export async function confirmBookingToPaymentStep(
+  page: Page,
+  isolation: BookingCreateIsolation,
+): Promise<void> {
+  await withBookingCreateClientIp(page, isolation, {
+    trigger: () =>
+      page
+        .getByRole("button", { name: /Continue to Payment|Confirm Booking/ })
+        .click(),
+    // "Complete Payment" appears both as the step-4 indicator and as the card
+    // title, so match loosely and just require the payment step to be showing.
+    waitForOutcome: () =>
+      expect(page.getByText("Complete Payment").first()).toBeVisible({
+        timeout: 30_000,
+      }),
   });
 }

@@ -22,6 +22,7 @@ vi.mock("@/lib/prisma", () => ({
     deletionRequest: {
       findUnique: vi.fn(),
       update: vi.fn(),
+      updateMany: vi.fn().mockResolvedValue({ count: 1 }),
     },
     booking: { findMany: vi.fn().mockResolvedValue([]) },
     bookingGuest: { updateMany: vi.fn() },
@@ -40,6 +41,9 @@ vi.mock("@/lib/prisma", () => ({
     },
     auditLog: { create: vi.fn().mockResolvedValue({}) },
     xeroContactCache: { findUnique: vi.fn().mockResolvedValue(null) },
+    xeroSyncOperation: { findFirst: vi.fn().mockResolvedValue(null) },
+    xeroObjectLink: { updateMany: vi.fn().mockResolvedValue({ count: 0 }) },
+    $executeRaw: vi.fn().mockResolvedValue(1),
     $transaction: vi.fn(),
   },
 }));
@@ -164,7 +168,9 @@ function putMember(id: string, body: Record<string, unknown>) {
 function mockTransaction() {
   vi.mocked(prisma.$transaction).mockImplementation(async (op: any) =>
     op({
+      $executeRaw: prisma.$executeRaw,
       member: {
+        findUnique: prisma.member.findUnique,
         update: prisma.member.update,
         updateMany: prisma.member.updateMany,
         count: prisma.member.count,
@@ -180,8 +186,26 @@ function mockTransaction() {
       },
       familyGroupMember: { deleteMany: prisma.familyGroupMember.deleteMany },
       bookingGuest: { updateMany: prisma.bookingGuest.updateMany },
+      // #2620: anonymisation revokes every outstanding credential artefact in
+      // the same commit — each authenticates on its own, and deletion used to
+      // leave them all live.
+      magicLinkToken: { deleteMany: vi.fn().mockResolvedValue({ count: 0 }) },
+      passwordResetToken: { deleteMany: vi.fn().mockResolvedValue({ count: 0 }) },
+      emailChangeToken: { deleteMany: vi.fn().mockResolvedValue({ count: 0 }) },
+      twoFactorEmailCode: { deleteMany: vi.fn().mockResolvedValue({ count: 0 }) },
+      twoFactorRecoveryCode: {
+        deleteMany: vi.fn().mockResolvedValue({ count: 0 }),
+      },
+      twoFactorSessionChallenge: {
+        deleteMany: vi.fn().mockResolvedValue({ count: 0 }),
+      },
       bedAllocation: (prisma as any).bedAllocation,
-      deletionRequest: { update: prisma.deletionRequest.update },
+      deletionRequest: {
+        update: prisma.deletionRequest.update,
+        updateMany: prisma.deletionRequest.updateMany,
+      },
+      xeroSyncOperation: prisma.xeroSyncOperation,
+      xeroObjectLink: prisma.xeroObjectLink,
       auditLog: { create: prisma.auditLog.create },
     }),
   );
@@ -191,6 +215,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   vi.mocked(prisma.member.count).mockResolvedValue(0);
   vi.mocked(prisma.booking.findMany).mockResolvedValue([] as any);
+  vi.mocked(prisma.deletionRequest.updateMany).mockResolvedValue({ count: 1 });
   mockTransaction();
 });
 

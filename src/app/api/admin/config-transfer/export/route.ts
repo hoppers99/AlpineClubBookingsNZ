@@ -8,6 +8,7 @@ import { buildConfigExport } from "@/lib/config-transfer/export";
 import { requireFullAdminForConfigTransfer } from "@/lib/config-transfer/route-helpers";
 import { configTransferErrorResponse } from "@/lib/config-transfer/route-error";
 import { CONFIG_TRANSFER_CATEGORIES } from "@/lib/config-transfer/manifest";
+import { todayDateOnlyForTimeZone } from "@/lib/date-only";
 
 // POST /api/admin/config-transfer/export — full-admin only.
 // Builds a configuration bundle (zip) for the selected categories and returns it
@@ -60,7 +61,7 @@ export async function POST(request: Request) {
       },
     });
 
-    const stamp = new Date().toISOString().slice(0, 10);
+    const stamp = todayDateOnlyForTimeZone();
     return new NextResponse(new Uint8Array(result.zip), {
       status: 200,
       headers: {

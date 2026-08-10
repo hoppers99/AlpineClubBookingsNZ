@@ -7,6 +7,7 @@ import {
   BUILT_IN_DISPLAY_LAYOUTS,
   BUILT_IN_DISPLAY_TEMPLATES,
 } from "@/lib/lodge-display/built-in-seeds";
+import { unverifiedWriteMessage } from "@/lib/unverified-write-copy";
 
 // "Restore built-in boards" + the honest empty state for the Templates gallery
 // (#2247). The behaviour lives here rather than in `templates/page.tsx` so that
@@ -255,9 +256,17 @@ export function useRestoreBuiltInBoards(options: {
     setRunning(false);
 
     if (!response) {
+      // #2668. This used to claim "Nothing was changed". A `fetch` that rejects
+      // covers both "the POST never arrived" and "the POST ran and the answer
+      // was lost", and this side cannot tell them apart. The restore itself IS
+      // idempotent — it rewrites the reserved built-in keys back to the shipped
+      // designs — so a second press is genuinely harmless, and that is the one
+      // thing here worth stating as fact.
       onResult(
-        "Could not reach the server to restore the built-in boards. Nothing " +
-          "was changed — safe to try again.",
+        unverifiedWriteMessage(
+          "the built-in boards were restored",
+          "Reload the page to see their current state. Restoring again is safe.",
+        ),
         false
       );
       return;

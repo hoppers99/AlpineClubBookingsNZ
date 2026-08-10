@@ -267,6 +267,15 @@ describe("paid legacy CONFIRMED booking repair", () => {
       bookingId: "booking-1",
       arrivedAt: null,
       departedAt: null,
+      // #2628: the arrive lookup loads the stay bounds and the night rows so it
+      // can tell a first arrival from a return, so the double carries them —
+      // the 10th and the 11th, exactly what the envelope below describes.
+      stayStart: dateOnly(2026, 6, 10),
+      stayEnd: dateOnly(2026, 6, 12),
+      nights: [
+        { stayDate: dateOnly(2026, 6, 10) },
+        { stayDate: dateOnly(2026, 6, 11) },
+      ],
     });
     prismaMocks.bookingGuestFindMany.mockResolvedValueOnce([
       {
@@ -274,7 +283,12 @@ describe("paid legacy CONFIRMED booking repair", () => {
         bookingId: "booking-1",
         stayStart: dateOnly(2026, 6, 10),
         stayEnd: dateOnly(2026, 6, 12),
-        nights: [],
+        // #2628: roster validation decides from the night rows it loads, so
+        // this double lists the two nights its envelope describes.
+        nights: [
+          { stayDate: dateOnly(2026, 6, 10) },
+          { stayDate: dateOnly(2026, 6, 11) },
+        ],
         booking: {
           checkIn: dateOnly(2026, 6, 10),
           checkOut: dateOnly(2026, 6, 12),
@@ -304,7 +318,12 @@ describe("paid legacy CONFIRMED booking repair", () => {
       expect.objectContaining({
         where: expect.objectContaining({
           stayStart: { lte: dateOnly(2026, 6, 10) },
-          stayEnd: { gt: dateOnly(2026, 6, 10) },
+          // #2622: roster validation is checkout-INCLUSIVE — a guest who leaves
+          // this morning may legitimately hold a chore today. The arrive lookup
+          // above stays night-only and keeps its `gt`; only the roster question
+          // moved to the operational day. What this test is pinning — that PAID
+          // and CONFIRMED are both operational statuses — is unchanged.
+          stayEnd: { gte: dateOnly(2026, 6, 10) },
           booking: expect.objectContaining({
             status: { in: expect.arrayContaining([BookingStatus.PAID]) },
           }),

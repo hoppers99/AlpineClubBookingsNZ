@@ -25,10 +25,10 @@ import { buildXeroContactUrl } from "@/lib/xero-links";
 import {
   buildXeroIdempotencyKey,
   buildXeroPayloadHash,
-  completeXeroSyncOperation,
   failXeroSyncOperation,
   startXeroSyncOperation,
 } from "@/lib/xero-sync";
+import { completeMemberContactOperation } from "@/lib/xero-contact-create-recovery";
 import {
   CONTACT_GROUP_CACHE_CURSOR_RESOURCE,
   CONTACT_GROUP_FULL_REFRESH_CURSOR_RESOURCE,
@@ -584,7 +584,17 @@ export async function syncManagedXeroContactGroupForMember(
       name: group.name,
     })),
   };
+  // The hash runs on the payload as composed, INCLUDING memberName, so the
+  // idempotency key is byte-identical to the one this code has always produced
+  // and no in-flight operation is orphaned by this change.
   const payloadHash = buildXeroPayloadHash(requestPayload);
+  // INV-PRIV-011 (#2683): but the STORED copy drops it. `memberName` here is a
+  // composed first+last name that is never sent to Xero — it existed only so
+  // the admin operations panel could label the row — and it went into
+  // `XeroSyncOperation.requestPayload` on every managed-group sync. The panel
+  // now labels the row with `memberId`, which it already stores.
+  const storedRequestPayload: Record<string, unknown> = { ...requestPayload };
+  delete storedRequestPayload.memberName;
   const idempotencyKey = buildXeroIdempotencyKey(
     "member",
     memberId,
@@ -600,7 +610,7 @@ export async function syncManagedXeroContactGroupForMember(
     localId: memberId,
     idempotencyKey,
     correlationKey: idempotencyKey,
-    requestPayload,
+    requestPayload: storedRequestPayload,
     createdByMemberId: options?.createdByMemberId ?? null,
   });
 
@@ -681,32 +691,37 @@ export async function syncManagedXeroContactGroupForMember(
     const refreshedContact = await getContactFromXero();
     await refreshXeroContactCachesFromContact(refreshedContact);
 
-    await completeXeroSyncOperation(operation.id, {
-      responsePayload: {
-        addedGroupIds,
-        removedGroupIds,
-        alreadyAbsentGroupIds,
-        resultingGroups: (
-          extractActiveXeroContactGroups(refreshedContact) ?? []
-        ).map((group) => ({
-          id: group.id,
-          name: group.name,
-        })),
-      },
-      xeroObjectType: "CONTACT",
-      xeroObjectId: member.xeroContactId,
-      xeroObjectUrl: buildXeroContactUrl(member.xeroContactId),
-      extraLinks: [
-        {
-          localModel: "Member",
-          localId: memberId,
-          xeroObjectType: "CONTACT",
-          xeroObjectId: member.xeroContactId,
-          xeroObjectUrl: buildXeroContactUrl(member.xeroContactId),
-          role: "CONTACT",
+    await completeMemberContactOperation(
+      memberId,
+      member.xeroContactId,
+      operation.id,
+      {
+        responsePayload: {
+          addedGroupIds,
+          removedGroupIds,
+          alreadyAbsentGroupIds,
+          resultingGroups: (
+            extractActiveXeroContactGroups(refreshedContact) ?? []
+          ).map((group) => ({
+            id: group.id,
+            name: group.name,
+          })),
         },
-      ],
-    });
+        xeroObjectType: "CONTACT",
+        xeroObjectId: member.xeroContactId,
+        xeroObjectUrl: buildXeroContactUrl(member.xeroContactId),
+        extraLinks: [
+          {
+            localModel: "Member",
+            localId: memberId,
+            xeroObjectType: "CONTACT",
+            xeroObjectId: member.xeroContactId,
+            xeroObjectUrl: buildXeroContactUrl(member.xeroContactId),
+            role: "CONTACT",
+          },
+        ],
+      },
+    );
 
     return {
       memberId,

@@ -42,8 +42,13 @@ vi.mock("@/lib/email", () => ({
 // #1756: the dissolve paths sweep the pair's future shared-double allocations
 // through this helper; the sweep's own behaviour is covered in
 // bed-allocation-lifecycle.test.ts, so here it is a spy.
+const mockAcquireFuturePartnerSharedAllocationLocks = vi
+  .fn()
+  .mockResolvedValue(undefined);
 vi.mock("@/lib/bed-allocation-lifecycle", () => ({
-  sweepFuturePartnerSharedAllocations: vi.fn().mockResolvedValue([]),
+  acquireFuturePartnerSharedAllocationLocks: (...args: unknown[]) =>
+    mockAcquireFuturePartnerSharedAllocationLocks(...args),
+  sweepFuturePartnerSharedAllocationsWithLocksHeld: vi.fn().mockResolvedValue([]),
   partnerShareSweepNights: vi.fn(() => [new Date("2026-08-01T00:00:00.000Z")]),
   describePartnerSharedSweepReason: vi.fn(() => "Partner link dissolved"),
 }));
@@ -56,7 +61,7 @@ import {
   sendPartnerLinkRemovedEmail,
   sendAdminPartnerShareSweptAlert,
 } from "@/lib/email";
-import { sweepFuturePartnerSharedAllocations } from "@/lib/bed-allocation-lifecycle";
+import { sweepFuturePartnerSharedAllocationsWithLocksHeld } from "@/lib/bed-allocation-lifecycle";
 import {
   canonicalPartnerPair,
   listOneStepPartnerCandidates,
@@ -125,7 +130,9 @@ beforeEach(() => {
   vi.mocked(prisma.memberPartnerLink.findMany).mockResolvedValue([] as never);
   vi.mocked(prisma.memberPartnerLink.findUnique).mockResolvedValue(null as never);
   vi.mocked(prisma.memberPartnerLink.deleteMany).mockResolvedValue({ count: 0 } as never);
-  vi.mocked(sweepFuturePartnerSharedAllocations).mockResolvedValue([]);
+  vi.mocked(sweepFuturePartnerSharedAllocationsWithLocksHeld).mockResolvedValue(
+    [],
+  );
 });
 
 describe("canonicalPartnerPair", () => {
@@ -707,7 +714,9 @@ describe("removeOwnPartnerLink", () => {
       memberB: adultB,
     } as never);
     vi.mocked(prisma.memberPartnerLink.deleteMany).mockResolvedValue({ count: 1 } as never);
-    vi.mocked(sweepFuturePartnerSharedAllocations).mockResolvedValueOnce([
+    vi.mocked(
+      sweepFuturePartnerSharedAllocationsWithLocksHeld,
+    ).mockResolvedValueOnce([
       {
         allocationId: "alloc-2nd",
         bookingId: "booking-b",
@@ -726,12 +735,28 @@ describe("removeOwnPartnerLink", () => {
     const result = await removeOwnPartnerLink({ memberId: adultA.id, linkId: "link-1" });
 
     expect(result.ok).toBe(true);
-    expect(sweepFuturePartnerSharedAllocations).toHaveBeenCalledWith({
+    expect(sweepFuturePartnerSharedAllocationsWithLocksHeld).toHaveBeenCalledWith({
       memberId: "member-a",
       partnerMemberId: "member-b",
       reason: "partner_link_dissolved",
       db: prisma,
     });
+    expect(mockAcquireFuturePartnerSharedAllocationLocks).toHaveBeenCalledWith(
+      prisma,
+      ["member-a", "member-b"],
+    );
+    const acquireOrder =
+      mockAcquireFuturePartnerSharedAllocationLocks.mock.invocationCallOrder[0];
+    const memberLockOrder = vi.mocked(prisma.$executeRaw).mock
+      .invocationCallOrder[0];
+    const deleteOrder = vi.mocked(prisma.memberPartnerLink.deleteMany).mock
+      .invocationCallOrder[0];
+    const heldSweepOrder = vi.mocked(
+      sweepFuturePartnerSharedAllocationsWithLocksHeld,
+    ).mock.invocationCallOrder[0];
+    expect(acquireOrder).toBeLessThan(memberLockOrder);
+    expect(memberLockOrder).toBeLessThan(deleteOrder);
+    expect(deleteOrder).toBeLessThan(heldSweepOrder);
     expect(sendAdminPartnerShareSweptAlert).toHaveBeenCalledWith(
       expect.objectContaining({
         memberName: "Alice Ash",
@@ -756,7 +781,7 @@ describe("removeOwnPartnerLink", () => {
     const result = await removeOwnPartnerLink({ memberId: adultA.id, linkId: "link-1" });
 
     expect(result.ok).toBe(true);
-    expect(sweepFuturePartnerSharedAllocations).not.toHaveBeenCalled();
+    expect(sweepFuturePartnerSharedAllocationsWithLocksHeld).not.toHaveBeenCalled();
     expect(sendAdminPartnerShareSweptAlert).not.toHaveBeenCalled();
   });
 
@@ -775,7 +800,9 @@ describe("removeOwnPartnerLink", () => {
     const result = await removeOwnPartnerLink({ memberId: adultA.id, linkId: "link-1" });
 
     expect(result.ok).toBe(true);
-    expect(sweepFuturePartnerSharedAllocations).toHaveBeenCalledTimes(1);
+    expect(sweepFuturePartnerSharedAllocationsWithLocksHeld).toHaveBeenCalledTimes(
+      1,
+    );
     expect(sendAdminPartnerShareSweptAlert).not.toHaveBeenCalled();
   });
 });
@@ -1046,7 +1073,9 @@ describe("adminRemovePartnerLink", () => {
       memberB: adultB,
     } as never);
     vi.mocked(prisma.memberPartnerLink.deleteMany).mockResolvedValue({ count: 1 } as never);
-    vi.mocked(sweepFuturePartnerSharedAllocations).mockResolvedValueOnce([
+    vi.mocked(
+      sweepFuturePartnerSharedAllocationsWithLocksHeld,
+    ).mockResolvedValueOnce([
       {
         allocationId: "alloc-2nd",
         bookingId: "booking-b",
@@ -1068,7 +1097,7 @@ describe("adminRemovePartnerLink", () => {
     });
 
     expect(result.ok).toBe(true);
-    expect(sweepFuturePartnerSharedAllocations).toHaveBeenCalledWith({
+    expect(sweepFuturePartnerSharedAllocationsWithLocksHeld).toHaveBeenCalledWith({
       memberId: "member-a",
       partnerMemberId: "member-b",
       reason: "partner_link_dissolved",
@@ -1099,7 +1128,7 @@ describe("adminRemovePartnerLink", () => {
     });
 
     expect(result.ok).toBe(true);
-    expect(sweepFuturePartnerSharedAllocations).not.toHaveBeenCalled();
+    expect(sweepFuturePartnerSharedAllocationsWithLocksHeld).not.toHaveBeenCalled();
     expect(sendAdminPartnerShareSweptAlert).not.toHaveBeenCalled();
   });
 

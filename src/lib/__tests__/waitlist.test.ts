@@ -7,6 +7,18 @@
 
 import { describe, it, expect, vi, beforeEach, beforeAll } from "vitest";
 import { captureHostTimeZone } from "@/lib/__tests__/helpers/timezone";
+import {
+  fenceBookingFindMany,
+  fenceHostingPolicyFindMany,
+  fenceMemberFindMany,
+  hostingMemberRow,
+  recordingBookingDouble,
+} from "@/lib/__tests__/support/hosting-participant-fence-double";
+import {
+  HOSTING_COVERAGE_RETRY_CODE,
+  HOSTING_COVERAGE_RETRY_MESSAGE,
+  HostingCoverageParticipantRetryError,
+} from "@/lib/adult-member-hosting-queue-participants";
 
 // Pay the module-graph transform cost once, outside any single test's 5s
 // budget: every test dynamic-imports @/lib/waitlist (for mock ordering), and
@@ -28,6 +40,7 @@ const mockBookingUpdate = vi.fn();
 const mockBookingUpdateMany = vi.fn();
 const mockBookingCreate = vi.fn();
 const mockExecuteRaw = vi.fn().mockResolvedValue(undefined);
+const mockReconcileBedAllocations = vi.fn().mockResolvedValue(undefined);
 /**
  * #2543: both waitlist paths now read the offered booking's party on the MODULE
  * client, outside the claiming transaction — the offer, to word the "why you are
@@ -44,8 +57,46 @@ const mockExecuteRaw = vi.fn().mockResolvedValue(undefined);
  */
 const mockBookingGuestFindMany = vi.fn().mockResolvedValue([]);
 
+/**
+ * #2619 — the hosting participant fence, on the transaction client.
+ *
+ * Every booking write reconciles the hosting review inside its own transaction,
+ * and that reconciliation locks the source booking's owner Member row
+ * `FOR KEY SHARE NOWAIT` before re-reading, UNDER the lock, both the Member rows
+ * and each source booking's owner and lodge. The reconciler PLANS its
+ * participants from this transaction's own `booking.findUnique`, so this
+ * transaction's `booking.findMany` has to replay exactly what that read served
+ * or the fence sees drift that never happened.
+ *
+ * The tests keep stubbing plain `vi.fn()` doubles — `mockTxBookingFindUnique`
+ * and `mockTxBookingFindMany` — and `mockTx.booking` exposes the recording
+ * wrappers around them. Re-stubbing the wrapper on `mockTx.booking` itself
+ * would REPLACE the recorder, and the fence would then find no source booking
+ * at all and refuse every write; that is exactly the trap this split exists to
+ * close.
+ */
+const mockTxBookingFindUnique = vi.fn();
+const mockTxBookingFindMany = vi.fn();
+let fenceBooking = recordingBookingDouble((args) =>
+  mockTxBookingFindUnique(args),
+);
+// Re-armed per test: `vi.clearAllMocks()` clears CALLS, not the rows the
+// recorder remembered, and a booking left behind by an earlier test is a
+// database state that never existed.
+function armParticipantFence(): void {
+  fenceBooking = recordingBookingDouble((args) => mockTxBookingFindUnique(args));
+}
+// Reads `fenceBooking` at call time, so one stable wrapper survives re-arming.
+// Only the fence's own three-column re-read is answered here; every other
+// `booking.findMany` this suite makes goes to the double the tests stub.
+const fenceTxBookingFindMany = fenceBookingFindMany(
+  (id) => fenceBooking.lookup(id),
+  (args) => mockTxBookingFindMany(args),
+);
+
 const mockTx = {
   $executeRaw: mockExecuteRaw,
+  member: { findMany: fenceMemberFindMany() },
   lodge: {
     findFirst: vi.fn().mockResolvedValue({ id: "lodge-1" }),
     // Cross-lodge pass (ADR-004): lock-list and offered-lodge-name reads.
@@ -54,10 +105,20 @@ const mockTx = {
   },
   // #2364: the hosting review is reconciled inside the booking write, so
   // every prisma/tx double a booking path runs against needs this client.
-  adultMemberHostingPolicy: { findMany: vi.fn().mockResolvedValue([]) },
+  // #2623 T5 / #2675: an ACTIVE mode, so the gate in front of the participant
+  // fence lets `confirmWaitlistOffer`'s claim reach it. `[]` resolved to
+  // DISABLED and took the gate's early return, so the three confirms that
+  // actually claim an offer never touched the fence the doubles above model.
+  // ADMIN_REVIEW_REQUIRED rather than the helper's ENFORCED default: under
+  // ENFORCED a hosting violation is thrown as a refusal and the confirm answers
+  // 409 instead of transitioning, which would rewrite what these cases assert;
+  // review-only just records a snapshot.
+  adultMemberHostingPolicy: {
+    findMany: fenceHostingPolicyFindMany({ mode: "ADMIN_REVIEW_REQUIRED" }),
+  },
   booking: {
-    findMany: vi.fn(),
-    findUnique: vi.fn(),
+    findMany: (args: unknown) => fenceTxBookingFindMany(args),
+    findUnique: (args: unknown) => fenceBooking.findUnique(args),
     update: vi.fn(),
     updateMany: vi.fn(),
     count: vi.fn(),
@@ -78,7 +139,20 @@ vi.mock("@/lib/prisma", () => ({
         : Promise.resolve(fn),
     // #2364: the hosting review is reconciled inside the booking write, so
     // every prisma/tx double a booking path runs against needs this client.
-    adultMemberHostingPolicy: { findMany: vi.fn().mockResolvedValue([]) },
+    // #2675: the SAME active mode as `mockTx` above — one club cannot answer
+    // ADMIN_REVIEW_REQUIRED inside a transaction and DISABLED outside it, and
+    // the post-commit coverage drain reads the policy on this client.
+    adultMemberHostingPolicy: {
+      findMany: fenceHostingPolicyFindMany({ mode: "ADMIN_REVIEW_REQUIRED" }),
+    },
+    // #2619: the participant fence can run on this client too, so it needs the
+    // raw lock statement and the id-only member re-read. The booking reads
+    // below are deliberately NOT wrapped in a recorder: the tests stub
+    // `mockBookingFindUnique` directly with `...Once` chains, and the only
+    // fence that reaches this client in these paths is the post-commit
+    // coverage drain, which swallows its own failures by design.
+    $executeRaw: mockExecuteRaw,
+    member: { findMany: fenceMemberFindMany() },
     booking: {
       findUnique: (...args: unknown[]) => mockBookingFindUnique(...args),
       findMany: (...args: unknown[]) => mockBookingFindMany(...args),
@@ -99,6 +173,22 @@ vi.mock("@/lib/capacity", () => ({
   acquireLodgeCapacityLock: vi.fn().mockResolvedValue(undefined),
   LODGE_CAPACITY: 29,
 }));
+
+vi.mock("@/lib/bed-allocation-lifecycle", async () => {
+  const actual =
+    await vi.importActual<typeof import("@/lib/bed-allocation-lifecycle")>(
+      "@/lib/bed-allocation-lifecycle",
+    );
+  return {
+    ...actual,
+    reconcileBedAllocationsForBookingWithGlobalLockHeld: (
+      ...args: unknown[]
+    ) => mockReconcileBedAllocations(...args),
+    reconcileBedAllocationsForBookingWithLodgeLockHeld: (
+      ...args: unknown[]
+    ) => mockReconcileBedAllocations(...args),
+  };
+});
 
 // #2363: confirmWaitlistOffer re-checks the CURRENT minimum-stay policy set
 // before it turns an offer into held capacity. Only that one export is stubbed
@@ -172,9 +262,21 @@ beforeEach(() => {
   mockBookingUpdate.mockReset();
   mockBookingUpdateMany.mockReset();
   mockBookingCreate.mockReset();
+  mockReconcileBedAllocations.mockReset();
+  mockReconcileBedAllocations.mockResolvedValue(undefined);
   mockExecuteRaw.mockReset();
-  mockTx.booking.findMany.mockReset();
-  mockTx.booking.findUnique.mockReset();
+  mockTxBookingFindMany.mockReset();
+  // #2675: NO SIBLING BOOKINGS, stated rather than left undefined. `mockReset`
+  // strips the implementation as well as the calls, so an unstubbed
+  // `booking.findMany` used to resolve to `undefined` — which Prisma cannot do,
+  // and which made `loadSiblingHosts` throw on `undefined.filter` the moment an
+  // active hosting mode let the evaluator read siblings at all. `[]` is the same
+  // neutral default `mockBookingFindMany` already carries below, and it is the
+  // truth for every fixture here: none of them is half of a #738 split pair.
+  mockTxBookingFindMany.mockResolvedValue([]);
+  mockTxBookingFindUnique.mockReset();
+  // A clean recorder per test — see `armParticipantFence`.
+  armParticipantFence();
   mockTx.booking.update.mockReset();
   mockTx.booking.updateMany.mockReset();
   mockTx.booking.updateMany.mockResolvedValue({ count: 1 });
@@ -337,7 +439,7 @@ describe("processWaitlistForDates", () => {
       promoRedemption: null,
     };
 
-    mockTx.booking.findMany.mockResolvedValue([candidate]);
+    mockTxBookingFindMany.mockResolvedValue([candidate]);
     (mockCheckCapacity as ReturnType<typeof vi.fn>).mockResolvedValue({ available: true });
     mockTx.booking.update.mockResolvedValue({});
     mockTx.booking.count.mockResolvedValue(0); // first in queue
@@ -377,7 +479,7 @@ describe("processWaitlistForDates", () => {
       member: { id: "m1", email: "test@test.com", firstName: "John", lastName: "Doe" },
       promoRedemption: null,
     };
-    mockTx.booking.findMany.mockResolvedValue([candidate]);
+    mockTxBookingFindMany.mockResolvedValue([candidate]);
     (mockCheckCapacity as ReturnType<typeof vi.fn>).mockResolvedValue({ available: true });
     mockTx.booking.update.mockResolvedValue({});
     mockTx.booking.count.mockResolvedValue(0);
@@ -473,7 +575,7 @@ describe("processWaitlistForDates", () => {
       member: { id: "m1", email: "test@test.com", firstName: "John", lastName: "Doe" },
       promoRedemption: null,
     };
-    mockTx.booking.findMany.mockResolvedValue([candidate]);
+    mockTxBookingFindMany.mockResolvedValue([candidate]);
     (mockCheckCapacity as ReturnType<typeof vi.fn>).mockResolvedValue({ available: true });
     mockTx.booking.update.mockResolvedValue({});
     mockTx.booking.count.mockResolvedValue(0);
@@ -532,7 +634,7 @@ describe("processWaitlistForDates", () => {
         promoCode: { id: "promo1", assignments: [] },
       },
     };
-    mockTx.booking.findMany.mockResolvedValue([candidate]);
+    mockTxBookingFindMany.mockResolvedValue([candidate]);
     (mockCheckCapacity as ReturnType<typeof vi.fn>).mockResolvedValue({ available: true });
     mockTx.booking.update.mockResolvedValue({});
     mockTx.booking.count.mockResolvedValue(0);
@@ -583,7 +685,7 @@ describe("processWaitlistForDates", () => {
       member: { id: "m1", email: "test@test.com", firstName: "John", lastName: "Doe" },
       promoRedemption: null,
     };
-    mockTx.booking.findMany.mockResolvedValue([candidate]);
+    mockTxBookingFindMany.mockResolvedValue([candidate]);
     (mockCheckCapacity as ReturnType<typeof vi.fn>).mockResolvedValue({ available: true });
     mockTx.booking.update.mockResolvedValue({});
     mockTx.booking.count.mockResolvedValue(0);
@@ -636,7 +738,7 @@ describe("processWaitlistForDates", () => {
       promoRedemption: null,
     };
 
-    mockTx.booking.findMany.mockResolvedValue([candidate]);
+    mockTxBookingFindMany.mockResolvedValue([candidate]);
     (mockCheckCapacity as ReturnType<typeof vi.fn>).mockResolvedValue({ available: false });
 
     const result = await processWaitlistForDates({
@@ -675,7 +777,7 @@ describe("processWaitlistForDates", () => {
       promoRedemption: null,
     };
 
-    mockTx.booking.findMany.mockResolvedValue([candidate]);
+    mockTxBookingFindMany.mockResolvedValue([candidate]);
     (mockCheckCapacity as ReturnType<typeof vi.fn>).mockResolvedValue({
       available: true,
       minAvailable: 0,
@@ -703,7 +805,7 @@ describe("processWaitlistForDates", () => {
   it("does nothing when no waitlisted bookings exist", async () => {
     const { processWaitlistForDates } = await import("@/lib/waitlist");
 
-    mockTx.booking.findMany.mockResolvedValue([]);
+    mockTxBookingFindMany.mockResolvedValue([]);
 
     const result = await processWaitlistForDates({
       checkIn: new Date("2026-07-01"),
@@ -713,6 +815,68 @@ describe("processWaitlistForDates", () => {
     expect(result.offeredBookingId).toBeNull();
   });
 });
+
+/**
+ * The offer's party as the hosting EVALUATOR reads it (#2675).
+ *
+ * `confirmWaitlistOffer` reconciles the hosting review inside its claiming
+ * transaction, and now that `mockTx` answers an ACTIVE mode the evaluator
+ * genuinely builds participants from these rows rather than bailing out at the
+ * mode gate. `BOOKING_HOSTING_SELECT` is the authority on their shape: names,
+ * the stay envelope, the sparse night set, the D-12 consent status, and — the
+ * crux — the LIVE `member` relation. A row carrying `isMember: true` with no
+ * `member` is a shape production cannot emit (the review's select always
+ * hydrates it) and it does not degrade gracefully: `undefined !== null` is true,
+ * so `memberIsInGoodStanding` reads `undefined.active` and the claim throws.
+ *
+ * `nights: []` is the honest answer here — none of these cases is about a
+ * partial stay — and the evaluator then falls back to stayStart..stayEnd, which
+ * is the whole offered range for everyone on it.
+ */
+function offerGuests(
+  checkIn: Date,
+  checkOut: Date,
+  options: { withNonMember?: boolean } = {},
+) {
+  const stay = {
+    stayStart: checkIn,
+    stayEnd: checkOut,
+    nights: [] as Array<{ stayDate: Date }>,
+    // `null` = no consent was ever needed, i.e. operationally present (D-12).
+    consentStatus: null,
+  };
+  const guests: Array<Record<string, unknown>> = [
+    {
+      id: "g1",
+      firstName: "John",
+      lastName: "Doe",
+      ageTier: "ADULT",
+      isMember: true,
+      memberId: "m1",
+      // The booking owner, an adult member in good standing staying the whole
+      // offer — so the party has a host and an active hosting mode raises no
+      // violation. These cases therefore answer exactly what they answered
+      // while the rule was off, with the fence in front now genuinely run.
+      member: hostingMemberRow("m1"),
+      ...stay,
+    },
+  ];
+  if (options.withNonMember) {
+    guests.push({
+      id: "g2",
+      firstName: "Bob",
+      lastName: "Jones",
+      ageTier: "ADULT",
+      isMember: false,
+      memberId: null,
+      // A true non-member states `member: null` EXPLICITLY. Omitting the key
+      // is the failure mode described above, not a softer version of this.
+      member: null,
+      ...stay,
+    });
+  }
+  return guests;
+}
 
 describe("confirmWaitlistOffer", () => {
   // The service reads the offer once OUTSIDE its claiming transaction to decide
@@ -736,18 +900,39 @@ describe("confirmWaitlistOffer", () => {
     mockValidateMinimumStay.mockResolvedValue({ valid: true, violations: [] });
   });
 
+  it("returns the stable retry result when the participant fence rolls back the offer claim", async () => {
+    const { confirmWaitlistOffer } = await import("@/lib/waitlist");
+    mockPrismaTransaction.mockRejectedValueOnce(
+      new HostingCoverageParticipantRetryError(),
+    );
+
+    const result = await confirmWaitlistOffer("booking1", "m1");
+
+    expect(result).toEqual({
+      success: false,
+      error: HOSTING_COVERAGE_RETRY_MESSAGE,
+      code: HOSTING_COVERAGE_RETRY_CODE,
+    });
+    expect(mockBookingUpdate).not.toHaveBeenCalled();
+    expect(mockBookingUpdateMany).not.toHaveBeenCalled();
+  });
+
   it("transitions to PAYMENT_PENDING for all-member bookings", async () => {
     const { confirmWaitlistOffer } = await import("@/lib/waitlist");
     const { checkCapacityForGuestRanges: mockCheckCapacity } = await import("@/lib/capacity");
 
-    mockTx.booking.findUnique.mockResolvedValue({
+    mockTxBookingFindUnique.mockResolvedValue({
       id: "booking1",
       memberId: "m1",
+      // Booking.lodgeId is NOT NULL in the schema, so a real row always carries
+      // one — and the #2619 participant fence re-reads it under the lock and
+      // compares it against the planned source.
+      lodgeId: "lodge-1",
       status: "WAITLIST_OFFERED",
       waitlistOfferExpiresAt: new Date(Date.now() + 86400000),
       checkIn: new Date("2026-07-01"),
       checkOut: new Date("2026-07-03"),
-      guests: [{ id: "g1", isMember: true }],
+      guests: offerGuests(new Date("2026-07-01"), new Date("2026-07-03")),
     });
     (mockCheckCapacity as ReturnType<typeof vi.fn>).mockResolvedValue({ available: true });
     mockTx.booking.update.mockResolvedValue({});
@@ -765,17 +950,20 @@ describe("confirmWaitlistOffer", () => {
     const farFuture = new Date();
     farFuture.setDate(farFuture.getDate() + 30);
 
-    mockTx.booking.findUnique.mockResolvedValue({
+    mockTxBookingFindUnique.mockResolvedValue({
       id: "booking1",
       memberId: "m1",
+      // Booking.lodgeId is NOT NULL in the schema, so a real row always carries
+      // one — and the #2619 participant fence re-reads it under the lock and
+      // compares it against the planned source.
+      lodgeId: "lodge-1",
       status: "WAITLIST_OFFERED",
       waitlistOfferExpiresAt: new Date(Date.now() + 86400000),
       checkIn: farFuture,
       checkOut: new Date(farFuture.getTime() + 2 * 86400000),
-      guests: [
-        { id: "g1", isMember: true },
-        { id: "g2", isMember: false },
-      ],
+      guests: offerGuests(farFuture, new Date(farFuture.getTime() + 2 * 86400000), {
+        withNonMember: true,
+      }),
     });
     (mockCheckCapacity as ReturnType<typeof vi.fn>).mockResolvedValue({ available: true });
     mockTx.booking.update.mockResolvedValue({});
@@ -799,18 +987,21 @@ describe("confirmWaitlistOffer", () => {
     const farFuture = new Date();
     farFuture.setDate(farFuture.getDate() + 30);
 
-    mockTx.booking.findUnique.mockResolvedValue({
+    mockTxBookingFindUnique.mockResolvedValue({
       id: "booking1",
       memberId: "m1",
+      // Booking.lodgeId is NOT NULL in the schema, so a real row always carries
+      // one — and the #2619 participant fence re-reads it under the lock and
+      // compares it against the planned source.
+      lodgeId: "lodge-1",
       status: "WAITLIST_OFFERED",
       waitlistOfferExpiresAt: new Date(Date.now() + 86400000),
       nonMemberHoldUntil: new Date("2026-07-01"),
       checkIn: farFuture,
       checkOut: new Date(farFuture.getTime() + 2 * 86400000),
-      guests: [
-        { id: "g1", isMember: true },
-        { id: "g2", isMember: false },
-      ],
+      guests: offerGuests(farFuture, new Date(farFuture.getTime() + 2 * 86400000), {
+        withNonMember: true,
+      }),
     });
     (mockCheckCapacity as ReturnType<typeof vi.fn>).mockResolvedValue({ available: true });
     mockTx.booking.update.mockResolvedValue({});
@@ -832,14 +1023,18 @@ describe("confirmWaitlistOffer", () => {
   it("rejects expired offers", async () => {
     const { confirmWaitlistOffer } = await import("@/lib/waitlist");
 
-    mockTx.booking.findUnique.mockResolvedValue({
+    mockTxBookingFindUnique.mockResolvedValue({
       id: "booking1",
       memberId: "m1",
+      // Booking.lodgeId is NOT NULL in the schema, so a real row always carries
+      // one — and the #2619 participant fence re-reads it under the lock and
+      // compares it against the planned source.
+      lodgeId: "lodge-1",
       status: "WAITLIST_OFFERED",
       waitlistOfferExpiresAt: new Date(Date.now() - 1000),
       checkIn: new Date("2026-07-01"),
       checkOut: new Date("2026-07-03"),
-      guests: [{ id: "g1", isMember: true }],
+      guests: offerGuests(new Date("2026-07-01"), new Date("2026-07-03")),
     });
 
     const result = await confirmWaitlistOffer("booking1", "m1");
@@ -851,7 +1046,7 @@ describe("confirmWaitlistOffer", () => {
   it("does not resurrect an offer that expiry reverted while confirm waited for the lodge lock (#1881)", async () => {
     const { confirmWaitlistOffer } = await import("@/lib/waitlist");
 
-    mockTx.booking.findUnique
+    mockTxBookingFindUnique
       // Pre-lock read resolves only the immutable lock key.
       .mockResolvedValueOnce({ lodgeId: "lodge-1" })
       // Expiry won the lock and committed before confirm's post-lock re-read.
@@ -863,7 +1058,7 @@ describe("confirmWaitlistOffer", () => {
         waitlistOfferExpiresAt: null,
         checkIn: new Date("2026-07-01"),
         checkOut: new Date("2026-07-03"),
-        guests: [{ id: "g1", isMember: true }],
+        guests: offerGuests(new Date("2026-07-01"), new Date("2026-07-03")),
       });
 
     const result = await confirmWaitlistOffer("booking1", "m1");
@@ -878,14 +1073,18 @@ describe("confirmWaitlistOffer", () => {
   it("rejects non-owner", async () => {
     const { confirmWaitlistOffer } = await import("@/lib/waitlist");
 
-    mockTx.booking.findUnique.mockResolvedValue({
+    mockTxBookingFindUnique.mockResolvedValue({
       id: "booking1",
       memberId: "m1",
+      // Booking.lodgeId is NOT NULL in the schema, so a real row always carries
+      // one — and the #2619 participant fence re-reads it under the lock and
+      // compares it against the planned source.
+      lodgeId: "lodge-1",
       status: "WAITLIST_OFFERED",
       waitlistOfferExpiresAt: new Date(Date.now() + 86400000),
       checkIn: new Date("2026-07-01"),
       checkOut: new Date("2026-07-03"),
-      guests: [{ id: "g1", isMember: true }],
+      guests: offerGuests(new Date("2026-07-01"), new Date("2026-07-03")),
     });
 
     const result = await confirmWaitlistOffer("booking1", "m2");
@@ -898,14 +1097,18 @@ describe("confirmWaitlistOffer", () => {
     const { confirmWaitlistOffer } = await import("@/lib/waitlist");
     const { checkCapacityForGuestRanges: mockCheckCapacity } = await import("@/lib/capacity");
 
-    mockTx.booking.findUnique.mockResolvedValue({
+    mockTxBookingFindUnique.mockResolvedValue({
       id: "booking1",
       memberId: "m1",
+      // Booking.lodgeId is NOT NULL in the schema, so a real row always carries
+      // one — and the #2619 participant fence re-reads it under the lock and
+      // compares it against the planned source.
+      lodgeId: "lodge-1",
       status: "WAITLIST_OFFERED",
       waitlistOfferExpiresAt: new Date(Date.now() + 86400000),
       checkIn: new Date("2026-07-01"),
       checkOut: new Date("2026-07-03"),
-      guests: [{ id: "g1", isMember: true }],
+      guests: offerGuests(new Date("2026-07-01"), new Date("2026-07-03")),
     });
     (mockCheckCapacity as ReturnType<typeof vi.fn>).mockResolvedValue({ available: false });
     mockTx.booking.update.mockResolvedValue({});
@@ -919,14 +1122,18 @@ describe("confirmWaitlistOffer", () => {
   it("rejects non-WAITLIST_OFFERED status", async () => {
     const { confirmWaitlistOffer } = await import("@/lib/waitlist");
 
-    mockTx.booking.findUnique.mockResolvedValue({
+    mockTxBookingFindUnique.mockResolvedValue({
       id: "booking1",
       memberId: "m1",
+      // Booking.lodgeId is NOT NULL in the schema, so a real row always carries
+      // one — and the #2619 participant fence re-reads it under the lock and
+      // compares it against the planned source.
+      lodgeId: "lodge-1",
       status: "WAITLISTED",
       waitlistOfferExpiresAt: null,
       checkIn: new Date("2026-07-01"),
       checkOut: new Date("2026-07-03"),
-      guests: [{ id: "g1", isMember: true }],
+      guests: offerGuests(new Date("2026-07-01"), new Date("2026-07-03")),
     });
 
     const result = await confirmWaitlistOffer("booking1", "m1");
@@ -940,7 +1147,7 @@ describe("expireStaleOffers", () => {
   it("reverts expired offers to WAITLISTED under the offer's own lodge lock (#1881)", async () => {
     const { expireStaleOffers } = await import("@/lib/waitlist");
 
-    mockTx.booking.findMany
+    mockTxBookingFindMany
       .mockResolvedValueOnce([
         {
           id: "booking1",
@@ -972,7 +1179,7 @@ describe("expireStaleOffers", () => {
   it("skips the revert when a concurrent confirm moved the offer out of WAITLIST_OFFERED under the lock (#1881)", async () => {
     const { expireStaleOffers } = await import("@/lib/waitlist");
 
-    mockTx.booking.findMany
+    mockTxBookingFindMany
       .mockResolvedValueOnce([
         {
           id: "booking1",
@@ -999,7 +1206,7 @@ describe("expireStaleOffers", () => {
   it("does nothing when no stale offers exist", async () => {
     const { expireStaleOffers } = await import("@/lib/waitlist");
 
-    mockTx.booking.findMany.mockResolvedValueOnce([]);
+    mockTxBookingFindMany.mockResolvedValueOnce([]);
 
     const result = await expireStaleOffers();
 
@@ -1011,7 +1218,7 @@ describe("expireStaleOffers", () => {
     const { expireStaleOffers } = await import("@/lib/waitlist");
     const { checkCapacityForGuestRanges } = await import("@/lib/capacity");
 
-    mockTx.booking.findMany
+    mockTxBookingFindMany
       .mockResolvedValueOnce([
         {
           id: "expired-offer-1",
@@ -1099,7 +1306,7 @@ describe("expireStaleOffers", () => {
       };
     }
 
-    mockTx.booking.findMany
+    mockTxBookingFindMany
       .mockResolvedValueOnce([offerA, offerB]) // the offers query
       .mockResolvedValueOnce([nextInLine("cand-a", "lodge-a", "2026-06-01")]) // pass 1: lodge A
       .mockResolvedValueOnce([nextInLine("cand-b", "lodge-b", "2026-06-02")]) // pass 2: lodge B
@@ -1147,7 +1354,7 @@ describe("processWaitlistCron", () => {
           new Error("Transaction API error: Unable to start a transaction in the given time.")
         )
         .mockImplementationOnce(async (fn: (tx: unknown) => Promise<unknown>) => fn(mockTx));
-      mockTx.booking.findMany.mockResolvedValueOnce([]);
+      mockTxBookingFindMany.mockResolvedValueOnce([]);
       mockBookingFindMany.mockResolvedValueOnce([]);
 
       await expect(processWaitlistCron()).resolves.toEqual({
@@ -1282,24 +1489,45 @@ describe("processWaitlistCron", () => {
   it("auto-cancels past-date waitlisted bookings", async () => {
     const { processWaitlistCron } = await import("@/lib/cron-waitlist");
 
-    mockTx.booking.findMany.mockResolvedValueOnce([]);
+    mockTxBookingFindMany.mockResolvedValueOnce([]);
     mockBookingFindMany.mockResolvedValueOnce([
       {
         id: "old1",
       },
       { id: "old2" },
     ]);
-    mockBookingUpdateMany.mockResolvedValue({ count: 2 });
+    const old1 = {
+      id: "old1",
+      status: "WAITLISTED",
+      lodgeId: "lodge-1",
+      checkIn: new Date("2026-06-01"),
+      checkOut: new Date("2026-06-03"),
+    };
+    const old2 = {
+      ...old1,
+      id: "old2",
+      status: "WAITLIST_OFFERED",
+    };
+    mockTxBookingFindUnique
+      .mockResolvedValueOnce(old1)
+      .mockResolvedValueOnce(old1)
+      .mockResolvedValueOnce(old2)
+      .mockResolvedValueOnce(old2);
 
     const result = await processWaitlistCron();
 
     expect(result.autoCancelled).toBe(2);
-    expect(mockBookingUpdateMany).toHaveBeenCalledWith(
+    expect(mockTx.booking.updateMany).toHaveBeenCalledTimes(2);
+    expect(mockTx.booking.updateMany).toHaveBeenCalledWith(
       expect.objectContaining({
-        where: { id: { in: ["old1", "old2"] } },
+        where: expect.objectContaining({
+          id: "old1",
+          status: { in: ["WAITLISTED", "WAITLIST_OFFERED"] },
+        }),
         data: expect.objectContaining({ status: "CANCELLED" }),
       })
     );
+    expect(mockReconcileBedAllocations).toHaveBeenCalledTimes(2);
   });
 
   // F32 (#1888): checkOut is @db.Date (the NZ calendar date stored at UTC
@@ -1321,7 +1549,7 @@ describe("processWaitlistCron", () => {
     vi.setSystemTime(new Date("2026-07-15T20:00:00.000Z"));
     try {
       // expireStaleOffers (step 1) runs first inside a transaction; no offers.
-      mockTx.booking.findMany.mockResolvedValueOnce([]);
+      mockTxBookingFindMany.mockResolvedValueOnce([]);
 
       // A waitlisted stay whose checkOut is today's NZ calendar date, stored as
       // @db.Date (UTC midnight).
@@ -1343,16 +1571,23 @@ describe("processWaitlistCron", () => {
           );
         }
       );
-      mockBookingUpdateMany.mockResolvedValue({ count: 1 });
+      const current = {
+        ...candidates[0],
+        status: "WAITLISTED",
+        lodgeId: "lodge-1",
+      };
+      mockTxBookingFindUnique
+        .mockResolvedValueOnce(current)
+        .mockResolvedValueOnce(current);
 
       const result = await processWaitlistCron();
 
       // Behavioural: the today-NZ checkout is in the cancel set (was excluded
       // under the local-midnight bug).
       expect(result.autoCancelled).toBe(1);
-      expect(mockBookingUpdateMany).toHaveBeenCalledWith(
+      expect(mockTx.booking.updateMany).toHaveBeenCalledWith(
         expect.objectContaining({
-          where: { id: { in: ["checks-out-today-nz"] } },
+          where: expect.objectContaining({ id: "checks-out-today-nz" }),
           data: expect.objectContaining({ status: "CANCELLED" }),
         })
       );
@@ -1364,6 +1599,28 @@ describe("processWaitlistCron", () => {
       vi.useRealTimers();
       hostTimeZone.restore();
     }
+  });
+
+  it("does not reconcile or report a past waitlist candidate that loses its claim", async () => {
+    const { processWaitlistCron } = await import("@/lib/cron-waitlist");
+    const booking = {
+      id: "lost-waitlist-claim",
+      status: "WAITLIST_OFFERED",
+      lodgeId: "lodge-1",
+      checkIn: new Date("2026-06-01"),
+      checkOut: new Date("2026-06-03"),
+    };
+    mockTxBookingFindMany.mockResolvedValueOnce([]);
+    mockBookingFindMany.mockResolvedValueOnce([{ id: booking.id }]);
+    mockTxBookingFindUnique
+      .mockResolvedValueOnce(booking)
+      .mockResolvedValueOnce(booking);
+    mockTx.booking.updateMany.mockResolvedValue({ count: 0 });
+
+    const result = await processWaitlistCron();
+
+    expect(result.autoCancelled).toBe(0);
+    expect(mockReconcileBedAllocations).not.toHaveBeenCalled();
   });
 });
 

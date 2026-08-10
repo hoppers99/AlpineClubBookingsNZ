@@ -53,28 +53,65 @@ function mockStats() {
 
   // The reworked officer-card counts compute over real fixtures so the headline
   // reconciles with each surface's own semantics (#2091 review). A single guest
-  // stays two of the next seven nights with no chore assignment → 2 roster
-  // nights needing chores; three guests each have an unallocated bed-night in
-  // the window → 3 guests awaiting a bed.
+  // stays THREE of the next seven nights with no chore assignment → 4 roster
+  // days needing chores (#2631: the three nights plus the checkout morning,
+  // when the beds get stripped and the kitchen shut down); three guests each
+  // have an unallocated bed-night in the window → 3 guests awaiting a bed.
+  //
+  // #2628: BOTH helpers expand the canonical `BookingGuestNight` rows, not the
+  // derived stayStart/stayEnd envelope, so every guest below carries the night
+  // rows a real guest has. The envelope stays alongside them because it is what
+  // the Prisma where-clauses select on, and because the two must agree for a
+  // contiguous stay — which is the whole point of writing both out here.
   const today = getTodayDateOnly();
   const plus1 = addDaysDateOnly(today, 1);
   const plus2 = addDaysDateOnly(today, 2);
+  const plus3 = addDaysDateOnly(today, 3);
 
   const rosterBookings = [
     {
       id: "rb1",
       checkIn: today,
-      checkOut: plus2,
-      guests: [{ stayStart: today, stayEnd: plus2, ageTier: null, nights: [] }],
+      checkOut: plus3,
+      guests: [
+        {
+          stayStart: today,
+          stayEnd: plus3,
+          ageTier: null,
+          // The three nights the envelope [today, plus3) describes. This used to
+          // be `[]`, which made the count come out right only by falling through
+          // to the legacy envelope branch — the branch a guest with real night
+          // rows never reaches — so the fixture agreed with the assertion while
+          // exercising none of the code the roster card actually runs (#2628).
+          nights: [{ stayDate: today }, { stayDate: plus1 }, { stayDate: plus2 }],
+        },
+      ],
     },
   ];
   const bedBookings = [
+    // One night each (the envelope [today, plus1) is a single night), none of
+    // them allocated below, so all three guests are awaiting a bed.
     {
       id: "bb1",
       guests: [
-        { id: "g1", stayStart: today, stayEnd: plus1 },
-        { id: "g2", stayStart: today, stayEnd: plus1 },
-        { id: "g3", stayStart: today, stayEnd: plus1 },
+        {
+          id: "g1",
+          stayStart: today,
+          stayEnd: plus1,
+          nights: [{ stayDate: today }],
+        },
+        {
+          id: "g2",
+          stayStart: today,
+          stayEnd: plus1,
+          nights: [{ stayDate: today }],
+        },
+        {
+          id: "g3",
+          stayStart: today,
+          stayEnd: plus1,
+          nights: [{ stayDate: today }],
+        },
       ],
     },
   ];
@@ -151,11 +188,13 @@ describe("admin dashboard officer key cards", () => {
     // Officer-card-unique copy and headline counts.
     expect(html).toContain("checking in within 7 days");
     expect(html).toContain("Roster Assignment");
-    expect(html).toContain("nights in the next 7 days with no chores assigned");
+    // #2631: DAYS, not nights. A changeover morning whose guests all leave
+    // before midday is a real day of chores and is counted here.
+    expect(html).toContain("days in the next 7 days with no chores assigned");
     expect(html).toContain("Bed Allocation");
     expect(html).toContain("guests in the next 7 days awaiting a bed");
     expect(html).toContain(">7</div>"); // upcoming check-ins
-    expect(html).toContain(">2</div>"); // roster nights needing chores
+    expect(html).toContain(">4</div>"); // roster days needing chores (#2631)
     expect(html).toContain(">3</div>"); // guests awaiting a bed
 
     // Slim secondary row keeps Members + Revenue.

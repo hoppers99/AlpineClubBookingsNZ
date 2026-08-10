@@ -37,6 +37,36 @@ import "./minimum-stay-policy-trigger.realdb.test";
 // import adds the over-budget race proof to the explicit CI race command without
 // making ordinary `npm test` depend on a database.
 import "./ai-diagnostics-budget-race.realdb.test";
+// #2597 reuses this suite's guarded PostgreSQL to force ordinary-queue/member-
+// merge winner orders, whole-transaction NOWAIT rollback, under-lock fan-out
+// drift, and the existing policy/config/merge lock order against production
+// seams. It remains a no-op unless RUN_CONCURRENCY_RACE_TESTS=1.
+import "./adult-member-hosting-queue-merge.realdb.test";
+// #2594 reuses this guarded disposable PostgreSQL to force the reviewed reset
+// apply path against the real move, explicit auto-allocation, lifecycle, and
+// cancellation writers. Its own describe stays skipped unless the shared race
+// flag is set, and its uniquely-namespaced fixtures are cleaned independently.
+import "./bed-allocation-removal-races.realdb.test";
+// #2595 reuses the same guarded disposable PostgreSQL to prove that a member
+// merge cannot leave two people sharing a double bed with no confirmed
+// partnership, driving the real `executeMemberMerge` and the real
+// bed-allocation reconciliation. Its own describe stays skipped unless the
+// shared race flag is set, and its uniquely-namespaced fixtures are cleaned
+// independently.
+import "./member-merge-shared-double-races.realdb.test";
+// #2656 reuses the same guarded PostgreSQL to prove the shared-DOUBLE
+// invariants against the real indexes: the two dangerous write outcomes are
+// both properties of `@@unique([bedId, stayDate, isSecondOccupant])` and of the
+// partial index behind it, which no mock can establish. Its describe stays
+// skipped unless RUN_CONCURRENCY_RACE_TESTS=1 and its fixtures are namespaced
+// and cleaned independently.
+import "./bed-allocation-shared-double.realdb.test";
+// #2622 reuses the same guarded PostgreSQL to force both winner orders of a
+// booking date change against roster Save/Regenerate/Confirm now that a chore
+// row can legitimately sit on a booking's CHECK-OUT date. Its describe stays
+// skipped unless RUN_CONCURRENCY_RACE_TESTS=1 and its fixtures are namespaced
+// and cleaned independently.
+import "./roster-checkout-day-races.realdb.test";
 // #2374 (AID-5) deliberately is NOT imported here, unlike the two suites above.
 // `ai-diagnostics-select-only-role.realdb.test.ts` provisions and drops a cluster
 // ROLE and revokes `TEMPORARY ... FROM PUBLIC` on the shared throwaway database

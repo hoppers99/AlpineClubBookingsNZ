@@ -1,5 +1,11 @@
 import { type BrowserContext, expect, test } from "@playwright/test";
 import { storageStatePath } from "./helpers/auth";
+import {
+  overrideSingleLodgeAutoAllocation,
+  setBedAllocationSettings,
+  type BedAllocationSettingsSnapshot,
+} from "./helpers/bed-allocation-settings";
+import { completeMemberDetailsGateIfShown } from "./helpers/booking";
 import { DEMO_BOOKING_WINDOWS, E2E_ADMIN } from "./helpers/fixtures";
 import { personas } from "./helpers/personas";
 
@@ -20,6 +26,7 @@ import { personas } from "./helpers/personas";
 test.describe.configure({ mode: "serial" });
 
 let adminContext: BrowserContext;
+let bedAllocationSettingsBefore: BedAllocationSettingsSnapshot | undefined;
 
 function addUtcDays(dateOnly: string, days: number) {
   const date = new Date(`${dateOnly}T00:00:00.000Z`);
@@ -35,30 +42,35 @@ test.beforeAll(async ({ browser }) => {
   });
 
   // Disable auto-allocation so approval parks Ken in the manual bucket.
-  const disabled = await adminContext.request.put(
-    "/api/admin/bed-allocation/settings",
-    { data: { autoAllocationEnabled: false } },
+  bedAllocationSettingsBefore = await overrideSingleLodgeAutoAllocation(
+    adminContext.request,
+    false,
   );
-  expect(
-    disabled.ok(),
-    `disable auto-allocation (${disabled.status()})`,
-  ).toBeTruthy();
 });
 
 test.afterAll(async () => {
   try {
     if (adminContext) {
-      // Restore the default (schema default is true).
-      await adminContext.request.put("/api/admin/bed-allocation/settings", {
-        data: { autoAllocationEnabled: true },
-      });
+      if (bedAllocationSettingsBefore) {
+        await setBedAllocationSettings(
+          adminContext.request,
+          {
+            ...bedAllocationSettingsBefore,
+            // The demo seed has no settings row, so its authoritative default
+            // is enabled. A killed prior worker may have left our false
+            // override persisted; always restore the seed behaviour, not that
+            // dirty retry snapshot.
+            autoAllocationEnabled: true,
+          },
+        );
+      }
     }
   } finally {
     await adminContext?.close();
   }
 });
 
-test("an admin approves a review-flagged booking then allocates a bed to its guest", async () => {
+test("an admin approves a review-flagged booking then allocates a bed to its guest", async ({}, testInfo) => {
   const page = await adminContext.newPage();
 
   // ── Approve Ken King's review-flagged booking ──
@@ -66,18 +78,29 @@ test("an admin approves a review-flagged booking then allocates a bed to its gue
   // the approvals panel defaults to the PENDING filter, where Ken's card sits.
   await page.goto("/admin/booking-approvals");
   await expect(page).toHaveURL(/\/admin\/booking-requests/);
-  await expect(
-    page.getByText("Ken King", { exact: true }).first(),
-  ).toBeVisible({ timeout: 30_000 });
-
-  // "Approve" (exact) so it never matches the "Approved" status-filter button.
-  await page.getByRole("button", { name: "Approve", exact: true }).click();
-  // #1790: the approve action now opens a notify-choice dialog; confirm the
-  // default notify path ("Approve and email member") to complete the approval.
-  await page
-    .getByRole("button", { name: "Approve and email member" })
-    .click();
-  await expect(page.getByText("Booking approved.")).toBeVisible();
+  const pendingKen = page.getByText("Ken King", { exact: true }).first();
+  const needsBookingApproval = await pendingKen
+    .waitFor({ state: "visible", timeout: 30_000 })
+    .then(() => true)
+    .catch(() => false);
+  if (needsBookingApproval) {
+    // "Approve" (exact) so it never matches the "Approved" status-filter button.
+    await page.getByRole("button", { name: "Approve", exact: true }).click();
+    // #1790: the approve action now opens a notify-choice dialog; confirm the
+    // default notify path ("Approve and email member") to complete the approval.
+    await page
+      .getByRole("button", { name: "Approve and email member" })
+      .click();
+    await expect(page.getByText("Booking approved.")).toBeVisible();
+  } else {
+    // A serial retry re-enters here after the preceding attempt may already
+    // have approved Ken. Treat that as idempotent setup, but never let a clean
+    // first attempt silently skip the high-row approval proof.
+    expect(
+      testInfo.retry,
+      "Ken may be absent from pending review only on a serial retry",
+    ).toBeGreaterThan(0);
+  }
 
   // ── Allocate Ken's guest to Bunk Room A / A1 via Select + Allocate ──
   // Board window matches Ken's RELATIVE seeded booking (issue #2117).
@@ -89,42 +112,65 @@ test("an admin approves a review-flagged booking then allocates a bed to its gue
     page.getByRole("heading", { name: "Bed Allocation" }),
   ).toBeVisible();
 
-  // Ken's guest chip in the "awaiting allocation" bucket. Both the booking card
-  // and the inner guest chip carry "Ken King" + an Allocate button, so .last()
-  // resolves to the innermost (the guest chip).
-  const kenChip = page
-    .locator("div")
-    .filter({ hasText: "Ken King" })
-    .filter({ has: page.getByRole("button", { name: "Allocate" }) })
-    .last();
-  await expect(kenChip).toBeVisible({ timeout: 30_000 });
+  const dashboardPath = `/api/admin/bed-allocation?from=${ken.checkIn}&to=${ken.checkOut}`;
+  const readKenAllocations = async () => {
+    const response = await adminContext.request.get(dashboardPath);
+    expect(
+      response.ok(),
+      `read Ken retry setup (${response.status()})`,
+    ).toBeTruthy();
+    const body = (await response.json()) as {
+      allocations: Array<{ guestName: string; approvedAt: string | null }>;
+    };
+    return body.allocations.filter((allocation) =>
+      allocation.guestName.includes("Ken"),
+    );
+  };
+  let kenAllocations = await readKenAllocations();
+  if (kenAllocations.length === 0) {
+    // Ken's guest chip in the "awaiting allocation" bucket. Both the booking
+    // card and inner guest chip carry "Ken King" + Allocate, so last() is the
+    // guest chip. This also repairs a retry whose prior worker died after the
+    // staged-removal apply and before its finally cleanup could run.
+    const kenChip = page
+      .locator("div")
+      .filter({ hasText: "Ken King" })
+      .filter({ has: page.getByRole("button", { name: "Allocate" }) })
+      .last();
+    await expect(kenChip).toBeVisible({ timeout: 30_000 });
 
-  // Open the grouped bed Select (Radix combobox, room label + bed option) and
-  // choose a free bed, then Allocate.
-  await kenChip.getByRole("combobox").click();
-  await page
-    .getByRole("group", { name: "Bunk Room A" })
-    .getByRole("option", { name: "A1", exact: true })
-    .click();
-  await kenChip.getByRole("button", { name: "Allocate" }).click();
-  await expect(page.getByText("Allocation saved")).toBeVisible();
+    // Open the grouped bed Select (Radix combobox, room label + bed option) and
+    // choose a free bed, then Allocate.
+    await kenChip.getByRole("combobox").click();
+    await page
+      .getByRole("group", { name: "Bunk Room A" })
+      .getByRole("option", { name: "A1", exact: true })
+      .click();
+    await kenChip.getByRole("button", { name: "Allocate" }).click();
+    await expect(page.getByText("Allocation saved")).toBeVisible();
+    kenAllocations = await readKenAllocations();
+  }
 
   // The board now shows Ken on a bed as a MANUAL, still-Draft allocation. "Draft"
   // is asserted exact so it never matches the "N draft allocations to approve"
   // summary badge (lowercase "draft").
   await expect(page.getByText("Ken King").first()).toBeVisible();
   await expect(page.getByText("MANUAL").first()).toBeVisible();
-  await expect(page.getByText("Draft", { exact: true }).first()).toBeVisible();
 
   // ── Approve the visible draft allocations ──
-  await page.getByRole("button", { name: "Approve Visible" }).click();
-  await expect(page.getByText("Allocations approved")).toBeVisible();
+  if (kenAllocations.some((allocation) => allocation.approvedAt === null)) {
+    await expect(
+      page.getByText("Draft", { exact: true }).first(),
+    ).toBeVisible();
+    await page.getByRole("button", { name: "Approve Visible" }).click();
+    await expect(page.getByText("Allocations approved")).toBeVisible();
+  }
   await expect(page.getByText("Approved", { exact: true }).first()).toBeVisible();
 
   await page.close();
 });
 
-test("existing-chip pointer and keyboard drops preserve dates, while keyboard cancel is silent", async ({}, testInfo) => {
+test("pointer, keyboard and menu moves share reviewed scopes and preserve original dates", async ({}, testInfo) => {
   const ken = DEMO_BOOKING_WINDOWS.kenReview;
   // Include the checkout date as one extra visible column so the pointer can
   // hover horizontally over a date Ken is not allocated on. Existing-chip
@@ -194,6 +240,12 @@ test("existing-chip pointer and keyboard drops preserve dates, while keyboard ca
   if (!originalBedId) {
     throw new Error("Ken's seeded full-stay placement has no source bed");
   }
+  const originalBed = payload.rooms
+    .flatMap((room) =>
+      room.beds.map((bed) => ({ ...bed, roomName: room.name })),
+    )
+    .find((bed) => bed.id === originalBedId);
+  expect(originalBed, "the source bed remains in active board inventory").toBeTruthy();
   const allocationIds = kensAllocations.map((allocation) => allocation.id);
   const originalApprovedAllocationIds = kensAllocations
     .filter((allocation) => allocation.approvedAt !== null)
@@ -205,9 +257,10 @@ test("existing-chip pointer and keyboard drops preserve dates, while keyboard ca
 
   const page = await adminContext.newPage();
   const moveRequests: Array<{
-    allocationIds: string[];
-    bedId: string;
-    stayDate?: string;
+    anchorAllocationId: string;
+    destinationBedId: string;
+    scope: "ALLOCATION_NIGHT" | "BOOKING_GUEST";
+    previewDigest: string;
   }> = [];
   let scenarioError: unknown;
   try {
@@ -219,9 +272,10 @@ test("existing-chip pointer and keyboard drops preserve dates, while keyboard ca
       ) {
         moveRequests.push(
           request.postDataJSON() as {
-            allocationIds: string[];
-            bedId: string;
-            stayDate?: string;
+            anchorAllocationId: string;
+            destinationBedId: string;
+            scope: "ALLOCATION_NIGHT" | "BOOKING_GUEST";
+            previewDigest: string;
           },
         );
       }
@@ -240,11 +294,15 @@ test("existing-chip pointer and keyboard drops preserve dates, while keyboard ca
       .filter({ has: page.getByText(destination!.name, { exact: true }) });
     const targetCell = () =>
       targetRow().locator(`td[data-stay-date="${ken.checkOut}"]`);
+    // The exact sentence the reviewed-move drag card renders
+    // (`allocation-drag-feedback.ts`, planBedAllocationDropFeedback's "review"
+    // outcome). Naming the destination bed inside the filter is what makes a
+    // wrong-row collision fail loudly instead of passing on a neighbour.
     const preview = () =>
       page
         .getByTestId("bed-allocation-drag-feedback")
         .filter({
-          hasText: `to ${destination!.roomName} / ${destination!.name}, snapped to original lodge night`,
+          hasText: `to ${destination!.roomName} / ${destination!.name}; choose the exact scope before confirming and keep every original lodge night`,
         });
 
     // The floating drag card. It is mounted ONLY while a drag is live (the
@@ -253,14 +311,19 @@ test("existing-chip pointer and keyboard drops preserve dates, while keyboard ca
     const dragCard = () => page.getByTestId("bed-allocation-drag-feedback");
 
     // Geometry is re-measured immediately before EVERY drag rather than cached
-    // across both of them. dnd-kit resolves the drop with closestCenter against
-    // droppable rects it measures at drag start, and starting a drag changes the
-    // board's own layout (the hovered cell gains its "Drop here" content, which
-    // reflows the rows below it). Coordinates taken before the first drag can
-    // therefore resolve a DIFFERENT row on the second one: CI run 30762167423
-    // failed here with the drag live and the card up, but reading "No change for
-    // Ken King; the selected allocations already use Bunk Room A / A1": the
-    // pointer had landed on the SOURCE row, one row above the destination.
+    // across both of them, because the board's own layout is free to change
+    // between two drags in the same test (a restored placement re-renders the
+    // rows). Coordinates taken before the first drag can therefore resolve a
+    // DIFFERENT row on the second one, and the symptom is not shaped like a
+    // geometry failure: the drag is live and the card is up, only naming the
+    // wrong bed, so a hasText-filtered locator matches nothing and times out.
+    //
+    // The offset arithmetic below aims the dragged CHIP's centre at the target
+    // cell, which is only correct because the DragOverlay's measured frame is
+    // pinned to the chip's rect (see the DragOverlay comment in
+    // bed-allocation/page.tsx). Do not let the floating card become the measured
+    // element again: closestCenter would then follow the card's own height and
+    // this drag would settle one row below the cell it was aimed at.
     const startPointerDragToTarget = async () => {
       await targetCell().scrollIntoViewIfNeeded();
       await dragHandle().scrollIntoViewIfNeeded();
@@ -356,19 +419,44 @@ test("existing-chip pointer and keyboard drops preserve dates, while keyboard ca
     await expect(dragCard()).toBeHidden();
     await expect.poll(() => moveRequests.length).toBe(0);
 
-    // Pointer success: release over the real cell, then prove the page emitted
-    // the date-free PATCH and the server persisted the original nights.
+    // Pointer success opens the authoritative dialog and sends no write until
+    // the operator widens scope, reviews the exact rows, and confirms.
     await startPointerDragToTarget();
     await page.mouse.up();
-    await expect(page.getByText("Visible guest nights moved")).toBeVisible({
-      timeout: 30_000,
+    const moveDialog = page.getByRole("dialog", {
+      name: new RegExp(`Move Ken King to ${destination!.roomName} / ${destination!.name}`),
     });
+    await expect(moveDialog).toBeVisible();
+    await expect.poll(() => moveRequests.length).toBe(0);
+    await expect(
+      moveDialog.getByRole("radio", { name: /This allocation night/ }),
+    ).toBeChecked();
+    await moveDialog
+      .getByRole("radio", { name: /This person on this booking/ })
+      .check();
+    await expect(
+      moveDialog.getByText(
+        `${allocationIds.length} changing, 0 unchanged, ${allocationIds.length} total`,
+        { exact: false },
+      ),
+    ).toBeVisible({ timeout: 30_000 });
+    await expect(
+      moveDialog.getByText(/approved allocations? will become unapproved Manual drafts/),
+    ).toBeVisible();
+    await moveDialog.getByRole("button", { name: "Confirm move" }).click();
+    await expect(moveDialog).toBeHidden({ timeout: 30_000 });
     expect(moveRequests).toHaveLength(1);
-    expect(moveRequests[0]).toEqual({
-      allocationIds,
-      bedId: destination!.id,
+    expect(moveRequests[0]).toMatchObject({
+      destinationBedId: destination!.id,
+      scope: "BOOKING_GUEST",
     });
+    // The headline invariant: Apply carries the scope, anchor, destination and
+    // digest — NEVER a target date. `toMatchObject` above permits extra
+    // properties, so this is the assertion that would fail if the hovered date
+    // column ever leaked back into the payload.
     expect(moveRequests[0]).not.toHaveProperty("stayDate");
+    expect(allocationIds).toContain(moveRequests[0].anchorAllocationId);
+    expect(moveRequests[0].previewDigest).toMatch(/^v1:[0-9a-f]{64}$/);
 
     const readPersisted = async () => {
       const response = await adminContext.request.get(dashboardPath);
@@ -459,28 +547,66 @@ test("existing-chip pointer and keyboard drops preserve dates, while keyboard ca
       persisted.every((allocation) => allocation.bedId === originalBedId),
     ).toBe(true);
 
-    // Keyboard drop: the live preview is followed by a real Space drop and a
-    // second date-free PATCH. The persisted nights remain byte-for-byte equal.
+    // Keyboard drop opens the same reviewed seam, still without a PATCH. Cancel
+    // and prove focus returns to the originating drag handle.
     await dragHandle().focus();
     await page.keyboard.press("Space");
     await moveKeyboardFocusToDestination();
     await page.keyboard.press("Space");
-    await expect(page.getByText("Visible guest nights moved")).toBeVisible({
-      timeout: 30_000,
-    });
-    expect(moveRequests).toHaveLength(2);
-    expect(moveRequests[1]).toEqual({
-      allocationIds,
-      bedId: destination!.id,
-    });
-    expect(moveRequests[1]).not.toHaveProperty("stayDate");
+    await expect(moveDialog).toBeVisible();
+    expect(moveRequests).toHaveLength(1);
+    await moveDialog.getByRole("button", { name: "Cancel" }).click();
+    await expect(dragHandle()).toBeFocused();
     persisted = await readPersisted();
     expect(persisted.map((allocation) => allocation.stayDate)).toEqual(
       originalDates,
     );
     expect(
-      persisted.every((allocation) => allocation.bedId === destination!.id),
+      persisted.every((allocation) => allocation.bedId === originalBedId),
     ).toBe(true);
+
+    // The nested menu uses the same seam. Selecting the current bed keeps that
+    // option reachable for person-scope consolidation; here every row is
+    // already there, so confirm is a real typed all-noop request.
+    const manageAllocation = page
+      .getByRole("button", { name: "Manage allocation for Ken King" })
+      .first();
+    await manageAllocation.click();
+    const sourceRoomMenu = page.getByRole("menuitem", {
+      name: `Move Ken King to a bed in ${originalBed!.roomName}`,
+    });
+    await sourceRoomMenu.hover();
+    await page
+      .getByRole("menuitem", {
+        name: `Move Ken King to ${originalBed!.roomName} / ${originalBed!.name}`,
+      })
+      .click();
+    const noopDialog = page.getByRole("dialog", {
+      name: new RegExp(
+        `Move Ken King to ${originalBed!.roomName} / ${originalBed!.name}`,
+      ),
+    });
+    await noopDialog
+      .getByRole("radio", { name: /This person on this booking/ })
+      .check();
+    await expect(
+      noopDialog.getByText(
+        `0 changing, ${allocationIds.length} unchanged, ${allocationIds.length} total`,
+        { exact: false },
+      ),
+    ).toBeVisible({ timeout: 30_000 });
+    await expect(
+      noopDialog.getByText(/No allocation will change and no approval or audit record/),
+    ).toBeVisible();
+    await noopDialog.getByRole("button", { name: "Confirm move" }).click();
+    await expect(noopDialog).toBeHidden({ timeout: 30_000 });
+    expect(moveRequests).toHaveLength(2);
+    expect(moveRequests[1]).toMatchObject({
+      destinationBedId: originalBedId,
+      scope: "BOOKING_GUEST",
+    });
+    expect(moveRequests[1]).not.toHaveProperty("stayDate");
+    await expect(manageAllocation).toBeFocused();
 
   } catch (error) {
     scenarioError = error;
@@ -613,7 +739,7 @@ test("an admin confirms this booking's beds from the booking page, and the membe
   const page = await adminContext.newPage();
   await page.goto(`/bookings/${kensAllocation!.bookingId}`);
 
-  const panel = page.locator("#bed-allocation");
+  const panel = page.locator("#bed-allocation:visible");
   await expect(panel).toBeVisible({ timeout: 30_000 });
   await expect(panel.getByText("Ken", { exact: false }).first()).toBeVisible();
   await expect(
@@ -640,6 +766,7 @@ test("an admin confirms this booking's beds from the booking page, and the membe
   try {
     const memberPage = await memberContext.newPage();
     await memberPage.goto("/bookings");
+    await completeMemberDetailsGateIfShown(memberPage);
     // The whole booking card is one anchor (my-bookings-list.tsx), so target
     // the href rather than a label.
     const firstBooking = memberPage
@@ -666,5 +793,281 @@ test("an admin confirms this booking's beds from the booking page, and the membe
     await memberPage.close();
   } finally {
     await memberContext.close();
+  }
+});
+
+// High row (issue #2594): Reset is deliberately category-neutral, while a
+// row-triggered removal starts from that row's mutually-exclusive category.
+// This serial step reuses Ken's approved allocation from the journeys above,
+// applies the booking-panel flow, and proves that enabling auto allocation does
+// not make Apply silently replace the removed row.
+test("staged removal previews an approved booking row and leaves it unallocated", async ({}, testInfo) => {
+  const ken = DEMO_BOOKING_WINDOWS.kenReview;
+  const page = await adminContext.newPage();
+  let scenarioError: unknown;
+  let removalAttempted = false;
+  let originalAllocations: Array<{
+    id: string;
+    bookingId: string;
+    bookingGuestId: string;
+    bedId: string;
+    stayDate: string;
+    guestName: string;
+    approvedAt: string | null;
+  }> = [];
+
+  try {
+    await page.goto(
+      `/admin/bed-allocation?from=${ken.checkIn}&to=${ken.checkOut}`,
+    );
+
+  await page.getByRole("button", { name: /Reset allocations/ }).click();
+  const resetDialog = page.getByRole("dialog", {
+    name: "Remove bed allocations",
+  });
+  for (const category of ["Auto draft", "Manual draft", "Approved"]) {
+    await expect(
+      resetDialog.getByRole("checkbox", {
+        name: new RegExp(`^${category}\\b`, "i"),
+      }),
+    ).not.toBeChecked();
+  }
+  await expect(
+    resetDialog.getByRole("button", { name: "Preview removal" }),
+  ).toBeDisabled();
+  await resetDialog.getByRole("button", { name: "Cancel" }).click();
+
+  const dashboard = await adminContext.request.get(
+    `/api/admin/bed-allocation?from=${ken.checkIn}&to=${ken.checkOut}`,
+  );
+  expect(dashboard.ok(), `read Ken's allocation (${dashboard.status()})`).toBeTruthy();
+  const before = (await dashboard.json()) as {
+    allocations: Array<{
+      id: string;
+      bookingId: string;
+      bookingGuestId: string;
+      bedId: string;
+      stayDate: string;
+      guestName: string;
+      approvedAt: string | null;
+    }>;
+  };
+  originalAllocations = before.allocations.filter(
+    (allocation) =>
+      allocation.guestName.includes("Ken") && allocation.approvedAt !== null,
+  );
+  const approvedKen = originalAllocations[0];
+  expect(approvedKen, "Ken has one approved row to remove").toBeTruthy();
+
+  // The board chip menu and the drag-to-unallocated-bucket gesture must open
+  // this same reviewed flow. Cancel both previews before the destructive
+  // booking-panel proof so neither entry point mutates the shared fixture.
+  const manageAllocation = page
+    .getByRole("button", { name: /Manage allocation for Ken King/ })
+    .first();
+  await manageAllocation.click();
+  await page.getByRole("menuitem", { name: "Remove allocation" }).click();
+  const boardRemovalDialog = page.getByRole("dialog", {
+    name: "Remove bed allocations",
+  });
+  await expect(
+    boardRemovalDialog.getByRole("checkbox", { name: /^Approved\b/i }),
+  ).toBeChecked();
+  await boardRemovalDialog.getByRole("button", { name: "Cancel" }).click();
+
+  const dragHandle = page
+    .getByRole("button", { name: /Drag Ken King to another bed/ })
+    .first();
+  const awaitingBucket = page.getByTestId(
+    "bed-allocation-unallocated-bucket",
+  );
+  const [dragBox, bucketBox] = await Promise.all([
+    dragHandle.boundingBox(),
+    awaitingBucket.boundingBox(),
+  ]);
+  expect(dragBox, "Ken's allocation drag handle is visible").toBeTruthy();
+  expect(bucketBox, "the unallocated bucket is visible").toBeTruthy();
+  await page.mouse.move(
+    dragBox!.x + dragBox!.width / 2,
+    dragBox!.y + dragBox!.height / 2,
+  );
+  await page.mouse.down();
+  await page.mouse.move(
+    bucketBox!.x + bucketBox!.width / 2,
+    bucketBox!.y + bucketBox!.height / 2,
+    { steps: 12 },
+  );
+  await page.mouse.up();
+  await expect(boardRemovalDialog).toBeVisible();
+  await expect(
+    boardRemovalDialog.getByRole("checkbox", { name: /^Approved\b/i }),
+  ).toBeChecked();
+  await boardRemovalDialog.getByRole("button", { name: "Cancel" }).click();
+
+  await page.goto(`/bookings/${approvedKen!.bookingId}`);
+  const panel = page.locator("#bed-allocation:visible");
+  await expect(panel).toBeVisible({ timeout: 30_000 });
+  await panel
+    .getByRole("button", { name: "Remove", exact: true })
+    .first()
+    .click();
+
+  const removalDialog = page.getByRole("dialog", {
+    name: "Remove bed allocations",
+  });
+  await expect(
+    removalDialog.getByRole("checkbox", { name: /^Approved\b/i }),
+  ).toBeChecked();
+  await expect(
+    removalDialog.getByText("Approved beds will be removed"),
+  ).toBeVisible();
+  await removalDialog.getByLabel("Removal scope").click();
+  await page
+    .getByRole("option", {
+      name: "This person on this booking, including off-screen nights",
+    })
+    .click();
+  await removalDialog
+    .getByRole("button", { name: "Preview removal" })
+    .click();
+  await expect(
+    removalDialog.getByText("Preview ready: 2 allocations will be removed."),
+  ).toBeVisible();
+  await expect(
+    removalDialog.getByText("Requested-room editing will re-open"),
+  ).toBeVisible();
+
+  await setBedAllocationSettings(adminContext.request, {
+    ...bedAllocationSettingsBefore!,
+    autoAllocationEnabled: true,
+  });
+  removalAttempted = true;
+  await removalDialog
+    .getByRole("button", { name: "Remove reviewed allocations" })
+    .click();
+  await expect(
+    page.getByText(
+      "2 reviewed bed nights removed for this booking; no automatic allocation was run",
+    ),
+  ).toBeVisible();
+  await expect(panel.getByText("No bed on any night of this page.")).toBeVisible();
+
+  const afterResponse = await adminContext.request.get(
+    `/api/admin/bed-allocation?from=${ken.checkIn}&to=${ken.checkOut}`,
+  );
+  expect(
+    afterResponse.ok(),
+    `re-read Ken's allocation (${afterResponse.status()})`,
+  ).toBeTruthy();
+  const after = (await afterResponse.json()) as {
+    allocations: Array<{ bookingId: string }>;
+  };
+  expect(
+    after.allocations.some(
+      (allocation) => allocation.bookingId === approvedKen!.bookingId,
+    ),
+    "reviewed removal must not auto-create a replacement row",
+  ).toBe(false);
+  } catch (error) {
+    scenarioError = error;
+    throw error;
+  } finally {
+    const cleanupErrors: unknown[] = [];
+    if (removalAttempted && originalAllocations.length > 0) {
+      try {
+        const currentResponse = await adminContext.request.get(
+          `/api/admin/bed-allocation?from=${ken.checkIn}&to=${ken.checkOut}`,
+        );
+        if (!currentResponse.ok()) {
+          throw new Error(
+            `read removal cleanup state (${currentResponse.status()}): ${await currentResponse.text()}`,
+          );
+        }
+        const current = (await currentResponse.json()) as {
+          allocations: Array<{
+            id: string;
+            bookingGuestId: string;
+            stayDate: string;
+            approvedAt: string | null;
+          }>;
+        };
+        const currentByGuestNight = new Map(
+          current.allocations.map((allocation) => [
+            `${allocation.bookingGuestId}:${allocation.stayDate}`,
+            allocation,
+          ]),
+        );
+        const restoredAllocationIds: string[] = [];
+        for (const allocation of originalAllocations) {
+          const currentAllocation = currentByGuestNight.get(
+            `${allocation.bookingGuestId}:${allocation.stayDate}`,
+          );
+          if (currentAllocation) {
+            if (currentAllocation.approvedAt === null) {
+              restoredAllocationIds.push(currentAllocation.id);
+            }
+            continue;
+          }
+          const restored = await adminContext.request.post(
+            "/api/admin/bed-allocation/allocations",
+            {
+              data: {
+                bookingGuestId: allocation.bookingGuestId,
+                bedId: allocation.bedId,
+                stayDate: allocation.stayDate,
+              },
+            },
+          );
+          if (!restored.ok()) {
+            throw new Error(
+              `restore removed bed night ${allocation.stayDate} (${restored.status()}): ${await restored.text()}`,
+            );
+          }
+          const body = (await restored.json()) as {
+            allocation: { id: string };
+          };
+          restoredAllocationIds.push(body.allocation.id);
+        }
+        if (restoredAllocationIds.length > 0) {
+          const restoredApproval = await adminContext.request.post(
+            "/api/admin/bed-allocation/approve",
+            { data: { allocationIds: restoredAllocationIds } },
+          );
+          if (!restoredApproval.ok()) {
+            throw new Error(
+              `restore removed approvals (${restoredApproval.status()}): ${await restoredApproval.text()}`,
+            );
+          }
+        }
+      } catch (error) {
+        cleanupErrors.push(error);
+      }
+    }
+    try {
+      await page.close();
+    } catch (error) {
+      cleanupErrors.push(error);
+    }
+    if (cleanupErrors.length > 0) {
+      if (scenarioError) {
+        await testInfo
+          .attach("bed-allocation-removal-cleanup-errors", {
+            body: cleanupErrors
+              .map((error) =>
+                error instanceof Error
+                  ? (error.stack ?? error.message)
+                  : String(error),
+              )
+              .join("\n\n"),
+            contentType: "text/plain",
+          })
+          .catch(() => undefined);
+      } else {
+        throw new AggregateError(
+          cleanupErrors,
+          "Bed-allocation removal E2E fixture cleanup failed",
+        );
+      }
+    }
   }
 });

@@ -102,15 +102,74 @@ The audit `category` on a row is an older, coarser taxonomy than the admin permi
 areas, and the two do not line up. This matters twice — for reading an empty result
 correctly, and for anyone extending the taxonomy in AID-6B or AID-6C.
 
-| Category | Correlation entry | What actually records there |
-| --- | --- | --- |
-| `system`, `security`, `communication` | System | Setup, credentials, password/magic-link policy, backups, auth events, PIN login, email/notification sends |
-| `admin` | System | **The cross-domain catch-all** — the largest category in the codebase. Member merge, member-lifecycle delete/archive, member import, lodge-access changes, seasonal membership assignments, internet-banking **payment settings**, booking-request **settings**, chores, lockers, rooms, bed allocation, lodge settings, access roles, modules |
-| `booking` | Booking | Member-facing and system booking events. Not booking *settings* — those are `admin` |
-| `account` | Membership | Member self-service only: profile edits, notification preferences, post-login landing, membership cancellation |
-| `privacy` | Membership | Deletion requests, member export, **admin issue reports** — even though Issue Reports is a `support` screen |
-| `payment`, `xero` | Finance | Payments, refunds, reconciliation, Xero sync. Not payment *settings* — those are `admin` |
-| `lodge` | Lodge | Rosters, guest arrival/departure, bed-allocation lifecycle, display built-ins, and **induction** — even though Induction is a `membership` screen |
+| Category | Correlation entry | Reader needs | What actually records there |
+| --- | --- | --- | --- |
+| `system`, `security` | System | `support:view` | Setup, credentials, password/magic-link policy, backups, auth events and auth bounces, PIN login |
+| `admin` | System | `support:view` | **The cross-domain catch-all** — still the largest category in the codebase (96 write sites, down from 118 in #2730). Member merge, member-lifecycle delete/archive, member import, lodge-access changes, seasonal membership assignments, internet-banking **payment settings**, booking-request **settings**, chores, lockers, work parties, lodge instructions, lodge settings, the `LODGE_*` lodge records themselves, access roles, modules. **Not bed allocation** any more, and not the lodge display configuration — both are `lodge` for rows written from #2730 onwards |
+| `booking` | Booking | `support:view` + `bookings:view` | Member-facing and system booking events. Not booking *settings* — those are `admin` |
+| `account` | Membership | `support:view` + `membership:view` | Member self-service: profile edits, notification preferences, post-login landing, membership cancellation, member photos, membership applications and nomination |
+| `family` | Membership | `support:view` + `membership:view` | Family groups, partner links, login-holder changes, dependents |
+| `communication` | Membership | `support:view` + `membership:view` | Bulk email, notices, delivery suppressions, credential-email reissues, age-up parent handoffs |
+| `privacy` | Membership | `support:view` + `membership:view` | Deletion requests, member export, member-guest resolution, **admin issue reports** — even though Issue Reports is a `support` screen |
+| `payment`, `xero` | Finance | `support:view` + `finance:view` | Payments, refunds, reconciliation, Xero sync. Not payment *settings* — those are `admin` |
+| `lodge` | Lodge | `support:view` + `lodge:view` | Rosters, guest arrival/departure, **all** bed allocation (an administrator's manual, bulk, range and approval actions as well as the automatic lifecycle ones, #2730), display built-ins and the **lodge display configuration**, and **induction** — even though Induction is a `membership` screen |
+
+That table is **derived from one map**, not maintained here by hand:
+`AUDIT_CATEGORY_CORRELATION_DOMAIN` in `src/lib/audit-categories.ts` sends every
+canonical category to exactly one entry, and each entry builds its own filter from it.
+Disjointness and total coverage are therefore properties of the type rather than
+assertions checked afterwards. Two rows changed in #2581 and both are behaviour changes,
+not tidying:
+
+- **`communication` moved from the System entry to Membership.** Bulk-email and
+  notice-delivery evidence needs `membership:view` now. A support-only operator who could
+  correlate those events **can no longer**. That is deliberate: those payloads carry
+  recipient email addresses, and communications is membership work.
+- **`family` joined Membership**, having previously been in **no** entry at all. 27
+  production write sites' evidence was invisible to every correlation tool and is now
+  readable with `support:view` plus `membership:view`.
+
+**One category's contents changed in #2730, and that is a behaviour change too.** The
+map above is untouched — no category moved between entries — but 22 write sites moved
+between categories, out of `admin` and into `lodge`:
+
+- **All 21 admin-initiated bed-allocation writers.** Bed allocation was split down the
+  middle: the automatic lifecycle promotions said `lodge` and the manual, bulk and range
+  ones an administrator performed said `admin`, so **the same action name answered to two
+  different permissions** and neither entry could return the whole night. A lodge manager
+  correlating "who moved this guest" got the automatic promotions and a silent absence
+  where the manual ones should have been. Bed allocation is now wholly `lodge`.
+- **`LODGE_DISPLAY_CONFIG_UPDATED`**, which was the one writer under `/admin/display/**`
+  still saying `admin` while its ten siblings said `lodge` — and the most lodge-scoped of
+  them, since it names the Lodge itself as its entity.
+
+**Both are narrowings, and somebody loses something.** A support-only operator can
+correlate those 22 sites' rows today and will need `lodge:view` as well after this — and
+so will a **Booking Officer holding `support` + `bookings` but not `lodge`**, who is the
+person actually performing these allocations, since the routes are gated `bookings:edit`
+rather than `lodge:edit`. They are all still readable in **Admin → Audit Log** with
+Support access, exactly as before — the change is to AI Diagnostics only. Nothing became
+readable to anybody new: neither `admin` nor `lodge` is a category members can see in
+their own activity list, so no row crossed onto a member-facing surface, and no row's
+retention class changed.
+
+**It moved the WRITERS, not the stored rows, and both entries say so.** A row already in
+`AuditLog` keeps the category it was written with, and `buildAuditCategoryWhere` ORs its
+legacy action-name guess in only for rows whose category is NULL — so a bed-allocation row
+recorded before this release carries a hard `admin` and is returned by the **system** entry
+alone, permanently. Bed-allocation evidence is therefore split by DATE across two entries
+until the backfill in #2751 runs. The lodge entry's `description` no longer claims to hold
+it "in full" and the system entry's `scope` says it still holds the older half; a pack test
+pins both sentences. `SHARED_DESCRIPTION_TAIL` does **not** cover this case — it warns
+about rows with no category, and these rows have one.
+
+The other 96 `admin` writers were read in the same pass: 87 were deliberately kept and
+nine are held for an owner decision, because their destinations are member-visible and the
+move would publish the row on a member-facing surface.
+[**The `admin` audit category, reviewed site by site**](audit-admin-category-review.md)
+records the verdict and the reason for every one of them, the alternative reading where
+there was a real one, and the fifteen lodge-gated sites that are an open question rather
+than a settled keep.
 
 The consequence to keep in mind: a correlation tool answering "nothing matched" is
 answering about **its own categories**, not about the domain. A Membership Officer
@@ -132,17 +191,92 @@ work around.
 
 ### A row with no category is invisible to correlation
 
-The table above covers the ten **named** categories. There is an eleventh case, and no
-correlation entry covers it: the column is optional.
+The table above covers all eleven **named** categories, and since #2581 every one of
+them is claimed by exactly one entry. There is a twelfth case, and no correlation entry
+covers it: the column is optional.
 
 `AuditLog.category` is `String?` with no default, and the audit writer sets it only when
-the caller supplies one. A census of this repository's non-test audit writes found **81 of
-about 350 call sites pass no category** — 11 through `createAuditLog`, 69 through
-`logAudit`, one through `createStructuredAuditLog`. Some of them are money-adjacent:
-subscription-billing settings, retry, mark/unmark family, reconcile; the subscription
-charge confirm; all three member-credit adjustment steps; fee configuration; the family
-login-holder change. Others are ordinary but relevant: booking-policy edits, bulk
-communications, deletion-request decisions.
+the caller supplies one. The **executable census** — `npm run audit:census`, pinned by
+`src/lib/__tests__/audit-writer-census.test.ts` — counted **82 production audit write
+sites that passed no category** when #2581 opened: 69 through `logAudit`, 11 through
+`createAuditLog`, 2 hand-built Prisma writes, and none through
+`createStructuredAuditLog`. Those same 82 were still uncategorised on `main`
+immediately before this change, out of **426** write sites in total.
+
+**All 82 have now been classified at the source.** The census reads **427 write sites and
+zero uncategorised**, so no *new* audit row is born invisible to these five entries. What
+each site was given is recorded site by site in `APPLIED_AUDIT_CATEGORIES`
+(`scripts/audit/audit-writer-census-manifest.ts`), and the contract test compares that
+table against the measured tree on every run, so a later reclassification is a named
+failure rather than a silent change of readership.
+
+**The gap has stopped growing; it has not closed.** Every row written before that runtime
+deployed still carries no category, and those rows are still invisible to every
+correlation entry. Giving them one is a separate, independently reviewable data change
+(#2581's third child) that has not run, so the disclosure below stays exactly as it is.
+
+Those figures used to be quoted here as "81 of about 350", which was a hand count and was
+stale. They are measured on every CI run now, and a **new** uncategorised audit writer
+fails the census contract with its own symbol named — and because the pinned set is now
+empty, the *first* such writer fails it, with no backlog left to hide in.
+
+**A new writer can no longer omit a category in the first place**, which is a stronger
+statement than the census pin and is the reason the pin is now a backstop rather than the
+only gate. `AuditLogParams.category` and `StructuredAuditEvent.category` are both required
+and non-null, so an omitting TypeScript writer does not compile; and
+`assertCanonicalAuditCategory` runs inside both `buildAuditLogCreateData` and
+`buildStructuredAuditLogCreateData` — between them every one of the four approved
+boundaries — so a value that reaches the helper through a cast, from untyped JavaScript, or
+forwarded out of a stored row is refused before persistence rather than stored unfilterable.
+Failure semantics are unchanged at each boundary: `logAudit` stays fire-and-forget and logs,
+and an awaited call inside a transaction aborts it exactly as a failed insert already does.
+What the census still uniquely catches is the writer the compiler cannot see — raw
+`INSERT INTO "AuditLog"` in a migration, a `.mjs` script, or the type mandate itself being
+reverted.
+
+**Scope the two compile-time and runtime layers honestly**: they cover writes that go
+through `src/lib/audit.ts`, which is every one of the 427 sites in the tree. A write that
+never reaches the helper — hand-built Prisma, raw SQL, a migration — is outside them by
+construction, which is what the census is for, and the census is a heuristic AST walk
+rather than a proof.
+
+The census covers all four TypeScript writer forms (`logAudit`, `createAuditLog`,
+`createStructuredAuditLog`, and a direct `auditLog.create`), the fourteen wrapper helpers
+that write on a caller's behalf, and — because a TypeScript-only census would have claimed
+`prisma/` was clean when it is not — the **raw SQL** in committed migrations. Two
+migrations write `"AuditLog"` directly, bypassing the audit boundary's sanitisation and
+retention derivation; both are pinned with a reason, and a migration that `INSERT`s audit
+rows without naming `"category"` — or that names the column and then supplies `NULL` for
+it — fails the same contract. It parses rather than greps, so a sink named inside a comment
+is not counted — the phantom `createStructuredAuditLog` omission preserved in the issue's
+own title was exactly that.
+
+**Six ways past the census were demonstrated during #2581's review and closed**, each now
+carried by a fixture in `src/lib/__tests__/audit-writer-census-scanner.test.ts` so a
+regression in the walk fails by name: a delegate parked in a local (`const log =
+tx.auditLog`) or renamed out of a destructure; a delegate reached by element access
+(`tx["auditLog"]`); raw SQL DML issued from TypeScript with `$executeRaw`/`$executeRawUnsafe`
+(the migration arm never walks `.ts` files); a `createMany` whose first array element
+carried a category and whose later elements did not; a schema-qualified
+`INSERT INTO "public"."AuditLog"`; and the `NULL`-in-the-category-column case above. Reads
+are deliberately still ignored, so the correlation packs' own `SELECT … FROM "AuditLog"`
+does not register as a writer.
+
+**What the census still cannot see**, stated rather than left to be discovered: a delegate
+returned from a helper call, an alias created by assignment rather than declaration, raw SQL
+assembled from fragments so no single expression contains both the keyword and the table
+name, and an `INSERT … SELECT` whose category expression is computed rather than literal.
+Those are why the type and the runtime assertion are the primary defences and this walk is
+the backstop, not the other way round.
+
+One consequence worth stating because it is not obvious: all 82 also passed no `severity`
+and no `retentionClass`, and the writer derives a retention class only when one of those
+three is present. So every one of those rows was stored with **no expiry at all** — never
+archived, never pruned. Giving them a category was therefore also a retention change, not
+a metadata tidy-up: all 82 write paths now classify `critical`, which is a **seven-year**
+expiry measured from the event. Rows already written keep their `NULL` retention class
+until #2581's third child decides what to do about them, so nothing that exists today
+becomes deletable because of this change.
 
 The shared statement filters on `"category" = ANY (…)`, which is NULL — not true — for a
 row with no category, so **such a row is returned by none of the five entries.** It is not
@@ -163,14 +297,17 @@ lines and descriptions, pin that the statement really cannot match a null row, a
 `prisma/schema.prisma` so the disclosure cannot be dropped as stale while the column is
 still nullable.
 
-**The alternative is an owner decision, not a reviewer's.** The system entry could take the
+**The alternative was put to the owner and refused.** The system entry could take the
 null case explicitly (`"category" IS NULL OR "category" = ANY (…)`), which would keep the
-five sets disjoint and make the evidence complete. But it routes those 81 call sites'
-rows — booking policy, communications, deletion decisions — into an entry that needs
+five sets disjoint and make the evidence complete. But it routes every historical null
+row — booking policy, communications, deletion decisions — into an entry that needs
 `support:view` alone, and it needs a fresh look at the `(category, createdAt)` index
-against the 5-second statement timeout. Widening who can read part of the audit trail is
-the owner's call. The other option, and the better long-run one, is to give those call
-sites a category at the source, which is a platform-wide change of its own.
+against the 5-second statement timeout. On #2581 the owner ruled it out: Diagnostics stays
+strictly category-filtered and permission-scoped, and the rows get a category **at the
+source** instead. The canonical taxonomy, the permission map above and the census contract
+were the first part of that work; the sweep that gave each of the 82 sites its category is
+the second and has landed; the exact-action backfill of the historical null rows is the
+third and has not. Until it does, the disclosure above is the honest answer and stays.
 
 ## Evidence sources
 
@@ -267,12 +404,16 @@ refused by PostgreSQL itself (42501), and so is `SELECT *`. A future tool, a
 projection bug, or a `psql` session opened with that credential all hit the same
 refusal.
 
-`entityId` is the deliberate omission to explain. It is often a member id, and this
-pack's permission set is system-plus-domain rather than a per-record investigation
-with ADR-004's per-invocation personal-data opt-in. Per-record evidence — the member,
-the booking, the payment — is AID-6B (#2376) and AID-6C (#2377) work, under their own
-area permission and their own privacy review. Every entry in this pack therefore
-reports `surfacesPersonalData: false`, and means it.
+`entityId` was the deliberate omission to explain, and AID-6C (#2377) has since
+added it — under its own area permission and its own privacy review, exactly as this
+section said it would have to be. It is often a member id, and this pack's permission
+set is system-plus-domain rather than a per-record investigation with ADR-004's
+per-invocation personal-data opt-in, so **no entry in this pack projects it**: the
+correlation tools' eight projected fields are unchanged, and every entry here still
+reports `surfacesPersonalData: false` and means it. What the column buys is
+AID-6C's `diagnostics.finance_record_audit_history`, which uses it as a PREDICATE
+against an id the caller already holds, behind `finance:view`, and does not project
+it either. See [tool-pack-finance.md](tool-pack-finance.md).
 
 The runtime self-check verifies the granted **columns** against the same allowlist
 and refuses the role if a wider grant appears. That matters because a hand-added
@@ -460,6 +601,8 @@ here:
 
 - [Tool substrate reference](tools.md) — the gates, bounds, audit, and the rules for
   adding a tool.
+- [Finance and Xero tool pack (AID-6C)](tool-pack-finance.md) — the second pack, and
+  the one that added `entityId` to the `AuditLog` grant.
 - [Deployment and operator guide](deployment.md) — provisioning the role, the grants
   it makes, and what readiness reports.
 - [Page context](page-context.md) and the

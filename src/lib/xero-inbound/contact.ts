@@ -1,11 +1,14 @@
 import { Address, Phone, type Contact, type XeroClient } from "xero-node";
 import { prisma } from "@/lib/prisma";
 import logger from "@/lib/logger";
-import { buildXeroContactUrl } from "@/lib/xero-links";
 import { callXeroApi, getAuthenticatedXeroClient, XeroDailyLimitError } from "@/lib/xero-api-client";
 import { refreshXeroContactCachesFromContact } from "@/lib/xero-contact-cache";
-import { upsertXeroObjectLink } from "@/lib/xero-sync";
-import { type MemberBackfillCandidate } from "./types";
+import {
+  applyInboundMemberContactPatch,
+  XeroContactLinkChangedError,
+  XeroMemberUnavailableError,
+  type InboundMemberContactPatch,
+} from "@/lib/xero-contact-create-recovery";
 import { writeXeroInboundAuditLogs } from "./audit";
 
 function parseXeroDateOfBirth(value: string | undefined): Date | null {
@@ -216,53 +219,40 @@ export async function reconcileXeroContact(contactId: string) {
   let linkedMembers = 0;
   let backfilledFields = 0;
 
-  for (const member of members as MemberBackfillCandidate[]) {
-    const updates: Record<string, unknown> = {};
-
-    if (!member.xeroContactId && canApplyCanonicalLink) {
-      updates.xeroContactId = contactId;
-      linkedMembers += 1;
-    }
-
-    if (!member.dateOfBirth && dateOfBirth) {
-      updates.dateOfBirth = dateOfBirth;
-    }
-
-    if (!member.phoneNumber && phone) {
-      updates.phoneCountryCode = phone.phoneCountryCode;
-      updates.phoneAreaCode = phone.phoneAreaCode;
-      updates.phoneNumber = phone.phoneNumber;
-    }
-
-    if (!member.streetAddressLine1 && addresses.street) {
-      Object.assign(updates, addresses.street);
-    }
-
-    if (!member.postalAddressLine1 && addresses.postal) {
-      Object.assign(updates, addresses.postal);
-    }
-
-    if (!member.joinedDate && joinedDate) {
-      updates.joinedDate = joinedDate;
-    }
-
-    await upsertXeroObjectLink({
-      localModel: "Member",
-      localId: member.id,
-      xeroObjectType: "CONTACT",
-      xeroObjectId: contactId,
-      xeroObjectUrl: buildXeroContactUrl(contactId),
-      role: "CONTACT",
-    });
-
-    const updateKeys = Object.keys(updates);
-    if (updateKeys.length > 0) {
-      await prisma.member.update({
-        where: {
-          id: member.id,
-        },
-        data: updates,
+  for (const member of members) {
+    const patch: InboundMemberContactPatch = {
+      dateOfBirth,
+      joinedDate,
+      ...(phone ?? {}),
+      ...(addresses.street ?? {}),
+      ...(addresses.postal ?? {}),
+    };
+    let applied;
+    try {
+      applied = await applyInboundMemberContactPatch({
+        memberId: member.id,
+        xeroContactId: contactId,
+        patch,
+        setCanonicalLink: canApplyCanonicalLink,
       });
+    } catch (error) {
+      if (
+        error instanceof XeroMemberUnavailableError ||
+        error instanceof XeroContactLinkChangedError ||
+        (error instanceof Error && error.message === `Member not found: ${member.id}`)
+      ) {
+        logger.info(
+          { memberId: member.id, contactId, reason: error.message },
+          "Skipped stale inbound Xero contact participant",
+        );
+        continue;
+      }
+      throw error;
+    }
+
+    const updateKeys = applied.appliedFields;
+    if (applied.linked) linkedMembers += 1;
+    if (updateKeys.length > 0) {
       updatedMembers += 1;
       backfilledFields += updateKeys.length;
       await writeXeroInboundAuditLogs({

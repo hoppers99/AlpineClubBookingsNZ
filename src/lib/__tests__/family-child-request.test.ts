@@ -29,6 +29,7 @@ vi.mock("@/lib/email", () => ({
 
 import { prisma } from "@/lib/prisma";
 import { auth } from "@/lib/auth";
+import logger from "@/lib/logger";
 import { POST as requestChild } from "@/app/api/members/family/request-child/route";
 
 const mockedAuth = vi.mocked(auth);
@@ -178,6 +179,34 @@ describe("POST /api/members/family/request-child", () => {
         childDateOfBirth: new Date("2018-03-15T00:00:00.000Z"),
       }),
     });
+  });
+
+  // INV-PRIV-011 (#2683 review finding 3). This route logged
+  // `childName: "${firstName} ${lastName}"` — a MINOR's full name, written on
+  // an ordinary self-service success path rather than on an error path. The
+  // audit row above still records it, where reading it needs the permission.
+  it("does not log the child's name on the success path", async () => {
+    mockedAuth.mockResolvedValue(adultSession);
+    vi.mocked(prisma.member.findUnique)
+      .mockResolvedValueOnce({
+        id: "adult1", firstName: "Alice", lastName: "Smith", active: true, ageTier: "ADULT",
+        familyGroupMemberships: [{ familyGroupId: "g1" }],
+      } as any)
+      .mockResolvedValueOnce({ email: "alice@test.com" } as any);
+    vi.mocked(prisma.familyGroupJoinRequest.findFirst).mockResolvedValue(null);
+    vi.mocked(prisma.familyGroupJoinRequest.create).mockResolvedValue({ id: "req1" } as any);
+    vi.mocked(prisma.familyGroup.findUnique).mockResolvedValue({ name: "Smith Family" } as any);
+
+    const res = await requestChild(makeRequest({
+      familyGroupId: "g1", firstName: "Ravensworth", lastName: "Quillfeather", dateOfBirth: "2018-03-15",
+    }));
+    expect(res.status).toBe(201);
+
+    const logged = JSON.stringify(vi.mocked(logger.info).mock.calls);
+    expect(logged).not.toContain("Ravensworth");
+    expect(logged).not.toContain("Quillfeather");
+    // The request id is still logged, so the line still identifies the row.
+    expect(logged).toContain("req1");
   });
 
   it("rejects duplicate pending request for same child", async () => {

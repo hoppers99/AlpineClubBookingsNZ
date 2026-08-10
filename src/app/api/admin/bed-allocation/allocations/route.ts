@@ -8,12 +8,18 @@ import {
 import { formatDateOnly } from "@/lib/date-only";
 import {
   bedAllocationErrorResponse,
-  requireBedAllocationAdmin,
+  requireBedAllocationWrite,
 } from "@/lib/admin-bed-allocation-routes";
 import { parseJsonRequestBody } from "@/lib/api-json";
 import { createAuditLog } from "@/lib/audit";
+import {
+  applyBedAllocationMove,
+  BED_ALLOCATION_MOVE_SCOPES,
+  BedAllocationMoveError,
+  type BedAllocationMoveApplyRequest,
+} from "@/lib/bed-allocation-move";
 
-// requireAdmin() is enforced by requireBedAllocationAdmin().
+// requireAdmin() is enforced by requireBedAllocationWrite().
 const manualAllocationSchema = z
   .object({
     bookingGuestId: z.string().min(1),
@@ -32,8 +38,38 @@ const moveAllocationSchema = z
   })
   .strict();
 
+const typedMoveAllocationSchema = z
+  .object({
+    anchorAllocationId: z.string().min(1),
+    destinationBedId: z.string().min(1),
+    scope: z.enum(BED_ALLOCATION_MOVE_SCOPES),
+    previewDigest: z.string().regex(/^v1:[0-9a-f]{64}$/),
+  })
+  .strict();
+
+const moveRequestSchema = z.union([
+  moveAllocationSchema,
+  typedMoveAllocationSchema,
+]);
+
+function moveErrorResponse(error: unknown) {
+  if (error instanceof BedAllocationMoveError) {
+    return NextResponse.json(
+      {
+        error: error.message,
+        code: error.code,
+        ...(error.refreshedPreview
+          ? { refreshedPreview: error.refreshedPreview }
+          : {}),
+      },
+      { status: error.status },
+    );
+  }
+  return bedAllocationErrorResponse(error);
+}
+
 export async function POST(request: Request) {
-  const guard = await requireBedAllocationAdmin();
+  const guard = await requireBedAllocationWrite();
   if (!guard.ok) return guard.response;
 
   try {
@@ -55,7 +91,7 @@ export async function POST(request: Request) {
       targetId: allocation.bookingId,
       entityType: "BedAllocation",
       entityId: allocation.id,
-      category: "admin",
+      category: "lodge",
       outcome: "success",
       summary: "Manual bed allocation set",
       metadata: {
@@ -75,7 +111,7 @@ export async function POST(request: Request) {
         targetId: promotedPartner.bookingId,
         entityType: "BedAllocation",
         entityId: promotedPartner.id,
-        category: "admin",
+        category: "lodge",
         outcome: "success",
         summary:
           "Second occupant auto-promoted to primary after the shared double's primary was moved to another bed",
@@ -95,14 +131,14 @@ export async function POST(request: Request) {
 }
 
 export async function PATCH(request: Request) {
-  const guard = await requireBedAllocationAdmin();
+  const guard = await requireBedAllocationWrite();
   if (!guard.ok) return guard.response;
 
   try {
     const json = await parseJsonRequestBody(request);
     if (!json.ok) return json.response;
 
-    const body = moveAllocationSchema.safeParse(json.body);
+    const body = moveRequestSchema.safeParse(json.body);
     if (!body.success) {
       return NextResponse.json(
         { error: "Invalid input", details: body.error.flatten() },
@@ -110,7 +146,16 @@ export async function PATCH(request: Request) {
       );
     }
 
-    // The service owns the transaction and writes both allocation changes and
+    if ("anchorAllocationId" in body.data) {
+      return NextResponse.json(
+        await applyBedAllocationMove({
+          request: body.data as BedAllocationMoveApplyRequest,
+          actorMemberId: guard.session.user.id,
+        }),
+      );
+    }
+
+    // The legacy service owns the transaction and writes both allocation changes and
     // audit rows inside it. Keeping the route audit-free avoids the old
     // committed-write/missing-audit window and makes server-side no-ops silent.
     const result = await moveBedAllocationsSameDate({
@@ -131,6 +176,6 @@ export async function PATCH(request: Request) {
       })),
     });
   } catch (error) {
-    return bedAllocationErrorResponse(error);
+    return moveErrorResponse(error);
   }
 }

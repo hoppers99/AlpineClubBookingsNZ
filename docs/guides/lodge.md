@@ -6,7 +6,7 @@ Audience: Operator
 
 The shared sign-in for the physical lodge **kiosk** — the tablet at the lodge that
 guests and hut leaders use to check in and out, see who's staying (including a
-week-at-a-glance of nightly guest counts), and view lodge information. This
+week-at-a-glance of daily guest counts), and view lodge information. This
 page sets the kiosk account's email and password (and, for a
 multi-lodge club, which lodge each kiosk device serves); it is **not** a personal
 admin login. Find it at **Admin → Lodge Operations → Lodge Kiosk**
@@ -41,6 +41,59 @@ module is on.
 1. Click **Preview kiosk** to open the kiosk exactly as this login would see it — a
    **read-only** preview, so nothing is saved.
 
+### What "here today" means on the kiosk
+
+Every count and badge on the kiosk answers one question: who is in the lodge on
+this **day**. Everyone who stays a night is here from midday on the day they
+arrive until midday on the day they leave, so a day's list holds the people
+sleeping there tonight **and** the people who slept there last night and leave
+this morning. **Departing** always means *leaves today* — on the day list, on
+the week strip, and in the roster setup wizard, which reads the same list.
+
+Two consequences worth knowing. A changeover morning is not an empty day: the
+week strip shows a guest count and offers a roster, because the beds still need
+stripping. And a stay with a gap in it — someone booked in for Friday and then
+again for Monday — shows nobody on the days in between, because they went home.
+
+That last one is enforced by the server, not only hidden on the screen: a
+check-in for a night the guest is not booked for is refused even if the request
+reaches the server anyway, which is what a kiosk page left open since an earlier
+night would send. When that happens the screen says the guest is not booked in
+for that night and asks you to reload the day, rather than reporting a failure —
+nothing is wrong with the kiosk, the page is just out of date.
+
+The week strip and the day list count slightly different populations, on
+purpose. The strip counts who can be **rostered**, so a booking still held by
+an admin review is not in its numbers. The day list counts who is **in the
+building**, so it does show that booking, marked "Blocked from Check-In". A
+day can therefore read as empty on the strip and open onto a flagged party.
+
+**Mark Departed** appears on every morning a guest actually leaves. On a stay
+with a gap in it, that is more than once: someone booked in for Friday and again
+for Monday leaves on Saturday morning and again on Tuesday morning, and each
+check-out can be recorded on the day it happens. Until #2628 only the last one
+could be — the earlier morning showed the **Departing** badge with no button —
+so a guest who left and came back was recorded as leaving once, at the end.
+
+**Mark Arrived** appears again when they come back. The kiosk holds one arrival
+and one departure per guest — where they are *now*, not a diary of every trip —
+so tapping **Mark Arrived** on the night they return records the new arrival and
+clears the earlier check-out at the same time. Their name stops being greyed out
+and the next **Mark Departed** records their next check-out. If the return
+arrival is never recorded, the card still reads **Departed** on the following
+departure morning: tap it once to clear that, and again to record the departure.
+
+Checking someone out clears the **suggested** chores they can no longer do —
+only up to the next night they are booked in for. Chores rostered for a later
+part of the same stay are left alone, and any chore already **confirmed** is
+never touched.
+
+The **Who's at the lodge** panel that sits under an admin calendar counts
+guest-**nights** rather than lodge days. On the chore roster calendar, whose
+day colours *are* lodge days, the panel spells that difference out on screen;
+the hut-leader assignment calendar is night-based throughout, so there is no
+difference to explain there and it says nothing.
+
 ### Multi-lodge: bind and add kiosk accounts
 
 1. With more than one lodge, each account gains an **Operates lodge** selector.
@@ -69,6 +122,7 @@ module is on.
 | "Lodge account not found. Run the database seed to create it." | The kiosk account row is missing | Seed the database, or create the account (multi-lodge) |
 | A kiosk account is flagged **Ambiguous** | It has staff access at more than one lodge | Set **Operates lodge** to a single lodge and save |
 | A kiosk falls back to the wrong lodge | The account is not bound to a lodge | Bind it to its lodge under **Operates lodge** (multi-lodge) |
+| **Mark Arrived** answers "this guest is not booked in for this night" | The page has been open since an earlier night, so its buttons are stale | Reload the day. The guest's booking has a gap over the night on screen — they went home — and the refreshed list shows who is actually staying |
 | The kiosk tablet's clock or time zone is set wrong | The device clock is separate from the club's calendar | Nothing to change for the kiosk: it takes "today" from the club's New Zealand day, so the week strip, the **Today** button and the night it opens on stay correct — and a kiosk left sitting on the week strip rolls onto the new day at the club's midnight without a reload (an open day list stays put; press **Today**). Fix the device clock only if people read the time off the tablet itself |
 
 ## Related links

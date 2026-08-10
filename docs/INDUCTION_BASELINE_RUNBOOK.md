@@ -718,5 +718,5 @@ is a no-op: it creates no induction row and no additional audit entry.
 - Back to the [documentation hub](README.md).
 - Operator guide: [Induction](guides/induction.md).
 - Reference: [Lodge Induction Lifecycle](STATE_MACHINES.md#lodge-induction-lifecycle),
-  [membership lifecycle invariants](DOMAIN_INVARIANTS.md#membership-lifecycle),
+  [membership lifecycle invariants](invariants/membership-lifecycle.md),
   and [concurrency and locking](CONCURRENCY_AND_LOCKING.md).

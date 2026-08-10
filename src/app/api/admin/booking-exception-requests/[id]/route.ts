@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { hostingCoverageParticipantRetryResponse } from "@/lib/adult-member-hosting-retry-response";
 import { z } from "zod";
 
 import { ApiError } from "@/lib/api-error";
@@ -538,6 +539,8 @@ export async function PATCH(
       store,
     });
   } catch (error) {
+    const hostingRetry = hostingCoverageParticipantRetryResponse(error);
+    if (hostingRetry) return hostingRetry;
     if (error instanceof SameOwnerCoverageOverrideRequiredError) {
       // #2576 section 7 is deliberately two-step. The first execution attempt
       // rolls back and returns the authoritative dependent bookings/nights; only

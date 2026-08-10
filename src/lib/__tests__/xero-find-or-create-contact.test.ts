@@ -3,10 +3,18 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const mocks = vi.hoisted(() => {
   const tx = {
     $executeRaw: vi.fn(),
+    $queryRaw: vi.fn(),
     member: {
       findFirst: vi.fn(),
       findUnique: vi.fn(),
       update: vi.fn(),
+    },
+    xeroSyncOperation: {
+      findFirst: vi.fn(),
+      // #2623 T7: the phase-2 link transaction closes any provider-created
+      // recovery whose own contact is the one it just linked.
+      findMany: vi.fn(),
+      updateMany: vi.fn(),
     },
   };
 
@@ -42,6 +50,12 @@ const mocks = vi.hoisted(() => {
     startXeroSyncOperation: vi.fn(),
     completeXeroSyncOperation: vi.fn(),
     failXeroSyncOperation: vi.fn(),
+    assertMemberAvailableForXeroContactChange: vi.fn(),
+    lockMemberForXeroContactLink: vi.fn(
+      async (db: typeof tx, memberId: string) =>
+        db.member.findUnique({ where: { id: memberId } }),
+    ),
+    recordProviderCreatedContactPendingLocalLink: vi.fn(),
     recordXeroApiUsage: vi.fn(),
     logger: {
       error: vi.fn(),
@@ -77,6 +91,20 @@ vi.mock("xero-node", () => ({
     },
   },
 }));
+
+vi.mock(
+  "@/lib/xero-contact-create-recovery",
+  async (importOriginal) => ({
+    ...(await importOriginal<
+      typeof import("@/lib/xero-contact-create-recovery")
+    >()),
+    assertMemberAvailableForXeroContactChange:
+      mocks.assertMemberAvailableForXeroContactChange,
+    lockMemberForXeroContactLink: mocks.lockMemberForXeroContactLink,
+    recordProviderCreatedContactPendingLocalLink:
+      mocks.recordProviderCreatedContactPendingLocalLink,
+  }),
+);
 
 vi.mock("@/lib/prisma", () => ({
   prisma: mocks.prisma,
@@ -161,10 +189,17 @@ describe("findOrCreateXeroContact", () => {
 
     mocks.prisma.$transaction.mockImplementation(async (callback) => callback(mocks.tx));
     mocks.tx.$executeRaw.mockResolvedValue(undefined);
+    mocks.tx.$queryRaw.mockImplementation(
+      async (_strings: TemplateStringsArray, memberId: string) => [{ id: memberId }],
+    );
     mocks.tx.member.findFirst.mockResolvedValue(null);
+    mocks.tx.xeroSyncOperation.findFirst.mockResolvedValue(null);
+    mocks.tx.xeroSyncOperation.findMany.mockResolvedValue([]);
+    mocks.tx.xeroSyncOperation.updateMany.mockResolvedValue({ count: 0 });
     mocks.tx.member.update.mockResolvedValue({ id: "mem_1", xeroContactId: "xero_new" });
     mocks.prisma.xeroToken.findFirst.mockResolvedValue(null);
     mocks.startXeroSyncOperation.mockResolvedValue({ id: "op_1" });
+    mocks.recordProviderCreatedContactPendingLocalLink.mockResolvedValue(undefined);
     mocks.xeroClientInstance.accountingApi.getContacts.mockResolvedValue({
       body: { contacts: [] },
     });
@@ -182,14 +217,17 @@ describe("findOrCreateXeroContact", () => {
     expect(mocks.prisma.xeroToken.findFirst).not.toHaveBeenCalled();
     expect(mocks.xeroClientInstance.accountingApi.getContacts).not.toHaveBeenCalled();
     expect(mocks.tx.member.update).not.toHaveBeenCalled();
-    expect(mocks.upsertXeroObjectLink).toHaveBeenCalledWith({
-      localModel: "Member",
-      localId: "mem_1",
-      xeroObjectType: "CONTACT",
-      xeroObjectId: "xero_existing",
-      xeroObjectUrl: "https://go.xero.test/contact/xero_existing",
-      role: "CONTACT",
-    });
+    expect(mocks.upsertXeroObjectLink).toHaveBeenCalledWith(
+      {
+        localModel: "Member",
+        localId: "mem_1",
+        xeroObjectType: "CONTACT",
+        xeroObjectId: "xero_existing",
+        xeroObjectUrl: "https://go.xero.test/contact/xero_existing",
+        role: "CONTACT",
+      },
+      { store: mocks.tx },
+    );
   });
 
   it("can explicitly repair an existing link by re-searching Xero and updating the member link", async () => {
@@ -224,18 +262,22 @@ describe("findOrCreateXeroContact", () => {
       where: { id: "mem_1" },
       data: { xeroContactId: "xero_repaired" },
     });
-    expect(mocks.upsertXeroObjectLink).toHaveBeenCalledWith({
-      localModel: "Member",
-      localId: "mem_1",
-      xeroObjectType: "CONTACT",
-      xeroObjectId: "xero_repaired",
-      xeroObjectUrl: "https://go.xero.test/contact/xero_repaired",
-      role: "CONTACT",
-      metadata: {
-        linkedVia: "email_match_repair",
-        repairedFromXeroContactId: "xero_stale",
+    expect(mocks.upsertXeroObjectLink).toHaveBeenCalledWith(
+      {
+        localModel: "Member",
+        localId: "mem_1",
+        xeroObjectType: "CONTACT",
+        xeroObjectId: "xero_repaired",
+        xeroObjectUrl: "https://go.xero.test/contact/xero_repaired",
+        role: "CONTACT",
+        metadata: {
+          contactName: undefined,
+          linkedVia: "email_match_repair",
+          repairedFromXeroContactId: "xero_stale",
+        },
       },
-    });
+      { store: mocks.tx },
+    );
   });
 
   it("skips the Xero email search for a walk-in placeholder owner and sends an empty email (#1935)", async () => {
@@ -267,6 +309,130 @@ describe("findOrCreateXeroContact", () => {
     const createPayload =
       mocks.xeroClientInstance.accountingApi.createContacts.mock.calls[0][1];
     expect(createPayload.contacts[0].emailAddress).toBe("");
+  });
+
+  // #2623 T2. A walk-in placeholder owner is the DETERMINISTIC case: the Xero
+  // email search is skipped by design, so nothing can produce a matched-existing
+  // resolution, and the repair therefore reaches the create reservation on every
+  // single attempt. That reservation used to throw XERO_CONTACT_ALREADY_LINKED
+  // unconditionally whenever the member had a link, so Admin → Force sync →
+  // Contact 409'd forever with nothing able to clear it.
+  describe("repairing an existing link (#2623 T2)", () => {
+    const walkInOwner = {
+      id: "mem_walkin",
+      firstName: "Walk",
+      lastName: "In",
+      email: "walk-in-abc123@no-email.invalid",
+      xeroContactId: "xero_stale_walkin",
+      phoneNumber: null,
+    };
+
+    async function connectXero() {
+      mocks.prisma.xeroToken.findFirst.mockResolvedValue({
+        id: "token_1",
+        accessToken: await encryptToken("access"),
+        refreshToken: await encryptToken("refresh"),
+        expiresAt: new Date(Date.now() + 60 * 60 * 1000),
+        tenantId: "tenant_1",
+      });
+    }
+
+    it("repairs a walk-in placeholder owner's link instead of 409ing forever", async () => {
+      mocks.tx.member.findUnique.mockResolvedValue(walkInOwner);
+      await connectXero();
+      // No live contact carries this member's name, so creation is the honest
+      // outcome and the reservation must be allowed to make it.
+      mocks.xeroClientInstance.accountingApi.getContacts.mockResolvedValue({
+        body: { contacts: [] },
+      });
+      mocks.xeroClientInstance.accountingApi.createContacts.mockResolvedValue({
+        body: { contacts: [{ contactID: "xero_repaired_walkin" }] },
+      });
+
+      await expect(
+        findOrCreateXeroContact("mem_walkin", { repairExistingLink: true }),
+      ).resolves.toBe("xero_repaired_walkin");
+
+      // The placeholder is still never used to search Xero by email.
+      for (const call of mocks.xeroClientInstance.accountingApi.getContacts.mock
+        .calls) {
+        expect(String(call[2] ?? "")).not.toContain("EmailAddress");
+      }
+      expect(mocks.tx.member.update).toHaveBeenCalledWith({
+        where: { id: "mem_walkin" },
+        data: { xeroContactId: "xero_repaired_walkin" },
+      });
+      expect(mocks.failXeroSyncOperation).not.toHaveBeenCalled();
+    });
+
+    it("re-links a live same-named contact rather than minting a duplicate", async () => {
+      mocks.tx.member.findUnique.mockResolvedValue(walkInOwner);
+      await connectXero();
+      mocks.xeroClientInstance.accountingApi.getContacts.mockResolvedValue({
+        body: {
+          contacts: [{ contactID: "xero_live_walkin", name: "Walk In" }],
+        },
+      });
+
+      await expect(
+        findOrCreateXeroContact("mem_walkin", { repairExistingLink: true }),
+      ).resolves.toBe("xero_live_walkin");
+
+      // Archived contacts are excluded from that search, so a genuinely dead
+      // link still falls through to creation (previous test) — but a live one
+      // must never become a second contact in the club's books.
+      expect(
+        mocks.xeroClientInstance.accountingApi.getContacts,
+      ).toHaveBeenCalledWith(
+        "tenant_1",
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        1,
+        false,
+        true,
+        "Walk In",
+        20,
+      );
+      expect(
+        mocks.xeroClientInstance.accountingApi.createContacts,
+      ).not.toHaveBeenCalled();
+      expect(mocks.startXeroSyncOperation).not.toHaveBeenCalled();
+      expect(mocks.upsertXeroObjectLink).toHaveBeenCalledWith(
+        expect.objectContaining({
+          xeroObjectId: "xero_live_walkin",
+          metadata: expect.objectContaining({
+            linkedVia: "name_match_repair",
+            repairedFromXeroContactId: "xero_stale_walkin",
+          }),
+        }),
+        { store: mocks.tx },
+      );
+    });
+
+    it("still refuses a create reservation for an already-linked member with no repair intent", async () => {
+      mocks.tx.member.findUnique.mockResolvedValue({
+        ...walkInOwner,
+        xeroContactId: null,
+      });
+      await connectXero();
+      mocks.xeroClientInstance.accountingApi.createContacts.mockResolvedValue({
+        body: { contacts: [{ contactID: "xero_first" }] },
+      });
+      // The reservation re-reads the member under its own KEY SHARE lock: a
+      // link that appeared in between must still refuse an ordinary create.
+      mocks.tx.member.findUnique
+        .mockResolvedValueOnce({ ...walkInOwner, xeroContactId: null })
+        .mockResolvedValue(walkInOwner);
+
+      await expect(findOrCreateXeroContact("mem_walkin")).rejects.toMatchObject({
+        code: "XERO_CONTACT_ALREADY_LINKED",
+      });
+      expect(
+        mocks.xeroClientInstance.accountingApi.createContacts,
+      ).not.toHaveBeenCalled();
+    });
   });
 
   it("links an exact Xero name match when createContacts fails with a duplicate-name validation error", async () => {
@@ -378,18 +544,21 @@ describe("findOrCreateXeroContact", () => {
       })
     );
     expect(mocks.failXeroSyncOperation).not.toHaveBeenCalled();
-    expect(mocks.upsertXeroObjectLink).toHaveBeenCalledWith({
-      localModel: "Member",
-      localId: "mem_1",
-      xeroObjectType: "CONTACT",
-      xeroObjectId: "xero_existing_by_name",
-      xeroObjectUrl: "https://go.xero.test/contact/xero_existing_by_name",
-      role: "CONTACT",
-      metadata: {
-        linkedVia: "name_match",
-        contactName: "Jordan Hartley-Smith",
-        repairedFromXeroContactId: undefined,
+    expect(mocks.upsertXeroObjectLink).toHaveBeenCalledWith(
+      {
+        localModel: "Member",
+        localId: "mem_1",
+        xeroObjectType: "CONTACT",
+        xeroObjectId: "xero_existing_by_name",
+        xeroObjectUrl: "https://go.xero.test/contact/xero_existing_by_name",
+        role: "CONTACT",
+        metadata: {
+          linkedVia: "name_match",
+          contactName: "Jordan Hartley-Smith",
+          repairedFromXeroContactId: undefined,
+        },
       },
-    });
+      { store: mocks.tx },
+    );
   });
 });

@@ -131,6 +131,36 @@ export function mergeXeroActivitySummaries(
   return merged;
 }
 
+/**
+ * The PAYMENT statuses for which Admin > Payments expects a Xero invoice to
+ * exist, and therefore the statuses at which it reports `invoiceMissing`.
+ *
+ * Extracted from the inline array `listAdminPayments` used (#2377) so there is
+ * ONE definition rather than two. The screen owns the meaning of `xeroState`,
+ * and AI Diagnostics reports the same field name for the same payment — a second
+ * copy of this list is how the diagnostic answer and the screen the operator then
+ * opens come to disagree about whether an invoice is missing.
+ *
+ * It is deliberately a PAYMENT-status test and not a booking-lifecycle one: an
+ * invoice is minted against money that moved. A booking-lifecycle expectation is
+ * a different and wider question, and the diagnostics pack asks it separately
+ * with `isSettledBookingStatus` rather than by widening this.
+ */
+const XERO_INVOICE_EXPECTED_PAYMENT_STATUSES = [
+  "SUCCEEDED",
+  "REFUNDED",
+  "PARTIALLY_REFUNDED",
+] as const;
+
+export function isXeroInvoiceExpectedPaymentStatus(
+  status: string | null | undefined
+): boolean {
+  return (
+    status != null &&
+    (XERO_INVOICE_EXPECTED_PAYMENT_STATUSES as readonly string[]).includes(status)
+  );
+}
+
 export function deriveXeroState(input: {
   invoiceExpected: boolean;
   invoiceLinked: boolean;

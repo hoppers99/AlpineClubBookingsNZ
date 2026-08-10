@@ -24,6 +24,11 @@ export const BOOKING_URL_TEMPLATE_NAMES: ReadonlySet<string> = new Set([
   "waitlist-confirmation",
   "waitlist-offer",
   "waitlist-offer-expired",
+  // #2649: the restored-place sibling of the expiry notice. Booking-scoped and
+  // registered like the other three, so the classification is mechanical and the
+  // canonical authorized detail link replaces the legacy {{BASE_URL}}/bookings
+  // line in its editable default.
+  "waitlist-place-restored",
   "chore-roster",
   "booking-request-approved",
   "split-guest-payment-link",

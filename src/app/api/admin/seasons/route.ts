@@ -148,8 +148,11 @@ export async function POST(req: NextRequest) {
 
   logAudit({
     action: "season.create",
+    category: "booking",
     memberId: session.user.id,
     targetId: season?.id,
+    entityType: "Season",
+    entityId: season?.id,
     details: `Created season: ${name}`,
   });
 

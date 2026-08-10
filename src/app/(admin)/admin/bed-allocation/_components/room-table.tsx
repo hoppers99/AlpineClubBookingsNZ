@@ -46,7 +46,11 @@ interface RoomTableProps {
   allocationByBedAndDate: Map<string, DashboardAllocation[]>;
   bedOptions: BedOption[];
   bedOptionGroups?: BedOptionGroup[];
-  onReassignBed: (allocation: DashboardAllocation, bedId: string) => void;
+  onReassignBed: (
+    allocation: DashboardAllocation,
+    bedId: string,
+    focusOrigin?: HTMLElement | null,
+  ) => void;
   onRemove: (allocation: DashboardAllocation) => void;
   onAssignRange: (allocation: DashboardAllocation) => void;
   // #2251 decision 3: green/red tinting of the nights the last range operation

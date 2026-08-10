@@ -6,7 +6,6 @@ import {
   type LodgeRoom,
 } from "@prisma/client";
 import { clubConfig } from "@/config/club";
-import { DEFAULT_BED_ALLOCATION_SETTINGS } from "@/config/club-settings-defaults";
 import {
   addDaysDateOnly,
   countNightsDateOnly,
@@ -29,13 +28,22 @@ import {
   type UnallocatedGuestNight,
 } from "@/lib/bed-allocation";
 import {
+  getEarliestCurrentBedNightDate,
+  getExplicitGuestBedNightKeys,
+} from "@/lib/booking-guest-stay-ranges";
+import { reportBedAllocationInvariantViolation } from "@/lib/bed-allocation-diagnostics";
+import {
   BED_ALLOCATABLE_BOOKING_STATUSES,
   dropAllocationRowsForUnallocatableBookings,
   promoteOrphanedSecondOccupants,
   promoteOrphanedSecondOccupantsBatch,
 } from "@/lib/bed-allocation-lifecycle";
 import logger from "@/lib/logger";
-import { getDefaultLodgeId, lodgeNullTolerantScope } from "@/lib/lodges";
+import {
+  getDefaultLodgeId,
+  lodgeNullTolerantScope,
+  resolveOptionalActiveLodgeId,
+} from "@/lib/lodges";
 import {
   bookingHoldsCapacity,
   isCapacityHoldingBookingStatus,
@@ -70,6 +78,12 @@ import {
   isOperationallyPresentConsent,
 } from "@/lib/member-guest-consent";
 import { prisma } from "@/lib/prisma";
+import {
+  parseBedAllocationPriorityOrder,
+  resolveEffectiveBedAllocationSettings,
+  type BedAllocationPriority,
+  type EffectiveBedAllocationSettings,
+} from "@/lib/bed-allocation-settings";
 
 const BED_ALLOCATION_SETTINGS_ID = "default";
 export const MAX_BED_ALLOCATION_RANGE_NIGHTS = 31;
@@ -91,11 +105,7 @@ export interface BedAllocationDateRange {
   toDate: string;
 }
 
-export interface BedAllocationSettingsPayload {
-  autoAllocationEnabled: boolean;
-  updatedByMemberId: string | null;
-  updatedAt: string | null;
-}
+export type BedAllocationSettingsPayload = EffectiveBedAllocationSettings;
 
 export interface AdminBedAllocationWarning {
   id: string;
@@ -194,12 +204,18 @@ interface DashboardAllocation {
   source: "AUTO" | "MANUAL";
   approvedAt: string | null;
   approvedByName: string | null;
+  isSecondOccupant?: boolean;
   // Raw booking status (issue #1251), kept for display/debugging.
   bookingStatus: string;
   // Server-computed "Held" vs "Provisional" signal (#1254). Holding is no longer
   // a pure function of status (an accepted-but-unpaid quote is PENDING but holds),
   // so the board reads this precomputed flag from bookingHoldsCapacity().
   holdsCapacity: boolean;
+}
+
+/** Server-private planner projection; family membership is not a board DTO. */
+interface PlannerAllocation extends DashboardAllocation {
+  familyGroupIds: string[];
 }
 
 interface DashboardGuestNight {
@@ -209,6 +225,11 @@ interface DashboardGuestNight {
   guestAgeTier: BedAllocationAgeTier;
   memberName: string;
   stayDate: string;
+}
+
+/** Server-private planner projection; family membership is not a board DTO. */
+interface PlannerGuestNight extends DashboardGuestNight {
+  familyGroupIds: string[];
 }
 
 interface DashboardRequestedRoom {
@@ -338,89 +359,60 @@ export function parseBedAllocationDateRange(input: {
   return { from, to, fromDate, toDate };
 }
 
-async function getBedAllocationSettings(
+export async function getEffectiveBedAllocationSettings(
   db: BedAllocationDb = prisma,
   // Lodge scope (lodge-scoping contract): the lodge's own row (id =
   // lodgeId) wins; else the legacy "default" row applies when unlinked or
   // soft-linked to this lodge; else code defaults.
   lodgeId?: string | null,
 ): Promise<BedAllocationSettingsPayload> {
-  if (lodgeId && lodgeId !== BED_ALLOCATION_SETTINGS_ID) {
-    const ownRow = await db.bedAllocationSettings.findUnique({
-      where: { id: lodgeId },
-    });
-    if (ownRow) {
-      return {
-        autoAllocationEnabled: ownRow.autoAllocationEnabled,
-        updatedByMemberId: ownRow.updatedByMemberId,
-        updatedAt: ownRow.updatedAt.toISOString(),
-      };
-    }
-  }
-  const record = await db.bedAllocationSettings.findUnique({
-    where: { id: BED_ALLOCATION_SETTINGS_ID },
-  });
-  if (record && lodgeId && record.lodgeId && record.lodgeId !== lodgeId) {
-    return {
-      autoAllocationEnabled: DEFAULT_BED_ALLOCATION_SETTINGS.autoAllocationEnabled,
-      updatedByMemberId: null,
-      updatedAt: null,
-    };
-  }
-
-  return {
-    autoAllocationEnabled:
-      record?.autoAllocationEnabled ??
-      DEFAULT_BED_ALLOCATION_SETTINGS.autoAllocationEnabled,
-    updatedByMemberId: record?.updatedByMemberId ?? null,
-    updatedAt: record?.updatedAt.toISOString() ?? null,
-  };
+  return resolveEffectiveBedAllocationSettings(db, lodgeId);
 }
 
 export async function updateBedAllocationSettings(input: {
   autoAllocationEnabled: boolean;
+  allocationPriorityOrder: BedAllocationPriority[];
   updatedByMemberId: string;
   db?: BedAllocationDb;
-  // Lodge scope: the legacy "default" row keeps serving the lodge it was
-  // soft-linked to (and single-lodge clubs); other lodges get their own
-  // row keyed by lodge id. An unlinked legacy row is claimed on write.
-  lodgeId?: string | null;
+  // Scoped admin writes require a lodge. An existing lodge-id row always wins;
+  // only when it is absent may a legacy default row linked to this lodge remain
+  // the write target. This keeps migration-forward/imported rows authoritative.
+  lodgeId: string;
 }): Promise<BedAllocationSettingsPayload> {
   const db = input.db ?? prisma;
-  const legacy = await db.bedAllocationSettings.findUnique({
-    where: { id: BED_ALLOCATION_SETTINGS_ID },
-  });
-  const targetsLegacyRow =
-    !input.lodgeId ||
-    !legacy ||
-    legacy.lodgeId === null ||
-    legacy.lodgeId === input.lodgeId;
+  const allocationPriorityOrder = parseBedAllocationPriorityOrder(
+    input.allocationPriorityOrder,
+    "allocationPriorityOrder",
+    400,
+  );
+  const [own, legacy] = await Promise.all([
+    db.bedAllocationSettings.findUnique({ where: { id: input.lodgeId } }),
+    db.bedAllocationSettings.findUnique({
+      where: { id: BED_ALLOCATION_SETTINGS_ID },
+    }),
+  ]);
+  const targetsLegacyRow = !own && legacy?.lodgeId === input.lodgeId;
   const targetId = targetsLegacyRow
     ? BED_ALLOCATION_SETTINGS_ID
-    : input.lodgeId!;
+    : input.lodgeId;
 
-  const record = await db.bedAllocationSettings.upsert({
+  await db.bedAllocationSettings.upsert({
     where: { id: targetId },
     create: {
       id: targetId,
       autoAllocationEnabled: input.autoAllocationEnabled,
+      allocationPriorityOrder,
       updatedByMemberId: input.updatedByMemberId,
-      lodgeId: input.lodgeId ?? null,
+      lodgeId: input.lodgeId,
     },
     update: {
       autoAllocationEnabled: input.autoAllocationEnabled,
+      allocationPriorityOrder,
       updatedByMemberId: input.updatedByMemberId,
-      ...(input.lodgeId && (!legacy || legacy.lodgeId === null) && targetsLegacyRow
-        ? { lodgeId: input.lodgeId }
-        : {}),
     },
   });
 
-  return {
-    autoAllocationEnabled: record.autoAllocationEnabled,
-    updatedByMemberId: record.updatedByMemberId,
-    updatedAt: record.updatedAt.toISOString(),
-  };
+  return resolveEffectiveBedAllocationSettings(db, input.lodgeId);
 }
 
 export async function listBedAllocationRooms(
@@ -558,9 +550,8 @@ export async function createBedAllocationRoom(input: {
   active?: boolean;
   notes?: string | null;
   lodgeId?: string;
-  db?: BedAllocationDb;
 }) {
-  const db = input.db ?? prisma;
+  const db = prisma;
   const lodgeId = input.lodgeId ?? (await getDefaultLodgeId(db));
   const name = input.name.trim();
   // Per-lodge uniqueness with null tolerance: a null-lodge row (pre-backfill
@@ -680,9 +671,33 @@ export async function updateBedAllocationRoom(input: {
   sortOrder?: number;
   active?: boolean;
   notes?: string | null;
-  db?: BedAllocationDb;
 }) {
-  const db = input.db ?? prisma;
+  return prisma.$transaction(async (tx) => {
+    await tx.$executeRaw`SELECT pg_advisory_xact_lock(1)`;
+    const roomKey = await tx.lodgeRoom.findUnique({
+      where: { id: input.id },
+      select: { lodgeId: true },
+    });
+    if (!roomKey) {
+      throw new BedAllocationAdminError("Room not found", 404);
+    }
+    if (roomKey.lodgeId) {
+      await acquireLodgeCapacityLock(tx, roomKey.lodgeId);
+    }
+    return updateBedAllocationRoomWithLocksHeld({ ...input, db: tx });
+  });
+}
+
+/** Internal room writer for callers that already hold global -> owning lodge. */
+export async function updateBedAllocationRoomWithLocksHeld(input: {
+  id: string;
+  name?: string;
+  sortOrder?: number;
+  active?: boolean;
+  notes?: string | null;
+  db: BedAllocationDb;
+}) {
+  const db = input.db;
 
   // #2286: deactivating a room takes every bed in it out of the pool, so it
   // gets the same future-custodian-hold refusal a bed deactivate does. (Room
@@ -971,19 +986,37 @@ export async function updateBedAllocationBed(input: {
   active?: boolean;
   bedType?: BedType;
   bunkGroup?: string | null;
-  db?: BedAllocationDb;
 }): Promise<LodgeBed> {
-  // A bunk-affecting edit (type or group) re-validates pairing under a room
-  // lock, so it must run in a transaction; self-wrap when no client is given.
+  return prisma.$transaction(async (tx) => {
+    await tx.$executeRaw`SELECT pg_advisory_xact_lock(1)`;
+    const bedKey = await tx.lodgeBed.findUnique({
+      where: { id: input.id },
+      select: { room: { select: { lodgeId: true } } },
+    });
+    if (!bedKey) {
+      throw new BedAllocationAdminError("Bed not found", 404);
+    }
+    if (bedKey.room.lodgeId) {
+      await acquireLodgeCapacityLock(tx, bedKey.room.lodgeId);
+    }
+    return updateBedAllocationBedWithLocksHeld({ ...input, db: tx });
+  });
+}
+
+/** Internal bed writer for callers that already hold global -> owning lodge. */
+export async function updateBedAllocationBedWithLocksHeld(input: {
+  id: string;
+  name?: string;
+  sortOrder?: number;
+  active?: boolean;
+  bedType?: BedType;
+  bunkGroup?: string | null;
+  db: BedAllocationDb;
+}): Promise<LodgeBed> {
   const touchesBunk =
     input.bedType !== undefined || input.bunkGroup !== undefined;
-  if (touchesBunk && !input.db) {
-    return prisma.$transaction((tx) =>
-      updateBedAllocationBed({ ...input, db: tx }),
-    );
-  }
 
-  const db = input.db ?? prisma;
+  const db = input.db;
   if (input.active === false) {
     await assertNoFutureBedAllocations({
       bedId: input.id,
@@ -1072,6 +1105,36 @@ export async function updateBedAllocationBed(input: {
   });
 }
 
+/**
+ * Refuse to deactivate or delete a bed that guests are allocated to.
+ *
+ * The two actions take DIFFERENT windows, exactly like their custodian-hold
+ * sibling below, and for the same two reasons (#2628):
+ *
+ * - DEACTIVATE only cares about occupancy that has not finished. That window
+ *   starts at LAST NIGHT, not today: night N runs to midday NZ on date N+1
+ *   (INV-DATE-002), so at any moment on day D the person who slept on night D-1
+ *   is still in the lodge or has only just left it. `stayDate >= today` forgot
+ *   them, which let an admin retire a bed somebody was lying in.
+ *   `getEarliestCurrentBedNightDate` is the shared name for that boundary.
+ * - DELETE refuses on ANY allocation, past included. `BedAllocation.bed` is
+ *   `onDelete: Restrict`, so a bed with historic rows used to pass this guard
+ *   and then fail deep in the driver with a raw P2003 the admin cannot act on.
+ *
+ * Either way the message names the guest, because "clear those dates" is not
+ * actionable until you know whose booking to open.
+ *
+ * THE MESSAGE IS CAPPED AND THE QUERY IS BOUNDED. The delete branch has no date
+ * predicate at all, so it can match every night a bed has ever held — several
+ * seasons of them on a bed in long service. Enumerating all of those would put a
+ * page of dates and a page of past guests' names into one 409 body and into the
+ * audit trail, for what is a yes/no answer. Only the first few are loaded and
+ * named; the rest become "and more". The room-level sibling
+ * (`assertNoRoomAllocationHistory`) does not even name a date for this reason —
+ * it is the same refusal, one level up.
+ */
+const BED_ALLOCATION_GUARD_MESSAGE_ROWS = 5;
+
 async function assertNoFutureBedAllocations(input: {
   bedId: string;
   db: BedAllocationDb;
@@ -1080,26 +1143,44 @@ async function assertNoFutureBedAllocations(input: {
   const blockingAllocations = await input.db.bedAllocation.findMany({
     where: {
       bedId: input.bedId,
-      stayDate: { gte: getTodayDateOnly() },
+      ...(input.action === "delete"
+        ? {}
+        : { stayDate: { gte: getEarliestCurrentBedNightDate() } }),
     },
-    select: { stayDate: true },
+    select: {
+      stayDate: true,
+      bookingGuest: { select: { firstName: true, lastName: true } },
+    },
     orderBy: { stayDate: "asc" },
+    // One more than we will name, which is all it takes to know there are more.
+    take: BED_ALLOCATION_GUARD_MESSAGE_ROWS + 1,
   });
 
   if (blockingAllocations.length === 0) {
     return;
   }
 
+  const truncated =
+    blockingAllocations.length > BED_ALLOCATION_GUARD_MESSAGE_ROWS;
+  const named = blockingAllocations.slice(0, BED_ALLOCATION_GUARD_MESSAGE_ROWS);
+
   const blockingDates = [
+    ...new Set(named.map((allocation) => formatDateOnly(allocation.stayDate))),
+  ];
+  const occupants = [
     ...new Set(
-      blockingAllocations.map((allocation) =>
-        formatDateOnly(allocation.stayDate),
-      ),
+      named.map((allocation) => guestName(allocation.bookingGuest)).filter(Boolean),
     ),
   ];
+  const dateList = `${blockingDates.join(", ")}${truncated ? " and more" : ""}`;
+  const occupied =
+    occupants.length > 0
+      ? ` (${occupants.join(", ")}${truncated ? " and others" : ""})`
+      : "";
+  const window = input.action === "delete" ? "allocations" : "current or future allocations";
 
   throw new BedAllocationAdminError(
-    `Cannot ${input.action} this bed while future allocations exist on ${blockingDates.join(", ")}. Clear those dates on the bed allocation page first.`,
+    `Cannot ${input.action} this bed while ${window} exist on ${dateList}${occupied}. Clear those dates on the bed allocation page first.`,
     409,
   );
 }
@@ -1141,9 +1222,29 @@ async function assertNoCustodianHoldsForBed(input: {
 
 export async function deleteBedAllocationBed(input: {
   id: string;
-  db?: BedAllocationDb;
 }) {
-  const db = input.db ?? prisma;
+  return prisma.$transaction(async (tx) => {
+    await tx.$executeRaw`SELECT pg_advisory_xact_lock(1)`;
+    const bedKey = await tx.lodgeBed.findUnique({
+      where: { id: input.id },
+      select: { room: { select: { lodgeId: true } } },
+    });
+    if (!bedKey) {
+      throw new BedAllocationAdminError("Bed not found", 404);
+    }
+    if (bedKey.room.lodgeId) {
+      await acquireLodgeCapacityLock(tx, bedKey.room.lodgeId);
+    }
+    return deleteBedAllocationBedWithLocksHeld({ ...input, db: tx });
+  });
+}
+
+/** Internal bed delete for callers that already hold global -> owning lodge. */
+export async function deleteBedAllocationBedWithLocksHeld(input: {
+  id: string;
+  db: BedAllocationDb;
+}) {
+  const db = input.db;
   await assertNoFutureBedAllocations({
     bedId: input.id,
     db,
@@ -1255,19 +1356,34 @@ export async function deleteBedAllocationRoom(input: {
   // the bed DELETE and does not pass it; callers that carry lodge context can
   // scope the delete defensively.
   lodgeId?: string;
-  db?: BedAllocationDb;
-  // Explicit return type: the function references itself in the $transaction
-  // branch, which TS cannot infer through (TS7023), matching the annotation on
-  // the other self-recursive transaction helpers here.
 }): Promise<LodgeRoom> {
-  // Run the history guard and the bed+room deletes in one transaction so a
-  // concurrent allocation cannot slip between the check and the delete. A
-  // caller-supplied client is assumed to already be transactional.
-  if (!input.db) {
-    return prisma.$transaction((tx) =>
-      deleteBedAllocationRoom({ ...input, db: tx }),
-    );
-  }
+  return prisma.$transaction(async (tx) => {
+    await tx.$executeRaw`SELECT pg_advisory_xact_lock(1)`;
+    const roomKey = await tx.lodgeRoom.findFirst({
+      where: {
+        id: input.id,
+        ...(input.lodgeId ? lodgeNullTolerantScope(input.lodgeId) : {}),
+      },
+      select: { lodgeId: true },
+    });
+    if (!roomKey) {
+      throw new BedAllocationAdminError("Room not found", 404);
+    }
+    if (roomKey.lodgeId) {
+      await acquireLodgeCapacityLock(tx, roomKey.lodgeId);
+    }
+    return deleteBedAllocationRoomWithLocksHeld({ ...input, db: tx });
+  });
+}
+
+/** Internal room delete for callers that already hold global -> owning lodge. */
+export async function deleteBedAllocationRoomWithLocksHeld(input: {
+  id: string;
+  lodgeId?: string;
+  db: BedAllocationDb;
+}): Promise<LodgeRoom> {
+  // The history guard and bed+room deletes share the caller's transaction so a
+  // concurrent allocation cannot slip between them.
   const db = input.db;
 
   const room = await db.lodgeRoom.findFirst({
@@ -1423,6 +1539,19 @@ async function loadBookingRecords(
           ageTier: true,
           stayStart: true,
           stayEnd: true,
+          nights: {
+            where: { stayDate: { gte: range.from, lt: range.to } },
+            select: { stayDate: true },
+            orderBy: { stayDate: "asc" },
+          },
+          member: {
+            select: {
+              familyGroupMemberships: {
+                select: { familyGroupId: true },
+                orderBy: { familyGroupId: "asc" },
+              },
+            },
+          },
         },
         orderBy: [{ createdAt: "asc" }, { id: "asc" }],
       },
@@ -1463,6 +1592,14 @@ async function loadAllocationRecords(
           firstName: true,
           lastName: true,
           ageTier: true,
+          member: {
+            select: {
+              familyGroupMemberships: {
+                select: { familyGroupId: true },
+                orderBy: { familyGroupId: "asc" },
+              },
+            },
+          },
         },
       },
       room: {
@@ -1562,9 +1699,9 @@ function serializeBookings(
   }));
 }
 
-function serializeAllocations(
+function serializePlannerAllocations(
   allocations: DashboardAllocationRecord[],
-): DashboardAllocation[] {
+): PlannerAllocation[] {
   return allocations.map((allocation) => ({
     id: allocation.id,
     bookingId: allocation.bookingId,
@@ -1588,29 +1725,70 @@ function serializeAllocations(
       hasAdminCapacityHold: Boolean(allocation.booking.adminCapacityHoldAt),
     }),
     isSecondOccupant: allocation.isSecondOccupant,
+    familyGroupIds:
+      allocation.bookingGuest.member?.familyGroupMemberships.map(
+        (membership) => membership.familyGroupId,
+      ) ?? [],
   }));
+}
+
+function toDashboardAllocation(
+  allocation: PlannerAllocation,
+): DashboardAllocation {
+  return {
+    id: allocation.id,
+    bookingId: allocation.bookingId,
+    bookingGuestId: allocation.bookingGuestId,
+    guestName: allocation.guestName,
+    guestAgeTier: allocation.guestAgeTier,
+    roomId: allocation.roomId,
+    roomName: allocation.roomName,
+    bedId: allocation.bedId,
+    bedName: allocation.bedName,
+    stayDate: allocation.stayDate,
+    source: allocation.source,
+    approvedAt: allocation.approvedAt,
+    approvedByName: allocation.approvedByName,
+    isSecondOccupant: allocation.isSecondOccupant,
+    bookingStatus: allocation.bookingStatus,
+    holdsCapacity: allocation.holdsCapacity,
+  };
+}
+
+function toDashboardGuestNight(
+  guestNight: PlannerGuestNight,
+): DashboardGuestNight {
+  return {
+    bookingId: guestNight.bookingId,
+    bookingGuestId: guestNight.bookingGuestId,
+    guestName: guestNight.guestName,
+    guestAgeTier: guestNight.guestAgeTier,
+    memberName: guestNight.memberName,
+    stayDate: guestNight.stayDate,
+  };
 }
 
 function buildGuestNightRows(
   bookings: DashboardBookingRecord[],
-  range: BedAllocationDateRange,
-): DashboardGuestNight[] {
-  const rows: DashboardGuestNight[] = [];
+): PlannerGuestNight[] {
+  const rows: PlannerGuestNight[] = [];
 
   for (const booking of bookings) {
     const bookingMemberName = memberName(booking.member);
 
     for (const guest of booking.guests) {
-      const clamped = clampGuestToRange(guest, range);
-
-      for (const date of eachDateOnlyInRange(clamped.stayStart, clamped.stayEnd)) {
+      for (const night of guest.nights) {
         rows.push({
           bookingId: booking.id,
           bookingGuestId: guest.id,
           guestName: guestName(guest),
           guestAgeTier: guest.ageTier,
           memberName: bookingMemberName,
-          stayDate: formatDateOnly(date),
+          stayDate: formatDateOnly(night.stayDate),
+          familyGroupIds:
+            guest.member?.familyGroupMemberships.map(
+              (membership) => membership.familyGroupId,
+            ) ?? [],
         });
       }
     }
@@ -1625,7 +1803,7 @@ function guestNightKey(bookingGuestId: string, stayDate: string) {
 
 function candidateGuestBookings(
   bookings: DashboardBookingRecord[],
-  guestNights: DashboardGuestNight[],
+  guestNights: PlannerGuestNight[],
 ): BedAllocationBooking[] {
   const bookingById = new Map(bookings.map((booking) => [booking.id, booking]));
   const guestsByBooking = new Map<string, BedAllocationBooking["guests"]>();
@@ -1644,6 +1822,8 @@ function candidateGuestBookings(
       ageTier: guestNight.guestAgeTier,
       stayStart,
       stayEnd,
+      nights: [guestNight.stayDate],
+      familyGroupIds: guestNight.familyGroupIds,
     });
     guestsByBooking.set(booking.id, guests);
   }
@@ -1869,12 +2049,58 @@ export async function getBedAllocationDashboard(input: {
 }): Promise<BedAllocationDashboardPayload> {
   const db = input.db ?? prisma;
   const [settings, rooms, bookings, allocationRecords] = await Promise.all([
-    getBedAllocationSettings(db, input.lodgeId),
+    getEffectiveBedAllocationSettings(db, input.lodgeId),
     listBedAllocationRooms(db, input.lodgeId),
     loadBookingRecords(input.range, db, input.lodgeId),
     loadAllocationRecords(input.range, db, input.lodgeId),
   ]);
-  const serializedAllocations = serializeAllocations(allocationRecords);
+  const visiblePlannerAllocations =
+    serializePlannerAllocations(allocationRecords);
+  const serializedAllocations = visiblePlannerAllocations.map(
+    toDashboardAllocation,
+  );
+
+  // Planner-only continuity context: the board still returns and renders only
+  // the requested window, but a guest allocated just outside it must influence
+  // STAY_CONTINUITY when an adjacent visible night is suggested. Load only the
+  // overlapping board bookings' full envelopes and keep those extra rows out
+  // of `serializedAllocations` and every response collection.
+  let plannerAllocationRecords = allocationRecords;
+  if (settings.autoAllocationEnabled && bookings.length > 0) {
+    const contextFrom = bookings.reduce(
+      (earliest, booking) =>
+        booking.checkIn < earliest ? booking.checkIn : earliest,
+      input.range.from,
+    );
+    const contextTo = bookings.reduce(
+      (latest, booking) =>
+        booking.checkOut > latest ? booking.checkOut : latest,
+      input.range.to,
+    );
+    if (contextFrom < input.range.from || contextTo > input.range.to) {
+      const bookingIds = new Set(bookings.map((booking) => booking.id));
+      const visibleIds = new Set(allocationRecords.map((row) => row.id));
+      const contextRecords = await loadAllocationRecords(
+        {
+          from: contextFrom,
+          to: contextTo,
+          fromDate: formatDateOnly(contextFrom),
+          toDate: formatDateOnly(contextTo),
+        },
+        db,
+        input.lodgeId,
+      );
+      plannerAllocationRecords = [
+        ...allocationRecords,
+        ...contextRecords.filter(
+          (row) => bookingIds.has(row.bookingId) && !visibleIds.has(row.id),
+        ),
+      ];
+    }
+  }
+  const serializedPlannerAllocations = serializePlannerAllocations(
+    plannerAllocationRecords,
+  );
 
   // Exclusive whole-lodge holds (ADR-001, issues #119/#120). A held booking
   // implicitly occupies every bed, so it is short-circuited OUT of per-bed
@@ -1892,13 +2118,13 @@ export async function getBedAllocationDashboard(input: {
     }));
   const heldBookingIds = new Set(heldSpans.map((held) => held.id));
 
-  const allGuestNights = buildGuestNightRows(bookings, input.range);
+  const allGuestNights = buildGuestNightRows(bookings);
   const allocatedGuestNights = new Set(
     serializedAllocations.map((allocation) =>
       guestNightKey(allocation.bookingGuestId, allocation.stayDate),
     ),
   );
-  const unallocatedGuestNights = allGuestNights.filter(
+  const unallocatedPlannerGuestNights = allGuestNights.filter(
     (guestNight) =>
       // A held booking needs no per-bed placement (#120): keep its guests out
       // of the awaiting-allocation bucket AND out of the planner entirely.
@@ -1906,6 +2132,9 @@ export async function getBedAllocationDashboard(input: {
       !allocatedGuestNights.has(
         guestNightKey(guestNight.bookingGuestId, guestNight.stayDate),
       ),
+  );
+  const unallocatedGuestNights = unallocatedPlannerGuestNights.map(
+    toDashboardGuestNight,
   );
 
   // Board representation for each hold (#120): the group + the held nights that
@@ -1975,20 +2204,33 @@ export async function getBedAllocationDashboard(input: {
   );
 
   const plannerRooms = buildPlannerRooms(rooms);
-  const plannerBookings = candidateGuestBookings(bookings, unallocatedGuestNights);
+  const plannerBookings = candidateGuestBookings(
+    bookings,
+    unallocatedPlannerGuestNights,
+  );
   const plan = settings.autoAllocationEnabled
     ? buildFirstFitBedAllocationPlan({
         enabled: true,
+        // #2656: the planner is pure, so it hands a detected bookkeeping
+        // divergence back rather than logging it itself. Test runs still throw;
+        // a live board render logs and breadcrumbs instead of staying silent.
+        onInvariantViolation: (message) =>
+          reportBedAllocationInvariantViolation(message, {
+            lodgeId: input.lodgeId ?? null,
+            source: "getBedAllocationDashboard",
+          }),
+        allocationPriorityOrder: settings.allocationPriorityOrder,
         rooms: plannerRooms,
         bookings: plannerBookings,
         occupiedBedNights: [
-          ...serializedAllocations.map((allocation) => ({
+          ...serializedPlannerAllocations.map((allocation) => ({
             bedId: allocation.bedId,
             bookingId: allocation.bookingId,
             bookingGuestId: allocation.bookingGuestId,
             roomId: allocation.roomId,
             stayDate: allocation.stayDate,
             ageTier: allocation.guestAgeTier,
+            familyGroupIds: allocation.familyGroupIds ?? [],
           })),
           ...custodianOccupiedBedNightsForPlanner(
             custodianBedHolds,
@@ -2121,8 +2363,17 @@ export async function countGuestsAwaitingBed(input: {
           },
           select: {
             id: true,
-            stayStart: true,
-            stayEnd: true,
+            // The board builds its awaiting-allocation set from these rows and
+            // nothing else (`buildGuestNightRows`), so this counter must too
+            // (#2628). It used to expand `stayStart`/`stayEnd` instead, which
+            // filled a sparse stay's internal gaps with nights no allocator will
+            // ever place — reporting that guest as awaiting a bed forever, on a
+            // card the board itself does not list. Window-scoped exactly like
+            // `loadBookingRecords`' own night load.
+            nights: {
+              where: { stayDate: { gte: from, lt: to } },
+              select: { stayDate: true },
+            },
           },
         },
       },
@@ -2148,9 +2399,11 @@ export async function countGuestsAwaitingBed(input: {
   const awaitingGuestIds = new Set<string>();
   for (const booking of bookings) {
     for (const guest of booking.guests) {
-      const clamped = clampGuestToRange(guest, { from, to });
-      for (const date of eachDateOnlyInRange(clamped.stayStart, clamped.stayEnd)) {
-        if (!allocatedGuestNights.has(guestNightKey(guest.id, formatDateOnly(date)))) {
+      // `?? []` is the board's rule, stated (#2628): a guest carrying no
+      // `BookingGuestNight` rows has no placeable nights, so the board never
+      // lists them and this card must not count them either.
+      for (const night of getExplicitGuestBedNightKeys(guest) ?? []) {
+        if (!allocatedGuestNights.has(guestNightKey(guest.id, night))) {
           awaitingGuestIds.add(guest.id);
           // One unallocated night makes the guest awaiting; count them once.
           break;
@@ -2166,97 +2419,65 @@ export async function runAutoBedAllocation(input: {
   range: BedAllocationDateRange;
   // Auto-allocation follows the board's lodge scope, so a suggestion can
   // never place a guest into another lodge's bed.
-  lodgeId?: string;
-  db?: BedAllocationDb;
+  lodgeId: string;
 }) {
-  const db = input.db ?? prisma;
-  const dashboard = await getBedAllocationDashboard({
-    range: input.range,
-    lodgeId: input.lodgeId,
-    db,
-  });
-
-  if (!dashboard.settings.autoAllocationEnabled) {
-    throw new BedAllocationAdminError(
-      "Auto allocation is disabled; use manual allocation.",
-      409,
-    );
-  }
-
-  if (dashboard.suggestedAllocations.length === 0) {
-    return { count: 0 };
-  }
-
-  const candidateRows = dashboard.suggestedAllocations.map((allocation) => ({
-    bookingId: allocation.bookingId,
-    bookingGuestId: allocation.bookingGuestId,
-    roomId: allocation.roomId,
-    bedId: allocation.bedId,
-    stayDate: parseDateOnly(allocation.stayDate),
-    source: "AUTO" as const,
-  }));
-
-  // Which lodge is each suggestion's room in? A scoped run already knows (the
-  // whole board is that lodge); a club-wide run resolves it once, here. This
-  // answers two questions with one lookup: which lodges the write must lock,
-  // and — for the #2317 whole-lodge-hold re-filter — which lodge's hold could
-  // take a given suggestion's bed. Resolved before the transaction opens so the
-  // lock stays the transaction's first statement.
-  const roomLodgeIdById = new Map<string, string>();
-  const candidateRoomLodgeIds = input.lodgeId
-    ? []
-    : (
-        await db.lodgeRoom.findMany({
-          where: {
-            id: { in: [...new Set(candidateRows.map((row) => row.roomId))] },
-          },
-          select: { id: true, lodgeId: true },
-        })
-      ).map((room) => {
-        roomLodgeIdById.set(room.id, room.lodgeId);
-        return room.lodgeId;
-      });
-  const lodgeIds = input.lodgeId
-    ? [input.lodgeId]
-    : [...new Set(candidateRoomLodgeIds)].sort();
-
   /**
-   * The locked write half of the run (#2286).
+   * Build and write one authoritative plan under the mutation topology.
    *
-   * This function used to write with a plain `db.bedAllocation.createMany` and
-   * NO transaction and NO lock at all — every check above ran against an
-   * unlocked dashboard read. That was survivable while the only concurrent
-   * writer was another allocation path guarded by the same unique indexes; a
-   * custodian hold is not protected by any index, so the re-filter below has to
-   * run under the same per-lodge advisory lock the hold writer takes, inside
-   * the same transaction as the write.
+   * The board GET is only a preview. Inventory, booking state, allocations,
+   * custodian/whole-lodge holds and every hard planner predicate are mutable,
+   * so a plan built from that response cannot be committed later. The action
+   * acquires global -> selected lodge first, then rebuilds the complete scoped
+   * dashboard through the transaction client and writes only that locked plan.
+   * Inventory writers and allocation counterparts share these keys, preventing
+   * a bed/room deactivate, retype, move, prune or approval from landing between
+   * this authoritative read and `createMany`.
    */
   const writeUnderLocks = async (
     tx: BedAllocationDb,
-    lodgeIds: string[],
   ): Promise<{ count: number }> => {
-    // Locks FIRST, in sorted order: the auto-allocate route accepts an omitted
-    // lodgeId (a club-wide run), so this transaction can span several lodges
-    // and must never deadlock against the per-lodge transactions taking the
-    // same keys one at a time. Sorted acquisition is the codebase's established
-    // multi-lodge pattern (instrumentation.node.ts draft cleanup).
-    for (const lodgeId of lodgeIds) {
-      await acquireLodgeCapacityLock(tx, lodgeId);
+    await tx.$executeRaw`SELECT pg_advisory_xact_lock(1)`;
+    const lodgeId = input.lodgeId;
+    await acquireLodgeCapacityLock(tx, lodgeId);
+    if (!(await resolveOptionalActiveLodgeId(tx, lodgeId))) {
+      throw new BedAllocationAdminError(
+        "Lodge not found or not active",
+        400,
+      );
     }
 
-    // Write-time re-check (#2285 review): the dashboard read above is not held
-    // under any lock, so an exclusive hold set (or a cancel / soft delete) can
-    // commit between the read and this write. Its prune frees the unique keys,
-    // so `skipDuplicates` cannot stop us re-inserting rows for a booking that
-    // must own none — re-read the payload's bookings and drop those that are no
-    // longer allocatable. Shared with the lifecycle planner so both writers
-    // agree.
+    const dashboard = await getBedAllocationDashboard({
+      range: input.range,
+      lodgeId,
+      db: tx,
+    });
+    if (!dashboard.settings.autoAllocationEnabled) {
+      throw new BedAllocationAdminError(
+        "Auto allocation is disabled; use manual allocation.",
+        409,
+      );
+    }
+    if (dashboard.suggestedAllocations.length === 0) return { count: 0 };
+
+    const candidateRows = dashboard.suggestedAllocations.map((allocation) => ({
+      bookingId: allocation.bookingId,
+      bookingGuestId: allocation.bookingGuestId,
+      roomId: allocation.roomId,
+      bedId: allocation.bedId,
+      stayDate: parseDateOnly(allocation.stayDate),
+      source: "AUTO" as const,
+    }));
+
+    // Immediate write-time defence in depth, shared with the lifecycle planner.
+    // The authoritative plan above is already under global -> lodge, but keep
+    // the narrow booking/hold checks adjacent to the write so an uncoordinated
+    // legacy/direct-SQL mutation remains conservative rather than restorative.
     const { rows, droppedBookingIds } =
       await dropAllocationRowsForUnallocatableBookings(tx, candidateRows);
 
     if (droppedBookingIds.length > 0) {
       logger.info(
-        { droppedBookingIds, lodgeId: input.lodgeId ?? null },
+        { droppedBookingIds, lodgeId },
         "Run Auto Allocation write-time re-check dropped suggestions for bookings that became unallocatable (held/cancelled/deleted) after planning",
       );
     }
@@ -2264,17 +2485,15 @@ export async function runAutoBedAllocation(input: {
       return { count: 0 };
     }
 
-    // Custodian re-filter (#2286), defence in depth: the planner was already
-    // fed these bed-nights as blocking unknown-occupant rows, but that read was
-    // unlocked. Re-read the holds HERE, under the locks, and drop any
-    // suggestion that would land on one.
+    // Custodian re-filter (#2286), defence in depth. Re-read the holds HERE,
+    // under the same locked transaction, and drop any suggestion targeting one.
     const stayDates = rows.map((row) => row.stayDate);
     const from = stayDates.reduce((a, b) => (a < b ? a : b));
     const latest = stayDates.reduce((a, b) => (a > b ? a : b));
     const toExclusive = addDaysDateOnly(latest, 1);
     const heldKeys = custodianHeldBedNightKeys(
       await findCustodianBedHolds({
-        lodgeId: input.lodgeId,
+        lodgeId,
         from,
         toExclusive,
         db: tx,
@@ -2288,7 +2507,7 @@ export async function runAutoBedAllocation(input: {
       logger.info(
         {
           droppedCount: rows.length - writableRows.length,
-          lodgeId: input.lodgeId ?? null,
+          lodgeId,
         },
         "Run Auto Allocation dropped suggestions targeting custodian-held bed-nights",
       );
@@ -2298,35 +2517,25 @@ export async function runAutoBedAllocation(input: {
     }
 
     // Whole-lodge-hold re-filter (#2317), the exact mirror of the custodian one
-    // above. The planner WAS fed these nights as blocking unattributed
-    // occupancy — but from the same unlocked dashboard read, and the
-    // unallocatable re-check above cannot cover this: it asks whether the
-    // SUGGESTED booking became unallocatable, and a hold set on somebody ELSE's
-    // booking leaves the suggested booking perfectly allocatable while taking
-    // every bed it was about to be placed on. Re-read the holds HERE, under the
-    // locks the hold writer takes, and drop any suggestion landing on a held
-    // lodge-night. A row whose lodge cannot be resolved is treated as held by
-    // ANY hold (null-tolerant), which is the conservative direction.
+    // above. The booking re-check cannot cover a hold set on somebody ELSE's
+    // booking, so retain this final narrow guard even though the locked planner
+    // has already consumed the same authoritative hold set.
     const isWholeLodgeHeld = buildWholeLodgeHeldNightPredicate(
       await findBlockingWholeLodgeHolds({
-        lodgeId: input.lodgeId,
+        lodgeId,
         from,
         toExclusive,
         db: tx,
       }),
     );
     const unheldRows = writableRows.filter(
-      (row) =>
-        !isWholeLodgeHeld(
-          input.lodgeId ?? roomLodgeIdById.get(row.roomId) ?? null,
-          formatDateOnly(row.stayDate),
-        ),
+      (row) => !isWholeLodgeHeld(lodgeId, formatDateOnly(row.stayDate)),
     );
     if (unheldRows.length < writableRows.length) {
       logger.info(
         {
           droppedCount: writableRows.length - unheldRows.length,
-          lodgeId: input.lodgeId ?? null,
+          lodgeId,
         },
         "Run Auto Allocation dropped suggestions targeting whole-lodge-held nights",
       );
@@ -2341,15 +2550,7 @@ export async function runAutoBedAllocation(input: {
     });
   };
 
-  // A caller-supplied client is already transactional, so run inline on it
-  // rather than nesting a transaction (the other self-wrapping helpers here do
-  // the same). The locks are still taken on that client — pg advisory locks are
-  // re-entrant within a session, so re-acquiring one the caller already holds
-  // is a no-op, and acquiring one it does not is exactly what we need.
-  if (input.db) {
-    return writeUnderLocks(input.db, lodgeIds);
-  }
-  return prisma.$transaction((tx) => writeUnderLocks(tx, lodgeIds));
+  return prisma.$transaction(writeUnderLocks);
 }
 
 async function assertGuestAndBedForAllocation(input: {
@@ -2723,31 +2924,17 @@ async function resolveBedLodgeIdForLock(
   return bed?.room.lodgeId ?? null;
 }
 
-export async function manuallyAllocateBed(input: {
+interface ManualAllocationInput {
   bookingGuestId: string;
   bedId: string;
   stayDate: string;
-  db?: BedAllocationDb;
-  // Explicit return type: the function references itself in the $transaction
-  // branch, which TS cannot infer through (TS7023).
-}): Promise<{ allocation: BedAllocation; promotedPartner: BedAllocation | null }> {
+}
+
+export async function manuallyAllocateBedWithLocksHeld(
+  input: ManualAllocationInput & { db: BedAllocationDb },
+): Promise<{ allocation: BedAllocation; promotedPartner: BedAllocation | null }> {
   if (!isDateOnlyString(input.stayDate)) {
     throw new BedAllocationAdminError("Invalid stay date", 400);
-  }
-
-  // Pre-move read + upsert + orphan promotion must be atomic so moving a shared
-  // double's primary to another bed can't strand its partner between the writes
-  // (#1750). A caller-supplied client is assumed to already be transactional.
-  if (!input.db) {
-    // #2286: this is now a capacity-relevant write (it must not land on a
-    // custodian-held bed-night), so the self-wrapped transaction takes the same
-    // per-lodge advisory lock the custodian-hold writer and every booking
-    // admission take, FIRST, before any check.
-    const lockLodgeId = await resolveBedLodgeIdForLock(input.bedId, prisma);
-    return prisma.$transaction(async (tx) => {
-      if (lockLodgeId) await acquireLodgeCapacityLock(tx, lockLodgeId);
-      return manuallyAllocateBed({ ...input, db: tx });
-    });
   }
   const db = input.db;
 
@@ -2780,6 +2967,20 @@ export async function manuallyAllocateBed(input: {
   }
 }
 
+export async function manuallyAllocateBed(
+  input: ManualAllocationInput,
+): Promise<{ allocation: BedAllocation; promotedPartner: BedAllocation | null }> {
+  if (!isDateOnlyString(input.stayDate)) {
+    throw new BedAllocationAdminError("Invalid stay date", 400);
+  }
+  const lockLodgeId = await resolveBedLodgeIdForLock(input.bedId, prisma);
+  return prisma.$transaction(async (tx) => {
+    await tx.$executeRaw`SELECT pg_advisory_xact_lock(1)`;
+    if (lockLodgeId) await acquireLodgeCapacityLock(tx, lockLodgeId);
+    return manuallyAllocateBedWithLocksHeld({ ...input, db: tx });
+  });
+}
+
 export interface SameDateAllocationMoveResult {
   allocations: BedAllocation[];
   promotedPartners: BedAllocation[];
@@ -2805,12 +3006,15 @@ export interface SameDateAllocationMoveResult {
  * deliberately from bucket-to-board bulk allocation, whose existing
  * place-what-you-can semantics remain unchanged.
  */
-export async function moveBedAllocationsSameDate(input: {
+interface SameDateAllocationMoveInput {
   allocationIds: string[];
   bedId: string;
   actorMemberId: string;
-  db?: BedAllocationDb;
-}): Promise<SameDateAllocationMoveResult> {
+}
+
+export async function moveBedAllocationsSameDateWithLocksHeld(
+  input: SameDateAllocationMoveInput & { db: BedAllocationDb },
+): Promise<SameDateAllocationMoveResult> {
   const allocationIds = [...new Set(input.allocationIds)];
   if (allocationIds.length === 0) {
     throw new BedAllocationAdminError(
@@ -2871,7 +3075,7 @@ export async function moveBedAllocationsSameDate(input: {
       movedBookingGuestId: string;
     }> = [];
     for (const source of rowsToMove) {
-      const result = await manuallyAllocateBed({
+      const result = await manuallyAllocateBedWithLocksHeld({
         bookingGuestId: source.bookingGuestId,
         bedId: input.bedId,
         stayDate: formatDateOnly(source.stayDate),
@@ -2900,7 +3104,7 @@ export async function moveBedAllocationsSameDate(input: {
         targetId: firstAllocation.bookingId,
         entityType: "BedAllocation",
         entityId: isBulk ? undefined : firstAllocation.id,
-        category: "admin",
+        category: "lodge",
         outcome: "success",
         summary: isBulk
           ? "Bed allocation set across multiple nights"
@@ -2937,7 +3141,7 @@ export async function moveBedAllocationsSameDate(input: {
           targetId: promotedPartner.bookingId,
           entityType: "BedAllocation",
           entityId: promotedPartner.id,
-          category: "admin",
+          category: "lodge",
           outcome: "success",
           summary:
             "Second occupant auto-promoted to primary after the shared double's primary was moved to another bed",
@@ -2958,10 +3162,13 @@ export async function moveBedAllocationsSameDate(input: {
     return { allocations, promotedPartners, noop: false };
   };
 
-  if (input.db) {
-    return moveUnderLock(input.db);
-  }
+  return moveUnderLock(input.db);
+}
 
+export async function moveBedAllocationsSameDate(
+  input: SameDateAllocationMoveInput,
+): Promise<SameDateAllocationMoveResult> {
+  const allocationIds = [...new Set(input.allocationIds)];
   // Only the destination bed is read before the transaction, and only for its
   // immutable lodge key. Source rows, dates, guest state and bed state are all
   // re-read after BOTH locks are held. Global must precede lodge everywhere:
@@ -2972,7 +3179,7 @@ export async function moveBedAllocationsSameDate(input: {
     return await prisma.$transaction(async (tx) => {
       await tx.$executeRaw`SELECT pg_advisory_xact_lock(1)`;
       if (lockLodgeId) await acquireLodgeCapacityLock(tx, lockLodgeId);
-      return moveUnderLock(tx);
+      return moveBedAllocationsSameDateWithLocksHeld({ ...input, db: tx });
     });
   } catch (error) {
     if (
@@ -3014,12 +3221,15 @@ export interface BulkAllocationResult {
  * night (a 409 in the single-night endpoint) is reported as a conflict
  * instead of aborting the nights that succeeded.
  */
-export async function manuallyAllocateBedForNights(input: {
+interface BulkAllocationInput {
   bookingGuestId: string;
   bedId: string;
   stayDates: string[];
-  db?: BedAllocationDb;
-}): Promise<BulkAllocationResult> {
+}
+
+export async function manuallyAllocateBedForNightsWithLocksHeld(
+  input: BulkAllocationInput & { db: BedAllocationDb },
+): Promise<BulkAllocationResult> {
   if (input.stayDates.length === 0) {
     throw new BedAllocationAdminError(
       "At least one stay date is required",
@@ -3038,7 +3248,7 @@ export async function manuallyAllocateBedForNights(input: {
     }
   }
 
-  const db = input.db ?? prisma;
+  const db = input.db;
   const { guest, bed } = await assertGuestAndBedForAllocation({
     bookingGuestId: input.bookingGuestId,
     bedId: input.bedId,
@@ -3053,10 +3263,6 @@ export async function manuallyAllocateBedForNights(input: {
   // #2286: each night's self-wrapped transaction takes the per-lodge advisory
   // lock first, exactly as the single-night path does. Resolved once outside
   // the loop — the bed does not change between nights.
-  const lockLodgeId = input.db
-    ? null
-    : await resolveBedLodgeIdForLock(input.bedId, db);
-
   for (const stayDateStr of [...new Set(input.stayDates)].sort()) {
     const stayDate = parseDateOnly(stayDateStr);
     if (!guestIsStayingOn(guest, stayDate)) {
@@ -3069,12 +3275,12 @@ export async function manuallyAllocateBedForNights(input: {
       // wrap it in its own transaction when no client is injected (so one night's
       // rollback never undoes an already-committed night), or run inline on an
       // injected transactional client. Mirrors the single-night self-wrap (#1750).
-      const { allocation, promotedPartner } = input.db
-        ? await allocateBedNight({ guest, bed, stayDate, db })
-        : await prisma.$transaction(async (tx) => {
-            if (lockLodgeId) await acquireLodgeCapacityLock(tx, lockLodgeId);
-            return allocateBedNight({ guest, bed, stayDate, db: tx });
-          });
+      const { allocation, promotedPartner } = await allocateBedNight({
+        guest,
+        bed,
+        stayDate,
+        db,
+      });
       allocations.push(allocation);
       if (promotedPartner) {
         promotedPartners.push(promotedPartner);
@@ -3109,6 +3315,48 @@ export async function manuallyAllocateBedForNights(input: {
   }
 
   return { allocations, conflicts, skipped, promotedPartners };
+}
+
+export async function manuallyAllocateBedForNights(
+  input: BulkAllocationInput,
+): Promise<BulkAllocationResult> {
+  if (input.stayDates.length === 0) {
+    throw new BedAllocationAdminError("At least one stay date is required", 400);
+  }
+  if (input.stayDates.length > MAX_BED_ALLOCATION_RANGE_NIGHTS) {
+    throw new BedAllocationAdminError(
+      `Cannot allocate more than ${MAX_BED_ALLOCATION_RANGE_NIGHTS} nights at once`,
+      400,
+    );
+  }
+  for (const stayDate of input.stayDates) {
+    if (!isDateOnlyString(stayDate)) {
+      throw new BedAllocationAdminError("Invalid stay date", 400);
+    }
+  }
+  const lockLodgeId = await resolveBedLodgeIdForLock(input.bedId, prisma);
+  const combined: BulkAllocationResult = {
+    allocations: [],
+    conflicts: [],
+    skipped: [],
+    promotedPartners: [],
+  };
+  for (const stayDate of [...new Set(input.stayDates)].sort()) {
+    const result = await prisma.$transaction(async (tx) => {
+      await tx.$executeRaw`SELECT pg_advisory_xact_lock(1)`;
+      if (lockLodgeId) await acquireLodgeCapacityLock(tx, lockLodgeId);
+      return manuallyAllocateBedForNightsWithLocksHeld({
+        ...input,
+        stayDates: [stayDate],
+        db: tx,
+      });
+    });
+    combined.allocations.push(...result.allocations);
+    combined.conflicts.push(...result.conflicts);
+    combined.skipped.push(...result.skipped);
+    combined.promotedPartners.push(...result.promotedPartners);
+  }
+  return combined;
 }
 
 /*
@@ -3391,6 +3639,14 @@ async function classifyBedTakenNights(input: {
       stayDate: { in: input.candidateNights.map(parseDateOnly) },
       bookingGuestId: { not: input.guest.id },
     },
+    // The PRIMARY of a shared DOUBLE must sort first, deterministically (#2669
+    // review). `byNight` below preserves this order and the `BED_TAKEN` refusal
+    // names `occupants[0]`; without an ORDER BY, `(bedId, stayDate)` is not
+    // unique on a shared double (#1701/#2656) so PostgreSQL could return the
+    // SECOND occupant first and the refusal would name the partner rather than
+    // the guest who actually holds the bed. `false` sorts before `true`, and
+    // `bookingGuestId` is a total order within a bed-night.
+    orderBy: [{ isSecondOccupant: "asc" }, { bookingGuestId: "asc" }],
     select: {
       stayDate: true,
       isSecondOccupant: true,
@@ -3549,7 +3805,7 @@ async function recordRangeAssignAudit(
       memberId: actorMemberId,
       targetId: result.bookingId,
       entityType: "BedAllocation",
-      category: "admin",
+      category: "lodge",
       outcome: result.applied ? "success" : "failure",
       summary: result.applied
         ? `Bed assigned across ${result.writtenNights.length} night${result.writtenNights.length === 1 ? "" : "s"}${result.partialByConsent ? " (a subset the admin chose)" : ""}`
@@ -3633,7 +3889,7 @@ async function recordRangeAssignAudit(
         memberId: actorMemberId,
         targetId: result.bookingId,
         entityType: "BedAllocation",
-        category: "admin",
+        category: "lodge",
         outcome: "success",
         summary: `${result.promotedPartners.length} second occupant${result.promotedPartners.length === 1 ? "" : "s"} auto-promoted to primary after a range assignment moved the shared double's primary to another bed`,
         details: `Promoted partner bookings: ${searchableBookingIds.join(", ")}${overflow > 0 ? ` (+${overflow} more in metadata.promotions)` : ""}`,
@@ -3936,36 +4192,41 @@ function retryableRangeWriteCode(error: unknown): string | null {
  * a refusal report — assigned exactly, or refused with a fresh report. Omit it
  * for the ordinary all-or-nothing attempt.
  */
-export async function assignBedRange(input: {
+interface AssignBedRangeInput {
   bookingGuestId: string;
   bedId: string;
   from: string;
   to: string;
   approvedByMemberId: string;
   nights?: string[];
-  db?: BedAllocationDb;
-}): Promise<AssignBedRangeResult> {
-  // Parsed and validated BEFORE any transaction opens (#2251 review C2): a
-  // malformed range, or one absurd enough to blow the night cap, must never
-  // occupy a database connection to be told so.
+}
+
+export async function assignBedRangeWithLocksHeld(
+  input: AssignBedRangeInput & { db: BedAllocationDb },
+): Promise<AssignBedRangeResult> {
   const range = parseBedAssignRange({ from: input.from, to: input.to });
   const consentedNights = input.nights
     ? parseConsentedNights(input.nights, range)
     : undefined;
-
-  const attemptInput = {
+  return runAssignBedRangeAttempt({
     bookingGuestId: input.bookingGuestId,
     bedId: input.bedId,
     range,
     approvedByMemberId: input.approvedByMemberId,
     consentedNights,
-  };
+    db: input.db,
+  });
+}
 
-  // A caller-supplied client is already transactional: run inline and let its
-  // owner handle a write conflict (we cannot retry inside an aborted
-  // transaction).
-  if (input.db) {
-    return runAssignBedRangeAttempt({ ...attemptInput, db: input.db });
+export async function assignBedRange(
+  input: AssignBedRangeInput,
+): Promise<AssignBedRangeResult> {
+  // Parsed and validated BEFORE any transaction opens (#2251 review C2): a
+  // malformed range, or one absurd enough to blow the night cap, must never
+  // occupy a database connection to be told so.
+  const range = parseBedAssignRange({ from: input.from, to: input.to });
+  if (input.nights) {
+    parseConsentedNights(input.nights, range);
   }
 
   // The scan, the writes and the audit row share one transaction so the refusal
@@ -3974,15 +4235,15 @@ export async function assignBedRange(input: {
   // count is fixed (see runAssignBedRangeAttempt) but a 366-night createMany is
   // a big single statement — generous headroom, not a licence to grow the
   // statement count with nights.
-  // #2286: the lodge lock is acquired FIRST inside the transaction, so the
-  // custodian scan below cannot race a hold being created or cleared. Resolved
-  // outside the transaction so it is genuinely the first statement.
+  // #2286: the transaction takes global first and then the lodge key before the
+  // custodian scan, so a hold cannot race the scan and write.
   const lockLodgeId = await resolveBedLodgeIdForLock(input.bedId, prisma);
   const runAttempt = () =>
     prisma.$transaction(
       async (tx) => {
+        await tx.$executeRaw`SELECT pg_advisory_xact_lock(1)`;
         if (lockLodgeId) await acquireLodgeCapacityLock(tx, lockLodgeId);
-        return runAssignBedRangeAttempt({ ...attemptInput, db: tx });
+        return assignBedRangeWithLocksHeld({ ...input, db: tx });
       },
       { timeout: 30_000, maxWait: 10_000 },
     );
@@ -4011,24 +4272,14 @@ export async function assignBedRange(input: {
   }
 }
 
-export async function deleteBedAllocation(input: {
+interface DeleteBedAllocationInput {
   id: string;
-  db?: BedAllocationDb;
-  // Explicit return type: the function references itself in the $transaction
-  // branch, which TS cannot infer through (TS7023), matching the annotation on
-  // the other self-recursive transaction helpers here.
-}): Promise<{ deleted: BedAllocation; promotedPartner: BedAllocation | null }> {
-  // Delete + orphan auto-promotion must be atomic so a failure between the two
-  // writes cannot strand a lone isSecondOccupant=true row (#1743). A
-  // caller-supplied client is assumed to already be transactional.
-  if (!input.db) {
-    return prisma.$transaction((tx) =>
-      deleteBedAllocation({ ...input, db: tx }),
-    );
-  }
-  const db = input.db;
+}
 
-  const deleted = await db.bedAllocation.delete({
+export async function deleteBedAllocationWithLocksHeld(
+  input: DeleteBedAllocationInput & { db: BedAllocationDb },
+): Promise<{ deleted: BedAllocation; promotedPartner: BedAllocation | null }> {
+  const deleted = await input.db.bedAllocation.delete({
     where: { id: input.id },
   });
 
@@ -4044,13 +4295,29 @@ export async function deleteBedAllocation(input: {
   // to the board-move and lifecycle-prune paths (#1750).
   let promotedPartner: BedAllocation | null = null;
   if (!deleted.isSecondOccupant) {
-    const [promoted] = await promoteOrphanedSecondOccupants(db, [
+    const [promoted] = await promoteOrphanedSecondOccupants(input.db, [
       { bedId: deleted.bedId, stayDate: deleted.stayDate },
     ]);
     promotedPartner = promoted ?? null;
   }
 
   return { deleted, promotedPartner };
+}
+
+export async function deleteBedAllocation(
+  input: DeleteBedAllocationInput,
+): Promise<{ deleted: BedAllocation; promotedPartner: BedAllocation | null }> {
+  return prisma.$transaction(async (tx) => {
+    await tx.$executeRaw`SELECT pg_advisory_xact_lock(1)`;
+    const allocationKey = await tx.bedAllocation.findUnique({
+      where: { id: input.id },
+      select: { room: { select: { lodgeId: true } } },
+    });
+    if (allocationKey?.room.lodgeId) {
+      await acquireLodgeCapacityLock(tx, allocationKey.room.lodgeId);
+    }
+    return deleteBedAllocationWithLocksHeld({ ...input, db: tx });
+  });
 }
 
 /**
@@ -4086,32 +4353,7 @@ export async function isBookingBedAllocationLocked(input: {
   return approved !== null;
 }
 
-/**
- * How many of a booking's bed nights are already approved — the booking-wide
- * count, ignoring any date window (#2252 review).
- *
- * `isBookingBedAllocationLocked` above answers "is the member's room request
- * locked?", which only needs existence. The in-booking panel needs the COUNT,
- * because it must decide whether the run an officer is about to remove holds
- * the booking's LAST approved nights — and on a stay longer than the 31-night
- * read window, the panel's own page cannot see the approved nights sitting on
- * the other pages. Deciding from the page alone made the "this re-opens the
- * member's room request" warning fire on stays where it was simply false.
- */
-export async function countApprovedBedAllocationNights(input: {
-  bookingId: string;
-  db?: BedAllocationDb;
-}): Promise<number> {
-  const db = input.db ?? prisma;
-  return db.bedAllocation.count({
-    where: {
-      bookingId: input.bookingId,
-      approvedAt: { not: null },
-    },
-  });
-}
-
-export async function approveBedAllocations(input: {
+interface ApproveBedAllocationsInput {
   approvedByMemberId: string;
   allocationIds?: string[];
   range?: BedAllocationDateRange;
@@ -4128,58 +4370,115 @@ export async function approveBedAllocations(input: {
   // Range approval follows the board's lodge scope so approving one lodge's
   // board never approves another lodge's pending allocations.
   lodgeId?: string;
-  db?: BedAllocationDb;
-}) {
-  const db = input.db ?? prisma;
-  const where: Prisma.BedAllocationWhereInput = {
-    approvedAt: null,
-  };
+}
 
+function buildApproveBedAllocationsWhere(
+  input: ApproveBedAllocationsInput,
+): Prisma.BedAllocationWhereInput {
+  const where: Prisma.BedAllocationWhereInput = { approvedAt: null };
   if (input.bookingId) {
     where.bookingId = input.bookingId;
-    /*
-     * ADR-003 lodge scope on the BOOKING selector too (#2252 review).
-     *
-     * The in-booking panel's read is lodge-scoped, so a row of this booking
-     * sitting in another lodge's room — an anomaly, but a reachable one across
-     * a booking that moved lodge, or a pre-backfill row — is invisible on the
-     * card. Without this the approve would stamp it anyway, making the write
-     * scope strictly wider than the read: the officer would confirm a bed they
-     * were never shown. Scoped, Confirm can only approve what was on screen.
-     *
-     * Omitting `lodgeId` still means club-wide, exactly as before, so the
-     * board's own selector forms are untouched (the board never sends a
-     * bookingId).
-     */
-    if (input.lodgeId) {
-      where.room = lodgeNullTolerantScope(input.lodgeId);
-    }
+    if (input.lodgeId) where.room = lodgeNullTolerantScope(input.lodgeId);
   }
-
   if (input.allocationIds?.length) {
     where.id = { in: input.allocationIds };
   } else if (input.range) {
-    where.stayDate = {
-      gte: input.range.from,
-      lt: input.range.to,
-    };
-    if (input.lodgeId) {
-      where.room = lodgeNullTolerantScope(input.lodgeId);
-    }
+    where.stayDate = { gte: input.range.from, lt: input.range.to };
+    if (input.lodgeId) where.room = lodgeNullTolerantScope(input.lodgeId);
   } else if (!input.bookingId) {
-    // Fires only when NONE of the three selectors is given: an unselected
-    // approve would otherwise stamp every pending allocation in the database.
     throw new BedAllocationAdminError(
       "Select allocations, a booking, or a date range to approve.",
       400,
     );
   }
+  // A supplied lodge scope narrows EVERY selector form, including explicit ids.
+  // Otherwise `allocationIds + lodgeId` could lock only the supplied lodge while
+  // row-locking and approving ids from another lodge.
+  if (input.lodgeId) where.room = lodgeNullTolerantScope(input.lodgeId);
+  return where;
+}
 
-  return db.bedAllocation.updateMany({
+export async function approveBedAllocationsWithLocksHeld(
+  input: ApproveBedAllocationsInput & { db: BedAllocationDb },
+) {
+  const where = buildApproveBedAllocationsWhere(input);
+
+  return input.db.bedAllocation.updateMany({
     where,
     data: {
       approvedAt: new Date(),
       approvedByMemberId: input.approvedByMemberId,
     },
+  });
+}
+
+export async function approveBedAllocations(input: ApproveBedAllocationsInput) {
+  const lockWhere = buildApproveBedAllocationsWhere(input);
+  // Resolve only immutable lodge keys before opening the transaction. A
+  // mutable allocation pre-read is not sufficient here: a writer already
+  // holding global lock(1) could commit a newly matching row after that read,
+  // and approval would then include its lodge without having taken that lodge's
+  // capacity lock. Lodge-scoped callers stay narrow; the supported legacy
+  // club-wide selector conservatively locks the immutable lodge-id superset.
+  const lodgeIds = input.lodgeId
+    ? [input.lodgeId]
+    : (
+        await prisma.lodge.findMany({
+          select: { id: true },
+          orderBy: { id: "asc" },
+        })
+      ).map((lodge) => lodge.id);
+
+  return prisma.$transaction(async (tx) => {
+    await tx.$executeRaw`SELECT pg_advisory_xact_lock(1)`;
+    for (const lodgeId of lodgeIds) {
+      await acquireLodgeCapacityLock(tx, lodgeId);
+    }
+
+    // Canonical row locks make approval serialize with reset/move on the exact
+    // allocation identities. The update still re-applies its full selector and
+    // `approvedAt: null` fence after these locks.
+    const rowsToLock = await tx.bedAllocation.findMany({
+      where: lockWhere,
+      select: { id: true },
+      orderBy: { id: "asc" },
+    });
+    const rowIds = rowsToLock.map((row) => row.id);
+    if (rowIds.length > 0) {
+      await tx.$executeRaw`
+        SELECT 1
+        FROM "BedAllocation"
+        WHERE "id" IN (${Prisma.join(rowIds)})
+        ORDER BY "id"
+        FOR UPDATE
+      `;
+    }
+
+    const result = await approveBedAllocationsWithLocksHeld({ ...input, db: tx });
+    await createAuditLog(
+      {
+        action: "BED_ALLOCATION_APPROVED",
+        memberId: input.approvedByMemberId,
+        entityType: "BedAllocation",
+        category: "lodge",
+        outcome: "success",
+        summary: "Bed allocations approved",
+        targetId: input.bookingId,
+        metadata: {
+          approvedCount: result.count,
+          allocationIds: input.allocationIds?.slice(0, 250),
+          bookingId: input.bookingId,
+          range: input.range
+            ? {
+                from: formatDateOnly(input.range.from),
+                to: formatDateOnly(input.range.to),
+              }
+            : undefined,
+          lodgeId: input.lodgeId,
+        },
+      },
+      tx,
+    );
+    return result;
   });
 }

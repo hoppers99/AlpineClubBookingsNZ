@@ -13,9 +13,12 @@ import { describe, expect, it, vi } from "vitest";
 vi.mock("server-only", () => ({}));
 
 import {
+  HOSTING_COVERAGE_OWNER_NOTIFICATION_LEASE_MS,
   claimHostingCoverageOwnerNotification,
   completeHostingCoverageOwnerNotification,
   hostingCoverageStateKey,
+  isHostingCoverageOwnerNotificationPending,
+  loadHostingCoverageOwnerNotificationDelivery,
   openOrUpdateHostingCoverageIncident,
   releaseHostingCoverageOwnerNotification,
   resolveHostingCoverageIncidents,
@@ -23,9 +26,14 @@ import {
 import {
   claimHostingCoverageReevaluations,
   completeHostingCoverageReevaluation,
+  deferHostingCoverageReevaluation,
   enqueueHostingCoverageReevaluation,
   failHostingCoverageReevaluation,
+  loadClaimedHostingCoverageReevaluation,
+  releaseHostingCoverageReevaluationContention,
+  renewHostingCoverageReevaluationClaim,
 } from "@/lib/adult-member-hosting-coverage-queue";
+import { acquireHostingCoverageQueueParticipantProof } from "@/lib/adult-member-hosting-queue-participants";
 import type { AdultMemberHostingPolicyExceptionViolation } from "@/lib/booking-policy-exceptions";
 
 function violation(
@@ -120,6 +128,9 @@ function makeIncidentDb(
           if (where.stateKey !== undefined && row.stateKey !== where.stateKey) {
             return false;
           }
+          if (where.cause !== undefined && row.cause !== where.cause) {
+            return false;
+          }
           if (where.OR !== undefined) {
             const matchesNotificationState = where.OR.some((branch: any) => {
               const filter = branch.notifiedStateKey;
@@ -165,6 +176,12 @@ function makeIncidentDb(
             where.ownerNotificationClaimStateKey !== undefined &&
             row.ownerNotificationClaimStateKey !==
               where.ownerNotificationClaimStateKey
+          ) {
+            return false;
+          }
+          if (
+            where.ownerNotificationClaimToken !== undefined &&
+            row.ownerNotificationClaimToken !== where.ownerNotificationClaimToken
           ) {
             return false;
           }
@@ -280,6 +297,82 @@ describe("one active incident per booking, created or folded into (#2576 §16)",
     // One audit row, not two: the drain is at-least-once, and an "officer, look at
     // this" event per sweep would bury the ones that are new.
     expect(audits).toHaveLength(1);
+  });
+
+  it.each([
+    ["system-first", false],
+    ["officer-first", true],
+  ] as const)(
+    "keeps officer cause, actor and reason when identical-state drains race (%s)",
+    async (_label, officerFirst) => {
+      const { db, rows } = makeIncidentDb();
+      const system = {
+        bookingId: "b-main",
+        lodgeId: "lodge-a",
+        cause: "SYSTEM_CHANGE" as const,
+        violation: UNCOVERED,
+      };
+      const officer = {
+        bookingId: "b-main",
+        lodgeId: "lodge-a",
+        cause: "OFFICER_OVERRIDE" as const,
+        violation: UNCOVERED,
+        override: {
+          byMemberId: "officer-1",
+          reason: "Approved after speaking with the family",
+        },
+      };
+
+      await Promise.all(
+        officerFirst
+          ? [
+              openOrUpdateHostingCoverageIncident(officer, db),
+              openOrUpdateHostingCoverageIncident(system, db),
+            ]
+          : [
+              openOrUpdateHostingCoverageIncident(system, db),
+              openOrUpdateHostingCoverageIncident(officer, db),
+            ],
+      );
+
+      expect(rows.filter((row) => row.resolvedAt == null)).toHaveLength(1);
+      expect(rows[0]).toMatchObject({
+        stateKey: hostingCoverageStateKey(UNCOVERED),
+        cause: "OFFICER_OVERRIDE",
+        overriddenByMemberId: "officer-1",
+        overrideReason: "Approved after speaking with the family",
+      });
+      const retry = await openOrUpdateHostingCoverageIncident(officer, db);
+      expect(retry.action).toBe("unchanged");
+      expect(rows.filter((row) => row.resolvedAt == null)).toHaveLength(1);
+    },
+  );
+
+  it("never lets a later identical SYSTEM_CHANGE drain downgrade an officer incident", async () => {
+    const { db, rows } = makeIncidentDb();
+    const officer = {
+      bookingId: "b-main",
+      lodgeId: "lodge-a",
+      cause: "OFFICER_OVERRIDE" as const,
+      violation: UNCOVERED,
+      override: { byMemberId: "officer-1", reason: "Officer decision" },
+    };
+    await openOrUpdateHostingCoverageIncident(officer, db);
+    const system = await openOrUpdateHostingCoverageIncident(
+      {
+        bookingId: "b-main",
+        lodgeId: "lodge-a",
+        cause: "SYSTEM_CHANGE",
+        violation: UNCOVERED,
+      },
+      db,
+    );
+    expect(system.action).toBe("unchanged");
+    expect(rows[0]).toMatchObject({
+      cause: "OFFICER_OVERRIDE",
+      overriddenByMemberId: "officer-1",
+      overrideReason: "Officer decision",
+    });
   });
 
   it("updates the open incident when the uncovered state moves", async () => {
@@ -434,7 +527,128 @@ describe("automatic resolution (#2576 §7, §16)", () => {
   });
 });
 
+function makeNotificationDeliveryDb(
+  overrides: Partial<Record<string, unknown>> = {},
+) {
+  const row: Record<string, any> = {
+    id: "incident-1",
+    bookingId: "booking-1",
+    resolvedAt: null,
+    stateKey: "v1:a",
+    notifiedStateKey: null,
+    ownerNotificationClaimStateKey: "v1:a",
+    ownerNotificationClaimedAt: new Date("2026-07-01T11:59:00.000Z"),
+    ownerNotificationClaimToken: "notification-current",
+    evidence: { affectedNights: ["2026-07-03", "2026-07-04"] },
+    booking: {
+      id: "booking-1",
+      memberId: "owner-1",
+      lodgeId: "lodge-a",
+      checkIn: new Date("2026-07-03T00:00:00.000Z"),
+      checkOut: new Date("2026-07-05T00:00:00.000Z"),
+      member: { firstName: "Owner", email: "owner@example.test" },
+    },
+    ...overrides,
+  };
+  const matches = (where: Record<string, any>) => {
+    for (const field of [
+      "id",
+      "bookingId",
+      "stateKey",
+      "ownerNotificationClaimStateKey",
+      "ownerNotificationClaimToken",
+    ]) {
+      if (where[field] !== undefined && row[field] !== where[field]) return false;
+    }
+    if (where.resolvedAt === null && row.resolvedAt != null) return false;
+    if (
+      where.ownerNotificationClaimedAt instanceof Date &&
+      (!(row.ownerNotificationClaimedAt instanceof Date) ||
+        row.ownerNotificationClaimedAt.getTime() !==
+          where.ownerNotificationClaimedAt.getTime())
+    ) {
+      return false;
+    }
+    if (where.OR) {
+      const notificationPending = where.OR.some((branch: any) => {
+        if (branch.notifiedStateKey === null) return row.notifiedStateKey == null;
+        if (branch.notifiedStateKey?.not !== undefined) {
+          return (
+            row.notifiedStateKey != null &&
+            row.notifiedStateKey !== branch.notifiedStateKey.not
+          );
+        }
+        return false;
+      });
+      if (!notificationPending) return false;
+    }
+    if (where.AND) {
+      const claimAvailable = (where.AND[0]?.OR ?? []).some((branch: any) => {
+        if (branch.ownerNotificationClaimStateKey === null) {
+          return row.ownerNotificationClaimStateKey == null;
+        }
+        if (branch.ownerNotificationClaimStateKey?.not !== undefined) {
+          return (
+            row.ownerNotificationClaimStateKey != null &&
+            row.ownerNotificationClaimStateKey !==
+              branch.ownerNotificationClaimStateKey.not
+          );
+        }
+        if (branch.ownerNotificationClaimedAt?.lt instanceof Date) {
+          return (
+            row.ownerNotificationClaimedAt instanceof Date &&
+            row.ownerNotificationClaimedAt <
+              branch.ownerNotificationClaimedAt.lt
+          );
+        }
+        return false;
+      });
+      if (!claimAvailable) return false;
+    }
+    return true;
+  };
+  const updateMany = vi.fn(async ({ where, data }: any) => {
+    if (!matches(where)) return { count: 0 };
+    Object.assign(row, data);
+    return { count: 1 };
+  });
+  const findFirst = vi.fn(async ({ where }: any) =>
+    matches(where) ? { evidence: row.evidence, booking: row.booking } : null,
+  );
+  return {
+    row,
+    updateMany,
+    findFirst,
+    db: { hostingCoverageIncident: { updateMany, findFirst } } as any,
+  };
+}
+
 describe("the owner is told once per transition (#2576 §16)", () => {
+  it("reports only an unresolved, exact-state, still-unnotified obligation as pending", async () => {
+    const { db, row } = makeNotificationDeliveryDb();
+
+    await expect(isHostingCoverageOwnerNotificationPending(
+      { incidentId: "incident-1", stateKey: "v1:a" }, db,
+    )).resolves.toBe(true);
+
+    row.notifiedStateKey = "v1:a";
+    await expect(isHostingCoverageOwnerNotificationPending(
+      { incidentId: "incident-1", stateKey: "v1:a" }, db,
+    )).resolves.toBe(false);
+
+    row.notifiedStateKey = null;
+    row.stateKey = "v1:b";
+    await expect(isHostingCoverageOwnerNotificationPending(
+      { incidentId: "incident-1", stateKey: "v1:a" }, db,
+    )).resolves.toBe(false);
+
+    row.stateKey = "v1:a";
+    row.resolvedAt = new Date("2026-07-01T12:05:00.000Z");
+    await expect(isHostingCoverageOwnerNotificationPending(
+      { incidentId: "incident-1", stateKey: "v1:a" }, db,
+    )).resolves.toBe(false);
+  });
+
   it("leases a fresh notification once, then stamps it only after success", async () => {
     const { db, rows } = makeIncidentDb([
       {
@@ -445,24 +659,27 @@ describe("the owner is told once per transition (#2576 §16)", () => {
         notifiedStateKey: null,
       },
     ]);
-    expect(
-      await claimHostingCoverageOwnerNotification(
-        { incidentId: "incident-1", stateKey: "v1:a" },
-        db,
-      ),
-    ).toBe(true);
+    const claim = await claimHostingCoverageOwnerNotification(
+      { incidentId: "incident-1", stateKey: "v1:a" },
+      db,
+    );
+    expect(claim).toMatchObject({
+      incidentId: "incident-1",
+      stateKey: "v1:a",
+      claimToken: expect.any(String),
+    });
     // The second drain of the same unchanged problem sends nothing.
     expect(
       await claimHostingCoverageOwnerNotification(
         { incidentId: "incident-1", stateKey: "v1:a" },
         db,
       ),
-    ).toBe(false);
+    ).toBeNull();
     expect(rows[0].notifiedStateKey).toBeNull();
 
     expect(
       await completeHostingCoverageOwnerNotification(
-        { incidentId: "incident-1", stateKey: "v1:a" },
+        claim!,
         db,
       ),
     ).toBe(true);
@@ -473,7 +690,7 @@ describe("the owner is told once per transition (#2576 §16)", () => {
         { incidentId: "incident-1", stateKey: "v1:a" },
         db,
       ),
-    ).toBe(false);
+    ).toBeNull();
   });
 
   it("releases a failed delivery so the unchanged state is retryable", async () => {
@@ -486,22 +703,18 @@ describe("the owner is told once per transition (#2576 §16)", () => {
         notifiedStateKey: null,
       },
     ]);
-    expect(
-      await claimHostingCoverageOwnerNotification(
-        { incidentId: "incident-1", stateKey: "v1:a" },
-        db,
-      ),
-    ).toBe(true);
-    await releaseHostingCoverageOwnerNotification(
+    const claim = await claimHostingCoverageOwnerNotification(
       { incidentId: "incident-1", stateKey: "v1:a" },
       db,
     );
+    expect(claim).not.toBeNull();
+    expect(await releaseHostingCoverageOwnerNotification(claim!, db)).toBe(true);
     expect(
       await claimHostingCoverageOwnerNotification(
         { incidentId: "incident-1", stateKey: "v1:a" },
         db,
       ),
-    ).toBe(true);
+    ).not.toBeNull();
   });
 
   it("notifies again when the uncovered state materially changes", async () => {
@@ -519,7 +732,7 @@ describe("the owner is told once per transition (#2576 §16)", () => {
         { incidentId: "incident-1", stateKey: "v1:b" },
         db,
       ),
-    ).toBe(true);
+    ).not.toBeNull();
   });
 
   it("does not notify about an incident that has been resolved underneath it", async () => {
@@ -537,7 +750,219 @@ describe("the owner is told once per transition (#2576 §16)", () => {
         { incidentId: "incident-1", stateKey: "v1:a" },
         db,
       ),
-    ).toBe(false);
+    ).toBeNull();
+  });
+
+  it("does not let an expired claimant complete or release its successor's lease", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-07-01T00:00:00.000Z"));
+    try {
+      const { db, rows } = makeIncidentDb([
+        {
+          id: "incident-1",
+          bookingId: "b-main",
+          resolvedAt: null,
+          stateKey: "v1:a",
+          notifiedStateKey: null,
+        },
+      ]);
+      const stale = await claimHostingCoverageOwnerNotification(
+        { incidentId: "incident-1", stateKey: "v1:a" },
+        db,
+      );
+      expect(stale).not.toBeNull();
+
+      vi.advanceTimersByTime(16 * 60 * 1000);
+      const current = await claimHostingCoverageOwnerNotification(
+        { incidentId: "incident-1", stateKey: "v1:a" },
+        db,
+      );
+      expect(current).not.toBeNull();
+      expect(current!.claimToken).not.toBe(stale!.claimToken);
+
+      expect(await releaseHostingCoverageOwnerNotification(stale!, db)).toBe(false);
+      expect(rows[0].ownerNotificationClaimToken).toBe(current!.claimToken);
+      expect(await completeHostingCoverageOwnerNotification(stale!, db)).toBe(false);
+      expect(await completeHostingCoverageOwnerNotification(current!, db)).toBe(true);
+      expect(rows[0].notifiedStateKey).toBe("v1:a");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("freezes incident evidence only while the exact incident, state, and token are current", async () => {
+    const now = new Date("2026-07-01T12:00:00.000Z");
+    const { db, row, updateMany, findFirst } = makeNotificationDeliveryDb();
+    const claim = {
+      bookingId: "booking-1",
+      incidentId: "incident-1",
+      stateKey: "v1:a",
+      claimToken: "notification-current",
+    };
+
+    await expect(
+      loadHostingCoverageOwnerNotificationDelivery(claim, db, now),
+    ).resolves.toMatchObject({
+      bookingId: "booking-1",
+      recipientMemberId: "owner-1",
+      uncoveredNights: "2026-07-03, 2026-07-04",
+    });
+    expect(updateMany).toHaveBeenCalledWith({
+      where: {
+        id: "incident-1",
+        bookingId: "booking-1",
+        resolvedAt: null,
+        stateKey: "v1:a",
+        ownerNotificationClaimStateKey: "v1:a",
+        ownerNotificationClaimToken: "notification-current",
+        OR: [
+          { notifiedStateKey: null },
+          { notifiedStateKey: { not: "v1:a" } },
+        ],
+      },
+      data: { ownerNotificationClaimedAt: now },
+    });
+    expect(row.ownerNotificationClaimedAt).toEqual(now);
+    expect(findFirst).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          ownerNotificationClaimedAt: now,
+          ownerNotificationClaimToken: "notification-current",
+          resolvedAt: null,
+        }),
+      }),
+    );
+    expect(JSON.stringify(findFirst.mock.calls[0][0].select)).not.toContain(
+      "adultMemberHostingReview",
+    );
+
+    row.ownerNotificationClaimToken = "notification-successor";
+    await expect(
+      loadHostingCoverageOwnerNotificationDelivery(claim, db, now),
+    ).resolves.toBeNull();
+    expect(findFirst).toHaveBeenCalledTimes(1);
+
+    row.ownerNotificationClaimToken = "notification-current";
+    row.stateKey = "v1:b";
+    await expect(
+      loadHostingCoverageOwnerNotificationDelivery(claim, db, now),
+    ).resolves.toBeNull();
+    expect(findFirst).toHaveBeenCalledTimes(1);
+
+    row.stateKey = "v1:a";
+    row.resolvedAt = new Date();
+    await expect(
+      loadHostingCoverageOwnerNotificationDelivery(claim, db, now),
+    ).resolves.toBeNull();
+    expect(findFirst).toHaveBeenCalledTimes(1);
+  });
+
+  it.each<[string, number]>([
+    ["fresh", HOSTING_COVERAGE_OWNER_NOTIFICATION_LEASE_MS - 1],
+    ["at the exact expiry boundary", HOSTING_COVERAGE_OWNER_NOTIFICATION_LEASE_MS],
+    ["expired but unreclaimed", HOSTING_COVERAGE_OWNER_NOTIFICATION_LEASE_MS + 1],
+  ])("renews and delivers a %s exact claim just before transport", async (_label, ageMs) => {
+    const now = new Date("2026-07-01T12:00:00.000Z");
+    const claimedAt = new Date(now.getTime() - ageMs);
+    const { db, row, updateMany, findFirst } = makeNotificationDeliveryDb({
+      ownerNotificationClaimedAt: claimedAt,
+      evidence: { affectedNights: ["2026-07-03"] },
+    });
+
+    const result = await loadHostingCoverageOwnerNotificationDelivery(
+      {
+        bookingId: "booking-1",
+        incidentId: "incident-1",
+        stateKey: "v1:a",
+        claimToken: "notification-current",
+      },
+      db,
+      now,
+    );
+
+    expect(result).toMatchObject({ uncoveredNights: "2026-07-03" });
+    expect(updateMany).toHaveBeenCalledTimes(1);
+    expect(updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          id: "incident-1",
+          bookingId: "booking-1",
+          resolvedAt: null,
+          stateKey: "v1:a",
+          ownerNotificationClaimStateKey: "v1:a",
+          ownerNotificationClaimToken: "notification-current",
+        }),
+        data: { ownerNotificationClaimedAt: now },
+      }),
+    );
+    expect(row.ownerNotificationClaimedAt).toEqual(now);
+    expect(findFirst).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          ownerNotificationClaimedAt: now,
+        }),
+      }),
+    );
+  });
+
+  it("serializes expired exact renewal against successor takeover so only one token wins", async () => {
+    vi.useFakeTimers();
+    const now = new Date("2026-07-01T12:00:00.000Z");
+    vi.setSystemTime(now);
+    const expiredAt = new Date(
+      now.getTime() - HOSTING_COVERAGE_OWNER_NOTIFICATION_LEASE_MS - 1,
+    );
+    const oldClaim = {
+      bookingId: "booking-1",
+      incidentId: "incident-1",
+      stateKey: "v1:a",
+      claimToken: "notification-current",
+    };
+    try {
+      // Old exact token reaches the row first: it renews, so takeover no longer
+      // sees an expired timestamp.
+      const oldWins = makeNotificationDeliveryDb({
+        ownerNotificationClaimedAt: expiredAt,
+      });
+      await expect(
+        loadHostingCoverageOwnerNotificationDelivery(oldClaim, oldWins.db, now),
+      ).resolves.not.toBeNull();
+      await expect(
+        claimHostingCoverageOwnerNotification(
+          { incidentId: "incident-1", stateKey: "v1:a" },
+          oldWins.db,
+        ),
+      ).resolves.toBeNull();
+      expect(oldWins.row.ownerNotificationClaimToken).toBe(
+        "notification-current",
+      );
+
+      // Successor reaches the expired row first: its new token replaces the old
+      // one, so the old token loses renewal and cannot reach the payload read.
+      const successorWins = makeNotificationDeliveryDb({
+        ownerNotificationClaimedAt: expiredAt,
+      });
+      const successor = await claimHostingCoverageOwnerNotification(
+        { incidentId: "incident-1", stateKey: "v1:a" },
+        successorWins.db,
+      );
+      expect(successor).toMatchObject({
+        incidentId: "incident-1",
+        stateKey: "v1:a",
+        claimToken: expect.any(String),
+      });
+      expect(successor!.claimToken).not.toBe("notification-current");
+      await expect(
+        loadHostingCoverageOwnerNotificationDelivery(
+          oldClaim,
+          successorWins.db,
+          now,
+        ),
+      ).resolves.toBeNull();
+      expect(successorWins.findFirst).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 
@@ -545,12 +970,23 @@ describe("the owner is told once per transition (#2576 §16)", () => {
 function makeQueueDb(seed: Array<Record<string, unknown>> = []) {
   const rows: Array<Record<string, unknown>> = seed.map((row) => ({ ...row }));
   const db = {
+    $executeRaw: vi.fn().mockResolvedValue(0),
+    member: {
+      findMany: vi.fn().mockResolvedValue([{ id: "owner-1" }]),
+    },
+    booking: {
+      findMany: vi.fn().mockResolvedValue([
+        { id: "source-1", memberId: "owner-1", lodgeId: "lodge-a" },
+      ]),
+    },
     hostingCoverageReevaluation: {
       create: vi.fn(async ({ data }: any) => {
         const created = {
           id: `queue-${rows.length + 1}`,
           attempts: 0,
           processedAt: null,
+          claimToken: null,
+          claimExpiresAt: null,
           enqueuedAt: new Date(1_700_000_000_000 + rows.length),
           ...data,
         };
@@ -562,8 +998,21 @@ function makeQueueDb(seed: Array<Record<string, unknown>> = []) {
           .filter(
             (row) =>
               (where.processedAt !== null || row.processedAt == null) &&
+              (where.id?.notIn === undefined ||
+                !where.id.notIn.includes(row.id)) &&
               (where.attempts?.lt === undefined ||
-                (row.attempts as number) < where.attempts.lt),
+                (row.attempts as number) < where.attempts.lt) &&
+              (where.OR === undefined ||
+                where.OR.some((branch: any) => {
+                  if (branch.claimToken === null) return row.claimToken == null;
+                  if (branch.claimExpiresAt?.lt instanceof Date) {
+                    return (
+                      row.claimExpiresAt instanceof Date &&
+                      row.claimExpiresAt < branch.claimExpiresAt.lt
+                    );
+                  }
+                  return false;
+                })),
           )
           .sort(
             (a, b) =>
@@ -575,6 +1024,15 @@ function makeQueueDb(seed: Array<Record<string, unknown>> = []) {
           // and double-count it — an artefact of the fake, not of the queue.
           .map((row) => ({ ...row })),
       ),
+      findFirst: vi.fn(async ({ where }: any) => {
+        const row = rows.find(
+          (candidate) =>
+            candidate.id === where.id &&
+            candidate.claimToken === where.claimToken &&
+            (where.processedAt !== null || candidate.processedAt == null),
+        );
+        return row ? { ...row } : null;
+      }),
       updateMany: vi.fn(async ({ where, data }: any) => {
         const matched = rows.filter((row) => {
           if (row.id !== where.id) return false;
@@ -582,18 +1040,43 @@ function makeQueueDb(seed: Array<Record<string, unknown>> = []) {
           if (where.attempts !== undefined && row.attempts !== where.attempts) {
             return false;
           }
+          if (
+            where.claimToken !== undefined &&
+            row.claimToken !== where.claimToken
+          ) {
+            return false;
+          }
+          if (
+            where.OR !== undefined &&
+            !where.OR.some((branch: any) => {
+              if (branch.claimToken === null) return row.claimToken == null;
+              if (branch.claimExpiresAt?.lt instanceof Date) {
+                return (
+                  row.claimExpiresAt instanceof Date &&
+                  row.claimExpiresAt < branch.claimExpiresAt.lt
+                );
+              }
+              return false;
+            })
+          ) {
+            return false;
+          }
           return true;
         });
         for (const row of matched) {
           for (const [key, value] of Object.entries(data)) {
-            if (
-              value &&
-              typeof value === "object" &&
-              "increment" in (value as Record<string, unknown>)
-            ) {
-              row[key] =
-                (row[key] as number) +
-                ((value as { increment: number }).increment ?? 0);
+            if (value && typeof value === "object") {
+              const operation = value as {
+                increment?: number;
+                decrement?: number;
+              };
+              if (operation.increment !== undefined) {
+                row[key] = (row[key] as number) + operation.increment;
+              } else if (operation.decrement !== undefined) {
+                row[key] = (row[key] as number) - operation.decrement;
+              } else {
+                row[key] = value;
+              }
             } else {
               row[key] = value;
             }
@@ -609,6 +1092,18 @@ function makeQueueDb(seed: Array<Record<string, unknown>> = []) {
 describe("the bounded re-evaluation queue (#2576 §8, §10)", () => {
   it("stores a sorted, de-duplicated night list and records nothing for no nights", async () => {
     const { db, rows } = makeQueueDb();
+    const proof = await acquireHostingCoverageQueueParticipantProof(
+      {
+        sources: [
+          {
+            bookingId: "source-1",
+            ownerMemberId: "owner-1",
+            lodgeId: "lodge-a",
+          },
+        ],
+      },
+      db,
+    );
     expect(
       await enqueueHostingCoverageReevaluation(
         {
@@ -616,7 +1111,9 @@ describe("the bounded re-evaluation queue (#2576 §8, §10)", () => {
           lodgeId: "lodge-a",
           nights: ["2026-07-04", "2026-07-03", "2026-07-04"],
           cause: "SYSTEM_CHANGE",
+          sourceBookingId: "source-1",
         },
+        proof,
         db,
       ),
     ).toBe("queue-1");
@@ -629,7 +1126,9 @@ describe("the bounded re-evaluation queue (#2576 §8, §10)", () => {
           lodgeId: "lodge-a",
           nights: [],
           cause: "SYSTEM_CHANGE",
+          sourceBookingId: "source-1",
         },
+        proof,
         db,
       ),
     ).toBeNull();
@@ -638,6 +1137,18 @@ describe("the bounded re-evaluation queue (#2576 §8, §10)", () => {
 
   it("truncates an over-long officer reason rather than failing the change", async () => {
     const { db, rows } = makeQueueDb();
+    const proof = await acquireHostingCoverageQueueParticipantProof(
+      {
+        sources: [
+          {
+            bookingId: "source-1",
+            ownerMemberId: "owner-1",
+            lodgeId: "lodge-a",
+          },
+        ],
+      },
+      db,
+    );
     await enqueueHostingCoverageReevaluation(
       {
         memberId: "owner-1",
@@ -645,10 +1156,53 @@ describe("the bounded re-evaluation queue (#2576 §8, §10)", () => {
         nights: ["2026-07-03"],
         cause: "OFFICER_OVERRIDE",
         reason: "x".repeat(900),
+        sourceBookingId: "source-1",
       },
+      proof,
       db,
     );
     expect((rows[0].reason as string).length).toBe(500);
+  });
+
+  it("re-reads the full payload only through the exact live claim", async () => {
+    const { db } = makeQueueDb([{
+      id: "queue-1",
+      memberId: "owner-master",
+      lodgeId: "lodge-b",
+      nights: ["2026-07-04", "bad", "2026-07-03", "2026-07-04"],
+      cause: "OFFICER_OVERRIDE",
+      sourceBookingId: "source-after",
+      actorMemberId: "actor-master",
+      reason: "authoritative reason",
+      attempts: 2,
+      processedAt: null,
+      claimToken: "claim-current",
+      claimExpiresAt: new Date("2026-07-01T00:15:00.000Z"),
+      enqueuedAt: new Date("2026-07-01T00:00:00.000Z"),
+    }]);
+
+    await expect(loadClaimedHostingCoverageReevaluation(
+      { id: "queue-1", claimToken: "claim-current" },
+      db,
+    )).resolves.toMatchObject({
+      memberId: "owner-master",
+      lodgeId: "lodge-b",
+      nights: ["2026-07-03", "2026-07-04"],
+      cause: "OFFICER_OVERRIDE",
+      sourceBookingId: "source-after",
+      actorMemberId: "actor-master",
+      reason: "authoritative reason",
+      claimToken: "claim-current",
+    });
+    expect(db.hostingCoverageReevaluation.findFirst).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { id: "queue-1", claimToken: "claim-current", processedAt: null },
+      }),
+    );
+    await expect(loadClaimedHostingCoverageReevaluation(
+      { id: "queue-1", claimToken: "claim-replaced" },
+      db,
+    )).resolves.toBeNull();
   });
 
   it("counts an attempt at claim time, so a poison item retires", async () => {
@@ -664,12 +1218,21 @@ describe("the bounded re-evaluation queue (#2576 §8, §10)", () => {
         reason: null,
         attempts: 0,
         processedAt: null,
+        claimToken: null,
+        claimExpiresAt: null,
         enqueuedAt: new Date(1_700_000_000_000),
       },
     ]);
     for (let attempt = 1; attempt <= 5; attempt += 1) {
       const claimed = await claimHostingCoverageReevaluations({ limit: 5 }, db);
       expect(claimed.map((item) => item.attempts)).toEqual([attempt]);
+      expect(
+        await failHostingCoverageReevaluation(
+          claimed[0],
+          `attempt ${attempt} failed`,
+          db,
+        ),
+      ).toBe(true);
     }
     // Incremented at claim rather than on failure, so a process that dies mid-item
     // still counts up. After maxAttempts the item is left alone.
@@ -690,24 +1253,188 @@ describe("the bounded re-evaluation queue (#2576 §8, §10)", () => {
         reason: null,
         attempts: 0,
         processedAt: null,
+        claimToken: null,
+        claimExpiresAt: null,
         enqueuedAt: new Date(1_700_000_000_000),
       },
     ]);
-    // Both read the same candidate list; the guarded claim on `attempts` is what
-    // makes exactly one of them own it.
+    // The first drain records both an incremented attempt and an opaque lease.
     const a = await claimHostingCoverageReevaluations({ limit: 5 }, db);
     expect(a).toHaveLength(1);
     expect(a[0].attempts).toBe(1);
-    // A SECOND drain that had already read the row at attempts 0 — the real race —
-    // finds its guarded claim matches nothing, because the guard names the attempt
-    // count it read. `count !== 1` is what makes it skip the item rather than
-    // process it twice.
-    const lost = await db.hostingCoverageReevaluation.updateMany({
-      where: { id: "queue-1", processedAt: null, attempts: 0 },
-      data: { attempts: { increment: 1 } },
-    });
-    expect(lost.count).toBe(0);
+    // A staggered drain starts after the increment but before completion. The
+    // unexpired lease excludes the item before `take`, so attempts cannot burn
+    // merely because another worker is still processing it.
+    expect(await claimHostingCoverageReevaluations({ limit: 5 }, db)).toEqual([]);
     expect(rows[0].attempts).toBe(1);
+  });
+
+  it("excludes rows already seen by the current drain", async () => {
+    const { db, rows } = makeQueueDb([
+      {
+        id: "queue-1",
+        memberId: "owner-1",
+        lodgeId: "lodge-a",
+        nights: ["2026-07-03"],
+        cause: "SYSTEM_CHANGE",
+        sourceBookingId: null,
+        actorMemberId: null,
+        reason: null,
+        attempts: 0,
+        processedAt: null,
+        claimToken: null,
+        claimExpiresAt: null,
+        enqueuedAt: new Date(1_700_000_000_000),
+      },
+      {
+        id: "queue-2",
+        memberId: "owner-1",
+        lodgeId: "lodge-a",
+        nights: ["2026-07-04"],
+        cause: "SYSTEM_CHANGE",
+        sourceBookingId: null,
+        actorMemberId: null,
+        reason: null,
+        attempts: 0,
+        processedAt: null,
+        claimToken: null,
+        claimExpiresAt: null,
+        enqueuedAt: new Date(1_700_000_000_001),
+      },
+    ]);
+
+    const claimed = await claimHostingCoverageReevaluations(
+      { limit: 1, excludeIds: ["queue-1"] },
+      db,
+    );
+
+    expect(claimed.map((item) => item.id)).toEqual(["queue-2"]);
+    expect(rows[0].attempts).toBe(0);
+    expect(rows[1].attempts).toBe(1);
+  });
+
+  it("retries a crashed claim only after expiry and fences stale completion", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-07-01T00:00:00.000Z"));
+    try {
+      const { db, rows } = makeQueueDb([
+        {
+          id: "queue-1",
+          memberId: "owner-1",
+          lodgeId: "lodge-a",
+          nights: ["2026-07-03"],
+          cause: "SYSTEM_CHANGE",
+          sourceBookingId: null,
+          actorMemberId: null,
+          reason: null,
+          attempts: 0,
+          processedAt: null,
+          claimToken: null,
+          claimExpiresAt: null,
+          enqueuedAt: new Date(1_700_000_000_000),
+        },
+      ]);
+      const [stale] = await claimHostingCoverageReevaluations({ limit: 5 }, db);
+      expect(await claimHostingCoverageReevaluations({ limit: 5 }, db)).toEqual([]);
+
+      vi.advanceTimersByTime(16 * 60 * 1000);
+      const [current] = await claimHostingCoverageReevaluations({ limit: 5 }, db);
+      expect(current.claimToken).not.toBe(stale.claimToken);
+      expect(current.attempts).toBe(2);
+
+      expect(
+        await failHostingCoverageReevaluation(stale, "stale failure", db),
+      ).toBe(false);
+      expect(rows[0].lastError).toBeUndefined();
+      expect(rows[0].claimToken).toBe(current.claimToken);
+      expect(await completeHostingCoverageReevaluation(stale, db)).toBe(false);
+      expect(rows[0].processedAt).toBeNull();
+      expect(rows[0].claimToken).toBe(current.claimToken);
+      expect(await completeHostingCoverageReevaluation(current, db)).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("renews only the exact queue token and parks without consuming its attempt", async () => {
+    const { db, rows } = makeQueueDb([{
+      id: "queue-1",
+      memberId: "owner-1",
+      lodgeId: "lodge-a",
+      nights: ["2026-07-03"],
+      cause: "SYSTEM_CHANGE",
+      sourceBookingId: null,
+      actorMemberId: null,
+      reason: null,
+      attempts: 5,
+      processedAt: null,
+      claimToken: "claim-current",
+      claimExpiresAt: new Date("2026-07-01T00:01:00.000Z"),
+      enqueuedAt: new Date("2026-07-01T00:00:00.000Z"),
+    }]);
+    const now = new Date("2026-07-01T00:02:00.000Z");
+
+    await expect(renewHostingCoverageReevaluationClaim(
+      { id: "queue-1", claimToken: "claim-replaced" }, db, now,
+    )).resolves.toBe(false);
+    await expect(renewHostingCoverageReevaluationClaim(
+      { id: "queue-1", claimToken: "claim-current" }, db, now,
+    )).resolves.toBe(true);
+    expect(rows[0].claimExpiresAt).toEqual(new Date("2026-07-01T00:17:00.000Z"));
+
+    await expect(deferHostingCoverageReevaluation(
+      { id: "queue-1", claimToken: "claim-current" }, db,
+    )).resolves.toBe(true);
+    expect(rows[0]).toMatchObject({
+      attempts: 4,
+      claimToken: "claim-current",
+      processedAt: null,
+    });
+    expect(rows[0].claimExpiresAt).toEqual(new Date("2026-07-01T00:17:00.000Z"));
+  });
+
+  it("releases policy contention for an immediate successor without consuming an attempt", async () => {
+    const { db, rows } = makeQueueDb([{
+      id: "queue-1",
+      memberId: "owner-1",
+      lodgeId: "lodge-a",
+      nights: ["2026-07-03"],
+      cause: "SYSTEM_CHANGE",
+      sourceBookingId: null,
+      actorMemberId: null,
+      reason: null,
+      attempts: 1,
+      processedAt: null,
+      claimToken: "claim-contended",
+      claimExpiresAt: new Date("2026-07-01T00:15:00.000Z"),
+      enqueuedAt: new Date("2026-07-01T00:00:00.000Z"),
+    }]);
+
+    await expect(
+      releaseHostingCoverageReevaluationContention(
+        { id: "queue-1", claimToken: "claim-replaced" },
+        db,
+      ),
+    ).resolves.toBe(false);
+    await expect(
+      releaseHostingCoverageReevaluationContention(
+        { id: "queue-1", claimToken: "claim-contended" },
+        db,
+      ),
+    ).resolves.toBe(true);
+    expect(rows[0]).toMatchObject({
+      attempts: 0,
+      claimToken: null,
+      claimExpiresAt: null,
+      processedAt: null,
+    });
+
+    const [successor] = await claimHostingCoverageReevaluations(
+      { limit: 1, maxAttempts: 1 },
+      db,
+    );
+    expect(successor).toMatchObject({ id: "queue-1", attempts: 1 });
+    expect(successor.claimToken).not.toBe("claim-contended");
   });
 
   it("drops a night list that is not a list of dates rather than widening the bound", async () => {
@@ -723,6 +1450,8 @@ describe("the bounded re-evaluation queue (#2576 §8, §10)", () => {
         reason: null,
         attempts: 0,
         processedAt: null,
+        claimToken: null,
+        claimExpiresAt: null,
         enqueuedAt: new Date(1_700_000_000_000),
       },
     ]);
@@ -741,15 +1470,23 @@ describe("the bounded re-evaluation queue (#2576 §8, §10)", () => {
         lastError: null,
       },
     ]);
-    await failHostingCoverageReevaluation("queue-1", "x".repeat(1200), db);
+    const claim = { id: "queue-1", claimToken: "claim-current" };
+    rows[0].claimToken = claim.claimToken;
+    rows[0].claimExpiresAt = new Date(Date.now() + 60_000);
+    expect(
+      await failHostingCoverageReevaluation(claim, "x".repeat(1200), db),
+    ).toBe(true);
     expect((rows[0].lastError as string).length).toBe(1000);
     expect(rows[0].processedAt).toBeNull();
 
-    await completeHostingCoverageReevaluation("queue-1", db);
+    const nextClaim = { id: "queue-1", claimToken: "claim-next" };
+    rows[0].claimToken = nextClaim.claimToken;
+    rows[0].claimExpiresAt = new Date(Date.now() + 60_000);
+    expect(await completeHostingCoverageReevaluation(nextClaim, db)).toBe(true);
     expect(rows[0].processedAt).not.toBeNull();
     expect(rows[0].lastError).toBeNull();
     const processedAt = rows[0].processedAt;
-    await completeHostingCoverageReevaluation("queue-1", db);
+    expect(await completeHostingCoverageReevaluation(nextClaim, db)).toBe(false);
     expect(rows[0].processedAt).toBe(processedAt);
   });
 });

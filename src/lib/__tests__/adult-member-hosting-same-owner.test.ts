@@ -31,9 +31,11 @@ import {
   reconcileSameOwnerCoverageIncident,
   reconcileAdultMemberHostingReviewWithSiblings,
   hostingCoverageActorOptions,
+  isHostingCoverageSourceBookingTerminal,
   loadSameOwnerCoverageDependentIds,
 } from "@/lib/adult-member-hosting-review";
 import { hostingCoverageStateKey } from "@/lib/adult-member-hosting-coverage-incidents";
+import { HostingCoverageParticipantRetryError } from "@/lib/adult-member-hosting-queue-participants";
 import {
   SameOwnerCoverageOverrideRequiredError,
   SameOwnerCoverageWouldBreakError,
@@ -205,6 +207,9 @@ function makeStore(
   const updates: Array<{ id: string; data: Record<string, unknown> }> = [];
 
   const db = {
+    $executeRaw: vi.fn(async (_query: unknown, actorMemberId?: string) =>
+      actorMemberId === "missing-officer" ? 0 : 1,
+    ),
     booking: {
       findUnique: vi.fn(async ({ where }: any) => byId.get(where.id) ?? null),
       findMany: vi.fn(async ({ where, select, orderBy, take }: any) => {
@@ -250,7 +255,19 @@ function makeStore(
       findMany: vi.fn().mockResolvedValue(options.policies ?? [policyRow()]),
     },
     lodge: { findFirst: vi.fn().mockResolvedValue({ name: "Ruapehu Lodge" }) },
-    member: { findMany: vi.fn().mockResolvedValue([]) },
+    member: {
+      // #2597: the participant fence takes FOR KEY SHARE NOWAIT and then
+      // re-reads those exact Member rows, requiring every one to exist in
+      // sorted id order. This double must model a real Member table for that
+      // check to mean anything — returning `[]` would make the fence report
+      // contention on every call, which is how these suites previously ran
+      // with the fence effectively disabled.
+      findMany: vi.fn(async ({ where }: any) => {
+        const ids: string[] = where?.id?.in ?? [];
+        return [...ids].sort().map((id) => ({ id }));
+      }),
+      findUnique: vi.fn(async ({ where }: any) => ({ id: where.id })),
+    },
     hostingCoverageIncident: {
       findMany: vi.fn(async ({ where }: any) =>
         incidents.filter((incident) =>
@@ -1696,6 +1713,53 @@ describe("the re-evaluation bound is a property of the item (#2576 §10)", () =>
   });
 });
 
+describe("source lifecycle resolution is independent of the bounded fan-out (#2596)", () => {
+  it.each([
+    "DRAFT",
+    "PENDING",
+    "PAYMENT_PENDING",
+    "CONFIRMED",
+    "PAID",
+    "COMPLETED",
+    "WAITLISTED",
+    "WAITLIST_OFFERED",
+    "AWAITING_REVIEW",
+  ])("does not infer an extant %s source was cancelled", async (status) => {
+    const { db } = makeStore([booking({ id: "source-active", status })]);
+
+    await expect(
+      isHostingCoverageSourceBookingTerminal("source-active", db),
+    ).resolves.toBe(false);
+    expect(db.booking.findUnique).toHaveBeenCalledWith({
+      where: { id: "source-active" },
+      select: { status: true, deletedAt: true },
+    });
+  });
+
+  it.each(["CANCELLED", "BUMPED"])(
+    "recognises the terminal %s lifecycle directly",
+    async (status) => {
+      const { db } = makeStore([booking({ id: "source-terminal", status })]);
+      await expect(
+        isHostingCoverageSourceBookingTerminal("source-terminal", db),
+      ).resolves.toBe(true);
+    },
+  );
+
+  it("recognises soft-deleted and hard-missing sources as terminal", async () => {
+    const { db } = makeStore([
+      booking({ id: "source-deleted", deletedAt: new Date("2026-07-02") }),
+    ]);
+
+    await expect(
+      isHostingCoverageSourceBookingTerminal("source-deleted", db),
+    ).resolves.toBe(true);
+    await expect(
+      isHostingCoverageSourceBookingTerminal("source-missing", db),
+    ).resolves.toBe(true);
+  });
+});
+
 /** The live booking row inside a fake store, for asserting what was written. */
 function rowFromStore(db: any, id: string): Record<string, unknown> {
   return db.__rows.get(id) as Record<string, unknown>;
@@ -1703,6 +1767,38 @@ function rowFromStore(db: any, id: string): Record<string, unknown> {
 
 describe("settling a dependent booking after the change (#2576 §7, §14, §16)", () => {
   const KID_NIGHTS = ["2026-07-03", "2026-07-04"];
+
+  it("takes the policy-set lock before reading policy or writing an incident", async () => {
+    const { db } = makeStore([
+      booking({ id: "b-main", guests: [guestRow("kid", KID_NIGHTS)] }),
+    ]);
+    const order: string[] = [];
+    db.$executeRaw.mockImplementation(async () => {
+      order.push("policy-set-lock");
+      return 1;
+    });
+    db.adultMemberHostingPolicy.findMany.mockImplementation(async () => {
+      order.push("policy-read");
+      return [policyRow()];
+    });
+    db.hostingCoverageIncident.create.mockImplementation(async ({ data }: any) => {
+      order.push("incident-write");
+      return { id: "incident-1", ...data };
+    });
+
+    await reconcileSameOwnerCoverageIncident(
+      { bookingId: "b-main", cause: "SYSTEM_CHANGE" },
+      db,
+    );
+
+    expect(order[0]).toBe("policy-set-lock");
+    expect(order.indexOf("policy-set-lock")).toBeLessThan(
+      order.indexOf("policy-read"),
+    );
+    expect(order.indexOf("policy-read")).toBeLessThan(
+      order.indexOf("incident-write"),
+    );
+  });
 
   it("opens ONE urgent incident and never touches the booking's lifecycle", async () => {
     const rows = [
@@ -1806,6 +1902,35 @@ describe("settling a dependent booking after the change (#2576 §7, §14, §16)"
     });
   });
 
+  it("degrades a deleted queued actor to null while preserving the mandatory reason", async () => {
+    const { db, incidents } = makeStore([
+      booking({ id: "b-main", guests: [guestRow("kid", KID_NIGHTS)] }),
+    ]);
+
+    await expect(
+      reconcileSameOwnerCoverageIncident(
+        {
+          bookingId: "b-main",
+          cause: "OFFICER_OVERRIDE",
+          actorMemberId: "missing-officer",
+          reason: "Queued before the officer profile was deleted",
+        },
+        db,
+      ),
+    ).resolves.toMatchObject({ action: "opened" });
+    expect(incidents[0]).toMatchObject({
+      cause: "OFFICER_OVERRIDE",
+      overriddenByMemberId: null,
+      overrideReason: "Queued before the officer profile was deleted",
+    });
+    expect(
+      db.$executeRaw.mock.calls.some((call: unknown[]) =>
+        call[1] === "missing-officer",
+      ),
+    ).toBe(true);
+    expect(db.member.findUnique).not.toHaveBeenCalled();
+  });
+
   it("does not refuse from inside the drain, however the club is configured", async () => {
     // `reconcileSameOwnerCoverageIncident` runs post-commit against a booking that
     // is ALREADY confirmed, so there is nothing left to refuse; throwing here would
@@ -1855,6 +1980,18 @@ describe("a change to one PERSON's standing (#2576 §8, §17)", () => {
       ...overrides,
     });
   }
+
+  it("fails at the subject NOWAIT barrier before even an empty candidate read", async () => {
+    const { db } = makeStore([]);
+    db.$executeRaw.mockRejectedValueOnce({
+      driverAdapterError: { cause: { originalCode: "55P03" } },
+    });
+
+    await expect(
+      enqueueHostingCoverageReevaluationForMember("lapsing-adult", db),
+    ).rejects.toBeInstanceOf(HostingCoverageParticipantRetryError);
+    expect(db.booking.findMany).not.toHaveBeenCalled();
+  });
 
   it("records one bounded item per booking the person actually attends", async () => {
     vi.useFakeTimers();
@@ -1962,6 +2099,130 @@ describe("a change to one PERSON's standing (#2576 §8, §17)", () => {
           sameBookingOnly.db,
         ),
       ).toBe(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("still fences the standing subject at a club that enforces nowhere (#2623 T5)", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(TODAY);
+    try {
+      // #2623 T5 asked for this seam's fence to be gated on the policy. Its
+      // PARTICIPANT fence already is — the per-lodge `ENFORCED` filter returns 0
+      // before any proof is acquired. The subject barrier above it must NOT be:
+      // it is the shared standing-subject fence every lifecycle writer reaches,
+      // and account deletion relies on it to exclude a concurrent
+      // booking-request linked-member hold in every mode, `DISABLED` included.
+      // Real PostgreSQL refutes the gate directly — see the mode-parameterised
+      // hold/deletion interleavings in
+      // `adult-member-hosting-queue-merge.realdb.test.ts`.
+      const { db, queued } = makeStore([attendedBooking("b-owner-1", "owner-1")], {
+        policies: [policyRow({ mode: "DISABLED" })],
+      });
+      db.$executeRaw.mockRejectedValue({
+        driverAdapterError: { cause: { originalCode: "55P03" } },
+      });
+
+      await expect(
+        enqueueHostingCoverageReevaluationForMember("lapsing-adult", db),
+      ).rejects.toBeInstanceOf(HostingCoverageParticipantRetryError);
+      expect(db.$executeRaw).toHaveBeenCalledTimes(1);
+      expect(queued).toEqual([]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
+describe("the participant fence is not taken for a rule the club is not using (#2623 T5)", () => {
+  const TODAY = new Date("2026-07-01T00:00:00.000Z");
+
+  function partyBooking(mode: string) {
+    return makeStore(
+      [
+        booking({
+          id: "b-main",
+          memberId: "owner-1",
+          guests: [
+            guestRow("non-member-1", ["2026-07-03", "2026-07-04"]),
+          ],
+        }),
+      ],
+      { policies: [policyRow({ mode })] },
+    );
+  }
+
+  it("does not refuse an ordinary booking write at a DISABLED lodge while a member-lifecycle writer holds the row", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(TODAY);
+    try {
+      const { db } = partyBooking("DISABLED");
+      // A concurrent member-lifecycle writer already holds the owner's Member row,
+      // so the fence's `FOR KEY SHARE NOWAIT` would come back 55P03. Before the
+      // gate this turned a plain booking write into
+      // `HOSTING_COVERAGE_PARTICIPANT_RETRY` — "reload before trying again, and
+      // check payment status if a payment was involved" — for a rule this club has
+      // switched off, guarding a queue row that would never be written.
+      db.$executeRaw.mockRejectedValue({
+        driverAdapterError: { cause: { originalCode: "55P03" } },
+      });
+
+      await expect(
+        reconcileAdultMemberHostingReviewWithSiblings("b-main", db),
+      ).resolves.toMatchObject({ mode: "DISABLED" });
+      expect(db.$executeRaw).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("still clears a snapshot left behind by a lodge that has since switched the rule off", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(TODAY);
+    try {
+      // Skipping the fence must not skip the RECONCILIATION: a review recorded
+      // while the rule was on has to be cleared once it is off, which is the one
+      // thing the un-fenced path still has to do.
+      const { db, updates } = makeStore(
+        [
+          booking({
+            id: "b-main",
+            memberId: "owner-1",
+            adultMemberHostingReviewStatus: "PENDING",
+            guests: [guestRow("non-member-1", ["2026-07-03", "2026-07-04"])],
+          }),
+        ],
+        { policies: [policyRow({ mode: "DISABLED" })] },
+      );
+
+      await expect(
+        reconcileAdultMemberHostingReviewWithSiblings("b-main", db),
+      ).resolves.toMatchObject({ action: "cleared" });
+      expect(updates).toHaveLength(1);
+      expect(updates[0].data).toMatchObject({
+        adultMemberHostingReviewStatus: null,
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("still fences an ADMIN_REVIEW_REQUIRED lodge, where queue work is real", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(TODAY);
+    try {
+      // The gate is `hostingModeIsActive`, not `ENFORCED`: under review-only the
+      // dependants still have to be re-read, so the fence is still owed.
+      const { db } = partyBooking("ADMIN_REVIEW_REQUIRED");
+      db.$executeRaw.mockRejectedValue({
+        driverAdapterError: { cause: { originalCode: "55P03" } },
+      });
+
+      await expect(
+        reconcileAdultMemberHostingReviewWithSiblings("b-main", db),
+      ).rejects.toBeInstanceOf(HostingCoverageParticipantRetryError);
+      expect(db.$executeRaw).toHaveBeenCalled();
     } finally {
       vi.useRealTimers();
     }

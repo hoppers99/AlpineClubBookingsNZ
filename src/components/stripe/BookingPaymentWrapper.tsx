@@ -6,6 +6,43 @@ import { type BookingPaymentMode } from "@/lib/booking-payment-flow";
 import StripeProvider from "./StripeProvider";
 import PaymentForm from "./PaymentForm";
 import SetupForm from "./SetupForm";
+import { FocusedActionError } from "@/components/focused-action-error";
+import {
+  EXISTING_CARD_TRANSACTION_STATUS_UNCONFIRMED_MESSAGE,
+  isExistingCardTransactionStatusUnconfirmed,
+  isPaymentReceivedFinalisationPending,
+  isPaymentReceivedStatusUnconfirmed,
+  isRefundedCardTransactionRepaymentRequired,
+  PAYMENT_RECEIVED_STATUS_UNCONFIRMED_MESSAGE,
+  REFUNDED_CARD_TRANSACTION_REPAYMENT_REQUIRED_MESSAGE,
+} from "@/lib/payment-recovery-contract";
+
+const CAPACITY_CANCELLATION_RECOVERY = {
+  refunded: {
+    heading: "Booking cancelled - payment refunded",
+    message:
+      "The booking was cancelled because lodge capacity was no longer available, and the card payment was refunded. Reload the booking to see its current status. Do not try another payment.",
+  },
+  refundPending: {
+    heading: "Booking cancelled - refund needs attention",
+    message:
+      "The booking was cancelled because lodge capacity was no longer available, but the refund could not be confirmed. Automatic refund recovery is pending. Do not try another payment. Reload the booking and contact the lodge administrator if the refund is not confirmed.",
+  },
+} as const;
+
+function capacityCancellationRecovery(value: unknown) {
+  if (!value || typeof value !== "object") return null;
+  const candidate = value as Record<string, unknown>;
+  if (
+    candidate.status !== "CANCELLED" ||
+    typeof candidate.refunded !== "boolean"
+  ) {
+    return null;
+  }
+  return candidate.refunded
+    ? CAPACITY_CANCELLATION_RECOVERY.refunded
+    : CAPACITY_CANCELLATION_RECOVERY.refundPending;
+}
 
 /**
  * Report a payment-initialization failure to ops WITHOUT ever surfacing the raw
@@ -67,6 +104,9 @@ export default function BookingPaymentWrapper({
     number | null
   >(null);
   const [initFailed, setInitFailed] = useState(false);
+  const [initRecoveryError, setInitRecoveryError] = useState("");
+  const [confirmationError, setConfirmationError] = useState("");
+  const [recoveryHeading, setRecoveryHeading] = useState("");
   const [loading, setLoading] = useState(true);
   const handleAlreadyComplete = useEffectEvent(() => onPaymentComplete());
 
@@ -77,6 +117,9 @@ export default function BookingPaymentWrapper({
       try {
         setLoading(true);
         setInitFailed(false);
+        setInitRecoveryError("");
+        setConfirmationError("");
+        setRecoveryHeading("");
 
         const endpoint = paymentMode === "setup"
           ? "/api/payments/create-setup-intent"
@@ -91,6 +134,47 @@ export default function BookingPaymentWrapper({
         const data = await response.json();
 
         if (!response.ok) {
+          const cancellationRecovery =
+            response.status === 409
+              ? capacityCancellationRecovery(data)
+              : null;
+          if (cancellationRecovery) {
+            setRecoveryHeading(cancellationRecovery.heading);
+            setInitRecoveryError(cancellationRecovery.message);
+            return;
+          }
+          if (
+            response.status === 409 &&
+            data.code === "HOSTING_COVERAGE_PARTICIPANT_RETRY" &&
+            data.paymentReceived === true &&
+            data.finalisationPending === true
+          ) {
+            setRecoveryHeading("Payment received - finalisation pending");
+            setInitRecoveryError(
+              `${data.error || "The booking could not be finalised."} Your card payment was received, but booking finalisation is still pending. Reload this page and check the booking status before trying any payment again.`,
+            );
+            return;
+          }
+          if (
+            response.status === 409 &&
+            isPaymentReceivedStatusUnconfirmed(data)
+          ) {
+            setRecoveryHeading("Payment received - check booking status");
+            setInitRecoveryError(
+              PAYMENT_RECEIVED_STATUS_UNCONFIRMED_MESSAGE,
+            );
+            return;
+          }
+          if (
+            response.status === 409 &&
+            isExistingCardTransactionStatusUnconfirmed(data)
+          ) {
+            setRecoveryHeading("Card transaction found - check payment status");
+            setInitRecoveryError(
+              EXISTING_CARD_TRANSACTION_STATUS_UNCONFIRMED_MESSAGE,
+            );
+            return;
+          }
           // The raw provider detail (data.error) may leak partial key material;
           // log it for ops, but only ever show generic copy to the member (#1223).
           reportPaymentInitError(bookingId, data.error || "Failed to initialize payment");
@@ -137,42 +221,60 @@ export default function BookingPaymentWrapper({
     );
   }
 
-  if (loading) {
-    return (
-      <div className="flex items-center justify-center p-8">
-        <div className="h-8 w-8 animate-spin rounded-full border-4 border-info-7 border-t-transparent" />
-        <span className="ml-3 text-muted-foreground">Preparing payment...</span>
-      </div>
-    );
-  }
-
-  if (initFailed) {
-    return (
-      <div className="rounded-md bg-danger-3 p-4 text-sm text-danger-11">
-        <p className="font-medium">Payment Error</p>
-        <p className="mt-1">
-          We couldn&apos;t start the card payment. Your booking is saved — you can
-          pay later from your booking page.
-        </p>
-      </div>
-    );
-  }
-
-  if (!clientSecret) {
-    return (
-      <div className="rounded-md bg-warning-3 p-4 text-sm text-warning-11">
-        Unable to initialize payment. Please try again.
-      </div>
-    );
-  }
-
   async function handlePaymentSuccess(paymentIntentId: string) {
     try {
-      await fetch(`/api/bookings/${bookingId}/confirm-payment`, {
+      setConfirmationError("");
+      setRecoveryHeading("");
+      const response = await fetch(`/api/bookings/${bookingId}/confirm-payment`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ paymentIntentId }),
       });
+      if (response.status === 409) {
+        const data = (await response.json().catch(() => ({}))) as Record<
+          string,
+          unknown
+        >;
+        const cancellationRecovery = capacityCancellationRecovery(data);
+        if (cancellationRecovery) {
+          setRecoveryHeading(cancellationRecovery.heading);
+          setConfirmationError(cancellationRecovery.message);
+          return;
+        }
+        const safeHostingMessage =
+          typeof data.error === "string"
+            ? data.error
+            : "The booking could not be finalised.";
+        if (
+          data.code === "HOSTING_COVERAGE_PARTICIPANT_RETRY" &&
+          isPaymentReceivedFinalisationPending(data)
+        ) {
+          setRecoveryHeading("Payment received - finalisation pending");
+          setConfirmationError(
+            `${safeHostingMessage} Your card payment was received, but booking finalisation is still pending.`,
+          );
+          return;
+        }
+        if (isPaymentReceivedStatusUnconfirmed(data)) {
+          setRecoveryHeading("Payment received - check booking status");
+          setConfirmationError(PAYMENT_RECEIVED_STATUS_UNCONFIRMED_MESSAGE);
+          return;
+        }
+        if (isExistingCardTransactionStatusUnconfirmed(data)) {
+          setRecoveryHeading("Card transaction found - check payment status");
+          setConfirmationError(
+            EXISTING_CARD_TRANSACTION_STATUS_UNCONFIRMED_MESSAGE,
+          );
+          return;
+        }
+        if (isRefundedCardTransactionRepaymentRequired(data)) {
+          setRecoveryHeading("Previous card payment refunded");
+          setConfirmationError(
+            REFUNDED_CARD_TRANSACTION_REPAYMENT_REQUIRED_MESSAGE,
+          );
+          return;
+        }
+      }
     } catch {
       // Non-fatal: the Stripe webhook will still reconcile the booking state.
     }
@@ -180,25 +282,53 @@ export default function BookingPaymentWrapper({
     onPaymentComplete();
   }
 
+  const initializationError = initFailed
+    ? "We couldn't start the card payment. Your booking is saved - you can pay later from your booking page."
+    : !loading && !clientSecret && !initRecoveryError
+      ? "Unable to initialize payment. Please try again."
+      : "";
+  const visibleError =
+    initRecoveryError || confirmationError || initializationError;
+  const visibleHeading =
+    initRecoveryError || confirmationError ? recoveryHeading : "Payment Error";
+  const suppressPaymentContent = Boolean(
+    initFailed || initRecoveryError || (!loading && !clientSecret),
+  );
+
   return (
-    <StripeProvider clientSecret={clientSecret}>
-      {paymentMode === "payment" ? (
-        <PaymentForm
-          amountCents={amountCents}
-          chargedAmountCents={chargedAmountCents}
-          isSplit={isSplit}
-          deferredGuestAmountCents={deferredGuestAmountCents}
-          returnUrl={returnUrl}
-          onSuccess={handlePaymentSuccess}
-          onError={() => undefined}
-        />
-      ) : (
-        <SetupForm
-          returnUrl={returnUrl}
-          onSuccess={() => onPaymentComplete()}
-          onError={() => undefined}
-        />
+    <>
+      <FocusedActionError
+        id="booking-payment-recovery-error"
+        error={visibleError}
+        heading={visibleHeading}
+        className="mb-4"
+      />
+      {loading ? (
+        <div className="flex items-center justify-center p-8">
+          <div className="h-8 w-8 animate-spin rounded-full border-4 border-info-7 border-t-transparent" />
+          <span className="ml-3 text-muted-foreground">Preparing payment...</span>
+        </div>
+      ) : suppressPaymentContent ? null : (
+        <StripeProvider clientSecret={clientSecret!}>
+          {paymentMode === "payment" ? (
+            <PaymentForm
+              amountCents={amountCents}
+              chargedAmountCents={chargedAmountCents}
+              isSplit={isSplit}
+              deferredGuestAmountCents={deferredGuestAmountCents}
+              returnUrl={returnUrl}
+              onSuccess={handlePaymentSuccess}
+              onError={() => undefined}
+            />
+          ) : (
+            <SetupForm
+              returnUrl={returnUrl}
+              onSuccess={() => onPaymentComplete()}
+              onError={() => undefined}
+            />
+          )}
+        </StripeProvider>
       )}
-    </StripeProvider>
+    </>
   );
 }

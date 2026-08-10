@@ -28,16 +28,149 @@ const h = vi.hoisted(() => ({
   // so the requirement does not apply and every case in this file is unchanged.
   prismaBookingGuestFindMany: vi.fn(async () => []),
   resolveSubscriptionLockoutMode: vi.fn(async () => "NON_MEMBER_PRICING"),
+  // #2675: the SAME club mode, read by the SAME policy row in production —
+  // `resolveSubscriptionLockoutMode` and `peekSubscriptionLockoutMode` are two
+  // readers of `readSubscriptionLockoutPolicy`, so a double that answers one and
+  // not the other is not a narrower club, it is an impossible one. The hosting
+  // evaluator's #2543 bridge (`withSubscriptionSettlement`) reads it, which is
+  // why it only became reachable once the mode gate stopped short-circuiting.
+  peekSubscriptionLockoutMode: vi.fn(async () => "NON_MEMBER_PRICING"),
   evaluateNonMemberPricingRequirements: vi.fn(async () => null),
 }));
 
+// #2619: the participant fence re-reads the locked Member rows and each source
+// booking's owner/lodge under the lock. Replay whatever this tx's own
+// findUnique served so the no-drift case matches by construction.
+const fenceBooking = recordingBookingDouble((args) =>
+  h.txBookingFindUnique(args),
+);
+
+/** The ids a batch read asked for, however it keyed them. */
+function memberIdsRequested(args: unknown): string[] {
+  const where = (args as { where?: { id?: { in?: string[] }; memberId?: { in?: string[] } } })
+    ?.where;
+  return where?.id?.in ?? where?.memberId?.in ?? [];
+}
+
+/** The `where`/`select` key sets a read actually asked for, sorted. */
+function keysOf(value: unknown): string[] {
+  return value && typeof value === "object"
+    ? Object.keys(value as Record<string, unknown>).sort()
+    : [];
+}
+
+/**
+ * True when a read's `where` and `select` are EXACTLY these key sets (#2675
+ * review).
+ *
+ * A delegate that answers on `where.id.in` alone reports every requested member
+ * as found, healthy and settled whatever else the query asked — which is the
+ * hazard `fenceMemberFindMany`'s own docstring spells out: it would make a
+ * guard's "linked member not found" (or "not active", or "wrong season")
+ * refusal UNFAILABLE in this suite, silently, the moment such a guard is added
+ * to the confirm path. Matching the exact query shape means a read this fixture
+ * was not built for gets `[]` — the honest answer, and one that fails loudly at
+ * the guard rather than passing vacuously.
+ */
+function matchesShape(
+  args: unknown,
+  where: readonly string[],
+  select: readonly string[],
+): boolean {
+  const a = args as { where?: unknown; select?: unknown } | undefined;
+  return (
+    keysOf(a?.where).join(",") === [...where].sort().join(",") &&
+    keysOf(a?.select).join(",") === [...select].sort().join(",")
+  );
+}
+
 const txClient = {
   $executeRaw: vi.fn(),
+  /**
+   * The offer owner as the club's own records hold him (#2675).
+   *
+   * This suite declares a `NON_MEMBER_PRICING` club (see the eligibility mock),
+   * so the hosting evaluator's #2543 bridge asks whether each member participant
+   * has SETTLED their season subscription before letting them count as a host —
+   * and it asks THIS client, not the stubbed
+   * `evaluateNonMemberPricingRequirements`. Answering nothing is not a narrower
+   * fixture, it is a member the club has no row for, which
+   * `resolveMemberSubscriptionSettlement` (rightly) reads as owing one. That
+   * would strip the party of its only adult host and turn every case in this
+   * file into an unrelated hosting-review scenario.
+   *
+   * So state the truth `hostingMemberRow` already asserts on the guest row: an
+   * adult member, subscription PAID.
+   *
+   * The fence's id-only re-read is still answered by the helper (which sorts, as
+   * the fence requires). Beyond it this delegate answers EXACTLY TWO reads, each
+   * matched on its full query shape rather than on "some ids were asked for":
+   * `resolveMembershipTypePoliciesForMembers` (`membership-type-policy.ts`, the
+   * six-column select) and `loadMemberSubscriptionSettlements`
+   * (`subscription-lockout-facts.ts`, `{ id, ageTier }`). Anything else gets
+   * `[]`, because answering it would make some future guard's refusal unfailable
+   * here — see `matchesShape`.
+   */
+  member: {
+    findMany: fenceMemberFindMany([], async (args: unknown) => {
+      // resolveMembershipTypePoliciesForMembers — membership-type-policy.ts.
+      if (
+        matchesShape(
+          args,
+          ["id"],
+          ["id", "firstName", "lastName", "email", "role", "ageTier"],
+        )
+      ) {
+        return memberIdsRequested(args).map((id) => ({
+          id,
+          firstName: "Offer",
+          lastName: "Owner",
+          email: `${id}@test.com`,
+          role: "MEMBER",
+          ageTier: "ADULT",
+        }));
+      }
+      // loadMemberSubscriptionSettlements — subscription-lockout-facts.ts.
+      if (matchesShape(args, ["id"], ["id", "ageTier"])) {
+        return memberIdsRequested(args).map((id) => ({ id, ageTier: "ADULT" }));
+      }
+      return [];
+    }),
+  },
+  memberSubscription: {
+    /**
+     * The settlement loader's own read, and only it: `where` is
+     * `{ memberId: { in }, seasonYear }` with a `{ memberId, status }` select
+     * (`subscription-lockout-facts.ts`). Answering PAID for any shape would
+     * answer PAID for the WRONG SEASON too, which is the one thing this
+     * suite's `NON_MEMBER_PRICING` subject is about.
+     */
+    findMany: vi.fn(async (args: unknown) => {
+      if (!matchesShape(args, ["memberId", "seasonYear"], ["memberId", "status"])) {
+        return [];
+      }
+      return memberIdsRequested(args).map((id) => ({
+        memberId: id,
+        status: "PAID",
+      }));
+    }),
+  },
   // #2364: the hosting review is reconciled inside the booking write, so
   // every prisma/tx double a booking path runs against needs this client.
-  adultMemberHostingPolicy: { findMany: vi.fn().mockResolvedValue([]) },
+  // #2623 T5 / #2675: an ACTIVE mode, so the gate in front of the participant
+  // fence lets the claim reach it. `[]` resolved to DISABLED and took the gate's
+  // early return, so the three cases here that actually claim the offer never
+  // touched the fence the doubles above model. ADMIN_REVIEW_REQUIRED rather than
+  // the helper's ENFORCED default: ENFORCED turns a hosting violation into a
+  // refusal (a different `result`, and a different `code`, from the ones these
+  // cases pin) and drags `settleSameOwnerDependentCoverage` into coverage-queue
+  // writes this client models nothing of; review-only just records a snapshot.
+  adultMemberHostingPolicy: {
+    findMany: fenceHostingPolicyFindMany({ mode: "ADMIN_REVIEW_REQUIRED" }),
+  },
   booking: {
-    findUnique: h.txBookingFindUnique,
+    findUnique: fenceBooking.findUnique,
+    findMany: fenceBooking.findMany,
     updateMany: h.txBookingUpdateMany,
   },
 };
@@ -56,6 +189,7 @@ vi.mock("@/lib/booking-policies", () => ({
 }));
 vi.mock("@/lib/member-subscription-eligibility", () => ({
   resolveSubscriptionLockoutMode: h.resolveSubscriptionLockoutMode,
+  peekSubscriptionLockoutMode: h.peekSubscriptionLockoutMode,
 }));
 // #2543: the evaluator is stubbed, but the two helpers that shape the REFUSAL are
 // the real ones — the point of the case below is that this path answers with the
@@ -75,7 +209,7 @@ vi.mock("@/lib/capacity", () => ({
   checkCapacityForGuestRanges: h.checkCapacityForGuestRanges,
 }));
 vi.mock("@/lib/bed-allocation-lifecycle", () => ({
-  reconcileBedAllocationsForBooking: h.reconcileBedAllocations,
+  reconcileBedAllocationsForBookingWithGlobalLockHeld: h.reconcileBedAllocations,
 }));
 vi.mock("@/lib/lodges", () => ({
   getDefaultLodgeId: h.getDefaultLodgeId,
@@ -101,6 +235,12 @@ vi.mock("@/lib/logger", () => ({
   default: { error: vi.fn(), info: vi.fn(), warn: h.warn },
 }));
 
+import {
+  fenceHostingPolicyFindMany,
+  fenceMemberFindMany,
+  hostingMemberRow,
+  recordingBookingDouble,
+} from "@/lib/__tests__/support/hosting-participant-fence-double";
 import { confirmWaitlistOffer } from "@/lib/waitlist";
 // The real formatter, so this path and the cross-lodge promotion are checked
 // against one shared string rather than against two copies of it.
@@ -147,7 +287,33 @@ function offer(overrides: Record<string, unknown> = {}) {
     waitlistOfferExpiresAt: new Date(Date.now() + 86_400_000),
     checkIn: CHECK_IN,
     checkOut: CHECK_OUT,
-    guests: [{ id: "g1", isMember: true, nights: [] }],
+    // #2675: the party as the hosting EVALUATOR reads it. With the active mode
+    // above, the claim's reconciliation genuinely builds participants from these
+    // rows rather than bailing at the mode gate, and `BOOKING_HOSTING_SELECT` is
+    // the authority on their shape: names, the stay envelope, the night set, the
+    // D-12 consent status (`null` = no consent was ever needed, i.e.
+    // operationally present) and — the crux — the LIVE `member` relation.
+    //
+    // `isMember: true` with no `member` row is a shape production cannot emit,
+    // and it does not fail softly: `undefined !== null` is true, so
+    // `memberIsInGoodStanding` reads `undefined.active` and the claim throws.
+    // The owner is an adult member in good standing staying the whole offer, so
+    // the party has a host, no violation is raised, and every answer below is
+    // the one this file already pinned — with the fence in front now really run.
+    guests: [
+      {
+        id: "g1",
+        firstName: "Offer",
+        lastName: "Owner",
+        isMember: true,
+        memberId: "member-1",
+        member: hostingMemberRow("member-1"),
+        consentStatus: null,
+        stayStart: CHECK_IN,
+        stayEnd: CHECK_OUT,
+        nights: [],
+      },
+    ],
     ...overrides,
   };
 }
@@ -458,5 +624,81 @@ describe("confirmWaitlistOffer paid-up-adult re-check (#2543)", () => {
     const result = await confirmWaitlistOffer("booking-1", "member-1");
     expect(result.success).toBe(true);
     expect("subscriptionMemberRateNotice" in result).toBe(false);
+  });
+});
+
+/**
+ * #2675 review — the tx doubles above must answer ONLY the reads they model.
+ *
+ * `fenceMemberFindMany`'s docstring states the hazard in as many words: a
+ * delegate that answers a member read carrying extra predicates "would report
+ * every requested member as found, active and unarchived, making its 'linked
+ * member not found' refusal unfailable in any suite using this helper". The
+ * first draft of this file's delegate did exactly that — it read `where.id.in`
+ * and echoed the ids back as live ADULT members whatever else was asked, and
+ * answered the subscription read PAID whatever season it named.
+ *
+ * No guard on today's confirm path issues either shape, so nothing was masked
+ * yet. These pin that it stays that way: the delegate has to be shape-matched,
+ * not id-matched, so an existence/standing/season guard added to this path
+ * later fails honestly here instead of passing vacuously.
+ */
+describe("tx member doubles answer only the reads they model (#2675)", () => {
+  it("answers the membership-type policy resolver's six-column read", async () => {
+    await expect(
+      txClient.member.findMany({
+        where: { id: { in: ["m1"] } },
+        select: {
+          id: true,
+          firstName: true,
+          lastName: true,
+          email: true,
+          role: true,
+          ageTier: true,
+        },
+      }),
+    ).resolves.toEqual([
+      expect.objectContaining({ id: "m1", role: "MEMBER", ageTier: "ADULT" }),
+    ]);
+  });
+
+  it("answers the settlement loader's { id, ageTier } read", async () => {
+    await expect(
+      txClient.member.findMany({
+        where: { id: { in: ["m1"] } },
+        select: { id: true, ageTier: true },
+      }),
+    ).resolves.toEqual([{ id: "m1", ageTier: "ADULT" }]);
+  });
+
+  it("returns NOTHING for a member read that also asks about standing", async () => {
+    // `assertLinkedMembersExist`'s shape. Answering it would make its "linked
+    // member not found" refusal unfailable in this suite.
+    await expect(
+      txClient.member.findMany({
+        // Cast because the helper's own arg type describes only the FENCE's
+        // read; the whole point here is a query shape it does not model.
+        where: { id: { in: ["m1"] }, active: true, archivedAt: null } as never,
+        select: { id: true },
+      }),
+    ).resolves.toEqual([]);
+  });
+
+  it("answers the subscription read only in its own season-keyed shape", async () => {
+    await expect(
+      txClient.memberSubscription.findMany({
+        where: { memberId: { in: ["m1"] }, seasonYear: 2026 },
+        select: { memberId: true, status: true },
+      }),
+    ).resolves.toEqual([{ memberId: "m1", status: "PAID" }]);
+
+    // Without the season it is not the read this fixture models, so it must not
+    // report the subscription settled.
+    await expect(
+      txClient.memberSubscription.findMany({
+        where: { memberId: { in: ["m1"] } },
+        select: { memberId: true, status: true },
+      }),
+    ).resolves.toEqual([]);
   });
 });

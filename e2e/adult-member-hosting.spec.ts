@@ -1,18 +1,25 @@
-import { type APIRequestContext, type BrowserContext, expect, test } from "@playwright/test";
+import {
+  type APIRequestContext,
+  type BrowserContext,
+  expect,
+  test,
+} from "@playwright/test";
 
 import { loginPersona, storageStatePath } from "./helpers/auth";
-import { E2E_ADMIN, ROLE_PERSONAS, WAITLISTER } from "./helpers/fixtures";
 import {
-  overrideModules,
-  setModuleSettings,
-} from "./helpers/modules";
+  bookingCreateIsolation,
+  postBookingCreate,
+} from "./helpers/booking-create-client-ip";
+import { E2E_ADMIN, ROLE_PERSONAS, WAITLISTER } from "./helpers/fixtures";
+import { overrideModules, setModuleSettings } from "./helpers/modules";
 import { cancelMemberBookingsOnDate } from "./helpers/reset";
 import { stayWindowForAttempt } from "./helpers/stay-dates";
 
 /**
- * #2569 / #2576 — the adult-member hosting rule end to end against the real app.
+ * #2569 / #2576 / #2597 — the adult-member hosting rule end to end against the
+ * real app.
  *
- * Three things only production-mode running can show, and each is an acceptance
+ * Four things only production-mode running can show, and each is an acceptance
  * criterion rather than a nice-to-have:
  *
  *  1. THE SETTINGS CARD'S TWO DIMENSIONS (#2569). The consequence and the
@@ -29,6 +36,11 @@ import { stayWindowForAttempt } from "./helpers/stay-dates";
  *     refused, because it would leave the first one uncovered. This is the whole
  *     point of the scope and it is intrinsically multi-booking, so it cannot be
  *     shown anywhere but here.
+ *  4. ACTIVE COVER RESTORATION (#2597). After an officer accepts the loss and the
+ *     dependent carries an incident, a different booking writer creates replacement
+ *     active cover. The incident resolves as COVERAGE_RESTORED while the accepted
+ *     dependent keeps its status. Deterministic lock-winner timing belongs in the
+ *     disposable real-PostgreSQL suite, never production browser automation.
  *
  * DRIVEN THROUGH THE PRODUCT'S OWN APIs except where the officer product surface
  * is itself the contract. Same reasoning as `policy-exception-approval.spec.ts`:
@@ -128,7 +140,9 @@ async function readClubHostingPolicy(): Promise<{
   modeSource: string;
   hostScopeSource: string;
 }> {
-  const res = await admin.get("/api/admin/booking-policies/adult-member-hosting");
+  const res = await admin.get(
+    "/api/admin/booking-policies/adult-member-hosting",
+  );
   expect(res.ok(), `read hosting policy (${res.status()})`).toBeTruthy();
   const body = (await res.json()) as {
     effective: {
@@ -152,19 +166,29 @@ async function resolveOwnerMemberId(): Promise<string> {
   const match = (body.members ?? []).find(
     (candidate) => candidate.email === WAITLISTER.email,
   );
-  expect(match?.id, "the booking persona must resolve to a member id").toBeTruthy();
+  expect(
+    match?.id,
+    "the booking persona must resolve to a member id",
+  ).toBeTruthy();
   return match!.id;
 }
 
 /** Create a booking as the member, returning the response for the caller to judge. */
-function createMemberBooking(guests: Array<Record<string, unknown>>) {
-  return member.post("/api/bookings", {
-    data: {
-      checkIn: WINDOW.checkIn,
-      checkOut: WINDOW.checkOut,
-      guests,
+function createMemberBooking(
+  guests: Array<Record<string, unknown>>,
+  retry: number,
+) {
+  return postBookingCreate(
+    member,
+    bookingCreateIsolation("adult-hosting-refusal", retry),
+    {
+      data: {
+        checkIn: WINDOW.checkIn,
+        checkOut: WINDOW.checkOut,
+        guests,
+      },
     },
-  });
+  );
 }
 
 /**
@@ -172,24 +196,28 @@ function createMemberBooking(guests: Array<Record<string, unknown>>) {
  * live Stripe, and deliberately makes `createdById` differ from `Booking.memberId`:
  * if coverage accidentally keys on the creator, the dependent below is refused.
  */
-function createCoveringBooking() {
-  return admin.post("/api/bookings", {
-    data: {
-      checkIn: WINDOW.checkIn,
-      checkOut: WINDOW.checkOut,
-      forMemberId: ownerMemberId,
-      paymentMethod: "internet_banking",
-      guests: [
-        {
-          firstName: WAITLISTER.firstName,
-          lastName: WAITLISTER.lastName,
-          ageTier: "ADULT",
-          isMember: true,
-          memberId: ownerMemberId,
-        },
-      ],
+function createCoveringBooking(retry: number) {
+  return postBookingCreate(
+    admin,
+    bookingCreateIsolation("adult-hosting-cross-booking", retry),
+    {
+      data: {
+        checkIn: WINDOW.checkIn,
+        checkOut: WINDOW.checkOut,
+        forMemberId: ownerMemberId,
+        paymentMethod: "internet_banking",
+        guests: [
+          {
+            firstName: WAITLISTER.firstName,
+            lastName: WAITLISTER.lastName,
+            ageTier: "ADULT",
+            isMember: true,
+            memberId: ownerMemberId,
+          },
+        ],
+      },
     },
-  });
+  );
 }
 
 /**
@@ -200,23 +228,79 @@ function createCoveringBooking() {
  * a merely PENDING booking is protected from losing prospective cover, but it does
  * not receive an urgent incident until the club has accepted it (§7, §16).
  */
-function createConfirmedDependentBooking() {
-  return bookingOfficer.post("/api/bookings", {
-    data: {
-      checkIn: WINDOW.checkIn,
-      checkOut: WINDOW.checkOut,
-      forMemberId: ownerMemberId,
-      paymentMethod: "internet_banking",
-      guests: [
-        {
-          firstName: "Covered",
-          lastName: "Guest",
-          ageTier: "ADULT",
-          isMember: false,
-        },
-      ],
+function createConfirmedDependentBooking(retry: number) {
+  return postBookingCreate(
+    bookingOfficer,
+    bookingCreateIsolation("adult-hosting-cross-booking", retry),
+    {
+      data: {
+        checkIn: WINDOW.checkIn,
+        checkOut: WINDOW.checkOut,
+        forMemberId: ownerMemberId,
+        paymentMethod: "internet_banking",
+        guests: [
+          {
+            firstName: "Covered",
+            lastName: "Guest",
+            ageTier: "ADULT",
+            isMember: false,
+          },
+        ],
+      },
     },
+  );
+}
+
+/**
+ * Run provider-free confirmed-booking setup with the two required switches on,
+ * then restore the exact shared settings even when the booking request fails.
+ */
+async function withInternetBankingHolds<T>(work: () => Promise<T>): Promise<T> {
+  const moduleSnapshot = await overrideModules(admin, {
+    xeroIntegration: true,
+    internetBankingPayments: true,
   });
+  let bankingSnapshot:
+    | {
+        holdBedSlots: boolean;
+        holdDays: number;
+        minimumDaysBeforeCheckIn: number;
+      }
+    | undefined;
+  try {
+    const banking = await admin.get("/api/admin/internet-banking-settings");
+    expect(
+      banking.ok(),
+      `read Internet Banking settings (${banking.status()})`,
+    ).toBe(true);
+    bankingSnapshot = (
+      (await banking.json()) as { settings: typeof bankingSnapshot }
+    ).settings;
+    expect(bankingSnapshot).toBeTruthy();
+    const enabled = await admin.put("/api/admin/internet-banking-settings", {
+      data: {
+        holdBedSlots: true,
+        holdDays: bankingSnapshot!.holdDays,
+        minimumDaysBeforeCheckIn: 0,
+      },
+    });
+    expect(
+      enabled.ok(),
+      `enable Internet Banking holds (${enabled.status()}): ${await enabled.text()}`,
+    ).toBe(true);
+    return await work();
+  } finally {
+    if (bankingSnapshot) {
+      const restored = await admin.put("/api/admin/internet-banking-settings", {
+        data: bankingSnapshot,
+      });
+      expect(
+        restored.ok(),
+        `restore Internet Banking settings (${restored.status()})`,
+      ).toBe(true);
+    }
+    await setModuleSettings(admin, moduleSnapshot);
+  }
 }
 
 /**
@@ -248,22 +332,24 @@ async function memberBookingsOnWindow(): Promise<
       deletedAt: string | null;
     }>;
   };
-  return body.bookings
-    .filter(
-      (booking) =>
-        booking.memberName === MEMBER_NAME &&
-        booking.checkIn === WINDOW.checkIn &&
-        !booking.deletedAt,
-    )
-    // CANCELLED rows are kept: the override step below asserts that the dependent
-    // booking is NOT cancelled, which only means something if a cancelled row would
-    // have been visible here.
+  return (
+    body.bookings
+      .filter(
+        (booking) =>
+          booking.memberName === MEMBER_NAME &&
+          booking.checkIn === WINDOW.checkIn &&
+          !booking.deletedAt,
+      )
+      // CANCELLED rows are kept: the override step below asserts that the dependent
+      // booking is NOT cancelled, which only means something if a cancelled row would
+      // have been visible here.
 
-    .map((booking) => ({
-      id: booking.id,
-      status: booking.status,
-      checkIn: booking.checkIn,
-    }));
+      .map((booking) => ({
+        id: booking.id,
+        status: booking.status,
+        checkIn: booking.checkIn,
+      }))
+  );
 }
 
 test.beforeAll(async ({ browser }) => {
@@ -365,10 +451,18 @@ test("the card resolves and states the two dimensions independently (#2569)", as
   await page.close();
 });
 
-test("an enforcing club refuses a booking with no adult member cover (#2569 §1)", async () => {
-  const refused = await createMemberBooking([
-    { firstName: "Hosting", lastName: "Guest", ageTier: "ADULT", isMember: false },
-  ]);
+test("an enforcing club refuses a booking with no adult member cover (#2569 §1)", async ({}, testInfo) => {
+  const refused = await createMemberBooking(
+    [
+      {
+        firstName: "Hosting",
+        lastName: "Guest",
+        ageTier: "ADULT",
+        isMember: false,
+      },
+    ],
+    testInfo.retry,
+  );
   expect(
     refused.status(),
     `uncovered booking must be refused, not recorded (${refused.status()}): ` +
@@ -394,60 +488,17 @@ test("an enforcing club refuses a booking with no adult member cover (#2569 §1)
   ).toEqual([]);
 });
 
-test("another booking on the same account supplies the cover, and cannot then be pulled away (#2576)", async () => {
+test("same-owner cover can be removed with authority and restored by another active booking (#2576, #2597)", async ({}, testInfo) => {
   // 1. THE SOURCE. A booking carrying the member themselves, who is a qualifying
   //    adult member attending those exact nights at that exact lodge.
   // Internet Banking is the isolated suite's provider-free route to CONFIRMED,
   // but enabling Xero globally would make Wanda's later member calls hit the
   // separate Xero-contact gate. Hold both switches only around this admin
   // on-behalf create, then restore the exact module snapshot before proceeding.
-  const moduleSnapshot = await overrideModules(admin, {
-    xeroIntegration: true,
-    internetBankingPayments: true,
-  });
-  let bankingSnapshot:
-    | {
-        holdBedSlots: boolean;
-        holdDays: number;
-        minimumDaysBeforeCheckIn: number;
-      }
-    | undefined;
-  let source: Awaited<ReturnType<typeof createCoveringBooking>>;
-  let dependent: Awaited<ReturnType<typeof createConfirmedDependentBooking>>;
-  try {
-    const banking = await admin.get("/api/admin/internet-banking-settings");
-    expect(banking.ok(), `read Internet Banking settings (${banking.status()})`).toBe(
-      true,
-    );
-    bankingSnapshot = (
-      (await banking.json()) as { settings: typeof bankingSnapshot }
-    ).settings;
-    expect(bankingSnapshot).toBeTruthy();
-    const enabled = await admin.put("/api/admin/internet-banking-settings", {
-      data: {
-        holdBedSlots: true,
-        holdDays: bankingSnapshot!.holdDays,
-        minimumDaysBeforeCheckIn: 0,
-      },
-    });
-    expect(
-      enabled.ok(),
-      `enable Internet Banking holds (${enabled.status()}): ${await enabled.text()}`,
-    ).toBe(true);
-    source = await createCoveringBooking();
-    dependent = await createConfirmedDependentBooking();
-  } finally {
-    if (bankingSnapshot) {
-      const restored = await admin.put("/api/admin/internet-banking-settings", {
-        data: bankingSnapshot,
-      });
-      expect(
-        restored.ok(),
-        `restore Internet Banking settings (${restored.status()})`,
-      ).toBe(true);
-    }
-    await setModuleSettings(admin, moduleSnapshot);
-  }
+  const { source, dependent } = await withInternetBankingHolds(async () => ({
+    source: await createCoveringBooking(testInfo.retry),
+    dependent: await createConfirmedDependentBooking(testInfo.retry),
+  }));
   expect(
     source.ok(),
     `create the covering booking (${source.status()}): ${await source.text()}`,
@@ -498,9 +549,12 @@ test("another booking on the same account supplies the cover, and cannot then be
 
   // 3. THE REFUSED CHANGE (§6). Cancelling the source would strand the dependent,
   //    so the member's own cancel is refused — and the source is left untouched.
-  const blocked = await member.post(`/api/bookings/${sourceBooking.id}/cancel`, {
-    data: { refundMethod: "credit" },
-  });
+  const blocked = await member.post(
+    `/api/bookings/${sourceBooking.id}/cancel`,
+    {
+      data: { refundMethod: "credit" },
+    },
+  );
   expect(
     blocked.status(),
     `stranding cancel must be refused (${blocked.status()}): ${await blocked.text()}`,
@@ -515,9 +569,9 @@ test("another booking on the same account supplies the cover, and cannot then be
   expect(
     (blockedBody.strandedBookings ?? []).map((row) => row.bookingId),
   ).toContain(dependentBooking.id);
-  expect(
-    (blockedBody.strandedBookings ?? [])[0]?.nights ?? [],
-  ).toContain(WINDOW.checkIn);
+  expect((blockedBody.strandedBookings ?? [])[0]?.nights ?? []).toContain(
+    WINDOW.checkIn,
+  );
 
   // The rollback is real: the source booking is still live and still confirmed.
   const afterRefusal = await memberBookingsOnWindow();
@@ -575,7 +629,10 @@ test("another booking on the same account supplies the cover, and cannot then be
   expect(needsOverrideBody.strandedStateKey).toMatch(/^v1:[0-9a-f]{64}$/);
 
   const stranded = needsOverrideBody.strandedBookings?.[0];
-  expect(stranded, "the officer refusal must carry display-safe evidence").toBeTruthy();
+  expect(
+    stranded,
+    "the officer refusal must carry display-safe evidence",
+  ).toBeTruthy();
   if (!stranded) throw new Error("Missing hosting-coverage evidence");
   const overridePrompt = officerPage
     .getByRole("alert")
@@ -664,7 +721,9 @@ test("another booking on the same account supplies the cover, and cannot then be
         pageSize: "10",
       }).toString(),
   );
-  expect(audit.ok(), `read hosting incident audit (${audit.status()})`).toBe(true);
+  expect(audit.ok(), `read hosting incident audit (${audit.status()})`).toBe(
+    true,
+  );
   const auditBody = (await audit.json()) as {
     data?: Array<{
       action: string;
@@ -677,6 +736,78 @@ test("another booking on the same account supplies the cover, and cannot then be
       action: "booking.hostingCoverage.incidentOpened",
       entityId: dependentBooking.id,
       details: overrideReason,
+    }),
+  );
+
+  // 5. ACTIVE COVER COMES BACK (#2597). Creating a replacement source is a
+  //    different booking writer from the officer cancellation above. Its queue
+  //    obligation must survive attribution fencing, reconcile the already-active
+  //    dependent and close the incident without changing that booking's lifecycle.
+  const restoredCover = await withInternetBankingHolds(() =>
+    createCoveringBooking(testInfo.retry),
+  );
+  expect(
+    restoredCover.ok(),
+    `create replacement cover (${restoredCover.status()}): ${await restoredCover.text()}`,
+  ).toBeTruthy();
+  const restoredCoverBooking = (await restoredCover.json()) as {
+    id: string;
+    status: string;
+    memberId: string;
+  };
+  createdBookingIds.push(restoredCoverBooking.id);
+  expect(restoredCoverBooking.memberId).toBe(ownerMemberId);
+  expect(["CONFIRMED", "PAID"]).toContain(restoredCoverBooking.status);
+
+  const restoredIncidentPage = await adminContext.newPage();
+  await restoredIncidentPage.goto("/admin/bookings#hosting-coverage-incidents");
+  await expect
+    .poll(
+      async () => {
+        await restoredIncidentPage.reload();
+        return restoredIncidentPage
+          .locator("#hosting-coverage-incidents")
+          .getByText(stranded.reference)
+          .count();
+      },
+      {
+        message: "replacement active cover must resolve the dependent incident",
+        timeout: 15_000,
+      },
+    )
+    .toBe(0);
+  await restoredIncidentPage.close();
+
+  const afterRestoration = await memberBookingsOnWindow();
+  const restoredDependent = afterRestoration.find(
+    (row) => row.id === dependentBooking.id,
+  );
+  expect(
+    restoredDependent,
+    "restoring cover must keep the dependent booking",
+  ).toBeTruthy();
+  expect(["CONFIRMED", "PAID"]).toContain(restoredDependent!.status);
+
+  const resolutionAudit = await admin.get(
+    "/api/admin/audit-log?" +
+      new URLSearchParams({
+        eventType: "booking.hostingCoverage.incidentResolved",
+        q: dependentBooking.id,
+        pageSize: "10",
+      }).toString(),
+  );
+  expect(
+    resolutionAudit.ok(),
+    `read hosting resolution audit (${resolutionAudit.status()})`,
+  ).toBe(true);
+  const resolutionAuditBody = (await resolutionAudit.json()) as {
+    data?: Array<{ action: string; entityId: string | null; summary?: string }>;
+  };
+  expect(resolutionAuditBody.data).toContainEqual(
+    expect.objectContaining({
+      action: "booking.hostingCoverage.incidentResolved",
+      entityId: dependentBooking.id,
+      summary: expect.stringContaining("COVERAGE_RESTORED"),
     }),
   );
 });

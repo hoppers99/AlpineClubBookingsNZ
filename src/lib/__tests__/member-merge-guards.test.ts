@@ -21,10 +21,163 @@ function guardMember(id: string, overrides: Record<string, unknown> = {}) {
 function defaultDelegate() {
   return {
     count: vi.fn().mockResolvedValue(0),
+    findFirst: vi.fn().mockResolvedValue(null),
     findMany: vi.fn().mockResolvedValue([]),
     findUnique: vi.fn().mockResolvedValue(null),
   };
 }
+
+function contactCreateFailure(providerContactCreated = true) {
+  return {
+    id: "xero-op-1",
+    responsePayload: {
+      phase: "local_link_after_xero_resolution",
+      providerContactCreated,
+    },
+  };
+}
+
+function staleResetContactCreatePendingProof() {
+  return {
+    id: "xero-op-stale-reset",
+    status: "FAILED",
+    responsePayload: {
+      phase: "provider_contact_created_local_link_pending",
+      providerContactCreated: true,
+    },
+  };
+}
+
+describe("unresolved Xero contact-create recovery blockers", () => {
+  it.each([
+    ["master", MASTER_ID, "master_xero_contact_create_recovery_pending"],
+    ["duplicate", LOSER_ID, "loser_xero_contact_create_recovery_pending"],
+  ])("blocks when the %s has provider-created local-link recovery", async (_side, id, code) => {
+    const xeroSyncOperation = {
+      ...defaultDelegate(),
+      findFirst: vi.fn(({ where }: { where: { localId: string } }) =>
+        Promise.resolve(where.localId === id ? contactCreateFailure() : null),
+      ),
+    };
+
+    const blockers = await runGuards({ xeroSyncOperation });
+
+    expect(blockers.map((blocker) => blocker.code)).toContain(code);
+    const label = blockers.find((blocker) => blocker.code === code)?.label;
+    expect(label).toMatch(
+      /Wait for it to finish, or resolve the failed Xero operation/,
+    );
+    // #2623 T7: the refusal names the exact operation and the screen that
+    // clears it. Without that the operator saw an unexplained 409 while the
+    // member's own page reported a clean Xero state.
+    expect(label).toContain(contactCreateFailure().id);
+    expect(label).toContain("Admin → Xero → Operations");
+  });
+
+  it("blocks an exact active contact-create reservation", async () => {
+    const xeroSyncOperation = {
+      ...defaultDelegate(),
+      findFirst: vi.fn(({ where }: { where: { localId: string } }) =>
+        Promise.resolve(
+          where.localId === LOSER_ID
+            ? { id: "xero-running", status: "RUNNING", responsePayload: null }
+            : null,
+        ),
+      ),
+    };
+
+    const blockers = await runGuards({ xeroSyncOperation });
+    expect(blockers.map((blocker) => blocker.code)).toContain(
+      "loser_xero_contact_create_recovery_pending",
+    );
+  });
+
+  it("blocks merge after a provider-created pending-link row is reset to FAILED", async () => {
+    const xeroSyncOperation = {
+      ...defaultDelegate(),
+      findFirst: vi.fn(({ where }: { where: { localId: string } }) =>
+        Promise.resolve(
+          where.localId === LOSER_ID
+            ? staleResetContactCreatePendingProof()
+            : null,
+        ),
+      ),
+    };
+
+    const blockers = await runGuards({ xeroSyncOperation });
+    expect(blockers.map((blocker) => blocker.code)).toContain(
+      "loser_xero_contact_create_recovery_pending",
+    );
+  });
+
+  it("blocks merge on an unmarked contact-create reservation reset as stale", async () => {
+    const xeroSyncOperation = {
+      ...defaultDelegate(),
+      findFirst: vi.fn(
+        ({ where }: { where: { localId: string; OR: unknown[] } }) => {
+          if (where.localId !== LOSER_ID) return Promise.resolve(null);
+          expect(where.OR).toEqual(
+            expect.arrayContaining([
+              {
+                operationType: "CREATE",
+                OR: expect.arrayContaining([
+                  {
+                    status: "FAILED",
+                    lastErrorCode: "ORPHANED_STALE_RUNNING",
+                  },
+                ]),
+              },
+            ]),
+          );
+          return Promise.resolve({
+            id: "xero-stale-reset",
+            status: "FAILED",
+            lastErrorCode: "ORPHANED_STALE_RUNNING",
+            responsePayload: null,
+          });
+        },
+      ),
+    };
+
+    const blockers = await runGuards({ xeroSyncOperation });
+    expect(blockers.map((blocker) => blocker.code)).toContain(
+      "loser_xero_contact_create_recovery_pending",
+    );
+  });
+
+  it("does not block matched-existing, manually resolved, or non-failed operations", async () => {
+    const excludedOperations = [
+      {
+        status: "FAILED",
+        manuallyResolvedAt: null,
+        responsePayload: contactCreateFailure(false).responsePayload,
+      },
+      {
+        status: "FAILED",
+        manuallyResolvedAt: new Date("2026-07-01T00:00:00Z"),
+        responsePayload: contactCreateFailure().responsePayload,
+      },
+      {
+        status: "SUCCEEDED",
+        manuallyResolvedAt: null,
+        responsePayload: contactCreateFailure().responsePayload,
+      },
+    ];
+    const xeroSyncOperation = {
+      ...defaultDelegate(),
+      // Prisma applies the exact where-clause before returning a candidate.
+      // These deliberately non-matching rows therefore produce no result.
+      findFirst: vi.fn(({ where }: { where: { OR: unknown[]; manuallyResolvedAt: null } }) => {
+        expect(where.OR).toEqual(expect.arrayContaining([expect.objectContaining({ status: "RUNNING" })]));
+        expect(where.manuallyResolvedAt).toBeNull();
+        expect(excludedOperations).toHaveLength(3);
+        return Promise.resolve(null);
+      }),
+    };
+
+    await expect(runGuards({ xeroSyncOperation })).resolves.toEqual([]);
+  });
+});
 
 /**
  * Proxy mock db: member.count answers the actorIsFullAdmin /
@@ -144,12 +297,23 @@ describe("subscription-collision blocker (B1 matrix)", () => {
   });
 });
 
-describe("pending DeletionRequest blocker (M2)", () => {
-  it("blocks when the LOSER has a PENDING account-deletion request", async () => {
+describe("open DeletionRequest blocker (M2)", () => {
+  /** The status filter the guard is expected to issue (#2597). */
+  type OpenStatusWhere = {
+    memberId: string;
+    status: { in: string[] };
+  };
+
+  const matchesOpenRequest = (where: OpenStatusWhere, memberId: string) =>
+    where.memberId === memberId &&
+    where.status.in.includes("PENDING") &&
+    where.status.in.includes("APPROVAL_IN_PROGRESS");
+
+  it("blocks when the LOSER has an open account-deletion request", async () => {
     const deletionRequest = {
       ...defaultDelegate(),
-      count: vi.fn(({ where }: { where: { memberId: string; status: string } }) =>
-        Promise.resolve(where.memberId === LOSER_ID && where.status === "PENDING" ? 1 : 0),
+      count: vi.fn(({ where }: { where: OpenStatusWhere }) =>
+        Promise.resolve(matchesOpenRequest(where, LOSER_ID) ? 1 : 0),
       ),
     };
     const blockers = await runGuards({ deletionRequest });
@@ -157,11 +321,11 @@ describe("pending DeletionRequest blocker (M2)", () => {
     expect(blockers.map((b) => b.code)).not.toContain("master_pending_requests");
   });
 
-  it("blocks when the MASTER has a PENDING account-deletion request", async () => {
+  it("blocks when the MASTER has an open account-deletion request", async () => {
     const deletionRequest = {
       ...defaultDelegate(),
-      count: vi.fn(({ where }: { where: { memberId: string; status: string } }) =>
-        Promise.resolve(where.memberId === MASTER_ID && where.status === "PENDING" ? 1 : 0),
+      count: vi.fn(({ where }: { where: OpenStatusWhere }) =>
+        Promise.resolve(matchesOpenRequest(where, MASTER_ID) ? 1 : 0),
       ),
     };
     const blockers = await runGuards({ deletionRequest });
@@ -169,11 +333,16 @@ describe("pending DeletionRequest blocker (M2)", () => {
     expect(blockers.map((b) => b.code)).not.toContain("loser_pending_requests");
   });
 
-  it("only PENDING deletion requests block (queries filter on status)", async () => {
+  it("counts a mid-approval request as open, not as a decided one", async () => {
+    // #2597: an approval that has already cancelled bookings but not yet
+    // anonymised must still block a merge. Were the guard to filter on PENDING
+    // alone, DeletionRequest.member (classified `move`) would silently
+    // re-point to the master and the later approval would wipe the MERGED
+    // record — the exact hazard this blocker exists to prevent.
     const deletionRequest = {
       ...defaultDelegate(),
-      count: vi.fn(({ where }: { where: { status?: string } }) => {
-        expect(where.status).toBe("PENDING");
+      count: vi.fn(({ where }: { where: OpenStatusWhere }) => {
+        expect(where.status.in).toEqual(["PENDING", "APPROVAL_IN_PROGRESS"]);
         return Promise.resolve(0);
       }),
     };

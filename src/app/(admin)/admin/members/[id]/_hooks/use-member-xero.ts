@@ -1,10 +1,11 @@
 "use client";
 
-import { useState, type Dispatch, type SetStateAction } from "react";
+import { useEffect, useState, type Dispatch, type SetStateAction } from "react";
 import { toast } from "sonner";
 import type { XeroSearchResult } from "@/components/admin/xero-suggested-contact-card";
 import { useXeroEntranceFeeDecision } from "@/lib/admin-xero-entrance-fee";
 import {
+  AdminMemberXeroActionError,
   linkMemberXeroContact,
   pushMemberToXero,
   searchXeroContacts,
@@ -17,6 +18,9 @@ interface UseMemberXeroParams {
   fetchMember: () => Promise<void>;
   setLoading: Dispatch<SetStateAction<boolean>>;
   setXeroError: Dispatch<SetStateAction<string>>;
+  onPartialSuccess: (error: AdminMemberXeroActionError) => Promise<void>;
+  xeroCreateSuppressed?: boolean;
+  xeroWritesSuppressed?: boolean;
 }
 
 export function useMemberXero({
@@ -24,6 +28,9 @@ export function useMemberXero({
   fetchMember,
   setLoading,
   setXeroError,
+  onPartialSuccess,
+  xeroCreateSuppressed = false,
+  xeroWritesSuppressed = false,
 }: UseMemberXeroParams) {
   const [xeroSearchOpen, setXeroSearchOpen] = useState(false);
   const [xeroSearchQuery, setXeroSearchQuery] = useState("");
@@ -50,11 +57,30 @@ export function useMemberXero({
     buildXeroEntranceFeeInvoiceOptions,
   } = useXeroEntranceFeeDecision();
   const [xeroCreateDecisionOpen, setXeroCreateDecisionOpen] = useState(false);
+
+  useEffect(() => {
+    if (!xeroWritesSuppressed) return;
+    setXeroSearchOpen(false);
+    setXeroCreateOpen(false);
+    setXeroCreateDecisionOpen(false);
+  }, [xeroWritesSuppressed]);
   const [xeroCreateDecisionResults, setXeroCreateDecisionResults] = useState<
     XeroSearchResult[]
   >([]);
   const [xeroDecisionContactId, setXeroDecisionContactId] = useState("");
   const [xeroDecisionError, setXeroDecisionError] = useState("");
+
+  const recoverPartialXeroAction = async (
+    error: AdminMemberXeroActionError,
+  ) => {
+    setXeroSearchOpen(false);
+    setXeroCreateOpen(false);
+    setXeroCreateDecisionOpen(false);
+    setXeroCreateDecisionResults([]);
+    setXeroDecisionContactId("");
+    setXeroDecisionError("");
+    await onPartialSuccess(error);
+  };
 
   const handleXeroSearch = async () => {
     if (!xeroSearchQuery || xeroSearchQuery.length < 2) return;
@@ -72,6 +98,7 @@ export function useMemberXero({
   };
 
   const handleXeroLink = async (xeroContactId: string) => {
+    if (xeroWritesSuppressed) return;
     setXeroLinking(true);
     setXeroError("");
     try {
@@ -85,6 +112,13 @@ export function useMemberXero({
       setLoading(true);
       await fetchMember();
     } catch (err) {
+      if (
+        err instanceof AdminMemberXeroActionError &&
+        err.recovery.xeroLinkMayHaveChanged
+      ) {
+        await recoverPartialXeroAction(err);
+        return;
+      }
       setXeroError(err instanceof Error ? err.message : "Link failed");
     } finally {
       setXeroLinking(false);
@@ -92,6 +126,7 @@ export function useMemberXero({
   };
 
   const handleXeroUnlink = async () => {
+    if (xeroWritesSuppressed) return;
     setXeroUnlinking(true);
     setXeroError("");
     try {
@@ -105,6 +140,13 @@ export function useMemberXero({
       setLoading(true);
       await fetchMember();
     } catch (err) {
+      if (
+        err instanceof AdminMemberXeroActionError &&
+        err.recovery.xeroContactUnlinked
+      ) {
+        await recoverPartialXeroAction(err);
+        return;
+      }
       setXeroError(err instanceof Error ? err.message : "Unlink failed");
     } finally {
       setXeroUnlinking(false);
@@ -146,6 +188,7 @@ export function useMemberXero({
   };
 
   const handleXeroPush = async (forceCreate = false) => {
+    if (xeroWritesSuppressed) return;
     setXeroPushing(true);
     setXeroError("");
     if (forceCreate) {
@@ -174,6 +217,13 @@ export function useMemberXero({
         entranceFeeInvoiceOptions.createEntranceFeeInvoice,
       );
     } catch (err) {
+      if (
+        err instanceof AdminMemberXeroActionError &&
+        err.recovery.xeroContactCreated
+      ) {
+        await recoverPartialXeroAction(err);
+        return;
+      }
       const message = err instanceof Error ? err.message : "Push failed";
       if (forceCreate) {
         setXeroDecisionError(message);
@@ -186,6 +236,7 @@ export function useMemberXero({
   };
 
   const handleXeroDecisionLink = async () => {
+    if (xeroWritesSuppressed) return;
     if (!xeroDecisionContactId) return;
 
     setXeroLinking(true);
@@ -203,6 +254,13 @@ export function useMemberXero({
       setLoading(true);
       await fetchMember();
     } catch (err) {
+      if (
+        err instanceof AdminMemberXeroActionError &&
+        err.recovery.xeroLinkMayHaveChanged
+      ) {
+        await recoverPartialXeroAction(err);
+        return;
+      }
       setXeroDecisionError(err instanceof Error ? err.message : "Link failed");
     } finally {
       setXeroLinking(false);
@@ -210,6 +268,7 @@ export function useMemberXero({
   };
 
   const openLinkXero = () => {
+    if (xeroWritesSuppressed) return;
     setXeroSearchOpen(true);
     setXeroSearchQuery("");
     setXeroSearchResults([]);
@@ -217,6 +276,7 @@ export function useMemberXero({
   };
 
   const openCreateXero = () => {
+    if (xeroCreateSuppressed) return;
     resetXeroEntranceFeeDecision();
     setXeroCreateOpen(true);
     setXeroError("");

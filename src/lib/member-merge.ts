@@ -12,23 +12,62 @@ import {
   MAX_FAMILY_LINK_GENERATIONS,
   MAX_PARENT_LINK_CHAIN_LENGTH,
 } from "@/lib/member-family-link-depth";
+import { OPEN_DELETION_REQUEST_STATUSES } from "@/lib/deletion-request-decision";
 import { deleteOwnedMemberPhotoBlobs } from "@/lib/member-photo";
 import { memberDisplayName } from "@/lib/member-serialization";
 import { prisma } from "@/lib/prisma";
+import { findMemberContactChangeMergeBlocker } from "@/lib/xero-contact-create-recovery";
 import { settleHostingCoverageAfterCommit } from "@/lib/adult-member-hosting-coverage-drain";
+import { lockAdultMemberHostingPolicySet } from "@/lib/adult-member-hosting-policy-set";
+import { lockHostingCoverageOwners } from "@/lib/adult-member-hosting-coverage-lock";
 import {
-  enqueueHostingCoverageReevaluationForMember,
-  enqueueOwnHostingCoverageReevaluation,
+  buildMemberMergeHostingCoveragePlan,
+  enqueueMemberMergeHostingCoveragePlan,
+  memberMergeHostingCoveragePlanFingerprint,
 } from "@/lib/adult-member-hosting-review";
+import {
+  HostingCoverageParticipantRetryError,
+  lockMemberMergeHostingCoverageParticipants,
+  proveMemberMergeHostingCoverageParticipants,
+  type HostingCoverageQueueParticipantProof,
+} from "@/lib/adult-member-hosting-queue-participants";
+import {
+  acquireMemberMergePartnerSharedLodgeLocks,
+  describePartnerSharedSweepReason,
+  partnerShareSweepCounterpartNames,
+  partnerShareSweepNights,
+  sweepUnbackedFutureSharedDoublesWithLocksHeld,
+  UnlockedPartnerShareLodgeError,
+  type SweptPartnerSharedAllocation,
+} from "@/lib/bed-allocation-lifecycle";
+import { sendAdminPartnerShareSweptAlert } from "@/lib/email";
 import logger from "@/lib/logger";
+import { acquireMemberPartnerLinkLocks } from "@/lib/member-partner-lock";
 
 /**
  * E11 (#1937) — additive, master-wins member profile merge.
  *
- * The whole operation runs in ONE interactive transaction guarded by a dual
- * `member-lifecycle:{id}` advisory lock (see docs/CONCURRENCY_AND_LOCKING.md).
+ * The whole operation runs in ONE interactive transaction guarded first by the
+ * hosting policy-set lock, then — since #2595, because merge repairs future
+ * shared-double bed placements it invalidates — every affected lodge capacity
+ * key in sorted order (and deliberately NOT the global cohort `lock(1)`, whose
+ * cost over a 120s merge is why the lodge set is derived from future
+ * guest-nights instead), then the dual `member-lifecycle:{id}` advisory lock, so
+ * the fixed lodge -> member order holds, and finally the two
+ * `member-partner-link:{id}` keys — because merge both re-points partner links
+ * and reads them to decide which future shared doubles to delete
+ * (see docs/CONCURRENCY_AND_LOCKING.md).
+ * The hosting drain takes the same sorted keys for its claimed owner and actor,
+ * then refreshes the exact queue payload. For a queue row that already exists,
+ * this handshake starts here, before any relation move. After the moves, one
+ * sorted Member row-lock statement covers master, loser and the exact queue
+ * owners, followed by a plan re-read and late queue-pointer sweeps. Policy and
+ * config-transfer reconciliation cannot interleave because it shares the
+ * policy-set lock.
  * It re-points every Member-referencing relation onto the master, additively
- * fills the master's blank scalar fields from the loser, tidies the loser's
+ * fills the master's blank scalar fields from the loser, removes any future
+ * shared DOUBLE bed the merge left without a confirmed partnership behind it
+ * (#2595, step 3b, alerted after commit), tidies the loser's
  * Xero links, writes one critical audit, and hard-deletes the loser. There are
  * NO Xero API calls anywhere in this module — the loser's Xero contact is left
  * for manual clean-up (surfaced as a preview warning).
@@ -448,6 +487,9 @@ export const MEMBER_MERGE_SNAPSHOT_SCALAR_COLUMNS: readonly string[] = [
   // MOVED loser -> master by `MEMBER_MERGE_FK_LESS_MOVE_COLUMNS` / `applyMoves`,
   // matching its FK twin on the same row (`requestedByMemberId`, classified
   // `move`).
+  // `HostingCoverageReevaluation.actorMemberId` is the same exceptional live
+  // shape: although FK-less while queued, it is promoted into the incident's
+  // real `overriddenByMemberId` FK, so the move registry owns it as well.
 
   // -------------------------------------------------------------------------
   // #2243 — the rest of the columns `parseFkLessMemberIdColumns` detects.
@@ -1322,16 +1364,53 @@ async function countPendingLifecycleOrFamily(
         ],
       },
     }),
-    // A PENDING self-service account-deletion request must block the merge:
+    // An open self-service account-deletion request must block the merge:
     // DeletionRequest.member is classified `move`, so without this guard a
     // loser's pending deletion would silently re-point to the master and a
     // later approval would anonymise/wipe the MERGED record (cross-check:
     // MEMBER_DELETE_BLOCKER_SPECS `account_deletion_requests`).
     db.deletionRequest.count({
-      where: { memberId, status: "PENDING" },
+      where: { memberId, status: { in: OPEN_DELETION_REQUEST_STATUSES } },
     }),
   ]);
   return lifecycle + family + deletion;
+}
+
+/**
+ * A RUNNING member-contact CREATE is the short-lived reservation that fences its
+ * provider call against merge. A provider-created contact whose local Member
+ * link failed is the durable recovery form of that same identity proof.
+ * `XeroSyncOperation.localId` deliberately has no Member foreign key, so refuse
+ * either exact state before deleting a participant.
+ */
+async function evaluateContactCreateRecoveryBlockers(
+  db: MergeDbClient,
+  masterId: string,
+  loserId: string,
+): Promise<MergeBlocker[]> {
+  const [masterPending, loserPending] = await Promise.all([
+    findMemberContactChangeMergeBlocker(masterId, db),
+    findMemberContactChangeMergeBlocker(loserId, db),
+  ]);
+  const blockers: MergeBlocker[] = [];
+  // #2623 T7: name the exact operation and the screen that clears it. A member
+  // whose link has since been repaired reads as clean everywhere else, so an
+  // unexplained refusal left the operator with nothing to search for.
+  const remedy = (operationId: string) =>
+    `Wait for it to finish, or resolve the failed Xero operation (${operationId}) under Admin → Xero → Operations, before merging.`;
+  if (masterPending) {
+    blockers.push({
+      code: "master_xero_contact_create_recovery_pending",
+      label: `The master has a Xero contact change in progress or awaiting local-link recovery. ${remedy(masterPending.operationId)}`,
+    });
+  }
+  if (loserPending) {
+    blockers.push({
+      code: "loser_xero_contact_create_recovery_pending",
+      label: `The duplicate has a Xero contact change in progress or awaiting local-link recovery. ${remedy(loserPending.operationId)}`,
+    });
+  }
+  return blockers;
 }
 
 /**
@@ -1432,6 +1511,9 @@ export async function evaluateMemberMergeGuards(params: {
   }
 
   blockers.push(...(await evaluateFamilyLinkGraphBlockers(db, masterId, loserId)));
+  blockers.push(
+    ...(await evaluateContactCreateRecoveryBlockers(db, masterId, loserId)),
+  );
 
   return blockers;
 }
@@ -1601,8 +1683,16 @@ function selfRelationMoveWhere(
  * `BookingRequest.convertedMemberId` is the identity pointer to the member a
  * booking request converted INTO, replayed as a live member id by
  * `claimAlreadyConvertedBookingRequest` — not an actor/audit snapshot.
+ * `HostingCoverageReevaluation.actorMemberId` is live too: the drain promotes
+ * it into the incident's real Member foreign key, so queued attribution must
+ * follow a merged person onto the surviving profile. Merge and drain share the
+ * sorted lifecycle handshake for an already-existing queue row, and the drain
+ * refreshes its exact claimed row. The post-move participant fence and late
+ * sweeps cover an ordinary producer that reaches this transaction after the
+ * first relation sweep; policy/config-transfer reconciliation is already
+ * serialised by the shared policy-set lock.
  */
-const MEMBER_MERGE_FK_LESS_MOVE_COLUMNS: readonly {
+export const MEMBER_MERGE_FK_LESS_MOVE_COLUMNS: readonly {
   key: string;
   delegate: string;
   column: string;
@@ -1611,6 +1701,11 @@ const MEMBER_MERGE_FK_LESS_MOVE_COLUMNS: readonly {
     key: "BookingRequest.convertedMemberId",
     delegate: "bookingRequest",
     column: "convertedMemberId",
+  },
+  {
+    key: "HostingCoverageReevaluation.actorMemberId",
+    delegate: "hostingCoverageReevaluation",
+    column: "actorMemberId",
   },
 ];
 
@@ -2013,6 +2108,15 @@ function extractRefusalContext(
       )
       .map((link) => ({ column: link.column, where: link.where }));
   }
+  if (Array.isArray(source.lodgeIds)) {
+    // #2595 `partner_share_lodge_drift`: the lodges that appeared for one of
+    // these members after the partner-share prefix derived its set. Lodge ids
+    // are structural, never member data, so they fit the non-PII contract and
+    // tell an operator which board changed under the merge.
+    context.unlockedLodgeIds = source.lodgeIds.filter(
+      (lodgeId): lodgeId is string => typeof lodgeId === "string",
+    );
+  }
   if (Array.isArray(source.blockers)) {
     context.blockerCodes = source.blockers
       .map((blocker) =>
@@ -2128,13 +2232,116 @@ export async function executeMemberMerge(params: {
     );
   }
 
+  // #2595 — the future shared-double placements this merge invalidated, filled
+  // in by step 3b inside the transaction and alerted on only AFTER it commits
+  // (the alert sends email, which never belongs inside a transaction). Same
+  // shape as the #1756 lifecycle callers.
+  let sweptShares: SweptPartnerSharedAllocation[] = [];
+  let sweptShareMasterName = "";
+
   const result = await client.$transaction(async (tx) => {
+    // Policy reconciliation enumerates bookings and inserts required queue rows
+    // under this key. Take it before lifecycle locks and hold it through every
+    // relation move, merge-triggered queue write and loser deletion, so a policy
+    // writer can only enqueue the complete pre-merge owner (which this merge
+    // moves) or the surviving owner after commit. Without this first tier, a row
+    // inserted after applyMoves could be cascade-dropped with the loser.
+    await lockAdultMemberHostingPolicySet(tx);
+
+    // #2595 — merge is a BED-ALLOCATION writer, because dropping the duplicate's
+    // CONFIRMED partner link invalidates any future shared DOUBLE bed sitting
+    // behind it, and step 3b below repairs that in this same transaction. So the
+    // affected lodge capacity keys are taken HERE, in sorted order, before the
+    // member-lifecycle pair and never at the point of use.
+    //
+    // That placement is the whole point, not a preference. The documented
+    // acquisition order is global -> lodge -> member
+    // (docs/CONCURRENCY_AND_LOCKING.md -> "The two-tier protocol"). Merge's own
+    // lock set is member-scoped and took no lodge key before this change, so
+    // reaching for the lodge tier down at the sweep — with both
+    // `member-lifecycle:` keys already held — would acquire a lodge key AFTER a
+    // member key and invert that order against every ordinary bed-allocation
+    // writer, which takes global -> lodge and only then reaches a member tier.
+    // Two such writers would then hold each other's next key: a deadlock, not a
+    // style point.
+    //
+    // What merge deliberately does NOT take is the global cohort `lock(1)` that
+    // the #1756 partner-share callers take (account-deletion approval, link
+    // dissolve, deactivation, seasonal reassignment). An advisory xact lock is
+    // released only at COMMIT and merge runs on a 120s budget, so holding the
+    // global key for a whole merge excludes every cancel/capture/settle/refund
+    // and every bed-allocation writer in the club — on their own default 5s
+    // budgets, which means REJECTED with `P2028`, not merely queued. Merge is the
+    // only partner-share caller long enough for that to matter, so it takes the
+    // narrow lodge-only prefix and pays for it with a WIDER lodge derivation:
+    // `acquireMemberMergePartnerSharedLodgeLocks` unions the lodges of the two
+    // members' future allocations with the lodges of every booking they hold a
+    // GUEST ROW on, so a lodge is covered even where no allocation exists there
+    // yet. See docs/CONCURRENCY_AND_LOCKING.md -> "Merge joins the
+    // bed-allocation cohort" for the deadlock analysis of the resulting edges.
+    //
+    // THAT SECOND READ CARRIES NO DATE FILTER, and #2672 is why. It used to ask
+    // for FUTURE guest-nights only, which meant it filtered on
+    // `BookingGuest.stayStart`/`stayEnd` and `BookingGuestNight` — all MUTABLE,
+    // all rewritten by writers (the admin date override, and the in-progress
+    // check-out extension that needs no override and no admin role) that hold
+    // lock(1) plus their own lodge key and no member key merge holds. A lodge
+    // with only PAST guest-nights at derivation time could therefore acquire
+    // future ones mid-merge, in a lodge merge held no key for. Locking on the
+    // guest row itself instead removes the class: no date write can make a
+    // guest row stop being a guest row at that lodge.
+    //
+    // The one thing the derivation alone cannot promise is that its set does
+    // not GROW, so step 3b re-derives it under the `Member … FOR UPDATE` taken
+    // below — the point after which no INSERT or re-point of a `BookingGuest`
+    // naming these members can commit, because that FK write needs
+    // `FOR KEY SHARE` on the member row — and 409s if a lodge appeared. That
+    // pair is what turns the argument into a fence rather than an observation.
+    //
+    // Deriving the lodge set here also needs BOTH identities: the helper reads
+    // the two members' own future allocations and guest-nights, so it must run
+    // while the loser's guest rows still name the loser.
+    //
+    // The returned set is carried to step 3b, which REFUSES the whole merge
+    // rather than judge a bed-night in a lodge this prefix did not cover.
+    const partnerShareLodgeIds = await acquireMemberMergePartnerSharedLodgeLocks(
+      tx,
+      [masterId, loserId],
+    );
+
     // Dual advisory lock in sorted id order (deadlock-free) on the shared
     // member-lifecycle key space, so a merge serialises with any concurrent
     // delete/archive/merge touching either member.
     const [lockA, lockB] = [masterId, loserId].sort();
     await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${`member-lifecycle:${lockA}`}))`;
     await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${`member-lifecycle:${lockB}`}))`;
+
+    // #2595 — merge is a partner-link WRITER (step 2 re-points the duplicate's
+    // links onto the master) and, since this change, a partner-link READER whose
+    // read decides a destructive bed write (step 3b asks `mayShareDoubleBedWith`
+    // which future shared doubles to delete). Both need this key, and merge did
+    // not take it.
+    //
+    // The database cannot supply the invariant on its own: the CONFIRMED partial
+    // uniques are PER SIDE (`MemberPartnerLink_memberA_confirmed_unique` on
+    // `memberAId`, `..._memberB_...` on `memberBId`, see
+    // `prisma/partial-unique-indexes.tsv`), so one member may hold one CONFIRMED
+    // link as A and another as B without violating either index. Only this
+    // advisory key enforces "at most one confirmed partner". Without it a
+    // concurrent confirm of a pending request (`member-partner-link.ts`, which
+    // takes this key and nothing else) can commit alongside merge's re-point:
+    // each transaction reads the other's link as absent, both pass their own
+    // one-confirmed-partner check, and the master ends with two. Step 3b would
+    // then KEEP a share the invariant forbids — or, on the mirror interleaving,
+    // delete a bed-night for a couple who are confirmed at commit time.
+    //
+    // Taken here, LAST, exactly as the reviewed move takes it
+    // (`bed-allocation-move.ts` -> `acquireMemberLifecycleLocks` then
+    // `acquireMemberPartnerLinkLocks`), so this adds no new EDGE to the wait
+    // graph — only a second holder of one that already exists. It cannot cycle:
+    // the partner-link service takes this key and no other tier, so a holder of
+    // it never waits on anything merge holds. Sorted inside the helper.
+    await acquireMemberPartnerLinkLocks(tx, [masterId, loserId]);
 
     const [masterFull, loserFull] = await Promise.all([
       tx.member.findUnique({ where: { id: masterId } }),
@@ -2209,10 +2416,10 @@ export async function executeMemberMerge(params: {
 
     // Collect a bounded moved-id sample BEFORE mutating.
     const movedIdSample = await collectMovedIdSample(tx, masterId, loserId);
-    const loserOwnedBookingIds = await tx.booking.findMany({
+    const loserOwnedBookingIds = (await tx.booking.findMany({
       where: { memberId: loserId },
       select: { id: true },
-    });
+    })).map((booking) => booking.id);
 
     // 1) Null master self-relation cycles first — value-conditionally: a
     // pointer that moved since the snapshot refuses here with the family-link
@@ -2232,7 +2439,215 @@ export async function executeMemberMerge(params: {
       masterId,
       loserId,
       relationPreview.selfRelationRefs,
+      loserOwnedBookingIds,
     );
+    const bookingOwnerMove = relationMoves.find(
+      (move) => move.model === "Booking.member",
+    );
+    if ((bookingOwnerMove?.count ?? 0) !== loserOwnedBookingIds.length) {
+      throw new MemberMergeError(
+        "Booking ownership changed while the merge was running. Nothing was saved. Re-run the preview and try again.",
+        409,
+        "merge_drift_in_transaction",
+        { driftFields: ["Booking.member"] },
+      );
+    }
+
+    // #2597: relation moves make the survivor's exact attendance and captured
+    // loser-owned booking fan-out authoritative. Plan it now, then acquire ONE
+    // sorted Member FOR UPDATE set containing master, loser and every ancillary
+    // queue owner. A guest/booking/owner that lands while the statement waits is
+    // visible to the under-lock re-plan and produces a safe 409, never a late row
+    // acquisition or a queue write against an unprotected identity.
+    const hostingPlan = await buildMemberMergeHostingCoveragePlan(
+      {
+        masterId,
+        capturedLoserOwnedBookingIds: loserOwnedBookingIds,
+      },
+      tx,
+    );
+    let refreshedHostingPlan: Awaited<
+      ReturnType<typeof buildMemberMergeHostingCoveragePlan>
+    >;
+    let hostingParticipantProof: HostingCoverageQueueParticipantProof;
+    try {
+      const lockedHostingParticipants =
+        await lockMemberMergeHostingCoverageParticipants(tx, {
+          masterId,
+          loserId,
+          ownerMemberIds: hostingPlan.sources.map(
+            (source) => source.ownerMemberId,
+          ),
+        });
+      refreshedHostingPlan = await buildMemberMergeHostingCoveragePlan(
+        {
+          masterId,
+          capturedLoserOwnedBookingIds: loserOwnedBookingIds,
+        },
+        tx,
+      );
+      if (
+        memberMergeHostingCoveragePlanFingerprint(hostingPlan) !==
+        memberMergeHostingCoveragePlanFingerprint(refreshedHostingPlan)
+      ) {
+        throw new HostingCoverageParticipantRetryError();
+      }
+      hostingParticipantProof = proveMemberMergeHostingCoverageParticipants({
+        lockedMemberIds: lockedHostingParticipants,
+        plannedSources: hostingPlan.sources,
+        refreshedSources: refreshedHostingPlan.sources,
+      });
+    } catch (error) {
+      if (error instanceof HostingCoverageParticipantRetryError) {
+        throw new MemberMergeError(
+          "Hosting coverage participants changed while the merge was running. Nothing was saved. Re-run the preview and try again.",
+          409,
+          "merge_drift_in_transaction",
+          { driftFields: ["hostingCoverageParticipants"] },
+        );
+      }
+      throw error;
+    }
+
+    const residualLoserOwnedBookings = await tx.booking.findMany({
+      where: { memberId: loserId },
+      orderBy: { id: "asc" },
+      select: { id: true },
+    });
+    if (residualLoserOwnedBookings.length > 0) {
+      throw new MemberMergeError(
+        "Booking ownership changed while the merge was running. Nothing was saved. Re-run the preview and try again.",
+        409,
+        "merge_drift_in_transaction",
+        {
+          driftFields: ["Booking.member"],
+          bookingIds: residualLoserOwnedBookings.map((booking) => booking.id),
+        },
+      );
+    }
+
+    // BookingGuest.member is an onDelete:SetNull attendance identity, so a row
+    // inserted after applyMoves would otherwise disappear silently when the
+    // loser is deleted. Re-read under the one sorted Member FOR UPDATE set and
+    // refuse the whole merge if ANY loser-linked guest remains. This must be a
+    // refusal rather than a late move: the hosting plan above was derived before
+    // this row moved, and its booking/owner/coverage key may be outside the exact
+    // proof. A guest inserted after the Member lock blocks on the loser's FK
+    // key-share check and fails after deletion; one committed before the lock is
+    // visible here, including when its booking was already a plan candidate.
+    const residualLoserGuestRows = await tx.bookingGuest.findMany({
+      where: { memberId: loserId },
+      orderBy: { id: "asc" },
+      select: { id: true, bookingId: true },
+    });
+    if (residualLoserGuestRows.length > 0) {
+      throw new MemberMergeError(
+        "Booking attendance changed while the merge was running. Nothing was saved. Re-run the preview and try again.",
+        409,
+        "merge_drift_in_transaction",
+        {
+          driftFields: ["BookingGuest.member"],
+          bookingGuestIds: residualLoserGuestRows.map((guest) => guest.id),
+          bookingIds: [
+            ...new Set(residualLoserGuestRows.map((guest) => guest.bookingId)),
+          ].sort(),
+        },
+      );
+    }
+
+    // Member rows precede coverage-owner keys in the #2597 order. Blocking is
+    // safe here: an ordinary producer that already owns one key also holds a
+    // compatible Member KEY SHARE, so the one FOR UPDATE statement above could
+    // not have completed until that transaction released both.
+    await lockHostingCoverageOwners(
+      tx,
+      refreshedHostingPlan.coverageOwnerIds,
+    );
+
+    // `XeroSyncOperation.localId` is FK-less, so it is outside the generic
+    // relation moves. Re-check the strict provider-created/local-link-failed
+    // proof only after the complete merge participant set is locked and
+    // immediately before the final sweeps, Xero teardown and loser deletion.
+    // A proof that appeared after preview therefore rolls back the whole merge;
+    // no provider call and no additional lock tier belongs in this transaction.
+    const contactRecoveryBlockers =
+      await evaluateContactCreateRecoveryBlockers(tx, masterId, loserId);
+    if (contactRecoveryBlockers.length > 0) {
+      throw new MemberMergeError(
+        "This merge is blocked.",
+        409,
+        "merge_blocked",
+        { blockers: contactRecoveryBlockers },
+      );
+    }
+
+    // Rows inserted after the generic relation/FK-less sweeps but before the
+    // one participant lock statement are still live obligations. Sweep BOTH
+    // pointers under the locked set and fold the counts into the existing model
+    // rows so audit/result never contains duplicate model entries.
+    await applyLateHostingCoverageMoves(
+      tx,
+      masterId,
+      loserId,
+      relationMoves,
+    );
+
+    // 3b) #2595 — reconcile the future shared DOUBLE beds this merge invalidated.
+    //
+    // `resolvePartnerLinks` (step 2) keeps at most one CONFIRMED partner for the
+    // surviving master, so merging a duplicate that already had its own confirmed
+    // partner DROPS that link; `applyMoves` (step 3) then re-points
+    // `BookingGuest.memberId` onto the master and leaves every bed allocation
+    // exactly where it was. Without this call the master and the duplicate's
+    // ex-partner keep sharing a future double with no partnership behind it —
+    // precisely what `mayShareDoubleBed` refuses to create in the first place.
+    // No lifecycle sweep covers merge and no database trigger supplies the
+    // invariant, so this is the only writer of it here.
+    //
+    // Placed after BOTH of those steps, so the guest rows name the master and the
+    // surviving partnerships are final, and after every drift refusal above, so
+    // no bed-night is judged against state this merge is about to 409 on. It
+    // acquires nothing: the lodge prefix has been held since the top of the
+    // transaction. Validity-driven rather than pair-driven, so it is idempotent
+    // and writes nothing on a merge that broke no share (including the merge that
+    // CARRIES the duplicate's link over to a master that had none).
+    //
+    // Because merge holds no global cohort key, the sweep is handed the exact
+    // lodge set the prefix locked and refuses if it is not still complete — one
+    // more drift refusal, in the same shape as the ones above, rather than a
+    // bed-inventory write in an unserialised lodge. Two refusals, in fact
+    // (#2672): the sweep first re-derives the members' whole guest-row lodge set
+    // and refuses if the prefix does not cover it, which is meaningful HERE
+    // precisely because the `Member … FOR UPDATE` above has already frozen that
+    // set for the rest of the transaction; then it refuses on any candidate row
+    // whose own room sits outside the prefix.
+    try {
+      sweptShares = await sweepUnbackedFutureSharedDoublesWithLocksHeld({
+        memberIds: [masterId, loserId],
+        lockedLodgeIds: partnerShareLodgeIds,
+        reason: "members_merged",
+        db: tx,
+      });
+    } catch (sweepError) {
+      if (sweepError instanceof UnlockedPartnerShareLodgeError) {
+        throw new MemberMergeError(
+          "A lodge booking for one of these members changed while the merge was running. Nothing was merged — please try again.",
+          409,
+          "partner_share_lodge_drift",
+          { lodgeIds: sweepError.lodgeIds },
+        );
+      }
+      throw sweepError;
+    }
+    if (sweptShares.length > 0) {
+      // The master's name for the post-commit alert. Read from the
+      // transaction-opening row on purpose: the step-5 field patch never touches
+      // firstName/lastName (neither is in `FILL_IF_BLANK_FIELDS` or
+      // `GROUP_FILL_SPECS`), so this is the surviving member's name either way,
+      // and capturing it here keeps the alert off a post-commit re-read of a row
+      // the operator may already be editing.
+      sweptShareMasterName = memberDisplayName(masterFull);
+    }
 
     // 4) Loser Xero teardown (link-role aware; NO Xero API calls).
     const xeroTeardown = await teardownLoserXero(tx, masterId, loserId);
@@ -2264,9 +2679,8 @@ export async function executeMemberMerge(params: {
     // Locking, per side:
     //   * LOSER — its row lock has been held since `teardownLoserXero` (step 4),
     //     which ends in an unconditional `member.update` on the loser.
-    //   * MASTER — locked HERE, by the `FOR UPDATE` below, because nothing
-    //     earlier is guaranteed to write it (`nullSelfRelationCycles` writes it
-    //     only when there is a self-cycle to null). Without that lock a
+    //   * MASTER — locked together with loser and every hosting queue owner by
+    //     #2597's single sorted `FOR UPDATE` statement above. Without that lock a
     //     concurrent on-behalf upload FOR THE MASTER can commit a new blob M2
     //     between this read and the update; the merge would then overwrite the
     //     master's pointer with the loser's absorbed value and nothing would
@@ -2298,8 +2712,6 @@ export async function executeMemberMerge(params: {
     // The ORIGINAL #2243 bug still stays fixed: the drift is detected from the
     // FRESH read BEFORE the write, so a stale FK value is never handed to
     // Postgres and the operator gets a plain 409 instead of a bare 500.
-    const [lockFirstId, lockSecondId] = [masterId, loserId].sort();
-    await tx.$executeRaw`SELECT 1 FROM "Member" WHERE "id" IN (${lockFirstId}, ${lockSecondId}) ORDER BY "id" FOR UPDATE`;
     const [masterAtWrite, loserAtWrite] = await Promise.all([
       tx.member.findUnique({ where: { id: masterId } }),
       tx.member.findUnique({ where: { id: loserId } }),
@@ -2481,18 +2893,14 @@ export async function executeMemberMerge(params: {
     }
 
     // Booking ownership and member-guest attendance were both repointed by the
-    // generic relation move. Record the surviving identity's attendance and each
-    // booking whose account owner moved before deleting the loser.
-    await enqueueHostingCoverageReevaluationForMember(masterId, tx, {
-      cause: "SYSTEM_CHANGE",
-      actorMemberId,
-    });
-    for (const booking of loserOwnedBookingIds) {
-      await enqueueOwnHostingCoverageReevaluation(booking.id, tx, {
-        cause: "SYSTEM_CHANGE",
-        actorMemberId,
-      });
-    }
+    // generic relation move. Record exactly the under-lock plan. Merge-generated
+    // SYSTEM_CHANGE rows are actorless: the critical MEMBER_MERGED audit above is
+    // the authoritative Full Admin attribution.
+    await enqueueMemberMergeHostingCoveragePlan(
+      refreshedHostingPlan,
+      hostingParticipantProof,
+      tx,
+    );
 
     // 8) Hard-delete the loser (cascade drops its auth/token rows).
     await tx.member.delete({ where: { id: loserId } });
@@ -2519,6 +2927,31 @@ export async function executeMemberMerge(params: {
     maxWait: 10_000,
   }).catch((error) => refuseMergeOrRethrow(client, refusalContext, error));
   await settleHostingCoverageAfterCommit({ limit: 50 }, client);
+
+  if (sweptShares.length > 0) {
+    // #2595, post-commit and fire-and-forget — the same contract every #1756
+    // caller uses. The removed second occupants are back in the
+    // awaiting-allocation queue, so the board needs a human look; the audit rows
+    // on both affected bookings are already committed inside the transaction, so
+    // a failed alert loses a notification, never the evidence.
+    sendAdminPartnerShareSweptAlert({
+      memberName: sweptShareMasterName,
+      partnerName: partnerShareSweepCounterpartNames(sweptShares, masterId),
+      reason: describePartnerSharedSweepReason("members_merged"),
+      nights: partnerShareSweepNights(sweptShares),
+    }).catch((alertErr) => {
+      logger.error(
+        {
+          err: alertErr,
+          masterId,
+          loserId,
+          sweptCount: sweptShares.length,
+        },
+        "Failed to send partner share sweep alert after member merge",
+      );
+    });
+  }
+
   return result;
 }
 
@@ -2728,6 +3161,7 @@ async function applyMoves(
   masterId: string,
   loserId: string,
   selfRelationRefs: Record<string, readonly string[]>,
+  loserOwnedBookingIds: readonly string[],
 ): Promise<{ model: string; count: number }[]> {
   const moves: { model: string; count: number }[] = [];
   for (const s of MEMBER_MERGE_RELATION_SPECS) {
@@ -2765,22 +3199,22 @@ async function applyMoves(
             [s.column]: loserId,
             id: { in: [...(selfRelationRefs[s.column] ?? [])], not: masterId },
           }
-        : { [s.column]: loserId },
+        : s.key === "Booking.member"
+          ? { [s.column]: loserId, id: { in: [...loserOwnedBookingIds] } }
+          : { [s.column]: loserId },
       data: { [s.column]: masterId },
     });
     if (res.count > 0) moves.push({ model: s.key, count: res.count });
   }
 
   // FK-LESS member-id columns carried as MOVES rather than snapshots (#2243).
-  // `BookingRequest.convertedMemberId` is not an actor/audit column: it is the
-  // identity pointer to the member the request converted INTO, handed straight
-  // back to the idempotent replay path as a live member id
-  // (`claimAlreadyConvertedBookingRequest` in booking-request-shared.ts, read by
-  // booking-request.ts and school-booking-request.ts). Left on a hard-deleted
-  // loser it would replay a conversion as a member that no longer exists. Its FK
-  // twin on the same row, `requestedByMemberId`, is classified `move` in the
-  // spec table above; this column carries no `@relation` and so cannot live
-  // there, hence `MEMBER_MERGE_FK_LESS_MOVE_COLUMNS`.
+  // Both are live identities even though the schema cannot express them as
+  // Member relations: one is replayed to conversion callers and the other is
+  // promoted into a real incident FK by the hosting drain. The drain's shared
+  // lifecycle handshake precedes this move. Merge follows it with an exact
+  // post-move participant plan, one sorted Member row-lock set and a late sweep
+  // before deleting the loser. Left on a hard-deleted loser, either pointer
+  // would later name a member that no longer exists.
   for (const c of MEMBER_MERGE_FK_LESS_MOVE_COLUMNS) {
     const delegate = (tx as unknown as Record<string, {
       updateMany: (args: unknown) => Promise<{ count: number }>;
@@ -2793,6 +3227,47 @@ async function applyMoves(
   }
 
   return moves;
+}
+
+function foldRelationMoveCount(
+  moves: { model: string; count: number }[],
+  model: string,
+  count: number,
+): void {
+  if (count === 0) return;
+  const existing = moves.find((move) => move.model === model);
+  if (existing) {
+    existing.count += count;
+  } else {
+    moves.push({ model, count });
+  }
+}
+
+async function applyLateHostingCoverageMoves(
+  tx: Prisma.TransactionClient,
+  masterId: string,
+  loserId: string,
+  relationMoves: { model: string; count: number }[],
+): Promise<void> {
+  const owner = await tx.hostingCoverageReevaluation.updateMany({
+    where: { memberId: loserId },
+    data: { memberId: masterId },
+  });
+  foldRelationMoveCount(
+    relationMoves,
+    "HostingCoverageReevaluation.member",
+    owner.count,
+  );
+
+  const actor = await tx.hostingCoverageReevaluation.updateMany({
+    where: { actorMemberId: loserId },
+    data: { actorMemberId: masterId },
+  });
+  foldRelationMoveCount(
+    relationMoves,
+    "HostingCoverageReevaluation.actorMemberId",
+    actor.count,
+  );
 }
 
 // ---------------------------------------------------------------------------

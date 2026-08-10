@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useClubIdentity } from "@/components/club-identity-provider";
 import { LodgeSelect, useLodgeOptions } from "@/components/lodge-select";
 import Link from "next/link";
@@ -23,7 +23,6 @@ import {
   ChevronLeft,
   ChevronRight,
   RefreshCw,
-  Save,
   Wand2,
 } from "lucide-react";
 import { toast } from "sonner";
@@ -53,10 +52,7 @@ import {
   type BedRangeAssignResult,
   type BedRangeAssignTarget,
 } from "@/components/admin/bed-range-assign-dialog";
-import {
-  applyOptimisticAllocationBedMove,
-  planAllocationMove,
-} from "./_components/allocation-move";
+import { useBedAllocationMoveDialog } from "@/components/admin/bed-allocation-move-dialog";
 import {
   MAX_RANGE_NIGHTS,
   boardNights,
@@ -85,6 +81,12 @@ import {
   describeBedAllocationDrop,
 } from "./_components/allocation-drag-feedback";
 import { useSyncedScroll } from "./_components/use-synced-scroll";
+import { AllocationPreferencesSection } from "./_components/allocation-preferences-section";
+import { useScopedDashboard } from "./_components/use-scoped-dashboard";
+import {
+  bedAllocationRemovalCategoryForAnchor,
+  useBedAllocationRemovalDialog,
+} from "@/components/admin/bed-allocation-removal-dialog";
 
 // #2286: a bulk drop can now be refused for two different reasons on different
 // nights, and they need different fixes — "someone else is in that bed" (clear
@@ -231,36 +233,35 @@ function addOptimisticAllocations(
   };
 }
 
-function applyOptimisticRemove(
-  payload: DashboardPayload,
-  allocation: DashboardAllocation,
-): DashboardPayload {
-  const memberName =
-    payload.bookings.find((booking) => booking.id === allocation.bookingId)
-      ?.memberName ?? "";
-
-  return {
-    ...payload,
-    allocations: payload.allocations.filter((item) => item.id !== allocation.id),
-    unallocatedGuestNights: [
-      ...payload.unallocatedGuestNights,
-      {
-        bookingId: allocation.bookingId,
-        bookingGuestId: allocation.bookingGuestId,
-        guestName: allocation.guestName,
-        guestAgeTier: allocation.guestAgeTier,
-        memberName,
-        stayDate: allocation.stayDate,
-      },
-    ],
-  };
-}
-
 export default function AdminBedAllocationPage() {
   const searchParams = useSearchParams();
   const requestedFrom = searchParams.get("from");
   const requestedTo = searchParams.get("to");
-  const highlightedBookingId = searchParams.get("bookingId") || "";
+  const linkedBookingId = searchParams.get("bookingId") || "";
+  /**
+   * #2678: a focused booking PINS the board's lodge, so choosing another lodge
+   * has to let the focus go.
+   *
+   * `GET /api/admin/bed-allocation` now derives its lodge from `bookingId` and
+   * ignores any `lodgeId` beside it, which is what stops the four bed pickers
+   * offering another lodge's beds for this booking's guests. The cost is that
+   * an admin who arrived on the deep link and then picked a different lodge
+   * from the selector would have been served the BOOKING's lodge under a
+   * selector reading the one they chose — a quieter lie than the one being
+   * fixed, but a lie. Dropping the focus on a deliberate lodge change keeps the
+   * two honest, and it is visible: the "Focused booking" badge goes with it.
+   *
+   * Only a deliberate change counts. `LodgeSelect` also calls `onChange` by
+   * itself — `onChange(null)` when `/api/admin/lodges` fails and it has no
+   * options left, and `onChange(lodges[0].id)` when nothing is selected yet —
+   * and neither is the admin browsing away. The null case matters most: it is
+   * exactly the outage state in which the server-side derivation from
+   * `bookingId` is the only thing keeping the board off a club-wide read, so
+   * the focus must survive it.
+   */
+  const [lodgeChosenAwayFromBooking, setLodgeChosenAwayFromBooking] =
+    useState(false);
+  const highlightedBookingId = lodgeChosenAwayFromBooking ? "" : linkedBookingId;
   const canEditBookings = useAdminAreaEditAccess("bookings");
   // Admin copy uses the club's own word for the hut-leader role (#2286 review
   // M8); only the lobby TV is pinned to the fixed word "Custodian".
@@ -294,11 +295,29 @@ export default function AdminBedAllocationPage() {
   const [lodgeId, setLodgeId] = useState<string | null>(
     searchParams.get("lodgeId"),
   );
+  /**
+   * #2678: see `lodgeChosenAwayFromBooking` above. Replacing one non-null lodge
+   * with a different non-null lodge is the admin CHOOSING. `LodgeSelect`'s own
+   * calls are not, and both are excluded here: `onChange(null)` when
+   * `/api/admin/lodges` has left it with no options, and `onChange(lodges[0].id)`
+   * from a null value when nothing is selected yet.
+   *
+   * Stable rather than inline, because `LodgeSelect`'s normalising effect lists
+   * `onChange` among its dependencies — a fresh closure every render would re-run
+   * that effect on every render for no reason.
+   */
+  const handleLodgeChange = useCallback(
+    (next: string | null) => {
+      if (next !== null && lodgeId !== null && next !== lodgeId) {
+        setLodgeChosenAwayFromBooking(true);
+      }
+      setLodgeId(next);
+    },
+    [lodgeId, setLodgeChosenAwayFromBooking, setLodgeId],
+  );
 
-  const [payload, setPayload] = useState<DashboardPayload | null>(null);
-  const [loading, setLoading] = useState(true);
+  const dashboardScopeKey = `${lodgeId ?? "all"}:${fromDate}:${toDate}:${highlightedBookingId}`;
   const [saving, setSaving] = useState<string | null>(null);
-  const [autoAllocationEnabled, setAutoAllocationEnabled] = useState(true);
   const [singleNightMode, setSingleNightMode] = useState(false);
   const [selectedBeds, setSelectedBeds] = useState<Record<string, string>>({});
   const [pendingKeys, setPendingKeys] = useState<Set<string>>(new Set());
@@ -328,6 +347,69 @@ export default function AdminBedAllocationPage() {
     () => boardWindowError(fromDate, toDate),
     [fromDate, toDate],
   );
+
+  const fetchDashboard = useCallback(
+    async (signal: AbortSignal) => {
+      const params = new URLSearchParams({ from: fromDate, to: toDate });
+      if (lodgeId) params.set("lodgeId", lodgeId);
+      if (highlightedBookingId) {
+        params.set("bookingId", highlightedBookingId);
+      }
+      const response = await fetch(`/api/admin/bed-allocation?${params}`, {
+        cache: "no-store",
+        signal,
+      });
+      if (!response.ok) {
+        throw new Error(
+          await readApiError(response, "Failed to load bed allocation"),
+        );
+      }
+      return (await response.json()) as DashboardPayload;
+    },
+    [fromDate, highlightedBookingId, lodgeId, toDate],
+  );
+  const scopedDashboard = useScopedDashboard({
+    scopeKey: dashboardScopeKey,
+    enabled: !windowError,
+    load: fetchDashboard,
+    onLoaded: () => setSingleNightMode(false),
+  });
+  const payload = scopedDashboard.value;
+  const loading = scopedDashboard.loading;
+  const dashboardError = scopedDashboard.error;
+  const loadDashboard = scopedDashboard.reload;
+  const setPayload = scopedDashboard.setValue;
+  const removalDialog = useBedAllocationRemovalDialog({
+    canEdit: canEditBookings,
+    onApplied: async ({ removedRowCount }) => {
+      toast.success(
+        `${removedRowCount} reviewed allocation${removedRowCount === 1 ? "" : "s"} removed; no automatic allocation was run`,
+      );
+      await loadDashboard();
+    },
+  });
+  const moveDialog = useBedAllocationMoveDialog({
+    canEdit: canEditBookings,
+    onApplied: async ({ movedRowCount, noop }) => {
+      if (noop) {
+        toast.info("No allocation nights needed to move");
+      } else {
+        toast.success(
+          `${movedRowCount} allocation night${movedRowCount === 1 ? "" : "s"} moved`,
+        );
+      }
+      const refreshed = await loadDashboard();
+      if (!refreshed) {
+        throw new Error(
+          "The allocation moved, but the board could not be refreshed. Try Refresh before making another change.",
+        );
+      }
+    },
+  });
+
+  useEffect(() => {
+    if (dashboardError) toast.error(dashboardError);
+  }, [dashboardError]);
 
   // A refused window has NO columns. Enumerating it anyway would build a column
   // per night for whatever the admin typed — a year, a century — and the board
@@ -460,48 +542,6 @@ export default function AdminBedAllocationPage() {
     [payload?.allocations, bucketGroups, bedOptions, singleNightMode],
   );
 
-  async function loadDashboard() {
-    // The server 400s on an over-long window anyway; withholding the request
-    // keeps the on-screen reason as the single explanation.
-    if (boardWindowError(fromDate, toDate)) {
-      setLoading(false);
-      return;
-    }
-    setLoading(true);
-    try {
-      const params = new URLSearchParams({ from: fromDate, to: toDate });
-      if (lodgeId) params.set("lodgeId", lodgeId);
-      if (highlightedBookingId) {
-        params.set("bookingId", highlightedBookingId);
-      }
-      const response = await fetch(`/api/admin/bed-allocation?${params}`, {
-        cache: "no-store",
-      });
-      if (!response.ok) {
-        throw new Error(
-          await readApiError(response, "Failed to load bed allocation"),
-        );
-      }
-
-      const data = (await response.json()) as DashboardPayload;
-      setPayload(data);
-      setAutoAllocationEnabled(data.settings.autoAllocationEnabled);
-    } catch (error) {
-      toast.error(
-        error instanceof Error
-          ? error.message
-          : "Failed to load bed allocation",
-      );
-    } finally {
-      setLoading(false);
-    }
-  }
-
-  useEffect(() => {
-    void loadDashboard();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [fromDate, toDate, lodgeId]);
-
   // Snap the date window onto a deep-linked focused booking that loaded outside
   // the current range (#1302). The server returns its stay window only while it
   // is out of range, so this fires at most once per booking; the ref guards a
@@ -565,26 +605,8 @@ export default function AdminBedAllocationPage() {
     }
   }
 
-  async function saveSettings() {
-    if (!canEditBookings) return;
-
-    await mutate(
-      "settings",
-      () =>
-        fetch("/api/admin/bed-allocation/settings", {
-          method: "PUT",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            autoAllocationEnabled,
-            ...(lodgeId ? { lodgeId } : {}),
-          }),
-        }),
-      "Bed allocation mode saved",
-    );
-  }
-
   async function runAutoAllocation() {
-    if (!canEditBookings) return;
+    if (!canEditBookings || !lodgeId) return;
 
     await mutate(
       "auto",
@@ -595,7 +617,7 @@ export default function AdminBedAllocationPage() {
           body: JSON.stringify({
             from: fromDate,
             to: toDate,
-            ...(lodgeId ? { lodgeId } : {}),
+            lodgeId,
           }),
         }),
       "Auto allocation applied",
@@ -740,86 +762,25 @@ export default function AdminBedAllocationPage() {
     });
   }
 
-  async function moveAllocation(
+  function openAllocationMoveDialog(
     allocation: DashboardAllocation,
-    target: { bedId: string; roomId: string; stayDate: string },
+    destinationBedId: string,
+    focusOrigin?: HTMLElement | null,
   ) {
-    if (!canEditBookings) return;
-
-    if (!payload) return;
-    const bed = bedById.get(target.bedId);
+    if (canEditBookings === undefined) return;
+    const bed = bedById.get(destinationBedId);
     if (!bed) return;
-
-    const movePlan = planAllocationMove({
-      allocation,
-      target,
-      visibleAllocations: payload.allocations,
-      visibleNights: nights,
-    });
-
-    if (movePlan.type === "noop") {
-      return;
-    }
-
-    const snapshot = payload;
-    const allocationIds =
-      movePlan.type === "bulk"
-        ? movePlan.allocationIds
-        : [movePlan.allocationId];
-    setPayload(
-      applyOptimisticAllocationBedMove({
-        payload,
-        allocationIds,
-        bed,
-      }),
-    );
-
-    await withPending(
-      allocationIds.map((id) => `allocation:${id}`),
-      async () => {
-        try {
-          const response = await fetch(
-            "/api/admin/bed-allocation/allocations",
-            {
-              method: "PATCH",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({
-                allocationIds,
-                bedId: target.bedId,
-              }),
-            },
-          );
-
-          if (!response.ok) {
-            setPayload(snapshot);
-            if (response.status === 409) {
-              toast.warning(
-                await readApiError(
-                  response,
-                  "No allocations were moved because the destination bed is unavailable on an original lodge night",
-                ),
-              );
-            } else {
-              toast.error(
-                await readApiError(response, "Failed to move allocation"),
-              );
-            }
-            await loadDashboard();
-            return;
-          }
-
-          toast.success(
-            movePlan.type === "bulk"
-              ? "Visible guest nights moved"
-              : "Allocation moved",
-          );
-          await loadDashboard();
-        } catch {
-          setPayload(snapshot);
-          toast.error("Failed to move allocation");
-          await loadDashboard();
-        }
+    moveDialog.openMoveDialog(
+      {
+        allocationId: allocation.id,
+        guestName: allocation.guestName,
+        stayDate: allocation.stayDate,
       },
+      {
+        destinationBedId: bed.id,
+        destinationLabel: bed.label,
+      },
+      focusOrigin,
     );
   }
 
@@ -902,35 +863,41 @@ export default function AdminBedAllocationPage() {
     void loadDashboard();
   }
 
-  async function removeAllocation(allocation: DashboardAllocation) {
-    if (!canEditBookings) return;
+  function removeAllocation(allocation: DashboardAllocation) {
+    if (!lodgeId) return;
+    removalDialog.openRemovalDialog({
+      allocations: [
+        {
+          allocationId: allocation.id,
+          bookingId: allocation.bookingId,
+          bookingGuestId: allocation.bookingGuestId,
+          lodgeId,
+          stayDate: allocation.stayDate,
+        },
+      ],
+      lodgeId,
+      lodgeName: lodges.find((lodge) => lodge.id === lodgeId)?.name,
+      window: { from: fromDate, to: toDate },
+      guestName: allocation.guestName,
+      initialScope: "ALLOCATION",
+      initialCategories: [
+        bedAllocationRemovalCategoryForAnchor(
+          allocation.source,
+          allocation.approvedAt,
+        ),
+      ],
+    });
+  }
 
-    if (!payload) return;
-
-    const snapshot = payload;
-    setPayload(applyOptimisticRemove(payload, allocation));
-
-    await withPending(`allocation:${allocation.id}`, async () => {
-      try {
-        const response = await fetch(
-          `/api/admin/bed-allocation/allocations/${allocation.id}`,
-          { method: "DELETE" },
-        );
-
-        if (!response.ok) {
-          setPayload(snapshot);
-          toast.error(await readApiError(response, "Failed to remove allocation"));
-          await loadDashboard();
-          return;
-        }
-
-        toast.success("Allocation removed");
-        await loadDashboard();
-      } catch {
-        setPayload(snapshot);
-        toast.error("Failed to remove allocation");
-        await loadDashboard();
-      }
+  function openWindowReset() {
+    if (!lodgeId) return;
+    removalDialog.openRemovalDialog({
+      allocations: [],
+      lodgeId,
+      lodgeName: lodges.find((lodge) => lodge.id === lodgeId)?.name,
+      window: { from: fromDate, to: toDate },
+      initialScope: "WINDOW",
+      initialCategories: [],
     });
   }
 
@@ -989,13 +956,9 @@ export default function AdminBedAllocationPage() {
       if (!allocation) return;
 
       if (overData.type === "bucket") {
-        void removeAllocation(allocation);
+        removeAllocation(allocation);
       } else if (overData.type === "cell") {
-        void moveAllocation(allocation, {
-          bedId: overData.bedId,
-          roomId: overData.roomId,
-          stayDate: overData.stayDate,
-        });
+        openAllocationMoveDialog(allocation, overData.bedId);
       }
     }
   }
@@ -1059,6 +1022,8 @@ export default function AdminBedAllocationPage() {
   const unapprovedCount =
     payload?.allocations.filter((allocation) => !allocation.approvedAt).length ?? 0;
   const activeBedCount = bedOptions.length;
+  const autoAllocationEnabled =
+    payload?.settings.autoAllocationEnabled ?? false;
 
   // A focused booking is "on the board" when it has a bucket card or a placed
   // allocation in the current range (#1302).
@@ -1092,8 +1057,9 @@ export default function AdminBedAllocationPage() {
   */
   const viewOnlyBanner = (
     <AdminViewOnlySectionBanner canEdit={canEditBookings} className="mb-6">
-      Your admin role can view bed allocation but cannot move, allocate,
-      approve, or save assignments.
+      Your admin role can view bed allocation but cannot change allocation
+      preferences, move or allocate guests, approve placements, or save
+      assignments.
     </AdminViewOnlySectionBanner>
   );
 
@@ -1126,7 +1092,7 @@ export default function AdminBedAllocationPage() {
           <LodgeSelect
             lodges={lodges}
             value={lodgeId}
-            onChange={setLodgeId}
+            onChange={handleLodgeChange}
             loading={lodgesLoading}
           />
           {/*
@@ -1243,43 +1209,41 @@ export default function AdminBedAllocationPage() {
         </Alert>
       ) : null}
 
+      {lodgeId ? (
+        <AllocationPreferencesSection
+          key={lodgeId}
+          lodgeId={lodgeId}
+          canEdit={canEditBookings}
+          renderViewOnlyBanner={false}
+          onSaved={async () => {
+            // Preferences change both the header state and the planner output;
+            // reload the complete dashboard instead of patching one field.
+            await loadDashboard();
+          }}
+        />
+      ) : (
+        <Card>
+          <CardHeader>
+            <CardTitle className="text-base">Allocation preferences</CardTitle>
+          </CardHeader>
+          <CardContent className="text-sm text-muted-foreground">
+            {lodgesLoading ? "Loading lodge…" : "Choose a lodge to continue."}
+          </CardContent>
+        </Card>
+      )}
+
       <Card>
         <CardHeader>
-          <CardTitle className="flex items-center gap-2 text-base">
-            <BedDouble className="h-4 w-4" />
-            Allocation Mode
-          </CardTitle>
+          <CardTitle className="text-base">Board drag controls</CardTitle>
         </CardHeader>
-        <CardContent className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
-          <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:gap-6">
-            <label className="flex items-center gap-3 text-sm font-medium">
-              <Checkbox
-                checked={autoAllocationEnabled}
-                disabled={!canEditBookings}
-                onCheckedChange={(checked) =>
-                  setAutoAllocationEnabled(checked === true)
-                }
-              />
-              Auto allocation enabled
-            </label>
-            <label className="flex items-center gap-3 text-sm font-medium">
-              <Checkbox
-                checked={singleNightMode}
-                onCheckedChange={(checked) => setSingleNightMode(checked === true)}
-              />
-              Single-night drag mode
-            </label>
-          </div>
-          <ViewOnlyActionButton
-            canEdit={canEditBookings}
-            describeReason={false}
-            onClick={() => void saveSettings()}
-            disabled={saving === "settings"}
-            className="gap-2 md:w-auto"
-          >
-            <Save className="h-4 w-4" />
-            Save Mode
-          </ViewOnlyActionButton>
+        <CardContent>
+          <label className="flex items-center gap-3 text-sm font-medium">
+            <Checkbox
+              checked={singleNightMode}
+              onCheckedChange={(checked) => setSingleNightMode(checked === true)}
+            />
+            Single-night drag mode (not saved)
+          </label>
         </CardContent>
       </Card>
 
@@ -1290,10 +1254,18 @@ export default function AdminBedAllocationPage() {
         </div>
       ) : null}
 
-      {/* The fetch is withheld while the window is out of range, but a payload
-          from the PREVIOUS good window survives in state. Rendering the board
-          against a refused window would show stale rows under a header the
-          admin no longer asked for, so the Alert above stands alone. */}
+      {!loading && dashboardError && !windowError ? (
+        <Alert variant="error" title="Bed allocation could not be loaded">
+          <p className="mb-3">{dashboardError}</p>
+          <Button variant="outline" onClick={() => void loadDashboard()}>
+            Try again
+          </Button>
+        </Alert>
+      ) : null}
+
+      {/* A dashboard is exposed only when its lodge/date key matches the
+          controls above. Loading and failures therefore leave no stale action
+          surface from the previous scope. */}
       {payload && !windowError ? (
         <DndContext
           sensors={sensors}
@@ -1385,6 +1357,7 @@ export default function AdminBedAllocationPage() {
                   describeReason={false}
                   onClick={() => void runAutoAllocation()}
                   disabled={
+                    !lodgeId ||
                     !payload.settings.autoAllocationEnabled ||
                     payload.suggestedAllocations.length === 0 ||
                     saving === "auto"
@@ -1405,6 +1378,13 @@ export default function AdminBedAllocationPage() {
                   <Check className="h-4 w-4" />
                   Approve Visible
                 </ViewOnlyActionButton>
+                <Button
+                  variant="destructive"
+                  onClick={openWindowReset}
+                  disabled={!lodgeId}
+                >
+                  Reset allocations…
+                </Button>
                 <Badge variant="outline">
                   {payload.suggestedAllocations.length} suggested
                 </Badge>
@@ -1480,14 +1460,8 @@ export default function AdminBedAllocationPage() {
                   allocationByBedAndDate={allocationByBedAndDate}
                   bedOptions={bedOptions}
                   bedOptionGroups={bedOptionGroups}
-                  onReassignBed={(allocation, bedId) =>
-                    void moveAllocation(allocation, {
-                      bedId,
-                      roomId: bedById.get(bedId)?.roomId ?? allocation.roomId,
-                      stayDate: allocation.stayDate,
-                    })
-                  }
-                  onRemove={(allocation) => void removeAllocation(allocation)}
+                  onReassignBed={openAllocationMoveDialog}
+                  onRemove={removeAllocation}
                   onAssignRange={openRangeForAllocation}
                   rangeTint={rangeTint}
                   custodianHoldByBedAndDate={custodianHoldByBedAndDate}
@@ -1503,16 +1477,31 @@ export default function AdminBedAllocationPage() {
 
           <DragOverlay>
             {activeDragLabel ? (
-              <div
-                data-testid="bed-allocation-drag-feedback"
-                className="rounded-md border bg-card px-3 py-2 text-sm font-medium text-card-foreground shadow-lg"
-              >
-                <div>{activeDragLabel}</div>
-                {activeDropPreview ? (
-                  <div className="mt-1 text-xs font-normal text-muted-foreground">
-                    {activeDropPreview}
-                  </div>
-                ) : null}
+              // The drop target must follow the dragged CHIP, never the size of
+              // this floating card. dnd-kit measures the DragOverlay's own child
+              // and uses that rect — not the draggable's — for closestCenter
+              // (`draggingNodeRect = dragOverlay.rect ?? activeNodeRect`,
+              // @dnd-kit/core), re-measuring it through a ResizeObserver while
+              // the drag is live. The card grows the moment `activeDropPreview`
+              // appears, so if the card were the measured child its centre would
+              // sink below the cursor's cell mid-drag and the drop would land on
+              // the row BELOW the one the preview just named — a full lodge night
+              // on the wrong bed. This frame is the element DragOverlay sizes
+              // from the chip's own rect, so keeping it as the measured child
+              // pins collisions to the chip; the card is taken out of flow and
+              // may be any height without moving the target.
+              <div className="relative h-full w-full">
+                <div
+                  data-testid="bed-allocation-drag-feedback"
+                  className="absolute left-0 top-0 w-full rounded-md border bg-card px-3 py-2 text-sm font-medium text-card-foreground shadow-lg"
+                >
+                  <div>{activeDragLabel}</div>
+                  {activeDropPreview ? (
+                    <div className="mt-1 text-xs font-normal text-muted-foreground">
+                      {activeDropPreview}
+                    </div>
+                  ) : null}
+                </div>
               </div>
             ) : null}
           </DragOverlay>
@@ -1527,6 +1516,8 @@ export default function AdminBedAllocationPage() {
         canEdit={canEditBookings}
         onAssigned={handleRangeAssigned}
       />
+      {removalDialog.dialog}
+      {moveDialog.dialog}
       </div>
     </div>
   );

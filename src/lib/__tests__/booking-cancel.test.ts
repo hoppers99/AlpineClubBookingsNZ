@@ -207,6 +207,11 @@ vi.mock("@/lib/xero-applied-credit-allocation-repair", () => ({
     mocks.repairLegacyAppliedCreditNoteAllocationsForBooking,
 }));
 
+import {
+  fenceHostingPolicyFindMany,
+  fenceMemberFindMany,
+  recordingBookingDouble,
+} from "@/lib/__tests__/support/hosting-participant-fence-double";
 import { cancelBooking } from "@/lib/booking-cancel";
 import { addDaysDateOnly, getTodayDateOnly } from "@/lib/date-only";
 
@@ -216,6 +221,7 @@ describe("cancelBooking credit refunds", () => {
     const defaultPaidBooking = {
       id: "booking_1",
       memberId: "member_1",
+      lodgeId: "lodge_1",
       status: "PAID",
       finalPriceCents: 10000,
       checkIn: new Date("2026-07-10"),
@@ -249,10 +255,24 @@ describe("cancelBooking credit refunds", () => {
         arg: ((tx: unknown) => Promise<unknown>) | Array<Promise<unknown>>,
       ) => {
         if (typeof arg === "function") {
+          // #2619: the hosting participant fence locks the participant Member
+          // rows and then re-reads them, plus each source booking's owner and
+          // lodge, to detect drift under the lock. Model both reads — the
+          // booking side replays whatever this tx's own findUnique served, so
+          // the no-drift case matches by construction.
+          const fenceBooking = recordingBookingDouble((args) =>
+            mocks.txBookingFindUnique(args),
+          );
           const mockTx = {
             $executeRaw: mocks.txExecuteRaw,
+            member: { findMany: fenceMemberFindMany() },
+            // #2623 T5: the seam reads the lodge's hosting mode before the fence, so
+            // the double answers with an ACTIVE one and the fence above stays on the
+            // path. See `fenceHostingPolicyFindMany`.
+            adultMemberHostingPolicy: { findMany: fenceHostingPolicyFindMany() },
             booking: {
-              findUnique: mocks.txBookingFindUnique,
+              findUnique: fenceBooking.findUnique,
+              findMany: fenceBooking.findMany,
               update: mocks.bookingUpdate,
               updateMany: mocks.bookingUpdateMany,
             },
@@ -420,6 +440,7 @@ describe("cancelBooking credit refunds", () => {
     const booking2 = {
       id: "booking_2",
       memberId: "member_1",
+      lodgeId: "lodge_1",
       status: "CONFIRMED",
       finalPriceCents: 10000,
       checkIn: new Date("2026-07-10"),
@@ -497,6 +518,7 @@ describe("cancelBooking credit refunds", () => {
     const booking3 = {
       id: "booking_3",
       memberId: "member_1",
+      lodgeId: "lodge_1",
       status: "CONFIRMED",
       finalPriceCents: 5000,
       checkIn: new Date("2026-07-10"),
@@ -555,6 +577,7 @@ describe("cancelBooking credit refunds", () => {
     const bookingPr = {
       id: "booking_pr",
       memberId: "member_1",
+      lodgeId: "lodge_1",
       status: "PAID",
       finalPriceCents: 10000,
       checkIn: new Date("2026-08-10"),
@@ -643,6 +666,7 @@ describe("cancelBooking credit refunds", () => {
     const bookingPr = {
       id: "booking_prc",
       memberId: "member_1",
+      lodgeId: "lodge_1",
       status: "PAID",
       finalPriceCents: 10000,
       checkIn: new Date("2026-08-10"),
@@ -684,7 +708,7 @@ describe("cancelBooking credit refunds", () => {
     );
 
     expect(result.status).toBe(200);
-    // Change fee stays non-refundable (FEE-03): base =
+    // Change fee stays non-refundable (INV-PAY-018): base =
     // min(10000 − 3000, 10000 + 500) − 500 = 6500.
     expect(mocks.calculateRefundAmount).toHaveBeenCalledWith(
       6500,
@@ -718,6 +742,7 @@ describe("cancelBooking credit refunds", () => {
     const bookingIb = {
       id: "booking_ibpr",
       memberId: "member_1",
+      lodgeId: "lodge_1",
       status: "PAID",
       finalPriceCents: 10000,
       checkIn: new Date("2026-08-10"),
@@ -797,6 +822,7 @@ describe("cancelBooking credit refunds", () => {
     const bookingFr = {
       id: "booking_fr",
       memberId: "member_1",
+      lodgeId: "lodge_1",
       status: "CONFIRMED",
       finalPriceCents: 7000,
       checkIn: new Date("2026-07-10"),
@@ -878,6 +904,7 @@ describe("cancelBooking credit refunds", () => {
     const bookingLegacy = {
       id: "booking_legacy",
       memberId: "member_1",
+      lodgeId: "lodge_1",
       status: "CONFIRMED",
       finalPriceCents: 7000,
       checkIn: new Date("2026-07-10"),
@@ -932,6 +959,7 @@ describe("cancelBooking credit refunds", () => {
     const bookingFold = {
       id: "booking_fold",
       memberId: "member_1",
+      lodgeId: "lodge_1",
       status: "CONFIRMED",
       finalPriceCents: 7000,
       checkIn: new Date("2026-07-10"),
@@ -1003,6 +1031,7 @@ describe("cancelBooking credit refunds", () => {
     const bookingAddl = {
       id: "booking_addl",
       memberId: "member_1",
+      lodgeId: "lodge_1",
       status: "CONFIRMED",
       finalPriceCents: 12000,
       checkIn: new Date("2026-07-10"),
@@ -1057,6 +1086,7 @@ describe("cancelBooking credit refunds", () => {
     const booking3Unpaid = {
       id: "booking_3",
       memberId: "member_1",
+      lodgeId: "lodge_1",
       status: "CONFIRMED",
       finalPriceCents: 10000,
       checkIn: new Date("2026-07-10"),
@@ -1127,6 +1157,7 @@ describe("cancelBooking credit refunds", () => {
     const booking5 = {
       id: "booking_5",
       memberId: "member_1",
+      lodgeId: "lodge_1",
       status: "PAID",
       finalPriceCents: 20000,
       checkIn: new Date("2026-07-10"),
@@ -1180,6 +1211,7 @@ describe("cancelBooking credit refunds", () => {
     const booking4 = {
       id: "booking_4",
       memberId: "member_1",
+      lodgeId: "lodge_1",
       status: "PAID",
       finalPriceCents: 10000,
       checkIn: new Date("2026-07-10"),
@@ -1241,6 +1273,7 @@ describe("cancelBooking credit refunds", () => {
     mocks.txBookingFindUnique.mockResolvedValueOnce({
       id: "booking_1",
       memberId: "member_1",
+      lodgeId: "lodge_1",
       status: "CANCELLED",
       finalPriceCents: 10000,
       checkIn: new Date("2026-07-10"),
@@ -1352,6 +1385,7 @@ describe("cancelBooking credit refunds", () => {
     const bookingWithOutstandingAdditional = {
       id: "booking_1",
       memberId: "member_1",
+      lodgeId: "lodge_1",
       status: "PAID",
       finalPriceCents: 10000,
       checkIn: new Date("2026-07-10"),
@@ -1645,6 +1679,7 @@ describe("cancelBooking credit refunds", () => {
       mocks.txBookingFindUnique.mockResolvedValueOnce({
         id: "booking_1",
         memberId: "member_1",
+        lodgeId: "lodge_1",
         status: "CANCELLED",
         finalPriceCents: 10000,
         checkIn: new Date("2026-07-10"),
@@ -1680,6 +1715,7 @@ describe("cancelBooking credit refunds", () => {
     const bookingWithCredit = {
       id: "booking_credit",
       memberId: "member_1",
+      lodgeId: "lodge_1",
       status: "PAID",
       finalPriceCents: 10000,
       checkIn: new Date("2026-07-10"),
@@ -1759,7 +1795,9 @@ describe("cancelBooking credit refunds", () => {
       5000,
       "card",
       1500,
-      undefined
+      // The booking's lodge. This read `undefined` while the fixture carried no
+      // lodgeId — which Booking.lodgeId being NOT NULL means never happens.
+      "lodge_1"
     );
   });
 
@@ -2036,6 +2074,7 @@ describe("cancelBooking credit refunds", () => {
       const pendingBooking = {
         id: "booking_pending",
         memberId: "member_1",
+        lodgeId: "lodge_1",
         status: "PENDING",
         finalPriceCents: 10000,
         checkIn: addDaysDateOnly(today, 30),
@@ -2074,6 +2113,7 @@ describe("cancelBooking credit refunds", () => {
       return {
         id: "bk_nc",
         memberId: "member_1",
+        lodgeId: "lodge_1",
         status: "PAYMENT_PENDING",
         finalPriceCents: 8000,
         checkIn: new Date("2026-07-10"),
@@ -2219,6 +2259,7 @@ describe("cancelBooking credit refunds", () => {
     const pendingBooking = () => ({
       id: "bk_pending",
       memberId: "member_1",
+      lodgeId: "lodge_1",
       status: "PENDING",
       finalPriceCents: 5000,
       checkIn: new Date("2026-07-10"),
@@ -2445,6 +2486,7 @@ describe("cancelBooking credit refunds", () => {
       const waitlisted = {
         id: "bk_wl",
         memberId: "member_1",
+        lodgeId: "lodge_1",
         status: "WAITLISTED",
         finalPriceCents: 4000,
         checkIn: new Date("2026-07-10"),
@@ -2507,6 +2549,46 @@ describe("cancelBooking credit refunds", () => {
       );
     });
   });
+
+  it("still refuses the cancellation when the hosting participant fence loses (#2619, #2623 T5)", async () => {
+    // THE FENCE IS STILL ON THIS PATH, and this suite is where that stops being
+    // a claim about a test double. #2623 T5 put a hosting-mode read in front of
+    // the participant fence so a club with the rule switched off pays no row
+    // lock on an ordinary booking write. The reverse has to keep holding: at a
+    // lodge where the rule IS active, a concurrent member-lifecycle writer
+    // holding the owner's `Member` row must still stop the cancellation rather
+    // than let it commit around the fence.
+    //
+    // It is also the mutation detector for `fenceHostingPolicyFindMany`. If that
+    // double is ever "simplified" to `DISABLED` or `[]`, the gate returns before
+    // the fence and this cancellation succeeds — the failure the fence doubles
+    // in this file exist to make impossible, and one that no other assertion
+    // here would notice.
+    mocks.txExecuteRaw.mockImplementation(async (statement: unknown) => {
+      const sql = String(
+        (statement as { strings?: readonly string[] })?.strings?.join(" ") ?? "",
+      );
+      if (sql.includes("FOR KEY SHARE NOWAIT")) {
+        throw { driverAdapterError: { cause: { originalCode: "55P03" } } };
+      }
+      return undefined;
+    });
+
+    // The stable contract, not an opaque failure: the fixed retry code and its
+    // 409, which is what every caller of this service already keys off.
+    await expect(
+      cancelBooking("booking_1", "member_1", "MEMBER", "127.0.0.1", "credit"),
+    ).rejects.toMatchObject({
+      code: "HOSTING_COVERAGE_PARTICIPANT_RETRY",
+      statusCode: 409,
+    });
+    // And it lands before anything irreversible leaves the process. The ledger
+    // writes that already ran are inside the claim transaction the throw rolls
+    // back (#1160); the provider call and the member's email are not, and they
+    // never happen.
+    expect(mocks.refundPaymentTransactions).not.toHaveBeenCalled();
+    expect(mocks.sendBookingCancelledEmail).not.toHaveBeenCalled();
+  });
 });
 
 
@@ -2523,6 +2605,7 @@ describe("cancelBooking detaches the held booking-request pointer (issue #1254)"
     mocks.txBookingFindUnique.mockResolvedValue({
       id: "held-1",
       memberId: "owner-1",
+      lodgeId: "lodge_1",
       status: "AWAITING_REVIEW",
       finalPriceCents: 1000,
       checkIn: new Date("2026-08-01"),
@@ -2539,10 +2622,24 @@ describe("cancelBooking detaches the held booking-request pointer (issue #1254)"
         arg: ((tx: unknown) => Promise<unknown>) | Array<Promise<unknown>>,
       ) => {
         if (typeof arg === "function") {
+          // #2619: the hosting participant fence locks the participant Member
+          // rows and then re-reads them, plus each source booking's owner and
+          // lodge, to detect drift under the lock. Model both reads — the
+          // booking side replays whatever this tx's own findUnique served, so
+          // the no-drift case matches by construction.
+          const fenceBooking = recordingBookingDouble((args) =>
+            mocks.txBookingFindUnique(args),
+          );
           const mockTx = {
             $executeRaw: mocks.txExecuteRaw,
+            member: { findMany: fenceMemberFindMany() },
+            // #2623 T5: the seam reads the lodge's hosting mode before the fence, so
+            // the double answers with an ACTIVE one and the fence above stays on the
+            // path. See `fenceHostingPolicyFindMany`.
+            adultMemberHostingPolicy: { findMany: fenceHostingPolicyFindMany() },
             booking: {
-              findUnique: mocks.txBookingFindUnique,
+              findUnique: fenceBooking.findUnique,
+              findMany: fenceBooking.findMany,
               update: mocks.bookingUpdate,
               updateMany: mocks.bookingUpdateMany,
             },
@@ -2573,6 +2670,7 @@ describe("cancelBooking detaches the held booking-request pointer (issue #1254)"
     mocks.bookingFindUnique.mockResolvedValue({
       id: "held-1",
       memberId: "owner-1",
+      lodgeId: "lodge_1",
       status: "AWAITING_REVIEW",
       finalPriceCents: 1000,
       checkIn: new Date("2026-08-01"),
@@ -2662,6 +2760,7 @@ describe("cancelBooking no-payment claim-first (issue #1311)", () => {
   const heldBooking = {
     id: "held-1",
     memberId: "owner-1",
+    lodgeId: "lodge_1",
     status: "AWAITING_REVIEW" as const,
     finalPriceCents: 1000,
     checkIn: new Date("2026-08-01"),
@@ -2684,10 +2783,24 @@ describe("cancelBooking no-payment claim-first (issue #1311)", () => {
         arg: ((tx: unknown) => Promise<unknown>) | Array<Promise<unknown>>,
       ) => {
         if (typeof arg === "function") {
+          // #2619: the hosting participant fence locks the participant Member
+          // rows and then re-reads them, plus each source booking's owner and
+          // lodge, to detect drift under the lock. Model both reads — the
+          // booking side replays whatever this tx's own findUnique served, so
+          // the no-drift case matches by construction.
+          const fenceBooking = recordingBookingDouble((args) =>
+            mocks.txBookingFindUnique(args),
+          );
           const mockTx = {
             $executeRaw: mocks.txExecuteRaw,
+            member: { findMany: fenceMemberFindMany() },
+            // #2623 T5: the seam reads the lodge's hosting mode before the fence, so
+            // the double answers with an ACTIVE one and the fence above stays on the
+            // path. See `fenceHostingPolicyFindMany`.
+            adultMemberHostingPolicy: { findMany: fenceHostingPolicyFindMany() },
             booking: {
-              findUnique: mocks.txBookingFindUnique,
+              findUnique: fenceBooking.findUnique,
+              findMany: fenceBooking.findMany,
               update: mocks.bookingUpdate,
               updateMany: mocks.bookingUpdateMany,
             },
@@ -2935,6 +3048,7 @@ describe("cancelBooking requireRequestHold guard (issue #1406)", () => {
   const heldBooking = {
     id: "held-1",
     memberId: "owner-1",
+    lodgeId: "lodge_1",
     status: "AWAITING_REVIEW" as const,
     finalPriceCents: 1000,
     checkIn: new Date("2026-08-01"),
@@ -2957,10 +3071,24 @@ describe("cancelBooking requireRequestHold guard (issue #1406)", () => {
         arg: ((tx: unknown) => Promise<unknown>) | Array<Promise<unknown>>,
       ) => {
         if (typeof arg === "function") {
+          // #2619: the hosting participant fence locks the participant Member
+          // rows and then re-reads them, plus each source booking's owner and
+          // lodge, to detect drift under the lock. Model both reads — the
+          // booking side replays whatever this tx's own findUnique served, so
+          // the no-drift case matches by construction.
+          const fenceBooking = recordingBookingDouble((args) =>
+            mocks.txBookingFindUnique(args),
+          );
           const mockTx = {
             $executeRaw: mocks.txExecuteRaw,
+            member: { findMany: fenceMemberFindMany() },
+            // #2623 T5: the seam reads the lodge's hosting mode before the fence, so
+            // the double answers with an ACTIVE one and the fence above stays on the
+            // path. See `fenceHostingPolicyFindMany`.
+            adultMemberHostingPolicy: { findMany: fenceHostingPolicyFindMany() },
             booking: {
-              findUnique: mocks.txBookingFindUnique,
+              findUnique: fenceBooking.findUnique,
+              findMany: fenceBooking.findMany,
               update: mocks.bookingUpdate,
               updateMany: mocks.bookingUpdateMany,
             },
@@ -3090,6 +3218,7 @@ describe("cancelBooking requireRequestHold guard (issue #1406)", () => {
     const pendingBooking = {
       id: "pending-1",
       memberId: "owner-1",
+      lodgeId: "lodge_1",
       status: "PENDING",
       finalPriceCents: 1000,
       checkIn: new Date("2026-08-01"),
@@ -3123,6 +3252,7 @@ describe("cancelBooking requireRequestHold guard (issue #1406)", () => {
     const heldPaidBooking = {
       id: "booking_held",
       memberId: "member_1",
+      lodgeId: "lodge_1",
       status: "PAID",
       finalPriceCents: 10000,
       checkIn: new Date("2026-07-10"),

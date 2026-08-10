@@ -4,6 +4,7 @@ import { join } from "node:path";
 import {
   AdminReviewStatus,
   AgeTier,
+  BookingStatus,
   type MemberGuestConsentStatus,
 } from "@prisma/client";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -22,6 +23,11 @@ import {
   bookingReviewReasonCodes,
   bookingReviewReasonSentences,
 } from "@/lib/booking-review";
+import {
+  fenceBookingFindMany,
+  fenceMemberFindMany,
+  recordingBookingDouble,
+} from "@/lib/__tests__/support/hosting-participant-fence-double";
 
 const CLUB_ON = {
   id: "policy-club",
@@ -95,28 +101,51 @@ function makeFamilyDb(rows: BookingRow[], policies: unknown[]) {
     Object.assign(byId.get(where.id)!, data);
     return {};
   });
+
+  // #2619: `reconcileAdultMemberHostingReviewWithSiblings` fences its source
+  // participants before it does anything else — it locks the owner/actor Member
+  // rows FOR KEY SHARE NOWAIT and then re-reads, under that lock, both those
+  // members and the source booking's owner and lodge. Replaying exactly what
+  // this client's own `findUnique` served is what makes the no-drift case match
+  // by construction instead of by a hand-copied fixture.
+  const fenceBooking = recordingBookingDouble(async (args: unknown) => {
+    const { where } = args as { where: { id: string } };
+    return byId.get(where.id) ?? null;
+  });
+
+  /**
+   * Every booking.findMany the REVIEW code makes — the sibling fan-out's id-only
+   * read and the borrow's own guest read. The fence's three-column re-read goes
+   * to the double above instead, so this spy stays exactly the call list this
+   * suite asserted on before the fence was switched on.
+   */
+  const siblingFindMany = vi.fn(async (args: unknown) => {
+    const { where } = args as { where: any };
+    return [...byId.values()].filter((row) => {
+      if (row.id === where.id?.not) return false;
+      if (row.memberId !== where.memberId) return false;
+      return (where.OR as any[]).some((clause) =>
+        clause.id !== undefined
+          ? row.id === clause.id
+          : row.parentBookingId === clause.parentBookingId,
+      );
+    });
+  });
+
   return {
     update,
+    siblingFindMany,
     rowFor: (id: string) => byId.get(id)!,
     db: {
+      $executeRaw: vi.fn().mockResolvedValue(1),
       booking: {
-        findUnique: vi.fn(async ({ where }: any) => byId.get(where.id) ?? null),
-        findMany: vi.fn(async ({ where }: any) =>
-          [...byId.values()].filter((row) => {
-            if (row.id === where.id?.not) return false;
-            if (row.memberId !== where.memberId) return false;
-            return (where.OR as any[]).some((clause) =>
-              clause.id !== undefined
-                ? row.id === clause.id
-                : row.parentBookingId === clause.parentBookingId,
-            );
-          }),
-        ),
+        findUnique: fenceBooking.findUnique,
+        findMany: fenceBookingFindMany(fenceBooking.lookup, siblingFindMany),
         update,
       },
       adultMemberHostingPolicy: { findMany: vi.fn().mockResolvedValue(policies) },
       lodge: { findFirst: vi.fn() },
-      member: { findMany: vi.fn().mockResolvedValue([]) },
+      member: { findMany: fenceMemberFindMany() },
     } as any,
   };
 }
@@ -474,7 +503,7 @@ describe("split-pair reconciliation (#2364 review finding)", () => {
     expect(family.rowFor("child-1").adultMemberHostingReviewStatus).toBe(
       AdminReviewStatus.PENDING,
     );
-    expect(family.db.booking.findMany).toHaveBeenCalled();
+    expect(family.siblingFindMany).toHaveBeenCalled();
   });
 
   it("never carries a caller's on-behalf decision onto a sibling", async () => {
@@ -496,12 +525,17 @@ describe("split-pair reconciliation (#2364 review finding)", () => {
   });
 
   it("costs a club that has not turned the rule on nothing at all", async () => {
+    // The fan-out and every write are what a disabled club must not pay for, and
+    // neither happens. The participant fence's own lock and re-read DO still run
+    // ahead of the policy read on this seam — that asymmetry against the two
+    // coverage seams, which both check the mode first, is tracked separately as
+    // T5 on #2623 and is not this test's subject.
     const family = makeFamilyDb(
       splitPair(["2026-07-04"], ["2026-07-04", "2026-07-05"]),
       [CLUB_OFF],
     );
     await reconcileAdultMemberHostingReviewWithSiblings("parent-1", family.db);
-    expect(family.db.booking.findMany).not.toHaveBeenCalled();
+    expect(family.siblingFindMany).not.toHaveBeenCalled();
     expect(family.update).not.toHaveBeenCalled();
   });
 
@@ -513,8 +547,8 @@ describe("split-pair reconciliation (#2364 review finding)", () => {
     await reconcileAdultMemberHostingReviewWithSiblings("parent-1", family.db);
     // Once for the mutated booking, once for the sibling lookup, once for the
     // sibling's own evaluation — never a third round trip from the sibling.
-    const siblingWheres = family.db.booking.findMany.mock.calls.map(
-      (call: any[]) => call[0].where,
+    const siblingWheres = family.siblingFindMany.mock.calls.map(
+      (call: any[]) => (call[0] as any).where,
     );
     for (const where of siblingWheres) {
       expect(where.memberId).toBe("owner-1");
@@ -555,6 +589,64 @@ describe("split-pair reconciliation (#2364 review finding)", () => {
       }),
     ).rejects.toThrow(/explicit decision reason/i);
     expect(bad.update).not.toHaveBeenCalled();
+  });
+
+  it("uses the fenced sibling-aware seam when a new booking is confirmed cover", async () => {
+    const [parent, child] = splitPair(
+      ["2026-07-04", "2026-07-05"],
+      ["2026-07-04", "2026-07-05"],
+    );
+    const family = makeFamilyDb(
+      [
+        { ...parent, status: BookingStatus.CONFIRMED, deletedAt: null },
+        {
+          ...child,
+          status: BookingStatus.PENDING,
+          deletedAt: null,
+          adultMemberHostingReview: {
+            reasonCode: "ADULT_MEMBER_HOSTING_REQUIRED",
+            policyId: "policy-club",
+            policyVersion: 3,
+            requirements: {
+              uncovered: [{ guestRef: "g1", night: "2026-07-05" }],
+            },
+          },
+          adultMemberHostingReviewStatus: AdminReviewStatus.PENDING,
+        },
+      ],
+      [CLUB_ON],
+    );
+
+    await recordAdultMemberHostingReviewForNewBooking(
+      "parent-1",
+      family.db,
+      null,
+    );
+
+    expect(family.rowFor("child-1").adultMemberHostingReviewStatus).toBeNull();
+    expect(family.siblingFindMany).toHaveBeenCalled();
+  });
+
+  it("keeps draft and waitlist creation on the single-booking review path", async () => {
+    for (const status of [BookingStatus.DRAFT, BookingStatus.WAITLISTED]) {
+      const family = makeFamilyDb(
+        splitPair(["2026-07-04"], ["2026-07-04", "2026-07-05"]).map(
+          (row) => ({ ...row, status, deletedAt: null }),
+        ),
+        [CLUB_ON],
+      );
+      await recordAdultMemberHostingReviewForNewBooking(
+        "parent-1",
+        family.db,
+        null,
+      );
+      expect(
+        family.db.booking.findMany.mock.calls.some(
+          ([args]: any[]) =>
+            args.select?.id === true && Object.keys(args.select).length === 1,
+        ),
+      ).toBe(false);
+    }
   });
 });
 

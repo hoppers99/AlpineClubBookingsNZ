@@ -33,6 +33,7 @@ import { z } from "zod";
 import { hashActionToken, issueActionToken } from "@/lib/action-tokens";
 import { settleHostingCoverageAfterCommit } from "@/lib/adult-member-hosting-coverage-drain";
 import { reconcileAdultMemberHostingReviewWithSiblings } from "@/lib/adult-member-hosting-review";
+import { isHostingCoverageParticipantRetry } from "@/lib/adult-member-hosting-queue-participants";
 import { logAudit } from "@/lib/audit";
 import { cancelBooking } from "@/lib/booking-cancel";
 import { recordBookingEvent } from "@/lib/booking-events";
@@ -136,6 +137,26 @@ export class BookingRequestError extends Error {
     super(message);
     this.name = "BookingRequestError";
     this.status = status;
+  }
+}
+
+export class BookingRequestDeclineCommittedError extends BookingRequestError {
+  readonly holdReleasePending: boolean;
+  readonly holdReleaseStatusUnconfirmed: boolean;
+  override readonly cause: unknown;
+
+  constructor(input: {
+    message: string;
+    status: number;
+    holdReleasePending: boolean;
+    holdReleaseStatusUnconfirmed: boolean;
+    cause?: unknown;
+  }) {
+    super(input.message, input.status);
+    this.name = "BookingRequestDeclineCommittedError";
+    this.holdReleasePending = input.holdReleasePending;
+    this.holdReleaseStatusUnconfirmed = input.holdReleaseStatusUnconfirmed;
+    this.cause = input.cause;
   }
 }
 
@@ -1255,6 +1276,8 @@ export async function declineBookingRequest(input: {
     );
   }
 
+  try {
+
   // #1791: decline always emails the requester unless the admin chose not to
   // notify (default is notify; the suppression is audited below). Only the
   // decline email is gated — the approve/quote path emails carry the
@@ -1384,7 +1407,12 @@ export async function declineBookingRequest(input: {
       // PENDING booking and `requireRequestHold` refused to clobber it. Either
       // way this decline must NOT destroy that booking, so forward the 409.
       if (result.status === 409) {
-        throw new BookingRequestError(result.error, 409);
+        throw new BookingRequestDeclineCommittedError({
+          message: result.error,
+          status: 409,
+          holdReleasePending: false,
+          holdReleaseStatusUnconfirmed: true,
+        });
       }
       if (result.status !== 200) {
         logger.error(
@@ -1395,10 +1423,12 @@ export async function declineBookingRequest(input: {
           },
           "Failed to release booking-request hold during decline"
         );
-        throw new BookingRequestError(
-          "Could not release the booking request's capacity hold",
-          result.status
-        );
+        throw new BookingRequestDeclineCommittedError({
+          message: "Could not release the booking request's capacity hold",
+          status: result.status,
+          holdReleasePending: true,
+          holdReleaseStatusUnconfirmed: false,
+        });
       }
       // Success: cancelBooking cancelled the held booking, reconciled/freed its
       // beds, and detached `heldBookingId` itself.
@@ -1424,7 +1454,33 @@ export async function declineBookingRequest(input: {
     }
   }
 
-  return prisma.bookingRequest.findUnique({ where: { id: input.requestId } });
+    const updated = await prisma.bookingRequest.findUnique({
+      where: { id: input.requestId },
+    });
+    if (!updated) {
+      throw new Error("Declined booking request could not be reloaded");
+    }
+    return updated;
+  } catch (error) {
+    if (error instanceof BookingRequestDeclineCommittedError) throw error;
+    const holdReleasePending = isHostingCoverageParticipantRetry(error);
+    const holdReleaseStatusUnconfirmed =
+      !holdReleasePending && request.heldBookingId !== null;
+    throw new BookingRequestDeclineCommittedError({
+      message: holdReleasePending || holdReleaseStatusUnconfirmed
+        ? "The request was declined, but its capacity hold status could not be confirmed. Open the held booking and check its status before retrying."
+        : "The request was declined, but the updated request could not be loaded. Reload the request queue before continuing.",
+      status:
+        error instanceof BookingRequestError
+          ? error.status
+          : holdReleasePending
+            ? 409
+            : 500,
+      holdReleasePending,
+      holdReleaseStatusUnconfirmed,
+      cause: error,
+    });
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -1671,9 +1727,31 @@ export async function reassignHeldBookingGuests(
 
   if (existing.length !== guestCreates.length) {
     await tx.bookingGuest.deleteMany({ where: { bookingId } });
-    if (planned.length > 0) {
-      await tx.bookingGuest.createMany({
-        data: planned.map((guest) => ({
+    // One `create` per guest rather than one `createMany` (#2739), then ONE
+    // `createMany` for the whole party's night rows.
+    //
+    // The guests cannot stay a `createMany`: their night rows need their ids,
+    // and reading the rows back to match them to their inputs would rest on an
+    // order `createMany` does not promise — every row shares one statement
+    // timestamp, so the tie-break is a cuid, and the wrong guest's nights is a
+    // bed on the wrong night. Creating them one at a time hands the ids back, so
+    // the read-back this replaced is gone as well.
+    //
+    // The NIGHTS are batched rather than nested per guest so the statement count
+    // stays O(guests) instead of O(guests x nights): this runs inside the
+    // approval transaction, on Prisma's default 5s interactive-transaction
+    // timeout, and a school party is bounded only by lodge capacity — forty
+    // guests over five nights is two hundred round trips nested, forty-one
+    // batched.
+    const created: Array<{ id: string; memberId: string | null }> = [];
+    const nightRows: Array<{
+      bookingGuestId: string;
+      stayDate: Date;
+      priceCents: number;
+    }> = [];
+    for (const guest of planned) {
+      const row = await tx.bookingGuest.create({
+        data: {
           bookingId,
           firstName: guest.firstName,
           lastName: guest.lastName,
@@ -1685,15 +1763,21 @@ export async function reassignHeldBookingGuests(
           priceCents: guest.priceCents,
           rateMembershipTypeId: guest.rateMembershipTypeId ?? null,
           ...(guest.memberGuestConsent ?? {}),
-        })),
+        },
+        select: { id: true, memberId: true },
       });
+      created.push(row);
+      for (const night of guest.nights) {
+        nightRows.push({
+          bookingGuestId: row.id,
+          stayDate: night.stayDate,
+          priceCents: night.priceCents,
+        });
+      }
     }
-    // `createMany` returns a count, never the rows, so the ids have to be read
-    // back. Ordering does not matter here — the match is by member id.
-    const created = await tx.bookingGuest.findMany({
-      where: { bookingId },
-      select: { id: true, memberId: true },
-    });
+    if (nightRows.length > 0) {
+      await tx.bookingGuestNight.createMany({ data: nightRows });
+    }
     return {
       preservedInPlace: false,
       memberGuestNotificationRows: owedNotifications(
@@ -1763,6 +1847,42 @@ export async function reassignHeldBookingGuests(
       },
     });
   }
+
+  /**
+   * Re-sync the canonical night set to the approved envelope and the approved
+   * price (#2739), the same delete-then-recreate every other night-set rewriter
+   * uses (`booking-modify-plan.ts`, `booking-date-modification-service.ts`) —
+   * once for the whole party rather than nested inside each `update`, so the
+   * statement count stays O(guests) inside the approval transaction and its 5s
+   * default timeout.
+   *
+   * REPLACED RATHER THAN LEFT ALONE, because both halves can have moved. The
+   * rows are being handed the approval's dates and the approval's price — an
+   * officer may have accepted a different quote option than the one the hold was
+   * taken at — so night rows left over from the hold would describe a stay and a
+   * total that no longer exist.
+   *
+   * This does NOT touch the beds #1254 preserves: `BedAllocation` keys on
+   * `bookingGuestId` and `stayDate`, not on a night row's id, so deleting and
+   * rewriting nights cascades to nothing. Guest ids still survive the swap,
+   * which is the property that preservation actually rests on.
+   */
+  if (existing.length > 0) {
+    await tx.bookingGuestNight.deleteMany({
+      where: { bookingGuestId: { in: existing.map((row) => row.id) } },
+    });
+    const replacementNights = planned.flatMap((guest, index) =>
+      guest.nights.map((night) => ({
+        bookingGuestId: existing[index].id,
+        stayDate: night.stayDate,
+        priceCents: night.priceCents,
+      }))
+    );
+    if (replacementNights.length > 0) {
+      await tx.bookingGuestNight.createMany({ data: replacementNights });
+    }
+  }
+
   return {
     preservedInPlace: true,
     memberGuestNotificationRows: owedNotifications(

@@ -14,6 +14,11 @@ import {
   selectCalendarDay,
 } from "./helpers/booking";
 import {
+  type BookingCreateIsolation,
+  bookingCreateIsolation,
+  withBookingCreateClientIp,
+} from "./helpers/booking-create-client-ip";
+import {
   cancelMemberBookingsOnDate,
   cancelOpenExceptionRequests,
   deactivateMinimumStayPolicies,
@@ -89,9 +94,9 @@ const MEMBER = WAITLISTER;
 const MEMBER_NAME = `${MEMBER.firstName} ${MEMBER.lastName}`;
 
 /**
- * Keep this journey's booking-create attempts out of the suite-wide default IP
- * bucket. Production still enforces the unchanged 20/hour limit; the test merely
- * models a second real client, as the login and whole-lodge specs already do.
+ * Login-only IP retained from the original journey. Booking creates now use the
+ * shared per-spec/per-attempt helper rather than applying this value to every
+ * request made by the member context (#2599).
  */
 const MEMBER_CLIENT_IP = "198.51.100.62";
 
@@ -197,20 +202,33 @@ async function submitGuestStepForQuote(
 }
 
 /**
- * Pick a stay in the `/book` wizard and press confirm, leaving the review step
- * showing whatever the server answered.
+ * Pick a stay in the `/book` wizard and press confirm on a stay the policy
+ * refuses, leaving the review step showing the exception-request offer the
+ * server answered with.
+ *
+ * Both callers book the same short stay, so the offer card IS this journey's
+ * authoritative outcome: the booking-create interception stays installed until
+ * it is on screen rather than being torn down when the click resolves.
  */
 async function bookThroughWizard(
   page: Page,
   checkIn: string,
   checkOut: string,
+  isolation: BookingCreateIsolation,
 ): Promise<void> {
   await submitGuestStepForQuote(page, checkIn, checkOut);
 
   await expect(page.getByText("Booking Summary")).toBeVisible();
-  await page
-    .getByRole("button", { name: /Continue to Payment|Confirm Booking/ })
-    .click();
+  await withBookingCreateClientIp(page, isolation, {
+    trigger: () =>
+      page
+        .getByRole("button", { name: /Continue to Payment|Confirm Booking/ })
+        .click(),
+    waitForOutcome: () =>
+      expect(page.getByTestId("request-officer-approval")).toBeVisible({
+        timeout: 30_000,
+      }),
+  });
 }
 
 /** Submit the offered request with an explanation, and wait for the receipt. */
@@ -244,9 +262,7 @@ test.beforeAll(async ({ browser }) => {
   adminContext = await browser.newContext({
     storageState: storageStatePath(E2E_ADMIN.email),
   });
-  memberContext = await browser.newContext({
-    extraHTTPHeaders: { "x-forwarded-for": MEMBER_CLIENT_IP },
-  });
+  memberContext = await browser.newContext();
   const memberLogin = await memberContext.newPage();
   await loginPersona(memberLogin, MEMBER.email, MEMBER_CLIENT_IP);
   await memberLogin.close();
@@ -324,18 +340,28 @@ test.afterAll(async () => {
   await memberContext?.close();
 });
 
-test("a stay that meets the minimum still books normally, with no exception step", async () => {
+test("a stay that meets the minimum still books normally, with no exception step", async ({}, testInfo) => {
   const page = await memberContext.newPage();
   await bookSelfToReviewStep(page, MEMBER, compliant);
-  await page
-    .getByRole("button", { name: /Continue to Payment|Confirm Booking/ })
-    .click();
+  await withBookingCreateClientIp(
+    page,
+    bookingCreateIsolation("member-exception-compliant", testInfo.retry),
+    {
+      trigger: () =>
+        page
+          .getByRole("button", { name: /Continue to Payment|Confirm Booking/ })
+          .click(),
+      // The ordinary journey reaches payment, and that step showing is this
+      // create's authoritative outcome, so the interception is held until then.
+      waitForOutcome: () =>
+        expect(page.getByText("Complete Payment").first()).toBeVisible({
+          timeout: 30_000,
+        }),
+    },
+  );
 
-  // The ordinary journey reaches payment, and the exception card is nowhere near
-  // it: a member who broke no rule is never asked to ask.
-  await expect(page.getByText("Complete Payment").first()).toBeVisible({
-    timeout: 30_000,
-  });
+  // The exception card is nowhere near it: a member who broke no rule is never
+  // asked to ask.
   await expect(page.getByTestId("request-officer-approval")).toBeHidden();
   await page.close();
 });
@@ -355,12 +381,18 @@ test("a hard failure offers no exception request at all", async () => {
   await page.close();
 });
 
-test("a minimum-stay refusal offers the request, tells the truth about beds, and needs an explanation", async () => {
+test("a minimum-stay refusal offers the request, tells the truth about beds, and needs an explanation", async ({}, testInfo) => {
   const page = await memberContext.newPage();
-  await bookThroughWizard(page, shortStay.checkIn, shortCheckOut);
+  await bookThroughWizard(
+    page,
+    shortStay.checkIn,
+    shortCheckOut,
+    bookingCreateIsolation("member-exception-minimum-refusal", testInfo.retry),
+  );
 
+  // `bookThroughWizard` holds the create's interception until this card is on
+  // screen, so scope straight into it rather than waiting for it twice.
   const card = page.getByTestId("request-officer-approval");
-  await expect(card).toBeVisible({ timeout: 30_000 });
 
   // The rule being asked about, named for a member rather than as an enum.
   await expect(card.getByText("Minimum length of stay")).toBeVisible();
@@ -464,7 +496,7 @@ test("the request area tracks it, and a duplicate attempt is sent to replace it"
   );
 });
 
-test("replacing a request supersedes the old one and leaves exactly one live", async () => {
+test("replacing a request supersedes the old one and leaves exactly one live", async ({}, testInfo) => {
   const before = await openRequest();
 
   const page = await memberContext.newPage();
@@ -490,12 +522,21 @@ test("replacing a request supersedes the old one and leaves exactly one live", a
   ).toBeVisible();
   await page.getByRole("button", { name: "Continue", exact: true }).click();
   await expect(page.getByText("Booking Summary")).toBeVisible();
-  await page
-    .getByRole("button", { name: /Continue to Payment|Confirm Booking/ })
-    .click();
-
   const card = page.getByTestId("request-officer-approval");
-  await expect(card).toBeVisible({ timeout: 30_000 });
+  await withBookingCreateClientIp(
+    page,
+    bookingCreateIsolation("member-exception-replacement", testInfo.retry),
+    {
+      trigger: () =>
+        page
+          .getByRole("button", { name: /Continue to Payment|Confirm Booking/ })
+          .click(),
+      // The replacement is refused the same way, so the offer card is this
+      // create's authoritative outcome; hold the interception until it shows.
+      waitForOutcome: () => expect(card).toBeVisible({ timeout: 30_000 }),
+    },
+  );
+
   // The card knows it is replacing something, and says so on its heading and its
   // button rather than looking like a second, parallel request.
   await expect(
@@ -582,10 +623,15 @@ test("a refusal shows the officer's member-facing explanation and never their in
   await page.close();
 });
 
-test("an approval becomes a real booking the member's row links to", async () => {
+test("an approval becomes a real booking the member's row links to", async ({}, testInfo) => {
   // Ask again, from the wizard, so the approved request is one a member raised.
   const page = await memberContext.newPage();
-  await bookThroughWizard(page, shortStay.checkIn, shortCheckOut);
+  await bookThroughWizard(
+    page,
+    shortStay.checkIn,
+    shortCheckOut,
+    bookingCreateIsolation("member-exception-approval", testInfo.retry),
+  );
   await submitRequest(
     page,
     "Asking once more now the committee has met — one night only.",

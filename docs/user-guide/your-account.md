@@ -147,7 +147,7 @@ The **Privacy & Data** section gives you two rights:
   [magic-link](../STATE_MACHINES.md#magic-link-sign-in-lifecycle), and
   [Google sign-in](../STATE_MACHINES.md#google-sign-in-lifecycle-profile-initiated-linking)
   lifecycles, and the
-  [membership lifecycle invariants](../DOMAIN_INVARIANTS.md#membership-lifecycle).
+  [membership lifecycle invariants](../invariants/membership-lifecycle.md).
   Operators set the password policy with the
   [Login & Security](../guides/security.md) guide and handle deletion requests
   with the [Deletion Requests](../guides/deletion-requests.md) guide.

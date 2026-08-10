@@ -680,7 +680,10 @@ export async function createMemberApplication(input: CreateMemberApplicationInpu
 
   logAudit({
     action: "MEMBERSHIP_APPLICATION_CREATED",
+    category: "account",
     targetId: application.id,
+    entityType: "MemberApplication",
+    entityId: application.id,
     details: JSON.stringify({
       applicantEmail,
       nominator1Id: nominator1.id,
@@ -835,8 +838,11 @@ export async function confirmNomination(token: string, nominatorMemberId: string
 
   logAudit({
     action: "MEMBERSHIP_APPLICATION_NOMINATION_CONFIRMED",
+    category: "account",
     memberId: nominatorMemberId,
     targetId: result.application.id,
+    entityType: "MemberApplication",
+    entityId: result.application.id,
     details: JSON.stringify({ movedToAdmin: result.movedToAdmin }),
   });
 
@@ -1109,7 +1115,21 @@ export async function refreshMemberApplicationNominations(
     targetId: applicationId,
     entityType: "MemberApplication",
     entityId: applicationId,
-    category: "membership",
+    // `account`, not the invented `membership` these three membership-application
+    // writers used to pass (#2581). `membership` was never a taxonomy value, so
+    // the rows were selectable by no Admin category filter and by no Diagnostics
+    // correlation tool. A membership application is account-domain work, and
+    // `account` is read with `support:view` plus `membership:view` — so these
+    // rows go from readable by nobody to readable by a Membership Officer.
+    //
+    // One member-facing consequence to state, since `account` is in
+    // MEMBER_VISIBLE_AUDIT_CATEGORIES and `membership` was in nothing: the member
+    // each row is about now sees it in their own profile timeline — the acting
+    // administrator here, the replacement nominator on the writer below, and the
+    // mapped member on `MEMBER_APPLICATION_MAPPED_TO_EXISTING`. The member
+    // projection returns the summary but NO metadata, so the applicant email in
+    // that last writer's metadata stays administrator-only.
+    category: "account",
     severity: "important",
     outcome: "success",
     summary: "Membership nomination workflow refreshed",
@@ -1262,7 +1282,9 @@ export async function replaceMemberApplicationNominator({
     targetId: applicationId,
     entityType: "MemberApplication",
     entityId: applicationId,
-    category: "membership",
+    // `account` (#2581) — was the invented `membership`; see the note on the
+    // nomination-workflow-refreshed writer above.
+    category: "account",
     severity: "important",
     outcome: "success",
     summary: "Membership application nominator replaced",
@@ -2247,7 +2269,9 @@ export async function approveMemberApplication(
       targetId: mapped.targetMemberId,
       entityType: "Member",
       entityId: mapped.targetMemberId,
-      category: "membership",
+      // `account` (#2581) — was the invented `membership`; see the note on the
+      // nomination-workflow-refreshed writer above.
+      category: "account",
       severity: "critical",
       outcome: "success",
       summary: "Membership applicant mapped to an existing member",
@@ -2275,8 +2299,11 @@ export async function approveMemberApplication(
 
   logAudit({
     action: "MEMBERSHIP_APPLICATION_APPROVED",
+    category: "account",
     memberId: adminMemberId,
     targetId: applicationId,
+    entityType: "MemberApplication",
+    entityId: applicationId,
     details: JSON.stringify({
       applicantMemberId: approved.applicantMember.id,
       createdMemberCount: approved.createdMemberIds.length,
@@ -2384,8 +2411,11 @@ export async function rejectMemberApplication(
 
   logAudit({
     action: "MEMBERSHIP_APPLICATION_REJECTED",
+    category: "account",
     memberId: adminMemberId,
     targetId: applicationId,
+    entityType: "MemberApplication",
+    entityId: applicationId,
     details: JSON.stringify({
       applicantEmail: rejected.applicantEmail,
       ...notifyAuditFields,

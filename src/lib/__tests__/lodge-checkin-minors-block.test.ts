@@ -149,6 +149,15 @@ describe("lodge check-in blocks a pending minors-only review (#1372)", () => {
             arrivedAt: null,
             departedAt: null,
             member: null,
+            // #2628: the guests route always loads the night rows and answers
+            // presence from them, so the fixture states its own stay — the two
+            // nights the booking's 10th-to-12th envelope always described.
+            stayStart: dateOnly(2026, 6, 10),
+            stayEnd: dateOnly(2026, 6, 12),
+            nights: [
+              { stayDate: dateOnly(2026, 6, 10) },
+              { stayDate: dateOnly(2026, 6, 11) },
+            ],
           },
         ],
       },
@@ -157,7 +166,7 @@ describe("lodge check-in blocks a pending minors-only review (#1372)", () => {
 
     const res = await GET(
       new Request(
-        "http://localhost/api/lodge/guests/2026-07-10?scope=lodge-list",
+        "http://localhost/api/lodge/guests/2026-07-10",
       ) as never,
       routeParams({ date: "2026-07-10" }),
     );

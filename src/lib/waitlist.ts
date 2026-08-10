@@ -16,8 +16,13 @@ import {
 } from "./email";
 import { logAudit } from "./audit";
 import logger from "@/lib/logger";
-import { reconcileBedAllocationsForBooking } from "@/lib/bed-allocation-lifecycle";
+import { reconcileBedAllocationsForBookingWithGlobalLockHeld } from "@/lib/bed-allocation-lifecycle";
 import { settleHostingCoverageAfterCommit } from "@/lib/adult-member-hosting-coverage-drain";
+import {
+  HOSTING_COVERAGE_RETRY_CODE,
+  HOSTING_COVERAGE_RETRY_MESSAGE,
+  isHostingCoverageParticipantRetry,
+} from "@/lib/adult-member-hosting-queue-participants";
 import {
   AdultMemberHostingRequiredError,
   buildAdultMemberHostingRefusalBody,
@@ -285,6 +290,7 @@ export async function processWaitlistForDates(freedDates: {
 
   try {
     await prisma.$transaction(async (tx) => {
+      await tx.$executeRaw`SELECT pg_advisory_xact_lock(1)`;
       const defaultLodgeId = await getDefaultLodgeId(tx);
       const freedLodgeId = freedDates.lodgeId ?? defaultLodgeId;
       // Own-lodge checks span every candidate's lodge and the cross-lodge
@@ -466,7 +472,7 @@ export async function processWaitlistForDates(freedDates: {
             waitlistOfferedPriceCents: offeredPriceCents,
           },
         });
-        await reconcileBedAllocationsForBooking({
+        await reconcileBedAllocationsForBookingWithGlobalLockHeld({
           bookingId: candidate.id,
           db: tx,
           previousRange: {
@@ -628,6 +634,7 @@ async function revertSameLodgeOfferToWaitlisted(
   previousRange: { checkIn: Date; checkOut: Date }
 ): Promise<void> {
   await prisma.$transaction(async (tx) => {
+    await tx.$executeRaw`SELECT pg_advisory_xact_lock(1)`;
     await acquireLodgeCapacityLock(tx, lodgeId);
     const restored = await tx.booking.updateMany({
       where: { id: bookingId, status: BookingStatus.WAITLIST_OFFERED },
@@ -640,7 +647,7 @@ async function revertSameLodgeOfferToWaitlisted(
       },
     });
     if (restored.count === 1) {
-      await reconcileBedAllocationsForBooking({
+      await reconcileBedAllocationsForBookingWithGlobalLockHeld({
         bookingId,
         db: tx,
         previousRange,
@@ -889,6 +896,7 @@ export async function confirmWaitlistOffer(
 
   try {
     result = await prisma.$transaction(async (tx) => {
+      await tx.$executeRaw`SELECT pg_advisory_xact_lock(1)`;
       const lockTarget = await tx.booking.findUnique({
         where: { id: bookingId },
         select: { lodgeId: true },
@@ -971,7 +979,7 @@ export async function confirmWaitlistOffer(
             waitlistOfferedPriceCents: null,
           },
         });
-        await reconcileBedAllocationsForBooking({
+        await reconcileBedAllocationsForBookingWithGlobalLockHeld({
           bookingId,
           db: tx,
           previousRange: {
@@ -1025,7 +1033,7 @@ export async function confirmWaitlistOffer(
       if (claimed.count === 0) {
         return { success: false, error: "Waitlist offer has expired or is no longer available" };
       }
-      await reconcileBedAllocationsForBooking({
+        await reconcileBedAllocationsForBookingWithGlobalLockHeld({
         bookingId,
         db: tx,
         previousRange: {
@@ -1051,6 +1059,13 @@ export async function confirmWaitlistOffer(
       return { success: true, newStatus };
     });
   } catch (err) {
+    if (isHostingCoverageParticipantRetry(err)) {
+      return {
+        success: false,
+        error: HOSTING_COVERAGE_RETRY_MESSAGE,
+        code: HOSTING_COVERAGE_RETRY_CODE,
+      };
+    }
     // #2569 — the ENFORCED hosting refusal, BEFORE the generic handler below,
     // which reported it as "an error occurred" and answered 400. That was the
     // worst of the available answers: the member was refused for a rule they
@@ -1126,6 +1141,7 @@ export async function expireStaleOffers(): Promise<{
   reofferedCount: number;
 }> {
   const { staleOffers, affectedRanges } = await prisma.$transaction(async (tx) => {
+    await tx.$executeRaw`SELECT pg_advisory_xact_lock(1)`;
     const candidates = await tx.booking.findMany({
       where: {
         status: BookingStatus.WAITLIST_OFFERED,
@@ -1169,7 +1185,7 @@ export async function expireStaleOffers(): Promise<{
         },
       });
       if (releasedRows.count === 0) continue;
-      await reconcileBedAllocationsForBooking({
+      await reconcileBedAllocationsForBookingWithGlobalLockHeld({
         bookingId: candidate.id,
         db: tx,
         previousRange: {

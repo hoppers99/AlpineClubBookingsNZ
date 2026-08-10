@@ -2,14 +2,14 @@ import { NextResponse } from "next/server";
 import { importRoomsAndBedsFromClubConfig } from "@/lib/admin-bed-allocation";
 import {
   bedAllocationErrorResponse,
-  requireBedAllocationAdmin,
+  requireBedInventoryWrite,
 } from "@/lib/admin-bed-allocation-routes";
 import { logAudit } from "@/lib/audit";
 import { revalidatePublicSite } from "@/lib/public-content-revalidation";
 
-// requireAdmin() is enforced by requireBedAllocationAdmin().
+// requireAdmin() is enforced by requireBedInventoryWrite().
 export async function POST() {
-  const guard = await requireBedAllocationAdmin();
+  const guard = await requireBedInventoryWrite();
   if (!guard.ok) return guard.response;
 
   try {
@@ -19,7 +19,7 @@ export async function POST() {
       action: "BED_ALLOCATION_CONFIG_IMPORTED",
       memberId: guard.session.user.id,
       entityType: "LodgeRoom",
-      category: "admin",
+      category: "lodge",
       outcome: "success",
       summary: "Rooms and beds imported from club config",
       metadata: {

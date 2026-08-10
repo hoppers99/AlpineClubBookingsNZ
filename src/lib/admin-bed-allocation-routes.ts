@@ -2,10 +2,13 @@ import { NextResponse } from "next/server";
 import { Prisma } from "@prisma/client";
 import { isEffectiveModuleEnabled } from "@/lib/admin-modules";
 import { BedAllocationAdminError } from "@/lib/admin-bed-allocation";
+import { BedAllocationSettingsValidationError } from "@/lib/bed-allocation-settings";
 import { requireAdmin } from "@/lib/session-guards";
 
-export async function requireBedAllocationAdmin() {
-  const guard = await requireAdmin();
+async function requireBedAllocationPermission(
+  level: "view" | "edit",
+) {
+  const guard = await requireAdmin({ permission: { area: "bookings", level } });
   if (!guard.ok) {
     return { ok: false as const, response: guard.response };
   }
@@ -20,7 +23,30 @@ export async function requireBedAllocationAdmin() {
   return { ok: true as const, session: guard.session };
 }
 
+/** Bed-board/settings reads require the explicit bookings:view contract. */
+export function requireBedAllocationRead() {
+  return requireBedAllocationPermission("view");
+}
+
+/** Every allocation/settings/approval mutation requires bookings:edit. */
+export function requireBedAllocationWrite() {
+  return requireBedAllocationPermission("edit");
+}
+
+/** Semantic inventory read helper; D-R17 preserves bookings:view. */
+export function requireBedInventoryRead() {
+  return requireBedAllocationPermission("view");
+}
+
+/** Semantic inventory write helper; D-R17 preserves bookings:edit. */
+export function requireBedInventoryWrite() {
+  return requireBedAllocationPermission("edit");
+}
+
 export function bedAllocationErrorResponse(error: unknown) {
+  if (error instanceof BedAllocationSettingsValidationError) {
+    return NextResponse.json({ error: error.message }, { status: error.status });
+  }
   if (error instanceof BedAllocationAdminError) {
     return NextResponse.json({ error: error.message }, { status: error.status });
   }

@@ -8,14 +8,6 @@ import { Alert } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog";
 import { Spinner } from "@/components/ui/spinner";
 import {
   AdminViewOnlySectionBanner,
@@ -30,7 +22,6 @@ import {
 } from "@/components/admin/bed-range-assign-dialog";
 import { useClubIdentity } from "@/components/club-identity-provider";
 import {
-  ADMIN_VIEW_ONLY_ACTION_REASON,
   useAdminAreaEditAccess,
 } from "@/hooks/use-admin-area-edit-access";
 import {
@@ -39,6 +30,11 @@ import {
   stayWindowPage,
 } from "@/lib/bed-allocation-board-window";
 import { buildHrefWithReturnTo } from "@/lib/internal-return-path";
+import {
+  bedAllocationRemovalCategoryForAnchor,
+  useBedAllocationRemovalDialog,
+} from "@/components/admin/bed-allocation-removal-dialog";
+import type { BedAllocationRemovalCategory } from "@/lib/bed-allocation-removal";
 
 /*
  * In-booking bed allocation (#2252, epic #2245 B2)
@@ -152,8 +148,25 @@ interface PanelPayload {
 
 export interface BookingBedAllocationPanelProps {
   bookingId: string;
-  /** ADR-003 board scope; null keeps the read club-wide, as the board does. */
-  lodgeId: string | null;
+  /**
+   * ADR-003 board scope — THIS BOOKING'S LODGE, and deliberately not nullable
+   * (#2678).
+   *
+   * It used to read `string | null`, documented as "null keeps the read
+   * club-wide, as the board does". That was true and it was a trap: this panel
+   * was safe only because its single caller passes `booking.lodgeId`, a NOT NULL
+   * column, so a future caller passing `null` would have silently turned a
+   * booking-scoped bed picker into a club-wide one — offering another lodge's
+   * beds for this booking's guests — with no test to catch it. A booking always
+   * has a lodge, so the type now says so.
+   *
+   * Defence in depth, not the boundary: the API derives the scope from
+   * `bookingId` server-side regardless of what a client sends (#2678), and the
+   * writer refuses a cross-lodge allocation outright.
+   */
+  lodgeId: string;
+  /** Human-readable lodge label for the shared removal review dialog. */
+  lodgeName: string;
   memberName: string;
   /** Date-only lodge nights: first night and check-out (exclusive). */
   checkIn: string;
@@ -177,14 +190,6 @@ export interface BookingBedAllocationPanelProps {
    * this server-side rather than the panel importing it.
    */
   canHoldBeds: boolean;
-  /*
-   * How many of this booking's bed nights are already approved, counted across
-   * the WHOLE booking rather than the page on screen (#2252 review). The
-   * "removing these re-opens the member's room request" warning is a
-   * booking-wide claim, and on a paged stay the window read cannot see the
-   * confirmed nights on the other pages.
-   */
-  approvedBedNightCount: number;
   /** Already loaded by the page, so the rows have names before the fetch lands. */
   guests: Array<{ id: string; name: string }>;
 }
@@ -226,6 +231,7 @@ interface PlacedRun {
   hasAutoSuggestion: boolean;
   /** Nights of this run that came from an AUTO suggestion, not a hand placement. */
   autoCount: number;
+  category: BedAllocationRemovalCategory;
   /*
    * Nights of this run sitting on a bed-night a custodian holds (#2286).
    * Unreachable through the guarded write paths, so each one is evidence of a
@@ -245,11 +251,6 @@ interface GuestRow {
   runs: PlacedRun[];
   placedNightCount: number;
   unplacedNightCount: number;
-}
-
-interface RemoveTarget {
-  guestName: string;
-  run: PlacedRun;
 }
 
 async function readApiError(response: Response, fallback: string) {
@@ -278,6 +279,7 @@ function earlierDate(left: string, right: string) {
 export function BookingBedAllocationPanel({
   bookingId,
   lodgeId,
+  lodgeName,
   memberName,
   checkIn,
   checkOut,
@@ -285,12 +287,11 @@ export function BookingBedAllocationPanel({
   bookingStatus,
   isDeleted,
   canHoldBeds,
-  approvedBedNightCount,
   guests,
 }: BookingBedAllocationPanelProps) {
-  // Same permission the board's write controls use: every affordance here is a
-  // write, so a view-only admin sees the state and the reason, never a button
-  // that would 403.
+  // Same permission the board's write controls use. Removal preview is a
+  // bookings:view read and remains reachable; assign, confirm, and the
+  // dialog's reviewed apply stay disabled until bookings:edit resolves true.
   const canEdit = useAdminAreaEditAccess("bookings");
   /*
    * Admin copy uses the club's own word for the role (#2286 review M8); only
@@ -320,18 +321,6 @@ export function BookingBedAllocationPanel({
     null,
   );
   const [assignOpen, setAssignOpen] = useState(false);
-  const [removeTarget, setRemoveTarget] = useState<RemoveTarget | null>(null);
-  /*
-   * Bed nights this panel's own Confirm has approved since the server rendered
-   * `approvedBedNightCount` (#2252 review). Confirm is booking-wide, so it can
-   * approve nights on pages this window never read — which would otherwise
-   * leave the booking-wide total stale LOW and let the "last confirmed nights"
-   * warning fire when it is no longer true. Only Confirm is tracked: a removal
-   * can only make the total stale HIGH, which suppresses the warning rather
-   * than inventing one.
-   */
-  const [approvedSinceRender, setApprovedSinceRender] = useState(0);
-
   // The stay is paged in <=31-night windows because the dashboard read refuses
   // anything longer, and bookings have no maximum length. The page is always
   // LABELLED on screen — a window is never silently shortened (#2251's rule).
@@ -364,8 +353,11 @@ export function BookingBedAllocationPanel({
         from: fromDate,
         to: toDate,
         bookingId,
+        // #2678: the server derives the scope from `bookingId` and ignores this,
+        // so it is a hint the two agree rather than the thing that scopes the
+        // read. Sent unconditionally now that the prop cannot be null.
+        lodgeId,
       });
-      if (lodgeId) params.set("lodgeId", lodgeId);
       const response = await fetch(
         `/api/admin/bed-allocation?${params.toString()}`,
       );
@@ -391,6 +383,16 @@ export function BookingBedAllocationPanel({
       if (isCurrent()) setLoading(false);
     }
   }, [bookingId, fromDate, toDate, lodgeId]);
+
+  const removalDialog = useBedAllocationRemovalDialog({
+    canEdit,
+    onApplied: async ({ removedRowCount }) => {
+      toast.success(
+        `${removedRowCount} reviewed bed ${nightWord(removedRowCount)} removed for this booking; no automatic allocation was run`,
+      );
+      await load();
+    },
+  });
 
   useEffect(() => {
     // A booking that cannot hold beds has nothing to read: the honest note is
@@ -519,7 +521,14 @@ export function BookingBedAllocationPanel({
       row.name = allocation.guestName;
       row.ageTier = row.ageTier ?? allocation.guestAgeTier;
       row.placedNightCount += 1;
-      const key = `${allocation.bookingGuestId}:${allocation.bedId}`;
+      // D-R12: a displayed run never crosses an allocation-category boundary.
+      // That makes its preselected removal category exact rather than a mixed
+      // run whose label and preview would disagree.
+      const category = bedAllocationRemovalCategoryForAnchor(
+        allocation.source,
+        allocation.approvedAt,
+      );
+      const key = `${allocation.bookingGuestId}:${allocation.bedId}:${category}`;
       const bucket = nightsByGuestBed.get(key);
       if (bucket) bucket.push(allocation);
       else nightsByGuestBed.set(key, [allocation]);
@@ -535,7 +544,11 @@ export function BookingBedAllocationPanel({
     // A 90-night stay must not render 90 identical lines: contiguous nights on
     // the same bed collapse into one run, which is also the unit Remove acts on.
     for (const [key, group] of nightsByGuestBed) {
-      const [guestId] = key.split(":");
+      const [guestId, , category] = key.split(":") as [
+        string,
+        string,
+        BedAllocationRemovalCategory,
+      ];
       const row = byId.get(guestId);
       if (!row) continue;
       const byNight = new Map(group.map((item) => [item.stayDate, item]));
@@ -556,6 +569,7 @@ export function BookingBedAllocationPanel({
           approvedCount: items.filter((item) => item.approvedAt).length,
           hasAutoSuggestion: items.some((item) => item.source === "AUTO"),
           autoCount: items.filter((item) => item.source === "AUTO").length,
+          category,
           custodianNights: items
             .filter((item) =>
               custodianHeldBedNights.has(`${item.bedId}:${item.stayDate}`),
@@ -607,7 +621,9 @@ export function BookingBedAllocationPanel({
       from: fromDate,
       to: toDate,
       bookingId,
-      ...(lodgeId ? { lodgeId } : {}),
+      // #2678: always named, so the board's lodge selector agrees with the scope
+      // the API derives from `bookingId`.
+      lodgeId,
     }).toString()}`,
     `/bookings/${bookingId}`,
   );
@@ -671,9 +687,6 @@ export function BookingBedAllocationPanel({
       }
       const body = (await response.json()) as { approvedCount?: number };
       const count = body.approvedCount ?? 0;
-      // Keep the booking-wide approved total honest for the removal warning,
-      // including the nights this window cannot see.
-      if (count > 0) setApprovedSinceRender((total) => total + count);
       toast.success(
         count > 0
           ? `Confirmed ${count} bed ${nightWord(count)} for this booking`
@@ -687,48 +700,29 @@ export function BookingBedAllocationPanel({
     }
   }
 
-  async function removeRun(target: RemoveTarget) {
-    if (!canEdit) return;
-    setBusy(`remove:${target.run.key}`);
-    let removed = 0;
-    let failure: string | null = null;
-    try {
-      /*
-       * One DELETE per night. There is deliberately no bulk-remove endpoint,
-       * and inventing one is out of scope for this issue — so the outcome is
-       * reported honestly instead of assumed: a run that stops halfway says how
-       * many nights actually went.
-       */
-      for (const id of target.run.allocationIds) {
-        const response = await fetch(
-          `/api/admin/bed-allocation/allocations/${id}`,
-          { method: "DELETE" },
-        );
-        if (!response.ok) {
-          failure = await readApiError(response, "Failed to remove a bed night");
-          break;
-        }
-        removed += 1;
-      }
-    } catch {
-      failure = "Failed to remove a bed night";
-    } finally {
-      setBusy(null);
-      setRemoveTarget(null);
-      await load();
-    }
-
-    if (failure) {
-      toast.error(
-        removed > 0
-          ? `${failure} — ${removed} of ${target.run.allocationIds.length} ${nightWord(target.run.allocationIds.length)} were removed.`
-          : failure,
-      );
-      return;
-    }
-    toast.success(
-      `Removed ${removed} bed ${nightWord(removed)} for ${target.guestName}`,
-    );
+  function openRunRemoval(guestName: string, run: PlacedRun) {
+    if (!lodgeId) return;
+    const runIds = new Set(run.allocationIds);
+    const runAllocations = allocations
+      .filter((allocation) => runIds.has(allocation.id))
+      .sort((a, b) => a.stayDate.localeCompare(b.stayDate))
+      .map((allocation) => ({
+        allocationId: allocation.id,
+        bookingId: allocation.bookingId,
+        bookingGuestId: allocation.bookingGuestId,
+        lodgeId,
+        stayDate: allocation.stayDate,
+      }));
+    removalDialog.openRemovalDialog({
+      allocations: runAllocations,
+      lodgeId,
+      lodgeName,
+      window: { from: fromDate, to: toDate },
+      guestName,
+      initialScope: "ALLOCATION",
+      initialCategories: [run.category],
+      allowWindow: false,
+    });
   }
 
   /*
@@ -738,35 +732,10 @@ export function BookingBedAllocationPanel({
    */
   const viewOnlyBanner = (
     <AdminViewOnlySectionBanner canEdit={canEdit} className="mb-4">
-      You can see where this booking is sleeping, but not assign, remove, or
-      confirm beds.
+      You can see where this booking is sleeping and preview removals, but not
+      assign, apply removals, or confirm beds.
     </AdminViewOnlySectionBanner>
   );
-
-  /*
-   * Removing the booking's last approved night legitimately re-opens the
-   * member's room-request editor (#776). The lock is not one-way, and the
-   * officer is told which case they are in rather than being left to find out.
-   *
-   * The claim is booking-wide, so it cannot be decided from the page's own
-   * `approvedCount` alone (#2252 review): on a paged stay, confirmed nights on
-   * another page would make the warning simply false. The booking-wide total
-   * comes from the server, and only ever SUPPRESSES the warning — so the one
-   * way it can drift (this panel's own Confirm approving nights off-page since
-   * the page rendered) is corrected by adding what Confirm actually reported,
-   * and drift in the other direction (rows removed elsewhere) can only omit a
-   * warning, never invent one.
-   */
-  const bookingApprovedCount = approvedBedNightCount + approvedSinceRender;
-  const approvedElsewhereOnBooking = Math.max(
-    bookingApprovedCount - approvedCount,
-    0,
-  );
-  const removingLastApproved =
-    removeTarget !== null &&
-    removeTarget.run.approvedCount > 0 &&
-    removeTarget.run.approvedCount >= approvedCount &&
-    approvedElsewhereOnBooking === 0;
 
   return (
     <Card id="bed-allocation" className="scroll-mt-20">
@@ -1055,19 +1024,14 @@ export function BookingBedAllocationPanel({
                             </span>
                           </span>
                         ) : null}
-                        <ViewOnlyActionButton
-                          canEdit={canEdit}
-                          describeReason={false}
+                        <Button
                           type="button"
                           variant="ghost"
                           size="sm"
-                          disabled={busy === `remove:${run.key}`}
-                          onClick={() =>
-                            setRemoveTarget({ guestName: row.name, run })
-                          }
+                          onClick={() => openRunRemoval(row.name, run)}
                         >
                           Remove
-                        </ViewOnlyActionButton>
+                        </Button>
                       </li>
                     ))}
                   </ul>
@@ -1133,54 +1097,7 @@ export function BookingBedAllocationPanel({
         canEdit={canEdit}
         onAssigned={handleAssigned}
       />
-
-      <Dialog
-        open={removeTarget !== null}
-        onOpenChange={(open) => {
-          if (!open) setRemoveTarget(null);
-        }}
-      >
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle>Remove these bed nights?</DialogTitle>
-            <DialogDescription>
-              {removeTarget
-                ? `${removeTarget.guestName} will lose ${removeTarget.run.nightCount} ${nightWord(removeTarget.run.nightCount)} in ${removeTarget.run.roomName} / ${removeTarget.run.bedName}.`
-                : null}
-            </DialogDescription>
-          </DialogHeader>
-          {removingLastApproved ? (
-            <Alert variant="warning" data-testid="bed-remove-reopens-lock">
-              These are the last confirmed bed nights on this booking. Removing
-              them re-opens the member&apos;s room request for editing.
-            </Alert>
-          ) : null}
-          <DialogFooter className="gap-2">
-            <Button
-              type="button"
-              variant="outline"
-              onClick={() => setRemoveTarget(null)}
-            >
-              Cancel
-            </Button>
-            {/* A dialog is its own accessibility container: the card's
-                view-only banner does not reach inside it, so this control
-                carries the reason itself — the same shape the shared range
-                dialog uses (#2251). */}
-            <Button
-              type="button"
-              variant="destructive"
-              disabled={!canEdit || busy !== null}
-              title={canEdit === false ? ADMIN_VIEW_ONLY_ACTION_REASON : undefined}
-              onClick={() => {
-                if (removeTarget) void removeRun(removeTarget);
-              }}
-            >
-              Remove
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+      {removalDialog.dialog}
     </Card>
   );
 }

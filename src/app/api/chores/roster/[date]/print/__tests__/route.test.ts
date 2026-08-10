@@ -92,12 +92,20 @@ const BOOKING_ROWS = [
     lodgeId: THIS_LODGE,
     checkIn: dateOnly("2026-07-10"),
     checkOut: dateOnly("2026-07-12"),
+    member: { firstName: "Bev", lastName: "Booker" },
     guests: [
       {
         id: "guest-1",
+        firstName: "Ada",
+        lastName: "Lovelace",
+        ageTier: "ADULT",
         stayStart: dateOnly("2026-07-10"),
         stayEnd: dateOnly("2026-07-12"),
-        nights: [],
+        nights: [
+          { stayDate: dateOnly("2026-07-10") },
+          { stayDate: dateOnly("2026-07-11") },
+        ],
+        member: null,
         consentStatus: null,
       },
     ],
@@ -107,12 +115,20 @@ const BOOKING_ROWS = [
     lodgeId: OTHER_LODGE,
     checkIn: dateOnly("2026-07-10"),
     checkOut: dateOnly("2026-07-12"),
+    member: { firstName: "Cal", lastName: "Other" },
     guests: [
       {
         id: "guest-2",
+        firstName: "Grace",
+        lastName: "Hopper",
+        ageTier: "ADULT",
         stayStart: dateOnly("2026-07-10"),
         stayEnd: dateOnly("2026-07-12"),
-        nights: [],
+        nights: [
+          { stayDate: dateOnly("2026-07-10") },
+          { stayDate: dateOnly("2026-07-11") },
+        ],
+        member: null,
         consentStatus: null,
       },
     ],
@@ -157,14 +173,20 @@ beforeEach(() => {
     );
   });
 
+  // #2631: the sheet's headcount now comes from the shared roster selector
+  // (`getOperationalRosterGuestsForDate`), whose window is checkout-INCLUSIVE —
+  // the morning after the last night is a rostered day. The mock APPLIES the
+  // bound it is sent, so a route that reverted to `gt` would fail loudly here
+  // rather than quietly returning every row.
   mockPrisma.booking.findMany.mockImplementation(async (args: never) => {
     const { where } = args as unknown as {
-      where: { lodgeId?: string; checkIn: { lte: Date }; checkOut: { gt: Date } };
+      where: { lodgeId?: string; checkIn: { lte: Date }; checkOut: { gte: Date } };
     };
+    expect(where.checkOut).toHaveProperty("gte");
     return BOOKING_ROWS.filter(
       (booking) =>
         booking.checkIn.getTime() <= where.checkIn.lte.getTime() &&
-        booking.checkOut.getTime() > where.checkOut.gt.getTime() &&
+        booking.checkOut.getTime() >= where.checkOut.gte.getTime() &&
         (where.lodgeId === undefined || booking.lodgeId === where.lodgeId),
     );
   });

@@ -171,7 +171,7 @@ re-creatable.
   That tooltip never appears (disabled buttons receive no pointer events), and
   gated controls also stay out of the keyboard tab order, so "tab to the button
   to hear why" is wrong too. **Check the screen before you write "the banner
-  says why":** 49 controls still carry their own per-button reason instead —
+  says why":** 51 controls still carry their own per-button reason instead —
   controls inside a dialog, popover, or dropdown; leaf toolbars dropped into
   another page's layout; the member detail **credit** card, whose buttons
   are gated on finance while that page's banner states membership; and the
@@ -240,6 +240,14 @@ Other linking rules:
   groups several distinct sibling sets and the label needs to name which one.
 - Run `npm run docs:linkcheck` before pushing; CI runs the same class of check
   (`.github/workflows/docs-link-check.yml`, lychee in offline mode).
+- Run `npm run docs:indexcheck` too. The link checker proves a link you wrote
+  goes somewhere; this one proves somebody can get to your page at all — every
+  `docs/` page must be reachable by following links from `README.md`,
+  `AGENTS.md`, `CLAUDE.md`, `CONTRIBUTING.md` or `docs/README.md`. It also
+  checks the invariant identifiers: every `INV-*` quoted anywhere in the
+  repository must resolve to a real rule under `docs/invariants/`, and every
+  rule must have exactly one row in `docs/DOMAIN_INVARIANTS.md`. It runs in the
+  blocking `verify` job, not the advisory link-check workflow.
 
 ## Mermaid conventions
 

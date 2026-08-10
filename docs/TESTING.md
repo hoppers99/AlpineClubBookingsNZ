@@ -118,6 +118,18 @@ generalised.
    `vitest.config.ts` pins `sequence.hooks: "stack"` so the setup file's
    `afterAll` restore stays last. The `vi.mock("@/lib/date-only", …)` idiom (see
    `site-banners.test.ts`) also still works and is unaffected.
+
+   The worked example is `nz-today-date-only.test.tsx` (#2682), which pins
+   `2026-06-30T21:00:00.000Z` — 09:00 on 1 July 2026 in New Zealand, and the
+   *previous* UTC day. Its whole subject is that the two disagree, so it also
+   shows the two guards a suite like that needs: it asserts up front that the
+   UTC day and the club day really are different (a fixture that drifted out of
+   the divergence window would otherwise pass vacuously), and it asserts that
+   `APP_TIME_ZONE` is still `Pacific/Auckland`, so a contributor doing what rule
+   6 below describes gets one clear environment failure instead of five that
+   read like product bugs. A suite that keeps the DEFAULT instant but hard-codes
+   fixture dates against it should assert that too — `night-occupancy-parity.test.ts`
+   (#2681) pins `getTodayDateOnly()` to `2026-07-01` for that reason.
 4. **Do not hand the clock back to the real calendar.** If your suite pins its
    own instant and wants to undo that, `vi.useRealTimers()` in an `afterEach` is
    safe — the root `beforeEach` re-freezes before the next test — but never rely
@@ -292,3 +304,151 @@ A malformed value fails the run rather than falling back to the frozen instant �
 falling back would report green while checking something other than what you
 asked for, which is the same vacuous-pass failure this whole convention exists to
 prevent.
+
+## Asserting that a recovery alert holds focus
+
+The other convention that is load-bearing rather than stylistic, for the same
+reason as the frozen clock: written the obvious way, the assertion reports green
+or red on something other than what it claims to check.
+
+Eighteen admin and member surfaces render a **permanently mounted** `role="alert"`
+that a failed action populates and then takes focus, so a keyboard or
+screen-reader user is not left on a control that has just been re-enabled while
+the explanation appears elsewhere on the page. Sixteen use
+`src/components/focused-action-error.tsx`; `policy-exception-requests-panel.tsx`
+and `roster-editor.tsx` inline their own copy.
+
+Assert that contract with the shared helper, never by hand:
+
+```ts
+import { expectRecoveryAlertToHoldFocus } from "@/lib/__tests__/helpers/focus";
+
+fireEvent.click(screen.getByRole("button", { name: "Confirm Booking" }));
+await waitFor(() => expect(alert).toHaveTextContent(RETRY_MESSAGE));
+await expectRecoveryAlertToHoldFocus(alert);
+```
+
+### Why not by hand
+
+Both obvious spellings are wrong, and this repository shipped both before #2635.
+
+**A synchronous `expect(document.activeElement).toBe(alert)`** taken straight
+after a `waitFor` on the alert's text passes only by luck. The component focuses
+in a passive effect, which React flushes in a Scheduler task *after* the commit
+that puts the message in the DOM. Measured on this stack: at the
+mutation-observer checkpoint where `waitFor`'s callback first succeeds, focus had
+landed in **0 of 30 runs**, arriving exactly one event-loop turn later. The
+assertion survived only because React Testing Library's `asyncWrapper` happens to
+drain one `setTimeout(0)` before handing control back — a one-turn margin inside
+a library internal that nothing guarantees. A loaded CI runner is enough to lose
+it, and `main` went intermittently red on a commit that passed on a rerun of the
+identical SHA.
+
+**A bare `await waitFor(() => expect(document.activeElement).toBe(alert))`** is
+not the fix either. `waitFor` resolves on the first poll where the condition
+holds, so focus that lands and is then stolen by a later commit passes it — a
+weaker guarantee than the one being claimed. #2618 relaxed the member-facing
+waitlist card to this spelling to dodge the race above, and an earlier review
+recorded that as a finding rather than a fix.
+
+`expectRecoveryAlertToHoldFocus` asserts both halves: it waits for focus to
+arrive, then settles every pending render and effect and re-asserts
+synchronously. So it depends on no ordering between React's flush and the test
+runner's drain, and it fails if the focus does not stay.
+
+### The related trap: `findByRole("alert")` on a permanently mounted alert
+
+Because the live region is mounted **empty** from the start,
+`await screen.findByRole("alert")` matches it immediately and waits for nothing.
+Any text assertion on the next line inherits the same one-turn margin. Wait for
+the text, not the element:
+
+```ts
+const alert = await screen.findByRole("alert");
+await waitFor(() => expect(alert).toHaveTextContent("Payment Error"));
+```
+
+### Do not make the component's effect a layout effect
+
+It looks like the tidy fix — focus in the same commit as the message, no window
+at all — and it regresses the surfaces that raise their failure from inside a
+closing dialog, to exactly the outcome the component exists to prevent. Radix's
+focus scope traps focus inside an open dialog and releases it from a *passive*
+effect cleanup, restoring focus to whatever was focused when the dialog opened.
+Those surfaces batch "close the dialog" and "record the failure" into one commit,
+so a layout effect focuses the alert while the closing dialog's content is still
+mounted: the trap steals it back and the release then hands focus to the control
+that opened the dialog — or to `<body>` under a synthetic click, which does not
+focus its button. `focused-action-error-focus-contract.test.tsx` pins this
+deliberately; so, incidentally, does `deletion-requests-client.test.tsx`.
+
+## A mutation probe is a change you have to undo
+
+`AGENTS.md` requires every new guard to be mutation-verified: break the thing
+the guard exists to catch, confirm the suite goes red, **then restore the
+mutation and re-run**. The restore is the half that gets skipped, and a probe
+left in the tree is a shipped defect wearing a green suite — the suite is green
+precisely because the guard is still working on code you no longer meant to
+ship.
+
+Two traps make the restore less reliable than it looks:
+
+- **Check the restore against the repository, not against your own backup.**
+  `git diff` before committing is the only check that cannot agree with itself.
+  A hash comparison against a copy you made is satisfied by a probe that never
+  landed at all, which is the same vacuous pass the frozen-clock section is
+  about.
+- **On Windows, prove the probe landed where you think.** .NET's working
+  directory is not PowerShell's: `[IO.File]::ReadAllText("AGENTS.md")` after a
+  `Set-Location` into a worktree reads and writes the file of the **original**
+  directory, so a probe run from a worktree can silently mutate — or, worse,
+  no-op against — a different checkout. Use absolute paths, and assert the
+  mutated text actually differs before you run the suite.
+
+## A suite can time out on a tree that is fine
+
+`review-findings-contracts.test.ts` shells out over the whole migration tree, so
+it is load-sensitive: started while other lanes are installing or compiling, it
+times out on a branch with nothing wrong with it.
+
+Raising the timeout from the command line does not help. Its per-test timeouts
+are written **inline in the file**, as the third argument to each `it(...)`, and
+an inline timeout wins over `--testTimeout`. Re-run the suite **alone** before
+believing a failure from it, and never report it as clean when it is not — say
+what failed and why it is not yours. `AGENTS.md` lists it alongside the other
+known-environmental suites.
+
+## Census tests and the merge hazard
+
+A third convention that is load-bearing rather than stylistic, for the same
+reason as the two above: written the obvious way, this reports green on
+something other than what it claims.
+
+A **census** is a test that pins how many call sites of a given shape exist —
+every writer that can strand a booking, every `toLocaleDateString` escape, every
+`ViewOnlyActionButton` opt-out. It is one of the strongest guards here, because
+it fails the moment somebody adds a call site nobody classified.
+
+It also carries a merge hazard no CI check can see. Two branches each add one
+call site. Each bumps the census literal from `6` to `7` — the same line, the
+same value — so git merges them with **no conflict**. Both were green alone, the
+merged suite is green, and `main` now asserts `7` where the truth is `8`. The
+next real addition sails through a census that has stopped counting anything.
+
+So:
+
+1. **Re-derive the count; never increment it.** Run the census against the tree
+   in front of you and record what it reports. Never take the number you started
+   with and add your own branch's additions to it.
+2. **Re-derive it after every merge into your branch, and once more before
+   flipping the PR ready.** Those are the only moments the merged tree exists.
+3. **If the number moved for a reason you did not cause, the hazard has fired**
+   — check the other branch's entries too. A wrong total usually means a wrong
+   *classification*, not just arithmetic: something named that is not really a
+   member of the set, or a real one missing. Commit `5a5e4e748` (#2649) found a
+   census claiming "at least nine other producers" that was really six, with two
+   of the named ones refuted outright.
+4. **Prefer a census that enumerates over one that only counts.** Listing the
+   entries by name puts two concurrent additions on the same lines, so git
+   raises a conflict and a human classifies both — which is exactly the review a
+   bare integer skipped.

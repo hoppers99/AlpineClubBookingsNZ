@@ -2,11 +2,16 @@
 
 import { describe, expect, it } from "vitest";
 import { render, screen } from "@testing-library/react";
-import type { DisplayState, DisplayStateBooking } from "@/lib/lodge-display-state";
+import type {
+  DisplayState,
+  DisplayStateBooking,
+  DisplayStateGuest,
+} from "@/lib/lodge-display-state";
 import {
   ArrivalsBoard,
   barNames,
   computeBarLayout,
+  computeBarSegments,
 } from "@/components/lodge-display/modules/arrivals-board";
 import { OccupancyGrid } from "@/components/lodge-display/modules/occupancy-grid";
 import { SinglesBoard } from "@/components/lodge-display/modules/singles-board";
@@ -24,19 +29,59 @@ import {
 
 const WINDOW = ["2026-04-13", "2026-04-14", "2026-04-15"];
 
-function row(overrides: Partial<DisplayStateBooking>): DisplayStateBooking {
-  return {
+/** Expand a half-open envelope into night keys — the payload's own rule. */
+function envelopeNights(stayStart: string, stayEnd: string): string[] {
+  const nights: string[] = [];
+  for (let key = stayStart; key < stayEnd; ) {
+    nights.push(key);
+    const next = new Date(`${key}T00:00:00.000Z`);
+    next.setUTCDate(next.getUTCDate() + 1);
+    key = next.toISOString().slice(0, 10);
+  }
+  return nights;
+}
+
+/**
+ * A fixture row or guest may leave `nights` out, and gets the expanded envelope
+ * (#2735).
+ *
+ * `nights` is REQUIRED on the real payload, and for every CONTIGUOUS stay the
+ * serialiser emits exactly the expanded envelope — so a fixture that says
+ * nothing about nights is handed the payload it would really receive, and the
+ * cases below assert the same bars they always did. A case about a stay with a
+ * GAP in it states `nights` explicitly, which is the only way to express one.
+ */
+type GuestFixture = Omit<DisplayStateGuest, "nights"> & { nights?: string[] };
+type RowFixture = Partial<Omit<DisplayStateBooking, "guests">> & {
+  guests?: GuestFixture[] | null;
+};
+
+function row(overrides: RowFixture): DisplayStateBooking {
+  const merged = {
     key: "row-1-0",
     label: "Olive O",
     wholeLodge: false,
     roomId: null,
     guests: [
       { label: "Jane S", stayStart: "2026-04-13", stayEnd: "2026-04-15" },
-    ],
+    ] as GuestFixture[] | null,
     guestCount: 1,
     stayStart: "2026-04-13",
     stayEnd: "2026-04-15",
+    // #2621: no expected arrival time is the ordinary case, so the base fixture
+    // has none; the cases that exercise the chip set it explicitly.
+    arrivalTime: null,
     ...overrides,
+  };
+  return {
+    ...merged,
+    guests:
+      merged.guests?.map((guest) => ({
+        ...guest,
+        nights: guest.nights ?? envelopeNights(guest.stayStart, guest.stayEnd),
+      })) ?? null,
+    nights:
+      overrides.nights ?? envelopeNights(merged.stayStart, merged.stayEnd),
   };
 }
 
@@ -117,10 +162,104 @@ describe("bar layout maths (clipping regression surface)", () => {
     expect(
       computeBarLayout({ stayStart: "2026-05-01", stayEnd: "2026-05-03" }, WINDOW)
     ).toBeNull();
+
     // Checks out on the window's first morning — no night tonight.
     expect(
       computeBarLayout({ stayStart: "2026-04-10", stayEnd: "2026-04-13" }, WINDOW)
     ).toBeNull();
+  });
+});
+
+describe("bar segments: a stay with a gap draws as two bars (#2735)", () => {
+  it("splits the row's nights into contiguous runs, each with its own check-out", () => {
+    // In on the 13th, home on the 14th, back on the 15th. One unbroken bar
+    // across all three columns claimed a bed on a night nobody booked, and
+    // labelled the whole thing with the LAST check-out.
+    const segments = computeBarSegments(
+      {
+        stayStart: "2026-04-13",
+        stayEnd: "2026-04-16",
+        nights: ["2026-04-13", "2026-04-15"],
+      },
+      WINDOW
+    );
+    expect(segments).toEqual([
+      {
+        stayStart: "2026-04-13",
+        stayEnd: "2026-04-14",
+        startColumn: 1,
+        spanColumns: 1,
+        startsBeforeWindow: false,
+        endsAfterWindow: false,
+        departing: false,
+      },
+      {
+        stayStart: "2026-04-15",
+        stayEnd: "2026-04-16",
+        startColumn: 3,
+        spanColumns: 1,
+        startsBeforeWindow: false,
+        endsAfterWindow: true,
+        departing: false,
+      },
+    ]);
+  });
+
+  it("is one bar, identical to the envelope, for a contiguous stay", () => {
+    const envelope = { stayStart: "2026-04-13", stayEnd: "2026-04-15" };
+    expect(
+      computeBarSegments(
+        { ...envelope, nights: ["2026-04-13", "2026-04-14"] },
+        WINDOW
+      )
+    ).toEqual([{ ...envelope, ...computeBarLayout(envelope, WINDOW) }]);
+  });
+
+  it("drops a run with no night in the window, and keeps the ones that have", () => {
+    // Nights on the 10th (before the window) and the 14th.
+    const segments = computeBarSegments(
+      {
+        stayStart: "2026-04-10",
+        stayEnd: "2026-04-15",
+        nights: ["2026-04-10", "2026-04-14"],
+      },
+      WINDOW
+    );
+    expect(segments).toHaveLength(1);
+    expect(segments[0]).toMatchObject({
+      stayStart: "2026-04-14",
+      stayEnd: "2026-04-15",
+      startColumn: 2,
+      spanColumns: 1,
+      startsBeforeWindow: false,
+    });
+  });
+
+  it("draws nothing for a row with no nights (INV-DATE-008)", () => {
+    expect(
+      computeBarSegments(
+        { stayStart: "2026-04-13", stayEnd: "2026-04-13", nights: [] },
+        WINDOW
+      )
+    ).toEqual([]);
+  });
+
+  it("falls back to the envelope when a caller passes no nights at all", () => {
+    // The direct-unit-test branch. Every row the serialiser emits carries its
+    // nights, so this shape does not occur on the wall.
+    expect(
+      computeBarSegments({ stayStart: "2026-04-14", stayEnd: "2026-04-15" }, WINDOW)
+    ).toEqual([
+      {
+        stayStart: "2026-04-14",
+        stayEnd: "2026-04-15",
+        startColumn: 2,
+        spanColumns: 1,
+        startsBeforeWindow: false,
+        endsAfterWindow: false,
+        departing: false,
+      },
+    ]);
   });
 });
 
@@ -151,6 +290,47 @@ describe("bar names overflow (AC2)", () => {
     const result = barNames(row({ guests, guestCount: 7 }), 5, true);
     expect(result.names).toEqual(["A X"]);
     expect(result.overflow).toBe(6);
+  });
+
+  it("names only the guests in the bar's own run of nights (#2735)", () => {
+    // One booking, one room, two people who are never here at the same time.
+    // The row's night union is {13, 15}, so it draws two bars — and each bar
+    // now carries its own check-out, so naming the whole row on both would
+    // attach "out Tue 14" to someone whose bed is on the 15th.
+    const split = row({
+      guests: [
+        { label: "Ari A", stayStart: "2026-04-13", stayEnd: "2026-04-14", nights: ["2026-04-13"] },
+        { label: "Bex B", stayStart: "2026-04-15", stayEnd: "2026-04-16", nights: ["2026-04-15"] },
+      ],
+      guestCount: 2,
+      stayStart: "2026-04-13",
+      stayEnd: "2026-04-16",
+      nights: ["2026-04-13", "2026-04-15"],
+    });
+    expect(barNames(split, 5, false, { stayStart: "2026-04-13", stayEnd: "2026-04-14" }).names)
+      .toEqual(["Ari A"]);
+    expect(barNames(split, 5, false, { stayStart: "2026-04-15", stayEnd: "2026-04-16" }).names)
+      .toEqual(["Bex B"]);
+    // No segment given → the whole row, exactly as before.
+    expect(barNames(split, 5).names).toEqual(["Ari A", "Bex B"]);
+  });
+
+  it("ArrivalsBoard labels each bar of a split row with only that run's people (#2735)", () => {
+    const split = row({
+      guests: [
+        { label: "Ari A", stayStart: "2026-04-13", stayEnd: "2026-04-14", nights: ["2026-04-13"] },
+        { label: "Bex B", stayStart: "2026-04-15", stayEnd: "2026-04-16", nights: ["2026-04-15"] },
+      ],
+      guestCount: 2,
+      stayStart: "2026-04-13",
+      stayEnd: "2026-04-16",
+      nights: ["2026-04-13", "2026-04-15"],
+    });
+    const { container } = render(<ArrivalsBoard state={state({ bookings: [split] })} />);
+    const bars = Array.from(container.querySelectorAll(".display-bar")) as HTMLElement[];
+    expect(bars).toHaveLength(2);
+    expect(bars[0].querySelector(".display-bar-names")?.textContent).toBe("Ari A");
+    expect(bars[1].querySelector(".display-bar-names")?.textContent).toBe("Bex B");
   });
 });
 
@@ -223,6 +403,169 @@ describe("ArrivalsBoard", () => {
     );
     // max-names clamps to 1 → 5 overflow
     expect(screen.getByText("+5")).toBeDefined();
+  });
+
+  // #2621: the expected arrival time chip. `lodge-display-state` makes the same
+  // privacy decision upstream, but this module does NOT rely on that: the
+  // name-suppression case below hands it a payload with a time on a
+  // name-withheld row — the shape a mistake upstream, a hand-built payload or a
+  // future caller would produce — and requires the module to refuse it anyway.
+  // What is tested besides that is that the module prints what it is given, in
+  // the 12-hour form the kiosk and the booking page use, and stays quiet
+  // otherwise.
+  it("shows the expected arrival time on a bar that starts inside the window", () => {
+    const { container } = render(
+      <ArrivalsBoard
+        state={state({
+          bookings: [row({ key: "a", arrivalTime: "17:30" })],
+        })}
+      />
+    );
+    expect(screen.getByText("arr 5:30 PM")).toBeDefined();
+    expect(container.querySelector(".display-bar-arrival")).not.toBeNull();
+  });
+
+  it("shows nothing when the row carries no time — the ordinary case", () => {
+    const { container } = render(
+      <ArrivalsBoard
+        state={state({ bookings: [row({ key: "a", arrivalTime: null })] })}
+      />
+    );
+    expect(container.querySelector(".display-bar-arrival")).toBeNull();
+    expect(screen.queryByText(/^arr /)).toBeNull();
+  });
+
+  it("shows no time on a bar clipped at the left edge — the arrival day is off the board", () => {
+    // The module can be configured to show fewer days than the state window, so
+    // it guards this itself rather than trusting the payload alone. A time with
+    // no visible arrival day beside it reads as tonight.
+    const { container } = render(
+      <ArrivalsBoard
+        state={state({
+          bookings: [
+            row({
+              key: "a",
+              stayStart: "2026-04-11",
+              stayEnd: "2026-04-15",
+              arrivalTime: "17:30",
+            }),
+          ],
+        })}
+      />
+    );
+    expect(container.querySelector(".display-bar-arrival")).toBeNull();
+  });
+
+  it("PRIVACY: never shows a time on a row whose names are withheld, even when the payload carries one", () => {
+    // The guard that matters, exercised against the payload it is meant to
+    // survive. `guests: null` is what the wall serialiser produces for a row it
+    // may not name; such a row renders "label · count" instead of names, and a
+    // movement time beside that is the same disclosure the label exists to
+    // avoid. Both name-withheld shapes are covered: a whole-lodge blockout and
+    // an ordinary grouped row (a party containing a minor, or COUNTS_ONLY).
+    //
+    // The time is handed in DELIBERATELY. An earlier version of this test passed
+    // `arrivalTime: null` and so asserted nothing whatsoever — the module could
+    // have printed every suppressed row's time and stayed green.
+    const { container } = render(
+      <ArrivalsBoard
+        state={state({
+          bookings: [
+            row({
+              key: "a",
+              wholeLodge: true,
+              label: "Harakeke College",
+              guests: null,
+              guestCount: 14,
+              arrivalTime: "17:30",
+            }),
+            row({
+              key: "b",
+              wholeLodge: false,
+              label: "Smith family",
+              guests: null,
+              guestCount: 4,
+              arrivalTime: "09:00",
+            }),
+          ],
+        })}
+      />
+    );
+    expect(container.querySelector(".display-bar-arrival")).toBeNull();
+    expect(screen.queryByText(/^arr /)).toBeNull();
+    expect(container.textContent).not.toContain("5:30 PM");
+    expect(container.textContent).not.toContain("9:00 AM");
+    // The rows themselves did render — otherwise this would pass for the wrong
+    // reason.
+    expect(screen.getByText("Harakeke College · 14")).toBeDefined();
+    expect(screen.getByText("Smith family · 4")).toBeDefined();
+  });
+
+  it("draws a stay with a gap as two bars, each labelled with its own check-out (#2735)", () => {
+    const { container } = render(
+      <ArrivalsBoard
+        state={state({
+          bookings: [
+            row({
+              key: "gap",
+              guests: [
+                {
+                  label: "Gappy G",
+                  stayStart: "2026-04-13",
+                  stayEnd: "2026-04-16",
+                  nights: ["2026-04-13", "2026-04-15"],
+                },
+              ],
+              stayStart: "2026-04-13",
+              stayEnd: "2026-04-16",
+              nights: ["2026-04-13", "2026-04-15"],
+            }),
+          ],
+        })}
+      />
+    );
+    const bars = Array.from(container.querySelectorAll(".display-bar"));
+    expect(bars).toHaveLength(2);
+    // Column 1 (the 13th) and column 3 (the 15th) — column 2 stays empty.
+    expect(bars.map((bar) => (bar as HTMLElement).style.gridColumnStart)).toEqual([
+      "1",
+      "3",
+    ]);
+    // Each bar names the day IT ends, not the row's overall check-out.
+    expect(screen.getByText("out Tue 14")).toBeDefined();
+    expect(screen.getByText("out Thu 16 →")).toBeDefined();
+  });
+
+  it("prints the expected arrival time on the FIRST bar only (#2735)", () => {
+    // There is one stored arrival time per booking and it describes the
+    // check-in. Repeating it on the bar for the night the party comes back
+    // would announce a time nobody stored.
+    const { container } = render(
+      <ArrivalsBoard
+        state={state({
+          bookings: [
+            row({
+              key: "gap",
+              arrivalTime: "17:30",
+              guests: [
+                {
+                  label: "Gappy G",
+                  stayStart: "2026-04-13",
+                  stayEnd: "2026-04-16",
+                  nights: ["2026-04-13", "2026-04-15"],
+                },
+              ],
+              stayStart: "2026-04-13",
+              stayEnd: "2026-04-16",
+              nights: ["2026-04-13", "2026-04-15"],
+            }),
+          ],
+        })}
+      />
+    );
+    expect(container.querySelectorAll(".display-bar")).toHaveLength(2);
+    expect(container.querySelectorAll(".display-bar-arrival")).toHaveLength(1);
+    expect(screen.getByText("arr 5:30 PM")).toBeDefined();
   });
 });
 
@@ -339,6 +682,65 @@ describe("OccupancyGrid / WelcomePanel (whole-lodge treatment, AC3/AC5)", () => 
     expect(rooms[1].hasAttribute("data-live")).toBe(true);
     expect(rooms[0].hasAttribute("data-live")).toBe(false);
   });
+
+  // A whole-lodge row is NOT guaranteed contiguous. The explicit hold flag is,
+  // but `wholeLodge` is also set by the sole-occupancy heuristic — sole on every
+  // night the booking covers — which never looks at the nights in between. A
+  // group alone on the 13th and the 15th but not the 14th satisfies it, and the
+  // envelope spans all three days.
+  const gappyBlockout = row({
+    key: "row-wl-gap",
+    wholeLodge: true,
+    label: "Harakeke College",
+    guests: null,
+    guestCount: 14,
+    roomId: null,
+    stayStart: "2026-04-13",
+    stayEnd: "2026-04-16",
+    nights: ["2026-04-13", "2026-04-15"],
+  });
+
+  it("statement variant leaves a gapped hold's free night unblocked (#2735)", () => {
+    const { container } = render(
+      <OccupancyGrid state={state({ bookings: [gappyBlockout] })} />
+    );
+    const blocked = Array.from(
+      container.querySelectorAll(".display-week-bar > span")
+    ).map((bar) => bar.hasAttribute("data-blocked"));
+    // The 14th is nobody's night — the strip must not paint "whole lodge
+    // booked" over a day whose own count reads 0.
+    expect(blocked).toEqual([true, false, true]);
+  });
+
+  it("board variant draws one block per run of a gapped hold, kicker on the first (#2735)", () => {
+    const withRooms = state({
+      rooms: [{ id: "room-1", name: "A - Kea" }],
+      bookings: [gappyBlockout],
+    });
+    const { container } = render(<OccupancyGrid state={withRooms} />);
+    const blocks = Array.from(
+      container.querySelectorAll(".display-blockout-panel")
+    ) as HTMLElement[];
+    expect(blocks).toHaveLength(2);
+    expect(blocks[0].style.gridColumnStart).toBe("2"); // the 13th
+    expect(blocks[0].style.gridColumnEnd).toBe("span 1");
+    expect(blocks[1].style.gridColumnStart).toBe("4"); // the 15th
+    expect(blocks[1].style.gridColumnEnd).toBe("span 1");
+    // One panel per blockout: the kicker, label, headcount and dates are
+    // printed once, on the first block, and the resumption is bare.
+    expect(container.querySelectorAll(".display-blockout-kicker")).toHaveLength(1);
+    expect(blocks[1].textContent).toBe("");
+    expect(blocks[1].getAttribute("data-continuation")).toBe("true");
+  });
+
+  it("welcome counts the nights a gapped hold really holds, not the envelope (#2735)", () => {
+    const { container } = render(
+      <WelcomePanel state={state({ bookings: [gappyBlockout] })} />
+    );
+    // 13 → 16 is a three-day envelope over two booked nights.
+    expect(container.textContent).toContain("· 2 nights");
+    expect(container.textContent).not.toContain("· 3 nights");
+  });
 });
 
 describe("SinglesBoard (AC4)", () => {
@@ -373,6 +775,42 @@ describe("SinglesBoard (AC4)", () => {
       />
     );
     expect(screen.getByText(/Guests · 3/)).toBeDefined();
+  });
+
+  it("gives a guest with a gap in their stay two bars on their own row (#2735)", () => {
+    const { container } = render(
+      <SinglesBoard
+        state={state({
+          bookings: [
+            row({
+              guests: [
+                {
+                  label: "Gappy G",
+                  stayStart: "2026-04-13",
+                  stayEnd: "2026-04-16",
+                  nights: ["2026-04-13", "2026-04-15"],
+                },
+                { label: "Rewi P", stayStart: "2026-04-13", stayEnd: "2026-04-15" },
+              ],
+              guestCount: 2,
+              stayStart: "2026-04-13",
+              stayEnd: "2026-04-16",
+              nights: ["2026-04-13", "2026-04-14", "2026-04-15"],
+            }),
+          ],
+        })}
+      />
+    );
+    // Two bars for Gappy, one for Rewi — three in total, all on their own rows.
+    const bars = Array.from(
+      container.querySelectorAll(".display-singles-bar")
+    ) as HTMLElement[];
+    expect(bars).toHaveLength(3);
+    // With no room axis the night columns start at 2 (column 1 is the guest
+    // name), so the 13th is column 2 and the 15th is column 4 — the 14th is
+    // left empty between them.
+    const gappyBars = bars.filter((bar) => bar.style.gridRow === "2");
+    expect(gappyBars.map((bar) => bar.style.gridColumnStart)).toEqual(["2", "4"]);
   });
 });
 

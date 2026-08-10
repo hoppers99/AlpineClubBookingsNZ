@@ -22,6 +22,7 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 
 import { ADMIN_PERMISSION_AREAS } from "@/lib/admin-permissions";
+import { AUDIT_CATEGORIES } from "@/lib/audit-categories";
 import { canonicalStringify } from "@/lib/diagnostics/knowledge/hash";
 
 import type {
@@ -75,22 +76,17 @@ function selectOnlyTool(id: string): DiagnosticsSelectOnlyToolEntry {
 }
 
 /**
- * The category values `AuditCategory` names in `src/lib/audit.ts`. Declared here
- * rather than imported because that type is an OPEN union (`… | (string & {})`) with
- * no runtime list — which is precisely why the coverage assertion below matters.
+ * The category values the platform writes, IMPORTED from the canonical taxonomy
+ * (#2581) rather than declared here.
+ *
+ * It used to be a hand-copy, justified by `AuditCategory` being an open union
+ * (`… | (string & {})`) with no runtime list. The copy then drifted in the way
+ * hand-copies do: it omitted `family`, which 27 production sites were writing, so
+ * the coverage assertion below reported full coverage while every family-domain
+ * audit event was readable through no correlation tool at all. The list is closed
+ * and has a runtime form now, so the assertion measures the real taxonomy.
  */
-const KNOWN_AUDIT_CATEGORIES = [
-  "account",
-  "booking",
-  "payment",
-  "admin",
-  "security",
-  "lodge",
-  "xero",
-  "communication",
-  "privacy",
-  "system",
-] as const;
+const KNOWN_AUDIT_CATEGORIES = AUDIT_CATEGORIES;
 
 /**
  * REAL field widths, so the bound assertions below measure what a deployment actually
@@ -302,7 +298,7 @@ describe("AID-6A correlation category sets (#2375)", () => {
   it("NAMES its categories in the scope line, so an empty result is not read as absence", () => {
     // The evidence-honesty half of the category taxonomy, and the reason it needs a
     // test rather than a comment. `AuditCategory` is NOT the admin-area map: `admin` is
-    // the cross-domain catch-all for administrator-initiated operations (115 call
+    // the cross-domain catch-all for administrator-initiated operations (117 call
     // sites, covering member merge, member lifecycle, imports, and payment, booking and
     // lodge SETTINGS), induction is filed under `lodge` although its admin screen is a
     // membership surface, and admin issue reports are filed under `privacy` although
@@ -333,12 +329,14 @@ describe("AID-6A correlation category sets (#2375)", () => {
 
   it("NAMES the ABSENT category as a gap, in every scope line and every description", () => {
     // The symmetric counterpart of the MISMATCH class above, and the one no entry covers
-    // at all. `AuditLog.category` is optional, `audit.ts` writes the column only when a
-    // caller supplies one, and 81 non-test call sites do not — including
-    // subscription-billing settings/retry/mark-family/unmark-family/reconcile, the
-    // subscription charge confirm, all three member-credit adjustment steps, fee
-    // configuration, the family login-holder change, booking-policy edits, bulk
-    // communications and deletion-request decisions.
+    // at all. `AuditLog.category` is optional and `audit.ts` writes the column only when
+    // a caller supplies one. 82 production call sites did not; #2581's second child
+    // classified all 82, so no NEW row is born without one and
+    // `audit-writer-census.test.ts` now pins that set EMPTY. Every row written before
+    // that runtime deployed still has no category, and giving those a category is a
+    // separate, independently reviewable data change that has not run — so this
+    // declaration is not stale, and it must not be removed on the strength of the
+    // writers being fixed.
     //
     // `WHERE "category" = ANY ($1)` is NULL for such a row, so it is returned by NONE of
     // the five entries. Untreated, a Finance Officer asking "what did the platform record
@@ -410,6 +408,44 @@ describe("AID-6A correlation category sets (#2375)", () => {
     );
   });
 
+  it("tells the model that #2730 moved the WRITERS and not the stored rows", () => {
+    /*
+      The fourth trap, and the one this pack creates for itself.
+
+      #2730 changed 22 bed-allocation and lodge-display writers from `admin` to
+      `lodge`. It rewrote no stored row, and `buildAuditCategoryWhere` ORs the
+      legacy action-name guess in only for rows whose category IS NULL — so a
+      bed-allocation row written before that release carries a hard `"admin"`
+      and is returned by the SYSTEM entry alone, permanently.
+
+      That splits bed-allocation evidence by DATE across two entries, and the
+      failure it produces is the exact one `SHARED_DESCRIPTION_TAIL` exists to
+      prevent, one step removed: the tail warns about rows with NO category, and
+      these rows have one, so it does not fire. Without these sentences the lodge
+      entry would tell the model it holds bed allocation "in full", return the
+      post-release half, and have the model narrate a bounded absence over a
+      partial answer — for the very question ("who put whom in which bed") the
+      entry advertises itself as the right tool for.
+
+      Pinned on BOTH entries because the misdirection is symmetric: the lodge
+      entry must not overclaim, and the system entry must not disclaim rows it
+      still holds.
+    */
+    const lodge = tool(DIAGNOSTICS_LODGE_CORRELATION_TOOL_ID);
+    const system = tool(DIAGNOSTICS_SYSTEM_CORRELATION_TOOL_ID);
+
+    // The overclaim that was there before, in the words it was written in.
+    expect(lodge.description).not.toContain("Bed allocation is recorded here in full");
+    expect(lodge.description).toContain("no stored row was rewritten");
+    expect(lodge.evidenceScope).toContain(
+      "Bed-allocation rows recorded BEFORE that release still carry `admin`",
+    );
+    // The mirror: the system entry says it still HOLDS the older half rather
+    // than only that bed allocation has left.
+    expect(system.evidenceScope).toContain("ARE returned here");
+    expect(system.evidenceScope).toContain("recorded BEFORE that release");
+  });
+
   it("renders the scope INSIDE the evidence block, above the rows", () => {
     // End to end: the sentence has to reach the model, not just sit on the entry.
     const entry = tool(DIAGNOSTICS_MEMBERSHIP_CORRELATION_TOOL_ID);
@@ -420,7 +456,13 @@ describe("AID-6A correlation category sets (#2375)", () => {
       evidenceScope: entry.evidenceScope,
     });
     expect(block).toContain("scope: ");
-    expect(block).toContain("account, privacy");
+    // The entry's own derived set, joined the way `evidenceScope` joins it, rather
+    // than a hard-coded pair — the membership set gained `family` and
+    // `communication` in #2581 and a literal here would have to be edited for
+    // every classification decision.
+    expect(block).toContain(
+      DIAGNOSTICS_CORRELATION_CATEGORY_SETS[entry.id].join(", "),
+    );
     expect(block).toContain("rows: none matched");
     expect(block.indexOf("scope:")).toBeLessThan(block.indexOf("rows:"));
   });
@@ -598,11 +640,17 @@ describe("AID-6A correlation SQL shape (#2375)", () => {
     //
     // EVERY ENTRY, AND WITH ITS OWN `scope:` LINE. Both halves were missing and both
     // mattered: the executor attaches `evidenceScope` to every one of these results
-    // (`invoke.ts`), and the scope lines run from 308 to 565 characters, so measuring
-    // without one measured a block this pack never emits. The five entries do still
-    // render 24 whole rows this way, and the widest-scope entry does it with 36
-    // characters of the 8 000 to spare — which is the number that makes "room to
-    // spare" the wrong description and this assertion worth running per entry.
+    // (`invoke.ts`), so measuring without one measured a block this pack never emits.
+    //
+    // THE SCOPE LINES AND THE ROWS SHARE ONE BUDGET, which is the reason to keep this
+    // per entry rather than on the widest. Re-measured after #2730 lengthened two of
+    // them: they now run from 432 to 1 002 characters, and the five entries still
+    // render all 22 whole rows — the system entry with 132 characters of the 8 000 to
+    // spare and the lodge entry with 185. This assertion has already earned that:
+    // #2730's first draft of the system `scope` overran by seven characters and the
+    // block silently dropped a row, which is exactly the failure "room to spare" would
+    // have hidden. A prose edit here is a capacity edit; re-run this before assuming
+    // otherwise.
     for (const entry of DIAGNOSTICS_SUPPORT_CORRELATION_TOOLS) {
       expect(entry.rowLimit).toBe(22);
       const evidence = renderToolResultEvidence({

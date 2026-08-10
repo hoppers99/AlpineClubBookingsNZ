@@ -1,4 +1,4 @@
-import { redactSensitiveJson } from "@/lib/redact-sensitive-json";
+import { redactSensitiveRecord } from "@/lib/redact-sensitive-json";
 import { formatCents } from "@/lib/utils";
 
 /**
@@ -11,10 +11,12 @@ import { formatCents } from "@/lib/utils";
  * object-level redactor and the shared cents formatter.
  *
  * Redaction: every summary is built from data that has ALREADY passed through
- * `redactSensitiveJson` (the object-level counterpart to the `formatRedactedJson`
- * string formatter the raw view uses). Any secret/PII field the redaction would
- * mask is `"[REDACTED]"` before a value is read out of it, so a summary can
- * never surface a value the raw JSON view would have hidden.
+ * `redactSensitiveRecord` (the object-level counterpart to the
+ * `formatRedactedJson` string formatter the raw view uses, and the same limits —
+ * the STORED-record ones, because a depth cap tuned for a log line would change
+ * what this panel counts). Any secret/PII field the redaction would mask is
+ * `"[REDACTED]"` before a value is read out of it, so a summary can never
+ * surface a value the raw JSON view would have hidden.
  *
  * Keys are matched on `(entityType, operationType)` plus payload-shape sniffing.
  * The denormalized `queueType` column is dropped from `requestPayload` once a
@@ -444,7 +446,10 @@ function summarizeContactGroupSync(
   if (!req && !res) return null;
   const facts = new FactList();
   facts
-    .add("Member", readString(req?.memberName))
+    // The member id, not a composed name: the name is no longer written into
+    // the stored payload (INV-PRIV-011, #2683), and every other identifying
+    // fact in this panel is a shortened id already.
+    .add("Member", shortId(req?.memberId))
     .add("Age tier", readString(req?.ageTier))
     .add("Default group", readString(asRecord(req?.defaultGroup)?.name));
 
@@ -467,8 +472,11 @@ function summarizeContactGroupSync(
 export function summarizeXeroOperation(
   input: XeroOperationSummaryInput
 ): XeroOperationSummary | null {
-  const req = asRecord(redactSensitiveJson(input.requestPayload ?? null));
-  const res = asRecord(redactSensitiveJson(input.responsePayload ?? null));
+  // The stored-record limits, not the log cap: these are already-persisted,
+  // already-redacted payloads being re-read to build the panel's summary, and a
+  // depth-6 cut would silently change what the summary counts and reports.
+  const req = asRecord(redactSensitiveRecord(input.requestPayload ?? null));
+  const res = asRecord(redactSensitiveRecord(input.responsePayload ?? null));
 
   const queueType = req ? readString(req.queueType) : null;
   if (queueType) {

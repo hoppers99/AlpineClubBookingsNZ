@@ -305,6 +305,16 @@
 
 .display-bar-overflow { color: var(--display-muted); font-weight: 600; }
 
+/* #2621: expected arrival time on a bar that starts inside the window. Sits
+   between the names and the check-out meta, in the same muted meta weight so it
+   reads as an aside rather than competing with the names. */
+.display-bar-arrival {
+  font-size: 1.4vmin;
+  font-weight: 600;
+  color: var(--display-arriving, var(--display-accent));
+  white-space: nowrap;
+}
+
 .display-bar-out {
   font-size: 1.4vmin;
   font-weight: 600;

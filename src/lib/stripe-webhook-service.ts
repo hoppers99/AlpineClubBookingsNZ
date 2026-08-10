@@ -15,6 +15,7 @@ import { recordWebhookLog } from "@/lib/webhook-log";
 import { notifyXeroSyncError } from "@/lib/xero-error-alert";
 import { queueXeroInvoiceForPaidBooking } from "@/lib/xero-booking-invoice-queue";
 import { deriveBookingAppliedCreditCents } from "@/lib/member-credit";
+import { closeDeletedBookingModificationRefundTaskAfterAutomaticRefund } from "@/lib/deleted-booking-modification-payment";
 import Stripe from "stripe";
 import logger from "@/lib/logger";
 import { logAudit } from "@/lib/audit";
@@ -616,6 +617,9 @@ async function handlePaymentIntentFailed(
     action: isAdditionalPayment
       ? "booking.modification.payment.failed"
       : "booking.payment.failed",
+    category: "payment",
+    entityType: "Booking",
+    entityId: bookingId ?? undefined,
     targetId: bookingId ?? undefined,
     details: JSON.stringify({
       paymentIntentId: paymentIntent.id,
@@ -696,6 +700,9 @@ async function handlePaymentIntentCanceled(
     action: isAdditionalPayment
       ? "booking.modification.payment.canceled"
       : "booking.payment.canceled",
+    category: "payment",
+    entityType: "Booking",
+    entityId: bookingId ?? undefined,
     targetId: bookingId ?? undefined,
     details: JSON.stringify({
       paymentIntentId: paymentIntent.id,
@@ -1116,6 +1123,9 @@ async function refundSupersededGroupSettlementIntent(
 
   logAudit({
     action: "group.settlement.superseded_intent_refunded",
+    category: "payment",
+    entityType: "GroupBooking",
+    entityId: groupBookingId ?? undefined,
     targetId: groupBookingId ?? paymentIntent.id,
     details: JSON.stringify({
       paymentIntentId: paymentIntent.id,
@@ -1245,8 +1255,36 @@ async function handleCancelledBookingAdditionalPaymentSucceeded(
   });
   const refundId = refundResult.refunds[0]?.refundId;
 
+  // #2700 — if the browser confirm won the race to this capture, it recorded the
+  // payment and raised an OPEN ManualRefundTask asking a human to decide whether
+  // to refund. The refund above has just answered that question, so the task is
+  // closed here rather than left for an operator to complete — completing it
+  // would write a SECOND refund allocation through `resolveManualRefundTask` and
+  // double-count one refund in the ledger.
+  //
+  // Matched on this exact payment intent, so the cash/manual cancellation task
+  // `booking-cancel.ts` can raise on the same booking is never touched. Fenced on
+  // OPEN, so a webhook replay claims nothing. Never allowed to fail the webhook:
+  // the money is already back with the member and a 500 here would replay the
+  // whole refund path for a bookkeeping row.
+  try {
+    await closeDeletedBookingModificationRefundTaskAfterAutomaticRefund({
+      bookingId: booking.id,
+      paymentId: booking.payment.id,
+      paymentIntentId: paymentIntent.id,
+    });
+  } catch (taskErr) {
+    logger.error(
+      { err: taskErr, bookingId: booking.id, paymentIntentId: paymentIntent.id },
+      "Failed to close the deleted-booking modification refund task after the automatic refund"
+    );
+  }
+
   logAudit({
     action: "booking.payment.refunded_after_cancellation",
+    category: "payment",
+    entityType: "Booking",
+    entityId: booking.id,
     targetId: booking.id,
     details: JSON.stringify({
       paymentIntentId: paymentIntent.id,
@@ -1357,6 +1395,9 @@ async function handleCancelledBookingPaymentSucceeded(
 
   logAudit({
     action: "booking.payment.refunded_after_cancellation",
+    category: "payment",
+    entityType: "Booking",
+    entityId: booking.id,
     targetId: booking.id,
     details: JSON.stringify({
       paymentIntentId: paymentIntent.id,

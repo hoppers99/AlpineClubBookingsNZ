@@ -363,13 +363,39 @@ string, and the default body carries only the token. `{{doorCodeNote}}`,
 `{{amountRecordedNote}}`, `{{bookingReferenceNote}}`, `{{choreListNote}}`,
 `{{choreLinkNote}}`, `{{localRecordNote}}`, `{{latestErrorNote}}`,
 `{{xeroLinksNote}}`, `{{refundOutcomeNote}}`, `{{settlementActionNote}}`,
-`{{creditNote}}` and `{{ownBookingNote}}` all behave this way, alongside the
+`{{creditNote}}`, `{{checkoutChoreNote}}` and `{{ownBookingNote}}` all behave
+this way, alongside the
 older `{{provisionalGuestsNote}}`, `{{paymentNote}}` and `{{promoSummary}}`. An
 operator overriding one of these bodies should place the token on a line of its
 own and **never** write a label of their own in front of it. The raw value
 behind each (`{{doorCode}}`, `{{reason}}`, `{{adminNote}}` …) stays valid for
 overrides written before the change, so nothing an operator already saved stops
 rendering or stops being re-savable.
+
+`{{checkoutChoreNote}}` is the newest of these (#2621, owner decision D-M5) and
+shows the shape at its clearest: on the **Pre-arrival Information** template the
+sender emits the whole checkout-day chore sentence when the club's **Chores**
+module is enabled, and the empty string when it is not. It is conditional on a
+module rather than on a per-booking value because **the chores module defaults
+off** — an unconditional sentence would tell every member of every chore-free
+club that they are on a roster that does not exist, and send them to find a hut
+leader about it, on the last message most members read before they travel. The
+module read fails soft to off, which is the safe direction here: a database blip
+costs a chores club one sentence, where failing open would misinform a club that
+keeps no roster.
+
+`{{expectedArrivalNote}}` on the same template is the ordinary per-booking form
+of the pattern: the member's expected arrival time is **display-only
+information** for the hut leader (#2621, owner decision 8 Aug), so the token
+renders the whole "Expected arrival: 4:30 PM" line for a booking that has one and
+nothing at all for a booking that does not. It changes no date, no charge and no
+chore assignment. The picker members and admins use offers 6:00 AM–11:00 PM on
+the hour and half hour, while the system accepts any half hour of the day, so a
+genuine after-midnight arrival can be recorded through the API or simply
+mentioned to the hut leader; a value stored outside the picker's range — or from
+before the half-hour rule was tightened — still reads back in 12-hour form on the
+booking page and the kiosk, and is named beside the dropdown so the screen never
+shows nothing where a time is recorded.
 
 A related rule follows from the same limitation: **one registered template
 serves exactly one outcome.** A body that has to say either "your appeal was
@@ -1024,19 +1050,27 @@ config-transfer lock and then the minimum-stay policy-set lock, re-plans inside
 the transaction, and relies on the automatic pre-apply database backup for
 rollback. Ordinary config-transfer categories remain non-deleting.
 
-**Adult-member hosting (#2364).** A club may also ask that every non-member
-guest-night overlaps an adult member staying on the same booking. It is one
-setting per scope: the club chooses **Allowed** or **Send the booking to an admin
-to review**, and each lodge may inherit that, or decide for itself. Like
-minimum-stay rows it carries an explicit exception-capacity mode — there is no
-automatic default, so the first save must state one — and a revision that refuses
-a stale write. Turning it on never stops a member: the booking is made and an
-admin reviews it, and the review clears itself as soon as an adult member covers
-the nights. Booking on behalf of a member is the one place it refuses, and only
-until the admin gives a reason, which is stored with the approval. The hosting
-setting travels in the same destructive `booking-policies` category, as
-`booking-policies/adult-member-hosting.csv`, under the same replace-set rules: a
-scope omitted from the file is deleted, back to the built-in default.
+**Adult-member hosting (#2364, #2569, #2576).** A club may require every
+non-member guest-night to overlap an eligible adult member. The policy has two
+independent dimensions: the consequence (**Disabled**, **Send to admin review**,
+or **Enforce the rule**) and the permitted host scopes (**Same booking** and/or
+**Another booking owned by the same member** at the same lodge on the same
+night). Ownership alone never counts as attendance, and an unrelated member,
+shared email, or Family Group link never supplies cover. Each lodge may inherit
+or override each dimension independently; the built-in default is disabled with
+same-booking-only scope, preserving pre-upgrade behaviour.
+
+Review mode allows the booking and opens officer work. Enforced mode rolls back
+a non-compliant member write and offers the signed-in exception-request journey;
+school and organisation approvals remain review-only. An admin booking on
+someone else's behalf may record an explicit reason as an attributable approval.
+Accepted bookings that later lose same-owner cover remain accepted but open an
+urgent incident, which resolves automatically when cover returns. Like
+minimum-stay rows, the policy carries an explicit exception-capacity mode — there
+is no automatic default, so the first save must state one — and a revision that
+refuses a stale write. It travels in the destructive `booking-policies` category
+as `booking-policies/adult-member-hosting.csv`; a configuration scope omitted
+from that replace-set file is deleted back to inherited or built-in behaviour.
 
 ### 8. Eligibility restrictions and cross-lodge waitlist
 

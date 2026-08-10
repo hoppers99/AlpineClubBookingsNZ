@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { hostingCoverageParticipantRetryResponse } from "@/lib/adult-member-hosting-retry-response";
 import { auth } from "@/lib/auth";
 import { getDefaultLodgeId } from "@/lib/lodges";
 import { prisma } from "@/lib/prisma";
@@ -31,7 +32,7 @@ import {
   evaluateNonMemberPricingRequirements,
   toSubscriptionLockoutParticipants,
 } from "@/lib/subscription-lockout-enforcement";
-import { reconcileBedAllocationsForBooking } from "@/lib/bed-allocation-lifecycle";
+import { reconcileBedAllocationsForBookingWithGlobalLockHeld } from "@/lib/bed-allocation-lifecycle";
 import { hasAdminAccess } from "@/lib/access-roles";
 import { settleHostingCoverageAfterCommit } from "@/lib/adult-member-hosting-coverage-drain";
 import {
@@ -210,6 +211,7 @@ export async function POST(
   // Check capacity + transition to PAID in transaction
   try {
   await prisma.$transaction(async (tx) => {
+    await tx.$executeRaw`SELECT pg_advisory_xact_lock(1)`;
     // Lock the booking's lodge before re-reading it: the draft's lodge cannot
     // change, so the pre-read outside the lock is safe for key selection.
     const lockTarget = await tx.booking.findUnique({
@@ -277,7 +279,7 @@ export async function POST(
         creditElectionCents: null,
       },
     });
-    await reconcileBedAllocationsForBooking({
+    await reconcileBedAllocationsForBookingWithGlobalLockHeld({
       bookingId: id,
       db: tx,
       previousRange: {
@@ -315,6 +317,8 @@ export async function POST(
     });
   });
   } catch (err) {
+    const hostingRetry = hostingCoverageParticipantRetryResponse(err);
+    if (hostingRetry) return hostingRetry;
     // #2576 §6/§7/§9, and #2569's own refusal. All three are `ApiError`s thrown
     // from inside the transaction, so the draft is untouched by the time they reach
     // here; each gets the body its own audience needs.

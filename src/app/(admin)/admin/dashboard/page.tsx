@@ -50,9 +50,10 @@ import {
   getTodayDateOnly,
   startOfDateOnlyForTimeZone,
 } from "@/lib/date-only";
-import { countRosterNightsNeedingChores } from "@/lib/roster-status";
+import { countRosterDaysNeedingChores } from "@/lib/roster-status";
 import { countGuestsAwaitingBed } from "@/lib/admin-bed-allocation";
 import { getUnassignedHutLeaderDates } from "@/lib/hut-leader-coverage";
+import { OPEN_DELETION_REQUEST_STATUSES } from "@/lib/deletion-request-decision";
 import {
   buildUnpaidFinishedStaysHref,
   buildUnpaidFinishedStaysWhere,
@@ -104,7 +105,7 @@ async function getStats() {
     pendingBookingReviews,
     pendingBookingChangeRequests,
     unassignedHutLeaderDates,
-    rosterNightsNeedingChores,
+    rosterDaysNeedingChores,
     bedGuestsAwaiting,
   ] = await Promise.all([
     prisma.member.count(),
@@ -193,7 +194,7 @@ async function getStats() {
       },
     }),
     prisma.deletionRequest.count({
-      where: { status: "PENDING" },
+      where: { status: { in: OPEN_DELETION_REQUEST_STATUSES } },
     }),
     prisma.booking.count({
       where: { adminReviewStatus: "PENDING", deletedAt: null },
@@ -202,14 +203,17 @@ async function getStats() {
       where: { status: "REQUESTED" },
     }),
     getUnassignedHutLeaderDates(),
-    // Roster Assignment officer card (#2091, D-E2): nights in the next 7 days
+    // Roster Assignment officer card (#2091, D-E2): DAYS in the next 7 days
     // that still need a chore roster. Window-scoped to the roster surface's own
-    // needs-roster semantics (nights with ≥1 staying guest and no chore
+    // needs-roster semantics (days with ≥1 guest in the lodge and no chore
     // assignment, per src/lib/roster-status.ts computeRosterDayStatuses), so the
-    // headline reconciles with what the officer sees — a per-night count that
-    // neither drops a stay rostered on only some of its nights nor inflates on
-    // guestless bookings. Cheap: bounded 7-day window.
-    countRosterNightsNeedingChores({ from: today, to: sevenDaysFromNow }),
+    // headline reconciles with what the officer sees — a per-day count that
+    // neither drops a stay rostered on only some of its days nor inflates on
+    // guestless bookings. Days, not nights (#2631): a changeover morning whose
+    // guests all leave before midday still needs its chores done and is counted
+    // here exactly as the roster calendar paints it. Cheap: bounded 7-day
+    // window.
+    countRosterDaysNeedingChores({ from: today, to: sevenDaysFromNow }),
     // Bed Allocation officer card (#2091, D-E2): guests in the next 7 days with a
     // bed-night still awaiting allocation. Window-scoped mirror of the bed
     // board's own unallocatedGuestNights set (src/lib/admin-bed-allocation.ts):
@@ -247,7 +251,7 @@ async function getStats() {
     pendingBookingChangeRequests,
     pendingMembershipReviews:
       pendingMembershipCancellations + pendingMemberArchives,
-    rosterNightsNeedingChores,
+    rosterDaysNeedingChores,
     bedGuestsAwaiting,
   };
 }
@@ -567,11 +571,11 @@ export default async function AdminDashboardPage() {
                 </CardHeader>
                 <CardContent>
                   <div className="text-3xl font-bold">
-                    {stats.rosterNightsNeedingChores}
+                    {stats.rosterDaysNeedingChores}
                   </div>
                   <p className="text-xs text-muted-foreground mt-1">
-                    night
-                    {stats.rosterNightsNeedingChores === 1 ? "" : "s"} in the
+                    day
+                    {stats.rosterDaysNeedingChores === 1 ? "" : "s"} in the
                     next 7 days with no chores assigned
                   </p>
                 </CardContent>

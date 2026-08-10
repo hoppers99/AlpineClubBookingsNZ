@@ -110,7 +110,8 @@ const GUARDED_WRITE_SITES: Array<{
     statement: "bedAllocation.updateMany",
     mechanism:
       "The displacement MOVE writes `bedId: displacement.toBedId`, and every displacement comes from the same planner run that was fed the custodian holds as never-evictable unknown occupants — so a MOVE can never target a held bed-night either.",
-    evidence: "data: { bedId: displacement.toBedId, roomId: displacement.toRoomId }",
+    evidence:
+      "bedId: displacement.toBedId,\n            roomId: displacement.toRoomId,",
   },
   {
     file: "prisma/demo-seed.ts",
@@ -163,7 +164,11 @@ const WHOLE_LODGE_GUARDED_WRITE_SITES: Array<{
     statement: "bedAllocation.updateMany",
     mechanism:
       "The displacement MOVE writes `bedId: displacement.toBedId`, and a displacement is applied only when the RE-CHECKED payload still claims the bed-night it frees — so a MOVE cannot survive the re-filter that dropped the row it was clearing the way for.",
-    evidence: "const applicable = justifiedDisplacements(data);",
+    // #2669 review F1: the justification is now computed from `writable` — the
+    // payload AFTER the occupancy filter, not just after the hold re-filters —
+    // so a row dropped by any write-time re-check takes its displacement with
+    // it. Strictly stronger than the `data` it replaced; same mechanism.
+    evidence: "const applicable = justifiedDisplacements(writable);",
   },
 ];
 
@@ -271,9 +276,16 @@ describe("custodian write-path contract (#2286)", () => {
     expect(reports).not.toContain("custodian-occupancy");
     expect(reports).toContain("deliberately EXCLUDED");
 
-    // And the other way round: the cron DOES count it.
+    // And the other way round: the cron DOES count it. Since #2681 the cron no
+    // longer builds the custodian counter itself — it calls the ONE shared
+    // occupancy calculation, which counts the custodian as one of its terms. The
+    // guarantee is unchanged, so it is asserted through that indirection: the
+    // cron must reach occupancy via computeNightOccupancy, and
+    // computeNightOccupancy must still include the custodian term.
     const cron = readRepoFile("src/lib/cron-capacity-warnings.ts");
-    expect(cron).toContain("buildLodgeCustodianNightCounter");
+    expect(cron).toContain("computeNightOccupancy");
+    const capacity = readRepoFile("src/lib/capacity.ts");
+    expect(capacity).toContain("buildLodgeCustodianNightCounter");
   });
 
   it("takes the per-lodge advisory lock in every self-wrapped placement transaction", () => {
@@ -293,6 +305,12 @@ describe("custodian write-path contract (#2286)", () => {
 
   it("keeps existing-allocation moves global-then-destination locked, date-preserving and on the guarded manual funnel", () => {
     const source = readRepoFile("src/lib/admin-bed-allocation.ts");
+    const lockHeldMove = source.slice(
+      source.indexOf(
+        "export async function moveBedAllocationsSameDateWithLocksHeld(",
+      ),
+      source.indexOf("export async function moveBedAllocationsSameDate("),
+    );
     const move = source.slice(
       source.indexOf("export async function moveBedAllocationsSameDate("),
       source.indexOf("interface BulkAllocationConflict"),
@@ -306,10 +324,15 @@ describe("custodian write-path contract (#2286)", () => {
     expect(wrapper.indexOf("pg_advisory_xact_lock(1)"))
       .toBeLessThan(wrapper.indexOf("acquireLodgeCapacityLock(tx, lockLodgeId)"));
     expect(wrapper.indexOf("acquireLodgeCapacityLock(tx, lockLodgeId)"))
-      .toBeLessThan(wrapper.indexOf("return moveUnderLock(tx)"));
-    expect(move).toContain("db.bedAllocation.findMany");
-    expect(move).toContain("stayDate: formatDateOnly(source.stayDate)");
-    expect(move).toContain("await manuallyAllocateBed({");
+      .toBeLessThan(
+        wrapper.indexOf(
+          "return moveBedAllocationsSameDateWithLocksHeld({ ...input, db: tx })",
+        ),
+      );
+    expect(lockHeldMove).toContain("return moveUnderLock(input.db)");
+    expect(lockHeldMove).toContain("db.bedAllocation.findMany");
+    expect(lockHeldMove).toContain("stayDate: formatDateOnly(source.stayDate)");
+    expect(lockHeldMove).toContain("await manuallyAllocateBedWithLocksHeld({");
     expect(move).toContain("pg_advisory_xact_lock(1)");
   });
 });

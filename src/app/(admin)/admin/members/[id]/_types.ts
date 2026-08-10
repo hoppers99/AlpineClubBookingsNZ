@@ -14,6 +14,10 @@ import type { DependentLinkIneligibleMatch } from "@/lib/dependent-link-eligibil
 import type { MemberAddressValues } from "@/lib/member-address";
 import type { MembershipTypeAgeExemption } from "@/lib/membership-types";
 import type { AppRole } from "@/lib/member-roles";
+import type {
+  MemberContactChangeBlocker,
+  MemberContactCreateRecoveryState,
+} from "@/lib/xero-contact-create-recovery";
 
 export interface MemberDeleteEligibilityBlocker {
   code: string;
@@ -198,6 +202,15 @@ export interface MemberDetail {
   photoUpdatedAt: string | null;
   forcePasswordChange: boolean;
   xeroContactId: string | null;
+  xeroContactCreateRecoveryState?: MemberContactCreateRecoveryState | null;
+  xeroContactCreateRecoveryPending?: boolean;
+  /**
+   * The open member CONTACT operation that currently refuses member merge and
+   * account deletion, read from the same predicate those refusals use (#2623
+   * T7). Present even when the member IS linked, which is exactly the case the
+   * page used to render as clean.
+   */
+  xeroContactLifecycleBlocker?: MemberContactChangeBlocker | null;
   joinedDate: string | null;
   lifeMemberDate: string | null;
   occupation: string | null;

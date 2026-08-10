@@ -177,8 +177,11 @@ export async function PUT(
 
     logAudit({
       action: "minimum-stay-policy.update",
+      category: "booking",
       memberId: session.user.id,
       targetId: id,
+      entityType: "MinimumStayPolicy",
+      entityId: id,
       details: JSON.stringify({
         lodgeId: outcome.existing.lodgeId,
         before: outcome.existing,
@@ -251,8 +254,11 @@ export async function DELETE(
     }
     logAudit({
       action: "minimum-stay-policy.delete",
+      category: "booking",
       memberId: session.user.id,
       targetId: id,
+      entityType: "MinimumStayPolicy",
+      entityId: id,
       details: JSON.stringify({
         lodgeId: outcome.existing.lodgeId,
         before: outcome.existing,

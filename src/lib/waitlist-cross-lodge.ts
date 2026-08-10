@@ -33,12 +33,19 @@ import {
   buildAdultMemberHostingRefusalBody,
 } from "@/lib/adult-member-hosting-review";
 import {
+  HOSTING_COVERAGE_RETRY_CODE,
+  HOSTING_COVERAGE_RETRY_MESSAGE,
+  isHostingCoverageParticipantRetry,
+} from "@/lib/adult-member-hosting-queue-participants";
+import {
   buildPaidUpAdultRefusalBody,
   evaluateNonMemberPricingRequirements,
   toSubscriptionLockoutParticipants,
 } from "@/lib/subscription-lockout-enforcement";
 import { getSeasonYear } from "@/lib/utils";
-import { reconcileBedAllocationsForBooking } from "@/lib/bed-allocation-lifecycle";
+import {
+  reconcileBedAllocationsForBookingWithLodgeLockHeld,
+} from "@/lib/bed-allocation-lifecycle";
 import { logAudit } from "@/lib/audit";
 import { recordBookingEvent } from "@/lib/booking-events";
 import logger from "@/lib/logger";
@@ -226,10 +233,28 @@ type CrossLodgeOfferEntry = Prisma.BookingGetPayload<{
 
 async function revertOfferToWaitlisted(
   tx: Prisma.TransactionClient,
-  entry: { id: string; checkIn: Date; checkOut: Date },
-): Promise<void> {
-  await tx.booking.update({
-    where: { id: entry.id },
+  entry: {
+    id: string;
+    checkIn: Date;
+    checkOut: Date;
+    lodgeId: string;
+    updatedAt: Date;
+    waitlistOfferedAt: Date | null;
+    waitlistOfferExpiresAt: Date | null;
+    waitlistOfferedLodgeId: string | null;
+    waitlistOfferedPriceCents: number | null;
+  },
+): Promise<boolean> {
+  const reverted = await tx.booking.updateMany({
+    where: {
+      id: entry.id,
+      status: BookingStatus.WAITLIST_OFFERED,
+      updatedAt: entry.updatedAt,
+      waitlistOfferedAt: entry.waitlistOfferedAt,
+      waitlistOfferExpiresAt: entry.waitlistOfferExpiresAt,
+      waitlistOfferedLodgeId: entry.waitlistOfferedLodgeId,
+      waitlistOfferedPriceCents: entry.waitlistOfferedPriceCents,
+    },
     data: {
       status: BookingStatus.WAITLISTED,
       waitlistOfferedAt: null,
@@ -238,11 +263,13 @@ async function revertOfferToWaitlisted(
       waitlistOfferedPriceCents: null,
     },
   });
-  await reconcileBedAllocationsForBooking({
+  if (reverted.count === 0) return false;
+  await reconcileBedAllocationsForBookingWithLodgeLockHeld({
     bookingId: entry.id,
     db: tx,
     previousRange: { checkIn: entry.checkIn, checkOut: entry.checkOut },
   });
+  return true;
 }
 
 /**
@@ -341,12 +368,26 @@ export async function confirmCrossLodgeWaitlistOffer(
       // lodge (or this one again once the rule allows it).
       try {
         await prisma.$transaction(async (tx) => {
-          await acquireLodgeCapacityLock(tx, offeredLodgeId);
+          await tx.$executeRaw`SELECT pg_advisory_xact_lock(1)`;
           const current = await tx.booking.findUnique({
             where: { id: bookingId },
-            select: { id: true, status: true, checkIn: true, checkOut: true },
+            select: {
+              id: true,
+              status: true,
+              checkIn: true,
+              checkOut: true,
+              lodgeId: true,
+              updatedAt: true,
+              waitlistOfferedAt: true,
+              waitlistOfferExpiresAt: true,
+              waitlistOfferedLodgeId: true,
+              waitlistOfferedPriceCents: true,
+            },
           });
           if (current?.status !== BookingStatus.WAITLIST_OFFERED) return;
+          for (const lodgeId of [offeredLodgeId, current.lodgeId].sort()) {
+            await acquireLodgeCapacityLock(tx, lodgeId);
+          }
           await revertOfferToWaitlisted(tx, current);
         });
       } catch (err) {
@@ -409,12 +450,26 @@ export async function confirmCrossLodgeWaitlistOffer(
       // or ask a Booking Officer instead of the offer being burnt.
       try {
         await prisma.$transaction(async (tx) => {
-          await acquireLodgeCapacityLock(tx, offeredLodgeId);
+          await tx.$executeRaw`SELECT pg_advisory_xact_lock(1)`;
           const current = await tx.booking.findUnique({
             where: { id: bookingId },
-            select: { id: true, status: true, checkIn: true, checkOut: true },
+            select: {
+              id: true,
+              status: true,
+              checkIn: true,
+              checkOut: true,
+              lodgeId: true,
+              updatedAt: true,
+              waitlistOfferedAt: true,
+              waitlistOfferExpiresAt: true,
+              waitlistOfferedLodgeId: true,
+              waitlistOfferedPriceCents: true,
+            },
           });
           if (current?.status !== BookingStatus.WAITLIST_OFFERED) return;
+          for (const lodgeId of [offeredLodgeId, current.lodgeId].sort()) {
+            await acquireLodgeCapacityLock(tx, lodgeId);
+          }
           await revertOfferToWaitlisted(tx, current);
         });
       } catch (err) {
@@ -451,6 +506,7 @@ export async function confirmCrossLodgeWaitlistOffer(
   let validated: Validated | { ok: false; result: CrossLodgeConfirmResult };
   try {
     validated = await prisma.$transaction(async (tx) => {
+      await tx.$executeRaw`SELECT pg_advisory_xact_lock(1)`;
       const entry = await tx.booking.findUnique({
         where: { id: bookingId },
         include: {
@@ -481,7 +537,9 @@ export async function confirmCrossLodgeWaitlistOffer(
         };
       }
 
-      await acquireLodgeCapacityLock(tx, offeredLodgeId);
+      for (const lodgeId of [offeredLodgeId, entry.lodgeId].sort()) {
+        await acquireLodgeCapacityLock(tx, lodgeId);
+      }
 
       const offeredLodge = await tx.lodge.findUnique({
         where: { id: offeredLodgeId },
@@ -666,6 +724,13 @@ export async function confirmCrossLodgeWaitlistOffer(
       allowPastCheckIn: true,
     });
   } catch (err) {
+    if (isHostingCoverageParticipantRetry(err)) {
+      return {
+        success: false,
+        error: HOSTING_COVERAGE_RETRY_MESSAGE,
+        code: HOSTING_COVERAGE_RETRY_CODE,
+      };
+    }
     if (err instanceof DuplicateStayConflictError) {
       // A concurrent confirm committed a booking for the same stay after this
       // one passed Phase 1; the in-transaction guard rolled this creation back,
@@ -708,10 +773,19 @@ export async function confirmCrossLodgeWaitlistOffer(
 
   if (outcome.type === "capacityExceeded") {
     try {
-      await prisma.$transaction(async (tx) => {
-        await acquireLodgeCapacityLock(tx, offeredLodgeId);
-        await revertOfferToWaitlisted(tx, entry);
+      const reverted = await prisma.$transaction(async (tx) => {
+        await tx.$executeRaw`SELECT pg_advisory_xact_lock(1)`;
+        for (const lodgeId of [offeredLodgeId, entry.lodgeId].sort()) {
+          await acquireLodgeCapacityLock(tx, lodgeId);
+        }
+        return revertOfferToWaitlisted(tx, entry);
       });
+      if (!reverted) {
+        return {
+          success: false,
+          error: "This waitlist offer changed while it was being confirmed. Refresh and try again.",
+        };
+      }
     } catch (err) {
       logger.error({ err, bookingId }, "Failed to revert cross-lodge offer after capacity loss");
     }
@@ -728,21 +802,45 @@ export async function confirmCrossLodgeWaitlistOffer(
     // rates changed in the moments since phase 1. Never charge it silently:
     // cancel the fresh booking, refresh the stored quote, and ask again.
     try {
-      await prisma.$transaction(async (tx) => {
-        await tx.booking.update({
-          where: { id: newBooking.id },
+      const refreshedCurrentOffer = await prisma.$transaction(async (tx) => {
+        await tx.$executeRaw`SELECT pg_advisory_xact_lock(1)`;
+        await acquireLodgeCapacityLock(tx, offeredLodgeId);
+        const cancelled = await tx.booking.updateMany({
+          where: { id: newBooking.id, status: newBooking.status },
           data: { status: BookingStatus.CANCELLED },
         });
-        await reconcileBedAllocationsForBooking({
+        if (cancelled.count === 0) {
+          throw new Error("Replacement booking changed before price-drift unwind");
+        }
+        await reconcileBedAllocationsForBookingWithLodgeLockHeld({
           bookingId: newBooking.id,
           db: tx,
           previousRange: { checkIn: newBooking.checkIn, checkOut: newBooking.checkOut },
         });
-        await tx.booking.update({
-          where: { id: entry.id },
+        const refreshedOffer = await tx.booking.updateMany({
+          where: {
+            id: entry.id,
+            status: BookingStatus.WAITLIST_OFFERED,
+            updatedAt: entry.updatedAt,
+            waitlistOfferedAt: entry.waitlistOfferedAt,
+            waitlistOfferExpiresAt: entry.waitlistOfferExpiresAt,
+            waitlistOfferedLodgeId: entry.waitlistOfferedLodgeId,
+            waitlistOfferedPriceCents: entry.waitlistOfferedPriceCents,
+          },
           data: { waitlistOfferedPriceCents: newBooking.finalPriceCents },
         });
+        return refreshedOffer.count === 1;
       });
+      if (!refreshedCurrentOffer) {
+        logger.warn(
+          { bookingId, newBookingId: newBooking.id },
+          "Price-drifted replacement was cancelled, but the waitlist offer epoch changed before its quote could be refreshed",
+        );
+        return {
+          success: false,
+          error: "This waitlist offer changed while it was being confirmed. Refresh and review the current offer.",
+        };
+      }
     } catch (err) {
       logger.error(
         { err, bookingId, newBookingId: newBooking.id },
@@ -761,10 +859,21 @@ export async function confirmCrossLodgeWaitlistOffer(
   // Phase 3 — cancel the waitlist entry and link the two bookings. The
   // member already has the new booking; a failure here must not fail the
   // confirm, it just leaves cleanup for an admin (loudly logged).
+  let waitlistEntryCleanupCompleted = false;
   try {
-    await prisma.$transaction(async (tx) => {
-      await tx.booking.update({
-        where: { id: entry.id },
+    const cancelledEntry = await prisma.$transaction(async (tx) => {
+      await tx.$executeRaw`SELECT pg_advisory_xact_lock(1)`;
+      await acquireLodgeCapacityLock(tx, entry.lodgeId);
+      const cancelled = await tx.booking.updateMany({
+        where: {
+          id: entry.id,
+          status: BookingStatus.WAITLIST_OFFERED,
+          updatedAt: entry.updatedAt,
+          waitlistOfferedAt: entry.waitlistOfferedAt,
+          waitlistOfferExpiresAt: entry.waitlistOfferExpiresAt,
+          waitlistOfferedLodgeId: entry.waitlistOfferedLodgeId,
+          waitlistOfferedPriceCents: entry.waitlistOfferedPriceCents,
+        },
         data: {
           status: BookingStatus.CANCELLED,
           waitlistPosition: null,
@@ -780,18 +889,28 @@ export async function confirmCrossLodgeWaitlistOffer(
             .join("\n"),
         },
       });
-      await reconcileBedAllocationsForBooking({
+      if (cancelled.count === 0) return false;
+      await reconcileBedAllocationsForBookingWithLodgeLockHeld({
         bookingId: entry.id,
         db: tx,
         previousRange: { checkIn: entry.checkIn, checkOut: entry.checkOut },
       });
+      return true;
     });
 
-    await recordBookingEvent({
-      bookingId: entry.id,
-      type: BookingEventType.CANCELLED,
-      actorMemberId: memberId,
-    });
+    if (cancelledEntry) {
+      waitlistEntryCleanupCompleted = true;
+      await recordBookingEvent({
+        bookingId: entry.id,
+        type: BookingEventType.CANCELLED,
+        actorMemberId: memberId,
+      });
+    } else {
+      logger.warn(
+        { waitlistBookingId: entry.id, newBookingId: newBooking.id },
+        "Cross-lodge confirm created the new booking but lost the waitlist-entry cleanup claim",
+      );
+    }
   } catch (err) {
     logger.error(
       { err, waitlistBookingId: entry.id, newBookingId: newBooking.id },
@@ -809,13 +928,16 @@ export async function confirmCrossLodgeWaitlistOffer(
     category: "booking",
     outcome: "success",
     summary: "Cross-lodge waitlist offer confirmed",
-    details: `Waitlist entry ${entry.id} replaced by booking ${newBooking.id} at the offered lodge`,
+    details: waitlistEntryCleanupCompleted
+      ? `Waitlist entry ${entry.id} replaced by booking ${newBooking.id} at the offered lodge`
+      : `Booking ${newBooking.id} was created at the offered lodge, but waitlist entry ${entry.id} changed before cleanup and needs review`,
     metadata: {
       waitlistBookingId: entry.id,
       newBookingId: newBooking.id,
       offeredLodgeId,
       priceCents: quotedPriceCents,
       newStatus: newBooking.status,
+      waitlistEntryCleanupCompleted,
     },
   });
 

@@ -67,12 +67,12 @@ interface ViewOnlyActionButtonProps extends ButtonProps {
    *
    * Since #2160 the DEFAULT is no longer the usual case — it is the fallback.
    * Most admin sections render an {@link AdminViewOnlySectionBanner} and pass
-   * `describeReason={false}` here (234 of 310 call sites), and a further 27 pass
+   * `describeReason={false}` here (237 of 315 call sites), and a further 27 pass
    * `describeReason={!ancestorRendersViewOnlyBanner}` because a VOUCHING PARENT
    * renders the banner instead — 22 vouched at a JSX render site (#2168) and 5
    * through the guided-setup shell's `WizardStepHelpers` channel (#2324), where
    * the shell calls each step from another file and no render site exists.
-   * 261 opt-outs in total.
+   * 264 opt-outs in total.
    * `view-only-banner-contract.test.ts` asserts every one of those figures, so
    * they are measured rather than counted by hand. The default survives in
    * three shapes:
@@ -86,8 +86,8 @@ interface ViewOnlyActionButtonProps extends ButtonProps {
    *    switch, the #2262 cash-payment and manual-refund-task controls, the
    *    non-member contact form), where
    *    nothing local proves an ancestor renders a banner. (`docs/ARCHITECTURE.md`
-   *    counts 36 controls here, but that bucket is the arithmetic remainder,
-   *    not a pure shape: 3 of the 34 are the FIRST shape — dialog contents
+   *    counts 37 controls here, but that bucket is the arithmetic remainder,
+   *    not a pure shape: 3 of the 37 are the FIRST shape — dialog contents
    *    inside `page-content-panel.tsx` and `site-banners-panel.tsx`, which are
    *    themselves banner-bearing panels; and 9 are the #2324 SCOPE exceptions
    *    below, sitting inside setup wizards that do render a banner); and
@@ -276,10 +276,22 @@ export const ADMIN_VIEW_ONLY_SECTION_HEADING =
  *    heads. The banner states the section's own scope once at the top; a Notice
  *    further down carries a DIFFERENT permission's reason for a subset of the
  *    controls, so the two are not the same statement and the Notice is not
- *    redundant. `fees/_components/hut-fees-section.tsx` (finance inside a lodge
- *    section) and `subscription-lockout-settings-panel.tsx` (finance-scoped
- *    account/item codes inside a membership section) both do this deliberately,
- *    and both render banner AND Notice AND gated buttons.
+ *    redundant. `backups/backups-client.tsx` is the clearest example (a
+ *    support-scoped banner heads the page; the Credentials card carries a
+ *    Full-Admin-scoped Notice for the fields only a Full Admin may write), and
+ *    `subscription-lockout-settings-panel.tsx` does the same with a
+ *    finance-scoped Notice over the subscription account and item codes inside
+ *    a membership-scoped section. Both render banner AND Notice AND gated
+ *    buttons at once.
+ *
+ * Having both components in one file does NOT make it the third case, and
+ * `fees/_components/hut-fees-section.tsx` is the example to keep straight: its
+ * banner and its Notice are MUTUALLY EXCLUSIVE by construction
+ * (`{!forbidden && viewOnlyBanner}` against
+ * `{forbidden && <AdminViewOnlyNotice canEdit={false}>}`), the Notice is the
+ * stronger "you cannot even read this section" statement, and the `forbidden`
+ * branch renders no controls at all — so it is the FIRST case, in a branch. The
+ * file's own comment says showing both "would contradict itself".
  *
  * So "a section with gated controls replaces its Notice with this banner" holds
  * only for a Notice covering the SAME scope. Before deleting a Notice from a

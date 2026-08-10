@@ -1,12 +1,19 @@
 import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
 import {
+  AuditCategoryError,
   buildMemberAuditLogWhere,
+  buildStructuredAuditLogCreateArgs,
   classifyAuditRetention,
   createAuditLog,
   createStructuredAuditLog,
   getAuditRetentionExpiresAt,
+  logAudit,
   sanitizeAuditMetadata,
 } from "@/lib/audit";
+import { AUDIT_CATEGORIES, type AuditCategory } from "@/lib/audit-categories";
+import logger from "@/lib/logger";
+import { prisma } from "@/lib/prisma";
+import { redactSensitiveJson } from "@/lib/redact-sensitive-json";
 
 vi.mock("@/lib/prisma", () => ({
   prisma: {
@@ -46,7 +53,21 @@ describe("audit helper", () => {
     vi.useRealTimers();
   });
 
-  it("keeps legacy createAuditLog calls compatible", async () => {
+  it("gives a minimal createAuditLog call a category, a retention class and an expiry", async () => {
+    /*
+      This test used to assert the OPPOSITE, and the change is the point (#2581).
+
+      It was called "keeps legacy createAuditLog calls compatible" and it pinned
+      the shape a category-less writer emitted: six fields, no `category`, no
+      `retentionClass` and no `expiresAt`. That shape is the defect the issue was
+      filed about — a row no AI Diagnostics correlation tool can return, and one
+      `pruneExpiredAuditLogs` can never reach, because every branch of its
+      predicate carries `expiresAt: { lt: now }` and NULL is not less than
+      anything. Kept forever, readable by nobody.
+
+      It is no longer reachable: `category` is required, so the old call does not
+      compile, and the retention derivation it used to skip is unconditional.
+    */
     const db = auditDb();
 
     await createAuditLog(
@@ -56,6 +77,7 @@ describe("audit helper", () => {
         targetId: "target-id",
         details: "Legacy details",
         ipAddress: "203.0.113.10",
+        category: "account",
       },
       db as never
     );
@@ -68,6 +90,9 @@ describe("audit helper", () => {
         details: "Legacy details",
         ipAddress: "203.0.113.10",
         actorMemberId: "actor-member",
+        category: "account",
+        retentionClass: "critical",
+        expiresAt: new Date("2033-01-01T00:00:00.000Z"),
       },
     });
   });
@@ -80,6 +105,7 @@ describe("audit helper", () => {
         action: "legacy.secret",
         details:
           "Retry failed for cardNumber=4242 4242 4242 4242 and token=live-token",
+        category: "payment",
       },
       db as never
     );
@@ -291,5 +317,245 @@ describe("audit helper", () => {
         { AND: [{ subjectMemberId: null }, { targetId: "member-1" }] },
       ],
     });
+  });
+
+  // INV-PRIV-011 (#2683). The two key lists deliberately differ, and this pins
+  // the difference in both directions at once: the log/Sentry redactor strips
+  // first name, last name AND street address, while the admin-action audit
+  // writer keeps all three, because an evidence record that cannot say who stops
+  // being evidence (owner decision, 10 Aug 2026). It fails if a later change
+  // makes the two lists "consistent" in either direction — adding person fields
+  // to audit.ts's sensitive keys, or dropping them from the log redactor's
+  // denylist so they become visible everywhere.
+  it("keeps name and street address in an audit row while the log redactor strips them", () => {
+    const person = {
+      firstName: "Jane",
+      lastName: "Doe",
+      streetAddressLine1: "12 Example Street",
+    };
+
+    expect(sanitizeAuditMetadata(person)).toEqual({
+      firstName: "Jane",
+      lastName: "Doe",
+      streetAddressLine1: "12 Example Street",
+    });
+
+    expect(redactSensitiveJson(person)).toEqual({
+      firstName: "[REDACTED]",
+      lastName: "[REDACTED]",
+      streetAddressLine1: "[REDACTED]",
+    });
+  });
+});
+
+/**
+ * The MANDATORY-CATEGORY contract (#2581, child 2's third part).
+ *
+ * The type is the first line of defence and the census contract test is the
+ * third. This describes the second: the runtime assertion at the write
+ * boundary, which is the one that still holds when a caller reaches the helper
+ * through a cast, from untyped JavaScript, or by forwarding a category read out
+ * of a stored row.
+ *
+ * WHAT EACH TEST WOULD CATCH, since "it throws on a bad value" is not by itself
+ * worth a test file:
+ *
+ *  - deleting `assertCanonicalAuditCategory` from ONE of the two builders — the
+ *    four-boundary test fails, naming the boundary, because a writer that
+ *    reaches the structured builder is covered by a different call than one that
+ *    reaches the params builder;
+ *  - narrowing the check to `typeof category === "string"` — the "invented
+ *    value" cases fail, which are the exact two values (`membership`, `auth`)
+ *    that reached production through the old `(string & {})` escape;
+ *  - making `logAudit` await or rethrow — the fire-and-forget test fails;
+ *  - swallowing the throw inside `createAuditLog` so the audit failure stops
+ *    aborting its transaction — the rollback test fails;
+ *  - restoring the `params.retentionClass || params.category || params.severity`
+ *    gate — the "no boundary can emit the kept-forever shape" test fails.
+ */
+describe("mandatory audit category (#2581)", () => {
+  const CANONICAL: readonly AuditCategory[] = AUDIT_CATEGORIES;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-01-01T00:00:00.000Z"));
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("refuses an omitted category at BOTH layers, type and runtime", async () => {
+    const db = auditDb();
+
+    await expect(
+      createAuditLog(
+        // @ts-expect-error - `category` is required. This line is the type-layer
+        // assertion, and it fails CI in BOTH directions: revert the mandate and
+        // the error disappears, which makes this an UNUSED @ts-expect-error,
+        // which `tsc` reports as an error of its own. There is no edit to
+        // `audit.ts` that leaves this file compiling and the mandate gone.
+        { action: "contract.omitted", details: "no category supplied" },
+        db as never,
+      ),
+    ).rejects.toThrow(AuditCategoryError);
+
+    // And the runtime layer independently, because a `ts-expect-error` proves
+    // only what the compiler thinks. Types are erased; a JavaScript caller, a
+    // cast or a forwarded stored value reaches this same helper with nothing
+    // checked. Nothing was written.
+    expect(db.auditLog.create).not.toHaveBeenCalled();
+  });
+
+  it("accepts every canonical category, and derives a retention class for each", async () => {
+    for (const category of CANONICAL) {
+      const db = auditDb();
+
+      await createAuditLog(
+        { action: `contract.${category}`, category },
+        db as never,
+      );
+
+      const data = db.auditLog.create.mock.calls[0][0].data;
+      expect(data.category, `category ${category} was not persisted`).toBe(
+        category,
+      );
+      expect(
+        data.retentionClass,
+        `category ${category} derived no retention class`,
+      ).toBeTruthy();
+      expect(data.expiresAt, `category ${category} derived no expiry`).toBeInstanceOf(
+        Date,
+      );
+    }
+  });
+
+  it("rejects a value the closed taxonomy does not contain, at all four boundaries", async () => {
+    // `membership` and `auth` are not hypothetical: both reached production
+    // through the old `| (string & {})` escape and produced rows that no reader
+    // could filter for. `undefined` and `null` are the omission cases.
+    const rejected = ["membership", "auth", "Booking", "", undefined, null];
+
+    for (const bad of rejected) {
+      const db = auditDb();
+
+      await expect(
+        createAuditLog(
+          { action: "contract.bad", category: bad as never },
+          db as never,
+        ),
+        `createAuditLog accepted ${JSON.stringify(bad)}`,
+      ).rejects.toThrow(AuditCategoryError);
+
+      await expect(
+        createStructuredAuditLog(
+          { action: "contract.bad", category: bad as never },
+          db as never,
+        ),
+        `createStructuredAuditLog accepted ${JSON.stringify(bad)}`,
+      ).rejects.toThrow(AuditCategoryError);
+
+      expect(() =>
+        buildStructuredAuditLogCreateArgs({
+          action: "contract.bad",
+          category: bad as never,
+        }),
+      ).toThrow(AuditCategoryError);
+
+      // Nothing reached the database on any of the three.
+      expect(db.auditLog.create).not.toHaveBeenCalled();
+    }
+  });
+
+  it("names the action in the error, so a log line identifies the writer", async () => {
+    const db = auditDb();
+
+    await expect(
+      createAuditLog(
+        { action: "subscription.reconciled", category: "membership" as never },
+        db as never,
+      ),
+    ).rejects.toThrow(/subscription\.reconciled/);
+  });
+
+  it("keeps logAudit fire-and-forget: it neither throws nor writes, and it logs", async () => {
+    // The fourth boundary. `logAudit` is used by 241 sites that must not be able
+    // to break the business operation they are recording, so the assertion has
+    // to surface as a log line rather than as a throw.
+    expect(() =>
+      logAudit({ action: "contract.fire", category: "nope" as never }),
+    ).not.toThrow();
+
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(vi.mocked(prisma.auditLog.create)).not.toHaveBeenCalled();
+    expect(vi.mocked(logger.error)).toHaveBeenCalledWith(
+      expect.objectContaining({ err: expect.any(AuditCategoryError) }),
+      "Failed to write audit log",
+    );
+  });
+
+  it("rolls a transaction back rather than committing a change it cannot record", async () => {
+    // The behaviour that must NOT change: an audit failure inside a transaction
+    // already aborts it, so the row and the change it describes commit together.
+    // A bad category is now one more way to fail, handled identically.
+    const tx = { auditLog: { create: vi.fn().mockResolvedValue({}) } };
+    const outcome: string[] = [];
+
+    const runTransaction = async (fn: () => Promise<void>) => {
+      try {
+        await fn();
+        outcome.push("committed");
+      } catch (err) {
+        outcome.push("rolled back");
+        throw err;
+      }
+    };
+
+    await expect(
+      runTransaction(async () => {
+        await createAuditLog(
+          { action: "member.dependent.link", category: "famly" as never },
+          tx as never,
+        );
+      }),
+    ).rejects.toThrow(AuditCategoryError);
+
+    expect(outcome).toEqual(["rolled back"]);
+    expect(tx.auditLog.create).not.toHaveBeenCalled();
+  });
+
+  it("leaves no boundary able to emit the kept-forever shape", async () => {
+    // `retentionClass = NULL, expiresAt = NULL` is what all 82 uncategorised
+    // writers produced, and it is unreachable now for any value the boundary
+    // accepts — the derivation is no longer gated.
+    for (const category of CANONICAL) {
+      const db = auditDb();
+      await createAuditLog({ action: "contract.keep", category }, db as never);
+      const data = db.auditLog.create.mock.calls[0][0].data;
+      expect(data.retentionClass).not.toBeUndefined();
+      expect(data.expiresAt).not.toBeUndefined();
+    }
+  });
+
+  it("still honours the deliberate keep-forever escape hatch", () => {
+    // `expiresAt: null` is the owner's to use on a deletion-decision row. Making
+    // the category mandatory must not have taken it away.
+    const db = auditDb();
+
+    void createAuditLog(
+      {
+        action: "member.deletion_approved",
+        category: "privacy",
+        expiresAt: null,
+      },
+      db as never,
+    );
+
+    const data = db.auditLog.create.mock.calls[0][0].data;
+    expect(data.retentionClass).toBe("critical");
+    expect(data.expiresAt).toBeUndefined();
   });
 });

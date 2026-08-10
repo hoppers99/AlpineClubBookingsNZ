@@ -11,6 +11,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 // (issue #154) so a hold set cannot race a concurrent admission.
 const mocks = vi.hoisted(() => {
   const tx = {
+    $executeRaw: vi.fn(),
     booking: {
       findUnique: vi.fn(),
       updateMany: vi.fn(),
@@ -77,7 +78,8 @@ vi.mock("@/lib/logger", () => ({
 // records); the reconcile's own held-booking semantics are covered by
 // bed-allocation-lifecycle.test.ts and held-booking-allocation-agreement.test.ts.
 vi.mock("@/lib/bed-allocation-lifecycle", () => ({
-  reconcileBedAllocationsForBooking: mocks.reconcileBedAllocations,
+  reconcileBedAllocationsForBookingWithGlobalLockHeld:
+    mocks.reconcileBedAllocations,
   MAX_AUDITED_PRUNED_ALLOCATIONS: 50,
 }));
 
@@ -226,14 +228,16 @@ describe("POST /api/admin/bookings/[id]/exclusive-hold", () => {
     );
     expect(mocks.tx.booking.updateMany).toHaveBeenCalledTimes(1);
 
-    // Ordering: the lock is acquired strictly before the conflict read (and
-    // therefore before the flag write). invocationCallOrder is a monotonic
-    // global counter across all mocks, so this proves the lock came first.
+    // Ordering: global precedes lodge, which precedes the conflict read and
+    // flag write. invocationCallOrder is monotonic across all mocks.
+    const globalLockOrder =
+      mocks.tx.$executeRaw.mock.invocationCallOrder[0];
     const lockOrder =
       mocks.acquireLodgeCapacityLock.mock.invocationCallOrder[0];
     const conflictReadOrder =
       mocks.findOverlappingCapacityHoldingBookings.mock.invocationCallOrder[0];
     const writeOrder = mocks.tx.booking.updateMany.mock.invocationCallOrder[0];
+    expect(globalLockOrder).toBeLessThan(lockOrder);
     expect(lockOrder).toBeLessThan(conflictReadOrder);
     expect(lockOrder).toBeLessThan(writeOrder);
   });

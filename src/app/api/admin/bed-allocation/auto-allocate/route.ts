@@ -6,24 +6,25 @@ import {
 } from "@/lib/admin-bed-allocation";
 import {
   bedAllocationErrorResponse,
-  requireBedAllocationAdmin,
+  requireBedAllocationWrite,
 } from "@/lib/admin-bed-allocation-routes";
 import { parseJsonRequestBody } from "@/lib/api-json";
 import { logAudit } from "@/lib/audit";
+import { resolveOptionalActiveLodgeId } from "@/lib/lodges";
+import { prisma } from "@/lib/prisma";
 
-// requireAdmin() is enforced by requireBedAllocationAdmin().
+// requireAdmin() with bookings:edit is enforced by requireBedAllocationWrite().
 const autoAllocateSchema = z
   .object({
     from: z.string().optional(),
     to: z.string().optional(),
-    // Board lodge scope (ADR-003): suggestions only place guests of this
-    // lodge's bookings into this lodge's beds. Omitted = club-wide.
-    lodgeId: z.string().min(1).optional(),
+    // Board actions are always scoped to exactly one lodge.
+    lodgeId: z.string().min(1),
   })
   .strict();
 
 export async function POST(request: Request) {
-  const guard = await requireBedAllocationAdmin();
+  const guard = await requireBedAllocationWrite();
   if (!guard.ok) return guard.response;
 
   try {
@@ -38,16 +39,27 @@ export async function POST(request: Request) {
       );
     }
 
+    const lodgeId = await resolveOptionalActiveLodgeId(
+      prisma,
+      body.data.lodgeId,
+    );
+    if (!lodgeId) {
+      return NextResponse.json(
+        { error: "Lodge not found or not active" },
+        { status: 400 },
+      );
+    }
+
     const range = parseBedAllocationDateRange(body.data);
     const result = await runAutoBedAllocation({
       range,
-      lodgeId: body.data.lodgeId,
+      lodgeId,
     });
     logAudit({
       action: "BED_ALLOCATION_AUTO_RUN",
       memberId: guard.session.user.id,
       entityType: "BedAllocation",
-      category: "admin",
+      category: "lodge",
       outcome: "success",
       summary: "Bed allocation auto allocation run",
       metadata: { range, createdCount: result.count },

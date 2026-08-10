@@ -32,6 +32,7 @@ export async function POST(
     });
     logAudit({
       action: "LODGE_DISPLAY_DEVICE_REVOKED",
+      category: "lodge",
       entityType: "LodgeDisplayDevice",
       entityId: device.id,
       targetId: device.id,

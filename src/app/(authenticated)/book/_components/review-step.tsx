@@ -640,7 +640,12 @@ export function ReviewStep({
           )}
           <div className="space-y-2">
             <Label htmlFor="arrival-time">Expected Arrival Time (optional)</Label>
+            {/* #2621: the `id` is what makes the label above more than
+                decoration. Without it the `htmlFor` pointed at nothing, so a
+                screen reader announced a bare combo box and clicking the visible
+                label did not focus the control. */}
             <TimePicker
+              id="arrival-time"
               value={expectedArrivalTime}
               onChange={setExpectedArrivalTime}
             />

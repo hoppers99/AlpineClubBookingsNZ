@@ -241,4 +241,4 @@ the whole filtered set; **Success Rate** is computed from the visible page.
   [refund and credit lifecycle](../STATE_MACHINES.md#refund-and-credit-lifecycle),
   the [Stripe](../ARCHITECTURE.md#stripe) and
   [operational Xero](../ARCHITECTURE.md#operational-xero) boundaries, and
-  [payment and settlement invariants](../DOMAIN_INVARIANTS.md#payment-and-settlement).
+  [payment and settlement invariants](../invariants/payment-and-settlement.md).

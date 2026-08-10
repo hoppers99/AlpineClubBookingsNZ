@@ -13,6 +13,7 @@
  * error display (formError / xeroError / xeroDecisionError etc.).
  */
 import type { XeroSearchResult } from "@/components/admin/xero-suggested-contact-card";
+import type { XeroPartialSuccessKind } from "@/lib/xero-partial-success";
 
 interface XeroEntranceFeeInvoicePushOptions {
   createEntranceFeeInvoice: boolean;
@@ -45,16 +46,90 @@ export interface XeroLinkResponse {
   [key: string]: unknown;
 }
 
-async function readErrorMessage(res: Response, fallback: string): Promise<string> {
-  try {
-    const data = (await res.json()) as { error?: unknown };
-    if (typeof data.error === "string" && data.error.length > 0) {
-      return data.error;
-    }
-  } catch {
-    // Response body not JSON; fall through.
+export interface XeroActionRecovery {
+  recoveryKind?: XeroPartialSuccessKind;
+  xeroLinkMayHaveChanged?: boolean;
+  xeroContactCreated?: boolean;
+  xeroContactLinked?: boolean;
+  xeroContactUnlinked?: boolean;
+  xeroContactId?: string;
+  memberImported?: boolean;
+  memberId?: string;
+  subscriptionRefreshPending?: boolean;
+  subscriptionCleanupPending?: boolean;
+  /** #2623 T3: the member's CONTACT ledger rows may still be ACTIVE. */
+  contactLinkRowsMayRemainActive?: boolean;
+  /** #2623 T3: the action's audit entry may never have been written. */
+  auditEntryMayBeMissing?: boolean;
+  xeroPostProcessingPending?: boolean;
+}
+
+export class AdminMemberXeroActionError extends Error {
+  readonly recovery: XeroActionRecovery;
+
+  constructor(message: string, recovery: XeroActionRecovery = {}) {
+    super(message);
+    this.name = "AdminMemberXeroActionError";
+    this.recovery = recovery;
   }
-  return fallback;
+}
+
+export const MEMBER_XERO_NETWORK_ERROR =
+  "The service could not be reached. Your selections are still here. Check the member and Xero status, then try again.";
+
+async function fetchXeroAction(
+  input: RequestInfo | URL,
+  init?: RequestInit,
+): Promise<Response> {
+  try {
+    return init === undefined ? await fetch(input) : await fetch(input, init);
+  } catch {
+    throw new AdminMemberXeroActionError(MEMBER_XERO_NETWORK_ERROR);
+  }
+}
+
+async function readActionError(
+  res: Response,
+  fallback: string,
+): Promise<AdminMemberXeroActionError> {
+  try {
+    const data = (await res.json()) as XeroActionRecovery & { error?: unknown };
+    const message =
+      typeof data.error === "string" && data.error.length > 0
+        ? data.error
+        : fallback;
+    return new AdminMemberXeroActionError(message, readRecovery(data));
+  } catch {
+    return new AdminMemberXeroActionError(fallback);
+  }
+}
+
+function readRecovery(data: XeroActionRecovery): XeroActionRecovery {
+  return {
+    ...(data.recoveryKind ? { recoveryKind: data.recoveryKind } : {}),
+    ...(data.xeroLinkMayHaveChanged
+      ? { xeroLinkMayHaveChanged: true }
+      : {}),
+    ...(data.xeroContactCreated ? { xeroContactCreated: true } : {}),
+    ...(data.xeroContactLinked ? { xeroContactLinked: true } : {}),
+    ...(data.xeroContactUnlinked ? { xeroContactUnlinked: true } : {}),
+    ...(data.xeroContactId ? { xeroContactId: data.xeroContactId } : {}),
+    ...(data.memberImported ? { memberImported: true } : {}),
+    ...(data.memberId ? { memberId: data.memberId } : {}),
+    ...(data.subscriptionRefreshPending
+      ? { subscriptionRefreshPending: true }
+      : {}),
+    ...(data.subscriptionCleanupPending
+      ? { subscriptionCleanupPending: true }
+      : {}),
+    ...(data.contactLinkRowsMayRemainActive
+      ? { contactLinkRowsMayRemainActive: true }
+      : {}),
+    ...(data.auditEntryMayBeMissing ? { auditEntryMayBeMissing: true } : {}),
+    ...(data.xeroPostProcessingPending
+      ? { xeroPostProcessingPending: true }
+      : {}),
+  };
 }
 
 /**
@@ -63,9 +138,11 @@ async function readErrorMessage(res: Response, fallback: string): Promise<string
  * needed.
  */
 export async function searchXeroContacts(query: string): Promise<XeroSearchResult[]> {
-  const res = await fetch(`/api/admin/xero/search-contacts?q=${encodeURIComponent(query)}`);
+  const res = await fetchXeroAction(
+    `/api/admin/xero/search-contacts?q=${encodeURIComponent(query)}`,
+  );
   if (!res.ok) {
-    throw new Error(await readErrorMessage(res, "Failed to search Xero contacts"));
+    throw await readActionError(res, "Failed to search Xero contacts");
   }
   const data = (await res.json()) as { contacts?: XeroSearchResult[] };
   return data.contacts ?? [];
@@ -78,13 +155,13 @@ export async function linkMemberXeroContact(
   memberId: string,
   xeroContactId: string,
 ): Promise<XeroLinkResponse> {
-  const res = await fetch(`/api/admin/members/${memberId}/xero-link`, {
+  const res = await fetchXeroAction(`/api/admin/members/${memberId}/xero-link`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ xeroContactId }),
   });
   if (!res.ok) {
-    throw new Error(await readErrorMessage(res, "Failed to link Xero contact"));
+    throw await readActionError(res, "Failed to link Xero contact");
   }
   return (await res.json().catch(() => ({}))) as XeroLinkResponse;
 }
@@ -93,9 +170,11 @@ export async function linkMemberXeroContact(
  * Unlink a local member from its Xero contact.
  */
 export async function unlinkMemberXeroContact(memberId: string): Promise<void> {
-  const res = await fetch(`/api/admin/members/${memberId}/xero-unlink`, { method: "POST" });
+  const res = await fetchXeroAction(`/api/admin/members/${memberId}/xero-unlink`, {
+    method: "POST",
+  });
   if (!res.ok) {
-    throw new Error(await readErrorMessage(res, "Failed to unlink Xero contact"));
+    throw await readActionError(res, "Failed to unlink Xero contact");
   }
 }
 
@@ -111,7 +190,7 @@ export async function pushMemberToXero(
   memberId: string,
   options: XeroPushOptions,
 ): Promise<XeroPushResult> {
-  const res = await fetch(`/api/admin/members/${memberId}/xero-push`, {
+  const res = await fetchXeroAction(`/api/admin/members/${memberId}/xero-push`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
@@ -124,7 +203,11 @@ export async function pushMemberToXero(
     }),
   });
   const data = (await res.json().catch(() => ({}))) as
-    | (XeroPushResponse & { error?: string; suggestedContacts?: XeroSearchResult[] });
+    | (XeroPushResponse &
+        XeroActionRecovery & {
+          error?: string;
+          suggestedContacts?: XeroSearchResult[];
+        });
 
   if (res.status === 409 && Array.isArray(data.suggestedContacts)) {
     return { status: "needsDecision", suggestedContacts: data.suggestedContacts };
@@ -132,7 +215,11 @@ export async function pushMemberToXero(
 
   if (!res.ok) {
     const fallback = "Failed to create Xero contact";
-    throw new Error(typeof data.error === "string" && data.error.length > 0 ? data.error : fallback);
+    const message =
+      typeof data.error === "string" && data.error.length > 0
+        ? data.error
+        : fallback;
+    throw new AdminMemberXeroActionError(message, readRecovery(data));
   }
 
   return { status: "created", data };

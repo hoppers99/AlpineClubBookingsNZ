@@ -3,6 +3,14 @@
 import { useState, useEffect } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
+import { FocusedActionError } from "@/components/focused-action-error";
+import {
+  WAITLIST_CONFIRM_AWAITING_OPERATOR_MESSAGE,
+  WAITLIST_CONFIRM_RELEASED_UNAVAILABLE_MESSAGE,
+  isWaitlistConfirmAwaitingOperator,
+  isWaitlistOfferRevoked,
+} from "@/lib/waitlist-confirm-recovery-contract";
+import { unverifiedWriteMessage } from "@/lib/unverified-write-copy";
 
 interface WaitlistOfferCardProps {
   bookingId: string;
@@ -27,6 +35,16 @@ export function WaitlistOfferCard({
 }: WaitlistOfferCardProps) {
   const [confirming, setConfirming] = useState(false);
   const [error, setError] = useState("");
+  // Why the CTA is gone. `status-unverified` = we could not read the outcome, so
+  // another confirm might duplicate a write. `offer-consumed` = the server told
+  // us the offer no longer exists, so another confirm is guaranteed to fail with
+  // "Booking is not in WAITLIST_OFFERED status" (#2623 T8). Both hide the CTA and
+  // both offer the reload; only the heading and the copy differ, because the two
+  // situations are not the same thing and were previously conflated (the second
+  // one simply left the button live).
+  const [confirmSuppressed, setConfirmSuppressed] = useState<
+    "status-unverified" | "offer-consumed" | null
+  >(null);
   const [timeLeft, setTimeLeft] = useState("");
   // Refreshed quote after an OFFER_PRICE_CHANGED rejection; the member
   // re-confirms at this figure.
@@ -59,33 +77,103 @@ export function WaitlistOfferCard({
     setConfirming(true);
     setError("");
 
-    const res = await fetch(`/api/bookings/${bookingId}/waitlist-confirm`, {
-      method: "POST",
-    });
+    try {
+      const res = await fetch(`/api/bookings/${bookingId}/waitlist-confirm`, {
+        method: "POST",
+      });
 
-    const data = await res.json();
-
-    if (res.ok && data.success) {
-      if (data.newBookingId) {
-        // Cross-lodge accept: the entry was replaced by a fresh booking at the
-        // offered lodge — hard-navigate there. A full load (not router.push)
-        // keeps the F28 guarantee that the CTA can never stick on "Confirming…".
-        window.location.href = `/bookings/${data.newBookingId}`;
+      let data: {
+        success?: boolean;
+        newBookingId?: string;
+        code?: string;
+        error?: string;
+        updatedPriceCents?: number;
+        // #2623 T8 — the server's positive statement that the offer this card is
+        // showing has already been consumed.
+        offerRevoked?: boolean;
+        waitlistPlaceRestored?: boolean;
+        awaitingOperatorRecovery?: boolean;
+      };
+      try {
+        data = (await res.json()) as typeof data;
+      } catch {
+        showUnconfirmedStatus();
         return;
       }
-      // Hard reload: the confirm POST succeeded server-side, so re-render the
-      // page from the server to its new status (CONFIRMED/PENDING/PAID) with a
-      // full document reload. `confirming` stays true until the reload navigates,
-      // so the CTA can never stick on "Confirming…". A soft router.refresh()
-      // raced the server re-render and could leave the button frozen (#1371 F28).
-      window.location.reload();
-    } else {
-      if (data.code === "OFFER_PRICE_CHANGED" && typeof data.updatedPriceCents === "number") {
+
+      if (res.ok && data.success) {
+        if (data.newBookingId) {
+          // Cross-lodge accept: the entry was replaced by a fresh booking at the
+          // offered lodge — hard-navigate there. A full load (not router.push)
+          // keeps the F28 guarantee that the CTA can never stick on "Confirming…".
+          window.location.assign(`/bookings/${data.newBookingId}`);
+          return;
+        }
+        // Hard reload: the confirm POST succeeded server-side, so re-render the
+        // page from the server to its new status (CONFIRMED/PENDING/PAID) with a
+        // full document reload. `confirming` stays true until the reload navigates,
+        // so the CTA can never stick on "Confirming…". A soft router.refresh()
+        // raced the server re-render and could leave the button frozen (#1371 F28).
+        window.location.reload();
+        return;
+      }
+
+      if (res.ok) {
+        // A successful HTTP response without the success contract is just as
+        // ambiguous as an unreadable response: the write may have landed, so
+        // another confirm must remain unavailable until canonical state reloads.
+        showUnconfirmedStatus();
+        return;
+      }
+
+      // #2623 T8 — BEFORE the generic refusal handler, and keyed on the flag
+      // rather than the code. `HOSTING_COVERAGE_PARTICIPANT_RETRY` arrives from
+      // two places: a phase-one refusal (the claim rolled back, the offer is
+      // still live, and keeping the CTA enabled is right) and a phase-two
+      // failure (the offer was already consumed). Only the flag distinguishes
+      // them, and without it this card invited a second click that could only
+      // ever answer "Booking is not in WAITLIST_OFFERED status".
+      if (isWaitlistOfferRevoked(data)) {
+        showOfferConsumedStatus(
+          data.error ||
+            (isWaitlistConfirmAwaitingOperator(data)
+              ? WAITLIST_CONFIRM_AWAITING_OPERATOR_MESSAGE
+              : WAITLIST_CONFIRM_RELEASED_UNAVAILABLE_MESSAGE),
+        );
+        return;
+      }
+
+      if (
+        data.code === "OFFER_PRICE_CHANGED" &&
+        typeof data.updatedPriceCents === "number"
+      ) {
         setUpdatedPriceCents(data.updatedPriceCents);
       }
       setError(data.error || "Failed to confirm booking");
       setConfirming(false);
+    } catch {
+      showUnconfirmedStatus();
     }
+  }
+
+  function showUnconfirmedStatus() {
+    // #2668: this sentence was written here first (#2623 T8) and is now the
+    // shared wording every unverified write in the app uses. Byte-for-byte the
+    // same string it always was — it just no longer lives in one component.
+    setError(
+      unverifiedWriteMessage(
+        "this offer was confirmed",
+        "Reload the booking and check its current status before trying again.",
+      ),
+    );
+    setConfirmSuppressed("status-unverified");
+    setConfirming(false);
+  }
+
+  function showOfferConsumedStatus(message: string) {
+    setError(message);
+    setConfirmSuppressed("offer-consumed");
+    setConfirming(false);
   }
 
   const isExpired = timeLeft === "Expired";
@@ -134,21 +222,43 @@ export function WaitlistOfferCard({
           </p>
         )}
 
-        {error && (
-          <div className="rounded-md bg-danger-3 p-3 text-sm text-danger-11">{error}</div>
-        )}
+        <FocusedActionError
+          id="waitlist-confirm-error"
+          error={error}
+          heading={
+            confirmSuppressed === "status-unverified"
+              ? "Confirmation status could not be verified"
+              : confirmSuppressed === "offer-consumed"
+                ? "This offer is no longer open"
+                : undefined
+          }
+          action={
+            confirmSuppressed !== null ? (
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                onClick={() => window.location.reload()}
+              >
+                Reload booking status
+              </Button>
+            ) : undefined
+          }
+        />
 
         <div className="flex gap-3">
-          <Button
-            onClick={handleConfirm}
-            disabled={confirming || isExpired}
-          >
-            {confirming
-              ? "Confirming..."
-              : isCrossLodge && displayPriceCents !== null && displayPriceCents !== undefined
-                ? `Confirm at ${offeredLodgeName ?? "this lodge"} for ${formatOfferCents(displayPriceCents)}`
-                : "Confirm Booking"}
-          </Button>
+          {confirmSuppressed === null ? (
+            <Button
+              onClick={handleConfirm}
+              disabled={confirming || isExpired}
+            >
+              {confirming
+                ? "Confirming..."
+                : isCrossLodge && displayPriceCents !== null && displayPriceCents !== undefined
+                  ? `Confirm at ${offeredLodgeName ?? "this lodge"} for ${formatOfferCents(displayPriceCents)}`
+                  : "Confirm Booking"}
+            </Button>
+          ) : null}
         </div>
       </CardContent>
     </Card>

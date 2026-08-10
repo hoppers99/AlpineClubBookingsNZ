@@ -7,18 +7,31 @@ AlpineClubBookingsNZ: the ability for the club to operate more than one
 physical lodge property (rooms, beds, capacity, pricing, chores, lockers)
 under one club, membership, and finance backend.
 
-The club currently operates two lodges, with a plausible future third. The
-data model targets an arbitrary number of lodges rather than hardcoding two,
-since the FK/scoping shape is the same either way.
+The data model targets an arbitrary number of lodges rather than hardcoding a
+number, since the FK/scoping shape is the same either way. This repository is
+a template each club deploys, so **how many lodges exist is a per-deployment
+fact, not a property of the software** — do not reason about locking, capacity
+or scoping from an assumed lodge count.
 
 ## Current State
 
-There is no `Lodge` model today. Rooms, beds, seasons/rates, cancellation and
-minimum-stay policy, booking periods, chores, and several settings tables
-(`LodgeSettings`, `BedAllocationSettings`, `BookingDefaults`,
-`BookingRequestSettings`) are implicit club-wide singletons. Capacity is a
-single scalar derived by summing all active beds; pricing is one rate table
-keyed by season and age tier with no property dimension. See
+The `Lodge` model exists and multi-lodge is core, not flagged (ADR-005). The
+sections below describing a pre-`Lodge` world are **design-time history**, kept
+for the reasoning they record; read them as "what we were changing from", not
+as a description of today.
+
+> **Measured on the Tokoroa deployment, 10 Aug 2026 (#2731):** one lodge, one
+> active. 431 members, 91 of whom hold a guest row, and **none** hold guest
+> rows at more than one lodge. This paragraph previously asserted "two lodges,
+> with a plausible future third", which was never true of that deployment and
+> was reasoned from as fact — see #2731 for what that cost.
+
+Rooms, beds, seasons/rates, cancellation and minimum-stay policy, booking
+periods, chores, and several settings tables (`LodgeSettings`,
+`BedAllocationSettings`, `BookingDefaults`, `BookingRequestSettings`) began as
+implicit club-wide singletons. Capacity was a single scalar derived by summing
+all active beds; pricing was one rate table keyed by season and age tier with
+no property dimension. See
 [ADR-001](decisions/ADR-001-lodge-entity-and-scoping-model.md) for the full
 inventory.
 

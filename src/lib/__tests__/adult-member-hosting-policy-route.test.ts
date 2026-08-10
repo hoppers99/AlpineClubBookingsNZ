@@ -6,18 +6,34 @@ const mocks = vi.hoisted(() => ({
   transaction: vi.fn(),
   findUnique: vi.fn(),
   findMany: vi.fn(),
+  txFindMany: vi.fn(),
   create: vi.fn(),
   updateMany: vi.fn(),
   lodgeFindUnique: vi.fn(),
   executeRaw: vi.fn(),
   logAudit: vi.fn(),
   revalidate: vi.fn(),
+  enqueuePolicyReconciliation: vi.fn(),
+  settleHostingCoverage: vi.fn(),
 }));
 
 vi.mock("@/lib/session-guards", () => ({ requireAdmin: mocks.requireAdmin }));
 vi.mock("@/lib/audit", () => ({ logAudit: mocks.logAudit }));
 vi.mock("@/lib/public-content-revalidation", () => ({
   revalidatePublicPageContent: mocks.revalidate,
+}));
+vi.mock("@/lib/adult-member-hosting-policy-reconciliation", async () => {
+  const actual = await vi.importActual<
+    typeof import("@/lib/adult-member-hosting-policy-reconciliation")
+  >("@/lib/adult-member-hosting-policy-reconciliation");
+  return {
+    ...actual,
+    enqueueActiveHostingIncidentPolicyReconciliation:
+      mocks.enqueuePolicyReconciliation,
+  };
+});
+vi.mock("@/lib/adult-member-hosting-coverage-drain", () => ({
+  settleHostingCoverageAfterCommit: mocks.settleHostingCoverage,
 }));
 vi.mock("@/lib/prisma", () => ({
   prisma: {
@@ -87,12 +103,16 @@ describe("adult-member hosting policy route (#2364)", () => {
       const row = await mocks.findUnique();
       return row ? [row] : [];
     });
+    mocks.txFindMany.mockResolvedValue([]);
+    mocks.enqueuePolicyReconciliation.mockResolvedValue(0);
+    mocks.settleHostingCoverage.mockResolvedValue(undefined);
     mocks.transaction.mockImplementation(
       async (fn: (tx: unknown) => Promise<unknown>) =>
         fn({
           $executeRaw: mocks.executeRaw,
           adultMemberHostingPolicy: {
             findUnique: mocks.findUnique,
+            findMany: mocks.txFindMany,
             create: mocks.create,
             updateMany: mocks.updateMany,
           },
@@ -172,7 +192,7 @@ describe("adult-member hosting policy route (#2364)", () => {
     expect(mocks.create).not.toHaveBeenCalled();
   });
 
-  it("takes the policy-set lock before it reads anything", async () => {
+  it("takes the policy-set lock before every set read and reconciliation", async () => {
     mocks.findUnique.mockResolvedValue(null);
     mocks.create.mockResolvedValue({ ...stored, version: 1 });
     const order: string[] = [];
@@ -180,9 +200,17 @@ describe("adult-member hosting policy route (#2364)", () => {
       order.push("lock");
       return Promise.resolve(1);
     });
+    mocks.txFindMany.mockImplementation(() => {
+      order.push("policy-set-read");
+      return Promise.resolve([]);
+    });
     mocks.findUnique.mockImplementation(() => {
-      order.push("read");
+      order.push("row-read");
       return Promise.resolve(null);
+    });
+    mocks.enqueuePolicyReconciliation.mockImplementation(async () => {
+      order.push("reconcile");
+      return 0;
     });
 
     await PUT(put({ mode: "DISABLED", capacityMode: "NO_HOLD" }));
@@ -190,7 +218,14 @@ describe("adult-member hosting policy route (#2364)", () => {
     // from a FRESH resolution of both candidate rows, because a lodge saving
     // "inherit" has to be told what it is now inheriting. It happens AFTER the
     // transaction, so the lock-before-read ordering this test guards is unchanged.
-    expect(order).toEqual(["lock", "read", "read"]);
+    expect(order[0]).toBe("lock");
+    expect(order.indexOf("policy-set-read")).toBeGreaterThan(
+      order.indexOf("lock"),
+    );
+    expect(order.indexOf("row-read")).toBeGreaterThan(order.indexOf("lock"));
+    expect(order.indexOf("reconcile")).toBeGreaterThan(
+      order.indexOf("policy-set-read"),
+    );
   });
 
   it("creates a first row at version 1 when the editor knew of none", async () => {
@@ -285,6 +320,8 @@ describe("adult-member hosting policy route (#2364)", () => {
     // not be purged for a write that did not happen (#2143).
     expect(mocks.logAudit).not.toHaveBeenCalled();
     expect(mocks.revalidate).not.toHaveBeenCalled();
+    expect(mocks.enqueuePolicyReconciliation).not.toHaveBeenCalled();
+    expect(mocks.settleHostingCoverage).not.toHaveBeenCalled();
     // The row still comes back, so the card refreshes to the stored truth.
     expect(await response.json()).toMatchObject({
       version: 4,
@@ -304,6 +341,56 @@ describe("adult-member hosting policy route (#2364)", () => {
     expect(response.status).toBe(200);
     expect(mocks.logAudit).toHaveBeenCalledTimes(1);
     expect(mocks.revalidate).toHaveBeenCalledTimes(1);
+  });
+
+  it("enqueues affected incidents in the policy transaction and drains only after commit", async () => {
+    const order: string[] = [];
+    mocks.findUnique
+      .mockResolvedValueOnce(stored)
+      .mockResolvedValueOnce({ ...stored, mode: "DISABLED", version: 5 });
+    mocks.txFindMany.mockResolvedValue([stored]);
+    mocks.updateMany.mockResolvedValue({ count: 1 });
+    mocks.enqueuePolicyReconciliation.mockImplementation(async () => {
+      order.push("enqueue-in-transaction");
+      return 1;
+    });
+    mocks.transaction.mockImplementation(
+      async (fn: (tx: unknown) => Promise<unknown>) => {
+        const result = await fn({
+          $executeRaw: mocks.executeRaw,
+          adultMemberHostingPolicy: {
+            findUnique: mocks.findUnique,
+            findMany: mocks.txFindMany,
+            create: mocks.create,
+            updateMany: mocks.updateMany,
+          },
+          lodge: { findUnique: mocks.lodgeFindUnique },
+        });
+        order.push("committed");
+        return result;
+      },
+    );
+    mocks.settleHostingCoverage.mockImplementation(async () => {
+      order.push("post-commit-drain");
+    });
+
+    const response = await PUT(
+      put({ mode: "DISABLED", capacityMode: "HOLD", version: 4 }),
+    );
+
+    expect(response.status).toBe(200);
+    expect(order).toEqual([
+      "enqueue-in-transaction",
+      "committed",
+      "post-commit-drain",
+    ]);
+    expect(mocks.enqueuePolicyReconciliation).toHaveBeenCalledWith(
+      { beforePolicies: [stored] },
+      expect.objectContaining({
+        adultMemberHostingPolicy: expect.any(Object),
+      }),
+    );
+    expect(mocks.settleHostingCoverage).toHaveBeenCalledWith({ limit: 5 });
   });
 
   it("audits and revalidates the FIRST save, which creates the row", async () => {

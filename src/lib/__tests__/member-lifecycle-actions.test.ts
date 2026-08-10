@@ -60,11 +60,14 @@ const mockPrisma = vi.hoisted(() => {
       findMany: vi.fn().mockResolvedValue([]),
       updateMany: vi.fn(),
     },
+    xeroSyncOperation: {
+      findFirst: vi.fn().mockResolvedValue(null),
+    },
     auditLog: {
       create: vi.fn(),
     },
     $transaction: vi.fn(),
-    $executeRaw: vi.fn().mockResolvedValue(0),
+    $executeRaw: vi.fn().mockResolvedValue(1),
     $executeRawUnsafe: vi.fn().mockResolvedValue(0),
   };
 });
@@ -376,6 +379,7 @@ describe("member delete lifecycle actions", () => {
       },
     ]);
     mockPrisma.xeroObjectLink.updateMany.mockResolvedValue({ count: 1 });
+    mockPrisma.xeroSyncOperation.findFirst.mockResolvedValue(null);
     mockPrisma.member.update.mockResolvedValue({ ...cleanMember, xeroContactId: null });
     mockPrisma.member.delete.mockResolvedValue(cleanMember);
     mockPrisma.memberLifecycleActionRequest.findMany.mockResolvedValue([]);
@@ -696,6 +700,82 @@ describe("member delete lifecycle actions", () => {
         photoOfMembers: { none: { id: { not: "member-1" } } },
       },
     });
+  });
+
+  it("refuses hard delete before its review claim when a Xero contact change is unresolved", async () => {
+    mockPrisma.xeroSyncOperation.findFirst.mockResolvedValue({
+      id: "contact-operation-1",
+    });
+
+    await expect(
+      reviewMemberDeleteRequest({
+        requestId: "request-1",
+        reviewedByMemberId: "admin-2",
+        action: "approve",
+      }),
+    ).rejects.toMatchObject({
+      name: "XeroContactCreateBlocksDeletionError",
+      code: "XERO_CONTACT_CREATE_BLOCKS_DELETION",
+      statusCode: 409,
+    });
+
+    expect(mockPrisma.memberLifecycleActionRequest.updateMany).not.toHaveBeenCalled();
+    expect(mockPrisma.xeroObjectLink.updateMany).not.toHaveBeenCalled();
+    expect(mockPrisma.member.update).not.toHaveBeenCalled();
+    expect(mockPrisma.member.delete).not.toHaveBeenCalled();
+  });
+
+  /**
+   * #2627 defect 1. The Xero contact fence on this path reached a check that
+   * refuses ANY member carrying the anonymisation marker — precisely what a
+   * completed self-service deletion approval writes. It raised
+   * `XeroMemberUnavailableError`, which appears nowhere in
+   * `member-lifecycle-actions.ts` and nowhere in the lifecycle action-request
+   * route (which maps only the hosting retry, the contact-create blocker, and
+   * its own lifecycle error). So a member who had already been through approved
+   * deletion could never afterwards be hard deleted, and the operator got a bare
+   * 500 with no code and no remedy.
+   *
+   * Xero availability is also the wrong question about such a member:
+   * anonymisation already nulled `Member.xeroContactId` and deactivated every
+   * active Member CONTACT ledger row, so there is no contact linkage left to
+   * protect. The fence keeps its row lock and its blocker re-check; it simply no
+   * longer asks that question.
+   */
+  it("hard-deletes a member already anonymised by an approved self-service deletion", async () => {
+    const anonymised = {
+      ...cleanMember,
+      firstName: "Deleted",
+      lastName: "Member",
+      // Both halves of the canonical marker, either of which used to be enough
+      // to make this delete impossible.
+      email: "deleted-member-1@deleted.invalid",
+      passwordHash: "DELETED_ACCOUNT",
+      active: false,
+      xeroContactId: null,
+    };
+    mockPrisma.member.findUnique.mockResolvedValue(anonymised);
+    mockPrisma.member.update.mockResolvedValue({
+      ...anonymised,
+      xeroContactId: null,
+    });
+    mockPrisma.member.delete.mockResolvedValue(anonymised);
+
+    const result = await reviewMemberDeleteRequest({
+      requestId: "request-1",
+      reviewedByMemberId: "admin-2",
+      action: "approve",
+      reviewNote: "Duplicate of an already-deleted account",
+    });
+
+    expect(result.request.status).toBe("APPROVED");
+    expect(mockPrisma.member.delete).toHaveBeenCalledWith({
+      where: { id: "member-1" },
+    });
+    // The rest of the fence is intact: the row was still taken FOR UPDATE and
+    // the contact-change blocker still re-checked under it.
+    expect(mockPrisma.$executeRaw).toHaveBeenCalled();
+    expect(mockPrisma.xeroSyncOperation.findFirst).toHaveBeenCalled();
   });
 
   /**

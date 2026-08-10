@@ -399,6 +399,11 @@ export default function RosterPage() {
                 onSelectionChange={({ startDate }) => changeDate(startDate)}
                 overlayByDate={overlayByDate}
                 overlayLegend={ROSTER_LEGEND}
+                // #2631: the roster overlay — and ONLY the roster overlay —
+                // colours the operational day, so this is the one calendar
+                // that explains the difference between its colours and the
+                // guest-night panel beneath them.
+                overlayCountsOperationalDay
                 onVisibleMonthChange={loadMonthStatus}
               />
             </div>
@@ -420,7 +425,10 @@ export default function RosterPage() {
                 <div className="flex flex-wrap items-start justify-between gap-3">
                   <div>
                     <CardTitle>Roster for {ROSTER_LONG_DATE.format(new Date(`${selectedDate}T00:00:00Z`))}</CardTitle>
-                    <CardDescription>{roster.guestCount} guest{roster.guestCount === 1 ? "" : "s"} staying · {roster.assignments.length} assignment{roster.assignments.length === 1 ? "" : "s"}</CardDescription>
+                    {/* #2622: the count is everyone in the lodge on this
+                        operational day, which includes the people checking out
+                        this morning — not just tonight's sleepers. */}
+                    <CardDescription>{roster.guestCount} guest{roster.guestCount === 1 ? "" : "s"} in the lodge · {roster.assignments.length} assignment{roster.assignments.length === 1 ? "" : "s"}</CardDescription>
                     {lastEmailSuppressed && <p className="mt-1 text-xs text-muted-foreground">Last send: no emails sent — existing chore links remain valid.</p>}
                   </div>
                   <div className="flex gap-2">
@@ -433,7 +441,7 @@ export default function RosterPage() {
 
             {isConfirmed && uncoveredCount > 0 && (
               <div className="rounded-md border border-warning-6 bg-warning-3 px-4 py-3 text-sm text-warning-11">
-                {uncoveredCount} booking{uncoveredCount === 1 ? "" : "s"} staying this night {uncoveredCount === 1 ? "has" : "have"} no chores — regenerate the roster to include {uncoveredCount === 1 ? "it" : "them"}.
+                {uncoveredCount} booking{uncoveredCount === 1 ? "" : "s"} in the lodge today {uncoveredCount === 1 ? "has" : "have"} no chores — regenerate the roster to include {uncoveredCount === 1 ? "it" : "them"}.
               </div>
             )}
 

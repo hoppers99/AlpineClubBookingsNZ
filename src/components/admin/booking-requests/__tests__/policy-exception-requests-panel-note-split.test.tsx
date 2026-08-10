@@ -2,9 +2,10 @@
 
 import "@testing-library/jest-dom/vitest";
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { PolicyExceptionRequestsPanel } from "@/components/admin/booking-requests/policy-exception-requests-panel";
+import { expectRecoveryAlertToHoldFocus } from "@/lib/__tests__/helpers/focus";
 
 /**
  * #2562 — the officer-note split on the #2526 queue.
@@ -86,6 +87,8 @@ function queueItem(overrides: Record<string, unknown> = {}) {
 let queueResponse: () => Response;
 let decisionResponse: () => Response;
 let fetchMock: ReturnType<typeof vi.fn>;
+let scrollIntoView: ReturnType<typeof vi.fn>;
+const originalScrollIntoView = HTMLElement.prototype.scrollIntoView;
 
 function installFetch() {
   queueResponse = () => jsonResponse({ data: [queueItem()], page: 1, pageSize: 100, total: 1 });
@@ -101,6 +104,22 @@ function installFetch() {
 
 beforeEach(() => {
   installFetch();
+  scrollIntoView = vi.fn();
+  Object.defineProperty(HTMLElement.prototype, "scrollIntoView", {
+    configurable: true,
+    value: scrollIntoView,
+  });
+});
+
+afterEach(() => {
+  if (originalScrollIntoView) {
+    Object.defineProperty(HTMLElement.prototype, "scrollIntoView", {
+      configurable: true,
+      value: originalScrollIntoView,
+    });
+  } else {
+    delete (HTMLElement.prototype as { scrollIntoView?: unknown }).scrollIntoView;
+  }
 });
 
 async function openDecisionForm() {
@@ -110,6 +129,125 @@ async function openDecisionForm() {
 }
 
 describe("the officer decision form labels who reads what, before submission", () => {
+  it("keeps a permanent alert and focuses and scrolls load failures", async () => {
+    const loadGate = deferred<Response>();
+    fetchMock.mockImplementation(async (input: unknown) => {
+      if (String(input).includes("/api/admin/booking-exception-requests?")) {
+        return loadGate.promise;
+      }
+      return jsonResponse({ proposedGuests: [] });
+    });
+    render(<PolicyExceptionRequestsPanel />);
+
+    const alert = document.getElementById("policy-exception-error");
+    expect(alert).toHaveAttribute("role", "alert");
+    expect(alert).toBeEmptyDOMElement();
+    expect(alert).toHaveClass("sr-only");
+    loadGate.resolve(jsonResponse({ error: "Queue service unavailable" }, 503));
+    expect(await screen.findByText("Queue service unavailable")).toBeInTheDocument();
+    expect(document.getElementById("policy-exception-error")).toBe(alert);
+    expect(alert).not.toHaveClass("sr-only");
+    expect(screen.getByRole("button", { name: "Try again" })).toBeInTheDocument();
+    expect(
+      screen.queryByText(/No requested booking-policy exception requests/i),
+    ).not.toBeInTheDocument();
+    await expectRecoveryAlertToHoldFocus(alert);
+    expect(scrollIntoView).toHaveBeenCalledWith({
+      behavior: "smooth",
+      block: "center",
+    });
+  });
+
+  it("retries the current filter from the load-failure alert", async () => {
+    let queueLoads = 0;
+    fetchMock.mockImplementation(async (input: unknown) => {
+      if (String(input).includes("/api/admin/booking-exception-requests?")) {
+        queueLoads += 1;
+        return queueLoads === 1
+          ? jsonResponse({ error: "Queue service unavailable" }, 503)
+          : jsonResponse({ data: [queueItem()], page: 1, pageSize: 100, total: 1 });
+      }
+      return jsonResponse({ proposedGuests: [] });
+    });
+
+    render(<PolicyExceptionRequestsPanel />);
+    fireEvent.click(await screen.findByRole("button", { name: "Try again" }));
+
+    expect(await screen.findByText("Ada Lovelace")).toBeInTheDocument();
+    expect(queueLoads).toBe(2);
+    expect(
+      fetchMock.mock.calls
+        .filter(([input]) =>
+          String(input).includes("/api/admin/booking-exception-requests?"),
+        )
+        .every(([input]) => String(input).includes("status=REQUESTED")),
+    ).toBe(true);
+    const alert = document.getElementById("policy-exception-error");
+    expect(alert).toBeEmptyDOMElement();
+    expect(alert).toHaveClass("sr-only");
+  });
+
+  it("does not show the previous filter's rows or a false empty state when a filter load fails", async () => {
+    fetchMock.mockImplementation(async (input: unknown) => {
+      const url = String(input);
+      if (url.includes("status=APPROVED")) {
+        return jsonResponse({ error: "Approved queue unavailable" }, 503);
+      }
+      if (url.includes("/api/admin/booking-exception-requests?")) {
+        return jsonResponse({ data: [queueItem()], page: 1, pageSize: 100, total: 1 });
+      }
+      return jsonResponse({ proposedGuests: [] });
+    });
+
+    render(<PolicyExceptionRequestsPanel />);
+    expect(await screen.findByText("Ada Lovelace")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Approved" }));
+
+    expect(await screen.findByText("Approved queue unavailable")).toBeInTheDocument();
+    expect(screen.queryByText("Ada Lovelace")).not.toBeInTheDocument();
+    expect(
+      screen.queryByText(/No approved booking-policy exception requests/i),
+    ).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Try again" })).toBeInTheDocument();
+  });
+
+  it("visually collapses the empty permanent alert after a successful load", async () => {
+    render(<PolicyExceptionRequestsPanel />);
+    await screen.findByRole("button", { name: /Decide this request/i });
+
+    const alert = document.getElementById("policy-exception-error");
+    expect(alert).toBeEmptyDOMElement();
+    expect(alert).toHaveClass("sr-only");
+  });
+
+  it("focuses a decision failure without discarding the open decision draft", async () => {
+    decisionResponse = () => jsonResponse({ error: "Decision service unavailable" }, 503);
+    await openDecisionForm();
+    const memberNote = screen.getByLabelText(/Explanation for the member/i);
+    const privateNote = screen.getByLabelText(/Internal note/i);
+    fireEvent.change(memberNote, {
+      target: { value: "Member-visible draft must remain." },
+    });
+    fireEvent.change(privateNote, {
+      target: { value: "Officer-only draft must remain." },
+    });
+    fireEvent.click(screen.getByLabelText(/I have read the proposal above/i));
+    fireEvent.click(screen.getByRole("button", { name: /Approve and apply/i }));
+
+    expect(
+      await screen.findByText("Decision service unavailable"),
+    ).toBeInTheDocument();
+    const alert = document.getElementById("policy-exception-error");
+    await expectRecoveryAlertToHoldFocus(alert);
+    expect(memberNote).toHaveValue("Member-visible draft must remain.");
+    expect(privateNote).toHaveValue("Officer-only draft must remain.");
+    expect(screen.getByLabelText(/I have read the proposal above/i)).toBeChecked();
+    expect(scrollIntoView).toHaveBeenCalledWith({
+      behavior: "smooth",
+      block: "center",
+    });
+  });
+
   it("draws two fields, and names the audience of each", async () => {
     await openDecisionForm();
     expect(screen.getByLabelText(/Explanation for the member/i)).toBeInTheDocument();

@@ -79,7 +79,7 @@ vi.mock("@/lib/booking-create-promo", () => ({
   remapPromoIndexesToSubset: vi.fn().mockReturnValue([]),
 }));
 vi.mock("@/lib/bed-allocation-lifecycle", () => ({
-  reconcileBedAllocationsForBooking: vi.fn().mockResolvedValue(undefined),
+  reconcileBedAllocationsForBookingWithGlobalLockHeld: vi.fn().mockResolvedValue(undefined),
 }));
 vi.mock("@/lib/audit", () => ({ logAudit: vi.fn() }));
 vi.mock("@/lib/booking-events", () => ({

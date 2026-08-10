@@ -47,6 +47,7 @@ import {
 import { loadCancellationPolicy } from "@/lib/cancellation";
 import { describeCancellationSchedule } from "@/lib/cancellation-schedule";
 import { WAITLIST_OFFER_HOURS } from "@/lib/waitlist";
+import { findUnresolvedWaitlistStrandReport } from "@/lib/waitlist-return-contract";
 import {
   getCancellationSettlementBreakdown,
   getPaymentDisplayStatus,
@@ -82,7 +83,6 @@ import {
   isPaymentOwedBookingStatus,
 } from "@/lib/booking-status";
 import {
-  countApprovedBedAllocationNights,
   isBookingBedAllocationLocked,
 } from "@/lib/admin-bed-allocation";
 import { BED_ALLOCATABLE_BOOKING_STATUSES } from "@/lib/bed-allocation-lifecycle";
@@ -231,6 +231,7 @@ export default async function BookingDetailPage({
         },
       },
       member: { select: { firstName: true, lastName: true } },
+      lodge: { select: { name: true } },
       // Admin capacity hold (#1764): who placed it, for the admin tools card.
       adminCapacityHoldBy: { select: { firstName: true, lastName: true } },
       // Exclusive whole-lodge hold (#121): who set it, for the admin tools card.
@@ -647,16 +648,6 @@ export default async function BookingDetailPage({
         booking.status,
       )
     : false;
-  /*
-   * This booking's approved bed nights, counted across the WHOLE booking. The
-   * panel's "removing these re-opens the member's room request" warning is a
-   * booking-wide claim, and on a stay longer than the 31-night read window the
-   * panel's own page cannot see the confirmed nights on the other pages (#2252
-   * review). Only counted when the card actually renders.
-   */
-  const approvedBedNightCount = showBedAllocationPanel
-    ? await countApprovedBedAllocationNights({ bookingId: booking.id })
-    : 0;
   const requestedRoomEditableStatus =
     booking.status !== "CANCELLED" && booking.status !== "COMPLETED";
   const editPolicy = getBookingEditPolicy({
@@ -1285,6 +1276,34 @@ export default async function BookingDetailPage({
       ? await getBookingManualPaymentState(booking.id)
       : null;
 
+  /*
+    #2649: the stranded zero-dollar waitlist confirm.
+
+    The three cheap conditions — free, `PAYMENT_PENDING`, no payment record — are
+    NOT the stranded shape on their own. Six other producers reach them, none of
+    them a waitlist confirmation, including the `20260511113000` backfill
+    migration, which has no price predicate at all. So the
+    button is offered only where the route will accept it: on an unresolved
+    `waitlist.confirm_offer_release_failed` report, the same provenance test the
+    route re-runs under its locks (`findUnresolvedWaitlistStrandReport`). Without
+    this the banner would state as fact — about an ordinary confirmed booking —
+    that "the waitlist offer that created it has been used up".
+
+    The audit read runs only when the cheap shape matches, which is rare, so an
+    ordinary booking page issues no extra query. Admin-gated like every other
+    tools-card input above.
+  */
+  const strandedWaitlistConfirmShape =
+    canSeeAdminTools &&
+    !isDeleted &&
+    modules.waitlist &&
+    booking.status === "PAYMENT_PENDING" &&
+    booking.finalPriceCents === 0 &&
+    !booking.payment;
+  const showReturnToWaitlist = strandedWaitlistConfirmShape
+    ? Boolean(await findUnresolvedWaitlistStrandReport(prisma, booking.id))
+    : false;
+
   // Admin conflict surfacing (ADR-001 decision 1, issue #119): when this
   // booking exclusively holds the whole lodge, list the existing
   // capacity-holding bookings overlapping its nights so the officer can resolve
@@ -1364,6 +1383,7 @@ export default async function BookingDetailPage({
           bookingId={booking.id}
           memberId={booking.memberId}
           memberName={`${booking.member.firstName} ${booking.member.lastName}`}
+          lodgeId={booking.lodgeId}
           checkIn={booking.checkIn}
           checkOut={booking.checkOut}
           copyProps={{
@@ -1420,6 +1440,17 @@ export default async function BookingDetailPage({
           }}
           noEmails={isDeleted ? undefined : (noEmailsState ?? undefined)}
           manualPayment={manualPaymentState ?? undefined}
+          // #2649: the stranded zero-dollar waitlist confirm. Derived above,
+          // where the provenance check that makes the banner's claim true can
+          // be awaited; the route re-checks every condition under its locks.
+          showReturnToWaitlist={showReturnToWaitlist}
+          // #2649 review S3: the repair releases any admin capacity hold with
+          // the transition, so the dialog has to say so before the officer
+          // presses it rather than leave it to the audit row afterwards.
+          returnToWaitlistReleasesHold={Boolean(
+            showReturnToWaitlist &&
+              (booking.adminCapacityHoldAt || booking.wholeLodgeHold),
+          )}
         />
       )}
 
@@ -1848,6 +1879,7 @@ export default async function BookingDetailPage({
         <BookingBedAllocationPanel
           bookingId={booking.id}
           lodgeId={booking.lodgeId}
+          lodgeName={booking.lodge.name}
           memberName={`${booking.member.firstName} ${booking.member.lastName}`}
           checkIn={formatDateOnly(booking.checkIn)}
           checkOut={formatDateOnly(booking.checkOut)}
@@ -1855,7 +1887,6 @@ export default async function BookingDetailPage({
           bookingStatus={booking.status}
           isDeleted={isDeleted}
           canHoldBeds={bookingCanHoldBeds}
-          approvedBedNightCount={approvedBedNightCount}
           guests={booking.guests.map((guest) => ({
             id: guest.id,
             name: `${guest.firstName} ${guest.lastName}`,

@@ -47,7 +47,8 @@ import {
  * by `member-subscription-eligibility.ts`, the facts are loaded by
  * `subscription-lockout-facts.ts`, and `subscription-lockout-enforcement.ts` is
  * the one place the five booking write paths call. See
- * `docs/DOMAIN_INVARIANTS.md` → "Subscription-lockout booking pricing (#2533)".
+ * `docs/invariants/subscription-lockout-pricing.md` — the `INV-LOCKOUT` rules,
+ * of which `INV-LOCKOUT-001` is the owner decision this module implements.
  */
 
 // ---------------------------------------------------------------------------

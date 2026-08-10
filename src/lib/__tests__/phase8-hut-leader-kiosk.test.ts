@@ -400,6 +400,13 @@ describe("Phase 8: Hut Leader & Kiosk Improvements", () => {
             isMember: true,
             arrivedAt: null,
             departedAt: null,
+            // #2628: the guests route always loads the night rows and decides
+            // presence from them, so the fixture states its own stay rather
+            // than borrowing the booking's. One night, the 10th, which is what
+            // the booking's 10th-to-11th envelope always meant.
+            stayStart: new Date("2026-07-10T00:00:00.000Z"),
+            stayEnd: new Date("2026-07-11T00:00:00.000Z"),
+            nights: [{ stayDate: new Date("2026-07-10T00:00:00.000Z") }],
             member: {
               ageTier: "ADULT",
               phoneCountryCode: "64",
@@ -442,6 +449,13 @@ describe("Phase 8: Hut Leader & Kiosk Improvements", () => {
             isMember: true,
             arrivedAt: null,
             departedAt: null,
+            // #2628: the guests route always loads the night rows and decides
+            // presence from them, so the fixture states its own stay rather
+            // than borrowing the booking's. One night, the 10th, which is what
+            // the booking's 10th-to-11th envelope always meant.
+            stayStart: new Date("2026-07-10T00:00:00.000Z"),
+            stayEnd: new Date("2026-07-11T00:00:00.000Z"),
+            nights: [{ stayDate: new Date("2026-07-10T00:00:00.000Z") }],
             member: {
               ageTier: "YOUTH",
               phoneCountryCode: "64",
@@ -492,6 +506,13 @@ describe("Phase 8: Hut Leader & Kiosk Improvements", () => {
             isMember: true,
             arrivedAt: null,
             departedAt: null,
+            // #2628: the guests route always loads the night rows and decides
+            // presence from them, so the fixture states its own stay rather
+            // than borrowing the booking's. One night, the 10th, which is what
+            // the booking's 10th-to-11th envelope always meant.
+            stayStart: new Date("2026-07-10T00:00:00.000Z"),
+            stayEnd: new Date("2026-07-11T00:00:00.000Z"),
+            nights: [{ stayDate: new Date("2026-07-10T00:00:00.000Z") }],
             member: {
               ageTier: "ADULT",
               phoneCountryCode: "64",
@@ -516,7 +537,7 @@ describe("Phase 8: Hut Leader & Kiosk Improvements", () => {
     expect(data.bookings[0].guests[0].phone).toBeNull();
   });
 
-  it("includes checkout-day guests only in lodge-list guest scope", async () => {
+  it("includes checkout-day guests with no scope parameter at all (#2631)", async () => {
     mockAuth.mockResolvedValue({
       user: { id: "admin-1", role: "ADMIN", accessRoles: [{ role: "ADMIN" }], email: "support@example.org" },
     });
@@ -536,6 +557,13 @@ describe("Phase 8: Hut Leader & Kiosk Improvements", () => {
             isMember: true,
             arrivedAt: null,
             departedAt: null,
+            // #2628: the route decides presence from the night rows it always
+            // loads, so the fixture carries the one night the booking envelope
+            // describes — the 10th. That is what makes the 11th this guest's
+            // departure morning, which is the whole point of the case.
+            stayStart: new Date("2026-07-10T00:00:00.000Z"),
+            stayEnd: new Date("2026-07-11T00:00:00.000Z"),
+            nights: [{ stayDate: new Date("2026-07-10T00:00:00.000Z") }],
             member: { ageTier: "ADULT" },
           },
         ],
@@ -544,9 +572,8 @@ describe("Phase 8: Hut Leader & Kiosk Improvements", () => {
 
     const { GET } = await import("@/app/api/lodge/guests/[date]/route");
     const res = await GET(
-      new Request(
-        "http://localhost/api/lodge/guests/2026-07-11?scope=lodge-list"
-      ) as any,
+      // NO `?scope=`: the route answers one question now, the operational day.
+      new Request("http://localhost/api/lodge/guests/2026-07-11") as any,
       { params: Promise.resolve({ date: "2026-07-11" }) }
     );
 
@@ -563,7 +590,11 @@ describe("Phase 8: Hut Leader & Kiosk Improvements", () => {
     expect(data.bookings[0].guests[0].isDeparting).toBe(true);
   });
 
-  it("keeps the default lodge guest API scope stay-night compatible", async () => {
+  it("MUTATION PROBE: the unified guest scope is checkout-inclusive, never `gt` (#2631)", async () => {
+    // The route used to send `checkOut: { gt: date }` unless asked for the
+    // lodge-list scope, which is what made a changeover morning read as an
+    // empty lodge. There is no scope parameter left to get wrong; reverting the
+    // predicate to `gt` fails here.
     mockAuth.mockResolvedValue({
       user: { id: "admin-1", role: "ADMIN", accessRoles: [{ role: "ADMIN" }], email: "support@example.org" },
     });
@@ -576,13 +607,21 @@ describe("Phase 8: Hut Leader & Kiosk Improvements", () => {
     );
 
     expect(res.status).toBe(200);
-    expect(mockPrisma.booking.findMany).toHaveBeenCalledWith(
-      expect.objectContaining({
-        where: expect.objectContaining({
-          checkOut: { gt: new Date("2026-07-11T00:00:00.000Z") },
-        }),
-      })
-    );
+    const args = mockPrisma.booking.findMany.mock.calls[0][0];
+    expect(args.where.checkOut).toEqual({
+      gte: new Date("2026-07-11T00:00:00.000Z"),
+    });
+    expect(args.where.guests.some.stayEnd).toEqual({
+      gte: new Date("2026-07-11T00:00:00.000Z"),
+    });
+    expect(args.include.guests.where.stayEnd).toEqual({
+      gte: new Date("2026-07-11T00:00:00.000Z"),
+    });
+    // …and the explicit night rows come with it, or a sparse stay's gap day
+    // would fall back to the envelope and show a guest who is not there.
+    expect(args.include.guests.include.nights).toEqual({
+      select: { stayDate: true },
+    });
   });
 
   it("filters lodge guest lists by individual guest stay ranges", async () => {
@@ -597,6 +636,10 @@ describe("Phase 8: Hut Leader & Kiosk Improvements", () => {
         expectedArrivalTime: null,
         member: { firstName: "Booking", lastName: "Owner" },
         guests: [
+          // #2628: each guest carries the night rows the route always loads,
+          // spelling out the nights their half-open envelope already described.
+          // These three differ only in when they stop, and it is the night rows
+          // — not the shared booking dates — that now say so.
           {
             id: "active-guest",
             firstName: "Active",
@@ -605,18 +648,46 @@ describe("Phase 8: Hut Leader & Kiosk Improvements", () => {
             isMember: true,
             stayStart: new Date("2026-07-10T00:00:00.000Z"),
             stayEnd: new Date("2026-07-15T00:00:00.000Z"),
+            nights: [
+              { stayDate: new Date("2026-07-10T00:00:00.000Z") },
+              { stayDate: new Date("2026-07-11T00:00:00.000Z") },
+              { stayDate: new Date("2026-07-12T00:00:00.000Z") },
+              { stayDate: new Date("2026-07-13T00:00:00.000Z") },
+              { stayDate: new Date("2026-07-14T00:00:00.000Z") },
+            ],
             arrivedAt: null,
             departedAt: null,
             member: { ageTier: "ADULT" },
           },
           {
-            id: "departed-guest",
-            firstName: "Departed",
+            // Last night was the 11th: still here this morning, leaves today.
+            id: "departing-guest",
+            firstName: "Departing",
             lastName: "Guest",
             ageTier: "ADULT",
             isMember: true,
             stayStart: new Date("2026-07-10T00:00:00.000Z"),
             stayEnd: new Date("2026-07-12T00:00:00.000Z"),
+            nights: [
+              { stayDate: new Date("2026-07-10T00:00:00.000Z") },
+              { stayDate: new Date("2026-07-11T00:00:00.000Z") },
+            ],
+            arrivedAt: null,
+            departedAt: null,
+            member: { ageTier: "ADULT" },
+          },
+          {
+            // Last night was the 10th, so they drove home yesterday morning.
+            // The coarse query cannot exclude them (their booking still
+            // overlaps); the operational-day rule must.
+            id: "left-yesterday-guest",
+            firstName: "Gone",
+            lastName: "Guest",
+            ageTier: "ADULT",
+            isMember: true,
+            stayStart: new Date("2026-07-10T00:00:00.000Z"),
+            stayEnd: new Date("2026-07-11T00:00:00.000Z"),
+            nights: [{ stayDate: new Date("2026-07-10T00:00:00.000Z") }],
             arrivedAt: null,
             departedAt: null,
             member: { ageTier: "ADULT" },
@@ -638,16 +709,28 @@ describe("Phase 8: Hut Leader & Kiosk Improvements", () => {
           guests: {
             some: expect.objectContaining({
               stayStart: { lte: new Date("2026-07-12T00:00:00.000Z") },
-              stayEnd: { gt: new Date("2026-07-12T00:00:00.000Z") },
+              stayEnd: { gte: new Date("2026-07-12T00:00:00.000Z") },
             }),
           },
         }),
       })
     );
     const data = await res.json();
-    expect(data.totalGuests).toBe(1);
-    expect(data.bookings[0].guests.map((guest: { id: string }) => guest.id)).toEqual([
-      "active-guest",
+    // #2631: the guest whose last night was the 11th is HERE this morning and
+    // is flagged as leaving today; the guest whose last night was the 10th is
+    // gone. The coarse SQL bound returns the row either way, so this is the
+    // operational-day rule doing the filtering, not the query.
+    expect(data.totalGuests).toBe(2);
+    expect(
+      data.bookings[0].guests.map(
+        (guest: { id: string; isDeparting: boolean }) => [
+          guest.id,
+          guest.isDeparting,
+        ],
+      ),
+    ).toEqual([
+      ["active-guest", false],
+      ["departing-guest", true],
     ]);
   });
 
@@ -718,13 +801,20 @@ describe("Phase 8: Hut Leader & Kiosk Improvements", () => {
         checkOut: new Date("2026-04-16T00:00:00.000Z"),
         memberName: "Secret Owner",
         guests: [
+          // #2628: the week route loads these night rows and counts from them,
+          // so each guest lists the nights their envelope describes. On the
+          // 14th that is one person still mid-stay, one arriving and one
+          // leaving — the counts this case has always asserted.
           {
             firstName: "Alice",
             lastName: "Secret",
             stayStart: new Date("2026-04-13T00:00:00.000Z"),
             stayEnd: new Date("2026-04-15T00:00:00.000Z"),
             ageTier: "ADULT",
-            nights: [],
+            nights: [
+              { stayDate: new Date("2026-04-13T00:00:00.000Z") },
+              { stayDate: new Date("2026-04-14T00:00:00.000Z") },
+            ],
           },
           {
             firstName: "Bob",
@@ -732,7 +822,10 @@ describe("Phase 8: Hut Leader & Kiosk Improvements", () => {
             stayStart: new Date("2026-04-14T00:00:00.000Z"),
             stayEnd: new Date("2026-04-16T00:00:00.000Z"),
             ageTier: "YOUTH",
-            nights: [],
+            nights: [
+              { stayDate: new Date("2026-04-14T00:00:00.000Z") },
+              { stayDate: new Date("2026-04-15T00:00:00.000Z") },
+            ],
           },
           {
             firstName: "Cara",
@@ -740,7 +833,10 @@ describe("Phase 8: Hut Leader & Kiosk Improvements", () => {
             stayStart: new Date("2026-04-12T00:00:00.000Z"),
             stayEnd: new Date("2026-04-14T00:00:00.000Z"),
             ageTier: "CHILD",
-            nights: [],
+            nights: [
+              { stayDate: new Date("2026-04-12T00:00:00.000Z") },
+              { stayDate: new Date("2026-04-13T00:00:00.000Z") },
+            ],
           },
         ],
       },
@@ -1077,8 +1173,21 @@ describe("Phase 8: Hut Leader & Kiosk Improvements", () => {
         memberId: "guest-member-1",
         arrivedAt: null,
         departedAt: null,
+        // #2628: the arrive lookup loads the stay bounds, the night rows and
+        // the booking dates so it can tell a first arrival from a RETURN. A
+        // fixture missing them only stays green while `departedAt` is null and
+        // the check short-circuits. Nights the 13th and the 14th, exactly the
+        // envelope below, so the 13th is an ordinary first arrival.
+        stayStart: new Date("2026-04-13T00:00:00.000Z"),
+        stayEnd: new Date("2026-04-15T00:00:00.000Z"),
+        nights: [
+          { stayDate: new Date("2026-04-13T00:00:00.000Z") },
+          { stayDate: new Date("2026-04-14T00:00:00.000Z") },
+        ],
         booking: {
           memberId: "booking-owner-1",
+          checkIn: new Date("2026-04-13T00:00:00.000Z"),
+          checkOut: new Date("2026-04-15T00:00:00.000Z"),
         },
       })
       .mockResolvedValueOnce({
@@ -1089,8 +1198,21 @@ describe("Phase 8: Hut Leader & Kiosk Improvements", () => {
         memberId: null,
         arrivedAt: new Date("2026-04-13T08:00:00.000Z"),
         departedAt: null,
+        // #2628: the depart lookup loads the coarse envelope and then applies
+        // the per-segment departure-morning rule, so this fixture carries the
+        // columns that rule reads. Last night was the 12th, so the 13th is a
+        // departure morning — the same guest the old `stayEnd: date` filter
+        // matched.
+        stayStart: new Date("2026-04-11T00:00:00.000Z"),
+        stayEnd: new Date("2026-04-13T00:00:00.000Z"),
+        nights: [
+          { stayDate: new Date("2026-04-11T00:00:00.000Z") },
+          { stayDate: new Date("2026-04-12T00:00:00.000Z") },
+        ],
         booking: {
           memberId: "booking-owner-2",
+          checkIn: new Date("2026-04-11T00:00:00.000Z"),
+          checkOut: new Date("2026-04-13T00:00:00.000Z"),
         },
       });
     mockPrisma.bookingGuest.update.mockResolvedValue({});
@@ -1192,8 +1314,20 @@ describe("Phase 8: Hut Leader & Kiosk Improvements", () => {
       memberId: null,
       arrivedAt: null,
       departedAt: null,
+      // #2628: same as the audit case above — the arrive lookup reads the
+      // night rows and the booking dates to spot a return, so the fixture
+      // carries the two nights its envelope describes (the 13th and the 14th)
+      // rather than relying on `departedAt` being null to skip the question.
+      stayStart: new Date("2026-04-13T00:00:00.000Z"),
+      stayEnd: new Date("2026-04-15T00:00:00.000Z"),
+      nights: [
+        { stayDate: new Date("2026-04-13T00:00:00.000Z") },
+        { stayDate: new Date("2026-04-14T00:00:00.000Z") },
+      ],
       booking: {
         memberId: "booking-owner-1",
+        checkIn: new Date("2026-04-13T00:00:00.000Z"),
+        checkOut: new Date("2026-04-15T00:00:00.000Z"),
       },
     });
     mockPrisma.bookingGuest.update.mockResolvedValue({});
@@ -1412,13 +1546,25 @@ describe("Phase 8: Hut Leader & Kiosk Improvements", () => {
     );
     const content = fs.readFileSync(kioskPath, "utf-8");
 
-    expect(content).toContain("scope=lodge-list");
+    // #2631: one scope, so no scope parameter at all.
+    expect(content).toContain("`/api/lodge/guests/${date}`");
+    expect(content).not.toContain("scope=lodge-list");
     expect(content).toContain("Guests Arriving Today");
     expect(content).toContain("Guests Staying");
     expect(content).toContain("Guests Departing Today");
     expect(content).toContain("guest.ageTier === \"ADULT\"");
-    expect(content).toContain("canMarkAttendance && guest.isArriving");
-    expect(content).toContain("canMarkAttendance && guest.isDeparting");
+    // #2631/#2628: BOTH attendance buttons hang off a SERVER-derived flag, not
+    // off a badge and not off a rule re-derived in the page. The server owns
+    // them because only it has the guest's night rows loaded: the check-out
+    // button follows the depart endpoint's own predicate, and the check-in
+    // button follows a rule the page's old `isArriving && !departedAt` could not
+    // express — a sparse stay's second arrival lands against a `departedAt` from
+    // its first segment, and the page hid BOTH buttons on a night the guest was
+    // in the building.
+    expect(content).toContain("canMarkAttendance && guest.canMarkArrived");
+    expect(content).toContain("canMarkAttendance && guest.canMarkDeparted");
+    expect(content).not.toContain("canMarkAttendance && guest.isArriving");
+    expect(content).not.toContain("canMarkAttendance && guest.isDeparting");
     expect(content).toContain("120000");
     expect(content).toContain("Manage Today's Roster");
     expect(content).not.toContain("Manage Today&apos;s Roster");
@@ -1442,10 +1588,10 @@ describe("Phase 8: Hut Leader & Kiosk Improvements", () => {
     expect(content).toContain("Blocked from Check-In — see Booking Officer");
     // ...and its arrive/depart toggles are suppressed for blocked bookings.
     expect(content).toContain(
-      "canMarkAttendance && guest.isArriving && !guest.departedAt && !booking.blockedFromCheckin"
+      "canMarkAttendance && guest.canMarkArrived && !booking.blockedFromCheckin"
     );
     expect(content).toContain(
-      "canMarkAttendance && guest.isDeparting && !booking.blockedFromCheckin"
+      "canMarkAttendance && guest.canMarkDeparted && !booking.blockedFromCheckin"
     );
   });
 });

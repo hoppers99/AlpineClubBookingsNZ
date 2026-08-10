@@ -100,7 +100,8 @@ seasons, promos, and booking money):
 - [Age Groups](guides/age-tier-settings.md) — membership age tiers and their
   booking rules.
 - [Promo Codes](guides/promo-codes.md) — discount codes and vouchers.
-- [Bed Allocation](guides/bed-allocation.md) — the drag-and-drop bed board.
+- [Bed Allocation](guides/bed-allocation.md) — the drag-and-drop bed board and
+  per-lodge auto-allocation preferences.
 - [Waitlist](guides/waitlist.md) — the waitlist queue and force-confirm.
 - [Payments](guides/payments.md) — the booking-payment ledger and Xero invoice
   state.
@@ -318,6 +319,19 @@ module boundaries, data model, integrations, cron jobs, and the mermaid maps.
   readiness, budget, background-job and audit-correlation tools, the permission each
   requires, the column-restricted `AuditLog` grant they argue for, the shared
   evidence-state and diagnostic-case contracts, and an operator troubleshooting table.
+  It also carries the **audit-category permission map** (#2581): the closed
+  canonical taxonomy lives in `src/lib/audit-categories.ts` and every reader — the
+  Admin filter, the member-visible subset, the badge colours and the five
+  correlation entries — derives from it, so a category decides which admin areas
+  an operator needs before Diagnostics will return the event. `npm run audit:census`
+  inventories every production audit writer, and
+  `src/lib/__tests__/audit-writer-census.test.ts` pins the result so a new
+  uncategorised writer fails CI by name. Every production writer now carries a
+  category — the 82 that did not are classified site by site in
+  `scripts/audit/audit-writer-census-manifest.ts`, and the same contract pins
+  which of them a member can see in their own timeline. Audit records created
+  before that change still have none; filling those in is separate and
+  outstanding. The operator-facing half is in [Audit Log](guides/audit-log.md).
 - [`ai-diagnostics/deployment.md`](ai-diagnostics/deployment.md) — the operator
   guide for AI Diagnostics: setup order, provisioning and rotating the dedicated
   non-superuser SELECT-only database role, what the role may read, and how to read the
@@ -377,6 +391,9 @@ Larger subsystems keep their own hub. Each links back to this page.
   [`config-transfer/README.md`](config-transfer/README.md).
 - **Exclusive whole-lodge hold (design)** —
   [`exclusive-booking/decisions/ADR-001-exclusive-whole-lodge-hold.md`](exclusive-booking/decisions/ADR-001-exclusive-whole-lodge-hold.md).
+- **Member photos (design)** — storage, visibility, and what a member merge does
+  to a photo:
+  [`member-photos/decisions/ADR-001-member-photos.md`](member-photos/decisions/ADR-001-member-photos.md).
 - **AI Diagnostics (design/foundation)** — the admin-only, read-only diagnostics
   assistant's security, privacy, authority, and evidence contracts: ADRs, the
   STRIDE threat model, the permission matrix, and the documentation plan. Start

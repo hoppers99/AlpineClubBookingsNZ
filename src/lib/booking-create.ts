@@ -76,7 +76,7 @@ import { logAudit } from "@/lib/audit";
 import { recordBookingEvent } from "@/lib/booking-events";
 import logger from "@/lib/logger";
 import { assertNoBookingMemberNightConflicts } from "@/lib/booking-member-night-conflicts";
-import { reconcileBedAllocationsForBooking } from "@/lib/bed-allocation-lifecycle";
+import { reconcileBedAllocationsForBookingWithGlobalLockHeld } from "@/lib/bed-allocation-lifecycle";
 import { buildInternetBankingHoldUntil } from "@/lib/internet-banking-settings";
 import {
   type BookingWithGuests,
@@ -110,6 +110,7 @@ import {
   resolveBookingDateEnvelope,
 } from "./booking-create-guests";
 import { recordAdultMemberHostingReviewForNewBooking } from "@/lib/adult-member-hosting-review";
+import { settleHostingCoverageAfterCommit } from "@/lib/adult-member-hosting-coverage-drain";
 import { withOptionalTransaction } from "@/lib/db-transaction";
 
 // The helper types, errors, and pure functions that used to live here now live
@@ -264,6 +265,7 @@ export async function createDraftBooking(input: DraftBookingInput): Promise<Book
   const draftStatus = review.blockForReview ? BookingStatus.AWAITING_REVIEW : BookingStatus.DRAFT;
 
   const newBooking = await prisma.$transaction(async (tx) => {
+    await tx.$executeRaw`SELECT pg_advisory_xact_lock(1)`;
     const bookingLodgeId = await resolveBookingLodgeId(
       tx,
       lodgeId,
@@ -421,7 +423,7 @@ export async function createDraftBooking(input: DraftBookingInput): Promise<Book
       );
     }
 
-    await reconcileBedAllocationsForBooking({
+    await reconcileBedAllocationsForBookingWithGlobalLockHeld({
       bookingId: createdBooking.id,
       db: tx,
     });
@@ -707,6 +709,9 @@ export async function createConfirmedBooking(input: ConfirmedBookingInput): Prom
     // re-enters that same per-lodge key (a no-op) so the lock order holds either
     // way.
     booking = await withOptionalTransaction(input.tx, async (tx) => {
+      if (!input.tx) {
+        await tx.$executeRaw`SELECT pg_advisory_xact_lock(1)`;
+      }
       const bookingLodgeId = await resolveBookingLodgeId(
         tx,
         lodgeId,
@@ -1093,7 +1098,7 @@ export async function createConfirmedBooking(input: ConfirmedBookingInput): Prom
         });
       }
 
-      await reconcileBedAllocationsForBooking({
+      await reconcileBedAllocationsForBookingWithGlobalLockHeld({
         bookingId: newBooking.id,
         db: tx,
       });
@@ -1172,7 +1177,7 @@ export async function createConfirmedBooking(input: ConfirmedBookingInput): Prom
           },
           include: { guests: true },
         });
-        await reconcileBedAllocationsForBooking({
+        await reconcileBedAllocationsForBookingWithGlobalLockHeld({
           bookingId: childBooking.id,
           db: tx,
         });
@@ -1260,6 +1265,13 @@ export async function createConfirmedBooking(input: ConfirmedBookingInput): Prom
   // commit, so it is handed back as `deferredPostCommit` to run AFTER that
   // commit — no provider call ever fires inside the still-open transaction.
   const runPostCommit = async (): Promise<void> => {
+    // A CONFIRMED/PAID create can restore cover to an existing same-owner
+    // booking. The fenced create transaction recorded that obligation; settle
+    // it only now, after either our transaction or the caller-owned transaction
+    // has committed, so the drain re-reads authoritative rows and keeps all
+    // notification providers outside the booking transaction.
+    await settleHostingCoverageAfterCommit({ bookingId: booking.id });
+
     logAudit({
       action: "booking.created",
       memberId: sessionUserId,

@@ -10,12 +10,16 @@ the demo seed (`prisma/demo-seed.ts`).
 
 | Spec | Matrix row | Journey |
 | --- | --- | --- |
+| `e2e/booking-create-rate-isolation.spec.ts` | Booking-create retry isolation (#2599, Medium) | Provider-independent real-route proof: unauthenticated attempt/retry probes stop at the auth boundary only after the production `bookingCreate` limiter runs, and read-only snapshots prove each exact synthetic-IP key advanced in the shared PostgreSQL `RateLimitCounter` store rather than the in-process fallback. Run before the waitlist and whole-lodge specs on the same prepared isolated stack. |
 | `e2e/two-factor-login.spec.ts` | Global two-factor enforcement (Critical) | Forced TOTP enrollment on first login, recovery codes, protected-route gating for unverified sessions, wrong-code rejection, TOTP re-login, single-use recovery codes |
 | `e2e/two-factor-email.spec.ts` | Global two-factor enforcement — email method (Critical) | Forced **email-code** enrollment on first login (send → capture the emailed code from the mailpit SMTP capture → enroll → recovery codes), then an email-code re-login that rejects a wrong code and accepts the emailed one. The code is read back over mailpit's HTTP API (`e2e/helpers/mailpit.ts`); no live mail provider is used |
 | `e2e/booking.spec.ts` | Create booking with capacity lock (Critical) | Member books a bed through `/book` (confirm-details gate → dates → guests → review → payment step) with the booker **pre-selected by default** (#1680); while payment is owed the booking holds **no** bed (issue #737 — only committed money reserves capacity); the same member cannot hold the same lodge night twice; the booker can also opt out (remove themselves) and continue with another guest to a priced review |
+| `e2e/adult-member-hosting.spec.ts` | Adult-member hosting enforcement and same-owner coverage (#2569, #2576; High) | Three serial journeys: the operator card saves and states the consequence and qualifying-host dimensions independently; an enforcing club refuses a booking with no qualifying adult-member cover and persists no live booking; and another booking on the same account supplies cover, after which member cancellation of that source is refused while an officer can acknowledge the exact stranded bookings and nights, give a private reason, cancel, and verify the resulting incident and audit evidence. The spec restores the shared club-wide hosting policy to **Disabled** in `afterAll` and cancels every booking it creates. |
 | `e2e/stripe-payment.spec.ts` | Stripe payment success/failure (Critical) | In-wizard step-4 card payment with Stripe test cards: `4242…` confirms the booking and the paid booking occupies its beds; `4000 0000 0000 0002` declines and leaves it payable. **Skips unless genuine Stripe test-mode keys are configured** |
 | `e2e/admin-roles.spec.ts` | Role boundaries (High) | One persona per bundled access role (ADMIN_READONLY, ADMIN_BOOKINGS, ADMIN_MEMBERSHIP, ADMIN_CONTENT, FINANCE_USER, FINANCE_ADMIN, LODGE). Each asserts an in-area page renders and an out-of-area page is blocked (redirect), per the authoritative matrix in `src/lib/admin-permissions.ts` and the `/finance` (finance-auth) and `/lodge` (kiosk) gates |
 | `e2e/waitlist.spec.ts` | Waitlist / force-confirm / offer (High) | Member is refused a seeded-full night and joins the waitlist (WAITLISTED); admin force-confirms it off the waitlist (overbook branch) through `/admin/waitlist`; member accepts a seeded, non-expired offer through the offer card; the admin waitlist surfaces offer + expiry state |
+| `e2e/double-bed-sharing.spec.ts` | Partner relationship and reviewed bed-allocation removal (#1742, #2594, High) | Partner declaration/admission and shared-double placement. S4 previews then applies removal through the production `POST`/`PUT /api/admin/bed-allocation/allocations/removal` boundary and proves the surviving second occupant is promoted to primary. This is the production-stack shared-double consequence proof; stale refresh and permission affordances remain in focused component/route suites. |
+| `e2e/bed-allocation.spec.ts` | Admin bed allocation, reviewed moves, booking confirmation, and reviewed removal (#2252, #2366, #2594, #2595, High) | Approves and allocates the seeded Ken booking, then proves every move entry point uses the reviewed confirmation seam. A pointer drop opens the dialog without writing, switches to **This person on this booking**, shows the exact changing/unchanged/total counts and approval consequence, and sends the typed scope plus preview digest only after confirmation while preserving the original lodge nights. A keyboard drop opens the same dialog, Cancel writes nothing and restores focus, and the chip menu can confirm a current-bed person-scope all-noop without changing placement or approval. The reviewed-removal journey opens the shared dialog from Reset, the chip menu, a pointer drop to the unallocated bucket, and booking detail; applies an approved person-wide removal with auto-allocation enabled; proves no replacement; and restores the exact guest-nights and approvals. Retry cleanup repairs a killed worker's placement and approval state through product APIs. |
 | `e2e/internet-banking.spec.ts` | Internet Banking settlement (Critical) | With Xero **absent**, a card PAYMENT_PENDING booking is switched to Internet Banking; the detail page shows the Internet Banking card with a `BOOKING-…` reference and does not crash (the Xero invoice is queued but never sent while disconnected). Toggles the Xero + Internet Banking modules on for its run and restores them |
 | `e2e/membership-application.spec.ts` | Membership application (High) | Public application submit; both nominators agree through the real `/nominations/<token>` pages; admin approves; the applicant then exists as a member |
 | `e2e/additional-payment-chase.spec.ts` | Outstanding additional payment (#2350, High) | The officer loop for money still owed after a booking change: the bookings list filtered to **Additional Payment: Still owing** marks the booking **Partly paid** with the amount due (its status chip still reading Paid); the booking page's **Additional payment outstanding** panel names the amount and reports nobody has been chased yet; **Resend payment request email** sends and the message is captured from mailpit; a second click inside the hour is refused instead of sending. The owing booking is **seeded** (`ADDITIONAL_OWED_BOOKING_ID`) rather than raised through an admin edit, because raising a real one mints a Stripe PaymentIntent and this journey must run whether or not Stripe test-mode keys are configured |
@@ -410,6 +414,16 @@ Four rules follow, and a new spec must satisfy all four:
   own admin API, so no spec needs direct database access and no test-only
   endpoint is added. A clean first attempt is a no-op.
 
+  `bed-allocation.spec.ts` now carries that repair in its serial setup (#2594,
+  #2595):
+  the first journey approves or allocates only when the retry database still
+  needs that step, so it restores Ken's approved full-stay placement after a
+  killed removal or move worker. The reviewed-move journey restores Ken to the
+  original bed and re-approves exactly the allocations that were approved on
+  entry; the staged-removal journey recreates and approves the exact removed
+  guest-nights in `finally`. The settings teardown always restores the demo
+  seed's enabled default rather than trusting a dirty retry snapshot.
+
   **A per-member SLOT is state too.** A member may hold only one open
   booking-policy exception request at a time, so a leftover one is refused as a
   duplicate (409 `OPEN_EXCEPTION_REQUEST`) on the next attempt.
@@ -446,12 +460,131 @@ Four rules follow, and a new spec must satisfy all four:
   instead — including, for the override spec, every date the booking is moved
   through.
 
+  **Per-attempt windows fix a RETRY, never a re-RUN (#2625).** Attempt 0 draws the
+  same window every time, and the past bands are derived from the RUN DATE — so a
+  spec that creates a booking and leaves it behind still fails the second time it
+  is run against one seeded database, and can wedge the NEXT DAY's run too,
+  because the bands slide a day while the leftover stays on its absolute date.
+  Both were observed on a real staging stack:
+  `admin-retroactive-booking.spec.ts` was the last date-based spec with no reset,
+  and a booking left by the previous day's run was found sitting on the current
+  day's attempt-0 nights and had to be cancelled through the app before the suite
+  would pass. A spec that creates a booking needs BOTH halves — its own window per
+  attempt *and* an idempotent `beforeAll` sweep.
+
+  Sweep every check-in that can hold one of this run's nights, not just the
+  attempt's own: a two-night stay checking in on `c` occupies nights `c` and
+  `c + 1`, so it collides with the window at offset `o` (nights `o`, `o + 1`)
+  exactly when `c` is `o - 1`, `o` or `o + 1`. `pastStayLeftoverCheckIns()`
+  (`e2e/helpers/stay-dates.ts`) derives that contiguous band straight from
+  `PAST_RETRY_OFFSETS_DAYS`, so it cannot drift from the windows it protects, and
+  it stops short of Alice's seeded DRAFT booking — a sweep wide enough to clear
+  seeded fixtures would trade one dirty database for another.
+
   Those retry bands cost calendar navigation: a spec reaches its dates by
   clicking the wizard calendar's "Next ›" one month at a time, bounded by
   `MAX_MONTH_HOPS` in `e2e/helpers/booking.ts`. Base 0–15 × attempt 0–2 needs at
   most 14 hops on any run date and the bound is 24, so nothing in range can run
   out — and if a future base or stride does, `selectCalendarDay` now fails on the
   month it could not reach rather than timing out on a day button.
+
+  The walk itself is `walkCalendarToMonth` in
+  [`e2e/helpers/calendar-navigation.ts`](../e2e/helpers/calendar-navigation.ts),
+  shared by the forward walk and the retroactive spec's backwards ones. Use it
+  rather than a local loop: a hop count is not a time bound, and only the shared
+  walk bounds the per-hop click. See "5. A bounded loop with an unbounded click in
+  it is not bounded" below for the 90-second timeout that cost.
+- **Give each retryable booking-create spec attempt its own client-IP bucket.**
+  `POST /api/bookings` is protected by the real 20-per-hour `bookingCreate`
+  limiter before authentication. The serial suite therefore must not let an
+  unrelated retry spend the shared runner-IP budget that a later spec needs.
+  `E2E_BOOKING_CREATE_CENSUS`
+  (`e2e/helpers/booking-create-client-ip.ts`) is the closed census. Ordinary
+  journey/setup entries are classified `isolated-setup` and must use
+  `bookingCreateIsolation(key, testInfo.retry)`: repeated booking-create calls
+  in one logical test attempt share one `10.240.0.0/16` bucket, while different
+  registered tests and retry numbers cannot collide. A spec whose purpose is
+  exercising the limiter is classified `intentional-limiter` and must use the
+  separate typed `bookingCreateLimiterProbe`; using either allocator with the
+  other classification fails both at typecheck and in the structural contract.
+  Use `postBookingCreate` for a direct `APIRequestContext` create, or use
+  `withBookingCreateClientIp` around exactly the browser action that emits the
+  create.
+
+  **A browser create passes two halves, never a bare function (#2610).** The
+  third argument is `{ trigger, waitForOutcome }`: `trigger` fires exactly the
+  gesture that emits the create, and `waitForOutcome` awaits that journey's OWN
+  authoritative outcome — server-rendered content on the booking-detail page a
+  navigating create reaches, the wizard step a payment-owing create reveals, or
+  the refusal card a policy-refused create renders. The interception is
+  installed across both halves and removed only after `waitForOutcome` resolves.
+
+  **For a navigating create the URL is not enough on its own.** The
+  booking-detail route has a `loading.tsx` boundary, so `router.push` commits
+  with the skeleton and Next pushes the address while the detail RSC GET is
+  still in flight. `toHaveURL` is therefore satisfied *before* the navigation
+  completes, and holding only to it tears interception down inside the very
+  window this helper exists to keep open. Assert something the server actually
+  rendered — the `Booking Details` heading, or the persisted date the
+  retroactive spec checks — after the URL.
+
+  The reason is that `page.unroute` is not free: Playwright implements it by
+  recomputing Chromium's *global* Fetch interception patterns, so a teardown
+  that overlaps a navigation the trigger just started is a race by construction
+  — the client-side `router.push` the create issues, and the RSC GET that
+  follows it within a few milliseconds, are both in flight while the patterns
+  are being rewritten. Waiting for a genuinely authoritative outcome first keeps
+  teardown outside that window. Treat this as harness hygiene and the hosted A/B
+  for #2610, **not** as a proven diagnosis: the stall has never reproduced
+  locally.
+
+  Do not invent a generic "some page rendered" wait to satisfy the shape — an
+  outcome that is not this journey's own is worse than none, because it passes
+  while proving nothing. The structural contract enforces the *shape* only; it
+  cannot tell whether what you awaited was authoritative, so that judgement is
+  yours and a reviewer's. Seven of the fourteen browser census entries reach the
+  helper through a shared wrapper that embeds the wait for them —
+  `confirmBookingToPaymentStep` waits for the payment step and
+  `bookThroughWizard` waits for the exception-request offer — so those specs
+  assert the outcome once, inside the hold, rather than twice. Holding the route
+  longer also widens the "exactly one matching request" guard to cover the
+  outcome window, so a second create that used to slip through after teardown
+  now fails loudly.
+
+  Both paths are structurally tied to the census. The same contract
+  inventories direct request calls, aliases, and a bare browser/global
+  `fetch("/api/bookings", { method: "POST" })`; default-GET fetches remain
+  outside the create census. Never put this header on a whole browser/admin
+  context: login,
+  availability and policy requests must keep their own client identity. The
+  login helper's `10.99.0.0/16` and whole-lodge submission worlds'
+  `10.77.1.0/24` remain separate and unchanged. This is isolation, not a bypass:
+  every create still traverses production rate limiting and the suite never
+  resets or mocks its storage. The fast #2599 unit contract reproduces
+  the old exhausted runner bucket through the shipped `bookingCreate`
+  configuration, client-IP resolver, and in-process fallback counter. Runtime
+  acceptance belongs to `booking-create-rate-isolation.spec.ts`: it sends
+  attempt, retry-1, and retry-2 probes through the real route, then proves each
+  exact counter advanced in shared PostgreSQL. Run these two commands in order
+  on the **same already-prepared isolated stack**, with no `prepare` between
+  them, so the later real waitlist and whole-lodge create paths follow those
+  staged retry dimensions:
+
+  ```bash
+  scripts/e2e-stack.sh run e2e/booking-create-rate-isolation.spec.ts --project=chromium --workers=1
+  E2E_PRESERVE_AUTH_STATE=1 scripts/e2e-stack.sh run e2e/waitlist.spec.ts e2e/whole-lodge-request.spec.ts --grep "placement then admin force-confirm|acknowledgement is byte-identical" --project=chromium --workers=1
+  ```
+
+  The first command requires no Stripe credentials: all three probes are
+  deliberately unauthenticated and must return 401 after rate limiting. The
+  second command explicitly preserves only the gitignored browser/TOTP files
+  created by the first command; the database and its limiter counters are
+  already preserved because neither command prepares or resets the stack. It
+  runs the retry-sensitive real-path anchors rather than unrelated scenarios in
+  those large files. It fails on any cross-spec 429 because waitlist pins 409
+  then 201, while the whole-lodge setup requires a successful confirmed held-
+  world booking create before its three privacy-safe request submissions.
+  Neither command resets, bypasses, mocks, nor increases the limiter.
 - **Restore shared state in `afterAll`, never at the end of the test body.**
   `xero-setup-wizard-completion.spec.ts` used to disconnect Xero and rewind the
   wizard on its last line; when it failed earlier it stranded the sibling spec on
@@ -484,25 +617,42 @@ Nothing in a spec may hardcode a calendar date. Stay windows come from
 `lodgeNightLabel` / `calendarDayLabel`. A hardcoded date produces an assertion
 that can only pass in the week it was written.
 
-### 4. Pointer geometry measured once, reused by a second drag
+### 4. A pointer drag that resolves one row off
 
-A drag-and-drop spec that drives two drags in a row must re-measure its bounding
-boxes before each one. `DndContext` resolves the drop with `closestCenter`
-against droppable rects it measures at drag start, and starting a drag changes
-the board's own layout: the hovered cell gains its "Drop here" content and
-reflows the rows beneath it. Coordinates captured before the first drag can
-therefore resolve a **different row** on the second, and the failure does not
-look like a geometry failure. The drag is live, the `DragOverlay` is up, and only
-its text is wrong, so a `hasText`-filtered locator matches nothing and times out.
+`DndContext` resolves the drop with `closestCenter`, and the rect it centres is
+**not** the dragged element's. When a `DragOverlay` is rendered, `@dnd-kit/core`
+uses the overlay's own measured child instead
+(`draggingNodeRect = dragOverlay.rect ?? activeNodeRect`) and keeps re-measuring
+it through a `ResizeObserver` for as long as the drag is live. A floating card
+that grows once it has something to say therefore *moves the drop target* mid-drag,
+downwards, by half of however much it grew.
 
-This is what `bed-allocation.spec.ts:127` did on run 30762167423: the second
-pointer drag was active with its card showing "No change for Ken King; the
-selected allocations already use Bunk Room A / A1", and the "Drop here" marker
-sat in the **source** row, one row above the destination.
+Measured on the bed board (issue #2595, 1280x720 Desktop Chrome): chip 104.6px
+tall, drag card 138px, target cell 57px. The card contributes
+`(138 - 104.6) / 2 = 16.7px` of downward bias and the spec's own one-pixel cursor
+clamp another 8.8px, against a 28.5px half-cell tolerance — 3px of margin. Any
+environment that renders the same sentence one line taller spends that margin and
+the drop lands on the row **below** the one the preview named. Forcing the card
+22px taller locally reproduced it exactly, one row every time; the hosted runner
+did the same on its own, dropping on `A3` while the spec aimed at `A2` on all
+three attempts of run 31196057937.
 
-- **Measure the handle, the dragged card and the target cell immediately before
+The failure does not look like a geometry failure. The drag is live, the overlay
+is up, and only the bed name in it is wrong, so a `hasText`-filtered locator
+matches nothing and times out.
+
+- **Keep the overlay's measured child the size of the dragged element.** On the
+  bed board the `DragOverlay` child is a `h-full w-full` frame — which
+  `DragOverlay` sizes from the chip's rect — and the readable card is absolutely
+  positioned inside it. Collisions then follow the chip, and the preview copy can
+  be any length. A spec that aims the dragged element's centre at a cell is only
+  correct while this holds.
+- **Never aim a pointer drag at a rect you did not measure.** If a spec computes a
+  grab offset from element A, `closestCenter` must be centring element A.
+- **Measure the handle, the dragged element and the target cell immediately before
   every drag.** Never hoist one measurement out of a loop or share it between two
-  scenarios in the same test.
+  scenarios in the same test — a restored placement between two drags re-renders
+  the rows.
 - **Wait for a cancelled drag to tear down before starting the next one.** The
   overlay is mounted only while a drag is live, so asserting it is hidden is both
   the honest check that the cancel worked and the settle point that leaves the
@@ -512,6 +662,61 @@ sat in the **source** row, one row above the destination.
   polls, so pure lag resolves itself well inside the timeout. A locator that
   never matches across the full 15s means the collision settled on the wrong
   droppable, which is a geometry bug.
+- **Assert the destination by name inside the preview filter.** `hasText` on the
+  room/bed label is what turns a one-row overshoot into a failure instead of a
+  pass on a neighbouring bed.
+
+### 5. A bounded loop with an unbounded click in it is not bounded (issue #2626)
+
+`playwright.config.ts` sets no `actionTimeout`, and Playwright's default is **0 —
+no timeout, wait until the test itself is killed**. So the hop count on a calendar
+walk bounds the number of clicks, not the time: if the nav control never becomes
+actionable, hop 0's single `click()` consumes the whole 90 s budget, and the
+walk's own arrival assertion is never reached. The reported error is then
+`locator.click: Target page, context or browser has been closed`, which reads as a
+browser crash and says nothing about the calendar — and in a serial group the
+tests after it never run at all.
+
+`admin-retroactive-booking.spec.ts` did exactly this. Measured on a real staging
+stack, the three-hop loop completed **zero** hops: `getByRole('button', { name:
+/Prev/ })` matched nothing, because the **"Confirm member details" onboarding gate
+was still open** over the page. A Radix modal puts the rest of the document behind
+an overlay *and* marks it `aria-hidden`, so the calendar is out of the
+accessibility tree entirely — while `getByText("Select Your Dates")` still reports
+visible, because Playwright's visibility check is not occlusion-aware. The
+pre-flight assertion passed and hid the problem.
+
+Two rules follow:
+
+- **Use `completeMemberDetailsGateIfShown`; never hand-roll the gate.** The spec
+  carried a private two-branch copy that knew only "Confirm details are correct"
+  and "Confirm and finish", and sampled them in the same tick the dialog title
+  appeared. The demo-seed members are missing a date of birth and a postal
+  address, so the gate actually opens on its **profile** step — "Save and
+  continue", which the copy had no branch for — and the shared helper exists
+  precisely because the title and the current step do not mount in the same
+  commit. A lossy copy of a hardened helper is a latent version of every bug that
+  helper was hardened against.
+- **Walk the calendar through `walkCalendarToMonth`**
+  (`e2e/helpers/calendar-navigation.ts`). It asserts the nav control is present
+  and enabled *before* each click, bounds the click, and asserts arrival — so an
+  unreachable calendar fails in ~15 s naming the control, the direction and the
+  target month (and pointing at the modal as the usual cause) instead of timing
+  out on a day button or on a closed page. It returns the hop count, which is what
+  makes "how many hops did it really do?" answerable at all. Bound the **day
+  click** you make on arrival with the same exported `CALENDAR_CLICK_TIMEOUT_MS`:
+  arrival being asserted means the month is right, but a day that resolves and is
+  not actionable — disabled as past, out of season, availability still loading —
+  is an unbounded click all over again. Pass `direction: "current"` when the
+  calendar should already be on the target month; the walk then clicks nothing and
+  asserts arrival only, because there is no control that keeps it where it is.
+
+Note how this one hid: it **passes in hosted CI**. The full suite runs
+`admin-override-dates.spec.ts` first, and that spec's `bookSelfToReviewStep`
+completes Alice's onboarding through the shared helper, so by the time the
+retroactive spec's member test runs the gate is gone. Running one spec on its own
+— exactly what you do while working on it — leaves the gate outstanding. **A spec
+must pass run on its own, not only in file order.**
 
 ### What is deliberately NOT the fix
 

@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { hostingCoverageParticipantRetryResponse } from "@/lib/adult-member-hosting-retry-response";
 import {
   PaymentSource,
   type AgeTier,
@@ -86,7 +87,7 @@ import {
   assertBookingNotQuotePriced,
   lockedNightPricesForGuest,
 } from "@/lib/booking-modify";
-import { reconcileBedAllocationsForBooking } from "@/lib/bed-allocation-lifecycle";
+import { reconcileBedAllocationsForBookingWithGlobalLockHeld } from "@/lib/bed-allocation-lifecycle";
 import {
   AdultMemberHostingRequiredError,
   buildAdultMemberHostingRefusalBody,
@@ -272,6 +273,7 @@ export async function POST(
 
   try {
     const result = await prisma.$transaction(async (tx) => {
+      await tx.$executeRaw`SELECT pg_advisory_xact_lock(1)`;
       // Lock the booking's lodge before re-reading it; the booking's lodge
       // cannot change, so the pre-read outside the lock is safe for key
       // selection.
@@ -815,7 +817,7 @@ export async function POST(
         include: { guests: true, payment: true },
       });
 
-      await reconcileBedAllocationsForBooking({
+      await reconcileBedAllocationsForBookingWithGlobalLockHeld({
         bookingId,
         db: tx,
         previousRange: {
@@ -1085,6 +1087,8 @@ export async function POST(
       promoCoverage: result.promoCoverage,
     });
   } catch (err) {
+    const hostingRetry = hostingCoverageParticipantRetryResponse(err);
+    if (hostingRetry) return hostingRetry;
     if (err instanceof MembershipTypeBookingPolicyError) {
       // Finding 2 (privacy re-review of MG3 #2308). The membership-type refusal
       // is D-8's FOURTH collapsing refusal, so when it collapsed it owes the

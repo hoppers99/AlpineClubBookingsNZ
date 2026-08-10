@@ -33,6 +33,7 @@ import {
 import {
   bookingBumpedRebookAction,
   bookingPaymentDueNote,
+  checkoutDayChoreNote,
   composeChoreLine,
   composeOptionalEmailLine,
   splitGuestPortionOwnBookingLine,
@@ -46,6 +47,7 @@ import {
 } from "../nzst-date";
 import { formatCents as formatMoneyCents } from "@/lib/utils";
 import { loadEmailMessageSettingsForLodge } from "@/lib/email-message-settings";
+import { loadEffectiveModuleFlags } from "@/lib/module-settings";
 import { sendEmail } from "./core";
 import { bookingOwnerEmailContext } from "@/lib/booking-email-contract";
 
@@ -1010,6 +1012,29 @@ export async function sendPreArrivalReminderEmail(params: {
   const settings = await loadEmailMessageSettingsForLodge(params.lodgeId);
   const outstandingAdditionalAmountCents =
     params.outstandingAdditionalAmountCents ?? 0;
+  // #2621 (owner decision D-M5) — the checkout-day chore sentence, and the one
+  // thing that decides whether it is said at all.
+  //
+  // The chores module DEFAULTS OFF (`ClubModuleSettings.chores` is
+  // `@default(false)`), so an unconditional sentence would tell every member of
+  // every club that never turns chores on that they are on a roster that does
+  // not exist — on the last message most members read before they travel.
+  // Composed once here and handed to BOTH the hand-built HTML and the
+  // admin-editable body's {{checkoutChoreNote}}, so an override and the built-in
+  // message cannot say different things (the {{namingUrgencyNote}} convention).
+  //
+  // Read here rather than threaded through every caller so no send site can
+  // forget it, and read BEFORE `sendEmail` rather than inside any transaction —
+  // there is none on this path, and the provider call stays outside one.
+  // `loadEffectiveModuleFlags` fails SOFT to all-modules-off, which is the right
+  // direction for this sentence: a database blip costs a club with chores one
+  // reminder sentence, whereas failing open would tell a club with no chore
+  // roster to go and talk to a hut leader about one.
+  const modules = await loadEffectiveModuleFlags();
+  // The bare sentence (or ""). The HTML wraps it in its own paragraph; the flat
+  // body needs it to bring its own paragraph break, which is the composition
+  // below rather than newlines in the default body — see the note there.
+  const checkoutChoreSentence = checkoutDayChoreNote(modules.chores);
   await sendEmail({
     to: params.email,
     subject: `Pre-arrival Information - ${EMAIL_DEFAULT_LODGE_NAME}`,
@@ -1017,6 +1042,7 @@ export async function sendPreArrivalReminderEmail(params: {
       ...params,
       lodgeTravelNote: settings.lodgeTravelNote,
       doorCode: settings.doorCode,
+      checkoutChoreNote: checkoutChoreSentence,
     }),
     bookingContext: bookingOwnerEmailContext(params.bookingId, params.recipientMemberId),
     templateName: "pre-arrival-reminder",
@@ -1036,6 +1062,21 @@ export async function sendPreArrivalReminderEmail(params: {
         params.expectedArrivalTime,
         { trailing: "\n" },
       ),
+      // #2621 (D-M5): the sentence with its OWN trailing blank line, or the
+      // empty string for a club with no chore roster.
+      //
+      // The separator rides the VALUE, not the default body — the
+      // `{{adminNoteLine}}` / `{{promoSummary}}` convention (see
+      // `composeOptionalEmailLine`). Newlines around the token in the body would
+      // be emitted whether or not the club runs chores, which changes the shape
+      // of every chore-free club's reminder (they are the default) for a
+      // sentence they never receive. This way the body reads
+      // `{{checkoutChoreNote}}{{outstandingAdditionalNote}}` and a chores-OFF
+      // send renders byte-for-byte what it rendered before #2621, while a
+      // chores-ON send gets a real paragraph of its own.
+      checkoutChoreNote: composeOptionalEmailLine(null, checkoutChoreSentence, {
+        trailing: "\n\n",
+      }),
       // #2268: identical shape to the booking-confirmed line above — a bare
       // "Door code: 1234", or nothing at all for a lodge with no code.
       doorCodeNote: composeOptionalEmailLine("Door code", settings.doorCode, {
@@ -1307,7 +1348,11 @@ export async function sendPolicyExceptionRequestExpiredEmail(params: {
  * once delivery has been LEASED against the incident row
  * (`claimHostingCoverageOwnerNotification`). The success stamp is written only
  * after this function returns `sent`; failures release the lease for the durable
- * queue to retry, while two concurrent drains cannot both send.
+ * queue to retry. Immediately before this wrapper is called, the exact claimant
+ * renews its lease atomically; a successor-token race leaves only one active exact
+ * claimant for that renewed lease. Delivery is still at-least-once: a crash after
+ * provider acceptance but before the success stamp can make a later lease send the
+ * transition again.
  *
  * The recipient is the booking's OWNER, which is also the authority the optional
  * booking link is resolved against. Under `SAME_BOOKING_OWNER` the cover that went

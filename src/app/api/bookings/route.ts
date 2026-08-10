@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { hostingCoverageParticipantRetryResponse } from "@/lib/adult-member-hosting-retry-response";
 import { auth } from "@/lib/auth";
 import { requireActiveSessionUser } from "@/lib/session-guards";
 import { prisma } from "@/lib/prisma";
@@ -10,6 +11,7 @@ import {
 import { AgeTier, BookingStatus } from "@prisma/client";
 import { z } from "zod";
 import { bookableAgeTierEnum } from "@/lib/age-tier-schema";
+import { ARRIVAL_TIME_ERROR_MESSAGE, ARRIVAL_TIME_PATTERN } from "@/lib/arrival-time";
 import { getLodgeCapacity } from "@/lib/lodge-capacity";
 import { applyRateLimit, rateLimiters } from "@/lib/rate-limit";
 import { ApiError } from "@/lib/api-error";
@@ -137,7 +139,14 @@ const createBookingSchema = z.object({
   workPartyEventId: z.string().min(1).optional(),
   draft: z.boolean().optional(),
   waitlist: z.boolean().optional(),
-  expectedArrivalTime: z.string().regex(/^([01]\d|2[0-3]):[0-5]0$/).optional(),
+  // #2621: display-only information for the hut leader — the shared pattern,
+  // never a re-spelled literal. The copy that used to sit here read `[0-5]0` and
+  // let a booking be created with an arrival time (:10/:20/:40/:50) that the
+  // picker on the booking page could never show back to the member.
+  expectedArrivalTime: z
+    .string()
+    .regex(ARRIVAL_TIME_PATTERN, ARRIVAL_TIME_ERROR_MESSAGE)
+    .optional(),
   requestedRoomId: z.string().min(1).optional(),
   // Lodge the booking is for (multi-lodge phase 8). Optional so existing
   // single-lodge clients keep working; omitted resolves to the default lodge.
@@ -1233,6 +1242,8 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: "Failed to create waitlisted booking" }, { status: 500 });
     }
   } catch (err) {
+    const hostingRetry = hostingCoverageParticipantRetryResponse(err);
+    if (hostingRetry) return hostingRetry;
     if (err instanceof BookingGuestValidationError) {
       // The in-transaction person-night guard's D-8 refusal, reached on a race
       // with the pre-flight check above.

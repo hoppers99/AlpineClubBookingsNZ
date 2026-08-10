@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { hostingCoverageParticipantRetryResponse } from "@/lib/adult-member-hosting-retry-response";
 import { z } from "zod";
 import {
   MemberLifecycleActionError,
@@ -7,6 +8,11 @@ import {
 import logger from "@/lib/logger";
 import { getClientIp } from "@/lib/rate-limit";
 import { requireAdmin } from "@/lib/session-guards";
+import {
+  XERO_CONTACT_CREATE_BLOCKS_DELETION_CODE,
+  XERO_CONTACT_OPERATION_RESOLVE_REMEDY,
+  XeroContactCreateBlocksDeletionError,
+} from "@/lib/xero-contact-create-recovery";
 
 const reviewSchema = z.object({
   action: z.enum(["approve", "reject"]),
@@ -48,6 +54,25 @@ export async function PATCH(
 
     return NextResponse.json(result);
   } catch (err) {
+    const hostingRetry = hostingCoverageParticipantRetryResponse(err);
+    if (hostingRetry) return hostingRetry;
+    if (err instanceof XeroContactCreateBlocksDeletionError) {
+      return NextResponse.json(
+        {
+          error: err.message,
+          code: XERO_CONTACT_CREATE_BLOCKS_DELETION_CODE,
+          // #2623 T7: the operator needs to know WHICH operation refused and
+          // where to clear it, not just that something Xero-shaped did.
+          ...(err.operationId
+            ? {
+                xeroOperationId: err.operationId,
+                remedy: XERO_CONTACT_OPERATION_RESOLVE_REMEDY,
+              }
+            : {}),
+        },
+        { status: err.statusCode },
+      );
+    }
     if (err instanceof MemberLifecycleActionError) {
       return NextResponse.json(
         { error: err.message, details: err.details },

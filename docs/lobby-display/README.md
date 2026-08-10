@@ -54,7 +54,8 @@ read at a glance, always matching the booking system.
   whole-lodge view appears only while the lodge actually has a full-lodge
   booking).
 - **Visual builder (no HTML)** — compose a board by picking a shape and dropping
-  modules into zones, with a live sandboxed preview, then save (`ADR-004`). It
+  modules into zones, with a live sandboxed preview, then save
+  ([`ADR-004`](decisions/ADR-004-guided-zone-builder.md)). It
   writes a valid layout + template for you; the raw-HTML editors remain as
   **Advanced mode**. Drag-and-drop is fully keyboard-operable with menu/button
   fallbacks, and the option controls only ever offer privacy-safe values.
@@ -81,11 +82,22 @@ browse all variants and iterations.
 
 ### Everyday board — booking bars
 
-The bread-and-butter view: each booking is one continuous bar across the nights
-it covers, carrying its check-out date; bars wrap to show up to five names, then
-"+N".
+The bread-and-butter view: each booking is a bar across the nights it covers,
+carrying its check-out date; bars wrap to show up to five names, then "+N".
+
+A booking whose guests are booked for some nights and not others — in on Friday,
+home on Saturday, back on Monday — draws **one bar per unbroken run of nights**
+with the empty night visible between them, each bar labelled with the day that
+part of the stay ends (#2735). The single continuous bar this replaced claimed a
+bed on a night nobody had booked. An ordinary stay with no gap is one bar,
+exactly as before.
 
 ![Everyday board — booking bars](mockups/screenshots/everyday-bar-board.png)
+
+This still was captured by hand before #2621 and so does not show the expected
+arrival time that a named, in-window arriving bar now carries. The HTML mockup,
+[`mockups/everyday-bar-board.html`](mockups/everyday-bar-board.html), is current
+and is the reference to work from.
 
 ### Whole-lodge bookings — blockout
 
@@ -155,7 +167,7 @@ Import [`seeds/display-template-pack.bundle.zip`](seeds/README.md) to add these.
 | [`phone-visibility.md`](phone-visibility.md) | Member phone-number opt-in (#37): the two-sided consent gate, the staff-kiosk exemption, and where each control lives |
 | [`config-transfer-workflow.md`](config-transfer-workflow.md) | Moving display config between environments as bundles |
 | `decisions/` | ADRs (pairing/auth model; template model + storage; Layout/Template authoring; **the guided visual builder — ADR-004**) — authored with their keystone tasks |
-| [`mockups/`](mockups/) | The full design-exploration catalogue, organised by concept |
+| [`mockups/`](mockups/) | The full design-exploration catalogue, organised by concept — the review-approved whole-lodge designs are frozen separately in [`mockups/approved/`](mockups/approved/README.md) |
 
 ## Delivery
 

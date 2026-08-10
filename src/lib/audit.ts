@@ -1,21 +1,28 @@
 import { prisma } from "./prisma";
 import type { Prisma, PrismaClient } from "@prisma/client";
 import logger from "@/lib/logger";
+import { isAuditCategory, type AuditCategory } from "./audit-categories";
 // test seam
 export { buildMemberAuditLogWhere } from "./audit-query";
 
-export type AuditCategory =
-  | "account"
-  | "booking"
-  | "payment"
-  | "admin"
-  | "security"
-  | "lodge"
-  | "xero"
-  | "communication"
-  | "privacy"
-  | "system"
-  | (string & {});
+/**
+ * The writer's category type is the canonical CLOSED taxonomy (#2581), re-exported
+ * here so every existing `import type { AuditCategory } from "@/lib/audit"` keeps
+ * resolving.
+ *
+ * It used to be an eleven-member union ending in `| (string & {})`, which accepts
+ * any string at all. Two invented values reached the database through that escape
+ * — `membership` from three nomination writers and `auth` from the auth-bounce
+ * writer — and each produced rows that no Admin filter and no Diagnostics
+ * correlation tool could select, because every reader filters on the named values.
+ * A typo would have done the same thing without anyone noticing. `family` had the
+ * mirror-image problem: 27 sites wrote it while it was missing from the union, so
+ * it was only ever accepted BY the escape.
+ *
+ * See `audit-categories.ts` for the list itself and for which permission each
+ * category's evidence sits behind.
+ */
+export type { AuditCategory };
 
 export type AuditSeverity = "info" | "important" | "critical";
 // The auth-bounce diagnostics (#1669) store their classification reason in
@@ -43,7 +50,29 @@ export type AuditLogParams = {
   subjectMemberId?: string | null;
   entityType?: string | null;
   entityId?: string | null;
-  category?: AuditCategory | null;
+  /**
+   * REQUIRED, and non-null — the third and last part of #2581's writer contract
+   * (owner decisions 5 and 6: "make category mandatory for all production audit
+   * writers", "prevent recurrence through BOTH type-level and CI contract
+   * enforcement").
+   *
+   * It was `category?: AuditCategory | null` until every production writer had
+   * one. That was deliberate — child 1 established the closed taxonomy and the
+   * census, child 2's sweep classified all 82 omitting sites — but it left the
+   * type saying the opposite of the rule: omission still compiled, and the only
+   * thing standing between a new writer and a permanently unreadable row was a
+   * census test the author had to run. Now omission does not compile, so the
+   * census contract is a second line rather than the only one.
+   *
+   * A row with no category is read by NOBODY: every AI Diagnostics correlation
+   * tool selects `category = ANY ($1)`, which is NULL — not true — for a NULL
+   * column. It is also kept forever, because `buildAuditLogCreateData` derived
+   * retention only when a category, severity or retention class was present.
+   *
+   * `StructuredAuditEvent.category` (below) has always been required; this makes
+   * the two writer shapes agree.
+   */
+  category: AuditCategory;
   severity?: AuditSeverity | null;
   outcome?: AuditOutcome | null;
   summary?: string | null;
@@ -176,6 +205,29 @@ function sanitizeAuditDetails(value?: string | null): string | undefined {
   return sanitizeAuditArchiveText(value) ?? undefined;
 }
 
+/**
+ * THIS LIST DELIBERATELY REDACTS LESS THAN THE LOG REDACTOR — INV-PRIV-011
+ * (#2683).
+ *
+ * It redacts credentials, tokens, card numbers and long HTML. It does NOT
+ * redact person fields, so an `AuditLog` row keeps first name, last name and
+ * street address where the caller recorded them. That is the decision, not an
+ * oversight: the log/Sentry redactor
+ * (`src/lib/redact-sensitive-json.ts`) strips all of those, and an `AuditLog`
+ * row is different in kind — a permission-gated, retention-classed evidence
+ * record whose job is to say who did what to whom, which stops being evidence
+ * if "who" is unreadable. The owner confirmed it on 10 Aug 2026 against the
+ * blanket-redaction recommendation. This schema holds no special-category data,
+ * which is what bounds the exposure, and the ARCHIVE MODE note above records
+ * what over-redaction had already cost once.
+ *
+ * The boundary is this module, not anyone's intent: a value keeps a person field
+ * only by being written as an audit row through this file. There is no flag or
+ * "audit context" marker on the redactor for a later change to copy, so do not
+ * add person fields here as part of a tidy-up that makes the two key lists
+ * "consistent" — the difference IS the decision. `audit.test.ts` pins all three
+ * fields in both directions at once, so a change to either side fails it.
+ */
 function isSensitiveMetadataKey(key: string): boolean {
   const normalized = key.replace(/[^a-z0-9]/gi, "").toLowerCase();
 
@@ -460,13 +512,92 @@ function compactCreateData(
   ) as Prisma.AuditLogUncheckedCreateInput;
 }
 
+/**
+ * Thrown when a category reaches the write boundary that the closed taxonomy
+ * does not contain — including `undefined` and `null`.
+ *
+ * Named rather than a bare `Error` so a caller that genuinely wants to tolerate
+ * it can, and so the message in a log names the action rather than only the
+ * value.
+ */
+export class AuditCategoryError extends Error {
+  readonly action: string;
+  readonly received: unknown;
+
+  constructor(action: string, received: unknown) {
+    super(
+      `Audit write "${action}" supplied no canonical category (received ` +
+        `${JSON.stringify(received) ?? String(received)}). ` +
+        "A row without a canonical category is returned by no AI Diagnostics " +
+        "correlation tool and is kept forever. Pass one of AUDIT_CATEGORIES " +
+        "from @/lib/audit-categories.",
+    );
+    this.name = "AuditCategoryError";
+    this.action = action;
+    this.received = received;
+  }
+}
+
+/**
+ * The RUNTIME half of the mandatory-category contract (#2581).
+ *
+ * The type is the first line and catches every ordinary writer. This is the
+ * second, and it exists because the type has three documented holes that a
+ * security-relevant field should not rely on being closed: a `as never` /
+ * `as AuditLogParams` cast (this repository uses `as never` freely in test
+ * doubles), a value crossing from untyped JavaScript or JSON, and a category
+ * read back out of a stored row and forwarded. `isAuditCategory` is the same
+ * predicate every reader uses, so writer and reader cannot drift.
+ *
+ * BOTH builders call it, which is what makes it complete: every one of the four
+ * approved boundaries funnels through one of the two.
+ *
+ *   createAuditLog            -> buildAuditLogCreateData
+ *   logAudit                  -> createAuditLog -> buildAuditLogCreateData
+ *   createStructuredAuditLog  -> buildStructuredAuditLogCreateData
+ *   buildStructuredAuditLogCreateArgs -> buildStructuredAuditLogCreateData
+ *
+ * FAILURE SEMANTICS ARE DELIBERATELY UNCHANGED, not newly invented. Throwing
+ * here behaves exactly as a failed `auditLog.create` already does at each
+ * boundary, which is why no caller needs to change:
+ *
+ *  - `logAudit` is fire-and-forget: the throw becomes a rejected promise and is
+ *    caught by its existing `.catch`, logged, and the business operation
+ *    continues. Unchanged.
+ *  - An awaited `createAuditLog`/`createStructuredAuditLog` inside a
+ *    `$transaction` propagates and rolls the transaction back — the same
+ *    "the audit row and the change it describes commit together" behaviour a
+ *    database error already produces. Unchanged.
+ *  - `buildStructuredAuditLogCreateArgs` throws synchronously at the call site,
+ *    which is inside the same transaction callback, so it rolls back the same
+ *    way. Unchanged.
+ *
+ * No production path can reach it today: the census measures 0 uncategorised,
+ * 0 conditional and 1 forwarded site, and that one forwards a typed
+ * `StructuredAuditEvent` whose five callers all pass a literal. It is
+ * defence-in-depth for the next writer, not a live code path.
+ */
+function assertCanonicalAuditCategory(
+  action: string,
+  category: unknown,
+): asserts category is AuditCategory {
+  if (!isAuditCategory(category)) {
+    throw new AuditCategoryError(action, category);
+  }
+}
+
 function buildAuditLogCreateData(
   params: AuditLogParams
 ): Prisma.AuditLogUncheckedCreateInput {
-  const retentionClass =
-    params.retentionClass || params.category || params.severity
-      ? classifyAuditRetention(params)
-      : undefined;
+  assertCanonicalAuditCategory(params.action, params.category);
+
+  // Unconditional now that the category is mandatory. It used to be gated on
+  // `params.retentionClass || params.category || params.severity`, and that gate
+  // is precisely what kept the 82 uncategorised writers' rows at
+  // `retentionClass = NULL, expiresAt = NULL` — never archived, never pruned,
+  // kept forever. With a category always present the gate can never be false,
+  // so it is removed rather than left as a branch that reads as if it can.
+  const retentionClass = classifyAuditRetention(params);
   const metadata =
     params.metadata === undefined
       ? undefined
@@ -482,7 +613,7 @@ function buildAuditLogCreateData(
     subjectMemberId: params.subjectMemberId ?? undefined,
     entityType: params.entityType ?? undefined,
     entityId: params.entityId ?? undefined,
-    category: params.category ?? undefined,
+    category: params.category,
     severity: params.severity ?? undefined,
     outcome: params.outcome ?? undefined,
     summary: params.summary ?? undefined,
@@ -490,13 +621,14 @@ function buildAuditLogCreateData(
     requestId: params.requestId ?? undefined,
     userAgent: params.userAgent ?? undefined,
     retentionClass,
+    // `expiresAt: null` stays the deliberate "keep this row forever" escape
+    // hatch — it is named at the deletion-decision writer and is the owner's to
+    // use. Everything else now derives an expiry, where before a writer that
+    // passed no category derived neither a class nor an expiry.
     expiresAt:
       params.expiresAt === null
         ? undefined
-        : params.expiresAt ??
-          (retentionClass
-            ? getAuditRetentionExpiresAt(retentionClass)
-            : undefined),
+        : params.expiresAt ?? getAuditRetentionExpiresAt(retentionClass),
     archivedAt: params.archivedAt ?? undefined,
     incidentPreserved: params.incidentPreserved ? true : undefined,
   });
@@ -506,6 +638,8 @@ function buildStructuredAuditLogCreateData(
   event: StructuredAuditEvent,
   options?: AuditMetadataOptions
 ): Prisma.AuditLogUncheckedCreateInput {
+  assertCanonicalAuditCategory(event.action, event.category);
+
   const actorMemberId = event.actor?.memberId ?? undefined;
   const subjectMemberId = event.subject?.memberId ?? undefined;
   const entityId = event.entity?.id ?? undefined;

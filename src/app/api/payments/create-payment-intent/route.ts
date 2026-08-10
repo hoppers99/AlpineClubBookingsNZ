@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { hostingCoverageParticipantRetryResponse } from "@/lib/adult-member-hosting-retry-response";
 import { settleHostingCoverageAfterCommit } from "@/lib/adult-member-hosting-coverage-drain";
 import { getDefaultLodgeId } from "@/lib/lodges";
 import { prisma } from "@/lib/prisma";
@@ -20,7 +21,7 @@ import {
   checkCapacityForGuestRanges,
 } from "@/lib/capacity";
 import { bookingHasCapacityOverride } from "@/lib/booking-status";
-import { reconcileBedAllocationsForBooking } from "@/lib/bed-allocation-lifecycle";
+import { reconcileBedAllocationsForBookingWithLodgeLockHeld } from "@/lib/bed-allocation-lifecycle";
 import { parseJsonRequestBody } from "@/lib/api-json";
 import {
   queueSupersededPrimaryIntentCancellations,
@@ -38,6 +39,10 @@ import {
 import { recordBookingEvent } from "@/lib/booking-events";
 import { sendBookingConfirmedEmail } from "@/lib/email";
 import { getProvisionalNonMemberChildSummary } from "@/lib/booking-split-summary";
+import {
+  EXISTING_CARD_TRANSACTION_STATUS_UNCONFIRMED_BODY,
+  PAYMENT_RECEIVED_STATUS_UNCONFIRMED_BODY,
+} from "@/lib/payment-recovery-contract";
 
 class PaymentIntentCapacityError extends Error {
   constructor() {
@@ -74,6 +79,13 @@ class PaymentIntentReviewPendingError extends Error {
 }
 
 export async function POST(request: NextRequest) {
+  // Arm after Stripe authoritatively reports a succeeded intent, while its
+  // captured-versus-refunded classification is still unknown. Clear it once
+  // the local ledger proves a refund; otherwise the outer retry mapper uses it
+  // to distinguish status/reconciliation recovery from an ordinary
+  // pre-capture participant conflict.
+  let receivedPaymentIntentId: string | null = null;
+  let succeededPaymentIntentObserved = false;
   try {
     const session = await auth();
     if (!session?.user?.id) {
@@ -359,7 +371,7 @@ export async function POST(request: NextRequest) {
             // immediately after its own guarded claim). An arm that changed no
             // status has nothing to reconcile.
             if (previousRange || settledAtZero) {
-              await reconcileBedAllocationsForBooking({
+              await reconcileBedAllocationsForBookingWithLodgeLockHeld({
                 bookingId,
                 db: tx,
                 previousRange: previousRange ?? {
@@ -518,6 +530,11 @@ export async function POST(request: NextRequest) {
       const existingIntent = await getPaymentIntent(booking.payment.stripePaymentIntentId);
 
       if (existingIntent.status === "succeeded") {
+        // Stripe has established a successful card transaction. Arm the
+        // no-retry recovery before the fallible local refund discriminator;
+        // until that lookup succeeds we cannot truthfully call it paid OR
+        // refunded.
+        succeededPaymentIntentObserved = true;
         // #1765 — a refunded PaymentIntent keeps status "succeeded" forever
         // (refunds hang off the charge and never move the intent), so at the
         // intent level a deliberately refunded payment is indistinguishable
@@ -537,6 +554,7 @@ export async function POST(request: NextRequest) {
             booking.payment.status === PaymentStatus.PARTIALLY_REFUNDED;
 
         if (!refundedHistory) {
+          receivedPaymentIntentId = existingIntent.id;
           if (booking.payment.status !== "SUCCEEDED") {
             const reconciliation = await markBookingPaymentSucceeded({
               bookingId: booking.id,
@@ -571,7 +589,6 @@ export async function POST(request: NextRequest) {
 
           return NextResponse.json({
             alreadyPaid: true,
-            paymentIntentId: existingIntent.id,
             // #2265 — this recovery path is reachable AFTER an election was
             // consumed above (an admin payment link or saved-card charge can
             // have minted and captured an intent against a PAYMENT_PENDING
@@ -581,6 +598,12 @@ export async function POST(request: NextRequest) {
             creditElection,
           });
         }
+
+        // The local ledger has now authoritatively proved that this succeeded
+        // intent was refunded. Any later failure belongs to the new repayment
+        // attempt, so it must retain the ordinary initialization retry contract
+        // instead of being misreported as an unknown existing card transaction.
+        succeededPaymentIntentObserved = false;
 
         // Refund history (#1765): the succeeded-then-refunded intent is
         // settlement history, not a recoverable payment — reconciling it would
@@ -714,7 +737,38 @@ export async function POST(request: NextRequest) {
       creditElection,
     });
   } catch (error) {
+    const hostingRetry = hostingCoverageParticipantRetryResponse(
+      error,
+      receivedPaymentIntentId
+          ? {
+            paymentReceived: true,
+            finalisationPending: true,
+          }
+        : succeededPaymentIntentObserved
+          ? {
+              existingCardTransactionFound: true,
+              paymentStatusUnconfirmed: true,
+            }
+        : undefined,
+    );
+    if (hostingRetry) return hostingRetry;
     logger.error({ err: error }, "Error creating payment intent");
+    if (receivedPaymentIntentId) {
+      // Stripe is authoritative for capture. Any non-participant error after
+      // that fact was observed leaves the browser unable to distinguish a
+      // rolled-back reconciliation from one that committed before a later
+      // local failure. Never send the member back to a payment form or claim
+      // finalisation is definitely pending; require a fresh status read.
+      return NextResponse.json(PAYMENT_RECEIVED_STATUS_UNCONFIRMED_BODY, {
+        status: 409,
+      });
+    }
+    if (succeededPaymentIntentObserved) {
+      return NextResponse.json(
+        EXISTING_CARD_TRANSACTION_STATUS_UNCONFIRMED_BODY,
+        { status: 409 },
+      );
+    }
     // The pay transaction's capacity refusal and its status-conflict bail both
     // carry an intentionally user-facing message; keep them (and their 409).
     // Every other unexpected error gets the fixed generic message so internal

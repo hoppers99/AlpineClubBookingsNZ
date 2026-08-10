@@ -276,7 +276,7 @@ type SubState = (typeof MEMBER_GUEST_CONSENT_SUB_STATES)[number];
 /** The vocabulary the table may use for a column's nullness. */
 const NULLNESS_WORDS = ["set", "null", "any"] as const;
 
-/** How each `respondedBy` word is spelled in the DOMAIN_INVARIANTS table. */
+/** How each `respondedBy` word is spelled in the INV-GUEST consent table. */
 const RESPONDER_DOC_WORDS: Record<string, string> = {
   null: "null",
   set: "set",
@@ -290,7 +290,7 @@ function statusWord(state: SubState): string {
   return state.status === null ? "NULL" : state.status;
 }
 
-/** One row of the eight-row table in docs/DOMAIN_INVARIANTS.md. */
+/** One row of the eight-row table in docs/invariants/member-guest-consent.md. */
 function docTableRow(state: SubState): string {
   const status = state.status === null ? "`NULL`" : `\`${state.status}\``;
   return [
@@ -331,12 +331,13 @@ describe("the documented model matches the shipped one", () => {
     }
   });
 
-  it("is mirrored row-for-row in docs/DOMAIN_INVARIANTS.md", () => {
-    const invariants = readRepoFile("docs/DOMAIN_INVARIANTS.md");
+  it("is mirrored row-for-row in docs/invariants/member-guest-consent.md", () => {
+    const invariants = readRepoFile("docs/invariants/member-guest-consent.md");
     for (const state of MEMBER_GUEST_CONSENT_SUB_STATES) {
       expect(
         invariants,
-        `${state.id}: DOMAIN_INVARIANTS is missing or stale for\n  ${docTableRow(state)}`,
+        `${state.id}: INV-GUEST is missing or stale for\n  ${docTableRow(state)}` +
+          "\n  (docs/invariants/member-guest-consent.md — the consent sub-state table)",
       ).toContain(docTableRow(state));
     }
   });
@@ -356,10 +357,12 @@ describe("the documented model matches the shipped one", () => {
     }
   });
 
-  it("documents the states as unreachable until MG2 in STATE_MACHINES.md", () => {
+  it("documents the shipped MG2 member-guest consent lifecycle in STATE_MACHINES.md", () => {
     const stateMachines = readRepoFile("docs/STATE_MACHINES.md");
-    expect(stateMachines).toContain("MemberGuestConsentStatus");
-    expect(stateMachines).toMatch(/unreachable/i);
+    expect(stateMachines).toContain("## Member Guest Consent Lifecycle");
+    expect(stateMachines).toContain("#2305 / MG2 #2307");
+    expect(stateMachines).toContain("PENDING -> CONFIRMED");
+    expect(stateMachines).not.toContain("unreachable until MG2");
   });
 });
 

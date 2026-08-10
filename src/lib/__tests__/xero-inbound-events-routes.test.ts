@@ -220,8 +220,11 @@ describe("Xero inbound event admin routes", () => {
     expect(mockReplayStoredXeroInboundEvent).toHaveBeenCalledWith("evt_1");
     expect(mockLogAudit).toHaveBeenCalledWith({
       action: "XERO_INBOUND_EVENT_REPLAY",
+      category: "xero",
       memberId: "admin-1",
       targetId: "evt_1",
+      entityType: "XeroInboundEvent",
+      entityId: "evt_1",
       details: "status=PROCESSED",
     });
 

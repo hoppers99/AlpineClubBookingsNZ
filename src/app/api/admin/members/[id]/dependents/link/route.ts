@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 import type { Prisma } from "@prisma/client";
 import { MEMBER_ACCESS_ROLE_SELECT } from "@/lib/access-role-definitions";
+import { createAuditLog } from "@/lib/audit";
 import { isFullAdmin, memberHoldsPrivilegedRole } from "@/lib/access-roles";
 import {
   AdminAccountGuardError,
@@ -368,11 +369,19 @@ export async function POST(
         )
       );
 
-      await tx.auditLog.create({
-        data: {
+      // Through `createAuditLog` rather than `tx.auditLog.create` (#2581) —
+      // same reason as the unlink route: the hand-built literal bypassed
+      // `buildAuditLogCreateData`, so this row got no metadata sanitisation, no
+      // `retentionClass` and no `expiresAt`. The `tx` client keeps the write
+      // inside the link's own transaction.
+      await createAuditLog(
+        {
           action: "member.dependent.link",
+          category: "family",
           memberId: session.user.id,
           targetId: target.id,
+          entityType: "Member",
+          entityId: target.id,
           details: JSON.stringify({
             parentMemberId: parent.id,
             linkType,
@@ -382,7 +391,8 @@ export async function POST(
             addToFamilyGroupIds,
           }),
         },
-      });
+        tx
+      );
 
       return updated;
     });

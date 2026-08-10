@@ -3,7 +3,11 @@
 import type { ComponentType } from "react";
 import { describe, expect, it } from "vitest";
 import { render } from "@testing-library/react";
-import type { DisplayState, DisplayStateBooking } from "@/lib/lodge-display-state";
+import type {
+  DisplayState,
+  DisplayStateBooking,
+  DisplayStateGuest,
+} from "@/lib/lodge-display-state";
 import { DISPLAY_CONDITION_NAMES } from "@/lib/lodge-display/conditions";
 import { DISPLAY_MODULE_NAMES } from "@/lib/lodge-display/template-registry";
 import {
@@ -30,17 +34,54 @@ import { WelcomePanel } from "@/components/lodge-display/modules/welcome-panel";
 
 const WINDOW = ["2026-04-13", "2026-04-14", "2026-04-15"];
 
-function row(overrides: Partial<DisplayStateBooking>): DisplayStateBooking {
-  return {
+/** Expand a half-open envelope into night keys — the payload's own rule. */
+function envelopeNights(stayStart: string, stayEnd: string): string[] {
+  const nights: string[] = [];
+  for (let key = stayStart; key < stayEnd; ) {
+    nights.push(key);
+    const next = new Date(`${key}T00:00:00.000Z`);
+    next.setUTCDate(next.getUTCDate() + 1);
+    key = next.toISOString().slice(0, 10);
+  }
+  return nights;
+}
+
+/**
+ * A fixture row or guest may leave `nights` out, and gets the expanded envelope
+ * (#2735) — which is exactly what the serialiser emits for a contiguous stay,
+ * so these hook fixtures render the bars they always did.
+ */
+type GuestFixture = Omit<DisplayStateGuest, "nights"> & { nights?: string[] };
+type RowFixture = Partial<Omit<DisplayStateBooking, "guests">> & {
+  guests?: GuestFixture[] | null;
+};
+
+function row(overrides: RowFixture): DisplayStateBooking {
+  const merged = {
     key: "row-1-0",
     label: "Olive O",
     wholeLodge: false,
     roomId: null,
-    guests: [{ label: "Jane S", stayStart: "2026-04-13", stayEnd: "2026-04-15" }],
+    guests: [
+      { label: "Jane S", stayStart: "2026-04-13", stayEnd: "2026-04-15" },
+    ] as GuestFixture[] | null,
     guestCount: 1,
     stayStart: "2026-04-13",
     stayEnd: "2026-04-15",
+    // #2621: no expected arrival time is the ordinary case, so the base fixture
+    // has none; the cases that exercise the chip set it explicitly.
+    arrivalTime: null,
     ...overrides,
+  };
+  return {
+    ...merged,
+    guests:
+      merged.guests?.map((guest) => ({
+        ...guest,
+        nights: guest.nights ?? envelopeNights(guest.stayStart, guest.stayEnd),
+      })) ?? null,
+    nights:
+      overrides.nights ?? envelopeNights(merged.stayStart, merged.stayEnd),
   };
 }
 
@@ -130,7 +171,17 @@ describe("CSS-hook stability contract", () => {
       Component: ArrivalsBoard,
       fixture: state({
         rooms,
-        bookings: [row({ key: "a", roomId: "r1", guests: overflowGuests, guestCount: 7 })],
+        bookings: [
+          row({
+            key: "a",
+            roomId: "r1",
+            guests: overflowGuests,
+            guestCount: 7,
+            // #2621: the fixture has to exercise every declared hook, and
+            // `display-bar-arrival` only renders for a row that carries a time.
+            arrivalTime: "17:30",
+          }),
+        ],
       }),
     },
     {

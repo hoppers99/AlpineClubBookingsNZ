@@ -1,4 +1,10 @@
-import { formatDateOnlyForTimeZone, isDateOnlyString } from "@/lib/date-only";
+import {
+  addDaysDateOnly,
+  formatDateOnlyForTimeZone,
+  getTodayDateOnly,
+  isDateOnlyString,
+  parseDateOnly,
+} from "@/lib/date-only";
 
 /**
  * A single included night for a guest. Accepts a Date, a `yyyy-mm-dd`
@@ -83,6 +89,21 @@ export function getGuestStayEnd(
   return guest.stayEnd ?? booking.checkOut;
 }
 
+/**
+ * Does this guest hold a bed for the lodge night `night`?
+ *
+ * A lodge night is one bed held from midday NZ on that date to midday NZ on the
+ * following date (INV-DATE-002). So the night a guest checks out is NOT one of
+ * theirs — they occupy only its morning half, which is the operational-day
+ * question below and never this one. That is why the envelope branch is
+ * half-open `[stayStart, stayEnd)`: `stayEnd` is a departure morning, not an
+ * occupied night (INV-DATE-003).
+ *
+ * This is the frozen night-model predicate that capacity, pricing, whole-lodge
+ * and member-night logic are built on (INV-DATE-005), and
+ * `booking-guest-stay-ranges-contract.test.ts` pins its body byte-for-byte. The
+ * set form of exactly this rule is {@link getGuestBedNightKeys}.
+ */
 export function isGuestActiveOnNight(
   guest: GuestStayRange,
   night: Date,
@@ -104,43 +125,150 @@ export function isGuestActiveOnNight(
   return stayStartKey <= nightKey && nightKey < stayEndKey;
 }
 
-function isGuestVisibleOnLodgeDate(
-  guest: GuestStayRange,
-  date: Date,
-  booking: BookingStayRange,
-  options?: { includeDepartureDate?: boolean }
-): boolean {
-  const dateKey = dateOnlyKey(date);
+// ---------------------------------------------------------------------------
+// The operational day (#2622)
+// ---------------------------------------------------------------------------
+//
+// Owner rule: everyone who stays a night is in the lodge from midday NZ on the
+// day they arrive until midday NZ on the day they leave. So an NZ calendar day
+// D has two halves and a guest occupies
+//
+//   the MORNING half of D  iff  D-1 is one of their booked nights
+//   the EVENING half of D  iff  D   is one of their booked nights
+//
+// and they are operationally present on D if they occupy either half. The
+// boundary is fixed at midday NZ by definition (epic D-M3): there is no
+// setting, no threshold and no time-of-day data anywhere in this file.
+//
+// This is a PURE per-night rule, so it handles sparse (non-contiguous) stays
+// segment by segment (epic D-M4): nights {5, 8} means present on {5, 6, 8, 9},
+// and the gap day 7 — adjacent to no booked night — is an absence. A booking
+// with zero nights is never operationally present on any day.
+//
+// The derived labels the chore allocator and the roster badges consume are
+// nothing more than which half is occupied:
+//
+//   isArriving(D)  = evening half only  ("arrives today")
+//   isDeparting(D) = morning half only  ("leaves today")
+//
+// They are never independent data. `isGuestActiveOnNight` — the NIGHT model
+// that capacity, pricing and the whole-lodge rules are built on — is untouched
+// and deliberately separate; do not conflate the two.
 
-  // For explicit night sets, "visible on a lodge date" means the guest stays
-  // that night, plus the morning after their last included night when
-  // includeDepartureDate is set (the checkout-day visibility the board uses).
+const MS_PER_DAY = 24 * 60 * 60 * 1000;
+
+/**
+ * Shift a `yyyy-mm-dd` NZ date-only key by whole days.
+ *
+ * The key is re-anchored at UTC midnight, which is midday NZ (UTC+12/+13), so
+ * adding or subtracting whole days can never land on an NZ daylight-saving
+ * transition and roll the calendar day the wrong way.
+ */
+function shiftDateOnlyKey(key: string, days: number): string {
+  return formatDateOnlyForTimeZone(
+    new Date(new Date(`${key}T00:00:00.000Z`).getTime() + days * MS_PER_DAY)
+  );
+}
+
+/**
+ * Is `nightKey` one of this guest's booked nights?
+ *
+ * Deliberately duplicates `isGuestActiveOnNight`'s two branches against a
+ * pre-derived key instead of refactoring it: that function is frozen (the
+ * capacity, pricing, whole-lodge and multi-date-range suites pin it), so the
+ * operational-day rule takes a private copy rather than touching it.
+ */
+function isGuestNightKeyBooked(
+  guest: GuestStayRange,
+  nightKey: string,
+  booking: BookingStayRange
+): boolean {
   const nightKeySet = getGuestNightKeySet(guest);
   if (nightKeySet) {
-    if (nightKeySet.has(dateKey)) {
-      return true;
-    }
-    if (options?.includeDepartureDate) {
-      let maxKey: string | null = null;
-      for (const key of nightKeySet) {
-        if (maxKey === null || key > maxKey) maxKey = key;
-      }
-      if (maxKey !== null) {
-        const departureKey = formatDateOnlyForTimeZone(
-          new Date(new Date(`${maxKey}T00:00:00.000Z`).getTime() + 24 * 60 * 60 * 1000)
-        );
-        return dateKey === departureKey;
-      }
-    }
-    return false;
+    return nightKeySet.has(nightKey);
   }
-
   const stayStartKey = dateOnlyKey(getGuestStayStart(guest, booking));
   const stayEndKey = dateOnlyKey(getGuestStayEnd(guest, booking));
+  return stayStartKey <= nightKey && nightKey < stayEndKey;
+}
 
-  return options?.includeDepartureDate
-    ? stayStartKey <= dateKey && dateKey <= stayEndKey
-    : stayStartKey <= dateKey && dateKey < stayEndKey;
+/** Which halves of NZ day `day` a guest occupies, plus the derived labels. */
+export type GuestOperationalDayPresence = {
+  /** Occupies the pre-midday half: the night BEFORE `day` was booked. */
+  morning: boolean;
+  /** Occupies the post-midday half: the night OF `day` is booked. */
+  evening: boolean;
+  /** Occupies either half. */
+  present: boolean;
+  /** Evening half only — they arrive today. */
+  isArriving: boolean;
+  /** Morning half only — they leave today. */
+  isDeparting: boolean;
+};
+
+export function getGuestOperationalDayPresence(
+  guest: GuestStayRange,
+  day: Date,
+  booking: BookingStayRange
+): GuestOperationalDayPresence {
+  const dayKey = dateOnlyKey(day);
+  const evening = isGuestNightKeyBooked(guest, dayKey, booking);
+  const morning = isGuestNightKeyBooked(
+    guest,
+    shiftDateOnlyKey(dayKey, -1),
+    booking
+  );
+  return {
+    morning,
+    evening,
+    present: morning || evening,
+    isArriving: evening && !morning,
+    isDeparting: morning && !evening,
+  };
+}
+
+/**
+ * Is the guest in the lodge at any point on NZ day `day`?
+ *
+ * This is the one named eligibility rule for every operational surface — chore
+ * roster generation, roster save/confirm validation and chore cleanup all read
+ * it, so they cannot disagree about who was there.
+ */
+export function isGuestOperationallyPresentOnDay(
+  guest: GuestStayRange,
+  day: Date,
+  booking: BookingStayRange
+): boolean {
+  return getGuestOperationalDayPresence(guest, day, booking).present;
+}
+
+/** Arrives on `day`: occupies the evening half only. */
+export function isGuestArrivingOnDay(
+  guest: GuestStayRange,
+  day: Date,
+  booking: BookingStayRange
+): boolean {
+  return getGuestOperationalDayPresence(guest, day, booking).isArriving;
+}
+
+/** Leaves on `day`: occupies the morning half only. */
+export function isGuestDepartingOnDay(
+  guest: GuestStayRange,
+  day: Date,
+  booking: BookingStayRange
+): boolean {
+  return getGuestOperationalDayPresence(guest, day, booking).isDeparting;
+}
+
+/** Everyone operationally present on NZ day `day`, in input order. */
+export function getOperationallyPresentGuestsForDay<Guest extends GuestStayRange>(
+  guests: Guest[] | null | undefined,
+  day: Date,
+  booking: BookingStayRange
+): Guest[] {
+  return (guests ?? []).filter((guest) =>
+    isGuestOperationallyPresentOnDay(guest, day, booking)
+  );
 }
 
 export function getActiveGuestsForNight<Guest extends GuestStayRange>(
@@ -161,6 +289,272 @@ export function countActiveGuestsForNight(
   return getActiveGuestsForNight(guests, night, booking).length;
 }
 
+// ---------------------------------------------------------------------------
+// Expanding a stay into nights (#2628)
+// ---------------------------------------------------------------------------
+//
+// `BookingGuestNight` is the canonical night set. `BookingGuest.stayStart` /
+// `stayEnd` is a DERIVED half-open envelope whose `stayEnd` is the morning after
+// the last night (INV-DATE-012). The two agree for a contiguous stay; for a
+// SPARSE (non-contiguous) one the envelope silently fills the internal gaps, so
+// anything that expands the envelope when a night set exists reports nights the
+// guest is not there.
+//
+// Six places used to expand a stay and they disagreed. These helpers are the one
+// definition (INV-DATE-020); route new callers here rather than writing another
+// `eachDateOnlyInRange(guest.stayStart, guest.stayEnd)`.
+
+/**
+ * Expand a half-open date-only envelope `[stayStart, stayEnd)` into night keys.
+ *
+ * **THE MOST DANGEROUS FUNCTION IN THIS FILE. IT IS HALF-OPEN. KEEP IT THAT
+ * WAY.** `stayEnd` is a departure morning, never an occupied night
+ * (INV-DATE-003), and the bed-allocation planner is fed ONE PSEUDO-GUEST PER
+ * NIGHT — each carrying `stayStart = night`, `stayEnd = night + 1`
+ * (`candidateGuestBookings` in `admin-bed-allocation.ts`). Make this inclusive
+ * and every pseudo-guest grows a phantom second night, so the planner claims the
+ * morning-after bed while its real occupant is still in it: a genuine double
+ * booking, on the automatic path, silently. `bed-allocation.test.ts` →
+ * "pseudo-guest envelope (#2628)" pins that; it is a mutation probe, not
+ * decoration.
+ *
+ * An empty or reversed envelope yields no nights, which is what makes a
+ * zero-night booking present on no day (INV-DATE-008).
+ */
+export function expandStayEnvelopeToNightKeys(
+  stayStart: Date,
+  stayEnd: Date
+): string[] {
+  const endKey = dateOnlyKey(stayEnd);
+  const keys: string[] = [];
+  for (
+    let key = dateOnlyKey(stayStart);
+    key < endKey;
+    key = shiftDateOnlyKey(key, 1)
+  ) {
+    keys.push(key);
+  }
+  return keys;
+}
+
+/**
+ * The explicit night set a guest carries, sorted — or `null` when they carry
+ * none and a caller would have to fall back to the envelope.
+ *
+ * Use this where the surface deliberately places or counts only explicitly
+ * listed nights, which is what the bed-allocation board and its lifecycle do:
+ * both build their guest-nights straight from `BookingGuestNight` rows, so a
+ * guest with none has nothing to allocate and any envelope fallback would
+ * advertise work no allocator will ever do. Everywhere else wants
+ * {@link getGuestBedNightKeys}.
+ */
+export function getExplicitGuestBedNightKeys(
+  guest: GuestStayRange
+): string[] | null {
+  const nightKeySet = getGuestNightKeySet(guest);
+  return nightKeySet ? [...nightKeySet].sort() : null;
+}
+
+/**
+ * Every lodge night this guest holds a bed for, sorted.
+ *
+ * The set form of {@link isGuestActiveOnNight} and identical to it night for
+ * night: the explicit night set wins when the guest has one, otherwise the
+ * half-open envelope. That equivalence is pinned by
+ * `booking-guest-stay-ranges-sparse.test.ts`, so the counting surfaces and the
+ * capacity/pricing surfaces cannot disagree about who is in a bed.
+ */
+export function getGuestBedNightKeys(
+  guest: GuestStayRange,
+  booking: BookingStayRange
+): string[] {
+  const explicit = getExplicitGuestBedNightKeys(guest);
+  if (explicit) return explicit;
+  return expandStayEnvelopeToNightKeys(
+    getGuestStayStart(guest, booking),
+    getGuestStayEnd(guest, booking)
+  );
+}
+
+/**
+ * The mornings this guest leaves the lodge, sorted — one per SEGMENT, not one
+ * per stay.
+ *
+ * A guest occupies the morning half of the day after each booked night
+ * (INV-DATE-004), so a departure morning is the day after a booked night that is
+ * not itself booked. A contiguous stay has exactly one, equal to `stayEnd`,
+ * which is why this changes nothing for the ordinary case. Nights {10, 12} have
+ * TWO: the 11th and the 13th — a guest who leaves and comes back really does
+ * depart twice, and a surface keyed on `stayEnd` alone can only ever record the
+ * last one.
+ */
+export function getGuestDepartureMorningKeys(
+  guest: GuestStayRange,
+  booking: BookingStayRange
+): string[] {
+  const nightKeys = getGuestBedNightKeys(guest, booking);
+  const booked = new Set(nightKeys);
+  return nightKeys
+    .map((nightKey) => shiftDateOnlyKey(nightKey, 1))
+    .filter((morningKey) => !booked.has(morningKey))
+    .sort();
+}
+
+/** Is `day` one of this guest's departure mornings (per segment)? */
+export function isGuestDepartureMorning(
+  guest: GuestStayRange,
+  day: Date,
+  booking: BookingStayRange
+): boolean {
+  const dayKey = dateOnlyKey(day);
+  return (
+    isGuestNightKeyBooked(guest, shiftDateOnlyKey(dayKey, -1), booking) &&
+    !isGuestNightKeyBooked(guest, dayKey, booking)
+  );
+}
+
+/**
+ * The next lodge night this guest holds a bed for AFTER `day`, or `null` when
+ * `day` is inside or after their last segment.
+ *
+ * The bound anything scoped to "the segment that just ended" needs. The kiosk's
+ * departure sweep is the reason it exists: marking a guest departed clears the
+ * chores they can no longer do, and before #2628 the endpoint only ever fired on
+ * the morning after the LAST night, so "everything after today" and "the rest of
+ * this segment" were the same set. They are not the same set on a sparse stay —
+ * a guest booked on nights {11, 14} who checks out on the 12th is BACK on the
+ * 14th, and a sweep with no upper bound takes their 14th and 15th with it.
+ */
+export function getNextGuestBedNightAfter(
+  guest: GuestStayRange,
+  day: Date,
+  booking: BookingStayRange
+): Date | null {
+  const dayKey = dateOnlyKey(day);
+  const nextKey = getGuestBedNightKeys(guest, booking).find(
+    (nightKey) => nightKey > dayKey
+  );
+  return nextKey ? parseDateOnly(nextKey) : null;
+}
+
+/**
+ * Is `day` a RETURN — an arrival evening that follows an earlier departure
+ * morning of the same stay?
+ *
+ * Only a sparse stay can have one. For a contiguous stay the single departure
+ * morning is `stayEnd`, which is after every booked night, so no arrival evening
+ * can follow it and this is false for every day of every contiguous stay —
+ * deliberately, because it is what keeps the kiosk's attendance controls exactly
+ * where they have always been for the ordinary case.
+ *
+ * It exists because `BookingGuest.arrivedAt` / `departedAt` is ONE attendance
+ * pair for the whole stay: "where is this person now", not a log. A guest who
+ * checks out on the 12th and comes back on the 14th arrives against a record
+ * that still says "departed", and without this the kiosk hides the arrive button
+ * (`!departedAt`) and offers no depart button (not a departure morning), leaving
+ * the officer with no control at all on a night the guest is in the building.
+ * Marking the return arrival clears the stale departure, so the NEXT check-out
+ * records rather than toggling the first one off (#2628).
+ */
+export function isGuestReturningOnDay(
+  guest: GuestStayRange,
+  day: Date,
+  booking: BookingStayRange
+): boolean {
+  const dayKey = dateOnlyKey(day);
+  if (!getGuestOperationalDayPresence(guest, day, booking).isArriving) {
+    return false;
+  }
+  return getGuestDepartureMorningKeys(guest, booking).some(
+    (morningKey) => morningKey < dayKey
+  );
+}
+
+/**
+ * The earliest lodge night whose occupant may still be in the lodge right now:
+ * YESTERDAY, not today.
+ *
+ * Night N runs to midday NZ on date N+1 (INV-DATE-002), so at any moment on day
+ * D the person who slept on night D-1 is either still in their bed or has just
+ * left it. A guard written `stayDate >= today` forgets them, which is how a bed
+ * somebody is lying in can be deleted. Use this as the lower bound of any
+ * "is this bed still spoken for?" query.
+ *
+ * Deliberately NOT for the partner-share sweeps, which DELETE rows: night D-1 is
+ * occupancy that has already happened, and past lodge nights are history and
+ * stay untouched (INV-CAP-010).
+ */
+export function getEarliestCurrentBedNightDate(
+  today: Date = getTodayDateOnly()
+): Date {
+  return addDaysDateOnly(today, -1);
+}
+
+/**
+ * Lodge-date visibility for the lobby wall. Both branches now delegate to a
+ * named model; this function chooses between them and holds nothing of its own.
+ *
+ * `includeDepartureDate: false` is the NIGHT model (INV-DATE-005): who holds a
+ * bed on the lodge night `date`.
+ *
+ * `includeDepartureDate: true` is the OPERATIONAL DAY (INV-DATE-004): who is in
+ * the lodge at any point on NZ day `date`, which is the guest whose night `date`
+ * or whose night `date - 1` is booked. That is per SEGMENT, so a guest booked on
+ * nights {10, 12} is visible on the 10th, the 11th, the 12th and the 13th — the
+ * 11th being a morning they really are in the building until midday.
+ *
+ * ## What changed, and why it is safe now (#2735)
+ *
+ * This branch used to be narrower on one shape and one shape only: for an
+ * explicit night set it admitted the morning after the FINAL listed night and no
+ * other, so a sparse stay's intermediate departure mornings were missing. Every
+ * other operational surface — the roster, the kiosk badges, the kiosk
+ * check-in/check-out buttons — was made per-segment by #2628; the wall was
+ * deliberately left behind, and #2622/#2628 both refused to move it.
+ *
+ * They refused because of the COUNT, not the rule. `lodge-display-state.ts` is
+ * the club's unauthenticated public screen, and its guest-name privacy gate is a
+ * sole-occupancy count over NIGHTS (INV-DATE-006, issue #58). That count used to
+ * be derived from this list — "everyone visible except whoever's `stayEnd` is
+ * today" — so widening this predicate by one morning would have added a phantom
+ * NIGHT, dropped a sole-occupancy blockout and published guest names and phone
+ * numbers. #2628 moved the count onto the night model; #2735 took it off this
+ * list entirely, so it is now derived from the booking's whole guest set and
+ * shares nothing with visibility in either direction. Widening this can no
+ * longer move a night count. THAT ORDER IS THE WHOLE SAFETY ARGUMENT — if the
+ * count is ever coupled back to this list, this predicate has to narrow again
+ * first.
+ *
+ * Unchanged for every contiguous stay, envelope or explicit: "night `date` or
+ * night `date - 1`" over `[stayStart, stayEnd)` is exactly the closed range
+ * `[stayStart, stayEnd]` this used to compute, and a contiguous night set has
+ * exactly one departure morning, the one after its final night.
+ */
+function isGuestVisibleOnLodgeDate(
+  guest: GuestStayRange,
+  date: Date,
+  booking: BookingStayRange,
+  options?: { includeDepartureDate?: boolean }
+): boolean {
+  if (!options?.includeDepartureDate) {
+    return isGuestActiveOnNight(guest, date, booking);
+  }
+  return isGuestOperationallyPresentOnDay(guest, date, booking);
+}
+
+/**
+ * @deprecated (#2622) Call the named model you actually mean:
+ * `getOperationallyPresentGuestsForDay` for the operational day, or
+ * `getActiveGuestsForNight` for the night model.
+ *
+ * Since #2631 this has exactly one caller — `lodge-display-state.ts`, the
+ * fenced, privacy-load-bearing lobby wall — and
+ * `booking-guest-stay-ranges-contract.test.ts` freezes that list so no new
+ * caller can appear. It survives as the wall's single named entry point rather
+ * than as a distinct rule: since #2735 both of its branches are a straight
+ * delegation to a named model (see `isGuestVisibleOnLodgeDate` above), so
+ * nothing is defined here and nothing can drift out of step.
+ */
 export function getLodgeVisibleGuestsForDate<Guest extends GuestStayRange>(
   guests: Guest[] | null | undefined,
   date: Date,

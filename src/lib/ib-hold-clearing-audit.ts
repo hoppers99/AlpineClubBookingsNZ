@@ -251,7 +251,7 @@ export function formatIbHoldClearingAuditReport(
 //
 // Distinct from the #1597 hold-clearing audit above. The booking invoice is
 // raised at the FULL finalPrice and locally-applied member credit is never
-// allocated against it (DOMAIN_INVARIANTS.md:124-128, "locally-applied credit
+// allocated against it (INV-PAY-017, "locally-applied credit
 // never reduced the invoice"). So every Internet-Banking payment carrying
 // applied credit is exposed: a member who pays that full invoice loses the
 // applied-credit slice (realized double-pay); one who has not yet paid is still

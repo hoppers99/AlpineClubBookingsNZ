@@ -8,14 +8,25 @@ import { NextRequest } from "next/server";
   THE ONE THING THESE TESTS EXIST TO HOLD DOWN is the route's uniform 403. Its
   own docblock says IDOR is the primary security concern on this endpoint,
   because the two ids it takes are exactly the two an attacker would want to
-  probe, and the answer to that is that EVERY failure — no such guest row, a row
-  on somebody else's booking, a row that is not a member-guest at all, a request
-  that has already been answered, and a caller who is neither the target nor an
-  accepted delegate — comes back as the same status with the same bytes. A
-  "helpful" 404 for the missing-guest case, or a distinct message for the
-  already-answered case, turns the endpoint back into an existence oracle, so
-  the first test below compares all five responses byte for byte rather than
-  asserting a status per case.
+  probe, and the answer to that is that EVERY AUTHORISATION failure — no such
+  guest row, a row on somebody else's booking, a row that is not a member-guest
+  at all, a request that has already been answered, and a caller who is neither
+  the target nor an accepted delegate — comes back as the same status with the
+  same bytes. A "helpful" 404 for the missing-guest case, or a distinct message
+  for the already-answered case, turns the endpoint back into an existence
+  oracle, so the first test below compares all five responses byte for byte
+  rather than asserting a status per case.
+
+  ONE ANSWER SITS BELOW THAT LINE and is deliberately NOT byte-identical: a
+  caller who has already proved they are the target or an accepted delegate gets
+  404 with the shared "cancelled or removed" sentence on a SOFT-DELETED booking
+  (#2700, INV-ADDPAY-034/035). It is not a hole in the uniformity above, because
+  it is unreachable until the target/delegate check has passed — the five cases
+  compared byte for byte here all fail before it. That guard lives in the
+  consent service and is pinned in
+  src/lib/__tests__/member-guest-consent-deleted-booking.test.ts, including the
+  ordering: a stranger on a deleted booking still gets the same 403 as on a live
+  one. Nothing new may be added ABOVE the target/delegate check.
 
   Mock shape follows the neighbouring MG2 suite
   (src/app/api/admin/member-guest-settings/__tests__/route.test.ts) and the

@@ -311,22 +311,22 @@ const NOTICE = "AdminViewOnlyNotice";
 /*
   The published census, in ONE place.
 
-  Four documents and one JSDoc block quote these numbers as fact, and they have
+  Three documents and one JSDoc block quote these numbers as fact, and they have
   drifted twice — once by being counted from raw text (a `describeReason={false}`
   inside a comment counted as a call site), and once by a doc being updated while
   a sibling doc was not. The census test below measures them; the
-  "figures the docs publish" test below that reads the four documents and fails
+  "figures the docs publish" test below reads those sources and fails
   when any of them no longer states the measured value. So a rollout change
   cannot land with the prose out of step: both tests fail, and the fix is always
   to re-measure and update every place together — never to loosen an assertion.
 */
 const FIGURES = {
   /** Every `<ViewOnlyActionButton>` render site in the admin tree. */
-  callSites: 310,
+  callSites: 315,
   /** Those that hand their explanation to a banner, by either rule. */
-  optOuts: 261,
+  optOuts: 264,
   /** `describeReason={false}` — needs a banner in the SAME file. */
-  staticOptOuts: 234,
+  staticOptOuts: 237,
   /** `describeReason={!ancestorRendersViewOnlyBanner}` — needs a vouch. */
   vouchedOptOuts: 27,
   /** …of the vouched: proved at a parent's own JSX render site (#2168). */
@@ -334,13 +334,13 @@ const FIGURES = {
   /** …of the vouched: proved through the wizard shell's channel (#2324). */
   shellVouchedOptOuts: 5,
   /** Controls that KEEP the per-button reason, and the files holding them. */
-  exceptions: 49,
-  exceptionFiles: 26,
+  exceptions: 51,
+  exceptionFiles: 28,
   /** The remainder bucket: neither a member detail card nor dialog-only. */
-  leafControls: 36,
-  leafFiles: 21,
+  leafControls: 37,
+  leafFiles: 22,
   /** Components that render an `AdminViewOnlySectionBanner`. */
-  bannerComponents: 83,
+  bannerComponents: 84,
 } as const;
 
 const WIZARD_SHELL = "IntegrationWizard";
@@ -1010,10 +1010,12 @@ describe("view-only section banner coverage (#2160)", () => {
 
   it("matches the coverage figures the docs publish", () => {
     /*
-      Four documents and one JSDoc block quote these numbers as fact:
-      `docs/ARCHITECTURE.md`, `AGENTS.md`, `docs/STYLE_GUIDE.md`,
+      Three documents and one JSDoc block quote these numbers as fact:
+      `docs/ARCHITECTURE.md`, `docs/STYLE_GUIDE.md`,
       `CHANGELOG.md`, and `ViewOnlyActionButton`'s own JSDoc in
-      `src/components/admin/view-only-action.tsx`.
+      `src/components/admin/view-only-action.tsx`. `AGENTS.md` published them
+      too until #2714 routed the settings pattern out of the always-read core;
+      it is still scanned for a stale figure, but no longer has to carry one.
 
       They were counted by hand, from raw text, and came out one too high —
       twice, for the same reason both times: a `describeReason={false}` written
@@ -1250,6 +1252,127 @@ describe("view-only section banner coverage (#2160)", () => {
                vouched by the roster page's unconditional lodge-access banner,
                so static opt-outs move 237 -> 234, render-site vouches move
                21 -> 22, and total opt-outs move 263 -> 261.
+          311  +1  #2593 replaces the old Save Mode site with two Edit/Save
+               sites in the per-lodge allocation-preferences card. It owns a
+               banner for standalone reuse, while the bed-allocation page
+               suppresses that child banner and covers both control sites with
+               the page's existing bookings-area banner.
+               static opt-outs move 234 -> 235 and banner components 83 -> 84.
+          310  -1  #2602 replaces the booking-panel removal control with a
+               plain preview button: view-only administrators may inspect the
+               staged removal, while the dialog keeps apply edit-gated. The
+               removed site was a same-file static opt-out, so static opt-outs
+               move 235 -> 234 and total opt-outs move 262 -> 261. Banner,
+               vouch and per-button-explanation counts are unchanged.
+          311  +1  Unrecorded when it landed, reconstructed here from the
+               commit rather than left as a hole in the chain: #2597 ADDED a
+               control — the "Resume approval" button, which finishes a deletion
+               approval that started and did not finish, in
+               `app/(admin)/admin/deletion-requests/deletion-requests-client.tsx`.
+               It is a `describeReason={false}` static opt-out in the same file
+               as that page's own unconditional banner, so callSites
+               310 -> 311, optOuts 261 -> 262 and staticOptOuts 234 -> 235,
+               and nothing else moves. Commit 969b88943
+               re-measured the figures to 311/262/235 and updated every place
+               that publishes them, but added no ledger line: the entry above
+               it reads 310, the figures read 311, and the gap was exactly
+               this. Noticed while measuring the entry below, whose own numbers
+               would otherwise have looked like +2.
+          312  +1  #2627 adds "Release approval" to the deletion queue's
+               self-service rows — the Full-Admin way out of an approval left
+               mid-flight, beside the existing "Resume approval". A static
+               opt-out under the page's own unconditional
+               AdminViewOnlySectionBanner, which the sibling Approve/Reject/
+               Resume controls already opt out under, so static opt-outs move
+               235 -> 236 and total opt-outs 262 -> 263. Nothing else moves: no
+               new banner component, and the Full-Admin gate it additionally
+               carries is applied by NOT RENDERING the control at all rather
+               than by disabling it with a narrower per-button reason, so it
+               adds no exception. (Re-measured, as always: 311 -> 312. The
+               running left-hand column reached 310 at the step above, so it
+               trails the measured total by one; #2637 supplies the correct
+               reconstruction of that gap and this note deliberately does not
+               guess at it.)
+          313  +1  #2352 MC-03D adds the per-page Delete control to the Page
+               Content cards, beside the Hide/Publish toggle it sits with and
+               under the banner that file already renders. Static opt-outs move
+               236 -> 237 and total opt-outs 263 -> 264; the vouched split,
+               the exceptions and the banner count are untouched, because the
+               control is gated on the same content area the banner states.
+          313      THE COLLISION THIS LEDGER EXISTS FOR, and it fired. This
+               entry was first written as `312`, measured against main at
+               54b282b61 when #2352 was the first of three open PRs off that
+               base — and #2636 (the entry above) reached main first with its own
+               `callSites: 312`. The two literals were byte-identical, so the
+               merge produced no conflict in the FIGURES block at all: only the
+               prose ledger conflicted, and the numbers it guards merged
+               silently wrong. Re-measured on the merged tree at f9bd34bd1 with
+               `vitest run view-only-banner-contract` and set to what the tree
+               reports: 313 / 264 / 237. #2641 will measure 314 / 265 / 238 when
+               it lands, and it must MEASURE that rather than read it here.
+          314  +1  #2595 adds the bed-allocation **Move** control to the
+               allocation board's row menu. It is an EXCEPTION, not an opt-out:
+               it keeps its own per-button reason because the menu it sits in is
+               popover content with no banner above it, which is the same
+               treatment every other control in that menu already has. So
+               callSites 313 -> 314 and exceptions 49 -> 50 across 26 -> 27
+               files, while optOuts and staticOptOuts do not move at all — the
+               one entry in this ledger where the opt-out figures stay still.
+
+               And that is where the entry above guessed wrong, which is the
+               ledger's own rule proving itself a third time. #2637 predicted
+               "#2641 will measure 314 / 265 / 238" by assuming every new
+               control is an opt-out under a banner. This one is not: it sits in
+               popover content, so it lands in the EXCEPTIONS bucket and the two
+               opt-out figures do not move. Measured on the merged tree with
+               `npx vitest run view-only-banner-contract`, the tree reports
+               314 / 264 / 237 — one more call site than 313, and the same
+               opt-out figures #2637 left behind. READ NOTHING FROM THIS
+               COLUMN; run the suite.
+
+               (The earlier hazard fired here too, in the other direction:
+               against its own base this branch measured `callSites: 312`, the
+               same literal #2637 wrote, so git merged the FIGURES value
+               silently and only this prose collided — exactly the shape the
+               entry above describes.)
+
+          314      Re-measured a second time after merging main at d8041b601
+               (#2352 ISR, #2621 arrival-time, #2654 requested-room Save). None
+               of those three adds a `<ViewOnlyActionButton>` render site, so
+               the tree still reports 314 / 264 / 237, exceptions 50 across 27
+               files, and this block is unchanged. Recorded anyway, because
+               "the figures did not move" is only worth anything when somebody
+               RAN the suite to find that out — the sibling audit-writer census
+               merged silently two short in this very same merge, off a
+               byte-identical literal, and the only reason that was caught is
+               that its per-sink figures were measured rather than assumed.
+
+          315  +1  #2649 adds **Return to waitlist** — the repair for a free
+               waitlist confirm stranded in `PAYMENT_PENDING`
+               (`admin-return-to-waitlist-controls.tsx`) — to the Admin tools
+               card. Like the `No emails` switch and the capacity/exclusive hold
+               controls it sits beside, it is a LEAF dropped into someone else's
+               layout with nothing local proving a banner renders above it, so
+               it keeps its own per-button reason: an EXCEPTION, not an opt-out.
+               leafControls 36 -> 37 across 21 -> 22 files, exceptions 50 -> 51
+               across 27 -> 28 files, and optOuts/staticOptOuts do not move.
+
+               AND THE COLLISION THIS LEDGER EXISTS FOR FIRED A THIRD TIME, on
+               three lines at once. #2595 (the `314 +1` entry above) and this
+               branch each measured `313 -> 314` against a base without the
+               other, and each wrote `callSites: 314`, `exceptions: 50`,
+               `exceptionFiles: 27` — byte-identical on all three, so git had no
+               textual disagreement to report and merged the VALUES silently
+               while only this prose collided. The merged tree holds BOTH new
+               controls, so the honest figures are 315 / 51 / 28 and neither
+               side's literals were them. The two that did NOT collide are what
+               makes the shape legible: `leafControls`/`leafFiles` moved on this
+               side only (#2595's control is popover content, mine is a leaf), so
+               they merged correctly to 37/22 — and 10 dialog + 37 leaf + 4
+               member-credit-card reconciles to 51, not 50. Re-measured with
+               `npx vitest run view-only-banner-contract`, which reports
+               315 / 264 / 237. READ NOTHING FROM THIS COLUMN; run the suite.
+
       */
       // #2259 adds the per-booking "No emails"
       // switch (`booking-no-emails-controls.tsx`), a leaf control dropped into
@@ -1300,6 +1423,7 @@ describe("view-only section banner coverage (#2160)", () => {
       "app/(admin)/admin/issue-reports/page.tsx",
       "app/(admin)/admin/member-applications/_components/approval-mapping-panel.tsx",
       "app/(admin)/admin/membership-types/page.tsx",
+      "components/admin/bed-allocation-move-dialog.tsx",
     ];
 
     const bucket = (names: string[]) =>
@@ -1329,7 +1453,7 @@ describe("view-only section banner coverage (#2160)", () => {
       // the wrong permission — and an admin with membership edit but finance
       // view-only would get no banner at all.
       memberDetailCards: { controls: 4, files: 1 },
-      separateA11yContainer: { controls: 9, files: 4 },
+      separateA11yContainer: { controls: 10, files: 5 },
       // +1 control / +1 file vs 20/11: the #2259 "No emails" switch; then
       // +4 controls / +1 file: the four #2249 display-wizard step controls,
       // which the shell's render-callback indirection put out of reach of both
@@ -1350,9 +1474,9 @@ describe("view-only section banner coverage (#2160)", () => {
 
       Both halves are needed, and the gap between them is where the drift has
       actually happened: the numbers moved, the census was updated, and one of the
-      four documents was not. That leaves a reader trusting a figure no test
-      disagrees with. Here every document that quotes a figure has to still quote
-      the measured one.
+      one of the three documents or the JSDoc was not. That leaves a reader
+      trusting a figure no test disagrees with. Here every document that quotes
+      a figure has to still quote the measured one.
 
       Matching is on whitespace-collapsed, markup-stripped text, so re-wrapping a
       paragraph or bolding a number is free; changing a number is not. The
@@ -1364,12 +1488,6 @@ describe("view-only section banner coverage (#2160)", () => {
     */
     const f = FIGURES;
     const published: Record<string, string[]> = {
-      "AGENTS.md": [
-        `${f.optOuts} of ${f.callSites} ViewOnlyActionButton call sites now opt out`,
-        `${f.staticOptOuts} covered by a banner in the SAME file`,
-        `${f.vouchedOptOuts} by a verified vouching parent (${f.renderSiteVouchedOptOuts} at a JSX render site, ${f.shellVouchedOptOuts} through the guided-setup shell)`,
-        `and ${f.exceptions} keep the per-button reason`,
-      ],
       "docs/ARCHITECTURE.md": [
         `${f.bannerComponents} components render a banner, and ${f.optOuts} of the ${f.callSites} ViewOnlyActionButton call sites opt out`,
         `${f.staticOptOuts} pass the literal describeReason={false}`,
@@ -1382,10 +1500,6 @@ describe("view-only section banner coverage (#2160)", () => {
         // The style guide publishes the exception TOTAL only, on purpose.
         `${f.exceptions} controls still carry their own per-button reason`,
       ],
-      "CHANGELOG.md": [
-        `${f.callSites} gated admin controls, ${f.optOuts} of them covered by a banner (${f.staticOptOuts} in their own file, ${f.vouchedOptOuts} by a verified vouching parent — ${f.shellVouchedOptOuts} of those through the wizard frame)`,
-        `and ${f.exceptions} across ${f.exceptionFiles} files deliberately keeping their own reason`,
-      ],
       "src/components/admin/view-only-action.tsx": [
         `pass describeReason={false} here (${f.staticOptOuts} of ${f.callSites} call sites)`,
         `a further ${f.vouchedOptOuts} pass describeReason={!${VOUCH_PROP}}`,
@@ -1394,6 +1508,28 @@ describe("view-only section banner coverage (#2160)", () => {
         `counts ${f.leafControls} controls here`,
       ],
     };
+    /*
+      #2714 routed the canonical admin-settings pattern out of `AGENTS.md`'s
+      always-read core and into `docs/ARCHITECTURE.md`, which had already carried
+      the same rules in fuller form. `AGENTS.md` now leaves a pointer and a
+      routing row instead, so it publishes none of these figures and is no longer
+      REQUIRED to. It is still scanned, for the reason the shape check below
+      exists: a figure re-introduced there has to be the measured one, not a
+      resurrected copy of a superseded census.
+    */
+    const scannedButNotRequired: Record<string, string[]> = {
+      "AGENTS.md": [
+        `${f.optOuts} of ${f.callSites} ViewOnlyActionButton call sites now opt out`,
+        `${f.staticOptOuts} covered by a banner in the SAME file`,
+        `${f.vouchedOptOuts} by a verified vouching parent (${f.renderSiteVouchedOptOuts} at a JSX render site, ${f.shellVouchedOptOuts} through the guided-setup shell)`,
+        `and ${f.exceptions} keep the per-button reason`,
+      ],
+    };
+
+    const changelogPhrases = [
+      `${f.callSites} gated admin controls, ${f.optOuts} of them covered by a banner (${f.staticOptOuts} in their own file, ${f.vouchedOptOuts} by a verified vouching parent — ${f.shellVouchedOptOuts} of those through the wizard frame)`,
+      `and ${f.exceptions} across ${f.exceptionFiles} files deliberately keeping their own reason`,
+    ];
 
     // Collapse the formatting a prose edit is free to change: line wrapping,
     // markdown emphasis, inline code fences, and JSDoc's leading ` * `.
@@ -1406,15 +1542,14 @@ describe("view-only section banner coverage (#2160)", () => {
     /*
       #2452 moved changelog entries OUT of CHANGELOG.md: a PR now writes its
       entry as a `changelog.d/<pr>-<slug>.md` fragment, and the release compile
-      folds the fragments into a version section later. A stale figure written
-      into a fragment therefore dodges the scan above entirely — it is invisible
-      until the release that publishes it, by which point the PR that introduced
-      it merged green and is long gone.
+      folds the fragments into the compiled CHANGELOG ledger later. Feature PRs
+      do not edit that ledger or its Unreleased list, so current census
+      enforcement applies to the source documents and new fragments instead.
 
-      So every fragment is scanned in the same bucket as CHANGELOG.md, and a
-      stale figure fails on its OWN pull request. The difference is presence: a
-      fragment is not REQUIRED to quote these sentences (almost none do), it is
-      only forbidden from quoting a superseded version of one.
+      Every new fragment is therefore scanned separately, and a stale figure
+      fails on its OWN pull request. A fragment is not REQUIRED to quote these
+      sentences (almost none do); it is only forbidden from quoting a
+      superseded version of one.
     */
     const fragmentsDir = join(process.cwd(), "changelog.d");
     const scanned: { rel: string; phrases: string[]; requirePresence: boolean }[] = [
@@ -1423,12 +1558,17 @@ describe("view-only section banner coverage (#2160)", () => {
         phrases,
         requirePresence: true,
       })),
+      ...Object.entries(scannedButNotRequired).map(([rel, phrases]) => ({
+        rel,
+        phrases,
+        requirePresence: false,
+      })),
       ...(existsSync(fragmentsDir)
         ? readdirSync(fragmentsDir)
             .filter((name) => name.endsWith(".md") && name !== "README.md")
             .map((name) => ({
               rel: `changelog.d/${name}`,
-              phrases: published["CHANGELOG.md"],
+              phrases: changelogPhrases,
               requirePresence: false,
             }))
         : []),
@@ -1448,14 +1588,10 @@ describe("view-only section banner coverage (#2160)", () => {
           offenders.push(`${rel}: "${phrase}"`);
           continue;
         }
-        // A CORRECT SENTENCE ELSEWHERE IN THE SAME FILE MUST NOT EXCUSE A STALE
-        // ONE, and that is not hypothetical: `includes` only answers "does the
-        // measured figure appear at least once". A CHANGELOG quotes this
-        // sentence once per release that moved the numbers, so a new entry
-        // carrying the right figure let an older entry keep publishing a
-        // superseded one — a reader landing on the wrong paragraph is told a
-        // number no test disagrees with, which is the exact failure the census
-        // above exists to prevent.
+        // A CORRECT SENTENCE ELSEWHERE IN THE SAME CURRENT DOCUMENT MUST NOT
+        // EXCUSE A STALE ONE: `includes` only answers "does the measured figure
+        // appear at least once". Release-compiler-owned CHANGELOG entries are
+        // not in this set; current changelog fragments are.
         //
         // So every occurrence of each sentence's SHAPE — the same words with any
         // digits in the numeric slots — has to carry the measured figures.
@@ -1474,9 +1610,9 @@ describe("view-only section banner coverage (#2160)", () => {
     expect(
       offenders,
       `These documents no longer state the figures the census above measures. ` +
-        `A rollout change moves the numbers; re-measure and update AGENTS.md, ` +
-        `docs/ARCHITECTURE.md, docs/STYLE_GUIDE.md, CHANGELOG.md (and any ` +
-        `changelog.d/ fragment quoting them) and the ` +
+        `A rollout change moves the numbers; re-measure and update ` +
+        `docs/ARCHITECTURE.md, docs/STYLE_GUIDE.md, any changelog.d/ fragment ` +
+        `quoting them, and the ` +
         `ViewOnlyActionButton JSDoc together.`,
     ).toEqual([]);
   });

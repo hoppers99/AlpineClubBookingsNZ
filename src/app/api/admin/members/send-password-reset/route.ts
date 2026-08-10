@@ -117,8 +117,19 @@ export async function POST(req: NextRequest) {
 
             logAudit({
               action: "member.password-reset-sent",
+              // `security`, not `communication` (#2581 decision 3): the
+              // affected domain is the CREDENTIAL, not the mailing — this
+              // action hands somebody a way to take over an account. `security`
+              // is read with `support:view` alone, the same gate Admin > Audit
+              // Log already needs for this row, and the correlation projection
+              // returns only action/category/severity/outcome/entityType/
+              // requestId — never `details`, which is where the recipient's
+              // address lives.
+              category: "security",
               memberId: adminId,
               targetId: member.id,
+              entityType: "Member",
+              entityId: member.id,
               details: JSON.stringify({
                 recipientEmail: member.email,
                 recipientName: `${member.firstName} ${member.lastName}`,

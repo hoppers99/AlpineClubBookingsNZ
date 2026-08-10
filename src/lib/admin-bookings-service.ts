@@ -26,13 +26,17 @@ import {
 } from "@/lib/booking-delete-visibility";
 import {
   addDaysDateOnly,
-  eachDateOnlyInRange,
   endOfDateOnlyForTimeZone,
   formatDateOnly,
   getTodayDateOnly,
   parseDateOnly,
   startOfDateOnlyForTimeZone,
 } from "@/lib/date-only";
+import {
+  getGuestBedNightKeys,
+  type BookingStayRange,
+  type GuestStayRange,
+} from "@/lib/booking-guest-stay-ranges";
 import { lodgeNullTolerantScope } from "@/lib/lodges";
 import { buildAdditionalOwedWhere } from "@/lib/unpaid-finished-stays";
 import { prisma } from "@/lib/prisma";
@@ -548,6 +552,11 @@ async function loadBookingCandidates(
           isMember: true,
           stayStart: true,
           stayEnd: true,
+          // The canonical night set (#2628). `deriveBedState` compares expected
+          // guest-nights against the booking's BedAllocation rows, so without
+          // these a sparse stay's gap nights are expected, never allocated, and
+          // the booking never reaches "complete".
+          nights: { select: { stayDate: true } },
         },
         orderBy: [{ createdAt: "asc" }, { id: "asc" }],
       },
@@ -625,9 +634,23 @@ function guestName(guest: { firstName: string; lastName: string }) {
   return [guest.firstName, guest.lastName].filter(Boolean).join(" ");
 }
 
-function guestNightKeys(guest: { id: string; stayStart: Date; stayEnd: Date }) {
-  return eachDateOnlyInRange(guest.stayStart, guest.stayEnd).map(
-    (date) => `${guest.id}:${formatDateOnly(date)}`
+/**
+ * The `guestId:night` keys this guest is expected to hold a bed on.
+ *
+ * Reads the canonical night set, NOT the `stayStart`/`stayEnd` envelope (#2628).
+ * Expanding the envelope filled a sparse stay's internal gaps with nights the
+ * guest is not there, and nothing ever allocates a bed for those — so a booking
+ * with a non-contiguous stay could never reach `"complete"` and sat in the
+ * operational queue for good. `getGuestBedNightKeys` falls back to the same
+ * half-open envelope for a guest carrying no night rows, so nothing moves for
+ * an ordinary contiguous stay or for a legacy guest.
+ */
+function guestNightKeys(
+  guest: { id: string } & GuestStayRange,
+  booking: BookingStayRange
+) {
+  return getGuestBedNightKeys(guest, booking).map(
+    (night) => `${guest.id}:${night}`
   );
 }
 
@@ -707,7 +730,7 @@ function deriveBedState(
   }
 
   const expectedGuestNightKeys = new Set(
-    booking.guests.flatMap((guest) => guestNightKeys(guest))
+    booking.guests.flatMap((guest) => guestNightKeys(guest, booking))
   );
   const allocationKeys = new Set(
     booking.bedAllocations.map(
