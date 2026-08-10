@@ -82,9 +82,15 @@ const AGE_TIER_SETTING_SELECT = {
  * computes, which is the same rule that stops this pack reseeding the
  * financial-year cache.
  */
-export async function getAgeTierSettingsStrict(): Promise<AgeTierSettingData[]> {
-  const { prisma } = await import("./prisma");
-  const rows = await prisma.ageTierSetting.findMany({
+export async function getAgeTierSettingsStrict(
+  /**
+   * A caller inside a bounded read-only transaction MUST pass it, so the read sits
+   * under that transaction's snapshot and statement timeout.
+   */
+  db?: { ageTierSetting: { findMany: typeof import("./prisma").prisma.ageTierSetting.findMany } },
+): Promise<AgeTierSettingData[]> {
+  const client = db ?? (await import("./prisma")).prisma;
+  const rows = await client.ageTierSetting.findMany({
     orderBy: { sortOrder: "asc" },
     select: AGE_TIER_SETTING_SELECT,
   });

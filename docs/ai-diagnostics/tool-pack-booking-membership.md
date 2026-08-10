@@ -339,10 +339,54 @@ cannot reach for one by accident.** None of these is used, and none may be:
 `approveAndExecutePolicyExceptionRequest`, `processWaitlistForDates`,
 `confirmWaitlistOffer` and `replaceBedAllocationsForBooking`. Reads use narrow
 Prisma `findUnique`, `findFirst`, `findMany` and `count` calls or read-only helpers
-built from those. One capacity sub-read uses a short Prisma transaction solely to
-set PostgreSQL `READ ONLY` and a five-second `statement_timeout` before its bounded
-allocation query; those two fixed control statements are the only `$executeRaw`
-calls. There is no data-write statement, advisory lock or HTTP request.
+built from those. There is no data-write statement, advisory lock or HTTP request.
+
+#### Every server-owned answer is bounded at the database
+
+The entry-level ten-second deadline is a `Promise.race`. It stops this process
+**waiting** and cancels nothing: no part of Prisma propagates a cancellation into an
+in-flight statement. So before this was fixed, a slow hosting sibling fan-out, member
+night-conflict scan or capacity read carried on running against the database after
+the operator had already been told the evidence was unavailable — and under a queue
+of invocations that is how a read-only feature becomes a database incident. Only the
+bed-allocation sub-read had a real boundary.
+
+All three `server_owned` entries now run their whole read graph inside **one**
+interactive transaction that begins with two fixed control statements — the only
+`$executeRaw` calls in the pack:
+
+```
+SET TRANSACTION READ ONLY
+SET LOCAL statement_timeout = '5s'
+```
+
+- **The timeout is PostgreSQL's**, so it fires whether or not this process is still
+  waiting, and it sits below the JS deadline so the database refuses first and the
+  operator gets a specific message rather than a race.
+- **`READ ONLY` is the database refusing a write**, in a transaction on the
+  application's own full-privilege connection. These entries are `server_owned`, not
+  `select_only_sql`, so the AID-5 role's grants are not the boundary here: this is
+  what makes "the agent remains completely read-only" enforced rather than intended.
+- **One snapshot.** Every read in one invocation sees the same committed state, so a
+  row can no longer report a party assembled at one instant against a capacity figure
+  measured at another. The "multiple READ COMMITTED instants" caveat applies between
+  invocations, not within one.
+- **The transaction client goes to every collaborator** — the policy evaluator, the
+  read-only hosting seam, the capacity engine, the conflict scan, the membership-type
+  resolver, the strict settings readers, the stored financial-year resolution and the
+  induction read. Each of those helpers falls back to the global client when it is not
+  given one, and a fallback would run outside both the snapshot and the timeout while
+  looking correct at the call site, so the canonical seams take a client and none of
+  these entries names the global one after opening the transaction. The bed-allocation
+  sub-read joins its caller's transaction rather than opening a second: a nested
+  interactive transaction is a second pool connection, which is the pool-starvation
+  shape `docs/CONCURRENCY_AND_LOCKING.md` forbids.
+- **The sibling fan-out has a deterministic ceiling.** It is the widest read in either
+  pack, because each sibling arrives with its guests and their night rows. It stays
+  **unbounded for a writer** — a hosting answer must see every booking that could
+  cover a night, so truncating it would change the rule — and an evidence caller
+  passes a ceiling of 25, reads `ceiling + 1` under a total order, and **refuses**
+  rather than returning a quietly short host list.
 
 ### The server-owned residual, stated plainly
 

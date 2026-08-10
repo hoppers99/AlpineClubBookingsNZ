@@ -1,6 +1,7 @@
 import "server-only";
 
 import type {
+  PrismaClient,
   InductionKind,
   InductionSignerRole,
   InductionStatus,
@@ -442,8 +443,14 @@ export async function getInductionForMember(
  */
 export async function getInductionStatusForMember(
   memberId: string,
+  /**
+   * A caller inside a bounded read-only transaction MUST pass it, so this read sits
+   * under that transaction's snapshot and statement timeout rather than on a second
+   * connection outside both.
+   */
+  db: Pick<PrismaClient, "memberInduction"> = prisma,
 ): Promise<InductionStatus | null> {
-  const induction = await prisma.memberInduction.findFirst({
+  const induction = await db.memberInduction.findFirst({
     where: { memberId },
     orderBy: { createdAt: "desc" },
     select: { status: true },

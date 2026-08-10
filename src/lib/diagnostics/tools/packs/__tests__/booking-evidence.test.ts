@@ -187,6 +187,7 @@ vi.mock("@/lib/member-subscription-eligibility", async (importOriginal) => ({
 import {
   AID6B_BOOKING_GUEST_CEILING,
   AID6B_CAPACITY_NIGHT_CEILING,
+  AID6B_HOSTING_SIBLING_CEILING,
   AID6B_OPEN_REQUEST_CEILING,
   BOOKING_BLOCKER_CODES,
   MEMBER_ELIGIBILITY_CODES,
@@ -1981,13 +1982,128 @@ describe("booking block state: reviews and the party footprint (#2376)", () => {
     // would count its own beds as somebody else's occupancy.
     seedBooking();
     await blockStateRow();
+    // And with the TRANSACTION CLIENT as its sixth argument, so the widest read in
+    // the entry runs inside the entry's own snapshot and under its statement
+    // timeout. The engine's own `tx ?? prisma` fallback is exactly the silent
+    // escape this argument exists to close.
     expect(checkCapacityMock).toHaveBeenCalledWith(
       LODGE_ID,
       day(CHECK_IN),
       day(CHECK_OUT),
       0,
       BOOKING_ID,
+      prismaMock,
     );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 2c. Every server-owned read is bounded AT THE DATABASE (#2376).
+// ---------------------------------------------------------------------------
+
+describe("server-owned evidence is bounded at the database, not only in JS (#2376)", () => {
+  /**
+   * WHY THIS SUITE EXISTS. The entry-level deadline is a `Promise.race`: it stops
+   * this process waiting and cancels nothing. Nothing in Prisma propagates a
+   * cancellation into an in-flight statement, so the hosting sibling fan-out, the
+   * conflict scan and the capacity engine all used to keep running against the
+   * database after the operator had already been told the evidence was unavailable.
+   * The bound therefore has to be PostgreSQL's own, and these assertions are about
+   * the statements that establish it.
+   */
+  const READERS = [
+    ["block state", () => readBookingBlockStateEvidence({ bookingId: BOOKING_ID })],
+    ["capacity", () => readBookingCapacityEvidence({ bookingId: BOOKING_ID })],
+    [
+      "member eligibility",
+      () => readMemberEligibilityEvidence({ memberId: MEMBER_ID }),
+    ],
+  ] as const;
+
+  it.each(READERS)(
+    "%s opens ONE read-only transaction with a statement timeout",
+    async (_label, read) => {
+      seedBooking();
+      seedMember({});
+      await read();
+      // ONE. A nested interactive transaction would be a second pool connection,
+      // a second snapshot and a second timeout — the pool-starvation shape
+      // CONCURRENCY_AND_LOCKING.md forbids — which is why the bed-allocation
+      // sub-read now joins its caller's transaction instead of opening its own.
+      expect(prismaMock.$transaction).toHaveBeenCalledTimes(1);
+      expect(prismaMock.$transaction).toHaveBeenCalledWith(
+        expect.any(Function),
+        expect.objectContaining({ maxWait: 2_000, timeout: 7_000 }),
+      );
+      // READ ONLY first, then the timeout: PostgreSQL refuses a write in this
+      // transaction even where a grant would permit one, which is what makes
+      // "completely read-only" a property the database enforces rather than a
+      // property of this code being careful. These entries run on the
+      // application's own full-privilege connection, so nothing else does.
+      expect(prismaMock.$executeRaw).toHaveBeenCalledTimes(2);
+      expect(prismaMock.$executeRaw.mock.calls[0]?.[0]?.[0]).toBe(
+        "SET TRANSACTION READ ONLY",
+      );
+      expect(prismaMock.$executeRaw.mock.calls[1]?.[0]?.[0]).toBe(
+        "SET LOCAL statement_timeout = '5s'",
+      );
+    },
+  );
+
+  it("sets the statement timeout below the JS deadline, so the database refuses first", async () => {
+    // A timeout above the deadline would make the race the effective bound again,
+    // and the operator would get the generic "exceeded 10000ms" instead of a
+    // specific database refusal.
+    seedBooking();
+    await blockStateRow();
+    const options = prismaMock.$transaction.mock.calls[0]?.[1] as {
+      timeout: number;
+    };
+    expect(options.timeout).toBeLessThan(10_000);
+  });
+
+  it("hands the transaction client to EVERY collaborator on the block-state graph", async () => {
+    // The finding this closes: each of these helpers takes a client and falls back
+    // to the global one when it is not given it. A helper that fell back would run
+    // outside both the snapshot and the timeout — which is the whole boundary the
+    // transaction exists to create — while looking perfectly correct at the call
+    // site.
+    seedBooking();
+    await blockStateRow();
+    expect(evaluatePersistedNonHostingViolationsMock.mock.calls[0]?.[0]).toBe(
+      prismaMock,
+    );
+    expect(evaluatePersistedHostingMock.mock.calls[0]?.[1]).toBe(prismaMock);
+    expect(findBookingMemberNightConflictsMock.mock.calls[0]?.[0]).toBe(
+      prismaMock,
+    );
+    expect(checkCapacityMock.mock.calls[0]?.[5]).toBe(prismaMock);
+  });
+
+  it("hands it to every collaborator on the member-eligibility graph too", async () => {
+    seedMember({});
+    await eligibilityRow();
+    expect(resolveMembershipTypePolicyForMemberMock.mock.calls[0]?.[0]).toBe(
+      prismaMock,
+    );
+    // The strict settings readers and the induction read take a client for the same
+    // reason; they are doubled here, so what is asserted is that the pack asks for
+    // them at all inside the transaction rather than which client they received.
+    expect(getAgeTierSettingsMock).toHaveBeenCalled();
+    expect(peekSubscriptionLockoutModeMock).toHaveBeenCalled();
+  });
+
+  it("gives the hosting sibling fan-out a deterministic ceiling", async () => {
+    // The widest read in either pack: each sibling arrives with its guests and
+    // their night rows. Unbounded is right for a WRITER — its answer must see every
+    // booking that could cover a night — and wrong for a diagnostic, which must
+    // either answer or say it could not.
+    seedBooking();
+    await blockStateRow();
+    const options = evaluatePersistedHostingMock.mock.calls[0]?.[2] as {
+      siblingCeiling?: number;
+    };
+    expect(options.siblingCeiling).toBe(AID6B_HOSTING_SIBLING_CEILING);
   });
 });
 

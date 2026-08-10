@@ -347,11 +347,37 @@ function hostingSiblingWhere(
 async function loadSiblingHosts(
   booking: LoadedHostingBooking,
   db: AdultMemberHostingReadDb,
+  /**
+   * A DETERMINISTIC CEILING, supplied only by a read-only evidence caller.
+   *
+   * This read is deliberately unbounded for a WRITER: the hosting answer it
+   * computes has to see every sibling that could cover a night, and silently
+   * truncating it would change the rule. A diagnostic has a different obligation --
+   * it must either answer or say it could not -- and it also has the widest fan-out
+   * in either tool pack, because each sibling arrives with its guests and their
+   * night rows. So an evidence caller passes a ceiling and gets `ceiling + 1` rows
+   * back, which makes "there were more than I may read" a distinguishable fact
+   * rather than a quietly short list.
+   *
+   * Omitted by every writer, whose behaviour is therefore byte-identical.
+   */
+  siblingCeiling?: number,
 ): Promise<{ participants: HostingParticipant[]; siblingIds: string[] }> {
   const siblings = (await db.booking.findMany({
     where: hostingSiblingWhere(booking),
     select: BOOKING_HOSTING_SELECT,
+    ...(siblingCeiling === undefined
+      ? {}
+      : {
+          // A total order, so a bound that binds binds reproducibly rather than
+          // returning any N of the matching rows.
+          orderBy: [{ checkIn: "asc" as const }, { id: "asc" as const }],
+          take: siblingCeiling + 1,
+        }),
   })) as LoadedHostingBooking[];
+  if (siblingCeiling !== undefined && siblings.length > siblingCeiling) {
+    throw new HostingSiblingCeilingExceededError(siblingCeiling);
+  }
 
   return {
     participants: siblings
@@ -500,6 +526,22 @@ async function loadSameBookingOwnerHosts(
 }
 
 /**
+ * Raised when an evidence caller's sibling ceiling binds.
+ *
+ * A NAMED ERROR rather than a truncated list, because the two readings are
+ * different answers: a short list says "these are the hosts", and this says "I
+ * cannot tell you". Only a caller that passed a ceiling can see it.
+ */
+export class HostingSiblingCeilingExceededError extends Error {
+  constructor(ceiling: number) {
+    super(
+      `Adult-member hosting evidence: more than ${ceiling} sibling bookings could cover these nights; refusing an inconclusive answer`,
+    );
+    this.name = "HostingSiblingCeilingExceededError";
+  }
+}
+
+/**
  * The ids of the bookings whose hosting answer depends on THIS booking's rows —
  * exactly the set `loadSiblingHosts` borrows from, computed with the same
  * predicate so the two can never drift apart.
@@ -552,6 +594,8 @@ async function evaluateLoadedBookingAdultMemberHosting(
    * fabricated hosting answer for an enforcing club after one transient failure.
    */
   subscriptionLockoutMode?: SubscriptionLockoutMode,
+  /** See `loadSiblingHosts`; supplied only by a read-only evidence caller. */
+  siblingCeiling?: number,
 ): Promise<{
   violation: AdultMemberHostingPolicyExceptionViolation | null;
   resolved: ResolvedAdultMemberHostingPolicy;
@@ -585,7 +629,7 @@ async function evaluateLoadedBookingAdultMemberHosting(
   // the #2569 upgrade a no-op on cost as well as on answers.
   let participants: HostingParticipant[] = [];
   if (hostingModeIsActive(resolved.mode)) {
-    const siblings = await loadSiblingHosts(booking, db);
+    const siblings = await loadSiblingHosts(booking, db, siblingCeiling);
     // §9: hold the per-owner key before reading another booking as cover, so a
     // concurrent removal of that cover cannot interleave with this evaluation.
     // Re-entrant, so a caller that already took it (the settle step) pays nothing.
@@ -662,6 +706,12 @@ export async function evaluatePersistedBookingAdultMemberHostingReadOnly(
   options?: {
     seasonYear?: number;
     subscriptionLockoutMode?: SubscriptionLockoutMode;
+    /**
+     * A deterministic ceiling on the sibling fan-out. An evidence caller passes one
+     * because it must either answer or report that it could not; a writer must not,
+     * because truncating that read would change the hosting rule.
+     */
+    siblingCeiling?: number;
   },
 ): Promise<{
   violation: AdultMemberHostingPolicyExceptionViolation | null;
@@ -678,6 +728,7 @@ export async function evaluatePersistedBookingAdultMemberHostingReadOnly(
     null,
     options?.seasonYear,
     options?.subscriptionLockoutMode,
+    options?.siblingCeiling,
   );
 }
 

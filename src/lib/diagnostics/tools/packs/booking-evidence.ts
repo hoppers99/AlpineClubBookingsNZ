@@ -210,6 +210,18 @@ const AID6B_ALLOCATION_COUNT_CEILING =
  */
 export const AID6B_OPEN_REQUEST_CEILING = 18;
 
+/**
+ * How many SIBLING bookings the hosting evidence read may consider.
+ *
+ * The same generous-guard reasoning as the hosting reconciler's own same-owner
+ * source limit, and the same number: a stay whose hosting answer depends on more
+ * than twenty-five other bookings at one lodge over one window is a data problem,
+ * not a club member. It is a diagnostics-only bound — the writer's read stays
+ * unbounded, because truncating it would change the rule rather than the answer's
+ * confidence — and it refuses rather than truncating.
+ */
+export const AID6B_HOSTING_SIBLING_CEILING = 25;
+
 const UTC_DAY_MS = 24 * 60 * 60 * 1000;
 
 /**
@@ -304,8 +316,11 @@ function requireResolvedLockoutMode(
   return mode;
 }
 
-async function resolveStoredSeasonYear(date: Date): Promise<number> {
-  const financialYear = await getStoredFinancialYearResolution();
+async function resolveStoredSeasonYear(
+  date: Date,
+  tx: Prisma.TransactionClient,
+): Promise<number> {
+  const financialYear = await getStoredFinancialYearResolution(tx);
   if (!financialYear.ok) {
     throw new Error(
       "AI Diagnostics AID-6B: this club follows its connected Xero organisation for the financial year and that year-end month is not stored locally, so the membership season for these dates cannot be resolved without a provider call. Set the financial year-end month override in membership settings to make this evidence available.",
@@ -561,6 +576,62 @@ async function withDeadline<T>(work: Promise<T>, label: string): Promise<T> {
   }
 }
 
+/**
+ * EVERY READ IN ONE SERVER-OWNED ANSWER, INSIDE ONE READ-ONLY TRANSACTION WITH
+ * POSTGRESQL'S OWN TIMEOUT ON IT.
+ *
+ * `withDeadline` above is a `Promise.race`. It stops this process WAITING; it
+ * cannot cancel anything. Nothing in Prisma propagates a cancellation into an
+ * in-flight statement, so before this helper existed the ten-second deadline
+ * rejected while the hosting sibling fan-out, the member-night conflict scan and
+ * the capacity engine went on running against the database — the operator got
+ * `evidence_unavailable` and the server kept paying for an answer nobody would
+ * read. Under a queue of diagnostics invocations that is how a read-only feature
+ * becomes a database incident.
+ *
+ * SO THE BOUND IS AT THE DATABASE. `SET LOCAL statement_timeout` makes PostgreSQL
+ * itself cancel any statement that overruns, and the interactive-transaction
+ * `timeout` bounds the whole graph. Both fire whether or not this process is still
+ * waiting, and the timeout literal is below `withDeadline`'s ceiling so the
+ * database refuses first and the operator gets a specific message rather than a
+ * race.
+ *
+ * `SET TRANSACTION READ ONLY` is the second half and it is not decoration: it is
+ * PostgreSQL refusing a write in this transaction even where a grant would permit
+ * one. These three entries run on the application's OWN full-privilege connection
+ * — they are `server_owned`, not `select_only_sql`, so the AID-5 role's grants are
+ * not the boundary here — and this is what makes "the agent must remain completely
+ * read-only" a property the database enforces rather than a property of the code
+ * being careful. Both statements are fixed literals with no interpolation.
+ *
+ * ONE SNAPSHOT, WHICH IS ALSO AN ANSWER TO A REVIEW FINDING. Every read in one
+ * invocation now sees the same committed state, so a row can no longer report a
+ * party assembled at one instant against a capacity figure measured at another.
+ * The module header's "multiple READ COMMITTED instants" caveat applies BETWEEN
+ * invocations, not within one.
+ *
+ * WHAT A CALLER MUST DO WITH `tx`: pass it to every collaborator. A helper that
+ * silently fell back to the global client would run outside both the snapshot and
+ * the timeout, which is the whole boundary this helper exists to create — so the
+ * canonical seams below all take a client, and none of these three readers names
+ * `prisma` after opening the transaction.
+ */
+async function withBoundedReadOnlyTransaction<T>(
+  run: (tx: Prisma.TransactionClient) => Promise<T>,
+): Promise<T> {
+  return prisma.$transaction(
+    async (tx: Prisma.TransactionClient) => {
+      await tx.$executeRaw`SET TRANSACTION READ ONLY`;
+      await tx.$executeRaw`SET LOCAL statement_timeout = '5s'`;
+      return run(tx);
+    },
+    {
+      maxWait: 2_000,
+      timeout: AID6B_DATABASE_STATEMENT_TIMEOUT_MS + 2_000,
+    },
+  );
+}
+
 // ---------------------------------------------------------------------------
 // 1. The authoritative booking block state.
 // ---------------------------------------------------------------------------
@@ -619,13 +690,19 @@ const BLOCK_STATE_BOOKING_SELECT = {
 export async function readBookingBlockStateEvidence(args: {
   bookingId: string;
 }): Promise<readonly DiagnosticsToolRawRow[]> {
-  return withDeadline(readBookingBlockState(args.bookingId), "booking block state");
+  return withDeadline(
+    withBoundedReadOnlyTransaction((tx) =>
+      readBookingBlockState(args.bookingId, tx),
+    ),
+    "booking block state",
+  );
 }
 
 async function readBookingBlockState(
   bookingId: string,
+  tx: Prisma.TransactionClient,
 ): Promise<readonly DiagnosticsToolRawRow[]> {
-  const booking = await prisma.booking.findUnique({
+  const booking = await tx.booking.findUnique({
     where: { id: bookingId },
     select: BLOCK_STATE_BOOKING_SELECT,
   });
@@ -643,7 +720,7 @@ async function readBookingBlockState(
   // bypass the same fail-closed population fence.
   assertCapacitySpanWithinCeiling(booking.checkIn, booking.checkOut);
 
-  const guests = await prisma.bookingGuest.findMany({
+  const guests = await tx.bookingGuest.findMany({
     where: { bookingId },
     select: {
       id: true,
@@ -702,7 +779,7 @@ async function readBookingBlockState(
    * `null` on those rows is "not needed", and it is never passed anywhere.
    */
   const seasonYear =
-    deleted || terminal ? null : await resolveStoredSeasonYear(booking.checkIn);
+    deleted || terminal ? null : await resolveStoredSeasonYear(booking.checkIn, tx);
 
   /**
    * The club's subscription-lockout mode, read ONCE and STRICTLY, then handed to
@@ -728,10 +805,10 @@ async function readBookingBlockState(
    * above: a suppressed booking runs neither rule.
    */
   const subscriptionLockoutMode =
-    deleted || terminal ? null : await peekSubscriptionLockoutModeStrict();
+    deleted || terminal ? null : await peekSubscriptionLockoutModeStrict(tx);
 
   /** The open exception requests, and whether any of them is actually holding beds. */
-  const openRequests = await prisma.bookingChangeRequest.findMany({
+  const openRequests = await tx.bookingChangeRequest.findMany({
     where: { bookingId, status: "REQUESTED" },
     select: {
       id: true,
@@ -789,7 +866,7 @@ async function readBookingBlockState(
     deleted || terminal
       ? Promise.resolve([])
       : evaluatePersistedBookingNonHostingPolicyViolations(
-          prisma,
+          tx,
           booking.lodgeId,
           party,
           {
@@ -809,10 +886,21 @@ async function readBookingBlockState(
         ),
     deleted || terminal
       ? Promise.resolve(null)
-      : evaluatePersistedBookingAdultMemberHostingReadOnly(booking.id, prisma, {
+      : evaluatePersistedBookingAdultMemberHostingReadOnly(booking.id, tx, {
           // Same two reasons, for #2543's subscription bridge inside the hosting
           // rule — and the same single mode value, so the two rules cannot disagree.
           seasonYear: requireResolvedSeasonYear(seasonYear),
+          /**
+           * THE WIDEST FAN-OUT IN EITHER PACK, given a deterministic ceiling.
+           *
+           * The sibling read is unbounded for a writer, and must be: its answer has
+           * to see every booking that could cover a night. Each sibling arrives with
+           * its guests and their night rows, so for a diagnostic it is also the read
+           * most able to turn one invocation into a large one. An evidence caller
+           * must either answer or say it could not, so it passes a ceiling and gets
+           * a refusal rather than a quietly short host list.
+           */
+          siblingCeiling: AID6B_HOSTING_SIBLING_CEILING,
           subscriptionLockoutMode: requireResolvedLockoutMode(
             subscriptionLockoutMode,
           ),
@@ -825,10 +913,15 @@ async function readBookingBlockState(
           booking.checkOut,
           0,
           booking.id,
+          // The capacity engine reads three populations no `Booking` query would
+          // find; every one of them belongs inside this snapshot and under this
+          // statement timeout, or the widest read in the entry is the one read the
+          // database cannot cancel.
+          tx,
         ),
     deleted || terminal
       ? Promise.resolve([])
-      : findBookingMemberNightConflicts(prisma, {
+      : findBookingMemberNightConflicts(tx, {
           // The ACTING identity here is the booking's own owner, not the
           // administrator running the diagnostic. The conflict scan's privileged
           // fields are gated on the actor's role, and passing a real admin role
@@ -1117,33 +1210,33 @@ async function readBoundedAllocationCounts(args: {
   bookingId: string;
   checkIn: Date;
   checkOut: Date;
+  /**
+   * The CALLER's transaction, and not one opened here.
+   *
+   * This read used to open its own bounded read-only transaction, which was the
+   * first place in the pack to put PostgreSQL's own cancellation behind a
+   * diagnostics read. Now that the whole entry runs inside one
+   * (`withBoundedReadOnlyTransaction`), opening a second would be a NESTED
+   * interactive transaction on a second pool connection — a second snapshot, a
+   * second timeout, and the pool-starvation shape `docs/CONCURRENCY_AND_LOCKING.md`
+   * forbids. It joins the caller's instead, so the bound is unchanged and the rows
+   * agree with the capacity figures they sit beside.
+   */
+  tx: Prisma.TransactionClient;
 }): Promise<Map<string, number>> {
-  const allocations = await prisma.$transaction(
-    async (tx: Prisma.TransactionClient) => {
-      // The outer diagnostics deadline only stops waiting; it cannot cancel a
-      // database statement. Put this bounded read under PostgreSQL's own refusal
-      // and cancellation controls instead. Both statements are fixed literals.
-      await tx.$executeRaw`SET TRANSACTION READ ONLY`;
-      await tx.$executeRaw`SET LOCAL statement_timeout = '5s'`;
-      return tx.bedAllocation.findMany({
-        where: {
-          bookingId: args.bookingId,
-          stayDate: { gte: args.checkIn, lt: args.checkOut },
-          // A corrupt allocation whose guest belongs to another booking is not
-          // evidence about this selected booking. Keep it out structurally rather
-          // than counting it and later trying to explain the inconsistency away.
-          bookingGuest: { is: { bookingId: args.bookingId } },
-        },
-        select: { stayDate: true },
-        orderBy: [{ stayDate: "asc" }, { id: "asc" }],
-        take: AID6B_ALLOCATION_COUNT_CEILING + 1,
-      });
+  const allocations = await args.tx.bedAllocation.findMany({
+    where: {
+      bookingId: args.bookingId,
+      stayDate: { gte: args.checkIn, lt: args.checkOut },
+      // A corrupt allocation whose guest belongs to another booking is not
+      // evidence about this selected booking. Keep it out structurally rather
+      // than counting it and later trying to explain the inconsistency away.
+      bookingGuest: { is: { bookingId: args.bookingId } },
     },
-    {
-      maxWait: 2_000,
-      timeout: AID6B_DATABASE_STATEMENT_TIMEOUT_MS + 2_000,
-    },
-  );
+    select: { stayDate: true },
+    orderBy: [{ stayDate: "asc" }, { id: "asc" }],
+    take: AID6B_ALLOCATION_COUNT_CEILING + 1,
+  });
   assertPopulationWithinCeiling(
     allocations.length,
     AID6B_ALLOCATION_COUNT_CEILING,
@@ -1174,13 +1267,17 @@ async function readBoundedAllocationCounts(args: {
 export async function readBookingCapacityEvidence(args: {
   bookingId: string;
 }): Promise<readonly DiagnosticsToolRawRow[]> {
-  return withDeadline(readBookingCapacity(args.bookingId), "booking capacity");
+  return withDeadline(
+    withBoundedReadOnlyTransaction((tx) => readBookingCapacity(args.bookingId, tx)),
+    "booking capacity",
+  );
 }
 
 async function readBookingCapacity(
   bookingId: string,
+  tx: Prisma.TransactionClient,
 ): Promise<readonly DiagnosticsToolRawRow[]> {
-  const booking = await prisma.booking.findUnique({
+  const booking = await tx.booking.findUnique({
     where: { id: bookingId },
     select: {
       id: true,
@@ -1201,7 +1298,7 @@ async function readBookingCapacity(
   // The executor deadline cannot cancel either once started.
   assertCapacitySpanWithinCeiling(booking.checkIn, booking.checkOut);
 
-  const guests = await prisma.bookingGuest.findMany({
+  const guests = await tx.bookingGuest.findMany({
     where: { bookingId },
     select: {
       id: true,
@@ -1236,12 +1333,14 @@ async function readBookingCapacity(
     booking.checkOut,
     0,
     booking.id,
+    tx,
   );
 
   const allocatedByNight = await readBoundedAllocationCounts({
     bookingId,
     checkIn: booking.checkIn,
     checkOut: booking.checkOut,
+    tx,
   });
 
   const observedAt = new Date().toISOString();
@@ -1364,11 +1463,17 @@ async function readBookingCapacity(
 export async function readMemberEligibilityEvidence(args: {
   memberId: string;
 }): Promise<readonly DiagnosticsToolRawRow[]> {
-  return withDeadline(readMemberEligibility(args.memberId), "member eligibility");
+  return withDeadline(
+    withBoundedReadOnlyTransaction((tx) =>
+      readMemberEligibility(args.memberId, tx),
+    ),
+    "member eligibility",
+  );
 }
 
 async function readMemberEligibility(
   memberId: string,
+  tx: Prisma.TransactionClient,
 ): Promise<readonly DiagnosticsToolRawRow[]> {
   /**
    * THE SEASON YEAR IS NOT THE CALENDAR YEAR, and this entry computed it as if it
@@ -1399,9 +1504,9 @@ async function readMemberEligibility(
    * `resolveStoredSeasonYear`, which is the single definition and the reason
    * neither depends on the process-level financial-year cache.
    */
-  const seasonYear = await resolveStoredSeasonYear(new Date());
+  const seasonYear = await resolveStoredSeasonYear(new Date(), tx);
 
-  const member = await prisma.member.findUnique({
+  const member = await tx.member.findUnique({
     where: { id: memberId },
     select: {
       id: true,
@@ -1425,8 +1530,8 @@ async function readMemberEligibility(
 
   const [typePolicy, subscription, ageTierSettings, lockoutMode, inductionStatus] =
     await Promise.all([
-      resolveMembershipTypePolicyForMember(prisma, { memberId, seasonYear }),
-      prisma.memberSubscription.findUnique({
+      resolveMembershipTypePolicyForMember(tx, { memberId, seasonYear }),
+      tx.memberSubscription.findUnique({
         where: { memberId_seasonYear: { memberId, seasonYear } },
         select: { status: true, paidAt: true, manuallyMarkedPaidAt: true },
       }),
@@ -1443,8 +1548,8 @@ async function readMemberEligibility(
        * `evidence_unavailable`; a genuinely absent row still resolves to the
        * platform's documented default, which is what actually governs such a club.
        */
-      getAgeTierSettingsStrict(),
-      peekSubscriptionLockoutModeStrict(),
+      getAgeTierSettingsStrict(tx),
+      peekSubscriptionLockoutModeStrict(tx),
       /**
        * THE NARROW READ, and not `getInductionForMember`, which is the wide one.
        *
@@ -1464,7 +1569,7 @@ async function readMemberEligibility(
        * `BLOCK_STATE_BOOKING_SELECT` were — one field name away from a projected
        * row, in a file where that distance is the whole control.
        */
-      getInductionStatusForMember(memberId),
+      getInductionStatusForMember(memberId, tx),
     ]);
 
   const settlement = resolveMemberSubscriptionSettlement({
@@ -1498,7 +1603,7 @@ async function readMemberEligibility(
    * hash is ever loaded, logged, hashed into an audit row or projected.
    */
   const erasedPasswordHash =
-    (await prisma.member.count({
+    (await tx.member.count({
       where: { id: memberId, passwordHash: DELETED_ACCOUNT_PASSWORD_HASH },
     })) > 0;
   const erased = isDeletedAccountRecord({

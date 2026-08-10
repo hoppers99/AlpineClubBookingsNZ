@@ -1,3 +1,5 @@
+import type { PrismaClient } from "@prisma/client";
+
 import { DEFAULT_MEMBERSHIP_LOCKOUT_SETTINGS } from "@/config/club-settings-defaults";
 import { prisma } from "@/lib/prisma";
 
@@ -169,9 +171,11 @@ export async function loadMembershipLockoutSettings(): Promise<MembershipLockout
  * A genuinely ABSENT singleton row still normalizes to the documented defaults,
  * which is what actually governs a club that has never saved the panel.
  */
-export async function loadMembershipLockoutSettingsStrict(): Promise<MembershipLockoutSettings> {
+export async function loadMembershipLockoutSettingsStrict(
+  db: Pick<PrismaClient, "membershipLockoutSettings"> = prisma,
+): Promise<MembershipLockoutSettings> {
   return normalizeMembershipLockoutSettings(
-    await prisma.membershipLockoutSettings.findUnique({
+    await db.membershipLockoutSettings.findUnique({
       where: { id: MEMBERSHIP_LOCKOUT_SETTINGS_ID },
     }),
   );

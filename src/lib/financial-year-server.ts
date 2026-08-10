@@ -12,6 +12,8 @@
  * client bundles.
  */
 
+import type { PrismaClient } from "@prisma/client";
+
 import {
   DEFAULT_FINANCIAL_YEAR_END_MONTH,
   setFinancialYearEndMonth,
@@ -53,6 +55,20 @@ export interface FinancialYearResolution {
   effectiveMonth: number;
 }
 
+/**
+ * The two relations the provider-free resolution reads, as a structural type so a
+ * `Prisma.TransactionClient` satisfies it.
+ *
+ * A caller that has opened a bounded read-only transaction MUST pass it: reading
+ * these two rows on the global client instead would put them outside that
+ * transaction's snapshot and outside its statement timeout, which is the whole
+ * boundary such a caller opened the transaction to get.
+ */
+export type StoredFinancialYearDb = Pick<
+  PrismaClient,
+  "membershipLockoutSettings" | "xeroToken"
+>;
+
 export type StoredFinancialYearResolution =
   | {
       ok: true;
@@ -71,13 +87,15 @@ export type StoredFinancialYearResolution =
  * fetched from Xero. Only the token row's existence is selected; credential
  * columns never cross this boundary.
  */
-export async function getStoredFinancialYearResolution(): Promise<StoredFinancialYearResolution> {
+export async function getStoredFinancialYearResolution(
+  db: StoredFinancialYearDb = prisma,
+): Promise<StoredFinancialYearResolution> {
   // Read this row STRICTLY. `loadMembershipLockoutSettings` intentionally treats
   // every database error as a migration-era missing table and returns defaults;
   // that is acceptable for the product fallback but not for evidence. A rejected
   // read must propagate so Diagnostics reports `evidence_unavailable` rather than
   // claiming the March default was observed.
-  const persisted = await prisma.membershipLockoutSettings.findUnique({
+  const persisted = await db.membershipLockoutSettings.findUnique({
     where: { id: MEMBERSHIP_LOCKOUT_SETTINGS_ID },
     select: {
       mode: true,
@@ -95,7 +113,7 @@ export async function getStoredFinancialYearResolution(): Promise<StoredFinancia
     return { ok: true, effectiveMonth: overrideMonth, source: "override" };
   }
 
-  const connectedTenant = await prisma.xeroToken.findFirst({
+  const connectedTenant = await db.xeroToken.findFirst({
     where: { tenantId: { not: null } },
     select: { id: true },
   });

@@ -1,4 +1,6 @@
-import type { AgeTier } from "@prisma/client";
+import type { AgeTier, PrismaClient } from "@prisma/client";
+
+import { prisma } from "@/lib/prisma";
 import {
   getAgeTierSettings,
   type AgeTierSettingData,
@@ -14,6 +16,12 @@ import {
   loadEffectiveModuleFlagsStrict,
 } from "@/lib/module-settings";
 import { requiresPaidSubscriptionForAgeTier as requiresPaidSubscriptionForAgeTierRule } from "@/lib/policies/subscription";
+
+/** The two relations the strict mode read needs; a transaction client satisfies it. */
+export type StrictLockoutModeDb = Pick<
+  PrismaClient,
+  "clubModuleSettings" | "membershipLockoutSettings"
+>;
 
 export function requiresPaidSubscriptionForAgeTier(
   ageTier: AgeTier | null | undefined,
@@ -133,10 +141,17 @@ export async function peekSubscriptionLockoutMode(): Promise<SubscriptionLockout
  * read-only evidence path must not change what other requests in this process
  * compute, and the reseed can reach Xero.
  */
-export async function peekSubscriptionLockoutModeStrict(): Promise<SubscriptionLockoutMode> {
-  const flags = await loadEffectiveModuleFlagsStrict();
+export async function peekSubscriptionLockoutModeStrict(
+  /**
+   * A caller inside a bounded read-only transaction MUST pass it, so both rows are
+   * read under that transaction's snapshot and its statement timeout rather than on
+   * a second connection outside both.
+   */
+  db: StrictLockoutModeDb = prisma,
+): Promise<SubscriptionLockoutMode> {
+  const flags = await loadEffectiveModuleFlagsStrict(db);
   if (!flags.xeroIntegration) return "NO_BLOCK";
-  return (await loadMembershipLockoutSettingsStrict()).mode;
+  return (await loadMembershipLockoutSettingsStrict(db)).mode;
 }
 
 /**

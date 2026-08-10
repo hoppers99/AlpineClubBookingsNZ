@@ -1,4 +1,4 @@
-import type { ClubModuleSettings } from "@prisma/client";
+import type { ClubModuleSettings, PrismaClient } from "@prisma/client";
 import {
   CLUB_MODULE_SETTINGS_COLUMN_SELECT,
   DEFAULT_MODULE_SETTINGS,
@@ -215,8 +215,10 @@ const DISABLED_MODULE_FLAGS: FeatureFlags = Object.fromEntries(
  * default for a club that has never saved the panel — an observation, not a
  * fallback.
  */
-export async function loadEffectiveModuleFlagsStrict(): Promise<FeatureFlags> {
-  const record = await prisma.clubModuleSettings.findUnique({
+export async function loadEffectiveModuleFlagsStrict(
+  db: Pick<PrismaClient, "clubModuleSettings"> = prisma,
+): Promise<FeatureFlags> {
+  const record = await db.clubModuleSettings.findUnique({
     where: { id: CLUB_MODULE_SETTINGS_ID },
     select: CLUB_MODULE_SETTINGS_COLUMN_SELECT,
   });

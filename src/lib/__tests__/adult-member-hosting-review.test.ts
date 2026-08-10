@@ -1079,6 +1079,44 @@ describe("the read-only form's season basis (#2376)", () => {
     expect(seasonAsked()).toBe(2026);
   });
 
+  it("leaves the sibling read UNBOUNDED when no ceiling is supplied", async () => {
+    // Byte-identical for every writer, and deliberately so: the hosting answer has
+    // to see every sibling that could cover a night, so a silent `take` here would
+    // change the rule rather than the answer's confidence.
+    const { db } = makeDb(bookingRow(), [CLUB_ON]);
+    await evaluatePersistedBookingAdultMemberHostingReadOnly("booking-1", db);
+    const args = db.booking.findMany.mock.calls[0]?.[0] as Record<string, unknown>;
+    expect(args.take).toBeUndefined();
+    expect(args.orderBy).toBeUndefined();
+  });
+
+  it("bounds the sibling read to ceiling + 1 when a ceiling IS supplied", async () => {
+    // `+ 1` so "there were more than I may read" is a distinguishable fact rather
+    // than a quietly short list, and a total order so a bound that binds binds
+    // reproducibly.
+    const { db } = makeDb(bookingRow(), [CLUB_ON]);
+    await evaluatePersistedBookingAdultMemberHostingReadOnly("booking-1", db, {
+      siblingCeiling: 3,
+    });
+    const args = db.booking.findMany.mock.calls[0]?.[0] as Record<string, unknown>;
+    expect(args.take).toBe(4);
+    expect(args.orderBy).toEqual([{ checkIn: "asc" }, { id: "asc" }]);
+  });
+
+  it("REFUSES rather than truncating when the ceiling binds", async () => {
+    // A short host list and "I cannot tell you" are different answers, and the first
+    // one reads as authoritative. Four siblings against a ceiling of three.
+    const siblings = [1, 2, 3, 4].map((index) =>
+      bookingRow({ id: `sibling-${index}`, parentBookingId: "booking-1" }),
+    );
+    const { db } = makeDb(bookingRow(), [CLUB_ON], siblings);
+    await expect(
+      evaluatePersistedBookingAdultMemberHostingReadOnly("booking-1", db, {
+        siblingCeiling: 3,
+      }),
+    ).rejects.toThrow(/refusing an inconclusive answer/);
+  });
+
   it("passes the caller's lockout mode to the bridge instead of letting it peek", async () => {
     // The bridge otherwise reads the mode through functions that swallow a database
     // failure into NO_BLOCK, so an evidence caller would report a fabricated hosting
