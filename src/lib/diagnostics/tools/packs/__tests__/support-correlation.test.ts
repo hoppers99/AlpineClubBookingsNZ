@@ -479,6 +479,59 @@ describe("AID-6A correlation category sets (#2375)", () => {
     );
   });
 
+  it("keeps naming the fifteen `admin` lodge-operations subsystems, so the keep's cost stays visible", () => {
+    /*
+      ENFORCES `INV-PRIV-013` (docs/invariants/analytics-and-privacy.md), the
+      standing obligation attached to #2765's decision to leave fifteen lodge-gated
+      writers at `admin`.
+
+      THE COST OF THAT KEEP IS A SILENT ABSENCE, and it is the whole reason the keep
+      was affordable. A Lodge correlation entry that returns nothing to "when was
+      this lodge deactivated?" reads to the model as evidence that nothing happened,
+      because the rows are filed `admin` and the Lodge entry cannot read `admin`.
+      The mitigation is prose: both entries name this set, so an empty answer reads
+      as a KNOWN GAP.
+
+      WHICH MADE IT THE ONE HALF OF #2765 NOTHING CHECKED. The category side is
+      pinned per site from the tree in `audit-writer-census.test.ts`; the naming
+      side was three string literals in one file that a copy-edit could quietly
+      shorten. Six subsystem words, on the three strings the invariant names.
+    */
+    const lodge = tool(DIAGNOSTICS_LODGE_CORRELATION_TOOL_ID);
+    const system = tool(DIAGNOSTICS_SYSTEM_CORRELATION_TOOL_ID);
+    const subsystems = [
+      "chore",
+      "locker",
+      "work part",
+      "lodge instruction",
+      "lodge setting",
+      "the lodge records",
+    ];
+    const strings: readonly [string, string | undefined][] = [
+      ["system entry scope", system.evidenceScope],
+      ["lodge entry scope", lodge.evidenceScope],
+      ["lodge entry description", lodge.description],
+    ];
+    for (const [label, text] of strings) {
+      // An entry with no scope at all would make every `toContain` below vacuous,
+      // so the absence is its own named failure rather than a silent skip.
+      expect(text, `${label} is missing entirely`).toBeTruthy();
+      const lowered = (text ?? "").toLowerCase();
+      for (const subsystem of subsystems) {
+        expect(
+          lowered,
+          `The ${label} no longer names "${subsystem}" as filed under \`admin\`. ` +
+            "INV-PRIV-013: while any of the fifteen stays `admin`, both " +
+            "correlation tools' evidence scope must keep naming it, so an empty " +
+            "lodge answer reads as a known gap rather than as evidence that " +
+            "nothing happened. If a subsystem MOVED, the rule changes with it — " +
+            "state the measured before/after audience per site (INV-OPS-012) and " +
+            "update INV-PRIV-013, rather than only shortening the sentence.",
+        ).toContain(subsystem);
+      }
+    }
+  });
+
   it("renders the scope INSIDE the evidence block, above the rows", () => {
     // End to end: the sentence has to reach the model, not just sit on the entry.
     const entry = tool(DIAGNOSTICS_MEMBERSHIP_CORRELATION_TOOL_ID);

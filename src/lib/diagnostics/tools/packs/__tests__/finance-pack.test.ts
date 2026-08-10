@@ -30,6 +30,8 @@ import { join } from "node:path";
 
 import { describe, expect, it } from "vitest";
 
+import { AUDIT_CORRELATION_DOMAIN_AREAS } from "@/lib/audit-categories";
+
 import { SELECT_GRANTS } from "../../provision-role";
 import { renderToolResultEvidenceBlock } from "../../render";
 import { DIAGNOSTICS_TOOLS } from "../../registry";
@@ -128,6 +130,61 @@ describe("AID-6C finance pack: permissions (#2377)", () => {
         `${tool.id} requires support:view`,
       ).not.toContain("support");
     }
+  });
+
+  it("is the SIXTH audit-category reader, and its gate is weaker than the five correlation entries'", () => {
+    /*
+      ENFORCES the audience half of `INV-OPS-012` (docs/invariants/operations.md),
+      which requires a recategorisation to measure its before/after audience against
+      every reader that keys on `category`.
+
+      THE TRAP THIS PINS. Four of those readers are obvious; this is the fifth kind
+      and the easiest to miss, because it lives in the finance pack rather than in
+      the correlation pack. `financeAuditHistory` filters `AuditLog` by
+      `auditCategoriesForCorrelationDomain("finance")` — the SAME derivation the
+      finance correlation entry uses — while requiring `finance` ALONE, whereas
+      `AUDIT_CORRELATION_DOMAIN_AREAS.finance` is `support` + `finance`. So a
+      reclassification into `payment` or `xero` on a Payment, Booking,
+      ManualRefundTask or MemberSubscription entity reaches a strictly WIDER
+      audience here than the correlation measurement would report.
+
+      THE WEAKER GATE IS DELIBERATE and must not be "fixed" to match: #2377's owner
+      decision, asserted above, is that a Finance Officer must not need Support &
+      System permission to investigate a payment. This test does not object to it —
+      it pins the asymmetry so that the next reclassifier measures it, and so that
+      INV-OPS-012's checklist and this entry cannot drift apart silently.
+    */
+    const audit = DIAGNOSTICS_TOOLS.find(
+      (tool) => tool.id === DIAGNOSTICS_FINANCE_AUDIT_HISTORY_TOOL_ID,
+    );
+    expect(audit).toBeDefined();
+    expect([...(audit?.requiredAreas ?? [])]).toEqual(["finance"]);
+    expect(
+      [...AUDIT_CORRELATION_DOMAIN_AREAS.finance],
+      "The finance correlation domain's areas changed. If they no longer include " +
+        "`support`, the asymmetry INV-OPS-012 warns about is gone and that rule's " +
+        "finance-diagnostics bullet should say so; if a new area joined, the " +
+        "asymmetry widened. Either way re-measure before editing this expectation.",
+    ).toEqual(["support", "finance"]);
+    expect(
+      AUDIT_CORRELATION_DOMAIN_AREAS.finance.filter(
+        (area) => !(audit?.requiredAreas ?? []).includes(area),
+      ),
+      "The finance audit-history entry's gate is no longer WEAKER than the finance " +
+        "correlation entry's. INV-OPS-012 names it as the reader whose audience a " +
+        "reclassification into `payment` or `xero` must be measured against " +
+        "SEPARATELY for exactly that reason; if this stops being true, that bullet " +
+        "needs updating in the same change.",
+    ).toEqual(["support"]);
+
+    // And it really does read the category column, which is what makes it a reader
+    // at all rather than a Payment-shaped query.
+    expect(packSource("finance-records.ts")).toContain(
+      'auditCategoriesForCorrelationDomain("finance")',
+    );
+    expect(packSource("finance-records.ts")).toContain(
+      'a."category" = ANY ($3::text[])',
+    );
   });
 
   it("requires BOTH areas on each combined entry, and never OR", () => {

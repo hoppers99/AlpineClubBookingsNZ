@@ -22,11 +22,14 @@ verbatim move from the source document and must not be reworded in place** —
 only the ID heading lines were added.
 
 That applies to `INV-PRIV-001` through `INV-PRIV-010`, which are the transcribed
-blocks. `INV-PRIV-011` (#2683) and `INV-PRIV-012` (#2755) were written after the
+blocks. `INV-PRIV-011` (#2683), `INV-PRIV-012` (#2755) and `INV-PRIV-013` (#2765)
+were written after the
 restructure rather than moved into it, so there is no source text to preserve
 them against: correct them like any other prose, in their own reviewable change.
 See [`SCHEME.md`](SCHEME.md) §3 — the no-rewording rule governs transcriptions,
-not rules first written here.
+not rules first written here. #2765 used that licence to scope `INV-PRIV-012`'s
+"narrowing, member-invisible in both directions" sentence to `lodge`, which is the
+only destination it is true of.
 
 ## INV-PRIV-001
 
@@ -359,10 +362,16 @@ and #2763's bulk member-record rows were not.
     obviously its answer either, and it needs its own reasoning rather than
     inheriting the group's whenever the group is next revisited.
 
-  Moving either group would be a **narrowing**, member-invisible in both
+  Moving either group **to `lodge`** would be a **narrowing**, member-invisible in both
   directions and retention-neutral, which makes it a materially easier question
   than any widening — but it is still a readership change, so it needs a decision
-  rather than a sweep. `docs/ai-diagnostics/audit-admin-category-review.md`
+  rather than a sweep. **That reading is scoped to `lodge` and does not travel to
+  another destination.** For the `lockers` subgroup the destination the access model
+  suggests — the membership correlation domain — is measurably a **widening onto a
+  member-facing surface**, not a narrowing: #2765 measured it and refused the move.
+  `INV-PRIV-013` carries that measurement, the rule that decides whether an `admin`
+  writer moves at all, and the one member-invisible path that is implementable.
+  `docs/ai-diagnostics/audit-admin-category-review.md`
   carries the per-site verdict for all 118 and the alternative reading for each.
 
 ## INV-PRIV-013
@@ -410,20 +419,38 @@ one destination a lane may never choose for itself. Owner decisions of 11 August
     #2581 removed from the old open union.
   - Every canonical category that DOES route to the membership correlation entry —
     `account`, `family`, `communication`, `privacy` — is **member-visible**. So
-    there is no member-invisible way to put a row where a Membership Officer
-    correlates it, and this is asserted as an empty set in
+    **no member-invisible destination exists in today's taxonomy**, and this is
+    asserted as an empty set in
     `src/lib/__tests__/audit-writer-census.test.ts` rather than left as prose: if a
     member-invisible category ever joins that domain, the failure message says the
     question has become answerable.
+  - **That is a fact about today's closed list, not an impossibility, and the
+    difference matters to whoever decides this next.** One member-invisible path is
+    implementable: add a NEW canonical category, map it to the membership
+    correlation domain, and deliberately leave it OUT of
+    `MEMBER_VISIBLE_AUDIT_CATEGORIES` — a separate reviewed list precisely so that
+    joining the taxonomy never publishes a category to members as a side effect.
+    That delivers what the access model asks for with no member-facing crossing.
+    **It must not reuse the string `membership`**, and the reason is a stored-row
+    cost that appears nowhere else: three pre-#2581 nomination writers wrote
+    `category = 'membership'` into real rows, and no migration has ever rewritten
+    them — the only migration that has ever rewritten a stored `AuditLog.category`
+    is #2751's bed-allocation backfill, which the census test asserts from the
+    migrations themselves. So those rows are correlated by nobody today, and
+    re-introducing the value would make them readable by any `support` +
+    `membership` operator retroactively, on an append-only table. That is a second
+    readership change, unasked for and undecided. The successor decision is filed as
+    **#2777** with this option costed; it is not left as prose here.
   - The crossing is not hypothetical for these four. They pass
     `memberId: <the acting officer>` and no `subjectMemberId`, so
     `buildMemberAuditLogWhere`'s null-subject `memberId` leg returns them on the
     acting officer's OWN activity page. A member-visible destination therefore
     publishes locker administration to a member, and audit rows are append-only.
   Per `INV-PRIV-012` and `INV-OPS-012` a crossing of that boundary is the owner's
-  decision and not a lane's, so `lockers` stays `admin` and stays recorded as an
-  open question — with the reason now measured — rather than being resolved by an
-  implementor to the value that reads best.
+  decision and not a lane's, so `lockers` stays `admin` and the question goes back
+  to the owner **as issue #2777** — with the reason measured and the
+  extend-the-taxonomy option costed — rather than being resolved by an implementor
+  to the value that reads best, or left as a sentence in a merged pull request.
 - **While any of the fifteen stays `admin`, both correlation tools' evidence scope
   must keep NAMING it.** The cost of the keep is a silent absence: a Lodge
   correlation entry that returns nothing to "when was this lodge deactivated?"
@@ -432,4 +459,11 @@ one destination a lane may never choose for itself. Owner decisions of 11 August
   work parties, lodge instructions, lodge settings and the `LODGE_*` records as
   `admin`, so an empty answer reads as a **known gap**. A scope string that stops
   naming this set — or that starts implying completeness — is a defect of the same
-  kind as the mis-classification, in the opposite direction.
+  kind as the mis-classification, in the opposite direction. **Pinned, not left to
+  a reviewer:** `src/lib/diagnostics/tools/packs/__tests__/support-correlation.test.ts`
+  asserts that the System entry's `scope` and the Lodge entry's `scope` and
+  `description` each still name chores, lockers, work parties, lodge instructions,
+  lodge settings and the lodge records, so a copy-edit that drops one fails by name.
+  The population here is three string literals in one file, which is why this half
+  is pinned rather than reviewer-enforced like the 307 unpinned write sites in
+  `INV-OPS-012`.

@@ -21,8 +21,9 @@ open-question section at the foot of this page.
 The test that decided it — *did this site split a subsystem*, not *does it name a
 lodge* — is `INV-PRIV-013`, and the fifteen are pinned per site in
 `LODGE_GATED_ADMIN_CATEGORIES_2765` so the keep no longer depends on the next
-author reading this page. `lockers` is the one subgroup still open, and #2765
-records why in terms that can be re-measured rather than re-argued.
+author reading this page. `lockers` is the one subgroup still open — as its own
+filed decision, **#2777**, not as a sentence here — and #2765 records why in terms
+that can be re-measured rather than re-argued.
 
 **What this page is not.** It is a record of where the platform FILES new rows. It
 changed no row already in the database, which left bed-allocation history split by
@@ -307,9 +308,21 @@ removed — and every category that DOES route to the membership correlation ent
 (`account`, `family`, `communication`, `privacy`) is member-visible. The four
 locker writers pass `memberId: <the acting officer>` with no `subjectMemberId`, so
 a member-visible destination would put every locker change on the acting officer's
-own activity page. That crossing is the owner's decision under `INV-PRIV-012` and
-`INV-OPS-012`, so the sites stay `admin` and the question stays open with its
-reason measured rather than argued.
+own activity page — not on the page of the member the locker is allocated to, whose
+id is only inside `metadata` and is no query leg at all. That crossing is the
+owner's decision under `INV-PRIV-012` and `INV-OPS-012`, so the sites stay `admin`
+and the question went back as its own filed decision, **#2777**, with the reason
+measured rather than argued.
+
+**#2777 also carries the option the refusal on its own does not:** a NEW canonical
+category mapped to the membership correlation domain and deliberately left off
+`MEMBER_VISIBLE_AUDIT_CATEGORIES` is member-invisible and delivers what the access
+model asks for. "No member-invisible destination" is a fact about today's closed
+taxonomy, not an impossibility — see `INV-PRIV-013`, which also carries the reason
+such a category must not reuse the string `membership`: three pre-#2581 writers
+stored that value in real rows, no migration ever rewrote them, so reviving the
+name would make rows already written correlatable by anyone with support and
+membership access.
 
 **Why `LODGE_DISPLAY_CONFIG_UPDATED` moved and `LODGE_UPDATED` did not**, since
 both name a Lodge on a `lodge:edit` route: the display writer was closing a
@@ -559,8 +572,9 @@ decision goes.
 decided it is now `INV-PRIV-013` and the fifteen are pinned per site in
 `LODGE_GATED_ADMIN_CATEGORIES_2765`, so the keep is enforced rather than argued
 each time. `lockers` remains the one unresolved subgroup, for a measured reason
-rather than a stylistic one — see the section above. Read the two paragraphs below
-as the history of how it got there.
+rather than a stylistic one, and it is now carried as a filed decision (**#2777**)
+rather than as an open question on a page — see the section above. Read the two
+paragraphs below as the history of how it got there.
 
 **#2755 promoted both halves of that from a page note to an invariant, and left
 them at `admin`.** `INV-PRIV-012` records the fifteen as a deliberate keep with

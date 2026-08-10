@@ -1168,10 +1168,25 @@ export const MEMBERSHIP_GATED_LOCKER_SITES_2765: readonly string[] = [
 
 /**
  * Every action name the fifteen sites above write, for the retention assertion
- * (#2765). Two of the fifteen resolve their action from an expression rather than
- * a literal, so this list is maintained here and cross-checked against the census:
- * the lodge PATCH writer picks between `LODGE_UPDATED` / `LODGE_ACTIVATED` /
- * `LODGE_DEACTIVATED`, and both lodge-instruction writers share one name.
+ * (#2765).
+ *
+ * DERIVED FROM THE CENSUS, NOT HAND-MAINTAINED — the census test asserts set
+ * equality between this list and the actions the fifteen sites actually write, so
+ * a renamed action fails by name rather than dropping silently out of the
+ * retention evidence. That gate is the whole reason this list can be trusted:
+ * before it existed, renaming one of these to something access-shaped (say
+ * `workparty.access_granted`) left the retention loop asserting `critical` for a
+ * name no site writes, while the site that does exist expired at 24 months
+ * instead of seven years and nothing objected — `classifyAuditRetention` reads
+ * the ACTION as well as the category.
+ *
+ * ONE of the fifteen resolves its action from an expression rather than a
+ * literal — the lodge PATCH writer, which picks between `LODGE_UPDATED` /
+ * `LODGE_ACTIVATED` / `LODGE_DEACTIVATED` — so the census reports it as
+ * `(dynamic) …` and the test unfolds that one ternary from the route's own source.
+ * Everything else is a literal; the two lodge-instruction writers share the one
+ * literal name `LODGE_INSTRUCTION_UPDATED`, which is a shared name rather than an
+ * expression.
  */
 export const LODGE_GATED_ADMIN_ACTIONS_2765: readonly string[] = [
   "CHORE_TEMPLATE_CREATED",
@@ -1190,6 +1205,37 @@ export const LODGE_GATED_ADMIN_ACTIONS_2765: readonly string[] = [
   "workparty.create",
   "workparty.update",
   "workparty.delete",
+];
+
+/**
+ * The six admin route directories the #2765 keep speaks for, so the UNIFORMITY
+ * premise is measured rather than assumed.
+ *
+ * WHY THIS EXISTS. `INV-PRIV-013`'s whole argument is that this group is *uniform*
+ * at `admin`, so there is no split to close. That premise is a fact about the tree,
+ * and until this list existed nothing checked it: the per-site map's assertions are
+ * computed over the map's OWN keys, so a SIXTEENTH writer in one of these
+ * subsystems filing `lodge` would create exactly the split the invariant says does
+ * not exist, with every test green. The census test asserts that every audit write
+ * site under these prefixes is in `LODGE_GATED_ADMIN_CATEGORIES_2765` at `admin`.
+ *
+ * NOT the same thing as "every `lodge:edit` route": `src/app/api/admin/display/**`
+ * and `src/app/api/admin/lodge/route.ts` are also gated `lodge:edit` and correctly
+ * file `lodge` — the display family was #2730's split-closing move. The uniformity
+ * claim is per subsystem, which is why this is a list of directories rather than a
+ * permission test; the census test covers the other direction separately, by
+ * requiring every `lodge:*` gated admin writer that files `admin` to be one of the
+ * fifteen. The known adjacency in the other direction is `lodge.chore.completed`
+ * in `src/app/api/lodge/roster/[date]/route.ts`: a different act (completing
+ * tonight's chore) on a different object, outside these prefixes by design.
+ */
+export const LODGE_GATED_ADMIN_SUBSYSTEM_PREFIXES_2765: readonly string[] = [
+  "src/app/api/admin/chores/",
+  "src/app/api/admin/lockers/",
+  "src/app/api/admin/lodge-instructions/",
+  "src/app/api/admin/lodge-settings/",
+  "src/app/api/admin/lodges/",
+  "src/app/api/admin/work-parties/",
 ];
 
 /**

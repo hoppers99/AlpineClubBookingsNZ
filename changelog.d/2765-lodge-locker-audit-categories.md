@@ -20,9 +20,10 @@
   Lockers were reviewed on their own, because a locker belongs to a named member
   while sitting in a building, and the locker screens require Membership access
   rather than Lodge access. Filing them where a Membership Officer would look for
-  them turned out to mean filing them somewhere **members can read**, which would
-  have published locker administration onto a member's own activity page — so
-  they stay under Admin, and the choice goes back to the club rather than being
-  made in passing. Nothing an operator does changes; the record of why simply
-  exists now, and a future change of mind will fail the build unless it is
-  deliberate.
+  them turned out to mean filing them somewhere **members can read**: every locker
+  change would have appeared on the activity page of the **officer who made it** —
+  officers are members too — while the member the locker is allocated to would
+  still have seen nothing. So lockers stay under Admin, and the choice goes back to
+  the club as its own decision (#2777) rather than being made in passing. Nothing
+  an operator does changes; the record of why simply exists now, and a future
+  change of mind will fail the build unless it is deliberate.
