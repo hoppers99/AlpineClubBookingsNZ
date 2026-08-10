@@ -18,7 +18,15 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
  * the money side: still exactly one task per capture, still closed exactly once,
  * replays included.
  *
- * MUTATION PROOF. Reword the close's note without moving the shared constant and
+ * WHAT THE CARD DOES NOT SHOW is pinned here too, because the surface is a
+ * partial record by construction: only the ordering where the confirm endpoint
+ * raised a task first ever produces a row. See "what the card cannot show" below,
+ * and the qualification in `INV-ADDPAY-037`.
+ *
+ * MUTATION PROOF. Reword the note prefix and "pins the stored bytes of the note
+ * prefix" fails — that one assertion is a golden string precisely because every
+ * other one derives its expectation from the constant and so cannot catch a
+ * reword. Reword the close's note without moving the shared constant and
  * "the note the close writes is the note the surface matches on" fails. Drop
  * `completedByMemberId: null` from the filter and "an operator's own dismissal is
  * never presented as an automatic refund" fails on its first row; drop the note
@@ -143,6 +151,29 @@ beforeEach(() => {
 });
 
 describe("the note the close writes and the surface reads (#2750)", () => {
+  it("pins the stored bytes of the note prefix, which are data and not copy", () => {
+    /*
+      A GOLDEN STRING, deliberately, and the one assertion in this file that does
+      NOT derive its expectation from the constant.
+
+      Every other assertion here reads the expected value off
+      `AUTOMATIC_CANCELLED_BOOKING_REFUND_NOTE_PREFIX`, which is right for proving
+      writer and reader agree — and is a tautology with respect to the value
+      itself. Rewording the constant would keep all of them green while making
+      every note ALREADY IN THE DATABASE stop matching `startsWith`, silently
+      emptying the card of every automatic refund the club has had so far. That is
+      the exact defect #2750 exists to close, arriving through the back door.
+
+      So these bytes are stored data, not display copy. Changing them needs a
+      migration that rewrites the existing notes (or a reader that matches both
+      the old and the new prefix), not an edit here. Reworded on purpose? Then
+      update this string in the same commit as that migration and say so.
+    */
+    expect(AUTOMATIC_CANCELLED_BOOKING_REFUND_NOTE_PREFIX).toBe(
+      "Closed automatically: Stripe refunded this capture under the cancelled-booking late-capture path",
+    );
+  });
+
   it("the note the close writes is the note the surface matches on", async () => {
     // Two copies of one sentence would not fail a build. It would silently empty
     // the card, which is the entire mechanism by which anybody is told.
@@ -236,6 +267,58 @@ describe("which rows the operator surface shows (#2750)", () => {
         note: "Cash handed back at the lodge",
       }),
     ).toBe(false);
+  });
+});
+
+describe("what the card cannot show, and why the claim is qualified (#2750 review)", () => {
+  /*
+    THE CARD IS A PARTIAL RECORD BY CONSTRUCTION, and this is where that is
+    stated in code rather than only in a document.
+
+    A row reaches the card only when the confirm endpoint raised a
+    `ManualRefundTask` first, because that endpoint is the ONLY writer of one on
+    this path. Two real orderings therefore produce an automatic refund with no
+    row at all: the webhook arriving first (which includes the member who simply
+    closes the tab after paying, so the confirm endpoint is never called), and the
+    webhook completing inside the confirm route's own Stripe round trip. Neither
+    is exotic — webhook-first is the healthy case.
+
+    These tests exist so that a future agent who reads `INV-ADDPAY-037` as "every
+    automatic refund appears on the finance queue" is corrected by the suite. If
+    somebody makes the record complete — the follow-up option is for the webhook
+    to write the DISMISSED row itself when its fenced close claims nothing — these
+    are the tests that must be changed on purpose, and the invariant's
+    qualification lifted in the same commit.
+  */
+  it("a close that claims no row creates nothing, so a webhook-first refund reaches no card", async () => {
+    // The healthy ordering: the webhook refunds and closes before any task
+    // exists, so its OPEN-fenced `updateMany` claims nothing. It must not invent
+    // a row (that is the follow-up decision, not this change), and the absence is
+    // what makes the card's coverage partial.
+    mocks.manualRefundTaskUpdateMany.mockResolvedValue({ count: 0 });
+
+    expect(await close()).toBe(0);
+    expect(mocks.manualRefundTaskCreate).not.toHaveBeenCalled();
+  });
+
+  it("the interleaved ordering is fenced off with no row, on purpose", async () => {
+    // Stripe refunded the capture inside the confirm route's own round trip. The
+    // raise refuses rather than queueing an operator to hand back money that has
+    // already gone — so again there is a real automatic refund and no row.
+    mocks.paymentTransactionFindUnique.mockResolvedValue({
+      status: "REFUNDED",
+      refundedAmountCents: AMOUNT_CENTS,
+      amountCents: AMOUNT_CENTS,
+    });
+
+    const result = await raise();
+
+    expect(result).toEqual({
+      taskId: null,
+      created: false,
+      alreadyRefunded: true,
+    });
+    expect(mocks.manualRefundTaskCreate).not.toHaveBeenCalled();
   });
 });
 

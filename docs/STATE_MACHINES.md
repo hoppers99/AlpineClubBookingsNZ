@@ -1423,9 +1423,21 @@ queue on `/admin/payments` shows OPEN rows as work to settle, and since #2750
 also shows the webhook-closed rows above as a read-only **"Refunded
 automatically — nothing to pay back"** card, bounded to the last
 `AUTOMATIC_REFUND_NOTICE_WINDOW_DAYS` (30) by `completedAt`. Before that, the
-webhook's own close took the row off the only screen it ever appeared on, so the
-one durable record of an automatic refund was visible only to somebody who
-thought to query the table.
+webhook's own close took the row off the only screen it ever appeared on, so that
+durable record of an automatic refund was visible only to somebody who thought to
+query the table.
+
+**That card shows rows, and not every automatic refund makes one.** The task has a
+single creator — the confirm-modification-payment endpoint — so it exists only on
+the ordering where the member's browser got there before the webhook did. Webhook
+first (the healthy case), a member who closes the tab after paying, and the
+interleaved ordering the raise's own refund fence declines all refund the capture
+and leave nothing for the close to claim; the close is a fenced `updateMany` and
+creates nothing. For those the record is the
+`booking.payment.refunded_after_cancellation` audit entry plus the admin payment
+alert, and the card says so in its own copy rather than presenting itself as the
+whole list. #2760 holds the option of making the record complete by having the
+webhook write the DISMISSED row itself when its close claims nothing.
 
 #2750 asked whether the #1350 automatic refund should instead be **gated**,
 leaving the task OPEN so a person decides. It was not, and the reasoning is

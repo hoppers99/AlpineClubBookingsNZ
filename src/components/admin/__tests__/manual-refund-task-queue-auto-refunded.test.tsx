@@ -33,7 +33,11 @@ import { ManualRefundTaskQueue } from "@/components/admin/manual-refund-task-que
  * record even when nothing is waiting to be paid back by hand" fails. Drop the
  * note or the reason from the row and "says both what happened and that the money
  * has already gone" fails. Render the card on an empty list and "renders nothing
- * at all when there is neither work nor a record" fails.
+ * at all when there is neither work nor a record" fails. Drop the partial-record
+ * paragraph and "says the list is partial" fails; put a `View booking` link back
+ * on a record row and "offers no booking link on a record row" fails; blank the
+ * screen silently on a failed or degraded read and the two "could not be loaded"
+ * tests fail.
  */
 
 const OPEN_TASK = {
@@ -208,18 +212,121 @@ describe("ManualRefundTaskQueue — automatically refunded late captures (#2750)
     ).not.toBeInTheDocument();
   });
 
-  it("shows no record when the load fails, rather than a stale one", async () => {
+  it("shows no record when the load fails, and says so rather than reading as a clean slate", async () => {
+    // Not showing a STALE list is right. Showing nothing at all is not: a 500
+    // would look exactly like "no automatic refunds in the last 30 days", and
+    // this card exists so that an absence of rows can be trusted. Both cards stay
+    // away and one line says why.
     stubLoad({}, false);
 
     render(<ManualRefundTaskQueue />);
 
     await waitFor(() =>
       expect(
-        screen.queryByTestId("manual-refund-task-queue"),
-      ).not.toBeInTheDocument(),
+        screen.getByTestId("manual-refund-task-load-error"),
+      ).toBeInTheDocument(),
+    );
+    expect(
+      screen.queryByTestId("manual-refund-task-queue"),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByTestId("automatic-refund-notices"),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.getByTestId("manual-refund-task-load-error"),
+    ).toHaveTextContent(/could not be loaded/i);
+  });
+
+  it("says the record is unavailable when the route could read the queue but not the notices", async () => {
+    // The route degrades its informational query on its own so a timeout on it
+    // cannot take the hand-back queue off screen. The empty list it then sends is
+    // NOT an answer about money, so the surface must not present it as one — and
+    // it must not claim the queue beside it is broken either.
+    stubLoad({
+      tasks: [OPEN_TASK],
+      autoRefunded: [],
+      autoRefundedUnavailable: true,
+    });
+
+    render(<ManualRefundTaskQueue />);
+
+    await waitFor(() =>
+      expect(
+        screen.getByTestId("automatic-refund-notices-unavailable"),
+      ).toBeInTheDocument(),
+    );
+    expect(screen.getByTestId("manual-refund-task-queue")).toHaveTextContent(
+      "Ada Lovelace",
     );
     expect(
       screen.queryByTestId("automatic-refund-notices"),
     ).not.toBeInTheDocument();
+    expect(
+      screen.queryByTestId("manual-refund-task-load-error"),
+    ).not.toBeInTheDocument();
+  });
+
+  it("shows the unavailable line even when there is no hand-back work at all", async () => {
+    // The pre-#2750 component returned `null` on an empty OPEN list, and a silent
+    // `null` here would be the same defect in a new place: nothing on screen when
+    // the truth is unknown.
+    stubLoad({ tasks: [], autoRefunded: [], autoRefundedUnavailable: true });
+
+    const { container } = render(<ManualRefundTaskQueue />);
+
+    await waitFor(() =>
+      expect(
+        screen.getByTestId("automatic-refund-notices-unavailable"),
+      ).toBeInTheDocument(),
+    );
+    expect(container).not.toBeEmptyDOMElement();
+  });
+
+  it("says the list is partial, naming the audit log as the complete record", async () => {
+    /*
+      #2750 review. A row only exists where the member's browser reached the
+      confirm endpoint before Stripe's webhook did. Webhook-first — the healthy
+      case — and a member who closes the tab after paying both refund the capture
+      and leave no row, so a short or empty card is not proof that no automatic
+      refund happened. Saying otherwise on this card would replace "nobody is
+      told" with "somebody is told something false", which is worse.
+    */
+    stubLoad({ tasks: [], autoRefunded: [AUTO_REFUND] });
+
+    render(<ManualRefundTaskQueue />);
+
+    await waitFor(() =>
+      expect(screen.getByTestId("automatic-refund-notices")).toBeInTheDocument(),
+    );
+    const card = screen.getByTestId("automatic-refund-notices");
+    expect(card).toHaveTextContent(/does not catch every one/i);
+    expect(card).toHaveTextContent(
+      /booking\.payment\.refunded_after_cancellation/,
+    );
+  });
+
+  it("offers no booking link on a record row, because every one of them is deleted", async () => {
+    /*
+      The booking detail page 404s a soft-deleted booking for anybody who is not a
+      Full Admin, and this card is gated on finance:view — which a Finance Viewer
+      and a Treasurer hold WITHOUT Full Admin. A "View booking" link here is a
+      dead end for exactly the audience the card is for, and the fix is not to
+      widen who may open a deleted booking. The identifiers are printed instead.
+    */
+    stubLoad({ tasks: [OPEN_TASK], autoRefunded: [AUTO_REFUND] });
+
+    render(<ManualRefundTaskQueue />);
+
+    await waitFor(() =>
+      expect(screen.getByTestId("automatic-refund-notices")).toBeInTheDocument(),
+    );
+    const notices = screen.getByTestId("automatic-refund-notices");
+    expect(notices.querySelectorAll("a")).toHaveLength(0);
+    expect(notices).toHaveTextContent("booking-deleted");
+    // The hand-back queue keeps its link: those bookings are cancelled, not
+    // deleted, so the page opens for every viewer this screen admits.
+    expect(
+      screen.getByTestId("manual-refund-task-queue").querySelectorAll("a").length,
+    ).toBeGreaterThan(0);
   });
 });

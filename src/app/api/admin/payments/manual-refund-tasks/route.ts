@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { requireAdmin } from "@/lib/session-guards";
 import { prisma } from "@/lib/prisma";
+import logger from "@/lib/logger";
 import {
   AUTOMATIC_REFUND_NOTICE_WINDOW_DAYS,
   automaticallyRefundedManualRefundTaskFilter,
@@ -22,7 +23,45 @@ import {
  *
  * Both are `take`-bounded and neither paginates, matching the pre-existing
  * behaviour of this route: it is a queue card, not a dataset surface.
+ *
+ * THE SECOND LIST CANNOT TAKE THE FIRST DOWN WITH IT (#2750 review). One
+ * `Promise.all` rejection rejects the whole batch, the client blanks both lists
+ * on a non-OK answer, and the OPEN list is money the club still owes members by
+ * hand — so a failure of the informational query would have removed the
+ * actionable queue from the screen. The failure mode is specific to the new
+ * query rather than hypothetical: `note: { startsWith }` is an unindexed
+ * `LIKE 'prefix%'` scan over the DISMISSED slice, so it is the one of the two
+ * that can time out as the table grows. It is therefore caught on its own,
+ * answered as an empty list with `autoRefundedUnavailable: true`, and logged.
+ * The flag matters as much as the fallback: an empty list means "no automatic
+ * refunds", and a degraded read must not be allowed to say that.
  */
+/**
+ * An informational list that degrades to "unavailable" rather than rejecting the
+ * batch carrying the actionable queue beside it (#2750 review).
+ *
+ * Generic over the row so the empty fallback keeps the query's own type — a bare
+ * `[]` in a `.catch` widens to `never[]` and makes the result unmappable — and
+ * returning the flag beside the rows is what stops the caller forgetting it: an
+ * empty list and a failed read look identical on screen, and on a refund notice
+ * that difference is the entire point of the card.
+ */
+function readOrDegrade<T>(
+  query: Promise<T[]>,
+  what: string,
+): Promise<{ rows: T[]; unavailable: boolean }> {
+  return query.then(
+    (rows) => ({ rows, unavailable: false }),
+    (err: unknown) => {
+      logger.error(
+        { err },
+        `Failed to read the ${what} for the finance queue; the hand-back queue is answered without them`,
+      );
+      return { rows: [], unavailable: true };
+    },
+  );
+}
+
 export async function GET() {
   const guard = await requireAdmin({
     permission: { area: "finance", level: "view" },
@@ -49,7 +88,7 @@ export async function GET() {
     Date.now() - AUTOMATIC_REFUND_NOTICE_WINDOW_DAYS * 24 * 60 * 60 * 1000,
   );
 
-  const [tasks, autoRefunded] = await Promise.all([
+  const [tasks, autoRefundedRead] = await Promise.all([
     prisma.manualRefundTask.findMany({
       where: { status: "OPEN" },
       orderBy: { createdAt: "asc" },
@@ -69,31 +108,34 @@ export async function GET() {
       this is "what happened lately" and the most recent automatic refund is the
       one an operator can still act on if the deletion was the mistake.
     */
-    prisma.manualRefundTask.findMany({
-      where: {
-        ...automaticallyRefundedManualRefundTaskFilter,
-        completedAt: { gte: noticesSince },
-      },
-      orderBy: { completedAt: "desc" },
-      /*
-        The same 100 as the queue above, on purpose. The card prints its own
-        length as a count, so a tighter `take` would silently make that count a
-        lie about a money movement the moment a club had more of them than the
-        limit — and the honest bound here is the thirty-day window, not a row
-        cap. A club with 100 of these inside a month has a problem it needs to
-        see in full.
-      */
-      take: 100,
-      select: {
-        id: true,
-        bookingId: true,
-        amountCents: true,
-        reason: true,
-        note: true,
-        completedAt: true,
-        booking: { select: bookingSummary },
-      },
-    }),
+    readOrDegrade(
+      prisma.manualRefundTask.findMany({
+        where: {
+          ...automaticallyRefundedManualRefundTaskFilter,
+          completedAt: { gte: noticesSince },
+        },
+        orderBy: { completedAt: "desc" },
+        /*
+          The same 100 as the queue above, on purpose. The card prints its own
+          length as a count, so a tighter `take` would silently make that count a
+          lie about a money movement the moment a club had more of them than the
+          limit — and the honest bound here is the thirty-day window, not a row
+          cap. A club with 100 of these inside a month has a problem it needs to
+          see in full.
+        */
+        take: 100,
+        select: {
+          id: true,
+          bookingId: true,
+          amountCents: true,
+          reason: true,
+          note: true,
+          completedAt: true,
+          booking: { select: bookingSummary },
+        },
+      }),
+      "automatically refunded late-capture notices",
+    ),
   ]);
 
   return NextResponse.json({
@@ -107,7 +149,12 @@ export async function GET() {
       checkIn: task.booking.checkIn.toISOString(),
       checkOut: task.booking.checkOut.toISOString(),
     })),
-    autoRefunded: autoRefunded.map((task) => ({
+    // True only when the notices read itself failed. The surface says so in a
+    // line of its own rather than showing an empty card, because "no automatic
+    // refunds in the last 30 days" is a claim about money and a failed query is
+    // not entitled to make it.
+    autoRefundedUnavailable: autoRefundedRead.unavailable,
+    autoRefunded: autoRefundedRead.rows.map((task) => ({
       id: task.id,
       bookingId: task.bookingId,
       amountCents: task.amountCents,

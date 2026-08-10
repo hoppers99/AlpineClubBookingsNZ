@@ -64,6 +64,15 @@ interface AutoRefundedNotice {
  * A separate component from the queue above because it is a different claim
  * about the world, and mixing "you owe this member money" rows with "this money
  * has already gone back" rows in one list is how somebody pays a refund twice.
+ *
+ * A PARTIAL RECORD, AND IT SAYS SO. A row exists only where the member's browser
+ * reached the confirm endpoint before the Stripe webhook did: that is the one
+ * ordering that raises a `ManualRefundTask` at all. Webhook-first (and the member
+ * who simply closes the tab after paying) refunds the capture and leaves no task
+ * for the close to find, and the interleaved ordering is fenced off deliberately
+ * — see `deleted-booking-modification-payment.ts`. The card therefore names the
+ * audit entry and the alert email as the complete record rather than letting a
+ * short list read as "that is all of them" (`INV-ADDPAY-037`).
  */
 function AutomaticRefundNoticesCard({
   notices,
@@ -86,6 +95,32 @@ function AutomaticRefundNoticesCard({
           the mistake rather than the payment, the booking has to be made again
           and the member charged again — the refund has already gone out.
         </p>
+        {/*
+          #2750 review: the card is a partial record, and it says so rather than
+          letting an operator read a short list as "that is all of them".
+
+          Only one of the ways this can happen leaves a row here: the member's
+          browser has to finish the payment step before Stripe's notification
+          reaches us. If the notification lands first, or the member closes the
+          tab after paying, the refund still happens and this card never learns
+          about it. The permanent record for every ordering is the booking's
+          audit log entry plus the payment alert email the club is sent at the
+          time, so those are named here — an operator who trusts an empty card as
+          proof no automatic refund happened is the failure this whole card
+          exists to prevent, and it would be a worse one than the original.
+        */}
+        <p className="text-sm text-muted-foreground">
+          This card does not catch every one. Whether a refund shows up here
+          depends on the order the member&apos;s browser and Stripe&apos;s
+          notification reached us in, so an empty or short list means &ldquo;none
+          recorded here&rdquo; rather than &ldquo;none happened&rdquo;. The
+          complete record is the booking&apos;s audit log (the{" "}
+          <span className="font-mono text-xs">
+            booking.payment.refunded_after_cancellation
+          </span>{" "}
+          entry) together with the payment alert email the club is sent at the
+          time.
+        </p>
         <ul className="space-y-3">
           {notices.map((notice) => (
             <li
@@ -98,15 +133,24 @@ function AutomaticRefundNoticesCard({
                   ? ` on ${formatNZDate(new Date(notice.refundedAt))}`
                   : ""}
               </p>
+              {/*
+                NO "View booking" LINK ON THIS CARD, unlike the hand-back queue
+                above, and the difference is not an oversight (#2750 review).
+
+                Every row here is a booking that has been DELETED, and the
+                booking detail page 404s a deleted booking for anybody who is not
+                a Full Admin — while this card is gated on finance:view, which a
+                Finance Viewer and a Treasurer hold without it. So the link would
+                be a dead end for exactly the audience the card is for. Widening
+                that page's audience to make a link work is not on the table; the
+                identifiers are printed as plain text instead, which is what a
+                Full Admin needs to look the booking up and what a finance
+                operator needs to quote it to somebody who can.
+              */}
               <p className="text-muted-foreground">
                 {formatNZDate(new Date(notice.checkIn))} to{" "}
-                {formatNZDate(new Date(notice.checkOut))} ·{" "}
-                <Link
-                  className="underline"
-                  href={`/bookings/${notice.bookingId}`}
-                >
-                  View booking
-                </Link>
+                {formatNZDate(new Date(notice.checkOut))} · booking{" "}
+                <span className="font-mono text-xs">{notice.bookingId}</span>
               </p>
               {/*
                 Both sentences, not one. The reason names the situation that
@@ -158,6 +202,23 @@ export function ManualRefundTaskQueue() {
   const canEdit = useAdminAreaEditAccess("finance");
   const [tasks, setTasks] = useState<ManualRefundTask[] | null>(null);
   const [autoRefunded, setAutoRefunded] = useState<AutoRefundedNotice[]>([]);
+  /**
+   * The load failed, as distinct from having found nothing (#2750 review).
+   *
+   * Blanking the cards on a failure is right — a stale list of money owed is
+   * worse than none — but blanking them SILENTLY makes a 500 look exactly like
+   * "nothing to pay back and no automatic refunds", and this card exists so that
+   * an absence of rows can be trusted. One line says which it was.
+   */
+  const [loadFailed, setLoadFailed] = useState(false);
+  /**
+   * The route answered, but its automatic-refund read specifically failed, so it
+   * sent an empty list it does not stand behind. Separate from `loadFailed`
+   * because the hand-back queue beside it IS trustworthy in that case, and
+   * telling the operator their work queue is broken when it is not would send
+   * them looking for a problem that is not there.
+   */
+  const [autoRefundedUnavailable, setAutoRefundedUnavailable] = useState(false);
   const [target, setTarget] = useState<
     null | { task: ManualRefundTask; resolution: "completed" | "dismissed" }
   >(null);
@@ -197,17 +258,24 @@ export function ManualRefundTaskQueue() {
       if (!response.ok) {
         setTasks([]);
         setAutoRefunded([]);
+        setAutoRefundedUnavailable(false);
+        setLoadFailed(true);
         return;
       }
       const data = (await response.json()) as {
         tasks: ManualRefundTask[];
         autoRefunded?: AutoRefundedNotice[];
+        autoRefundedUnavailable?: boolean;
       };
       setTasks(data.tasks ?? []);
       setAutoRefunded(data.autoRefunded ?? []);
+      setAutoRefundedUnavailable(Boolean(data.autoRefundedUnavailable));
+      setLoadFailed(false);
     } catch {
       setTasks([]);
       setAutoRefunded([]);
+      setAutoRefundedUnavailable(false);
+      setLoadFailed(true);
     }
   }, []);
 
@@ -277,14 +345,38 @@ export function ManualRefundTaskQueue() {
     The hand-back queue keeps its original behaviour exactly: it shows while the
     load is still in flight (`tasks === null`) and disappears once the load says
     there is nothing to pay back. The automatic-refund card is independent — one
-    can be present without the other, and when both are empty this component
-    still renders nothing at all.
+    can be present without the other, and when both are empty AND the load
+    succeeded this component still renders nothing at all. A failed load is the
+    one case where "nothing" is not the answer: it renders the line below instead,
+    because silence there is indistinguishable from a clean slate.
   */
   const showQueue = tasks === null || tasks.length > 0;
-  if (!showQueue && autoRefunded.length === 0) return null;
+  if (
+    !showQueue &&
+    autoRefunded.length === 0 &&
+    !loadFailed &&
+    !autoRefundedUnavailable
+  ) {
+    return null;
+  }
 
   return (
     <div className="space-y-6">
+      {/*
+        A failed read says so (#2750 review). Rendered above the cards because it
+        is a statement about what is missing from them, and as its own line rather
+        than as an empty card so it cannot be mistaken for a list with no rows.
+      */}
+      {loadFailed ? (
+        <p
+          className="text-sm text-muted-foreground"
+          data-testid="manual-refund-task-load-error"
+        >
+          Refund tasks could not be loaded, so this page cannot say whether any
+          are waiting or whether a payment was refunded automatically. Reload the
+          page.
+        </p>
+      ) : null}
       {showQueue ? (
         <Card data-testid="manual-refund-task-queue">
           <CardHeader>
@@ -449,6 +541,22 @@ export function ManualRefundTaskQueue() {
             </DialogContent>
           </Dialog>
         </Card>
+      ) : null}
+      {/*
+        The route answered but could not read this list. Said in one line instead
+        of an empty card, for the same reason as above: an empty card asserts that
+        no money was refunded automatically, and a query that failed has not
+        earned the right to assert that.
+      */}
+      {autoRefundedUnavailable ? (
+        <p
+          className="text-sm text-muted-foreground"
+          data-testid="automatic-refund-notices-unavailable"
+        >
+          The record of automatic refunds could not be loaded, so this page
+          cannot say whether any payment was refunded automatically. The
+          hand-back queue above is unaffected. Reload the page.
+        </p>
       ) : null}
       {autoRefunded.length > 0 ? (
         <AutomaticRefundNoticesCard notices={autoRefunded} />

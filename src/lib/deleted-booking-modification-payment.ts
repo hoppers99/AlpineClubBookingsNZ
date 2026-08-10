@@ -177,6 +177,16 @@ export async function raiseDeletedBookingModificationRefundTask(params: {
  * Only the close below ever writes it, so it is the load-bearing half of the
  * filter. Kept short of the full sentence on purpose: the sentence ends with the
  * payment intent id, so a prefix is what a `startsWith` can match.
+ *
+ * THESE BYTES ARE STORED DATA, NOT DISPLAY COPY (#2750 review). Sharing the
+ * constant keeps writer and reader from drifting apart, but it does NOT make the
+ * value safe to edit: `startsWith` is evaluated against notes already written to
+ * rows, so rewording this would leave every test that derives its expectation
+ * from the constant green while making every automatic refund the club has
+ * already had disappear from the card — the exact defect #2750 exists to close.
+ * `deleted-booking-refund-visibility.test.ts` therefore pins these bytes as a
+ * golden string. Changing them needs a migration that rewrites the stored notes,
+ * or a reader that accepts the old prefix as well, in the same commit.
  */
 export const AUTOMATIC_CANCELLED_BOOKING_REFUND_NOTE_PREFIX =
   "Closed automatically: Stripe refunded this capture under the cancelled-booking late-capture path";

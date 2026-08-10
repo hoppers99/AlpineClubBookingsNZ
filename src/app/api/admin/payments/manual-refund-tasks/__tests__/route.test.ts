@@ -20,12 +20,16 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
  * `completedAt` window and "bounds the record to a review window" fails. Return
  * the second list under the first list's key, or map `note` away, and the two
  * mapping tests fail. Refuse the route to finance:view and "a finance viewer may
- * read both lists" fails.
+ * read both lists" fails. Put the notices query back inside the bare
+ * `Promise.all` and "answers 200 with the hand-back queue intact when the notices
+ * query fails" fails; swallow the OPEN query's failure the same way and "still
+ * fails loudly when the hand-back queue itself cannot be read" fails.
  */
 
 const mocks = vi.hoisted(() => ({
   requireAdmin: vi.fn(),
   manualRefundTaskFindMany: vi.fn(),
+  loggerError: vi.fn(),
 }));
 
 vi.mock("@/lib/session-guards", () => ({ requireAdmin: mocks.requireAdmin }));
@@ -33,6 +37,9 @@ vi.mock("@/lib/prisma", () => ({
   prisma: {
     manualRefundTask: { findMany: mocks.manualRefundTaskFindMany },
   },
+}));
+vi.mock("@/lib/logger", () => ({
+  default: { error: mocks.loggerError, warn: vi.fn(), info: vi.fn() },
 }));
 
 import { GET } from "../route";
@@ -220,6 +227,60 @@ describe("GET manual-refund-tasks (#2262, #2750)", () => {
       autoRefunded: unknown[];
     };
 
-    expect(body).toEqual({ tasks: [], autoRefunded: [] });
+    // `autoRefundedUnavailable: false` is part of the answer, not noise: the
+    // surface has to be able to tell "no automatic refunds" from "could not
+    // look", and only an explicit false lets it.
+    expect(body).toEqual({
+      tasks: [],
+      autoRefunded: [],
+      autoRefundedUnavailable: false,
+    });
+  });
+});
+
+describe("a failed notices read must not take the work queue with it (#2750 review)", () => {
+  /*
+    The second query is the informational one; the first is money the club still
+    owes members by hand. Inside one `Promise.all` a single rejection rejects the
+    batch, the client blanks BOTH cards on a non-OK answer, and the actionable
+    queue would disappear because a card that only informs could not be read.
+
+    Not hypothetical for this query in particular: `note: { startsWith }` is an
+    unindexed `LIKE 'prefix%'` over the DISMISSED slice, so it is the one of the
+    two that can hit a statement timeout as the table grows, and any future edit
+    to the shared filter object can make it a Prisma validation error.
+  */
+  it("answers 200 with the hand-back queue intact when the notices query fails", async () => {
+    mocks.manualRefundTaskFindMany
+      .mockReset()
+      .mockResolvedValueOnce([OPEN_ROW])
+      .mockRejectedValueOnce(new Error("statement timeout"));
+
+    const response = await GET();
+    const body = (await response.json()) as {
+      tasks: { id: string }[];
+      autoRefunded: unknown[];
+      autoRefundedUnavailable: boolean;
+    };
+
+    expect(response.status).toBe(200);
+    expect(body.tasks.map((task) => task.id)).toEqual(["task-open"]);
+    // Empty AND flagged. An empty list on its own is a claim that no money was
+    // refunded automatically, which a query that failed has not earned.
+    expect(body.autoRefunded).toEqual([]);
+    expect(body.autoRefundedUnavailable).toBe(true);
+    expect(mocks.loggerError).toHaveBeenCalled();
+  });
+
+  it("still fails loudly when the hand-back queue itself cannot be read", async () => {
+    // The asymmetry is the point. Degrading the informational list is safe;
+    // degrading the queue of refunds an operator must pay would answer "nothing
+    // to pay back" when the truth is unknown, so that one propagates.
+    mocks.manualRefundTaskFindMany
+      .mockReset()
+      .mockRejectedValueOnce(new Error("statement timeout"))
+      .mockResolvedValueOnce([AUTO_ROW]);
+
+    await expect(GET()).rejects.toThrow("statement timeout");
   });
 });

@@ -189,6 +189,37 @@ member is told the club will arrange their refund.
 3. If the member declined the refund, or it was settled another way, click
    **Dismiss** and say which. A note is required.
 
+### A refund that happened without you — "Refunded automatically"
+
+Sometimes a member pays for a booking change at the same moment an admin is
+deleting that booking. The payment goes through against a booking that no longer
+exists, and Stripe hands the money straight back to the member on its own. Nobody
+decided that, and there is nothing for you to pay back.
+
+Those refunds appear on this page in a second card, **Refunded automatically —
+nothing to pay back**, above the filters. It lists the member, the amount, the day
+the money went back and the stay, and it covers the last 30 days.
+
+1. **There are no buttons, and that is on purpose.** The money has already gone
+   back to the member. Marking it as paid back would record the same refund twice.
+2. **Ask whether the deletion was the mistake.** If the booking should never have
+   been deleted, the refund has already gone out — so the booking has to be made
+   again and the member charged again. That is the only work these rows can create,
+   and it is not on this page.
+3. **Do not read an empty card as proof.** Whether one of these refunds lands on
+   the card depends on the order the member's browser and Stripe's notification
+   reached us in, so some leave their record only in the booking's audit log and in
+   the **Payment Failed** alert email the club is sent at the time. The card says
+   this on screen. If you need to be certain, check the audit log (a Full Admin
+   can) for a `booking.payment.refunded_after_cancellation` entry.
+4. **If it says it could not be loaded, reload.** A line in place of the card means
+   the page could not read the record — not that there is nothing to see. The
+   hand-back queue above it is unaffected.
+
+There is no **View booking** link on these rows. The bookings are deleted, and a
+deleted booking's page opens only for a Full Admin, so the booking's identifier is
+printed as text for you to quote instead of a link that would not work for you.
+
 ### Follow a payment into Stripe or Xero
 
 1. Click the Stripe id to open the payment in the Stripe dashboard, or the Xero
@@ -213,6 +244,7 @@ Payments is a read-only ledger (aside from Generate Invoice). Its controls:
 | Generate Invoice | Create a Xero invoice for a succeeded payment | — | Needs finance **edit**; only for succeeded, non-Internet-Banking payments with no invoice. Never offered for a manually recorded cash payment — no invoice is expected for one |
 | Record / Reverse manual payment | Record a cash or off-Xero bank-transfer settlement on a booking, or undo one | — | On the booking page, not here. Needs finance **edit**. Never contacts Xero |
 | Mark paid back / Dismiss | Close a hand-back task for a cancelled cash booking | — | Needs finance **edit**. "Mark paid back" writes the refund into the ledger; "Dismiss" needs a note |
+| Refunded automatically — nothing to pay back | Read-only record of a booking-change payment Stripe returned by itself, because the booking had already been deleted | last 30 days | No controls at all: the money has already gone back. Not a complete list — some of these refunds are recorded only in the audit log and the alert email, which the card says on screen |
 
 Page size is fixed at 25. **Total Revenue** and **Refunded / Credited** reflect
 the whole filtered set; **Success Rate** is computed from the visible page.

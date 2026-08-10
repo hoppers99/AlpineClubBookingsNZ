@@ -9,11 +9,19 @@
 
   Payments now carries a second card, **"Refunded automatically — nothing to pay
   back"**, listing those refunds from the last 30 days with the member, the
-  amount, the day the money went back, and a link to the booking. It has no
-  buttons, because there is nothing left for you to settle. It does say the one
-  thing that might still need doing: if deleting the booking was the mistake
-  rather than the payment, the booking has to be made again and the member
-  charged again, because the refund has already gone out.
+  amount, the day the money went back and the stay. It has no buttons, because
+  there is nothing left for you to settle. It does say the one thing that might
+  still need doing: if deleting the booking was the mistake rather than the
+  payment, the booking has to be made again and the member charged again, because
+  the refund has already gone out.
+
+  The card is careful about what it claims, and says so on screen: whether one of
+  these refunds reaches it depends on the order the member's browser and Stripe
+  reached us in, so an empty list means "none recorded here" rather than "none
+  happened" — the booking's audit log and the payment alert email the club is sent
+  at the time remain the full record. If the list cannot be loaded you get a line
+  saying so instead of an empty card, and a problem reading it never hides the
+  hand-back refunds you still owe members.
 
   No money moves differently. Refunds happen exactly when and in the amounts they
   did before; the only change is that you can see this one.
