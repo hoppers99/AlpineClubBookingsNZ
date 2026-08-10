@@ -77,9 +77,12 @@ only the ID heading lines were added.
 
 - **Reclassifying an audit row's `category` in code changes only the rows written
   afterwards, so the pull request that reclassifies either ships the backfill for
-  the rows already written or files the issue that decides not to (#2751).**
-  Never neither, and never as comment prose — a follow-up that exists only as a
-  sentence in a PR is not a follow-up.
+  the rows already written or files it as an issue — never neither, and never as
+  prose. A backfill that would cross the member-visible boundary in either
+  direction needs its own owner decision rather than following this rule
+  automatically.** Owner decision of 10 August 2026 on #2751, decision C, in the
+  variant #2763 informed; a follow-up that exists only as a sentence in a pull
+  request is not a follow-up.
 
   **Why the code change is never the whole change.** `AuditLog.category` is
   stored on the row at write time and never re-derived at read time, and
@@ -110,15 +113,19 @@ only the ID heading lines were added.
   row counts before and after, because a rewrite of an append-only table is
   otherwise invisible to the club whose history it changed.
 
-  **When filing instead is the right answer, not the lazy one.** A backfill that
-  crosses the member-visible boundary is a visibility decision rather than a
-  tidy-up: rewriting a stored row OUT of a member-visible category (`account`,
-  `security`, `booking`, `payment`, `family`, `communication`, `privacy`)
-  withdraws an entry a member can see about their own account today, and
-  rewriting one INTO a member-visible category publishes an administrator's
-  action to the member it was about. Neither follows from the writer decision, so
-  neither may ride along with it. #2763 is the worked example and it recommends
-  leaving the rows alone exactly where #2751 recommends moving them.
+  **The member-visibility carve-out, which is the half of this rule that is NOT
+  automatic.** A backfill crossing the member-visible boundary is a visibility
+  decision rather than a tidy-up: rewriting a stored row OUT of a member-visible
+  category (`account`, `security`, `booking`, `payment`, `family`,
+  `communication`, `privacy` — the reviewed list in
+  `MEMBER_VISIBLE_AUDIT_CATEGORIES`) withdraws an entry a member can see about
+  their own account today, and rewriting one INTO a member-visible category
+  publishes an administrator's action to the member it was about. Neither follows
+  from the writer decision, so neither may ride along with it, and neither may be
+  taken by a lane: **it is the owner's decision.** #2763 is the worked example —
+  the same mechanism as #2751 with the opposite answer, because those rows are
+  member-visible and stay untouched. #2751's own rows cleared this because neither
+  `admin` nor `lodge` is member-visible, so nothing crossed in either direction.
 
   **Enforcement is partial, and the boundary is stated rather than implied.** The
   mechanical half exists and is real:

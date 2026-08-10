@@ -180,9 +180,11 @@ match, and the pack test that used to pin the split now pins its absence.
 
 The generalised rule this produced is **`INV-OPS-012`**: a pull request that
 reclassifies an audit category either ships the backfill for the rows already
-written or files the issue that decides not to — never neither, and never as
-comment prose. It carries the honest limit too, that only the pinned population
-can be checked mechanically.
+written or files it as an issue — never neither, and never as prose — and a
+backfill that would cross the member-visible boundary in either direction needs
+its own owner decision rather than following the rule automatically. It carries
+the honest limit too, that only the pinned population can be checked
+mechanically.
 
 ## Kept: 87 sites
 

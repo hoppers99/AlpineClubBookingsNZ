@@ -40,5 +40,8 @@
 
   **And it is now the rule rather than a one-off.** A change that moves an event
   from one activity category to another has to move the records already written or
-  say in writing why it will not — recorded as `INV-OPS-012`, so the next
-  reclassification cannot quietly leave a second split behind.
+  file the decision not to as its own issue — recorded as `INV-OPS-012`, so the
+  next reclassification cannot quietly leave a second split behind. With one
+  carve-out that is deliberately not automatic: where moving the stored records
+  would change what a member can see about their own account, that needs a
+  separate decision by the club rather than following the rule.
