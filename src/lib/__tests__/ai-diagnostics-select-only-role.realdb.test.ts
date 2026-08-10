@@ -1275,7 +1275,12 @@ describe("diagnostics privilege proof DB safety guard (#2374)", () => {
         [
           "BookingGuest",
           "ageTier",
-          ["consentRespondedByMemberId", "rateMembershipTypeId"],
+          // NOT `consentRespondedByMemberId`: that column IS granted — the consent
+          // sub-state entry reads it — and this pin listing it as withheld was the
+          // same stale copy review finding [5] caught in the docblock, surfacing
+          // here on the suite's first real-PostgreSQL execution. `arrivedAt` is the
+          // deliberately-dropped column the allowlist's own comment records.
+          ["rateMembershipTypeId", "arrivedAt"],
         ],
         [
           "BookingChangeRequest",
