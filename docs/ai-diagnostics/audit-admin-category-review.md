@@ -313,14 +313,16 @@ id is only inside `metadata` and is no query leg at all. That crossing is the
 owner's decision under `INV-PRIV-012` and `INV-OPS-012`, so the sites stay `admin`
 and the question went back as its own filed decision, **#2777**, with the reason
 measured rather than argued. **#2777 was decided on 11 August 2026: the four
-locker writers stay `admin`**, with the accepted trade-off that a Membership
-Officer correlating locker changes uses the System entry (gated `support` alone)
-rather than a membership-domain one — a stated gap, because both entries' scope
-strings keep naming lockers as `admin`.
+locker writers stay `admin`.** The accepted trade-off is a permission
+requirement, not a choice of tool: the correlation path for these rows is the
+System entry, which requires `support`, so a Membership Officer who does not
+also hold Support & System cannot correlate a member's locker history at all —
+a stated gap, because the System and Lodge entries' scope strings keep naming
+lockers as `admin`.
 
-**#2777 also carried — and the owner declined — the option the refusal on its own
-does not:** a NEW canonical
-category mapped to the membership correlation domain and deliberately left off
+**#2777 also carried — and the owner declined — the option the refusal on its
+own does not:** a NEW canonical category mapped to the membership correlation
+domain and deliberately left off
 `MEMBER_VISIBLE_AUDIT_CATEGORIES` is member-invisible and delivers what the access
 model asks for. "No member-invisible destination" is a fact about today's closed
 taxonomy, not an impossibility — see `INV-PRIV-013`, which also carries the reason
@@ -586,7 +588,7 @@ below as the history of how it got there.
 them at `admin`.** `INV-PRIV-012` records the fifteen as a deliberate keep with
 the rule they were measured against — *did this site split a subsystem*, not *does
 it name a lodge* and not *is the route gated `lodge:edit`* — and records that
-`lockers` (4 of the fifteen) is **unresolved rather than settled**, because its
+`lockers` (4 of the fifteen) was, at that point, **unresolved rather than settled**, because its
 routes are gated `membership:*` and a locker is allocated to a named member, so
 `lodge` is not obviously its answer either. The point of moving it into the
 invariant is that a decision recorded only in a page attached to a closed issue is

@@ -1094,7 +1094,9 @@ export const OFFICER_DRIVEN_MEMBER_VISIBLE_WRITERS_2755: Readonly<
  * ELEVEN ARE GATED `lodge:*` AND FOUR ARE GATED `membership:*`, and the census test
  * measures that split from the routes' own source rather than trusting this
  * comment. The four are the lockers, listed again in
- * `MEMBERSHIP_GATED_LOCKER_SITES_2765` because their answer is still open.
+ * `MEMBERSHIP_GATED_LOCKER_SITES_2765` because they were settled on their own
+ * reasoning (#2777, 11 August 2026: they stay `admin`), not by inheriting the
+ * group's.
  */
 export const LODGE_GATED_ADMIN_CATEGORIES_2765: Readonly<
   Record<string, string>
@@ -1108,7 +1110,7 @@ export const LODGE_GATED_ADMIN_CATEGORIES_2765: Readonly<
   "src/app/api/admin/chores/[id]/route.ts::PUT#0": "admin",
   "src/app/api/admin/chores/[id]/route.ts::DELETE#0": "admin",
 
-  // ─── Lockers (gated `membership:*`, NOT `lodge:*`) — answer still open ───────
+  // ─── Lockers (gated `membership:*`, NOT `lodge:*`) — settled at `admin`, #2777
   "src/app/api/admin/lockers/route.ts::POST.locker#0": "admin",
   "src/app/api/admin/lockers/[id]/route.ts::PUT.locker#0": "admin",
   "src/app/api/admin/lockers/[id]/route.ts::DELETE#0": "admin",
@@ -1133,10 +1135,11 @@ export const LODGE_GATED_ADMIN_CATEGORIES_2765: Readonly<
 };
 
 /**
- * The four locker writers, named again as the subgroup whose category is still an
- * OPEN QUESTION rather than a settled keep (#2765).
+ * The four locker writers, named again as the subgroup whose category was decided
+ * separately: #2765 refused the `membership` move on measurement, and #2777
+ * settled them at `admin` on 11 August 2026.
  *
- * WHY THEY ARE NOT SETTLED WITH THE OTHER ELEVEN. Their routes are gated
+ * WHY THEY WERE NOT SETTLED WITH THE OTHER ELEVEN. Their routes are gated
  * `membership:view` / `membership:edit`, not `lodge:*`, and a locker is allocated
  * to a NAMED MEMBER rather than to a building — so "lodge infrastructure" is not
  * obviously their domain, and unlike the other eleven the surface reading and the

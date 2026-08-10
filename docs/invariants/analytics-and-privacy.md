@@ -382,7 +382,8 @@ and #2763's bulk member-record rows were not.
 The test that decides whether an `admin` audit writer moves in a sweep, and the
 one destination a lane may never choose for itself. Owner decisions of 11 August
 2026 on #2765, D1 and D2, and — same day — the successor decision on #2777: the
-four `lockers` writers stay `admin` and the question is closed.
+four `lockers` writers stay `admin`; the question is closed, and reopening it is
+a fresh owner decision.
 
 - **The test is: did this site SPLIT a subsystem? Not: does this site name a
   lodge, a member or a payment.** A split is the defect — some other writer of
@@ -446,8 +447,9 @@ four `lockers` writers stay `admin` and the question is closed.
     readership change, unasked for and undecided. The successor decision was filed
     as **#2777** with this option costed, and the owner declined it on 11 August
     2026 — the four locker writers stay `admin`. The path stays recorded because
-    it is the only member-invisible way the question could ever be reopened, and
-    reopening it is a fresh owner decision, not a lane's.
+    it is the only member-invisible destination in the membership correlation
+    domain that today's taxonomy could be extended to; extending it is a fresh
+    owner decision, not a lane's.
   - The crossing is not hypothetical for these four. They pass
     `memberId: <the acting officer>` and no `subjectMemberId`, so
     `buildMemberAuditLogWhere`'s null-subject `memberId` leg returns them on the
@@ -459,11 +461,12 @@ four `lockers` writers stay `admin` and the question is closed.
   rather than being resolved by an implementor to the value that reads best, or
   left as a sentence in a merged pull request. **The owner decided it on 11 August
   2026: the four locker writers stay `admin`.** The accepted cost is the one the
-  access model argued about — a Membership Officer investigating a member's locker
-  reaches for the System correlation entry (gated `support` alone) rather than a
-  membership-domain one — and it stays a stated gap rather than a silent absence,
-  because both entries' scope strings keep naming lockers as `admin` (pinned, next
-  bullet).
+  access model argued about, and it is a permission requirement rather than a
+  choice of tool: the correlation path for these rows is the System entry, which
+  requires `support`, so a Membership Officer who does not also hold Support &
+  System cannot correlate a member's locker history at all. It stays a stated gap
+  rather than a silent absence, because the System and Lodge entries' scope
+  strings keep naming lockers as `admin` (pinned, next bullet).
 - **While any of the fifteen stays `admin`, both correlation tools' evidence scope
   must keep NAMING it.** The cost of the keep is a silent absence: a Lodge
   correlation entry that returns nothing to "when was this lodge deactivated?"

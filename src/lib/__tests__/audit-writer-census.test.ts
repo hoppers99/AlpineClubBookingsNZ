@@ -703,7 +703,8 @@ describe("audit writer census (#2581)", { timeout: 180_000 }, () => {
 
   it("names the four locker sites as membership-gated, and no destination exists that does not widen", () => {
     /*
-      The open half of #2765, kept measurable instead of kept in prose.
+      The half of #2765 that needed its own decision, kept measurable instead of
+      kept in prose — settled by #2777 on 11 August 2026: the four stay `admin`.
 
       THE FOUR LOCKER WRITERS ARE THE ODD ONES OUT of the fifteen, and this asserts
       the reason from the routes' own source rather than from a comment: eleven of
@@ -726,9 +727,9 @@ describe("audit writer census (#2581)", { timeout: 180_000 }, () => {
 
       IF THIS TEST EVER FAILS ON THE EMPTY-SET ASSERTION, that is the useful signal
       rather than a nuisance: a member-INVISIBLE category has joined the membership
-      correlation domain, so #2765's question finally has a destination that does
-      not publish an officer's locker admin to a member, and the decision can be
-      put again on those terms.
+      correlation domain, so the question #2777 settled finally has a destination
+      that does not publish an officer's locker admin to a member, and the decision
+      can be put to the owner again on those terms.
     */
     expect(MEMBERSHIP_GATED_LOCKER_SITES_2765).toHaveLength(4);
     for (const id of MEMBERSHIP_GATED_LOCKER_SITES_2765) {
@@ -763,9 +764,10 @@ describe("audit writer census (#2581)", { timeout: 180_000 }, () => {
     expect(
       membershipGatedFiles.sort(),
       "The permission gate on a lodge-gated operational route changed. The whole " +
-        "reason lockers are an open question and the other eleven are not is that " +
-        "these four routes require `membership` and the rest require `lodge`; if " +
-        "that stops being true, the question changes shape (INV-PRIV-013).",
+        "reason lockers needed their own decision (#2777) and the other eleven " +
+        "did not is that these four routes require `membership` and the rest " +
+        "require `lodge`; if that stops being true, the question changes shape " +
+        "(INV-PRIV-013).",
     ).toEqual([
       "src/app/api/admin/lockers/[id]/route.ts",
       "src/app/api/admin/lockers/bulk/route.ts",
