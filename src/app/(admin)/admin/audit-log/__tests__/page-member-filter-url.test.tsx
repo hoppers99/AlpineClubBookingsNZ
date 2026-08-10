@@ -27,6 +27,17 @@ const JANE = {
   role: "MEMBER",
 };
 
+// The members search matches an id by PREFIX as well as by name and email, so a
+// longer id starting with the filtered one is a legitimate extra row. The chip
+// must resolve to the exact id, never to the first row that came back.
+const PREFIX_SIBLING = {
+  id: `${JANE.id}-2`,
+  firstName: "Wrong",
+  lastName: "Person",
+  email: "wrong@example.test",
+  role: "MEMBER",
+};
+
 const emptyAuditPage = {
   data: [],
   total: 0,
@@ -60,7 +71,10 @@ function stubFetch() {
           json: async () => ({ error: "Unauthorized" }),
         } as Response;
       }
-      return { ok: true, json: async () => ({ members: [JANE] }) } as Response;
+      return {
+        ok: true,
+        json: async () => ({ members: [PREFIX_SIBLING, JANE] }),
+      } as Response;
     }
     throw new Error(`Unexpected request: ${url}`);
   }) as typeof fetch;
@@ -107,6 +121,7 @@ describe("admin audit log member filter URL (#2733)", () => {
     await renderAuditLogPage();
 
     expect(await screen.findByText("Jane Doe")).toBeInTheDocument();
+    expect(screen.queryByText("Wrong Person")).not.toBeInTheDocument();
 
     // The label came from the authorized members lookup, keyed by the id.
     expect(
