@@ -332,7 +332,20 @@ export const AUDIT_CENSUS_TOTALS = {
     // All five already reached the member self-timeline through the legacy
     // action inference for null-category rows, so none of them becomes visible
     // to a member who could not already see it.
-    account: 20,
+    //
+    // 20 -> 19 (#2755): that same `member.bulk-deactivate`/`-reactivate` branch
+    // moved OUT, to `admin`, so all three officer-driven member-record writers
+    // agree. THIS IS A NARROWING IN BOTH DIRECTIONS AT ONCE, which is why it is
+    // spelt out rather than counted. The subject member stops seeing a bulk
+    // deactivation of their own account on their own activity list — they already
+    // saw nothing when an officer did the same thing from the member detail page,
+    // so the outcome is uniform invisibility rather than visibility-by-screen. And
+    // the row moves from `support` + `membership` to `support` alone, so a
+    // support-only operator gains it: the same gate the member-page equivalent has
+    // always answered to. Retention is unchanged (`critical` under both values —
+    // no access-event word in the action, and no `severity: "info"` path).
+    // See `admin` below for the whole decision and `INV-PRIV-012` for the rule.
+    account: 19,
     // 80 -> 82 (#2621): `booking.expected_arrival_time.set` and `.cleared`. Read
     // with `support:view` plus `bookings:view`, like every other booking row
     // beside them — and the booking officers who can set this field already hold
@@ -392,7 +405,39 @@ export const AUDIT_CENSUS_TOTALS = {
     // because their destinations are member-visible. The 22 are pinned per site
     // in `REVIEWED_ADMIN_CATEGORIES_2730` below, because this count alone cannot
     // see a compensating swap.
-    admin: 96,
+    //
+    // 96 -> 98 (#2755): the two `bulk-update/route.ts` branches moved IN, from
+    // `security` and `account`. #2730 held the reverse question — should the member
+    // detail writer leave `admin`? — and the answer was no: the two bulk branches
+    // join it instead.
+    //
+    // THE DEFECT THIS CLOSES was that one business act was filed three ways
+    // according to which SCREEN the officer opened. Deactivating one member from
+    // the member page wrote `admin`; deactivating the same members from the bulk
+    // screen wrote `account`; changing roles from the member page wrote `admin`
+    // while the bulk screen wrote `security`. Category follows the business domain
+    // affected, and an officer editing somebody else's member record is one domain.
+    //
+    // WHY THE JOIN IS `admin` RATHER THAN A MEMBER-VISIBLE CATEGORY. All three
+    // writers pass a subject member, and `account` and `security` are both in
+    // `MEMBER_VISIBLE_AUDIT_CATEGORIES`, so unifying on either would publish an
+    // officer's edits of a member's record to that member's own timeline. Audit
+    // rows are append-only, so that is not quietly reversible. Whether a member
+    // should see a given event is a separate explicit declaration (#2695), decided
+    // per event at the writing site and denied by default.
+    //
+    // ONE SITE DELIBERATELY DID NOT JOIN: `/api/profile` (`member.profile.updated`,
+    // `account`), where the actor IS the subject. That is self-service, not
+    // administration, and filing it `admin` would hide a member's own action from
+    // their own timeline. #2755's issue body listed it as part of the split; it is
+    // not, and the anchor it gave for the third site
+    // (`api/admin/members/[id]/profile/route.ts`) does not exist in the tree.
+    //
+    // The three sites are pinned per site in `MEMBER_RECORD_ADMIN_CATEGORIES_2755`
+    // below with an action-name gate beside it, because this count cannot see a
+    // compensating swap and cannot see a FOURTH member-record screen arriving with
+    // a different answer. Full rule: `INV-PRIV-012`.
+    admin: 98,
     // 16 -> 19 (#2581 child 2): `member.password-reset-sent` and
     // `member.setup-invite-sent` (decision 3 — the affected domain is the
     // CREDENTIAL, not the mailing), plus the `member.bulk-set-role` branch
@@ -401,7 +446,16 @@ export const AUDIT_CENSUS_TOTALS = {
     // operator in Admin > Audit Log, and the correlation projection returns no
     // `details` and no `metadata`, so the recipient addresses those rows carry
     // do not travel with them.
-    security: 19,
+    //
+    // 19 -> 18 (#2755): the `member.bulk-set-role` branch moved to `admin` with its
+    // sibling — see `admin` above. Correlation-neutral, because `security` and
+    // `admin` are both in the System entry and both read with `support:view` alone;
+    // the change a reader can feel is that the row stops reaching the subject
+    // member's own timeline, since `security` is member-visible and `admin` is not.
+    // Retention is unchanged: `critical` under both values, because
+    // `member.bulk-set-role` normalises to no access-event word, so the
+    // `security`-plus-access-event `sensitive_access` branch never applied to it.
+    security: 18,
     // 16 -> 18 (#2595): the two reviewed-move writes. `lodge` is the category
     // every other bed-allocation write already uses, and it is not one of the
     // three (`admin`, `security`, `system`) readable with support:view alone —
@@ -645,15 +699,22 @@ export const APPLIED_AUDIT_CATEGORIES: Readonly<Record<string, string>> = {
   "src/app/api/admin/members/send-password-reset/route.ts::POST#0": "security",
   "src/app/api/admin/members/send-setup-invite/route.ts::POST.batchResults#0": "security",
 
-  // ─── Member bulk lifecycle → SPLIT by action (#2581 decision 6) ────────────
-  // One call site, several affected domains, so it became two sites: `set-role`
+  // ─── Member bulk lifecycle → `admin` (#2581 decision 6, REVISED by #2755) ──
+  // Child 2 split this one call site into two, by affected domain: `set-role`
   // changes what a member may do (`security`), `deactivate`/`reactivate` change
-  // the account (`account`). The route's zod enum bounds the family to exactly
-  // those three, so the split is exhaustive. Both destinations are member-
-  // visible, and the null-category rows already were through the legacy `member.`
-  // inference, so no row moves across the member self-timeline boundary.
-  "src/app/api/admin/members/bulk-update/route.ts::POST#0": "security",
-  "src/app/api/admin/members/bulk-update/route.ts::POST#1": "account",
+  // the account (`account`). Read on its own that was defensible. Read against
+  // the rest of the tree it was not — the SAME two acts performed from the member
+  // detail page wrote `admin` — so #2755 unified all three officer-driven
+  // member-record writers on `admin`, which is the only join that does not
+  // publish an officer's edits of a member's record to that member's own
+  // timeline. Both entries are the reversal record for that: change the literal
+  // at the site and the value here, and `INV-PRIV-012` states what moves.
+  //
+  // Still TWO sites, not one. The two `details` strings genuinely differ (the
+  // set-role branch records the roles assigned), and the census contract forbids
+  // a conditional category — so the branch stays and both halves say `admin`.
+  "src/app/api/admin/members/bulk-update/route.ts::POST#0": "admin",
+  "src/app/api/admin/members/bulk-update/route.ts::POST#1": "admin",
 
   // ─── Privacy decisions and issue reports → `privacy` ───────────────────────
   // `issue.reported` stays `privacy` despite `/admin/issue-reports` being a
@@ -745,6 +806,86 @@ export const REVIEWED_ADMIN_CATEGORIES_2730: Readonly<Record<string, string>> = 
   // uniform at `admin` and stay there — see the comment at this route.
   "src/app/api/admin/display/lodge-config/route.ts::PUT#0": "lodge",
 };
+
+/**
+ * Every writer that records an officer editing SOMEBODY ELSE'S member record,
+ * and the single category all of them file (#2755).
+ *
+ * WHY THIS IS ITS OWN MAP. The three sites were split across the two maps above
+ * and the unpinned remainder: two of them are `APPLIED_AUDIT_CATEGORIES` entries
+ * and the third — `admin-member-detail-service.ts` — was one of the 118 that
+ * already said `admin`, was one of the nine #2730 HELD rather than moved, and so
+ * carried no per-site pin at all. Nothing tied the three together, which is
+ * exactly how they came to disagree: each was reviewed against its own
+ * neighbours and never against each other.
+ *
+ * WHAT IT PINS THAT THE OTHER GATES CANNOT. `categoryValues` is a distribution
+ * and cannot see a swap. `APPLIED_AUDIT_CATEGORIES` pins two of the three but not
+ * the third, so it would pass while the pair and the detail page disagreed again.
+ * And neither can see the failure that actually happened here — a FOURTH screen
+ * for the same act, reviewed on its own and given its own answer. Hence the
+ * action-name family below beside the site map: the census test measures both.
+ *
+ * ALL THREE SAY `admin`, AND THAT IS LOAD-BEARING RATHER THAN INCIDENTAL. Every
+ * one of these writers passes a subject member, and `account` and `security` — the
+ * two the bulk screen used to use — are both in `MEMBER_VISIBLE_AUDIT_CATEGORIES`.
+ * So unifying on either would have published an officer's edits of a member's
+ * record on that member's own timeline, and audit rows are append-only. The census
+ * test asserts the destination is member-INVISIBLE as a property, not just that
+ * the three agree, because "all three agree" is also true of the wrong answer.
+ *
+ * NOT IN THIS SET, deliberately: `src/app/api/profile/route.ts::PUT#0`
+ * (`member.profile.updated`, `account`). Its actor IS its subject — a member
+ * editing their own record, with no on-behalf path — so it is self-service rather
+ * than administration, and filing it `admin` would hide a member's own action from
+ * them. #2755's issue body listed it among the split sites; the anchor it gave for
+ * that third site does not exist in the tree.
+ *
+ * WHAT IT DOES NOT COVER: rows already written. A stored row keeps the category it
+ * was written with, so bulk member-record history is split by date — the older
+ * half carries `account`/`security` and stays member-visible and Membership-gated.
+ * That is the same data question #2751 holds for bed allocation, and it is a data
+ * question rather than a writer question, so no census gate can see it.
+ */
+export const MEMBER_RECORD_ADMIN_CATEGORIES_2755: Readonly<
+  Record<string, string>
+> = {
+  // The member detail page: one member, every editable field, plus activate and
+  // deactivate. `admin` before #2755 and `admin` after — this is the site the
+  // other two joined.
+  "src/lib/admin-member-detail-service.ts::updateAdminMember.updated#0": "admin",
+  // The bulk screen, same acts across a selection. `security` before #2755.
+  "src/app/api/admin/members/bulk-update/route.ts::POST#0": "admin",
+  // The bulk screen's deactivate/reactivate branch. `account` before #2755.
+  "src/app/api/admin/members/bulk-update/route.ts::POST#1": "admin",
+};
+
+/**
+ * Every action name the sites above can write.
+ *
+ * WHY BY NAME AS WELL AS BY SITE. The site map catches an existing writer
+ * changing its answer. It cannot catch a NEW screen for the same act — a quick
+ * edit on the members list, an importer that reactivates — written with a literal
+ * `admin.member.deactivated` and `category: "account"` because its author read
+ * only its own neighbours. That is precisely how the three sites here diverged,
+ * so the census test also asserts that no OTHER writer in the tree records one of
+ * these action names under a different category.
+ *
+ * NEITHER SITE WRITES A LITERAL, which is why this list is maintained here rather
+ * than measured. The detail service returns one of the three `admin.member.*`
+ * names from `getAdminMemberAuditAction`; the bulk route interpolates
+ * `member.bulk-${action}` over a zod enum. The census test derives the bulk half
+ * from that enum in the route's own source, so adding a fourth bulk action fails
+ * here by name instead of quietly minting an unpinned member-record action.
+ */
+export const MEMBER_RECORD_ADMIN_ACTIONS_2755: readonly string[] = [
+  "admin.member.updated",
+  "admin.member.deactivated",
+  "admin.member.reactivated",
+  "member.bulk-deactivate",
+  "member.bulk-reactivate",
+  "member.bulk-set-role",
+];
 
 /**
  * Sites among `APPLIED_AUDIT_CATEGORIES` that still carry NO entity identifier,
