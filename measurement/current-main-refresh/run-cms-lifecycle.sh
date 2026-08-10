@@ -67,6 +67,15 @@ cleanup() {
   local original_status=$? failed=false count audit_after
   trap - EXIT
   set +e
+  # Decided against the database, not against the flag alone. If the supported
+  # DELETE returned 2xx but a later MC-03D assertion failed, the row is already
+  # gone while PAGE_DELETED_VIA_API is still false; the removal path below would
+  # then PATCH an id that no longer exists, take the 404 as a cleanup failure,
+  # and report a cleanup problem on top of the real one.
+  if [[ "$PAGE_ARMED" == true && "$PAGE_DELETED_VIA_API" != true ]] \
+    && [[ "$(psql_scalar "SELECT count(*) FROM \"PageContent\" WHERE \"slug\"='$SLUG' OR \"path\"='$PATHNAME';" 2>/dev/null)" == 0 ]]; then
+    PAGE_DELETED_VIA_API=true
+  fi
   if [[ "$PAGE_ARMED" == true && "$PAGE_DELETED_VIA_API" == true ]]; then
     # The supported endpoint already removed the row through the product's own
     # path, so there is nothing to unpublish and nothing to delete out from
