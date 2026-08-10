@@ -126,7 +126,14 @@ compose() {
   verify_env_snapshot
   local image="${MEASURE_APP_IMAGE:-$DEFAULT_MEASURE_APP_IMAGE}"
   local clean_env=("PATH=$PATH") name
-  for name in SystemRoot SYSTEMROOT COMSPEC DOCKER_HOST DOCKER_CONTEXT DOCKER_CONFIG DOCKER_CERT_PATH DOCKER_TLS_VERIFY HOME USERPROFILE TEMP TMP; do
+  # PROGRAMFILES is how the Windows Docker CLI locates C:\Program Files\Docker\
+  # cli-plugins. Without it `docker compose` is not a known command at all and
+  # the whole stack fails on its first call with "unknown flag: --env-file",
+  # which reads like a Compose version problem rather than a missing variable.
+  # The other spellings are carried for the same reason; every one of them is a
+  # path, never a credential, so this does not widen what `env -i` is here to
+  # keep out of Compose.
+  for name in SystemRoot SYSTEMROOT COMSPEC PROGRAMFILES ProgramFiles ProgramW6432 ProgramData PROGRAMDATA DOCKER_HOST DOCKER_CONTEXT DOCKER_CONFIG DOCKER_CERT_PATH DOCKER_TLS_VERIFY HOME USERPROFILE TEMP TMP; do
     [ -z "${!name:-}" ] || clean_env+=("$name=${!name}")
   done
   env -i "${clean_env[@]}" MEASURE_APP_IMAGE="$image" docker compose --env-file "$ENV_FILE" -p "$PROJECT" --project-directory "$ROOT" \

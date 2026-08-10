@@ -114,8 +114,16 @@ services:
     ports: !override
       - "127.0.0.1:8027:8027"
     environment:
-      DOMAIN: localhost
-      STAGING_CADDY_SITE: http://localhost:8027
+      DOMAIN: 127.0.0.1
+      # The exact loopback authority every part of this harness pins:
+      # validate-orchestrator-inputs.mjs demands http://127.0.0.1:8027, and both
+      # runners send every producer and timed request to it. Caddy serves only
+      # the host in its site address, so while this said `localhost:8027` a
+      # request carrying Host `127.0.0.1:8027` matched no site and Caddy
+      # answered an empty 200 — a body-less success that would have been
+      # measured as a very fast cached page. Must stay byte-identical to
+      # CORRECTNESS_BASE_URL / the phase-2 BASE.
+      STAGING_CADDY_SITE: http://127.0.0.1:8027
     volumes: !override
       - ./Caddyfile.staging:/etc/caddy/Caddyfile:ro
       - caddy_data:/data
