@@ -242,11 +242,15 @@ function storedNightPricesByKey(
     if (typeof priceCents !== "number" || !Number.isFinite(priceCents)) {
       continue;
     }
-    const stayDate =
-      typeof entry.stayDate === "string"
-        ? parseDateOnly(entry.stayDate)
-        : entry.stayDate;
-    byKey.set(dateOnlyKey(stayDate), priceCents);
+    // Keyed through the SAME canonical helper that builds `heldNightKeys`, one
+    // entry at a time, rather than by re-deriving the key here. A price keyed
+    // even slightly differently from its night would never match it, and the
+    // failure would be silent — the night would just quietly price at today's
+    // rate again, which is the whole defect (INV-DATE-020).
+    const [key] = getExplicitGuestBedNightKeys({ nights: [entry] }) ?? [];
+    if (key !== undefined) {
+      byKey.set(key, priceCents);
+    }
   }
   return byKey;
 }
@@ -297,7 +301,9 @@ function priceGuestNights(
     "ageTier" | "isMember" | "rateMembershipTypeId" | "rateSource"
   >,
   seasons: SeasonRateData[],
-  lockedNightPricesByKey?: ReadonlyMap<string, number>
+  // Empty for an ADDED guest, who has bought nothing yet and whose every night
+  // is therefore a fresh season lookup.
+  lockedNightPricesByKey: ReadonlyMap<string, number> = new Map()
 ): { totalCents: number; perNightCents: number[] } {
   if (nightKeys.length === 0) {
     return { totalCents: 0, perNightCents: [] };
@@ -305,7 +311,7 @@ function priceGuestNights(
   const nights = nightKeys.map((key) => parseDateOnly(key));
   // Keyed by night, so an entry for a night outside this leg simply never
   // matches; `calculateBookingPrice` looks a lock up per priced night.
-  const lockedNightPrices = [...(lockedNightPricesByKey ?? new Map())].map(
+  const lockedNightPrices = [...lockedNightPricesByKey].map(
     ([stayDate, priceCents]) => ({ stayDate, priceCents })
   );
 

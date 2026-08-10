@@ -1047,6 +1047,38 @@ describe("#2744 a night is credited back at the price it was sold for", () => {
     expect(added.priceCents).toBe(LOW + 2 * HIGH);
   });
 
+  it("matches a stored price to its night whichever shape the row's date arrives in", () => {
+    // The night set and the stored prices are keyed by the same canonical
+    // helper, so a row carrying a date-only STRING still lines up with the night
+    // it belongs to. If the two key derivations ever drifted apart nothing would
+    // throw — the price would simply never match, and the night would quietly go
+    // back to being valued at today's rate, which is the defect itself.
+    const stringDated: TestGuest = {
+      ...guestFromNights(["2026-08-23", "2026-08-24"], "g1"),
+      nights: [
+        { stayDate: "2026-08-23" as unknown as Date, priceCents: LOW },
+        { stayDate: "2026-08-24" as unknown as Date, priceCents: LOW },
+      ],
+      priceCents: 2 * LOW,
+    };
+    const plan = buildInProgressGuestRangePlan(
+      planInput({
+        guests: [
+          stringDated,
+          guestFromNights(["2026-08-23", "2026-08-24"], "g2"),
+        ],
+        editableFrom: "2026-08-24",
+        newCheckOut: "2026-08-25",
+        removeGuestIds: ["g1"],
+      }),
+    );
+    const entry = plan.proposedExistingGuests[0];
+
+    expect(entry.oldFuturePriceCents).toBe(LOW);
+    expect(entry.priceCents).toBe(LOW);
+    expect(entry.perNightCents).toEqual([LOW]);
+  });
+
   it("degrades to today's rate and the even split when there is no sold price to recover", () => {
     // A booking that predates `BookingGuestNight`, or one converted from a
     // request: no rows, so nothing records what the member paid. That guest gets
