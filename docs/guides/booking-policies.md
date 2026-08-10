@@ -93,7 +93,7 @@ rules — see
 
 1. Open **Group Discount** and click **Edit**.
 
-   ![Group Discount: the Enabled toggle, minimum group size, and Summer seasons only checkbox](../images/admin/admin-booking-policies-group-discount.png)
+   ![Group Discount: the Enabled toggle, minimum group size, Summer seasons only checkbox, and the Apply to nights added after booking checkbox](../images/admin/admin-booking-policies-group-discount.png)
 
 2. Tick **Enabled**, set the **Minimum group size** (the number of guests at
    which the whole booking is charged at member rates), and optionally

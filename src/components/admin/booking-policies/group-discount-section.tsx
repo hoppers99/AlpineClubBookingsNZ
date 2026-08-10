@@ -38,7 +38,7 @@ interface GroupDiscountDraft {
    * route SYNTHESISES the defaults when there is no row, so on a club that has
    * never saved this policy the draft equals the snapshot and the #2143 dirty
    * gate would make creating the row unreachable. This flag is never sent to
-   * the server — the PUT body is built from the three real policy fields.
+   * the server — the PUT body is built from the real policy fields only.
    */
   configured: boolean
 }
@@ -99,8 +99,8 @@ export function GroupDiscountSection() {
       const res = await fetch(ENDPOINT, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
-        // Only the three real policy fields; `configured` is a client-side view
-        // of the GET, not part of the write contract.
+        // Only the real policy fields — four of them since #2770; `configured` is
+        // a client-side view of the GET, not part of the write contract.
         body: JSON.stringify({
           minGroupSize: draft.minGroupSize,
           summerOnly: draft.summerOnly,

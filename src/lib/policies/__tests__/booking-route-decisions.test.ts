@@ -102,36 +102,135 @@ describe("booking route policy decisions", () => {
       expect(toEditTimeGroupDiscountConfig(undefined)).toBeUndefined();
     });
 
+    /**
+     * The stay the note is judged against. A SUMMER season (so `summerOnly: true`
+     * is satisfied) and a party of five (so `minGroupSize: 5` is satisfied), which
+     * is the only shape where a withheld discount is worth explaining.
+     */
+    const summerSeasons = toSeasonRateData([
+      {
+        id: "summer",
+        startDate: new Date("2026-11-01"),
+        endDate: new Date("2027-03-31"),
+        type: "SUMMER",
+        membershipTypeRates: [],
+      },
+    ]);
+    const winterSeasons = toSeasonRateData([
+      {
+        id: "winter",
+        startDate: new Date("2026-04-01"),
+        endDate: new Date("2026-10-31"),
+        type: "WINTER",
+        membershipTypeRates: [],
+      },
+    ]);
+    function party(size: number) {
+      return Array.from({ length: size }, () => ({
+        ageTier: "ADULT" as const,
+        isMember: false,
+      }));
+    }
+    const QUALIFYING_STAY = {
+      checkIn: new Date("2026-12-10"),
+      checkOut: new Date("2026-12-13"),
+      guests: party(5),
+      seasons: summerSeasons,
+    };
+
     // #2770 D2. The note is DERIVED from the mapper, so it cannot contradict the
-    // price: it is present exactly when the club runs a discount and the edit
-    // does not get it. These four cases are the complete truth table.
+    // price: it is present exactly when the club runs a discount, the edit does
+    // not get it, and the edit would otherwise have had it.
     it("explains the withheld discount exactly when there is one to withhold", () => {
-      expect(groupDiscountEditNotice({ ...enabled, applyToEdits: false })).toBe(
-        GROUP_DISCOUNT_EDIT_OFF_NOTICE,
-      );
       expect(
-        groupDiscountEditNotice({ ...enabled, applyToEdits: true }),
+        groupDiscountEditNotice(
+          { ...enabled, applyToEdits: false },
+          QUALIFYING_STAY,
+        ),
+      ).toBe(GROUP_DISCOUNT_EDIT_OFF_NOTICE);
+      expect(
+        groupDiscountEditNotice(
+          { ...enabled, applyToEdits: true },
+          QUALIFYING_STAY,
+        ),
       ).toBeNull();
       expect(
-        groupDiscountEditNotice({
-          enabled: false,
-          minGroupSize: 5,
-          summerOnly: true,
-          applyToEdits: false,
+        groupDiscountEditNotice(
+          {
+            enabled: false,
+            minGroupSize: 5,
+            summerOnly: true,
+            applyToEdits: false,
+          },
+          QUALIFYING_STAY,
+        ),
+      ).toBeNull();
+      expect(groupDiscountEditNotice(null, QUALIFYING_STAY)).toBeNull();
+    });
+
+    // The narrowing (#2770 D2 review). D2's purpose was to explain a number that
+    // went UP, so a note beside a number that did not move is worse than silence —
+    // the officer reads the switch as the reason for a price the switch did not
+    // touch. Both ways an edit can fail to qualify are pinned.
+    it("stays silent when this edit could not have been discounted anyway", () => {
+      // A party below the club's minimum: the same edit costs the same cents with
+      // the switch on.
+      expect(
+        groupDiscountEditNotice(
+          { ...enabled, applyToEdits: false },
+          { ...QUALIFYING_STAY, guests: party(4) },
+        ),
+      ).toBeNull();
+      // A winter stay at a summer-only club, same reason.
+      expect(
+        groupDiscountEditNotice({ ...enabled, applyToEdits: false }, {
+          checkIn: new Date("2026-06-10"),
+          checkOut: new Date("2026-06-13"),
+          guests: party(5),
+          seasons: winterSeasons,
         }),
       ).toBeNull();
-      expect(groupDiscountEditNotice(null)).toBeNull();
+      // And `summerOnly: false` puts the winter stay back in scope, so the
+      // silence above is really about the season and not about the dates.
+      expect(
+        groupDiscountEditNotice(
+          { ...enabled, summerOnly: false, applyToEdits: false },
+          {
+            checkIn: new Date("2026-06-10"),
+            checkOut: new Date("2026-06-13"),
+            guests: party(5),
+            seasons: winterSeasons,
+          },
+        ),
+      ).toBe(GROUP_DISCOUNT_EDIT_OFF_NOTICE);
     });
 
     it("never states a note while the same setting still yields a discount config", () => {
       // The property the derivation exists for: note and config are mutually
-      // exclusive, so a quote can never show one and charge the other.
+      // exclusive, so a quote can never show one and charge the other. Held
+      // across every setting state AND every stay shape, because the narrowing
+      // above must not have opened a case where both appear.
       for (const applyToEdits of [true, false]) {
         for (const isEnabled of [true, false]) {
-          const setting = { ...enabled, enabled: isEnabled, applyToEdits };
-          const config = toEditTimeGroupDiscountConfig(setting);
-          const note = groupDiscountEditNotice(setting);
-          expect(config !== undefined && note !== null).toBe(false);
+          for (const summerOnly of [true, false]) {
+            for (const guests of [party(4), party(5)]) {
+              for (const seasons of [summerSeasons, winterSeasons]) {
+                const setting = {
+                  ...enabled,
+                  enabled: isEnabled,
+                  summerOnly,
+                  applyToEdits,
+                };
+                const config = toEditTimeGroupDiscountConfig(setting);
+                const note = groupDiscountEditNotice(setting, {
+                  ...QUALIFYING_STAY,
+                  guests,
+                  seasons,
+                });
+                expect(config !== undefined && note !== null).toBe(false);
+              }
+            }
+          }
         }
       }
     });

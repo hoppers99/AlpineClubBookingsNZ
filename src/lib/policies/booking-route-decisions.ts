@@ -141,30 +141,64 @@ export function toEditTimeGroupDiscountConfig(
 }
 
 /**
- * What a member or officer is told when the club runs a group discount but has
- * switched it off for later edits (#2770 D2, INV-MOD-026).
+ * What a member or officer is told when the club runs a group discount, has
+ * switched it off for later edits, AND this particular edit would otherwise have
+ * been discounted (#2770 D2, INV-MOD-026).
  *
- * Derived FROM the mapper rather than from a second reading of the column, on
- * purpose: the quote can then never say "these nights are not discounted" while
- * the same request discounts them, or stay silent while it does not. One
- * condition, one answer, quote and charge in lockstep (#1095).
+ * The switch half is derived FROM the mapper rather than from a second reading of
+ * the column, on purpose: the quote can then never say "these nights are not
+ * discounted" while the same request discounts them, or stay silent while it
+ * does not. One condition, one answer, quote and charge in lockstep (#1095).
  *
- * `null` in both of the other states, because neither has anything to explain: a
- * club with no group discount is not withholding one, and a club whose switch is
- * on is giving it.
+ * The STAY half is what keeps the note honest. D2 asked for a line that explains
+ * a number that went up, so a note beside a number that did not go up is worse
+ * than no note: an officer editing a two-guest booking at a `minGroupSize: 5`
+ * club, or a winter stay at a `summerOnly` club, would read that the discount was
+ * withheld from a price that would have been identical with the switch on, and
+ * conclude the switch was why. So the same proposed stay is put to
+ * `isGroupDiscountAppliedToBooking` under the UNGATED config, and the note is
+ * returned only if that says yes. This is the one other place
+ * `toGroupDiscountConfig` is called for an edit, and it is deliberately here
+ * rather than in the route: the caller cannot then reach the ungated config, so
+ * the switch still cannot be worked around, and the census still finds exactly
+ * one file that turns `applyToEdits` into a pricing decision.
+ *
+ * `null` in the other states, because none has anything to explain: a club with
+ * no group discount is not withholding one, and a club whose switch is on is
+ * giving it.
+ *
+ * The stay it judges is the PROPOSED post-edit stay and party, which is what the
+ * route is quoting. It is therefore a statement about the edit, not about which
+ * individual night moved.
  */
 export const GROUP_DISCOUNT_EDIT_OFF_NOTICE =
   "Group discount does not apply to nights added after booking. Nights already booked keep the price they were booked at.";
 
 export function groupDiscountEditNotice(
-  setting: EditTimeGroupDiscountSettingLike | null | undefined
+  setting: EditTimeGroupDiscountSettingLike | null | undefined,
+  stay: {
+    checkIn: Date;
+    checkOut: Date;
+    guests: UnratedGuestInput[];
+    seasons: SeasonRateData[];
+  }
 ): string | null {
   if (!setting?.enabled) {
     return null;
   }
-  return toEditTimeGroupDiscountConfig(setting)
-    ? null
-    : GROUP_DISCOUNT_EDIT_OFF_NOTICE;
+  if (toEditTimeGroupDiscountConfig(setting)) {
+    return null;
+  }
+  return isGroupDiscountAppliedToBooking({
+    checkIn: stay.checkIn,
+    checkOut: stay.checkOut,
+    guestCount: stay.guests.length,
+    guests: stay.guests,
+    seasons: stay.seasons,
+    groupDiscount: toGroupDiscountConfig(setting),
+  })
+    ? GROUP_DISCOUNT_EDIT_OFF_NOTICE
+    : null;
 }
 
 /**

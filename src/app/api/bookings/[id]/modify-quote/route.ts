@@ -1332,11 +1332,21 @@ export async function POST(
   const groupDiscount = toEditTimeGroupDiscountConfig(groupDiscountSetting);
   /**
    * Plain-English note shown beside the number when the club HAS a group
-   * discount but has switched it off for later edits (#2770 D2). Derived from
-   * the same mapper the pricing passes above use, so the note and the number
-   * can never disagree; null in every other state.
+   * discount, has switched it off for later edits, AND this edit would otherwise
+   * have been discounted (#2770 D2). Derived from the same mapper the pricing
+   * passes above use, so the note and the number can never disagree; null in
+   * every other state, including an edit whose party or season could not have
+   * qualified anyway — there is no higher number to explain there.
+   *
+   * The proposed stay and party are what it judges, which is what this route is
+   * quoting.
    */
-  const editDiscountNotice = groupDiscountEditNotice(groupDiscountSetting);
+  const editDiscountNotice = groupDiscountEditNotice(groupDiscountSetting, {
+    checkIn: newCheckIn,
+    checkOut: newCheckOut,
+    guests: guestsForPricing,
+    seasons: seasonRateData,
+  });
 
   // Resolve each guest's rate membership type + rateSource once (#1930, E4);
   // the rated guests feed every pricing pass below and carry the snapshot.

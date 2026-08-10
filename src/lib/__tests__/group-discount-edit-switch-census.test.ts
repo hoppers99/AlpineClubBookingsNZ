@@ -192,9 +192,9 @@ const MAPPER_CALL_SITES = [
   {
     file: "src/lib/policies/booking-route-decisions.ts",
     kind: "mapper-home",
-    creationCalls: 1,
+    creationCalls: 2,
     editCalls: 1,
-    what: "where the mappers live: toEditTimeGroupDiscountConfig applies the switch and then delegates to toGroupDiscountConfig for the rest of the shape, so the two answers can never drift apart field by field; and groupDiscountEditNotice derives the member-facing note from the SAME mapper, so a quote can never state a withheld discount while the same request grants it",
+    what: "where the mappers live. toEditTimeGroupDiscountConfig applies the switch and then delegates to toGroupDiscountConfig for the rest of the shape, so the two answers can never drift apart field by field. The SECOND creation call is groupDiscountEditNotice's: it derives the member-facing note from the edit mapper (so a quote can never state a withheld discount while the same request grants it) and then asks the UNGATED config whether this stay would have been discounted at all, so the note is never shown beside a number that did not move. That ungated resolution is deliberately kept in here rather than handed to the route, so no caller can reach around the switch",
   },
 
   // ---------------------------------------------------------------- creation

@@ -501,6 +501,23 @@ still subject to the minimum — deferred as scope B on #2124.)
 
 ## INV-MOD-025
 
+**Not retired, and #2770 records why.** The owner's 10 Aug 2026 decision on #2756
+asked for this id to be retired, and #2770's acceptance criterion 5 repeated it.
+Following that literally would delete rules that are still true: `SCHEME.md`
+requires a retirement to replace the whole body with a one-line notice, and this
+body is #2736 (price the nights held, not the envelope), #2743 (sell only the
+nights the edit creates, with its four boundary cases) and #2744 (sold-price
+valuation, the refund ceiling, the negative-row refusal, the real-rate
+write-back) — every one of them still enforced by
+`booking-edit-guest-ranges-sparse.test.ts` and cited from
+`END_TO_END_TEST_MATRIX.md` and `STATE_MACHINES.md`. What the decision was
+pointing at was this id's group-discount carve-out, the sentence that said an
+in-progress edit's newly bought nights carry no discount. That is gone: #2756
+(PR #2772) removed it, and what remains below is the historical account of how it
+was fixed. The question of whether an edit's new nights are discounted is now
+answered by INV-MOD-006 and INV-MOD-026 and nowhere else. Raised on #2770 as an
+explicit decision rather than settled here.
+
 An in-progress edit prices, quotes and persists a guest over the nights that
 guest actually holds — the canonical `BookingGuestNight` set — never over the
 `stayStart`/`stayEnd` envelope, which fills a sparse stay's internal gaps
