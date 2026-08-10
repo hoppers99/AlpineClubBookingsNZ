@@ -223,6 +223,22 @@ derivation).
   again must narrow the predicate back first. A departure morning is never a
   night (INV-DATE-003), and `lodge-display-state.test.ts` fails on a sparse-stay
   fixture if one is ever counted as one.
+- **Withholding names and drawing a blockout are separate decisions on that
+  wall** (#2735). The serialiser keeps two sets: `wholeLodgeBookingIds` (the
+  group holds a night INSIDE the window → `DisplayStateBooking.wholeLodge`, the
+  blockout panel, the week strip, the rotating `occupancy:whole-lodge-*`
+  conditions) and `soleOccupancyBookingIds`, a SUPERSET that also covers a group
+  whose only presence in the window is its departure morning. The privacy gate
+  (`namesAllowedForBooking`, and the chore-assignee labels that reuse it) asks
+  the superset; the blockout view asks the narrow set. Being a superset is the
+  safety property — a widening here can only withhold more names. A row that
+  reaches the wall on a departure morning alone must NOT be flagged
+  `wholeLodge`: it holds no night tonight, and a "the lodge is fully booked"
+  statement over an empty lodge is its own kind of wrong. A `wholeLodge` row is
+  also not guaranteed contiguous — the heuristic never inspects the nights
+  between the ones a booking covers — so any DAY span painted from such a row
+  (blockout panel, week strip, night count on the welcome panel) is derived from
+  the row's `nights`, never from its envelope.
 
 ### INV-DATE-007
 

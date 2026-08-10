@@ -27,7 +27,7 @@ interface SinglesRow {
   stayStart: string;
   stayEnd: string;
   /** The row's own nights — one bar per contiguous run of them (#2735). */
-  nights: string[];
+  nights: readonly string[];
 }
 
 interface SinglesGroup {

@@ -390,6 +390,54 @@ describe("buildDisplayState privacy matrix", () => {
     expect(gappyRow.guests![0].nights).toEqual(["2026-04-13", "2026-04-15"]);
   });
 
+  it("PRIVACY: a sole group is still not named on a window that only catches its departure morning (#2735)", async () => {
+    // The other half of the sole-occupancy gate, and the one the widened
+    // visibility rule made reachable on far more days.
+    //
+    // Fourteen people hold the lodge to themselves on nights 12 and 16 and on
+    // nothing in between. The window is 13–15, so the ONLY thing the wall sees
+    // of them is the morning of the 13th, when they are in the building until
+    // midday — a row with no night inside the window at all. The blockout
+    // heuristic scans window nights, finds none, and used to fall straight
+    // through to "not whole lodge", which published all fourteen names on an
+    // unauthenticated screen. They are named on no other day: on any window
+    // containing one of their nights they ARE the sole occupants and the names
+    // are withheld, so this window was the one that printed them.
+    const org = { firstName: "Harakeke", lastName: "College", ageTier: "ADULT" };
+    const sparseGuests = Array.from({ length: 14 }, (_, i) => ({
+      ...guest(`Student${i}`, "Roll", "ADULT", {
+        start: "2026-04-12",
+        end: "2026-04-17",
+      }),
+      nights: [
+        { stayDate: parseDateOnly("2026-04-12") },
+        { stayDate: parseDateOnly("2026-04-16") },
+      ],
+    }));
+    mockPrisma.booking.findMany.mockResolvedValue([
+      booking("b1", org, sparseGuests, {
+        checkIn: "2026-04-12",
+        checkOut: "2026-04-17",
+      }),
+    ]);
+    const { buildDisplayState } = await import("@/lib/lodge-display-state");
+    const state = await buildDisplayState("lodge-a");
+
+    // The row exists — they really are here on the morning of the 13th, which
+    // is the fix this issue shipped.
+    expect(state!.bookings).toHaveLength(1);
+    const row = state!.bookings[0];
+    expect(row.nights).toEqual(["2026-04-12", "2026-04-16"]);
+    // …but nobody is named, and no phone or arrival time rides along.
+    expect(row.guests).toBeNull();
+    expect(JSON.stringify(state)).not.toContain("Student");
+    // And the wall does NOT claim the lodge is blocked out: they hold no night
+    // in this window, so the blockout panel and the rotating blockout condition
+    // stay off. Withholding a name and painting a "fully booked" statement over
+    // an empty lodge are different decisions.
+    expect(row.wholeLodge).toBe(false);
+  });
+
   it("PRIVACY: the wall's night count is taken from the guest list, never the visible list (#2735)", async () => {
     // A source contract because the forms agree night for night on every stay in
     // the tree today — no fixture can tell them apart, so reverting this would

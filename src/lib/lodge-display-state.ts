@@ -77,8 +77,13 @@ export interface DisplayStateGuest {
    *
    * No new disclosure: the envelope already published the span, and the row
    * carrying this is already one the wall may name (`namesAllowed`).
+   *
+   * `readonly` because this is a SERIALISED payload: every consumer reads it
+   * and none may sort or splice it in place. It also keeps an `as const` test
+   * fixture assignable, which is what caught this — the payload's first array
+   * field made every frozen fixture in the tree a type error.
    */
-  nights: string[];
+  nights: readonly string[];
   /** Adult member phone number — present ONLY when the two-sided consent gate
    * allows it (#125 / #37); omitted otherwise, so the default payload carries
    * no contact field. */
@@ -108,8 +113,10 @@ export interface DisplayStateBooking {
    * This CHANGES NO COUNT. The occupancy buckets, the night counts and the
    * whole-lodge heuristic are all derived above, from the guest rows, before
    * any row is built.
+   *
+   * `readonly` for the same reason as {@link DisplayStateGuest.nights}.
    */
-  nights: string[];
+  nights: readonly string[];
   /**
    * The booking's expected arrival time as stored, `"HH:mm"` — display-only
    * information so the wall can say when tonight's arrivals are due (#2621,
@@ -250,21 +257,28 @@ interface OrganiserShape {
 
 /**
  * Whether a booking's guests may be individually named anywhere on the wall
- * (design.md §10 settled rules; issue #174): a whole-lodge blockout, any
+ * (design.md §10 settled rules; issue #174): sole occupancy of the lodge, any
  * minor in the booking, an organisation organiser, or counts-only
  * granularity all suppress individual names in favour of the booking's
  * reduced group label. This is the SINGLE definition of that condition —
  * every board that might name an individual (booking rows, chore assignees)
  * calls this instead of re-deriving the condition list.
+ *
+ * `soleOccupancy`, not `wholeLodge` (#2735). It was renamed because the two
+ * came apart: `row.wholeLodge` says the wall may draw a BLOCKOUT (the group
+ * holds a night inside the window), while this asks whether the group had the
+ * building to itself on any night that put it on the wall — which includes the
+ * night before the window, whose occupants are still here on the first morning.
+ * The privacy rule follows the second, so it is the second that belongs here.
  */
 export function namesAllowedForBooking(options: {
-  wholeLodge: boolean;
+  soleOccupancy: boolean;
   containsMinors: boolean;
   organiserAgeTier: AgeTier;
   granularity: DisplayNameGranularity;
 }): boolean {
   return (
-    !options.wholeLodge &&
+    !options.soleOccupancy &&
     !options.containsMinors &&
     options.organiserAgeTier !== "NOT_APPLICABLE" &&
     options.granularity !== "COUNTS_ONLY"
@@ -353,7 +367,8 @@ export async function buildDisplayState(
   // The nights whose occupants can appear anywhere in this window. Night
   // `startDate - 1` counts: its occupant is still in the lodge on the window's
   // first morning (INV-DATE-002).
-  const windowFirstNightKey = formatDateOnly(addDaysDateOnly(startDate, -1));
+  const priorNight = addDaysDateOnly(startDate, -1);
+  const windowFirstNightKey = formatDateOnly(priorNight);
   const windowLastNightKey = formatDateOnly(endInclusive);
 
   const [lodge, flags] = await Promise.all([
@@ -592,21 +607,70 @@ export async function buildDisplayState(
   // (design.md §10: sole occupancy on every NIGHT the booking covers AND a
   // genuine group — organisation or >= threshold) is the fallback for
   // un-flagged bookings.
+  //
+  // TWO SETS, NOT ONE (#2735), because the two things "whole lodge" used to
+  // mean pull apart on a departure morning:
+  //
+  // - `wholeLodgeBookingIds` is the BLOCKOUT VIEW. The group holds the lodge on
+  //   a night INSIDE the window, so `row.wholeLodge` is true and the wall may
+  //   say the lodge is booked out — the blockout panel, the week strip, the
+  //   rotating `occupancy:whole-lodge-*` conditions. A group that checked out on
+  //   the window's FIRST MORNING holds nothing tonight and must not turn the
+  //   wall into a "fully booked" statement over an empty lodge.
+  // - `soleOccupancyBookingIds` is the PRIVACY GATE, and it is a SUPERSET. It
+  //   also covers the group whose only presence in this window is that departure
+  //   morning: they had the lodge to themselves on night `startDate - 1`, and
+  //   naming fourteen people who were alone in the building is exactly the
+  //   disclosure issue #58 and design.md §10 refuse. The morning they leave is
+  //   not an exception to that (INV-DATE-006).
+  //
+  // Being a superset is the safety property: this can only ever WITHHOLD more
+  // names, never publish one the old rule withheld.
   const wholeLodgeBookingIds = new Set<string>();
+  const soleOccupancyBookingIds = new Set<string>();
+  // Night `startDate - 1`, counted the same way the window's own nights are.
+  // Needed because `perBookingNightCounts`/`nightTotals` are scanned over the
+  // window only, and the booking this closes over holds no night in it. NOT
+  // folded into that scan: a group sole on nights 13 and 14 but SHARING night
+  // 12 would then lose its blockout and start naming its members, which is the
+  // same disclosure in the opposite direction.
+  const priorNightCounts = new Map<string, number>();
+  let priorNightTotal = 0;
+  for (const booking of bookings) {
+    const count = getActiveGuestsForNight(booking.guests, priorNight, booking)
+      .length;
+    if (count > 0) {
+      priorNightCounts.set(booking.id, count);
+      priorNightTotal += count;
+    }
+  }
   for (const booking of bookings) {
     if (booking.wholeLodgeHold) {
       wholeLodgeBookingIds.add(booking.id);
+      soleOccupancyBookingIds.add(booking.id);
       continue;
     }
-    const nightMap = perBookingNightCounts.get(booking.id);
-    if (!nightMap || nightMap.size === 0) continue;
-    const isSoleOnAllNights = [...nightMap.entries()].every(
-      ([dateKey, count]) => nightTotals.get(dateKey) === count
-    );
     const guestCount = booking.guests.length;
     const isOrganisation = booking.member.ageTier === "NOT_APPLICABLE";
-    if (isSoleOnAllNights && (isOrganisation || guestCount >= WHOLE_LODGE_MIN_GUESTS)) {
-      wholeLodgeBookingIds.add(booking.id);
+    const isGroup = isOrganisation || guestCount >= WHOLE_LODGE_MIN_GUESTS;
+    if (!isGroup) continue;
+    const nightMap = perBookingNightCounts.get(booking.id);
+    if (nightMap && nightMap.size > 0) {
+      const isSoleOnAllNights = [...nightMap.entries()].every(
+        ([dateKey, count]) => nightTotals.get(dateKey) === count
+      );
+      if (isSoleOnAllNights) {
+        wholeLodgeBookingIds.add(booking.id);
+        soleOccupancyBookingIds.add(booking.id);
+      }
+      continue;
+    }
+    // No night inside the window at all, yet the booking can still hold a row:
+    // its only presence here is the morning after night `startDate - 1`. Judge
+    // sole occupancy on that night alone — the only night it has here.
+    const priorCount = priorNightCounts.get(booking.id) ?? 0;
+    if (priorCount > 0 && priorCount === priorNightTotal) {
+      soleOccupancyBookingIds.add(booking.id);
     }
   }
 
@@ -623,8 +687,14 @@ export async function buildDisplayState(
       guestCount: booking.guests.length,
     });
     // Individual names appear only when every privacy condition allows it.
+    //
+    // The sole-occupancy set, NOT `wholeLodge` (#2735). They are the same on
+    // every row that holds a night in the window; they differ only for the group
+    // whose one appearance here is the morning they leave, where the wall must
+    // still not name them but must also not claim the lodge is booked out. See
+    // the two sets above.
     const namesAllowed = namesAllowedForBooking({
-      wholeLodge,
+      soleOccupancy: soleOccupancyBookingIds.has(booking.id),
       containsMinors,
       organiserAgeTier: booking.member.ageTier,
       granularity,
@@ -775,8 +845,12 @@ export async function buildDisplayState(
       const bookingContainsMinors = assignment.booking.guests.some((guest) =>
         isMinor(guest.ageTier)
       );
+      // The SAME sole-occupancy set the booking's own row used (#2735), not the
+      // narrower blockout set: a chore assignee is never named more precisely
+      // than that booking's row, and the row withholds names on the group's
+      // departure morning too.
       const namesAllowed = namesAllowedForBooking({
-        wholeLodge: wholeLodgeBookingIds.has(assignment.booking.id),
+        soleOccupancy: soleOccupancyBookingIds.has(assignment.booking.id),
         containsMinors: bookingContainsMinors,
         organiserAgeTier: assignment.booking.member.ageTier,
         granularity,
