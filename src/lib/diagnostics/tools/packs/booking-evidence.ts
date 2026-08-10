@@ -148,6 +148,10 @@ import { getAgeTierSettingsStrict } from "@/lib/age-tier";
 import { getBookingEditPolicy } from "@/lib/booking-edit-policy";
 import { evaluatePersistedBookingNonHostingPolicyViolations } from "@/lib/booking-exception-request-service";
 import { findBookingMemberNightConflicts } from "@/lib/booking-member-night-conflicts";
+import {
+  expandStayEnvelopeToNightKeys,
+  getExplicitGuestBedNightKeys,
+} from "@/lib/booking-guest-stay-ranges";
 import { formatBookingReference } from "@/lib/booking-reference";
 import { bookingReviewReasonCodes, isCheckinBlockedByPendingReview } from "@/lib/booking-review";
 import { bookingHoldsCapacity } from "@/lib/booking-status";
@@ -289,18 +293,27 @@ const UTC_DAY_MS = 24 * 60 * 60 * 1000;
  * expand it into per-night work. `Promise.race` only stops waiting for a loser;
  * it cannot cancel a `checkCapacity` query already walking an unbounded interval.
  */
+/**
+ * How many nights a half-open date-only envelope spans, by ARITHMETIC.
+ *
+ * A measurement, not an expansion, and the distinction is load-bearing: this runs
+ * BEFORE anything builds a night list, so a corrupt hundred-year envelope is refused
+ * rather than materialised. INV-DATE-020 governs turning a stay INTO nights and
+ * `expandStayEnvelopeToNightKeys` is the one definition of that; counting the days
+ * between two dates is not that operation and needs no helper of its own.
+ */
+function dateOnlyNightSpan(start: Date, end: Date): number {
+  const startUtc = Date.UTC(
+    start.getUTCFullYear(),
+    start.getUTCMonth(),
+    start.getUTCDate(),
+  );
+  const endUtc = Date.UTC(end.getUTCFullYear(), end.getUTCMonth(), end.getUTCDate());
+  return (endUtc - startUtc) / UTC_DAY_MS;
+}
+
 function assertCapacitySpanWithinCeiling(checkIn: Date, checkOut: Date): number {
-  const start = Date.UTC(
-    checkIn.getUTCFullYear(),
-    checkIn.getUTCMonth(),
-    checkIn.getUTCDate(),
-  );
-  const end = Date.UTC(
-    checkOut.getUTCFullYear(),
-    checkOut.getUTCMonth(),
-    checkOut.getUTCDate(),
-  );
-  const nights = (end - start) / UTC_DAY_MS;
+  const nights = dateOnlyNightSpan(checkIn, checkOut);
   if (
     !Number.isSafeInteger(nights) ||
     nights < 1 ||
@@ -415,9 +428,43 @@ type GuestNightFootprint = {
 };
 
 /**
- * Bound both representations before sorting, de-duplicating or expanding them.
- * Explicit duplicates still count toward the read ceiling: de-duplication must
- * never turn an oversized source population into an apparently safe one.
+ * Every lodge night one guest holds a bed for — BOUNDED FIRST, then expanded by the
+ * canonical helpers and by nothing of this module's own.
+ *
+ * WHY THIS IS NOT A LOCAL DAY LOOP ANY MORE. It was, and the loop was right night
+ * for night — but INV-DATE-020 exists because six places once expanded a stay and
+ * three of them read the envelope while a night set existed, so a guest booked on
+ * nights {1, 3} was reported as occupying the 2nd. The invariant's remedy is that
+ * every read surface routes at `booking-guest-stay-ranges.ts`, and its guard,
+ * `guest-stay-expansion-census.test.ts`, can only see a call it recognises: a
+ * hand-rolled loop is invisible to it, which the census's own header names as its
+ * residue. This function fed BOTH `booking_block_state`'s party nights and
+ * `booking_capacity_by_night`'s per-night demand, so the next change to the sparse
+ * rule — a narrower envelope fallback, a new night representation reaching
+ * `nightEntryKey`, anything at all in `getGuestBedNightKeys` — would have left these
+ * two entries on the old rule with the guard green. That is #2628 re-created inside
+ * the pack.
+ *
+ * `getExplicitGuestBedNightKeys` and `expandStayEnvelopeToNightKeys` are the two
+ * halves of `getGuestBedNightKeys`, called in its own order: the night set wins, the
+ * envelope is only a fallback. They are called SEPARATELY rather than through
+ * `getGuestBedNightKeys` itself because the ceilings and the zero-night refusal have
+ * to sit BETWEEN the two branches — a bound applied after the expansion would have
+ * already materialised whatever a corrupt envelope asked for, and the canonical
+ * helper returns an empty list for a zero-night envelope where this pack has already
+ * decided that a persisted zero-night guest is corrupt evidence rather than an
+ * absent guest.
+ *
+ * ONE CONSEQUENCE WORTH STATING: the keys are now the tree's canonical NZ-time-zone
+ * keys (`formatDateOnlyForTimeZone`) rather than this module's `formatDateOnly`. For
+ * every value that can reach here the two are identical — `BookingGuestNight.stayDate`,
+ * `BookingGuest.stayStart`/`stayEnd` and `Booking.checkIn`/`checkOut` are all
+ * `@db.Date`, so they arrive at UTC midnight, which is the same calendar day in
+ * Pacific/Auckland. Where they could ever differ, the canonical key is the one the
+ * capacity engine and the pricing surfaces use, so agreeing with them is the point.
+ *
+ * Explicit duplicates still count toward the read ceiling: de-duplication must never
+ * turn an oversized source population into an apparently safe one.
  */
 function boundedGuestNightFootprint(guest: GuestNightFootprint): string[] {
   assertPopulationWithinCeiling(
@@ -425,27 +472,10 @@ function boundedGuestNightFootprint(guest: GuestNightFootprint): string[] {
     AID6B_CAPACITY_NIGHT_CEILING,
     "guest-night rows",
   );
-  if (guest.nights.length > 0) {
-    return [
-      ...new Set(
-        guest.nights
-          .map((night) => formatDateOnly(night.stayDate))
-          .sort(),
-      ),
-    ];
-  }
+  const explicit = getExplicitGuestBedNightKeys(guest);
+  if (explicit) return explicit;
 
-  const start = Date.UTC(
-    guest.stayStart.getUTCFullYear(),
-    guest.stayStart.getUTCMonth(),
-    guest.stayStart.getUTCDate(),
-  );
-  const end = Date.UTC(
-    guest.stayEnd.getUTCFullYear(),
-    guest.stayEnd.getUTCMonth(),
-    guest.stayEnd.getUTCDate(),
-  );
-  const nights = (end - start) / UTC_DAY_MS;
+  const nights = dateOnlyNightSpan(guest.stayStart, guest.stayEnd);
   if (
     !Number.isSafeInteger(nights) ||
     nights < 0 ||
@@ -458,18 +488,15 @@ function boundedGuestNightFootprint(guest: GuestNightFootprint): string[] {
 
   // A half-open [start,end) interval with equal endpoints contains ZERO nights.
   // Persisted guest rows are required to contain at least one night, so refuse the
-  // corrupt evidence instead of fabricating occupancy on the departure day.
+  // corrupt evidence instead of fabricating occupancy on the departure day. The
+  // canonical expander returns an empty list here, which is right for a caller
+  // asking "which nights" and wrong for one asserting "this row is sound".
   if (nights === 0) {
     throw new Error(
       "AI Diagnostics AID-6B: guest fallback envelope contains zero nights; refusing corrupt persisted stay evidence",
     );
   }
-  const footprint: string[] = [];
-  for (let offset = 0; offset < nights; offset += 1) {
-    const night = new Date(start + offset * UTC_DAY_MS);
-    footprint.push(formatDateOnly(night));
-  }
-  return footprint;
+  return expandStayEnvelopeToNightKeys(guest.stayStart, guest.stayEnd);
 }
 
 /**

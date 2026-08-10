@@ -2558,6 +2558,43 @@ describe("AID-6B booking/membership pack: read-only (#2376)", () => {
     }
   });
 
+  it("turns a stay into nights ONLY through the canonical helpers (INV-DATE-020)", () => {
+    // THE GUARD THE TREE-WIDE CENSUS STRUCTURALLY CANNOT BE.
+    // `guest-stay-expansion-census.test.ts` matches a literal
+    // `eachDateOnlyInRange(<a stay bound>` call, and its own header names "an
+    // expansion that inlines its own day loop" as the residue it cannot see. This
+    // module had exactly that: a hand-rolled `Date.UTC`/day-millisecond loop feeding
+    // BOTH `booking_block_state`'s party nights and `booking_capacity_by_night`'s
+    // per-night demand, with the census green.
+    //
+    // The cost of that shape is not a wrong answer today — it matched night for
+    // night — it is that the next change to the sparse-night rule leaves these two
+    // entries behind silently, which is #2628 re-created inside the pack. So the
+    // routing is asserted here, at the one file that can see it.
+    const evidence = packSource("booking-evidence.ts");
+    expect(evidence).toContain(
+      'from "@/lib/booking-guest-stay-ranges"',
+    );
+    // The night set FIRST, then the envelope — `getGuestBedNightKeys`' own order,
+    // and the half whose loss is the #2628 defect itself.
+    expect(evidence).toContain("getExplicitGuestBedNightKeys(guest)");
+    expect(evidence).toContain("expandStayEnvelopeToNightKeys(guest.stayStart, guest.stayEnd)");
+
+    // AND NO SECOND WAY TO DO IT. The day-loop shape is what the tree-wide census
+    // cannot police, so it is banned outright here: one arithmetic day-span
+    // MEASUREMENT is allowed (it is what bounds a corrupt envelope BEFORE anything
+    // is expanded) and it is the only place the day constant may be divided by.
+    const code = evidence
+      .replace(/\/\*[\s\S]*?\*\//g, "")
+      .replace(/^[ \t]*\/\/.*$/gm, "");
+    expect(code.match(/UTC_DAY_MS/g)).toHaveLength(2);
+    expect(code.match(/Date\.UTC\(/g)).toHaveLength(2);
+    expect(code).toContain("function dateOnlyNightSpan(");
+    // A loop that walks days is the exact shape being excluded.
+    expect(code).not.toMatch(/for\s*\([^)]*offset[^)]*\)/);
+    expect(code).not.toContain("UTC_DAY_MS)");
+  });
+
   it("marks every module `server-only`, so no pack code can reach a browser bundle", () => {
     for (const name of AID6B_PACK_MODULES) {
       expect(packSource(name), name).toContain('import "server-only"');

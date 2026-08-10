@@ -919,11 +919,29 @@ The property holds by construction rather than by care, in four places:
   columns is an integer number of days, and because `checkOut` is the departure
   day rather than a night, that integer **is** the number of lodge nights: the
   14th to the 17th is three nights.
-- **Guest envelopes use the same half-open rule.** `stayStart` is inclusive and
-  `stayEnd` is the exclusive departure day, never the last occupied night. Equal
-  endpoints contain zero nights. When a legacy guest has no explicit night rows,
-  Diagnostics may expand a valid envelope as fallback evidence, but it refuses an
-  equal-endpoint envelope as corrupt instead of fabricating one occupied night.
+- **Guest envelopes use the same half-open rule, through the canonical expander.**
+  `stayStart` is inclusive and `stayEnd` is the exclusive departure day, never the
+  last occupied night. Equal endpoints contain zero nights. When a legacy guest has
+  no explicit night rows, Diagnostics may expand a valid envelope as fallback
+  evidence, but it refuses an equal-endpoint envelope as corrupt instead of
+  fabricating one occupied night.
+
+  **The expansion itself is `booking-guest-stay-ranges.ts`', not this pack's.**
+  INV-DATE-020 requires every read surface that turns a stay into nights to route
+  there, and this pack briefly did not: it carried its own `Date.UTC` day loop,
+  which matched night for night but was invisible to
+  `guest-stay-expansion-census.test.ts` — that census matches a recognisable call,
+  and its own header names an inlined day loop as the residue it cannot see. Since
+  the loop fed both `booking_block_state`'s party nights and
+  `booking_capacity_by_night`'s per-night demand, the next change to the sparse-night
+  rule would have left both entries on the old rule with the census green, which is
+  the #2628 regression class re-created inside the pack. It now calls
+  `getExplicitGuestBedNightKeys` then `expandStayEnvelopeToNightKeys` — the two
+  halves of `getGuestBedNightKeys`, in its own night-set-first order — with the
+  read ceilings and the zero-night refusal in between, because a bound applied after
+  the expansion would already have materialised whatever a corrupt envelope asked
+  for. A pack test asserts the routing and bans the day-loop shape outright, which
+  is the guard the tree-wide census structurally cannot be.
 - **A date is re-validated on the way out.** `dateOnlyOrNull` reports the shared
   `(unparseable)` sentinel for anything that is not day-shaped, rather than
   shipping a full ISO instant into a field a model would read as a moment and
