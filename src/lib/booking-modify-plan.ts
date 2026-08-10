@@ -1102,46 +1102,36 @@ export type PricingResult = {
 };
 
 /**
- * Build a per-night breakdown over the nights a guest actually holds, by
- * splitting the total evenly across them with any integer-cent remainder on the
- * earliest nights so the per-night sum equals the total exactly. Used by the
- * in-progress edit plan, which prices guests as scalar totals (issue #713).
+ * The per-night breakdown for one guest of an in-progress edit, in the shape the
+ * rest of this file consumes: the nights they hold, what each is worth, and
+ * their total.
  *
- * #2736: it used to take `(stayStart, stayEnd)` and expand that envelope
- * itself, which is why an edit to a booking already under way turned a guest
- * with a gap in their stay into one continuous run — the gap night was
- * materialised here, then written back as a `BookingGuestNight` row by
- * `applyGuestChanges` below. It now takes the plan's night LIST
- * (`ProposedExistingGuestRange.nights`), which is that same envelope expanded
- * for every contiguous guest and the guest's real nights for a sparse one
- * (INV-MOD-025).
+ * This used to be `splitGuestNightsEvenly`, which took the guest's total and
+ * divided it across their nights — so an edit spanning a season boundary stored
+ * the average, and `lockedNightPricesForGuest` handed that average to the next
+ * edit as the price the member was deemed to have paid (#2744). The plan now
+ * computes each night's real amount itself, alongside the price it charges for
+ * them, so there is nothing left to split here; the even split survives inside
+ * the plan as the fallback for a guest whose stored total cannot be reconciled
+ * with their rows (`composeProposedNightPrices`).
  *
- * Integer cents only: `Math.floor` over an integer total, remainder distributed
- * one cent at a time (INV-MONEY-001, INV-MONEY-003).
- *
- * Still an EVEN split, which #2736 did not change and is not claiming to have
- * fixed. The rows now cover the right nights, but their per-night amounts are
- * the guest's total divided by their night count, so an edit spanning a season
- * boundary stores the average rather than each night's real rate — and
- * `lockedNightPricesForGuest` hands exactly that column to the next edit. The
- * sum is always exact, so nothing goes out of balance; the per-night snapshot
- * is simply not the price list. Carried as #2744.
+ * Integer cents throughout, and `perNightCents` sums to `priceCents` exactly —
+ * which is what keeps the Xero lines, rebuilt per contiguous run with
+ * `perNightCents * nightCount === totalCents`, free of a phantom balance
+ * (INV-MONEY-001, INV-MONEY-003).
  */
-function splitGuestNightsEvenly(
-  nights: ReadonlyArray<Date>,
-  totalCents: number
-): { priceCents: number; perNightCents: number[]; nightDates: Date[] } {
-  const nightDates = nights.map((night) => normalizeDateOnlyForTimeZone(night));
-  const count = nightDates.length;
-  const perNightCents: number[] = [];
-  if (count > 0) {
-    const base = Math.floor(totalCents / count);
-    const remainder = totalCents - base * count;
-    for (let i = 0; i < count; i++) {
-      perNightCents.push(base + (i < remainder ? 1 : 0));
-    }
-  }
-  return { priceCents: totalCents, perNightCents, nightDates };
+function guestNightBreakdown(entry: {
+  nights: ReadonlyArray<Date>;
+  perNightCents: ReadonlyArray<number>;
+  priceCents: number;
+}): { priceCents: number; perNightCents: number[]; nightDates: Date[] } {
+  return {
+    priceCents: entry.priceCents,
+    perNightCents: [...entry.perNightCents],
+    nightDates: entry.nights.map((night) =>
+      normalizeDateOnlyForTimeZone(night)
+    ),
+  };
 }
 
 /**
@@ -1427,12 +1417,8 @@ export async function calculateModifiedPricing(
       ? {
           totalPriceCents: inProgressPlan.newTotalPriceCents,
           guests: [
-            ...inProgressPlan.proposedExistingGuests.map((entry) =>
-              splitGuestNightsEvenly(entry.nights, entry.priceCents)
-            ),
-            ...inProgressPlan.proposedAddedGuests.map((entry) =>
-              splitGuestNightsEvenly(entry.nights, entry.priceCents)
-            ),
+            ...inProgressPlan.proposedExistingGuests.map(guestNightBreakdown),
+            ...inProgressPlan.proposedAddedGuests.map(guestNightBreakdown),
           ],
         }
       : await priceBookingGuestsWithMembershipTypePolicy(tx, {
