@@ -187,9 +187,20 @@ require_absolute_file_path() {
 database_fingerprint() {
   # A canonical, complete logical fingerprint. The archive is restored before
   # each side; this detects any timing-side database mutation afterwards.
+  #
+  # The `\restrict`/`\unrestrict` pair is filtered for the same reason the
+  # version and timestamp headers are: it is a psql meta-command wrapper that
+  # carries no database content. PostgreSQL 16.14's pg_dump emits a fresh
+  # RANDOM token in it on every invocation, so without this filter two dumps of
+  # a completely unchanged database differ — measured here, and the token was
+  # the ONLY difference across 14,122 lines. That made the fingerprint useless
+  # as an equality control: the correctness runner's post-restore assertion,
+  # every phase-2 before/after side comparison, and aggregation's single-common-
+  # fingerprint requirement would each have failed on an untouched database, so
+  # no pair could ever have completed.
   compose exec -T postgres pg_dump -U tac -d tacbookings \
     --schema=public --no-owner --no-privileges --inserts --column-inserts \
-    | sed -E '/^-- Dumped (from|by) database version /d; /^-- Started on /d; /^-- Completed on /d' \
+    | sed -E '/^-- Dumped (from|by) database version /d; /^-- Started on /d; /^-- Completed on /d; /^\\(un)?restrict [A-Za-z0-9]+$/d' \
     | sha256sum | awk '{print $1}'
 }
 
@@ -228,8 +239,14 @@ create_canonical_dump() (
   temp_archive="$(mktemp "${archive}.tmp.XXXXXXXX")"
   cleanup_canonical_temp() { rm -f -- "$temp_archive"; }
   trap cleanup_canonical_temp EXIT
+  # Deliberately NOT --schema=public. A schema-filtered dump omits
+  # `CREATE EXTENSION`, so restoring it into a dropped-and-recreated schema
+  # lost btree_gist and pgcrypto and then failed on the first exclusion
+  # constraint that needs a GiST operator class. The archive has to be able to
+  # rebuild the database on its own, because that is exactly what every timing
+  # side and every correctness postcondition asks it to do.
   compose exec -T postgres pg_dump -U tac -d tacbookings \
-    --format=custom --no-owner --no-privileges --schema=public > "$temp_archive"
+    --format=custom --no-owner --no-privileges > "$temp_archive"
   [ -s "$temp_archive" ] || { echo "canonical archive is empty: $temp_archive" >&2; exit 1; }
   compose exec -T postgres pg_restore --list < "$temp_archive" > /dev/null
   # Same-directory hard-link publication is atomic and refuses a destination
@@ -274,6 +291,10 @@ restore_canonical_dump() {
   }
   stop_application_writers
   compose up -d --wait postgres >/dev/null
+  # The recreate is required, not incidental: a full-database `pg_dump` writes
+  # "*not* creating schema, since initdb creates it" and never creates `public`
+  # itself, so dropping without recreating leaves the very first
+  # `COMMENT ON SCHEMA public` with nothing to comment on.
   compose exec -T postgres psql -U tac -d tacbookings -v ON_ERROR_STOP=1 \
     -c "DROP SCHEMA IF EXISTS public CASCADE; CREATE SCHEMA public;" >/dev/null
   compose exec -T postgres pg_restore -U tac -d tacbookings \
