@@ -130,6 +130,7 @@ number and prefix, and it is listed at the end of the table below.
 | `INV-DATE-021` | Kiosk attendance is one current state per stay, re-read per segment |
 | `INV-DATE-022` | A SQL stay filter is coarse; kiosk write lookups decide over the night rows |
 | `INV-DATE-006` | The lobby wall is deliberately mixed and stays on its own fenced path |
+| `INV-DATE-023` | The lobby wall's night count is derived independently of what it shows |
 | `INV-DATE-007` | Departing lodge A and arriving at lodge B on one date is legal |
 | `INV-DATE-008` | Zero-night bookings expand to no nights and every route refuses them |
 | `INV-DATE-009` | Six areas sit deliberately outside the boundary and must not be aligned |

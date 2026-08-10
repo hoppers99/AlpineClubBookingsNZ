@@ -39,6 +39,11 @@ const WHOLE_LODGE_ROW = {
   guestCount: 14,
   stayStart: "2026-04-13",
   stayEnd: "2026-04-15",
+  // #2735: the row's own nights — the expanded envelope for this contiguous
+  // stay. `occupancy:whole-lodge-today` asks this rather than re-deriving a
+  // night from the envelope, so a row whose nights have a gap in them no
+  // longer claims the lodge on the gap night.
+  nights: ["2026-04-13", "2026-04-14"],
   // #2621: no expected arrival time in this fixture.
   arrivalTime: null,
 } as const;
@@ -86,7 +91,12 @@ describe("condition engine (namespaced registry — ADR-003 §3)", () => {
     // departure day, so it is in the window but not occupying tonight.
     const departingToday = stateWith({
       bookings: [
-        { ...WHOLE_LODGE_ROW, stayStart: "2026-04-12", stayEnd: "2026-04-13" },
+        {
+          ...WHOLE_LODGE_ROW,
+          stayStart: "2026-04-12",
+          stayEnd: "2026-04-13",
+          nights: ["2026-04-12"],
+        },
       ],
       occupancy: [
         { date: "2026-04-13", arriving: 0, departing: 14, staying: 14 },
@@ -97,6 +107,64 @@ describe("condition engine (namespaced registry — ADR-003 §3)", () => {
     expect(evaluateDisplayCondition("occupancy:whole-lodge-in-window", departingToday)).toBe(true);
     expect(evaluateDisplayCondition("occupancy:whole-lodge-today", departingToday)).toBe(false);
     expect(evaluateDisplayCondition("occupancy:departures-today", departingToday)).toBe(true);
+  });
+
+  it("does not claim the lodge tonight on a whole-lodge hold's GAP night (#2735)", async () => {
+    const { evaluateDisplayCondition } = await import(
+      "@/lib/lodge-display/conditions"
+    );
+    // `wholeLodge` is not only the explicit hold flag — the sole-occupancy
+    // heuristic sets it too, and that never requires contiguity. This group is
+    // alone on the 13th and the 15th and holds nothing on the 14th, so on the
+    // 14th the lodge is NOT booked out tonight even though the envelope spans
+    // it. The envelope rule this replaced answered true here.
+    const gapNight = {
+      ...WHOLE_LODGE_ROW,
+      stayStart: "2026-04-13",
+      stayEnd: "2026-04-16",
+      nights: ["2026-04-13", "2026-04-15"],
+    };
+    const occupancy = [
+      { date: "2026-04-14", arriving: 0, departing: 14, staying: 14 },
+      { date: "2026-04-15", arriving: 14, departing: 0, staying: 14 },
+      { date: "2026-04-16", arriving: 0, departing: 14, staying: 14 },
+    ];
+    const onGap = stateWith({
+      window: { start: "2026-04-14", days: 3 },
+      bookings: [gapNight],
+      occupancy,
+    });
+    expect(evaluateDisplayCondition("occupancy:whole-lodge-today", onGap)).toBe(false);
+    // Still in the window, so the rotating blockout stays eligible.
+    expect(evaluateDisplayCondition("occupancy:whole-lodge-in-window", onGap)).toBe(true);
+
+    // …and true on both nights they really do hold.
+    for (const start of ["2026-04-13", "2026-04-15"]) {
+      const held = stateWith({
+        window: { start, days: 3 },
+        bookings: [gapNight],
+        occupancy: [{ date: start, arriving: 0, departing: 0, staying: 14 }],
+      });
+      expect(evaluateDisplayCondition("occupancy:whole-lodge-today", held)).toBe(true);
+    }
+  });
+
+  it("survives a payload row with no night set at all (deploy skew, #2735)", async () => {
+    const { evaluateDisplayCondition } = await import(
+      "@/lib/lodge-display/conditions"
+    );
+    // A lobby TV can poll an instance still serving the previous deploy's
+    // payload shape. The condition engine must fall back to the envelope, not
+    // throw — a throw here blanks the whole screen.
+    const withoutNights: Record<string, unknown> = { ...WHOLE_LODGE_ROW };
+    delete withoutNights.nights;
+    const stale = stateWith({
+      bookings: [withoutNights as unknown as DisplayState["bookings"][number]],
+    });
+    expect(() =>
+      evaluateDisplayCondition("occupancy:whole-lodge-today", stale)
+    ).not.toThrow();
+    expect(evaluateDisplayCondition("occupancy:whole-lodge-today", stale)).toBe(true);
   });
 
   it("gates capability + chores:today conditions on the payload's module flags", async () => {
@@ -334,6 +402,7 @@ describe("rotation eligibility (AC4/AC5)", () => {
             guestCount: 14,
             stayStart: "2026-04-13",
             stayEnd: "2026-04-15",
+            nights: ["2026-04-13", "2026-04-14"],
             // #2621: no expected arrival time in this fixture.
             arrivalTime: null,
           },

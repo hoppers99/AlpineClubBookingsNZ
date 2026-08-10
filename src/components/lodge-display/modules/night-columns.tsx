@@ -10,7 +10,8 @@ import {
 import {
   STAY_STATUS_ORDER,
   shortDay,
-  stayStatusOn,
+  staySegmentOn,
+  type StaySegment,
   type StayStatus,
 } from "./status-helpers";
 
@@ -53,9 +54,13 @@ function bookingLabel(booking: DisplayStateBooking): { label: string; group: boo
   };
 }
 
-function spanText(booking: DisplayStateBooking, status: StayStatus): string {
-  if (status === "departing") return "leaves";
-  return `→ ${shortDay(booking.stayEnd)}`;
+// The SEGMENT's check-out, not the row's envelope (#2735). This panel shows
+// several days at once, so the contradiction was visible inside one panel: for
+// nights {13, 15} the 13th's column said "→ Thu 16" while the 14th's said
+// "leaves". Now the 13th says "→ Tue 14" and the 15th says "→ Thu 16".
+function spanText(segment: StaySegment): string {
+  if (segment.status === "departing") return "leaves";
+  return `→ ${shortDay(segment.stayEnd)}`;
 }
 
 export function NightColumns({
@@ -87,8 +92,8 @@ export function NightColumns({
 
         const rows: NightRow[] = state.bookings
           .map((booking): NightRow | null => {
-            const status = stayStatusOn(booking, date);
-            if (status === null) return null;
+            const segment = staySegmentOn(booking, date);
+            if (segment === null) return null;
             const { label, group } = bookingLabel(booking);
             const roomName =
               showRooms && booking.roomId !== null
@@ -97,8 +102,8 @@ export function NightColumns({
             return {
               key: booking.key,
               label,
-              status,
-              span: spanText(booking, status),
+              status: segment.status,
+              span: spanText(segment),
               roomName,
               group,
             };
