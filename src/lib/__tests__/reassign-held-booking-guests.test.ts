@@ -18,17 +18,36 @@ import type { MemberGuestAddPolicy } from "@/lib/member-guest-add-policy";
  * REAL production shape, not a shortcut — see `computeMemberGuestBoundary`.
  */
 function makeTx() {
+  let createdCount = 0;
   return {
     bookingGuest: {
       findMany: vi.fn(),
       deleteMany: vi.fn().mockResolvedValue({ count: 0 }),
       createMany: vi.fn().mockResolvedValue({ count: 0 }),
+      // #2739: the recreate fallback creates one row at a time, because its
+      // night rows need the id each create hands back.
+      create: vi.fn().mockImplementation(async () => {
+        createdCount += 1;
+        return { id: `new-${createdCount}`, memberId: null };
+      }),
       update: vi.fn().mockResolvedValue({}),
+    },
+    // #2739: night rows are written for the whole party in one batch, keyed by
+    // the guest ids the branch above already holds.
+    bookingGuestNight: {
+      deleteMany: vi.fn().mockResolvedValue({ count: 0 }),
+      createMany: vi.fn().mockResolvedValue({ count: 0 }),
     },
     familyGroupMember: { findMany: vi.fn().mockResolvedValue([]) },
     member: { findMany: vi.fn().mockResolvedValue([]) },
   };
 }
+
+/** The two nights of the default envelope, priced 2500 each of the 5000 total. */
+const defaultNights = (priceCents = 5000) => [
+  { stayDate: new Date("2026-08-01T00:00:00.000Z"), priceCents: Math.ceil(priceCents / 2) },
+  { stayDate: new Date("2026-08-02T00:00:00.000Z"), priceCents: Math.floor(priceCents / 2) },
+];
 
 const guest = (overrides: Record<string, unknown> = {}) => ({
   firstName: "Tara",
@@ -39,6 +58,9 @@ const guest = (overrides: Record<string, unknown> = {}) => ({
   stayStart: new Date("2026-08-01T00:00:00.000Z"),
   stayEnd: new Date("2026-08-03T00:00:00.000Z"),
   priceCents: 5000,
+  nights: defaultNights(
+    typeof overrides.priceCents === "number" ? overrides.priceCents : 5000,
+  ),
   ...overrides,
 });
 
@@ -111,14 +133,9 @@ describe("reassignHeldBookingGuests (issue #1254 bed preservation)", () => {
   });
 
   it("falls back to delete+recreate when the row count diverges", async () => {
-    tx.bookingGuest.findMany
-      .mockResolvedValueOnce([{ id: "g1", memberId: null, consentStatus: null }])
-      // The read-back after createMany, so the notification plan can be matched
-      // to rows that only exist once the write has happened.
-      .mockResolvedValueOnce([
-        { id: "g9", memberId: null },
-        { id: "g10", memberId: null },
-      ]);
+    tx.bookingGuest.findMany.mockResolvedValueOnce([
+      { id: "g1", memberId: null, consentStatus: null },
+    ]);
 
     const result = await reassignHeldBookingGuests(
       tx as never,
@@ -131,8 +148,56 @@ describe("reassignHeldBookingGuests (issue #1254 bed preservation)", () => {
     expect(tx.bookingGuest.deleteMany).toHaveBeenCalledWith({
       where: { bookingId: "held-1" },
     });
-    expect(tx.bookingGuest.createMany).toHaveBeenCalledTimes(1);
+    // #2739: one create per guest, because each guest's night rows need the id
+    // that create hands back — matching read-back rows to their inputs would
+    // rest on an ordering `createMany` does not promise. The NIGHTS are then
+    // written for the whole party in one batch, so the statement count stays
+    // O(guests) inside the approval transaction.
+    expect(tx.bookingGuest.createMany).not.toHaveBeenCalled();
+    expect(tx.bookingGuest.create).toHaveBeenCalledTimes(2);
+    expect(tx.bookingGuest.create).toHaveBeenNthCalledWith(
+      1,
+      expect.objectContaining({
+        data: expect.objectContaining({ firstName: "Tara" }),
+      }),
+    );
+    expect(tx.bookingGuestNight.createMany).toHaveBeenCalledTimes(1);
+    expect(tx.bookingGuestNight.createMany).toHaveBeenCalledWith({
+      data: [
+        ...defaultNights().map((night) => ({ bookingGuestId: "new-1", ...night })),
+        ...defaultNights().map((night) => ({ bookingGuestId: "new-2", ...night })),
+      ],
+    });
     expect(tx.bookingGuest.update).not.toHaveBeenCalled();
+  });
+
+  it("re-syncs the night set on the in-place path (#2739)", async () => {
+    // The whole point of the delete-then-create: an officer may accept a
+    // different quote option than the hold was taken at, so night rows left over
+    // from the hold would price a stay nobody agreed to. Beds are untouched —
+    // BedAllocation keys on bookingGuestId + stayDate, not on a night row's id.
+    tx.bookingGuest.findMany.mockResolvedValue([
+      { id: "g1", memberId: null, consentStatus: null },
+    ]);
+
+    await reassignHeldBookingGuests(
+      tx as never,
+      "held-1",
+      [guest({ priceCents: 9000 })],
+      memberGuest(),
+    );
+
+    expect(tx.bookingGuestNight.deleteMany).toHaveBeenCalledWith({
+      where: { bookingGuestId: { in: ["g1"] } },
+    });
+    expect(tx.bookingGuestNight.createMany).toHaveBeenCalledWith({
+      data: defaultNights(9000).map((night) => ({
+        bookingGuestId: "g1",
+        ...night,
+      })),
+    });
+    // The guest ROWS survive — that is what #1254's bed preservation rests on.
+    expect(tx.bookingGuest.deleteMany).not.toHaveBeenCalled();
   });
 });
 

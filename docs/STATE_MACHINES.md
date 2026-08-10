@@ -822,17 +822,40 @@ In `"in-progress"` mode the plan that prices the change
 `BookingGuestNight` set, not from their `stayStart`/`stayEnd` envelope
 (#2736, `INV-MOD-025`). A guest with a gap in their stay keeps the gap: it is
 not charged, not written back as a night row and not given a bed, while an
-extension still buys contiguous new nights after their last held one. For a
-contiguous stay every number is exactly what it was before. Bookings edited
-before that fix keep the rows and the price they were given — history is not
-repriced (#2745 carries the decision about whether anything is done about
-them). One edit is newly refused: a check-out pulled back past the last night
-any remaining guest still holds, which would leave the booking with a night
-nobody occupies; the refusal names the check-out that would work. A night the
-edit gives back is credited at the price the member paid rather than at today's
-season rate, and the per-night rows written back are each night's real rate
-rather than the guest's average (#2744, `INV-MOD-025`). One money shape on this
-path is still frozen rather than fixed — see `INV-MOD-025` and #2743.
+extension still buys contiguous new nights after their last held one. The edit
+also sells only the nights it creates (#2743): a night is added to an existing
+guest only when the check-out actually moves, and only past the OLD check-out,
+so an edit that leaves the dates alone — a guest added or removed, a promo or
+member-link change — cannot add a night to anybody. (A name-only edit never
+reaches this plan: it is identity-only on both routes and takes the
+price-preserving echo.) The discriminator is whether a guest's held nights reach
+the BOOKING'S own check-out, not whether they have gone home, so a guest who is
+in the lodge tonight but leaves before the booking does gets the same gap and the
+same smaller bill as one who left a week ago. Extending the check-out does still
+admit every remaining guest for the nights it adds — this plan overrides
+`guestStayRanges` for existing guests and the panel offers no per-guest end date
+on an in-progress edit, so an API caller that sends one is ignored rather than
+refused, and the officer sees the cost as one aggregate quote line for the whole
+party. Because nobody is back-filled, a removal can leave `Booking.checkOut`
+ahead of the last night anybody holds; that is accepted rather than guarded.
+A night the edit gives back is credited at the price the member paid rather than
+at today's season rate, and the per-night rows written back are each night's real
+rate rather than the guest's average (#2744, `INV-MOD-025`); a guest with no
+recoverable stored price is still valued at today's rate, capped so that no edit
+can credit back more than that guest is carrying.
+For an ordinary stay that runs to the booking's check-out, every number is
+exactly what it was before. Bookings edited before those fixes keep the rows and
+the price they were given — history is not repriced (#2745 carries the decision
+about whether anything is done about them). Two edits are newly refused, both
+because the booking would be left with NOBODY in the future window: a check-out
+pulled back past the last night any remaining guest still holds, and a save on a
+booking whose check-out is still ahead but whose guests have all finished their
+stays. Both name a check-out the plan will actually accept — the suggestion is
+clamped at the edit window, without which #2743's own shape would name a date
+every guard rejects and the booking would be editable by no route at all. One
+money shape on this path is stated rather than fixed: the plan prices each guest
+on their own, so nights an in-progress edit newly BUYS carry no group discount —
+see `INV-MOD-025` and #2756.
 
 Self-service cancellation of a **started** stay is blocked (#2029). Once
 `checkIn <= todayNZ`, the member-facing cancel route

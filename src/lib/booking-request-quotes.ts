@@ -31,10 +31,12 @@ import {
 } from "@/lib/booking-request";
 import { reconcileBedAllocationsForBookingWithGlobalLockHeld } from "@/lib/bed-allocation-lifecycle";
 import {
+  buildApprovalGuestNights,
   collectNotifiedMemberGuestIds,
   notifyMemberGuestsHoldReleased,
   planBookingRequestGuestConsent,
   toPipelineGuestCreateData,
+  type HeldBookingGuestInput,
 } from "@/lib/booking-request-shared";
 import {
   loadMemberGuestAddPolicy,
@@ -1353,7 +1355,11 @@ export async function holdBookingRequestSlots(input: {
   // unlinked guests record the built-in NON_MEMBER type. Snapshot-only — the
   // quoted per-guest split above stays exactly as stored. rateSource is
   // resolver-internal and never persisted.
-  const guestCreates = (
+  // Annotated (#2739) so this producer is type-checked against the same shape
+  // `buildApprovalGuestCreates` returns: the hold is the one write point that
+  // builds its guest rows inline rather than through that helper, so without the
+  // annotation nothing would check that it supplies a night set at all.
+  const guestCreates: HeldBookingGuestInput[] = (
     await resolveGuestRateMembershipTypes(prisma, {
       seasonYear: getSeasonYear(request.checkIn),
       guests: guests.map((guest, index) => {
@@ -1380,6 +1386,16 @@ export async function holdBookingRequestSlots(input: {
     stayEnd: guest.stayEnd,
     priceCents: guest.priceCents,
     rateMembershipTypeId: guest.rateMembershipTypeId,
+    // #2739. A hold is a capacity-holding booking that an officer can already
+    // place beds on, so its guests need the canonical night set for exactly the
+    // reason a converted booking's do — without it the board shows an
+    // AWAITING_REVIEW booking with nobody on it. Built from the request's own
+    // envelope, which is what the guest rows above take.
+    nights: buildApprovalGuestNights({
+      checkIn: request.checkIn,
+      checkOut: request.checkOut,
+      priceCents: guest.priceCents,
+    }),
   }));
 
   let capacityFullNights: string[] | null = null;

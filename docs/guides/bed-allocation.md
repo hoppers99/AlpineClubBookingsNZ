@@ -410,6 +410,7 @@ you place them yourself.
 | The card says "No nights of this booking on this page" | None of the booking's guests is booked on any night of the page shown. On a long stay its nights are on another page; otherwise check the guests' stay dates | Step through with › , or fix the guest stay dates. Assign and **Confirm draft beds** still work — Confirm covers the whole booking |
 | **Confirm draft beds** is greyed out | Nothing on this booking is still in draft | Everything is already confirmed; range assignments confirm as they are written |
 | The card shows fewer nights than the stay | The stay is longer than the 31-night read window, so it is paged | Step forward with › — the label tells you which nights you are looking at |
+| A school or public-request party is not on the board at all | Fixed in August 2026. Bookings created by approving a booking request, and the capacity holds taken while quoting one, used to carry no per-night guest records, so the board could not list them and the dashboard's Bed Allocation card did not count them either | Nothing to do. New approvals go on the board immediately, and existing ones were repaired in the same release. If a party is still missing, it is the ordinary case above — check the booking's status and the guests' stay dates |
 
 ## Related links
 

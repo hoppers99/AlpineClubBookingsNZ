@@ -540,6 +540,155 @@ describe("calculateModifiedPricing in-progress per-night breakdown (#2736)", () 
   });
 });
 
+// #2743: an edit sells only the nights it creates. The sparse suite asserts that
+// on the PLAN's return value; this asserts it on what the writer is actually
+// handed, which is a different array. `applyGuestChanges` → `syncGuestNights`
+// consumes `priceBreakdown.guests[].nightDates`, matched POSITIONALLY over
+// `proposedExistingGuests`, and re-derives the stored `BookingGuest.stayStart` /
+// `stayEnd` from the first and last of those dates rather than from the plan's
+// own envelope. So a plan that is right and a breakdown that is wrong would
+// still write the wrong rows and reserve the wrong beds. These cases drive the
+// REAL plan through `calculateModifiedPricing` and read the breakdown.
+describe("calculateModifiedPricing in-progress departed guest (#2743)", () => {
+  const MEMBER_TYPE = "type-member";
+  const RATE = 5000;
+  const SEASON = [
+    {
+      seasonId: "s1",
+      startDate: D("2026-08-01"),
+      endDate: D("2026-08-31"),
+      rates: [
+        { ageTier: "ADULT", membershipTypeId: MEMBER_TYPE, pricePerNightCents: RATE },
+      ],
+    },
+  ];
+  const AVAILABLE = { available: true, minAvailable: 5, nightDetails: [] };
+
+  /** A guest built from the nights they hold, the way the writer derives them. */
+  function guestOf(id: string, memberId: string, nights: string[]) {
+    const sorted = [...nights].sort();
+    return {
+      id,
+      ageTier: "ADULT",
+      isMember: true,
+      memberId,
+      rateMembershipTypeId: MEMBER_TYPE,
+      rateSource: "OWN_TYPE",
+      stayStart: D(sorted[0]),
+      stayEnd: D(
+        new Date(D(sorted[sorted.length - 1]).getTime() + 86_400_000)
+          .toISOString()
+          .slice(0, 10),
+      ),
+      nights: sorted.map((stayDate) => ({ stayDate: D(stayDate) })),
+      priceCents: sorted.length * RATE,
+    };
+  }
+
+  /**
+   * Booking 18 → 23 Aug. `g1` went home after the 19th; `g2` is there for the
+   * whole run. It is the 21st, so the edit window opens on the 22nd.
+   */
+  function departedGuestArgs(newCheckOut: string) {
+    const gone = guestOf("g1", "m1", ["2026-08-18", "2026-08-19"]);
+    const present = guestOf("g2", "m2", [
+      "2026-08-18", "2026-08-19", "2026-08-20", "2026-08-21", "2026-08-22",
+    ]);
+    const totalPriceCents = gone.priceCents + present.priceCents;
+    return {
+      booking: {
+        id: "b1",
+        memberId: "m1",
+        lodgeId: "lodge-1",
+        checkIn: D("2026-08-18"),
+        checkOut: D("2026-08-23"),
+        totalPriceCents,
+        discountCents: 0,
+        promoAdjustmentCents: 0,
+        finalPriceCents: totalPriceCents,
+        guests: [gone, present],
+      } as never,
+      bookingId: "b1",
+      isInProgressEdit: true,
+      editableFrom: D("2026-08-22"),
+      newCheckIn: D("2026-08-18"),
+      newCheckOut: D(newCheckOut),
+      normalizedAddGuests: undefined,
+      removeGuestIds: undefined,
+      guestsForPricing: [
+        {
+          bookingGuestId: "g1",
+          ageTier: "ADULT" as const,
+          isMember: true,
+          memberId: "m1",
+          stayStart: D("2026-08-18"),
+          stayEnd: D(newCheckOut),
+        },
+        {
+          bookingGuestId: "g2",
+          ageTier: "ADULT" as const,
+          isMember: true,
+          memberId: "m2",
+          stayStart: D("2026-08-18"),
+          stayEnd: D(newCheckOut),
+        },
+      ],
+      skipBookingLifecycleRules: false,
+      seasonRateData: SEASON as never,
+      partnerSharedGuests: [],
+    };
+  }
+
+  it("hands the writer only the departed guest's own nights, and moves no money", async () => {
+    h.checkCapacityForGuestRanges.mockResolvedValue(AVAILABLE);
+
+    const result = await calculateModifiedPricing(
+      {} as never,
+      departedGuestArgs("2026-08-23"),
+    );
+    const [gone, present] = result.priceBreakdown.guests;
+
+    // The rows the writer will persist, and the envelope it re-derives from
+    // them: the 18th and the 19th, full stop. Before #2743 this array was the
+    // 18th to the 22nd and the member was billed three nights for somebody who
+    // had gone home.
+    expect(gone.nightDates).toEqual([D("2026-08-18"), D("2026-08-19")]);
+    expect(gone.priceCents).toBe(2 * RATE);
+    expect(gone.perNightCents.reduce((a, b) => a + b, 0)).toBe(gone.priceCents);
+    // The guest who is actually there is untouched.
+    expect(present.nightDates).toEqual([
+      D("2026-08-18"), D("2026-08-19"), D("2026-08-20"), D("2026-08-21"),
+      D("2026-08-22"),
+    ]);
+    expect(result.newTotalPriceCents).toBe(7 * RATE);
+  });
+
+  it("still gives them the nights an extension genuinely creates, as a second run with the gap intact", async () => {
+    // The accepted residual, measured on the writer's own array rather than on
+    // the plan: extending to the 25th admits the departed guest for the two
+    // nights past the OLD check-out and nothing between. The stored envelope
+    // that gets re-derived from this is 18 Aug → 25 Aug with two nights of
+    // absence inside it — which is why the bed board reads the night rows and
+    // never the envelope (INV-DATE-012, INV-MOD-025).
+    h.checkCapacityForGuestRanges.mockResolvedValue(AVAILABLE);
+
+    const result = await calculateModifiedPricing(
+      {} as never,
+      departedGuestArgs("2026-08-25"),
+    );
+    const [gone] = result.priceBreakdown.guests;
+
+    expect(gone.nightDates).toEqual([
+      D("2026-08-18"),
+      D("2026-08-19"),
+      // the 20th, 21st and 22nd are NOT theirs
+      D("2026-08-23"),
+      D("2026-08-24"),
+    ]);
+    expect(gone.priceCents).toBe(4 * RATE);
+  });
+});
+
 describe("calculateModifiedPricing in-progress per-night prices (#2744)", () => {
   const MEMBER_TYPE = "type-member";
   const LOW = 5000;

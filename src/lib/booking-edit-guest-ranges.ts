@@ -101,11 +101,12 @@ interface ProposedExistingGuestRange {
   stayEnd: Date;
   // #2736: the nights this guest actually holds after the edit, sorted — the
   // guest's own canonical nights that survive the edit, plus the genuinely-new
-  // nights a check-out extension adds after their last one. This, NOT
-  // `[stayStart, stayEnd)`, is what gets priced, quoted per night and written
-  // back as `BookingGuestNight` rows, so an internal gap stays a gap
-  // (INV-MOD-025). For a contiguous guest it IS `[stayStart, stayEnd)`, night
-  // for night, which is what makes the change a no-op for every ordinary stay.
+  // nights a check-out extension adds after their last one AND after the
+  // booking's old check-out (#2743). This, NOT `[stayStart, stayEnd)`, is what
+  // gets priced, quoted per night and written back as `BookingGuestNight` rows,
+  // so an internal gap stays a gap (INV-MOD-025). For a contiguous guest who
+  // holds the booking's last night it IS `[stayStart, stayEnd)`, night for
+  // night, which is what makes the change a no-op for every ordinary stay.
   nights: Date[];
   // #2744: what each of `nights` is worth, in the same order and in integer
   // cents, summing EXACTLY to `priceCents`. This is what gets written to
@@ -179,11 +180,12 @@ export interface BookingEditGuestRangePlan {
     // flagged sharer's range from the ordinary ones; null for non-members.
     memberId?: string | null;
   }>;
-  // #2029: the earliest night the capacity check must cover for this edit — the
-  // minimum `futureStart` across the included ranges, never later than
-  // editableFrom. The capacity call sites use this (not editableFrom) as the
-  // window start so a check-out-day extension's new night is inside the checked
-  // window; for mid-stay/last-night edits it equals editableFrom (unchanged).
+  // #2029: the earliest night the capacity check must cover for this edit —
+  // never later than editableFrom. The capacity call sites use this (not
+  // editableFrom) as the window start so a check-out-day extension's new night
+  // is inside the checked window; for mid-stay/last-night edits it equals
+  // editableFrom (unchanged). #2743: it is the earliest night any included range
+  // actually OCCUPIES, not the minimum `futureStart` — see the derivation below.
   capacityRangeStart: Date;
 }
 
@@ -467,11 +469,28 @@ function composeProposedNightPrices(args: {
  * mid-stay REMOVAL or a SHORTENED check-out subtracted those phantom nights and
  * refunded money the member had never paid (#2736).
  *
- * For a contiguous stay every output here is identical to that envelope
- * arithmetic — to the cent, to the night, to the capacity range and to the
- * thrown error. That equivalence is the property that makes the rule safe on
- * live bookings, and `booking-edit-guest-ranges-sparse.test.ts` proves it by
- * re-implementing the old maths and comparing, rather than asserting it.
+ * **Sell only the nights the edit creates (INV-MOD-025).** An edit adds a night
+ * to a guest only when it moves the booking's check-out, and only past the OLD
+ * check-out. This plan used to run each guest's added-nights leg from their own
+ * last held night to the new check-out whether the check-out had moved or not,
+ * so a #713 partial-stay guest whose stay had already finished was put back on
+ * the booking for the rest of its nights and charged for them by an edit that
+ * changed nothing else — adding one guest bought seven nights for another
+ * (#2743). Not a NAME correction, which never reaches this plan at all: a
+ * name-only request is identity-only on both routes and takes the
+ * price-preserving echo (`buildIdentityOnlyPricing`) instead. The edits that DO
+ * reach here and used to re-admit are adding a guest, removing a guest, moving
+ * the check-out, and a promo or member-link change.
+ *
+ * For a contiguous stay that runs to the booking's own check-out — every
+ * ordinary edit — every output here is identical to the pre-#2736 envelope
+ * arithmetic, to the cent, to the night, to the capacity range and to the thrown
+ * error. That equivalence is the property that makes the rule safe on live
+ * bookings, and `booking-edit-guest-ranges-sparse.test.ts` proves it by
+ * re-implementing the old maths and comparing, rather than asserting it. The
+ * one deliberate exception is #2743's own shape, and the same suite measures it:
+ * the bound never charges MORE than the old arithmetic did, and never lets
+ * through an edit the old arithmetic refused.
  *
  * **Value a night at what it was sold for, not at today's rate (#2744).** The
  * guest's stored `BookingGuestNight.priceCents` is passed as `lockedNightPrices`
@@ -576,20 +595,16 @@ export function buildInProgressGuestRangePlan(
     // old-price window correctly does — nothing of the old stay is left to
     // reprice there) would drop that slice and hand those nights out free.
     // Start the new-price window at the guest's own stay end whenever it
-    // precedes editableFrom, so futureDelta always equals exactly the added
-    // nights [stayEnd, newCheckOut) per guest. `maxDate(stayStart, …)` keeps a
-    // future-dated partial-range guest (#713) from being charged before they
-    // arrive; whenever editableFrom <= stayEnd this is byte-identical to the
-    // prior `maxDate(stayStart, editableFrom)` (the mid-stay / last-night case).
+    // precedes editableFrom. `maxDate(stayStart, …)` keeps a future-dated
+    // partial-range guest (#713) from being charged before they arrive;
+    // whenever editableFrom <= stayEnd this is byte-identical to the prior
+    // `maxDate(stayStart, editableFrom)` (the mid-stay / last-night case).
     //
-    // KNOWN AND FROZEN (#2743): the reach-back is right when the guest's stay
-    // ended one day behind editableFrom and wrong when it ended a week behind —
-    // a #713 partial-stay guest who has already gone home is re-admitted for the
-    // booking's remaining nights and charged for them, on ANY edit, including one
-    // that does not move the check-out. That is what the pre-#2736 arithmetic
-    // did too (the matrix proves the two agree on it), so correcting it here
-    // would trade away the equivalence that makes #2736 safe. It is a money
-    // decision of its own; #2743 carries the options.
+    // #2743 leaves this anchor exactly where it was and bounds the ADDED leg
+    // instead (see `extensionStart` below). The anchor answers "from which night
+    // does this edit reprice the guest", and reaching back is right for that —
+    // what was wrong was letting the added leg SELL every night between a
+    // departed guest's last one and the booking's own check-out.
     const newFutureStart = maxDate(stayStart, minDate(editableFrom, stayEnd));
 
     // #2736: the night set this edit proposes, in two parts.
@@ -598,14 +613,18 @@ export function buildInProgressGuestRangePlan(
     //     check-out. Gaps survive as gaps: this is the whole fix. A shortened
     //     check-out drops the nights beyond it and nothing else.
     //  2. ADDED — the genuinely-new nights an extension buys, which run
-    //     contiguously from the morning after the guest's last held night to
-    //     the new check-out. They are new occupancy, so there is no pattern to
-    //     preserve and expanding the envelope is the right answer for them.
+    //     contiguously from the morning after the guest's last held night, and
+    //     never earlier than the booking's own old check-out (#2743). They are
+    //     new occupancy, so there is no pattern to preserve and expanding the
+    //     envelope is the right answer for them.
     //
     // The two parts are disjoint by construction (part 1 is entirely before the
-    // anchor part 2 starts at), and for a CONTIGUOUS guest they compose to
-    // exactly `[stayStart, proposedStayEnd)` — the range this used to expand —
-    // whether the edit extends, shortens, or leaves the check-out alone.
+    // anchor part 2 starts at), and for a contiguous guest who holds the
+    // booking's LAST night they compose to exactly `[stayStart, proposedStayEnd)`
+    // — the range this used to expand — whether the edit extends, shortens, or
+    // leaves the check-out alone. A guest who goes home before the booking does
+    // is the shape #2743 changes: their held nights are kept, and only nights
+    // past the old check-out can be added to them.
     const proposedEndKey = dateOnlyKey(proposedStayEnd);
     const keptNightKeys = heldNightKeys.filter((key) => key < proposedEndKey);
     // The morning after their last held night. Read off the night set rather
@@ -620,8 +639,76 @@ export function buildInProgressGuestRangePlan(
             1
           )
         : stayEnd;
-    const addedNightKeys = expandStayEnvelopeToNightKeys(
+    // #2743: an edit may only SELL nights the edit itself creates. The added leg
+    // therefore starts no earlier than the booking's ORIGINAL check-out as well
+    // as no earlier than the morning after the guest's last held night, so
+    // `[bookingCheckOut, newCheckOut)` — the nights this edit adds to the
+    // BOOKING — is the only ground it can ever cover. An edit that leaves the
+    // check-out where it is cannot add a night to anybody.
+    //
+    // Without that bound the reach-back above did double duty: right when a
+    // guest's stay ended one day behind the edit window (#2029's check-out-day
+    // extension, where the check-out IS moving and the guest's stay end IS the
+    // old check-out), wrong when it ended a week behind, because the leg then
+    // ran from their last held night all the way to the new check-out whether or
+    // not the check-out had moved. A #713 partial-stay guest who had gone home
+    // was put back on the booking for every remaining night and charged for
+    // them, on ANY edit that reaches this plan — adding one guest bought seven
+    // nights for another. (A name-only edit never gets here: it is identity-only
+    // on both routes and takes the price-preserving echo.)
+    //
+    // The real discriminator is NOT "has this guest gone home". It is whether
+    // their held nights reach the BOOKING'S OWN check-out, because that is the
+    // only thing `bookingCheckOut` can test. Stated boundary by boundary,
+    // because getting one wrong either keeps that over-charge or evicts somebody
+    // who is still in the lodge:
+    //
+    //  - RUNS TO THE CHECK-OUT — their last held night is the night before
+    //    `bookingCheckOut`. Every ordinary stay. `heldEndExclusive` already
+    //    equals `bookingCheckOut`, so the bound is a no-op by construction and
+    //    nothing about them moves, extension included.
+    //  - LEAVING TODAY — stay end equals the booking's check-out, one day behind
+    //    editableFrom. #2029's case: the check-out IS moving, bookingCheckOut is
+    //    behind the new nights, and the leg buys them from the same anchor and
+    //    at the same price as before. Also a no-op, for the same reason.
+    //  - STOPS SHORT OF THE CHECK-OUT — their last held night is before
+    //    `bookingCheckOut`, whether they went home a week ago or are IN THE
+    //    LODGE TONIGHT and leaving on the 23rd of a booking that runs to the
+    //    27th. The nights between their last one and that check-out are the rest
+    //    of somebody else's stay, were not created by this edit, and are no
+    //    longer sold to them. So an extension gives a still-present early
+    //    departer a GAP and a smaller bill too — this is not confined to a guest
+    //    who has already departed, and INV-MOD-025 says so. Nights past the OLD
+    //    check-out are still sold to all of them: an extension admits every
+    //    remaining guest. Not because the request has no way to CARRY a
+    //    per-guest end — `BatchModifyInput.guestStayRanges` exists — but because
+    //    this plan deliberately overrides it for every existing guest, exactly
+    //    as it does for an added one, and the edit panel does not offer the
+    //    control on an in-progress edit (`gridMode`/`rangeMode` are both off).
+    //    So there is no honoured way to say "this one is not coming back", and
+    //    an API caller that sends one for an existing guest is ignored rather
+    //    than refused. INV-MOD-025 states both plainly.
+    //
+    // One consequence is deliberate and recorded rather than guarded: because
+    // nobody is back-filled any more, an edit can leave `Booking.checkOut`
+    // claiming nights no remaining guest holds — remove the only whole-run guest
+    // and the tail after the next-longest stay is uncovered. That is the honest
+    // result of not selling nights the edit did not create, the containment
+    // triggers permit it (they test containment, never coverage), and refusing
+    // it would refuse the ordinary "remove the guest who was staying longest"
+    // edit. The refusal below fires only when NO remaining guest holds a future
+    // night at all. See INV-MOD-025.
+    const extensionStart = maxDate(
       maxDate(newFutureStart, heldEndExclusive),
+      bookingCheckOut
+    );
+    // The upper half of that intersection, `[…, newCheckOut)`, is already
+    // implied: `proposedStayEnd` IS newCheckOut for a guest who stays on the
+    // booking, and never later than editableFrom (hence never later than
+    // newCheckOut, which was refused above if it preceded editableFrom) for a
+    // guest being removed.
+    const addedNightKeys = expandStayEnvelopeToNightKeys(
+      extensionStart,
       proposedStayEnd
     );
     const proposedNightKeys = [
@@ -767,12 +854,31 @@ export function buildInProgressGuestRangePlan(
     // check-out date, and the recoverable answer is the morning after the last
     // night anybody still holds.
     //
-    // Unreachable for a contiguous stay. A contiguous guest who keeps any
-    // proposed night always holds one from futureStart on (their nights are a
-    // run that starts at or before it), so this branch cannot change the wording
-    // of any refusal the pre-#2736 arithmetic also made — which is what the
-    // 480-case matrix in `booking-edit-guest-ranges-sparse.test.ts` compares.
-    // Removing every guest still lands on the original sentence.
+    // #2743 widens the same refusal to one more booking, and it is worth being
+    // plain about it: a booking whose check-out is still ahead but EVERY guest's
+    // stay has already finished. That edit used to go through by re-admitting
+    // and charging those guests for the remaining nights; the nights are no
+    // longer sold, so nobody is left holding one and the save is refused with
+    // the same recoverable sentence. The booking is inconsistent — its check-out
+    // claims nights no guest ever booked — and the message names the check-out
+    // that matches who is actually there.
+    //
+    // It fires only when NOBODY is left in the future window, never when the
+    // tail is merely PARTLY uncovered. That asymmetry is deliberate: a booking
+    // whose check-out outruns its longest remaining stay is the ordinary result
+    // of removing the guest who was staying longest, and refusing it would
+    // refuse a routine save. The counterpart is that such a booking eventually
+    // walks into THIS refusal, once the remaining nights fall behind the window
+    // — which is why the sentence below has to name a check-out the plan will
+    // actually accept, and does.
+    //
+    // Unreachable for a contiguous stay that runs to the booking's own
+    // check-out. Such a guest, if they keep any proposed night, always holds one
+    // from futureStart on (their nights are a run that starts at or before it),
+    // so this branch cannot change the wording of any refusal the pre-#2736
+    // arithmetic also made — which is what the 960-case matrix in
+    // `booking-edit-guest-ranges-sparse.test.ts` compares. Removing every guest
+    // still lands on the original sentence.
     //
     // This string is a LOG line, not operator copy: the quote route replaces it
     // with "Unable to price the requested future-night changes" and the save
@@ -786,8 +892,23 @@ export function buildInProgressGuestRangePlan(
     const lastRemainingNightKey =
       lastRemainingNightKeys[lastRemainingNightKeys.length - 1];
     if (lastRemainingNightKey !== undefined) {
+      // The morning after the last night anybody still holds — CLAMPED to
+      // `editableFrom`, because a check-out before it is refused by this
+      // function's own first guard and by `resolveTargetDates` before that
+      // ("NZ today and earlier are locked for self-service changes"). Under
+      // #2736 alone the clamp was invisible: that refusal needs a guest whose
+      // last night is the day before the window opens, so lastNight + 1 landed
+      // exactly ON editableFrom. #2743's shape is a guest who left a WEEK ago,
+      // and lastNight + 1 is then a date nobody can save — the message would
+      // name a remedy the code rejects and the booking would be editable by no
+      // route at all. Clamped, the named date is always one the plan accepts,
+      // and the #2736 wording is byte-identical because its own suggestion
+      // already equalled editableFrom.
       const workableCheckOut = dateOnlyKey(
-        addDaysDateOnly(parseDateOnly(lastRemainingNightKey), 1)
+        maxDate(
+          addDaysDateOnly(parseDateOnly(lastRemainingNightKey), 1),
+          editableFrom
+        )
       );
       throw new Error(
         `No remaining guest is booked for a night on or after ${dateOnlyKey(editableFrom)}, ` +
@@ -838,12 +959,28 @@ export function buildInProgressGuestRangePlan(
 
   // #2029: the capacity window must start no later than the earliest checked
   // night. Seed at editableFrom (so it is never pushed later than today+1) and
-  // pull it back to the earliest range start — which drops to the check-out-day
-  // night for such an extension, and stays editableFrom for every mid-stay edit.
-  const capacityRangeStart = capacityGuestRanges.reduce(
-    (earliest, range) => (range.stayStart < earliest ? range.stayStart : earliest),
-    editableFrom
-  );
+  // pull it back to the earliest night any included range actually OCCUPIES —
+  // which drops to the check-out-day night for such an extension, and stays
+  // editableFrom for every mid-stay edit.
+  //
+  // #2743: read off the night set, not off `range.stayStart`. That start is the
+  // guest's pricing anchor (`futureStart`), which reaches back to their own stay
+  // end so a check-out-day extension's new night is priced — and for a guest who
+  // went home a week ago it reached back a week, dragging the checked window
+  // over nights this edit puts nobody on. `checkCapacityForGuestRanges`
+  // evaluates EVERY night in `[capacityRangeStart, newCheckOut)`, so a past
+  // night that is over capacity (possible via the #1668 admin override) or under
+  // a whole-lodge hold (never admin-overridable, ADR-001 decision 5) could
+  // refuse an extension that adds nobody to it. Every range in this list is
+  // non-empty by the filter above, so `nights[0]` always exists, and it is by
+  // construction the earliest night that range can occupy — narrowing the window
+  // to it can never hide a night that IS checked.
+  const capacityRangeStart = capacityGuestRanges.reduce((earliest, range) => {
+    const firstOccupiedNight = range.nights[0];
+    return firstOccupiedNight !== undefined && firstOccupiedNight < earliest
+      ? firstOccupiedNight
+      : earliest;
+  }, editableFrom);
 
   return {
     proposedExistingGuests,
