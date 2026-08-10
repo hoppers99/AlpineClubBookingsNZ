@@ -888,6 +888,29 @@ a model could otherwise narrate an absence as an answer:
   had", "when did they first stay" or "have they ever stayed at X" from it. The
   same stay can also produce two rows, when a split member/non-member party was
   stored as a parent booking plus a child booking.
+- **Involvement is not attendance, and `memberOperationallyPresent` is what settles
+  it.** The `GUEST` leg is an `EXISTS` over `BookingGuest`, and a member invited as a
+  cross-family **member guest** who **declined** still has that row —
+  `member-guest-consent.ts` states that a `PENDING` row "holds a bed (D-4) and
+  nothing else" and that a `DECLINED` or `EXPIRED` row which survived its removal
+  attempt "is not an occupant either", and both are enumerated as reachable persisted
+  states. So the entry reported `involvement: GUEST` on a booking the member never
+  accepted, with nothing on the row and nothing in the scope line to say so, while
+  the sibling `booking_party_state` warns explicitly against reasoning from the raw
+  column.
+
+  The row now carries the platform's own presence predicate for this member's rows on
+  that booking, evaluated in SQL — the same `consentStatus IS NULL OR consentStatus =
+  'CONFIRMED'` text `booking_party_state` precomputes, on both union legs. It is
+  **three-valued**, on the same discipline as `nightsAreContiguous`: true means at
+  least one of their rows counts them as an occupant, false means none does (though a
+  pending invitation may still be holding a bed), and **null means they hold no guest
+  row on that booking at all**, which is the ordinary shape of an `OWNER` who booked
+  for other people — a `false` there would be the specific and untrue claim "on the
+  booking but not present". The **row set is unchanged**: a declined invitation is
+  still returned, because "why is this booking in their list" is exactly the question
+  being asked and the answer is now on the row. No `BookingGuest` column value is
+  projected here; what crosses is a predicate's answer, not a column.
 - **`updatedAtUtc` is when any column on the row last changed.** It is not when
   anything was verified, and this schema stores no such instant.
 

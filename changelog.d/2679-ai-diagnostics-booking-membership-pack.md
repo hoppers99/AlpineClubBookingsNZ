@@ -79,6 +79,17 @@
   `evidence_unavailable` instead of a confident answer nobody observed. Ordinary
   booking screens keep their existing fallbacks unchanged.
 
+  Being named on somebody else's booking is no longer reported as having been there.
+  A member invited as a guest on another member's booking keeps that record even
+  after they decline, never answer, or let the invitation expire, so the member's
+  booking list used to show those bookings with no hint that the member is not
+  coming. Every row now says whether the member actually counts as an occupant on
+  that booking, using the platform's own presence rule — and says nothing at all,
+  rather than "no", when the member holds no guest place on it, which is the ordinary
+  shape of somebody who booked for other people. The bookings themselves are still
+  listed, because "why is this booking in their list" is usually the question being
+  asked.
+
   An erased account is now identified by the marker an approved deletion writes, not
   by the shape of an inactive record. Ordinary bulk deactivation is reversible and
   leaves the same shape, so both member search and the member summary used to report

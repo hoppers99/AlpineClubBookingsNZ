@@ -410,6 +410,7 @@ import {
   aid6bRecordAuditReaderAreas,
   dateOnly,
   dateOnlyOrNull,
+  nullableBoolOf,
   personNameOrNull,
 } from "./booking-shared";
 import {
@@ -465,24 +466,6 @@ const bookingIdInputSchema = {
   required: ["bookingId"],
   additionalProperties: false as const,
 };
-
-/**
- * A boolean that may be genuinely UNKNOWN.
- *
- * `boolOf` maps everything that is not exactly `true` to `false`, which is right
- * for a NOT NULL column and WRONG for a comparison whose operands can be absent.
- * Two such comparisons exist here — whether a guest's per-night rows form an
- * unbroken run (unknowable when the guest has no per-night rows at all), and
- * whether an allocation's denormalised bed type matches its bed (unknowable when
- * the bed row could not be read) — and in both cases `false` is a specific,
- * actionable and possibly untrue claim: "this stay has gaps", "this allocation
- * is corrupt". Null says "this is not established", which is the honest answer
- * and the one the scope lines explain.
- */
-function nullableBoolOf(value: unknown): boolean | null {
-  if (value === null || value === undefined) return null;
-  return value === true;
-}
 
 /**
  * The hard cap on a ROOM or BED label on the way out.

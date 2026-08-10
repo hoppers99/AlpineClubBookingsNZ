@@ -2968,6 +2968,79 @@ describe("AID-6B booking/membership pack: the code catalogues (#2376)", () => {
     );
   });
 
+  it("tells the model that member booking INVOLVEMENT is not attendance (#2376)", () => {
+    // THE FINDING. The GUEST leg is a bare `EXISTS` over `BookingGuest`, and a
+    // member invited as a cross-family member guest who DECLINED — or who has not
+    // answered, or whose invitation EXPIRED — still has that row.
+    // `member-guest-consent.ts` says so in as many words: a PENDING row "holds a bed
+    // (D-4) and nothing else", and a DECLINED or EXPIRED row that survived its
+    // removal attempt "is not an occupant either". So an officer asking "why is this
+    // member on that booking" or "were they there" was told they were a guest on it,
+    // with no qualifier on the row and none in the scope line.
+    const summary = entry(DIAGNOSTICS_MEMBER_BOOKING_SUMMARY_TOOL_ID);
+    const modelFacing = `${summary.description}\n${summary.evidenceScope ?? ""}`;
+    const sql = summary.sql ?? "";
+
+    // THE PLATFORM'S OWN PREDICATE, in SQL, and the same text
+    // `booking_party_state` precomputes — not a second reading of the column.
+    expect(
+      sql.match(
+        /\(gp\."consentStatus" IS NULL OR gp\."consentStatus" = 'CONFIRMED'\)/g,
+      ),
+      "the canonical presence predicate must appear on BOTH union legs",
+    ).toHaveLength(2);
+    // THREE-VALUED, so an OWNER who booked for other people is not reported as
+    // "on the booking but not present". Both legs carry the NULL arm.
+    expect(sql.match(/NULL::boolean/g)).toHaveLength(2);
+    expect(sql).toContain("AS member_operationally_present");
+
+    // And the model is told what all three values mean, because a bare boolean
+    // beside `involvement: GUEST` is exactly the field a model would paraphrase.
+    expect(modelFacing).toContain("INVOLVEMENT IS NOT ATTENDANCE");
+    expect(modelFacing).toContain("memberOperationallyPresent");
+    expect(modelFacing).toContain("DECLINED");
+    expect(modelFacing).toContain("null means they hold no guest row");
+    expect(modelFacing).toContain(
+      'NEVER answer "was this member at the lodge"',
+    );
+
+    // The row set is UNCHANGED — a declined invitation is still returned, because
+    // "why is this booking in their list" is the question being asked.
+    expect(sql).not.toContain("consentStatus IS NULL OR gm.");
+    expect(
+      sql.match(/WHERE gm\."bookingId" = b2\."id" AND gm\."memberId" = \$1::text/g),
+      "the GUEST leg's own EXISTS must stay unfiltered by consent",
+    ).toHaveLength(1);
+
+    // No BookingGuest COLUMN VALUE crosses; only the predicate's answer does.
+    const projected = Object.keys(
+      summary.project({ member_operationally_present: false }),
+    );
+    expect(projected).toContain("memberOperationallyPresent");
+    for (const leaked of [
+      "consentStatus",
+      "consentSubState",
+      "firstName",
+      "lastName",
+      "guestRef",
+    ]) {
+      expect(projected, `${leaked} must not be projected here`).not.toContain(
+        leaked,
+      );
+    }
+    // `nullableBoolOf` and never `boolOf`: an absent value must stay null rather
+    // than collapsing into the untrue claim "on the booking but not present".
+    expect(summary.project({}).memberOperationallyPresent).toBeNull();
+    expect(
+      summary.project({ member_operationally_present: false })
+        .memberOperationallyPresent,
+    ).toBe(false);
+    expect(
+      summary.project({ member_operationally_present: true })
+        .memberOperationallyPresent,
+    ).toBe(true);
+  });
+
   it("ships every double-bed sharing verdict and meaning with the allocation entry", () => {
     const allocation = entry(DIAGNOSTICS_BOOKING_BED_ALLOCATION_TOOL_ID);
     const modelFacing = `${allocation.description}\n${allocation.evidenceScope ?? ""}`;

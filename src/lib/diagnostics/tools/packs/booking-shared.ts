@@ -384,6 +384,30 @@ export const PHONE_SEARCH_TERM = z
  */
 const PROJECTABLE_DATE_ONLY = /^\d{4}-\d{2}-\d{2}$/;
 
+/**
+ * A boolean that may be genuinely UNKNOWN.
+ *
+ * `boolOf` maps everything that is not exactly `true` to `false`, which is right
+ * for a NOT NULL column and WRONG for a comparison whose operands can be absent.
+ * Three such comparisons exist across the pack — whether a guest's per-night rows
+ * form an unbroken run (unknowable when the guest has no per-night rows at all),
+ * whether an allocation's denormalised bed type matches its bed (unknowable when
+ * the bed row could not be read), and whether a member is operationally present as
+ * a guest on a booking (unknowable when they hold no guest row on it) — and in every
+ * case `false` is a specific, actionable and possibly untrue claim: "this stay has
+ * gaps", "this allocation is corrupt", "they are on the booking but not present".
+ * Null says "this is not established", which is the honest answer and the one the
+ * scope lines explain.
+ *
+ * SHARED rather than copied: it lived in `booking-records.ts` and a second module
+ * needed it, and a per-module copy of a three-valued mapping is how one of them
+ * quietly becomes two-valued.
+ */
+export function nullableBoolOf(value: unknown): boolean | null {
+  if (value === null || value === undefined) return null;
+  return value === true;
+}
+
 export function dateOnlyOrNull(value: unknown): string | null {
   if (value === null || value === undefined) return null;
   const text = String(value);

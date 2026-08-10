@@ -161,16 +161,26 @@
  *   `memberReviewJustification`, `deletedReason`, `adultMemberHostingReview` (a
  *   frozen policy JSON blob) and every `*ById` actor column.
  *
- * public."BookingGuest"  (aliases g, gm)
- *   [PREDICATE] NEVER PROJECTED — nothing on this relation is projected by this
- *   module at all
- *     bookingId             E4 the party-size subquery and the GUEST-leg `EXISTS`
- *     memberId              E4 the GUEST-leg `EXISTS`. NEW: `booking_search` reads
- *                           only `bookingId`, so `memberId` is this module's one
- *                           addition to the `BookingGuest` grant.
+ * public."BookingGuest"  (aliases g, gm, gp)
+ *   [PREDICATE] NEVER PROJECTED — no COLUMN VALUE from this relation leaves this
+ *   module. One derived BOOLEAN does (`memberOperationallyPresent`), which is a
+ *   predicate's answer rather than a column, on the same terms as
+ *   `booking_party_state`'s `operationallyPresent`.
+ *     bookingId             E4 the party-size subquery, the GUEST-leg `EXISTS` and
+ *                           the presence lateral
+ *     memberId              E4 the GUEST-leg `EXISTS` and the presence lateral.
+ *                           NEW: `booking_search` reads only `bookingId`, so
+ *                           `memberId` is this module's one addition to the
+ *                           `BookingGuest` grant.
+ *     consentStatus         E4 the canonical operational-presence predicate. Already
+ *                           granted for `booking_party_state`, which both projects
+ *                           it and precomputes the same predicate, so this adds no
+ *                           column to the allowlist — only a second reader.
  *   NOT READ: `firstName`, `lastName` (a guest's name is the booking pack's
  *   business, under `bookings:view`, not a membership answer), `ageTier`,
- *   `priceCents`, every `consent*` column, `arrivedAt`, `departedAt`.
+ *   `priceCents`, the other `consent*` columns (`consentRequestedAt`,
+ *   `consentRespondedAt`, `consentRespondedByMemberId`, `consentExpiresAt`),
+ *   `arrivedAt`, `departedAt`.
  *
  * public."Lodge"  (alias l)
  *   PROJECTED
@@ -232,6 +242,7 @@ import {
   dateOnlyOrNull,
   deletedAccountEmailMarkerSql,
   emailOrNull,
+  nullableBoolOf,
   personNameOrNull,
 } from "./booking-shared";
 import {
@@ -772,10 +783,37 @@ const memberFamilyState = defineDiagnosticsTool<MemberIdArgs>({
  * has no guest rows at all rather than "unknown", and it is the same subquery
  * `booking_search` uses so the two entries can never disagree about a party size.
  *
- * NOTHING FROM `BookingGuest` IS PROJECTED. Its two granted columns are read as
- * predicates only. A guest's name is booking-pack evidence under `bookings:view`,
- * and returning the party here would make this entry a second, drifting answer to
- * the party question `diagnostics.booking_party_state` owns.
+ * NO `BookingGuest` COLUMN VALUE IS PROJECTED. Its three granted columns are read
+ * as predicates only. A guest's name is booking-pack evidence under
+ * `bookings:view`, and returning the party here would make this entry a second,
+ * drifting answer to the party question `diagnostics.booking_party_state` owns.
+ *
+ * `member_operationally_present` IS THE ONE THING THAT CROSSES, and it is a
+ * predicate's ANSWER rather than a column. The entry used to report `involvement:
+ * 'GUEST'` from a bare `EXISTS` over `BookingGuest`, with nothing on the row and
+ * nothing in the scope line about consent — so a member who was invited as a
+ * cross-family member guest and DECLINED was reported as a guest on that booking.
+ * Those rows survive: `member-guest-consent.ts` states in as many words that a
+ * PENDING row "holds a bed (D-4) and nothing else" and that a DECLINED or EXPIRED
+ * row which survived its removal attempt "is not an occupant either", and
+ * `MEMBER_GUEST_CONSENT_SUB_STATES` enumerates both as reachable persisted states.
+ * An officer asking "why is this member on that booking" or "were they there" was
+ * being told they were a guest on it.
+ *
+ * The predicate is the platform's own, in SQL:
+ * `OPERATIONALLY_PRESENT_GUEST_WHERE` is `consentStatus IS NULL OR consentStatus =
+ * 'CONFIRMED'`, the same text `booking_party_state` precomputes, and NULL is the
+ * dominant value forever — every non-member guest, every family-scope guest and
+ * every pre-feature row carries one — so the naive `consentStatus <> 'PENDING'`
+ * would be UNKNOWN for those rows and silently drop every ordinary guest.
+ *
+ * IT IS THREE-VALUED, on the same discipline as `booking_party_state`'s
+ * `nightsAreContiguous`. NULL means this member holds NO guest row on the booking
+ * at all, which is the ordinary shape of an OWNER who booked for other people — and
+ * a `false` there would be a specific claim ("they are on the booking but not
+ * present") that is simply untrue. The ROW SET is unchanged: a declined invitation
+ * is still returned, because "why is this booking in their list" is exactly the
+ * question being asked, and it is now answerable.
  */
 const MEMBER_BOOKING_SUMMARY_SQL = `SELECT
   b."id" AS booking_ref,
@@ -790,6 +828,17 @@ const MEMBER_BOOKING_SUMMARY_SQL = `SELECT
      FROM public."BookingGuest" g
     WHERE g."bookingId" = b."id") AS guest_count,
   b."finalPriceCents" AS final_price_cents,
+  CASE
+    WHEN NOT EXISTS (
+      SELECT 1 FROM public."BookingGuest" gp
+       WHERE gp."bookingId" = b."id" AND gp."memberId" = $1::text
+    ) THEN NULL::boolean
+    ELSE EXISTS (
+      SELECT 1 FROM public."BookingGuest" gp
+       WHERE gp."bookingId" = b."id" AND gp."memberId" = $1::text
+         AND (gp."consentStatus" IS NULL OR gp."consentStatus" = 'CONFIRMED')
+    )
+  END AS member_operationally_present,
   ${utcInstant('b."deletedAt"')} AS deleted_at_utc,
   ${utcInstant('b."createdAt"')} AS created_at_utc
 FROM public."Booking" b
@@ -809,6 +858,17 @@ SELECT
      FROM public."BookingGuest" g2
     WHERE g2."bookingId" = b2."id") AS guest_count,
   b2."finalPriceCents" AS final_price_cents,
+  CASE
+    WHEN NOT EXISTS (
+      SELECT 1 FROM public."BookingGuest" gp
+       WHERE gp."bookingId" = b2."id" AND gp."memberId" = $1::text
+    ) THEN NULL::boolean
+    ELSE EXISTS (
+      SELECT 1 FROM public."BookingGuest" gp
+       WHERE gp."bookingId" = b2."id" AND gp."memberId" = $1::text
+         AND (gp."consentStatus" IS NULL OR gp."consentStatus" = 'CONFIRMED')
+    )
+  END AS member_operationally_present,
   ${utcInstant('b2."deletedAt"')} AS deleted_at_utc,
   ${utcInstant('b2."createdAt"')} AS created_at_utc
 FROM public."Booking" b2
@@ -825,9 +885,9 @@ const memberBookingSummary = defineDiagnosticsTool<MemberIdArgs>({
   id: DIAGNOSTICS_MEMBER_BOOKING_SUMMARY_TOOL_ID,
   source: "select_only_sql",
   label: "Member recent booking involvement",
-  description: `Returns the most recent bookings ONE member is involved in — at most ${AID6B_HISTORY_ROW_LIMIT}, LATEST NIGHTS FIRST — as either the OWNER of the booking or a GUEST on somebody else's. Each row carries the booking id and the eight-character booking reference, which involvement it is, the lodge id and name, the booking status, the check-in and check-out New Zealand nights, how many guests are on the booking in total, the final price in integer cents, and when the booking was deleted and created. Requires BOTH membership and booking access, because it joins who the member is to what they booked. It is a RECENT-INVOLVEMENT SUMMARY and NOT a complete history: never answer "how many bookings has this member had" from it, and never present its count as a total. For the booking's own detail — the party, the beds, the review state — use the booking tools with the booking id from here. ${AID6B_DESCRIPTION_TAIL}`,
+  description: `Returns the most recent bookings ONE member is involved in — at most ${AID6B_HISTORY_ROW_LIMIT}, LATEST NIGHTS FIRST — as either the OWNER of the booking or a GUEST on somebody else's. Each row carries the booking id and the eight-character booking reference, which involvement it is, the lodge id and name, the booking status, the check-in and check-out New Zealand nights, how many guests are on the booking in total, the final price in integer cents, whether this member is OPERATIONALLY PRESENT on it as a guest, and when the booking was deleted and created. Requires BOTH membership and booking access, because it joins who the member is to what they booked. It is a RECENT-INVOLVEMENT SUMMARY and NOT a complete history: never answer "how many bookings has this member had" from it, and never present its count as a total. For the booking's own detail — the party, the beds, the review state — use the booking tools with the booking id from here. ${AID6B_DESCRIPTION_TAIL}`,
   requiredAreas: ["membership", "bookings"],
-  evidenceScope: `At most ${AID6B_HISTORY_ROW_LIMIT} bookings this member is involved in, LATEST NIGHTS FIRST. It is a recent-involvement summary and NOT a complete history: a member with more bookings than the cap has the older ones silently outside this result, which the truncation flag reports, so NEVER answer "how many bookings has this member had", "when did they first stay" or "have they ever stayed at X" from these rows — the count here is the number of rows returned and nothing more. A member appears as GUEST on somebody else's booking and as OWNER on their own, so the same person can legitimately appear in both involvements, and the same STAY can produce TWO rows when a split member/non-member party was stored as a parent booking plus a child booking. Soft-deleted bookings ARE included, with their deletion instant, because "the booking has vanished" is usually a question about exactly those rows — never describe a booking with a deletion instant as active. finalPriceCents is the booking's stored price in integer cents and says NOTHING about whether it was paid: an unpaid booking looks identical here to a paid one, and payment evidence needs finance access and the finance tools. guestCount is the size of the WHOLE party on that booking, not this member's part of it. ${AID6B_SCOPE_TAIL} ${AID6B_UNTRUSTED_EVIDENCE_DISCLOSURE}`,
+  evidenceScope: `At most ${AID6B_HISTORY_ROW_LIMIT} bookings this member is involved in, LATEST NIGHTS FIRST. It is a recent-involvement summary and NOT a complete history: a member with more bookings than the cap has the older ones silently outside this result, which the truncation flag reports, so NEVER answer "how many bookings has this member had", "when did they first stay" or "have they ever stayed at X" from these rows — the count here is the number of rows returned and nothing more. A member appears as GUEST on somebody else's booking and as OWNER on their own, so the same person can legitimately appear in both involvements, and the same STAY can produce TWO rows when a split member/non-member party was stored as a parent booking plus a child booking. Soft-deleted bookings ARE included, with their deletion instant, because "the booking has vanished" is usually a question about exactly those rows — never describe a booking with a deletion instant as active. finalPriceCents is the booking's stored price in integer cents and says NOTHING about whether it was paid: an unpaid booking looks identical here to a paid one, and payment evidence needs finance access and the finance tools. guestCount is the size of the WHOLE party on that booking, not this member's part of it. INVOLVEMENT IS NOT ATTENDANCE, and memberOperationallyPresent is what settles it: involvement GUEST means only that a guest row on that booking names this member, and a member invited as a cross-family MEMBER GUEST who DECLINED, or who has not answered, or whose invitation EXPIRED, still has that row. memberOperationallyPresent is the platform's own presence predicate for this member's rows on that booking — true means at least one of their rows counts them as an occupant, false means none does (they were invited and are not coming, though a pending invitation may still be holding a bed), and null means they hold no guest row on that booking at all, which is the ordinary shape of an OWNER who booked for other people. So NEVER answer "was this member at the lodge" or "who was on this booking" from involvement alone: a false there means they did not accept, and reporting them as a guest on the booking would be wrong. Why the declined row is still returned: "why is this booking in their list" is exactly the question being asked, and the answer is on the row. ${AID6B_SCOPE_TAIL} ${AID6B_UNTRUSTED_EVIDENCE_DISCLOSURE}`,
   argsSchema: memberIdArgsSchema,
   inputSchema: memberIdInputSchema,
   sql: MEMBER_BOOKING_SUMMARY_SQL,
@@ -843,6 +903,10 @@ const memberBookingSummary = defineDiagnosticsTool<MemberIdArgs>({
     checkOut: dateOnlyOrNull(row.check_out) ?? "",
     guestCount: countOf(row.guest_count),
     finalPriceCents: centsOrZero(row.final_price_cents),
+    // THREE-VALUED, so `boolOrNull` and never `boolOf`: `boolOf` maps NULL to
+    // `false`, which would turn "this member holds no guest row on this booking"
+    // into the specific and untrue claim "they are on it but not present".
+    memberOperationallyPresent: nullableBoolOf(row.member_operationally_present),
     deletedAtUtc: instantOrNull(row.deleted_at_utc),
     createdAtUtc: instantOrNull(row.created_at_utc) ?? "",
   }),
