@@ -379,6 +379,50 @@ actorless system change.
 
 | Admin/finance dataset review              | Return a list, queue, ledger, or report to its known default without losing work context                                                   | Change search, filters, explicit sort, or page; use the always-visible **Reset** action; stay on the same lodge, season, tab, cohort, focused record, or Finance view where that value is context rather than dataset state                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  | Use one visible label, **Reset**, across the audited 22 dataset surfaces. Keep it rendered at the default but natively disabled; its accessible name explains that search, filters, sort, and page are already at defaults. URL-backed resets use replace-style navigation, remove only known dataset keys, preserve unknown forward-compatible keys, and do not add history entries. Payments returns to the rolling NZ three-month Updated range through today; Reports returns to its rolling default through current month-end while keeping lodge; Subscriptions keeps season; Finance Dashboard restores Last Month / Previous Period / Next Month and empty cost filters while keeping view and lodge                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      | Search-only, filter-only, sort-only, page-only, and combined dirty state; default state; a focused record or non-default lodge/season/tab/Finance view; unknown URL key; Xero sibling-panel params                                                                                                                                                                                                                                                                                                                                                                                                                                                     | Members, Bookings, Payments, Subscriptions, Reports, Finance Dashboard, Audit Log, Refund Requests, Waitlist, both Xero panels, Family Groups, Issue Reports, Deletion Requests, Membership Cancellations, Member Applications, all three Booking Request tabs, Induction Register, Promo Redemptions, Lockers |
 
+## Automatically refunded late captures (#2750)
+
+A finance-view admin opens `/admin/payments`. Above the filters, up to two refund
+cards can appear, and they make opposite claims. **"Refunds to pay back by hand"**
+(#2262) is work: cash-settled cancellations the club still owes, each with **Mark
+paid back** and **Dismiss**. **"Refunded automatically — nothing to pay back"**
+(#2750) is a record: a booking-change payment that landed after the booking had
+already been deleted, which Stripe returned to the member automatically. It shows
+the member, the amount, the day the money went back, the stay dates, the booking
+identifier as plain text, and both the reason the payment was queued and the note
+saying it is already settled.
+
+It carries **no View booking link**, and the hand-back card above it does. That is
+deliberate: every booking on the record card is soft-deleted, and the booking
+detail page 404s a deleted booking for anybody who is not a Full Admin, while this
+screen admits `finance:view` — a Finance Viewer or Treasurer would follow the link
+into a dead end. The identifiers are printed instead of the page's audience being
+widened.
+
+The second card has **no controls at all**, deliberately: there is no decision
+left, and "Mark paid back" on such a row would record a second refund for one
+refund. Its copy carries the only action that may remain, which is off this
+screen — if deleting the booking was the mistake rather than the payment, the
+booking has to be made again and the member charged again, because the refund has
+already gone out.
+
+The record card also states, on screen, that it is **not** a complete list: whether
+a refund appears there depends on the order the member's browser and Stripe's
+notification arrived in, so the copy names the booking's audit entry
+(`booking.payment.refunded_after_cancellation`) and the payment alert email as the
+record that is complete. An operator who read an empty card as proof that no
+automatic refund happened would be worse off than before the card existed.
+
+Each card renders only when it has rows, independently of the other, and the
+component renders nothing when both are empty. The record card must appear when
+there is **no** hand-back work at all: that is the ordinary case, since a healthy
+Stripe webhook closes the task itself. It looks back 30 days. A failed load shows
+neither card **and one line saying it could not load**, rather than a stale list or
+a silent blank that reads as "nothing to pay back and nothing refunded"; when the
+route could read the queue but not the record, the queue renders as usual and the
+record is replaced by that same kind of line. See `INV-ADDPAY-036` and
+`INV-ADDPAY-037`, and the "Manual refund task lifecycle" entry in
+[`STATE_MACHINES.md`](STATE_MACHINES.md).
+
 ## Whole-roster staged editing (#2586)
 
 On `/admin/roster`, selecting a lodge night loads a read-only authoritative

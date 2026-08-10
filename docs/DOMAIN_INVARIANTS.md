@@ -31,7 +31,7 @@ description, so you can find the right file without opening more than one.
 | [`subscription-lockout-pricing.md`](invariants/subscription-lockout-pricing.md) | `INV-LOCKOUT` | lapsed-subscription pricing, admin date overrides, retroactive creates, withheld email |
 | [`booking-policy-exceptions.md`](invariants/booking-policy-exceptions.md) | `INV-EXCEPT` | policy-exception requests and officer decisions on them |
 | [`additional-payment-chasing.md`](invariants/additional-payment-chasing.md) | `INV-ADDPAY` | an outstanding additional payment, quote/request holds, refund settlement |
-| [`analytics-and-privacy.md`](invariants/analytics-and-privacy.md) | `INV-PRIV` | analytics loading, the consent banner, the public Analytics preferences control, the analytics route policy, what leaves this application for Google, what personal data may appear in a log |
+| [`analytics-and-privacy.md`](invariants/analytics-and-privacy.md) | `INV-PRIV` | analytics loading, the consent banner, the public Analytics preferences control, the analytics route policy, what leaves this application for Google, what personal data may appear in a log, the audit `category` a writer records and who may therefore read the row |
 | [`membership-lifecycle.md`](invariants/membership-lifecycle.md) | `INV-LIFE` (except `INV-LIFE-062`) | applications and nomination, cancellation, archive and deletion, roles and the admin lock-out guards, seasonal membership type and age tier, family groups, partner and parent/dependant links, email inheritance, inductions, member merge |
 | [`integrations.md`](invariants/integrations.md) | `INV-INT` | webhooks, cron idempotency, provider callbacks, Xero member grouping |
 | [`operations.md`](invariants/operations.md) | `INV-OPS` | raw SQL, row locking, deployment, dropping a column, what may be used as test input |
@@ -538,11 +538,12 @@ Prefix `INV-ADDPAY`.
 | `INV-ADDPAY-034` | One shared "cancelled or removed" sentence for the surfaces that explain rather than 404 |
 | `INV-ADDPAY-035` | A soft-deleted booking takes no member-guest consent answer, from any role, either arm |
 | `INV-ADDPAY-036` | A modification payment captured on a deleted booking is recorded and queued for a human, never auto-refunded from that path |
+| `INV-ADDPAY-037` | Where an auto-refunded late capture left a closed refund task, the finance queue shows it (not a complete list of such refunds — see the rule), and the refund stays automatic |
 
 ## Analytics And Privacy
 
 Analytics loading and consent, what this application is allowed to send to
-Google, and what personal data may appear in a log.
+Google, what personal data may appear in a log, and who may read an audit row.
 File:
 [`invariants/analytics-and-privacy.md`](invariants/analytics-and-privacy.md).
 Prefix `INV-PRIV`.
@@ -560,6 +561,7 @@ Prefix `INV-PRIV`.
 | `INV-PRIV-009` | The per-browser choice stores the consent revision and surface; only an explicit action bumps it |
 | `INV-PRIV-010` | Every one of these fails closed, and the public website still renders normally |
 | `INV-PRIV-011` | Which person fields the log/Sentry redactor strips by key, that key coverage is not exhaustive, and that audit rows deliberately keep name and street address |
+| `INV-PRIV-012` | Audit category follows the affected domain; member visibility is declared separately |
 
 ## Membership Lifecycle
 

@@ -308,6 +308,13 @@ describe("audit helper", () => {
     );
   });
 
+  // This shape IS the member-boundary predicate `INV-PRIV-012` states, so keep the
+  // two in step (#2755 review). Three of the four legs fire only when
+  // `subjectMemberId` is NULL, which is why "does the writer pass a subject
+  // member?" is the wrong question to ask about a re-classification: the two
+  // `member.bulk-*` writers pass no subject at all and still reach the member
+  // through the `targetId` leg. Delete or narrow a leg here and the invariant's
+  // predicate has to change with it.
   it("builds a member history where condition for structured and legacy rows", () => {
     expect(buildMemberAuditLogWhere("member-1")).toEqual({
       OR: [
