@@ -40,6 +40,7 @@ const {
   mockMarkGroupSettlementIntentFailed,
   mockMarkGroupSettlementIntentRefunded,
   mockGroupBookingFindUnique,
+  mockCloseDeletedBookingModificationRefundTask,
 } = vi.hoisted(() => ({
   mockConstructWebhookEvent: vi.fn(),
   mockProcessedWebhookCreate: vi.fn(),
@@ -106,6 +107,14 @@ const {
   mockMarkGroupSettlementIntentFailed: vi.fn().mockResolvedValue(undefined),
   mockMarkGroupSettlementIntentRefunded: vi.fn().mockResolvedValue(undefined),
   mockGroupBookingFindUnique: vi.fn().mockResolvedValue(null),
+  // #2700
+  mockCloseDeletedBookingModificationRefundTask: vi.fn().mockResolvedValue(0),
+}));
+
+vi.mock("@/lib/deleted-booking-modification-payment", () => ({
+  closeDeletedBookingModificationRefundTaskAfterAutomaticRefund: (
+    ...args: unknown[]
+  ) => mockCloseDeletedBookingModificationRefundTask(...args),
 }));
 
 vi.mock("@/lib/stripe", () => ({
@@ -1317,6 +1326,78 @@ describe("Stripe webhook Xero alerting", () => {
       ).not.toHaveBeenCalled();
       // No Xero presence -> no corrective credit note.
       expect(mockEnqueueXeroRefundCreditNoteOperation).not.toHaveBeenCalled();
+    });
+
+    /**
+     * #2700 — this pre-existing #1350 path is the reason the deleted-booking
+     * ManualRefundTask needs closing rather than leaving OPEN.
+     *
+     * A soft-deleted booking is ALWAYS CANCELLED (`INV-ADDPAY-030`), so every
+     * deleted booking reaches the branch above. If the browser confirm won the
+     * race first, it recorded the capture and raised an OPEN task asking a human
+     * to decide whether to refund. The refund this handler has just issued
+     * answers that question, and an operator who then COMPLETES the task would
+     * write a SECOND refund allocation through `resolveManualRefundTask` and
+     * double-count one refund in the ledger.
+     *
+     * MUTATION PROOF: delete the close call from
+     * `handleCancelledBookingAdditionalPaymentSucceeded` and this fails by name.
+     */
+    it("closes any deleted-booking modification refund task after refunding (#2700)", async () => {
+      mockConstructWebhookEvent.mockReturnValue(
+        additionalSucceededEvent("evt_add_cancelled_task_close"),
+      );
+      mockFindPaymentTransactionByIntentId.mockResolvedValue({
+        id: "txn-9",
+        paymentId: "payment-9",
+        kind: "ADDITIONAL",
+        amountCents: 2500,
+        status: "FAILED",
+      });
+      armCancelledBooking();
+
+      const response = await POST(makeRequest());
+
+      expect(response.status).toBe(200);
+      expect(mockCloseDeletedBookingModificationRefundTask).toHaveBeenCalledWith(
+        {
+          bookingId: "booking-9",
+          paymentId: "payment-9",
+          paymentIntentId: "pi_additional_late",
+        },
+      );
+      // Closed AFTER the money actually went back, never before.
+      expect(
+        mockRefundPaymentTransactions.mock.invocationCallOrder[0],
+      ).toBeLessThan(
+        mockCloseDeletedBookingModificationRefundTask.mock
+          .invocationCallOrder[0],
+      );
+    });
+
+    it("still returns 200 when closing that task fails (#2700)", async () => {
+      // The money is already back with the member. A 500 here would clear the
+      // processed-event marker and replay the whole refund path for the sake of
+      // a bookkeeping row.
+      mockConstructWebhookEvent.mockReturnValue(
+        additionalSucceededEvent("evt_add_cancelled_task_close_fails"),
+      );
+      mockFindPaymentTransactionByIntentId.mockResolvedValue({
+        id: "txn-9",
+        paymentId: "payment-9",
+        kind: "ADDITIONAL",
+        amountCents: 2500,
+        status: "FAILED",
+      });
+      armCancelledBooking();
+      mockCloseDeletedBookingModificationRefundTask.mockRejectedValueOnce(
+        new Error("database is down"),
+      );
+
+      const response = await POST(makeRequest());
+
+      expect(response.status).toBe(200);
+      expect(mockRefundPaymentTransactions).toHaveBeenCalled();
     });
 
     it("does not flip an already-refunded transaction back on webhook replay, and still never releases the invoice", async () => {

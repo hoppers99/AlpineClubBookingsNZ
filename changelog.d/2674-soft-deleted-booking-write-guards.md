@@ -35,8 +35,11 @@
   have been relying on being able to raise a refund request after deleting a
   booking, raise it before deleting, or ask an admin to restore the record first.
 
-  Two further actions still work on a deleted booking and are deliberately left
-  alone for now, because each needs a decision rather than a guard: recording a
-  guest's consent answer, and recording a modification payment the card provider
-  has already taken. Two read-only screens will also still show the owner their
-  own deleted booking's details. All of these are being handled separately.
+  Two further actions were left alone here, because each needed a decision
+  rather than a guard: recording a guest's consent answer, and recording a
+  modification payment the card provider has already taken. Two read-only
+  screens also still showed the owner their own deleted booking's details. Those
+  decisions have since been taken and all four are dealt with in this same
+  release — the consent answer and both screens now refuse, and the modification
+  payment is recorded and raised for a person rather than left silent. See the
+  #2700 entry below.
