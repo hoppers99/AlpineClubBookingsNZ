@@ -109,9 +109,9 @@ export function OtherLodgesPanel({
         throw new Error("Failed to load other lodges");
       }
       const data = (await response.json()) as {
-        otherLodges: OtherLodgeRecord[];
+        otherLodges?: OtherLodgeRecord[];
       };
-      setLodges(data.otherLodges);
+      setLodges(Array.isArray(data?.otherLodges) ? data.otherLodges : []);
     } catch {
       setError("Could not load other lodges. Please try again.");
     } finally {

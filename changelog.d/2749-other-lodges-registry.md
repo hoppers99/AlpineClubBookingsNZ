@@ -20,3 +20,8 @@
   This is the groundwork for an upcoming feature: the names entered here will
   populate a drop-down so a non-member can indicate which other lodge they belong
   to when booking.
+
+  Under the covers, adding, editing, or deleting an other lodge writes an
+  `admin`-category audit record (three new write sites), readable with
+  support-level access like the club's other administrative audit entries — no
+  new class of reader gains access.

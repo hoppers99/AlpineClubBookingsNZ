@@ -7,11 +7,15 @@ import {
   serializeBookingRequestForAdmin,
 } from "@/lib/booking-request";
 import { readBookingRequestQuoteOptionsForDisplay } from "@/lib/booking-request-quotes";
-import { resolveSuggestedGuestNightRatesForRequests } from "@/lib/booking-request-suggested-rates";
+import {
+  resolveSuggestedGuestNightRatesForRequests,
+  type SuggestedGuestNightRates,
+} from "@/lib/booking-request-suggested-rates";
 import { resolveWholeLodgeFlatPricesForRequests } from "@/lib/school-booking-request";
 import { loadSchoolGroupSoftCap } from "@/lib/lodge-settings";
 import { prisma } from "@/lib/prisma";
 import { requireAdmin } from "@/lib/session-guards";
+import logger from "@/lib/logger";
 
 const statusFilterValues = [
   ...Object.values(BookingRequestStatus),
@@ -129,9 +133,13 @@ export async function GET(req: NextRequest) {
 
   // #2749: suggested per-guest-night rates (non-member + Full-member per tier)
   // so the pricing panel can pre-fill the rate fields. Batched by lodge; pure
-  // rate resolution after the season load.
-  const suggestedRatesByRequestId =
-    await resolveSuggestedGuestNightRatesForRequests(
+  // rate resolution after the season load. Advisory only: if the fee/season
+  // lookup fails for any reason it must NOT take down the whole queue (same
+  // tolerance as the malformed-blob handling below, #2342) — degrade to no
+  // pre-fill and let the officer enter rates by hand.
+  let suggestedRatesByRequestId = new Map<string, SuggestedGuestNightRates>();
+  try {
+    suggestedRatesByRequestId = await resolveSuggestedGuestNightRatesForRequests(
       requests.map((request) => ({
         id: request.id,
         lodgeId: request.lodgeId,
@@ -139,6 +147,12 @@ export async function GET(req: NextRequest) {
         guests: readBookingRequestGuestsForDisplay(request.guests).guests,
       })),
     );
+  } catch (error) {
+    logger.error(
+      { err: error },
+      "Failed to resolve suggested guest-night rates; serving the queue without pre-fill",
+    );
+  }
 
   const data = requests.map((request) => {
     const quote = latestQuoteByRequestId.get(request.id) ?? null;
