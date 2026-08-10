@@ -830,28 +830,44 @@ export function buildInProgressGuestRangePlan(
     };
   });
 
-  // #2756: the earliest night either pass below has to look a rate up for.
+  // #2756: the earliest night this edit prices for ANYBODY — the first night of
+  // the earliest future window, or the first night an added guest is admitted for.
+  // `undefined` means nobody holds a future night at all, so there is nothing to
+  // price (the refusal below usually follows).
   //
-  // Seeded at `editableFrom` — no old-price window can start before it
-  // (`oldFutureStart` is `maxDate(stayStart, editableFrom)`) and no added guest
-  // is admitted before it — and pulled back to the earliest `newFutureStart`,
-  // which drops behind the edit window only for #2029's check-out-day extension,
-  // where a guest whose stay ended today buys tonight.
+  // It bounds what the proposed pass PRICES, and the bound is load-bearing in both
+  // directions. Too high and the party count would miss a guest who holds a priced
+  // night as one of their OWN past nights, so a night the edit really is buying
+  // could miss a discount the party had earned. That needs a night before
+  // `editableFrom` to be priced at all, which is #2029's check-out-day extension
+  // — a guest whose stay ended today buys tonight while the window opens tomorrow
+  // — and a second guest whose stored nights claim that same night, which takes
+  // drifted data, since the night the extension buys is the booking's own old
+  // check-out and no undrifted guest holds it. Rare, then, but the floor makes the
+  // count right there rather than resting on the drift being absent. Too low —
+  // handing each guest their whole proposed night list, back to their check-in —
+  // and this plan would start demanding a season rate for nights nobody is
+  // repricing, so an edit to a stay whose past nights sit outside any active
+  // season, or whose age-tier rate row has since been removed, would fail where it
+  // used to succeed. A guest who went home a week ago makes that difference a week
+  // wide.
   //
-  // It exists to bound what the proposed pass PRICES, and the bound is
-  // load-bearing in two directions. Too high and the party count on that
-  // check-out-day night would see only the guests extending onto it, not the ones
-  // already holding it, so the one night this plan can newly buy inside the locked
-  // window would miss a discount the party had earned. Too low — passing each
-  // guest their whole proposed night list, back to their check-in — and this plan
-  // would start demanding a season rate for nights nobody is repricing, so an
-  // edit to a stay whose past nights sit outside any active season, or whose
-  // age-tier rate row has since been removed, would fail where it used to
-  // succeed. Every night either leg actually sums is at or after this floor.
-  const pricingFloorKey = existingNightPlans.reduce(
-    (earliest, entry) =>
-      entry.newFutureStartKey < earliest ? entry.newFutureStartKey : earliest,
-    dateOnlyKey(editableFrom)
+  // Read off the night LISTS rather than off `newFutureStart`, which is a pricing
+  // anchor that reaches back to a departed guest's own stay end and would drag the
+  // floor back with it even though that guest buys nothing before the booking's
+  // old check-out (#2743). Every night either leg sums is at or after this floor:
+  // the new-price leg sums `futureNightKeys`, and the old-price leg's kept nights
+  // are a subset of them (`oldFutureStart` is never earlier than
+  // `newFutureStart`).
+  const pricingFloorKey = existingNightPlans.reduce<string | undefined>(
+    (earliest, entry) => {
+      const firstPricedNight = entry.futureNightKeys[0];
+      return firstPricedNight !== undefined &&
+        (earliest === undefined || firstPricedNight < earliest)
+        ? firstPricedNight
+        : earliest;
+    },
+    addGuests.length > 0 ? addedGuestNightKeys[0] : undefined
   );
 
   // #2756: THE PRE-EDIT PARTY, over the nights each guest currently holds inside
@@ -891,9 +907,14 @@ export function buildInProgressGuestRangePlan(
     [
       ...existingNightPlans.map((entry) => ({
         guest: entry.guest,
-        nightKeys: entry.proposedNightKeys.filter(
-          (key) => key >= pricingFloorKey
-        ),
+        // Every night they end up holding from the floor on: the nights this edit
+        // prices for them, plus any of their own earlier nights that another
+        // guest's window reaches back over, which are what keep the party count
+        // honest there.
+        nightKeys:
+          pricingFloorKey === undefined
+            ? []
+            : entry.proposedNightKeys.filter((key) => key >= pricingFloorKey),
         lockedNightPricesByKey: entry.storedNightPriceByKey,
       })),
       // No stored night prices to honour: every night is being bought now, so

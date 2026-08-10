@@ -2522,6 +2522,91 @@ describe("#2756 the group discount on a stay already under way", () => {
     }
   });
 
+  it("asks for no rate for a night nobody is repricing, however far back a guest's stay reaches", () => {
+    // The other edge of the same floor. Pricing the party in one pass means
+    // deciding which nights go INTO the pass, and handing each guest their whole
+    // proposed night list would make this plan demand a season rate for nights it
+    // is not repricing — so an edit to a stay whose earlier nights sit outside
+    // every active season, or whose rate row has since been removed, would start
+    // failing. A guest who went home a week ago makes that difference a week wide,
+    // because their pricing anchor reaches back to their own stay end even though
+    // #2743 lets them buy nothing before the booking's old check-out.
+    //
+    // Here the only season starts on the 23rd, the day the edit window opens.
+    // Every night before it is unpriceable, and the edit must still go through.
+    const LATE_SEASON: SeasonRateData[] = [
+      {
+        seasonId: "s-late",
+        startDate: D("2026-08-23"),
+        endDate: D("2026-09-30"),
+        rates: GROUP_SEASONS[0].rates,
+      },
+    ];
+    const departedAWeekAgo = partyGuest({
+      id: "m1",
+      nights: ["2026-08-16", "2026-08-17"],
+      isMember: true,
+    });
+    const stillHere = Array.from({ length: 5 }, (_, index) =>
+      partyGuest({
+        id: `n${index + 1}`,
+        nights: [
+          "2026-08-20",
+          "2026-08-21",
+          "2026-08-22",
+          "2026-08-23",
+          "2026-08-24",
+          "2026-08-25",
+        ],
+        isMember: false,
+        soldRateCents: null,
+      }),
+    );
+    const plan = buildInProgressGuestRangePlan({
+      ...groupPlanInput({
+        guests: [departedAWeekAgo, ...stillHere],
+        checkIn: "2026-08-16",
+        checkOut: "2026-08-26",
+        editableFrom: "2026-08-23",
+        newCheckOut: "2026-08-28",
+        groupDiscount: GROUP_DISCOUNT,
+      }),
+      seasons: LATE_SEASON,
+    });
+
+    // The extension buys the 26th and the 27th for all six of them, so those two
+    // nights are a party of six and are discounted; the three nights the five are
+    // already holding are a party of five, and are not.
+    for (const entry of plan.proposedExistingGuests.slice(1)) {
+      expect(entry.futureDeltaCents, entry.guest.id).toBe(2 * GROUP_NIGHT);
+      expect(entry.priceCents, entry.guest.id).toBe(
+        6 * NON_MEMBER_NIGHT + 2 * GROUP_NIGHT,
+      );
+      // No stored prices to honour, so the amounts written back are the even
+      // split this plan has always fallen back to — over eight nights, three of
+      // which no season covers and none of which this edit priced.
+      expect(entry.perNightCents, entry.guest.id).toEqual(
+        evenSplit(entry.priceCents, 8),
+      );
+    }
+    // And the guest who went home a week ago buys only what the extension
+    // creates, at their own rate, with their two unpriceable nights untouched.
+    const departed = plan.proposedExistingGuests[0];
+    expect(departed.nights.map(key)).toEqual([
+      "2026-08-16",
+      "2026-08-17",
+      "2026-08-26",
+      "2026-08-27",
+    ]);
+    expect(departed.perNightCents).toEqual([
+      MEMBER_NIGHT,
+      MEMBER_NIGHT,
+      MEMBER_NIGHT,
+      MEMBER_NIGHT,
+    ]);
+    expect(departed.futureDeltaCents).toBe(2 * MEMBER_NIGHT);
+  });
+
   it("keeps every amount an integer that sums back to the guest's price", () => {
     const plans = [
       buildInProgressGuestRangePlan(
