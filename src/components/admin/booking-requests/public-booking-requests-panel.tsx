@@ -1323,6 +1323,10 @@ export function PublicBookingRequestsPanel({
                       {formatDate(request.checkIn)} to {formatDate(request.checkOut)}
                     </div>
                     <div>
+                      <span className="text-muted-foreground">Nights:</span>{" "}
+                      {nightsBetween(request.checkIn, request.checkOut)}
+                    </div>
+                    <div>
                       <span className="text-muted-foreground">Guests:</span> {request.guests.length}
                     </div>
                     {/* Only GENERAL public requests are asked the "other lodge"
