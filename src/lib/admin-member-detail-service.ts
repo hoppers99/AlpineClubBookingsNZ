@@ -1419,26 +1419,34 @@ export async function updateAdminMember(params: {
         }
       }
 
-      // `admin`, KEPT PENDING AN OWNER DECISION rather than settled (#2730).
+      // `admin`, and now SETTLED rather than held (#2755, `INV-PRIV-012`).
       //
-      // Read against the owner's rule this is the weakest `admin` left in the
-      // tree, and the comparison is inside the platform: the identical acts
-      // performed from the bulk screen write `account` (`member.bulk-deactivate`
-      // / `-reactivate`) and `security` (`member.bulk-set-role`), and the member's
-      // own edit of the same fields writes `account` (`/api/profile`). So today
-      // the same business act is filed three ways depending on the SCREEN — which
-      // is initiator reasoning wearing a different hat, and `bulk-update/route.ts`
-      // names it as "the exact thing the owner rule forbids".
+      // #2730 left this as the weakest `admin` in the tree because the comparison
+      // was inside the platform and it lost: the identical acts performed from
+      // the bulk screen wrote `account` (`member.bulk-deactivate` /
+      // `-reactivate`) and `security` (`member.bulk-set-role`), so one business
+      // act was filed three ways according to which SCREEN the officer opened —
+      // initiator reasoning wearing a different hat.
       //
-      // It was not moved here because both destinations are MEMBER-VISIBLE
-      // (`MEMBER_VISIBLE_AUDIT_CATEGORIES`), so the move publishes this row on the
-      // subject member's own activity page. That is a widening, and #2730's rule
-      // is that a widening is the owner's to take, not a lane's — it is on the
-      // issue beside the `member_lifecycle.delete_*` and family-suggestion
-      // questions. If it is approved, the fix is the split
-      // `bulk-update/route.ts` already uses: `security` when the change set is
-      // access roles, `account` otherwise, written as two calls with LITERAL
-      // categories (the census contract forbids a conditional category).
+      // #2755 closed it by moving the OTHER TWO here, not by moving this one. The
+      // rule is that category follows the business domain affected, and an
+      // officer editing somebody else's member record is one domain: the
+      // administration of that record. `account` and `security` are both
+      // member-visible and all three writers pass a subject member, so unifying
+      // on either would have published an officer's edits of a member's record to
+      // that member's own timeline. Whether a member should see a given event is a
+      // separate, explicit declaration (#2695) — decided per event at the writing
+      // site, denied by default — never a consequence of tidying labels.
+      //
+      // THE ONE SITE THAT DELIBERATELY DID NOT JOIN is `/api/profile`, where a
+      // member edits their OWN record (`member.profile.updated`, `account`). Its
+      // actor IS its subject, so it is not an officer screen and filing it `admin`
+      // would hide a member's own action from them. Same fields, different
+      // business domain: self-service, not administration.
+      //
+      // Do not "finish the job" by moving this site to a member-visible category.
+      // Audit rows are append-only, so publishing administrative activity to
+      // members is not quietly reversible.
       await tx.auditLog.create(
         buildStructuredAuditLogCreateArgs({
           action: auditAction.action,

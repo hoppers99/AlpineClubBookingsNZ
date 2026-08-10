@@ -593,28 +593,54 @@ export async function POST(req: NextRequest) {
       await settleHostingCoverageAfterCommit({ limit: 50 });
     }
 
-    // Audit log for each affected member.
+    // Audit log for each affected member. Both branches file `admin`
+    // (`INV-PRIV-012`), because an officer editing SOMEBODY ELSE'S member record
+    // is one business domain — administration of that record — however many
+    // screens reach it.
     //
-    // #2581 decision 6: this is ONE call site standing for several affected
-    // domains. `member.bulk-set-role` changes what a member is permitted to do,
-    // which is `security`; `member.bulk-deactivate` and `member.bulk-reactivate`
-    // change the account itself, which is `account`. The route's zod enum bounds
-    // the family to exactly those three, so the split below is exhaustive.
+    // WHAT THIS REPLACED, and why the earlier reasoning was wrong (#2755).
+    // #2581 decision 6 read this as several affected domains and split it:
+    // `member.bulk-set-role` changes what a member is permitted to do, so
+    // `security`; `member.bulk-deactivate` / `-reactivate` change the account
+    // itself, so `account`. Read on its own that is defensible. Read against the
+    // rest of the tree it was not, because the SAME two acts performed from the
+    // member detail page wrote `admin` (`admin.member.updated` /
+    // `.deactivated` / `.reactivated`, `src/lib/admin-member-detail-service.ts`)
+    // — so one business act was filed three ways according to which screen the
+    // officer happened to open. That is initiator reasoning wearing a different
+    // hat, and it is the defect #2581's own rule exists to forbid.
     //
-    // Written as two calls with LITERAL categories rather than one call with a
-    // conditional, deliberately. The census contract pins that no production
-    // writer picks its category with a conditional expression, because the one
-    // that used to do so picked by WHO ACTED (`actor.onBehalf ? "admin" :
-    // "account"`) — the exact thing the owner rule forbids. Splitting keeps the
-    // rule "one literal category per site" intact while still letting the
-    // affected domain decide, and both branches remain member-visible, so no
-    // row moves across the member self-timeline boundary.
+    // WHY THE JOIN IS `admin` AND NOT `account`. `account` and `security` are
+    // both member-visible and both these writers pass a subject member, so
+    // unifying on either would publish an officer's edits of a member's record
+    // to that member's own timeline. Whether a member should see a given event
+    // is a separate, explicit declaration (#2695), decided per event at the
+    // writing site and denied by default — never a side effect of tidying
+    // category labels. `admin` is the join that changes no member's readership
+    // in the widening direction.
+    //
+    // WHAT IT DOES COST, stated rather than glossed: these two sites NARROW.
+    // A member could see a bulk deactivation of their own account on their own
+    // activity list and saw nothing when an officer did the same thing from the
+    // member page; now they see neither. And `admin` is read with `support:view`
+    // alone while `account` needs `membership:view` too, so a support-only
+    // operator gains these rows — which is exactly the gate the member-page
+    // equivalent already answered to. Rows already written keep their stored
+    // category, so nothing is withdrawn from a member who has already seen it.
+    //
+    // STILL TWO CALLS WITH LITERAL CATEGORIES, not one call with a conditional.
+    // The census contract pins that no production writer picks its category with
+    // a conditional expression, because the one that used to do so picked by WHO
+    // ACTED (`actor.onBehalf ? "admin" : "account"`). The branch survives the
+    // unification because the two `details` strings genuinely differ — the
+    // set-role branch records the roles assigned — and collapsing it would
+    // silently drop that from the club's audit trail.
     for (const member of existingMembers) {
       if (idsToUpdate.includes(member.id)) {
         if (action === "set-role") {
           logAudit({
             action: `member.bulk-${action}`,
-            category: "security",
+            category: "admin",
             memberId: currentUserId,
             targetId: member.id,
             entityType: "Member",
@@ -624,7 +650,7 @@ export async function POST(req: NextRequest) {
         } else {
           logAudit({
             action: `member.bulk-${action}`,
-            category: "account",
+            category: "admin",
             memberId: currentUserId,
             targetId: member.id,
             entityType: "Member",
