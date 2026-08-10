@@ -1427,17 +1427,20 @@ webhook's own close took the row off the only screen it ever appeared on, so tha
 durable record of an automatic refund was visible only to somebody who thought to
 query the table.
 
-**That card shows rows, and not every automatic refund makes one.** The task has a
-single creator — the confirm-modification-payment endpoint — so it exists only on
-the ordering where the member's browser got there before the webhook did. Webhook
-first (the healthy case), a member who closes the tab after paying, and the
-interleaved ordering the raise's own refund fence declines all refund the capture
-and leave nothing for the close to claim; the close is a fenced `updateMany` and
-creates nothing. For those the record is the
-`booking.payment.refunded_after_cancellation` audit entry plus the admin payment
-alert, and the card says so in its own copy rather than presenting itself as the
-whole list. #2760 holds the option of making the record complete by having the
-webhook write the DISMISSED row itself when its close claims nothing.
+**That card is complete since #2760, and it used not to be.** As #2750 shipped it
+the task had a single creator — the confirm-modification-payment endpoint — so a row
+existed only on the ordering where the member's browser got there before the webhook
+did. Webhook first (the healthy case), a member who closes the tab after paying, and
+the interleaved ordering the raise's own refund fence declines all refunded the
+capture and left nothing for the close to claim, and the raise never fired at all
+for a booking that is CANCELLED but not deleted. The webhook now writes the
+DISMISSED row itself when its OPEN-fenced close claims nothing, for both
+populations (`recordAutomaticCancelledBookingRefundTask`, owner decision 10 Aug
+2026) — so every automatic refund of a late capture inside the card's window is on
+the card, and the card groups the deleted rows apart from the merely cancelled ones
+so normal operation cannot bury the interesting case. What is still bounded is the
+window, not the record: the row and the
+`booking.payment.refunded_after_cancellation` audit entry are permanent.
 
 #2750 asked whether the #1350 automatic refund should instead be **gated**,
 leaving the task OPEN so a person decides. It was not, and the reasoning is
@@ -1445,8 +1448,9 @@ recorded rather than assumed: the member's money returning is the safe direction
 when nobody is watching, gating it means the club holds a member's money until
 somebody acts, and it would put a new condition on a Critical webhook money
 path. The club is already emailed the moment it happens —
-`handleCancelledBookingAdditionalPaymentSucceeded` has always sent the admin
-payment alert on this path, naming the amount and the auto-refund — so what was
+`handleCancelledBookingAdditionalPaymentSucceeded` has always mailed an admin alert
+on this path, naming the amount and the auto-refund, and since #2761 that mail has
+its own accurate subject and cannot be muted (`INV-ADDPAY-038`) — so what was
 missing was somewhere to look afterwards, not a notification. The card
 carries no controls — there is no decision left, and "Mark paid back" on such a
 row would write a second refund allocation — and its copy names the one thing an
@@ -1457,8 +1461,7 @@ the refund has already gone out. The rows it shows are defined once, in
 route uses rather than restating; an operator's own dismissal never appears
 there.
 
-There are TWO creators, and the second is on a completely different path from
-the first:
+There are THREE creators, and only the first two ever make an OPEN row:
 
 - Created atomically with the CANCELLED claim when a **cash-settled** booking is
   cancelled with a non-zero policy refund. A zero-refund outcome creates no task.
@@ -1468,6 +1471,15 @@ the first:
   task asks a person to decide. Raised under `pg_advisory_xact_lock(1)`,
   idempotent on the payment intent, and fenced against a refund that already
   happened, so it is never raised for money Stripe has already returned.
+- Created **already DISMISSED** by the Stripe webhook when it auto-refunds a late
+  capture on a cancelled booking and its OPEN-fenced close claims nothing (#2760,
+  `INV-ADDPAY-037`). Never OPEN — there is no work, and completing such a row
+  throws out of `applyLocalRefundAllocation` — and never `COMPLETED`, which would
+  write a second refund allocation for one refund. Both populations, deleted and
+  merely cancelled, each storing its own `reason` sentence; the lookups match both
+  sentences so a deletion landing between two Stripe deliveries cannot produce two
+  rows. Under the same `pg_advisory_xact_lock(1)` as the raise above, because
+  close-or-create is a find-then-write rather than an atomic fenced update.
 The transition is a status-fenced conditional update, so a double click can
 never double-apply the allocation, and the row is never processed by any cron —
 it deliberately is not a `PaymentRecoveryOperation`. (That dispatcher's final
