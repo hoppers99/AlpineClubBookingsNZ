@@ -16,8 +16,8 @@ import {
  *
  * TWO LISTS SINCE #2750, and the second one has nothing to do. `tasks` is the
  * work: OPEN rows an operator has to settle by hand. `autoRefunded` is the
- * record: rows the Stripe webhook already closed itself because it had refunded
- * the capture, which the operator can only read. They are returned together
+ * record: rows the Stripe webhook closed — or, since #2760, wrote itself — because
+ * it had refunded the capture, which the operator can only read. They are returned together
  * rather than from two endpoints because they render as two cards on one screen
  * from one load, and a second round trip would buy nothing.
  *
@@ -72,6 +72,28 @@ export async function GET() {
     checkIn: true,
     checkOut: true,
     member: { select: { firstName: true, lastName: true } },
+  } as const;
+
+  /*
+    #2760: the record now covers two populations — a late capture auto-refunded on
+    a booking the club DELETED, and one on a booking that is cancelled but still
+    on file — and the card groups them, because the deleted case is the
+    interesting one and the cancelled case is normal operation that would
+    otherwise bury it. `deletedAt` is read only for that grouping and answered as
+    a boolean; the date itself is not the operator's business here and is not sent
+    to the browser.
+
+    Read as CURRENT state, not as the state at the moment of the refund. Deletion
+    is one-way (there is one writer of `deletedAt` and no restore path), so the
+    only disagreement possible is a row written while the booking was merely
+    cancelled and deleted afterwards — and for that row the present-tense grouping
+    ("this booking is deleted") is the more useful of the two truths: it is what
+    decides whether remaking the booking is even possible. The row's own stored
+    reason still says what was true when the money went back.
+  */
+  const autoRefundedBookingSummary = {
+    ...bookingSummary,
+    deletedAt: true,
   } as const;
 
   /*
@@ -131,7 +153,7 @@ export async function GET() {
           reason: true,
           note: true,
           completedAt: true,
-          booking: { select: bookingSummary },
+          booking: { select: autoRefundedBookingSummary },
         },
       }),
       "automatically refunded late-capture notices",
@@ -161,10 +183,14 @@ export async function GET() {
       reason: task.reason,
       note: task.note,
       // `completedAt` is nullable in the schema but never null on a row this
-      // filter matched — the close writes it in the same update as the status.
+      // filter matched — the writer sets it in the same statement as the status,
+      // on both the close arm and the #2760 create.
       // Answered as null rather than coerced, so the surface renders a row whose
       // date it cannot state instead of inventing one.
       refundedAt: task.completedAt ? task.completedAt.toISOString() : null,
+      // #2760: which group the card puts this row in. A boolean, not the date:
+      // the card needs "is this booking still there?" and nothing more.
+      bookingDeleted: task.booking.deletedAt !== null,
       memberName: `${task.booking.member.firstName} ${task.booking.member.lastName}`,
       checkIn: task.booking.checkIn.toISOString(),
       checkOut: task.booking.checkOut.toISOString(),

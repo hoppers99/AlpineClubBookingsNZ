@@ -13,11 +13,20 @@ const mocks = vi.hoisted(() => ({
   sendEmail: vi.fn(),
   shouldSendAdminSystemEmail: vi.fn(),
   recordEscalation: vi.fn(),
+  // #2761 fix: the last-resort recipient is the club's OWN support address, read
+  // through the same `EmailMessageSetting` row every outbound email reads.
+  emailMessageSettingFindUnique: vi.fn(),
   logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() },
 }));
 
 vi.mock("@/lib/prisma", () => ({
-  prisma: { member: { findMany: mocks.findMany } },
+  prisma: {
+    member: { findMany: mocks.findMany },
+    emailMessageSetting: {
+      findUnique: (...args: unknown[]) =>
+        mocks.emailMessageSettingFindUnique(...args),
+    },
+  },
 }));
 vi.mock("@/lib/logger", () => ({ default: mocks.logger }));
 vi.mock("@/lib/notification-delivery-policies", () => ({
@@ -31,12 +40,21 @@ vi.mock("@/lib/email/core", () => ({ sendEmail: mocks.sendEmail }));
 import {
   getAdminEmails,
   sendToAdmins,
+  sendUnmuteableAdminAlert,
 } from "@/lib/email/admin-alerts-shared";
 import {
   ADMIN_NOTIFICATION_PREFERENCE_KEYS,
   type AdminNotificationPreferenceKey,
 } from "@/lib/admin-notification-preferences";
 import { ADMIN_CAPABLE_MEMBER_WHERE } from "@/lib/access-role-definitions";
+import { CLUB_SUPPORT_EMAIL } from "@/config/club-identity";
+
+/**
+ * A club that has actually configured its support mailbox. Deliberately NOT the
+ * safe default (`support@example.org`), which is the documentation-domain literal
+ * `CLUB_SUPPORT_EMAIL` resolves to — the whole point of the assertions below.
+ */
+const CONFIGURED_CLUB_SUPPORT_EMAIL = "club.office@realclub.test";
 
 type Candidate = {
   email: string;
@@ -248,6 +266,179 @@ describe("stored preferences still gate delivery (#2548)", () => {
     });
     expect(mocks.sendEmail).not.toHaveBeenCalled();
     expect(mocks.findMany).not.toHaveBeenCalled();
+  });
+});
+
+
+/**
+ * #2761 — the alert nobody may mute.
+ *
+ * An automatic money movement should not be silenceable and its recipient set must
+ * not be able to be silently empty (owner decision 10 Aug 2026). Two mute vectors
+ * existed: the per-member notification checkbox, and the club-wide delivery mode.
+ * This path reads neither, and it falls back rather than sending to nobody.
+ *
+ * MUTATION PROOF. Read the notification preference here and "sends to the area's
+ * editors even when every one of them has muted the category" fails. Drop the
+ * Support & System fallback and "falls back to Support & System editors" fails;
+ * drop the club-address fallback and "never resolves an empty recipient set"
+ * fails; resolve that last rung from the `CLUB_SUPPORT_EMAIL` bootstrap constant
+ * instead of the club's stored setting and "sends the last resort to the club's
+ * CONFIGURED address" fails. Consult the delivery policy and "does not consult the
+ * club-wide delivery policy" fails. Stop escalating and "escalates when not one
+ * recipient received it" fails.
+ */
+describe("unmuteable admin alerts (#2761)", () => {
+  beforeEach(() => {
+    // The real escalation writer is async, and the send path attaches a `.catch`
+    // to it so a failed audit entry cannot take the alert down with it.
+    mocks.recordEscalation.mockResolvedValue(undefined);
+    // A club that HAS configured its support address, so the last-resort rung is
+    // distinguishable from the frozen unconfigured-club literal.
+    mocks.emailMessageSettingFindUnique.mockResolvedValue({
+      supportEmail: CONFIGURED_CLUB_SUPPORT_EMAIL,
+    });
+  });
+
+  async function sendAlert(candidates: Candidate[]) {
+    mocks.findMany.mockResolvedValue(candidates);
+    await sendUnmuteableAdminAlert({
+      subject: "Payment refunded automatically — booking already deleted: X",
+      html: "<p>alert</p>",
+      templateName: "admin-late-capture-auto-refund",
+      requirement: { area: "finance", level: "edit" },
+    });
+    return mocks.sendEmail.mock.calls.map((call) => call[0].to as string).sort();
+  }
+
+  const mutedTeam: Candidate[] = [
+    // Every finance editor has switched payment-failure alerts OFF. Under
+    // `sendToAdmins` that silences the mail; here it must not.
+    enumRole("full.admin@club.test", "ADMIN", {
+      notificationPreference: { adminPaymentFailure: false },
+    }),
+    enumRole("treasurer@club.test", "FINANCE_ADMIN", {
+      notificationPreference: { adminPaymentFailure: false },
+    }),
+    enumRole("booking.officer@club.test", "ADMIN_BOOKINGS"),
+  ];
+
+  it("sends to the area's editors even when every one of them has muted the category", async () => {
+    expect(await sendAlert(mutedTeam)).toEqual([
+      "full.admin@club.test",
+      "treasurer@club.test",
+    ]);
+  });
+
+  it("still respects the permission matrix, which is an audience rule and not a mute", async () => {
+    // A Booking Officer cannot action a refund and is not told about one. Making
+    // the alert unmuteable does not widen who sees the club's money.
+    expect(await sendAlert(mutedTeam)).not.toContain(
+      "booking.officer@club.test",
+    );
+  });
+
+  it("falls back to Support & System editors when nobody can edit finance", async () => {
+    // A club can genuinely reach this: the one member holding finance edit was
+    // deactivated, or a custom role set lost the area.
+    const emails = await sendAlert([
+      definitionRole("deputy@club.test", { supportLevel: "EDIT" }),
+    ]);
+
+    expect(emails).toEqual(["deputy@club.test"]);
+    expect(mocks.logger.warn).toHaveBeenCalled();
+  });
+
+  it("never resolves an empty recipient set, even with no admins at all", async () => {
+    // "No recipients" is not a state this alert can reach.
+    expect(await sendAlert([])).toEqual([CONFIGURED_CLUB_SUPPORT_EMAIL]);
+  });
+
+  it("sends the last resort to the club's CONFIGURED address, not the unconfigured-club literal", async () => {
+    /*
+      The bug this pins (found in review of #2761): the fallback used to be the
+      constant `CLUB_SUPPORT_EMAIL`, which is `SAFE_DEFAULT_CONFIG.supportEmail` —
+      the frozen documentation-domain literal `support@example.org`, NOT the address
+      the club typed into /admin/email-messages. SES accepts that address and
+      bounces it asynchronously, so `sendEmail` reports "sent", the undeliverable
+      escalation below never fires, and the alert vanishes in exactly the state the
+      fallback exists for. Asserting a CONFIGURED address distinct from the literal
+      is what makes reverting to the constant fail.
+    */
+    expect(CONFIGURED_CLUB_SUPPORT_EMAIL).not.toBe(CLUB_SUPPORT_EMAIL);
+    expect(await sendAlert([])).toEqual([CONFIGURED_CLUB_SUPPORT_EMAIL]);
+    expect(mocks.emailMessageSettingFindUnique).toHaveBeenCalled();
+  });
+
+  it("still mails exactly one recipient when the stored support address is unreadable", async () => {
+    /*
+      The fallback runs in a state where things are already going wrong, so a
+      settings read that fails must not turn "nobody holds finance edit" into "no
+      mail at all". The loader degrades to the config-derived default rather than
+      throwing, and the guarantee under test is the count: never zero.
+    */
+    mocks.emailMessageSettingFindUnique.mockRejectedValueOnce(
+      new Error("settings table unreachable"),
+    );
+
+    const emails = await sendAlert([]);
+    expect(emails).toHaveLength(1);
+    expect(emails[0]).toMatch(/@/);
+  });
+
+  it("does not consult the club-wide delivery policy", async () => {
+    /*
+      Every template sent this way is delivery-locked, so the notification-rules
+      route refuses to change its mode — but `shouldSendAdminSystemEmail` reads
+      whatever row is in the table regardless of the lock, so consulting it would
+      leave one more way to mute an automatic money movement. The fail-closed
+      withhold alert in email/core.ts takes the same direct route.
+    */
+    mocks.shouldSendAdminSystemEmail.mockResolvedValue({
+      send: false,
+      mode: "disabled",
+      reason: "disabled",
+    });
+
+    expect(await sendAlert([enumRole("full.admin@club.test", "ADMIN")])).toEqual(
+      ["full.admin@club.test"],
+    );
+    expect(mocks.shouldSendAdminSystemEmail).not.toHaveBeenCalled();
+  });
+
+  it("escalates when not one recipient received it", async () => {
+    // Suppressed or failed for everybody is the state where the club believes it
+    // was told and was not.
+    mocks.sendEmail.mockResolvedValue({ status: "suppressed" });
+
+    await sendAlert([enumRole("full.admin@club.test", "ADMIN")]);
+
+    expect(mocks.recordEscalation).toHaveBeenCalledWith(
+      expect.objectContaining({
+        templateName: "admin-late-capture-auto-refund",
+        preferenceKey: "none (delivery-locked)",
+      }),
+    );
+  });
+
+  it("does not escalate when somebody was reached", async () => {
+    await sendAlert([enumRole("full.admin@club.test", "ADMIN")]);
+
+    expect(mocks.recordEscalation).not.toHaveBeenCalled();
+  });
+
+  it("one recipient's failure does not stop the others", async () => {
+    mocks.sendEmail
+      .mockRejectedValueOnce(new Error("smtp down"))
+      .mockResolvedValue({ status: "sent" });
+
+    const emails = await sendAlert([
+      enumRole("full.admin@club.test", "ADMIN"),
+      enumRole("treasurer@club.test", "FINANCE_ADMIN"),
+    ]);
+
+    expect(emails).toHaveLength(2);
+    expect(mocks.recordEscalation).not.toHaveBeenCalled();
   });
 });
 

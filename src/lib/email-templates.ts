@@ -34,6 +34,7 @@ import {
   bookingBumpedRebookAction,
   bookingPaymentDueNote,
   duplicateCaptureRefundOutcomeParagraph,
+  lateCaptureAutoRefundOutcomeParagraph,
   splitGuestPortionOwnBookingLine,
   type BookingPaymentDueCredit,
 } from "./email-message-notes";
@@ -1723,6 +1724,78 @@ export function adminDuplicateCaptureRefundTemplate(data: {
       ...(data.refundFailed && data.errorMessage
         ? [{ label: "Failure detail", value: escapeHtml(data.errorMessage) }]
         : []),
+    ])}
+    ${button("View Payments", data.reviewUrl, { sameOrigin: true })}
+  `);
+}
+
+/**
+ * #2761 — the admin alert for an automatically refunded late capture.
+ *
+ * WHY IT IS NOT `adminPaymentFailureTemplate`. That template's heading is
+ * "Payment Failed" and its alert box says a payment "has failed and may require
+ * manual attention". Neither is true here: Stripe captured a booking-change
+ * payment after the booking was already cancelled, and the money went straight
+ * back to the member. An operator who filters or skims "Payment Failed" mail
+ * triages this as noise, which is exactly what #2761 was filed about.
+ *
+ * IT NAMES WHICH POPULATION IT IS, because the two need different follow-up. On a
+ * DELETED booking, deleting it may have been the mistake, and putting that right
+ * means remaking the booking and charging the member again — the refund has gone.
+ * On a booking that is merely cancelled, the refund is normally the expected
+ * outcome and there is usually nothing to do at all. `bookingDeleted` selects the
+ * wording (the one-template-with-boolean precedent used by
+ * `adminDuplicateCaptureRefundTemplate`), so there is still exactly ONE
+ * notification for this event (`INV-ADDPAY-037`).
+ *
+ * No bearer token and no member address, so this is not sensitive-log material.
+ */
+export function adminLateCaptureAutoRefundTemplate(data: {
+  memberName: string;
+  checkIn: Date;
+  checkOut: Date;
+  amountCents: number;
+  paymentIntentId: string;
+  bookingId: string;
+  bookingDeleted: boolean;
+  reviewUrl: string;
+}): string {
+  return layout(`
+    ${heading(
+      data.bookingDeleted
+        ? "Payment Refunded Automatically — Booking Already Deleted"
+        : "Payment Refunded Automatically — Booking Already Cancelled"
+    )}
+    ${alertBox(
+      data.bookingDeleted
+        ? "A booking-change payment was captured after the booking had already been deleted. It has been refunded in full automatically — there is nothing to pay back."
+        : "A booking-change payment was captured after the booking had already been cancelled. It has been refunded in full automatically — there is nothing to pay back.",
+      "success"
+    )}
+    ${paragraph(
+      "Nothing failed and no money is missing. The member paid for a booking change while the booking was on its way out, so the charge was returned to them as soon as Stripe told us about it. The supplementary Xero invoice for the change was not released."
+    )}
+    ${
+      // The SAME sentence the {{refundOutcomeNote}} token renders in the
+      // admin-editable body (#2268 convention): one source, so the hand-built
+      // HTML and an admin's default can never say different things about which
+      // population this was. Developer-authored copy with no member data in it,
+      // so it is emitted raw exactly like its duplicate-capture sibling.
+      paragraph(lateCaptureAutoRefundOutcomeParagraph(data.bookingDeleted))
+    }
+    ${infoTable([
+      { label: "Member", value: escapeHtml(data.memberName) },
+      { label: "Check-in", value: formatNZDate(data.checkIn) },
+      { label: "Check-out", value: formatNZDate(data.checkOut) },
+      { label: "Amount refunded", value: formatCents(data.amountCents) },
+      {
+        label: "Booking status",
+        value: data.bookingDeleted
+          ? "Cancelled and deleted"
+          : "Cancelled, still on file",
+      },
+      { label: "Booking", value: escapeHtml(data.bookingId) },
+      { label: "Stripe PI", value: escapeHtml(data.paymentIntentId) },
     ])}
     ${button("View Payments", data.reviewUrl, { sameOrigin: true })}
   `);

@@ -158,7 +158,24 @@ const GLOBAL_BOOKING_MONEY_LOCK_INVENTORY: Record<string, number> = {
   // create, touches no capacity or member-credit
   // tier, and every Stripe call is made by the caller outside this
   // transaction — so it composes with nothing and reverses no order.
-  "src/lib/deleted-booking-modification-payment.ts": 1,
+  //
+  // #2760 adds the SECOND site in this file, in
+  // `recordAutomaticCancelledBookingRefundTask` — the Stripe webhook's writer,
+  // which now creates the already-DISMISSED record when its OPEN-fenced close
+  // claims nothing. Until #2760 that was a single status-fenced `updateMany`,
+  // atomic on its own and holding no lock at all ("needs no lock of its own" was
+  // an asserted property). It is now close-or-create, a find-then-write, and two
+  // Stripe deliveries of one capture — or a delivery racing the confirm route's
+  // raise above — would each find no row and each write one, putting a single
+  // refund on the finance card twice. Same key as the raise for the same reason:
+  // same cohort, same file, no new keyspace and no new ordering. Same shape too —
+  // it takes lock(1) and nothing else, holds it across an `updateMany`, a
+  // `findFirst` and at most one `create`, and every Stripe call belongs to the
+  // caller and has already returned before this transaction opens (the refund is
+  // what triggers it). Counterparts reconciled: this file's own raise (identical
+  // key, no other tier), `booking-cancel.ts`'s ManualRefundTask create, and the
+  // #1350 webhook path that calls it.
+  "src/lib/deleted-booking-modification-payment.ts": 2,
   "src/lib/group-cancel.ts": 3,
   "src/lib/group-settlement.ts": 6,
   "src/lib/internet-banking-payment-cron.ts": 1,
