@@ -220,7 +220,7 @@
  *                                 the pack reads a requested room or an
  *                                 admin-creator, and the admin booking page
  *                                 shows all six.
- *   the five presence booleans  → see "the presence-boolean trap" above. Those
+ *   the six presence booleans   → see "the presence-boolean trap" above. Those
  *                                 are dropped for a GRANT reason, not a cap
  *                                 reason, and would stay dropped at any cap.
  *
@@ -1246,9 +1246,11 @@ const bookingExceptionRequestState = defineDiagnosticsTool<BookingIdArgs>({
   }),
   rowLimit: AID6B_HISTORY_ROW_LIMIT,
   byteLimit: AID6B_BYTE_LIMIT,
-  // Two member ids per row — who asked and who decided. ADR-004's per-invocation
-  // opt-in is DECLARED by this flag and is not yet implemented (prerequisite on
-  // #2378), so it is not a control.
+  // ONE member id per row: `requestedByMemberRef`, who asked. Who DECIDED is not
+  // projected and `reviewedByMemberId` is not granted — the docblock above gives the
+  // reason, and this comment said "two member ids" from a draft in which it was.
+  // ADR-004's per-invocation opt-in is DECLARED by this flag and is not yet
+  // implemented (prerequisite on #2378), so it is not a control.
   surfacesPersonalData: true,
 });
 
@@ -1320,7 +1322,7 @@ const bookingRecordAuditHistory = defineDiagnosticsTool<BookingIdArgs>({
   // record-scoped audit entry does not require `support` and the pack's contract
   // test for the assertion that reconciles the two.
   requiredAreas: aid6bRecordAuditReaderAreas("booking"),
-  evidenceScope: `Audit events recorded against ONE booking record, in the booking categories ${BOOKING_AUDIT_CATEGORIES.join(" and ")} only, at most ${AID6B_HISTORY_ROW_LIMIT}, newest first. AN EMPTY RESULT IS NOT EVIDENCE THAT NOTHING HAPPENED, and there are two structural reasons rather than one. First, the audit category is OPTIONAL for historical compatibility. The exact-head census has 427 row-producing current production writer sites and zero uncategorised sites: no current writer omits category, but historical rows written before categorisation was deployed may lack it and are matched by no diagnostics tool anywhere. Second, "Booking" is the ONLY entity type read here: an event recorded against this booking's PAYMENT, its bed allocation, its change request or the member is filed under that record's own type and id, and is not in this result. Never report that something did not happen on the strength of an empty result; say that no categorised booking audit event matched the booking record, and point at Admin > Audit Log, which lists historical uncategorised rows and every entity type as well. ${AID6B_SCOPE_TAIL} ${AID6B_UNTRUSTED_EVIDENCE_DISCLOSURE}`,
+  evidenceScope: `Audit events recorded against ONE booking record, in the booking categories ${BOOKING_AUDIT_CATEGORIES.join(" and ")} only, at most ${AID6B_HISTORY_ROW_LIMIT}, newest first. AN EMPTY RESULT IS NOT EVIDENCE THAT NOTHING HAPPENED, and there are two structural reasons rather than one. First, the audit category is OPTIONAL for historical compatibility. The exact-head census has 428 row-producing current production writer sites and zero uncategorised sites: no current writer omits category, but historical rows written before categorisation was deployed may lack it and are matched by no diagnostics tool anywhere. Second, "Booking" is the ONLY entity type read here: an event recorded against this booking's PAYMENT, its bed allocation, its change request or the member is filed under that record's own type and id, and is not in this result. Never report that something did not happen on the strength of an empty result; say that no categorised booking audit event matched the booking record, and point at Admin > Audit Log, which lists historical uncategorised rows and every entity type as well. ${AID6B_SCOPE_TAIL} ${AID6B_UNTRUSTED_EVIDENCE_DISCLOSURE}`,
   argsSchema: bookingIdArgsSchema,
   inputSchema: bookingIdInputSchema,
   sql: BOOKING_AUDIT_SQL,

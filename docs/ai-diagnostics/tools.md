@@ -515,9 +515,12 @@ against a real PostgreSQL, connects as that role, and proves:
   the role is `NOINHERIT` and the `'USAGE'` predicate reports a hand-granted
   membership as absent;
 - it can read nothing on the migrated schema outside the declared allowlist, and on
-  the one column-granted relation it can read **only** the declared columns — every
-  other column, and `SELECT *`, are refused with `42501` — and although PUBLIC leaves
-  it able to EXECUTE the schema's routines, none of them is `SECURITY DEFINER`;
+  a column-granted relation it can read **only** the declared columns — every other
+  column, and `SELECT *`, are refused with `42501`. **All twenty-six allowlisted
+  relations are column-granted**, not one of them: the sentence used to say "the one
+  column-granted relation" from the release when `AuditLog` was the only entry, and
+  wholesale grants have not existed here since. Although PUBLIC leaves the role able
+  to EXECUTE the schema's routines, none of them is `SECURITY DEFINER`;
 - re-provisioning **revokes** a hand-widened column grant, so an allowlist entry can
   be narrowed in a later release and not merely widened;
 - the self-check refuses the role when a column grant widens to the whole relation —
@@ -583,7 +586,7 @@ failing.
 - [Booking and membership tool pack (AID-6B)](tool-pack-booking-membership.md) —
   bounded booking and member selection, per-record party/bed/exception/subscription/
   family evidence, the authoritative block-state, capacity and eligibility
-  calculations, the twelve further relation grants plus the widened `Member`, the
+  calculations, the thirteen further relation grants plus the widened `Member`, the
   presence-boolean finding, and the questions this schema cannot answer.
 - [Deployment and operator guide](deployment.md) — provisioning the role, rotating
   the password, and what readiness reports.

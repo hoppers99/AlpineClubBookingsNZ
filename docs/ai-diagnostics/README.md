@@ -469,7 +469,11 @@ application's own authoritative calculations.** Sixteen entries. Full reference:
   engine, member-night conflict scan, edit-window classifier, lifecycle resolver,
   subscription-settlement rule and adult-member-host predicate. Each returns stable
   codes in an argued priority order, and every code's operator sentence travels to
-  the model inside the entry's own scope text. They compose multiple READ COMMITTED
+  the model inside the entry's own **description** — deliberately, because a
+  description is always sent with the tool definition while `evidenceScope` is
+  attached to a RESULT, and a model has to know what a code means in order to decide
+  whether to ask for it. Each scope then repeats that the description holds the exact
+  meanings and that they must not be paraphrased. They compose multiple READ COMMITTED
   reads rather than one snapshot, so `observedAtUtc` means assembly completion and
   their scopes require a rerun before action or a definitive conclusion.
 - **Thirteen more relation grants, plus the widened `Member`.** The allowlist now

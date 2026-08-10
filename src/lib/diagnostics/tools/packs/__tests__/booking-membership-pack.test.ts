@@ -1341,6 +1341,23 @@ describe("AID-6B booking/membership pack: no pattern language (#2376)", () => {
     expect([...called].sort()).toEqual([...ALLOWED_PG_CATALOG_FUNCTIONS].sort());
   });
 
+  it("does date-only arithmetic with dates and integers, never with an INTERVAL", () => {
+    // A lodge night is a `@db.Date` calendar day, not an instant. `date + INTERVAL
+    // '1 day'` is TIMESTAMP arithmetic: PostgreSQL promotes the left operand, so the
+    // expression's type changes under the comparison and a night can acquire a time
+    // of day. `date + int` stays a date, which is the only type this pack may
+    // compare a lodge night against. Asserted across every statement in the pack so
+    // the next window filter cannot reintroduce it, and the shape of the one window
+    // that exists is pinned beside it.
+    for (const tool of sqlEntries) {
+      expect(tool.sql, `${tool.id} does timestamp arithmetic on a lodge night`)
+        .not.toMatch(/INTERVAL/i);
+    }
+    expect(sqlOf(DIAGNOSTICS_BOOKING_SEARCH_TOOL_ID)).toContain(
+      '($5::date + ($6)::int)',
+    );
+  });
+
   it("names every relation as `public.\"Relation\"`", () => {
     // Same argument as the function qualification, applied to the object that
     // actually carries the rows. A bare `FROM "Booking"` resolves through

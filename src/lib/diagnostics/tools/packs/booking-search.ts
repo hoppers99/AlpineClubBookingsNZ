@@ -238,7 +238,7 @@ const BOOKING_SEARCH_COLUMNS = `b."id" AS booking_ref,
   b."adminReviewStatus"::text AS admin_review_status,
   b."adultMemberHostingReviewStatus"::text AS hosting_review_status,
   b."waitlistPosition" AS waitlist_position,
-  b."wholeLodgeHold" AS whole_lodge_hold,
+  b."wholeLodgeHold" AS whole_lodge_hold_flag_stored,
   (b."adminCapacityHoldAt" IS NOT NULL) AS admin_capacity_hold,
   (b."capacityOverriddenAt" IS NOT NULL) AS capacity_overridden,
   ${utcInstant('b."deletedAt"')} AS deleted_at_utc,
@@ -271,7 +271,7 @@ WHERE (
   OR ($1::text = 'owner_member_id' AND b."memberId" = $2::text)
   OR ($1::text = 'booking_reference' AND pg_catalog.left(b."id", 8) = pg_catalog.lower($3::text))
   OR ($1::text = 'lodge_nights' AND b."lodgeId" = $4::text
-      AND b."checkIn" < ($5::date + (($6)::int * INTERVAL '1 day'))
+      AND b."checkIn" < ($5::date + ($6)::int)
       AND b."checkOut" > $5::date)
 )
 ORDER BY b."checkIn" DESC, b."id" ASC`;
@@ -303,7 +303,15 @@ function projectBookingSearchRow(row: Record<string, unknown>) {
     // through `countOf` reads as position 0, the FRONT of the queue, on a booking
     // that has no place in it.
     waitlistPosition: countOrNull(row.waitlist_position),
-    wholeLodgeHold: boolOf(row.whole_lodge_hold),
+    /**
+     * THE STORED FLAG, NAMED AS STORED. `Booking."wholeLodgeHold"` is a persisted
+     * request; whether the booking EFFECTIVELY holds the lodge also depends on its
+     * status, whether it converted from a request, and whether an admin capacity
+     * hold exists (`bookingHoldsCapacity`). A search row cannot answer that and
+     * must not look as though it does — `booking_capacity_by_night` reports the
+     * effective hold, per night, beside the occupancy it implies.
+     */
+    wholeLodgeHoldFlagStored: boolOf(row.whole_lodge_hold_flag_stored),
     adminCapacityHold: boolOf(row.admin_capacity_hold),
     capacityOverridden: boolOf(row.capacity_overridden),
     deletedAtUtc: instantOrNull(row.deleted_at_utc),
@@ -318,7 +326,7 @@ const bookingSearch = defineDiagnosticsTool<BookingSearchArgs>({
   label: "Find a booking",
   description: `Finds a booking one of four ways: by its exact record id, by the eight-character booking reference a member sees on their confirmation, by the exact record id of the member who OWNS it, or by a lodge plus a first night and a short window (1d, 7d or 30d — 7d by default). Use it FIRST: every other booking tool needs the exact booking id this returns. Exact matches only — there are no partial, wildcard or blank searches, and it returns at most ${AID6B_SEARCH_ROW_LIMIT} rows, latest nights first. Each row carries the booking id and reference, the owner's member id (not their name — that needs membership access), the lodge id and name, the status, the check-in and check-out nights, the number of guests, the final price in integer cents, whether the party includes non-members, whether it is a linked child booking, the review and hosting-review state, the waitlist position, the whole-lodge, admin-capacity-hold and capacity-override flags, and when it was deleted, created and last changed. The booking reference is NOT unique — if several rows come back, ask the operator which booking they mean rather than choosing one. ${AID6B_DESCRIPTION_TAIL}`,
   requiredAreas: ["bookings"],
-  evidenceScope: `Bookings matching ONE exact identifier, or present at one lodge across a short window of nights. The lodge-night search is an OVERLAP test — it returns every booking PRESENT on those nights, including one that checked in earlier — which is the population the capacity engine counts. A booking reference is only the first eight characters of the booking id and is NOT unique, so more than one row can legitimately match. waitlistPosition is ONE-BASED and is ABSENT on every booking that does not hold a place in a waitlist queue — there is no position 0, so never read an absent position as the front of the queue. ${AID6B_SCOPE_TAIL} ${AID6B_UNTRUSTED_EVIDENCE_DISCLOSURE}`,
+  evidenceScope: `Bookings matching ONE exact identifier, or present at one lodge across a short window of nights. The lodge-night search is an OVERLAP test — it returns every booking PRESENT on those nights, including one that checked in earlier — and it is LIFECYCLE-INDEPENDENT: cancelled, bumped, waitlisted, draft and soft-deleted bookings all overlap those nights and are all returned. It is therefore NOT the population the capacity engine counts and must never be used to reason about how full a lodge is; diagnostics.booking_capacity_by_night is the authority for occupancy, spare beds and effective holds. A booking reference is only the first eight characters of the booking id and is NOT unique, so more than one row can legitimately match. waitlistPosition is ONE-BASED and is ABSENT on every booking that does not hold a place in a waitlist queue — there is no position 0, so never read an absent position as the front of the queue. ${AID6B_SCOPE_TAIL} ${AID6B_UNTRUSTED_EVIDENCE_DISCLOSURE}`,
   argsSchema: bookingSearchArgsSchema,
   inputSchema: {
     type: "object",

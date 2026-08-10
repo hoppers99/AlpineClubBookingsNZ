@@ -537,7 +537,7 @@ export const SELECT_GRANTS: readonly AiDiagnosticsSelectGrant[] = [
      * column, `notes IS NOT NULL` included. So a `hasNotes` flag cannot be had
      * without making every booking note in the club readable to anybody holding this
      * credential in a `psql` session — and a boolean is not worth trading that
-     * property for. The five presence booleans #2376's plan asked for were dropped
+     * property for. The six presence booleans #2376's plan asked for were dropped
      * for exactly this reason, not for a field-count one.
      */
     columns: [

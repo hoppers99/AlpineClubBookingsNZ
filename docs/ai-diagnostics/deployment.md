@@ -377,9 +377,21 @@ The operator CLI prints the declared grants, columns and all, on every run and o
 
 **Upgrading to the AID-6B release is a two-step operation: deploy, then re-run
 `npm run diagnostics:provision-role`.** This release adds thirteen relations and
-widens `Member` from two columns to twenty-three, so until it is re-run readiness
-reports `under_provisioned` — the *previous* release's grants no longer match the
-declared allowlist — and **every SQL-backed tool refuses, by design**. That is
+widens `Member` from two columns to twenty-three, so until it is re-run the
+*previous* release's grants no longer match the declared allowlist and **every
+SQL-backed tool refuses, by design**.
+
+Which state readiness reports in the meantime depends on the stale role, and the
+precedence is worth knowing before an operator reads it as a smaller problem than it
+is. `under_provisioned` is reported **only** when the stale role is otherwise
+exactly safe — every privilege it holds is one this release still declares, and the
+only difference is grants that are absent. If the stale role also holds anything the
+new declaration does *not* include, **excess privilege takes precedence and the state
+is `over_privileged`**, because a role that can read more than the allowlist declares
+is the more serious of the two facts and must not be reported as merely
+incomplete. `checkDiagnosticsDatabaseReadiness` derives that ordering structurally:
+it reports missing grants only when zeroing them would make the privilege report
+safe. That is
 ADR-007's deliberate friction, and it is the same step AID-6A and AID-6C each
 required. The three `server_owned` entries in AID-6B do not read through this
 credential and are unaffected, so a deployment that has not been re-provisioned can

@@ -191,6 +191,17 @@ describe("diagnostics privilege proof DB safety guard (#2374)", () => {
     let roleUrl: string;
     let databaseName: string;
     let adminRole: string;
+    /**
+     * Whether PUBLIC held TEMPORARY on the scratch database BEFORE this suite ran.
+     *
+     * Recorded rather than assumed, because the cleanup below used to
+     * unconditionally `GRANT TEMPORARY ... TO PUBLIC` on the way out. On a database
+     * where PUBLIC did not have it, that hands back a privilege the operator had
+     * deliberately removed — a test tidying up by widening the thing this very
+     * suite exists to prove is narrow. `null` means the state was never observed
+     * (the suite failed before it could ask), and the cleanup then changes nothing.
+     */
+    let publicHadTemporaryBefore: boolean | null = null;
 
     /**
      * Run one statement as the restricted role and return the SQLSTATE, or null
@@ -234,6 +245,18 @@ describe("diagnostics privilege proof DB safety guard (#2374)", () => {
     }
 
     async function provision(): Promise<void> {
+      /**
+       * OBSERVE PUBLIC's TEMPORARY grant BEFORE the provisioner revokes it, so the
+       * cleanup can restore exactly what existed rather than granting it back
+       * unconditionally. Recorded once: `provision()` runs more than once in this
+       * suite, and the state that matters is the one before the FIRST revoke.
+       */
+      if (publicHadTemporaryBefore === null) {
+        const before = await admin.query(
+          `SELECT pg_catalog.has_database_privilege('public', current_database(), 'TEMPORARY') AS temp`,
+        );
+        publicHadTemporaryBefore = before.rows[0]?.temp === true;
+      }
       const statements = buildAiDiagnosticsRoleSql({
         roleName: TEST_ROLE,
         password: TEST_ROLE_PASSWORD,
@@ -304,6 +327,7 @@ describe("diagnostics privilege proof DB safety guard (#2374)", () => {
       const parsed = new URL(RACE_DB_URL);
       databaseName = decodeURIComponent(parsed.pathname.replace(/^\//, ""));
       adminRole = decodeURIComponent(parsed.username);
+      publicHadTemporaryBefore = null;
 
       ({ Client: PgClientCtor } = await import("pg"));
       ({ buildAiDiagnosticsRoleSql, FORBIDDEN_PREDEFINED_ROLES, SELECT_GRANTS } =
@@ -482,13 +506,31 @@ describe("diagnostics privilege proof DB safety guard (#2374)", () => {
             await cleanupAdmin!.query(`DROP TABLE IF EXISTS public.${table}`);
           });
         }
-        // Leave the shared scratch database's PUBLIC TEMP grant as it was before
-        // this suite, so later isolated suites are not coupled to our provisioner.
-        if (databaseName) {
+        // Leave the shared scratch database's PUBLIC TEMP grant EXACTLY as it was
+        // before this suite, so later isolated suites are not coupled to our
+        // provisioner — and so a database where PUBLIC deliberately does NOT hold
+        // TEMPORARY does not have it handed back by a test. Restoring
+        // unconditionally was the defect: the one privilege this suite proves the
+        // provisioner revokes is the one the cleanup would re-grant to everybody.
+        if (databaseName && publicHadTemporaryBefore === true) {
           await cleanupStep("restore PUBLIC TEMPORARY", async () => {
             await cleanupAdmin!.query(
               `GRANT TEMPORARY ON DATABASE ${quoteTestRoleIdentifier(databaseName)} TO PUBLIC`,
             );
+          });
+        } else if (databaseName && publicHadTemporaryBefore === false) {
+          await cleanupStep("leave PUBLIC TEMPORARY revoked", async () => {
+            // Nothing to do, and saying so is the point: the state we found is the
+            // state we leave. Asserted rather than assumed, because a silent
+            // no-op here and a silent GRANT look identical in a cleanup log.
+            const after = await cleanupAdmin!.query(
+              `SELECT pg_catalog.has_database_privilege('public', current_database(), 'TEMPORARY') AS temp`,
+            );
+            if (after.rows[0]?.temp === true) {
+              throw new Error(
+                "cleanup left PUBLIC holding TEMPORARY on a database that did not have it",
+              );
+            }
           });
         }
 
