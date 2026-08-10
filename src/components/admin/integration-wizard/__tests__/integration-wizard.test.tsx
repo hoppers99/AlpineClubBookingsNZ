@@ -522,6 +522,50 @@ describe("IntegrationWizard cursor race (#2781)", () => {
     expect(active?.textContent).toContain("Step B body");
   });
 
+  // Clicking the step you are ALREADY on is how an operator says "stay here",
+  // and before initialisation it is the only thing standing between them and a
+  // persisted cursor that moves them. So `goTo` must claim ownership even when
+  // the index does not change: add an `if (clamped === index) return;` fast path
+  // and this fails, because the resume then still wins.
+  it("keeps the ALREADY-ACTIVE step when that is what the operator clicked", async () => {
+    mockedProgress = { currentStepId: "b" };
+    const releaseCursor = deferCursorLoad();
+    const clicked = clickPermit();
+    // Step A is the pre-initialisation index, and Step A is what gets clicked.
+    render(
+      <IntegrationWizard<Ctx>
+        wizardId="test"
+        title="Test wizard"
+        steps={[
+          {
+            id: "a",
+            title: "Step A",
+            isVerified: () => true,
+            render: () => (
+              <ClickStepOnMount label={/Step A/} permit={clicked}>
+                <div>Step A body</div>
+              </ClickStepOnMount>
+            ),
+          },
+          ...steps().slice(1),
+        ]}
+        context={{ bReady: false, cReady: false }}
+        contextLoading={false}
+        onRefresh={() => {}}
+        canEdit={true}
+        viewOnlyBanner={<>view only</>}
+      />,
+    );
+
+    await releaseCursor();
+
+    expect(clicked.taken).toBe(true);
+    // The persisted cursor says "b"; the operator said "a" first, so a wins.
+    expect(screen.getByText("Step A body")).toBeTruthy();
+    expect(screen.queryByText("Step B body")).toBeNull();
+    expect(screen.getByText("Step 1 of 3")).toBeTruthy();
+  });
+
   it("keeps a step clicked before a PERSISTED cursor is applied", async () => {
     mockedProgress = { currentStepId: "a" };
     const releaseCursor = deferCursorLoad();

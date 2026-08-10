@@ -176,6 +176,13 @@ export function IntegrationWizard<Ctx>({
     const clamped = Math.min(Math.max(next, 0), maxReachable);
     // The operator owns the cursor from here on, so a resume initialisation
     // that has not run yet stands down rather than undoing this (#2781).
+    //
+    // Deliberately unconditional: do NOT skip this when `clamped === index`.
+    // Clicking the step you are already on is exactly how an operator says
+    // "stay here", and before initialisation that click is the only thing that
+    // stops a persisted cursor moving them elsewhere. Bailing out to save the
+    // one wasted render would re-open #2781 for that click. (`cursor.persist`
+    // already dedupes the POST, so the waste is a render, not a request.)
     setStep({ index: clamped, owner: "operator" });
     cursor.persist(steps[clamped].id, cursor.acknowledged);
   }
