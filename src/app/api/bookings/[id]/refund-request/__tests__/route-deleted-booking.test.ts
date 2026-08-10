@@ -27,6 +27,7 @@ const mocks = vi.hoisted(() => ({
   bookingFindUnique: vi.fn(),
   refundRequestFindFirst: vi.fn(),
   refundRequestCreate: vi.fn(),
+  refundRequestFindMany: vi.fn(),
   logAudit: vi.fn(),
   sendAdminRefundRequestAlert: vi.fn(),
 }));
@@ -43,6 +44,7 @@ vi.mock("@/lib/prisma", () => ({
     refundRequest: {
       findFirst: (...args: unknown[]) => mocks.refundRequestFindFirst(...args),
       create: (...args: unknown[]) => mocks.refundRequestCreate(...args),
+      findMany: (...args: unknown[]) => mocks.refundRequestFindMany(...args),
     },
   },
 }));
@@ -54,7 +56,8 @@ vi.mock("@/lib/email", () => ({
     mocks.sendAdminRefundRequestAlert(...args),
 }));
 
-import { POST } from "@/app/api/bookings/[id]/refund-request/route";
+import { GET, POST } from "@/app/api/bookings/[id]/refund-request/route";
+import { DELETED_BOOKING_MESSAGE } from "@/lib/deleted-booking-refusal";
 
 const OWNER = {
   user: { id: "member-1", role: "MEMBER", accessRoles: [{ role: "USER" }] },
@@ -217,5 +220,154 @@ describe("POST /api/bookings/[id]/refund-request — soft-deleted booking (#2674
     const res = await callRoute();
 
     expect(res.status).toBe(201);
+  });
+});
+
+/**
+ * #2700 surface 3 — the GET on this same route file.
+ *
+ * WHAT WAS WRONG. #2674 closed the POST above but left the GET reading the
+ * booking on `{ memberId }` alone, so a deleted booking's own refund appeals
+ * were still listed to its owner — the second of the two reads
+ * `INV-ADDPAY-033` tracked, and the reason "this route checks `deletedAt`" is
+ * never evidence on its own that every method on it does.
+ *
+ * THE TWO METHODS DELIBERATELY ANSWER DIFFERENT BODIES, which is worth pinning
+ * so nobody "tidies" one into the other:
+ *
+ * - the **POST** keeps `INV-ADDPAY-031`'s byte-identical `Booking not found`,
+ *   settled by #2674;
+ * - the **GET** carries the shared cancelled-or-removed sentence, the owner's
+ *   10 Aug 2026 decision for the read surfaces (`INV-ADDPAY-034`).
+ *
+ * Nothing leaks either way: both sit after the same 403, so only somebody
+ * already entitled to the booking sees either answer, and that person learns
+ * the same fact from both.
+ *
+ * MUTATION PROOF. Delete the `if (booking.deletedAt)` block from the GET and
+ * "refuses the appeal list…" fails by name. Move it above the 403 and "gives a
+ * caller with no claim the same 403…" fails.
+ */
+describe("GET /api/bookings/[id]/refund-request — soft-deleted booking (#2700)", () => {
+  function callGet() {
+    return GET(
+      new NextRequest("http://localhost/api/bookings/booking-1/refund-request"),
+      { params: Promise.resolve({ id: "booking-1" }) },
+    );
+  }
+
+  beforeEach(() => {
+    // Armed to EXPLODE, like the POST's create above.
+    mocks.refundRequestFindMany.mockImplementation(() => {
+      throw new Error(
+        "refundRequest.findMany must never run on a soft-deleted booking",
+      );
+    });
+  });
+
+  it.each([
+    ["the booking's owner", OWNER],
+    ["a Full Admin", FULL_ADMIN],
+  ])(
+    "refuses the appeal list for %s, saying the booking was cancelled or removed",
+    async (_who, session) => {
+      mocks.auth.mockResolvedValue(session);
+      mocks.bookingFindUnique.mockResolvedValue({
+        memberId: "member-1",
+        deletedAt: DELETED_AT,
+      });
+
+      const res = await callGet();
+
+      expect(res.status).toBe(404);
+      await expect(res.json()).resolves.toEqual({
+        error: DELETED_BOOKING_MESSAGE,
+      });
+      expect(mocks.refundRequestFindMany).not.toHaveBeenCalled();
+    },
+  );
+
+  it("selects deletedAt beside the authority field", async () => {
+    mocks.auth.mockResolvedValue(OWNER);
+    mocks.bookingFindUnique.mockResolvedValue({
+      memberId: "member-1",
+      deletedAt: DELETED_AT,
+    });
+
+    await callGet();
+
+    expect(mocks.bookingFindUnique).toHaveBeenCalledWith({
+      where: { id: "booking-1" },
+      select: { memberId: true, deletedAt: true },
+    });
+  });
+
+  it("gives a caller with no claim the same 403, never the cancelled-or-removed message", async () => {
+    mocks.auth.mockResolvedValue(STRANGER);
+    mocks.bookingFindUnique.mockResolvedValue({
+      memberId: "member-1",
+      deletedAt: DELETED_AT,
+    });
+
+    const res = await callGet();
+
+    expect(res.status).toBe(403);
+    await expect(res.json()).resolves.toEqual({ error: "Forbidden" });
+    expect(mocks.refundRequestFindMany).not.toHaveBeenCalled();
+  });
+
+  it("gives that same caller the identical 403 on a booking that is NOT deleted", async () => {
+    mocks.auth.mockResolvedValue(STRANGER);
+    mocks.bookingFindUnique.mockResolvedValue({
+      memberId: "member-1",
+      deletedAt: null,
+    });
+
+    const res = await callGet();
+
+    expect(res.status).toBe(403);
+  });
+
+  it("keeps the plain not-found answer distinct from the deleted one", async () => {
+    mocks.auth.mockResolvedValue(OWNER);
+    mocks.bookingFindUnique.mockResolvedValue(null);
+
+    const res = await callGet();
+
+    expect(res.status).toBe(404);
+    await expect(res.json()).resolves.toEqual({ error: "Booking not found" });
+  });
+
+  it("still serves the list on an identical booking that is NOT deleted", async () => {
+    mocks.auth.mockResolvedValue(OWNER);
+    mocks.bookingFindUnique.mockResolvedValue({
+      memberId: "member-1",
+      deletedAt: null,
+    });
+    mocks.refundRequestFindMany.mockResolvedValue([]);
+
+    const res = await callGet();
+
+    expect(res.status).toBe(200);
+    expect(mocks.refundRequestFindMany).toHaveBeenCalledTimes(1);
+  });
+
+  it("answers a DIFFERENT body from the POST on the very same deleted booking", async () => {
+    // Both are correct and both are deliberate; this exists so a later reader
+    // who notices the difference finds it asserted rather than accidental.
+    mocks.auth.mockResolvedValue(OWNER);
+    mocks.bookingFindUnique.mockResolvedValue(cancelledBooking(DELETED_AT));
+
+    const getRes = await callGet();
+    const postRes = await callRoute();
+
+    expect(getRes.status).toBe(404);
+    expect(postRes.status).toBe(404);
+    await expect(getRes.json()).resolves.toEqual({
+      error: DELETED_BOOKING_MESSAGE,
+    });
+    await expect(postRes.json()).resolves.toEqual({
+      error: "Booking not found",
+    });
   });
 });

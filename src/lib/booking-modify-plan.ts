@@ -92,7 +92,6 @@ import {
 } from "@/lib/member-guest-consent";
 import {
   addDaysDateOnly,
-  eachDateOnlyInRange,
   formatDateOnly,
   normalizeDateOnlyForTimeZone,
 } from "@/lib/date-only";
@@ -1103,20 +1102,36 @@ export type PricingResult = {
 };
 
 /**
- * Build a per-night breakdown for a contiguous range by splitting the total
- * evenly across the nights, with any integer-cent remainder on the earliest
- * nights so the per-night sum equals the total exactly. Used by the
+ * Build a per-night breakdown over the nights a guest actually holds, by
+ * splitting the total evenly across them with any integer-cent remainder on the
+ * earliest nights so the per-night sum equals the total exactly. Used by the
  * in-progress edit plan, which prices guests as scalar totals (issue #713).
+ *
+ * #2736: it used to take `(stayStart, stayEnd)` and expand that envelope
+ * itself, which is why an edit to a booking already under way turned a guest
+ * with a gap in their stay into one continuous run — the gap night was
+ * materialised here, then written back as a `BookingGuestNight` row by
+ * `applyGuestChanges` below. It now takes the plan's night LIST
+ * (`ProposedExistingGuestRange.nights`), which is that same envelope expanded
+ * for every contiguous guest and the guest's real nights for a sparse one
+ * (INV-MOD-025).
+ *
+ * Integer cents only: `Math.floor` over an integer total, remainder distributed
+ * one cent at a time (INV-MONEY-001, INV-MONEY-003).
+ *
+ * Still an EVEN split, which #2736 did not change and is not claiming to have
+ * fixed. The rows now cover the right nights, but their per-night amounts are
+ * the guest's total divided by their night count, so an edit spanning a season
+ * boundary stores the average rather than each night's real rate — and
+ * `lockedNightPricesForGuest` hands exactly that column to the next edit. The
+ * sum is always exact, so nothing goes out of balance; the per-night snapshot
+ * is simply not the price list. Carried as #2744.
  */
-function splitContiguousNights(
-  stayStart: Date,
-  stayEnd: Date,
+function splitGuestNightsEvenly(
+  nights: ReadonlyArray<Date>,
   totalCents: number
 ): { priceCents: number; perNightCents: number[]; nightDates: Date[] } {
-  const nightDates = eachDateOnlyInRange(
-    normalizeDateOnlyForTimeZone(stayStart),
-    normalizeDateOnlyForTimeZone(stayEnd)
-  );
+  const nightDates = nights.map((night) => normalizeDateOnlyForTimeZone(night));
   const count = nightDates.length;
   const perNightCents: number[] = [];
   if (count > 0) {
@@ -1413,10 +1428,10 @@ export async function calculateModifiedPricing(
           totalPriceCents: inProgressPlan.newTotalPriceCents,
           guests: [
             ...inProgressPlan.proposedExistingGuests.map((entry) =>
-              splitContiguousNights(entry.stayStart, entry.stayEnd, entry.priceCents)
+              splitGuestNightsEvenly(entry.nights, entry.priceCents)
             ),
             ...inProgressPlan.proposedAddedGuests.map((entry) =>
-              splitContiguousNights(entry.stayStart, entry.stayEnd, entry.priceCents)
+              splitGuestNightsEvenly(entry.nights, entry.priceCents)
             ),
           ],
         }
@@ -1890,6 +1905,12 @@ export async function applyGuestChanges(
   // Re-sync a guest's BookingGuestNight rows to the priced nights (issue #713),
   // and return the matching stayStart/stayEnd envelope. Called on every guest
   // write so a guest's gaps are persisted and stale nights never linger.
+  //
+  // #2736: that promise used to be broken on the IN-PROGRESS branch below, which
+  // is the one place the priced nights did not come from a real night set — the
+  // plan expanded its envelope, so this deleted a sparse guest's rows and wrote
+  // back a continuous run, filling the gap for good. The plan now carries the
+  // night list (INV-MOD-025) and this is the only writer that needs to know.
   const syncGuestNights = async (
     bookingGuestId: string,
     bg: BreakdownGuest | undefined,

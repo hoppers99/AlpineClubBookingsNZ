@@ -16,6 +16,7 @@ import {
   type BuildInProgressGuestRangePlanInput,
 } from "@/lib/booking-edit-guest-ranges";
 import type { SeasonRateData } from "@/lib/pricing";
+import { eachDateOnlyInRange } from "@/lib/date-only";
 
 const D = (s: string) => new Date(`${s}T00:00:00.000Z`);
 
@@ -43,6 +44,14 @@ function guest(stayStart: string, stayEnd: string, priceCents: number, id = "g1"
     rateSource: "OWN_TYPE" as const,
     stayStart: D(stayStart),
     stayEnd: D(stayEnd),
+    // #2736: every real caller loads the guest's `BookingGuestNight` rows, so
+    // this double carries them — otherwise these #2029 pins would only ever
+    // exercise the envelope FALLBACK and stop covering the branch production
+    // takes. Contiguous stay, so they are the envelope expanded and every
+    // expectation below is unchanged.
+    nights: eachDateOnlyInRange(D(stayStart), D(stayEnd)).map((stayDate) => ({
+      stayDate,
+    })),
     priceCents,
   };
 }
@@ -170,8 +179,16 @@ describe("buildInProgressGuestRangePlan — #2029 capacity ranges", () => {
     );
 
     expect(plan.capacityRangeStart).toEqual(D("2026-08-24"));
+    // #2736: the range now also carries the exact nights it occupies. For this
+    // contiguous guest that is the window expanded, night for night, so the
+    // capacity verdict is unchanged.
     expect(plan.capacityGuestRanges).toEqual([
-      { stayStart: D("2026-08-24"), stayEnd: D("2026-08-25"), memberId: "m-g1" },
+      {
+        stayStart: D("2026-08-24"),
+        stayEnd: D("2026-08-25"),
+        nights: [D("2026-08-24")],
+        memberId: "m-g1",
+      },
     ]);
   });
 
@@ -182,7 +199,12 @@ describe("buildInProgressGuestRangePlan — #2029 capacity ranges", () => {
 
     expect(plan.capacityRangeStart).toEqual(D("2026-08-24"));
     expect(plan.capacityGuestRanges).toEqual([
-      { stayStart: D("2026-08-24"), stayEnd: D("2026-08-26"), memberId: "m-g1" },
+      {
+        stayStart: D("2026-08-24"),
+        stayEnd: D("2026-08-26"),
+        nights: [D("2026-08-24"), D("2026-08-25")],
+        memberId: "m-g1",
+      },
     ]);
   });
 
