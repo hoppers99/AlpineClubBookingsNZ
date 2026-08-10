@@ -80,3 +80,6 @@ review-fixes.log
 .github/agents/
 public/images/
 .env.capture
+
+# Isolated #2352/#2663 measurement stack secrets (never committed, never in a PR).
+measurement/stack/.env.measure
