@@ -1317,7 +1317,7 @@ export function PublicBookingRequestsPanel({
                   </div>
                 </CardHeader>
                 <CardContent className="space-y-4">
-                  <div className="grid gap-3 text-sm sm:grid-cols-2 lg:grid-cols-5">
+                  <div className="grid gap-3 text-sm sm:grid-cols-2 lg:grid-cols-4">
                     <div>
                       <span className="text-muted-foreground">Dates:</span>{" "}
                       {formatDate(request.checkIn)} to {formatDate(request.checkOut)}
@@ -1329,16 +1329,6 @@ export function PublicBookingRequestsPanel({
                     <div>
                       <span className="text-muted-foreground">Guests:</span> {request.guests.length}
                     </div>
-                    {/* Only GENERAL public requests are asked the "other lodge"
-                        question on the form (#2749). */}
-                    {memberWholeLodge || request.type === "SCHOOL" ? null : (
-                      <div>
-                        <span className="text-muted-foreground">
-                          Member of another Lodge :
-                        </span>{" "}
-                        {request.otherLodgeName ?? "No"}
-                      </div>
-                    )}
                     {request.indicativePriceCents != null ? (
                       <div>
                         <span className="text-muted-foreground">Indicative price:</span>{" "}
@@ -1352,6 +1342,17 @@ export function PublicBookingRequestsPanel({
                       </div>
                     ) : null}
                   </div>
+
+                  {/* Only GENERAL public requests are asked the "other lodge"
+                      question on the form (#2749). */}
+                  {memberWholeLodge || request.type === "SCHOOL" ? null : (
+                    <div className="text-sm">
+                      <span className="text-muted-foreground">
+                        Member of another Lodge:
+                      </span>{" "}
+                      {request.otherLodgeName ?? "No"}
+                    </div>
+                  )}
 
                   {request.type === "SCHOOL" && request.teachers.length > 0 ? (
                     <div className="text-sm">
