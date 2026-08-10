@@ -1417,6 +1417,31 @@ OPEN -> DISMISSED   (#2700: the Stripe webhook, with NO acting member at all —
                      one refund. See `INV-ADDPAY-036`.)
 ```
 
+**Where a terminal row is read, and the #2750 decision behind it.** Both
+terminal states are terminal for the row, not for the operator: the finance
+queue on `/admin/payments` shows OPEN rows as work to settle, and since #2750
+also shows the webhook-closed rows above as a read-only **"Refunded
+automatically — nothing to pay back"** card, bounded to the last
+`AUTOMATIC_REFUND_NOTICE_WINDOW_DAYS` (30) by `completedAt`. Before that, the
+webhook's own close took the row off the only screen it ever appeared on, so the
+one durable record of an automatic refund was visible only to somebody who
+thought to query the table.
+
+#2750 asked whether the #1350 automatic refund should instead be **gated**,
+leaving the task OPEN so a person decides. It was not, and the reasoning is
+recorded rather than assumed: the member's money returning is the safe direction
+when nobody is watching, gating it means the club holds a member's money until
+somebody acts, and it would put a new condition on a Critical webhook money
+path. So the record is made visible instead of the refund being held. The card
+carries no controls — there is no decision left, and "Mark paid back" on such a
+row would write a second refund allocation — and its copy names the one thing an
+operator may still have to do: if the deletion rather than the payment was the
+mistake, the booking has to be made again and the member charged again, because
+the refund has already gone out. The rows it shows are defined once, in
+`automaticallyRefundedManualRefundTaskFilter` (`INV-ADDPAY-037`), which the
+route uses rather than restating; an operator's own dismissal never appears
+there.
+
 There are TWO creators, and the second is on a completely different path from
 the first:
 

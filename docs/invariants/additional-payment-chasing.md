@@ -955,3 +955,53 @@ automatically and the task is a record rather than a decision.** The task earns
 its place in the orderings where the webhook does not arrive, is disabled, or
 fails — which is precisely when the club would otherwise be holding money with
 nobody told.
+
+### INV-ADDPAY-037
+
+**An automatic refund of a late capture on a deleted booking is visible on the
+operator surface, not only recorded in a closed row** (#2750, orchestrator
+decision 10 Aug 2026 under the owner's standing backlog instruction; reversible).
+`INV-ADDPAY-036`'s consequence — that on a healthy webhook the member is refunded
+automatically and the task is a record rather than a decision — was only half
+delivered: the webhook's own close moved the row out of the `OPEN` list, which is
+the only list the finance queue showed, so the sole durable record of a money
+movement nobody authorised appeared on no screen at all. "A human is told" was
+true of the database and false of every human. Three obligations:
+
+- **The finance queue on `/admin/payments` renders those rows** as a second,
+  read-only card beneath the hand-back queue. It renders **even when no `OPEN`
+  task exists**, which is the ordinary case for a healthy webhook and the exact
+  case the pre-#2750 component could not display: that component returned `null`
+  on an empty `OPEN` list. It is bounded by `completedAt` to
+  `AUTOMATIC_REFUND_NOTICE_WINDOW_DAYS`, because an unbounded list of long-settled
+  rows is the state that makes an operator stop reading a card; the row itself and
+  the `booking.payment.refunded_after_cancellation` audit entry stay permanent.
+- **Which rows those are is defined once**, in
+  `automaticallyRefundedManualRefundTaskFilter`, and every reader uses that export
+  rather than restating its conditions. It requires **both** the automatic close's
+  note prefix — a shared constant, so a reworded note cannot silently empty the
+  card without failing a test — **and** `completedByMemberId: null`, and neither
+  condition may be dropped as redundant. `ManualRefundTask.completedBy` is
+  `onDelete: SetNull`, so deleting the member who dismissed a task by hand NULLs
+  the column that said who did it; on the null check alone, that operator's
+  deliberate dismissal would then be presented as an automatic refund the club
+  never made. On the note alone, a future writer of the same sentence *with* an
+  acting member would be admitted.
+- **The card carries no controls, and says what is still owed in work rather than
+  in money.** There is no decision left — Stripe returned the money before anybody
+  saw the capture — and a control would claim otherwise, while "Mark paid back" on
+  such a row writes a second refund allocation for one refund. The copy states the
+  one thing an operator may still have to do: if the **deletion** rather than the
+  payment was the mistake, the booking has to be made again and the member charged
+  again, because the refund has already gone out.
+
+**The refund itself is deliberately NOT gated, and that is the decision this rule
+records.** Suppressing #1350's automatic refund while the booking is soft-deleted
+was considered and rejected: it leaves a member's money with the club until
+somebody acts, and it puts a new condition on a Critical webhook money path. The
+money returning to the member is the safe direction when nobody is watching, so
+visibility was added instead of the refund being held. **Do not gate it as a side
+effect of work in this area** — reversing this needs a fresh owner decision, a
+test pinning that the capture is not auto-refunded and the task stays `OPEN`, and
+its own review of the webhook path. Nothing here changes what money moves, when,
+or by how much.
