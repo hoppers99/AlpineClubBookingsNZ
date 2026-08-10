@@ -1369,6 +1369,11 @@ export async function POST(
           addGuests: policyAdjustedAddGuests,
           removeGuestIds,
           seasons: seasonRateData,
+          // #2756: the same config every other pricing pass in this route gets.
+          // The preview has to quote what the save will charge, so an in-progress
+          // edit's newly bought nights carry the group discount here exactly as
+          // they now do on apply (INV-MOD-006).
+          groupDiscount,
         })
         : null;
   } catch (error) {

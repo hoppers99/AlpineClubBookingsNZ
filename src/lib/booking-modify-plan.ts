@@ -1311,6 +1311,18 @@ export async function calculateModifiedPricing(
     subscriptionLockoutMode,
   });
 
+  // Group discount applies to the newly priced nights (#1095); locked nights
+  // keep their booked (discount-inclusive) prices regardless (INV-MOD-006).
+  //
+  // #2756: read once, here, and handed to BOTH pricing paths below. It used to be
+  // read inline in the not-in-progress branch only, which is how the in-progress
+  // planner came to be the one edit path that priced without it — so a stay
+  // already under way bought its new nights undiscounted. One query either way,
+  // on the connection this function is already using, and it takes no lock.
+  const groupDiscount = toGroupDiscountConfig(
+    await tx.groupDiscountSetting.findUnique({ where: { id: "default" } }),
+  );
+
   let inProgressPlan: BookingEditGuestRangePlan | null = null;
   if (isInProgressEdit && editableFrom) {
     inProgressPlan = buildInProgressGuestRangePlan({
@@ -1328,6 +1340,7 @@ export async function calculateModifiedPricing(
       addGuests: policyAdjustedAddGuests,
       removeGuestIds,
       seasons: seasonRateData,
+      groupDiscount,
     });
   }
 
@@ -1427,13 +1440,7 @@ export async function calculateModifiedPricing(
           checkOut: newCheckOut,
           guests: policyAdjustedGuestsForPricing,
           seasons: seasonRateData,
-          // Group discount applies to the newly priced nights (#1095); locked
-          // nights keep their booked (discount-inclusive) prices regardless.
-          groupDiscount: toGroupDiscountConfig(
-            await tx.groupDiscountSetting.findUnique({
-              where: { id: "default" },
-            }),
-          ),
+          groupDiscount,
           seasonYear,
           skipAuthorization,
           subscriptionLockoutMode,
