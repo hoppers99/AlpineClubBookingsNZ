@@ -50,8 +50,19 @@ the member up and shows their name on the chip, so an id-only address still read
 normally.
 
 If your role can read the audit log but not the membership roll (support access
-without membership access), the chip reads **Selected member** instead of a name.
-The filter itself still works — only the label needs membership access.
+without membership access), the name on the chip comes from the audit entries on
+screen instead, and reads **Selected member** only when none of them names that
+member. Either way the filter itself works — only the label depends on where the
+name can be read from.
+
+A bookmark saved **before** this change still has the name and email in it. From
+the first time you open it, the page drops them from the address so they are not
+carried on into new history entries or passed to the next page you click through
+to. That is a fix going forward, not a clean-up: the visit itself has already been
+recorded — in this browser's history, and in the access log of anything sitting in
+front of the site — and nothing the page does afterwards can remove those. If that
+matters for a particular bookmark, replace the bookmark and clear that history
+entry on the machine that holds it.
 
 ## Settings reference
 

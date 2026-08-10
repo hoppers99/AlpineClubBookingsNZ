@@ -7,9 +7,18 @@
 
   The filter now travels as the member's id alone. Sharing or bookmarking a
   filtered view works exactly as before: opening the link looks the member up and
-  shows their name on the filter chip, and an address saved before this change is
-  rewritten without the name and email the first time it is opened.
+  shows their name on the filter chip.
 
-  One visible difference: if an administrator's role can read the audit log but
-  not the membership roll, the chip reads "Selected member" instead of a name. The
-  filter still works — only the name needs membership access.
+  An address saved *before* this change still contains the name and email. From
+  the first time it is opened the page drops them, so they are not carried on into
+  new history entries or into the next page clicked through to — but that is a fix
+  going forward, not a clean-up. Opening that bookmark is a visit the browser and
+  any proxy in front of the site have already recorded, and nothing the page does
+  afterwards can remove those records. Replacing the bookmark is the only way to
+  stop it happening again.
+
+  One visible difference for an administrator whose role can read the audit log
+  but not the membership roll: the name on the chip is taken from the audit
+  entries on screen instead of from the membership roll, and reads "Selected
+  member" only when none of the entries on screen names that member. The filter
+  itself always works.
