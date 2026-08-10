@@ -486,6 +486,61 @@ function makeTx(booking: ReturnType<typeof makeBooking>) {
   };
 }
 
+/**
+ * A `calculateBookingPrice` double that prices EXACTLY the nights it is handed,
+ * at a per-night rate that depends only on whether the guest is a member, and
+ * returns each amount attached to the night it belongs to.
+ *
+ * The in-progress cases below used to hand this mock a canned answer per call, in
+ * call order: guest 1's old window, guest 1's new window, then the added guest.
+ * #2756 made the planner price the whole PARTY in one pass per window rather than
+ * one pass per guest — the group discount depends on how many people are in the
+ * lodge that night, which a per-guest call can never see — and read each guest's
+ * slice back out BY NIGHT. So a canned answer per call now describes neither the
+ * right number of calls nor the right nights. Deriving the answer from the input
+ * fixes both and changes no arithmetic: these fixtures are flat-rate bookings
+ * whose stored totals divide exactly, and the rates are the ones the canned
+ * answers already implied (2500 a night for the member, 3000 for the non-member
+ * guest being added).
+ */
+function pricesNightsHandedIn(memberRateCents: number, nonMemberRateCents: number) {
+  return (
+    checkIn: Date,
+    checkOut: Date,
+    guests: Array<{ isMember?: boolean; nights?: ReadonlyArray<Date> | null }>,
+  ) => {
+    const breakdowns = guests.map((guest) => {
+      const nights =
+        guest.nights && guest.nights.length > 0
+          ? [...guest.nights]
+          : eachNightBetween(checkIn, checkOut);
+      const rateCents = guest.isMember ? memberRateCents : nonMemberRateCents;
+      return {
+        priceCents: nights.length * rateCents,
+        perNightCents: nights.map(() => rateCents),
+        nightDates: nights,
+      };
+    });
+    return {
+      guests: breakdowns,
+      totalPriceCents: breakdowns.reduce((sum, g) => sum + g.priceCents, 0),
+    };
+  };
+}
+
+/** `[checkIn, checkOut)` as nights — half-open, the departure morning excluded. */
+function eachNightBetween(checkIn: Date, checkOut: Date): Date[] {
+  const nights: Date[] = [];
+  for (
+    let night = new Date(checkIn.getTime());
+    night < checkOut;
+    night = new Date(night.getTime() + 86_400_000)
+  ) {
+    nights.push(new Date(night.getTime()));
+  }
+  return nights;
+}
+
 describe("PUT /api/bookings/[id]/modify", () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -1976,10 +2031,9 @@ describe("PUT /api/bookings/[id]/modify", () => {
       mockTransaction.mockImplementation((fn: (innerTx: typeof tx) => unknown) =>
         fn(tx)
       );
-      mockCalculateBookingPrice.mockReturnValueOnce({
-        totalPriceCents: 5000,
-        guests: [{ priceCents: 5000, perNightCents: [2500, 2500] }],
-      });
+      mockCalculateBookingPrice.mockImplementation(
+        pricesNightsHandedIn(2500, 3000) as never,
+      );
 
       const { PUT } = await import("@/app/api/bookings/[id]/modify/route");
 
@@ -2068,19 +2122,9 @@ describe("PUT /api/bookings/[id]/modify", () => {
       mockTransaction.mockImplementation((fn: (innerTx: typeof tx) => unknown) =>
         fn(tx)
       );
-      mockCalculateBookingPrice
-        .mockReturnValueOnce({
-          totalPriceCents: 5000,
-          guests: [{ priceCents: 5000, perNightCents: [2500, 2500] }],
-        })
-        .mockReturnValueOnce({
-          totalPriceCents: 5000,
-          guests: [{ priceCents: 5000, perNightCents: [2500, 2500] }],
-        })
-        .mockReturnValueOnce({
-          totalPriceCents: 6000,
-          guests: [{ priceCents: 6000, perNightCents: [3000, 3000] }],
-        });
+      mockCalculateBookingPrice.mockImplementation(
+        pricesNightsHandedIn(2500, 3000) as never,
+      );
 
       const { PUT } = await import("@/app/api/bookings/[id]/modify/route");
 

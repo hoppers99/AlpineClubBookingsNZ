@@ -15,6 +15,7 @@ import {
 } from "@prisma/client";
 
 import { ApiError } from "@/lib/api-error";
+import logger from "@/lib/logger";
 import {
   ADULT_SUPERVISION_REVIEW_REASON,
   requiresAdultSupervisionReview,
@@ -51,7 +52,10 @@ import {
   MembershipTypeBookingPolicyError,
   priceBookingGuestsWithMembershipTypePolicy,
 } from "@/lib/membership-type-policy";
-import { toEditTimeGroupDiscountConfig } from "@/lib/policies/booking-route-decisions";
+import {
+  toEditTimeGroupDiscountConfig,
+  toSeasonRateData,
+} from "@/lib/policies/booking-route-decisions";
 import {
   deletePromoRedemptionAndAdjustCount,
   lockAndRefreshPromoCodeUsage,
@@ -1069,16 +1073,13 @@ export async function loadActiveSeasonRates(
     where: { active: true, ...lodgeNullTolerantScope(lodgeId) },
     include: { membershipTypeRates: true },
   });
-  return seasons.map((s) => ({
-    seasonId: s.id,
-    startDate: s.startDate,
-    endDate: s.endDate,
-    rates: s.membershipTypeRates.map((r) => ({
-      membershipTypeId: r.membershipTypeId,
-      ageTier: r.ageTier,
-      pricePerNightCents: r.pricePerNightCents,
-    })),
-  }));
+  // #2756: through the shared mapper, which carries the season's `type`. This
+  // used to hand-roll a four-key literal without it, and because
+  // `SeasonRateData.type` is optional that compiled silently and switched the
+  // group discount off for every club on the DEFAULT `summerOnly: true` setting —
+  // on this function's two consumers, which are the apply path's in-progress
+  // planner and its ordinary pricing pass alike.
+  return toSeasonRateData(seasons);
 }
 
 export type PricingResult = {
@@ -1311,24 +1312,68 @@ export async function calculateModifiedPricing(
     subscriptionLockoutMode,
   });
 
+  // Group discount applies to the newly priced nights (#1095); locked nights
+  // keep their booked (discount-inclusive) prices regardless (INV-MOD-006).
+  //
+  // #2756: read once, here, and handed to BOTH pricing paths below. It used to be
+  // read inline in the not-in-progress branch only, which is how the in-progress
+  // planner came to be the one edit path that priced without it — so a stay
+  // already under way bought its new nights undiscounted. One query either way,
+  // on the connection this function is already using, and it takes no lock.
+  //
+  // #2770 (INV-MOD-026): resolved through the EDIT-time mapper, because both
+  // branches below are edits. That is what makes the club's `applyToEdits`
+  // switch mean ONE thing per edit: the in-progress planner and the ordinary
+  // pricing pass are handed the same value, so they can never disagree about a
+  // night's price the way #2756 had them disagree. Off resolves to no config at
+  // all — byte-identical to a club that never enabled the discount — and nights
+  // already bought keep their stored prices in either state (INV-MOD-005).
+  const groupDiscount = toEditTimeGroupDiscountConfig(
+    await tx.groupDiscountSetting.findUnique({ where: { id: "default" } }),
+  );
+
   let inProgressPlan: BookingEditGuestRangePlan | null = null;
   if (isInProgressEdit && editableFrom) {
-    inProgressPlan = buildInProgressGuestRangePlan({
-      booking: {
-        checkIn: booking.checkIn,
-        checkOut: booking.checkOut,
-        totalPriceCents: booking.totalPriceCents,
-        discountCents: booking.discountCents,
-        promoAdjustmentCents: booking.promoAdjustmentCents,
-        finalPriceCents: booking.finalPriceCents,
-        guests: policyAdjustedExistingGuests,
-      },
-      editableFrom,
-      newCheckOut,
-      addGuests: policyAdjustedAddGuests,
-      removeGuestIds,
-      seasons: seasonRateData,
-    });
+    // #2756: the same mapping the QUOTE route already applies around its own call
+    // to this planner (`modify-quote/route.ts`, "Unable to price the requested
+    // future-night changes", 400). The plan can fail for the one reason the
+    // ordinary pricing pass below can — no season rate covers a night it has to
+    // price — and that pass has been mapped to a 400 all along, from inside the
+    // `try` further down. This call sits outside it because the capacity check
+    // needs the plan first, so the same failure surfaced as an unmapped error on
+    // apply while the preview returned a clean 400. Preview and apply now agree on
+    // the refusal as well as on the price.
+    try {
+      inProgressPlan = buildInProgressGuestRangePlan({
+        booking: {
+          checkIn: booking.checkIn,
+          checkOut: booking.checkOut,
+          totalPriceCents: booking.totalPriceCents,
+          discountCents: booking.discountCents,
+          promoAdjustmentCents: booking.promoAdjustmentCents,
+          finalPriceCents: booking.finalPriceCents,
+          guests: policyAdjustedExistingGuests,
+        },
+        editableFrom,
+        newCheckOut,
+        addGuests: policyAdjustedAddGuests,
+        removeGuestIds,
+        seasons: seasonRateData,
+        groupDiscount,
+      });
+    } catch (error) {
+      // An ApiError is already a decided refusal with its own wording and status
+      // (the plan's own guards do not raise one today, but re-throwing keeps this
+      // from ever swallowing one that is added later).
+      if (error instanceof ApiError) {
+        throw error;
+      }
+      logger.error(
+        { err: error, bookingId: booking.id },
+        "Failed to build the in-progress edit plan",
+      );
+      throw new ApiError("No season rate found for the requested dates", 400);
+    }
   }
 
   const pricingLodgeId = booking.lodgeId ?? (await getDefaultLodgeId(tx));
@@ -1427,22 +1472,10 @@ export async function calculateModifiedPricing(
           checkOut: newCheckOut,
           guests: policyAdjustedGuestsForPricing,
           seasons: seasonRateData,
-          // Group discount applies to the newly priced nights (#1095); locked
-          // nights keep their booked (discount-inclusive) prices regardless.
-          //
-          // Read through the EDIT-time mapper (#2770, INV-MOD-026): this is an
-          // edit, so the club's `applyToEdits` switch decides whether the
-          // nights this edit buys earn the discount. Off resolves to no config
-          // at all, which is byte-identical to a club that never enabled the
-          // discount. The in-progress branch above passes no config today
-          // (#2756 is what makes it price as a party); when it does, its config
-          // must come from this same mapper — the census test enforces that, so
-          // the two branches can never disagree about one night's price again.
-          groupDiscount: toEditTimeGroupDiscountConfig(
-            await tx.groupDiscountSetting.findUnique({
-              where: { id: "default" },
-            }),
-          ),
+          // The one gated value hoisted above (#2756 read-once, #2770 gate) —
+          // the same object the in-progress planner was handed, so the two
+          // branches cannot price a night differently.
+          groupDiscount,
           seasonYear,
           skipAuthorization,
           subscriptionLockoutMode,

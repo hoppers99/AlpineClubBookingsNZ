@@ -112,13 +112,52 @@ and per party size on that night: a partial-stay guest's absent nights do not
 count toward the minimum. The modify-quote preview prices with the same
 config so previews match what the mutating paths charge. The guest-add route
 therefore prices the whole post-add party in one pass — the added guest's
-stored price and night rows are their slice of the combined breakdown. Since
-#2770 "the default group discount" an edit path passes means the value
-`toEditTimeGroupDiscountConfig` resolves, which is absent when the club has
+stored price and night rows are their slice of the combined breakdown.
+**Every edit path means the in-progress planner too** (#2756): it priced each
+guest alone with no config, so the party size the rule saw was always one and a
+night an edit to a stay already under way BOUGHT carried no discount while the
+same night bought a day earlier did. It now prices the party in one pass per
+window, and the same two rules govern which nights move — locks win, and only
+newly priced nights are discounted. INV-MOD-025, which is
+`buildInProgressGuestRangePlan`'s own rule, states how — and states the property
+that keeps it safe: a night the guest keeps is valued identically on both sides of
+the edit, so no held night is re-rated when the party crosses the minimum in
+either direction.
+
+**"Passes the discount into pricing" includes the season's `type`, and every edit
+path had been failing that half in silence** (#2756). `summerOnly` is `true` by
+`prisma/schema.prisma`'s default, by `DEFAULT_GROUP_DISCOUNT_SETTING` and by the
+admin section's own default, so `isGroupDiscountApplicable` tests
+`findSeasonForDate(night, seasons)?.type === "SUMMER"` for the configuration a real
+club is most likely in. `SeasonRateData.type` is optional, and all five edit paths
+— the modify quote, the modify apply's `loadActiveSeasonRates`, the guest-add
+route, the date-modification service and the guest-removal service — hand-rolled a
+four-key season literal that omitted it, while every creation path mapped through
+`toSeasonRateData` and carried it. So a default-configured club had its booking
+discounted when it was made and **every later edit priced at the full rate**,
+whichever planner ran: the parity this invariant asserts was false in exactly the
+direction that costs the member money, and no test could see it. All season
+loading now goes through `toSeasonRateData`, which is the ONLY production mapping
+by census, because a second one is free to drop the field again and the type system
+cannot object. Correcting this changes prices on ordinary (not-in-progress) edits
+too at any summer-only club with the discount enabled — it is the same defect, not
+a separate one, and the fix could not be confined to the in-progress branch
+because both branches read the same season array.
+
+The **substitution's two consequences** reach every path this invariant covers,
+including the in-progress planner since #2756: a `rateMembershipTypeId` whose rows
+are dearer than `NON_MEMBER`'s makes a qualifying night cost MORE, and a
+substituted type with no row for some age tier in some season throws where the
+guest's own type would have resolved. The admin group-discount route validates
+neither. Members are never affected (only `NON_MEMBER_DEFAULT` is substituted —
+INV-MOD-007).
+
+Since #2770, **"the default group discount" an edit path passes means the value
+`toEditTimeGroupDiscountConfig` resolves**, which is absent when the club has
 switched `GroupDiscountSetting.applyToEdits` off — the one club-controlled
 qualification on this rule, stated in full as INV-MOD-026. Nothing else here
-moves: every edit path still passes the SAME resolved value, and locks still win
-over it in both states of the switch.
+moves: every edit path still passes the SAME resolved value, both planner
+branches included, and locks still win over it in both states of the switch.
 
 ## INV-MOD-026
 
@@ -130,18 +169,25 @@ not to a code path — and `toEditTimeGroupDiscountConfig` in
 `src/lib/policies/booking-route-decisions.ts` is the only place it is applied.
 Every edit path resolves its config there and nowhere else: the ordinary planner
 (`calculateModifiedPricing`), the date-modification service, the guest-add
-route, the single-guest-removal service, and the modify-quote preview, whose
-answer must be the one the save path then charges (#1095). There is deliberately
-no second gate, because the defect this switch was added alongside was one
-planner reading a different config from every other path (#2756) — a two-tier
-price for the same night at the same club — and one chokepoint is the only shape
-that stays true as paths are added.
+route, the single-guest-removal service, the modify-quote preview — whose answer
+must be the one the save path then charges (#1095) — and the promo-code validator
+when it is previewing an edit rather than a first purchase. **The in-progress
+planner is covered by those same resolutions rather than by a sixth one**: since
+#2756 both `calculateModifiedPricing` and the modify-quote route read the setting
+ONCE and hand that one gated value to `buildInProgressGuestRangePlan` and to the
+ordinary pricing pass alike, so the two planner branches cannot disagree about a
+night's price. There is deliberately no second gate, because the defect this
+switch was added alongside was one planner reading a different config from every
+other path (#2756) — a two-tier price for the same night at the same club — and
+one chokepoint is the only shape that stays true as paths are added.
 `group-discount-edit-switch-census.test.ts` scans the tree and fails the build
 when an edit path resolves the discount through the creation mapper
-(`toGroupDiscountConfig`) instead, and when any caller of
-`buildInProgressGuestRangePlan` is not an edit path, because the two mappers
-differ by one boolean and nothing in the type system can tell a mistake from a
-choice.
+(`toGroupDiscountConfig`) instead, when any caller of
+`buildInProgressGuestRangePlan` is not a declared edit path, and when any file
+outside the mapper home hand-rolls a group-discount config literal instead of
+calling a mapper at all — the shape that hid the promo-code validator from the
+#2756 census. The two mappers differ by one boolean and nothing in the type
+system can tell a mistake from a choice.
 
 **The default is ON, and the default is what every club already had.** Every
 edit path already passed the discount into pricing (INV-MOD-006), so the column
@@ -175,13 +221,19 @@ member confirms all keep using `toGroupDiscountConfig`. None of them is an edit
 to nights somebody already holds; the offer email must quote the price the
 confirm will charge, and the switch is about what an edit *adds*.
 
-**When it is off, the quote says so.** The modify-quote response carries
+**When it is off, the quote says so — but only when the discount would otherwise
+have reached this stay.** The modify-quote response carries
 `groupDiscountEditNotice`, and the edit panel renders it beside the number in the
-same slot as the subscription-rate notice — non-null only when the club runs a
-group discount AND has switched it off for edits, because a club with no
-discount has nothing to explain and a club with the switch on is getting the
-discount. The admin control states the same thing where it is set, so the person
-who turned it off can see what they turned off.
+same slot as the subscription-rate notice. It is non-null only when the club runs
+a group discount, has switched it off for edits, AND the same edit priced through
+the ungated creation mapper would actually have been discounted — so an officer
+editing a party below `minGroupSize`, or a winter stay at a `summerOnly` club, is
+not told a discount was withheld from a number that would have been identical
+either way. That makes the notice quote-level rather than club-level, which is
+what D2 asked for: it explains a number that went up. The mutual exclusion still
+holds — a response can never carry both the notice and a group discount — because
+the switch remains the outer condition. The admin control states the policy where
+it is set, so the person who turned it off can see what they turned off.
 
 ## INV-MOD-007
 
@@ -621,18 +673,106 @@ at the lodge with a negative stored price. Both windows, not just the old one:
 the locks are what make a night the guest KEEPS carry one price on either side of
 the difference and cancel to nothing, so an extension's delta is still exactly
 the nights it adds and no night anybody already bought is ever re-rated. That
-half of INV-MOD-006 — **locks win over the discount** — is now satisfied here as
+half of INV-MOD-006 — **locks win over the discount** — is satisfied here as
 it is everywhere else, so a removal no longer strips a group discount the member
-bought (INV-MOD-005, INV-MOD-006). The other half is not, and this plan cannot
-satisfy it: **it prices each guest on their own**, one `calculateBookingPrice`
-call per guest with no group-discount config, so the party size it sees is always
-one. Nights a guest already held are unaffected (their locked price is
-discount-inclusive), but nights an in-progress edit newly BUYS carry no group
-discount, where the same nights bought by an edit to a stay that has not started
-would. On a club with the discount switched on that is an overcharge running
-against the member. It is pre-existing, it is stated here rather than implied,
-and it is carried as its own decision on **#2756** — not as an unqualified
-INV-MOD-006 citation.
+bought (INV-MOD-005, INV-MOD-006).
+
+**The group discount applies to what the edit BUYS, and the party is counted per
+night (#2756).** The other half of INV-MOD-006 is satisfied too. This plan used to
+price each guest on their own — one `calculateBookingPrice` call per guest with no
+group-discount config — so the party size the rule saw was always one, and a night
+an in-progress edit newly BOUGHT carried no discount where the same night bought
+before the stay began would have. On a club with the discount switched on that was
+an overcharge running against the member, and it was nobody's decision. The plan
+now prices the WHOLE PARTY in one pass per window, the way the guest-add route
+does, and each guest's amounts are their slice of that combined breakdown. Two
+passes, and which party each counts is the rule:
+
+- The **post-edit** party, over the nights each guest ends up holding, prices
+  everything this edit buys: an added guest's window, and the nights an extension
+  creates. The count needs no special-casing — a removed guest's proposed nights
+  stop at the edit window, a shortened check-out drops its own tail, and a
+  partial-stay guest is counted only on the nights they hold, so an absent night
+  cannot make up the minimum.
+- The **pre-edit** window, over the nights each guest currently holds inside the
+  edit window, values a night this edit takes AWAY — and it is passed **no discount
+  config at all**, so it is byte-identical to what it was before #2756, discount
+  configured or not. #2756 reaches the nights an edit BUYS and nothing else.
+
+  That is a money decision, not an oversight, and it is the second thing an
+  obvious-looking fix gets wrong. INV-MOD-006's "a party dropping below the minimum
+  on removal never loses a discount it bought" is achieved by the **lock**, which
+  covers every guest whose `BookingGuestNight` rows record what they paid and needs
+  no party counted. Passing the config would only ever have changed the guests the
+  lock cannot reach — a booking predating the rows, or one created by approving a
+  request (#2739 backfills those but cannot empty the population) — and for them
+  today's party is a guess, so it can only ever SHRINK the credit. A removal on
+  such a booking credited $160 for nights the club had charged $240 for, and a
+  shortened check-out kept $480 across six guests. `refundCeilingCents` caps this
+  leg from ABOVE only, so that direction has no floor: the club would have kept
+  money it should have returned, on the credit leg, which is the leg #2744 exists
+  to keep honest.
+
+  So a night with **no recoverable stored price** is credited at the guest's own
+  rate type at today's rate, no substitution — which errs TOWARD the member for any
+  sane rate table, and is bounded above by `refundCeilingCents` so it can still
+  never hand back more than the guest is carrying. That is the documented
+  pre-existing degradation this file already names above, unchanged. The accurate
+  answer is that guest's own stored per-night average, which is right in both
+  directions where neither today's-rate rule is; it also moves the
+  discount-DISABLED path and therefore the 960-case equivalence matrix, so it is a
+  change to ordinary bookings, and it is filed as **#2771** alongside #2745's
+  repricing decision rather than taken here.
+
+**A night the guest KEEPS is valued from the post-edit pass in BOTH windows**, and
+that is the property that makes a party-aware discount safe on live bookings, not
+a detail of it. It cancels to nothing across the difference exactly as the locked
+prices do, so nothing already bought moves — not for a guest whose rows record
+what they paid, whose price is locked anyway, and **not for a legacy guest with no
+recoverable price either**. Valuing the two windows against their own parties
+instead would re-rate that guest's already-slept nights every time an edit pushed
+the party across the minimum: an add would CREDIT the rest of the party for nights
+they had already had, and a removal would CHARGE them for the same nights
+(INV-MOD-005). The pass is bounded below by the earliest night the edit actually
+prices, so it demands a season rate for no night that nobody is repricing, and
+reaches back below the edit window only for the #2029 check-out-day night the
+plan can genuinely buy there.
+
+**A night below a guest's OWN first priced night is in that pass for the party
+COUNT only, and is carried only when its price is locked.** The floor is party-wide,
+so in #2029's shape it can sit below one guest's own future window and reach back
+over one of their earlier nights. Nobody reads that night's price. Asking the season
+table for it anyway turned an edit that previously succeeded into a thrown
+"No rate found" whenever the booking's night rows had drifted past its own check-out
+(INV-DATE-012) and the covering season had no row for that guest's tier and rate
+type — no season gap required. A locked night short-circuits the rate lookup, so it
+joins the count and cannot fail; an unlocked one is dropped, which costs at most the
+count on that one night — the pre-#2756 answer for it, able to withhold a discount
+but never to invent one. Refusing the edit is the worse outcome. The apply path now
+maps a plan failure to the same 400 the quote route already returned, so preview and
+apply agree on the refusal as well as on the price.
+
+The 960-case contiguous equivalence matrix is
+untouched by every bit of this, and not by luck: it configures no discount and
+prices every guest on their own membership type's rows, so the substitution can
+reach no case in it and the same buckets still hold, per variant and in total. An
+edit at a club that has not switched the discount on does not move by a cent.
+**History is not repriced:** the discount binds
+edits from here on, nothing already charged, refunded or invoiced is recalculated,
+and a correction to a member charged the undiscounted rate by an earlier
+in-progress edit is a separate, audited adjustment — the same treatment #2744 and
+#2736 had, and the decision recorded on **#2756**.
+
+**What #2756 did NOT build, stated here rather than left to be discovered.** The
+owner's decision on that issue added a scope item to D1: an admin-controlled option
+on the group-discount setup for *whether bookings edited later receive the
+discount*, governing every edit path uniformly, defaulting to ON. This change
+implements the D1 behaviour — which is that default — but not the switch, so a club
+cannot yet turn edit-time discounting off. That is a new club-facing setting with a
+schema column, an admin section, settings-census registration and both-state tests,
+and it is filed as **#2770**. Until that lands, edit-time discounting is always on for
+a club whose discount is enabled, which is the documented default and no club's
+current correct behaviour changes because of the switch's absence.
 
 **The per-night amounts written back are each night's real rate (#2744), not an
 average.** A kept night keeps its stored price, a newly bought night takes its
@@ -686,17 +826,19 @@ What moves, deliberately, is a refund on a stay whose season rate HAS changed
 since it was made: it is now what the club charged rather than what it would
 charge today.
 
-**Nothing on this path is left frozen as a money shape, and one thing is stated
-rather than fixed.** #2736 carried three, each pinned by a test in
+**Nothing on this path is left frozen as a money shape.** #2736 carried three,
+each pinned by a test in
 `booking-edit-guest-ranges-sparse.test.ts` that had to be rewritten rather than
 deleted: a guest whose stay had already ended was re-admitted and charged, a
 refund was valued at today's rate, and the per-night amounts written back were an
 even split. #2743 answered the first and #2744 the other two, and all three pins
-were rewritten into the corrected assertion. What is left is not a frozen shape
-but a stated gap carrying its own decision — this plan prices each guest alone,
-so nights an in-progress edit newly BUYS carry no group discount (**#2756**,
-above) — plus the two disclosures recorded above, which are about what the
-officer is shown rather than about what anybody is charged.
+were rewritten into the corrected assertion. The fourth was a stated gap rather
+than a frozen shape — this plan priced each guest alone, so nights an in-progress
+edit newly BOUGHT carried no group discount — and **#2756** answered it, on the
+same terms: the behaviour is corrected forward, its pin is a mutation-probed suite
+rather than a claim, and history is not repriced. What is left is the two
+disclosures recorded above, which are about what the officer is shown rather than
+about what anybody is charged.
 
 **Money direction, stated with its scope.** Against the answer this plan gave
 *before* #2743, nothing moves up: the bound only ever removes nights from the

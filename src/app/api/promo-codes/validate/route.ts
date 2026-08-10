@@ -11,6 +11,7 @@ import {
   type GroupDiscountConfig,
   type SeasonRateData,
 } from "@/lib/pricing";
+import { toSeasonRateData } from "@/lib/policies/booking-route-decisions";
 import {
   getMembershipTypeBookingPolicyErrorBody,
   MembershipTypeBookingPolicyError,
@@ -212,17 +213,10 @@ export async function POST(req: NextRequest) {
     include: { membershipTypeRates: true },
   });
 
-  const seasonData: SeasonRateData[] = seasons.map((s) => ({
-    seasonId: s.id,
-    startDate: s.startDate,
-    endDate: s.endDate,
-    type: s.type,
-    rates: s.membershipTypeRates.map((r) => ({
-      membershipTypeId: r.membershipTypeId,
-      ageTier: r.ageTier,
-      pricePerNightCents: r.pricePerNightCents,
-    })),
-  }));
+  // #2756: through the shared mapper. This one already carried `type` and its
+  // prices do not move — it is routed here so `toSeasonRateData` is the tree's
+  // ONLY production season mapping, which is what the census can then enforce.
+  const seasonData: SeasonRateData[] = toSeasonRateData(seasons);
 
   let groupDiscount: GroupDiscountConfig | undefined;
   const gds = await prisma.groupDiscountSetting.findUnique({

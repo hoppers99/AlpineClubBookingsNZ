@@ -21,7 +21,10 @@ import {
   describePromoCapCoverage,
   type PromoCoverageNotice,
 } from "@/lib/promo-cap-coverage";
-import { toEditTimeGroupDiscountConfig } from "@/lib/policies/booking-route-decisions";
+import {
+  toEditTimeGroupDiscountConfig,
+  toSeasonRateData,
+} from "@/lib/policies/booking-route-decisions";
 import {
   ADULT_SUPERVISION_REVIEW_REASON,
   minorsReviewAlertShouldFire,
@@ -842,16 +845,11 @@ export async function loadSeasonRateData(
     include: { membershipTypeRates: true },
   });
 
-  return seasons.map((season) => ({
-    seasonId: season.id,
-    startDate: season.startDate,
-    endDate: season.endDate,
-    rates: season.membershipTypeRates.map((rate) => ({
-      membershipTypeId: rate.membershipTypeId,
-      ageTier: rate.ageTier,
-      pricePerNightCents: rate.pricePerNightCents,
-    })),
-  }));
+  // #2756: through the shared mapper, which carries the season's `type`. Mapped
+  // by hand without it, `summerOnly` — the schema DEFAULT — could never be
+  // satisfied, so the guest-removal reprice and the waitlist confirm that shares
+  // this loader both priced at the full rate whatever the club had configured.
+  return toSeasonRateData(seasons);
 }
 
 async function removeGuestChoreAssignments(

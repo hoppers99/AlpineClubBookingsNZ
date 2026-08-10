@@ -46,7 +46,11 @@ import {
   buildInProgressGuestRangePlan,
   type BuildInProgressGuestRangePlanInput,
 } from "@/lib/booking-edit-guest-ranges";
-import { calculateBookingPrice, type SeasonRateData } from "@/lib/pricing";
+import {
+  calculateBookingPrice,
+  type GroupDiscountConfig,
+  type SeasonRateData,
+} from "@/lib/pricing";
 import { eachDateOnlyInRange, normalizeDateOnlyForTimeZone } from "@/lib/date-only";
 
 const D = (s: string) => new Date(`${s}T00:00:00.000Z`);
@@ -2006,3 +2010,913 @@ function evenSplit(totalCents: number, count: number): number[] {
   const remainder = totalCents - base * count;
   return Array.from({ length: count }, (_, i) => base + (i < remainder ? 1 : 0));
 }
+
+// ---------------------------------------------------------------------------
+// 6. #2756 — the group discount reaches the nights an in-progress edit BUYS,
+//    and reaches nothing else.
+//
+// This plan used to price one guest at a time with no group-discount config, so
+// `countActiveGuestsForNight` was always looking at a one-element list and the
+// party size the rule saw was always 1. A member adding a sixth person to a
+// party of eight therefore got the discount if the stay started tomorrow and did
+// not if it started yesterday — same club, same night, same party, and the money
+// ran against the member (INV-MOD-006). The whole party is now priced in one
+// pass per window, the way the guest-add route already does it.
+//
+// The cases below are in two halves, and the second is the one that makes the
+// first safe:
+//
+//  - The discount applies to what the edit BUYS: an added guest's nights, and
+//    the nights an extension creates. Per night, and per the party actually in
+//    the lodge on that night, so an absent night does not count toward the
+//    minimum.
+//  - NOTHING ALREADY BOUGHT MOVES (INV-MOD-005). Not for a guest whose rows
+//    record what they paid, and — the shape a naive fix breaks — not for a
+//    legacy guest with no recoverable price either, whose held nights would
+//    otherwise be re-valued in one window and not the other every time an edit
+//    pushed the party across the minimum: an add would CREDIT the rest of the
+//    party for nights they had already slept, and a removal would CHARGE them.
+//
+// The fixture below runs on the SCHEMA DEFAULT configuration — `summerOnly:
+// true`, per `prisma/schema.prisma`, `DEFAULT_GROUP_DISCOUNT_SETTING` and the
+// admin section's own default — and its seasons therefore carry a `type`, because
+// that is the shape a real club is in. An earlier draft of these cases pinned
+// `summerOnly: false` throughout, which passed while the fix was INERT for every
+// default-configured club: `SeasonRateData.type` is optional, all five edit paths
+// hand-rolled a season literal without it, and `isGroupDiscountApplicable`'s
+// `season?.type === "SUMMER"` test could therefore never be satisfied. Running the
+// suite on the default is what makes it able to see that. `summerOnly: false`
+// survives only where that flag is itself the property under test.
+// ---------------------------------------------------------------------------
+
+const NON_MEMBER_TYPE = "type-non-member";
+const GROUP_RATE_TYPE = "type-group";
+/** What a member pays a night. */
+const MEMBER_NIGHT = 5000;
+/** What a true non-member pays a night. */
+const NON_MEMBER_NIGHT = 12000;
+/** The rate a qualifying group discount substitutes for a non-member. */
+const GROUP_NIGHT = 8000;
+const MIN_GROUP_SIZE = 6;
+
+/**
+ * One flat season carrying all three rate rows, so a discounted night and an
+ * undiscounted one differ by the rate row chosen and by nothing else — no season
+ * boundary in the way. The two-season fixture at the top of this file is what
+ * proves per-night season pricing; this one isolates the discount.
+ *
+ * `type: "SUMMER"` is load-bearing, not decoration: the default configuration
+ * restricts the discount to summer, so a season reaching pricing without its type
+ * turns the discount off silently. Every case here that expects a discounted
+ * amount fails if the field is dropped.
+ */
+const GROUP_SEASONS: SeasonRateData[] = [
+  {
+    seasonId: "s-group",
+    startDate: D("2026-08-01"),
+    endDate: D("2026-09-30"),
+    type: "SUMMER",
+    rates: [
+      { ageTier: "ADULT", membershipTypeId: MEMBER_TYPE, pricePerNightCents: MEMBER_NIGHT },
+      {
+        ageTier: "ADULT",
+        membershipTypeId: NON_MEMBER_TYPE,
+        pricePerNightCents: NON_MEMBER_NIGHT,
+      },
+      {
+        ageTier: "ADULT",
+        membershipTypeId: GROUP_RATE_TYPE,
+        pricePerNightCents: GROUP_NIGHT,
+      },
+    ],
+  },
+];
+
+/**
+ * A club that HAS switched the group discount on, on the DEFAULT settings —
+ * `summerOnly: true` (`prisma/schema.prisma`, `DEFAULT_GROUP_DISCOUNT_SETTING`,
+ * and `group-discount-section.tsx`). Every case below uses this unless the case is
+ * about `summerOnly` itself.
+ */
+const GROUP_DISCOUNT: GroupDiscountConfig = {
+  enabled: true,
+  minGroupSize: MIN_GROUP_SIZE,
+  summerOnly: true,
+  rateMembershipTypeId: GROUP_RATE_TYPE,
+};
+
+/** The same club with the summer restriction lifted — the non-default setting. */
+const GROUP_DISCOUNT_ANY_SEASON: GroupDiscountConfig = {
+  ...GROUP_DISCOUNT,
+  summerOnly: false,
+};
+
+/** The same rates in a WINTER season, which the default configuration excludes. */
+const WINTER_SEASONS: SeasonRateData[] = [
+  {
+    seasonId: "s-winter",
+    startDate: D("2026-08-01"),
+    endDate: D("2026-09-30"),
+    type: "WINTER",
+    rates: GROUP_SEASONS[0].rates,
+  },
+];
+
+type PartyGuest = BuildInProgressGuestRangePlanInput["booking"]["guests"][number];
+
+/**
+ * One guest of a party, holding exactly `nights`.
+ *
+ * `soldRateCents: null` drops their `BookingGuestNight` rows entirely — a legacy
+ * guest from before the rows existed, or one on a booking created by approving a
+ * request, which still writes none (#2739). They have no recoverable price, so
+ * their nights are valued at today's rate in both windows, which is the shape
+ * INV-MOD-005 already names and the one a party-aware discount can damage.
+ */
+function partyGuest(args: {
+  id: string;
+  nights: string[];
+  isMember: boolean;
+  soldRateCents?: number | null;
+  paidRateCents?: number;
+}): PartyGuest {
+  const sorted = [...args.nights].sort();
+  const last = sorted[sorted.length - 1];
+  const ownRate = args.isMember ? MEMBER_NIGHT : NON_MEMBER_NIGHT;
+  const soldRateCents =
+    args.soldRateCents === undefined ? ownRate : args.soldRateCents;
+  const paidRateCents = args.paidRateCents ?? soldRateCents ?? ownRate;
+  return {
+    id: args.id,
+    firstName: "Guest",
+    lastName: args.id,
+    ageTier: "ADULT",
+    isMember: args.isMember,
+    memberId: args.isMember ? `m-${args.id}` : null,
+    rateMembershipTypeId: args.isMember ? MEMBER_TYPE : NON_MEMBER_TYPE,
+    // Only a NON_MEMBER_DEFAULT guest's rate may be substituted by the discount
+    // (INV-MOD-007); a member keeps their own type's rate either way.
+    rateSource: args.isMember ? "OWN_TYPE" : "NON_MEMBER_DEFAULT",
+    stayStart: D(sorted[0]),
+    stayEnd: new Date(D(last).getTime() + 86_400_000),
+    ...(soldRateCents === null
+      ? {}
+      : {
+          nights: sorted.map((night) => ({
+            stayDate: D(night),
+            priceCents: soldRateCents,
+          })),
+        }),
+    priceCents: sorted.length * paidRateCents,
+  };
+}
+
+/** A non-member being added to the party by this edit. */
+function addedNonMember(id: string) {
+  return {
+    firstName: "Added",
+    lastName: id,
+    ageTier: "ADULT" as const,
+    isMember: false,
+    memberId: null,
+    rateMembershipTypeId: NON_MEMBER_TYPE,
+    rateSource: "NON_MEMBER_DEFAULT" as const,
+  };
+}
+
+/** The booking every case in this section edits: five nights, in progress. */
+const PARTY_NIGHTS = [
+  "2026-08-20",
+  "2026-08-21",
+  "2026-08-22",
+  "2026-08-23",
+  "2026-08-24",
+];
+const PARTY_CHECK_IN = "2026-08-20";
+const PARTY_CHECK_OUT = "2026-08-25";
+/** NZ tomorrow: nights 20-22 are locked, 23 and 24 are the future window. */
+const PARTY_EDITABLE_FROM = "2026-08-23";
+
+function groupPlanInput(args: {
+  guests: PartyGuest[];
+  newCheckOut?: string;
+  addGuests?: BuildInProgressGuestRangePlanInput["addGuests"];
+  removeGuestIds?: string[];
+  groupDiscount?: GroupDiscountConfig;
+  editableFrom?: string;
+  checkIn?: string;
+  checkOut?: string;
+}): BuildInProgressGuestRangePlanInput {
+  const totalPriceCents = args.guests.reduce((sum, g) => sum + g.priceCents, 0);
+  return {
+    booking: {
+      checkIn: D(args.checkIn ?? PARTY_CHECK_IN),
+      checkOut: D(args.checkOut ?? PARTY_CHECK_OUT),
+      totalPriceCents,
+      discountCents: 0,
+      promoAdjustmentCents: 0,
+      finalPriceCents: totalPriceCents,
+      guests: args.guests,
+    },
+    editableFrom: D(args.editableFrom ?? PARTY_EDITABLE_FROM),
+    newCheckOut: D(args.newCheckOut ?? PARTY_CHECK_OUT),
+    seasons: GROUP_SEASONS,
+    ...(args.addGuests ? { addGuests: args.addGuests } : {}),
+    ...(args.removeGuestIds ? { removeGuestIds: args.removeGuestIds } : {}),
+    ...(args.groupDiscount ? { groupDiscount: args.groupDiscount } : {}),
+  };
+}
+
+/** `count` members holding the booking's whole run, at what they paid for it. */
+function wholeRunMembers(count: number): PartyGuest[] {
+  return Array.from({ length: count }, (_, index) =>
+    partyGuest({ id: `m${index + 1}`, nights: PARTY_NIGHTS, isMember: true }),
+  );
+}
+
+/** Contiguous runs of equally-priced nights — one Xero line each (#1163). */
+function priceRuns(perNightCents: readonly number[]): Array<{
+  nightCount: number;
+  perNightCents: number;
+  totalCents: number;
+}> {
+  const runs: Array<{ nightCount: number; perNightCents: number; totalCents: number }> =
+    [];
+  for (const cents of perNightCents) {
+    const last = runs[runs.length - 1];
+    if (last && last.perNightCents === cents) {
+      last.nightCount += 1;
+      last.totalCents += cents;
+    } else {
+      runs.push({ nightCount: 1, perNightCents: cents, totalCents: cents });
+    }
+  }
+  return runs;
+}
+
+describe("#2756 the group discount on a stay already under way", () => {
+  it("gives an added guest the party's discounted rate, and moves nobody else", () => {
+    // Five members already in the lodge; the sixth person is added to a stay
+    // that started three nights ago. The party on every night this edit buys is
+    // six, which is the minimum, so those nights are discounted — exactly as
+    // they would be if the same guest were added the day before check-in.
+    const plan = buildInProgressGuestRangePlan(
+      groupPlanInput({
+        guests: wholeRunMembers(5),
+        addGuests: [addedNonMember("a1")],
+        groupDiscount: GROUP_DISCOUNT,
+      }),
+    );
+    const added = plan.proposedAddedGuests[0];
+
+    expect(added.nights.map(key)).toEqual(["2026-08-23", "2026-08-24"]);
+    expect(added.perNightCents).toEqual([GROUP_NIGHT, GROUP_NIGHT]);
+    expect(added.priceCents).toBe(2 * GROUP_NIGHT);
+    // The pre-#2756 answer, and the whole defect: the party size the rule saw
+    // was always one, so the added guest paid the undiscounted non-member rate.
+    expect(added.priceCents).not.toBe(2 * NON_MEMBER_NIGHT);
+
+    // INV-MOD-005: nobody who was already in the lodge moves by a cent.
+    for (const entry of plan.proposedExistingGuests) {
+      expect(entry.futureDeltaCents, entry.guest.id).toBe(0);
+      expect(entry.priceCents, entry.guest.id).toBe(5 * MEMBER_NIGHT);
+      expect(entry.perNightCents, entry.guest.id).toEqual(
+        PARTY_NIGHTS.map(() => MEMBER_NIGHT),
+      );
+    }
+    expect(plan.newTotalPriceCents).toBe(5 * 5 * MEMBER_NIGHT + 2 * GROUP_NIGHT);
+  });
+
+  it("charges the full rate at a club that has not switched the discount on", () => {
+    // The same edit at a club with no `GroupDiscountSetting` to pass. This is the
+    // majority of clubs and it must land exactly where it landed before #2756.
+    const plan = buildInProgressGuestRangePlan(
+      groupPlanInput({
+        guests: wholeRunMembers(5),
+        addGuests: [addedNonMember("a1")],
+      }),
+    );
+    const added = plan.proposedAddedGuests[0];
+
+    expect(added.perNightCents).toEqual([NON_MEMBER_NIGHT, NON_MEMBER_NIGHT]);
+    expect(added.priceCents).toBe(2 * NON_MEMBER_NIGHT);
+    for (const entry of plan.proposedExistingGuests) {
+      expect(entry.futureDeltaCents, entry.guest.id).toBe(0);
+      expect(entry.priceCents, entry.guest.id).toBe(5 * MEMBER_NIGHT);
+    }
+  });
+
+  it("charges the full rate when the party is one short of the minimum", () => {
+    // Four members plus the added guest is five, and the minimum is six. The
+    // config is passed and still cannot qualify, which is what separates "the
+    // config now reaches this plan" from "this plan now discounts everything".
+    const plan = buildInProgressGuestRangePlan(
+      groupPlanInput({
+        guests: wholeRunMembers(4),
+        addGuests: [addedNonMember("a1")],
+        groupDiscount: GROUP_DISCOUNT,
+      }),
+    );
+
+    expect(plan.proposedAddedGuests[0].priceCents).toBe(2 * NON_MEMBER_NIGHT);
+  });
+
+  it("counts the party per night, so an absent night cannot qualify", () => {
+    // Five members, one of whom goes home on the 24th. With the added guest the
+    // party is six on the 23rd and five on the 24th, so the first night this
+    // edit buys is discounted and the second is not — INV-MOD-006's "eligibility
+    // is per night and per party size on that night: a partial-stay guest's
+    // absent nights do not count toward the minimum".
+    const earlyDeparter = partyGuest({
+      id: "m5",
+      nights: PARTY_NIGHTS.slice(0, 4),
+      isMember: true,
+    });
+    const plan = buildInProgressGuestRangePlan(
+      groupPlanInput({
+        guests: [...wholeRunMembers(4), earlyDeparter],
+        addGuests: [addedNonMember("a1")],
+        groupDiscount: GROUP_DISCOUNT,
+      }),
+    );
+    const added = plan.proposedAddedGuests[0];
+
+    expect(added.perNightCents).toEqual([GROUP_NIGHT, NON_MEMBER_NIGHT]);
+    expect(added.priceCents).toBe(GROUP_NIGHT + NON_MEMBER_NIGHT);
+
+    // And the early departer is not back-filled onto the 24th to make up the
+    // number (#2743): they keep their own four nights and their own price.
+    const departer = plan.proposedExistingGuests.find(
+      (entry) => entry.guest.id === "m5",
+    );
+    expect(departer?.nights.map(key)).toEqual(PARTY_NIGHTS.slice(0, 4));
+    expect(departer?.futureDeltaCents).toBe(0);
+  });
+
+  it("discounts the nights an extension creates and leaves the held ones at what they cost", () => {
+    // A party of six, one of them a non-member who booked at 7000 a night before
+    // the rate moved. The check-out moves out two nights: those two are bought
+    // now, by a party of six, so they are discounted — and the five nights
+    // already bought keep the price on their rows, which is what makes the
+    // extension's delta exactly the nights it adds (INV-MOD-005).
+    const boughtAtTheOldRate = partyGuest({
+      id: "n1",
+      nights: PARTY_NIGHTS,
+      isMember: false,
+      soldRateCents: 7000,
+    });
+    const plan = buildInProgressGuestRangePlan(
+      groupPlanInput({
+        guests: [...wholeRunMembers(5), boughtAtTheOldRate],
+        newCheckOut: "2026-08-27",
+        groupDiscount: GROUP_DISCOUNT,
+      }),
+    );
+    const entry = plan.proposedExistingGuests.find(
+      (candidate) => candidate.guest.id === "n1",
+    );
+    if (!entry) throw new Error("the non-member is missing from the plan");
+
+    expect(entry.nights.map(key)).toEqual([
+      ...PARTY_NIGHTS,
+      "2026-08-25",
+      "2026-08-26",
+    ]);
+    expect(entry.perNightCents).toEqual([
+      7000,
+      7000,
+      7000,
+      7000,
+      7000,
+      GROUP_NIGHT,
+      GROUP_NIGHT,
+    ]);
+    expect(entry.futureDeltaCents).toBe(2 * GROUP_NIGHT);
+    // The two answers this must not give: today's undiscounted rate for the new
+    // nights (the pre-#2756 answer), and anything at all for the five nights the
+    // member had already paid for.
+    expect(entry.futureDeltaCents).not.toBe(2 * NON_MEMBER_NIGHT);
+    expect(entry.priceCents).toBe(5 * 7000 + 2 * GROUP_NIGHT);
+    expect(entry.perNightCents.slice(0, 5)).toEqual(PARTY_NIGHTS.map(() => 7000));
+
+    // The per-night amounts are what Xero rebuilds its lines from, one line per
+    // contiguous run of equally-priced nights, so every run has to multiply back
+    // out to its own total (#1163, INV-MONEY-001).
+    expect(priceRuns(entry.perNightCents)).toEqual([
+      { nightCount: 5, perNightCents: 7000, totalCents: 35000 },
+      { nightCount: 2, perNightCents: GROUP_NIGHT, totalCents: 2 * GROUP_NIGHT },
+    ]);
+    for (const run of priceRuns(entry.perNightCents)) {
+      expect(run.perNightCents * run.nightCount).toBe(run.totalCents);
+    }
+  });
+
+  it("does not credit a guest with no stored prices when an add pushes the party over the minimum", () => {
+    // THE SAFETY PIN. A legacy non-member carrying no night rows has no
+    // recoverable price, so their held nights are valued at today's rate in both
+    // windows. Adding a guest takes the party from five to six, and a fix that
+    // priced the two windows against different parties would value those nights
+    // at 8000 in one and 12000 in the other — handing the member 8000 back for
+    // nights they had already slept, on an edit that only added somebody else.
+    const legacy = partyGuest({
+      id: "n1",
+      nights: PARTY_NIGHTS,
+      isMember: false,
+      soldRateCents: null,
+    });
+    const plan = buildInProgressGuestRangePlan(
+      groupPlanInput({
+        guests: [...wholeRunMembers(4), legacy],
+        addGuests: [addedNonMember("a1")],
+        groupDiscount: GROUP_DISCOUNT,
+      }),
+    );
+    const entry = plan.proposedExistingGuests.find(
+      (candidate) => candidate.guest.id === "n1",
+    );
+    if (!entry) throw new Error("the legacy non-member is missing from the plan");
+
+    expect(entry.futureDeltaCents).toBe(0);
+    expect(entry.newFuturePriceCents).toBe(entry.oldFuturePriceCents);
+    expect(entry.priceCents).toBe(5 * NON_MEMBER_NIGHT);
+    expect(entry.perNightCents).toEqual(PARTY_NIGHTS.map(() => NON_MEMBER_NIGHT));
+    // While the nights the edit actually BUYS are discounted in the same plan —
+    // which is the point: the discount reached the new nights without touching
+    // the old ones.
+    expect(plan.proposedAddedGuests[0].priceCents).toBe(2 * GROUP_NIGHT);
+  });
+
+  it("does not charge a guest with no stored prices when a removal drops the party below the minimum", () => {
+    // The same pin in the other direction, and the worse one: a removal that
+    // takes the party from six to five must not re-rate a remaining legacy
+    // guest's already-slept nights UP to the undiscounted rate. Their nights are
+    // valued identically in both windows, so the difference is zero whatever the
+    // party does.
+    const legacy = partyGuest({
+      id: "n1",
+      nights: PARTY_NIGHTS,
+      isMember: false,
+      soldRateCents: null,
+      paidRateCents: GROUP_NIGHT,
+    });
+    const plan = buildInProgressGuestRangePlan(
+      groupPlanInput({
+        guests: [...wholeRunMembers(5), legacy],
+        removeGuestIds: ["m1"],
+        groupDiscount: GROUP_DISCOUNT,
+      }),
+    );
+    const remaining = plan.proposedExistingGuests.find(
+      (candidate) => candidate.guest.id === "n1",
+    );
+    const removed = plan.proposedExistingGuests.find(
+      (candidate) => candidate.guest.id === "m1",
+    );
+
+    expect(remaining?.futureDeltaCents).toBe(0);
+    expect(remaining?.priceCents).toBe(5 * GROUP_NIGHT);
+    // The removed member is credited exactly what their rows say they paid.
+    expect(removed?.futureDeltaCents).toBe(-2 * MEMBER_NIGHT);
+    expect(removed?.priceCents).toBe(3 * MEMBER_NIGHT);
+  });
+
+  it("credits a removed guest what their rows say they paid, discount included", () => {
+    // A non-member who bought at the discounted rate is taken off the last two
+    // nights. Their `BookingGuestNight` rows record the discounted price, so the
+    // LOCK returns exactly it — which is how INV-MOD-006's "a party dropping below
+    // the minimum on removal never loses a discount it bought" is actually
+    // achieved. No party has to be counted for it and no config has to be
+    // consulted, which is why it holds for a club with the discount switched off
+    // afterwards just as well.
+    const boughtDiscounted = partyGuest({
+      id: "n1",
+      nights: PARTY_NIGHTS,
+      isMember: false,
+      soldRateCents: GROUP_NIGHT,
+    });
+    const plan = buildInProgressGuestRangePlan(
+      groupPlanInput({
+        guests: [...wholeRunMembers(5), boughtDiscounted],
+        removeGuestIds: ["n1"],
+        groupDiscount: GROUP_DISCOUNT,
+      }),
+    );
+    const entry = plan.proposedExistingGuests.find(
+      (candidate) => candidate.guest.id === "n1",
+    );
+    if (!entry) throw new Error("the discounted non-member is missing from the plan");
+
+    expect(entry.oldFuturePriceCents).toBe(2 * GROUP_NIGHT);
+    expect(entry.oldFuturePriceCents).not.toBe(2 * NON_MEMBER_NIGHT);
+    expect(entry.futureDeltaCents).toBe(-2 * GROUP_NIGHT);
+    expect(entry.priceCents).toBe(3 * GROUP_NIGHT);
+    // Never below zero, whichever way the rates moved (#2744).
+    expect(entry.priceCents).toBeGreaterThanOrEqual(0);
+  });
+
+  it("credits a guest with NO stored prices at their own rate, never at a discount they cannot be shown to have had", () => {
+    // The population the lock cannot reach: a guest with no `BookingGuestNight`
+    // rows at all (a booking predating them, or one created by approving a request
+    // — #2739 backfills those but cannot empty the population). There is no
+    // per-night evidence of what they paid, so #2756 leaves this leg exactly where
+    // it was: their own rate type at today's rate, no substitution, no party count.
+    //
+    // Valuing it under today's party and today's config instead — the obvious
+    // reading of "credit it at what the party was charged" — can only ever SHRINK
+    // the credit, and `refundCeilingCents` caps this leg from ABOVE only, so that
+    // direction has no floor. This guest was charged the FULL rate (the club
+    // switched the discount on after they booked, or the party was under the
+    // minimum then), which their stored total proves: 5 x 12000.
+    const noRows = partyGuest({
+      id: "n1",
+      nights: PARTY_NIGHTS,
+      isMember: false,
+      soldRateCents: null,
+      paidRateCents: NON_MEMBER_NIGHT,
+    });
+    const plan = buildInProgressGuestRangePlan(
+      groupPlanInput({
+        guests: [...wholeRunMembers(5), noRows],
+        removeGuestIds: ["n1"],
+        groupDiscount: GROUP_DISCOUNT,
+      }),
+    );
+    const entry = plan.proposedExistingGuests.find(
+      (candidate) => candidate.guest.id === "n1",
+    );
+    if (!entry) throw new Error("the row-less non-member is missing from the plan");
+
+    // $240 back for two nights that cost $240, not the $160 a party-aware credit
+    // would have returned.
+    expect(entry.oldFuturePriceCents).toBe(2 * NON_MEMBER_NIGHT);
+    expect(entry.oldFuturePriceCents).not.toBe(2 * GROUP_NIGHT);
+    expect(entry.futureDeltaCents).toBe(-2 * NON_MEMBER_NIGHT);
+    expect(entry.priceCents).toBe(3 * NON_MEMBER_NIGHT);
+    expect(entry.priceCents).toBeGreaterThanOrEqual(0);
+
+    // And it is the same number with the config absent altogether, which is the
+    // property that makes it byte-identical to the pre-#2756 answer: this leg is
+    // not what #2756 changed.
+    const withoutDiscount = buildInProgressGuestRangePlan(
+      groupPlanInput({
+        guests: [...wholeRunMembers(5), noRows],
+        removeGuestIds: ["n1"],
+      }),
+    );
+    expect(
+      withoutDiscount.proposedExistingGuests.find(
+        (candidate) => candidate.guest.id === "n1",
+      )?.oldFuturePriceCents,
+    ).toBe(entry.oldFuturePriceCents);
+  });
+
+  it("still refuses to credit back more than a guest with no rows is carrying", () => {
+    // The ceiling is what keeps the member-favouring fallback above honest in the
+    // other direction (#2744). A guest with no rows whose stored total is BELOW
+    // today's rate for the nights they are giving back cannot be credited past it.
+    const cheapNoRows = partyGuest({
+      id: "n1",
+      nights: PARTY_NIGHTS,
+      isMember: false,
+      soldRateCents: null,
+      paidRateCents: 3000,
+    });
+    const plan = buildInProgressGuestRangePlan(
+      groupPlanInput({
+        guests: [...wholeRunMembers(5), cheapNoRows],
+        removeGuestIds: ["n1"],
+        groupDiscount: GROUP_DISCOUNT,
+      }),
+    );
+    const entry = plan.proposedExistingGuests.find(
+      (candidate) => candidate.guest.id === "n1",
+    );
+
+    // Today's rate would credit 2 x 12000 = 24000; they are carrying 5 x 3000.
+    expect(entry?.oldFuturePriceCents).toBe(5 * 3000);
+    expect(entry?.priceCents).toBe(0);
+  });
+
+  it("does not discount a WINTER night on the default summer-only setting, and does with the restriction lifted", () => {
+    // The setting the SCHEMA defaults to, and the one an earlier draft of this
+    // suite never exercised. `isGroupDiscountApplicable` reads
+    // `findSeasonForDate(night, seasons)?.type`, so with `summerOnly: true` a night
+    // in a WINTER season is not discounted however large the party — and, the
+    // reason this case exists, a season that reaches pricing WITHOUT its type is
+    // indistinguishable from that. Every edit path used to hand-roll its
+    // `SeasonRateData` and drop `type`, which made the whole discount inert for a
+    // default-configured club while this suite stayed green on `summerOnly: false`.
+    const winter = buildInProgressGuestRangePlan({
+      ...groupPlanInput({
+        guests: wholeRunMembers(5),
+        addGuests: [addedNonMember("a1")],
+        groupDiscount: GROUP_DISCOUNT,
+      }),
+      seasons: WINTER_SEASONS,
+    });
+    expect(winter.proposedAddedGuests[0].perNightCents).toEqual([
+      NON_MEMBER_NIGHT,
+      NON_MEMBER_NIGHT,
+    ]);
+
+    // The same party, the same winter night, with the summer restriction lifted.
+    const anySeason = buildInProgressGuestRangePlan({
+      ...groupPlanInput({
+        guests: wholeRunMembers(5),
+        addGuests: [addedNonMember("a1")],
+        groupDiscount: GROUP_DISCOUNT_ANY_SEASON,
+      }),
+      seasons: WINTER_SEASONS,
+    });
+    expect(anySeason.proposedAddedGuests[0].perNightCents).toEqual([
+      GROUP_NIGHT,
+      GROUP_NIGHT,
+    ]);
+
+    // And a season carrying no `type` at all behaves as WINTER does under the
+    // default: absence is not "summer", which is why the mapping has to carry it.
+    const untyped = buildInProgressGuestRangePlan({
+      ...groupPlanInput({
+        guests: wholeRunMembers(5),
+        addGuests: [addedNonMember("a1")],
+        groupDiscount: GROUP_DISCOUNT,
+      }),
+      seasons: [{ ...GROUP_SEASONS[0], type: undefined }],
+    });
+    expect(untyped.proposedAddedGuests[0].perNightCents).toEqual([
+      NON_MEMBER_NIGHT,
+      NON_MEMBER_NIGHT,
+    ]);
+  });
+
+  it("does not demand a rate for a drifted guest's own past night the floor reaches back over", () => {
+    // #2029's check-out-day extension again, in the shape the floor ALONE got
+    // wrong. The extension buys the night of the 22nd — inside the locked window,
+    // because the booking's check-out was the 22nd and the edit window opens on the
+    // 23rd — so the pass has to reach back to it. A SECOND guest's stored nights
+    // have drifted past the booking's own check-out (INV-DATE-012) and claim that
+    // same 22nd. Nobody reads their price for it: they are in the pass for the
+    // party COUNT only. Sending it to the season table anyway is what turned an
+    // edit that used to succeed into a thrown "No rate found" — here because the
+    // season covering the 22nd carries no row for THEIR rate type, which needs no
+    // season gap at all.
+    const EARLY_NO_MEMBER_ROW: SeasonRateData[] = [
+      {
+        seasonId: "s-early",
+        startDate: D("2026-08-01"),
+        endDate: D("2026-08-22"),
+        type: "SUMMER",
+        // No ADULT member row: a tier/rate-type combination the covering season
+        // cannot price, which is all it takes.
+        rates: GROUP_SEASONS[0].rates.filter(
+          (rate) => rate.membershipTypeId !== MEMBER_TYPE,
+        ),
+      },
+      {
+        seasonId: "s-late",
+        startDate: D("2026-08-23"),
+        endDate: D("2026-09-30"),
+        type: "SUMMER",
+        rates: GROUP_SEASONS[0].rates,
+      },
+    ];
+    /** Five non-members whose stay ends on the booking's own check-out day. */
+    const onCheckOutDay = Array.from({ length: 5 }, (_, index) =>
+      partyGuest({
+        id: `n${index + 1}`,
+        nights: ["2026-08-20", "2026-08-21"],
+        isMember: false,
+        soldRateCents: 7000,
+      }),
+    );
+    const driftedGuest = (soldRateCents: number | null) =>
+      partyGuest({
+        id: "d1",
+        nights: ["2026-08-20", "2026-08-21", "2026-08-22"],
+        isMember: true,
+        soldRateCents,
+      });
+    const extendBy = (drifted: PartyGuest) =>
+      buildInProgressGuestRangePlan({
+        ...groupPlanInput({
+          guests: [...onCheckOutDay, drifted],
+          checkIn: "2026-08-20",
+          checkOut: "2026-08-22",
+          editableFrom: "2026-08-23",
+          newCheckOut: "2026-08-24",
+          groupDiscount: GROUP_DISCOUNT,
+        }),
+        seasons: EARLY_NO_MEMBER_ROW,
+      });
+
+    // NO stored price for the drifted night. The edit goes through — it used to
+    // throw — and the cost is bounded to the party count on that one night: five
+    // rather than six, so the 22nd prices undiscounted, which is the pre-#2756
+    // answer for it. The 23rd, where the drifted guest IS priced and IS counted,
+    // is discounted.
+    const unlocked = extendBy(driftedGuest(null));
+    for (const entry of unlocked.proposedExistingGuests.slice(0, 5)) {
+      expect(entry.futureNights.map(key), entry.guest.id).toEqual([
+        "2026-08-22",
+        "2026-08-23",
+      ]);
+      expect(entry.perNightCents.slice(-2), entry.guest.id).toEqual([
+        NON_MEMBER_NIGHT,
+        GROUP_NIGHT,
+      ]);
+    }
+
+    // With a stored price for it, the same night joins the count without any season
+    // lookup — a lock short-circuits the rate — so the party is six on the 22nd and
+    // both bought nights are discounted.
+    const locked = extendBy(driftedGuest(7000));
+    for (const entry of locked.proposedExistingGuests.slice(0, 5)) {
+      expect(entry.perNightCents.slice(-2), entry.guest.id).toEqual([
+        GROUP_NIGHT,
+        GROUP_NIGHT,
+      ]);
+    }
+  });
+
+  it("discounts the check-out-day night an extension buys inside the locked window", () => {
+    // #2029's shape, with a discount on it. The booking's check-out is the 22nd
+    // and the edit window opens on the 23rd, so extending to the 24th buys the
+    // party the night of the 22nd — a night INSIDE the locked window that no
+    // guest holds yet. It has to be priced by the party that will be in the
+    // lodge on it, which means the pricing pass has to reach back below the edit
+    // window to cover it: if it did not, the night would be missing from the pass
+    // and the plan would throw rather than quietly hand it out.
+    const party = Array.from({ length: MIN_GROUP_SIZE }, (_, index) =>
+      partyGuest({
+        id: `n${index + 1}`,
+        nights: ["2026-08-20", "2026-08-21"],
+        isMember: false,
+        soldRateCents: 7000,
+      }),
+    );
+    const plan = buildInProgressGuestRangePlan(
+      groupPlanInput({
+        guests: party,
+        checkIn: "2026-08-20",
+        checkOut: "2026-08-22",
+        editableFrom: "2026-08-23",
+        newCheckOut: "2026-08-24",
+        groupDiscount: GROUP_DISCOUNT,
+      }),
+    );
+
+    for (const entry of plan.proposedExistingGuests) {
+      expect(entry.nights.map(key), entry.guest.id).toEqual([
+        "2026-08-20",
+        "2026-08-21",
+        "2026-08-22",
+        "2026-08-23",
+      ]);
+      // Two nights already bought at 7000, two bought now by a party of six.
+      expect(entry.perNightCents, entry.guest.id).toEqual([
+        7000,
+        7000,
+        GROUP_NIGHT,
+        GROUP_NIGHT,
+      ]);
+      expect(entry.futureDeltaCents, entry.guest.id).toBe(2 * GROUP_NIGHT);
+      expect(entry.futureDeltaCents, entry.guest.id).not.toBe(
+        2 * NON_MEMBER_NIGHT,
+      );
+    }
+  });
+
+  it("asks for no rate for a night nobody is repricing, however far back a guest's stay reaches", () => {
+    // The other edge of the same floor. Pricing the party in one pass means
+    // deciding which nights go INTO the pass, and handing each guest their whole
+    // proposed night list would make this plan demand a season rate for nights it
+    // is not repricing — so an edit to a stay whose earlier nights sit outside
+    // every active season, or whose rate row has since been removed, would start
+    // failing. A guest who went home a week ago makes that difference a week wide,
+    // because their pricing anchor reaches back to their own stay end even though
+    // #2743 lets them buy nothing before the booking's old check-out.
+    //
+    // Here the only season starts on the 23rd, the day the edit window opens.
+    // Every night before it is unpriceable, and the edit must still go through.
+    const LATE_SEASON: SeasonRateData[] = [
+      {
+        seasonId: "s-late",
+        startDate: D("2026-08-23"),
+        endDate: D("2026-09-30"),
+        type: "SUMMER",
+        rates: GROUP_SEASONS[0].rates,
+      },
+    ];
+    const departedAWeekAgo = partyGuest({
+      id: "m1",
+      nights: ["2026-08-16", "2026-08-17"],
+      isMember: true,
+    });
+    const stillHere = Array.from({ length: 5 }, (_, index) =>
+      partyGuest({
+        id: `n${index + 1}`,
+        nights: [
+          "2026-08-20",
+          "2026-08-21",
+          "2026-08-22",
+          "2026-08-23",
+          "2026-08-24",
+          "2026-08-25",
+        ],
+        isMember: false,
+        soldRateCents: null,
+      }),
+    );
+    const plan = buildInProgressGuestRangePlan({
+      ...groupPlanInput({
+        guests: [departedAWeekAgo, ...stillHere],
+        checkIn: "2026-08-16",
+        checkOut: "2026-08-26",
+        editableFrom: "2026-08-23",
+        newCheckOut: "2026-08-28",
+        groupDiscount: GROUP_DISCOUNT,
+      }),
+      seasons: LATE_SEASON,
+    });
+
+    // The extension buys the 26th and the 27th for all six of them, so those two
+    // nights are a party of six and are discounted; the three nights the five are
+    // already holding are a party of five, and are not.
+    for (const entry of plan.proposedExistingGuests.slice(1)) {
+      expect(entry.futureDeltaCents, entry.guest.id).toBe(2 * GROUP_NIGHT);
+      expect(entry.priceCents, entry.guest.id).toBe(
+        6 * NON_MEMBER_NIGHT + 2 * GROUP_NIGHT,
+      );
+      // No stored prices to honour, so the amounts written back are the even
+      // split this plan has always fallen back to — over eight nights, three of
+      // which no season covers and none of which this edit priced.
+      expect(entry.perNightCents, entry.guest.id).toEqual(
+        evenSplit(entry.priceCents, 8),
+      );
+    }
+    // And the guest who went home a week ago buys only what the extension
+    // creates, at their own rate, with their two unpriceable nights untouched.
+    const departed = plan.proposedExistingGuests[0];
+    expect(departed.nights.map(key)).toEqual([
+      "2026-08-16",
+      "2026-08-17",
+      "2026-08-26",
+      "2026-08-27",
+    ]);
+    expect(departed.perNightCents).toEqual([
+      MEMBER_NIGHT,
+      MEMBER_NIGHT,
+      MEMBER_NIGHT,
+      MEMBER_NIGHT,
+    ]);
+    expect(departed.futureDeltaCents).toBe(2 * MEMBER_NIGHT);
+  });
+
+  it("keeps every amount an integer that sums back to the guest's price", () => {
+    const plans = [
+      buildInProgressGuestRangePlan(
+        groupPlanInput({
+          guests: wholeRunMembers(5),
+          addGuests: [addedNonMember("a1")],
+          groupDiscount: GROUP_DISCOUNT,
+        }),
+      ),
+      buildInProgressGuestRangePlan(
+        groupPlanInput({
+          guests: [
+            ...wholeRunMembers(5),
+            partyGuest({
+              id: "n1",
+              nights: PARTY_NIGHTS,
+              isMember: false,
+              soldRateCents: 7001,
+            }),
+          ],
+          newCheckOut: "2026-08-27",
+          groupDiscount: GROUP_DISCOUNT,
+        }),
+      ),
+    ];
+
+    for (const plan of plans) {
+      for (const entry of [
+        ...plan.proposedExistingGuests,
+        ...plan.proposedAddedGuests,
+      ]) {
+        expect(entry.perNightCents.every(Number.isInteger)).toBe(true);
+        expect(entry.perNightCents).toHaveLength(entry.nights.length);
+        expect(entry.perNightCents.reduce((sum, cents) => sum + cents, 0)).toBe(
+          entry.priceCents,
+        );
+        expect(Number.isInteger(entry.priceCents)).toBe(true);
+      }
+      expect(Number.isInteger(plan.newTotalPriceCents)).toBe(true);
+      expect(plan.newTotalPriceCents).toBe(
+        [...plan.proposedExistingGuests, ...plan.proposedAddedGuests].reduce(
+          (sum, entry) => sum + entry.priceCents,
+          0,
+        ),
+      );
+    }
+  });
+});

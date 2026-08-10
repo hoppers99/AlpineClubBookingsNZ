@@ -21,6 +21,7 @@ import {
 import {
   groupDiscountEditNotice,
   toEditTimeGroupDiscountConfig,
+  toSeasonRateData,
 } from "@/lib/policies/booking-route-decisions";
 import { calculateChangeFee } from "@/lib/change-fee";
 import {
@@ -1308,16 +1309,13 @@ export async function POST(
     include: { membershipTypeRates: true },
   });
 
-  const seasonRateData: SeasonRateData[] = seasons.map((s) => ({
-    seasonId: s.id,
-    startDate: s.startDate,
-    endDate: s.endDate,
-    rates: s.membershipTypeRates.map((r) => ({
-      membershipTypeId: r.membershipTypeId,
-      ageTier: r.ageTier,
-      pricePerNightCents: r.pricePerNightCents,
-    })),
-  }));
+  // #2756: through the shared mapper, which carries the season's `type`. Mapped
+  // by hand here without it, the group discount's default `summerOnly` test could
+  // never pass, so every one of this route's pricing passes quoted the full rate
+  // for a club on the default setting — including the in-progress preview, which
+  // then agreed with an apply path broken the same way rather than with the price
+  // the club had configured.
+  const seasonRateData: SeasonRateData[] = toSeasonRateData(seasons);
 
   // The preview must quote what the mutating paths will charge (#1095): the
   // group discount applies to newly priced nights on every pricing pass below.
@@ -1387,6 +1385,11 @@ export async function POST(
           addGuests: policyAdjustedAddGuests,
           removeGuestIds,
           seasons: seasonRateData,
+          // #2756: the same config every other pricing pass in this route gets.
+          // The preview has to quote what the save will charge, so an in-progress
+          // edit's newly bought nights carry the group discount here exactly as
+          // they now do on apply (INV-MOD-006).
+          groupDiscount,
         })
         : null;
   } catch (error) {

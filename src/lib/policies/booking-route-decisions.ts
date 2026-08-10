@@ -36,13 +36,19 @@ export interface GroupDiscountSettingLike {
  * The same setting, read by an EDIT path, where `applyToEdits` is load-bearing
  * (#2770, INV-MOD-026).
  *
- * It is REQUIRED here rather than optional-with-a-default, and that is the
- * point. `GroupDiscountSetting` is read with a narrow `select` in at least one
- * place already (the public fee-page tokens select `enabled`/`minGroupSize`/
- * `summerOnly` only), so an optional field would let a future narrow select
- * disarm the club's switch silently — the switch would read as ON because the
- * column was never fetched, which is exactly the failure mode a money setting
- * cannot have. Requiring it makes that a typecheck failure instead.
+ * It is REQUIRED here rather than optional-with-a-default, and the DIRECTION of
+ * the failure it prevents is the point. `toEditTimeGroupDiscountConfig` gates on
+ * `!setting?.applyToEdits`, so a row that arrives WITHOUT the field is falsy and
+ * the discount is WITHHELD. `GroupDiscountSetting` is already read with a narrow
+ * `select` in one place (the public fee-page tokens select
+ * `enabled`/`minGroupSize`/`summerOnly` only), so if this field were optional a
+ * future narrow select on an edit path would silently withhold a discount the
+ * club left ON — money against the member, with nothing failing. Requiring it
+ * makes that a typecheck failure instead.
+ *
+ * `group-discount-section.tsx`'s `data.applyToEdits ?? true` is the deliberate
+ * OPPOSITE default, and for a different reason: a UI with no value must show the
+ * behaviour actually in force, and the column's own default is ON.
  */
 export interface EditTimeGroupDiscountSettingLike
   extends GroupDiscountSettingLike {
@@ -161,6 +167,28 @@ export function groupDiscountEditNotice(
     : GROUP_DISCOUNT_EDIT_OFF_NOTICE;
 }
 
+/**
+ * The ONE mapper from loaded `Season` rows to the shape every pricing pass reads.
+ *
+ * **It is the only one on purpose, and `type` is why (#2756).** The group
+ * discount's `summerOnly` flag — `true` by `prisma/schema.prisma`'s own default,
+ * by `DEFAULT_GROUP_DISCOUNT_SETTING`, and by the admin section's default — makes
+ * `isGroupDiscountApplicable` test `findSeasonForDate(night, seasons)?.type ===
+ * "SUMMER"`. `SeasonRateData.type` is OPTIONAL, because a caller that never
+ * configures a discount has no use for it, so a mapping that simply omits the
+ * field compiles silently, throws nothing, fails no test — and turns the discount
+ * OFF for every summer-only club, on whichever paths use that mapping.
+ *
+ * That is exactly what had happened: creation, the quote route, booking requests,
+ * group and school bookings and the waitlist reprice all came through here and
+ * carried `type`, while all five EDIT paths hand-rolled their own four-key literal
+ * without it. So a club on the default setting had its booking discounted when it
+ * was made and every later edit priced at the full rate — INV-MOD-006's parity
+ * claim was false for the most likely real configuration, and the money ran
+ * against the member. Route new season loads through this function rather than
+ * mapping them again; `in-progress-edit-sold-price-census.test.ts` fails a second
+ * production mapper, because the type system cannot.
+ */
 export function toSeasonRateData(seasons: SeasonRateSource[]): SeasonRateData[] {
   return seasons.map((season) => ({
     seasonId: season.id,

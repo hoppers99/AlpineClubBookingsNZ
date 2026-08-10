@@ -28,6 +28,7 @@ import {
 import {
   calculateBookingHoldDecision,
   toEditTimeGroupDiscountConfig,
+  toSeasonRateData,
 } from "@/lib/policies/booking-route-decisions";
 import {
   deletePromoRedemptionAndAdjustCount,
@@ -515,16 +516,12 @@ export async function POST(
         include: { membershipTypeRates: true },
       });
 
-      const seasonRateData: SeasonRateData[] = seasons.map((s) => ({
-        seasonId: s.id,
-        startDate: s.startDate,
-        endDate: s.endDate,
-        rates: s.membershipTypeRates.map((r) => ({
-          membershipTypeId: r.membershipTypeId,
-          ageTier: r.ageTier,
-          pricePerNightCents: r.pricePerNightCents,
-        })),
-      }));
+      // #2756: through the shared mapper, which carries the season's `type`.
+      // INV-MOD-006 names this route as the one that prices the whole post-add
+      // party, but the hand-rolled literal it used dropped `type`, so the discount
+      // it exists to apply could never qualify at a club on the DEFAULT
+      // `summerOnly: true` setting.
+      const seasonRateData: SeasonRateData[] = toSeasonRateData(seasons);
 
       // Calculate price for new guests
       const newGuestInputs = normalizedNewGuests.map((g) => ({

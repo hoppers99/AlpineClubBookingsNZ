@@ -39,6 +39,31 @@ edit or delete an entry. Retention and optional archival are governed by the
    user agent, retention class, and every drill-down target. Use **Reset** to
    restore search, filters, and page while keeping unrelated URL context.
 
+### Sharing or bookmarking a filtered view
+
+The filters live in the page address, so a link or a bookmark restores the same
+view. The **Member** filter travels as the member's **id only** — never their
+name or email address, because a page address reaches browser history, every
+proxy or CDN access log in front of the site, and the `Referer` header of any
+link you follow out of the page (#2733). When the page loads such a link it looks
+the member up and shows their name on the chip, so an id-only address still reads
+normally.
+
+If your role can read the audit log but not the membership roll (support access
+without membership access), the name on the chip comes from the audit entries on
+screen instead, and reads **Selected member** only when none of them names that
+member. Either way the filter itself works — only the label depends on where the
+name can be read from.
+
+A bookmark saved **before** this change still has the name and email in it. From
+the first time you open it, the page drops them from the address so they are not
+carried on into new history entries or passed to the next page you click through
+to. That is a fix going forward, not a clean-up: the visit itself has already been
+recorded — in this browser's history, and in the access log of anything sitting in
+front of the site — and nothing the page does afterwards can remove those. If that
+matters for a particular bookmark, replace the bookmark and clear that history
+entry on the machine that holds it.
+
 ## Settings reference
 
 The audit log has no editable settings. Its filters:
@@ -47,7 +72,7 @@ The audit log has no editable settings. Its filters:
 | --- | --- |
 | Event Type | Restrict to one recorded event action |
 | Category | One of account, booking, payment, family, admin, security, lodge, xero, communication, privacy, system |
-| Member + Member Scope | A specific member, matched as the actor, the subject, or either (*Involves*) |
+| Member + Member Scope | A specific member, matched as the actor, the subject, or either (*Involves*). Shared and bookmarked links carry the member's id only; the name on the chip is looked up from that id (#2733) |
 | Date range | From/To, with the standard presets |
 | Outcome | The recorded result (e.g. success/failure), from the events present |
 | Severity | The recorded severity, from the events present |
@@ -109,29 +134,52 @@ can see what.**
   not Lodge**. The bed-allocation screens are gated on Bookings, not Lodge, so a
   Booking Officer can still make every allocation and can still read the full
   record here on this screen, but will no longer see their own allocations
-  through AI Diagnostics. Everyone in both groups keeps Admin → Audit Log.
+  through AI Diagnostics. Everyone in both groups keeps Admin → Audit Log. This
+  applies to the older allocations too, because the same release moves the
+  entries already recorded — see below.
 
 **None of the three changes affects what this screen shows you. Admin → Audit Log
 shows every entry to anyone with Support access**, exactly as before — the
 categories above only govern the AI Diagnostics tools, which are deliberately
 narrower.
 
-**But the bed-allocation change does affect the Category *filter* on this screen,
-and it will not fix itself.** An entry keeps the category it was given when it
-was written, and this release did not rewrite the entries already recorded. So
-bed-allocation history is now **split by date**:
+**The bed-allocation entries you already had were moved too, so the Category
+filter finds the whole run.** An entry normally keeps the category it was given
+when it was written, and a category change in the code would therefore have split
+bed-allocation history by date — filter by **Lodge** and you would see only
+entries from this release onwards, filter by **Admin** and only the older ones,
+and neither would answer "what happened to the beds that weekend" if the weekend
+straddled the upgrade. This release avoids that: the upgrade rewrites the stored
+category on exactly the bed-allocation and lodge-display entries whose recording
+changed, and nothing else. Filtering by **Lodge** now returns the whole run,
+however old.
 
-- Filter by **Lodge** and you see bed-allocation entries recorded from this
-  release onwards.
-- Filter by **Admin** and you see the ones recorded before it.
-- **Clear the filter (or use All) to see the whole run** — that is the reliable
-  way to answer "what happened to the beds that weekend" across the release date.
+Three things an operator should know about that rewrite:
 
-This is the same shape as the `booking` → `payment` split described further down:
-older entries stay where they were. In AI Diagnostics the split disappears about
-a week after the release, because the widest correlation window there is 7 days;
-on this screen it lasts until the entries are reclassified, which is a separate
-reviewed change.
+- **It changed one field and nothing else.** The date, who did it, who it was
+  about, the summary, the stored details and the retention date on every one of
+  those entries are exactly as they were. Bed-allocation entries are kept for
+  seven years and that is unchanged in both directions.
+- **The upgrade records itself.** You will see one new entry, *"Upgrade moved
+  historical bed-allocation and lodge-display activity records from the Admin
+  category to Lodge"*, filed under **Admin**, carrying how many of *these*
+  entries were in each category before and after. Read those figures as scoped to
+  the rewrite: they count only the bed-allocation and lodge-display event names it
+  matched, so they are far smaller than the number of Admin or Lodge entries the
+  Category filter itself shows, and that is correct rather than a miscount. It is
+  there deliberately: this is the club's
+  own record that its history was rewritten, and it is filed under Admin so a
+  Support-only operator — the person who just lost these entries from their AI
+  Diagnostics view — can see why.
+- **A handful of entries from the upgrade itself may still say Admin.** The
+  rewrite runs a few minutes before the new version starts serving, so an
+  allocation made in that window is recorded by the old version and filed the old
+  way. Clear the filter (or use **All**) if you are chasing something from the
+  upgrade window itself. The operator runbook asks whoever performs the upgrade to
+  run the rewrite once more afterwards, which removes even those.
+
+This is a different outcome from the `booking` → `payment` split described further
+down, where the older entries genuinely do stay where they were.
 
 **A larger set of entries moved in this release**, because 82 kinds of entry that
 had never carried a category were given one. The bold items in the table above are
