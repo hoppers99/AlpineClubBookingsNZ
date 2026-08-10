@@ -638,8 +638,8 @@ passes, and which party each counts is the rule:
   answer is that guest's own stored per-night average, which is right in both
   directions where neither today's-rate rule is; it also moves the
   discount-DISABLED path and therefore the 960-case equivalence matrix, so it is a
-  change to ordinary bookings and belongs with #2745's repricing decision rather
-  than here.
+  change to ordinary bookings, and it is filed as **#2771** alongside #2745's
+  repricing decision rather than taken here.
 
 **A night the guest KEEPS is valued from the post-edit pass in BOTH windows**, and
 that is the property that makes a party-aware discount safe on live bookings, not
@@ -687,7 +687,7 @@ discount*, governing every edit path uniformly, defaulting to ON. This change
 implements the D1 behaviour — which is that default — but not the switch, so a club
 cannot yet turn edit-time discounting off. That is a new club-facing setting with a
 schema column, an admin section, settings-census registration and both-state tests,
-and it carries its own issue. Until it lands, edit-time discounting is always on for
+and it is filed as **#2770**. Until that lands, edit-time discounting is always on for
 a club whose discount is enabled, which is the documented default and no club's
 current correct behaviour changes because of the switch's absence.
 

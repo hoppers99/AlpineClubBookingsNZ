@@ -41,5 +41,5 @@
   before this release keep the prices they were given; putting anything right for
   a member who was charged the undiscounted rate is a separate, audited
   adjustment. The admin switch for whether later edits receive the discount at all
-  is a separate change and is not in this release — edit-time discounting is on for
+  is a separate change (#2770) and is not in this release — edit-time discounting is on for
   any club whose discount is enabled, which is that switch's intended default.
