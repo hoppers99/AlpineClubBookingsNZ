@@ -542,16 +542,25 @@ export const DIAGNOSTICS_LODGE_CORRELATION_TOOL_ID =
  *    #2751's migration
  *    (`prisma/migrations/20260810020000_backfill_bed_allocation_audit_category`)
  *    rewrote those rows to `lodge` for exactly the 18 action names those 22 sites
- *    write, so the lodge entry now holds the whole family and the system entry
- *    holds none of it. **If you reclassify an audit writer again, this is the
- *    trap: the prose here is about STORED rows, and moving a writer without
+ *    write, so the lodge entry holds practically the whole family and the system
+ *    entry practically none of it. **If you reclassify an audit writer again, this
+ *    is the trap: the prose here is about STORED rows, and moving a writer without
  *    moving the rows re-opens the same date split** (INV-OPS-012).
- *    The one residue is minutes wide rather than release wide: `migrate deploy`
- *    runs before cutover, so a row written by the old colour during the upgrade
- *    window keeps `admin` until the operator re-runs the statement, which the
- *    migration's own operator note asks for. `SHARED_DESCRIPTION_TAIL` already
- *    tells the model never to settle a question on one empty entry, which is the
- *    right size of warning for that.
+ *
+ *    "PRACTICALLY", NOT "ENTIRELY", AND THE STRINGS SAY SO. One residue survives
+ *    the backfill, minutes wide rather than release wide: `migrate deploy` runs
+ *    before cutover, so a row written by the old colour during the upgrade window
+ *    is filed `admin` AFTER the statement has already passed, and keeps `admin`
+ *    until the operator re-runs it — which the runbook asks for (§3.2) but
+ *    explicitly permits skipping. An earlier draft of this pack left that to
+ *    `SHARED_DESCRIPTION_TAIL`, which only tells the model not to settle a
+ *    question on ONE EMPTY entry; neither entry is empty in this case (each holds
+ *    the rest of the history), so the tail never fires and the model was left with
+ *    an absolute "NOT here at all" that the same release documented as possibly
+ *    false for ever. That is the #2730 evidence-honesty defect in the opposite
+ *    direction, so the residue is now named in the system `scope`, the lodge
+ *    `scope` and the lodge `description`, and pinned in both directions by
+ *    `support-correlation.test.ts`.
  *  - `lodge` carries INDUCTION (`induction.ts`, `induction-baseline.ts`), even though
  *    `/admin/induction` is a `membership` surface.
  *  - `privacy` carries the admin ISSUE-REPORT events, even though
@@ -609,7 +618,7 @@ export const DIAGNOSTICS_SUPPORT_CORRELATION_TOOLS: readonly DiagnosticsToolEntr
       requiredAreas: AUDIT_CORRELATION_DOMAIN_AREAS.system,
       categories: SYSTEM_CATEGORIES,
       scope:
-        "System, security and ADMIN-INITIATED events. The `admin` category is the platform's catch-all for actions an administrator took in EVERY domain — member merges and lifecycle decisions, member import, seasonal assignments, payment and booking SETTINGS changes, chores, lockers, work parties, lodge instructions, lodge settings, the lodge records themselves, and an officer's edit of ANOTHER member's record (#2755) — as metadata only. Bulk member-record rows before #2755 sit in the membership tool. Communication events (bulk email, notices, delivery suppressions) are NOT here: they are `communication`, which the membership tool covers. BED ALLOCATION is NOT here at all: #2730 moved its writers to `lodge` and #2751 moved the older rows, so the lodge tool holds the whole family.",
+        "System, security and ADMIN-INITIATED events. The `admin` category is the platform's catch-all for actions an administrator took in EVERY domain — member merges and lifecycle decisions, member import, seasonal assignments, payment and booking SETTINGS changes, chores, lockers, work parties, lodge instructions, lodge settings, the lodge records, and an officer's edit of ANOTHER member's record (#2755) — as metadata only. Bulk member-record rows before #2755 sit in the membership tool. Communication events (bulk email, notices, delivery suppressions) are `communication`, which the membership tool covers. BED ALLOCATION belongs to the lodge tool: #2730 moved its writers, #2751 the older rows — except an allocation made in an upgrade window, which the old code files here until the backfill re-runs.",
       description: `Correlates recent audit events in the categories admin, security and system, optionally for one exact request identifier. Use it to see what the platform recorded around an incident. Note that "admin" is the catch-all for administrator-initiated actions in every domain — member merges, lifecycle decisions, imports and settings changes are recorded here rather than in the domain categories — so this tool is the right one for "what did an administrator do around this time". An officer's edit of another member's record is recorded here from the #2755 release onwards, whether they used the member detail page or the bulk screen, so this is the right tool for "who deactivated this member" or "who changed their roles". Bulk rows recorded BEFORE that release still say "account" or "security" — no stored row was rewritten — so for anything older use the membership correlation tool too, and never report an absence of bulk member-record activity on this tool alone. A member editing their OWN profile is "account", which the membership correlation tool covers. Email and notice delivery is recorded under "communication", which the membership correlation tool covers, not this one. ${SHARED_DESCRIPTION_TAIL}`,
     }),
     defineCorrelationTool({
@@ -645,7 +654,7 @@ export const DIAGNOSTICS_SUPPORT_CORRELATION_TOOLS: readonly DiagnosticsToolEntr
       requiredAreas: AUDIT_CORRELATION_DOMAIN_AREAS.lodge,
       categories: LODGE_CATEGORIES,
       scope:
-        "Lodge-operations events, including INDUCTION and induction-baseline events even though the induction admin screen sits under Membership, and bed-allocation events — an administrator's manual, bulk and range allocations as well as the automatic lifecycle ones. That includes the allocations recorded BEFORE the release that shipped #2730: their writers said `admin` at the time, and #2751's backfill moved the stored rows here, so the whole run is in one place. Administrator changes to chores, lockers, work parties, lodge instructions, lodge settings and the lodge records themselves are `admin`, which the system correlation tool covers.",
-      description: `Correlates recent audit events in the lodge category, optionally for one exact request identifier. Use it to see what the platform recorded around a rosters, guest arrival/departure, bed-allocation or induction problem. Induction events are recorded here, under "lodge", even though the induction admin screen sits under Membership. Lodge display layouts, templates and devices, the lodge display configuration, and lodge kiosk accounts, are recorded here too. Bed allocation is recorded here: an administrator's manual, bulk, range and approval actions sit beside the automatic lifecycle promotions and displacements, so this is the right tool for "who put whom in which bed". That includes allocations from before the release that shipped #2730, whose stored rows said "admin" until the #2751 backfill moved them here, so a bed question no longer needs the system correlation tool as well. Administrator changes to chores, lockers, work parties, lodge settings, lodge instructions and the lodge records themselves are recorded under "admin", so use the system correlation tool for those. ${SHARED_DESCRIPTION_TAIL}`,
+        "Lodge-operations events, including INDUCTION and induction-baseline events even though the induction admin screen sits under Membership, and bed-allocation events — an administrator's manual, bulk and range allocations as well as the automatic lifecycle ones. That includes the allocations recorded BEFORE the release that shipped #2730: their writers said `admin` at the time, and #2751's backfill moved the stored rows here, so the whole run is in one place — apart from an allocation recorded during an upgrade window itself, which stays in the system tool until the operator re-runs that backfill. Administrator changes to chores, lockers, work parties, lodge instructions, lodge settings and the lodge records themselves are `admin`, which the system correlation tool covers.",
+      description: `Correlates recent audit events in the lodge category, optionally for one exact request identifier. Use it to see what the platform recorded around a rosters, guest arrival/departure, bed-allocation or induction problem. Induction events are recorded here, under "lodge", even though the induction admin screen sits under Membership. Lodge display layouts, templates and devices, the lodge display configuration, and lodge kiosk accounts, are recorded here too. Bed allocation is recorded here: an administrator's manual, bulk, range and approval actions sit beside the automatic lifecycle promotions and displacements, so this is the right tool for "who put whom in which bed". That includes allocations from before the release that shipped #2730, whose stored rows said "admin" until the #2751 backfill moved them here, so a bed question needs the system correlation tool only for the minutes of an upgrade window: the backfill runs a few minutes before the new version starts serving, so an allocation recorded in that window was filed under "admin" and stays there until the operator runs the backfill again. Administrator changes to chores, lockers, work parties, lodge settings, lodge instructions and the lodge records themselves are recorded under "admin", so use the system correlation tool for those. ${SHARED_DESCRIPTION_TAIL}`,
     }),
   ];

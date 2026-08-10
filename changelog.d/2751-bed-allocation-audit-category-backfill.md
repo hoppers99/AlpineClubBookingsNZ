@@ -15,8 +15,11 @@
 
   **You will see the upgrade record itself.** One new entry appears, *"Upgrade
   moved historical bed-allocation and lodge-display activity records from the Admin
-  category to Lodge"*, filed under **Admin** and carrying how many records were in
-  each category before and after. It is there on purpose: this is the club's own
+  category to Lodge"*, filed under **Admin** and carrying how many of *these*
+  records were in each category before and after — the bed-allocation and
+  lodge-display records only, not every Admin or Lodge record the club holds, so
+  the figures will not match the Category filter's own totals. It is there on
+  purpose: this is the club's own
   record that its own history was rewritten, and Admin is the category a
   Support-only operator can still see — so the person who just lost these records
   from their AI Diagnostics view can read why.

@@ -426,7 +426,18 @@ describe("AID-6A correlation category sets (#2375)", () => {
       migration `20260810020000_backfill_bed_allocation_audit_category` rewrote
       the stored rows for exactly the 18 action names those 22 sites write, so the
       lodge entry really does hold the whole family and the system entry holds
-      none of it.
+      practically none of it.
+
+      "PRACTICALLY", AND THAT WORD IS THE THIRD THING THIS TEST PINS. `migrate
+      deploy` runs before cutover, so the draining old colour files bed-allocation
+      rows `admin` AFTER the statement has passed, and they keep `admin` for ever
+      if the operator takes the runbook's own permission (§3.2) to skip the
+      re-run. An absolute "BED ALLOCATION is NOT here at all" on the system entry
+      would therefore be a Diagnostics tool telling the model something the same
+      release documents as possibly false permanently — the #2730 evidence-honesty
+      defect in the opposite direction. `SHARED_DESCRIPTION_TAIL` does not cover
+      it: the tail only warns against settling a question on ONE EMPTY entry, and
+      neither entry is empty here.
 
       STILL PINNED ON BOTH ENTRIES, because the misdirection is still symmetric —
       only the direction changed. The lodge entry must not go back to disclaiming
@@ -449,10 +460,23 @@ describe("AID-6A correlation category sets (#2375)", () => {
     expect(lodge.evidenceScope).not.toContain(
       "still carry `admin`",
     );
-    // The mirror: the system entry disclaims bed allocation outright instead of
-    // holding half of it.
-    expect(system.evidenceScope).toContain("BED ALLOCATION is NOT here at all");
+    // The mirror: the system entry sends bed allocation to the lodge tool instead
+    // of claiming to hold half of it.
+    expect(system.evidenceScope).toContain(
+      "BED ALLOCATION belongs to the lodge tool",
+    );
     expect(system.evidenceScope).not.toContain("ARE returned here");
+
+    // The upgrade-window residue is named on all three strings, so no entry
+    // asserts a completeness the runbook says may never arrive. The absolute
+    // claim must not come back on either side of it.
+    expect(system.evidenceScope).toContain("upgrade window");
+    expect(system.evidenceScope).not.toContain("NOT here at all");
+    expect(lodge.evidenceScope).toContain("upgrade window");
+    expect(lodge.description).toContain("upgrade window");
+    expect(lodge.description).not.toContain(
+      "no longer needs the system correlation tool as well",
+    );
   });
 
   it("renders the scope INSIDE the evidence block, above the rows", () => {
@@ -653,12 +677,14 @@ describe("AID-6A correlation SQL shape (#2375)", () => {
     //
     // THE SCOPE LINES AND THE ROWS SHARE ONE BUDGET, which is the reason to keep this
     // per entry rather than on the widest. Re-measured after #2751 rewrote the two
-    // bed-allocation sentences on top of #2755's system and membership additions
-    // (#2730 read 432 to 1 002 characters with 132 spare on the system entry;
-    // #2755 read 432 to 1 094 with 40 spare on system, 55 on membership and 185 on
-    // lodge): the scopes now run from 432 to 1 080 characters, and the five entries
-    // still render all 22 whole rows — the system entry with 64 characters of the
-    // 8 000 to spare, the membership entry with 55 and the lodge entry with 230.
+    // bed-allocation sentences and then named the upgrade-window residue on three of
+    // them, on top of #2755's system and membership additions (#2730 read 432 to
+    // 1 002 characters with 132 spare on the system entry; #2755 read 432 to 1 094
+    // with 40 spare on system, 55 on membership and 185 on lodge; #2751's first draft
+    // read 432 to 1 080 with 64, 55 and 230): the scopes now run from 432 to 1 092
+    // characters, and the five entries still render all 22 whole rows — the system
+    // entry with 42 characters of the 8 000 to spare, the membership entry with 55
+    // and the lodge entry with 89.
     // This assertion has already earned that TWICE: #2730's first draft of the
     // system `scope`
     // overran by seven characters and the block silently dropped a row, and #2755's
@@ -669,10 +695,12 @@ describe("AID-6A correlation SQL shape (#2375)", () => {
     // characters of `scope` render 22 rows and 1 136 render 21. It is the entry every
     // classification change has to annotate, because `admin` is where the catch-all
     // lives, so expect the next such change to have to BUY its words by shortening
-    // something rather than by appending — which is what #2751 did here, replacing
-    // the bed-allocation split sentence with a shorter one that says the split is
-    // closed. A prose edit here is a capacity edit; re-run this before assuming
-    // otherwise.
+    // something rather than by appending — which is what #2751 did TWICE here: first
+    // replacing the bed-allocation split sentence with a shorter one saying the split
+    // is closed, then paying for the upgrade-window clause by collapsing "are NOT
+    // here: they are `communication`" to "are `communication`" and dropping
+    // "themselves" from the lodge-records list. A prose edit here is a capacity edit;
+    // re-run this before assuming otherwise.
     for (const entry of DIAGNOSTICS_SUPPORT_CORRELATION_TOOLS) {
       expect(entry.rowLimit).toBe(22);
       const evidence = renderToolResultEvidence({

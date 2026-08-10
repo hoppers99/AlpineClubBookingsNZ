@@ -137,8 +137,12 @@ Three things an operator should know about that rewrite:
   seven years and that is unchanged in both directions.
 - **The upgrade records itself.** You will see one new entry, *"Upgrade moved
   historical bed-allocation and lodge-display activity records from the Admin
-  category to Lodge"*, filed under **Admin**, carrying how many entries were in
-  each category before and after. It is there deliberately: this is the club's
+  category to Lodge"*, filed under **Admin**, carrying how many of *these*
+  entries were in each category before and after. Read those figures as scoped to
+  the rewrite: they count only the bed-allocation and lodge-display event names it
+  matched, so they are far smaller than the number of Admin or Lodge entries the
+  Category filter itself shows, and that is correct rather than a miscount. It is
+  there deliberately: this is the club's
   own record that its history was rewritten, and it is filed under Admin so a
   Support-only operator — the person who just lost these entries from their AI
   Diagnostics view — can see why.

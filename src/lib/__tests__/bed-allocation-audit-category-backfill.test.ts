@@ -146,11 +146,17 @@ describe("the #2751 bed-allocation category backfill (INV-OPS-012)", () => {
         "  * an action the backfill names that NO reviewed writer records means " +
         "the migration rewrites stored rows in an append-only table on the " +
         "strength of a decision nobody reviewed, and there is no undo.\n" +
-        "If a writer was genuinely added or moved, extend the literal list in " +
-        "prisma/migrations/" +
+        "If a writer was genuinely added or moved, the SAFE remedy comes first: " +
+        "if this migration has shipped in ANY release, do NOT edit it. Prisma " +
+        "records a checksum for every applied migration, so editing an applied " +
+        "one breaks `prisma migrate deploy` on every fork that already ran it " +
+        "(docs/BLUE_GREEN_MIGRATION_POLICY.md — committed migrations are not " +
+        "edited retroactively). Write a NEW backfill migration covering the " +
+        "added action, or file it (INV-OPS-012), and say so here. Extending the " +
+        "literal list in prisma/migrations/" +
         BACKFILL_MIGRATION +
-        "/migration.sql — or, if the rows are already deployed and a new " +
-        "migration is needed, file it (INV-OPS-012) and say so here.",
+        "/migration.sql is correct ONLY while that migration is still " +
+        "unreleased and unapplied anywhere.",
     ).toEqual(writtenActions);
   }, 180_000);
 

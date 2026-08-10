@@ -786,6 +786,118 @@ built-in wording, so you can decide whether to patch your wording or press
 saved copy that merely reads differently — which is the whole point of saving
 one — is reported as a plain difference and never as a problem.
 
+### One-off rewrite of stored bed-allocation activity categories (#2751)
+
+`20260810020000_backfill_bed_allocation_audit_category` is a **data-only
+rewrite**. It adds and removes no schema, and it is safe to run in the ordinary
+deploy window with the previous app colour still serving — but it needs **one
+post-cutover action** (below), which is the only part of it that can be missed.
+
+**What it fixes.** Every activity entry in `AuditLog` carries a **category**, and
+that category is written onto the row when the row is written — it is not worked
+out again when you look at it. This release moved bed allocation and the lodge
+display configuration out of the **Admin** category and into **Lodge** (#2730),
+which changed where *new* entries are filed and deliberately left the entries
+already in your database alone. Bed-allocation history was therefore split at the
+upgrade date: filtering **Admin → Audit Log** by Lodge returned the newer
+allocations, filtering by Admin returned the older ones, and neither answered
+"what happened to the beds that weekend" if the weekend straddled the upgrade.
+The same split ran through **AI Diagnostics**, where the lodge correlation tool
+held one half and the system correlation tool the other. This migration rewrites
+the older entries so the whole run reads as one again.
+
+**What it changes, exactly.** `category` goes from `'admin'` to `'lodge'` on rows
+whose `action` is one of **eighteen exact names**, and on nothing else:
+
+```
+BED_ALLOCATION_APPROVED             BED_ALLOCATION_PARTNERS_PROMOTED
+BED_ALLOCATION_AUTO_RUN             BED_ALLOCATION_PARTNER_PROMOTED
+BED_ALLOCATION_BED_CREATED          BED_ALLOCATION_RANGE_SET
+BED_ALLOCATION_BED_DELETED          BED_ALLOCATION_REMOVAL_APPLIED
+BED_ALLOCATION_BED_UPDATED          BED_ALLOCATION_ROOMS_BULK_CREATED
+BED_ALLOCATION_BULK_SET             BED_ALLOCATION_ROOM_CREATED
+BED_ALLOCATION_CONFIG_IMPORTED      BED_ALLOCATION_ROOM_DELETED
+BED_ALLOCATION_MANUAL_SET           BED_ALLOCATION_ROOM_UPDATED
+BED_ALLOCATION_SETTINGS_UPDATED     LODGE_DISPLAY_CONFIG_UPDATED
+```
+
+The list is **literal, never a `BED_ALLOCATION%` pattern**. A pattern cannot be
+reviewed against the audit-writer census and would sweep up any bed-allocation
+event added after this migration was written, including one deliberately filed
+somewhere else — so the migration would rewrite rows nobody reviewed, on an
+append-only table, with no undo.
+
+`category` is also **the only column in the `SET` clause**. The date, the actor,
+who it was about, the summary, the stored details, the IP address, `retentionClass`
+and `expiresAt` all keep the bytes they were written with. That last pair matters:
+they were derived from the category at write time, and recomputing them from the
+new value is how a tidy-up silently re-dates when a row is purged. Retention does
+not move here in any case — every one of these eighteen actions classifies
+`critical` (seven years) under `admin` and under `lodge` alike.
+
+**Who can see what afterwards.** Anyone with **Support** access still reads every
+one of these entries in full in **Admin → Audit Log**, exactly as before; nothing
+is hidden from anyone on that screen. In **AI Diagnostics** the older entries
+follow the newer ones out of the system correlation tool and into the lodge one,
+so an operator holding Support alone — or Support and Bookings but not Lodge — no
+longer correlates them there. That is the same narrowing #2730 already applied to
+new entries, now applied consistently instead of by date. **No member gains or
+loses sight of anything** on their own activity page: neither `admin` nor `lodge`
+is a member-visible category, so nothing crossed that boundary in either
+direction.
+
+**How to see what was changed.** The migration writes one
+`AUDIT_CATEGORY_BACKFILLED` entry with no actor, filed under **Admin** on purpose
+so the Support-only operator who just lost these entries from their AI Diagnostics
+view can read why. Find it under **Admin → Audit Log** around your upgrade time,
+or:
+
+```sql
+SELECT "createdAt", "metadata"
+FROM "AuditLog"
+WHERE "action" = 'AUDIT_CATEGORY_BACKFILLED'
+  AND "metadata" ->> 'source' LIKE 'migration:20260810020000%';
+```
+
+`metadata -> 'measured'` holds the counts read in the same statement as the
+rewrite — `adminBefore`, `lodgeBefore`, `rewritten` and the action names actually
+touched — and `metadata -> 'derived'` holds `adminAfter` and `lodgeAfter`
+computed from them. **Read all of those as scoped to the eighteen actions above,
+not to the categories.** They count only bed-allocation and lodge-display entries,
+so they are far smaller than the totals the Category filter shows for Admin or
+Lodge; that is correct, not a miscount.
+
+**Re-running is safe.** The `WHERE` clause is the state the statement destroys, so
+a second run finds nothing left to move, and the `AUDIT_CATEGORY_BACKFILLED` entry
+is written only when rows actually moved — a replay rewrites no row and appends no
+row.
+
+**Post-upgrade action — recommended, and the runbook asks for it.** `prisma
+migrate deploy` runs **before** cutover, while the previous colour is still
+serving and still filing new bed-allocation entries the old way. Every allocation
+made in that window is written *after* the statement has already passed, so it
+keeps `admin` permanently unless the statement runs again. Run the same file
+verbatim once cutover is complete
+([`PRODUCTION_UPGRADE_RUNBOOK.md`](PRODUCTION_UPGRADE_RUNBOOK.md) §3.2):
+
+```bash
+psql "$DATABASE_URL" \
+  -f prisma/migrations/20260810020000_backfill_bed_allocation_audit_category/migration.sql
+```
+
+Expect either a second `AUDIT_CATEGORY_BACKFILLED` entry naming the handful of
+window rows, or no new entry at all — both are correct. **Skipping it is not a
+failure**, but it is not free either: those few entries stay under the **Admin**
+filter (where clearing the filter, or **All**, still finds them), and the system
+correlation tool in AI Diagnostics keeps returning them for up to seven days
+afterwards — which is exactly the week somebody is most likely to ask what
+happened during the upgrade.
+
+**There is no rollback.** A committed data rewrite survives a rollback of the
+code, and this migration is not `windowed`, so it ships no `rollback.sql`. Your
+pre-migration backup (step 3 of the generic procedure) is the only way back, and
+the club's own record of what happened is the audit entry above.
+
 ---
 
 ## v0.13.1 → v0.13.2

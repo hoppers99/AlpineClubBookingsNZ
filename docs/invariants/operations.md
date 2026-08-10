@@ -132,8 +132,15 @@ only the ID heading lines were added.
   `src/lib/__tests__/bed-allocation-audit-category-backfill.test.ts` fails when
   the #2751 backfill's literal action list and the writers pinned in
   `REVIEWED_ADMIN_CATEGORIES_2730` stop naming the same events in either
-  direction, so adding a 23rd bed-allocation writer without extending the
-  backfill fails CI by name. A GENERAL "did a reclassification ship without a
+  direction, so adding a 23rd bed-allocation writer without covering its rows
+  fails CI by name. **The remedy for that failure is a NEW backfill migration, or
+  a filed issue — not an edit to the #2751 one**, because
+  `docs/BLUE_GREEN_MIGRATION_POLICY.md` binds committed migrations never to be
+  edited retroactively: Prisma records a checksum per applied migration, so
+  editing one breaks `prisma migrate deploy` on every fork that already ran it.
+  Extending the existing literal list is correct only while that migration is
+  still unreleased and unapplied anywhere. A GENERAL "did a reclassification ship
+  without a
   backfill" check is **not available**, and pretending otherwise would be worse
   than having none: the audit-writer census pins only 105 of its 428 write sites
   per-site (`APPLIED_AUDIT_CATEGORIES` plus `REVIEWED_ADMIN_CATEGORIES_2730`) —

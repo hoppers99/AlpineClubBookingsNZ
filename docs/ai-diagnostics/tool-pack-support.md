@@ -164,12 +164,27 @@ split explicitly while it existed.
 
 #2751's migration `20260810020000_backfill_bed_allocation_audit_category` rewrote those
 rows — one column, on rows matched by an exact literal list of the 18 action names those 22
-sites write — so the lodge entry now holds the whole family and the system entry holds none
-of it. Both entries' prose is inverted to match and a pack test pins the new sentences in
-both directions, because the misdirection is symmetric: the lodge entry must not disclaim
-rows it now holds, and the system entry must not claim an older half it no longer has. The
-generalised rule is **INV-OPS-012** — an audit reclassification ships its backfill or files
-one — with the honest note that only the pinned population can be checked mechanically.
+sites write — so the lodge entry now holds practically the whole family and the system entry
+practically none of it. Both entries' prose is inverted to match and a pack test pins the new
+sentences in both directions, because the misdirection is symmetric: the lodge entry must not
+disclaim rows it now holds, and the system entry must not claim an older half it no longer
+has.
+
+**"Practically", and all three strings say so.** `prisma migrate deploy` runs before
+cutover, so the draining old colour files bed-allocation rows `admin` *after* the statement
+has passed, and they keep it for ever if the operator takes the runbook's own permission
+([§3.2](../PRODUCTION_UPGRADE_RUNBOOK.md)) to skip the re-run. An absolute "BED ALLOCATION
+is NOT here at all" on the system entry would therefore have been this pack asserting a
+completeness the same release documents as possibly permanently false — the same
+evidence-honesty defect as the split itself, in the opposite direction — and the shared tail
+cannot rescue it, because the tail only warns against settling a question on ONE EMPTY entry
+and neither entry is empty here. So the residue is named in the system `scope`, the lodge
+`scope` and the lodge `description`, and the pack test pins both the residue clause and the
+absence of the absolute claim.
+
+The generalised rule is **INV-OPS-012** — an audit reclassification ships its backfill or
+files one — with the honest note that only the pinned population can be checked
+mechanically.
 
 The other 96 `admin` writers were read in the same pass: 87 were deliberately kept and
 nine were held for a decision, because their destinations are member-visible and the

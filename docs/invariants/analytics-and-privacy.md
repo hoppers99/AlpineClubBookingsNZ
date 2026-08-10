@@ -205,8 +205,17 @@ category is a **permission decision written at the moment of the write**: it
 picks which AI Diagnostics correlation entry can return the row, therefore which
 admin areas an operator must hold, and — separately — whether the subject member
 sees the row on their own activity timeline. It is stored on the row and never
-recomputed at read time, so a classification decision binds the club's history
-from that release onward and is not reversible for rows already written.
+recomputed at read time, so **changing the code changes only the rows written
+afterwards**: the rows already written keep the superseded value, and a
+classification decision therefore binds the club's history from that release
+onward *until a backfill moves them*. **Moving them is not optional to decide in
+silence — `INV-OPS-012` ([`operations.md`](operations.md)) requires the
+reclassifying pull request to ship that backfill or file it as an issue, never
+neither and never as prose.** Its one carve-out is the boundary the second bullet
+below draws: a backfill that would cross the member-visible line in either
+direction is the owner's decision rather than an automatic consequence, which is
+why #2751's bed-allocation rows were rewritten (both categories member-invisible)
+and #2763's bulk member-record rows were not.
 
 - **Category follows the business domain affected. Never the initiator, never the
   route, and never the screen.** This is the owner's binding rule from #2581, and
