@@ -175,11 +175,13 @@ const EXPANSION_SITES = [
   // `plan-range` one. THIS CENSUS FOUND IT — the call was wrapped over three
   // lines, so the per-line regex the census shipped with could not see it — and
   // the pricing question it raised was filed as #2736 and is now fixed:
-  // `ProposedExistingGuestRange` carries the guest's canonical `nights`, and
-  // `splitGuestNightsEvenly` splits that LIST instead of re-expanding an
-  // envelope. There is no expansion left in the file, so it is gone from the
-  // table rather than sitting here at zero — the first test below derives the
-  // found set from the source, and a declared file with nothing in it fails it.
+  // `ProposedExistingGuestRange` carries the guest's canonical `nights`, and the
+  // per-night amounts are computed over that LIST instead of by re-expanding an
+  // envelope (#2744 then made them each night's real rate rather than an even
+  // split of the guest's total, still over the same list). There is no expansion
+  // left in the file, so it is gone from the table rather than sitting here at
+  // zero — the first test below derives the found set from the source, and a
+  // declared file with nothing in it fails it.
   // `booking-edit-guest-ranges.ts` does not replace it: the plan now calls the
   // canonical `expandStayEnvelopeToNightKeys`, which is what a routed caller
   // looks like (INV-DATE-020) and is deliberately not a census site.

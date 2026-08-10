@@ -31,7 +31,8 @@ interface ExistingBookingEditGuest {
   rateSource?: RateSource;
   stayStart?: Date | null;
   stayEnd?: Date | null;
-  // The guest's CANONICAL night set — their `BookingGuestNight` rows (#2736).
+  // The guest's CANONICAL night set — their `BookingGuestNight` rows (#2736),
+  // each carrying what that night was SOLD for (#2744).
   //
   // `stayStart`/`stayEnd` above is the DERIVED half-open envelope whose
   // `stayEnd` is the morning after the last night (INV-DATE-012), and for a
@@ -42,9 +43,31 @@ interface ExistingBookingEditGuest {
   // `LoadedBookingForModify` includes them — so before #2736 they were present
   // at runtime and invisible to the type system, which is exactly how the plan
   // came to be the one edit path that flattens a sparse stay.
-  nights?: ReadonlyArray<GuestNightInput> | null;
+  //
+  // `priceCents` was the same story a second time (#2744). The loaded rows carry
+  // it — `LoadedBookingForModify` types it, and `lockedNightPricesForGuest`
+  // reads exactly this column on every other edit path — but this plan's type
+  // stopped at `GuestNightInput`, so the one thing that says what the member
+  // actually paid for a night was invisible here and every night was valued at
+  // today's rate instead.
+  nights?: ReadonlyArray<StoredGuestNight> | null;
   priceCents: number;
 }
+
+/**
+ * One loaded `BookingGuestNight` row as this plan reads it: the night, and what
+ * the member was charged for it (#2744).
+ *
+ * `GuestNightInput` (a bare `Date`, a `yyyy-MM-dd` string, or `{ stayDate }`) is
+ * what the canonical stay-range helpers accept and is kept in the union so a
+ * caller holding any of those shapes still type-checks. The extra member is
+ * assignable to `{ stayDate }`, so the night set still flows into
+ * `getExplicitGuestBedNightKeys` unchanged; the price is simply no longer
+ * dropped on the floor on the way in.
+ */
+type StoredGuestNight =
+  | GuestNightInput
+  | { stayDate: Date | string; priceCents?: number | null };
 
 // Extends MemberGuestConsentGuestFields ("+ Add Member Guest", epic #2305, MG2
 // #2307) so a cross-family guest added to an IN-PROGRESS stay carries its consent
@@ -85,6 +108,14 @@ interface ProposedExistingGuestRange {
   // holds the booking's last night it IS `[stayStart, stayEnd)`, night for
   // night, which is what makes the change a no-op for every ordinary stay.
   nights: Date[];
+  // #2744: what each of `nights` is worth, in the same order and in integer
+  // cents, summing EXACTLY to `priceCents`. This is what gets written to
+  // `BookingGuestNight.priceCents`, and therefore what the NEXT edit is told the
+  // member paid — so it is each night's real rate (the price it was sold at for
+  // a night the guest already held, the current season rate for a night this
+  // edit newly buys), not the guest's total divided by their night count. See
+  // `composeProposedNightPrices` for the one case that still has to average.
+  perNightCents: number[];
   // The subset of `nights` from `futureStart` onwards — the nights this edit
   // actually prices and capacity-checks. Empty means the guest holds no future
   // night at all, which is how a sparse guest whose remaining nights are all
@@ -116,6 +147,11 @@ interface ProposedAddedGuestRange {
   // It is materialised anyway so the write path, the capacity check and the
   // per-night quote all read one night list whichever kind of guest they hold.
   nights: Date[];
+  // #2744: what each of `nights` costs, in order, summing exactly to
+  // `priceCents`. Every night here is newly bought, so each is its own current
+  // season rate straight from `calculateBookingPrice` — a guest added across a
+  // season boundary now stores 50/50/90/90 rather than four averaged 70s.
+  perNightCents: number[];
   priceCents: number;
 }
 
@@ -184,7 +220,63 @@ function dateOnlyKey(value: Date): string {
 }
 
 /**
- * Price EXACTLY these nights at current season rates, in integer cents.
+ * What the guest was CHARGED for each night they already hold, by NZ date-only
+ * key (#2744) — read straight off their loaded `BookingGuestNight` rows, which
+ * is the same column `lockedNightPricesForGuest` hands every other edit path.
+ *
+ * A night with no row, or a row loaded without its price, is simply absent: that
+ * night has no recoverable sold price and prices at the current season rate,
+ * which is exactly what INV-MOD-005 already says happens to a legacy guest
+ * carrying no night rows. Absence is therefore a documented, pre-existing
+ * degradation rather than a new silent fallback — but it IS a degradation, and
+ * for a booking that predates `BookingGuestNight` it means the old behaviour:
+ * the night is credited back at today's rate. The `refundCeilingCents` clamp
+ * below is what stops that degradation handing back more than the member paid.
+ *
+ * A NEGATIVE stored price is treated the same way — as no recoverable price at
+ * all — and that is a deliberate refusal, not tidiness. `BookingGuestNight.
+ * priceCents` is a bare `Int` with no non-negative constraint, and the very
+ * arithmetic this change replaces could write negative rows: the old even split
+ * of a guest whose total had been driven below zero by a today's-rate refund
+ * spread that negative total across their nights. Trusting such a row as a
+ * "sold price" would invert the whole edit — the old-price window would come out
+ * negative, so GIVING A NIGHT BACK would CHARGE the member — on a booking the
+ * pre-fix bug had already damaged. Skipping it drops that night into the
+ * documented "nothing to recover" degradation instead, where the clamp holds it.
+ * Nothing already stored is rewritten: what those rows should become is a
+ * separate, audited decision on #2745.
+ */
+function storedNightPricesByKey(
+  guest: Pick<ExistingBookingEditGuest, "nights">
+): Map<string, number> {
+  const byKey = new Map<string, number>();
+  for (const entry of guest.nights ?? []) {
+    if (entry instanceof Date || typeof entry === "string") {
+      continue;
+    }
+    const priceCents = "priceCents" in entry ? entry.priceCents : undefined;
+    if (
+      typeof priceCents !== "number" ||
+      !Number.isFinite(priceCents) ||
+      priceCents < 0
+    ) {
+      continue;
+    }
+    // Keyed through the SAME canonical helper that builds `heldNightKeys`, one
+    // entry at a time, rather than by re-deriving the key here. A price keyed
+    // even slightly differently from its night would never match it, and the
+    // failure would be silent — the night would just quietly price at today's
+    // rate again, which is the whole defect (INV-DATE-020).
+    const [key] = getExplicitGuestBedNightKeys({ nights: [entry] }) ?? [];
+    if (key !== undefined) {
+      byKey.set(key, priceCents);
+    }
+  }
+  return byKey;
+}
+
+/**
+ * Price EXACTLY these nights, in integer cents, and say what each one costs.
  *
  * #2736 replaced the old `priceGuestRangeCents(start, end, …)`, which handed
  * `calculateBookingPrice` a bare `[start, end)` envelope and let it expand the
@@ -196,33 +288,54 @@ function dateOnlyKey(value: Date): string {
  * contiguous night list the two forms price the identical set of nights in the
  * identical order, which is why every ordinary stay is unchanged to the cent.
  *
- * Integer cents throughout: every term is a `pricePerNightCents` integer summed
- * by `calculateBookingPrice` (INV-MONEY-001, INV-MONEY-003). No float, no
- * parse, no rounding.
+ * Integer cents throughout: every term is either a stored `priceCents` or a
+ * `pricePerNightCents` integer, summed by `calculateBookingPrice`
+ * (INV-MONEY-001, INV-MONEY-003). No float, no parse, no rounding.
  *
- * Deliberately passes NO `lockedNightPrices`, exactly as `priceGuestRangeCents`
- * did: every night here is valued at the CURRENT season rate, including the
- * nights an edit gives back. The other edit paths do pass them
- * (`lockedNightPricesForGuest`, `booking-modify-plan.ts`), so this plan is the
- * exception, and after a rate rise it can credit a night back for more than the
- * member paid for it. Not changed by #2736 — passing them would move contiguous
- * stays' refunds and give up the equivalence this plan's safety rests on — and
- * carried as #2744 with the options.
+ * #2744: `lockedNightPrices` is now passed, which is what brings this plan into
+ * line with INV-MOD-005 — "a night a guest already bought keeps the price stored
+ * on its `BookingGuestNight` row … removing one returns exactly theirs". Every
+ * other edit path already did this; the in-progress plan was the sole exception,
+ * so a night given back after a rate rise was credited at TODAY's rate and the
+ * club refunded more than it had ever charged. The locks are passed to BOTH
+ * legs, deliberately: a night the guest keeps then carries the same price in the
+ * old window and the new one and cancels exactly, so an extension is untouched
+ * and no held night is ever re-rated (INV-MOD-005, INV-MOD-006). Passing them to
+ * the old leg alone would have made every extension reprice the nights the
+ * member had already bought — the very thing the locked-price rule exists to
+ * prevent.
+ *
+ * `perNightCents` is parallel to `nightKeys`, and that alignment is structural
+ * rather than hoped for: `calculateBookingPrice` prices a guest's explicit
+ * nights deduped and sorted ascending, and `nightKeys` reaches here already
+ * deduped (through a `Set`) and sorted, so the two are the same nights in the
+ * same order. It matters because these amounts are written per night — a
+ * misalignment would put one night's price on another night's row — so the
+ * contiguous matrix in `booking-edit-guest-ranges-sparse.test.ts` re-asserts
+ * length and sum on every one of its cases against the real pricing function.
  */
-function priceGuestNightKeysCents(
+function priceGuestNights(
   nightKeys: readonly string[],
   guest: Pick<
     ExistingBookingEditGuest,
     "ageTier" | "isMember" | "rateMembershipTypeId" | "rateSource"
   >,
-  seasons: SeasonRateData[]
-): number {
+  seasons: SeasonRateData[],
+  // Empty for an ADDED guest, who has bought nothing yet and whose every night
+  // is therefore a fresh season lookup.
+  lockedNightPricesByKey: ReadonlyMap<string, number> = new Map()
+): { totalCents: number; perNightCents: number[] } {
   if (nightKeys.length === 0) {
-    return 0;
+    return { totalCents: 0, perNightCents: [] };
   }
   const nights = nightKeys.map((key) => parseDateOnly(key));
+  // Keyed by night, so an entry for a night outside this leg simply never
+  // matches; `calculateBookingPrice` looks a lock up per priced night.
+  const lockedNightPrices = [...lockedNightPricesByKey].map(
+    ([stayDate, priceCents]) => ({ stayDate, priceCents })
+  );
 
-  return calculateBookingPrice(
+  const breakdown = calculateBookingPrice(
     nights[0],
     addDaysDateOnly(nights[nights.length - 1], 1),
     [{
@@ -231,9 +344,114 @@ function priceGuestNightKeysCents(
       rateMembershipTypeId: guest.rateMembershipTypeId,
       rateSource: guest.rateSource,
       nights,
+      lockedNightPrices,
     }],
     seasons
-  ).totalPriceCents;
+  );
+  return {
+    totalCents: breakdown.totalPriceCents,
+    perNightCents: breakdown.guests[0].perNightCents,
+  };
+}
+
+/**
+ * Split `totalCents` evenly across `count` nights in integer cents, the
+ * remainder spread one cent at a time over the earliest nights so the parts sum
+ * back to the total EXACTLY — for a negative total too, where `Math.floor`
+ * rounds away from zero and the remainder is added back cent by cent
+ * (INV-MONEY-001, INV-MONEY-003).
+ *
+ * This is the fallback, not the rule: see `composeProposedNightPrices`.
+ */
+function distributeEvenlyCents(totalCents: number, count: number): number[] {
+  if (count <= 0) {
+    return [];
+  }
+  const base = Math.floor(totalCents / count);
+  const remainder = totalCents - base * count;
+  const parts: number[] = [];
+  for (let i = 0; i < count; i++) {
+    parts.push(base + (i < remainder ? 1 : 0));
+  }
+  return parts;
+}
+
+/**
+ * What to write on each of a guest's proposed night rows (#2744).
+ *
+ * The rows this returns become `BookingGuestNight.priceCents`, which is the only
+ * record of what a night was sold for and therefore what the NEXT edit is told
+ * the member paid. They used to be the guest's total divided by their night
+ * count, so an edit spanning a season boundary stored the average — four nights
+ * of 50/50/90/90 written back as four 70s, and the next edit charging 70 for a
+ * 50-cent night and 70 for a 90-cent one. Sums reconciled, so nothing went out
+ * of balance; the snapshot simply was not the price list.
+ *
+ * Two parts, and the split between them is the edit window:
+ *
+ *  - FUTURE nights — the ones this edit prices — take the amounts
+ *    `calculateBookingPrice` just produced: the locked price for a night the
+ *    guest already held, the current season rate for a night newly bought.
+ *  - PAST nights — the ones behind the window, which this edit does not touch —
+ *    keep the prices already stored against them.
+ *
+ * The whole list must sum to `totalCents` (= the guest's stored total plus this
+ * edit's delta), because that is the number written to `BookingGuest.priceCents`
+ * and summed into the booking total; a per-night list that disagreed with it
+ * would leave a phantom balance the moment Xero rebuilt its lines from the runs.
+ * The one shape where it cannot is a guest left holding NO nights — removed
+ * before their stay began — where there is nothing to distribute across. A
+ * guest whose rows account for their total lands on exactly zero there, so the
+ * empty list is the whole of it; a guest whose total has drifted from their rows
+ * keeps the drift, which this rule neither invents nor erases (it is what the
+ * pre-#2736 arithmetic left too, and #2745 owns what to do about it).
+ *
+ * The future part sums to its own total by construction, so the real rates can
+ * be written only when the stored past prices account EXACTLY for the rest —
+ * every past night has one, and together they come to `totalCents` less the
+ * future part. That is the ordinary case, and it is what makes the rows honest.
+ *
+ * Anything else falls back to the even split this function replaced, over the
+ * guest's whole night list — the behaviour every in-progress edit had before.
+ * It covers a guest whose rows carry no prices at all (pre-#713, or a booking
+ * converted from a request) and a guest whose stored total has drifted from
+ * their rows: in both, the per-night record does not support the total, so
+ * inventing a distribution from it would be a guess dressed as a rate. Falling
+ * back rather than improvising also means a guest with no stored per-night
+ * prices comes out of this function EXACTLY where they came out before — the
+ * same amounts on the same nights — so the change reaches only guests whose real
+ * rates are actually recoverable.
+ */
+function composeProposedNightPrices(args: {
+  pastNightKeys: readonly string[];
+  futureNightKeys: readonly string[];
+  futurePerNightCents: readonly number[];
+  storedNightPriceByKey: ReadonlyMap<string, number>;
+  totalCents: number;
+}): number[] {
+  const futureTotalCents = args.futurePerNightCents.reduce(
+    (sum, cents) => sum + cents,
+    0
+  );
+  const pastTotalCents = args.totalCents - futureTotalCents;
+  const storedPastCents = args.pastNightKeys.map((key) =>
+    args.storedNightPriceByKey.get(key)
+  );
+  // `null` the moment one past night has no stored price — an unknown night
+  // cannot be part of a total that adds up. An empty past list sums to 0, which
+  // is the guest whose every proposed night is priced by this edit.
+  const storedPastTotalCents = storedPastCents.reduce<number | null>(
+    (sum, cents) => (sum === null || cents === undefined ? null : sum + cents),
+    0
+  );
+
+  if (storedPastTotalCents === pastTotalCents) {
+    return [...(storedPastCents as number[]), ...args.futurePerNightCents];
+  }
+  return distributeEvenlyCents(
+    args.totalCents,
+    args.pastNightKeys.length + args.futureNightKeys.length
+  );
 }
 
 /**
@@ -273,6 +491,34 @@ function priceGuestNightKeysCents(
  * one deliberate exception is #2743's own shape, and the same suite measures it:
  * the bound never charges MORE than the old arithmetic did, and never lets
  * through an edit the old arithmetic refused.
+ *
+ * **Value a night at what it was sold for, not at today's rate (#2744).** The
+ * guest's stored `BookingGuestNight.priceCents` is passed as `lockedNightPrices`
+ * to both pricing legs, so a night given back is credited at the price the
+ * member actually paid and a night they keep cancels between the two windows
+ * exactly as before (INV-MOD-005). The per-night amounts written back are those
+ * same real rates rather than the guest's total divided by their night count.
+ * The equivalence above still holds, and is still proved rather than asserted:
+ * a stay whose stored per-night prices equal the current season rates — every
+ * booking where no rate has moved since it was made — comes out cent for cent
+ * where it did, and so does a guest carrying no stored prices at all. What DOES
+ * move, deliberately, is a refund on a stay whose rate has changed since: it is
+ * now what the club charged rather than what it would charge today.
+ *
+ * **And a floor under it: no edit leaves a guest owing less than nothing.** The
+ * locked prices cure the cause wherever a guest's rows record what they paid,
+ * but a guest with no per-night record at all — a booking that predates
+ * `BookingGuestNight`, or one created by approving a booking request, which
+ * still writes no rows (#2739) — has nothing to recover, so their nights are
+ * valued on the old leg at today's rate and after a rate rise the credit can
+ * exceed everything the club ever charged them. `refundCeilingCents` caps the
+ * credit at what the guest is actually carrying, so their price lands at worst
+ * on zero and no negative amount is ever written to a night row for the next
+ * edit to read back as a sold price. It cannot bind on a guest whose nights cost
+ * no more than they paid, which is every healthy booking and every case in the
+ * contiguous equivalence matrix. Guests ALREADY below zero from an edit made
+ * before this change are left exactly as found — not driven deeper, not
+ * repaired; that correction is an owner decision with its own audit, on #2745.
  */
 export function buildInProgressGuestRangePlan(
   input: BuildInProgressGuestRangePlanInput
@@ -308,6 +554,11 @@ export function buildInProgressGuestRangePlan(
       getExplicitGuestBedNightKeys(guest) ??
       expandStayEnvelopeToNightKeys(stayStart, stayEnd);
     const stayEndKey = dateOnlyKey(stayEnd);
+    // #2744: what this guest was charged for each night they already hold. Every
+    // night that has one is priced at it in BOTH windows below, so a night given
+    // back is credited at the price it was sold for and a night kept still
+    // cancels between the two (INV-MOD-005).
+    const storedNightPriceByKey = storedNightPricesByKey(guest);
 
     const oldFutureStart = maxDate(stayStart, editableFrom);
     const oldFutureStartKey = dateOnlyKey(oldFutureStart);
@@ -317,18 +568,22 @@ export function buildInProgressGuestRangePlan(
     // nights drop out, which is what stops a mid-stay removal or a shortened
     // check-out from refunding nights the guest never bought.
     //
-    // WHICH nights, not what they are worth: this leg still values them at
-    // TODAY's season rates, because no `lockedNightPrices` is passed (see
-    // `priceGuestNightKeysCents`). After a rate rise a removal can therefore
-    // credit back more than the member paid. Pre-existing on this line, frozen
-    // here for the same equivalence reason, and carried as #2744.
-    const oldFuturePriceCents = priceGuestNightKeysCents(
+    // And what they are worth: each at the price it was SOLD for (#2744), via
+    // the locked prices below, falling back to the current season rate only for
+    // a night that has no stored price to recover. This is the leg a removal or
+    // a shortened check-out credits back, so it is the one that decides whether
+    // the club hands back what it took. "Raw" because a night with no
+    // recoverable price is valued here at TODAY's rate, which after a rate rise
+    // can exceed what the member was ever charged; `refundCeilingCents` below
+    // is what stops that leaving the wire.
+    const rawOldFuturePriceCents = priceGuestNights(
       heldNightKeys.filter(
         (key) => key >= oldFutureStartKey && key < stayEndKey
       ),
       guest,
-      input.seasons
-    );
+      input.seasons,
+      storedNightPriceByKey
+    ).totalCents;
     const removedFromFuture = removeSet.has(guest.id);
     const proposedStayEnd = removedFromFuture
       ? minDate(stayEnd, editableFrom)
@@ -464,18 +719,78 @@ export function buildInProgressGuestRangePlan(
     const futureNightKeys = proposedNightKeys.filter(
       (key) => key >= newFutureStartKey
     );
-    const newFuturePriceCents = removedFromFuture
-      ? 0
-      : priceGuestNightKeysCents(futureNightKeys, guest, input.seasons);
+    // #2744: the same locked prices go into the NEW window too. A night the
+    // guest keeps therefore carries one price on both sides of the difference
+    // and cancels to nothing, which is why an extension's delta is still exactly
+    // the nights it adds and no night anybody already bought is ever re-rated
+    // (INV-MOD-005). Only genuinely-new nights reach a season lookup.
+    const newFuture = removedFromFuture
+      ? // A removed guest holds no future night — `proposedStayEnd` collapses to
+        // the edit window, so `futureNightKeys` is empty and this maps to `[]`.
+        // Written as a zero per night rather than a bare `[]` so the per-night
+        // list stays the same length as the night list by construction.
+        { totalCents: 0, perNightCents: futureNightKeys.map(() => 0) }
+      : priceGuestNights(
+          futureNightKeys,
+          guest,
+          input.seasons,
+          storedNightPriceByKey
+        );
+    const newFuturePriceCents = newFuture.totalCents;
+    // #2744, acceptance criterion 1: an edit can never leave a guest owing less
+    // than nothing. The locked prices above cure the CAUSE for every guest whose
+    // rows record what they paid, but they cannot help a guest with no
+    // recoverable price at all — a booking that predates `BookingGuestNight`,
+    // or one created by approving a booking request, which still writes no rows
+    // (#2739). Those nights are valued at today's rate on the old leg, so after
+    // a rate rise the credit can exceed the guest's whole stored total and the
+    // club hands back money it never took.
+    //
+    // The ceiling is what the guest is actually carrying: their stored price,
+    // plus whatever this edit is charging them for the nights they keep. Credit
+    // more than that and their price goes negative. Below the ceiling nothing
+    // moves, which is why this is a floor under the money rather than a change
+    // to the arithmetic — for a guest whose nights are priced at or under what
+    // they paid (every healthy booking, and every case in the contiguous
+    // equivalence matrix, where the old window prices a SUBSET of the nights the
+    // stored total covers) the clamp cannot bind.
+    //
+    // Clamped here, on the old-price leg, and not on the delta: the leg is what
+    // the modify-quote route itemises as the "removed from future nights"
+    // credit, so quote and charge stay the same number, and
+    // `newFuture - oldFuture === futureDelta` stays true for every consumer.
+    //
+    // `Math.max(guest.priceCents, 0)` and not the stored price itself: a guest
+    // whose price is ALREADY below zero was damaged by an edit made before this
+    // change, and their ceiling is 0 — no further credit — so this edit cannot
+    // drive them deeper. It does not lift them back to zero either. Correcting
+    // what the old arithmetic already wrote is an owner decision with its own
+    // audit, tracked on #2745; refusing to make it worse is not.
+    const refundCeilingCents =
+      Math.max(guest.priceCents, 0) + newFuturePriceCents;
+    const oldFuturePriceCents = Math.min(
+      rawOldFuturePriceCents,
+      refundCeilingCents
+    );
     const futureDeltaCents = newFuturePriceCents - oldFuturePriceCents;
+    const priceCents = guest.priceCents + futureDeltaCents;
 
     return {
       guest,
       stayStart,
       stayEnd: proposedStayEnd,
       nights: proposedNightKeys.map((key) => parseDateOnly(key)),
+      perNightCents: composeProposedNightPrices({
+        pastNightKeys: proposedNightKeys.filter(
+          (key) => key < newFutureStartKey
+        ),
+        futureNightKeys,
+        futurePerNightCents: newFuture.perNightCents,
+        storedNightPriceByKey,
+        totalCents: priceCents,
+      }),
       futureNights: futureNightKeys.map((key) => parseDateOnly(key)),
-      priceCents: guest.priceCents + futureDeltaCents,
+      priceCents,
       oldFuturePriceCents,
       newFuturePriceCents,
       futureDeltaCents,
@@ -495,17 +810,21 @@ export function buildInProgressGuestRangePlan(
     editableFrom,
     newCheckOut
   );
-  const proposedAddedGuests = addGuests.map((guest) => ({
-    guest,
-    stayStart: editableFrom,
-    stayEnd: newCheckOut,
-    nights: addedGuestNightKeys.map((key) => parseDateOnly(key)),
-    priceCents: priceGuestNightKeysCents(
-      addedGuestNightKeys,
+  const proposedAddedGuests = addGuests.map((guest) => {
+    // No stored night prices to honour: every night is being bought now, so each
+    // one is its own current season rate and the per-night amounts are simply
+    // what pricing returned — no average, and the sum is the total by
+    // construction (#2744).
+    const priced = priceGuestNights(addedGuestNightKeys, guest, input.seasons);
+    return {
       guest,
-      input.seasons
-    ),
-  }));
+      stayStart: editableFrom,
+      stayEnd: newCheckOut,
+      nights: addedGuestNightKeys.map((key) => parseDateOnly(key)),
+      perNightCents: priced.perNightCents,
+      priceCents: priced.totalCents,
+    };
+  });
 
   // #2029: a guest is "active in the future window" when its corrected future
   // window [futureStart, proposedStayEnd) is non-empty. Using futureStart (not
@@ -557,7 +876,7 @@ export function buildInProgressGuestRangePlan(
     // check-out. Such a guest, if they keep any proposed night, always holds one
     // from futureStart on (their nights are a run that starts at or before it),
     // so this branch cannot change the wording of any refusal the pre-#2736
-    // arithmetic also made — which is what the 480-case matrix in
+    // arithmetic also made — which is what the 960-case matrix in
     // `booking-edit-guest-ranges-sparse.test.ts` compares. Removing every guest
     // still lands on the original sentence.
     //

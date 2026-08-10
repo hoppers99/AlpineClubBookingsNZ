@@ -515,6 +515,17 @@ describe("calculateModifiedPricing in-progress per-night breakdown (#2736)", () 
     // An odd total over four nights: the remainder lands on the earliest nights
     // one cent at a time and the parts are integers (INV-MONEY-001,
     // INV-MONEY-003) — no float division, no rounding drift.
+    //
+    // This guest's rows arrive without their price, so #2744's real-rate
+    // write-back has nothing to recover and the even split is still what lands —
+    // the behaviour this fixture pinned before, unchanged. That shape is a
+    // THINNER select, not a state the database can hold: `BookingGuestNight.
+    // priceCents` is NOT NULL and both production loaders ask for it, which
+    // `in-progress-edit-sold-price-census.test.ts` is what keeps true. The two
+    // fallbacks a live booking can actually reach are a guest with NO rows
+    // (pre-`BookingGuestNight`, or created by approving a request — #2739) and a
+    // guest whose stored total has drifted from their rows; both are covered by
+    // the matrix in `booking-edit-guest-ranges-sparse.test.ts`.
     h.checkCapacityForGuestRanges.mockResolvedValue(AVAILABLE);
 
     const result = await calculateModifiedPricing({} as never, sparseArgs(1001));
@@ -675,5 +686,265 @@ describe("calculateModifiedPricing in-progress departed guest (#2743)", () => {
       D("2026-08-24"),
     ]);
     expect(gone.priceCents).toBe(4 * RATE);
+  });
+});
+
+describe("calculateModifiedPricing in-progress per-night prices (#2744)", () => {
+  const MEMBER_TYPE = "type-member";
+  const LOW = 5000;
+  const HIGH = 9000;
+  const SEASONS = [
+    {
+      seasonId: "s-low",
+      startDate: D("2026-08-01"),
+      endDate: D("2026-08-22"),
+      rates: [
+        { ageTier: "ADULT", membershipTypeId: MEMBER_TYPE, pricePerNightCents: LOW },
+      ],
+    },
+    {
+      seasonId: "s-high",
+      startDate: D("2026-08-23"),
+      endDate: D("2026-09-30"),
+      rates: [
+        { ageTier: "ADULT", membershipTypeId: MEMBER_TYPE, pricePerNightCents: HIGH },
+      ],
+    },
+  ];
+  const AVAILABLE = { available: true, minAvailable: 5, nightDetails: [] };
+
+  /**
+   * The guest from the issue: nights 08-20 and 08-22, both bought at LOW, with
+   * the rows recording it. The edit extends the check-out to the 25th, so the
+   * 23rd and 24th are bought now at HIGH.
+   */
+  function args({ withCompanion = false }: { withCompanion?: boolean } = {}) {
+    const guest = {
+      id: "g1",
+      ageTier: "ADULT",
+      isMember: true,
+      memberId: "m1",
+      rateMembershipTypeId: MEMBER_TYPE,
+      rateSource: "OWN_TYPE",
+      stayStart: D("2026-08-20"),
+      stayEnd: D("2026-08-23"),
+      nights: [
+        { stayDate: D("2026-08-20"), priceCents: LOW },
+        { stayDate: D("2026-08-22"), priceCents: LOW },
+      ],
+      priceCents: 2 * LOW,
+    };
+    // A second guest on the whole run, so taking g1 off does not leave the
+    // booking with future nights nobody holds (which the plan refuses, #2736).
+    const companion = {
+      ...guest,
+      id: "g2",
+      memberId: "m2",
+      nights: [
+        { stayDate: D("2026-08-20"), priceCents: LOW },
+        { stayDate: D("2026-08-21"), priceCents: LOW },
+        { stayDate: D("2026-08-22"), priceCents: LOW },
+      ],
+      priceCents: 3 * LOW,
+    };
+    const guests = withCompanion ? [guest, companion] : [guest];
+    const totalPriceCents = guests.reduce((sum, g) => sum + g.priceCents, 0);
+    return {
+      booking: {
+        id: "b1",
+        memberId: "m1",
+        lodgeId: "lodge-1",
+        checkIn: D("2026-08-20"),
+        checkOut: D("2026-08-23"),
+        totalPriceCents,
+        discountCents: 0,
+        promoAdjustmentCents: 0,
+        finalPriceCents: totalPriceCents,
+        guests,
+      } as never,
+      bookingId: "b1",
+      isInProgressEdit: true,
+      editableFrom: D("2026-08-21"),
+      newCheckIn: D("2026-08-20"),
+      newCheckOut: D("2026-08-25"),
+      normalizedAddGuests: undefined,
+      removeGuestIds: undefined,
+      guestsForPricing: [
+        {
+          bookingGuestId: "g1",
+          ageTier: "ADULT" as const,
+          isMember: true,
+          memberId: "m1",
+          stayStart: D("2026-08-20"),
+          stayEnd: D("2026-08-25"),
+        },
+      ],
+      skipBookingLifecycleRules: false,
+      seasonRateData: SEASONS as never,
+      partnerSharedGuests: [],
+    };
+  }
+
+  it("persists each night's real rate, not the guest's average", async () => {
+    // `applyGuestChanges`/`syncGuestNights` writes `perNightCents[k]` onto the
+    // `BookingGuestNight` row for `nightDates[k]`, and `lockedNightPricesForGuest`
+    // hands that column to the NEXT edit — so these four numbers are what the
+    // system will later believe the member paid. They used to be four copies of
+    // the average (7000 each); they are the real rates now.
+    h.checkCapacityForGuestRanges.mockResolvedValue(AVAILABLE);
+
+    const result = await calculateModifiedPricing({} as never, args());
+    const guest = result.priceBreakdown.guests[0];
+
+    expect(guest.nightDates).toEqual([
+      D("2026-08-20"),
+      D("2026-08-22"),
+      D("2026-08-23"),
+      D("2026-08-24"),
+    ]);
+    expect(guest.perNightCents).toEqual([LOW, LOW, HIGH, HIGH]);
+    expect(guest.perNightCents.reduce((a, b) => a + b, 0)).toBe(guest.priceCents);
+    expect(result.newTotalPriceCents).toBe(2 * LOW + 2 * HIGH);
+    // Xero rebuilds its lines per contiguous run of equal price, so the runs
+    // have to multiply back out: 2 x LOW and 2 x HIGH, no phantom balance.
+    expect(2 * LOW + 2 * HIGH).toBe(guest.priceCents);
+  });
+
+  /**
+   * A removal ACROSS a rate rise, which is the shape the refund half of #2744
+   * exists for. Both nights sit in the HIGH season (from 08-23) but were bought
+   * at LOW and the rows say so, so the price the member paid and the price the
+   * table would quote today are DIFFERENT NUMBERS — which is what makes the
+   * assertions below discriminate. An earlier version of this fixture gave back
+   * 2026-08-22, a night the `s-low` season still covers, so the stored price and
+   * today's rate were the same LOW and the test passed with the locked prices
+   * removed from the pricing window entirely.
+   */
+  function removalArgs(
+    {
+      withNightRows = true,
+      editableFrom = D("2026-08-24"),
+    }: { withNightRows?: boolean; editableFrom?: Date } = {},
+  ) {
+    const guest = {
+      id: "g1",
+      ageTier: "ADULT",
+      isMember: true,
+      memberId: "m1",
+      rateMembershipTypeId: MEMBER_TYPE,
+      rateSource: "OWN_TYPE",
+      stayStart: D("2026-08-23"),
+      stayEnd: D("2026-08-25"),
+      nights: withNightRows
+        ? [
+            { stayDate: D("2026-08-23"), priceCents: LOW },
+            { stayDate: D("2026-08-24"), priceCents: LOW },
+          ]
+        : [],
+      priceCents: 2 * LOW,
+    };
+    // A companion on the same nights, so taking g1 off does not leave the
+    // booking with future nights nobody holds (which the plan refuses, #2736).
+    // Always rowed: the shape under test is g1's, not the booking's.
+    const companion = {
+      ...guest,
+      id: "g2",
+      memberId: "m2",
+      nights: [
+        { stayDate: D("2026-08-23"), priceCents: LOW },
+        { stayDate: D("2026-08-24"), priceCents: LOW },
+      ],
+    };
+    const totalPriceCents = 4 * LOW;
+    return {
+      booking: {
+        id: "b1",
+        memberId: "m1",
+        lodgeId: "lodge-1",
+        checkIn: D("2026-08-23"),
+        checkOut: D("2026-08-25"),
+        totalPriceCents,
+        discountCents: 0,
+        promoAdjustmentCents: 0,
+        finalPriceCents: totalPriceCents,
+        guests: [guest, companion],
+      } as never,
+      bookingId: "b1",
+      isInProgressEdit: true,
+      // The 24th is the only night this edit can still touch; the 23rd is slept.
+      editableFrom,
+      newCheckIn: D("2026-08-23"),
+      newCheckOut: D("2026-08-25"),
+      normalizedAddGuests: undefined,
+      removeGuestIds: ["g1"],
+      guestsForPricing: [
+        {
+          bookingGuestId: "g2",
+          ageTier: "ADULT" as const,
+          isMember: true,
+          memberId: "m2",
+          stayStart: D("2026-08-23"),
+          stayEnd: D("2026-08-25"),
+        },
+      ],
+      skipBookingLifecycleRules: false,
+      seasonRateData: SEASONS as never,
+      partnerSharedGuests: [],
+    };
+  }
+
+  it("credits a removal at the stored price, so nobody comes off owing less than nothing", async () => {
+    // The club has raised its rate to HIGH since this booking was made, and an
+    // officer takes the guest off from the 24th. The 24th is given back at the
+    // LOW it was sold for — not the HIGH it would cost to buy today — leaving
+    // exactly the 23rd they slept, at what they paid for it.
+    h.checkCapacityForGuestRanges.mockResolvedValue(AVAILABLE);
+
+    const result = await calculateModifiedPricing({} as never, removalArgs());
+    const guest = result.priceBreakdown.guests[0];
+    const plan = result.inProgressPlan?.proposedExistingGuests[0];
+
+    // The two numbers this test turns on: what they paid, and what it costs now.
+    expect(HIGH).not.toBe(LOW);
+    expect(plan?.oldFuturePriceCents).toBe(LOW);
+    expect(plan?.futureDeltaCents).toBe(-LOW);
+    expect(guest.priceCents).toBe(LOW);
+    // Acceptance criterion 1, through the real wiring: nobody comes off a
+    // booking owing less than nothing. Crediting today's HIGH against a stored
+    // 2 x LOW is what used to leave a guest who genuinely slept at the lodge
+    // showing 1000 instead of 5000 — still positive here only by accident of
+    // the numbers, which is why the delta above is asserted too.
+    expect(guest.priceCents).toBeGreaterThanOrEqual(0);
+    expect(guest.nightDates).toEqual([D("2026-08-23")]);
+    expect(guest.perNightCents).toEqual([LOW]);
+  });
+
+  it("never credits back more than the guest paid when no row records a price", async () => {
+    // The population the locked prices cannot reach: a booking created by
+    // approving a booking request, which still writes no `BookingGuestNight`
+    // rows at all (#2739). Those nights have no sold price, so the old-price
+    // window values them at TODAY's rate — 2 x HIGH = 18000 against a stored
+    // 2 x LOW = 10000 — and without the ceiling the guest comes off the booking
+    // at -8000, with a negative per-night row for the next edit to read back as
+    // a sold price. The credit stops at what they are carrying.
+    h.checkCapacityForGuestRanges.mockResolvedValue(AVAILABLE);
+
+    const result = await calculateModifiedPricing(
+      {} as never,
+      removalArgs({
+        withNightRows: false,
+        // Removed from the 23rd, so BOTH nights are given back and the raw
+        // credit (2 x HIGH) exceeds the whole stored total.
+        editableFrom: D("2026-08-23"),
+      }),
+    );
+    const guest = result.priceBreakdown.guests[0];
+    const plan = result.inProgressPlan?.proposedExistingGuests[0];
+
+    expect(2 * HIGH).toBeGreaterThan(2 * LOW);
+    expect(plan?.oldFuturePriceCents).toBe(2 * LOW);
+    expect(guest.priceCents).toBe(0);
+    expect(guest.priceCents).toBeGreaterThanOrEqual(0);
+    expect(guest.perNightCents.every((cents) => cents >= 0)).toBe(true);
   });
 });
