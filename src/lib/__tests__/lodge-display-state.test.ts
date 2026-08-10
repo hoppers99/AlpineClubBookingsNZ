@@ -337,7 +337,7 @@ describe("buildDisplayState privacy matrix", () => {
     // derived from its visible list again, the gap morning re-enters it as a
     // PHANTOM NIGHT on the 14th, the eight-guest booking stops being the sole
     // occupant, its whole-lodge blockout drops, and eight guest names appear on
-    // an unauthenticated public screen (INV-DATE-006, INV-DATE-022, issue #58).
+    // an unauthenticated public screen (INV-DATE-006, INV-DATE-023, issue #58).
     const sparse = {
       ...guest("Gappy", "Guest", "ADULT", { start: "2026-04-13", end: "2026-04-16" }),
       // Nights 13 and 15 only — the 14th is NOT booked.
@@ -447,7 +447,7 @@ describe("buildDisplayState privacy matrix", () => {
     // subtracting the envelope end from the visible list (pre-#2628), filtering
     // the visible list by the night model (#2628, which left the count bounded
     // above by visibility), and any other re-derivation of `nightGuests` from
-    // `visible`. The count must read `booking.guests` (INV-DATE-022).
+    // `visible`. The count must read `booking.guests` (INV-DATE-023).
     const fs = await import("node:fs");
     const path = await import("node:path");
     const source = fs.readFileSync(

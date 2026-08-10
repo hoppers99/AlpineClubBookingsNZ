@@ -1024,7 +1024,7 @@ value must match the canonical `HH:00`/`HH:30` shape, so a malformed legacy row
 degrades to no time rather than to arbitrary text on a lobby TV.
 
 **The sole-occupancy count is independent of what the wall shows** (#2735,
-`INV-DATE-022`). Rule 2's night count is taken from the booking's whole guest
+`INV-DATE-023`). Rule 2's night count is taken from the booking's whole guest
 set through the night model, never by filtering or subtracting from the visible
 list, so no change to who is DISPLAYED can add or remove a night. That
 separation is what let the wall become per-segment: since #2735 a guest is shown

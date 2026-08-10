@@ -111,7 +111,7 @@ derivation).
   widen it, because the lobby wall (fenced, below) derived its night counts from
   that list and a per-segment gap morning would have become a phantom night on a
   public screen (issue #58). #2735 removed that coupling FIRST and widened the
-  predicate second; see [INV-DATE-022], which is the standing rule that keeps
+  predicate second; see [INV-DATE-023], which is the standing rule that keeps
   them apart. A source contract freezes the wrapper's caller list. #2631
   converted the two kiosk read surfaces that used to call it (`api/lodge/week`
   and `api/lodge/guests/[date]`) onto the named operational-day helpers, so
@@ -246,11 +246,11 @@ derivation).
   (#2735). Being mixed is the point: the two answers are different on a
   changeover day and each is right for its own question. The fence is that the
   wall may not be unified onto one family, and that the night count is derived
-  independently of the visible list [INV-DATE-022] — widening its night counts
+  independently of the visible list [INV-DATE-023] — widening its night counts
   would put guest names on an unauthenticated public screen during back-to-back
   handovers.
 
-### INV-DATE-022
+### INV-DATE-023
 
 - **The lobby wall's night count is derived independently of what the wall
   shows** (#2735). `nightTotals` in `src/lib/lodge-display-state.ts` — the input
