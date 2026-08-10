@@ -234,6 +234,7 @@ describe("audit writer census (#2581)", { timeout: 180_000 }, () => {
       "docs/ai-diagnostics/tool-pack-support.md",
       "docs/guides/audit-log.md",
       "src/lib/diagnostics/tools/packs/booking-records.ts",
+      "src/lib/diagnostics/tools/packs/finance-records.ts",
       "src/lib/diagnostics/tools/packs/support-correlation.ts",
     ]);
     expect(
