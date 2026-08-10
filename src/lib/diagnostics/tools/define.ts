@@ -119,10 +119,18 @@ interface DiagnosticsToolSpecBase<TArgs> {
    * arms, and only three of them are enumerable: a name PREFIX is three letters, a
    * mobile is six to fifteen digits, and an email address is guessable from a name
    * and a domain, while `recordId` is a cuid with no candidate space worth walking.
-   * Redacting the whole entry would throw away the one digest that has audit value
-   * — "the same admin looked this same member up twice" — to protect the three
-   * that do not, so the declaration names the KEYS and the redaction is decided per
-   * invocation from the arguments that were actually accepted.
+   * `booking_search` splits the same way — an eight-character reference derived
+   * from a cuid TIMESTAMP block and a lodge-night triple are both walkable, while
+   * its two `recordId` arms are not. Redacting a whole entry would throw away the
+   * digests that have audit value — "the same admin looked this same member up
+   * twice" — to protect the arms that do not, so the declaration names the KEYS and
+   * the redaction is decided per invocation from the arguments that were actually
+   * accepted.
+   *
+   * A KEY WITH A SCHEMA `.default()` MUST NEVER BE DECLARED. Zod materialises a
+   * defaulted key on every accepted object, so declaring one redacts every arm of
+   * the entry including the high-entropy ones. `booking_search.window` is the live
+   * case and the pack's contract test pins that it is not declared.
    *
    * IT IS NOT A KEYED HASH, deliberately. An HMAC would preserve correlation for
    * the low-entropy arms, but it would also introduce a secret whose rotation

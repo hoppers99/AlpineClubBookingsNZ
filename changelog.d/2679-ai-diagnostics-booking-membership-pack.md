@@ -98,7 +98,10 @@
   pack can create, change, cancel, confirm, approve, refuse, allocate, move,
   complete, sign off, link, unlink or release anything, and it contacts no external
   provider. Stored text remains untrusted evidence, and invocation audit records
-  contain metadata rather than arguments, results, questions or answers. Member
-  search records no argument digest at all: a name prefix, a mobile fragment or a
-  guessable address has too little entropy for a hash to be one-way, so the tool,
-  the outcome and the timing are recorded and the digest is omitted.
+  contain metadata rather than arguments, results, questions or answers. The two
+  searches record no argument digest where the term could be guessed: a name prefix,
+  a mobile fragment, an email address, an eight-character booking reference and a
+  lodge night with a closed window all have too little entropy for a hash to be
+  one-way, so the tool, the outcome and the timing are recorded and the digest is
+  omitted. Record-id searches keep their digest, because a cuid cannot be walked and
+  "the same officer looked this record up twice" is a real audit question.

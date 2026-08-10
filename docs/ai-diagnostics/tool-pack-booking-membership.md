@@ -169,39 +169,57 @@ not the cap:
   counts and the timing — so a walk is a visible pattern in `AuditLog` rather than
   an invisible one. The row records `argsHash: "low_entropy_args_redacted"`
   and **no digest** for the name-prefix, mobile and email arms of `member_search`
+  and for the booking-reference and lodge-night arms of `booking_search`
   (see below); the walk is still visible as a run of rows, because what makes it
   visible is the count of invocations rather than the term in each one;
 - **the per-question budget reservation** (ADR-005), which is spent per provider
   round trip and is what stops a session from being long in the first place.
 
-### The member-search argument hash is omitted, not computed
+### The search argument hash is omitted, not computed
 
 ADR-004 §4 lets a durable row carry "a stable, **non-reversible** hash of a query
 key". The substrate's `argsHash` is an unkeyed SHA-256 of the canonical accepted
-arguments, and that is non-reversible only where the argument has entropy. Three
-of `member_search`'s four terms have almost none:
+arguments, and that is non-reversible only where the argument has entropy. **Five
+of the two entries' eight arms** have almost none:
 
-| Arm | Candidate space a reader of the audit metadata can walk |
-| --- | --- |
-| `name_prefix` | three letters — 17,576 strings, and a club's real surname list is far shorter |
-| `mobile` | normalised to digits; a New Zealand mobile is under ten million candidates |
-| `email_exact` | not enumerated but **guessed**: `firstname.lastname@` against a few local domains |
+| Entry | Arm | Candidate space a reader of the audit metadata can walk |
+| --- | --- | --- |
+| `member_search` | `name_prefix` | three letters — 17,576 strings, and a club's real surname list is far shorter |
+| `member_search` | `mobile` | normalised to digits; a New Zealand mobile is under ten million candidates |
+| `member_search` | `email_exact` | not enumerated but **guessed**: `firstname.lastname@` against a few local domains |
+| `booking_search` | `booking_reference` | eight characters, but the reference is `left(Booking."id", 8)` upper-cased and the id is a cuid — so it is `C` plus seven base-36 characters of the cuid **timestamp** block, ~2.6e9 over a three-year history rather than 36⁸ |
+| `booking_search` | `lodge_nights` | a handful of club lodge cuids × a 20xx calendar date × a three-value window enum — tens of thousands |
 
-So the entry declares those three keys low-entropy (`lowEntropyArgKeys` in
+So both entries declare their low-entropy keys (`lowEntropyArgKeys` in
 `booking-search.ts`), and `invoke.ts` records the sentinel
 `low_entropy_args_redacted` in place of a digest whenever an accepted argument
-object carries one of them. `member_id` still hashes, because a cuid has no
-candidate space worth walking and "the same administrator looked the same member
-up in three sessions" is a real audit question. `booking_search` declares nothing:
-its terms are cuids, a server-derived eight-character reference and a lodge night
-with a closed window.
+object carries one of them. The three **cuid** arms — `member_search`'s `member_id`
+and `booking_search`'s `booking_id` and `owner_member_id` — still hash, because a
+cuid has no candidate space worth walking and "the same administrator looked the
+same member up in three sessions" is a real audit question. `window` is never
+declared: it carries a schema default, so it is present on every accepted argument
+object, and declaring it would redact the whole entry.
 
-**What that costs, stated plainly.** For a name, mobile or email search the durable
-row cannot be correlated by term. The trade is deliberate: the audit trail exists
-to show who read what kind of evidence when, not to keep a recoverable copy of a
-member's phone number. An HMAC would preserve the correlation, and was rejected
-for the liability it creates — a secret whose rotation silently breaks correlation
-across the boundary and whose leak retroactively reverses every row ever written.
+**The booking arms were previously left hashed on a wrong premise**, recorded here
+because a reviewer should be able to see the correction rather than only the rule.
+The earlier reasoning was that a reference and a lodge night are "server-side facts
+an audit reader already sees on the row they are auditing". They are not:
+`auditMetadata` in `tools/audit.ts` builds the durable object field by field and it
+carries exactly `toolId`, `areasChecked`, `authOutcome`, `failureReason`,
+`argsHash`, `resultHash`, `rowCount`, `byteCount`, `durationMs`, `roundIndex` and
+`observedAt`. Recovering the term therefore yields what the row withholds, to a
+`support:view`-only audit reader who does **not** hold `bookings:view`. The
+recovered value is a booking or a lodge and a night rather than a person, which is
+why this was a reversibility defect against ADR-004 §4 rather than a privacy
+incident — and why the fix is a declaration rather than a redesign.
+
+**What that costs, stated plainly.** For a name, mobile, email, reference or
+lodge-night search the durable row cannot be correlated by term. The trade is
+deliberate: the audit trail exists to show who read what kind of evidence when, not
+to keep a recoverable copy of a member's phone number or of which booking an officer
+looked at. An HMAC would preserve the correlation, and was rejected for the liability
+it creates — a secret whose rotation silently breaks correlation across the boundary
+and whose leak retroactively reverses every row ever written.
 
 A search row is also shaped for **recognition rather than harvesting**. A member
 search row carries the name, age tier, lifecycle flags, login state and record id,

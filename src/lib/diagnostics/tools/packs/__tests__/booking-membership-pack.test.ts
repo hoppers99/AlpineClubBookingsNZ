@@ -1016,6 +1016,85 @@ describe("AID-6B booking/membership pack: the search argument schemas (#2376)", 
     }
   });
 
+  /**
+   * The same attack against `booking_search`, whose reference and lodge-night arms
+   * an earlier revision left hashed on a justification that was factually wrong —
+   * it claimed both terms were already visible on the audit row, when
+   * `auditMetadata` carries no reference, lodge id or night at all.
+   *
+   * Neither recovered value is personal data; both name a booking or a lodge and a
+   * night. That is why this is a reversibility defect against ADR-004 §4 rather
+   * than a privacy incident — and why it still has to be closed, because the
+   * reader it leaks to holds `support:view` and NOT `bookings:view`.
+   */
+  it("never records a recoverable digest of a booking reference or a lodge night", () => {
+    const digest = (args: unknown) => sha256Hex(canonicalStringify(args));
+
+    const attacks = [
+      {
+        label: "booking_reference",
+        real: { kind: "booking_reference", bookingReference: "CM4A2K71" },
+        // The reference is `left(Booking."id", 8)` upper-cased and `Booking.id` is a
+        // cuid, so an offline reader walks `C` plus seven base-36 characters of the
+        // cuid timestamp block — ~2.6e9 over a three-year history, not 36⁸. A dozen
+        // candidates stand in for that walk and include the real one.
+        candidates: [
+          { kind: "booking_reference", bookingReference: "CM4A2K70" },
+          { kind: "booking_reference", bookingReference: "CM4A2K71" },
+          { kind: "booking_reference", bookingReference: "CM4A2K72" },
+          { kind: "booking_reference", bookingReference: "CM4A2K7Z" },
+        ],
+      },
+      {
+        label: "lodge_nights",
+        real: { kind: "lodge_nights", lodgeId: RECORD, nightFrom: "2026-08-14" },
+        // A handful of club lodge cuids × a 20xx calendar date × a three-value
+        // window enum. Tens of thousands of candidates: one second.
+        candidates: [
+          { kind: "lodge_nights", lodgeId: RECORD, nightFrom: "2026-08-13" },
+          { kind: "lodge_nights", lodgeId: RECORD, nightFrom: "2026-08-14" },
+          { kind: "lodge_nights", lodgeId: RECORD, nightFrom: "2026-08-15" },
+          {
+            kind: "lodge_nights",
+            lodgeId: RECORD,
+            nightFrom: "2026-08-14",
+            window: "30d",
+          },
+        ],
+      },
+    ];
+
+    for (const attack of attacks) {
+      const accepted = acceptedArgs(
+        DIAGNOSTICS_BOOKING_SEARCH_TOOL_ID,
+        attack.real,
+      );
+      const recovered = new Set(
+        attack.candidates.map((candidate) =>
+          digest(acceptedArgs(DIAGNOSTICS_BOOKING_SEARCH_TOOL_ID, candidate)),
+        ),
+      );
+
+      // The enumeration works, so publishing the digest would name the booking or
+      // the lodge night an officer searched.
+      expect(
+        recovered.has(digest(accepted)),
+        `${attack.label}: the offline enumeration did not reproduce the real digest`,
+      ).toBe(true);
+
+      const recorded = diagnosticsAuditArgsHash(
+        entry(DIAGNOSTICS_BOOKING_SEARCH_TOOL_ID),
+        accepted,
+        digest,
+      );
+      expect(
+        recorded,
+        `${attack.label}: the audit row carried a recoverable digest`,
+      ).toBe(DIAGNOSTICS_ARGS_HASH_REDACTED);
+      expect(recovered.has(recorded)).toBe(false);
+    }
+  });
+
   it("still hashes the high-entropy arms, so correlation survives redaction", () => {
     const digest = (args: unknown) => sha256Hex(canonicalStringify(args));
     // A cuid has no candidate space worth walking, and "the same admin looked this
@@ -1032,14 +1111,13 @@ describe("AID-6B booking/membership pack: the search argument schemas (#2376)", 
     expect(first).toMatch(/^[0-9a-f]{64}$/);
     expect(first).not.toBe(DIAGNOSTICS_ARGS_HASH_REDACTED);
 
-    // Every booking-search arm keeps its digest: cuids, a server-derived reference
-    // and a lodge night with a closed window are not personal terms an operator
-    // typed from memory.
+    // The two CUID booking-search arms keep their digest — and they are the ones
+    // carrying the correlation value, because the model uses the id arm after any
+    // search. `window` carries a schema default and is therefore present on these
+    // two objects as well, which is exactly why it is not a declared key.
     for (const raw of [
       { kind: "booking_id", recordId: RECORD },
       { kind: "owner_member_id", recordId: RECORD },
-      { kind: "booking_reference", bookingReference: "AB12CD34" },
-      { kind: "lodge_nights", lodgeId: RECORD, nightFrom: "2026-08-14" },
     ]) {
       expect(
         diagnosticsAuditArgsHash(
@@ -1052,29 +1130,37 @@ describe("AID-6B booking/membership pack: the search argument schemas (#2376)", 
     }
   });
 
-  it("declares the low-entropy keys the member search actually accepts", () => {
-    // A declaration that names a key the schema does not have redacts nothing. The
-    // three named keys must all be real arms, and the redaction must be decided by
-    // key PRESENCE rather than by the value — an explicitly-supplied term still
-    // narrows the candidate space however short it is.
-    const declared = entry(DIAGNOSTICS_MEMBER_SEARCH_TOOL_ID).lowEntropyArgKeys;
-    expect([...(declared ?? [])].sort()).toEqual([
-      "email",
-      "mobile",
-      "namePrefix",
+  it("declares the low-entropy keys the two search entries actually accept", () => {
+    // A declaration that names a key the schema does not have redacts nothing. Every
+    // named key must be a real argument, and the redaction must be decided by key
+    // PRESENCE rather than by the value — an explicitly-supplied term still narrows
+    // the candidate space however short it is.
+    const expected = new Map<string, readonly string[]>([
+      [DIAGNOSTICS_MEMBER_SEARCH_TOOL_ID, ["email", "mobile", "namePrefix"]],
+      [
+        DIAGNOSTICS_BOOKING_SEARCH_TOOL_ID,
+        ["bookingReference", "lodgeId", "nightFrom"],
+      ],
     ]);
-    for (const key of declared ?? []) {
-      expect(
-        Object.keys(
-          entry(DIAGNOSTICS_MEMBER_SEARCH_TOOL_ID).inputSchema.properties,
-        ),
-        `${key} is not an argument this entry accepts`,
-      ).toContain(key);
+    for (const [toolId, keys] of expected) {
+      const declared = entry(toolId).lowEntropyArgKeys;
+      expect([...(declared ?? [])].sort(), toolId).toEqual([...keys].sort());
+      for (const key of declared ?? []) {
+        expect(
+          Object.keys(entry(toolId).inputSchema.properties),
+          `${key} is not an argument ${toolId} accepts`,
+        ).toContain(key);
+      }
+      // `window` must never be declared: it carries a schema `.default()`, so it is
+      // present on EVERY accepted object and declaring it would redact the entry.
+      expect(declared ?? [], `${toolId} declared the defaulted window key`).not.toContain(
+        "window",
+      );
     }
-    // No other entry in the pack declares one, so the redaction cannot quietly
+    // No OTHER entry in the pack declares one, so the redaction cannot quietly
     // spread across the pack and hollow out the audit trail.
     for (const tool of packTools) {
-      if (tool.id === DIAGNOSTICS_MEMBER_SEARCH_TOOL_ID) continue;
+      if (expected.has(tool.id)) continue;
       expect(
         tool.lowEntropyArgKeys ?? [],
         `${tool.id} unexpectedly redacts its argument hash`,

@@ -67,12 +67,14 @@
  * and no way to page: the cap is not an offset.
  *
  * THAT AUDIT ROW RECORDS NO DIGEST OF A LOW-ENTROPY TERM, and the earlier version of
- * this paragraph leaned on one that should never have existed: `member_search`'s
- * name-prefix, mobile and email arms are all recoverable from an unkeyed SHA-256 by
- * offline enumeration, so `lowEntropyArgKeys` below redacts the hash for them
- * (ADR-004 §4). What makes a walk visible is the RUN of invocations against one
- * admin, which the rows still show in full; the term in each one was never what made
- * it detectable.
+ * this paragraph leaned on one that should never have existed. FIVE of the eight arms
+ * across the two entries are recoverable from an unkeyed SHA-256 by offline
+ * enumeration — `member_search`'s name-prefix, mobile and email, and
+ * `booking_search`'s eight-character reference and its lodge-night window — so
+ * `lowEntropyArgKeys` on both entries redacts the hash for them (ADR-004 §4). The
+ * three cuid arms keep theirs, which is where the correlation value is. What makes a
+ * walk visible is the RUN of invocations against one admin, which the rows still show
+ * in full; the term in each one was never what made it detectable.
  *
  * THE PLAN, AND WHY IT IS ACCEPTABLE. `Member."email"` is indexed;
  * `firstName`/`lastName` and the phone columns are not, so a name or mobile search
@@ -399,6 +401,57 @@ const bookingSearch = defineDiagnosticsTool<BookingSearchArgs>({
   // row carries a member id, which identifies a person to anyone who can resolve
   // it. ADR-004's per-invocation opt-in applies.
   surfacesPersonalData: true,
+  /**
+   * TWO OF THE FOUR BOOKING SEARCH ARMS ALSO MUST NOT REACH A DURABLE DIGEST, and
+   * an earlier revision of this pack said the opposite for a reason that was
+   * factually wrong.
+   *
+   * That revision argued the reference and the lodge night were "server-side facts
+   * an audit reader already sees on the row they are auditing". They are not.
+   * `auditMetadata` in `tools/audit.ts` builds the durable object field by field
+   * and it carries exactly eleven: `toolId`, `areasChecked`, `authOutcome`,
+   * `failureReason`, `argsHash`, `resultHash`, `rowCount`, `byteCount`,
+   * `durationMs`, `roundIndex`, `observedAt`. No lodge id, no night, no reference.
+   * So recovering the term from the digest yields information the row otherwise
+   * withholds — from a `support:view`-only audit reader who by construction does
+   * NOT hold `bookings:view`, which is the same reader `member_search`'s
+   * declaration below exists to defend against.
+   *
+   * AND BOTH ARMS ARE ENUMERABLE, which is the property ADR-004 §4 actually
+   * requires ("a stable, NON-REVERSIBLE hash of a query key"):
+   *
+   *  - `bookingReference` is eight characters of `[A-Za-z0-9]`, so 36⁸ ≈ 2.8e12 at
+   *    worst — already a GPU-minutes walk. In practice it is far smaller: the
+   *    reference is `left(Booking."id", 8)` upper-cased and `Booking.id` is
+   *    `@default(cuid())`, so the eight characters are the literal `c` plus seven
+   *    base-36 characters of the cuid's TIMESTAMP block. That pins creation time to
+   *    a ~36 ms window and leaves ~2.6e9 candidates across a three-year club
+   *    history — seconds, not years.
+   *  - the `lodge_nights` arm hashes `{kind, lodgeId, nightFrom, window}` where
+   *    `window` is a three-value enum, `nightFrom` is a 20xx `YYYY-MM-DD` and
+   *    `lodgeId` is one of a handful of club lodge cuids. A few tens of thousands
+   *    of candidates: one second.
+   *
+   * Recovering either names the exact booking, or the exact lodge and night window,
+   * that a Booking Officer searched — a booking/lodge identifier rather than a
+   * person, which is why this is a reversibility defect rather than a privacy
+   * incident, and why it is fixed by declaration rather than by redesign.
+   *
+   * `lodgeId` is declared as well as `nightFrom` even though redaction is
+   * all-or-nothing per invocation and either key alone already covers the live arm.
+   * It costs nothing and it means a future arm that accepts a lodge id WITHOUT a
+   * night — "everything at lodge X" — is born redacted rather than born reversible.
+   *
+   * WHAT STAYS HASHED, AND THAT IS THE POINT OF DECLARING KEYS RATHER THAN ENTRIES:
+   * `recordId` is a cuid with no candidate space worth walking, so the `booking_id`
+   * and `owner_member_id` arms keep their digest — and those two are where the
+   * correlation value actually is, because the model uses the id arm after any
+   * search. `window` is NOT declared even though it is a three-value enum: it
+   * carries a schema `.default()`, so it is present on EVERY accepted argument
+   * object including the two cuid arms, and declaring it would redact the whole
+   * entry.
+   */
+  lowEntropyArgKeys: ["bookingReference", "lodgeId", "nightFrom"],
 });
 
 // ---------------------------------------------------------------------------
@@ -694,11 +747,12 @@ const memberSearch = defineDiagnosticsTool<MemberSearchArgs>({
    * intended trade: the audit trail exists to show WHO read WHAT KIND of evidence
    * WHEN, not to preserve a recoverable copy of a member's phone number.
    *
-   * `booking_search` needs no declaration. Its terms are cuids (`recordId`,
-   * `lodgeId`), a lodge night with a three-value window — both server-side facts an
-   * audit reader already sees on the row they are auditing — and the eight-character
-   * booking REFERENCE, which is derived from a cuid rather than typed by a member
-   * and identifies a booking rather than a person.
+   * `booking_search` NEEDS ONE TOO, for its reference and lodge-night arms. An
+   * earlier revision of this comment said it did not, on the ground that those terms
+   * were "server-side facts an audit reader already sees on the row they are
+   * auditing" — which is false, because the durable metadata object carries no lodge
+   * id, night or reference at all. The reasoning is at that entry's own declaration;
+   * both are enumerable and both are now redacted.
    */
   lowEntropyArgKeys: ["email", "namePrefix", "mobile"],
 });
