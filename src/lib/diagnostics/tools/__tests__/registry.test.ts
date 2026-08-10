@@ -466,7 +466,12 @@ const EXAMPLE_RAW_ROWS: Record<string, Record<string, unknown>> = {
     admin_review_status: "NOT_REQUIRED",
     hosting_review_status: "NOT_REQUIRED",
     waitlist_position: 999,
-    whole_lodge_hold: true,
+    // The alias the STATEMENT emits. It was `whole_lodge_hold` until the
+    // stored-vs-effective rename, and the fixture kept the old name for a release:
+    // the projection then read an absent key and this row silently stopped being
+    // the widest one it is declared to be. The parity assertion below is what
+    // makes that visible now.
+    whole_lodge_hold_flag_stored: true,
     admin_capacity_hold: true,
     capacity_overridden: true,
     deleted_at_utc: WIDEST_INSTANT,
@@ -543,8 +548,29 @@ const EXAMPLE_RAW_ROWS: Record<string, Record<string, unknown>> = {
     last_night: "2026-09-07",
     price_cents: 1_234_567,
     operationally_present: true,
-    // The widest declared sub-state, which is also the one a defect produces.
-    consent_sub_state: "unrecognised_consent_shape",
+    /**
+     * THE FIVE DISCRIMINATOR COLUMNS THE STATEMENT ACTUALLY EMITS.
+     *
+     * This used to be one `consent_sub_state` key, which the statement has never
+     * selected and the projection has never read: `consentSubState` is DERIVED from
+     * these five by `consentSubStateOf`. The widest sub-state came out anyway, but
+     * only because an ABSENT `consent_status` falls through to
+     * `unrecognised_consent_shape` — so the widest row was being measured by
+     * accident, off a key that was never real. The key-parity assertion below is what
+     * made that visible.
+     *
+     * The values are the notify-only auto-confirmed shape (D-3 opt-down: CONFIRMED
+     * with a null requestedAt AND a null respondedBy), whose code
+     * `notify_only_auto_confirmed` is 26 characters — the widest any REACHABLE
+     * classification produces, and reachable is the point: measuring against a code
+     * only a corrupt enum value could produce would be measuring a row PostgreSQL
+     * cannot store.
+     */
+    consent_status: "CONFIRMED",
+    consent_requested_at: null,
+    consent_responded_at: null,
+    consent_responded_by_member_ref: null,
+    consent_expires_at: null,
   },
   [DIAGNOSTICS_BOOKING_BED_ALLOCATION_TOOL_ID]: {
     stay_date: "2026-08-08",
@@ -554,6 +580,12 @@ const EXAMPLE_RAW_ROWS: Record<string, Record<string, unknown>> = {
     bed_type: "DOUBLE",
     bed_type_matches_bed: true,
     is_second_occupant: true,
+    // The LIVE bed type off the `LodgeBed` row, which the classifier reads and this
+    // fixture did not supply — so `doubleBedSharingState` was measured at
+    // `live_bed_missing` (17 characters) while the widest state this row can produce
+    // is `ineligible_partner_link_pending` (31). Thirty allocation rows on a 24,576-byte
+    // ceiling is where that difference is spent.
+    live_bed_type: "DOUBLE",
     other_occupant_count: 1,
     member_a_ref: WIDEST_RECORD_ID,
     member_b_ref: "clz1111111abcdefghijklmno",
@@ -657,6 +689,9 @@ const EXAMPLE_RAW_ROWS: Record<string, Record<string, unknown>> = {
     check_out: "2026-09-08",
     guest_count: 30,
     final_price_cents: 1_234_567,
+    // `false` and not `true`: the widest serialisation of the three values this
+    // three-valued field can take (`false` is 5 characters, `true` and `null` are 4).
+    member_operationally_present: false,
     deleted_at_utc: WIDEST_INSTANT,
     created_at_utc: WIDEST_INSTANT,
   },
@@ -1223,6 +1258,53 @@ describe("diagnostics tool registry contract (#2374)", () => {
           /^- \d+\. (?:[A-Za-z0-9]+=(?:"[^"]*"|true|false|null|-?\d+(?:\.\d+)?); )*[A-Za-z0-9]+=(?:"[^"]*"|true|false|null|-?\d+(?:\.\d+)?)$/,
         );
       }
+    },
+  );
+
+  it.each(DIAGNOSTICS_TOOLS.map((tool) => [tool.id, tool] as const))(
+    "%s reads every key its EXAMPLE_RAW_ROWS fixture supplies, and supplies every key it reads",
+    (_id, tool) => {
+      // THE FIXTURE IS THE MEASUREMENT, NOT AN ILLUSTRATION. `tools.md` says so in
+      // as many words: "Measure rowLimit and byteLimit; do not estimate them. Add
+      // the entry's widest realistic raw row to EXAMPLE_RAW_ROWS." So a key the
+      // projection does not read is not a harmless extra — it means the field it was
+      // meant to size is being measured at its FALLBACK instead, and the ceiling this
+      // suite certifies as measured is short by however wide the real value is.
+      //
+      // It has already happened once. An alias rename in `booking_search`
+      // (`whole_lodge_hold` -> `whole_lodge_hold_flag_stored`) left the fixture on
+      // the old key; the fallback there was `boolOf`, so the effect was one byte in
+      // the SAFE direction and nobody noticed. The next rename on a field whose
+      // fallback is `null` — `instantOrNull`, `recordRefOrNull`, `personNameOrNull`,
+      // `centsOrNull`, all the wide ones — would take up to 200 characters out of
+      // the measurement while `byteLimit` stayed put, and gate 9 would refuse the
+      // entry in production against a ceiling the suite had certified.
+      //
+      // Both directions are asserted. Neither is catchable by TypeScript:
+      // `EXAMPLE_RAW_ROWS` is `Record<string, unknown>` and `project` takes the same,
+      // so an unread key and a missing key are both perfectly well typed.
+      const raw = EXAMPLE_RAW_ROWS[tool.id] as Record<string, unknown>;
+      const read = new Set<string>();
+      tool.project(
+        new Proxy(raw, {
+          get: (target, property) => {
+            if (typeof property === "string") read.add(property);
+            return Reflect.get(target, property);
+          },
+          has: (target, property) => {
+            if (typeof property === "string") read.add(property);
+            return Reflect.has(target, property);
+          },
+        }),
+      );
+      expect(
+        [...Object.keys(raw)].filter((key) => !read.has(key)).sort(),
+        `${tool.id}: fixture keys its projection never reads — the alias was renamed, or the key was never real`,
+      ).toEqual([]);
+      expect(
+        [...read].filter((key) => !(key in raw)).sort(),
+        `${tool.id}: keys the projection reads that the widest-row fixture does not supply, so those fields are measured at their fallback`,
+      ).toEqual([]);
     },
   );
 
