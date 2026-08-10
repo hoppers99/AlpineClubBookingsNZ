@@ -23,7 +23,9 @@
   them turned out to mean filing them somewhere **members can read**: every locker
   change would have appeared on the activity page of the **officer who made it** —
   officers are members too — while the member the locker is allocated to would
-  still have seen nothing. So lockers stay under Admin, and the choice goes back to
-  the club as its own decision (#2777) rather than being made in passing. Nothing
-  an operator does changes; the record of why simply exists now, and a future
-  change of mind will fail the build unless it is deliberate.
+  still have seen nothing. So lockers stayed under Admin while the choice went back
+  to the club as its own decision (#2777) rather than being made in passing — and
+  the club settled it the same way: lockers stay under Admin, with the alternative
+  (a brand-new, members-can't-see-it audit category) considered and declined.
+  Nothing an operator does changes; the record of why simply exists now, and a
+  future change of mind will fail the build unless it is deliberate.

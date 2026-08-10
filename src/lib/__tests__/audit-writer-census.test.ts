@@ -829,20 +829,21 @@ describe("audit writer census (#2581)", { timeout: 180_000 }, () => {
         (category) => !memberVisible.has(category),
       ),
       "A member-INVISIBLE category now routes to the membership correlation " +
-        "entry. That changes #2765: until now, filing the locker writers where a " +
-        "Membership Officer could correlate them meant filing them somewhere a " +
-        "member can read, and these four writers reach the acting officer's own " +
-        "timeline through the null-subject `memberId` leg. With a member-invisible " +
-        "destination available the question can be put to the owner again on those " +
-        "terms — it is still the owner's, not a lane's (INV-PRIV-012).",
+        "entry. That changes the ground #2765 and #2777 were decided on: filing " +
+        "the locker writers where a Membership Officer could correlate them meant " +
+        "filing them somewhere a member can read, and these four writers reach " +
+        "the acting officer's own timeline through the null-subject `memberId` " +
+        "leg. #2777 settled them at `admin` on exactly those terms, so with a " +
+        "member-invisible destination available the question can be put to the " +
+        "owner again — it is still the owner's, not a lane's (INV-PRIV-012).",
     ).toEqual([]);
   });
 
   it("pins the stored-row cost of ever re-introducing `membership` as a category", () => {
     /*
       The half of #2765's refusal that is about rows already written, not rows
-      written next — measured here so the successor decision (#2777) is costed
-      rather than argued.
+      written next — measured here so the successor decision (#2777, decided
+      11 August 2026: the lockers stay `admin`) was costed rather than argued.
 
       THE ONE IMPLEMENTABLE MEMBER-INVISIBLE DESTINATION for the locker writers is a
       NEW canonical category routed to the membership correlation domain and
@@ -857,9 +858,11 @@ describe("audit writer census (#2581)", { timeout: 180_000 }, () => {
       never matches a value outside the taxonomy — and re-introducing the string
       would make them readable by any support+membership operator, retroactively, on
       an append-only table. That is a stored-row audience change nobody has decided,
-      and it is the reason the successor issue asks for a NEW name rather than the
-      old one. If this test fails because another migration rewrites the column, that
-      cost has changed and #2777's brief is out of date.
+      and it is the reason the successor issue asked for a NEW name rather than the
+      old one. #2777 was decided with the lockers staying `admin`, so no such
+      category exists; if this test fails because another migration rewrites the
+      column, the measured cost that decision rested on has changed — re-measure it
+      before citing #2777.
     */
     const migrationsRoot = join(process.cwd(), "prisma", "migrations");
     const rewriters = readdirSync(migrationsRoot, { withFileTypes: true })
@@ -883,8 +886,8 @@ describe("audit writer census (#2581)", { timeout: 180_000 }, () => {
         "legacy `category = 'membership'` rows from three pre-#2581 nomination " +
         "writers were never backfilled and are therefore correlated by nobody — so " +
         "re-introducing that string would widen who can read rows already written " +
-        "(INV-PRIV-013, INV-OPS-012). Re-measure that cost and update #2777 before " +
-        "changing this list.",
+        "(INV-PRIV-013, INV-OPS-012). #2777 was decided on that measured cost — " +
+        "re-measure it and record the change before altering this list.",
     ).toEqual(["20260810020000_backfill_bed_allocation_audit_category"]);
 
     // And the name itself is still outside the taxonomy, which is what makes those

@@ -14,16 +14,16 @@ member record* on `admin` by moving the two bulk-screen branches IN, rather than
 moving the member-page writer out into a member-visible category. Eight of the
 nine remain held. `admin` therefore reads 98 sites now, not 96, and the rule that
 came out of it is `INV-PRIV-012` — which is also where the fifteen lodge-gated
-sites and the unresolved `lockers` group are now recorded, instead of only in the
-open-question section at the foot of this page.
+sites and the `lockers` group (unresolved then, settled by #2777) are now
+recorded, instead of only in the open-question section at the foot of this page.
 
 **And the open question at the foot of this page is closed: they stay (#2765).**
 The test that decided it — *did this site split a subsystem*, not *does it name a
 lodge* — is `INV-PRIV-013`, and the fifteen are pinned per site in
 `LODGE_GATED_ADMIN_CATEGORIES_2765` so the keep no longer depends on the next
-author reading this page. `lockers` is the one subgroup still open — as its own
-filed decision, **#2777**, not as a sentence here — and #2765 records why in terms
-that can be re-measured rather than re-argued.
+author reading this page. `lockers` went back as its own filed decision, **#2777**,
+not as a sentence here, and was decided on 11 August 2026: the four stay `admin`.
+#2765 records why in terms that can be re-measured rather than re-argued.
 
 **What this page is not.** It is a record of where the platform FILES new rows. It
 changed no row already in the database, which left bed-allocation history split by
@@ -312,9 +312,14 @@ own activity page — not on the page of the member the locker is allocated to, 
 id is only inside `metadata` and is no query leg at all. That crossing is the
 owner's decision under `INV-PRIV-012` and `INV-OPS-012`, so the sites stay `admin`
 and the question went back as its own filed decision, **#2777**, with the reason
-measured rather than argued.
+measured rather than argued. **#2777 was decided on 11 August 2026: the four
+locker writers stay `admin`**, with the accepted trade-off that a Membership
+Officer correlating locker changes uses the System entry (gated `support` alone)
+rather than a membership-domain one — a stated gap, because both entries' scope
+strings keep naming lockers as `admin`.
 
-**#2777 also carries the option the refusal on its own does not:** a NEW canonical
+**#2777 also carried — and the owner declined — the option the refusal on its own
+does not:** a NEW canonical
 category mapped to the membership correlation domain and deliberately left off
 `MEMBER_VISIBLE_AUDIT_CATEGORIES` is member-invisible and delivers what the access
 model asks for. "No member-invisible destination" is a fact about today's closed
@@ -571,10 +576,11 @@ decision goes.
 **#2765 closed this open question, and the answer was "they stay".** The rule that
 decided it is now `INV-PRIV-013` and the fifteen are pinned per site in
 `LODGE_GATED_ADMIN_CATEGORIES_2765`, so the keep is enforced rather than argued
-each time. `lockers` remains the one unresolved subgroup, for a measured reason
-rather than a stylistic one, and it is now carried as a filed decision (**#2777**)
-rather than as an open question on a page — see the section above. Read the two
-paragraphs below as the history of how it got there.
+each time. `lockers` was the one subgroup that needed its own decision, for a
+measured reason rather than a stylistic one; it was carried as a filed decision
+(**#2777**) rather than as an open question on a page, and decided on 11 August
+2026: the four stay `admin` — see the section above. Read the two paragraphs
+below as the history of how it got there.
 
 **#2755 promoted both halves of that from a page note to an invariant, and left
 them at `admin`.** `INV-PRIV-012` records the fifteen as a deliberate keep with

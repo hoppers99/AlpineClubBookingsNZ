@@ -195,7 +195,10 @@ rules first written here. #2765 extended it with the measured-audience half.
   not the end of the obligation — the question went back to the owner as **#2777**,
   a filed issue with the measurement and the costed alternatives, because a
   carry-forward named in a pull request and nowhere else is the defect #2765 was
-  itself opened to fix.
+  itself opened to fix. #2777 was decided on 11 August 2026 — the four locker
+  writers stay `admin`, the new-category alternative declined — which is the shape
+  the obligation asks for: measured, filed, decided, and recorded
+  (`INV-PRIV-013`).
 
 ## INV-OPS-005
 
