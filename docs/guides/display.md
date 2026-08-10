@@ -118,6 +118,9 @@ actually happens:
   (Saving the position also needs finance access, which is what the underlying
   route is gated on. An admin without it still runs the whole wizard — it simply
   does not remember where they were between visits.)
+  Clicking a step always wins over the saved position, including when you click
+  one the instant the wizard opens and the saved position has not arrived yet
+  (#2781).
 
 **Where you find it.** While your club has no boards, or no working screen, the
 Lobby Display hub leads with a gold **Guided setup** card. Once a screen is

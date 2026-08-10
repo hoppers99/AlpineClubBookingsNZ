@@ -786,7 +786,10 @@ Stripe (C4) and Google (C5) reuse the same shell with their own steps:
 Each step gates on **live server truth** (`isVerified(context)`); a small
 `IntegrationWizardProgress` row persists only a resume cursor (advisory), so a
 reload mid-flow resumes at the right step and a stale cursor can never skip a
-gate.
+gate. Advisory also means it loses to the operator: the shell tags its step
+cursor with who placed it, and a resume that is still in flight when the operator
+clicks a step stands down instead of moving them (#2781, and see
+`src/components/admin/integration-wizard/integration-wizard.tsx`).
 
 **Mock-Xero E2E harness.** A test-only seam (`xero-mock-endpoint.ts`, gated on
 `XERO_MOCK_API_ORIGIN`) routes the consent/token/connections/organisation calls
