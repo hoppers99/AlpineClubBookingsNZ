@@ -38,24 +38,38 @@ import { describe, expect, it } from "vitest";
  *
  * ## The forward guard, and why it is in this file
  *
- * On the current tree `buildInProgressGuestRangePlan` takes no group-discount
- * config at all — that is #2756 (PR #2772), which makes the in-progress planner
- * price the whole party in one pass so the discount can reach the nights it
- * buys. When it does, the value it is handed must be the gated one, or the two
- * planner branches disagree again and the switch becomes decorative on the very
- * path that motivated it. This census cannot see a config that does not exist
- * yet, so it pins the reachable half: every production caller of that planner
- * must be a declared EDIT path, so the config can only ever come from a file
- * that resolves it through the gate.
+ * Since #2756 (PR #2772) `buildInProgressGuestRangePlan` takes a group-discount
+ * config, and the value it is handed must be the gated one or the two planner
+ * branches disagree again and the switch is decorative on the very path that
+ * motivated it. This census cannot follow a value across files, so it pins what
+ * it can see: every production caller of that planner must be a declared EDIT
+ * path, so the config can only ever come from a file that resolves it through
+ * the gate. Both current callers — `calculateModifiedPricing` and the
+ * modify-quote route — read the setting ONCE and hand the same resolved value to
+ * that planner and to their ordinary pricing pass, which is the property the
+ * pricing suite then measures in cents at both branches.
+ *
+ * ## The hand-rolled-literal guard, and why it exists at all
+ *
+ * A census of mapper CALLS is blind to the one shape that needs it most: a file
+ * that never calls a mapper and assembles the config itself. That is not
+ * hypothetical — `/api/promo-codes/validate` did exactly that, gated on `enabled`
+ * alone, and was therefore invisible to every assertion here while the edit panel
+ * called it. It is also the same defect class #2756 closed for seasons: a second,
+ * hand-written copy of a config the tree resolves in one place, free to drift
+ * from it in silence. So the last test scans for the SHAPE rather than for a
+ * name, and fails any production file outside the mapper home that builds one.
  *
  * ## What this census does and does not guarantee
  *
- * It is a SOURCE-TEXT census over `src/`, excluding `__tests__`. It guarantees
- * that no production call to either mapper appears without being declared, that
- * the call COUNT in each declared file is what is declared (so a second call
- * cannot hide behind the first), and that no declared edit path calls the
- * creation mapper or vice versa. It cannot follow a config resolved in one file
- * and passed through three others; the declarations record that route in prose.
+ * It is a SOURCE-TEXT census over `src/`, excluding `__tests__`, run over
+ * comment-stripped source so prose can neither add a phantom call site nor hide
+ * a real one. It guarantees that no production call to either mapper appears
+ * without being declared, that the call COUNT in each declared file is what is
+ * declared (so a second call cannot hide behind the first), that no declared
+ * edit path calls the creation mapper or vice versa, and that nobody builds the
+ * config by hand. It cannot follow a config resolved in one file and passed
+ * through three others; the declarations record that route in prose.
  */
 
 const SRC_ROOT = path.resolve(process.cwd(), "src");
@@ -74,8 +88,67 @@ function repoRelative(absolute: string): string {
   return path.relative(process.cwd(), absolute).split(path.sep).join("/");
 }
 
+/**
+ * Source text with comments removed, because a census that counts prose counts
+ * the wrong things in both directions.
+ *
+ * It really happened: `booking-edit-guest-ranges.ts` documents what its callers
+ * pass by naming the mapper and its argument, and the raw-text scan read that
+ * sentence as an undeclared production call site. The reverse mistake is the
+ * dangerous one — a scan that cannot tell code from prose can be talked out of a
+ * finding by wording, in either direction. So the stripping is a real scanner
+ * over string and template literals and both comment forms, not a line regex
+ * that would eat the double slash inside a URL.
+ */
+function stripComments(source: string): string {
+  let out = "";
+  let i = 0;
+  while (i < source.length) {
+    const char = source[i];
+    const next = source[i + 1];
+    if (char === "/" && next === "/") {
+      while (i < source.length && source[i] !== "\n") i += 1;
+      continue;
+    }
+    if (char === "/" && next === "*") {
+      i += 2;
+      while (i < source.length && !(source[i] === "*" && source[i + 1] === "/")) {
+        i += 1;
+      }
+      i += 2;
+      continue;
+    }
+    if (char === '"' || char === "'" || char === "`") {
+      const quote = char;
+      out += char;
+      i += 1;
+      while (i < source.length) {
+        if (source[i] === "\\") {
+          out += source[i] + (source[i + 1] ?? "");
+          i += 2;
+          continue;
+        }
+        out += source[i];
+        if (source[i] === quote) {
+          i += 1;
+          break;
+        }
+        i += 1;
+      }
+      continue;
+    }
+    out += char;
+    i += 1;
+  }
+  return out;
+}
+
+function readSource(absolute: string): string {
+  return stripComments(fs.readFileSync(absolute, "utf8"));
+}
+
 function read(file: string): string {
-  return fs.readFileSync(path.resolve(process.cwd(), file), "utf8");
+  return readSource(path.resolve(process.cwd(), file));
 }
 
 function countMatches(source: string, pattern: RegExp): number {
@@ -108,8 +181,11 @@ const IN_PROGRESS_PLAN_CALL =
  * one's classification — and so a creation call appearing in an edit path, or the
  * reverse, fails as a COUNT as well as a classification.
  *
- * `mapper-home` is the one file allowed to call both, because it is where the two
- * mappers and the member-facing note are defined in terms of each other.
+ * `mapper-home` is where the two mappers and the member-facing note are defined
+ * in terms of each other. `either` is the one OTHER shape allowed to hold both,
+ * for a route that previews a first purchase for some callers and an edit for
+ * others and is told which by the request — exactly one of the two runs per
+ * request, so it still never holds two different configs at once.
  */
 const MAPPER_CALL_SITES = [
   // ------------------------------------------------------------- mapper home
@@ -201,6 +277,15 @@ const MAPPER_CALL_SITES = [
     editCalls: 1,
     what: "the modify-quote preview, which must resolve the same value the save path charges (#1095) or the member is quoted a discount the save then refuses",
   },
+
+  // ------------------------------------------------------- either, by request
+  {
+    file: "src/app/api/promo-codes/validate/route.ts",
+    kind: "either",
+    creationCalls: 1,
+    editCalls: 1,
+    what: "the promo-code preview. ONE route serves both the create wizard and the edit panel, so it is told which by the request's `forBookingEdit` flag (absent = a first purchase, which is what every create-flow client sends) and resolves through the matching mapper. Exactly one branch runs per request. It used to hand-roll the config inline behind `enabled` alone, which is why the shape guard below now exists; nothing here decides a charge — `modify-quote` and the save path each recompute the promo on their own gated pricing (#1095)",
+  },
 ] as const;
 
 const creationSites = MAPPER_CALL_SITES.filter((site) => site.creationCalls > 0);
@@ -216,8 +301,7 @@ describe("group-discount edit-time switch census (#2770, INV-MOD-026)", () => {
     const found = allSourceFiles(SRC_ROOT)
       .filter(
         (absolute) =>
-          countMatches(fs.readFileSync(absolute, "utf8"), CREATION_MAPPER_CALL) >
-          0,
+          countMatches(readSource(absolute), CREATION_MAPPER_CALL) > 0,
       )
       .map(repoRelative)
       .sort();
@@ -233,7 +317,7 @@ describe("group-discount edit-time switch census (#2770, INV-MOD-026)", () => {
     const found = allSourceFiles(SRC_ROOT)
       .filter(
         (absolute) =>
-          countMatches(fs.readFileSync(absolute, "utf8"), EDIT_MAPPER_CALL) > 0,
+          countMatches(readSource(absolute), EDIT_MAPPER_CALL) > 0,
       )
       .map(repoRelative)
       .sort();
@@ -286,10 +370,7 @@ describe("group-discount edit-time switch census (#2770, INV-MOD-026)", () => {
     const callers = allSourceFiles(SRC_ROOT)
       .filter(
         (absolute) =>
-          countMatches(
-            fs.readFileSync(absolute, "utf8"),
-            IN_PROGRESS_PLAN_CALL,
-          ) > 0,
+          countMatches(readSource(absolute), IN_PROGRESS_PLAN_CALL) > 0,
       )
       .map(repoRelative)
       .sort();
@@ -312,7 +393,7 @@ describe("group-discount edit-time switch census (#2770, INV-MOD-026)", () => {
     const decidingFiles = allSourceFiles(SRC_ROOT)
       .filter((absolute) =>
         /!setting\?\.applyToEdits|applyToEdits\s*\?\s*toGroupDiscountConfig/.test(
-          fs.readFileSync(absolute, "utf8"),
+          readSource(absolute),
         ),
       )
       .map(repoRelative);
@@ -320,5 +401,29 @@ describe("group-discount edit-time switch census (#2770, INV-MOD-026)", () => {
     expect(decidingFiles).toEqual([
       "src/lib/policies/booking-route-decisions.ts",
     ]);
+  });
+
+  it("refuses a group-discount config built by hand instead of through a mapper", () => {
+    // The shape guard. Every test above looks for a mapper NAME, so the one
+    // failure mode they are all blind to is a file that calls neither and
+    // assembles the four-key `GroupDiscountConfig` itself — which is what
+    // `/api/promo-codes/validate` did, gated on `enabled` alone, while the edit
+    // panel called it. A hand-rolled copy of a config the tree resolves in one
+    // place is free to drift from it silently, and this one already had.
+    //
+    // Matched by shape: an object literal that sets `minGroupSize` to something
+    // and `enabled` to the literal `true`. `minGroupSize: true` is excluded
+    // because that is a Prisma `select` projection, not a config — the public
+    // fee-page tokens select exactly those three columns.
+    const HAND_ROLLED_CONFIG =
+      /\bminGroupSize\s*:\s*(?!true\b)[^,;}]+[,;][\s\S]{0,400}?\benabled\s*:\s*true\b/;
+    const offenders = allSourceFiles(SRC_ROOT)
+      .filter((absolute) => HAND_ROLLED_CONFIG.test(readSource(absolute)))
+      .map(repoRelative)
+      .sort();
+
+    // Only the mapper home may write the literal, because it is the literal
+    // everything else must come from.
+    expect(offenders).toEqual(["src/lib/policies/booking-route-decisions.ts"]);
   });
 });

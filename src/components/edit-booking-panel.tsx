@@ -3088,6 +3088,12 @@ export function EditBookingPanel({
                 </div>
               )}
               <PromoCodeInput
+                // #2770 (INV-MOD-026): this widget is on an EDIT, so the
+                // validator must consult the club's `applyToEdits` switch. Left
+                // off, the promo adjustment shown here would be sized on
+                // group-discounted per-night rates that the quote above and the
+                // save below refuse to give at a switch-off club.
+                forBookingEdit
                 checkIn={checkIn}
                 checkOut={checkOut}
                 guests={[

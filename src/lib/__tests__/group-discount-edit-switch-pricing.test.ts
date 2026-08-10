@@ -24,16 +24,18 @@ import type { SeasonRateData } from "@/lib/policies/pricing";
  *
  * ## The two season shapes, and why both are run
  *
- * On the current tree the production edit paths hand-roll their `SeasonRateData`
- * without the season's `type`, so at a club on the schema default
- * (`summerOnly: true`) the group discount cannot reach an edit at all — that is
- * #2756 (PR #2772), which routes every mapping through `toSeasonRateData`. Each
- * case therefore runs twice:
+ * The edit paths used to hand-roll their `SeasonRateData` without the season's
+ * `type`, so at a club on the schema default (`summerOnly: true`) the group
+ * discount could not reach an edit at all. #2756 (PR #2772, now merged) routes
+ * every mapping through `toSeasonRateData` and restored it, which is what makes
+ * this switch matter to a default-configured club rather than only to one that
+ * had turned `summerOnly` off. Each case therefore runs twice:
  *
- *  - `summerOnly: false` with a typeless season — the shape the current tree can
- *    actually reach, so these cases prove the switch on `main` today;
- *  - `summerOnly: true` with a `SUMMER` season — the shape #2772 restores, so the
- *    same cases keep proving it afterwards.
+ *  - `summerOnly: true` with a `SUMMER` season — the schema default, and the
+ *    configuration a real club is most likely in;
+ *  - `summerOnly: false` with a typeless season — the same behaviour where the
+ *    season's type is irrelevant, so a future regression in `type` plumbing
+ *    cannot make the whole suite vacuous at once.
  *
  * Both must behave identically, because the switch is about *whether an edit is
  * discounted*, never about which season it is in.
@@ -188,11 +190,30 @@ interface PartyGuest {
   nights?: Array<{ stayDate: Date; priceCents: number }>;
 }
 
+/** What a guest's stored night rows say they have paid so far. */
+function storedPriceOf(guest: PartyGuest): number {
+  return (guest.nights ?? []).reduce((sum, night) => sum + night.priceCents, 0);
+}
+
+/**
+ * A guest's stored total is the SUM of their stored night rows, never a
+ * hard-coded zero, and that matters more than it looks (#2744, INV-MOD-025).
+ *
+ * `composeProposedNightPrices` writes the real per-night rates only when the
+ * stored past nights account exactly for the part of the total the edit does not
+ * touch; a guest whose total has drifted from their rows falls back to an EVEN
+ * SPLIT of the whole total across every night. Under that fallback a cheaper
+ * edit makes every night look cheaper — held nights included — so a fixture with
+ * three stored 12000-cent nights and a stored total of zero would report the
+ * switch re-rating history when it had done nothing of the kind, and would hide
+ * the real per-night effect behind an average. The fixtures must therefore be
+ * the coherent booking, because that is the one the assertions are about.
+ */
 function bookingOf(
   party: PartyGuest[],
   checkIn: Date,
   checkOut: Date,
-  totalPriceCents: number,
+  totalPriceCents = party.reduce((sum, guest) => sum + storedPriceOf(guest), 0),
 ) {
   return {
     id: "b1",
@@ -211,7 +232,7 @@ function bookingOf(
       memberId: guest.isMember ? `m-${guest.id}` : null,
       stayStart: guest.stayStart,
       stayEnd: guest.stayEnd,
-      priceCents: 0,
+      priceCents: storedPriceOf(guest),
       nights: guest.nights ?? [],
     })),
   } as never;
@@ -395,33 +416,34 @@ describe.each(SEASON_SHAPES)(
     /**
      * The IN-PROGRESS planner branch. The stay has started (the frozen clock puts
      * "today" at 2026-07-01 NZ, so a stay from 2026-06-28 is under way and
-     * `editableFrom` is NZ tomorrow), and the check-out moves out by one night.
+     * `editableFrom` is NZ tomorrow), and the check-out moves out by one night —
+     * so the edit buys exactly ONE night per guest, on 2026-07-03.
      *
-     * What is asserted here is deliberately the stable half. On the current tree
-     * `buildInProgressGuestRangePlan` is handed no group-discount config at all —
-     * that is exactly the #2756 defect, and PR #2772 is what fixes it — so ON and
-     * OFF necessarily agree today. Pinning that agreement would turn this suite
-     * red the moment #2772 lands, which would be asserting a bug. What is pinned
-     * instead holds before and after: **OFF prices byte-identically to a club with
-     * no group discount**, and a night already bought does not move in either
-     * state. The forward half — that when this branch does take a config it can
-     * only be the gated one — is `group-discount-edit-switch-census.test.ts`,
-     * which refuses any caller of this planner that is not a declared edit path.
+     * Since #2756 (PR #2772) this branch takes a group-discount config, and after
+     * the merge it takes the SAME hoisted, gated value the ordinary pass takes.
+     * So the assertions here are the same strict shape as the ordinary planner's:
+     * ON is cheaper than OFF by exactly the discount on the night the edit buys,
+     * OFF is byte-identical to a club with no discount at all, and the three
+     * nights each guest already holds carry their stored price untouched in both
+     * states. An inert gate on this branch makes the ON and OFF numbers equal and
+     * fails the case, which is what acceptance criterion 4 asks for — both states
+     * at both planner branches, provably.
      */
+    const HELD_NIGHTS = [D("2026-06-28"), D("2026-06-29"), D("2026-06-30")];
+
     async function extendInProgress(state: "disabled" | "on" | "off") {
-      const held = [D("2026-06-28"), D("2026-06-29"), D("2026-06-30")];
       const party: PartyGuest[] = [1, 2, 3, 4, 5].map((n) => ({
         id: `g${n}`,
         isMember: false,
         stayStart: D("2026-06-28"),
         stayEnd: D("2026-07-03"),
-        nights: held.map((stayDate) => ({
+        nights: HELD_NIGHTS.map((stayDate) => ({
           stayDate,
           priceCents: NON_MEMBER_RATE_CENTS,
         })),
       }));
       return calculateModifiedPricing(txFor(state, summerOnly), {
-        booking: bookingOf(party, D("2026-06-28"), D("2026-07-03"), 0),
+        booking: bookingOf(party, D("2026-06-28"), D("2026-07-03")),
         bookingId: "b1",
         isInProgressEdit: true,
         editableFrom: D("2026-07-02"),
@@ -451,16 +473,35 @@ describe.each(SEASON_SHAPES)(
       expect(off.guestNightRates).toEqual([]);
     });
 
-    it("in-progress planner: a night already bought keeps its stored price in both states (INV-MOD-005)", async () => {
+    it("in-progress planner: ON discounts the night the edit buys and OFF does not, while every night already bought keeps its stored price (INV-MOD-005)", async () => {
       const [on, off] = await Promise.all([
         extendInProgress("on"),
         extendInProgress("off"),
       ]);
 
-      for (const quote of [on, off]) {
+      // The load-bearing assertion, and the one an inert gate on THIS branch
+      // cannot pass: one newly bought night per guest, five guests, one discount
+      // each.
+      expect(on.newTotalPriceCents).toBeLessThan(off.newTotalPriceCents);
+      expect(off.newTotalPriceCents - on.newTotalPriceCents).toBe(
+        5 * DISCOUNT_PER_NIGHT_CENTS,
+      );
+
+      for (const [state, quote] of [
+        ["on", on],
+        ["off", off],
+      ] as const) {
+        const expectedNewNightCents =
+          state === "on" ? MEMBER_RATE_CENTS : NON_MEMBER_RATE_CENTS;
         for (const guest of quote.priceBreakdown.guests) {
-          // The three held nights are valued at what they were sold for, and the
-          // per-night amounts are whole cents summing back to the guest's total.
+          // Four nights: the three held, then the one this edit bought.
+          expect(guest.perNightCents).toEqual([
+            NON_MEMBER_RATE_CENTS,
+            NON_MEMBER_RATE_CENTS,
+            NON_MEMBER_RATE_CENTS,
+            expectedNewNightCents,
+          ]);
+          // Integer cents per night, summing back to the guest's own total.
           for (const cents of guest.perNightCents) {
             expect(Number.isInteger(cents)).toBe(true);
           }
@@ -469,10 +510,13 @@ describe.each(SEASON_SHAPES)(
           ).toBe(guest.priceCents);
         }
       }
-      // The switch cannot re-rate a bought night in either direction: the held
-      // nights are the same numbers in both states.
+
+      // Stated once more as the property rather than as numbers: the switch
+      // cannot re-rate a bought night in either direction.
       const heldOf = (quote: Awaited<ReturnType<typeof extendInProgress>>) =>
-        quote.priceBreakdown.guests.map((g) => g.perNightCents.slice(0, 3));
+        quote.priceBreakdown.guests.map((g) =>
+          g.perNightCents.slice(0, HELD_NIGHTS.length),
+        );
       expect(heldOf(on)).toEqual(heldOf(off));
     });
   },
