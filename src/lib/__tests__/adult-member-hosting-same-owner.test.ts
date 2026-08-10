@@ -2366,7 +2366,7 @@ describe("the SOURCE read gets an evidence ceiling of its own (#2376)", () => {
       { sameOwnerSourceCeiling: 3 },
     ).catch((caught: unknown) => caught as Error);
     expect(error).toBeInstanceOf(HostingSameOwnerSourceCeilingExceededError);
-    expect(error.message).not.toContain("sibling bookings could cover");
+    expect((error as Error).message).not.toContain("sibling bookings could cover");
   });
 
   it("still answers, unrefused, when the population sits inside the ceiling", async () => {

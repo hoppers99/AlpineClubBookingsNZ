@@ -1065,7 +1065,7 @@ describe("the read-only form's season basis (#2376)", () => {
   /** The season the bridge was actually asked about. */
   function seasonAsked(): unknown {
     const call = subscriptionBridge.loadUnpaidSubscriptionMemberIds.mock
-      .calls[0] as [unknown, { seasonYear?: number }] | undefined;
+      .calls[0] as unknown as [unknown, { seasonYear?: number }] | undefined;
     return call?.[1]?.seasonYear;
   }
 
@@ -1126,7 +1126,7 @@ describe("the read-only form's season basis (#2376)", () => {
       subscriptionLockoutMode: "NON_MEMBER_PRICING",
     });
     const call = subscriptionBridge.loadUnpaidSubscriptionMemberIds.mock
-      .calls[0] as [unknown, { mode?: string }] | undefined;
+      .calls[0] as unknown as [unknown, { mode?: string }] | undefined;
     expect(call?.[1]?.mode).toBe("NON_MEMBER_PRICING");
   });
 
@@ -1134,7 +1134,7 @@ describe("the read-only form's season basis (#2376)", () => {
     const { db } = makeDb(bookingRow(), [CLUB_ON]);
     await evaluatePersistedBookingAdultMemberHostingReadOnly("booking-1", db);
     const call = subscriptionBridge.loadUnpaidSubscriptionMemberIds.mock
-      .calls[0] as [unknown, { mode?: string }] | undefined;
+      .calls[0] as unknown as [unknown, { mode?: string }] | undefined;
     expect(call?.[1]?.mode).toBeUndefined();
   });
 

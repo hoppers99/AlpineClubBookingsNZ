@@ -3205,7 +3205,7 @@ describe("AID-6B booking/membership pack: the code catalogues (#2376)", () => {
     // with no qualifier on the row and none in the scope line.
     const summary = entry(DIAGNOSTICS_MEMBER_BOOKING_SUMMARY_TOOL_ID);
     const modelFacing = `${summary.description}\n${summary.evidenceScope ?? ""}`;
-    const sql = summary.sql ?? "";
+    const sql = "sql" in summary ? summary.sql : "";
 
     // THE PLATFORM'S OWN PREDICATE, in SQL, and the same text
     // `booking_party_state` precomputes — not a second reading of the column.
