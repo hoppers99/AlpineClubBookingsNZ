@@ -326,8 +326,15 @@ describe("IntegrationWizard focus management (#2080 UX-F3)", () => {
 //  - the click is dispatched from the step body's own mount effect. React
 //    flushes a child's effects BEFORE its parent's, so the navigation is
 //    guaranteed to land in the window between the wizard painting a clickable
-//    stepper and the shell's initialisation effect running — the same window a
-//    real operator hits while `wizard-progress` is still in flight.
+//    stepper and the shell's initialisation effect running.
+//
+// That window is NOT "while `wizard-progress` is in flight" — the shell renders
+// a spinner until `cursor.loaded`, so no stepper button exists to click. It is
+// the React turn AFTER the GET resolves: `loaded`, `persistedStepId` and
+// `acknowledged` batch into one commit, that commit paints an interactive
+// stepper, and the init effect placing the cursor is flushed after it. So the
+// window's length is main-thread scheduling, not network latency — which is
+// exactly why it fired under contended CI load and never locally.
 //
 // This ordering failed three times in CI and was written off as a flake each
 // time (#2738, #2775 twice). Nothing here depends on timing: revert the fix and
@@ -451,6 +458,42 @@ describe("IntegrationWizard cursor race (#2781)", () => {
     );
   }
 
+  // The premise every explanation of this defect rests on, pinned so the
+  // explanations cannot drift back to the wrong one. The window is NOT "the GET
+  // is in flight": while it is, there is no stepper at all, so there is nothing
+  // to click. Make the stepper render during loading and this fails — which is
+  // the signal to revisit the changelog, `docs/guides/display.md` and
+  // `docs/xero/ARCHITECTURE.md`, because the window they describe would change.
+  it("shows NO clickable stepper at all while the cursor GET is in flight", async () => {
+    const releaseCursor = deferCursorLoad();
+    render(
+      <IntegrationWizard<Ctx>
+        wizardId="test"
+        title="Test wizard"
+        steps={steps()}
+        context={{ bReady: false, cReady: false }}
+        contextLoading={false}
+        onRefresh={() => {}}
+        canEdit={true}
+        viewOnlyBanner={<>view only</>}
+      />,
+    );
+
+    // Not "step B is unreachable" — no step button exists in any state, not
+    // even the always-reachable first one, and no step body has rendered.
+    expect(screen.queryByRole("button", { name: /Step A/ })).toBeNull();
+    expect(screen.queryByRole("button", { name: /Step B/ })).toBeNull();
+    expect(screen.queryByRole("button", { name: /Step C/ })).toBeNull();
+    expect(screen.queryByText("Step A body")).toBeNull();
+
+    await releaseCursor();
+
+    // The stepper only becomes clickable once the saved position has arrived,
+    // so the race window can only open after that.
+    expect(screen.getByRole("button", { name: /Step A/ })).toBeTruthy();
+    expect(screen.getByText("Step A body")).toBeTruthy();
+  });
+
   it("keeps a step clicked before a FIRST-RUN cursor is applied", async () => {
     const releaseCursor = deferCursorLoad();
     const clicked = clickPermit();
@@ -468,6 +511,15 @@ describe("IntegrationWizard cursor race (#2781)", () => {
     expect(screen.queryByText("Step A body")).toBeNull();
     // The shell agrees, not just the body.
     expect(screen.getByText("Step 2 of 3")).toBeTruthy();
+    // Focus followed the click, exactly as it does for any other stepper click.
+    // This is the one case where the operator's own placement is the FIRST one
+    // the focus effect ever sees, so it is the only test that pins the
+    // `owner === "operator"` arm of that first-observation branch: a resume
+    // first-observation must stay silent (see "does not steal focus on the
+    // initial resume render"), but this one must not.
+    const active = document.activeElement as HTMLElement | null;
+    expect(active?.getAttribute("tabindex")).toBe("-1");
+    expect(active?.textContent).toContain("Step B body");
   });
 
   it("keeps a step clicked before a PERSISTED cursor is applied", async () => {

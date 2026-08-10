@@ -175,7 +175,7 @@ export function IntegrationWizard<Ctx>({
   function goTo(next: number) {
     const clamped = Math.min(Math.max(next, 0), maxReachable);
     // The operator owns the cursor from here on, so a resume initialisation
-    // still in flight stands down rather than undoing this (#2781).
+    // that has not run yet stands down rather than undoing this (#2781).
     setStep({ index: clamped, owner: "operator" });
     cursor.persist(steps[clamped].id, cursor.acknowledged);
   }

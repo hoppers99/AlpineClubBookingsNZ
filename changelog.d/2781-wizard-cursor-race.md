@@ -1,11 +1,13 @@
 - **An integration setup wizard no longer jumps back to step one when you click
   a step as it opens (#2781).** Each guided setup wizard — Xero, Stripe, Google,
   backups, the lobby display — remembers where you got to last time and takes
-  you back there. Fetching that saved position happens in the background, and if
-  you clicked a step in the stepper before the answer arrived, the wizard threw
-  your click away and put you back on the first step. On a slow connection, or
-  on the first visit of the day when the site is waking up, that could happen
-  often enough to be maddening.
+  you back there. The wizard waits for that saved position before it shows you
+  anything, so you never see a half-loaded stepper; but there is a split second
+  between the stepper becoming clickable and the wizard actually moving you to
+  the saved step. A click that landed in that split second was thrown away and
+  you were put back on the first step. It is a very short window, and how slow
+  your connection is does not make it any longer — a busy browser or a heavy
+  page does, which is why it looked random rather than reproducible.
 
   Clicking a step now always wins: whichever step you pick is where the wizard
   stays, and the saved position is only used when you have not chosen a step
