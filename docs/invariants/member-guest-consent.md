@@ -18,6 +18,13 @@ are permanent: never renumbered, never reused. **The text under each ID is a
 verbatim move from the source document and must not be reworded in place** —
 only the ID heading lines were added.
 
+One rule that binds this domain is defined under a different prefix, because it
+is cited alongside the deleted-booking rules rather than the consent ones: a
+soft-deleted booking refuses **every** consent answer, from every actor, before
+any of the transitions below is attempted — see
+[`INV-ADDPAY-035`](additional-payment-chasing.md#inv-addpay-035) (#2700). Read it
+before changing `respondToMemberGuestConsent` or the delegate answer path.
+
 ## INV-GUEST-001
 
 A MEMBER added as somebody else's guest may need that member's agreement first

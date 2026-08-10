@@ -214,8 +214,21 @@ export const AUDIT_CENSUS_TOTALS = {
    * `createAuditLog` 108, `auditLog.create` 70, `createStructuredAuditLog` 8,
    * uncategorised 0 — unchanged, because #2670 and #2677 add no audit writer
    * between them. `filesScanned` moved 1894 -> 1895 for #2670's new module.
+   *
+   * 427 -> 428 (#2700): soft-deleting a cancelled booking now asks Stripe to
+   * cancel the booking's in-flight PaymentIntents after the transaction
+   * commits, and a cancellation that FAILS writes
+   * `booking.delete.payment_intent_cancel.failed`. That outcome — the booking is
+   * gone but money can still be captured against it — was previously visible
+   * only in the server log, and the soft-delete's own audit entry is written
+   * inside the transaction BEFORE Stripe is called, so it cannot carry it.
+   * `logAudit`, because the whole cancellation path is deliberately
+   * best-effort and auditing the failure must not become a new way for it to
+   * throw. Categorised `payment` at the site, so it does not join
+   * `UNCATEGORISED_AUDIT_WRITERS` below, and it carries
+   * `entityType`/`entityId` so it correlates to the booking.
    */
-  writeSites: 427,
+  writeSites: 428,
   /**
    * Of those, sites whose event object carries no `category` key.
    *
@@ -236,7 +249,14 @@ export const AUDIT_CENSUS_TOTALS = {
     // see `createAuditLog` below. Fire-and-forget was right while it was only a
     // notification and wrong once a repair depended on it.
     // 240 -> 241 (#2581 child 2): the bulk-update split, above.
-    logAudit: { total: 241, uncategorised: 0 },
+    // 241 -> 242 (#2700): `booking.delete.payment_intent_cancel.failed`, above.
+    // `logAudit` rather than an awaited `createAuditLog` on purpose, and the
+    // reasoning is the inverse of #2649's conversion below: nothing depends on
+    // this row existing before the response is written, and the block it sits
+    // in is the one path in the delete that must never throw — the booking is
+    // already durably deleted, so an error there would tell the admin the
+    // deletion failed and invite a retry that answers 409.
+    logAudit: { total: 242, uncategorised: 0 },
     // 101 -> 102 (#2627): the deletion-approval release, above.
     // 102 -> 104 (#2595): the two reviewed-move writes, above.
     // 104 -> 105 (#2649): the return-to-waitlist repair, above.
@@ -265,10 +285,20 @@ export const AUDIT_CENSUS_TOTALS = {
     // Had this change been a pure re-form with no category attached, the total
     // would have merged silently two short. The merged truth is 108, measured.
     createAuditLog: { total: 108, uncategorised: 0 },
-    createStructuredAuditLog: { total: 8, uncategorised: 0 },
+    // 8 -> 9 (#2581 child 2 review): `recordAgeUpParentEmailHandoffAudit`
+    // moved off its hand-built `prisma.auditLog.create`, the last one in `src/`.
+    // Same row, same dedupe keys (`action` + `subjectMemberId` + `outcome`) —
+    // but it now derives `retentionClass: "critical"` and a seven-year
+    // `expiresAt` instead of the NULL/NULL kept-forever shape, and its metadata
+    // (which carries a recipient email address) goes through
+    // `sanitizeAuditMetadata`. Again the row COUNT is unchanged and only the
+    // FORM moved, which is what this per-sink pin exists to surface.
+    createStructuredAuditLog: { total: 9, uncategorised: 0 },
     // 71 -> 72 (#2352 MC-03D): the page-content deletion, above.
     // 72 -> 70 (#2581 child 2): the two dependants writes, above.
-    "auditLog.create": { total: 70, uncategorised: 0 },
+    // 70 -> 69 (#2581 child 2 review): the age-up handoff write, above. No
+    // hand-built `auditLog.create` remains outside a declared wrapper.
+    "auditLog.create": { total: 69, uncategorised: 0 },
   },
   /**
    * Literal category values written, and by how many sites. The three `membership`
@@ -302,7 +332,20 @@ export const AUDIT_CENSUS_TOTALS = {
     // All five already reached the member self-timeline through the legacy
     // action inference for null-category rows, so none of them becomes visible
     // to a member who could not already see it.
-    account: 20,
+    //
+    // 20 -> 19 (#2755): that same `member.bulk-deactivate`/`-reactivate` branch
+    // moved OUT, to `admin`, so all three officer-driven member-record writers
+    // agree. THIS IS A NARROWING IN BOTH DIRECTIONS AT ONCE, which is why it is
+    // spelt out rather than counted. The subject member stops seeing a bulk
+    // deactivation of their own account on their own activity list — they already
+    // saw nothing when an officer did the same thing from the member detail page,
+    // so the outcome is uniform invisibility rather than visibility-by-screen. And
+    // the row moves from `support` + `membership` to `support` alone, so a
+    // support-only operator gains it: the same gate the member-page equivalent has
+    // always answered to. Retention is unchanged (`critical` under both values —
+    // no access-event word in the action, and no `severity: "info"` path).
+    // See `admin` below for the whole decision and `INV-PRIV-012` for the rule.
+    account: 19,
     // 80 -> 82 (#2621): `booking.expected_arrival_time.set` and `.cleared`. Read
     // with `support:view` plus `bookings:view`, like every other booking row
     // beside them — and the booking officers who can set this field already hold
@@ -318,7 +361,14 @@ export const AUDIT_CENSUS_TOTALS = {
     // billing, member credit, fee configuration, saved-card charges and the five
     // Stripe webhook outcomes. `payment` is `support` plus `finance`, the
     // narrowest genuine gate for money evidence.
-    payment: 33,
+    // 33 -> 34 (#2700): `booking.delete.payment_intent_cancel.failed`. The row
+    // says money may still be capturable against a booking that no longer
+    // exists, which is finance evidence rather than booking history, so it
+    // takes the same `support` + `finance` gate as the other money rows. It
+    // widens nobody's access: whoever has to act on it — cancel the intent by
+    // hand in Stripe, or wait for the manual refund task the capture would
+    // raise — already holds `finance`.
+    payment: 34,
     // 27 -> 34 (#2581 child 2): the five family-group writers and the two
     // dependants writers. Both dependants writers also moved off a hand-built
     // Prisma literal and onto the audit boundary in the same change.
@@ -330,7 +380,70 @@ export const AUDIT_CENSUS_TOTALS = {
     // UNCHANGED by #2581 child 2, deliberately: `admin` is the platform's
     // catch-all and is read with `support:view` alone, so classifying anything
     // into it needed a written justification and none of the 82 earned one.
-    admin: 118,
+    //
+    // 118 -> 96 (#2730): the FIRST review of the `admin` population itself.
+    // #2676 classified the 82 that had no category and explicitly did not read
+    // the 118 that already said `admin`; #2581's own readiness note says those
+    // "cannot be assumed correct". Twenty-two of them were not: the twenty-one
+    // admin-initiated bed-allocation writers and `LODGE_DISPLAY_CONFIG_UPDATED`
+    // now say `lodge`, which is what every other writer of the same objects
+    // already said. Two of them wrote an action name that a `lodge` writer also
+    // wrote (`BED_ALLOCATION_PARTNER_PROMOTED`, `BED_ALLOCATION_PARTNERS_PROMOTED`),
+    // so one action was answering to two permission gates.
+    //
+    // THIS IS A NARROWING, and it is the whole behaviour change: those 22 sites'
+    // rows move from `support:view` alone to `support:view` plus `lodge:view`.
+    // Neither category is member-visible, so no row reaches a member who could
+    // not read it before, and `classifyAuditRetention` returns `critical` for
+    // every one of the 22 under both the old and the new value — no row's
+    // retention changes. It also moves NO ROW ALREADY WRITTEN: a stored row keeps
+    // the category it was written with, so bed-allocation history is split by
+    // date until the backfill in #2751 runs, and both correlation entries' prose
+    // says which half they hold. See
+    // `docs/ai-diagnostics/audit-admin-category-review.md` for the per-site
+    // verdict on all 118 — 22 moved, 87 kept, 9 held for an owner decision
+    // because their destinations are member-visible. The 22 are pinned per site
+    // in `REVIEWED_ADMIN_CATEGORIES_2730` below, because this count alone cannot
+    // see a compensating swap.
+    //
+    // 96 -> 98 (#2755): the two `bulk-update/route.ts` branches moved IN, from
+    // `security` and `account`. #2730 held the reverse question — should the member
+    // detail writer leave `admin`? — and the answer was no: the two bulk branches
+    // join it instead.
+    //
+    // THE DEFECT THIS CLOSES was that one business act was filed three ways
+    // according to which SCREEN the officer opened. Deactivating one member from
+    // the member page wrote `admin`; deactivating the same members from the bulk
+    // screen wrote `account`; changing roles from the member page wrote `admin`
+    // while the bulk screen wrote `security`. Category follows the business domain
+    // affected, and editing, activating, deactivating or re-roling a member's
+    // record from an officer screen is one domain.
+    //
+    // WHY THE JOIN IS `admin` RATHER THAN A MEMBER-VISIBLE CATEGORY. All three
+    // rows reach the subject member's own timeline, and `account` and `security`
+    // are both in `MEMBER_VISIBLE_AUDIT_CATEGORIES`, so unifying on either would
+    // publish an officer's edits of a member's record to that member. The detail
+    // writer reaches them by passing `subjectMemberId`; the two bulk writers pass
+    // NO subject and reach them anyway, through `buildMemberAuditLogWhere`'s
+    // null-subject `targetId` leg (`src/lib/audit-query.ts`, pinned in
+    // `src/lib/__tests__/audit.test.ts`). Audit rows are append-only, so that is
+    // not quietly reversible. Whether a member should see a given event is meant
+    // to become an explicit per-event declaration at the writing site, denied by
+    // default: #2695 DECIDED that on 9 Aug 2026 and it is NOT BUILT YET, so until
+    // it lands the category is the only lever there is.
+    //
+    // ONE SITE DELIBERATELY DID NOT JOIN: `/api/profile` (`member.profile.updated`,
+    // `account`), where the actor IS the subject. That is self-service, not
+    // administration, and filing it `admin` would hide a member's own action from
+    // their own timeline. #2755's issue body listed it as part of the split; it is
+    // not, and the anchor it gave for the third site
+    // (`api/admin/members/[id]/profile/route.ts`) does not exist in the tree.
+    //
+    // The three sites are pinned per site in `MEMBER_RECORD_ADMIN_CATEGORIES_2755`
+    // below, with an action-name gate and a surface gate beside it, because this
+    // count cannot see a compensating swap and cannot see a FOURTH member-record
+    // screen arriving with a different answer. Full rule: `INV-PRIV-012`.
+    admin: 98,
     // 16 -> 19 (#2581 child 2): `member.password-reset-sent` and
     // `member.setup-invite-sent` (decision 3 — the affected domain is the
     // CREDENTIAL, not the mailing), plus the `member.bulk-set-role` branch
@@ -339,7 +452,16 @@ export const AUDIT_CENSUS_TOTALS = {
     // operator in Admin > Audit Log, and the correlation projection returns no
     // `details` and no `metadata`, so the recipient addresses those rows carry
     // do not travel with them.
-    security: 19,
+    //
+    // 19 -> 18 (#2755): the `member.bulk-set-role` branch moved to `admin` with its
+    // sibling — see `admin` above. Correlation-neutral, because `security` and
+    // `admin` are both in the System entry and both read with `support:view` alone;
+    // the change a reader can feel is that the row stops reaching the subject
+    // member's own timeline, since `security` is member-visible and `admin` is not.
+    // Retention is unchanged: `critical` under both values, because
+    // `member.bulk-set-role` normalises to no access-event word, so the
+    // `security`-plus-access-event `sensitive_access` branch never applied to it.
+    security: 18,
     // 16 -> 18 (#2595): the two reviewed-move writes. `lodge` is the category
     // every other bed-allocation write already uses, and it is not one of the
     // three (`admin`, `security`, `system`) readable with support:view alone —
@@ -347,7 +469,12 @@ export const AUDIT_CENSUS_TOTALS = {
     // 18 -> 30 (#2581 child 2): the nine lodge-display writers and the three
     // kiosk-account writers. This NARROWS nothing and widens only within the
     // lodge gate (`support` plus `lodge`).
-    lodge: 30,
+    // 30 -> 52 (#2730): the twenty-one admin-initiated bed-allocation writers
+    // and `LODGE_DISPLAY_CONFIG_UPDATED`, moved OUT of `admin` — see the note on
+    // `admin` above for the readership and retention consequences. Bed
+    // allocation is now wholly `lodge`: 28 sites, one gate, no action name
+    // written into two.
+    lodge: 52,
     // 19 -> 34 (#2581 child 2): the fifteen Xero settings, mapping, replay and
     // retry writers. `xero` is `support` plus `finance`.
     xero: 34,
@@ -390,6 +517,37 @@ export const AUDIT_CENSUS_TOTALS = {
  * ceiling — and it means nobody can quietly re-open the backlog by adding an
  * entry here instead of a category at the site. An addition to this object is
  * now a regression under review, not a to-do.
+ *
+ * WHAT THIS GATE STILL CATCHES NOW THE TYPE IS MANDATORY. `AuditLogParams.category`
+ * and `StructuredAuditEvent.category` are both required and non-null, so an
+ * omitting TypeScript writer no longer compiles — which means this census is no
+ * longer the FIRST thing to notice one, and should not be read as if it were.
+ * It remains the gate for the three cases the compiler cannot see:
+ *
+ *   - raw `INSERT INTO "AuditLog"` in a migration (`APPROVED_MIGRATION_AUDIT_SQL`
+ *     already pins five);
+ *   - a `.mjs`/`.cjs` script or any writer reaching the table outside the typed
+ *     boundary;
+ *   - the type mandate itself being reverted, which would make every omitting
+ *     writer compile again at once.
+ *
+ * So the three layers are: the type refuses omission at compile time, the
+ * runtime assertion in both builders refuses it for anything that reaches the
+ * helper through a cast or from untyped code, and this census refuses it for
+ * writers neither of those can see.
+ *
+ * AND THE THIRD LAYER IS A HEURISTIC, not a proof — worth stating here because
+ * the first draft of the docs said the gap "cannot re-open", which was more than
+ * the tree enforced. A review ran the shipped scanner over a synthetic tree and
+ * produced SIX writers it reported clean: a delegate parked in a local, one
+ * renamed out of a destructure, one reached by element access, raw SQL DML from
+ * TypeScript, a `createMany` whose non-first elements omitted the category, a
+ * schema-qualified migration INSERT, and a migration INSERT naming `"category"`
+ * while supplying NULL. All are closed and fixtured in
+ * `src/lib/__tests__/audit-writer-census-scanner.test.ts`; the residuals that
+ * remain open are named in the scanner's own header. Read this gate as "a new
+ * uncategorised writer written the ordinary way fails CI by name", not as a
+ * closure proof.
  *
  * THE RETENTION CONSEQUENCE OF EMPTYING IT, measured rather than assumed,
  * because it is the reason this was not a metadata-only sweep. Adding a category
@@ -547,15 +705,22 @@ export const APPLIED_AUDIT_CATEGORIES: Readonly<Record<string, string>> = {
   "src/app/api/admin/members/send-password-reset/route.ts::POST#0": "security",
   "src/app/api/admin/members/send-setup-invite/route.ts::POST.batchResults#0": "security",
 
-  // ─── Member bulk lifecycle → SPLIT by action (#2581 decision 6) ────────────
-  // One call site, several affected domains, so it became two sites: `set-role`
+  // ─── Member bulk lifecycle → `admin` (#2581 decision 6, REVISED by #2755) ──
+  // Child 2 split this one call site into two, by affected domain: `set-role`
   // changes what a member may do (`security`), `deactivate`/`reactivate` change
-  // the account (`account`). The route's zod enum bounds the family to exactly
-  // those three, so the split is exhaustive. Both destinations are member-
-  // visible, and the null-category rows already were through the legacy `member.`
-  // inference, so no row moves across the member self-timeline boundary.
-  "src/app/api/admin/members/bulk-update/route.ts::POST#0": "security",
-  "src/app/api/admin/members/bulk-update/route.ts::POST#1": "account",
+  // the account (`account`). Read on its own that was defensible. Read against
+  // the rest of the tree it was not — the SAME two acts performed from the member
+  // detail page wrote `admin` — so #2755 unified all three officer-driven
+  // member-record writers on `admin`, which is the only join that does not
+  // publish an officer's edits of a member's record to that member's own
+  // timeline. Both entries are the reversal record for that: change the literal
+  // at the site and the value here, and `INV-PRIV-012` states what moves.
+  //
+  // Still TWO sites, not one. The two `details` strings genuinely differ (the
+  // set-role branch records the roles assigned), and the census contract forbids
+  // a conditional category — so the branch stays and both halves say `admin`.
+  "src/app/api/admin/members/bulk-update/route.ts::POST#0": "admin",
+  "src/app/api/admin/members/bulk-update/route.ts::POST#1": "admin",
 
   // ─── Privacy decisions and issue reports → `privacy` ───────────────────────
   // `issue.reported` stays `privacy` despite `/admin/issue-reports` being a
@@ -575,6 +740,323 @@ export const APPLIED_AUDIT_CATEGORIES: Readonly<Record<string, string>> = {
   // evidence behind `support:view` alone.
   "src/app/api/admin/communications/send/route.ts::POST#0": "communication",
   "src/app/api/admin/email-suppressions/[id]/clear/route.ts::POST#0": "communication",
+};
+
+/**
+ * The category #2730 RE-classified at each site it moved out of `admin`.
+ *
+ * WHY A SECOND MAP RATHER THAN MORE ROWS IN `APPLIED_AUDIT_CATEGORIES`. That one
+ * is #2581 child 2's reversal record — the sites that had NO category and were
+ * given one — and three assertions read it as exactly that population: the swap
+ * gate, the 56/27 member-visibility split, and the no-entity-identifier
+ * allowlist. Folding 22 unrelated sites in would move all three numbers for a
+ * reason none of their comments describes. These sites are a different decision
+ * with a different before-state (`admin`, not null), so they get their own
+ * record and their own assertion.
+ *
+ * WHY IT EXISTS AT ALL. `categoryValues` is a DISTRIBUTION, and a distribution
+ * cannot see a swap: move one of these 22 back to `admin` and any one `admin`
+ * site into `lodge`, and every count in the census is identical while two rows
+ * changed who may read them. #2730's whole thesis is that unreviewed `admin`
+ * classifications drift silently, so its own corrections are pinned per site
+ * rather than left under an aggregate that a compensating pair defeats.
+ *
+ * ALL 22 MOVED `admin` -> `lodge`, and the direction matters twice over. Neither
+ * category is member-visible, so no row crossed the member self-timeline
+ * boundary in either direction — which is why this pin does not need a
+ * visible/hidden split the way #2581's does. And `classifyAuditRetention`
+ * returns `critical` for every one of these actions under BOTH values, so the
+ * move changed no row's expiry.
+ *
+ * WHAT IT DOES NOT COVER: rows already written. A stored row keeps the category
+ * it was written with, so bed-allocation history is split by date until the
+ * backfill in #2751 runs. That is a data question, not a writer question, and no
+ * census gate can see it.
+ */
+export const REVIEWED_ADMIN_CATEGORIES_2730: Readonly<Record<string, string>> = {
+  // ─── Bed allocation: 21 admin-initiated writers → `lodge` ──────────────────
+  // The affected domain is a bed in a lodge room on a lodge night, whoever moved
+  // it. Before this, `BED_ALLOCATION_PARTNER_PROMOTED` and
+  // `BED_ALLOCATION_PARTNERS_PROMOTED` were each written into TWO permission
+  // gates depending on whether an administrator or the lifecycle wrote them, so
+  // neither correlation entry could return a whole night.
+  "src/app/api/admin/bed-allocation/allocations/bulk/route.ts::POST#0": "lodge",
+  "src/app/api/admin/bed-allocation/allocations/bulk/route.ts::POST#1": "lodge",
+  "src/app/api/admin/bed-allocation/allocations/route.ts::POST#0": "lodge",
+  "src/app/api/admin/bed-allocation/allocations/route.ts::POST#1": "lodge",
+  "src/app/api/admin/bed-allocation/auto-allocate/route.ts::POST#0": "lodge",
+  "src/app/api/admin/bed-allocation/beds/[id]/route.ts::DELETE#0": "lodge",
+  "src/app/api/admin/bed-allocation/beds/[id]/route.ts::PATCH#0": "lodge",
+  "src/app/api/admin/bed-allocation/beds/route.ts::POST#0": "lodge",
+  "src/app/api/admin/bed-allocation/rooms/[id]/route.ts::DELETE#0": "lodge",
+  "src/app/api/admin/bed-allocation/rooms/[id]/route.ts::PATCH#0": "lodge",
+  "src/app/api/admin/bed-allocation/rooms/bulk/route.ts::POST#0": "lodge",
+  "src/app/api/admin/bed-allocation/rooms/import-from-config/route.ts::POST#0":
+    "lodge",
+  "src/app/api/admin/bed-allocation/rooms/route.ts::POST#0": "lodge",
+  "src/app/api/admin/bed-allocation/settings/route.ts::PUT#0": "lodge",
+  "src/lib/admin-bed-allocation.ts::approveBedAllocations#0": "lodge",
+  "src/lib/admin-bed-allocation.ts::moveBedAllocationsSameDateWithLocksHeld.moveUnderLock#0":
+    "lodge",
+  "src/lib/admin-bed-allocation.ts::moveBedAllocationsSameDateWithLocksHeld.moveUnderLock#1":
+    "lodge",
+  "src/lib/admin-bed-allocation.ts::recordRangeAssignAudit#0": "lodge",
+  "src/lib/admin-bed-allocation.ts::recordRangeAssignAudit#1": "lodge",
+  "src/lib/bed-allocation-removal.ts::applyBedAllocationRemoval#0": "lodge",
+  "src/lib/bed-allocation-removal.ts::applyBedAllocationRemoval#1": "lodge",
+
+  // ─── The last lodge-display writer → `lodge` ───────────────────────────────
+  // Moved because it SPLIT a subsystem: ten siblings under `/api/admin/display/**`
+  // already said `lodge`. The other `entityType: "Lodge"` writers (`LODGE_CREATED`,
+  // `LODGE_UPDATED`, `LODGE_SETTINGS_UPDATED`, `LODGE_INSTRUCTION_UPDATED`) are
+  // uniform at `admin` and stay there — see the comment at this route.
+  "src/app/api/admin/display/lodge-config/route.ts::PUT#0": "lodge",
+};
+
+/**
+ * Every writer of the SIX MEMBER-RECORD ACTIONS below — an officer editing,
+ * activating, deactivating or re-roling a member's record — and the single
+ * category all of them file (#2755).
+ *
+ * WHAT THIS MAP IS NOT. It is not "every writer that records an officer acting on
+ * somebody else's member record", and reading it that way is how this pin would
+ * grow a false claim of its own. Other officer-driven writers deliberately file
+ * MEMBER-VISIBLE categories, by earlier reviewed decisions, and they are pinned
+ * separately in `OFFICER_DRIVEN_MEMBER_VISIBLE_WRITERS_2755` below — the
+ * member-photo pair (#2581 chose `account` for the on-behalf branch on purpose,
+ * transparently) and the officer-driven membership-cancellation writers. The rule
+ * in `INV-PRIV-012` is scoped to the six action families named in
+ * `MEMBER_RECORD_ADMIN_ACTIONS_2755`, not to "officer acted", because "who acted"
+ * is the discriminator that rule exists to forbid.
+ *
+ * WHY THIS IS ITS OWN MAP. The three sites were split across the two maps above
+ * and the unpinned remainder: two of them are `APPLIED_AUDIT_CATEGORIES` entries
+ * and the third — `admin-member-detail-service.ts` — was one of the 118 that
+ * already said `admin`, was one of the nine #2730 HELD rather than moved, and so
+ * carried no per-site pin at all. Nothing tied the three together, which is
+ * exactly how they came to disagree: each was reviewed against its own
+ * neighbours and never against each other.
+ *
+ * WHAT IT PINS THAT THE OTHER GATES CANNOT. `categoryValues` is a distribution
+ * and cannot see a swap. `APPLIED_AUDIT_CATEGORIES` pins two of the three but not
+ * the third, so it would pass while the pair and the detail page disagreed again.
+ * And neither can see the failure that actually happened here — a FOURTH screen
+ * for the same act, reviewed on its own and given its own answer. Hence the
+ * action-name family below beside the site map: the census test measures both.
+ *
+ * ALL THREE SAY `admin`, AND THAT IS LOAD-BEARING RATHER THAN INCIDENTAL. All
+ * three rows reach the subject member's own timeline, and `account` and
+ * `security` — the two the bulk screen used to use — are both in
+ * `MEMBER_VISIBLE_AUDIT_CATEGORIES`. So unifying on either would have published an
+ * officer's edits of a member's record on that member's own timeline, and audit
+ * rows are append-only. The census test asserts the destination is
+ * member-INVISIBLE as a property, not just that the three agree, because "all
+ * three agree" is also true of the wrong answer.
+ *
+ * HOW THEY REACH THAT TIMELINE IS NOT UNIFORM, and the difference matters to
+ * anyone applying the rule to a new writer. The detail-service writer passes
+ * `subjectMemberId`. The two bulk writers pass NO subject at all — only
+ * `memberId` (the officer) and `targetId` (the member) — and reach the member
+ * anyway, through `buildMemberAuditLogWhere`'s null-subject `targetId` leg
+ * (`src/lib/audit-query.ts`, pinned in `src/lib/__tests__/audit.test.ts`). "Does
+ * it pass a subject?" is therefore NOT the test for whether a re-classification
+ * crosses the member boundary; `INV-PRIV-012` states the real predicate.
+ *
+ * NOT IN THIS SET, deliberately:
+ *
+ *  - `src/app/api/profile/route.ts::PUT#0` (`member.profile.updated`, `account`).
+ *    Its actor IS its subject — a member editing their own record, with no
+ *    on-behalf path — so it is self-service rather than administration, and filing
+ *    it `admin` would hide a member's own action from them. #2755's issue body
+ *    listed it among the split sites; the anchor it gave for that third site does
+ *    not exist in the tree.
+ *  - The member-photo pair and the cancellation-review writers, which record an
+ *    officer acting on somebody else's record and stay MEMBER-VISIBLE on purpose.
+ *    The photo pair even coexists with this set on ONE screen: the admin member
+ *    detail page renders `MemberPhotoEditor` in `mode="admin"`, so a field edit
+ *    there files `admin` and a photo change there files `account`. That is not an
+ *    oversight — see `OFFICER_DRIVEN_MEMBER_VISIBLE_WRITERS_2755`.
+ *
+ * WHAT IT DOES NOT COVER: rows already written. A stored row keeps the category it
+ * was written with, so bulk member-record history is split by date — the older
+ * half carries `account`/`security` and stays member-visible and Membership-gated.
+ * It is a data question rather than a writer question, so no census gate can see
+ * it, and it is filed as #2763. NOT #2751: that issue's scope is the 23
+ * bed-allocation actions plus `LODGE_DISPLAY_CONFIG_UPDATED`, where both the old
+ * and new categories are member-invisible, so nothing a member can see moves —
+ * which is exactly what makes this population a different decision.
+ */
+export const MEMBER_RECORD_ADMIN_CATEGORIES_2755: Readonly<
+  Record<string, string>
+> = {
+  // The member detail page: one member, every editable field, plus activate and
+  // deactivate. `admin` before #2755 and `admin` after — this is the site the
+  // other two joined.
+  "src/lib/admin-member-detail-service.ts::updateAdminMember.updated#0": "admin",
+  // The bulk screen, same acts across a selection. `security` before #2755.
+  "src/app/api/admin/members/bulk-update/route.ts::POST#0": "admin",
+  // The bulk screen's deactivate/reactivate branch. `account` before #2755.
+  "src/app/api/admin/members/bulk-update/route.ts::POST#1": "admin",
+};
+
+/**
+ * Every action name the sites above can write.
+ *
+ * WHY BY NAME AS WELL AS BY SITE. The site map catches an existing writer
+ * changing its answer. It cannot catch a NEW screen for the same act — a quick
+ * edit on the members list, an importer that reactivates — written with a literal
+ * `admin.member.deactivated` and `category: "account"` because its author read
+ * only its own neighbours. That is precisely how the three sites here diverged,
+ * so the census test also asserts that no OTHER writer in the tree records one of
+ * these action names under a different category.
+ *
+ * NEITHER SITE WRITES A LITERAL, which is why this list is maintained here rather
+ * than measured. The detail service returns one of the three `admin.member.*`
+ * names from `getAdminMemberAuditAction`; the bulk route interpolates
+ * `member.bulk-${action}` over a zod enum. The census test derives the bulk half
+ * from that enum in the route's own source, so adding a fourth bulk action fails
+ * here by name instead of quietly minting an unpinned member-record action.
+ *
+ * EXACTLY WHAT THE NAME GATE CATCHES, stated because the first version of this
+ * comment claimed more than it delivered. The census resolves a non-literal action
+ * to `(dynamic) <expression>`, so a writer whose action comes from a constant —
+ * the house style at a dozen sites — was invisible to a gate that compared action
+ * strings. Three mechanisms now stand behind the claim, and a fourth screen has to
+ * clear all three:
+ *
+ *  1. the site map above, measured from the tree, so moving or re-answering one of
+ *     the three pinned sites fails;
+ *  2. this name list, matched against each site's action with ONE level of
+ *     same-file `const` indirection resolved, so `const A = "admin.member.
+ *     deactivated"` no longer hides a writer;
+ *  3. a corpus gate: every non-test file in the census's own scan that NAMES one
+ *     of these action literals must be a reviewed file
+ *     (`MEMBER_RECORD_ACTION_LITERAL_FILES_2755`), which catches a new writer
+ *     however it assembles the string — including from an imported constant.
+ *
+ * What still escapes all three is a fourth screen that invents a NEW action name
+ * for the same act (`admin.member.archived`, say). That is what the surface gate
+ * below is for on the officer surfaces it covers; off those surfaces it remains a
+ * review question, not a mechanical one.
+ */
+export const MEMBER_RECORD_ADMIN_ACTIONS_2755: readonly string[] = [
+  "admin.member.updated",
+  "admin.member.deactivated",
+  "admin.member.reactivated",
+  "member.bulk-deactivate",
+  "member.bulk-reactivate",
+  "member.bulk-set-role",
+];
+
+/**
+ * Non-test files in the census's own scan corpus that may name one of the six
+ * action literals above (#2755).
+ *
+ * A new entry here is the whole point: it means somebody wrote one of these action
+ * names in a new place, and a reviewer has to answer whether that place is a
+ * writer and whether it files `admin`. The two writer files name their own
+ * actions; the two service files also name each other's in the comments that
+ * record the unification; this manifest names all six.
+ */
+export const MEMBER_RECORD_ACTION_LITERAL_FILES_2755: readonly string[] = [
+  "scripts/audit/audit-writer-census-manifest.ts",
+  "src/app/api/admin/members/bulk-update/route.ts",
+  "src/lib/admin-member-detail-service.ts",
+];
+
+/**
+ * The officer-facing member-record surfaces, measured EXHAUSTIVELY for
+ * member-visible writers (#2755).
+ *
+ * The name gate above is keyed on six action names. This one is keyed on WHERE the
+ * writer lives, so a fourth screen that invents a new action name for the same act
+ * — `admin.member.archived` on a quick-action route — cannot slip past by simply
+ * not being on the list. Every census site under these path prefixes that files a
+ * member-visible category must be named in
+ * `OFFICER_DRIVEN_MEMBER_VISIBLE_WRITERS_2755`, so a NEW one fails by name with
+ * the readership question stated, instead of only nudging the `account` count in
+ * `AUDIT_CENSUS_TOTALS` — a nudge whose failure message invites a lane to bump the
+ * number and move on.
+ */
+export const MEMBER_RECORD_ADMIN_SURFACES_2755: readonly string[] = [
+  "src/app/api/admin/members/",
+  "src/lib/admin-member-",
+];
+
+/**
+ * Writers that record an officer acting on ANOTHER member's record and file a
+ * MEMBER-VISIBLE category on purpose (#2755).
+ *
+ * WHY THIS EXISTS. `INV-PRIV-012` unified six member-record actions on `admin`
+ * because `account` and `security` are member-visible. Read as "officer acted ⇒
+ * `admin`" that would condemn the writers below, which are shipped, reviewed, and
+ * deliberately the other way — and it would hand a future lane a citation for
+ * withdrawing them from members' timelines. So the rule is scoped to the six
+ * actions, and these are pinned as the named exceptions: measured from the tree, so
+ * moving one of them to `admin` fails here with the withdrawal named, and a NEW
+ * member-visible writer on the officer surfaces fails too.
+ *
+ * WHAT IT IS AND IS NOT. Exhaustive for the surfaces in
+ * `MEMBER_RECORD_ADMIN_SURFACES_2755`, because the census test measures those
+ * paths and requires every member-visible site there to appear here. Off those
+ * surfaces it is the invariant's named-exception list, not a tree-wide census of
+ * member-visible writers — other officer-driven member-visible writers exist (the
+ * `member_lifecycle.delete_*` group is held at `admin` on #2730, member credit
+ * adjustments are `payment`), and this map does not claim otherwise.
+ *
+ * THE REASON THESE STAY MEMBER-VISIBLE, per group, since a pin without a reason is
+ * just a number to be adjusted:
+ *
+ *  - The **member-photo pair** is #2581's own worked example, and it went the other
+ *    way ON PURPOSE: the writer used to read `actor.onBehalf ? "admin" : "account"`
+ *    and now reads `account` unconditionally, so a member sees an administrator's
+ *    change to their photo in their own timeline. The artefact is the member's own
+ *    photo whoever uploaded it. Note the coexistence: the admin member-detail page
+ *    renders the photo editor in `mode="admin"`, so on ONE screen a field edit is
+ *    `admin` and a photo change is `account`. That is domain following the
+ *    ARTEFACT rather than the screen, which is the rule working, not failing.
+ *  - The **cancellation writers** record an officer's decision on a membership
+ *    cancellation. The member is party to that decision — usually they requested
+ *    it — so the row belongs on their timeline for the same reason the member's own
+ *    `membership_cancellation.requested` does. Withdrawing it would tell a member
+ *    less about their own cancellation than they knew when they asked for it.
+ *  - The **remaining member-admin surface writers** are each about a specific
+ *    narrower domain that already answers to its own gate: a dependant link is
+ *    `family`, an export is `privacy`, and a credential email is `security` by
+ *    #2581 decision 3 (the domain is the CREDENTIAL, not the mailing).
+ *
+ * None of that is settled beyond challenge — it is recorded so a challenge has to
+ * argue with a reason instead of citing a rule that never meant to cover it.
+ */
+export const OFFICER_DRIVEN_MEMBER_VISIBLE_WRITERS_2755: Readonly<
+  Record<string, string>
+> = {
+  // ─── On the member-record admin surfaces (this half is exhaustive) ──────────
+  "src/app/api/admin/members/[id]/dependents/[dependentId]/route.ts::DELETE.result#0":
+    "family",
+  "src/app/api/admin/members/[id]/dependents/link/route.ts::POST.linkedMember#0":
+    "family",
+  "src/app/api/admin/members/export/route.ts::GET#0": "privacy",
+  "src/app/api/admin/members/send-password-reset/route.ts::POST#0": "security",
+  "src/app/api/admin/members/send-setup-invite/route.ts::POST.batchResults#0":
+    "security",
+
+  // ─── The named exceptions off those surfaces ────────────────────────────────
+  // The member's own photo, changed by an officer on their behalf (#2581).
+  "src/app/api/members/[id]/photo/route.ts::POST#0": "account",
+  "src/app/api/members/[id]/photo/route.ts::DELETE#0": "account",
+  // An officer's decisions on a member's cancellation, and an officer-initiated
+  // cancellation of a member's membership.
+  "src/lib/membership-cancellation-admin.ts::reviewMembershipCancellationParticipant#0":
+    "account",
+  "src/lib/membership-cancellation-admin.ts::reviewMembershipCancellationParticipant#1":
+    "account",
+  "src/lib/membership-cancellation-admin.ts::reviewMembershipCancellationParticipant#2":
+    "account",
+  "src/lib/membership-cancellation-requests.ts::createAdminMembershipCancellationRequest#0":
+    "account",
+  "src/lib/membership-cancellation-requests.ts::reissueParticipantConfirmationToken#0":
+    "account",
 };
 
 /**
@@ -644,11 +1126,14 @@ export const AUDIT_WRITERS_WITHOUT_ENTITY_IDENTIFIER: Readonly<
  * it. Pinning the wrapper's own category evidence means a change to it is a diff
  * in this file.
  *
- * `recordAgeUpParentEmailHandoffAudit` is the awkward one and the reason the list
- * is fourteen rather than thirteen: it is a hand-built Prisma `create` rather than
- * a helper call, so it bypasses `buildAuditLogCreateData`'s sanitisation and
- * retention derivation while still writing `communication` — and its metadata
- * carries a recipient email address.
+ * `recordAgeUpParentEmailHandoffAudit` used to be the awkward one: a hand-built
+ * Prisma `create` that wrote `communication` but bypassed
+ * `buildAuditLogCreateData`, so its row got no metadata sanitisation and no
+ * retention derivation — kept forever, with a recipient email address in its
+ * metadata. #2581 child 2's review moved it onto `createStructuredAuditLog`.
+ * Every wrapper in this list now reaches the table through the audit boundary,
+ * which is what lets the docs say the boundary decides retention for every row
+ * the platform writes rather than for most of them.
  */
 export const AUDIT_WRITER_WRAPPERS: Readonly<
   Record<string, { sink: string; category: string }>
@@ -661,13 +1146,19 @@ export const AUDIT_WRITER_WRAPPERS: Readonly<
     sink: "logAudit",
     category: "booking",
   },
+  // `admin` -> `lodge` in #2730, with the other nineteen admin-initiated
+  // bed-allocation writers. This wrapper matters more than most: it stands for
+  // every range assignment the club makes, and `recordRangeAssignAudit#1` writes
+  // `BED_ALLOCATION_PARTNERS_PROMOTED` — an action name the automatic path in
+  // `bed-allocation-move.ts` already wrote as `lodge`, so this one wrapper was
+  // half of a same-action, two-permission-gate split.
   "src/lib/admin-bed-allocation.ts::recordRangeAssignAudit#0": {
     sink: "createAuditLog",
-    category: "admin",
+    category: "lodge",
   },
   "src/lib/admin-bed-allocation.ts::recordRangeAssignAudit#1": {
     sink: "createAuditLog",
-    category: "admin",
+    category: "lodge",
   },
   "src/lib/adult-member-hosting-coverage-incidents.ts::recordIncidentAudit#0": {
     sink: "createAuditLog",
@@ -714,7 +1205,7 @@ export const AUDIT_WRITER_WRAPPERS: Readonly<
     category: "xero",
   },
   "src/lib/cron-age-up.ts::recordAgeUpParentEmailHandoffAudit#0": {
-    sink: "auditLog.create",
+    sink: "createStructuredAuditLog",
     category: "communication",
   },
 };

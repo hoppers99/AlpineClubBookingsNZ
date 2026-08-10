@@ -624,7 +624,27 @@ is never cleared. Two consequences follow, and both are load-bearing:
   `refund-request` POST, and the `booking: { deletedAt: null }` relation filter
   inside `cancelModificationExceptionRequest` — the split is **8** direct,
   **15** incidental, **2** still reaching a write, and the same **2** unguarded
-  reads. So "this route is safe" is not the same claim as "this route checks",
+  reads.
+
+  **After #2700 the split is 11 / 15 / 1 / 0 = 27**, re-measured by enumerating
+  all 27 methods rather than by adjusting the arithmetic. #2700 closed the
+  consent write and both reads, so: **11** consult `deletedAt` directly **and
+  refuse** (the 8 above, plus `guests/[guestId]/consent` POST through
+  `member-guest-consent-service.ts`, plus `change-requests` GET and
+  `refund-request` GET); **15** refuse only incidentally, unchanged, because
+  #2700 touched none of them; **1** consults `deletedAt` directly and
+  **deliberately writes anyway** (`confirm-modification-payment` POST — see
+  `INV-ADDPAY-036`); and **0** unguarded reads remain.
+
+  **The first and third categories are both "consults `deletedAt`", and they
+  are split on what the route then DOES**, so the partition stays disjoint and
+  still sums to 27. Counting "routes that consult `deletedAt`" gives **12**, not
+  11, and a reader who adds the categories expecting that number will think one
+  is missing. The distinction is the point: consulting the column is not the
+  same act as refusing on it, which is the same lesson `INV-ADDPAY-031` records
+  about `send-guest-payment-link`.
+
+  So "this route is safe" is not the same claim as "this route checks",
   and a change to a status rule can uncover a write nobody meant to expose. Any
   NEW booking-scoped write should carry the guard explicitly rather than inherit
   the coincidence.
@@ -663,7 +683,22 @@ otherwise establish (a booking they were a guest on, a shared URL). Consulting
 the ordering has to be read. Reordered in #2674 and pinned by
 `src/app/api/bookings/[id]/send-guest-payment-link/__tests__/deleted-booking-ordering.test.ts`.
 
+**The byte-identical-body half now has one named carve-out, and only that
+half.** `INV-ADDPAY-034` lets three surfaces say the booking was cancelled or
+removed instead. The **ordering** half — after the authorisation check, always —
+has no carve-out anywhere and is what keeps the carve-out safe: every surface
+that departs from the body rule still answers `403` to a caller with no claim,
+so nothing is disclosed to anyone not already entitled to the record. Read the
+two halves separately; a future exception to one is not an exception to the
+other.
+
 ### INV-ADDPAY-032
+
+**Superseded by INV-ADDPAY-035 and INV-ADDPAY-036 (#2700).** Both decisions were
+taken in the owner's 10 Aug 2026 walkthrough and both surfaces are now closed —
+the consent write refuses, the modification payment records and queues a human.
+Neither remains "tracked as a decision rather than a guard". Original text kept
+below, verbatim, because merged commits and closed issues cite this id.
 
 Two write paths are known to remain reachable on a soft-deleted booking, and are
 tracked separately because each needs a decision rather than a guard:
@@ -681,6 +716,11 @@ tracked separately because each needs a decision rather than a guard:
 
 ### INV-ADDPAY-033
 
+**Superseded by INV-ADDPAY-034 (#2700).** Both reads now refuse a soft-deleted
+booking, sharing one sentence with the consent write. Original text kept below,
+verbatim — and its `cancel-preview` correction is still the authority on why
+that route is not a third, which is why this stub does not repeat it.
+
 The two unguarded read-only GETs above — `change-requests` and `refund-request` —
 are tracked with them: each reads the booking on `{ memberId }` alone and returns
 a deleted booking's own data to its own owner after the 403, which is a smaller
@@ -690,3 +730,337 @@ problem than a write but is still a surface the booking page itself refuses.
 `INV-ADDPAY-030` listed it as a third: its status gate refuses every deleted
 booking with a `400` before any payload is built. Anyone acting on that earlier
 figure would have gone to add a guard to a route that already refuses.
+
+### INV-ADDPAY-034
+
+**Three surfaces tell the reader the booking was cancelled or removed instead of
+answering a bare 404, and they share ONE sentence to do it** (#2700, owner
+decision 10 Aug 2026). The sentence lives in
+`src/lib/deleted-booking-refusal.ts` as `DELETED_BOOKING_MESSAGE`, and the three
+callers import that constant rather than restating it:
+`guests/[guestId]/consent` POST, `change-requests` GET, and `refund-request`
+GET. One constant, not three copies, is the rule — three variants that say
+subtly different things about the same event is the failure this prevents.
+
+**Both halves are ENFORCED, not merely written down.**
+`src/lib/__tests__/deleted-booking-refusal-callers.test.ts` sweeps `src/` for
+importers of the refusal module and fails on a fourth, and asserts per surface
+that the guard sits below that surface's own authorisation refusal. Without it
+a later contributor could import the constant — now that an informative body is
+normalised on this hazard — and place it above an ownership check, restoring the
+`send-guest-payment-link` oracle #2674 had to reorder out, with every existing
+test still green.
+
+**This is a deliberate departure from `INV-ADDPAY-031`'s byte-identical-body
+half, and it is worth stating precisely because the general rule is the opposite
+of it.** Disclosing that a record existed and is gone is normally an oracle. It
+is not one here, because **the guard sits after the authorisation check** on
+every one of the three: to see the sentence you must already be the guest being
+asked, an accepted family delegate answering for them, the booking's owner, or
+an admin. A caller with no claim still receives `403` and learns nothing, and
+the answer they get does not move with the booking's deletion state. Disclosure
+to somebody already entitled to the record is not an oracle. The ordering half
+of `INV-ADDPAY-031` therefore has no exception and is what makes this one safe.
+
+**Why say anything at all.** "Booking not found" is a dead end that reads as a
+fault in the system; "cancelled or removed" is an explanation the reader can act
+on. The owner's stated purpose (10 Aug 2026) was that somebody arriving from an
+old club email gets the explanation rather than the dead end.
+
+**Who actually reaches it today, stated plainly, because the rule above must not
+claim a journey the product does not have.** The reader is a client that loaded
+the booking BEFORE the deletion and acted AFTER it — the stale tab, which is the
+same race the rest of this rule and `INV-ADDPAY-036` exist for — or a direct API
+caller. **No fresh navigation reaches any of the three bodies**, and every one
+of the four paths dead-ends earlier for its own pre-existing reason:
+
+- The consent card lives on `bookings/[id]/page.tsx`, which calls `notFound()`
+  for any non-admin on a deleted booking before rendering anything.
+- The delegate consent page resolves `{ kind: "NOT_FOUND" }` on
+  `guest.booking.deletedAt` in `member-guest-delegate-page.ts`, **above** both
+  the target and the delegate branches — deliberately, so the neutral page
+  cannot be used to tell a real guest row from a fabricated id.
+- `refund-request` GET's only client is `RefundAppealButton`, which the booking
+  page renders only when the booking is not deleted.
+- `change-requests` GET has **no client at all** in `src/` or `e2e/`; the one
+  fetch of that path is the panel's `POST`.
+
+So the departure below is currently worth its cost for the race, not for the
+email journey. Making the email journey itself explain rather than dead-end
+would mean changing the delegate page's uniform `NOT_FOUND` — which is a
+privacy property with its own Playwright assertion — and is therefore an owner
+decision rather than a tidy-up. Recorded here rather than assumed: do not cite
+the email journey as a live behaviour until that decision is taken.
+
+**What the sentence must NOT carry, and both exclusions are load-bearing:**
+
+- **Who deleted it.** The guest does not need it, the system cannot always
+  assert it accurately, and naming an actor invites the reader to wonder whether
+  somebody made a mistake.
+- **The booking owner's name.** That would leak a member's identity on a booking
+  the club has deleted. "Contact the club" costs the reader nothing.
+
+**The status stays 404, not 410.** 404 is what `INV-ADDPAY-031` already fixed
+across this route folder and what every existing client treats as "gone"; the
+decision changed the BODY, not the status. It is uniform for every role
+including a Full Admin — the record-viewing exemption on `bookings/[id]/page.tsx`
+belongs to the page, not to the APIs beneath it.
+
+**A route may carry both bodies at once, and `refund-request` does.** Its POST
+keeps the byte-identical `Booking not found` settled by #2674; its GET carries
+this sentence. That is not drift: both sit after the same 403, so the one person
+who can see either learns the same fact from both. Pinned by "answers a
+DIFFERENT body from the POST on the very same deleted booking" in
+`src/app/api/bookings/[id]/refund-request/__tests__/route-deleted-booking.test.ts`,
+so a later reader who notices the difference finds it asserted rather than
+accidental.
+
+### INV-ADDPAY-035
+
+**A soft-deleted booking takes no member-guest consent answer, from any role, on
+either arm** (#2700, owner decision 10 Aug 2026, superseding the first bullet of
+`INV-ADDPAY-032`). `respondToMemberGuestConsent` refuses with 404 and
+`INV-ADDPAY-034`'s shared sentence. Nothing is recorded: no status claim, no bed
+reconcile, no hosting-queue drain, no audit entry, and **no email to the booking
+owner** about a record the club has deleted.
+
+Both arms needed closing, and the APPROVE arm was the more direct of the two: it
+took its claim having read neither `status` nor `deletedAt`, because the booking
+was loaded only to pick a lodge lock. The DECLINE arm additionally recorded a
+BLOCKED response outside the transaction it rolls back — the refusal now lands
+before that transaction is opened, so that path is unreachable too.
+
+**The guard is asserted TWICE and both are required.** An unlocked pre-read
+produces the right answer cheaply and keeps the refusal out of the transaction;
+a second read **inside** the transaction, after `pg_advisory_xact_lock(1)`, is
+what makes it true. `softDeleteCancelledBooking` takes that same key, so a
+deletion committing between the two reads is serialised behind the consent
+transaction and seen by the locked read. Removing either one fails a named test
+in `src/lib/__tests__/member-guest-consent-deleted-booking.test.ts`.
+
+**The guard cannot live in the route, and that is not a style preference.** The
+route's pre-read proves only that the guest row belongs to the booking — not
+that the caller is the target or an accepted delegate. A check there would hand
+somebody holding a guessed pair of ids a 404-versus-403 oracle, which is exactly
+what `INV-ADDPAY-031`'s ordering half forbids and exactly the defect
+`send-guest-payment-link` had.
+
+**The route's uniform 403 still wins wherever it applies.** A non-existent
+booking, a non-existent guest row, a guest row on another booking, an
+already-answered request, and a caller who is neither target nor delegate all
+keep answering the same 403 with the same body on a deleted booking as on a live
+one. The new message is reachable only after all of those have passed.
+
+### INV-ADDPAY-036
+
+**A booking modification payment captured against an already-deleted booking is
+RECORDED and queued for a person; it is never refused, and never automatically
+refunded from that path** (#2700, owner decision 10 Aug 2026, superseding the
+second bullet of `INV-ADDPAY-032`). The owner rejected both of the alternatives:
+recording it silently leaves a ledger row against a ghost booking with nobody
+told, and refusing it leaves the club holding a member's money with no record of
+it at all. Three obligations follow, and all three are the rule:
+
+- **`confirm-modification-payment` POST does not refuse.** Stripe has already
+  captured by the time it is called; a 404 would leave a captured payment with
+  no ledger row, which is worse than a ledger row against a deleted booking. It
+  is the one method on this prefix that consults `deletedAt` and deliberately
+  writes anyway, which is why the `INV-ADDPAY-030` census counts it separately
+  from the eleven that refuse.
+- **It decides from a FRESH read of `deletedAt`, not from the one it opened
+  with.** The handler's opening read happens before `getPaymentIntent` — a live
+  Stripe round trip — so deciding from it covers only the ordering where the
+  booking was already deleted when the handler looked. In the other ordering the
+  DELETE commits while the handler is talking to Stripe, and deciding from the
+  stale value recorded the capture and raised nothing: the exact state this rule
+  says cannot occur. The flag is therefore re-read immediately before the
+  decision, and **either** read seeing a deletion is enough — nothing in the tree
+  un-deletes a booking (one writer of `deletedAt`, no restore path), so the two
+  reads can only disagree in one direction. The re-read is skipped when the first
+  read already answered.
+- **It raises an OPEN `ManualRefundTask`** (`bookingId`, `paymentId`,
+  `amountCents`, `reason`, `status: OPEN`) after recording the payment and
+  before the audit entry, so a human decides whether to refund. `status: OPEN`
+  is written explicitly rather than inherited from the schema default, so the
+  property is the code's and provable without a database. The raise is
+  idempotent on the **payment intent** — matched on
+  `bookingId + paymentId + this intent's reason` across every status — so a
+  retry raises nothing, and the unrelated cash/manual settlement task
+  `booking-cancel.ts` can hold on the same booking is never mistaken for it.
+  Raising it is best-effort in exactly one sense: a failure is logged loudly and
+  never turned into a 500, because the money IS recorded and a retry would take
+  the already-captured early return and never reach the raise again.
+- **The raise is fenced against a refund that already happened**, under the same
+  `pg_advisory_xact_lock(1)`. The close described below only catches a webhook
+  that arrives after the task exists; a webhook that completes entirely inside
+  the confirm route's own Stripe round trip leaves nothing to close, and the
+  route then writes `SUCCEEDED` back over the `REFUNDED` status and would raise
+  a task for money Stripe has already returned — one an operator cannot even
+  complete, because `applyLocalRefundAllocation` throws "Refund amount exceeds
+  captured payments". So the raise re-reads the transaction row and skips when
+  `refundedAmountCents` covers the capture. That field, not `status`, is what
+  decides it: `markPaymentIntentTransactionSucceeded` overwrites the status but
+  never the refunded total, so on this interleaving the status is the field that
+  is lying.
+- **The deletion path closes the window rather than only handling the fallout.**
+  `softDeleteCancelledBooking` cancels the booking's in-flight PaymentIntents —
+  both the base and the modification one — **after** the transaction commits, so
+  no Stripe round trip happens while the global lock is held and no provider
+  timeout can roll back a deletion the admin was told nothing about. It never
+  throws, and it marks the local transaction FAILED **only** when Stripe
+  confirms the cancel; on `canceled: false` the intent reached a terminal state
+  on its own, possibly `succeeded`, and writing FAILED there would be a lie the
+  confirm endpoint would immediately overwrite. The honest claim is that this
+  makes the race **rare**, not impossible — the residue is what the task above
+  exists for. A cancellation that FAILS is **audited**, not only logged
+  (`booking.delete.payment_intent_cancel.failed`, `outcome: "failure"`,
+  category `payment`): the swallow is right, but the one outcome somebody has to
+  act on — the window did not close — must not be visible only in the server
+  log, and the soft-delete's own audit entry is written inside the transaction
+  before Stripe is called, so it cannot carry it.
+
+**No automatic refund from this path**, deliberately: it is a money movement
+triggered by a race, and if the DELETION was itself the mistake, refunding
+automatically compounds it rather than surfacing it.
+
+**But a refund can still happen, from a DIFFERENT and older path, and anyone
+reading the rule above needs to know it.** Since #1350 the Stripe webhook routes
+an additional payment captured on a `CANCELLED` booking through
+`handleCancelledBookingAdditionalPaymentSucceeded`, which refunds it in full
+automatically — and by the first clause of `INV-ADDPAY-030` a soft-deleted
+booking is always `CANCELLED`, so that path covers deleted bookings too. The two
+orderings must not pay the member twice:
+
+- **Webhook first** — it records and refunds; the confirm endpoint then finds
+  the transaction already captured, takes its early return, and raises no task.
+- **Confirm endpoint first** — it records and raises the task; the webhook's
+  refund then answers that task's whole question, so the webhook **closes** it
+  as `DISMISSED` with a note. `DISMISSED`, never `COMPLETED`: in
+  `manual-booking-payment.ts` COMPLETED means an operator handed the money back
+  by hand and is what writes the local refund allocation, so COMPLETED here
+  would be untrue AND would write a second allocation for one refund.
+  `completedByMemberId` stays null because no member did it.
+- **Interleaved** — the webhook completes entirely inside the confirm route's
+  own Stripe round trip. The route's already-captured early return does not
+  fire (it read the status before the refund) and the close found no task (it
+  ran before the raise), so neither of the two guards above applies. The raise's
+  own refund fence is what covers this one, and it is the reason that fence sits
+  inside the lock rather than beside it.
+
+Closing a task whose subject is already resolved moves no money, so it does not
+contradict the no-automatic-refund rule; the refund it records is #1350's
+established behaviour and is not introduced by #2700. **The consequence worth
+naming: on the common path where webhooks are healthy, the member is refunded
+automatically and the task is a record rather than a decision.** The task earns
+its place in the orderings where the webhook does not arrive, is disabled, or
+fails — which is precisely when the club would otherwise be holding money with
+nobody told.
+
+### INV-ADDPAY-037
+
+**Where an automatic refund of a late capture leaves a closed `ManualRefundTask`,
+that row is visible on the operator surface rather than only in the database**
+(#2750, orchestrator decision 10 Aug 2026 under the owner's standing backlog
+instruction; reversible). `INV-ADDPAY-036`'s consequence — that on a healthy
+webhook the member is refunded automatically and the task is a record rather than
+a decision — was only half delivered: the webhook's own close moved the row out of
+the `OPEN` list, which is the only list the finance queue showed, so that durable
+record of a money movement nobody authorised appeared on no screen at all. "A
+human is told" was true of the database and false of every human.
+
+**READ THE SCOPE IN THAT HEADLINE BEFORE RELYING ON THIS RULE.** It is about rows
+that exist, and not every automatic refund produces one. The task is created in
+exactly one place — the confirm-modification-payment endpoint, on the ordering
+where the member's browser reaches it before the webhook does — so a webhook-first
+refund (the ordinary healthy case), a member who closes the tab after paying, and
+the interleaved ordering the raise's refund fence declines all move money with no
+row for this card to show. The #1350 refund also fires on
+`Booking.status === "CANCELLED"` rather than on `deletedAt`, so an auto-refunded
+late capture on a cancelled-but-live booking is outside this rule as well. **For
+those, the record is the `booking.payment.refunded_after_cancellation` audit entry
+plus the admin payment alert described below** — the card is not a complete list of
+automatic refunds and must not be documented, described in a PR, or relied on as
+one. #2760 carries the option of making it complete (the webhook writing the
+DISMISSED row itself when its fenced close claims nothing); lifting the
+qualification is that issue's job, in the same PR as the code.
+
+Five obligations:
+
+**One thing was already in place and must not be built twice.**
+`handleCancelledBookingAdditionalPaymentSucceeded` has always sent
+`sendAdminPaymentFailureAlert` on this path, naming the member, the stay, the
+amount, the payment intent, and the fact that the capture was auto-refunded and
+the supplementary Xero invoice was not released. So the club is emailed at the
+moment it happens; what was missing was somewhere to look afterwards, which is
+what this rule adds. Anyone tempted to "add an alert" here should check that
+mail first — a second notification for one event is noise, and noise is how the
+first one stops being read. **State that mail's limits honestly** rather than
+treating it as a guarantee: it carries `preferenceKey: "adminPaymentFailure"`, so
+recipients can mute it and the recipient set can be empty; the webhook sends it
+fire-and-forget with a `.catch` that only logs; and its subject is the generic
+"Payment Failed". No pending count anywhere reaches these rows either, because
+every one of them counts `status: "OPEN"` — #2761 holds that decision. So the card
+is the place to look, and nothing currently sends an operator there.
+
+- **The finance queue on `/admin/payments` renders those rows** as a second,
+  read-only card beneath the hand-back queue. It renders **even when no `OPEN`
+  task exists**, which is the ordinary case for a healthy webhook and the exact
+  case the pre-#2750 component could not display: that component returned `null`
+  on an empty `OPEN` list. It is bounded by `completedAt` to
+  `AUTOMATIC_REFUND_NOTICE_WINDOW_DAYS`, because an unbounded list of long-settled
+  rows is the state that makes an operator stop reading a card; the row itself and
+  the `booking.payment.refunded_after_cancellation` audit entry stay permanent.
+  **The card says on screen that it is not a complete list** and names that audit
+  entry and the alert mail as the record that is, so a short or empty card is read
+  as "none recorded here" rather than "none happened". No row carries a **View
+  booking** link, unlike the hand-back queue beside it: every booking here is
+  soft-deleted, and the booking detail page 404s a deleted booking for anybody who
+  is not a Full Admin, while this card is gated on `finance:view` — which a Finance
+  Viewer and a Treasurer hold without it. The identifiers are printed as text
+  instead; **widening who may open a deleted booking to make a link work is not an
+  acceptable fix** and would need its own owner decision.
+- **Which rows those are is defined once**, in
+  `automaticallyRefundedManualRefundTaskFilter`, and every reader uses that export
+  rather than restating its conditions. It requires **both** the automatic close's
+  note prefix **and** `completedByMemberId: null`, and neither condition may be
+  dropped as redundant. `ManualRefundTask.completedBy` is
+  `onDelete: SetNull`, so deleting the member who dismissed a task by hand NULLs
+  the column that said who did it; on the null check alone, that operator's
+  deliberate dismissal would then be presented as an automatic refund the club
+  never made. On the note alone, a future writer of the same sentence *with* an
+  acting member would be admitted.
+- **The note prefix is stored data, not display copy.** Writer and reader share the
+  constant, so they cannot drift from each other — but `startsWith` is evaluated
+  against text already written to rows, so rewording the constant would keep every
+  test that derives its expectation from it green while making every historical
+  automatic refund invisible: #2750's own defect, arriving through the back door.
+  One assertion in
+  `src/lib/__tests__/deleted-booking-refund-visibility.test.ts` therefore pins the
+  exact bytes as a golden string. Changing them needs a migration that rewrites the
+  stored notes (or a reader that accepts the old prefix as well), in the same commit
+  as the new string.
+- **A failed read never reads as a clean slate.** The notices query is caught on its
+  own so it cannot reject the batch carrying the OPEN hand-back queue — money the
+  club still owes members must not leave the screen because an informational list
+  timed out — and the route answers `autoRefundedUnavailable: true` beside the empty
+  list. The surface prints a line saying it could not look, for that case and for a
+  whole failed load, because an empty card asserts that no money was refunded
+  automatically and a query that failed has not earned that.
+- **The card carries no controls, and says what is still owed in work rather than
+  in money.** There is no decision left — Stripe returned the money before anybody
+  saw the capture — and a control would claim otherwise, while "Mark paid back" on
+  such a row writes a second refund allocation for one refund. The copy states the
+  one thing an operator may still have to do: if the **deletion** rather than the
+  payment was the mistake, the booking has to be made again and the member charged
+  again, because the refund has already gone out.
+
+**The refund itself is deliberately NOT gated, and that is the decision this rule
+records.** Suppressing #1350's automatic refund while the booking is soft-deleted
+was considered and rejected: it leaves a member's money with the club until
+somebody acts, and it puts a new condition on a Critical webhook money path. The
+money returning to the member is the safe direction when nobody is watching, so
+visibility was added instead of the refund being held. **Do not gate it as a side
+effect of work in this area** — reversing this needs a fresh owner decision, a
+test pinning that the capture is not auto-refunded and the task stays `OPEN`, and
+its own review of the webhook path. Nothing here changes what money moves, when,
+or by how much.

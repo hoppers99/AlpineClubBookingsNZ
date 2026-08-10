@@ -487,6 +487,13 @@ describe("AdminBookingsPage", () => {
       isMember: false,
       stayStart: new Date("2026-07-01T00:00:00.000Z"),
       stayEnd: new Date("2026-07-03T00:00:00.000Z"),
+      // #2628: bed state is now counted off the guest's night rows, which the
+      // service always loads, so the fixture carries the two nights its
+      // half-open envelope describes — the 1st and the 2nd.
+      nights: [
+        { stayDate: new Date("2026-07-01T00:00:00.000Z") },
+        { stayDate: new Date("2026-07-02T00:00:00.000Z") },
+      ],
     };
     vi.mocked(prisma.booking.findMany).mockResolvedValue([
       makeBooking({
@@ -561,6 +568,12 @@ describe("AdminBookingsPage", () => {
             isMember: false,
             stayStart: new Date("2026-07-01T00:00:00.000Z"),
             stayEnd: new Date("2026-07-03T00:00:00.000Z"),
+            // #2628: the service always loads the night rows, so the fixture
+            // carries the nights its envelope describes — the 1st and the 2nd.
+            nights: [
+              { stayDate: new Date("2026-07-01T00:00:00.000Z") },
+              { stayDate: new Date("2026-07-02T00:00:00.000Z") },
+            ],
           },
         ],
       }),
@@ -591,6 +604,12 @@ describe("AdminBookingsPage", () => {
             isMember: false,
             stayStart: new Date("2026-07-01T00:00:00.000Z"),
             stayEnd: new Date("2026-07-03T00:00:00.000Z"),
+            // #2628: the service always loads the night rows, so the fixture
+            // carries the nights its envelope describes — the 1st and the 2nd.
+            nights: [
+              { stayDate: new Date("2026-07-01T00:00:00.000Z") },
+              { stayDate: new Date("2026-07-02T00:00:00.000Z") },
+            ],
           },
         ],
       }),

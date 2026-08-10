@@ -11,6 +11,7 @@ import {
   sendAgeUpParentEmailHandoffEmail,
 } from "./email";
 import logger from "./logger";
+import { createStructuredAuditLog } from "./audit";
 import { issueActionToken } from "./action-tokens";
 import { triggerMemberXeroContactGroupSync } from "./xero-contact-groups";
 import { describeParentSideDepth } from "@/lib/member-family-link-depth";
@@ -203,25 +204,50 @@ async function recordAgeUpParentEmailHandoffAudit(params: {
 }) {
   const youthName = memberFullName(params.member);
 
-  await prisma.auditLog.create({
-    data: {
-      action: AGE_UP_PARENT_EMAIL_HANDOFF_AUDIT_ACTION,
-      targetId: params.member.id,
-      subjectMemberId: params.member.id,
-      entityType: "Member",
-      entityId: params.member.id,
-      category: "communication",
-      severity: "info",
-      outcome: "success",
-      summary: `Age-up email handoff sent for ${youthName}`,
-      metadata: {
-        handoffReason: params.handoff.reason,
-        recipientEmail: params.handoff.recipientEmail,
-        sourceMemberId: params.handoff.sourceMemberId,
-        targetAgeTier: "ADULT",
-        targetAgeTierLabel: params.targetAgeTierLabel,
-        targetAgeTierMinAge: params.targetAgeTierMinAge,
-      },
+  /*
+    ROUTED THROUGH THE AUDIT BOUNDARY (#2581 review), not hand-built.
+
+    This was the last production writer building its own
+    `prisma.auditLog.create({ data: … })`. It already passed
+    `category: "communication"`, so it looked settled — but a hand-built create
+    skips `buildStructuredAuditLogCreateData` entirely, and that is where two
+    things happen that this row needs:
+
+     - RETENTION. `retentionClass` and `expiresAt` have no schema default and no
+       Prisma middleware fills them, so the row was written NULL/NULL. That is
+       the "kept forever" shape #2581 exists to remove: `pruneExpiredAuditLogs`
+       carries `expiresAt: { lt: now }` on every branch and NULL is not less than
+       anything, and `archiveEligibleAuditLogs` filters on `retentionClass`. The
+       row is now `critical` — seven years — like every other `communication`
+       row beside it.
+     - SANITISATION. The metadata carries a recipient EMAIL ADDRESS. Nothing in
+       this payload trips a redaction rule today, so the stored value does not
+       change; what changes is that it is now subject to the same secret,
+       card-number, depth, key-count and length limits as every other audit
+       payload, instead of being written verbatim by construction.
+
+    Everything else is deliberately identical: `createStructuredAuditLog`
+    derives `targetId` from `subject.memberId`, so the row keeps the same
+    `targetId`, `subjectMemberId`, `entityType`, `entityId`, `severity`,
+    `outcome` and `summary` — which matters, because
+    `hasAgeUpParentEmailHandoffAudit` dedupes on
+    `action` + `subjectMemberId` + `outcome`.
+  */
+  await createStructuredAuditLog({
+    action: AGE_UP_PARENT_EMAIL_HANDOFF_AUDIT_ACTION,
+    subject: { memberId: params.member.id },
+    entity: { type: "Member", id: params.member.id },
+    category: "communication",
+    severity: "info",
+    outcome: "success",
+    summary: `Age-up email handoff sent for ${youthName}`,
+    metadata: {
+      handoffReason: params.handoff.reason,
+      recipientEmail: params.handoff.recipientEmail,
+      sourceMemberId: params.handoff.sourceMemberId,
+      targetAgeTier: "ADULT",
+      targetAgeTierLabel: params.targetAgeTierLabel,
+      targetAgeTierMinAge: params.targetAgeTierMinAge,
     },
   });
 }

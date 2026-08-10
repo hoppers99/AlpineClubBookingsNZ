@@ -1419,6 +1419,44 @@ export async function updateAdminMember(params: {
         }
       }
 
+      // `admin`, and now SETTLED rather than held (#2755, `INV-PRIV-012`).
+      //
+      // #2730 left this as the weakest `admin` in the tree because the comparison
+      // was inside the platform and it lost: the identical acts performed from
+      // the bulk screen wrote `account` (`member.bulk-deactivate` /
+      // `-reactivate`) and `security` (`member.bulk-set-role`), so one business
+      // act was filed three ways according to which SCREEN the officer opened —
+      // initiator reasoning wearing a different hat.
+      //
+      // #2755 closed it by moving the OTHER TWO here, not by moving this one. The
+      // rule is that category follows the business domain affected, and editing,
+      // activating, deactivating or re-roling somebody's member record is one
+      // domain: the administration of that record. `account` and `security` are
+      // both member-visible and all three rows reach the subject member's own
+      // timeline — this writer by passing `subjectMemberId`, the two bulk writers
+      // by `buildMemberAuditLogWhere`'s null-subject `targetId` leg — so unifying
+      // on either would have published an officer's edits of a member's record to
+      // that member. Whether a member should see a given event is meant to become
+      // a separate explicit declaration at the writing site, denied by default:
+      // #2695 DECIDED that and it is NOT BUILT YET, so today the category is the
+      // only lever there is.
+      //
+      // THE RULE IS SCOPED TO THOSE SIX ACTIONS, not to "an officer acted". Other
+      // officer-driven writers file MEMBER-VISIBLE categories on purpose — the
+      // member-photo pair (#2581 chose `account` for the on-behalf branch
+      // deliberately, and the photo editor renders on THIS very screen in
+      // `mode="admin"`) and the cancellation-review writers. Do not "finish the
+      // job" by sweeping those into `admin`: that withdraws rows from members'
+      // timelines, `OFFICER_DRIVEN_MEMBER_VISIBLE_WRITERS_2755` fails CI when it
+      // happens, and it needs the owner's decision. `/api/profile` likewise stays
+      // `account`: a member editing their OWN record
+      // (`member.profile.updated`) has its actor as its subject, so it is
+      // self-service rather than administration, and filing it `admin` would hide
+      // a member's own action from them.
+      //
+      // Do not "finish the job" by moving this site to a member-visible category.
+      // Audit rows are append-only, so publishing administrative activity to
+      // members is not quietly reversible.
       await tx.auditLog.create(
         buildStructuredAuditLogCreateArgs({
           action: auditAction.action,

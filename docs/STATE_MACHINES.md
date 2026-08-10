@@ -817,6 +817,46 @@ adminOverride && role === "ADMIN"   -> "admin-override" (issue #1668: date-windo
                                                          lock still enforced)
 ```
 
+In `"in-progress"` mode the plan that prices the change
+(`buildInProgressGuestRangePlan`) works from each guest's canonical
+`BookingGuestNight` set, not from their `stayStart`/`stayEnd` envelope
+(#2736, `INV-MOD-025`). A guest with a gap in their stay keeps the gap: it is
+not charged, not written back as a night row and not given a bed, while an
+extension still buys contiguous new nights after their last held one. The edit
+also sells only the nights it creates (#2743): a night is added to an existing
+guest only when the check-out actually moves, and only past the OLD check-out,
+so an edit that leaves the dates alone — a guest added or removed, a promo or
+member-link change — cannot add a night to anybody. (A name-only edit never
+reaches this plan: it is identity-only on both routes and takes the
+price-preserving echo.) The discriminator is whether a guest's held nights reach
+the BOOKING'S own check-out, not whether they have gone home, so a guest who is
+in the lodge tonight but leaves before the booking does gets the same gap and the
+same smaller bill as one who left a week ago. Extending the check-out does still
+admit every remaining guest for the nights it adds — this plan overrides
+`guestStayRanges` for existing guests and the panel offers no per-guest end date
+on an in-progress edit, so an API caller that sends one is ignored rather than
+refused, and the officer sees the cost as one aggregate quote line for the whole
+party. Because nobody is back-filled, a removal can leave `Booking.checkOut`
+ahead of the last night anybody holds; that is accepted rather than guarded.
+A night the edit gives back is credited at the price the member paid rather than
+at today's season rate, and the per-night rows written back are each night's real
+rate rather than the guest's average (#2744, `INV-MOD-025`); a guest with no
+recoverable stored price is still valued at today's rate, capped so that no edit
+can credit back more than that guest is carrying.
+For an ordinary stay that runs to the booking's check-out, every number is
+exactly what it was before. Bookings edited before those fixes keep the rows and
+the price they were given — history is not repriced (#2745 carries the decision
+about whether anything is done about them). Two edits are newly refused, both
+because the booking would be left with NOBODY in the future window: a check-out
+pulled back past the last night any remaining guest still holds, and a save on a
+booking whose check-out is still ahead but whose guests have all finished their
+stays. Both name a check-out the plan will actually accept — the suggestion is
+clamped at the edit window, without which #2743's own shape would name a date
+every guard rejects and the booking would be editable by no route at all. One
+money shape on this path is stated rather than fixed: the plan prices each guest
+on their own, so nights an in-progress edit newly BUYS carry no group discount —
+see `INV-MOD-025` and #2756.
+
 Self-service cancellation of a **started** stay is blocked (#2029). Once
 `checkIn <= todayNZ`, the member-facing cancel route
 (`enforceStartedStayBlock`) refuses cancellation for a booking owner or Booking
@@ -881,6 +921,23 @@ credit-note id) no longer blocks — and the coincident `payment.creditAppliedCe
 mirror is waived with it — but an `ADMIN_ADJUSTMENT`/`BOOKING_MODIFICATION_REFUND`
 row, a net-non-zero ledger, or any Xero-linked credit note still blocks, as does
 any independently captured/refunded payment.
+
+Soft-delete also reaches out to Stripe, **after** its transaction commits
+(#2700, `INV-ADDPAY-036`). The blockers above count CAPTURED payment history, so
+an intent that has not captured yet is exactly the state they permit — and
+exactly the state that can capture a moment later, because deleting a booking
+does not by itself touch Stripe. The delete therefore cancels the booking's
+in-flight PaymentIntents, both the base one and the modification one, once the
+booking row is durably deleted: outside the transaction so no provider round
+trip is made while `pg_advisory_xact_lock(1)` is held, and never throwing, so a
+Stripe outage cannot turn a completed deletion into an error the admin would
+retry. The local `PaymentTransaction` is marked FAILED **only** when Stripe
+confirms the cancel; `canceled: false` means the intent reached a terminal state
+on its own — possibly `succeeded` — and writing FAILED there would be a lie.
+A cancellation that fails is audited as
+`booking.delete.payment_intent_cancel.failed` (`outcome: "failure"`) as well as
+logged. This makes the race rare rather than impossible; a capture that still
+lands is handled by the manual refund task lifecycle above.
 
 ## Public Booking Request Quote Lifecycle
 
@@ -1348,10 +1405,69 @@ OPEN -> COMPLETED   (finance:edit; writes the local refund allocation and a
                      REFUNDED BookingEvent — the ONLY moment the ledger says
                      the money went back)
 OPEN -> DISMISSED   (finance:edit; requires a note; moves no money)
+OPEN -> DISMISSED   (#2700: the Stripe webhook, with NO acting member at all —
+                     `completedByMemberId` stays null and no operator note is
+                     required. Fires only on a task raised by the deleted-booking
+                     modification-payment path, matched on that exact payment
+                     intent, when `handleCancelledBookingAdditionalPaymentSucceeded`
+                     has already refunded the capture, so the task's question is
+                     answered. Status-fenced on OPEN, so a replay or an operator
+                     who got there first claims nothing. Moves no money —
+                     COMPLETED here would write a SECOND refund allocation for
+                     one refund. See `INV-ADDPAY-036`.)
 ```
 
-Created atomically with the CANCELLED claim when a cash-settled booking is
-cancelled with a non-zero policy refund. A zero-refund outcome creates no task.
+**Where a terminal row is read, and the #2750 decision behind it.** Both
+terminal states are terminal for the row, not for the operator: the finance
+queue on `/admin/payments` shows OPEN rows as work to settle, and since #2750
+also shows the webhook-closed rows above as a read-only **"Refunded
+automatically — nothing to pay back"** card, bounded to the last
+`AUTOMATIC_REFUND_NOTICE_WINDOW_DAYS` (30) by `completedAt`. Before that, the
+webhook's own close took the row off the only screen it ever appeared on, so that
+durable record of an automatic refund was visible only to somebody who thought to
+query the table.
+
+**That card shows rows, and not every automatic refund makes one.** The task has a
+single creator — the confirm-modification-payment endpoint — so it exists only on
+the ordering where the member's browser got there before the webhook did. Webhook
+first (the healthy case), a member who closes the tab after paying, and the
+interleaved ordering the raise's own refund fence declines all refund the capture
+and leave nothing for the close to claim; the close is a fenced `updateMany` and
+creates nothing. For those the record is the
+`booking.payment.refunded_after_cancellation` audit entry plus the admin payment
+alert, and the card says so in its own copy rather than presenting itself as the
+whole list. #2760 holds the option of making the record complete by having the
+webhook write the DISMISSED row itself when its close claims nothing.
+
+#2750 asked whether the #1350 automatic refund should instead be **gated**,
+leaving the task OPEN so a person decides. It was not, and the reasoning is
+recorded rather than assumed: the member's money returning is the safe direction
+when nobody is watching, gating it means the club holds a member's money until
+somebody acts, and it would put a new condition on a Critical webhook money
+path. The club is already emailed the moment it happens —
+`handleCancelledBookingAdditionalPaymentSucceeded` has always sent the admin
+payment alert on this path, naming the amount and the auto-refund — so what was
+missing was somewhere to look afterwards, not a notification. The card
+carries no controls — there is no decision left, and "Mark paid back" on such a
+row would write a second refund allocation — and its copy names the one thing an
+operator may still have to do: if the deletion rather than the payment was the
+mistake, the booking has to be made again and the member charged again, because
+the refund has already gone out. The rows it shows are defined once, in
+`automaticallyRefundedManualRefundTaskFilter` (`INV-ADDPAY-037`), which the
+route uses rather than restating; an operator's own dismissal never appears
+there.
+
+There are TWO creators, and the second is on a completely different path from
+the first:
+
+- Created atomically with the CANCELLED claim when a **cash-settled** booking is
+  cancelled with a non-zero policy refund. A zero-refund outcome creates no task.
+- Created by `confirm-modification-payment` when a **card** modification payment
+  is captured against a booking the club has already soft-deleted (#2700,
+  `INV-ADDPAY-036`): the capture is recorded rather than refused, and an OPEN
+  task asks a person to decide. Raised under `pg_advisory_xact_lock(1)`,
+  idempotent on the payment intent, and fenced against a refund that already
+  happened, so it is never raised for money Stripe has already returned.
 The transition is a status-fenced conditional update, so a double click can
 never double-apply the allocation, and the row is never processed by any cron —
 it deliberately is not a `PaymentRecoveryOperation`. (That dispatcher's final
@@ -1954,6 +2070,19 @@ any state -> (row deleted)   the booker or an officer takes the guest off the bo
                              The member is told once (member-guest-request-withdrawn); the
                              consent record goes with the row. NOT a status transition.
 ```
+
+**A soft-deleted booking answers nothing at all, and that outranks every
+PENDING edge above** (#2700, `INV-ADDPAY-035`). `respondToMemberGuestConsent`
+refuses before any transition is attempted, for **every** actor — the target and
+an accepted delegate alike — so `PENDING -> CONFIRMED` and `PENDING -> DECLINED`
+are both unreachable once the club has deleted the booking. Nothing is recorded:
+no claim, no bed reconcile, no hosting-queue drain, and no email to the booking
+owner about a record the club has deleted. The refusal is asserted twice — once
+unlocked to answer cheaply, and again inside the transaction under
+`pg_advisory_xact_lock(1)`, which is the same key `softDeleteCancelledBooking`
+takes, so a deletion committing between the two reads is serialised behind the
+consent transaction and seen. The nightly `PENDING -> EXPIRED` sweep is
+unaffected; it is not an answer.
 
 **No EDIT transitions this machine, and that is owner decision D-13 rather than
 an omission.** Changing a booking's dates, its lodge, its price, or the rest of

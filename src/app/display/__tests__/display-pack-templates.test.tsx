@@ -5,7 +5,11 @@ import path from "node:path";
 import { act, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { unzipSync, strFromU8 } from "fflate";
-import type { DisplayState } from "@/lib/lodge-display-state";
+import type {
+  DisplayState,
+  DisplayStateBooking,
+  DisplayStateGuest,
+} from "@/lib/lodge-display-state";
 
 // Issue #2047 — the template pack renders end to end through the REAL server
 // assembler (buildLayoutRender) and the REAL client layout engine (DisplayScreen
@@ -145,14 +149,56 @@ async function renderBoard(def: Def, state: DisplayState) {
 
 const WINDOW3 = ["2026-04-13", "2026-04-14", "2026-04-15"];
 
-function baseState(overrides: Partial<DisplayState> = {}): DisplayState {
+/** Expand a half-open envelope into night keys — the payload's own rule. */
+function envelopeNights(stayStart: string, stayEnd: string): string[] {
+  const nights: string[] = [];
+  for (let key = stayStart; key < stayEnd; ) {
+    nights.push(key);
+    const next = new Date(`${key}T00:00:00.000Z`);
+    next.setUTCDate(next.getUTCDate() + 1);
+    key = next.toISOString().slice(0, 10);
+  }
+  return nights;
+}
+
+/**
+ * A fixture row or guest may leave `nights` out and gets the expanded envelope
+ * (#2735) — the same convention as the module fixtures.
+ *
+ * `nights` is REQUIRED on the real payload and every board here reads it, so a
+ * fixture without one would render through the `nights === undefined` fallback
+ * branch that the serialiser never produces. Filling it in keeps this file —
+ * the tree's only whole-board-pack coverage — on the payload shape production
+ * actually emits.
+ */
+type GuestFixture = Omit<DisplayStateGuest, "nights"> & { nights?: string[] };
+type BookingFixture = Omit<DisplayStateBooking, "guests" | "nights"> & {
+  guests?: GuestFixture[] | null;
+  nights?: string[];
+};
+type StateFixture = Omit<Partial<DisplayState>, "bookings"> & {
+  bookings?: BookingFixture[];
+};
+
+function withNights(booking: BookingFixture): DisplayStateBooking {
+  return {
+    ...booking,
+    guests:
+      booking.guests?.map((guest) => ({
+        ...guest,
+        nights: guest.nights ?? envelopeNights(guest.stayStart, guest.stayEnd),
+      })) ?? null,
+    nights: booking.nights ?? envelopeNights(booking.stayStart, booking.stayEnd),
+  };
+}
+
+function baseState(overrides: StateFixture = {}): DisplayState {
   return {
     lodge: { name: "Silverpeak Lodge" },
     club: { name: "Alpine Sports Club", logoUrl: null, logoDataUrl: null },
     generatedAt: "2026-04-13T00:00:00.000Z",
     window: { start: "2026-04-13", days: 3 },
     rooms: null,
-    bookings: [],
     occupancy: WINDOW3.map((date) => ({ date, arriving: 0, departing: 0, staying: 0 })),
     chores: [],
     rules: null,
@@ -160,6 +206,7 @@ function baseState(overrides: Partial<DisplayState> = {}): DisplayState {
     config: {},
     capabilities: { bedAllocation: false, chores: false },
     ...overrides,
+    bookings: (overrides.bookings ?? []).map(withNights),
   } as DisplayState;
 }
 

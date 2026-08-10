@@ -31,7 +31,7 @@ description, so you can find the right file without opening more than one.
 | [`subscription-lockout-pricing.md`](invariants/subscription-lockout-pricing.md) | `INV-LOCKOUT` | lapsed-subscription pricing, admin date overrides, retroactive creates, withheld email |
 | [`booking-policy-exceptions.md`](invariants/booking-policy-exceptions.md) | `INV-EXCEPT` | policy-exception requests and officer decisions on them |
 | [`additional-payment-chasing.md`](invariants/additional-payment-chasing.md) | `INV-ADDPAY` | an outstanding additional payment, quote/request holds, refund settlement |
-| [`analytics-and-privacy.md`](invariants/analytics-and-privacy.md) | `INV-PRIV` | analytics loading, the consent banner, the public Analytics preferences control, the analytics route policy, what leaves this application for Google, what personal data may appear in a log |
+| [`analytics-and-privacy.md`](invariants/analytics-and-privacy.md) | `INV-PRIV` | analytics loading, the consent banner, the public Analytics preferences control, the analytics route policy, what leaves this application for Google, what personal data may appear in a log, the audit `category` a writer records and who may therefore read the row |
 | [`membership-lifecycle.md`](invariants/membership-lifecycle.md) | `INV-LIFE` (except `INV-LIFE-062`) | applications and nomination, cancellation, archive and deletion, roles and the admin lock-out guards, seasonal membership type and age tier, family groups, partner and parent/dependant links, email inheritance, inductions, member merge |
 | [`integrations.md`](invariants/integrations.md) | `INV-INT` | webhooks, cron idempotency, provider callbacks, Xero member grouping |
 | [`operations.md`](invariants/operations.md) | `INV-OPS` | raw SQL, row locking, deployment, dropping a column, what may be used as test input |
@@ -126,7 +126,11 @@ number and prefix, and it is listed at the end of the table below.
 | `INV-DATE-003` | A stay is the half-open range `[checkIn, checkOut)` expanded to nights; explicit `BookingGuestNight` rows override the envelope |
 | `INV-DATE-004` | Presence on day D: morning half from D−1's night, evening half from D's |
 | `INV-DATE-005` | Two helper families — night model for resources, operational-day for people |
+| `INV-DATE-020` | One expander turns a stay into nights; its envelope branch stays half-open |
+| `INV-DATE-021` | Kiosk attendance is one current state per stay, re-read per segment |
+| `INV-DATE-022` | A SQL stay filter is coarse; kiosk write lookups decide over the night rows |
 | `INV-DATE-006` | The lobby wall is deliberately mixed and stays on its own fenced path |
+| `INV-DATE-023` | The lobby wall's night count is derived independently of what it shows |
 | `INV-DATE-007` | Departing lodge A and arriving at lodge B on one date is legal |
 | `INV-DATE-008` | Zero-night bookings expand to no nights and every route refuses them |
 | `INV-DATE-009` | Six areas sit deliberately outside the boundary and must not be aligned |
@@ -146,6 +150,7 @@ number and prefix, and it is listed at the end of the table below.
 | `INV-CAP-004` | `capacityHoldingBookingFilter()` decides which bookings consume beds |
 | `INV-CAP-005` | A split guest portion always settles or is notified, never stranded |
 | `INV-CAP-006` | Bed-allocation eligibility is a status-only superset of capacity-holding |
+| `INV-CAP-032` | Every guest-creating path writes the canonical `BookingGuestNight` set, half-open and cents-exact |
 | `INV-CAP-007` | Auto-allocated stays are room-continuous per booking, with bounded fallback |
 | `INV-CAP-008` | Allocation preferences are per lodge and advisory, never safety overrides |
 | `INV-CAP-009` | Automated placement never mixes one booking's minors with another's adult; the manual board warns only |
@@ -295,6 +300,7 @@ Prefix `INV-MOD`.
 | `INV-MOD-017` | Legacy stamped applications are repaired under the same lock before clamp, cancel, expiry or read |
 | `INV-MOD-018` | Every modification path applies the same lifecycle transitions, whichever endpoint made the change |
 | `INV-MOD-019` | Self-service edits obey the date-window edit policy; an in-progress stay extends future nights only, and minimum stay is then evaluated over the whole contiguous stay |
+| `INV-MOD-025` | An in-progress edit prices the nights a guest holds, not their envelope, sells only the nights it creates, and values each at the price it was sold for, never leaving a guest owing less than nothing; ordinary stays are unchanged and history is not repriced |
 | `INV-MOD-020` | Minimum stay is the first exception-foundation consumer; only two soft reason codes exist |
 | `INV-MOD-021` | The frozen violation explains a refusal, never authorises one; every member path stops server-side |
 | `INV-MOD-022` | The admin exemption is not one predicate, and is stated per path |
@@ -527,13 +533,17 @@ Prefix `INV-ADDPAY`.
 | `INV-ADDPAY-022` | Soft-delete may hide a duplicate only when no external money history must stay operator-visible |
 | `INV-ADDPAY-030` | A soft-deleted booking is always CANCELLED and stays so; most routes refuse it only incidentally |
 | `INV-ADDPAY-031` | House shape for a deleted-booking guard: 404 for every role, after the authorisation check |
-| `INV-ADDPAY-032` | Two writes stay reachable on a soft-deleted booking, tracked as decisions not guards |
-| `INV-ADDPAY-033` | Two unguarded GETs still serve a deleted booking's own data to its owner |
+| `INV-ADDPAY-032` | Superseded by `INV-ADDPAY-035`/`INV-ADDPAY-036`: two writes stay reachable on a soft-deleted booking |
+| `INV-ADDPAY-033` | Superseded by `INV-ADDPAY-034`: two unguarded GETs still serve a deleted booking's own data |
+| `INV-ADDPAY-034` | One shared "cancelled or removed" sentence for the surfaces that explain rather than 404 |
+| `INV-ADDPAY-035` | A soft-deleted booking takes no member-guest consent answer, from any role, either arm |
+| `INV-ADDPAY-036` | A modification payment captured on a deleted booking is recorded and queued for a human, never auto-refunded from that path |
+| `INV-ADDPAY-037` | Where an auto-refunded late capture left a closed refund task, the finance queue shows it (not a complete list of such refunds — see the rule), and the refund stays automatic |
 
 ## Analytics And Privacy
 
 Analytics loading and consent, what this application is allowed to send to
-Google, and what personal data may appear in a log.
+Google, what personal data may appear in a log, and who may read an audit row.
 File:
 [`invariants/analytics-and-privacy.md`](invariants/analytics-and-privacy.md).
 Prefix `INV-PRIV`.
@@ -551,6 +561,7 @@ Prefix `INV-PRIV`.
 | `INV-PRIV-009` | The per-browser choice stores the consent revision and surface; only an explicit action bumps it |
 | `INV-PRIV-010` | Every one of these fails closed, and the public website still renders normally |
 | `INV-PRIV-011` | Which person fields the log/Sentry redactor strips by key, that key coverage is not exhaustive, and that audit rows deliberately keep name and street address |
+| `INV-PRIV-012` | Audit category follows the affected domain; member visibility is declared separately |
 
 ## Membership Lifecycle
 
@@ -675,7 +686,7 @@ File: [`invariants/integrations.md`](invariants/integrations.md). Prefix
 | `INV-INT-013` | Mode or rule changes never auto-resync the population; members re-group on their next trigger |
 | `INV-INT-014` | The per-member sync keeps Xero calls outside transactions, ledgers each op, and adds before removing |
 | `INV-INT-015` | The bulk re-sync is admin-triggered, dry-run-first, chunked, resumable, and never moves the watermark |
-| `INV-INT-016` | `GET /api/bookings/rooms` keeps its no-`lodgeId` mode for FORKED/EXTERNAL consumers; no `src/` client may use it |
+| `INV-INT-016` | `GET /api/bookings/rooms` keeps its no-`lodgeId` mode for FORKED/EXTERNAL consumers, excluding archived lodges; no `src/` client may use it |
 
 ## Operations
 

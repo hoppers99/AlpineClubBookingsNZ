@@ -1,6 +1,11 @@
 import type { DisplayState, DisplayStateBooking } from "@/lib/lodge-display-state";
 import type { DisplayPanelOptions } from "./module-options";
-import { shortDay, stayStatusOn, type StayStatus } from "./status-helpers";
+import {
+  shortDay,
+  staySegmentOn,
+  type StaySegment,
+  type StayStatus,
+} from "./status-helpers";
 
 // Allocation-off status board (issue #115, closes #114; visual reference:
 // origin five-panel mock O4 "When rooms aren't assigned"). Three status columns
@@ -40,13 +45,19 @@ function bookingLabel(booking: DisplayStateBooking): { label: string; group: boo
   };
 }
 
-function spanText(booking: DisplayStateBooking, status: StayStatus): string {
+function spanText(segment: StaySegment): string {
   // Leaving shows the whole stay (mock O4: "Mon 6 – Fri 10"); arriving/staying
   // point at the check-out ("→ Sun 12").
-  if (status === "departing") {
-    return `${shortDay(booking.stayStart)} – ${shortDay(booking.stayEnd)}`;
+  //
+  // The SEGMENT's dates, not the row's envelope (#2735). The status beside them
+  // is per segment, so labelling with the envelope printed "Leaving today ·
+  // Gappy G · Mon 13 – Thu 16" for a stay with a gap — a check-out three days
+  // after the day it says they leave. For a contiguous stay the segment IS the
+  // envelope and nothing changes.
+  if (segment.status === "departing") {
+    return `${shortDay(segment.stayStart)} – ${shortDay(segment.stayEnd)}`;
   }
-  return `→ ${shortDay(booking.stayEnd)}`;
+  return `→ ${shortDay(segment.stayEnd)}`;
 }
 
 export function StatusBoard({
@@ -64,13 +75,13 @@ export function StatusBoard({
   ]);
 
   for (const booking of state.bookings) {
-    const status = stayStatusOn(booking, tonight);
-    if (status === null) continue;
+    const segment = staySegmentOn(booking, tonight);
+    if (segment === null) continue;
     const { label, group } = bookingLabel(booking);
-    byStatus.get(status)!.push({
+    byStatus.get(segment.status)!.push({
       key: booking.key,
       label,
-      span: spanText(booking, status),
+      span: spanText(segment),
       group,
     });
   }

@@ -92,7 +92,6 @@ import {
 } from "@/lib/member-guest-consent";
 import {
   addDaysDateOnly,
-  eachDateOnlyInRange,
   formatDateOnly,
   normalizeDateOnlyForTimeZone,
 } from "@/lib/date-only";
@@ -1103,30 +1102,36 @@ export type PricingResult = {
 };
 
 /**
- * Build a per-night breakdown for a contiguous range by splitting the total
- * evenly across the nights, with any integer-cent remainder on the earliest
- * nights so the per-night sum equals the total exactly. Used by the
- * in-progress edit plan, which prices guests as scalar totals (issue #713).
+ * The per-night breakdown for one guest of an in-progress edit, in the shape the
+ * rest of this file consumes: the nights they hold, what each is worth, and
+ * their total.
+ *
+ * This used to be `splitGuestNightsEvenly`, which took the guest's total and
+ * divided it across their nights — so an edit spanning a season boundary stored
+ * the average, and `lockedNightPricesForGuest` handed that average to the next
+ * edit as the price the member was deemed to have paid (#2744). The plan now
+ * computes each night's real amount itself, alongside the price it charges for
+ * them, so there is nothing left to split here; the even split survives inside
+ * the plan as the fallback for a guest whose stored total cannot be reconciled
+ * with their rows (`composeProposedNightPrices`).
+ *
+ * Integer cents throughout, and `perNightCents` sums to `priceCents` exactly —
+ * which is what keeps the Xero lines, rebuilt per contiguous run with
+ * `perNightCents * nightCount === totalCents`, free of a phantom balance
+ * (INV-MONEY-001, INV-MONEY-003).
  */
-function splitContiguousNights(
-  stayStart: Date,
-  stayEnd: Date,
-  totalCents: number
-): { priceCents: number; perNightCents: number[]; nightDates: Date[] } {
-  const nightDates = eachDateOnlyInRange(
-    normalizeDateOnlyForTimeZone(stayStart),
-    normalizeDateOnlyForTimeZone(stayEnd)
-  );
-  const count = nightDates.length;
-  const perNightCents: number[] = [];
-  if (count > 0) {
-    const base = Math.floor(totalCents / count);
-    const remainder = totalCents - base * count;
-    for (let i = 0; i < count; i++) {
-      perNightCents.push(base + (i < remainder ? 1 : 0));
-    }
-  }
-  return { priceCents: totalCents, perNightCents, nightDates };
+function guestNightBreakdown(entry: {
+  nights: ReadonlyArray<Date>;
+  perNightCents: ReadonlyArray<number>;
+  priceCents: number;
+}): { priceCents: number; perNightCents: number[]; nightDates: Date[] } {
+  return {
+    priceCents: entry.priceCents,
+    perNightCents: [...entry.perNightCents],
+    nightDates: entry.nights.map((night) =>
+      normalizeDateOnlyForTimeZone(night)
+    ),
+  };
 }
 
 /**
@@ -1412,12 +1417,8 @@ export async function calculateModifiedPricing(
       ? {
           totalPriceCents: inProgressPlan.newTotalPriceCents,
           guests: [
-            ...inProgressPlan.proposedExistingGuests.map((entry) =>
-              splitContiguousNights(entry.stayStart, entry.stayEnd, entry.priceCents)
-            ),
-            ...inProgressPlan.proposedAddedGuests.map((entry) =>
-              splitContiguousNights(entry.stayStart, entry.stayEnd, entry.priceCents)
-            ),
+            ...inProgressPlan.proposedExistingGuests.map(guestNightBreakdown),
+            ...inProgressPlan.proposedAddedGuests.map(guestNightBreakdown),
           ],
         }
       : await priceBookingGuestsWithMembershipTypePolicy(tx, {
@@ -1890,6 +1891,12 @@ export async function applyGuestChanges(
   // Re-sync a guest's BookingGuestNight rows to the priced nights (issue #713),
   // and return the matching stayStart/stayEnd envelope. Called on every guest
   // write so a guest's gaps are persisted and stale nights never linger.
+  //
+  // #2736: that promise used to be broken on the IN-PROGRESS branch below, which
+  // is the one place the priced nights did not come from a real night set — the
+  // plan expanded its envelope, so this deleted a sparse guest's rows and wrote
+  // back a continuous run, filling the gap for good. The plan now carries the
+  // night list (INV-MOD-025) and this is the only writer that needs to know.
   const syncGuestNights = async (
     bookingGuestId: string,
     bg: BreakdownGuest | undefined,

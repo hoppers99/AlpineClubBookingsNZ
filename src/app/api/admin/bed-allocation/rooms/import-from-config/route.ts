@@ -19,7 +19,7 @@ export async function POST() {
       action: "BED_ALLOCATION_CONFIG_IMPORTED",
       memberId: guard.session.user.id,
       entityType: "LodgeRoom",
-      category: "admin",
+      category: "lodge",
       outcome: "success",
       summary: "Rooms and beds imported from club config",
       metadata: {

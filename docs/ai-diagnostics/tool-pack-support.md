@@ -105,14 +105,14 @@ correctly, and for anyone extending the taxonomy in AID-6B or AID-6C.
 | Category | Correlation entry | Reader needs | What actually records there |
 | --- | --- | --- | --- |
 | `system`, `security` | System | `support:view` | Setup, credentials, password/magic-link policy, backups, auth events and auth bounces, PIN login |
-| `admin` | System | `support:view` | **The cross-domain catch-all** — the largest category in the codebase (118 write sites). Member merge, member-lifecycle delete/archive, member import, lodge-access changes, seasonal membership assignments, internet-banking **payment settings**, booking-request **settings**, chores, lockers, rooms, bed allocation, lodge settings, access roles, modules |
+| `admin` | System | `support:view` | **The cross-domain catch-all** — still the largest category in the codebase (98 write sites: 118 before #2730, 96 after it, 98 after #2755). Member merge, member-lifecycle delete/archive, member import, lodge-access changes, seasonal membership assignments, internet-banking **payment settings**, booking-request **settings**, chores, lockers, work parties, lodge instructions, lodge settings, the `LODGE_*` lodge records themselves, access roles, modules. Also **an officer editing another member's record** — every field, plus activate, deactivate and role changes — from the member page *and* the bulk screen alike, for rows written from #2755 onwards. **Not bed allocation** any more, and not the lodge display configuration — both are `lodge` for rows written from #2730 onwards |
 | `booking` | Booking | `support:view` + `bookings:view` | Member-facing and system booking events. Not booking *settings* — those are `admin` |
-| `account` | Membership | `support:view` + `membership:view` | Member self-service: profile edits, notification preferences, post-login landing, membership cancellation, member photos, membership applications and nomination |
+| `account` | Membership | `support:view` + `membership:view` | Member self-service **only**: profile edits, notification preferences, post-login landing, membership cancellation, member photos, membership applications and nomination. An officer editing somebody else's record is `admin` from #2755 onwards, including the bulk screen's activate/deactivate, which recorded here before |
 | `family` | Membership | `support:view` + `membership:view` | Family groups, partner links, login-holder changes, dependents |
 | `communication` | Membership | `support:view` + `membership:view` | Bulk email, notices, delivery suppressions, credential-email reissues, age-up parent handoffs |
 | `privacy` | Membership | `support:view` + `membership:view` | Deletion requests, member export, member-guest resolution, **admin issue reports** — even though Issue Reports is a `support` screen |
 | `payment`, `xero` | Finance | `support:view` + `finance:view` | Payments, refunds, reconciliation, Xero sync. Not payment *settings* — those are `admin` |
-| `lodge` | Lodge | `support:view` + `lodge:view` | Rosters, guest arrival/departure, bed-allocation lifecycle, display built-ins, and **induction** — even though Induction is a `membership` screen |
+| `lodge` | Lodge | `support:view` + `lodge:view` | Rosters, guest arrival/departure, **all** bed allocation (an administrator's manual, bulk, range and approval actions as well as the automatic lifecycle ones, #2730), display built-ins and the **lodge display configuration**, and **induction** — even though Induction is a `membership` screen |
 
 That table is **derived from one map**, not maintained here by hand:
 `AUDIT_CATEGORY_CORRELATION_DOMAIN` in `src/lib/audit-categories.ts` sends every
@@ -128,6 +128,72 @@ not tidying:
 - **`family` joined Membership**, having previously been in **no** entry at all. 27
   production write sites' evidence was invisible to every correlation tool and is now
   readable with `support:view` plus `membership:view`.
+
+**One category's contents changed in #2730, and that is a behaviour change too.** The
+map above is untouched — no category moved between entries — but 22 write sites moved
+between categories, out of `admin` and into `lodge`:
+
+- **All 21 admin-initiated bed-allocation writers.** Bed allocation was split down the
+  middle: the automatic lifecycle promotions said `lodge` and the manual, bulk and range
+  ones an administrator performed said `admin`, so **the same action name answered to two
+  different permissions** and neither entry could return the whole night. A lodge manager
+  correlating "who moved this guest" got the automatic promotions and a silent absence
+  where the manual ones should have been. Bed allocation is now wholly `lodge`.
+- **`LODGE_DISPLAY_CONFIG_UPDATED`**, which was the one writer under `/admin/display/**`
+  still saying `admin` while its ten siblings said `lodge` — and the most lodge-scoped of
+  them, since it names the Lodge itself as its entity.
+
+**Both are narrowings, and somebody loses something.** A support-only operator can
+correlate those 22 sites' rows today and will need `lodge:view` as well after this — and
+so will a **Booking Officer holding `support` + `bookings` but not `lodge`**, who is the
+person actually performing these allocations, since the routes are gated `bookings:edit`
+rather than `lodge:edit`. They are all still readable in **Admin → Audit Log** with
+Support access, exactly as before — the change is to AI Diagnostics only. Nothing became
+readable to anybody new: neither `admin` nor `lodge` is a category members can see in
+their own activity list, so no row crossed onto a member-facing surface, and no row's
+retention class changed.
+
+**It moved the WRITERS, not the stored rows, and both entries say so.** A row already in
+`AuditLog` keeps the category it was written with, and `buildAuditCategoryWhere` ORs its
+legacy action-name guess in only for rows whose category is NULL — so a bed-allocation row
+recorded before this release carries a hard `admin` and is returned by the **system** entry
+alone, permanently. Bed-allocation evidence is therefore split by DATE across two entries
+until the backfill in #2751 runs. The lodge entry's `description` no longer claims to hold
+it "in full" and the system entry's `scope` says it still holds the older half; a pack test
+pins both sentences. `SHARED_DESCRIPTION_TAIL` does **not** cover this case — it warns
+about rows with no category, and these rows have one.
+
+The other 96 `admin` writers were read in the same pass: 87 were deliberately kept and
+nine were held for a decision, because their destinations are member-visible and the
+move would publish the row on a member-facing surface.
+[**The `admin` audit category, reviewed site by site**](audit-admin-category-review.md)
+records the verdict and the reason for every one of them, the alternative reading where
+there was a real one, and the fifteen lodge-gated sites that are an open question rather
+than a settled keep.
+
+**One of those nine was resolved in #2755, and it moved TWO more writers IN rather than
+out.** Editing, activating, deactivating or re-roling a member's record from an officer
+screen was filed by the SCREEN used — `admin` from the member detail page, `account` and
+`security` from the bulk screen — so one business act answered to two different
+correlation entries and a category-scoped reader saw part of the picture with nothing to
+say so. All three now say `admin`, which keeps them in this entry. `account` and
+`security` are both member-visible and all three rows reach the subject member's own
+timeline, so unifying on either would have published an officer's edits of a member's
+record on that member's own timeline; declaring visibility per event instead is decided
+(#2695) but not yet built, so until it lands the category is the only lever. **The cost,
+stated plainly:** the bulk activate/deactivate rows move from `support` + `membership` to
+`support` alone, so a support-only operator gains them — the same gate the member-page
+equivalent has always answered to — and the subject member stops seeing them on their own
+timeline. As with bed allocation this moved the WRITERS and not the stored rows, so bulk
+member-record evidence recorded before the release is returned by the **membership** entry
+and stays member-visible: split by date, with the backfill question filed as #2763 (and
+deliberately not folded into #2751, because rewriting these rows would withdraw entries a
+member can see today, which bed allocation's rewrite would not).
+
+The rule this produced (`INV-PRIV-012`) is scoped to those six action names, **not** to
+"an officer acted": a member's photo changed by an officer on their behalf, and an
+officer's decisions on a member's cancellation, stay `account` and stay in the
+**membership** entry on purpose.
 
 The consequence to keep in mind: a correlation tool answering "nothing matched" is
 answering about **its own categories**, not about the domain. A Membership Officer
@@ -178,15 +244,54 @@ stale. They are measured on every CI run now, and a **new** uncategorised audit 
 fails the census contract with its own symbol named — and because the pinned set is now
 empty, the *first* such writer fails it, with no backlog left to hide in.
 
+**A new writer can no longer omit a category in the first place**, which is a stronger
+statement than the census pin and is the reason the pin is now a backstop rather than the
+only gate. `AuditLogParams.category` and `StructuredAuditEvent.category` are both required
+and non-null, so an omitting TypeScript writer does not compile; and
+`assertCanonicalAuditCategory` runs inside both `buildAuditLogCreateData` and
+`buildStructuredAuditLogCreateData` — between them every one of the four approved
+boundaries — so a value that reaches the helper through a cast, from untyped JavaScript, or
+forwarded out of a stored row is refused before persistence rather than stored unfilterable.
+Failure semantics are unchanged at each boundary: `logAudit` stays fire-and-forget and logs,
+and an awaited call inside a transaction aborts it exactly as a failed insert already does.
+What the census still uniquely catches is the writer the compiler cannot see — raw
+`INSERT INTO "AuditLog"` in a migration, a `.mjs` script, or the type mandate itself being
+reverted.
+
+**Scope the two compile-time and runtime layers honestly**: they cover writes that go
+through `src/lib/audit.ts`, which is every one of the 427 sites in the tree. A write that
+never reaches the helper — hand-built Prisma, raw SQL, a migration — is outside them by
+construction, which is what the census is for, and the census is a heuristic AST walk
+rather than a proof.
+
 The census covers all four TypeScript writer forms (`logAudit`, `createAuditLog`,
 `createStructuredAuditLog`, and a direct `auditLog.create`), the fourteen wrapper helpers
 that write on a caller's behalf, and — because a TypeScript-only census would have claimed
 `prisma/` was clean when it is not — the **raw SQL** in committed migrations. Two
 migrations write `"AuditLog"` directly, bypassing the audit boundary's sanitisation and
 retention derivation; both are pinned with a reason, and a migration that `INSERT`s audit
-rows without naming `"category"` fails the same contract. It parses rather than greps, so a
-sink named inside a comment is not counted — the phantom `createStructuredAuditLog`
-omission preserved in the issue's own title was exactly that.
+rows without naming `"category"` — or that names the column and then supplies `NULL` for
+it — fails the same contract. It parses rather than greps, so a sink named inside a comment
+is not counted — the phantom `createStructuredAuditLog` omission preserved in the issue's
+own title was exactly that.
+
+**Six ways past the census were demonstrated during #2581's review and closed**, each now
+carried by a fixture in `src/lib/__tests__/audit-writer-census-scanner.test.ts` so a
+regression in the walk fails by name: a delegate parked in a local (`const log =
+tx.auditLog`) or renamed out of a destructure; a delegate reached by element access
+(`tx["auditLog"]`); raw SQL DML issued from TypeScript with `$executeRaw`/`$executeRawUnsafe`
+(the migration arm never walks `.ts` files); a `createMany` whose first array element
+carried a category and whose later elements did not; a schema-qualified
+`INSERT INTO "public"."AuditLog"`; and the `NULL`-in-the-category-column case above. Reads
+are deliberately still ignored, so the correlation packs' own `SELECT … FROM "AuditLog"`
+does not register as a writer.
+
+**What the census still cannot see**, stated rather than left to be discovered: a delegate
+returned from a helper call, an alias created by assignment rather than declaration, raw SQL
+assembled from fragments so no single expression contains both the keyword and the table
+name, and an `INSERT … SELECT` whose category expression is computed rather than literal.
+Those are why the type and the runtime assertion are the primary defences and this walk is
+the backstop, not the other way round.
 
 One consequence worth stating because it is not obvious: all 82 also passed no `severity`
 and no `retentionClass`, and the writer derives a retention class only when one of those

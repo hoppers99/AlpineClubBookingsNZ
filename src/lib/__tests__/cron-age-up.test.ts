@@ -65,6 +65,7 @@ import {
   sendAgeUpParentEmailHandoffEmail,
 } from "../email";
 import { AGE_TIER_DEFAULTS, invalidateAgeTierCache } from "../age-tier";
+import { getAuditRetentionExpiresAt } from "../audit";
 import { checkAgeUpMembers } from "../cron-age-up";
 
 const mockedFindMany = vi.mocked(prisma.member.findMany);
@@ -736,6 +737,65 @@ describe("checkAgeUpMembers", () => {
         }),
       }),
     });
+  });
+
+  it("gives the handoff audit row an expiry instead of keeping it forever (#2581)", async () => {
+    /*
+      WHAT THIS CATCHES: this writer going back to a hand-built
+      `prisma.auditLog.create({ data: … })`.
+
+      It carried `category: "communication"` even while hand-built, so every
+      category-shaped assertion passed and the defect was invisible: bypassing
+      `buildStructuredAuditLogCreateData` meant no `retentionClass` and no
+      `expiresAt`, neither of which has a schema default and neither of which any
+      Prisma middleware fills. A NULL/NULL row is never archived
+      (`archiveEligibleAuditLogs` filters on `retentionClass`) and never pruned
+      (`pruneExpiredAuditLogs` carries `expiresAt: { lt: now }` on every branch,
+      and NULL is not less than anything) — so a row naming a member and a
+      recipient EMAIL ADDRESS was kept for the life of the database.
+
+      The category pin above cannot catch that. This one can, and it is the
+      behavioural half of the per-sink pin in the census manifest.
+    */
+    const member = {
+      id: "m-retention",
+      email: "child@placeholder.com",
+      firstName: "Charlie",
+      lastName: "Brown",
+      dateOfBirth: dobForAge(18),
+      parentMemberId: null,
+      inheritParentEmail: false,
+      inheritEmailFromId: "parent1",
+      inheritEmailFrom: {
+        id: "parent1",
+        email: "parent@example.com",
+        firstName: "Pat",
+        lastName: "Parent",
+      },
+      parent: null,
+    };
+
+    mockedFindMany.mockResolvedValue([member] as any);
+    mockedSendHandoffEmail.mockResolvedValue(undefined);
+
+    await checkAgeUpMembers();
+
+    const data = mockedAuditLogCreate.mock.calls[0][0].data as Record<
+      string,
+      unknown
+    >;
+    expect(data.retentionClass).toBe("critical");
+    expect(data.expiresAt).toEqual(getAuditRetentionExpiresAt("critical"));
+    // And the payload the boundary now sanitises still says what it said, so the
+    // routing is a retention/sanitisation change and not a content change.
+    expect(data.metadata).toEqual(
+      expect.objectContaining({
+        handoffReason: "inheritEmailFrom",
+        recipientEmail: "parent@example.com",
+        sourceMemberId: "parent1",
+        targetAgeTier: "ADULT",
+      }),
+    );
   });
 
   it("sends parent handoff for legacy inheritParentEmail with parentMemberId", async () => {

@@ -213,11 +213,19 @@ async function recordPartnerPromotionAudit(
   promoted: BedAllocation,
 ): Promise<void> {
   // Best-effort, mirroring recordBedDisplacementAudit: an audit-write failure
-  // must never roll back a committed promotion. There is no acting member on the
-  // lifecycle path (the promotion is a system-driven consequence of a prune), so
-  // this is a "lodge" system event rather than an "admin" action, and it is
-  // recorded against the PROMOTED partner's own booking — which may differ from
-  // the booking whose prune triggered it.
+  // must never roll back a committed promotion. It is recorded against the
+  // PROMOTED partner's own booking — which may differ from the booking whose
+  // prune triggered it.
+  //
+  // `lodge` because the AFFECTED DOMAIN is a bed in a lodge room on a lodge
+  // night, not because no member acted here (#2730). That distinction is the
+  // whole of the owner's rule on #2581: category follows what the event
+  // changed, never who started it. This comment used to argue the opposite —
+  // "there is no acting member … so this is a 'lodge' system event rather than
+  // an 'admin' action" — and the three admin-initiated writers of this SAME
+  // action name took it at its word and wrote `admin`, so one action answered
+  // to two permission gates and no operator could correlate the whole set. All
+  // 21 admin-initiated bed-allocation writers now say `lodge` too.
   try {
     await createAuditLog(
       {
@@ -676,9 +684,17 @@ async function loadBookingForBedAllocation(
 }
 
 /**
- * The dates a guest actually stays within a date range (issue #713). Uses the
- * explicit night set when present; otherwise the contiguous stayStart/stayEnd
- * range clamped to the range — the pre-#713 behaviour.
+ * The dates a guest actually stays within a date range (issue #713).
+ *
+ * Reads the explicit `BookingGuestNight` set and NOTHING ELSE. There is no
+ * envelope fallback — the docstring used to promise one and the body never had
+ * it (#2628) — and adding one now would be a behaviour change, not a fix: this
+ * feeds both the auto-placement demand AND `pruneAllocationsForBooking`'s diff,
+ * so a guest with no night rows must contribute no nights on both sides or the
+ * lifecycle would place rows it then immediately sweeps back off.
+ * `getExplicitGuestBedNightKeys` is the same rule in the canonical helper
+ * module; this one stays on `Date` values because its callers key Prisma
+ * `stayDate` filters off them.
  */
 function getGuestNightDatesInRange(
   guest: { stayStart: Date; stayEnd: Date; nights?: { stayDate: Date }[] },
@@ -1660,11 +1676,14 @@ export async function reconcileBedAllocationsForBooking(
 // Placement-time eligibility (mayShareDoubleBed) blocks NEW second occupants
 // once a partner link dissolves or a member stops being an active adult, but
 // rows placed while the pair qualified used to outlive those events. This
-// sweep removes the affected pair's FUTURE (tonight onwards, NZ date-only —
-// the same `stayDate >= getTodayDateOnly()` window as the bed deactivate
-// guard) shared-double second-occupant rows, returning those guest-nights to
-// the awaiting-allocation queue; past lodge nights are history and stay
-// untouched. Only the `isSecondOccupant=true` row is ever deleted — the
+// sweep removes the affected pair's FUTURE (tonight onwards, NZ date-only)
+// shared-double second-occupant rows, returning those guest-nights to the
+// awaiting-allocation queue; past lodge nights are history and stay untouched.
+// That window is deliberately NARROWER than the bed deactivate guard's, which
+// #2628 widened to `getEarliestCurrentBedNightDate()` — last night onwards —
+// because a guard REFUSES and must remember this morning's occupant, while this
+// sweep DELETES and must not touch a night that has already been slept
+// (INV-DATE-020, INV-CAP-010). Do not "align" the two. Only the `isSecondOccupant=true` row is ever deleted — the
 // primary keeps their bed — so the sweep can never orphan a partner and needs
 // no promotion pass (contrast the #1750 primary-removal paths). Callers run it
 // on the same transaction as the event that broke the pair (link delete /
@@ -1871,9 +1890,14 @@ async function recordPartnerShareSweepAudits(
   for (const group of groups.values()) {
     // Best-effort for the #1756 lifecycle events, mirroring
     // recordPartnerPromotionAudit: an audit-write failure must never roll back a
-    // committed sweep. There is no acting member — the removal is a system
-    // consequence of the pair breaking — so this is a "lodge" system event
-    // recorded against each affected booking.
+    // committed sweep. It is recorded against each affected booking.
+    //
+    // `lodge` because the AFFECTED DOMAIN is a bed in a lodge room on a lodge
+    // night — not because the removal is a system consequence of the pair
+    // breaking and no member acted (#2730). This comment used to give that
+    // second reason, which is classification by INITIATOR and is what the
+    // owner's rule on #2581 forbids; the pointer above now leads to a corrected
+    // rationale rather than the one that propagated the split.
     try {
       await createAuditLog(
         {

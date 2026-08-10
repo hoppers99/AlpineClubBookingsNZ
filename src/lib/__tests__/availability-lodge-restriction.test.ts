@@ -163,16 +163,20 @@ describe("GET /api/bookings/rooms BOOKING_RESTRICTION gate (Low 1)", () => {
     );
   });
 
-  it("lists every lodge's rooms unfiltered for an unrestricted member", async () => {
-    // Default-open: no BOOKING_RESTRICTION rows means no lodge filter, so the
-    // response is unchanged from today's behaviour.
+  it("lists every ACTIVE lodge's rooms, unnarrowed, for an unrestricted member", async () => {
+    // Default-open: no BOOKING_RESTRICTION rows means no eligibility narrowing
+    // by lodge id. The listing is still not club-wide without limit — #2727
+    // added the lodge's own `active` flag, so an archived lodge's rooms are
+    // never offered in a discovery listing (INV-INT-016). The two filters are
+    // different questions: "may this member book here?" and "is this lodge
+    // still in service?".
     restrictTo([]);
     const { GET } = await import("@/app/api/bookings/rooms/route");
     const res = await GET(new NextRequest("http://localhost/api/bookings/rooms"));
     expect(res.status).toBe(200);
     expect(mockLodgeRoomFindMany).toHaveBeenCalled();
     const whereArg = mockLodgeRoomFindMany.mock.calls[0][0].where;
-    expect(whereArg).toEqual({ active: true });
+    expect(whereArg).toEqual({ active: true, lodge: { active: true } });
     expect(whereArg).not.toHaveProperty("lodgeId");
   });
 });

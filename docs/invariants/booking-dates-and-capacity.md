@@ -100,33 +100,188 @@ derivation).
   both the admin roster service and the kiosk generate route; roster-confirm
   validation and both chore-cleanup paths read the same helpers (D-M6), and the
   arriving/departing labels are derived from the night set on the operational
-  date. **The sparse fix applies per converted surface, not globally.**
-  `getLodgeVisibleGuestsForDate` survives as a deprecated wrapper carrying the
-  LEGACY lodge-date meaning unchanged: `includeDepartureDate: false` is the
-  night model, and `includeDepartureDate: true` admits the guest's own nights
-  plus the single morning after their FINAL listed night (or, for an
-  envelope-only guest, the closed range `[stayStart, stayEnd]`). It is
-  deliberately NOT `getOperationallyPresentGuestsForDay`: the lobby wall
-  (fenced, below) derives its night counts by subtracting only the envelope end
-  from that list, so per-segment presence there would count a sparse stay's gap
-  morning as a phantom night and put guest names on a public screen. A source
-  contract freezes both the legacy semantics and the wrapper's remaining caller
-  list. #2631 converted the two kiosk read surfaces that used to call it
-  (`api/lodge/week` and `api/lodge/guests/[date]`) onto the named operational-day
-  helpers, so `lodge-display-state` — the lobby wall — is now its **only**
-  caller, and a PERMANENT one rather than a pending migration: nobody is to
-  "finish the job" by pointing it at the operational day, for the privacy reason
-  above (issue #58). The same statement lives beside the code in
-  `booking-guest-stay-ranges.ts`. No surface may grow a second call.
+  date. **Every read surface is now converted.**
+  `getLodgeVisibleGuestsForDate` survives as a deprecated wrapper that DEFINES
+  NOTHING: since #2735 both of its branches are a straight delegation, with
+  `includeDepartureDate: false` the night model and `includeDepartureDate: true`
+  `isGuestOperationallyPresentOnDay`. It exists only so the lobby wall keeps a
+  single named entry point that a source contract can fence. It carried the
+  LEGACY lodge-date meaning until #2735 — the guest's own nights plus the single
+  morning after their FINAL listed night — and #2622 and #2628 both refused to
+  widen it, because the lobby wall (fenced, below) derived its night counts from
+  that list and a per-segment gap morning would have become a phantom night on a
+  public screen (issue #58). #2735 removed that coupling FIRST and widened the
+  predicate second; see [INV-DATE-023], which is the standing rule that keeps
+  them apart. A source contract freezes the wrapper's caller list. #2631
+  converted the two kiosk read surfaces that used to call it (`api/lodge/week`
+  and `api/lodge/guests/[date]`) onto the named operational-day helpers, so
+  `lodge-display-state` — the lobby wall — is its **only** caller. No surface may
+  grow a second call.
+
+### INV-DATE-020
+
+- **One place turns a stay into nights, and its envelope branch is half-open**
+  (#2628). `BookingGuestNight` is the canonical night set;
+  `BookingGuest.stayStart`/`stayEnd` is a DERIVED envelope whose `stayEnd` is the
+  morning after the last night [INV-DATE-012]. They agree for a contiguous stay;
+  for a sparse one the envelope silently fills the internal gaps, so an expander
+  that reads it reports nights the guest is not there. Six sites expanded a stay
+  independently and disagreed. The named helpers in
+  `src/lib/booking-guest-stay-ranges.ts` are now the one definition and every
+  read surface routes at them: `expandStayEnvelopeToNightKeys` (the raw
+  half-open expansion), `getGuestBedNightKeys` (night set when the guest has
+  one, else the envelope — the set form of `isGuestActiveOnNight`, and agreeing
+  with it night for night), `getExplicitGuestBedNightKeys` (explicit rows only,
+  `null` when the guest carries none, for the bed-allocation surfaces that
+  place only listed nights), `getGuestDepartureMorningKeys` /
+  `isGuestDepartureMorning` (one departure per SEGMENT, not one per stay),
+  `getNextGuestBedNightAfter` / `isGuestReturningOnDay` (the bounds anything
+  scoped to ONE segment needs), and `getEarliestCurrentBedNightDate`. Do not
+  write another `eachDateOnlyInRange(guest.stayStart, guest.stayEnd)`;
+  `guest-stay-expansion-census.test.ts` counts them per site, so a second copy
+  inside an already-declared file fails too.
+  **`expandStayEnvelopeToNightKeys` must stay half-open.** Both bed-allocation
+  planners are fed ONE PSEUDO-GUEST PER NIGHT, each carrying
+  `stayStart = night` and `stayEnd = night + 1`; an inclusive expansion gives
+  every one of them a phantom second night and the planner claims the
+  morning-after bed while its occupant is still in it — a double booking, on the
+  automatic path, silently. `bed-allocation.test.ts` →
+  "pseudo-guest envelope (#2628)" is the mutation probe for that and the reason
+  the rule is written here rather than only in a comment. Two deliberate
+  non-callers: the lifecycle's `getGuestNightDatesInRange` reads the explicit
+  night rows and has NO envelope fallback (its output feeds both placement and
+  the prune diff, so a fallback would place rows the next reconcile sweeps), and
+  the planner's `guestStayNights` treats an explicitly EMPTY night list as "no
+  demand" rather than falling back. A guard on whether a bed is still spoken for
+  starts at LAST NIGHT, not today: night N runs to midday NZ on date N+1
+  [INV-DATE-002], so `stayDate >= today` forgets this morning's occupant and
+  lets an admin retire a bed somebody is lying in. That widening is for
+  REFUSALS only — the partner-share sweeps DELETE rows and stay at
+  `stayDate >= today`, because night D-1 is occupancy that has already happened
+  and past lodge nights are history and stay untouched [INV-CAP-010]. A refusal
+  built on this rule states only WHAT blocks, never the whole history: the bed
+  guard names the first few dates and occupants and says "and more", because the
+  delete branch has no date predicate at all and would otherwise put every night
+  a bed has ever held into one error string and into the audit trail.
+
+### INV-DATE-021
+
+- **A guest's kiosk attendance is one CURRENT state per stay, and every rule
+  keyed on "the end of the stay" has to be re-read per segment** (#2628).
+  `BookingGuest.arrivedAt` / `departedAt` is a single pair of timestamps meaning
+  "where is this person now", not a log of check-ins. A stay with a gap in it
+  arrives and leaves once per SEGMENT, so three consequences are load-bearing and
+  none of them may be dropped:
+  - The kiosk's check-in and check-out buttons BOTH ride on server-derived flags
+    (`canMarkArrived`, `canMarkDeparted`) computed where the guest's night rows
+    are loaded, never on a rule re-derived in the page from `isArriving` and
+    `departedAt`. Those two fields cannot see the night set, and the combination
+    they produce on a return night — check-in hidden because a departure is
+    recorded, check-out hidden because the night is not a departure morning —
+    leaves a hut leader with no control at all on a night the guest is in the
+    building.
+  - Marking a RETURN arrival (`isGuestReturningOnDay`, which is false for every
+    day of every contiguous stay) always marks arrived and CLEARS the superseded
+    departure, rather than toggling. That is what keeps the next check-out
+    recordable instead of un-recording the previous one, and it is why "Arrived"
+    and the faded row read `arrivedAt && !departedAt` rather than `arrivedAt`.
+  - The departure chore sweep is bounded by `getNextGuestBedNightAfter`, not by
+    "every date after today". Unbounded was correct only while the endpoint
+    accepted a single, final departure; on a sparse stay it silently deletes the
+    suggested roster generated for a segment the guest is still booked for, and
+    toggling the departure back off restores nothing.
+
+### INV-DATE-022
+
+- **A SQL stay filter is a COARSE FILTER, never the answer: every kiosk write
+  lookup loads the envelope and then decides over the night rows** (#2737). A
+  `where` on `stayStart`/`stayEnd` can only ever describe the envelope, and the
+  envelope is a strict SUPERSET of the canonical night set for a sparse stay
+  [INV-DATE-020] — its internal gap nights sit inside it. So a lookup whose
+  authority stops at the `where` accepts a write for a night the guest is at
+  home. Both kiosk write lookups in `src/lib/lodge-date-scoping.ts` therefore
+  load coarse and decide in code: `findLodgeGuestForDate` (arrive) with
+  `isGuestActiveOnNight`, `findLodgeGuestDepartingOnDate` (depart) with
+  `isGuestDepartureMorning`. Three things about that are load-bearing:
+  - **The night rule is NOT folded into the `where`.** The fragments there are
+    the enforcement gates — member consent [D-12/#2307], pending admin review
+    [#1372/#1422], lodge scope and booking status — and they collapse to one
+    deliberately uninformative "nothing matched" precisely so a refused caller
+    learns nothing. "You are not booked in tonight" is a fact about the booking,
+    not about the caller's rights; keeping it separate is what lets the arrive
+    endpoint answer `409 GUEST_NOT_BOOKED_THIS_NIGHT` with a sentence a hut
+    leader can act on while `403` stays authorisation and `404` stays uniform.
+    **Depart deliberately keeps the uniform `404` for "not a departure
+    morning".** It is already correct — no wrong write is reachable — so the
+    difference is copy, not safety, and buying that copy means widening the
+    return type of a lookup that runs inside the depart transaction's advisory
+    locks. It is also not the same clean fact: a guest refused a check-out
+    mid-stay is refused because they are STAYING tonight, which is a different
+    sentence from "not booked in", and choosing it is a decision rather than a
+    port. Anyone who does add it must not do so by folding the rule into the
+    `where`, for the reason above.
+  - **The coarse filters stay as narrow as each rule allows and are not
+    unified.** Arrive's is half-open (`stayEnd: { gt: date }`) because a
+    departure morning is never an occupied night [INV-DATE-003]; depart's is
+    checkout-inclusive because a departure morning is exactly what it looks for.
+    Widening either only loads rows the in-code rule then refuses.
+  - **A guest carrying no `BookingGuestNight` rows still falls back to the
+    envelope**, so every pre-#713 row behaves exactly as it always has. A fixture
+    that omits `nights` is therefore exercising the fallback, not the rule — the
+    silent-staleness class #2628's sweep found across eight suites.
+  A server guard is required even where no screen sends the request: the kiosk's
+  `canMarkArrived`/`canMarkDeparted` flags [INV-DATE-021] make the offer and the
+  acceptance agree by construction, but a stale open page or a direct call
+  bypasses the offer entirely.
 
 ### INV-DATE-006
 
-- **The lobby wall is deliberately mixed and stays fenced** (issue #58): its
-  guest-name privacy gate (sole-occupancy detection) uses NIGHT counts while
-  its visibility rows are checkout-inclusive. It keeps its own code path
-  (`src/lib/lodge-display-state.ts`) and is never unified onto either helper
-  family — widening its night counts would put guest names on an
-  unauthenticated public screen during back-to-back handovers.
+- **The lobby wall is deliberately mixed and stays fenced** (issue #58): it asks
+  BOTH models, each for its own job, and keeps its own code path
+  (`src/lib/lodge-display-state.ts`). Its guest-name privacy gate
+  (sole-occupancy detection) is a NIGHT count. Everything a viewer reads — who
+  is listed, the arriving/departing/staying counters, the bars — is the
+  OPERATIONAL DAY, so a guest is shown on every morning they leave, including a
+  mid-stay one, and their bar is drawn from their night set with the gap in it
+  (#2735). Being mixed is the point: the two answers are different on a
+  changeover day and each is right for its own question. The fence is that the
+  wall may not be unified onto one family, and that the night count is derived
+  independently of the visible list [INV-DATE-023] — widening its night counts
+  would put guest names on an unauthenticated public screen during back-to-back
+  handovers.
+
+### INV-DATE-023
+
+- **The lobby wall's night count is derived independently of what the wall
+  shows** (#2735). `nightTotals` in `src/lib/lodge-display-state.ts` — the input
+  to sole-occupancy / whole-lodge detection, which is what decides whether an
+  unauthenticated public screen prints guests' names and phone numbers — is
+  taken from the booking's whole guest set through the night model
+  (`getActiveGuestsForNight`), never by filtering, subtracting from or otherwise
+  reading the visible list. It shares no term with the visibility rule in either
+  direction, so no change to who is DISPLAYED can add or remove a night. This
+  ordering is the standing safety rule and not an implementation detail: the
+  wall's visibility predicate could only be widened to per-segment presence
+  because the count had already been decoupled, and anything that couples them
+  again must narrow the predicate back first. A departure morning is never a
+  night (INV-DATE-003), and `lodge-display-state.test.ts` fails on a sparse-stay
+  fixture if one is ever counted as one.
+- **Withholding names and drawing a blockout are separate decisions on that
+  wall** (#2735). The serialiser keeps two sets: `wholeLodgeBookingIds` (the
+  group holds a night INSIDE the window → `DisplayStateBooking.wholeLodge`, the
+  blockout panel, the week strip, the rotating `occupancy:whole-lodge-*`
+  conditions) and `soleOccupancyBookingIds`, a SUPERSET that also covers a group
+  whose only presence in the window is its departure morning. The privacy gate
+  (`namesAllowedForBooking`, and the chore-assignee labels that reuse it) asks
+  the superset; the blockout view asks the narrow set. Being a superset is the
+  safety property — a widening here can only withhold more names. A row that
+  reaches the wall on a departure morning alone must NOT be flagged
+  `wholeLodge`: it holds no night tonight, and a "the lodge is fully booked"
+  statement over an empty lodge is its own kind of wrong. A `wholeLodge` row is
+  also not guaranteed contiguous — the heuristic never inspects the nights
+  between the ones a booking covers — so any DAY span painted from such a row
+  (blockout panel, week strip, night count on the welcome panel) is derived from
+  the row's `nights`, never from its envelope.
 
 ### INV-DATE-007
 
@@ -461,6 +616,133 @@ derivation).
   invariant still holds because rule (b) only extends holding to PENDING, which
   is already bed-allocatable (locked by
   `booking-status-bed-allocation-ownership.test.ts`, #813).
+
+### INV-CAP-032
+
+- **Every path that creates a booking guest writes their `BookingGuestNight`
+  rows (#2739).** `BookingGuestNight` is the canonical night set — the whole
+  bed-allocation surface reads it and only it, and since #2628 the officer card
+  reads it too ("a guest carrying no night rows has no placeable nights, so the
+  board never lists them and this card must not count them either"). A guest
+  created with no rows is therefore not a guest with an unknown night set; they
+  are a guest the system believes is nowhere. They are not listed on the board,
+  not placed by the planner, and not counted as awaiting a bed, while being a
+  real person on a confirmed booking who turns up at the lodge.
+  **This is a creation-path obligation, not a read-path fallback**: the envelope
+  fallback in [INV-DATE-003] exists for pre-#713 history and must not be relied
+  on to cover a path that could have written rows and did not.
+  The **five** booking-request write points had exactly that gap until #2739:
+  the public approval create (`approveBookingRequest`, `booking-request.ts`), the
+  school approval create and the member whole-lodge approval create
+  (`approveSchoolBookingRequest` and `approveMemberWholeLodgeRequest`,
+  `school-booking-request.ts`), the held-booking reassign
+  (`reassignHeldBookingGuests`, `booking-request.ts`) and the quote hold
+  (`holdBookingRequestSlots`, `booking-request-quotes.ts`). That is why
+  `HeldBookingGuestInput.nights` is a REQUIRED field, why the quote hold's inline
+  producer is annotated with that type, and why `toPipelineGuestCreateData`
+  requires `nights` with no fallback: a sixth pipeline that supplies no night set
+  is a TYPE ERROR, pinned by the `@ts-expect-error` case in
+  `src/lib/__tests__/booking-request-guest-nights.test.ts`, so it cannot be added
+  without answering the question. Each of the five has a test reading its own
+  Prisma create payload; none of them passes with the night set removed.
+- **The rows are half-open and NZ date-only, like every other night row.** Built
+  from the approved envelope through the pricing engine's own night list, so a
+  converted booking's encoding is identical to a directly-created one's: nights
+  over `[checkIn, checkOut)` [INV-DATE-003] at the storage encoding
+  [INV-DATE-013]. A row on the check-out morning would be a phantom night, and
+  the planner would claim that bed while its real occupant is still in it.
+- **The per-night cents are the engine's where the engine priced the guest, and
+  a division of the total where an officer set it.** Which case applies is
+  decided by the write point, because only it knows where the number came from,
+  and `buildApprovalGuestNights` refuses any supplied vector that does not
+  reconcile to the guest's stored `priceCents` and divides instead.
+  - ENGINE-PRICED (school approval and member whole-lodge approval, whenever the
+    officer set no flat total): the rows store
+    `PriceBreakdown.guests[i].perNightCents` verbatim, which is exactly what the
+    canonical direct-create writer (`buildGuestCreateData`) stores. A season
+    boundary inside the stay, or a per-night group discount, makes those nights
+    genuinely different prices; a flat re-split would carry the right total on
+    the wrong nights, and these rows are what the finance revenue reconciliation
+    sums inside a DATE WINDOW and what a later edit re-uses as #1036 locked
+    prices.
+  - OFFICER-TOTAL (public approval, quote hold, flat whole-lodge or manual
+    override, and the backfill): the number is a negotiated total's share, not a
+    rate — the distinction #1098 recorded when its backfill skipped these
+    bookings — so there is no per-night truth and nothing is re-priced. The share
+    divides to the exact cent with the extra cents on the EARLIEST nights, which
+    is deliberately the vector `evenlySplitCents`
+    (`src/lib/xero-booking-invoices.ts`) already synthesises for a guest carrying
+    no rows and bills from. That equality is what keeps such a booking's Xero
+    line items byte-identical whether the rows exist or not, on a fresh invoice
+    and on an invoice-update diff of a backfilled booking alike; it is pinned by
+    `src/lib/__tests__/booking-request-guest-nights.test.ts`. A split that totals
+    the same but distributes differently still emits different Xero lines, which
+    on an already-raised invoice reads as a change to push.
+- **The rows are the #1036 locked prices on the one edit path that reaches these
+  bookings, and that is deliberate.** Standard edits refuse a booking-request
+  booking outright (`assertBookingNotQuotePriced` / `isQuotePricedBooking`,
+  #1032) — including the admin date shift
+  (`booking-date-modification-service.ts`) and guest removal
+  (`booking-guest-removal-service.ts`), both of which assert before they ever
+  reach `lockedNightPricesForGuest`. `booking-batch-modification-service.ts`
+  exempts three request shapes from that block, and only ONE of them prices:
+  identity-only (#1099) and credit-election-only (#2266) take
+  `buildIdentityOnlyPricing`, which echoes the stored totals and never runs the
+  engine, so no lock set can reach them. The third is a link-only #2337
+  placeholder→member request on a member whole-lodge booking. That path
+  reprices, and `prepareGuestPlan` passes
+  `link ? [] : lockedNightPricesForGuest(guest)` — so the LINKED row re-rates at
+  the member rate (its locks are cleared on purpose) while every UNLINKED
+  placeholder is protected only by its stored night rows. While this pipeline
+  wrote none, those placeholders repriced at whatever the season rate happened to
+  be on the day of the link, silently replacing the negotiated whole-lodge basis
+  the #1032 block exists to protect. Writing the rows closes that leak, so the
+  negotiated price now holds; the join is asserted in
+  `src/lib/__tests__/school-booking-request.test.ts` with the real reader and the
+  real engine.
+  **This is a real change to what that path charges, and it needs the owner's
+  approval before it ships** — it is not an incidental consequence to be waved
+  through as part of a bed-board fix. It moves a bill in BOTH directions,
+  which is the part a reader assumes away: rates up since the quote means the
+  member is now charged LESS than the old behaviour took, rates down means they
+  are charged MORE, because what stands is the price that was agreed rather than
+  whichever was cheaper on the day an officer clicked Link. Both totals are
+  pinned as executable assertions in that same test — the old empty lock set and
+  the new stored one, priced against the same moved rate — so the size of the
+  change is a fact in the suite rather than a claim in prose. The alternative
+  considered and rejected was suppressing the locked prices on this path: it
+  would have kept the leak open by design, broken this invariant's own
+  reconcile-to-`priceCents` rule, and needed a booking-request special case
+  inside the shared edit planner, which is a wider money surface than the one
+  being protected.
+- **The backfill for existing rows is `20260810010000_backfill_booking_request_guest_nights`**,
+  the exact complement of #1098's `20260704150000_backfill_booking_guest_nights`.
+  It is idempotent (per-guest "has no rows at all" guard plus
+  `ON CONFLICT DO NOTHING`), skips cancelled, bumped and soft-deleted bookings,
+  and is proven against a real PostgreSQL by its #2418 verification fixture. Two
+  consequences of filling the gap are intended, not incidental: booking-request
+  hut fees now reach the finance revenue reconciliation's booking side (it summed
+  night rows, so these bookings contributed zero against invoices Xero already
+  held), and a member an officer linked to a converted booking's guest is now
+  credited with the nights they really stayed by `countMemberStayNights`.
+- **It is a DATA write taken before cutover, which makes three operator facts
+  true that no schema migration makes true.** `prisma migrate deploy` runs at
+  step 13 of `docs/PRODUCTION_UPGRADE_RUNBOOK.md`, while the old colour is still
+  serving traffic, and this migration is not `windowed` (no ledger row is
+  required, and the blue/green validator matches nothing hot or breaking in it).
+  So: (1) every booking-request approval and quote hold taken between `migrate`
+  and cutover is written by pre-#2739 code, gets no night rows, and is already
+  behind the one-shot `INSERT` — **re-run the statement verbatim after cutover**,
+  which is safe and inserts nothing where the first pass already ran; (2) aborting
+  the cutover un-does the code but NOT the inserted rows, so this is the only
+  irreversible part of the release; and (3) in that same window the old colour's
+  in-place hold reassignment updates `stayStart`/`stayEnd`/`priceCents` without
+  rewriting night rows (this branch is what adds that rewrite), so a quote
+  accepted in the window at a different option than the hold was taken at can
+  leave backfilled rows describing the hold's dates and total — and invoicing
+  prefers stored rows over the guest's flat `priceCents`. Remedy: re-raise or
+  refresh the invoice for any request approved in the window, or take the deploy
+  with quoting paused.
 
 ### INV-CAP-007
 

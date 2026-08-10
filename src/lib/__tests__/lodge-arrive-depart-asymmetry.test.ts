@@ -8,8 +8,8 @@
  *
  *   findLodgeGuestForDate         (arrive) — NIGHT-only. You can be marked
  *     arrived for a night you are actually sleeping here, and no other day.
- *   findLodgeGuestDepartingOnDate (depart) — the EXACT checkout date. You leave
- *     on one specific day, not on any day you happen to be in the building.
+ *   findLodgeGuestDepartingOnDate (depart) — a DEPARTURE MORNING. You leave on
+ *     one specific day, not on any day you happen to be in the building.
  *
  * Collapse either into `isGuestOperationallyPresentOnDay` and a guest becomes
  * markable-ARRIVED on the morning they are driving home — the operational day
@@ -17,6 +17,24 @@
  * in that file, `validateRosterAllocationsForDate`, IS the operational-day
  * question ("was this person in the building today?") and is deliberately on
  * the shared rule; the contrast is the point.
+ *
+ * #2628 kept that asymmetry and fixed the one thing wrong with the depart half:
+ * it was keyed `stayEnd: date`, and `stayEnd` is the morning after the LAST
+ * night, so a sparse stay could only ever record its final departure. The rule
+ * is now per-segment (`isGuestDepartureMorning`), which is still not presence —
+ * a guest mid-stay is present and is not departing — and is unchanged for every
+ * contiguous stay.
+ *
+ * #2737 fixed the one thing wrong with the ARRIVE half, and the asymmetry
+ * survives that too. "Night-only" was true of the RULE and not of the QUERY: the
+ * SQL `where` is the envelope `[stayStart, stayEnd)`, which contains a sparse
+ * stay's internal gap nights, so the endpoint would accept a check-in for a
+ * night the guest is at home. The lookup now loads coarse and decides in code
+ * with `isGuestActiveOnNight` — the same shape depart takes — and reports the
+ * gap-night refusal as its OWN outcome rather than folding it into the
+ * deliberately uninformative "nothing matched" that the enforcement gates share
+ * (INV-DATE-022). Both lookups are still keyed on different questions; both are
+ * still not presence.
  *
  * Frozen clock discipline: fixtures are anchored to 2026-07-01T00:00:00Z.
  */
@@ -59,16 +77,247 @@ describe("the arrive/depart asymmetry survives the operational-day unification",
     expect(where.booking.checkOut).toEqual({ gt: DEPARTURE_MORNING });
   });
 
-  it("depart stays pinned to the EXACT checkout date, not to presence", async () => {
+  it("arrive loads on the coarse envelope and decides on the night set (#2737)", async () => {
+    mockPrisma.bookingGuest.findFirst.mockResolvedValue(null);
+
+    await findLodgeGuestForDate("guest-1", DEPARTURE_MORNING, "lodge-1");
+
+    const { select } = mockPrisma.bookingGuest.findFirst.mock.calls[0][0];
+    // Stop loading the night rows and the rule silently degrades back to the
+    // envelope, which is the gap-night hole #2737 closed.
+    expect(select.nights).toEqual({ select: { stayDate: true } });
+    // …and the guest's OWN envelope, which is what the fallback branch keys
+    // off. `tsc` cannot catch these going missing — `GuestStayRange` makes both
+    // optional and the helper falls back to `booking.checkIn`/`checkOut` — and
+    // no mocked-Prisma test can either, because a double returns whatever it
+    // likes regardless of the select. This probe is the only thing in the tree
+    // that fails, so it asserts the whole shape rather than a third of it.
+    expect(select.stayStart).toBe(true);
+    expect(select.stayEnd).toBe(true);
+  });
+
+  it("arrive REFUSES a night inside a sparse stay's gap, distinctly from not-found (#2737)", async () => {
+    // Nights {2, 4}: the envelope is [2, 5), so the 3rd is inside the SQL
+    // filter and the guest is at home. MUTATION PROBE — delete the
+    // `isGuestActiveOnNight` guard in `findLodgeGuestForDate` and the gap-night
+    // case below comes back `ok` with a guest attached.
+    const sparse = {
+      id: "guest-1",
+      bookingId: "booking-1",
+      firstName: "Two",
+      lastName: "Segments",
+      memberId: null,
+      arrivedAt: null,
+      departedAt: null,
+      stayStart: day("2026-07-02"),
+      stayEnd: day("2026-07-05"),
+      nights: [{ stayDate: day("2026-07-02") }, { stayDate: day("2026-07-04") }],
+      booking: {
+        memberId: "member-1",
+        checkIn: day("2026-07-02"),
+        checkOut: day("2026-07-05"),
+      },
+    };
+    mockPrisma.bookingGuest.findFirst.mockResolvedValue(sparse);
+
+    expect(await findLodgeGuestForDate("guest-1", day("2026-07-03"))).toEqual({
+      outcome: "not-a-booked-night",
+    });
+    // …and the nights either side are still accepted.
+    for (const bookedNight of ["2026-07-02", "2026-07-04"]) {
+      expect(
+        (await findLodgeGuestForDate("guest-1", day(bookedNight))).outcome,
+        bookedNight,
+      ).toBe("ok");
+    }
+
+    // The two refusals stay separable, which is the reason the outcome is a
+    // union rather than a null: everything the enforcement gates reject is
+    // filtered in SQL and must keep collapsing to one uninformative answer.
+    mockPrisma.bookingGuest.findFirst.mockResolvedValue(null);
+    expect(await findLodgeGuestForDate("guest-1", day("2026-07-02"))).toEqual({
+      outcome: "not-found",
+    });
+  });
+
+  it("arrive falls back to the envelope for a guest with no night rows (#2737)", async () => {
+    // Pre-#713 rows carry only the envelope, exactly as the depart case below.
+    // #2737 must refuse gap nights without turning legacy guests into permanent
+    // refusals — they declare no gaps, so they have none.
+    mockPrisma.bookingGuest.findFirst.mockResolvedValue({
+      id: "guest-1",
+      bookingId: "booking-1",
+      firstName: "Leg",
+      lastName: "Acy",
+      memberId: null,
+      arrivedAt: null,
+      departedAt: null,
+      stayStart: day("2026-07-02"),
+      stayEnd: DEPARTURE_MORNING,
+      nights: [],
+      booking: {
+        memberId: "member-1",
+        checkIn: day("2026-07-02"),
+        checkOut: DEPARTURE_MORNING,
+      },
+    });
+
+    expect((await findLodgeGuestForDate("guest-1", day("2026-07-03"))).outcome).toBe("ok");
+    // …and still not on the departure morning. Postgres would already have
+    // excluded that row (`stayEnd: { gt: date }`), so this is belt-and-braces
+    // with the mock forced open: the in-code rule AGREES with the SQL filter
+    // rather than widening it, which is what makes the pair safe to reason
+    // about separately.
+    expect(
+      (await findLodgeGuestForDate("guest-1", DEPARTURE_MORNING)).outcome,
+    ).toBe("not-a-booked-night");
+  });
+
+  it("the envelope fallback is the GUEST's own, never the whole booking's (#2737)", async () => {
+    // WHY `stayStart`/`stayEnd` STAY IN THE SELECT. A partial-stay guest on a
+    // longer booking, carrying no night rows: the fallback has to answer over
+    // THEIR envelope, and `getGuestStayStart`/`getGuestStayEnd` silently
+    // substitute `booking.checkIn`/`checkOut` the moment those fields are
+    // missing. The mock is forced open past the SQL filter on purpose — the
+    // in-code rule must be right on its own, not merely because today's `where`
+    // happens to agree with it. Rewrite the rule in terms of the booking and
+    // the four assertions below split two-and-two.
+    mockPrisma.bookingGuest.findFirst.mockResolvedValue({
+      id: "guest-1",
+      bookingId: "booking-1",
+      firstName: "Part",
+      lastName: "Stay",
+      memberId: null,
+      arrivedAt: null,
+      departedAt: null,
+      stayStart: day("2026-07-03"),
+      stayEnd: day("2026-07-05"),
+      nights: [],
+      booking: {
+        memberId: "member-1",
+        checkIn: day("2026-07-01"),
+        checkOut: day("2026-07-08"),
+      },
+    });
+
+    // Inside the BOOKING, outside this guest's own stay: they are not here.
+    for (const away of ["2026-07-01", "2026-07-06"]) {
+      expect(
+        (await findLodgeGuestForDate("guest-1", day(away))).outcome,
+        away,
+      ).toBe("not-a-booked-night");
+    }
+    // …and their own two nights are still accepted.
+    for (const own of ["2026-07-03", "2026-07-04"]) {
+      expect(
+        (await findLodgeGuestForDate("guest-1", day(own))).outcome,
+        own,
+      ).toBe("ok");
+    }
+  });
+
+  it("depart loads on the coarse envelope and decides on the night set", async () => {
     mockPrisma.bookingGuest.findFirst.mockResolvedValue(null);
 
     await findLodgeGuestDepartingOnDate("guest-1", DEPARTURE_MORNING, "lodge-1");
 
-    const { where } = mockPrisma.bookingGuest.findFirst.mock.calls[0][0];
-    // Equality, not a range: a guest mid-stay is present on today's operational
-    // day but is not departing today, and must not be markable departed.
-    expect(where.stayEnd).toEqual(DEPARTURE_MORNING);
+    const { where, select } = mockPrisma.bookingGuest.findFirst.mock.calls[0][0];
+    // #2628: the SQL half is now the coarse envelope, which must contain any
+    // departure morning, and the authoritative answer comes from the loaded
+    // night rows. `stayEnd: date` alone could only ever match a sparse stay's
+    // FINAL departure. Both bounds are checkout-inclusive for that reason.
+    expect(where.stayStart).toEqual({ lte: DEPARTURE_MORNING });
+    expect(where.stayEnd).toEqual({ gte: DEPARTURE_MORNING });
     expect(where.booking.checkOut).toEqual({ gte: DEPARTURE_MORNING });
+    // …and the night rows are actually loaded, or the rule silently degrades to
+    // the envelope and the sparse case comes straight back.
+    expect(select.nights).toEqual({ select: { stayDate: true } });
+    // Same whole-shape probe as the arrive lookup above, for the same reason:
+    // the depart fallback is the guest's own envelope, not the booking's.
+    expect(select.stayStart).toBe(true);
+    expect(select.stayEnd).toBe(true);
+  });
+
+  it("depart is still NOT presence: a guest mid-stay is refused", async () => {
+    // The whole reason the coarse filter is not the answer. On the 3rd this
+    // guest occupies both halves of the day — present, not departing — and the
+    // envelope filter happily returns them. The in-code rule is what says no.
+    mockPrisma.bookingGuest.findFirst.mockResolvedValue({
+      id: "guest-1",
+      bookingId: "booking-1",
+      firstName: "Mid",
+      lastName: "Stay",
+      memberId: null,
+      arrivedAt: null,
+      departedAt: null,
+      stayStart: day("2026-07-02"),
+      stayEnd: DEPARTURE_MORNING,
+      nights: [{ stayDate: day("2026-07-02") }, { stayDate: day("2026-07-03") }],
+      booking: {
+        memberId: "member-1",
+        checkIn: day("2026-07-02"),
+        checkOut: DEPARTURE_MORNING,
+      },
+    });
+
+    expect(await findLodgeGuestDepartingOnDate("guest-1", day("2026-07-03"))).toBeNull();
+    expect(await findLodgeGuestDepartingOnDate("guest-1", DEPARTURE_MORNING)).not.toBeNull();
+  });
+
+  it("depart records EACH segment of a sparse stay, not only the last (#2628)", async () => {
+    // Nights {2, 4}: they leave on the morning of the 3rd, come back that
+    // evening, and leave again on the 5th. Keyed on `stayEnd` the officer could
+    // only ever mark the 5th, so the first departure was unrecordable.
+    const sparse = {
+      id: "guest-1",
+      bookingId: "booking-1",
+      firstName: "Two",
+      lastName: "Segments",
+      memberId: null,
+      arrivedAt: null,
+      departedAt: null,
+      stayStart: day("2026-07-02"),
+      stayEnd: day("2026-07-05"),
+      nights: [{ stayDate: day("2026-07-02") }, { stayDate: day("2026-07-04") }],
+      booking: {
+        memberId: "member-1",
+        checkIn: day("2026-07-02"),
+        checkOut: day("2026-07-05"),
+      },
+    };
+    mockPrisma.bookingGuest.findFirst.mockResolvedValue(sparse);
+
+    expect(await findLodgeGuestDepartingOnDate("guest-1", day("2026-07-03"))).not.toBeNull();
+    expect(await findLodgeGuestDepartingOnDate("guest-1", day("2026-07-05"))).not.toBeNull();
+    // …and the gap evening and each arrival night are still refused.
+    expect(await findLodgeGuestDepartingOnDate("guest-1", day("2026-07-02"))).toBeNull();
+    expect(await findLodgeGuestDepartingOnDate("guest-1", day("2026-07-04"))).toBeNull();
+  });
+
+  it("a guest with no night rows still departs on stayEnd and nowhere else", async () => {
+    // Pre-#713 rows carry only the envelope. The helper falls back to it, so
+    // the legacy case is byte-for-byte what it was before #2628.
+    const legacy = {
+      id: "guest-1",
+      bookingId: "booking-1",
+      firstName: "Leg",
+      lastName: "Acy",
+      memberId: null,
+      arrivedAt: null,
+      departedAt: null,
+      stayStart: day("2026-07-02"),
+      stayEnd: DEPARTURE_MORNING,
+      nights: [],
+      booking: {
+        memberId: "member-1",
+        checkIn: day("2026-07-02"),
+        checkOut: DEPARTURE_MORNING,
+      },
+    };
+    mockPrisma.bookingGuest.findFirst.mockResolvedValue(legacy);
+
+    expect(await findLodgeGuestDepartingOnDate("guest-1", DEPARTURE_MORNING)).not.toBeNull();
+    expect(await findLodgeGuestDepartingOnDate("guest-1", day("2026-07-03"))).toBeNull();
   });
 
   it("SOURCE CONTRACT: neither lookup is rewritten in terms of the presence helper", async () => {
@@ -98,9 +347,15 @@ describe("the arrive/depart asymmetry survives the operational-day unification",
       expect(body, name).not.toContain("getOperationallyPresentGuestsForDay");
     }
 
+    // …and each carries its own in-code night decision, not just a SQL filter.
+    // MUTATION PROBE (#2737): delete either guard and this fails by name.
+    expect(arrive, "arrive").toContain("isGuestActiveOnNight(");
+    expect(depart, "depart").toContain("isGuestDepartureMorning(");
+
     // The comment explaining WHY has to stay with them: the next reader
     // tidying up "the last two night-model callers" needs to find it.
     expect(source).toContain("THE ARRIVE/DEPART ASYMMETRY IS DELIBERATE");
+    expect(source).toContain("BOTH LOOKUPS NOW LOAD COARSE AND DECIDE IN CODE");
 
     // …and the contrast: roster validation IS on the shared rule.
     const validate = source.slice(

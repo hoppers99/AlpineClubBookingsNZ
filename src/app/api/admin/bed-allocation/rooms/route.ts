@@ -83,7 +83,7 @@ export async function POST(request: Request) {
       memberId: guard.session.user.id,
       entityType: "LodgeRoom",
       entityId: room.id,
-      category: "admin",
+      category: "lodge",
       outcome: "success",
       summary: "Bed allocation room created",
       metadata: { roomId: room.id, name: room.name },

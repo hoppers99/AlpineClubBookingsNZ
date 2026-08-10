@@ -55,16 +55,38 @@ week strip shows a guest count and offers a roster, because the beds still need
 stripping. And a stay with a gap in it — someone booked in for Friday and then
 again for Monday — shows nobody on the days in between, because they went home.
 
+That last one is enforced by the server, not only hidden on the screen: a
+check-in for a night the guest is not booked for is refused even if the request
+reaches the server anyway, which is what a kiosk page left open since an earlier
+night would send. When that happens the screen says the guest is not booked in
+for that night and asks you to reload the day, rather than reporting a failure —
+nothing is wrong with the kiosk, the page is just out of date.
+
 The week strip and the day list count slightly different populations, on
 purpose. The strip counts who can be **rostered**, so a booking still held by
 an admin review is not in its numbers. The day list counts who is **in the
 building**, so it does show that booking, marked "Blocked from Check-In". A
 day can therefore read as empty on the strip and open onto a flagged party.
 
-**Mark Departed** appears only on a guest's *final* departure — the morning
-after their last booked night. On a stay with a gap in it, the earlier
-departure morning shows the **Departing** badge without the button, because
-check-out can only be recorded once, at the end of the booking.
+**Mark Departed** appears on every morning a guest actually leaves. On a stay
+with a gap in it, that is more than once: someone booked in for Friday and again
+for Monday leaves on Saturday morning and again on Tuesday morning, and each
+check-out can be recorded on the day it happens. Until #2628 only the last one
+could be — the earlier morning showed the **Departing** badge with no button —
+so a guest who left and came back was recorded as leaving once, at the end.
+
+**Mark Arrived** appears again when they come back. The kiosk holds one arrival
+and one departure per guest — where they are *now*, not a diary of every trip —
+so tapping **Mark Arrived** on the night they return records the new arrival and
+clears the earlier check-out at the same time. Their name stops being greyed out
+and the next **Mark Departed** records their next check-out. If the return
+arrival is never recorded, the card still reads **Departed** on the following
+departure morning: tap it once to clear that, and again to record the departure.
+
+Checking someone out clears the **suggested** chores they can no longer do —
+only up to the next night they are booked in for. Chores rostered for a later
+part of the same stay are left alone, and any chore already **confirmed** is
+never touched.
 
 The **Who's at the lodge** panel that sits under an admin calendar counts
 guest-**nights** rather than lodge days. On the chore roster calendar, whose
@@ -100,6 +122,7 @@ difference to explain there and it says nothing.
 | "Lodge account not found. Run the database seed to create it." | The kiosk account row is missing | Seed the database, or create the account (multi-lodge) |
 | A kiosk account is flagged **Ambiguous** | It has staff access at more than one lodge | Set **Operates lodge** to a single lodge and save |
 | A kiosk falls back to the wrong lodge | The account is not bound to a lodge | Bind it to its lodge under **Operates lodge** (multi-lodge) |
+| **Mark Arrived** answers "this guest is not booked in for this night" | The page has been open since an earlier night, so its buttons are stale | Reload the day. The guest's booking has a gap over the night on screen — they went home — and the refreshed list shows who is actually staying |
 | The kiosk tablet's clock or time zone is set wrong | The device clock is separate from the club's calendar | Nothing to change for the kiosk: it takes "today" from the club's New Zealand day, so the week strip, the **Today** button and the night it opens on stay correct — and a kiosk left sitting on the week strip rolls onto the new day at the club's midnight without a reload (an open day list stays put; press **Today**). Fix the device clock only if people read the time off the tablet itself |
 
 ## Related links

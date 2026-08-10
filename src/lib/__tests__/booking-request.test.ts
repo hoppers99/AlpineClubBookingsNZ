@@ -58,7 +58,14 @@ vi.mock("@/lib/prisma", () => ({
       findMany: vi.fn(),
       deleteMany: vi.fn(),
       createMany: vi.fn(),
+      create: vi.fn(),
       update: vi.fn(),
+    },
+    // #2739: the held-booking reassign writes the party's night rows in one
+    // batched delete + createMany after the guest rows exist.
+    bookingGuestNight: {
+      deleteMany: vi.fn(),
+      createMany: vi.fn(),
     },
     payment: {
       create: vi.fn(),
@@ -1601,6 +1608,46 @@ describe("approveBookingRequest", () => {
     expect(mockedLogAudit).toHaveBeenCalledWith(
       expect.objectContaining({ action: "booking_request.approved" })
     );
+  });
+
+  it("gives every converted guest their canonical night set (#2739)", async () => {
+    // Before this, an approved request produced guests with NO BookingGuestNight
+    // rows, so the bed board did not list them, the planner did not place them
+    // and nothing counted them as awaiting a bed — real people on a confirmed
+    // booking (INV-CAP-032).
+    mockedFindUnique.mockResolvedValue(
+      baseRequest({ status: BookingRequestStatus.PRICED, priceCents: 12000 }) as never
+    );
+    mockedUpdateMany.mockResolvedValue({ count: 1 } as never);
+    mockedCheckCapacity.mockResolvedValue({
+      available: true,
+      minAvailable: 5,
+      nightDetails: [],
+    } as never);
+    vi.mocked(prisma.member.create).mockResolvedValue({ id: "member-1" } as never);
+    vi.mocked(prisma.booking.create).mockResolvedValue({ id: "booking-1" } as never);
+    vi.mocked(prisma.payment.create).mockResolvedValue({} as never);
+    vi.mocked(prisma.paymentLink.create).mockResolvedValue({} as never);
+    vi.mocked(prisma.bookingRequest.update).mockResolvedValue({} as never);
+
+    await approveBookingRequest({ requestId: "req-1", adminMemberId: "admin-1" });
+
+    const bookingArgs = vi.mocked(prisma.booking.create).mock.calls[0][0]
+      .data as Record<string, unknown>;
+    const guestCreates = (bookingArgs.guests as { create: Record<string, unknown>[] })
+      .create;
+    expect(guestCreates).toHaveLength(1);
+    // Two nights for a 1 Aug → 3 Aug stay. NOT three: the check-out morning is a
+    // departure, not a night anybody holds a bed for (INV-DATE-003), and a
+    // phantom night there is a double booking.
+    expect(guestCreates[0].nights).toEqual({
+      create: [
+        { stayDate: new Date("2026-08-01T00:00:00.000Z"), priceCents: 6000 },
+        { stayDate: new Date("2026-08-02T00:00:00.000Z"), priceCents: 6000 },
+      ],
+    });
+    // Money does not move: the nights sum to the guest's stored price.
+    expect(guestCreates[0].priceCents).toBe(12000);
   });
 
   it("records the adult-member hosting review on the approved booking, in the approving transaction (#2364)", async () => {

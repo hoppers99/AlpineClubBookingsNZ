@@ -53,7 +53,7 @@ export async function PATCH(
       memberId: guard.session.user.id,
       entityType: "LodgeBed",
       entityId: bed.id,
-      category: "admin",
+      category: "lodge",
       outcome: "success",
       summary: "Bed allocation bed updated",
       metadata: { bedId: bed.id, changes: body.data },
@@ -81,7 +81,7 @@ export async function DELETE(
       memberId: guard.session.user.id,
       entityType: "LodgeBed",
       entityId: bed.id,
-      category: "admin",
+      category: "lodge",
       outcome: "success",
       summary: "Bed allocation bed deleted",
       metadata: {
