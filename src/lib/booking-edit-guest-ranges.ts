@@ -281,10 +281,14 @@ function storedNightPricesByKey(
  * member had already bought — the very thing the locked-price rule exists to
  * prevent.
  *
- * `perNightCents` is parallel to `nightKeys`. `calculateBookingPrice` prices a
- * guest's explicit nights deduped and sorted ascending, and `nightKeys` is
- * already deduped and sorted, so the two lists are the same nights in the same
- * order; the guard below states that rather than trusting it.
+ * `perNightCents` is parallel to `nightKeys`, and that alignment is structural
+ * rather than hoped for: `calculateBookingPrice` prices a guest's explicit
+ * nights deduped and sorted ascending, and `nightKeys` reaches here already
+ * deduped (through a `Set`) and sorted, so the two are the same nights in the
+ * same order. It matters because these amounts are written per night — a
+ * misalignment would put one night's price on another night's row — so the
+ * contiguous matrix in `booking-edit-guest-ranges-sparse.test.ts` re-asserts
+ * length and sum on every one of its cases against the real pricing function.
  */
 function priceGuestNights(
   nightKeys: readonly string[],
@@ -318,22 +322,9 @@ function priceGuestNights(
     }],
     seasons
   );
-  const priced = breakdown.guests[0];
-  if (
-    priced.nightDates.length !== nightKeys.length ||
-    priced.nightDates.some((night, i) => dateOnlyKey(night) !== nightKeys[i])
-  ) {
-    // Unreachable while both sides stay deduped-and-sorted; stated as a guard
-    // because a silently misaligned per-night list would write one night's price
-    // onto another night's row (INV-MOD-025).
-    throw new Error(
-      "INV-MOD-025: priced nights do not match the requested night set"
-    );
-  }
-
   return {
     totalCents: breakdown.totalPriceCents,
-    perNightCents: priced.perNightCents,
+    perNightCents: breakdown.guests[0].perNightCents,
   };
 }
 

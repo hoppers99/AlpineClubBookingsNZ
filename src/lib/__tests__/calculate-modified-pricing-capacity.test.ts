@@ -515,6 +515,10 @@ describe("calculateModifiedPricing in-progress per-night breakdown (#2736)", () 
     // An odd total over four nights: the remainder lands on the earliest nights
     // one cent at a time and the parts are integers (INV-MONEY-001,
     // INV-MONEY-003) — no float division, no rounding drift.
+    //
+    // This guest's rows carry no stored price, so #2744's real-rate write-back
+    // has nothing to recover and the even split is still what lands — the
+    // behaviour this fixture pinned before, unchanged.
     h.checkCapacityForGuestRanges.mockResolvedValue(AVAILABLE);
 
     const result = await calculateModifiedPricing({} as never, sparseArgs(1001));
@@ -526,5 +530,148 @@ describe("calculateModifiedPricing in-progress per-night breakdown (#2736)", () 
     }
     expect(guest.perNightCents.reduce((a, b) => a + b, 0)).toBe(guest.priceCents);
     expect(guest.priceCents).toBe(1001 + 2 * RATE);
+  });
+});
+
+describe("calculateModifiedPricing in-progress per-night prices (#2744)", () => {
+  const MEMBER_TYPE = "type-member";
+  const LOW = 5000;
+  const HIGH = 9000;
+  const SEASONS = [
+    {
+      seasonId: "s-low",
+      startDate: D("2026-08-01"),
+      endDate: D("2026-08-22"),
+      rates: [
+        { ageTier: "ADULT", membershipTypeId: MEMBER_TYPE, pricePerNightCents: LOW },
+      ],
+    },
+    {
+      seasonId: "s-high",
+      startDate: D("2026-08-23"),
+      endDate: D("2026-09-30"),
+      rates: [
+        { ageTier: "ADULT", membershipTypeId: MEMBER_TYPE, pricePerNightCents: HIGH },
+      ],
+    },
+  ];
+  const AVAILABLE = { available: true, minAvailable: 5, nightDetails: [] };
+
+  /**
+   * The guest from the issue: nights 08-20 and 08-22, both bought at LOW, with
+   * the rows recording it. The edit extends the check-out to the 25th, so the
+   * 23rd and 24th are bought now at HIGH.
+   */
+  function args({ withCompanion = false }: { withCompanion?: boolean } = {}) {
+    const guest = {
+      id: "g1",
+      ageTier: "ADULT",
+      isMember: true,
+      memberId: "m1",
+      rateMembershipTypeId: MEMBER_TYPE,
+      rateSource: "OWN_TYPE",
+      stayStart: D("2026-08-20"),
+      stayEnd: D("2026-08-23"),
+      nights: [
+        { stayDate: D("2026-08-20"), priceCents: LOW },
+        { stayDate: D("2026-08-22"), priceCents: LOW },
+      ],
+      priceCents: 2 * LOW,
+    };
+    // A second guest on the whole run, so taking g1 off does not leave the
+    // booking with future nights nobody holds (which the plan refuses, #2736).
+    const companion = {
+      ...guest,
+      id: "g2",
+      memberId: "m2",
+      nights: [
+        { stayDate: D("2026-08-20"), priceCents: LOW },
+        { stayDate: D("2026-08-21"), priceCents: LOW },
+        { stayDate: D("2026-08-22"), priceCents: LOW },
+      ],
+      priceCents: 3 * LOW,
+    };
+    const guests = withCompanion ? [guest, companion] : [guest];
+    const totalPriceCents = guests.reduce((sum, g) => sum + g.priceCents, 0);
+    return {
+      booking: {
+        id: "b1",
+        memberId: "m1",
+        lodgeId: "lodge-1",
+        checkIn: D("2026-08-20"),
+        checkOut: D("2026-08-23"),
+        totalPriceCents,
+        discountCents: 0,
+        promoAdjustmentCents: 0,
+        finalPriceCents: totalPriceCents,
+        guests,
+      } as never,
+      bookingId: "b1",
+      isInProgressEdit: true,
+      editableFrom: D("2026-08-21"),
+      newCheckIn: D("2026-08-20"),
+      newCheckOut: D("2026-08-25"),
+      normalizedAddGuests: undefined,
+      removeGuestIds: undefined,
+      guestsForPricing: [
+        {
+          bookingGuestId: "g1",
+          ageTier: "ADULT" as const,
+          isMember: true,
+          memberId: "m1",
+          stayStart: D("2026-08-20"),
+          stayEnd: D("2026-08-25"),
+        },
+      ],
+      skipBookingLifecycleRules: false,
+      seasonRateData: SEASONS as never,
+      partnerSharedGuests: [],
+    };
+  }
+
+  it("persists each night's real rate, not the guest's average", async () => {
+    // `applyGuestChanges`/`syncGuestNights` writes `perNightCents[k]` onto the
+    // `BookingGuestNight` row for `nightDates[k]`, and `lockedNightPricesForGuest`
+    // hands that column to the NEXT edit — so these four numbers are what the
+    // system will later believe the member paid. They used to be four copies of
+    // the average (7000 each); they are the real rates now.
+    h.checkCapacityForGuestRanges.mockResolvedValue(AVAILABLE);
+
+    const result = await calculateModifiedPricing({} as never, args());
+    const guest = result.priceBreakdown.guests[0];
+
+    expect(guest.nightDates).toEqual([
+      D("2026-08-20"),
+      D("2026-08-22"),
+      D("2026-08-23"),
+      D("2026-08-24"),
+    ]);
+    expect(guest.perNightCents).toEqual([LOW, LOW, HIGH, HIGH]);
+    expect(guest.perNightCents.reduce((a, b) => a + b, 0)).toBe(guest.priceCents);
+    expect(result.newTotalPriceCents).toBe(2 * LOW + 2 * HIGH);
+    // Xero rebuilds its lines per contiguous run of equal price, so the runs
+    // have to multiply back out: 2 x LOW and 2 x HIGH, no phantom balance.
+    expect(2 * LOW + 2 * HIGH).toBe(guest.priceCents);
+  });
+
+  it("credits a removal at the stored price, so nobody comes off owing less than nothing", async () => {
+    // Same guest, but the club has raised its rate to HIGH for the nights they
+    // still hold and an officer takes them off from the 21st. The 22nd is given
+    // back at the LOW it was sold for, leaving exactly the 20th they slept.
+    h.checkCapacityForGuestRanges.mockResolvedValue(AVAILABLE);
+
+    const result = await calculateModifiedPricing({} as never, {
+      ...args({ withCompanion: true }),
+      newCheckOut: D("2026-08-23"),
+      removeGuestIds: ["g1"],
+    });
+    const guest = result.priceBreakdown.guests[0];
+    const plan = result.inProgressPlan?.proposedExistingGuests[0];
+
+    expect(plan?.oldFuturePriceCents).toBe(LOW);
+    expect(guest.priceCents).toBe(LOW);
+    expect(guest.priceCents).toBeGreaterThanOrEqual(0);
+    expect(guest.nightDates).toEqual([D("2026-08-20")]);
+    expect(guest.perNightCents).toEqual([LOW]);
   });
 });
