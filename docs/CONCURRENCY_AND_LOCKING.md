@@ -1680,18 +1680,36 @@ Filtering on the guest ROW instead of the guest's DATES removes the class: no
 date write can make a guest row stop being a guest row at that lodge.
 
 **What it costs, at the size it actually is.** A member who has ever held a
-guest row at every lodge makes merge take **every** lodge's capacity key. It is
-true that this is bounded by the club's lodge count rather than by the member's
-booking history — and on its own that sentence is misleading, so it is not left
-standing alone: `docs/multi-lodge/README.md` records that the club operates
-**two** lodges with a plausible future third, so for any long-standing member
-that bound **is the whole club**. Stated plainly, and this is the fact the #2672
-owner decision turns on: for the merge's whole 120s budget, every booking
-create, confirm, payment capture, cancel-with-reconcile, board place/move/remove
-and admin date shift at either lodge queues on a key merge holds, on its own
-5-second Prisma budget, and is **rejected with `P2028` having written nothing** —
-not merely delayed. That is the capacity half of the very outcome the "why merge
-takes no global cohort key" paragraph above rejects `lock(1)` for.
+guest row at every lodge makes merge take **every** lodge's capacity key,
+bounded by the club's lodge count rather than by the member's booking history.
+For the merge's whole 120s budget, every booking create, confirm, payment
+capture, cancel-with-reconcile, board place/move/remove and admin date shift at
+a held lodge queues on a key merge holds, on its own 5-second Prisma budget, and
+is **rejected with `P2028` having written nothing** — not merely delayed.
+
+How much that costs depends entirely on the deployment's lodge count, and
+**this is a per-deployment fact, not a property of the software** — this
+repository is a template each club deploys. An earlier revision of this
+paragraph reasoned from `docs/multi-lodge/README.md`'s claim that the club ran
+**two** lodges and concluded the bound "is the whole club". That claim was
+stale. Measured against the live Tokoroa database on 10 Aug 2026 (#2731,
+read-only aggregate counts):
+
+| Measure | Value |
+|---|---|
+| Lodges (total / active) | 1 / 1 |
+| Members holding a guest row | 91 of 431 |
+| Members holding guest rows at more than one lodge | **0** |
+| Member merges ever run | **0** |
+
+On a single-lodge deployment any lodge-scoped lock is club-wide by definition,
+so the distinction this section reasons about does not exist there — and the
+window has never opened, because no merge has ever run. #2731 records that as an
+accepted, quantified risk rather than a defect. **On a genuinely multi-lodge
+deployment the worst case above is the right reading**, and that is when the
+cheapest mitigation — classifying `P2028` as contention and telling the operator
+to retry, as `waitlist-return-contract.ts` and `deletion-request-decision.ts`
+already do — earns its keep.
 
 What dropping `lock(1)` still buys is real but **narrower than it sounds**: the
 writers it protects are the ones that take the global key and **no** lodge key —
@@ -1701,11 +1719,11 @@ global → lodge (see the header of `adult-member-hosting-coverage-lock.ts`), so
 most capacity writers take a lodge key and stall either way. The resulting shape
 is the convoy described at the foot of this section, **measured** at ~114s waits.
 
-The distribution that would size this precisely — how many members actually hold
-guest rows at more than one lodge — has **not** been measured; exploratory work
-takes no production database. On a two-lodge club the safe reading is the worst
-case above. The queries to run against a representative database, if the owner
-wants the real number before ticking #2672, are:
+The distribution above was measured on 10 Aug 2026 and is recorded on #2731.
+Re-run these queries against a representative database when a deployment adds a
+second lodge, or when merges stop being a rare deliberate action — those are the
+two conditions that reopen the question. Run them read-only; aggregate counts
+are all that is needed, and no row data or database copy is required:
 
 ```sql
 SELECT count(*) FROM "Lodge";

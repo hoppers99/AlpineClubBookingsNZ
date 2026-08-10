@@ -128,6 +128,7 @@ number and prefix, and it is listed at the end of the table below.
 | `INV-DATE-005` | Two helper families — night model for resources, operational-day for people |
 | `INV-DATE-020` | One expander turns a stay into nights; its envelope branch stays half-open |
 | `INV-DATE-021` | Kiosk attendance is one current state per stay, re-read per segment |
+| `INV-DATE-022` | A SQL stay filter is coarse; kiosk write lookups decide over the night rows |
 | `INV-DATE-006` | The lobby wall is deliberately mixed and stays on its own fenced path |
 | `INV-DATE-007` | Departing lodge A and arriving at lodge B on one date is legal |
 | `INV-DATE-008` | Zero-night bookings expand to no nights and every route refuses them |
@@ -678,7 +679,7 @@ File: [`invariants/integrations.md`](invariants/integrations.md). Prefix
 | `INV-INT-013` | Mode or rule changes never auto-resync the population; members re-group on their next trigger |
 | `INV-INT-014` | The per-member sync keeps Xero calls outside transactions, ledgers each op, and adds before removing |
 | `INV-INT-015` | The bulk re-sync is admin-triggered, dry-run-first, chunked, resumable, and never moves the watermark |
-| `INV-INT-016` | `GET /api/bookings/rooms` keeps its no-`lodgeId` mode for FORKED/EXTERNAL consumers; no `src/` client may use it |
+| `INV-INT-016` | `GET /api/bookings/rooms` keeps its no-`lodgeId` mode for FORKED/EXTERNAL consumers, excluding archived lodges; no `src/` client may use it |
 
 ## Operations
 
