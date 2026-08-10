@@ -1,6 +1,7 @@
 import type { AgeTier } from "@prisma/client";
 import {
   calculateBookingPrice,
+  type GroupDiscountConfig,
   type RateSource,
   type SeasonRateData,
 } from "@/lib/pricing";
@@ -25,8 +26,10 @@ interface ExistingBookingEditGuest {
   isMember: boolean;
   memberId?: string | null;
   // Resolved rate membership type (#1930, E4); replaces the old
-  // forceNonMemberRate boolean. Range pricing here never applies a group
-  // discount, so rateSource is carried only for shape parity.
+  // forceNonMemberRate boolean. `rateSource` decides whether a qualifying group
+  // discount may substitute a rate for this guest — only a NON_MEMBER_DEFAULT
+  // guest's is substituted (INV-MOD-007) — so since #2756 it is load-bearing
+  // here rather than carried for shape parity.
   rateMembershipTypeId: string;
   rateSource?: RateSource;
   stayStart?: Date | null;
@@ -204,6 +207,14 @@ export interface BuildInProgressGuestRangePlanInput {
   addGuests?: AddedBookingEditGuest[];
   removeGuestIds?: string[];
   seasons: SeasonRateData[];
+  // #2756: the club's default group-discount config, or absent when the club has
+  // not switched one on — in which case every number this plan produces is what
+  // it produced before, because `isGroupDiscountApplicable` returns false with no
+  // config and no rate can be substituted. Every other edit path already passes
+  // it (INV-MOD-006); this plan was the sole exception, so nights an in-progress
+  // edit newly bought were charged undiscounted while the same nights bought a
+  // day earlier were not. Callers pass `toGroupDiscountConfig(setting)`.
+  groupDiscount?: GroupDiscountConfig;
 }
 
 function maxDate(a: Date, b: Date): Date {
@@ -275,10 +286,37 @@ function storedNightPricesByKey(
   return byKey;
 }
 
+/** One guest, the nights to price for them, and what they already paid. */
+interface PartyPricingParticipant {
+  guest: Pick<
+    ExistingBookingEditGuest,
+    "ageTier" | "isMember" | "rateMembershipTypeId" | "rateSource"
+  >;
+  nightKeys: readonly string[];
+  // Absent for an ADDED guest, who has bought nothing yet and whose every night
+  // is therefore a fresh season lookup.
+  lockedNightPricesByKey?: ReadonlyMap<string, number>;
+}
+
 /**
- * Price EXACTLY these nights, in integer cents, and say what each one costs.
+ * Price EXACTLY these nights, for EVERY guest in the party, in ONE pass — and
+ * say what each night costs each of them, by night key.
  *
- * #2736 replaced the old `priceGuestRangeCents(start, end, …)`, which handed
+ * **One pass, because the group discount is a property of the party and not of a
+ * guest (#2756).** This used to be one `calculateBookingPrice` call per guest,
+ * with no group-discount config, so `countActiveGuestsForNight` was always
+ * looking at a one-element list and the party size the discount rule saw was
+ * always 1. Two things followed and the second was the defect: no config was
+ * passed at all, so `isGroupDiscountApplicable` refused immediately, and even
+ * with one it could never have qualified. Nights an in-progress edit newly BOUGHT
+ * were therefore charged undiscounted while the same nights bought before the
+ * stay began were not — a member adding a sixth person to a party of eight paid
+ * one price if the stay started tomorrow and another if it started yesterday
+ * (INV-MOD-006). Handing the whole party to one call is what the guest-add route
+ * already does for the same reason, and the per-guest slices of the combined
+ * breakdown are read straight back out of it here.
+ *
+ * #2736 replaced the older `priceGuestRangeCents(start, end, …)`, which handed
  * `calculateBookingPrice` a bare `[start, end)` envelope and let it expand the
  * range itself. Passing the night list instead takes the *same* per-night code
  * path — `calculateBookingPrice` prefers a guest's explicit `nights` over the
@@ -292,66 +330,117 @@ function storedNightPricesByKey(
  * `pricePerNightCents` integer, summed by `calculateBookingPrice`
  * (INV-MONEY-001, INV-MONEY-003). No float, no parse, no rounding.
  *
- * #2744: `lockedNightPrices` is now passed, which is what brings this plan into
+ * #2744: `lockedNightPrices` is passed, which is what brings this plan into
  * line with INV-MOD-005 — "a night a guest already bought keeps the price stored
  * on its `BookingGuestNight` row … removing one returns exactly theirs". Every
  * other edit path already did this; the in-progress plan was the sole exception,
  * so a night given back after a rate rise was credited at TODAY's rate and the
- * club refunded more than it had ever charged. The locks are passed to BOTH
- * legs, deliberately: a night the guest keeps then carries the same price in the
- * old window and the new one and cancels exactly, so an extension is untouched
- * and no held night is ever re-rated (INV-MOD-005, INV-MOD-006). Passing them to
- * the old leg alone would have made every extension reprice the nights the
- * member had already bought — the very thing the locked-price rule exists to
- * prevent.
+ * club refunded more than it had ever charged. A locked night short-circuits the
+ * season lookup, so it also short-circuits the group discount: a night the guest
+ * already bought keeps its booked, discount-inclusive price and is never
+ * re-rated because the party grew or shrank (INV-MOD-005, INV-MOD-006).
  *
- * `perNightCents` is parallel to `nightKeys`, and that alignment is structural
- * rather than hoped for: `calculateBookingPrice` prices a guest's explicit
- * nights deduped and sorted ascending, and `nightKeys` reaches here already
- * deduped (through a `Set`) and sorted, so the two are the same nights in the
- * same order. It matters because these amounts are written per night — a
- * misalignment would put one night's price on another night's row — so the
- * contiguous matrix in `booking-edit-guest-ranges-sparse.test.ts` re-asserts
- * length and sum on every one of its cases against the real pricing function.
+ * The `[checkIn, checkOut)` range is the envelope of every night handed in, and
+ * it is inert: every participant carries an explicit night list, so it is never
+ * expanded into anybody's nights and `isGuestActiveOnNight` ignores it for a
+ * guest with a night set (INV-DATE-005). A participant with NO nights is left
+ * out of the call entirely and gets an empty map — passing an empty `nights`
+ * array would make `calculateBookingPrice` fall back to that envelope and price
+ * them for the whole range, and it would add them to the party count on every
+ * night of it.
+ *
+ * The returned map is keyed by night rather than positional, because the callers
+ * sum different subsets of it (a guest's old window, their future window) and a
+ * positional slice would have to be re-derived for each. Alignment inside the
+ * pass is still structural: `calculateBookingPrice` returns `nightDates`
+ * alongside `perNightCents`, so each amount is attached to the night the engine
+ * actually priced rather than to the night this function hoped it priced. It
+ * matters because these amounts are written per night — a misalignment would put
+ * one night's price on another night's row — so the contiguous matrix in
+ * `booking-edit-guest-ranges-sparse.test.ts` re-asserts length and sum on every
+ * one of its cases against the real pricing function.
  */
-function priceGuestNights(
-  nightKeys: readonly string[],
-  guest: Pick<
-    ExistingBookingEditGuest,
-    "ageTier" | "isMember" | "rateMembershipTypeId" | "rateSource"
-  >,
+function pricePartyNights(
+  participants: readonly PartyPricingParticipant[],
   seasons: SeasonRateData[],
-  // Empty for an ADDED guest, who has bought nothing yet and whose every night
-  // is therefore a fresh season lookup.
-  lockedNightPricesByKey: ReadonlyMap<string, number> = new Map()
-): { totalCents: number; perNightCents: number[] } {
-  if (nightKeys.length === 0) {
-    return { totalCents: 0, perNightCents: [] };
+  groupDiscount?: GroupDiscountConfig
+): Array<Map<string, number>> {
+  const pricedByParticipant = participants.map(() => new Map<string, number>());
+  const occupied = participants
+    .map((participant, index) => ({ participant, index }))
+    .filter(({ participant }) => participant.nightKeys.length > 0);
+  if (occupied.length === 0) {
+    return pricedByParticipant;
   }
-  const nights = nightKeys.map((key) => parseDateOnly(key));
-  // Keyed by night, so an entry for a night outside this leg simply never
-  // matches; `calculateBookingPrice` looks a lock up per priced night.
-  const lockedNightPrices = [...lockedNightPricesByKey].map(
-    ([stayDate, priceCents]) => ({ stayDate, priceCents })
-  );
+
+  const allNightKeys = occupied
+    .flatMap(({ participant }) => [...participant.nightKeys])
+    .sort();
+  const firstNight = parseDateOnly(allNightKeys[0]);
+  const lastNight = parseDateOnly(allNightKeys[allNightKeys.length - 1]);
 
   const breakdown = calculateBookingPrice(
-    nights[0],
-    addDaysDateOnly(nights[nights.length - 1], 1),
-    [{
-      ageTier: guest.ageTier,
-      isMember: guest.isMember,
-      rateMembershipTypeId: guest.rateMembershipTypeId,
-      rateSource: guest.rateSource,
-      nights,
-      lockedNightPrices,
-    }],
-    seasons
+    firstNight,
+    addDaysDateOnly(lastNight, 1),
+    occupied.map(({ participant }) => ({
+      ageTier: participant.guest.ageTier,
+      isMember: participant.guest.isMember,
+      rateMembershipTypeId: participant.guest.rateMembershipTypeId,
+      rateSource: participant.guest.rateSource,
+      nights: participant.nightKeys.map((key) => parseDateOnly(key)),
+      // Keyed by night, so an entry for a night outside this pass simply never
+      // matches; `calculateBookingPrice` looks a lock up per priced night.
+      lockedNightPrices: [...(participant.lockedNightPricesByKey ?? [])].map(
+        ([stayDate, priceCents]) => ({ stayDate, priceCents })
+      ),
+    })),
+    seasons,
+    groupDiscount
   );
-  return {
-    totalCents: breakdown.totalPriceCents,
-    perNightCents: breakdown.guests[0].perNightCents,
-  };
+
+  occupied.forEach(({ index }, position) => {
+    const guestBreakdown = breakdown.guests[position];
+    const priced = pricedByParticipant[index];
+    guestBreakdown.nightDates.forEach((night, nightIndex) => {
+      priced.set(dateOnlyKey(night), guestBreakdown.perNightCents[nightIndex]);
+    });
+  });
+  return pricedByParticipant;
+}
+
+/**
+ * What this pass charged one guest for one night.
+ *
+ * A night the pass did not price is a wiring defect, not a free night, so it
+ * throws rather than defaulting to zero: every caller below asks only for nights
+ * it put into the pass, and a silent zero would hand a night out for nothing —
+ * or, on the old-price window, credit one back at nothing. The message is a log
+ * line; both routes replace it before an operator sees it (#1888).
+ */
+function nightPriceFrom(
+  priced: ReadonlyMap<string, number>,
+  nightKey: string
+): number {
+  const cents = priced.get(nightKey);
+  if (cents === undefined) {
+    throw new Error(
+      `Priced night ${nightKey} missing from the party pricing pass (INV-MOD-025)`
+    );
+  }
+  return cents;
+}
+
+/** The same, for each of `nightKeys`, in that order. */
+function nightPricesFrom(
+  priced: ReadonlyMap<string, number>,
+  nightKeys: readonly string[]
+): number[] {
+  return nightKeys.map((key) => nightPriceFrom(priced, key));
+}
+
+/** Sum integer cents. No float, no rounding (INV-MONEY-001). */
+function sumCents(values: readonly number[]): number {
+  return values.reduce((sum, cents) => sum + cents, 0);
 }
 
 /**
@@ -540,7 +629,25 @@ export function buildInProgressGuestRangePlan(
 
   const remainingGuests = input.booking.guests.filter((g) => !removeSet.has(g.id));
   const removedGuests = input.booking.guests.filter((g) => removeSet.has(g.id));
-  const proposedExistingGuests = input.booking.guests.map((guest) => {
+
+  // A guest ADDED to a stay already under way is admitted for the booking's
+  // remaining future nights and nothing else: this plan deliberately overrides
+  // whatever per-guest range or night set the request carried, exactly as it
+  // did before #2736. So this window is contiguous by construction and there is
+  // no sparse input to preserve — but it is still materialised as a night list,
+  // so the write path, the capacity check and the per-night quote read one shape
+  // for both kinds of guest.
+  const addedGuestNightKeys = expandStayEnvelopeToNightKeys(
+    editableFrom,
+    newCheckOut
+  );
+
+  // #2756: WHICH NIGHTS each guest ends up holding is decided for the whole
+  // party first, because WHAT THEY COST cannot be decided one guest at a time
+  // any more. The group discount is a property of the party on a night, so the
+  // two pricing passes below are party-wide and this loop must therefore finish
+  // before either of them runs.
+  const existingNightPlans = input.booking.guests.map((guest) => {
     const stayStart = normalizeDateOnlyForTimeZone(guest.stayStart ?? bookingCheckIn);
     const stayEnd = normalizeDateOnlyForTimeZone(guest.stayEnd ?? bookingCheckOut);
     // #2736: the nights this guest actually holds today. The explicit
@@ -567,23 +674,9 @@ export function buildInProgressGuestRangePlan(
     // range was, so a contiguous guest is unchanged; for a sparse one the gap
     // nights drop out, which is what stops a mid-stay removal or a shortened
     // check-out from refunding nights the guest never bought.
-    //
-    // And what they are worth: each at the price it was SOLD for (#2744), via
-    // the locked prices below, falling back to the current season rate only for
-    // a night that has no stored price to recover. This is the leg a removal or
-    // a shortened check-out credits back, so it is the one that decides whether
-    // the club hands back what it took. "Raw" because a night with no
-    // recoverable price is valued here at TODAY's rate, which after a rate rise
-    // can exceed what the member was ever charged; `refundCeilingCents` below
-    // is what stops that leaving the wire.
-    const rawOldFuturePriceCents = priceGuestNights(
-      heldNightKeys.filter(
-        (key) => key >= oldFutureStartKey && key < stayEndKey
-      ),
-      guest,
-      input.seasons,
-      storedNightPriceByKey
-    ).totalCents;
+    const oldWindowNightKeys = heldNightKeys.filter(
+      (key) => key >= oldFutureStartKey && key < stayEndKey
+    );
     const removedFromFuture = removeSet.has(guest.id);
     const proposedStayEnd = removedFromFuture
       ? minDate(stayEnd, editableFrom)
@@ -719,24 +812,157 @@ export function buildInProgressGuestRangePlan(
     const futureNightKeys = proposedNightKeys.filter(
       (key) => key >= newFutureStartKey
     );
+
+    return {
+      guest,
+      stayStart,
+      proposedStayEnd,
+      storedNightPriceByKey,
+      oldWindowNightKeys,
+      proposedNightKeys,
+      // The same nights as a set, so the old-price window can ask "does this
+      // guest KEEP this night?" per night without re-scanning the list.
+      proposedNightKeySet: new Set(proposedNightKeys),
+      futureNightKeys,
+      newFutureStart,
+      newFutureStartKey,
+      removedFromFuture,
+    };
+  });
+
+  // #2756: the earliest night either pass below has to look a rate up for.
+  //
+  // Seeded at `editableFrom` — no old-price window can start before it
+  // (`oldFutureStart` is `maxDate(stayStart, editableFrom)`) and no added guest
+  // is admitted before it — and pulled back to the earliest `newFutureStart`,
+  // which drops behind the edit window only for #2029's check-out-day extension,
+  // where a guest whose stay ended today buys tonight.
+  //
+  // It exists to bound what the proposed pass PRICES, and the bound is
+  // load-bearing in two directions. Too high and the party count on that
+  // check-out-day night would see only the guests extending onto it, not the ones
+  // already holding it, so the one night this plan can newly buy inside the locked
+  // window would miss a discount the party had earned. Too low — passing each
+  // guest their whole proposed night list, back to their check-in — and this plan
+  // would start demanding a season rate for nights nobody is repricing, so an
+  // edit to a stay whose past nights sit outside any active season, or whose
+  // age-tier rate row has since been removed, would fail where it used to
+  // succeed. Every night either leg actually sums is at or after this floor.
+  const pricingFloorKey = existingNightPlans.reduce(
+    (earliest, entry) =>
+      entry.newFutureStartKey < earliest ? entry.newFutureStartKey : earliest,
+    dateOnlyKey(editableFrom)
+  );
+
+  // #2756: THE PRE-EDIT PARTY, over the nights each guest currently holds inside
+  // the edit window. This is the leg a removal or a shortened check-out credits
+  // back, so it is the one that decides whether the club hands back what it took
+  // — and the party that has to be counted for it is the party that actually held
+  // those nights, which is why added guests are absent from this pass and a
+  // removed guest is present in it. Each night is valued at the price it was SOLD
+  // for (#2744) through the locked prices, falling back to the current season
+  // rate — now under the real party size rather than a party of one — only for a
+  // night with no stored price to recover.
+  //
+  // Ordered first so that a booking with no rate for one of its nights throws
+  // naming the same night it named before, rather than one from the other pass.
+  const heldWindowPrices = pricePartyNights(
+    existingNightPlans.map((entry) => ({
+      guest: entry.guest,
+      nightKeys: entry.oldWindowNightKeys,
+      lockedNightPricesByKey: entry.storedNightPriceByKey,
+    })),
+    input.seasons,
+    input.groupDiscount
+  );
+
+  // #2756: THE POST-EDIT PARTY, over the nights each guest ends up holding — the
+  // pass the whole change is for. Every guest who survives the edit is in it with
+  // the nights they will hold, and every added guest is in it with theirs, so on
+  // a night this edit newly buys `countActiveGuestsForNight` sees the party that
+  // will really be in the lodge and the group discount applies to it exactly as it
+  // does on creation, a waitlist reprice, an ordinary date change or an ordinary
+  // guest add (INV-MOD-006). The count is right in both directions without any
+  // special-casing: a removed guest's proposed nights stop at the edit window, so
+  // they are not counted on a future night; a shortened check-out drops its own
+  // tail; and a guest whose stay ends early is counted on the nights they hold and
+  // no others.
+  const proposedPartyPrices = pricePartyNights(
+    [
+      ...existingNightPlans.map((entry) => ({
+        guest: entry.guest,
+        nightKeys: entry.proposedNightKeys.filter(
+          (key) => key >= pricingFloorKey
+        ),
+        lockedNightPricesByKey: entry.storedNightPriceByKey,
+      })),
+      // No stored night prices to honour: every night is being bought now, so
+      // each one is its own current season rate (#2744) — under the post-edit
+      // party, which is the defect #2756 fixes.
+      ...addGuests.map((guest) => ({ guest, nightKeys: addedGuestNightKeys })),
+    ],
+    input.seasons,
+    input.groupDiscount
+  );
+
+  const proposedExistingGuests = existingNightPlans.map((entry, index) => {
+    const {
+      guest,
+      storedNightPriceByKey,
+      oldWindowNightKeys,
+      proposedNightKeys,
+      proposedNightKeySet,
+      futureNightKeys,
+      newFutureStartKey,
+      removedFromFuture,
+    } = entry;
+    const proposedPriced = proposedPartyPrices[index];
+    const heldPriced = heldWindowPrices[index];
+
+    // What the guest's current nights inside the edit window are worth. "Raw"
+    // because a night with no recoverable price is valued at TODAY's rate, which
+    // after a rate rise can exceed what the member was ever charged;
+    // `refundCeilingCents` below is what stops that leaving the wire.
+    //
+    // #2756 splits it by whether the guest KEEPS the night, and that split is the
+    // property that makes a party-aware discount safe on live bookings:
+    //
+    //  - A night they KEEP is taken from the POST-EDIT pass, the same number the
+    //    new-price window below will use for it, so it cancels to nothing across
+    //    the difference exactly as #2744's locked prices made it cancel. Nothing
+    //    already bought moves — not for a guest whose rows record what they paid
+    //    (whose price is locked anyway), and not for a legacy guest with no
+    //    recoverable price either, who would otherwise have been re-rated in one
+    //    window and not the other every time an edit pushed the party across the
+    //    minimum group size. Adding a guest would then have CREDITED the rest of
+    //    the party for nights they already held, and removing one would have
+    //    CHARGED them more for the same nights (INV-MOD-005, INV-MOD-006).
+    //  - A night they GIVE BACK appears in this window only, so there is nothing
+    //    to cancel against and it is valued in the world it belonged to: the
+    //    pre-edit pass, under the party that held it. A party dropping below the
+    //    minimum on removal therefore never strips a discount it had earned from
+    //    the credit for the nights it is handing back (INV-MOD-006).
+    const rawOldFuturePriceCents = sumCents(
+      oldWindowNightKeys.map((key) =>
+        proposedNightKeySet.has(key)
+          ? nightPriceFrom(proposedPriced, key)
+          : nightPriceFrom(heldPriced, key)
+      )
+    );
+
     // #2744: the same locked prices go into the NEW window too. A night the
     // guest keeps therefore carries one price on both sides of the difference
     // and cancels to nothing, which is why an extension's delta is still exactly
     // the nights it adds and no night anybody already bought is ever re-rated
     // (INV-MOD-005). Only genuinely-new nights reach a season lookup.
-    const newFuture = removedFromFuture
+    const futurePerNightCents = removedFromFuture
       ? // A removed guest holds no future night — `proposedStayEnd` collapses to
         // the edit window, so `futureNightKeys` is empty and this maps to `[]`.
         // Written as a zero per night rather than a bare `[]` so the per-night
         // list stays the same length as the night list by construction.
-        { totalCents: 0, perNightCents: futureNightKeys.map(() => 0) }
-      : priceGuestNights(
-          futureNightKeys,
-          guest,
-          input.seasons,
-          storedNightPriceByKey
-        );
-    const newFuturePriceCents = newFuture.totalCents;
+        futureNightKeys.map(() => 0)
+      : nightPricesFrom(proposedPriced, futureNightKeys);
+    const newFuturePriceCents = sumCents(futurePerNightCents);
     // #2744, acceptance criterion 1: an edit can never leave a guest owing less
     // than nothing. The locked prices above cure the CAUSE for every guest whose
     // rows record what they paid, but they cannot help a guest with no
@@ -777,15 +1003,15 @@ export function buildInProgressGuestRangePlan(
 
     return {
       guest,
-      stayStart,
-      stayEnd: proposedStayEnd,
+      stayStart: entry.stayStart,
+      stayEnd: entry.proposedStayEnd,
       nights: proposedNightKeys.map((key) => parseDateOnly(key)),
       perNightCents: composeProposedNightPrices({
         pastNightKeys: proposedNightKeys.filter(
           (key) => key < newFutureStartKey
         ),
         futureNightKeys,
-        futurePerNightCents: newFuture.perNightCents,
+        futurePerNightCents,
         storedNightPriceByKey,
         totalCents: priceCents,
       }),
@@ -795,34 +1021,29 @@ export function buildInProgressGuestRangePlan(
       newFuturePriceCents,
       futureDeltaCents,
       removedFromFuture,
-      futureStart: newFutureStart,
+      futureStart: entry.newFutureStart,
     };
   });
 
-  // A guest ADDED to a stay already under way is admitted for the booking's
-  // remaining future nights and nothing else: this plan deliberately overrides
-  // whatever per-guest range or night set the request carried, exactly as it
-  // did before #2736. So this window is contiguous by construction and there is
-  // no sparse input to preserve — but it is still materialised as a night list,
-  // so the write path, the capacity check and the per-night quote read one shape
-  // for both kinds of guest.
-  const addedGuestNightKeys = expandStayEnvelopeToNightKeys(
-    editableFrom,
-    newCheckOut
-  );
-  const proposedAddedGuests = addGuests.map((guest) => {
-    // No stored night prices to honour: every night is being bought now, so each
-    // one is its own current season rate and the per-night amounts are simply
-    // what pricing returned — no average, and the sum is the total by
-    // construction (#2744).
-    const priced = priceGuestNights(addedGuestNightKeys, guest, input.seasons);
+  const proposedAddedGuests = addGuests.map((guest, addedIndex) => {
+    // Their slice of the post-edit party pass (#2756), read out by index the way
+    // the guest-add route reads the added guest's slice of its own combined
+    // breakdown: every existing guest comes first, in booking order, then every
+    // added guest in request order. The per-night amounts are what pricing
+    // returned night by night — no average, and the sum is the total by
+    // construction (#2744) — and each one now carries the group discount the
+    // whole party qualifies for on that night.
+    const perNightCents = nightPricesFrom(
+      proposedPartyPrices[existingNightPlans.length + addedIndex],
+      addedGuestNightKeys
+    );
     return {
       guest,
       stayStart: editableFrom,
       stayEnd: newCheckOut,
       nights: addedGuestNightKeys.map((key) => parseDateOnly(key)),
-      perNightCents: priced.perNightCents,
-      priceCents: priced.totalCents,
+      perNightCents,
+      priceCents: sumCents(perNightCents),
     };
   });
 
