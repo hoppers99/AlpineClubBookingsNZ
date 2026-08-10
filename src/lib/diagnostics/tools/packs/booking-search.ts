@@ -62,9 +62,17 @@
  * code. A three-character surname prefix capped at ten rows is walkable in
  * principle. What bounds it is not the cap: it is the substrate's per-session
  * ceiling of sixteen tool calls (so one session sees at most 160 search rows however
- * it spends them), one approved-metadata audit row per invocation with the argument
- * HASH recorded, and the per-question budget reservation. There is no listing tool,
- * no wildcard, no COUNT, and no way to page: the cap is not an offset.
+ * it spends them), one approved-metadata audit row per invocation, and the
+ * per-question budget reservation. There is no listing tool, no wildcard, no COUNT,
+ * and no way to page: the cap is not an offset.
+ *
+ * THAT AUDIT ROW RECORDS NO DIGEST OF A LOW-ENTROPY TERM, and the earlier version of
+ * this paragraph leaned on one that should never have existed: `member_search`'s
+ * name-prefix, mobile and email arms are all recoverable from an unkeyed SHA-256 by
+ * offline enumeration, so `lowEntropyArgKeys` below redacts the hash for them
+ * (ADR-004 §4). What makes a walk visible is the RUN of invocations against one
+ * admin, which the rows still show in full; the term in each one was never what made
+ * it detectable.
  *
  * THE PLAN, AND WHY IT IS ACCEPTABLE. `Member."email"` is indexed;
  * `firstName`/`lastName` and the phone columns are not, so a name or mobile search
@@ -635,6 +643,45 @@ const memberSearch = defineDiagnosticsTool<MemberSearchArgs>({
   rowLimit: AID6B_SEARCH_ROW_LIMIT,
   byteLimit: AID6B_BYTE_LIMIT,
   surfacesPersonalData: true,
+  /**
+   * THREE OF THE FOUR SEARCH TERMS MUST NEVER REACH A DURABLE DIGEST, and this is
+   * the only entry in either pack that needs the declaration.
+   *
+   * ADR-004 §4 lets an audit row carry "a stable, NON-REVERSIBLE hash of a query
+   * key" and forbids it carrying "unrestricted personal identifiers (a member's
+   * name, email …)". The substrate's digest is an unkeyed SHA-256 of the canonical
+   * accepted arguments — non-reversible only where the input has entropy, and these
+   * three have almost none:
+   *
+   *  - `namePrefix` is three to sixty letters, and the searches that happen are
+   *    three or four characters of a surname. A reader of the audit metadata knows
+   *    the tool id, so they know the canonical shape; 26³ candidates is a fraction
+   *    of a second of hashing, and the club's own surname list is shorter still.
+   *  - `mobile` is normalised to six-to-fifteen DIGITS before it is hashed. A New
+   *    Zealand mobile is ten of them with a fixed prefix — under ten million
+   *    candidates, which is seconds.
+   *  - `email` is guessable rather than enumerable, and that is worse: a reader
+   *    testing `firstname.lastname@` against a handful of local domains recovers a
+   *    specific member's address from the digest for a handful of hashes.
+   *
+   * `recordId` is a cuid and stays hashed, which is where the correlation value
+   * actually is: "this admin looked the same member up in three sessions" is a real
+   * audit question, and the id arm is the one the model uses after a search anyway.
+   *
+   * WHAT IS LOST, stated plainly: for a name, mobile or email search the durable row
+   * records the tool, the acting admin, the outcome, the row count, the byte count,
+   * the duration and the instant — everything except a value standing in for the
+   * term. Correlating two name searches by term is not possible, and that is the
+   * intended trade: the audit trail exists to show WHO read WHAT KIND of evidence
+   * WHEN, not to preserve a recoverable copy of a member's phone number.
+   *
+   * `booking_search` needs no declaration. Its terms are cuids (`recordId`,
+   * `lodgeId`), a lodge night with a three-value window — both server-side facts an
+   * audit reader already sees on the row they are auditing — and the eight-character
+   * booking REFERENCE, which is derived from a cuid rather than typed by a member
+   * and identifies a booking rather than a person.
+   */
+  lowEntropyArgKeys: ["email", "namePrefix", "mobile"],
 });
 
 /** The AID-6B search half, in presentation order. */

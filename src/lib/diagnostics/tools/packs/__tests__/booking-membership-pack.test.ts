@@ -87,13 +87,18 @@ import {
   auditCategoryReaderAreas,
 } from "@/lib/audit-categories";
 
+import { canonicalStringify, sha256Hex } from "../../../knowledge/hash";
 import {
   FORBIDDEN_TOOL_SQL_PATTERNS,
+  diagnosticsAuditArgsHash,
   type DiagnosticsToolEntry,
 } from "../../define";
 import { renderToolResultEvidenceBlock } from "../../render";
 import { DIAGNOSTICS_TOOLS } from "../../registry";
-import { DIAGNOSTICS_TOOL_BOUNDS } from "../../types";
+import {
+  DIAGNOSTICS_ARGS_HASH_REDACTED,
+  DIAGNOSTICS_TOOL_BOUNDS,
+} from "../../types";
 import {
   BOOKING_BLOCKER_CODES,
   MEMBER_ELIGIBILITY_CODES,
@@ -915,6 +920,163 @@ describe("AID-6B booking/membership pack: the search argument schemas (#2376)", 
     );
     expect(sql.match(/pg_catalog\.translate\(/g)).toHaveLength(4);
     expect(sql).not.toMatch(/LIKE|ILIKE|SIMILAR TO/);
+  });
+
+  /**
+   * THE LOW-ENTROPY ARGUMENT HASH, PROVED BY ACTUALLY RECOVERING ONE.
+   *
+   * ADR-004 §4 permits a durable "stable, NON-REVERSIBLE hash of a query key". The
+   * substrate's digest is an unkeyed SHA-256 of the canonical accepted arguments,
+   * which is non-reversible only where the input has entropy — and a three-letter
+   * surname prefix, a ten-digit mobile and a guessable email have none. This test
+   * does the attack rather than describing it: it enumerates the candidate space
+   * the way a reader of the audit metadata could, confirms the enumeration DOES
+   * reproduce the digest of the real term, and then asserts that the value the
+   * audit row would actually carry is not in that set.
+   *
+   * The middle assertion is what makes this a mutation-proof rather than a
+   * tautology: drop `lowEntropyArgKeys` from the entry and the recorded value
+   * becomes exactly the digest the enumeration just found.
+   */
+  it("never records a recoverable digest of a low-entropy member search term", () => {
+    const digest = (args: unknown) => sha256Hex(canonicalStringify(args));
+
+    const attacks = [
+      {
+        kind: "name_prefix" as const,
+        key: "namePrefix",
+        real: "smi",
+        // The candidate space an offline reader walks. Three letters is 17,576
+        // strings; a dozen stands in for the walk and includes the real one.
+        candidates: ["smi", "sma", "smy", "bro", "wil", "tay", "cla", "har"],
+      },
+      {
+        kind: "mobile" as const,
+        key: "mobile",
+        real: "0274224115",
+        candidates: [
+          "0274224115",
+          "0274224116",
+          "0212345678",
+          "0211234567",
+          "0279999999",
+        ],
+      },
+      {
+        kind: "email_exact" as const,
+        key: "email",
+        real: "jane.smith@example.co",
+        candidates: [
+          "jane.smith@example.co",
+          "j.smith@example.co",
+          "jsmith@example.co",
+          "jane@example.co",
+        ],
+      },
+    ];
+
+    for (const attack of attacks) {
+      const accepted = acceptedArgs(DIAGNOSTICS_MEMBER_SEARCH_TOOL_ID, {
+        kind: attack.kind,
+        [attack.key]: attack.real,
+      });
+      const recovered = new Set(
+        attack.candidates.map((candidate) =>
+          digest(
+            acceptedArgs(DIAGNOSTICS_MEMBER_SEARCH_TOOL_ID, {
+              kind: attack.kind,
+              [attack.key]: candidate,
+            }),
+          ),
+        ),
+      );
+
+      // The enumeration works: the real term's digest IS in the recovered set, so
+      // publishing it would name the member the operator searched for.
+      expect(
+        recovered.has(digest(accepted)),
+        `${attack.kind}: the offline enumeration did not reproduce the real digest`,
+      ).toBe(true);
+
+      const recorded = diagnosticsAuditArgsHash(
+        entry(DIAGNOSTICS_MEMBER_SEARCH_TOOL_ID),
+        accepted,
+        digest,
+      );
+      expect(
+        recorded,
+        `${attack.kind}: the audit row carried a recoverable digest`,
+      ).toBe(DIAGNOSTICS_ARGS_HASH_REDACTED);
+      expect(recovered.has(recorded)).toBe(false);
+      // And it is not the raw term either, under any spelling.
+      expect(recorded).not.toContain(attack.real);
+    }
+  });
+
+  it("still hashes the high-entropy arms, so correlation survives redaction", () => {
+    const digest = (args: unknown) => sha256Hex(canonicalStringify(args));
+    // A cuid has no candidate space worth walking, and "the same admin looked this
+    // same member up twice" is a real audit question — so the id arm keeps its
+    // digest, and two calls that mean the same lookup still hash identically.
+    const first = diagnosticsAuditArgsHash(
+      entry(DIAGNOSTICS_MEMBER_SEARCH_TOOL_ID),
+      acceptedArgs(DIAGNOSTICS_MEMBER_SEARCH_TOOL_ID, {
+        kind: "member_id",
+        recordId: RECORD,
+      }),
+      digest,
+    );
+    expect(first).toMatch(/^[0-9a-f]{64}$/);
+    expect(first).not.toBe(DIAGNOSTICS_ARGS_HASH_REDACTED);
+
+    // Every booking-search arm keeps its digest: cuids, a server-derived reference
+    // and a lodge night with a closed window are not personal terms an operator
+    // typed from memory.
+    for (const raw of [
+      { kind: "booking_id", recordId: RECORD },
+      { kind: "owner_member_id", recordId: RECORD },
+      { kind: "booking_reference", bookingReference: "AB12CD34" },
+      { kind: "lodge_nights", lodgeId: RECORD, nightFrom: "2026-08-14" },
+    ]) {
+      expect(
+        diagnosticsAuditArgsHash(
+          entry(DIAGNOSTICS_BOOKING_SEARCH_TOOL_ID),
+          acceptedArgs(DIAGNOSTICS_BOOKING_SEARCH_TOOL_ID, raw),
+          digest,
+        ),
+        JSON.stringify(raw),
+      ).toMatch(/^[0-9a-f]{64}$/);
+    }
+  });
+
+  it("declares the low-entropy keys the member search actually accepts", () => {
+    // A declaration that names a key the schema does not have redacts nothing. The
+    // three named keys must all be real arms, and the redaction must be decided by
+    // key PRESENCE rather than by the value — an explicitly-supplied term still
+    // narrows the candidate space however short it is.
+    const declared = entry(DIAGNOSTICS_MEMBER_SEARCH_TOOL_ID).lowEntropyArgKeys;
+    expect([...(declared ?? [])].sort()).toEqual([
+      "email",
+      "mobile",
+      "namePrefix",
+    ]);
+    for (const key of declared ?? []) {
+      expect(
+        Object.keys(
+          entry(DIAGNOSTICS_MEMBER_SEARCH_TOOL_ID).inputSchema.properties,
+        ),
+        `${key} is not an argument this entry accepts`,
+      ).toContain(key);
+    }
+    // No other entry in the pack declares one, so the redaction cannot quietly
+    // spread across the pack and hollow out the audit trail.
+    for (const tool of packTools) {
+      if (tool.id === DIAGNOSTICS_MEMBER_SEARCH_TOOL_ID) continue;
+      expect(
+        tool.lowEntropyArgKeys ?? [],
+        `${tool.id} unexpectedly redacts its argument hash`,
+      ).toEqual([]);
+    }
   });
 
   it("keeps the date window a CLOSED enum with a default, not a range", () => {
