@@ -681,12 +681,19 @@ export async function approveSchoolBookingRequest(input: {
 
   let totalPriceCents: number;
   let guestPriceCents: number[];
+  // #2739: set ONLY on the branch where the engine priced each guest, so the
+  // written BookingGuestNight rows carry the rates it really resolved (a season
+  // boundary or a per-night group discount makes those nights genuinely
+  // different prices) instead of a flat re-split of the guest's total. Left
+  // undefined on the officer-total branches, which have no per-night truth.
+  let guestPerNightCents: Array<readonly number[] | undefined> | undefined;
   if (request.priceCents != null) {
     totalPriceCents = request.priceCents;
     guestPriceCents = splitPriceAcrossGuests(totalPriceCents, guests.length);
   } else if (price && price.guests.length === guests.length) {
     totalPriceCents = price.totalPriceCents;
     guestPriceCents = price.guests.map((guest) => guest.priceCents);
+    guestPerNightCents = price.guests.map((guest) => guest.perNightCents);
   } else if (price) {
     totalPriceCents = price.totalPriceCents;
     guestPriceCents = splitPriceAcrossGuests(totalPriceCents, guests.length);
@@ -911,6 +918,7 @@ export async function approveSchoolBookingRequest(input: {
         guests,
         linkedMembers,
         guestPriceCents,
+        guestPerNightCents,
         checkIn: request.checkIn,
         checkOut: request.checkOut,
         adminMemberId: input.adminMemberId,
@@ -1865,6 +1873,10 @@ export async function approveMemberWholeLodgeRequest(input: {
 
   let totalPriceCents: number;
   let guestPriceCents: number[];
+  // #2739: see the school approval — set only where the engine priced each
+  // guest, so the night rows store the engine's own per-night vector rather than
+  // a flat re-split of a total that was itself built out of varying rates.
+  let guestPerNightCents: Array<readonly number[] | undefined> | undefined;
   if (priceOverrideCents != null) {
     // Officer's manual total wins over BOTH flat and per-guest, split in integer
     // cents with the remainder on the first guest (splitPriceAcrossGuests) — no
@@ -1880,6 +1892,7 @@ export async function approveMemberWholeLodgeRequest(input: {
   } else if (price && price.guests.length === guests.length) {
     totalPriceCents = price.totalPriceCents;
     guestPriceCents = price.guests.map((guest) => guest.priceCents);
+    guestPerNightCents = price.guests.map((guest) => guest.perNightCents);
   } else if (price) {
     totalPriceCents = price.totalPriceCents;
     guestPriceCents = splitPriceAcrossGuests(totalPriceCents, guests.length);
@@ -2058,6 +2071,7 @@ export async function approveMemberWholeLodgeRequest(input: {
         // (OD-A).
         linkedMembers: new Map<number, string>(),
         guestPriceCents,
+        guestPerNightCents,
         checkIn: request.checkIn,
         checkOut: request.checkOut,
         adminMemberId: input.adminMemberId,
@@ -2081,7 +2095,11 @@ export async function approveMemberWholeLodgeRequest(input: {
           notes: request.message,
           createdById: input.adminMemberId,
           ...exclusiveHoldData,
-          guests: { create: guestCreates },
+          // #2739: routed through the same shaper as the other pipeline write
+          // points. It is what nests each guest's canonical night set, and this
+          // create used to hand `guestCreates` to Prisma raw — the one write
+          // point that would have kept producing night-less guests.
+          guests: { create: guestCreates.map(toPipelineGuestCreateData) },
         },
         select: { id: true },
       });

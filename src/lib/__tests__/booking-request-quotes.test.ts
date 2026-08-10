@@ -1755,6 +1755,41 @@ describe("holdBookingRequestSlots owner role", () => {
     });
   });
 
+  it("gives every held guest their canonical night set (#2739)", async () => {
+    // A hold is a capacity-holding booking an officer can already place beds on,
+    // so a hold whose guests carry no BookingGuestNight rows shows on the board
+    // as a booking with nobody on it (INV-CAP-032).
+    vi.mocked(prisma.bookingRequest.findUnique).mockResolvedValue(
+      baseRequest({
+        type: BookingRequestType.GENERAL,
+        priceCents: 12000,
+        quotes: [],
+      }) as never
+    );
+
+    await holdBookingRequestSlots({ requestId: "req-1", adminMemberId: "admin-1" });
+
+    const bookingArgs = vi.mocked(prisma.booking.create).mock.calls[0][0].data as {
+      guests: { create: Array<Record<string, unknown>> };
+    };
+    const guestCreates = bookingArgs.guests.create;
+    expect(guestCreates.length).toBeGreaterThan(0);
+    for (const guest of guestCreates) {
+      const nights = (guest.nights as { create: Array<{ stayDate: Date; priceCents: number }> })
+        .create;
+      // Two nights for 1 Aug → 3 Aug; the check-out morning is not one
+      // (INV-DATE-003).
+      expect(nights.map((night) => night.stayDate)).toEqual([
+        new Date("2026-08-01T00:00:00.000Z"),
+        new Date("2026-08-02T00:00:00.000Z"),
+      ]);
+      // Money does not move: the nights sum to the quoted split exactly.
+      expect(nights.reduce((sum, night) => sum + night.priceCents, 0)).toBe(
+        guest.priceCents,
+      );
+    }
+  });
+
   it("blocks the hold and creates nothing when a linked member double-books (issue #1158)", async () => {
     vi.mocked(prisma.bookingRequest.findUnique).mockResolvedValue(
       baseRequest({

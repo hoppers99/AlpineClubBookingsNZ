@@ -38,6 +38,15 @@ vi.mock("@/lib/prisma", () => ({
       update: vi.fn(),
       deleteMany: vi.fn(),
       createMany: vi.fn(),
+      // #2739: the reassign recreate branch creates one guest at a time, so the
+      // ids its BookingGuestNight rows need come back in hand.
+      create: vi.fn(),
+    },
+    // #2739: both reassign branches write the party's night rows in one batched
+    // delete + createMany, once the guest ids exist.
+    bookingGuestNight: {
+      deleteMany: vi.fn(),
+      createMany: vi.fn(),
     },
     payment: { create: vi.fn() },
     // #2263: stubbed so "no PaymentLink is created" is a REAL assertion. Left
@@ -214,6 +223,11 @@ import {
   createSchoolBookingRequest,
   generateSchoolGuests,
 } from "@/lib/school-booking-request";
+// #2739: the night rows this pipeline writes are the #1036 locked prices the
+// #2337 member link then prices against, so the join is asserted here with the
+// real reader and the real engine rather than described in a comment.
+import { lockedNightPricesForGuest } from "@/lib/booking-modify-plan";
+import { calculateBookingPrice } from "@/lib/policies/pricing";
 
 import { sendMemberGuestAddNotifications } from "@/lib/member-guest-consent-notifications";
 import {
@@ -745,6 +759,152 @@ describe("approveSchoolBookingRequest", () => {
         notification: "ADDED_NOTICE",
       }),
     ]);
+  });
+
+  it("gives every school guest their canonical night set (#2739)", async () => {
+    // A school party is the sharpest form of the defect: thirty children on a
+    // confirmed booking, none of them on the bed-allocation board, discovered
+    // when the bus arrives.
+    mockedFindUnique.mockResolvedValue(schoolRequest() as never);
+
+    await approveSchoolBookingRequest({
+      requestId: "req-school",
+      adminMemberId: "admin-1",
+    });
+
+    const bookingArgs = vi.mocked(prisma.booking.create).mock.calls[0][0].data as {
+      guests: { create: Array<Record<string, unknown>> };
+    };
+    const guestCreates = bookingArgs.guests.create;
+    expect(guestCreates).toHaveLength(3);
+    for (const guest of guestCreates) {
+      const nights = (guest.nights as { create: Array<{ stayDate: Date; priceCents: number }> })
+        .create;
+      // Two nights for 1 Aug → 3 Aug. Not three — the check-out morning is a
+      // departure, not a night (INV-DATE-003).
+      expect(nights.map((night) => night.stayDate)).toEqual([CHECK_IN, new Date("2026-08-02T00:00:00.000Z")]);
+      // Money does not move: the split is exact against the guest's own share of
+      // the officer's total.
+      expect(nights.reduce((sum, night) => sum + night.priceCents, 0)).toBe(
+        guest.priceCents,
+      );
+    }
+  });
+
+  it("stores the engine's REAL per-night rates across a season boundary, not a flat re-split (#2739)", async () => {
+    /*
+      The night rows are what the finance revenue reconciliation sums inside a
+      DATE WINDOW, and what a later edit re-uses as #1036 locked prices. So when
+      the engine priced this guest — which is every school approval an officer
+      did not hand a flat total — the rows must carry the rates it really
+      resolved, exactly as the canonical direct-create writer stores
+      `priced.perNightCents[k]`.
+
+      Two seasons, one boundary inside a two-night stay: 1 Aug at $50, 2 Aug at
+      $80. An even split of the guest's $130 would write 6500/6500 — the right
+      TOTAL against the wrong nights, which misattributes revenue between the
+      two periods by $15 a guest and would lock a later edit to prices nobody
+      ever charged.
+    */
+    mockedFindUnique.mockResolvedValue(schoolRequest() as never);
+    mockedSeasonFindMany.mockResolvedValue([
+      {
+        id: "season-early",
+        startDate: new Date("2026-07-01T00:00:00.000Z"),
+        endDate: new Date("2026-08-01T00:00:00.000Z"),
+        type: "WINTER",
+        membershipTypeRates: [
+          { membershipTypeId: "type-nonmember", ageTier: "ADULT", pricePerNightCents: 5000 },
+          { membershipTypeId: "type-nonmember", ageTier: "CHILD", pricePerNightCents: 2500 },
+        ],
+      },
+      {
+        id: "season-late",
+        startDate: new Date("2026-08-02T00:00:00.000Z"),
+        endDate: new Date("2026-09-01T00:00:00.000Z"),
+        type: "WINTER",
+        membershipTypeRates: [
+          { membershipTypeId: "type-nonmember", ageTier: "ADULT", pricePerNightCents: 8000 },
+          { membershipTypeId: "type-nonmember", ageTier: "CHILD", pricePerNightCents: 4000 },
+        ],
+      },
+    ] as never);
+
+    await approveSchoolBookingRequest({
+      requestId: "req-school",
+      adminMemberId: "admin-1",
+    });
+
+    const bookingArgs = vi.mocked(prisma.booking.create).mock.calls[0][0].data as {
+      guests: { create: Array<Record<string, unknown>> };
+    };
+    const nightsFor = (index: number) =>
+      (
+        bookingArgs.guests.create[index].nights as {
+          create: Array<{ stayDate: Date; priceCents: number }>;
+        }
+      ).create.map((night) => night.priceCents);
+
+    // The ADULT teacher, then the two CHILD students — each at their own tier's
+    // rate for each night's own season.
+    expect(nightsFor(0)).toEqual([5000, 8000]);
+    expect(nightsFor(1)).toEqual([2500, 4000]);
+    expect(nightsFor(2)).toEqual([2500, 4000]);
+    // And each guest's rows still reconcile to their stored price exactly.
+    for (let index = 0; index < 3; index += 1) {
+      expect(nightsFor(index).reduce((sum, cents) => sum + cents, 0)).toBe(
+        bookingArgs.guests.create[index].priceCents,
+      );
+    }
+  });
+
+  it("falls back to the even split when the officer set the total, which has no per-night truth (#2739)", async () => {
+    // An officer's negotiated figure is a total, not a rate — #1098's own reason
+    // for skipping these bookings. There is nothing per-night to store, so the
+    // share is divided evenly, which is deliberately the vector
+    // `evenlySplitCents` already synthesises for a night-less guest in Xero line
+    // building. Season rates vary underneath and are deliberately ignored.
+    mockedFindUnique.mockResolvedValue(
+      schoolRequest({ priceCents: 30003 }) as never,
+    );
+    mockedSeasonFindMany.mockResolvedValue([
+      {
+        id: "season-early",
+        startDate: new Date("2026-07-01T00:00:00.000Z"),
+        endDate: new Date("2026-08-01T00:00:00.000Z"),
+        type: "WINTER",
+        membershipTypeRates: [
+          { membershipTypeId: "type-nonmember", ageTier: "ADULT", pricePerNightCents: 5000 },
+          { membershipTypeId: "type-nonmember", ageTier: "CHILD", pricePerNightCents: 2500 },
+        ],
+      },
+      {
+        id: "season-late",
+        startDate: new Date("2026-08-02T00:00:00.000Z"),
+        endDate: new Date("2026-09-01T00:00:00.000Z"),
+        type: "WINTER",
+        membershipTypeRates: [
+          { membershipTypeId: "type-nonmember", ageTier: "ADULT", pricePerNightCents: 8000 },
+          { membershipTypeId: "type-nonmember", ageTier: "CHILD", pricePerNightCents: 4000 },
+        ],
+      },
+    ] as never);
+
+    await approveSchoolBookingRequest({
+      requestId: "req-school",
+      adminMemberId: "admin-1",
+    });
+
+    const bookingArgs = vi.mocked(prisma.booking.create).mock.calls[0][0].data as {
+      guests: { create: Array<Record<string, unknown>> };
+    };
+    // 30003c over three guests is 10001/10001/10001; each guest's 10001 over two
+    // nights is 5001/5000 — the extra cent on the EARLIEST night.
+    for (const guest of bookingArgs.guests.create) {
+      const nights = (guest.nights as { create: Array<{ priceCents: number }> }).create;
+      expect(nights.map((night) => night.priceCents)).toEqual([5001, 5000]);
+      expect(guest.priceCents).toBe(10001);
+    }
   });
 
   it("tells nobody on an ordinary school request with no linked members", async () => {
@@ -1527,7 +1687,10 @@ describe("approveSchoolBookingRequest", () => {
     // Guest counts differ → reassign uses delete+recreate (both mocked).
     vi.mocked(prisma.bookingGuest.findMany).mockResolvedValue([] as never);
     vi.mocked(prisma.bookingGuest.deleteMany).mockResolvedValue({ count: 0 } as never);
-    vi.mocked(prisma.bookingGuest.createMany).mockResolvedValue({ count: 3 } as never);
+    vi.mocked(prisma.bookingGuest.create).mockResolvedValue({
+      id: "recreated-guest",
+      memberId: null,
+    } as never);
     vi.mocked(prisma.booking.update).mockResolvedValue({ id: "held-1" } as never);
 
     const result = await approveSchoolBookingRequest({
@@ -1670,7 +1833,10 @@ describe("approveSchoolBookingRequest", () => {
     } as never);
     vi.mocked(prisma.bookingGuest.findMany).mockResolvedValue([] as never);
     vi.mocked(prisma.bookingGuest.deleteMany).mockResolvedValue({ count: 0 } as never);
-    vi.mocked(prisma.bookingGuest.createMany).mockResolvedValue({ count: 5 } as never);
+    vi.mocked(prisma.bookingGuest.create).mockResolvedValue({
+      id: "recreated-guest",
+      memberId: null,
+    } as never);
     vi.mocked(prisma.booking.update).mockResolvedValue({ id: "held-1" } as never);
 
     const result = await approveSchoolBookingRequest({
@@ -1715,7 +1881,10 @@ describe("approveSchoolBookingRequest", () => {
     } as never);
     vi.mocked(prisma.bookingGuest.findMany).mockResolvedValue([] as never);
     vi.mocked(prisma.bookingGuest.deleteMany).mockResolvedValue({ count: 0 } as never);
-    vi.mocked(prisma.bookingGuest.createMany).mockResolvedValue({ count: 3 } as never);
+    vi.mocked(prisma.bookingGuest.create).mockResolvedValue({
+      id: "recreated-guest",
+      memberId: null,
+    } as never);
     vi.mocked(prisma.booking.update).mockResolvedValue({ id: "held-1" } as never);
 
     const result = await approveSchoolBookingRequest({
@@ -2004,6 +2173,138 @@ describe("approveMemberWholeLodgeRequest (#2263)", () => {
     expect(data.totalPriceCents).toBe(30000);
     expect(data.finalPriceCents).toBe(30000);
     expect(data.hasNonMembers).toBe(true);
+  });
+
+  it("gives every placeholder their canonical night set, at the engine's own rates (#2739)", async () => {
+    /*
+      The FOURTH write point, and the one the issue did not name. This create
+      handed `guestCreates` to Prisma raw, so a member whole-lodge booking's
+      placeholders were created with no BookingGuestNight rows at all — a
+      CONFIRMED booking holding the entire lodge with nobody on the bed board
+      (INV-CAP-032). Revert the `.map(toPipelineGuestCreateData)` at
+      `school-booking-request.ts` and this test is the one that goes red;
+      everything else in this block passes either way.
+    */
+    await approveMemberWholeLodgeRequest({
+      requestId: "req-member",
+      adminMemberId: "admin-1",
+    });
+
+    const data = vi.mocked(prisma.booking.create).mock.calls[0][0].data as {
+      guests: { create: Array<Record<string, unknown>> };
+    };
+    expect(data.guests.create).toHaveLength(3);
+    for (const guest of data.guests.create) {
+      const nights = (
+        guest.nights as { create: Array<{ stayDate: Date; priceCents: number }> }
+      ).create;
+      // Two nights for 1 Aug → 3 Aug; the check-out morning is a departure, not
+      // a night anybody holds a bed for (INV-DATE-003).
+      expect(nights.map((night) => night.stayDate)).toEqual([
+        CHECK_IN,
+        new Date("2026-08-02T00:00:00.000Z"),
+      ]);
+      // The engine priced these placeholders, so the rows carry its resolved
+      // non-member rate per night — and still reconcile to the stored price.
+      expect(nights.map((night) => night.priceCents)).toEqual([5000, 5000]);
+      expect(nights.reduce((sum, night) => sum + night.priceCents, 0)).toBe(
+        guest.priceCents,
+      );
+    }
+  });
+
+  it("keeps an unlinked placeholder's negotiated price when another is linked to a member (#2739, #2337)", async () => {
+    /*
+      A DECLARED CONSEQUENCE, pinned so it cannot drift back silently.
+
+      The #2337 placeholder→member link is the ONE edit path exempt from the
+      quote-priced block, and it reprices the whole booking. `prepareGuestPlan`
+      passes `link ? [] : lockedNightPricesForGuest(guest)`, so an UNLINKED
+      placeholder is protected only by its stored night rows. While this pipeline
+      wrote none, those rows were empty, every unlinked placeholder repriced at
+      whatever the season rate is on the day of the link, and the negotiated
+      whole-lodge basis the block exists to protect was silently replaced —
+      exactly the #1032 harm, leaking through the exemption.
+
+      Now the approval writes them, so the negotiated price holds.
+
+      BOTH SIDES OF THE CHANGE ARE ASSERTED HERE, not just the new one, because
+      this is a money behaviour change put to the owner and the size and the
+      DIRECTION of it are what they are being asked about. The same unlinked
+      placeholder is priced twice against the same moved season rate: once with
+      the empty lock set the pipeline used to leave behind (the old total), and
+      once with the rows it now writes (the new total). The rate is moved UP in
+      one case and DOWN in the other, because the old behaviour did not always
+      overcharge — when rates had fallen it undercharged, and the change takes
+      that back too.
+    */
+    await approveMemberWholeLodgeRequest({
+      requestId: "req-member",
+      adminMemberId: "admin-1",
+    });
+
+    const data = vi.mocked(prisma.booking.create).mock.calls[0][0].data as {
+      guests: { create: Array<Record<string, unknown>> };
+    };
+    const storedNights = (
+      data.guests.create[0].nights as {
+        create: Array<{ stayDate: Date; priceCents: number }>;
+      }
+    ).create;
+
+    // AFTER: the rows this pipeline now writes, read by the real lock reader.
+    const locks = lockedNightPricesForGuest({ nights: storedNights });
+    expect(locks).toHaveLength(2);
+    // BEFORE: what the same reader returned while the pipeline wrote no rows at
+    // all. Not a stand-in — a night-less guest is exactly what it was handed.
+    const noLocks = lockedNightPricesForGuest({ nights: [] });
+    expect(noLocks).toEqual([]);
+
+    /** What the #2337 link charges this untouched placeholder, at `rateCents`. */
+    const priceUnlinkedPlaceholderAt = (
+      rateCents: number,
+      lockedNightPrices: Array<{ stayDate: Date; priceCents: number }>,
+    ) =>
+      calculateBookingPrice(
+        CHECK_IN,
+        CHECK_OUT,
+        [
+          {
+            ageTier: "ADULT",
+            isMember: false,
+            rateMembershipTypeId: "type-nonmember",
+            rateSource: "NON_MEMBER_DEFAULT" as const,
+            lockedNightPrices,
+          },
+        ],
+        [
+          {
+            seasonId: "season-1",
+            startDate: new Date("2026-07-01T00:00:00.000Z"),
+            endDate: new Date("2026-09-01T00:00:00.000Z"),
+            rates: [
+              {
+                ageTier: "ADULT",
+                membershipTypeId: "type-nonmember",
+                pricePerNightCents: rateCents,
+              },
+            ],
+          },
+        ],
+      ).guests[0].priceCents;
+
+    // The club put its rates UP to $99 a night after the quote was agreed.
+    // Old: the placeholder nobody touched was re-priced to $198. New: the
+    // negotiated $100 stands, so this member is charged $98 LESS than before.
+    expect(priceUnlinkedPlaceholderAt(9900, noLocks)).toBe(19800);
+    expect(priceUnlinkedPlaceholderAt(9900, locks)).toBe(10000);
+
+    // And the other direction, which is the half a reader assumes away: rates
+    // fell to $30. Old: the same untouched placeholder dropped to $60. New: the
+    // negotiated $100 stands, so this member is charged $40 MORE than before.
+    // The change protects the price that was AGREED, not the cheaper one.
+    expect(priceUnlinkedPlaceholderAt(3000, noLocks)).toBe(6000);
+    expect(priceUnlinkedPlaceholderAt(3000, locks)).toBe(10000);
   });
 
   it("stamps NO nonMemberHoldUntil on the confirmed whole-lodge booking", async () => {
