@@ -98,12 +98,15 @@ for an interactive Claude Code session:
   for genuinely frontier-complexity Critical work (deep Xero idempotency,
   immutable-charge backfill, irreversible merge / DMMF reasoning). Scale model
   *and* reasoning effort to the task.
-- **Never route security work to Fable — keep it on Opus at `max` effort.**
+- **Never route security work to Fable — keep it on Opus at `xhigh` effort.**
   Fable's safety classifiers target cyber content, so a security review can come
   back refused as `stop_reason: "refusal"` on an HTTP 200 — it reads like a clean
   pass, not an error — and Fable's bug-finding gains explicitly exclude security
   analysis. Opus refuses far less here, and falls back rather than stopping
   outright.
+- **`xhigh` is the effort ceiling — never `max`, on any lane** (owner directive,
+  10 Aug 2026): `max` overthinks and produces worse outcomes; `xhigh` is
+  sufficient for the hardest security and Critical work.
 - **Split fast local checks from full CI gates.** Locally generate Prisma, lint,
   typecheck, run focused touched/adjacent tests, mutation-test new guards, and
   run docs linkcheck or knip when their surfaces change. Then push the draft PR:

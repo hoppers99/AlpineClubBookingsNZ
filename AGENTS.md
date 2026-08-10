@@ -280,8 +280,10 @@ an orchestrator with subagents, not a single agent doing everything inline:
   task complexity. Work in gated areas (money movement, booking capacity,
   membership/family lifecycle, schema, auth/security, live providers) keeps
   the strongest available model at high reasoning effort, per the rule above —
-  and auth/security work goes to `max`, since an uncertain security blocker
-  escalates in effort, never in model tier (see "Model selection").
+  and auth/security work runs at `xhigh` — the effort ceiling for all work
+  (owner directive, 10 Aug 2026: `max` overthinks and produces worse outcomes) —
+  since an uncertain security blocker escalates in effort toward that ceiling,
+  never in model tier (see "Model selection").
 - **Parallel lanes:** multiple issues may run concurrently, each in its own
   worktree/branch/PR, only when their code surfaces do not clash. Shared
   documentation files (for example `docs/DOMAIN_INVARIANTS.md`) are acceptable
@@ -556,7 +558,7 @@ handed an epic-with-children or asked to run several related issues at once.
   backfill correctness, or irreversible member-merge + DMMF-completeness
   reasoning. Scale model *and* reasoning effort to the task; do not use the top
   tier blanket for everything labelled "Critical".
-- **Never route security work to the top tier — keep it on Opus at `max`
+- **Never route security work to the top tier — keep it on Opus at `xhigh`
   reasoning effort.** Fable's safety classifiers target cyber content, so a
   security review or exploit analysis can come back *refused* rather than
   answered. The refusal arrives as `stop_reason: "refusal"` on an HTTP 200, not
@@ -565,6 +567,11 @@ handed an epic-with-children or asked to run several related issues at once.
   analysis, so the escalation buys nothing here even when it does answer. Opus
   refuses far less on this material and falls back rather than stopping outright,
   which is why an uncertain security blocker escalates in *effort*, not in tier.
+- **`xhigh` is the effort ceiling — never use `max`, on any lane** (owner
+  directive, 10 Aug 2026). At `max` the model overthinks and the outcome gets
+  *worse*, not better; `xhigh` is sufficient for the hardest security and
+  Critical work. Effort escalation for an uncertain blocker therefore tops out
+  at `xhigh`.
 
 ### 5. Per-issue pipeline
 
