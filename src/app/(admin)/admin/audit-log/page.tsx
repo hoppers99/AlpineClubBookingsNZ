@@ -44,6 +44,7 @@ import {
 } from "@/lib/audit-query";
 import { auditCategoryBadgeClass } from "@/lib/audit-category-badges";
 import { buildHrefWithReturnTo } from "@/lib/internal-return-path";
+import { memberName } from "@/lib/member-serialization";
 import { APP_LOCALE, APP_TIME_ZONE } from "@/config/operational";
 
 type AuditFacets = {
@@ -133,16 +134,66 @@ function parsePositivePage(value: string | null) {
   return Number.isInteger(page) && page > 0 ? page : 1;
 }
 
+// Shown while the id has not (yet) been turned into a readable label, and kept
+// as the LAST resort when nothing on this page can name the member — neither the
+// members lookup (which an audit reader without `membership:view` cannot call)
+// nor the audit rows already on screen.
+const UNRESOLVED_MEMBER_LABEL = "Selected member";
+const RESOLVING_MEMBER_LABEL = "Loading member...";
+
+/**
+ * #2733: the member filter is restored from `memberId` ALONE. A member's name or
+ * email address in the query string reaches browser history, every
+ * reverse-proxy/CDN access log, and the `Referer` header of anything this page
+ * links out to — none of which the log/Sentry redactor of `INV-PRIV-011` can
+ * reach, because none of them is ours. The same reasoning already governs the
+ * officer's member picker (`INV-GUEST-016`, `INV-LIFE-068`): carry the
+ * identifier, resolve the person from it.
+ *
+ * The returned member is deliberately unlabelled; the effect in `AuditLogPage`
+ * fills the label in from the id.
+ */
 function initialSelectedMember(searchParams: Pick<URLSearchParams, "get">): PickedMember | null {
   const id = searchParams.get("memberId");
   if (!id) return null;
 
-  return {
-    id,
-    firstName: searchParams.get("memberName") || "Selected member",
-    lastName: "",
-    email: searchParams.get("memberEmail") || "",
-  };
+  return { id, firstName: "", lastName: "", email: "" };
+}
+
+/**
+ * True when a chip carries an id but nothing readable to show for it yet, so the
+ * label still has to be resolved.
+ */
+function needsMemberLabelResolution(member: PickedMember | null) {
+  if (!member) return false;
+  return !memberName(member) && !member.email;
+}
+
+/**
+ * The chip label, in order of authority:
+ *
+ * 1. the member the lookup (or the picker) resolved — the only source that works
+ *    with zero audit rows on screen, so it stays primary;
+ * 2. the name the audit rows on screen already carry for that id. This page's own
+ *    API sends actor/subject `firstName`/`lastName`/`email` to this audience
+ *    (`/api/admin/audit-log`, admin audience), so for a reader who cannot call the
+ *    members search the name is already in front of them, repeated down the
+ *    Actor/Subject columns — a neutral chip beside it protects nothing and only
+ *    makes the filter harder to read (#2733 review finding 2);
+ * 3. `RESOLVING_MEMBER_LABEL` while the lookup is still in flight;
+ * 4. `UNRESOLVED_MEMBER_LABEL`, when nothing available can name them.
+ */
+function memberFilterLabel(params: {
+  member: PickedMember;
+  entriesLabel: string;
+  resolving: boolean;
+}) {
+  return (
+    memberName(params.member) ||
+    params.member.email ||
+    params.entriesLabel ||
+    (params.resolving ? RESOLVING_MEMBER_LABEL : UNRESOLVED_MEMBER_LABEL)
+  );
 }
 
 function PrimaryDrilldowns({
@@ -178,10 +229,13 @@ function PrimaryDrilldowns({
 
 function MemberSearchFilter({
   selected,
+  selectedLabel,
   onSelect,
   onClear,
 }: {
   selected: PickedMember | null;
+  /** Resolved by the page from `selected.id`, never read out of the URL (#2733). */
+  selectedLabel: string;
   onSelect: (member: PickedMember) => void;
   onClear: () => void;
 }) {
@@ -238,9 +292,7 @@ function MemberSearchFilter({
       <div className="min-w-64 space-y-1">
         <Label className="text-xs">Member</Label>
         <div className="flex h-9 items-center gap-2 rounded-md border px-3 text-sm">
-          <span className="min-w-0 flex-1 truncate">
-            {[selected.firstName, selected.lastName].filter(Boolean).join(" ")}
-          </span>
+          <span className="min-w-0 flex-1 truncate">{selectedLabel}</span>
           {selected.role ? (
             <Badge variant="secondary" className="text-[10px]">
               {selected.role}
@@ -330,11 +382,31 @@ export default function AuditLogPage() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [expandedId, setExpandedId] = useState<string | null>(null);
+  // Seeded, not defaulted to false: an id-only URL is resolving from the FIRST
+  // paint, so the chip opens on "Loading member..." instead of flashing the
+  // terminal "Selected member" for one render before the effect below runs
+  // (#2733 review finding 4b).
+  const [resolvingMemberLabel, setResolvingMemberLabel] = useState(() =>
+    needsMemberLabelResolution(initialSelectedMember(searchParams))
+  );
+  const attemptedMemberLabelIdRef = useRef<string | null>(null);
+
+  const selectedMemberId = selectedMember?.id ?? null;
 
   const buildAuditSearchParams = useCallback(() => {
     const params = new URLSearchParams(searchParams.toString());
     for (const key of [
-      "eventType", "category", "memberId", "memberName", "memberEmail",
+      "eventType", "category", "memberId",
+      // #2733: no longer written, still deleted, so a bookmarked or pasted
+      // pre-#2733 URL stops carrying the person fields FORWARD into further
+      // history entries, `Referer` headers and request lines. It is not
+      // retroactive: this runs in the browser after the server has already
+      // served that legacy address, so the proxy access log line and the
+      // browser's own visit record for it still hold the name and email.
+      // `src/proxy.ts` keeps those two keys out of the one server-side copy
+      // that would otherwise persist (the `x-pathname` header, which becomes a
+      // 2FA `callbackUrl` and an `AuthBounceRecord.path`).
+      "memberName", "memberEmail",
       "memberScope", "from", "to", "outcome", "severity", "entityType",
       "q", "page",
     ]) {
@@ -342,12 +414,9 @@ export default function AuditLogPage() {
     }
     if (eventType !== "all") params.set("eventType", eventType);
     if (category !== "all") params.set("category", category);
-    if (selectedMember) {
-      params.set("memberId", selectedMember.id);
-      params.set("memberName", [selectedMember.firstName, selectedMember.lastName].filter(Boolean).join(" "));
-      if (selectedMember.email) params.set("memberEmail", selectedMember.email);
-    }
-    if (selectedMember && memberScope !== "involves") params.set("memberScope", memberScope);
+    // The member filter travels as the id and nothing else (#2733).
+    if (selectedMemberId) params.set("memberId", selectedMemberId);
+    if (selectedMemberId && memberScope !== "involves") params.set("memberScope", memberScope);
     if (from) params.set("from", from);
     if (to) params.set("to", to);
     if (outcome !== "all") params.set("outcome", outcome);
@@ -365,7 +434,7 @@ export default function AuditLogPage() {
     outcome,
     page,
     search,
-    selectedMember,
+    selectedMemberId,
     searchParams,
     severity,
     to,
@@ -377,6 +446,123 @@ export default function AuditLogPage() {
   useEffect(() => {
     router.replace(currentAuditPath, { scroll: false });
   }, [currentAuditPath, router]);
+
+  // #2733: an id-only URL still has to render a readable chip, so the label is
+  // resolved from `memberId` through the same authorized members search the
+  // picker above uses. That route is gated on `membership:view` while this page
+  // is gated on `support:view`, so a reader who may read the audit trail but not
+  // the membership roll cannot call it — resolving the label never widens what
+  // anybody can see, and for that reader the label falls through to the audit
+  // rows instead (see `entriesDerivedMemberLabel`).
+  //
+  // One attempt per id, plus ONE immediate retry for a TRANSIENT failure (a
+  // network error, or a 5xx). A 4xx is permanent — a refusal, or an id with no
+  // member behind it, does not become an answer on a second ask, and retrying it
+  // would hammer a route the reader may not be allowed to call at all.
+  useEffect(() => {
+    const selected = selectedMember;
+    if (!selected) {
+      attemptedMemberLabelIdRef.current = null;
+      setResolvingMemberLabel(false);
+      return;
+    }
+    // Already readable — either resolved below, or picked from the search box,
+    // which never needs a lookup at all.
+    if (!needsMemberLabelResolution(selected)) {
+      setResolvingMemberLabel(false);
+      return;
+    }
+    if (attemptedMemberLabelIdRef.current === selected.id) return;
+    attemptedMemberLabelIdRef.current = selected.id;
+
+    let cancelled = false;
+    let settled = false;
+    setResolvingMemberLabel(true);
+    void (async () => {
+      try {
+        for (let attempt = 0; attempt < 2; attempt += 1) {
+          if (cancelled) return;
+          let transient = false;
+          try {
+            const params = new URLSearchParams({
+              q: selected.id,
+              pageSize: "8",
+              // An archived member is still an actor and a subject in the trail,
+              // and `listAdminMembers` hides archived rows unless asked; without
+              // this their chip could never resolve (#2733 review finding 3). The
+              // route accepts the flag from any `membership:view` holder, so this
+              // widens nothing.
+              includeArchived: "true",
+            });
+            const res = await fetch(`/api/admin/members?${params.toString()}`);
+            if (res.ok) {
+              const data = (await res.json()) as { members?: PickedMember[] };
+              // `q` matches an id by PREFIX as well as matching names and
+              // emails, so take the exact id — never the first row of a fuzzy
+              // match. No matching row is a FINAL answer (a purged or unknown
+              // id), not a transient failure: stop and let the label fall
+              // through.
+              const match = data.members?.find(
+                (member) => member.id === selected.id
+              );
+              if (!match || cancelled) return;
+              setSelectedMember((current) =>
+                current && current.id === match.id ? match : current
+              );
+              return;
+            }
+            // 4xx is the reader's answer and will not change; anything else
+            // (5xx, or an opaque 0) is worth exactly one more ask.
+            transient = res.status < 400 || res.status >= 500;
+          } catch {
+            // Network error, or a body that would not parse.
+            transient = true;
+          }
+          if (!transient) return;
+        }
+      } finally {
+        settled = true;
+        if (!cancelled) setResolvingMemberLabel(false);
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+      // React StrictMode double-invokes mount effects (this repo does not set
+      // `reactStrictMode`, and Next defaults it on in dev). Run 1 is cleaned up
+      // before its fetch resolves and its result is then discarded by
+      // `cancelled`, so clearing the one-attempt marker for an attempt that
+      // never settled is what lets run 2 attempt again — without it run 2
+      // early-returns on the marker and the chip stays on "Loading member..."
+      // for the life of the page (#2733 review finding 1).
+      if (!settled) attemptedMemberLabelIdRef.current = null;
+    };
+  }, [selectedMember]);
+
+  // #2733 review finding 2: the fallback when the members lookup cannot answer.
+  // Exact-id only, and only from a row that actually carries the person (a null
+  // `actor`/`subject` renders as "System"/"Unknown member", which must never
+  // become a chip label).
+  const entriesDerivedMemberLabel = useMemo(() => {
+    if (!selectedMemberId) return "";
+    for (const entry of entries) {
+      if (entry.actor?.id === selectedMemberId && entry.actorDisplayName) {
+        return entry.actorDisplayName;
+      }
+      if (entry.subject?.id === selectedMemberId && entry.subjectDisplayName) {
+        return entry.subjectDisplayName;
+      }
+    }
+    return "";
+  }, [entries, selectedMemberId]);
+
+  const selectedMemberLabel = selectedMember
+    ? memberFilterLabel({
+        member: selectedMember,
+        entriesLabel: entriesDerivedMemberLabel,
+        resolving: resolvingMemberLabel,
+      })
+    : "";
 
   const fetchData = useCallback(async () => {
     setLoading(true);
@@ -519,6 +705,7 @@ export default function AuditLogPage() {
 
         <MemberSearchFilter
           selected={selectedMember}
+          selectedLabel={selectedMemberLabel}
           onSelect={(member) => {
             setSelectedMember(member);
             resetPage();

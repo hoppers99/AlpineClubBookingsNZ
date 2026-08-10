@@ -205,8 +205,17 @@ category is a **permission decision written at the moment of the write**: it
 picks which AI Diagnostics correlation entry can return the row, therefore which
 admin areas an operator must hold, and — separately — whether the subject member
 sees the row on their own activity timeline. It is stored on the row and never
-recomputed at read time, so a classification decision binds the club's history
-from that release onward and is not reversible for rows already written.
+recomputed at read time, so **changing the code changes only the rows written
+afterwards**: the rows already written keep the superseded value, and a
+classification decision therefore binds the club's history from that release
+onward *until a backfill moves them*. **Moving them is not optional to decide in
+silence — `INV-OPS-012` ([`operations.md`](operations.md)) requires the
+reclassifying pull request to ship that backfill or file it as an issue, never
+neither and never as prose.** Its one carve-out is the boundary the second bullet
+below draws: a backfill that would cross the member-visible line in either
+direction is the owner's decision rather than an automatic consequence, which is
+why #2751's bed-allocation rows were rewritten (both categories member-invisible)
+and #2763's bulk member-record rows were not.
 
 - **Category follows the business domain affected. Never the initiator, never the
   route, and never the screen.** This is the owner's binding rule from #2581, and
@@ -267,10 +276,14 @@ from that release onward and is not reversible for rows already written.
   actions classify `critical` under the old and the new value alike. Rows already
   written keep their stored category, so nothing is withdrawn from a member who has
   already seen it, and bulk member-record history is split by date the way
-  bed-allocation history is; the two backfills are separate questions and separate
+  bed-allocation history was; the two backfills are separate questions and separate
   issues, because #2751's bed-allocation rows move between two member-invisible
   categories while these rows are member-visible today, so rewriting them would
-  **withdraw** something a member can see (#2763).
+  **withdraw** something a member can see (#2763). #2751's backfill has since
+  shipped and closed its half of the split; #2763's is still open, and that
+  asymmetry is the reason `INV-OPS-012` — which requires a reclassification to ship
+  its backfill or file one — carves the member-visible boundary out as an owner
+  decision rather than an automatic consequence.
 
   **This rule is scoped to those six actions. It is not "an officer acted, so
   `admin`",** and it must never be read that way, because "who acted" is the

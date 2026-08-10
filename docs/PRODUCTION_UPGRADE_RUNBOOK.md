@@ -808,7 +808,36 @@ capture), after confirming provider/setup readiness for each:
 Saving the module page stamps `updatedByMemberId`, so this reset is a one-time
 event, not a recurring one.
 
-### 3.2 Historical access-role/membership cleanup window
+### 3.2 Re-run the bed-allocation audit category backfill
+
+`20260810020000_backfill_bed_allocation_audit_category` (#2751) moves the stored
+audit `category` from `admin` to `lodge` on the bed-allocation and lodge-display
+activity records written before #2730 changed where new ones are filed, so that
+bed-allocation history reads as one run in the Category filter and in AI
+Diagnostics instead of being split at the upgrade date.
+
+`prisma migrate deploy` runs it **before** cutover, while the old colour is still
+serving and still filing new bed-allocation records the old way. Every allocation
+made in that window is written after the statement has already passed, so it keeps
+`admin` permanently unless the statement runs again.
+
+Run the whole `migration.sql` again, verbatim, against the production database
+once cutover is complete:
+
+```bash
+psql "$DATABASE_URL" \
+  -f prisma/migrations/20260810020000_backfill_bed_allocation_audit_category/migration.sql
+```
+
+It is idempotent, so this changes nothing anywhere it already ran: the `WHERE`
+clause is the state the statement destroys, and its `AUDIT_CATEGORY_BACKFILLED`
+record is written only when rows actually moved. Expect either a second such entry
+in **Admin → Audit Log** naming the handful of window rows it picked up, or no new
+entry at all — both are correct outcomes. Skipping this step is not a failure
+either; it leaves those few records under the Admin filter, where **All** still
+finds them.
+
+### 3.3 Historical access-role/membership cleanup window
 
 The temporary access-role and membership-type cleanup rehearsal applied only to
 forks that deployed an intermediate `main` during the 2026-06-28 .. 2026-06-30
@@ -816,7 +845,7 @@ window. That fork migration window is closed, and the disposable-data rehearsal
 note has been retired from the living documentation set. A fork upgrading from
 a `v0.9.0`-era tag straight to `v0.10.0` does not need this check.
 
-### 3.3 Spot-check money and integrations
+### 3.4 Spot-check money and integrations
 
 - Open the **Xero reconciliation report** and confirm it reconciles; totals must
   match the cent. Money is integer cents — no rounding or rescale is introduced
@@ -825,7 +854,7 @@ a `v0.9.0`-era tag straight to `v0.10.0` does not need this check.
   captured amounts, and refunds/credits should read identically to before the
   upgrade.
 
-### 3.4 Manual E2E-critical journeys
+### 3.5 Manual E2E-critical journeys
 
 Drive each critical journey by hand against the live site
 (`https://your-domain.example`):
@@ -838,7 +867,7 @@ Drive each critical journey by hand against the live site
 
 Any failure here is a signal to consider [§4 rollback](#4-rollback-plan).
 
-### 3.5 Fork automation note: removed `POST /api/bookings/cancel`
+### 3.6 Fork automation note: removed `POST /api/bookings/cancel`
 
 The body-based `POST /api/bookings/cancel` route has been removed. If any fork
 automation, script, or integration still calls that endpoint, it will now 404 —
