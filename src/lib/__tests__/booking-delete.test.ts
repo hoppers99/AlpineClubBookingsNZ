@@ -19,6 +19,17 @@ const mocks = vi.hoisted(() => ({
   xeroSyncOperationCount: vi.fn(),
   prismaTransaction: vi.fn(),
   createAuditLog: vi.fn(),
+  // #2700 — the soft-delete path now asks Stripe to cancel any in-flight
+  // PaymentIntent after the commit. Mocked here for two reasons: without it
+  // these cases reach the real `getStripe()` and fail on a missing credential
+  // (swallowed, so they still passed — but they were exercising nothing), and
+  // the new behaviour deserves assertions rather than an accident.
+  cancelPaymentIntentIfCancellableWithResult: vi.fn(),
+  markPaymentIntentTransactionFailed: vi.fn(),
+  // #2700 — a cancellation that FAILS is audited as well as logged. The
+  // soft-delete's own audit entry is written inside the transaction, before
+  // Stripe is called, so it cannot carry this outcome.
+  logAudit: vi.fn(),
 }));
 
 const mockTx = {
@@ -118,6 +129,17 @@ vi.mock("@/lib/prisma", () => ({
 
 vi.mock("@/lib/audit", () => ({
   createAuditLog: mocks.createAuditLog,
+  logAudit: mocks.logAudit,
+}));
+
+vi.mock("@/lib/stripe", () => ({
+  cancelPaymentIntentIfCancellableWithResult: (...args: unknown[]) =>
+    mocks.cancelPaymentIntentIfCancellableWithResult(...args),
+}));
+
+vi.mock("@/lib/payment-transactions", () => ({
+  markPaymentIntentTransactionFailed: (...args: unknown[]) =>
+    mocks.markPaymentIntentTransactionFailed(...args),
 }));
 
 import { deleteBooking } from "@/lib/booking-delete";
@@ -175,6 +197,11 @@ describe("deleteBooking", () => {
     mocks.paymentRecoveryOperationCount.mockResolvedValue(0);
     mocks.xeroObjectLinkCount.mockResolvedValue(0);
     mocks.xeroSyncOperationCount.mockResolvedValue(0);
+    mocks.cancelPaymentIntentIfCancellableWithResult.mockResolvedValue({
+      paymentIntent: { id: "pi_x", status: "canceled" },
+      canceled: true,
+    });
+    mocks.markPaymentIntentTransactionFailed.mockResolvedValue(null);
   });
 
   it("hard-deletes an owned draft after durable audit and promo cleanup", async () => {
@@ -671,5 +698,305 @@ describe("deleteBooking", () => {
       const blockers = "blockers" in result ? result.blockers ?? [] : [];
       expect(blockers.some((b) => b.code === "member_credit")).toBe(false);
     });
+  });
+});
+
+/**
+ * #2700 part 1 — deleting a booking must also stop money reaching it.
+ *
+ * The owner's 10 Aug 2026 walkthrough rejected both of the issue's original
+ * options for the modification-payment surface and replaced them with two
+ * halves. This is the first half: cancel the in-flight PaymentIntent when the
+ * booking is deleted, so the window in which a member can still pay for a
+ * booking the club has removed mostly closes. The second half —
+ * record-and-raise-a-`ManualRefundTask` when the race still fires — is pinned in
+ * `deleted-booking-modification-payment.test.ts` and the confirm route's own
+ * suite.
+ *
+ * WHY THE RACE IS REACHABLE AT ALL, which is what makes this worth a guard:
+ * `getCancelledBookingDeleteBlockers` refuses a delete over CAPTURED payment
+ * history, so an intent that has not captured YET is precisely the state it
+ * allows through — and precisely the state that can capture a second later.
+ *
+ * MUTATION PROOF. Delete the
+ * `await cancelInFlightPaymentIntentsAfterSoftDelete(...)` call in
+ * `softDeleteCancelledBooking` and the first three cases below fail by name.
+ * Move it inside the transaction and "cancels intents only AFTER the deletion
+ * has committed" fails. Drop the `canceled` check and "leaves the ledger alone
+ * when Stripe reports the intent was not cancellable" fails.
+ */
+describe("deleteBooking — soft-delete cancels in-flight PaymentIntents (#2700)", () => {
+  const paymentWith = (overrides: Record<string, unknown>) => ({
+    id: "payment-1",
+    status: "PENDING",
+    amountCents: 4000,
+    refundedAmountCents: 0,
+    changeFeeCents: 0,
+    additionalAmountCents: 2000,
+    additionalPaymentStatus: "PENDING",
+    creditAppliedCents: 0,
+    stripePaymentIntentId: null,
+    additionalPaymentIntentId: null,
+    xeroInvoiceId: null,
+    xeroInvoiceNumber: null,
+    xeroRefundCreditNoteId: null,
+    ...overrides,
+  });
+
+  function softDelete() {
+    return deleteBooking({
+      bookingId: "booking-1",
+      actor: { memberId: "admin-1", role: "ADMIN", ipAddress: "127.0.0.1" },
+      reason: "Duplicate booking",
+    });
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mocks.prismaTransaction.mockImplementation(
+      async (callback: (tx: typeof mockTx) => unknown | Promise<unknown>) =>
+        callback(mockTx)
+    );
+    mocks.createAuditLog.mockResolvedValue(undefined);
+    mocks.bookingUpdate.mockResolvedValue({});
+    mocks.paymentTransactionCount.mockResolvedValue(0);
+    mocks.paymentRefundCount.mockResolvedValue(0);
+    mocks.refundRequestCount.mockResolvedValue(0);
+    mocks.memberCreditFindMany.mockResolvedValue([]);
+    mocks.paymentRecoveryOperationCount.mockResolvedValue(0);
+    mocks.xeroObjectLinkCount.mockResolvedValue(0);
+    mocks.xeroSyncOperationCount.mockResolvedValue(0);
+    mocks.cancelPaymentIntentIfCancellableWithResult.mockResolvedValue({
+      paymentIntent: { id: "pi_x", status: "canceled" },
+      canceled: true,
+    });
+    mocks.markPaymentIntentTransactionFailed.mockResolvedValue(null);
+  });
+
+  it("cancels the in-flight MODIFICATION intent so nothing further can be captured", async () => {
+    mocks.bookingFindUnique.mockResolvedValue(
+      makeBooking({
+        status: "CANCELLED",
+        draftExpiresAt: null,
+        payment: paymentWith({ additionalPaymentIntentId: "pi_modification" }),
+      })
+    );
+
+    const result = await softDelete();
+
+    expect(result.status).toBe(200);
+    expect(
+      mocks.cancelPaymentIntentIfCancellableWithResult
+    ).toHaveBeenCalledWith("pi_modification");
+    // Stripe confirmed the cancel, so the local ledger is squared with it.
+    expect(mocks.markPaymentIntentTransactionFailed).toHaveBeenCalledWith({
+      paymentIntentId: "pi_modification",
+    });
+  });
+
+  it("cancels the BASE intent too, not only the modification one", async () => {
+    // The decision was written about the modification payment because that is
+    // the surface #2700 found, but a live base intent is the same hazard.
+    mocks.bookingFindUnique.mockResolvedValue(
+      makeBooking({
+        status: "CANCELLED",
+        draftExpiresAt: null,
+        payment: paymentWith({
+          stripePaymentIntentId: "pi_base",
+          additionalPaymentIntentId: "pi_modification",
+        }),
+      })
+    );
+
+    await softDelete();
+
+    expect(
+      mocks.cancelPaymentIntentIfCancellableWithResult
+    ).toHaveBeenCalledTimes(2);
+    expect(
+      mocks.cancelPaymentIntentIfCancellableWithResult
+    ).toHaveBeenCalledWith("pi_base");
+    expect(
+      mocks.cancelPaymentIntentIfCancellableWithResult
+    ).toHaveBeenCalledWith("pi_modification");
+  });
+
+  it("asks Stripe exactly once when both columns hold the same intent id", async () => {
+    mocks.bookingFindUnique.mockResolvedValue(
+      makeBooking({
+        status: "CANCELLED",
+        draftExpiresAt: null,
+        payment: paymentWith({
+          stripePaymentIntentId: "pi_same",
+          additionalPaymentIntentId: "pi_same",
+        }),
+      })
+    );
+
+    await softDelete();
+
+    expect(
+      mocks.cancelPaymentIntentIfCancellableWithResult
+    ).toHaveBeenCalledTimes(1);
+  });
+
+  it("leaves the ledger alone when Stripe reports the intent was not cancellable", async () => {
+    // `canceled: false` means the intent reached a terminal state on its own —
+    // possibly `succeeded`, with the confirm endpoint not yet run. Marking the
+    // local transaction FAILED there would write a lie that the confirm endpoint
+    // would immediately have to overwrite.
+    mocks.cancelPaymentIntentIfCancellableWithResult.mockResolvedValue({
+      paymentIntent: { id: "pi_modification", status: "succeeded" },
+      canceled: false,
+    });
+    mocks.bookingFindUnique.mockResolvedValue(
+      makeBooking({
+        status: "CANCELLED",
+        draftExpiresAt: null,
+        payment: paymentWith({ additionalPaymentIntentId: "pi_modification" }),
+      })
+    );
+
+    const result = await softDelete();
+
+    expect(result.status).toBe(200);
+    expect(mocks.markPaymentIntentTransactionFailed).not.toHaveBeenCalled();
+  });
+
+  it("still reports the deletion as succeeded when Stripe throws", async () => {
+    // The deletion is already durable. Turning it into a 500 would tell the
+    // admin it failed when it did not, and a retry would answer 409.
+    mocks.cancelPaymentIntentIfCancellableWithResult.mockRejectedValue(
+      new Error("Stripe is down")
+    );
+    mocks.bookingFindUnique.mockResolvedValue(
+      makeBooking({
+        status: "CANCELLED",
+        draftExpiresAt: null,
+        payment: paymentWith({ additionalPaymentIntentId: "pi_modification" }),
+      })
+    );
+
+    await expect(softDelete()).resolves.toMatchObject({
+      status: 200,
+      data: { mode: "soft-delete" },
+    });
+  });
+
+  it("audits the failure, so a window that did not close is not a log line only", async () => {
+    // Swallowing the error is right — see above — but swallowing it into the
+    // server's own diary left the one outcome anybody needs to act on visible
+    // to nobody: the admin gets a plain 200 and the changelog tells them the
+    // payment was cancelled. The soft-delete's own audit entry is written
+    // inside the transaction, BEFORE Stripe is called, so it cannot carry this;
+    // a second entry does, and lands on the same /admin/audit-log screen.
+    mocks.cancelPaymentIntentIfCancellableWithResult.mockRejectedValue(
+      new Error("Stripe is down")
+    );
+    mocks.bookingFindUnique.mockResolvedValue(
+      makeBooking({
+        status: "CANCELLED",
+        draftExpiresAt: null,
+        payment: paymentWith({ additionalPaymentIntentId: "pi_modification" }),
+      })
+    );
+
+    await softDelete();
+
+    expect(mocks.logAudit).toHaveBeenCalledTimes(1);
+    expect(mocks.logAudit).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: "booking.delete.payment_intent_cancel.failed",
+        outcome: "failure",
+        severity: "critical",
+        category: "payment",
+        entityType: "Booking",
+        entityId: "booking-1",
+        memberId: "admin-1",
+        metadata: expect.objectContaining({
+          paymentIntentId: "pi_modification",
+          paymentId: "payment-1",
+        }),
+      })
+    );
+  });
+
+  it("audits nothing extra when the cancellation succeeds", async () => {
+    // The complement. An audit row for every deletion would bury the one that
+    // matters.
+    mocks.bookingFindUnique.mockResolvedValue(
+      makeBooking({
+        status: "CANCELLED",
+        draftExpiresAt: null,
+        payment: paymentWith({ additionalPaymentIntentId: "pi_modification" }),
+      })
+    );
+
+    await softDelete();
+
+    expect(mocks.logAudit).not.toHaveBeenCalled();
+  });
+
+  it("cancels intents only AFTER the deletion has committed", async () => {
+    // A Stripe round trip inside the transaction would hold the global
+    // pg_advisory_xact_lock(1) across a call to a live provider, which AGENTS.md
+    // forbids, and a provider timeout would roll back a deletion the admin was
+    // told nothing about.
+    let bookingUpdatedBeforeStripe = false;
+    mocks.cancelPaymentIntentIfCancellableWithResult.mockImplementation(
+      async () => {
+        bookingUpdatedBeforeStripe = mocks.bookingUpdate.mock.calls.length > 0;
+        return {
+          paymentIntent: { id: "pi_x", status: "canceled" },
+          canceled: true,
+        };
+      }
+    );
+    mocks.bookingFindUnique.mockResolvedValue(
+      makeBooking({
+        status: "CANCELLED",
+        draftExpiresAt: null,
+        payment: paymentWith({ additionalPaymentIntentId: "pi_modification" }),
+      })
+    );
+
+    await softDelete();
+
+    expect(bookingUpdatedBeforeStripe).toBe(true);
+  });
+
+  it("does not call Stripe when a REFUSED delete leaves the booking alive", async () => {
+    // The complement. Without it the suite would be satisfied by code that
+    // cancelled a member's live PaymentIntent on every rejected delete attempt —
+    // which would be a money bug introduced by a money fix.
+    mocks.bookingFindUnique.mockResolvedValue(
+      makeBooking({
+        status: "CANCELLED",
+        draftExpiresAt: null,
+        payment: paymentWith({ additionalPaymentIntentId: "pi_modification" }),
+      })
+    );
+    mocks.refundRequestCount.mockResolvedValue(1);
+
+    const result = await softDelete();
+
+    expect(result.status).toBe(409);
+    expect(
+      mocks.cancelPaymentIntentIfCancellableWithResult
+    ).not.toHaveBeenCalled();
+    expect(mocks.markPaymentIntentTransactionFailed).not.toHaveBeenCalled();
+  });
+
+  it("does nothing when the booking carries no payment record at all", async () => {
+    mocks.bookingFindUnique.mockResolvedValue(
+      makeBooking({ status: "CANCELLED", draftExpiresAt: null, payment: null })
+    );
+
+    const result = await softDelete();
+
+    expect(result.status).toBe(200);
+    expect(
+      mocks.cancelPaymentIntentIfCancellableWithResult
+    ).not.toHaveBeenCalled();
   });
 });

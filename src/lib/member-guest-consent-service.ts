@@ -14,6 +14,7 @@ import type { MemberGuestConsentDelegateResolver } from "@/lib/member-guest-dele
 import { getDefaultLodgeId } from "@/lib/lodges";
 import { reconcileBedAllocationsForBooking } from "@/lib/bed-allocation-lifecycle";
 import { ApiError } from "@/lib/api-error";
+import { DELETED_BOOKING_MESSAGE } from "@/lib/deleted-booking-refusal";
 import { MembershipTypeBookingPolicyError } from "@/lib/membership-type-policy";
 import { logAudit } from "@/lib/audit";
 import {
@@ -124,6 +125,30 @@ export class MemberGuestConsentError extends Error {
  */
 function forbidden(): never {
   throw new MemberGuestConsentError("Forbidden", 403);
+}
+
+/**
+ * The refusal a soft-deleted booking gets (#2700).
+ *
+ * NOT the uniform 403 above, and that difference is deliberate. This one is
+ * only ever thrown BELOW the target/delegate check, so the caller has already
+ * proved they are the guest being asked (or an accepted family delegate
+ * answering for them). Telling that person the booking was cancelled or removed
+ * discloses nothing they were not already entitled to know, and it is the
+ * difference between an explanation and a dead end. In practice the person who
+ * sees it answered from a page loaded before the deletion — a fresh click on an
+ * old consent email dead-ends earlier, on the booking page's own `notFound()`
+ * or the delegate page's uniform NOT_FOUND. `deleted-booking-refusal.ts`
+ * carries the full reasoning and the wording every surface shares, and
+ * `INV-ADDPAY-034` records that widening it to the email journey is an owner
+ * decision rather than a tidy-up.
+ *
+ * Anyone who has NOT proved that still hits `forbidden()` first and cannot tell
+ * a deleted booking from a live one, which is the property that makes the
+ * disclosure safe.
+ */
+function refuseDeletedBooking(): never {
+  throw new MemberGuestConsentError(DELETED_BOOKING_MESSAGE, 404);
 }
 
 /**
@@ -407,6 +432,32 @@ export async function respondToMemberGuestConsent(params: {
 
   if (!isTarget && !isDelegate) forbidden();
 
+  // #2700 — a SOFT-DELETED booking takes no consent answer, from anybody.
+  //
+  // The rule is `INV-ADDPAY-035`; `INV-ADDPAY-032`, which tracked this as an
+  // open decision, is now a superseded stub pointing there.
+  //
+  // BOTH ARMS reached a write before this. `INV-ADDPAY-032` recorded the shape:
+  // the booking was loaded below purely to pick a lodge lock (`{ id, lodgeId }`),
+  // so neither `status` nor `deletedAt` was ever read, and an APPROVE went on to
+  // write the guest row, reconcile beds, drain the hosting queue and EMAIL THE
+  // BOOKING'S OWNER about a record the club has deleted; a DECLINE additionally
+  // recorded a BLOCKED response outside the transaction it rolls back. The owner
+  // decided (10 Aug 2026) that none of that should happen: a guest cannot
+  // meaningfully consent to a stay the club has deleted, and the owner should
+  // not receive an email about one.
+  //
+  // AFTER the authorisation check, deliberately, and that is why the refusal is
+  // allowed to be informative — see `refuseDeletedBooking` above. Note the ROUTE
+  // could not host this guard: its pre-read only proves the guest row belongs to
+  // the booking, not that the caller is the target or a delegate, so a check
+  // there would answer 404-vs-403 to somebody holding a guessed pair of ids.
+  const bookingBeforeLock = await db.booking.findUnique({
+    where: { id: bookingId },
+    select: { deletedAt: true },
+  });
+  if (bookingBeforeLock?.deletedAt) refuseDeletedBooking();
+
   try {
     return await db.$transaction(async (tx) => {
       // Global money/status lock first, then the per-lodge capacity lock: this
@@ -415,9 +466,15 @@ export async function respondToMemberGuestConsent(params: {
       await tx.$executeRaw`SELECT pg_advisory_xact_lock(1)`;
       const booking = await tx.booking.findUnique({
         where: { id: bookingId },
-        select: { id: true, lodgeId: true },
+        select: { id: true, lodgeId: true, deletedAt: true },
       });
       if (!booking) forbidden();
+      // Re-asserted under the lock, not merely checked above. The unlocked read
+      // is what produces the right answer cheaply; THIS one is what makes it
+      // true. `softDeleteCancelledBooking` takes the same
+      // `pg_advisory_xact_lock(1)`, so a deletion committing between the two
+      // reads is serialised behind this transaction and seen here.
+      if (booking.deletedAt) refuseDeletedBooking();
       await acquireLodgeCapacityLock(
         tx,
         booking.lodgeId ?? (await getDefaultLodgeId(tx)),

@@ -214,6 +214,10 @@ const PER_NIGHT_GUEST_COUNTERS: Array<{ file: string; why: string }> = [
     file: "src/lib/hut-leader-coverage.ts",
     why: "lodge-wide guests-per-night for the hut-leader coverage report — a STAFFING figure, not a bed count, and it is not compared against capacity. It selects only stayStart/stayEnd, so a sparse stay falls back to the #713 envelope and its guest total reads slightly high on a gap night; recorded here as a known reporting imprecision rather than a capacity defect",
   },
+  {
+    file: "src/lib/booking-edit-guest-ranges.ts",
+    why: "counts guests still holding a future night on ONE booking (futureActiveGuestCount, #2736) so an edit cannot leave that booking with future nights nobody occupies — a per-BOOKING population test, never summed across bookings and never compared against lodge capacity. It reaches this census by naming countActiveGuestsForNight in a comment rather than calling it: the comment explains that the nights it hands to the capacity check are the exact bed-nights a range occupies, which is the property that stops a sparse guest claiming a gap night. Declared rather than reworded, because the file genuinely does count guests per night and a future reader should find it here",
+  },
 ];
 
 function listSourceFiles(dir: string): string[] {

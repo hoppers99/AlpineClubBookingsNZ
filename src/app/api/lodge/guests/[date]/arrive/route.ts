@@ -30,6 +30,19 @@ const bodySchema = z.object({
  * is the toggle it has always been, and a contiguous stay can never be a return
  * (`isGuestReturningOnDay` is false for every day of one), so the ordinary path
  * is untouched.
+ *
+ * A GAP NIGHT IS REFUSED, AND NOT AS A 403 OR A 404 (#2737, INV-DATE-022). The
+ * lookup's SQL is an envelope and an envelope contains a sparse stay's internal
+ * gap nights, so this endpoint used to accept a check-in for a night the guest
+ * is at home — unreachable from the kiosk, which has ridden on the night-set
+ * `canMarkArrived` flag since #2628, but reachable from a stale open page or a
+ * direct call. That refusal is a fact about the BOOKING, not about the caller's
+ * rights, so it is its own outcome and its own status: `403` stays the
+ * authorisation answer (a staying guest may not mark anyone arrived), `404`
+ * stays the deliberately uniform "nothing matched" that consent, pending review,
+ * lodge scope and booking status all collapse to, and a night the guest does not
+ * hold answers `409` with `GUEST_NOT_BOOKED_THIS_NIGHT` so the officer is told
+ * to reload rather than left guessing at "failed".
  */
 export async function PUT(
   req: NextRequest,
@@ -70,14 +83,30 @@ export async function PUT(
 
   try {
     const lodgeId = await resolveKioskLodgeId(authResult, prisma);
-    const guest = await findLodgeGuestForDate(parsed.data.bookingGuestId, date, lodgeId);
+    const lookup = await findLodgeGuestForDate(parsed.data.bookingGuestId, date, lodgeId);
 
-    if (!guest) {
+    if (lookup.outcome === "not-found") {
       return NextResponse.json(
         { error: "Guest not found for this date" },
         { status: 404 }
       );
     }
+    if (lookup.outcome === "not-a-booked-night") {
+      // 409, not 404 and not 403: the guest is real, is in an operational
+      // booking at this lodge, and cleared every enforcement gate — they are
+      // simply not booked in tonight. Saying so plainly is what the day list
+      // already tells the same operator, and it is the only refusal here they
+      // can do anything about.
+      return NextResponse.json(
+        {
+          error:
+            "This guest is not booked in for this night, so they cannot be checked in. Reload the day to see who is staying.",
+          code: "GUEST_NOT_BOOKED_THIS_NIGHT",
+        },
+        { status: 409 }
+      );
+    }
+    const guest = lookup.guest;
 
     // A RETURN supersedes the stay's stale attendance pair; anything else is
     // the plain toggle. See the header — this is only ever true on a sparse

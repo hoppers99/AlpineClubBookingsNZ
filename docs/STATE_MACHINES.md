@@ -817,6 +817,21 @@ adminOverride && role === "ADMIN"   -> "admin-override" (issue #1668: date-windo
                                                          lock still enforced)
 ```
 
+In `"in-progress"` mode the plan that prices the change
+(`buildInProgressGuestRangePlan`) works from each guest's canonical
+`BookingGuestNight` set, not from their `stayStart`/`stayEnd` envelope
+(#2736, `INV-MOD-025`). A guest with a gap in their stay keeps the gap: it is
+not charged, not written back as a night row and not given a bed, while an
+extension still buys contiguous new nights after their last held one. For a
+contiguous stay every number is exactly what it was before. Bookings edited
+before that fix keep the rows and the price they were given — history is not
+repriced (#2745 carries the decision about whether anything is done about
+them). One edit is newly refused: a check-out pulled back past the last night
+any remaining guest still holds, which would leave the booking with a night
+nobody occupies; the refusal names the check-out that would work. Three money
+shapes on this path are frozen rather than fixed — see `INV-MOD-025` and
+#2743 / #2744.
+
 Self-service cancellation of a **started** stay is blocked (#2029). Once
 `checkIn <= todayNZ`, the member-facing cancel route
 (`enforceStartedStayBlock`) refuses cancellation for a booking owner or Booking
@@ -881,6 +896,23 @@ credit-note id) no longer blocks — and the coincident `payment.creditAppliedCe
 mirror is waived with it — but an `ADMIN_ADJUSTMENT`/`BOOKING_MODIFICATION_REFUND`
 row, a net-non-zero ledger, or any Xero-linked credit note still blocks, as does
 any independently captured/refunded payment.
+
+Soft-delete also reaches out to Stripe, **after** its transaction commits
+(#2700, `INV-ADDPAY-036`). The blockers above count CAPTURED payment history, so
+an intent that has not captured yet is exactly the state they permit — and
+exactly the state that can capture a moment later, because deleting a booking
+does not by itself touch Stripe. The delete therefore cancels the booking's
+in-flight PaymentIntents, both the base one and the modification one, once the
+booking row is durably deleted: outside the transaction so no provider round
+trip is made while `pg_advisory_xact_lock(1)` is held, and never throwing, so a
+Stripe outage cannot turn a completed deletion into an error the admin would
+retry. The local `PaymentTransaction` is marked FAILED **only** when Stripe
+confirms the cancel; `canceled: false` means the intent reached a terminal state
+on its own — possibly `succeeded` — and writing FAILED there would be a lie.
+A cancellation that fails is audited as
+`booking.delete.payment_intent_cancel.failed` (`outcome: "failure"`) as well as
+logged. This makes the race rare rather than impossible; a capture that still
+lands is handled by the manual refund task lifecycle above.
 
 ## Public Booking Request Quote Lifecycle
 
@@ -1348,10 +1380,29 @@ OPEN -> COMPLETED   (finance:edit; writes the local refund allocation and a
                      REFUNDED BookingEvent — the ONLY moment the ledger says
                      the money went back)
 OPEN -> DISMISSED   (finance:edit; requires a note; moves no money)
+OPEN -> DISMISSED   (#2700: the Stripe webhook, with NO acting member at all —
+                     `completedByMemberId` stays null and no operator note is
+                     required. Fires only on a task raised by the deleted-booking
+                     modification-payment path, matched on that exact payment
+                     intent, when `handleCancelledBookingAdditionalPaymentSucceeded`
+                     has already refunded the capture, so the task's question is
+                     answered. Status-fenced on OPEN, so a replay or an operator
+                     who got there first claims nothing. Moves no money —
+                     COMPLETED here would write a SECOND refund allocation for
+                     one refund. See `INV-ADDPAY-036`.)
 ```
 
-Created atomically with the CANCELLED claim when a cash-settled booking is
-cancelled with a non-zero policy refund. A zero-refund outcome creates no task.
+There are TWO creators, and the second is on a completely different path from
+the first:
+
+- Created atomically with the CANCELLED claim when a **cash-settled** booking is
+  cancelled with a non-zero policy refund. A zero-refund outcome creates no task.
+- Created by `confirm-modification-payment` when a **card** modification payment
+  is captured against a booking the club has already soft-deleted (#2700,
+  `INV-ADDPAY-036`): the capture is recorded rather than refused, and an OPEN
+  task asks a person to decide. Raised under `pg_advisory_xact_lock(1)`,
+  idempotent on the payment intent, and fenced against a refund that already
+  happened, so it is never raised for money Stripe has already returned.
 The transition is a status-fenced conditional update, so a double click can
 never double-apply the allocation, and the row is never processed by any cron —
 it deliberately is not a `PaymentRecoveryOperation`. (That dispatcher's final
@@ -1954,6 +2005,19 @@ any state -> (row deleted)   the booker or an officer takes the guest off the bo
                              The member is told once (member-guest-request-withdrawn); the
                              consent record goes with the row. NOT a status transition.
 ```
+
+**A soft-deleted booking answers nothing at all, and that outranks every
+PENDING edge above** (#2700, `INV-ADDPAY-035`). `respondToMemberGuestConsent`
+refuses before any transition is attempted, for **every** actor — the target and
+an accepted delegate alike — so `PENDING -> CONFIRMED` and `PENDING -> DECLINED`
+are both unreachable once the club has deleted the booking. Nothing is recorded:
+no claim, no bed reconcile, no hosting-queue drain, and no email to the booking
+owner about a record the club has deleted. The refusal is asserted twice — once
+unlocked to answer cheaply, and again inside the transaction under
+`pg_advisory_xact_lock(1)`, which is the same key `softDeleteCancelledBooking`
+takes, so a deletion committing between the two reads is serialised behind the
+consent transaction and seen. The nightly `PENDING -> EXPIRED` sweep is
+unaffected; it is not an answer.
 
 **No EDIT transitions this machine, and that is owner decision D-13 rather than
 an omission.** Changing a booking's dates, its lodge, its price, or the rest of

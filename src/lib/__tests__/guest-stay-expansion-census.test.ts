@@ -120,12 +120,13 @@ function countStayEnvelopeExpansions(source: string): number {
  *                    `getGuestBedNightKeys`'s own rule. Correct as written;
  *                    each one is a local copy that could be routed at the
  *                    helper later, and none may lose its night-set branch.
- *  - `plan-range`  — expands a PLAN's own `[stayStart, stayEnd)` window, which
- *                    is contiguous by construction: the shape it comes from has
- *                    no night field at all. Nothing sparse can be lost because
- *                    nothing sparse ever reaches it. That the plan flattens a
- *                    sparse guest to their envelope BEFORE this point is a
- *                    pricing question, not an expansion one — see #2736.
+ *  - `plan-range`  — expanded a PLAN's own `[stayStart, stayEnd)` window, on the
+ *                    argument that the window was contiguous by construction
+ *                    because the shape it came from had no night field at all.
+ *                    #2736 gave that shape a night field, so the one site of
+ *                    this kind is gone and the classification is RETIRED. Do not
+ *                    revive it: "the plan flattened it before this point" is a
+ *                    reason to go and look at the plan, which is what #2736 was.
  */
 const EXPANSION_SITES = [
   {
@@ -170,23 +171,18 @@ const EXPANSION_SITES = [
     what: "the nights shown on the delegate consent page",
     evidence: ["guest.nights.length > 0"],
   },
-  {
-    // FOUND BY THIS CENSUS, not by the audit that filed #2628: the call is
-    // wrapped over three lines, so the per-line regex the census shipped with
-    // could not see it. `ProposedExistingGuestRange` / `ProposedAddedGuestRange`
-    // carry `stayStart`/`stayEnd` and no nights, and the whole in-progress edit
-    // path prices every guest as a contiguous range (`priceGuestRangeCents` ->
-    // `calculateBookingPrice`), so this split cannot lose a night the plan still
-    // had. Whether the PLAN should keep sparse guests sparse is #2736.
-    file: "src/lib/booking-modify-plan.ts",
-    kind: "plan-range",
-    expansions: 1,
-    what: "splitContiguousNights — an edit plan's own contiguous range, split into per-night cents",
-    evidence: [
-      "function splitContiguousNights(",
-      "Build a per-night breakdown for a contiguous range",
-    ],
-  },
+  // `src/lib/booking-modify-plan.ts` used to be the eighth entry, and the only
+  // `plan-range` one. THIS CENSUS FOUND IT — the call was wrapped over three
+  // lines, so the per-line regex the census shipped with could not see it — and
+  // the pricing question it raised was filed as #2736 and is now fixed:
+  // `ProposedExistingGuestRange` carries the guest's canonical `nights`, and
+  // `splitGuestNightsEvenly` splits that LIST instead of re-expanding an
+  // envelope. There is no expansion left in the file, so it is gone from the
+  // table rather than sitting here at zero — the first test below derives the
+  // found set from the source, and a declared file with nothing in it fails it.
+  // `booking-edit-guest-ranges.ts` does not replace it: the plan now calls the
+  // canonical `expandStayEnvelopeToNightKeys`, which is what a routed caller
+  // looks like (INV-DATE-020) and is deliberately not a census site.
 ] as const;
 
 describe("guest stay expansion census (#2628)", () => {

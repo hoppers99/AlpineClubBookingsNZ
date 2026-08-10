@@ -191,6 +191,49 @@ derivation).
     suggested roster generated for a segment the guest is still booked for, and
     toggling the departure back off restores nothing.
 
+### INV-DATE-022
+
+- **A SQL stay filter is a COARSE FILTER, never the answer: every kiosk write
+  lookup loads the envelope and then decides over the night rows** (#2737). A
+  `where` on `stayStart`/`stayEnd` can only ever describe the envelope, and the
+  envelope is a strict SUPERSET of the canonical night set for a sparse stay
+  [INV-DATE-020] — its internal gap nights sit inside it. So a lookup whose
+  authority stops at the `where` accepts a write for a night the guest is at
+  home. Both kiosk write lookups in `src/lib/lodge-date-scoping.ts` therefore
+  load coarse and decide in code: `findLodgeGuestForDate` (arrive) with
+  `isGuestActiveOnNight`, `findLodgeGuestDepartingOnDate` (depart) with
+  `isGuestDepartureMorning`. Three things about that are load-bearing:
+  - **The night rule is NOT folded into the `where`.** The fragments there are
+    the enforcement gates — member consent [D-12/#2307], pending admin review
+    [#1372/#1422], lodge scope and booking status — and they collapse to one
+    deliberately uninformative "nothing matched" precisely so a refused caller
+    learns nothing. "You are not booked in tonight" is a fact about the booking,
+    not about the caller's rights; keeping it separate is what lets the arrive
+    endpoint answer `409 GUEST_NOT_BOOKED_THIS_NIGHT` with a sentence a hut
+    leader can act on while `403` stays authorisation and `404` stays uniform.
+    **Depart deliberately keeps the uniform `404` for "not a departure
+    morning".** It is already correct — no wrong write is reachable — so the
+    difference is copy, not safety, and buying that copy means widening the
+    return type of a lookup that runs inside the depart transaction's advisory
+    locks. It is also not the same clean fact: a guest refused a check-out
+    mid-stay is refused because they are STAYING tonight, which is a different
+    sentence from "not booked in", and choosing it is a decision rather than a
+    port. Anyone who does add it must not do so by folding the rule into the
+    `where`, for the reason above.
+  - **The coarse filters stay as narrow as each rule allows and are not
+    unified.** Arrive's is half-open (`stayEnd: { gt: date }`) because a
+    departure morning is never an occupied night [INV-DATE-003]; depart's is
+    checkout-inclusive because a departure morning is exactly what it looks for.
+    Widening either only loads rows the in-code rule then refuses.
+  - **A guest carrying no `BookingGuestNight` rows still falls back to the
+    envelope**, so every pre-#713 row behaves exactly as it always has. A fixture
+    that omits `nights` is therefore exercising the fallback, not the rule — the
+    silent-staleness class #2628's sweep found across eight suites.
+  A server guard is required even where no screen sends the request: the kiosk's
+  `canMarkArrived`/`canMarkDeparted` flags [INV-DATE-021] make the offer and the
+  acceptance agree by construction, but a stale open page or a direct call
+  bypasses the offer entirely.
+
 ### INV-DATE-006
 
 - **The lobby wall is deliberately mixed and stays fenced** (issue #58): it asks

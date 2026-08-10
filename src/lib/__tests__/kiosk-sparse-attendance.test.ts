@@ -233,3 +233,95 @@ describe("a RETURN supersedes the stay's stale attendance pair (#2628)", () => {
     });
   });
 });
+
+describe("the arrive ENDPOINT refuses a gap night (#2737)", () => {
+  /**
+   * The issue's own acceptance criterion, driven through the endpoint.
+   *
+   * Nights {11, 14}. The envelope the SQL filter uses is `[11, 15)`, so the
+   * 12th and the 13th are INSIDE it while the guest is at home — that is the
+   * whole hole. Before #2737 the endpoint accepted both and stamped an arrival
+   * time on a night nobody was in the lodge.
+   *
+   * MUTATION PROBE: delete the `isGuestActiveOnNight` guard in
+   * `findLodgeGuestForDate` and the two gap-night cases below go 200, because
+   * the envelope filter is mocked out here exactly as Postgres would satisfy it.
+   */
+  it("refuses BOTH gap nights with 409 and writes nothing", async () => {
+    const { PUT } = await import("@/app/api/lodge/guests/[date]/arrive/route");
+
+    for (const gapNight of ["2026-07-12", "2026-07-13"]) {
+      mockPrisma.bookingGuest.findFirst.mockResolvedValue(sparseGuest());
+      const res = await PUT(
+        request(gapNight, "arrive", "g-sparse"),
+        params(gapNight),
+      );
+
+      expect(res.status, gapNight).toBe(409);
+      await expect(res.json()).resolves.toEqual(
+        expect.objectContaining({ code: "GUEST_NOT_BOOKED_THIS_NIGHT" }),
+      );
+    }
+    // Not "no arrival was recorded" — no write was attempted at all.
+    expect(mockPrisma.bookingGuest.update).not.toHaveBeenCalled();
+  });
+
+  it("still accepts both nights the guest DOES hold, either side of the gap", async () => {
+    const { PUT } = await import("@/app/api/lodge/guests/[date]/arrive/route");
+
+    for (const bookedNight of ["2026-07-11", "2026-07-14"]) {
+      mockPrisma.bookingGuest.update.mockClear();
+      mockPrisma.bookingGuest.findFirst.mockResolvedValue(sparseGuest());
+      const res = await PUT(
+        request(bookedNight, "arrive", "g-sparse"),
+        params(bookedNight),
+      );
+
+      expect(res.status, bookedNight).toBe(200);
+      expect(mockPrisma.bookingGuest.update).toHaveBeenCalledWith({
+        where: { id: "g-sparse" },
+        data: { arrivedAt: expect.any(Date) },
+      });
+    }
+  });
+
+  it("keeps 404 for a guest nothing matched, so a refusal is never a disclosure", async () => {
+    // The two refusals must stay distinguishable in the OTHER direction as
+    // well. Consent, pending review, lodge scope and booking status all resolve
+    // to null in SQL and must keep collapsing to the same uninformative 404 —
+    // if the 409 ever became the general "no" this endpoint gives, it would
+    // start answering questions the caller was refused.
+    mockPrisma.bookingGuest.findFirst.mockResolvedValue(null);
+
+    const { PUT } = await import("@/app/api/lodge/guests/[date]/arrive/route");
+    const res = await PUT(
+      request("2026-07-11", "arrive", "g-sparse"),
+      params("2026-07-11"),
+    );
+
+    expect(res.status).toBe(404);
+    await expect(res.json()).resolves.toEqual({
+      error: "Guest not found for this date",
+    });
+    expect(mockPrisma.bookingGuest.update).not.toHaveBeenCalled();
+  });
+
+  it("a legacy guest carrying NO night rows still arrives on every envelope night", async () => {
+    // Pre-#713 rows have only the envelope, and `isGuestActiveOnNight` falls
+    // back to it. #2737 must not turn those guests into permanent 409s: the
+    // 12th is a night for them precisely because they declare no night set.
+    mockPrisma.bookingGuest.findFirst.mockResolvedValue(sparseGuest({ nights: [] }));
+
+    const { PUT } = await import("@/app/api/lodge/guests/[date]/arrive/route");
+    const res = await PUT(
+      request("2026-07-12", "arrive", "g-sparse"),
+      params("2026-07-12"),
+    );
+
+    expect(res.status).toBe(200);
+    expect(mockPrisma.bookingGuest.update).toHaveBeenCalledWith({
+      where: { id: "g-sparse" },
+      data: { arrivedAt: expect.any(Date) },
+    });
+  });
+});

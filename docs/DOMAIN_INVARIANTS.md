@@ -128,6 +128,7 @@ number and prefix, and it is listed at the end of the table below.
 | `INV-DATE-005` | Two helper families — night model for resources, operational-day for people |
 | `INV-DATE-020` | One expander turns a stay into nights; its envelope branch stays half-open |
 | `INV-DATE-021` | Kiosk attendance is one current state per stay, re-read per segment |
+| `INV-DATE-022` | A SQL stay filter is coarse; kiosk write lookups decide over the night rows |
 | `INV-DATE-006` | The lobby wall is deliberately mixed and stays on its own fenced path |
 | `INV-DATE-022` | The lobby wall's night count is derived independently of what it shows |
 | `INV-DATE-007` | Departing lodge A and arriving at lodge B on one date is legal |
@@ -298,6 +299,7 @@ Prefix `INV-MOD`.
 | `INV-MOD-017` | Legacy stamped applications are repaired under the same lock before clamp, cancel, expiry or read |
 | `INV-MOD-018` | Every modification path applies the same lifecycle transitions, whichever endpoint made the change |
 | `INV-MOD-019` | Self-service edits obey the date-window edit policy; an in-progress stay extends future nights only, and minimum stay is then evaluated over the whole contiguous stay |
+| `INV-MOD-025` | An in-progress edit prices the nights a guest holds, not their envelope; contiguous stays are unchanged and history is not repriced |
 | `INV-MOD-020` | Minimum stay is the first exception-foundation consumer; only two soft reason codes exist |
 | `INV-MOD-021` | The frozen violation explains a refusal, never authorises one; every member path stops server-side |
 | `INV-MOD-022` | The admin exemption is not one predicate, and is stated per path |
@@ -530,8 +532,11 @@ Prefix `INV-ADDPAY`.
 | `INV-ADDPAY-022` | Soft-delete may hide a duplicate only when no external money history must stay operator-visible |
 | `INV-ADDPAY-030` | A soft-deleted booking is always CANCELLED and stays so; most routes refuse it only incidentally |
 | `INV-ADDPAY-031` | House shape for a deleted-booking guard: 404 for every role, after the authorisation check |
-| `INV-ADDPAY-032` | Two writes stay reachable on a soft-deleted booking, tracked as decisions not guards |
-| `INV-ADDPAY-033` | Two unguarded GETs still serve a deleted booking's own data to its owner |
+| `INV-ADDPAY-032` | Superseded by `INV-ADDPAY-035`/`INV-ADDPAY-036`: two writes stay reachable on a soft-deleted booking |
+| `INV-ADDPAY-033` | Superseded by `INV-ADDPAY-034`: two unguarded GETs still serve a deleted booking's own data |
+| `INV-ADDPAY-034` | One shared "cancelled or removed" sentence for the surfaces that explain rather than 404 |
+| `INV-ADDPAY-035` | A soft-deleted booking takes no member-guest consent answer, from any role, either arm |
+| `INV-ADDPAY-036` | A modification payment captured on a deleted booking is recorded and queued for a human, never auto-refunded from that path |
 
 ## Analytics And Privacy
 
