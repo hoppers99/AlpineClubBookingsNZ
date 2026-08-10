@@ -21,4 +21,12 @@
 
   One switch covers every way a booking can be edited, on purpose: the same
   night can no longer cost one amount on one edit screen and a different amount
-  on another.
+  on another. That includes the promo-code box on the edit screen, which used to
+  size its discount on group-discounted rates regardless of the setting — so at a
+  club that unticks this, the promo figure now matches the price beside it.
+
+  The note beside the price appears only when the discount would genuinely have
+  applied to what you are adding. If the party is too small for the club's
+  minimum, or the stay falls outside the seasons the discount covers, the price
+  is the same either way and no note is shown, because there is nothing to
+  explain.
