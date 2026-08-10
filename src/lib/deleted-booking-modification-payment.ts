@@ -247,8 +247,9 @@ export async function raiseDeletedBookingModificationRefundTask(params: {
 }
 
 /**
- * The opening words of the note the automatic close writes, and the phrase the
- * operator surface matches on (#2750).
+ * The opening words of the note the automatic writer writes — whether it closes a
+ * raised task or creates the record itself (#2760) — and the phrase the operator
+ * surface matches on (#2750).
  *
  * IT IS A SHARED CONSTANT, not two copies of one sentence, because the writer
  * below and the finance queue's reader
@@ -257,7 +258,8 @@ export async function raiseDeletedBookingModificationRefundTask(params: {
  * silently empties the list of automatically-refunded captures — the surface
  * whose entire purpose is that this money movement does not go unseen.
  *
- * Only the close below ever writes it, so it is the load-bearing half of the
+ * Only `recordAutomaticCancelledBookingRefundTask` below ever writes it — on both
+ * arms, the close AND the #2760 create — so it is the load-bearing half of the
  * filter. Kept short of the full sentence on purpose: the sentence ends with the
  * payment intent id, so a prefix is what a `startsWith` can match.
  *

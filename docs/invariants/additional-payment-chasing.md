@@ -933,6 +933,9 @@ orderings must not pay the member twice:
 
 - **Webhook first** — it records and refunds; the confirm endpoint then finds
   the transaction already captured, takes its early return, and raises no task.
+  Since #2760 the webhook writes the record itself in that case, already
+  `DISMISSED` (`INV-ADDPAY-037`), so "no task is raised" no longer means "no row
+  exists" — it means no OPEN one does.
 - **Confirm endpoint first** — it records and raises the task; the webhook's
   refund then answers that task's whole question, so the webhook **closes** it
   as `DISMISSED` with a note. `DISMISSED`, never `COMPLETED`: in
@@ -949,9 +952,10 @@ orderings must not pay the member twice:
 
 Closing a task whose subject is already resolved moves no money, so it does not
 contradict the no-automatic-refund rule; the refund it records is #1350's
-established behaviour and is not introduced by #2700. **The consequence worth
-naming: on the common path where webhooks are healthy, the member is refunded
-automatically and the task is a record rather than a decision.** The task earns
+established behaviour and is not introduced by #2700. Nor does #2760's write: an
+already-`DISMISSED` row asks nobody for anything and moves nothing. **The
+consequence worth naming: on the common path where webhooks are healthy, the member
+is refunded automatically and the task is a record rather than a decision.** The task earns
 its place in the orderings where the webhook does not arrive, is disabled, or
 fails — which is precisely when the club would otherwise be holding money with
 nobody told.

@@ -183,7 +183,8 @@ export async function GET() {
       reason: task.reason,
       note: task.note,
       // `completedAt` is nullable in the schema but never null on a row this
-      // filter matched — the close writes it in the same update as the status.
+      // filter matched — the writer sets it in the same statement as the status,
+      // on both the close arm and the #2760 create.
       // Answered as null rather than coerced, so the surface renders a row whose
       // date it cannot state instead of inventing one.
       refundedAt: task.completedAt ? task.completedAt.toISOString() : null,
