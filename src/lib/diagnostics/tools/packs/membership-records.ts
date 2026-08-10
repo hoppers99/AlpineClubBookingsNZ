@@ -222,6 +222,7 @@ import {
   aid6bRecordAuditReaderAreas,
   dateOnly,
   dateOnlyOrNull,
+  deletedAccountEmailMarkerSql,
   emailOrNull,
   personNameOrNull,
 } from "./booking-shared";
@@ -326,12 +327,21 @@ const memberIdInputSchema = {
  * `lifecycle_deleted` IS THE MOST IMPORTANT DERIVED COLUMN HERE, and the reason is
  * specific. An ANONYMISED (erased) account is `active = false` with `cancelledAt`
  * NULL and `archivedAt` NULL, because erasure stamps NEITHER instant — so a naive
- * three-column read reports an erased member as merely "Inactive", and a model
- * shown that will tell an officer to reactivate an account that no longer has a
- * person behind it. The flag makes the shape visible.
- * `diagnostics.member_eligibility_state` runs the platform's own resolver and gives
- * the authoritative label; this is the warning that the two are different
- * questions.
+ * three-column read reports an erased member as merely "Inactive", and a model shown
+ * that will tell an officer to reactivate an account that no longer has a person
+ * behind it. The flag exists to close that.
+ *
+ * IT WAS THAT THREE-COLUMN SHAPE ITSELF UNTIL #2679's REVIEW, and that was the same
+ * error pointing the other way. Ordinary bulk DEACTIVATION is `active = false` with
+ * neither instant too — it is reversible and routine — so a shape test reported
+ * every deactivated member as possibly erased. Both mistakes send an officer to the
+ * wrong action; erasure is defined by its MARKERS, never by the absence of other
+ * markers. The column now runs `deletedAccountEmailMarkerSql`, the SQL half of the
+ * platform's own `isDeletedAccountRecord` (`INV-LIFE-013`), keyed on the anonymised
+ * address the deletion writes. `diagnostics.member_eligibility_state` is the entry
+ * that tests BOTH markers — it compares the sentinel password hash inside
+ * PostgreSQL, a column this role is not granted — and gives the platform's own
+ * authoritative lifecycle label.
  *
  * A BOOLEAN RATHER THAN THE XERO CONTACT ID, on purpose. `hasXeroContact` says a
  * link exists; the id itself is FINANCE evidence, and
@@ -364,7 +374,7 @@ const MEMBER_SUMMARY_SQL = `SELECT
   m."canLogin" AS can_login,
   ${utcInstant('m."cancelledAt"')} AS cancelled_at_utc,
   ${utcInstant('m."archivedAt"')} AS archived_at_utc,
-  (m."active" = false AND m."cancelledAt" IS NULL AND m."archivedAt" IS NULL) AS lifecycle_deleted,
+  ${deletedAccountEmailMarkerSql('m."email"')} AS lifecycle_deleted,
   ${dateOnly('m."joinedDate"')} AS joined_date,
   ${dateOnly('m."lifeMemberDate"')} AS life_member_date,
   m."requiresInduction" AS requires_induction,
@@ -388,7 +398,7 @@ const memberSummary = defineDiagnosticsTool<MemberIdArgs>({
   label: "Member diagnostic summary",
   description: `Returns everything this platform has stored about ONE member's identity and membership lifecycle: the record id, the given and family name, the email address, whether a phone number is on file, the age tier, whether the account is active and can log in, the cancellation and archival instants, whether the row has the shape of an ERASED account, the joined and life-member dates, whether an induction is required of them, whether they are hut-leader eligible, whether a Xero contact is linked, the parent and secondary-parent record ids, the legacy and billing family-group ids, how many dependents point at them, and when the record was created and last changed. Use it after finding a member. It returns NO date of birth, NO address, NO phone number, NO gender or occupation, NO password, two-factor or login-history state, NO private comments and NO cancellation or archival reason: none of those is granted to the diagnostics database role, so the database itself refuses them. There is NO member number in this platform — the record id, the email address and the Xero contact link are the identifiers it has. ${AID6B_DESCRIPTION_TAIL}`,
   requiredAreas: ["membership"],
-  evidenceScope: `The stored identity and lifecycle state of ONE member record. The email address is returned here and NOWHERE else in these tools, because this member was explicitly selected; a member SEARCH reports only whether an address is on file. The phone number is never returned by any of these tools at all — only whether one is recorded. No date of birth is stored in the evidence returned and none can be read: age-based eligibility in this platform is decided on the AGE TIER, which is reported, so answer age questions from the tier and never from an age you calculated. This platform records NO member number, so a member quoting one is quoting a Xero contact number or an invoice number, which are finance records these tools do not search. An "isActive = false" member with neither a cancellation nor an archival instant may be an ERASED account rather than a merely inactive one — that is what lifecycleDeleted marks — and diagnostics.member_eligibility_state gives the platform's own authoritative label; never advise reactivating an account on the strength of this row alone. legacyFamilyGroupRef is the DEPRECATED single-group pointer on the member row: diagnostics.member_family_state is authoritative for family membership, and the two disagreeing is itself a finding. hasXeroContact says only that a link exists; the Xero contact id is finance evidence and needs diagnostics.xero_contact_linkage, which requires finance access as well. joinedDate and lifeMemberDate are calendar days taken from stored timestamps, not lodge nights. updatedAtUtc is when ANY column on this row last changed and is NOT when anything was verified. ${AID6B_SCOPE_TAIL} ${AID6B_UNTRUSTED_EVIDENCE_DISCLOSURE}`,
+  evidenceScope: `The stored identity and lifecycle state of ONE member record. The email address is returned here and NOWHERE else in these tools, because this member was explicitly selected; a member SEARCH reports only whether an address is on file. The phone number is never returned by any of these tools at all — only whether one is recorded. No date of birth is stored in the evidence returned and none can be read: age-based eligibility in this platform is decided on the AGE TIER, which is reported, so answer age questions from the tier and never from an age you calculated. This platform records NO member number, so a member quoting one is quoting a Xero contact number or an invoice number, which are finance records these tools do not search. lifecycleDeleted is TRUE only when this record carries the anonymisation marker an approved deletion writes, so it means the account was ERASED: there is no longer a person behind it, and you must never suggest reactivating or contacting them. It is NOT an inference from inactivity, and an inactive, cancelled or archived member is a reversible administrative state for which lifecycleDeleted is FALSE — read isActive, cancelledAtUtc and archivedAtUtc for those. diagnostics.member_eligibility_state tests both deletion markers and gives the platform's own authoritative lifecycle label. legacyFamilyGroupRef is the DEPRECATED single-group pointer on the member row: diagnostics.member_family_state is authoritative for family membership, and the two disagreeing is itself a finding. hasXeroContact says only that a link exists; the Xero contact id is finance evidence and needs diagnostics.xero_contact_linkage, which requires finance access as well. joinedDate and lifeMemberDate are calendar days taken from stored timestamps, not lodge nights. updatedAtUtc is when ANY column on this row last changed and is NOT when anything was verified. ${AID6B_SCOPE_TAIL} ${AID6B_UNTRUSTED_EVIDENCE_DISCLOSURE}`,
   argsSchema: memberIdArgsSchema,
   inputSchema: memberIdInputSchema,
   sql: MEMBER_SUMMARY_SQL,

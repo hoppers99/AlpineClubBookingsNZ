@@ -963,11 +963,46 @@ booking themselves, not whether an administrator could: the edit policy is
 evaluated with the booking owner's role deliberately, because the admin answer is
 always yes-with-an-override and would tell an operator nothing.
 
+### Deactivation is not deletion
+
+`member_search` and `member_diagnostic_summary` both report `lifecycleDeleted`, and
+both derived it from `active = false AND cancelledAt IS NULL AND archivedAt IS NULL`
+until #2679's review. The reasoning was sound as far as it went — erasure does stamp
+neither instant, which is why `member_erased` exists at all — but that shape is also
+exactly what **ordinary bulk deactivation** leaves behind, and deactivation is
+reversible and routine. So every deactivated member on the roll was reported as
+possibly erased, up to ten at a time on a single search. An officer told a member may
+have been erased does not reactivate them, and the owner's rule for this pack is that
+an inference must never be presented as a confirmed fact.
+
+Erasure is defined by its **markers**, never by the absence of other markers.
+`isDeletedAccountRecord` (`INV-LIFE-013`) is the platform's one definition and it is
+an OR over the two things the anonymisation writes together: a sentinel
+`passwordHash` and an `email` rewritten onto the reserved `@deleted.invalid` domain.
+Both entries now run `deletedAccountEmailMarkerSql` — that second marker, as a
+`select_only_sql` predicate, with the domain taken from the same constant so the two
+cannot drift.
+
+Three properties are worth stating:
+
+- **The address is the predicate and never the projection.** The marker crosses the
+  boundary as one boolean, exactly as `hasEmail` does. A search row is still a page
+  of names, not of contactable addresses.
+- **The credential half is deliberately absent.** `Member."passwordHash"` is not
+  granted to the diagnostics role and must never be. The two markers are written in
+  one `update` and nothing else writes either, so the email half is decisive on any
+  row the current code can produce — and `member_eligibility_state` is the entry that
+  tests both, comparing the sentinel inside PostgreSQL as a count so no hash ever
+  crosses the boundary.
+- **The marker reads no lifecycle column at all**, which is the property that makes
+  this a fix rather than a better guess: nothing about being inactive, cancelled or
+  archived can trip it, however those columns are set.
+
 ### The member eligibility codes
 
 | # | Code | Why it sits here |
 | --- | --- | --- |
-| 1 | `member_erased` | An anonymised account is not a member, and it is **invisible** to the three-column read every other surface would do: erasure sets `active: false` and stamps neither a cancellation nor an archival instant. An officer told the member is merely inactive will try to reactivate them. |
+| 1 | `member_erased` | An anonymised account is not a member, and it is **invisible** to the three-column read every other surface would do: erasure sets `active: false` and stamps neither a cancellation nor an archival instant. An officer told the member is merely inactive will try to reactivate them. This entry tests BOTH anonymisation markers, so it is the authority the two `lifecycleDeleted` surfaces point at — see "Deactivation is not deletion". |
 | 2 | `member_archived` | **Lifecycle, outermost first.** The order matches `getLifecycleStatusConfig`'s own precedence exactly, because a diagnostic that ranked them differently from the badge an officer is looking at would be describing a different member. |
 | 3 | `member_cancelled` | As above. |
 | 4 | `member_inactive` | Raised **only** when nothing more specific explains it, so the list reads as one problem rather than two. |

@@ -105,6 +105,7 @@ import {
   countOrNull,
   dateOnly,
   dateOnlyOrNull,
+  deletedAccountEmailMarkerSql,
   personNameOrNull,
 } from "./booking-shared";
 import {
@@ -475,12 +476,22 @@ type MemberSearchArgs = z.infer<typeof memberSearchArgsSchema>;
  * The admin family-group search sets the same precedent, returning a calculated age
  * label and never the date.
  *
- * `lifecycle_deleted` is `active = false AND cancelledAt IS NULL AND archivedAt IS
- * NULL`, and it exists because an ANONYMISED account is exactly that shape: erasure
- * stamps neither instant, so a naive three-column read reports an erased member as
- * merely "Inactive". The authoritative label comes from
- * `member_eligibility_state`, which runs the platform's own resolver; this flag is
- * the search's warning that the two are not the same question.
+ * `lifecycle_deleted` IS THE ERASURE MARKER, NOT THE SHAPE OF ONE. It was
+ * `active = false AND cancelledAt IS NULL AND archivedAt IS NULL` until #2679's
+ * review, on the reasoning that erasure stamps neither instant — which is true, and
+ * is also true of ORDINARY BULK DEACTIVATION. Deactivation is reversible, routine,
+ * and produces exactly that shape, so every deactivated member on the roll was
+ * reported as possibly ERASED, on a search that can return ten of them at a time.
+ * An officer told a member may have been erased does not reactivate them, and the
+ * owner's rule for this pack is that an inference must never be presented as a
+ * confirmed fact.
+ *
+ * It now runs `deletedAccountEmailMarkerSql` — the SQL half of the platform's own
+ * `isDeletedAccountRecord` (`INV-LIFE-013`), keyed on the anonymised address the
+ * deletion actually writes. THE ADDRESS IS THE PREDICATE AND NEVER THE PROJECTION:
+ * the marker crosses this boundary as one boolean, exactly as `has_email` does, and
+ * the value stays behind. `member_eligibility_state` remains the entry that tests
+ * both markers and gives the platform's own lifecycle label.
  */
 const MEMBER_SEARCH_COLUMNS = `m."id" AS member_ref,
   m."firstName" AS first_name,
@@ -490,7 +501,7 @@ const MEMBER_SEARCH_COLUMNS = `m."id" AS member_ref,
   m."canLogin" AS can_login,
   (m."cancelledAt" IS NOT NULL) AS is_cancelled,
   (m."archivedAt" IS NOT NULL) AS is_archived,
-  (m."active" = false AND m."cancelledAt" IS NULL AND m."archivedAt" IS NULL) AS lifecycle_deleted,
+  ${deletedAccountEmailMarkerSql('m."email"')} AS lifecycle_deleted,
   (m."email" IS NOT NULL AND m."email" <> '') AS has_email,
   (m."phoneNumber" IS NOT NULL AND m."phoneNumber" <> '') AS has_phone,
   (m."xeroContactId" IS NOT NULL) AS has_xero_contact,
@@ -570,7 +581,7 @@ const memberSearch = defineDiagnosticsTool<MemberSearchArgs>({
   label: "Find a member",
   description: `Finds a member one of four ways: by their exact record id, by their exact email address, by the START of their given or family name (at least ${AID6B_MIN_NAME_SEARCH_CHARS} characters, case-insensitive), or by their mobile number. Use it FIRST: every other membership tool needs the exact member id this returns. There is NO member-number search, because this platform stores no member number — the record id, the email address and the Xero contact link are the identifiers it has. At most ${AID6B_SEARCH_ROW_LIMIT} rows, family name then given name then id. Each row carries the member id, the given and family name, the age tier, whether the account is active, can log in, is cancelled or is archived, whether an email address and a phone number are ON FILE (the values themselves are NOT returned by a search — use the member summary for one selected member), whether a Xero contact is linked, whether a parent link exists, whether an induction is required of them, the joined date and the created and last-changed instants. A name prefix matches families — if several rows come back, ask the operator which member they mean rather than choosing one. ${AID6B_DESCRIPTION_TAIL}`,
   requiredAreas: ["membership"],
-  evidenceScope: `Members matching ONE exact identifier, or whose given or family name STARTS WITH the term. It searches the whole membership roll including inactive, cancelled and archived members, because a question about a member who cannot book is usually a question about one of those. A search row deliberately reports only WHETHER an email address and a phone number are on file, never the values. There is no member number in this platform, so a member who quotes one is quoting something else — probably a Xero contact number or an invoice number, which are finance records this tool does not search. An "active = false" member with neither a cancellation nor an archival instant may be an ERASED account rather than a merely inactive one; the lifecycleDeleted flag marks that shape and diagnostics.member_eligibility_state gives the platform's own authoritative label. joinedDate is a CALENDAR DAY taken from a stored timestamp, not a lodge night: it is the day the membership record began, and it must never be compared against a booking night or narrated as a moment. ${AID6B_SCOPE_TAIL} ${AID6B_UNTRUSTED_EVIDENCE_DISCLOSURE}`,
+  evidenceScope: `Members matching ONE exact identifier, or whose given or family name STARTS WITH the term. It searches the whole membership roll including inactive, cancelled and archived members, because a question about a member who cannot book is usually a question about one of those. A search row deliberately reports only WHETHER an email address and a phone number are on file, never the values. There is no member number in this platform, so a member who quotes one is quoting something else — probably a Xero contact number or an invoice number, which are finance records this tool does not search. lifecycleDeleted is TRUE only when the member record carries the anonymisation marker an approved deletion writes, so it means the account was ERASED and there is no longer a person behind it: never suggest reactivating or contacting such a member. It is NOT an inference from inactivity. An ordinary inactive, cancelled or archived member is a reversible administrative state and lifecycleDeleted is FALSE for all three, so read isActive, isCancelled and isArchived for those. diagnostics.member_eligibility_state tests both deletion markers and gives the platform's own authoritative lifecycle label. joinedDate is a CALENDAR DAY taken from a stored timestamp, not a lodge night: it is the day the membership record began, and it must never be compared against a booking night or narrated as a moment. ${AID6B_SCOPE_TAIL} ${AID6B_UNTRUSTED_EVIDENCE_DISCLOSURE}`,
   argsSchema: memberSearchArgsSchema,
   inputSchema: {
     type: "object",

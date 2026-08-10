@@ -80,6 +80,8 @@ import { BookingStatus } from "@prisma/client";
 import { describe, expect, it } from "vitest";
 
 import { bookingAttendanceIsTerminal } from "@/lib/adult-member-hosting-review";
+import { isDeletedAccountRecord } from "@/lib/deleted-account";
+import { DELETED_CONTACT_EMAIL_DOMAIN } from "@/lib/placeholder-contact-email";
 import {
   AUDIT_CATEGORY_CORRELATION_DOMAIN,
   AUDIT_CORRELATION_DOMAIN_AREAS,
@@ -134,6 +136,7 @@ import {
   AID6B_WIDE_BYTE_LIMIT,
   PERSON_NAME_MAX_CHARS,
   aid6bRecordAuditReaderAreas,
+  deletedAccountEmailMarkerSql,
   personNameOrNull,
 } from "../booking-shared";
 import {
@@ -1231,12 +1234,20 @@ describe("AID-6B booking/membership pack: the search argument schemas (#2376)", 
  * against a database.
  */
 const ALLOWED_PG_CATALOG_FUNCTIONS = [
+  // Space-folds an address before the anonymised-account suffix comparison, the
+  // way the canonical `isDeletedAccountEmail` calls `.trim()` before `endsWith`.
+  "btrim",
   "concat",
   "count",
   "left",
   "lower",
   "max",
   "min",
+  // The suffix half of that comparison. A catalogued FUNCTION rather than the
+  // `LIKE` operator, which `search_path` resolves — the same reason the mobile arm
+  // uses `pg_catalog.concat` instead of `||`, and the reason the marker carries no
+  // pattern language.
+  "right",
   "starts_with",
   "to_char",
   "translate",
@@ -1326,7 +1337,7 @@ describe("AID-6B booking/membership pack: no pattern language (#2376)", () => {
         ).toBe(true);
       }
     }
-    // Non-vacuous, and a census: ten functions, and an eleventh needs review.
+    // Non-vacuous, and a census: twelve functions, and a thirteenth needs review.
     expect([...called].sort()).toEqual([...ALLOWED_PG_CATALOG_FUNCTIONS].sort());
   });
 
@@ -1348,6 +1359,125 @@ describe("AID-6B booking/membership pack: no pattern language (#2376)", () => {
     }
     expect(checked).toBeGreaterThan(20);
   });
+});
+
+// ---------------------------------------------------------------------------
+// 4b. Deactivation is not deletion (#2376).
+// ---------------------------------------------------------------------------
+
+describe("AID-6B booking/membership pack: deactivation is NOT deletion (#2376)", () => {
+  /**
+   * The two entries that report `lifecycleDeleted`, and the defect they carried.
+   *
+   * Both derived it from `active = false AND cancelledAt IS NULL AND archivedAt IS
+   * NULL` — offered as "the shape of an erased account", and equally the shape of
+   * ORDINARY BULK DEACTIVATION, which is reversible and routine. So every
+   * deactivated member on the roll was reported as possibly erased, ten at a time
+   * on a search, and an officer told a member may have been erased does not
+   * reactivate them. `INV-LIFE-013` defines erasure by its MARKERS.
+   */
+  const LIFECYCLE_DELETED_ENTRIES = [
+    DIAGNOSTICS_MEMBER_SEARCH_TOOL_ID,
+    DIAGNOSTICS_MEMBER_SUMMARY_TOOL_ID,
+  ] as const;
+
+  it("builds the marker from the canonical anonymised-email domain", () => {
+    // Written out rather than derived with the same helper the source uses, EXCEPT
+    // for the domain itself: the domain must follow `placeholder-contact-email.ts`
+    // automatically, while a change to the comparison's shape has to be looked at.
+    const suffix = `@${DELETED_CONTACT_EMAIL_DOMAIN}`;
+    expect(deletedAccountEmailMarkerSql('m."email"')).toBe(
+      `(pg_catalog.right(pg_catalog.lower(pg_catalog.btrim(m."email")), ${suffix.length}) = '${suffix}')`,
+    );
+    // The length is the suffix's, so a longer or shorter reserved domain cannot
+    // leave the comparison reading the wrong number of characters.
+    expect(suffix.length).toBe("@deleted.invalid".length);
+  });
+
+  it("reads ONLY the address, so no reversible lifecycle state can trip it", () => {
+    // THE PROPERTY THAT MAKES THE FIX A FIX. A marker that mentions no lifecycle
+    // column cannot fire on a deactivation, a cancellation or an archival however
+    // those columns are set — and it is a property of the fragment, not of a
+    // fixture somebody has to remember to write.
+    const marker = deletedAccountEmailMarkerSql('m."email"');
+    for (const column of ["active", "cancelledAt", "archivedAt", "canLogin"]) {
+      expect(marker, `the marker reads ${column}`).not.toContain(column);
+    }
+    // Nor the credential half of the canonical disjunction: `passwordHash` is not
+    // granted to this role and must never become readable because a diagnostic
+    // would find it convenient. `member_eligibility_state` tests that half inside
+    // PostgreSQL as a count, so no hash ever crosses the boundary.
+    expect(marker).not.toContain("passwordHash");
+  });
+
+  it("agrees with the canonical JS predicate about what the suffix means", () => {
+    // The fragment is the SQL half of `isDeletedAccountRecord`. This pins the
+    // vocabulary the two share: which addresses ARE the anonymised form, and — the
+    // more important half — which similar-looking ones are not. A walk-in
+    // `@no-email.invalid` placeholder is an ordinary member record.
+    expect(isDeletedAccountRecord({ email: "deleted-a1b2c3d4@deleted.invalid" })).toBe(
+      true,
+    );
+    expect(isDeletedAccountRecord({ email: "  DELETED-A1B2C3D4@Deleted.Invalid  " })).toBe(
+      true,
+    );
+    expect(isDeletedAccountRecord({ email: "walkin-7@no-email.invalid" })).toBe(
+      false,
+    );
+    expect(isDeletedAccountRecord({ email: "ada@example.test" })).toBe(false);
+    expect(isDeletedAccountRecord({ email: null })).toBe(false);
+    // And the marker is case- and space-folded on the SQL side too, which is what
+    // makes the second case above the same answer in both languages.
+    const marker = deletedAccountEmailMarkerSql('m."email"');
+    expect(marker).toContain("pg_catalog.lower");
+    expect(marker).toContain("pg_catalog.btrim");
+  });
+
+  it.each(LIFECYCLE_DELETED_ENTRIES)(
+    "%s derives lifecycle_deleted from the marker and not from inactivity",
+    (id) => {
+      const sql = sqlOf(id);
+      expect(sql).toContain(
+        `${deletedAccountEmailMarkerSql('m."email"')} AS lifecycle_deleted`,
+      );
+      // The exact shape test that used to be there, so it cannot come back
+      // unnoticed beside the marker.
+      expect(sql).not.toContain(
+        'm."active" = false AND m."cancelledAt" IS NULL AND m."archivedAt" IS NULL',
+      );
+    },
+  );
+
+  it("still keeps the address itself out of a search row", () => {
+    // The marker is a PREDICATE on the address, exactly as `has_email` is. Making
+    // the deletion answer authoritative must not turn a search into a page of
+    // contactable addresses.
+    const search = entry(DIAGNOSTICS_MEMBER_SEARCH_TOOL_ID);
+    const projected = search.project?.({
+      member_ref: "clzmember00000000000000001",
+      lifecycle_deleted: true,
+      has_email: true,
+    }) as Record<string, unknown>;
+    expect(projected).toBeDefined();
+    expect(Object.keys(projected)).not.toContain("email");
+    expect(projected.lifecycleDeleted).toBe(true);
+    expect(sqlOf(DIAGNOSTICS_MEMBER_SEARCH_TOOL_ID)).not.toContain(
+      'm."email" AS',
+    );
+  });
+
+  it.each(LIFECYCLE_DELETED_ENTRIES)(
+    "%s tells the model that lifecycleDeleted is not an inference from inactivity",
+    (id) => {
+      // The scope line is the only part of this a model ever reads, and the old one
+      // taught the defect in as many words ("may be an ERASED account rather than a
+      // merely inactive one … marks that shape").
+      const scope = entry(id).evidenceScope ?? "";
+      expect(scope).toContain("NOT an inference from inactivity");
+      expect(scope).not.toContain("may be an ERASED account");
+      expect(scope).toContain("member_eligibility_state");
+    },
+  );
 });
 
 // ---------------------------------------------------------------------------
