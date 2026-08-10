@@ -97,17 +97,18 @@
 --   aborts one transaction, `prisma migrate deploy` fails, and the deploy stops
 --   BEFORE cutover with nothing half-applied. Re-run the deploy.
 --
--- OPERATOR NOTE — RE-RUN THIS STATEMENT AFTER CUTOVER. `prisma migrate deploy`
--- runs at step 13 of `docs/PRODUCTION_UPGRADE_RUNBOOK.md`, before the new colour
--- takes traffic, and #2730 has not shipped in any release yet — so during the
--- window between this migration and cutover the OLD colour is still filing new
--- bed-allocation rows as `admin`. Those rows are written after this statement
--- has already passed and keep `admin` permanently unless the same statement is
--- run again. Running it verbatim a second time after cutover picks them up and
--- changes nothing anywhere it already ran. This is not reversible by aborting
--- the cutover: a committed data rewrite survives a rollback of the code, there
--- is no `rollback.sql` (this migration is not `windowed`), and the club's own
--- record of the rewrite is the `AUDIT_CATEGORY_BACKFILLED` row below.
+-- OPERATOR NOTE — RE-RUN THIS STATEMENT AFTER CUTOVER, and the runbook asks for
+-- it: `docs/PRODUCTION_UPGRADE_RUNBOOK.md` §3.2. `prisma migrate deploy` is step
+-- 13/20 of that runbook, before the new colour takes traffic, and #2730 has not
+-- shipped in any release yet — so during the window between this migration and
+-- cutover the OLD colour is still filing new bed-allocation rows as `admin`.
+-- Those rows are written after this statement has already passed and keep
+-- `admin` permanently unless the same statement is run again. Running it
+-- verbatim a second time after cutover picks them up and changes nothing
+-- anywhere it already ran. This is not reversible by aborting the cutover: a
+-- committed data rewrite survives a rollback of the code, there is no
+-- `rollback.sql` (this migration is not `windowed`), and the club's own record
+-- of the rewrite is the `AUDIT_CATEGORY_BACKFILLED` row below.
 
 WITH before_counts AS (
   -- The BEFORE half of the count decision B asks for, read in the same statement

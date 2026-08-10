@@ -3,12 +3,14 @@
 Audience: Developer, Agent.
 
 Prefix defined in this file: **`INV-OPS`** — raw SQL result shapes and row
-locking, production deployment including the worked windowed column drop, and
-what may be used as test input.
+locking, production deployment including the worked windowed column drop,
+changing what values already stored in a column mean, and what may be used as
+test input.
 
 Read this file when you are writing raw SQL, taking a row lock, dropping a
-column, deploying to production, or choosing credentials or data for CI and
-local validation.
+column, changing the meaning of a stored value (an audit `category`, a status
+string) so that the rows already written no longer match the code, deploying to
+production, or choosing credentials or data for CI and local validation.
 
 `INV-OPS-005` to `INV-OPS-011` are the `FamilyGroupMember.role` column drop,
 re-homed here from `membership-lifecycle.md` by #2706: they are migration
@@ -70,6 +72,71 @@ only the ID heading lines were added.
 ## INV-OPS-002
 
 - Production deployment must respect `docs/BLUE_GREEN_MIGRATION_POLICY.md`.
+
+## INV-OPS-012
+
+- **Reclassifying an audit row's `category` in code changes only the rows written
+  afterwards, so the pull request that reclassifies either ships the backfill for
+  the rows already written or files the issue that decides not to (#2751).**
+  Never neither, and never as comment prose — a follow-up that exists only as a
+  sentence in a PR is not a follow-up.
+
+  **Why the code change is never the whole change.** `AuditLog.category` is
+  stored on the row at write time and never re-derived at read time, and
+  `buildAuditCategoryWhere`'s legacy action-name fallback fires only for rows
+  whose category IS NULL — so a row that already carries a category keeps the
+  superseded one for as long as it is retained. Moving a writer therefore splits
+  that event's history at the release boundary: Admin > Audit Log's Category
+  filter answers "show me what happened that weekend" for one side of the date
+  only, and of the two AI Diagnostics correlation entries involved, the one that
+  gained the writer returns the newer half while the one that lost it returns the
+  older half. Neither is wrong about what it holds and neither can answer the
+  question. #2730 moved 22 bed-allocation writers and produced exactly that;
+  #2751's backfill closed it. The population most likely to move next is the
+  lodge-gated group left at `admin`, which is why this is a rule rather than a
+  note on one issue.
+
+  **What a backfill has to be.** An EXACT literal list of the action names the
+  moved sites write, never a prefix or pattern match: a pattern cannot be
+  reviewed against the audit-writer census and it sweeps up any action added
+  after the migration was written, including one deliberately classified
+  somewhere else. `category` is the only column in the `SET` clause —
+  `retentionClass` and `expiresAt` are stored columns that were derived from the
+  category at write time, and recomputing them from the new value is how a
+  rewrite silently re-dates when a row is purged, with no undo on an append-only
+  table. Idempotent, because `prisma migrate deploy` runs before cutover and the
+  old colour keeps writing the old category until it drains, so the operator has
+  to be able to run the statement again. And it records what it moved, with the
+  row counts before and after, because a rewrite of an append-only table is
+  otherwise invisible to the club whose history it changed.
+
+  **When filing instead is the right answer, not the lazy one.** A backfill that
+  crosses the member-visible boundary is a visibility decision rather than a
+  tidy-up: rewriting a stored row OUT of a member-visible category (`account`,
+  `security`, `booking`, `payment`, `family`, `communication`, `privacy`)
+  withdraws an entry a member can see about their own account today, and
+  rewriting one INTO a member-visible category publishes an administrator's
+  action to the member it was about. Neither follows from the writer decision, so
+  neither may ride along with it. #2763 is the worked example and it recommends
+  leaving the rows alone exactly where #2751 recommends moving them.
+
+  **Enforcement is partial, and the boundary is stated rather than implied.** The
+  mechanical half exists and is real:
+  `src/lib/__tests__/bed-allocation-audit-category-backfill.test.ts` fails when
+  the #2751 backfill's literal action list and the writers pinned in
+  `REVIEWED_ADMIN_CATEGORIES_2730` stop naming the same events in either
+  direction, so adding a 23rd bed-allocation writer without extending the
+  backfill fails CI by name. A GENERAL "did a reclassification ship without a
+  backfill" check is **not available**, and pretending otherwise would be worse
+  than having none: the audit-writer census pins only 105 of its 428 write sites
+  per-site (`APPLIED_AUDIT_CATEGORIES` plus `REVIEWED_ADMIN_CATEGORIES_2730`) —
+  deliberately, because pinning all of them would make every feature that records
+  something edit a 400-line literal — so for the other 323 there is no baseline
+  a check could compare against, and the category distribution alone cannot see a
+  reclassification that another one compensates for. The two `verify` gates that
+  can read a pull request parse its BODY, not its diff. So outside the pinned
+  population this is a rule a reviewer applies, and the reviewer is the
+  enforcement.
 
 ## INV-OPS-005
 

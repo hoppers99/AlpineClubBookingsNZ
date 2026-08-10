@@ -8,11 +8,12 @@ nine are held for an owner decision because moving them would publish rows on a
 member-facing surface. This page says why for each, rather than leaving `admin`
 to look like the absence of a decision.
 
-**What this page is not.** It is a record of where the platform FILES new rows.
-It changed no row already in the database: a stored row keeps the category it was
-written with, so bed-allocation history is split by date until the backfill in
-[#2751](https://github.com/thatskiff33/AlpineClubBookingsNZ/issues/2751) runs.
-See [Rows already written](#rows-already-written-what-the-move-does-not-touch).
+**What this page is not.** It is a record of where the platform FILES new rows. It
+changed no row already in the database, which left bed-allocation history split by
+date — a separate reviewed decision, taken in
+[#2751](https://github.com/thatskiff33/AlpineClubBookingsNZ/issues/2751), whose
+one-off exact-action migration has since moved the stored rows as well.
+See [Rows already written](#rows-already-written-moved-too-by-2751).
 
 **Why it exists.** `AuditLog.category` is a permission decision, not a label.
 It decides which AI Diagnostics correlation entry can return the row — and
@@ -130,38 +131,58 @@ the closing of a split, and it is recorded as the open question below. The rule
 is repeated in a comment at the writer so the next author does not have to find
 this page.
 
-## Rows already written: what the move does not touch
+## Rows already written: moved too, by #2751
 
-**The 22 edits changed where the platform files a NEW row. No stored row was
-rewritten, and no filter rescues the old ones.** `buildAuditCategoryWhere`
-(`src/lib/audit-query.ts`) ORs its legacy action-name guess in only for rows
-whose `category` is NULL; a bed-allocation row written before this release
-carries a hard `"admin"`, matches neither `{category: "lodge"}` nor the legacy
-`LODGE_`/`lodge` clause, and is returned under the Admin filter alone —
-permanently.
+**The 22 edits changed where the platform files a NEW row, and nothing more.**
+`buildAuditCategoryWhere` (`src/lib/audit-query.ts`) ORs its legacy action-name
+guess in only for rows whose `category` is NULL, so a bed-allocation row written
+before that release carried a hard `"admin"`, matched neither
+`{category: "lodge"}` nor the legacy `LODGE_`/`lodge` clause, and was returned
+under the Admin filter alone. Bed-allocation evidence was therefore split by
+**date** rather than by initiator: in Admin → Audit Log, filtering by Lodge got
+rows from the release forwards and filtering by Admin got the older ones, with
+neither answering a question that spanned the date; in AI Diagnostics the Lodge
+entry returned the newer half and the System entry the older half.
 
-So bed-allocation evidence is now split by **date** rather than by initiator:
+**[#2751](https://github.com/thatskiff33/AlpineClubBookingsNZ/issues/2751) closed
+that, and this is the shape of the fix.** One migration,
+`prisma/migrations/20260810020000_backfill_bed_allocation_audit_category`, rewrites
+`category` from `admin` to `lodge` on rows matched by an EXACT literal list of the
+18 distinct action names these 22 sites write — never a prefix, which could not be
+reviewed against the census and would sweep up whatever is added next. `category`
+is the only column in the `SET` clause, so the date, the actor, the subject, the
+summary, the stored details, `retentionClass` and `expiresAt` are all untouched;
+the counts before and after are recorded as one `AUDIT_CATEGORY_BACKFILLED` row in
+the club's own history; and the statement is idempotent, so it can be run again
+after cutover for the rows the draining old colour wrote during the upgrade window.
 
-- **Admin → Audit Log** (unbounded history). Filter by Lodge and you get rows
-  from this release forwards; filter by Admin and you get the older ones. Neither
-  filter answers a question spanning the release. Clearing the filter still shows
-  everything, which is the workaround an operator needs to be told about — and
-  is, so [the audit-log guide](../guides/audit-log.md) says it.
-- **AI Diagnostics** (7-day maximum window). The Lodge entry returns the newer
-  half and the System entry the older half. This half self-heals seven days after
-  the release, because `CORRELATION_WINDOWS` caps the window at 7 days — but it
-  is live and wrong for that week, so both entries' `scope` and `description`
-  say which half they hold. A pack test pins those sentences.
+Two things the backfill did **not** change, and both were checked in the code
+rather than assumed:
 
-Retention is unaffected either way: `classifyAuditRetention` returns `critical`
-for every one of these actions under both categories, so no stored row's expiry
-moved and none was brought forward for deletion.
+- **Retention.** `pruneExpiredAuditLogs` and `archiveEligibleAuditLogs` select on
+  the stored `retentionClass`, `expiresAt`, `severity`, `createdAt` and
+  `archivedAt` columns and never read `category` at all — and
+  `classifyAuditRetention` returns `critical` for every one of these actions under
+  both values anyway, so no row's expiry moved in either direction and none was
+  brought forward for deletion.
+- **What a member sees.** Neither `admin` nor `lodge` is in
+  `MEMBER_VISIBLE_AUDIT_CATEGORIES`, so no row crossed onto a member's own
+  activity list, in either direction.
 
-Fixing the data is a separate, reviewed decision — a one-off exact-action
-`UPDATE` over live audit records, which narrows who can correlate the older rows
-exactly as this change narrowed the newer ones. It is filed as
-[#2751](https://github.com/thatskiff33/AlpineClubBookingsNZ/issues/2751) with the
-options and the checks already done, not left as a note.
+What the backfill **did** change is who can correlate the older rows in AI
+Diagnostics, and it is the same narrowing this page's 22 moves applied to the new
+ones: a Support-only operator, and a Booking Officer holding Support and Bookings
+but not Lodge, lose them from the System entry and do not gain them in the Lodge
+entry. Everyone with Support access still reads every one of those rows in full in
+Admin → Audit Log, which is why this is a projection change rather than a loss of
+evidence. Both correlation entries' `scope` and `description` are inverted to
+match, and the pack test that used to pin the split now pins its absence.
+
+The generalised rule this produced is **`INV-OPS-012`**: a pull request that
+reclassifies an audit category either ships the backfill for the rows already
+written or files the issue that decides not to — never neither, and never as
+comment prose. It carries the honest limit too, that only the pinned population
+can be checked mechanically.
 
 ## Kept: 87 sites
 
@@ -460,8 +481,12 @@ is what makes a reversal a named diff. The same test asserts that none of the 22
 lands in a member-visible category, which is the property that made the move a
 narrowing rather than a decision for the owner.
 
-The sentences that tell the model which half of bed-allocation history each
-correlation entry holds are pinned in
-`src/lib/diagnostics/tools/packs/__tests__/support-correlation.test.ts`
-("tells the model that #2730 moved the WRITERS and not the stored rows"), so they
-cannot be tidied away while the split is still real.
+The sentences that tell the model where bed-allocation history lives are pinned in
+`src/lib/diagnostics/tools/packs/__tests__/support-correlation.test.ts` ("tells the
+model that bed allocation is WHOLLY lodge now, older rows included"). They were
+pinned in the opposite direction while the date split was real, and #2751 inverted
+them in the same change that closed it — a reclassification that shipped no
+backfill would put the overclaim straight back. The backfill's own action list is
+pinned against `REVIEWED_ADMIN_CATEGORIES_2730` by
+`src/lib/__tests__/bed-allocation-audit-category-backfill.test.ts`, so a 23rd
+bed-allocation writer added here cannot re-open the split silently (`INV-OPS-012`).

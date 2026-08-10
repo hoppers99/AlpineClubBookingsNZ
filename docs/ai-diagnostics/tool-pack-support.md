@@ -105,14 +105,14 @@ correctly, and for anyone extending the taxonomy in AID-6B or AID-6C.
 | Category | Correlation entry | Reader needs | What actually records there |
 | --- | --- | --- | --- |
 | `system`, `security` | System | `support:view` | Setup, credentials, password/magic-link policy, backups, auth events and auth bounces, PIN login |
-| `admin` | System | `support:view` | **The cross-domain catch-all** — still the largest category in the codebase (96 write sites, down from 118 in #2730). Member merge, member-lifecycle delete/archive, member import, lodge-access changes, seasonal membership assignments, internet-banking **payment settings**, booking-request **settings**, chores, lockers, work parties, lodge instructions, lodge settings, the `LODGE_*` lodge records themselves, access roles, modules. **Not bed allocation** any more, and not the lodge display configuration — both are `lodge` for rows written from #2730 onwards |
+| `admin` | System | `support:view` | **The cross-domain catch-all** — still the largest category in the codebase (96 write sites, down from 118 in #2730). Member merge, member-lifecycle delete/archive, member import, lodge-access changes, seasonal membership assignments, internet-banking **payment settings**, booking-request **settings**, chores, lockers, work parties, lodge instructions, lodge settings, the `LODGE_*` lodge records themselves, access roles, modules. **Not bed allocation** any more, and not the lodge display configuration — both are `lodge`, for the rows already written as well as the new ones (#2730 moved the writers, #2751 moved the rows) |
 | `booking` | Booking | `support:view` + `bookings:view` | Member-facing and system booking events. Not booking *settings* — those are `admin` |
 | `account` | Membership | `support:view` + `membership:view` | Member self-service: profile edits, notification preferences, post-login landing, membership cancellation, member photos, membership applications and nomination |
 | `family` | Membership | `support:view` + `membership:view` | Family groups, partner links, login-holder changes, dependents |
 | `communication` | Membership | `support:view` + `membership:view` | Bulk email, notices, delivery suppressions, credential-email reissues, age-up parent handoffs |
 | `privacy` | Membership | `support:view` + `membership:view` | Deletion requests, member export, member-guest resolution, **admin issue reports** — even though Issue Reports is a `support` screen |
 | `payment`, `xero` | Finance | `support:view` + `finance:view` | Payments, refunds, reconciliation, Xero sync. Not payment *settings* — those are `admin` |
-| `lodge` | Lodge | `support:view` + `lodge:view` | Rosters, guest arrival/departure, **all** bed allocation (an administrator's manual, bulk, range and approval actions as well as the automatic lifecycle ones, #2730), display built-ins and the **lodge display configuration**, and **induction** — even though Induction is a `membership` screen |
+| `lodge` | Lodge | `support:view` + `lodge:view` | Rosters, guest arrival/departure, **all** bed allocation (an administrator's manual, bulk, range and approval actions as well as the automatic lifecycle ones, #2730 — including the rows recorded before that release, moved here by #2751), display built-ins and the **lodge display configuration**, and **induction** — even though Induction is a `membership` screen |
 
 That table is **derived from one map**, not maintained here by hand:
 `AUDIT_CATEGORY_CORRELATION_DOMAIN` in `src/lib/audit-categories.ts` sends every
@@ -153,15 +153,23 @@ readable to anybody new: neither `admin` nor `lodge` is a category members can s
 their own activity list, so no row crossed onto a member-facing surface, and no row's
 retention class changed.
 
-**It moved the WRITERS, not the stored rows, and both entries say so.** A row already in
-`AuditLog` keeps the category it was written with, and `buildAuditCategoryWhere` ORs its
-legacy action-name guess in only for rows whose category is NULL — so a bed-allocation row
-recorded before this release carries a hard `admin` and is returned by the **system** entry
-alone, permanently. Bed-allocation evidence is therefore split by DATE across two entries
-until the backfill in #2751 runs. The lodge entry's `description` no longer claims to hold
-it "in full" and the system entry's `scope` says it still holds the older half; a pack test
-pins both sentences. `SHARED_DESCRIPTION_TAIL` does **not** cover this case — it warns
-about rows with no category, and these rows have one.
+**#2730 moved the WRITERS and #2751 moved the STORED ROWS, and it took both.** A row
+already in `AuditLog` keeps the category it was written with, and `buildAuditCategoryWhere`
+ORs its legacy action-name guess in only for rows whose category is NULL — so between the
+two changes a bed-allocation row recorded before #2730's release carried a hard `admin` and
+was returned by the **system** entry alone, splitting bed-allocation evidence by DATE across
+two entries. `SHARED_DESCRIPTION_TAIL` does **not** cover that case: it warns about rows
+with no category, and these rows have one, which is why both entries' prose had to carry the
+split explicitly while it existed.
+
+#2751's migration `20260810020000_backfill_bed_allocation_audit_category` rewrote those
+rows — one column, on rows matched by an exact literal list of the 18 action names those 22
+sites write — so the lodge entry now holds the whole family and the system entry holds none
+of it. Both entries' prose is inverted to match and a pack test pins the new sentences in
+both directions, because the misdirection is symmetric: the lodge entry must not disclaim
+rows it now holds, and the system entry must not claim an older half it no longer has. The
+generalised rule is **INV-OPS-012** — an audit reclassification ships its backfill or files
+one — with the honest note that only the pinned population can be checked mechanically.
 
 The other 96 `admin` writers were read in the same pass: 87 were deliberately kept and
 nine are held for an owner decision, because their destinations are member-visible and the

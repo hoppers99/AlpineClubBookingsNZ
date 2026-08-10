@@ -689,13 +689,15 @@ File: [`invariants/integrations.md`](invariants/integrations.md). Prefix
 ## Operations
 
 Raw SQL and row locking, production deployment including the worked windowed
-column drop, and what may be used as test input.
+column drop, changing what values already stored in a column mean, and what may
+be used as test input.
 File: [`invariants/operations.md`](invariants/operations.md). Prefix `INV-OPS`.
 
 | ID | Covers |
 | --- | --- |
 | `INV-OPS-001` | Raw SQL never declares its own result shape: lock raw and read typed, or validate the rows |
 | `INV-OPS-002` | Production deployment must respect `docs/BLUE_GREEN_MIGRATION_POLICY.md` |
+| `INV-OPS-012` | An audit reclassification ships its backfill or files one, never neither |
 | `INV-OPS-005` | A doomed column needs `@ignore`: static defaults and implicit `RETURNING` still name it |
 | `INV-OPS-006` | Post-drop the compiler catches only `where`; `select` and `create` fail at runtime |
 | `INV-OPS-007` | The surviving guard test pins the generated client's shape and raw SQL |
