@@ -514,16 +514,24 @@ export const SINGLETONS: SingletonSpec[] = [
   {
     entity: "group-discount-setting",
     delegate: "groupDiscountSetting",
-    fields: ["minGroupSize", "summerOnly", "enabled"],
+    fields: ["minGroupSize", "summerOnly", "enabled", "applyToEdits"],
     // All non-null (@default); a present null fails the dry-run (#2200).
     // minGroupSize mirrors the admin route (booking-policies/group-discount):
     // z.number().int().min(2).max(200). The route's additional
     // minGroupSize <= lodgeCapacity check is a dynamic capacity guard, not a
     // static bound, so it is not mirrored here.
+    //
+    // `applyToEdits` travels (#2770, INV-MOD-026): it is a club POLICY decision
+    // about what a member is charged for a later edit, in exactly the same class
+    // as `enabled` and `summerOnly` beside it, and it carries no instance-local
+    // id — unlike `rateMembershipTypeId` below, which is excluded because it is
+    // an FK. A club transferring its configuration expects its own answer to
+    // "do later edits get the discount?" to arrive with the rest of the policy.
     constraints: {
       minGroupSize: { required: true, min: 2, max: 200 },
       summerOnly: { required: true },
       enabled: { required: true },
+      applyToEdits: { required: true },
     },
     excluded: {
       rateMembershipTypeId:

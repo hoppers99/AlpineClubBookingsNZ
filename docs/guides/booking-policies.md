@@ -93,7 +93,7 @@ rules — see
 
 1. Open **Group Discount** and click **Edit**.
 
-   ![Group Discount: the Enabled toggle, minimum group size, and Summer seasons only checkbox](../images/admin/admin-booking-policies-group-discount.png)
+   ![Group Discount: the Enabled toggle, minimum group size, Summer seasons only checkbox, and the Apply to nights added after booking checkbox](../images/admin/admin-booking-policies-group-discount.png)
 
 2. Tick **Enabled**, set the **Minimum group size** (the number of guests at
    which the whole booking is charged at member rates), and optionally
@@ -103,6 +103,17 @@ rules — see
    did not make. On a club that has never saved this policy, Save is available
    straight away so you can commit the defaults once and have the setup
    checklist show the group discount as configured.
+
+3. **Apply to nights added after booking** decides what happens when a booking
+   is edited later — the dates are extended, or another guest is added. Leave it
+   ticked (the default) and those new nights get the discount too, exactly as
+   they would have if they had been booked at the start. Untick it and only the
+   original booking is discounted: anything added later is charged at the
+   ordinary rate, and the member or officer editing the booking is told so
+   beside the price. Either way, nights that were already booked keep the price
+   they were booked at, so changing this setting never re-charges anyone for a
+   night they have already paid for, and never changes a booking that is not
+   being edited.
 
 ### Minimum Night Stay
 
@@ -384,6 +395,7 @@ because there is nowhere to ask yet.
 | Group discount enabled | Group Discount | Charge all guests at member rates for big bookings | off | — |
 | Minimum group size | Group Discount | Guest count that triggers the discount | 5 | 2 up to lodge capacity |
 | Summer seasons only | Group Discount | Restrict the group discount to summer | on | — |
+| Apply to nights added after booking | Group Discount | Whether a later edit (extra nights, extra guests) earns the discount on the nights it adds | on | Nights already booked keep their booked price in either state; a club with the discount off is unaffected |
 | Minimum nights | Minimum Stay | Nights required when a trigger day is included | 2 | Minimum 2 |
 | Trigger days | Minimum Stay | Which weekdays activate the rule | Sat | At least one day |
 | Exception capacity handling | Minimum Stay | Whether a future exception request holds the affected capacity while it waits | Existing rows: Hold | Required on create; Hold wins when several eligible rules apply; a hold ends when the request is decided or its deadline passes (7 days, never past the first night held, never under 24 hours) |

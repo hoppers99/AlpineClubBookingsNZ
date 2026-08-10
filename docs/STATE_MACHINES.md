@@ -864,6 +864,18 @@ discount, whichever planner ran. Season loading now goes through the one
 `toSeasonRateData` mapper, which is a price change to ordinary edits as well —
 see `INV-MOD-006`.
 
+Because that price change reaches a club on the default setting, the club now has
+a say in it (#2770). `GroupDiscountSetting.applyToEdits` decides whether a booking
+edited later earns the group discount on the nights that edit newly buys, and it
+governs this planner exactly as it governs the ordinary one: both
+`calculateModifiedPricing` and the modify-quote route read the setting once and
+hand the SAME resolved value to `buildInProgressGuestRangePlan` and to the
+ordinary pricing pass, so the two branches cannot price a night differently. The
+default is on, which is what every edit path already did, so no club's prices move
+because the switch exists; switched off, the nights an edit buys price exactly as
+they would at a club with no group discount at all, and nights a guest already
+holds keep their stored price in either state — see `INV-MOD-026`.
+
 Self-service cancellation of a **started** stay is blocked (#2029). Once
 `checkIn <= todayNZ`, the member-facing cancel route
 (`enforceStartedStayBlock`) refuses cancellation for a booking owner or Booking

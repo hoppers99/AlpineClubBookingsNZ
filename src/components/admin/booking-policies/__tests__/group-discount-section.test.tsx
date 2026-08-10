@@ -33,6 +33,9 @@ const LOADED = {
   minGroupSize: 6,
   summerOnly: true,
   enabled: false,
+  // #2770: whether a later edit earns the discount. Ticked on this fixture
+  // because the column defaults to true — the club's existing behaviour.
+  applyToEdits: true,
   configured: true,
 };
 
@@ -43,6 +46,7 @@ const UNCONFIGURED = {
   minGroupSize: 5,
   summerOnly: true,
   enabled: false,
+  applyToEdits: true,
   configured: false,
 };
 
@@ -52,6 +56,12 @@ function enabledBox() {
 
 function minSizeInput() {
   return screen.getByLabelText("Minimum group size") as HTMLInputElement;
+}
+
+function applyToEditsBox() {
+  return screen.getByLabelText(
+    "Apply to nights added after booking",
+  ) as HTMLInputElement;
 }
 
 function saveButton() {
@@ -114,6 +124,8 @@ describe("GroupDiscountSection (#2136)", () => {
     // Read-only: the loaded values, controls disabled, no Save.
     expect(enabledBox().checked).toBe(false);
     expect(enabledBox().disabled).toBe(true);
+    expect(applyToEditsBox().checked).toBe(true);
+    expect(applyToEditsBox().disabled).toBe(true);
     expect(minSizeInput().value).toBe("6");
     expect(
       screen.queryByRole("button", { name: "Save Group Discount" }),
@@ -126,13 +138,16 @@ describe("GroupDiscountSection (#2136)", () => {
     fireEvent.click(enabledBox());
     fireEvent.change(minSizeInput(), { target: { value: "9" } });
     fireEvent.click(screen.getByLabelText("Summer seasons only"));
+    fireEvent.click(applyToEditsBox());
     expect(enabledBox().checked).toBe(true);
     expect(minSizeInput().value).toBe("9");
+    expect(applyToEditsBox().checked).toBe(false);
     expect(fetchMock).toHaveBeenCalledTimes(1); // the mount load only
 
     fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
     expect(enabledBox().checked).toBe(false);
     expect(minSizeInput().value).toBe("6");
+    expect(applyToEditsBox().checked).toBe(true);
     expect(
       (screen.getByLabelText("Summer seasons only") as HTMLInputElement)
         .checked,
@@ -157,7 +172,12 @@ describe("GroupDiscountSection (#2136)", () => {
   it("Save PUTs the staged draft and re-seeds from the SERVER response", async () => {
     // The server stores something other than what was submitted; the form must
     // end up showing the server's value, not the draft's.
-    const stored = { minGroupSize: 4, summerOnly: false, enabled: true };
+    const stored = {
+      minGroupSize: 4,
+      summerOnly: false,
+      enabled: true,
+      applyToEdits: false,
+    };
     const fetchMock = vi.fn(async (_url: string, init?: RequestInit) => {
       if (init?.method === "PUT") {
         return new Response(
@@ -191,6 +211,7 @@ describe("GroupDiscountSection (#2136)", () => {
       minGroupSize: 9,
       summerOnly: true,
       enabled: true,
+      applyToEdits: true,
     });
 
     // Back to read-only, showing the STORED values (4 / off), not the draft's.
@@ -203,6 +224,9 @@ describe("GroupDiscountSection (#2136)", () => {
         .checked,
     ).toBe(false);
     expect(enabledBox().checked).toBe(true);
+    // The server said the club has switched later edits off; the form must show
+    // the server's answer, not the draft's (#2770).
+    expect(applyToEditsBox().checked).toBe(false);
   });
 
   it("canEdit=false disables Edit and shows the view-only notice", async () => {
@@ -263,7 +287,13 @@ describe("GroupDiscountSection (#2136)", () => {
     const fetchMock = vi.fn(async (_url: string, init?: RequestInit) => {
       if (init?.method === "PUT") {
         return new Response(
-          JSON.stringify({ id: "default", minGroupSize: 5, summerOnly: true, enabled: false }),
+          JSON.stringify({
+            id: "default",
+            minGroupSize: 5,
+            summerOnly: true,
+            enabled: false,
+            applyToEdits: true,
+          }),
           { status: 200 },
         );
       }
@@ -289,6 +319,7 @@ describe("GroupDiscountSection (#2136)", () => {
       minGroupSize: 5,
       summerOnly: true,
       enabled: false,
+      applyToEdits: true,
     });
   });
 
@@ -299,7 +330,13 @@ describe("GroupDiscountSection (#2136)", () => {
     const fetchMock = vi.fn(async (_url: string, init?: RequestInit) => {
       if (init?.method === "PUT") {
         return new Response(
-          JSON.stringify({ id: "default", minGroupSize: 5, summerOnly: true, enabled: false }),
+          JSON.stringify({
+            id: "default",
+            minGroupSize: 5,
+            summerOnly: true,
+            enabled: false,
+            applyToEdits: true,
+          }),
           { status: 200 },
         );
       }
@@ -323,6 +360,78 @@ describe("GroupDiscountSection (#2136)", () => {
         fetchMock.mock.calls.filter(([, init]) => init?.method === "PUT"),
       ).toHaveLength(1),
     );
+  });
+
+  it("stages the edit-time switch on its own, and the dirty gate tracks it (#2770)", async () => {
+    // Its own draft key, its own term in `isDirty`. Without the second, an admin
+    // who changed ONLY this control would find Save greyed out and the switch
+    // unreachable — the same defect #2142 fixed for the whole section.
+    const fetchMock = vi.fn(async (_url: string, init?: RequestInit) => {
+      if (init?.method === "PUT") {
+        return new Response(
+          JSON.stringify({
+            id: "default",
+            minGroupSize: 6,
+            summerOnly: true,
+            enabled: false,
+            applyToEdits: false,
+          }),
+          { status: 200 },
+        );
+      }
+      return new Response(JSON.stringify(LOADED), { status: 200 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    await renderLoaded();
+
+    fireEvent.click(screen.getByRole("button", { name: "Edit" }));
+    expect(saveButton().disabled).toBe(true);
+
+    // Untick it and nothing else: the draft is dirty on this field alone.
+    fireEvent.click(applyToEditsBox());
+    expect(applyToEditsBox().checked).toBe(false);
+    expect(saveButton().disabled).toBe(false);
+
+    // Re-tick it and Save closes again — the gate compares, it is not a
+    // has-been-touched flag.
+    fireEvent.click(applyToEditsBox());
+    expect(saveButton().disabled).toBe(true);
+
+    fireEvent.click(applyToEditsBox());
+    fireEvent.click(saveButton());
+    await waitFor(() =>
+      expect(screen.getByText(/Group discount settings saved/i)).toBeTruthy(),
+    );
+
+    const putCalls = fetchMock.mock.calls.filter(
+      ([, init]) => init?.method === "PUT",
+    );
+    expect(putCalls).toHaveLength(1);
+    expect(JSON.parse(String(putCalls[0][1]?.body))).toEqual({
+      minGroupSize: 6,
+      summerOnly: true,
+      enabled: false,
+      applyToEdits: false,
+    });
+    expect(applyToEditsBox().checked).toBe(false);
+  });
+
+  it("shows the switch ticked when a response predates the column, because that is the behaviour in force (#2770)", async () => {
+    // A fork mid-upgrade: the GET answers without `applyToEdits`. The behaviour
+    // actually running there is the old always-on one, so showing the box ticked
+    // is what is TRUE — and failing the other way would tell an admin their club
+    // had stopped discounting edits when it had not.
+    const withoutColumn: Record<string, unknown> = { ...LOADED };
+    delete withoutColumn.applyToEdits;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(
+        async () =>
+          new Response(JSON.stringify(withoutColumn), { status: 200 }),
+      ),
+    );
+    await renderLoaded();
+    expect(applyToEditsBox().checked).toBe(true);
   });
 
   it("a FAILED load leaves Save gated, so it cannot blind-write the defaults (#2142)", async () => {
