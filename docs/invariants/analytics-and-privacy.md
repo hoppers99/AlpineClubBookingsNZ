@@ -226,52 +226,110 @@ from that release onward and is not reversible for rows already written.
   `src/lib/audit-query.ts` is a reviewed subset, deliberately hand-listed rather
   than derived, so adding a category to the canonical taxonomy cannot publish it
   to members as a side effect. Re-classifying an existing writer still can, and
-  that is the crossing to argue for explicitly: a writer that passes
-  `subjectMemberId` and moves into `account`, `booking`, `payment`, `family`,
-  `security`, `communication` or `privacy` starts appearing on that member's own
-  timeline. **Whether a member should see a given event is decided per event at
-  the writing site and denied by default** (the pattern #2695 settled for
-  free-text notes). Do not reach for a member-visible category in order to
-  achieve visibility, and do not accept one as the price of tidying labels: audit
-  rows are append-only, so publishing administrative activity to members cannot
-  be quietly undone.
-- **All three writers of an officer editing somebody else's member record file
-  `admin`, and the join is `admin` for that reason** (#2755). The member detail
-  page (`admin.member.updated` / `.deactivated` / `.reactivated`,
-  `src/lib/admin-member-detail-service.ts`) and both branches of the bulk screen
-  (`member.bulk-set-role`, `member.bulk-deactivate`, `member.bulk-reactivate`,
-  `src/app/api/admin/members/bulk-update/route.ts`) are one business domain — the
-  administration of that record — however many screens reach it. All three pass a
-  subject member, so unifying on either member-visible category the bulk screen
-  used would have published an officer's edits to the member concerned. **The
-  cost of choosing `admin` is stated rather than glossed, because this narrows in
-  two directions at once:** the subject member no longer sees a bulk deactivation
-  or bulk role change of their own account (they already saw nothing when an
-  officer did the same thing from the member page, so the outcome is uniform
-  invisibility rather than visibility decided by screen), and the two rows move
-  from `support` + `membership` to `support` alone, so a support-only operator
-  gains them — which is the gate the member-page equivalent has always answered
-  to. Retention does not move: all six actions classify `critical` under the old
-  and the new value alike. Rows already written keep their stored category, so
-  nothing is withdrawn from a member who has already seen it, and bulk
-  member-record history is split by date exactly as bed-allocation history is
-  (#2751 holds the backfill question for both).
-- **`/api/profile` is deliberately not part of that set.** A member editing their
-  own record (`member.profile.updated`) files `account` and stays member-visible,
-  because its actor IS its subject and there is no on-behalf path. Same fields,
-  different business domain: self-service rather than administration. Filing it
-  `admin` would hide a member's own action from their own timeline, which is a
-  narrowing in the one direction nobody has argued for.
+  that is the crossing to argue for explicitly.
+  **The test for whether a re-classification crosses that boundary is
+  `buildMemberAuditLogWhere`, not the presence of a subject.** A row reaches the
+  subject member's own timeline if it passes `subjectMemberId` for them, **or**
+  leaves `subjectMemberId` null while passing `targetId`, `memberId` or
+  `actorMemberId` for them — four legs, pinned in `src/lib/__tests__/audit.test.ts`.
+  So a writer that passes no subject at all still reaches a member, which is
+  precisely the case at the two bulk writers below; "it has no subject member" is
+  not a reason to treat a move into `account`, `booking`, `payment`, `family`,
+  `security`, `communication` or `privacy` as invisible.
+  **Whether a member should see a given event is meant to be declared per event at
+  the writing site and denied by default — that is DECIDED (#2695, 9 Aug 2026) and
+  NOT YET BUILT.** No such mechanism exists in the tree today: member visibility is
+  entirely a function of the category, so until #2695 lands the category is the
+  only lever there is, and an event withdrawn by a re-classification has no
+  declaration path in the meantime. Do not reach for a member-visible category in
+  order to achieve visibility, and do not accept one as the price of tidying
+  labels: audit rows are append-only, so publishing administrative activity to
+  members cannot be quietly undone.
+- **All three writers of the SIX MEMBER-RECORD ACTIONS file `admin`, and the join
+  is `admin` for that reason** (#2755). The six are `admin.member.updated` /
+  `.deactivated` / `.reactivated` from the member detail page
+  (`src/lib/admin-member-detail-service.ts`) and `member.bulk-set-role` /
+  `member.bulk-deactivate` / `member.bulk-reactivate` from the bulk screen
+  (`src/app/api/admin/members/bulk-update/route.ts`) — editing a member's fields,
+  activating, deactivating, or changing what they may do. That is one business
+  domain, the administration of that record, however many screens reach it. All
+  three rows reach the subject member's own timeline (the detail writer by subject,
+  the two bulk writers by the null-subject `targetId` leg), so unifying on either
+  member-visible category the bulk screen used would have published an officer's
+  edits to the member concerned. **The cost of choosing `admin` is stated rather
+  than glossed, because this narrows in two directions at once:** the subject
+  member no longer sees a bulk deactivation or bulk role change of their own
+  account (they already saw nothing when an officer did the same thing from the
+  member page, so the outcome is uniform invisibility rather than visibility
+  decided by screen), and the two rows move from `support` + `membership` to
+  `support` alone, so a support-only operator gains them — which is the gate the
+  member-page equivalent has always answered to. Retention does not move: all six
+  actions classify `critical` under the old and the new value alike. Rows already
+  written keep their stored category, so nothing is withdrawn from a member who has
+  already seen it, and bulk member-record history is split by date the way
+  bed-allocation history is; the two backfills are separate questions and separate
+  issues, because #2751's bed-allocation rows move between two member-invisible
+  categories while these rows are member-visible today, so rewriting them would
+  **withdraw** something a member can see (#2763).
+
+  **This rule is scoped to those six actions. It is not "an officer acted, so
+  `admin`",** and it must never be read that way, because "who acted" is the
+  discriminator the first bullet forbids. The discriminator here is the artefact
+  and the domain: administering somebody's membership record is `admin`; the
+  member's own content and the member's own requests stay in the member's domain
+  whoever touched them. Three shipped groups make the boundary concrete, and all
+  three are deliberate:
+  - **`/api/profile` is not part of the set.** A member editing their own record
+    (`member.profile.updated`) files `account` and stays member-visible, because
+    its actor IS its subject and there is no on-behalf path. Same fields,
+    different business domain: self-service rather than administration. Filing it
+    `admin` would hide a member's own action from their own timeline, a narrowing
+    in the one direction nobody has argued for.
+  - **The member-photo pair stays `account` and stays member-visible even when an
+    officer does it for the member** (`member_photo.upload` / `.remove`,
+    `src/app/api/members/[id]/photo/route.ts`). This is #2581's own worked example
+    — the site that used to read `actor.onBehalf ? "admin" : "account"` — and its
+    resolution was `account` unconditionally, on purpose, so the member sees an
+    administrator's change to their photo. The artefact is the member's own photo
+    whoever uploaded it. Note the coexistence, since it looks like a contradiction
+    and is not: the admin member-detail page renders the photo editor in
+    `mode="admin"`, so on one screen a field edit files `admin` and a photo change
+    files `account`. That is the domain following the artefact rather than the
+    screen.
+  - **The officer-driven cancellation writers stay `account`**
+    (`membership_cancellation.admin_requested`, `.approval_blocked`,
+    `.participant_cancelled`, `.participant_rejected`,
+    `.confirmation_token_reissued`). The member is party to the decision, usually
+    having requested it, so the row belongs on their timeline for the same reason
+    their own `membership_cancellation.requested` does.
+
+  All of these are pinned from the tree in
+  `OFFICER_DRIVEN_MEMBER_VISIBLE_WRITERS_2755`
+  (`scripts/audit/audit-writer-census-manifest.ts`), so citing this rule to move
+  one of them to `admin` fails CI with the withdrawal named. Moving them is a
+  readership change and needs the owner's decision, exactly as this one did — not
+  a sweep, and not an inference from a rule that never covered them.
+- **#2755 satisfies #2695's acceptance criterion 5 by re-classification, not by
+  gating, and that is not the same thing.** #2695 lists `member.bulk-deactivate` —
+  whose `details` is the plain sentence `Bulk deactivate: Jane Doe (jane@…)` — as
+  one of three writers whose free text reaches a member timeline, and asks for it
+  to stop. Filing the writer `admin` does stop it, because the row leaves the
+  member-visible query altogether. But the mechanism #2695 is about is untouched:
+  `src/lib/audit-query.ts` still returns `details` on a shape test
+  (`hasLegacyMetadata ? null : log.details`) rather than an audience test, and
+  `member.deletion_rejected` and `member.credit.adjustment.approve` still hand a
+  member an administrator's free text. Do not treat that criterion as delivered.
 - **Two groups stay `admin` as a recorded decision, not as an unexamined
   default.** #2730 reviewed all 118 writers that said `admin` and moved 22 to
   `lodge`; the rule it actually applied was *did this site split a subsystem* —
   did some other writer of the same objects already answer to a different gate,
   so that no operator could get a complete answer — and **not** *does it name a
   lodge* and **not** *is the route gated `lodge:edit`*. Under that rule these stay:
-  - **The fifteen lodge-gated operational sites** — chores (3), lockers (4), lodge
-    instructions (2), lodge settings (1), the `LODGE_*` lodge records themselves
-    (2, including `LODGE_CREATED`, `LODGE_UPDATED`, `LODGE_SETTINGS_UPDATED` and
-    `LODGE_INSTRUCTION_UPDATED`) and work parties (3). They pass the surface
+  - **The fifteen lodge-gated operational sites** — chores (3), lockers (4),
+    `LODGE_INSTRUCTION_UPDATED` (2), `LODGE_SETTINGS_UPDATED` (1), the `LODGE_*`
+    lodge records themselves — `LODGE_CREATED` and the `LODGE_UPDATED` /
+    `LODGE_ACTIVATED` / `LODGE_DEACTIVATED` writer (2) — and work parties (3).
+    They pass the surface
     tests — `entityType: "Lodge"` or a `lodge:*` route — but the group is
     **uniform** at `admin`, so moving it would not close a two-gates-for-one-thing
     split; it would open a fresh readership question of its own size, taking

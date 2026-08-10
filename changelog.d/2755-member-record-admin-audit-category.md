@@ -19,10 +19,18 @@
   Making these entries visible to members *everywhere* was the alternative, and
   it is a bigger decision than tidying labels: it would publish an
   administrator's edits of somebody's record to that person, and audit entries
-  are never rewritten, so it could not be undone afterwards. That decision is
-  being taken deliberately and per kind of entry instead. **A member editing
-  their own profile is untouched** — that stays under Account, on their own
-  timeline, because it is the member's own action rather than an officer's.
+  are never rewritten, so it could not be undone afterwards. It will be decided per
+  kind of entry, where the entry is recorded — a decision already taken in
+  principle but **not built yet**, so for now the category is the only control and
+  these two kinds of entry are simply off the member's timeline.
+
+  **Three things an officer does are deliberately untouched**, because what they
+  affect belongs to the member rather than to the administration of their record:
+  a member editing their own profile stays under Account, on their own timeline; an
+  officer changing a member's **photo** for them stays under Account and stays
+  visible to that member, which was itself a deliberate correction in an earlier
+  release; and an officer's decision on a member's **cancellation** stays under
+  Account, because the member asked for it and should see the answer.
 
   **What an operator will notice.** Bulk deactivations and bulk role changes now
   correlate in AI Diagnostics with Support access alone, where the bulk
@@ -38,7 +46,10 @@
   split by date until that older data is revisited, the same way bed-allocation
   history has been since the previous release. The AI Diagnostics tools' own
   wording says this out loud, so a partial answer is never reported as a complete
-  one.
+  one. Whether to rewrite those older entries is a question of its own, and the
+  recommendation is to leave them alone: rewriting would take entries away from
+  members who can see them today, which is not something the club should do
+  quietly.
 
   Two groups of settings that also record under Admin were re-examined and
   deliberately left there, with the reason now written into the club's invariant

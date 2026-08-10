@@ -1065,6 +1065,15 @@ export type AuditWriterCensus = {
   sqlStatements: readonly AuditSqlStatement[];
   /** Files scanned, for the "did the scan actually run" assertion. */
   filesScanned: number;
+  /**
+   * Every scanned source file, repo-relative and posix-separated, sorted.
+   *
+   * Exposed so a contract test can ask questions of the SAME corpus the census
+   * measured rather than walking the tree itself with its own exclusions — a
+   * gate keyed on "which files name this action" is only as trustworthy as its
+   * agreement with the census about what the tree is (#2755).
+   */
+  files: readonly string[];
   /** Migration `.sql` files scanned, for the same reason. */
   sqlFilesScanned: number;
 };
@@ -1133,6 +1142,7 @@ export function scanAuditWriterCensus(
     sinkCounts,
     sqlStatements,
     filesScanned: files.length,
+    files: files.map((file) => toPosix(relative(repoRoot, file))),
     sqlFilesScanned: sqlFiles.length,
   };
 }

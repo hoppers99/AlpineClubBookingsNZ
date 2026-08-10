@@ -172,21 +172,28 @@ there was a real one, and the fifteen lodge-gated sites that are an open questio
 than a settled keep.
 
 **One of those nine was resolved in #2755, and it moved TWO more writers IN rather than
-out.** An officer editing somebody else's member record was filed by the SCREEN they
-used — `admin` from the member detail page, `account` and `security` from the bulk
-screen — so one business act answered to two different correlation entries and a
-category-scoped reader saw part of the picture with nothing to say so. All three now say
-`admin`, which keeps them in this entry. `account` and `security` are both member-visible
-and all three writers pass a subject member, so unifying on either would have published
-an officer's edits of a member's record on that member's own timeline; whether a member
-sees a given event is now an explicit per-event declaration (#2695) instead. **The cost,
+out.** Editing, activating, deactivating or re-roling a member's record from an officer
+screen was filed by the SCREEN used — `admin` from the member detail page, `account` and
+`security` from the bulk screen — so one business act answered to two different
+correlation entries and a category-scoped reader saw part of the picture with nothing to
+say so. All three now say `admin`, which keeps them in this entry. `account` and
+`security` are both member-visible and all three rows reach the subject member's own
+timeline, so unifying on either would have published an officer's edits of a member's
+record on that member's own timeline; declaring visibility per event instead is decided
+(#2695) but not yet built, so until it lands the category is the only lever. **The cost,
 stated plainly:** the bulk activate/deactivate rows move from `support` + `membership` to
 `support` alone, so a support-only operator gains them — the same gate the member-page
 equivalent has always answered to — and the subject member stops seeing them on their own
 timeline. As with bed allocation this moved the WRITERS and not the stored rows, so bulk
 member-record evidence recorded before the release is returned by the **membership** entry
-and stays member-visible: split by date, and #2751 holds the backfill question for it as
-well.
+and stays member-visible: split by date, with the backfill question filed as #2763 (and
+deliberately not folded into #2751, because rewriting these rows would withdraw entries a
+member can see today, which bed allocation's rewrite would not).
+
+The rule this produced (`INV-PRIV-012`) is scoped to those six action names, **not** to
+"an officer acted": a member's photo changed by an officer on their behalf, and an
+officer's decisions on a member's cancellation, stay `account` and stay in the
+**membership** entry on purpose.
 
 The consequence to keep in mind: a correlation tool answering "nothing matched" is
 answering about **its own categories**, not about the domain. A Membership Officer

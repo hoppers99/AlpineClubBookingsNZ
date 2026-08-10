@@ -611,13 +611,29 @@ export async function POST(req: NextRequest) {
     // hat, and it is the defect #2581's own rule exists to forbid.
     //
     // WHY THE JOIN IS `admin` AND NOT `account`. `account` and `security` are
-    // both member-visible and both these writers pass a subject member, so
-    // unifying on either would publish an officer's edits of a member's record
-    // to that member's own timeline. Whether a member should see a given event
-    // is a separate, explicit declaration (#2695), decided per event at the
-    // writing site and denied by default — never a side effect of tidying
-    // category labels. `admin` is the join that changes no member's readership
-    // in the widening direction.
+    // both member-visible and both these rows reach the subject member's own
+    // timeline, so unifying on either would publish an officer's edits of a
+    // member's record to that member. Note HOW they reach it, because it is not
+    // what it looks like: these two writers pass NO `subjectMemberId` at all —
+    // only `memberId` (the officer) and `targetId` (the member) — and arrive
+    // through `buildMemberAuditLogWhere`'s null-subject `targetId` leg
+    // (`src/lib/audit-query.ts`). "It has no subject member" is therefore not a
+    // reason to think a re-classification here is invisible; `INV-PRIV-012`
+    // states the real predicate. Whether a member should see a given event is
+    // meant to become a separate explicit declaration at the writing site,
+    // denied by default: #2695 DECIDED that on 9 Aug 2026 and it is NOT BUILT
+    // YET, so until it lands the category is the only lever there is and these
+    // two events are simply invisible to the member. `admin` is the join that
+    // changes no member's readership in the widening direction.
+    //
+    // ONE SIDE EFFECT WORTH NAMING, so nobody reads it as a fix. #2695's
+    // acceptance criterion 5 asks that `member.bulk-deactivate` stop exposing
+    // another member's name and email to a member's own timeline — the `details`
+    // sentence below carries both, and the acting officer's own timeline shows
+    // it. This change makes that true by removing the row from the member-visible
+    // query, NOT by gating the free text: `audit-query.ts` still decides
+    // `details` on a shape test rather than an audience test. #2695 is still
+    // needed.
     //
     // WHAT IT DOES COST, stated rather than glossed: these two sites NARROW.
     // A member could see a bulk deactivation of their own account on their own
@@ -626,7 +642,9 @@ export async function POST(req: NextRequest) {
     // alone while `account` needs `membership:view` too, so a support-only
     // operator gains these rows — which is exactly the gate the member-page
     // equivalent already answered to. Rows already written keep their stored
-    // category, so nothing is withdrawn from a member who has already seen it.
+    // category, so nothing is withdrawn from a member who has already seen it;
+    // whether to rewrite them is #2763, and the answer is not obvious, because
+    // rewriting WOULD withdraw rows a member can see today.
     //
     // STILL TWO CALLS WITH LITERAL CATEGORIES, not one call with a conditional.
     // The census contract pins that no production writer picks its category with

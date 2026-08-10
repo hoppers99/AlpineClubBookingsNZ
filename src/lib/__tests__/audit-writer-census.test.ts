@@ -52,8 +52,11 @@ import {
   AUDIT_CENSUS_TOTALS,
   AUDIT_WRITER_WRAPPERS,
   AUDIT_WRITERS_WITHOUT_ENTITY_IDENTIFIER,
+  MEMBER_RECORD_ACTION_LITERAL_FILES_2755,
   MEMBER_RECORD_ADMIN_ACTIONS_2755,
   MEMBER_RECORD_ADMIN_CATEGORIES_2755,
+  MEMBER_RECORD_ADMIN_SURFACES_2755,
+  OFFICER_DRIVEN_MEMBER_VISIBLE_WRITERS_2755,
   REVIEWED_ADMIN_CATEGORIES_2730,
   UNCATEGORISED_AUDIT_WRITERS,
 } from "../../../scripts/audit/audit-writer-census-manifest";
@@ -250,10 +253,14 @@ describe("audit writer census (#2581)", { timeout: 180_000 }, () => {
     ).toEqual(MEMBER_RECORD_ADMIN_CATEGORIES_2755);
 
     // Agreement alone is not the property that matters — "all three agree" is
-    // equally true of the wrong answer. Every one of these writers passes a
-    // SUBJECT member, so a member-visible destination publishes an officer's edit
-    // of a member's record on that member's own timeline, and audit rows are
-    // append-only.
+    // equally true of the wrong answer. All three of these rows REACH the subject
+    // member's own timeline, so a member-visible destination publishes an
+    // officer's edit of a member's record to that member, and audit rows are
+    // append-only. Note HOW they reach it, because it is not uniform and the
+    // difference misleads: the detail writer passes `subjectMemberId`, while both
+    // bulk writers pass no subject at all and arrive through
+    // `buildMemberAuditLogWhere`'s null-subject `targetId` leg (pinned in
+    // `audit.test.ts`). "Passes a subject" is not the boundary test.
     const memberVisible = new Set<string>(
       MEMBER_AUDIT_TIMELINE_CATEGORY_OPTIONS.map((option) => option.value),
     );
@@ -261,12 +268,13 @@ describe("audit writer census (#2581)", { timeout: 180_000 }, () => {
       Object.values(MEMBER_RECORD_ADMIN_CATEGORIES_2755).filter((category) =>
         memberVisible.has(category),
       ),
-      "A member-record admin writer now files a MEMBER-VISIBLE category. Every " +
-        "one of these passes subjectMemberId, so this publishes an " +
-        "administrator's edits of a member's record to that member's own " +
-        "timeline. Whether a member sees a given event is a separate explicit " +
-        "declaration at the writing site (#2695), denied by default — never a " +
-        "side effect of tidying category labels, and not reversible afterwards.",
+      "A member-record admin writer now files a MEMBER-VISIBLE category. All " +
+        "three of these rows reach the subject member's own timeline, so this " +
+        "publishes an administrator's edits of a member's record to that member. " +
+        "Whether a member sees a given event is meant to become a separate " +
+        "explicit declaration at the writing site, denied by default — #2695 " +
+        "decided that and it is NOT BUILT YET, so today the category is the only " +
+        "lever, and this is not reversible afterwards.",
     ).toEqual([]);
 
     // One category, stated as a set, so unifying all three onto the WRONG value
@@ -291,16 +299,61 @@ describe("audit writer census (#2581)", { timeout: 180_000 }, () => {
       interpolates over a zod enum), so they cannot match this scan themselves —
       which is why the enum is re-derived from the route's own source below rather
       than trusted from the list.
+
+      THE HOLE THIS USED TO HAVE, measured rather than reasoned (review of #2755).
+      The census resolves a non-literal action to `(dynamic) <expression>`, so a
+      writer whose action came from a constant escaped a gate that compared action
+      strings: a new file with `const A = "admin.member.deactivated"` and
+      `category: "account"` passed this test outright, leaving only the census
+      distribution counts to object — and their message invites bumping `account`
+      by one. Two additions close it. `resolveActionLiteral` resolves ONE level of
+      same-file `const` indirection, and the corpus gate below fails when any
+      non-test file in the census's own scan NAMES one of these literals, which
+      catches a writer that assembles the string from an imported constant too.
     */
     const pinned = new Set(MEMBER_RECORD_ADMIN_ACTIONS_2755);
+
+    /*
+      One level of same-file `const` indirection, and no more.
+
+      Deliberately not a general evaluator: it reads the site's own file for
+      `const NAME = "literal"`, which is the house style for an action constant at
+      every dynamic-action site in the census (`XERO_MEMBER_IMPORT_*_ACTION`,
+      `SEASONAL_MEMBERSHIP_*_ACTION`, `TOKEN_EMAIL_RECOVERY_ACTION`). Anything it
+      cannot resolve is left as the census reported it and is caught by the corpus
+      gate below instead, so an unresolvable expression fails loudly somewhere
+      rather than passing quietly here.
+    */
+    const sourceCache = new Map<string, string>();
+    const readSource = (file: string): string => {
+      const cached = sourceCache.get(file);
+      if (cached !== undefined) return cached;
+      const text = readFileSync(join(process.cwd(), file), "utf8");
+      sourceCache.set(file, text);
+      return text;
+    };
+    const resolveActionLiteral = (site: AuditWriteSite): string => {
+      const identifier = /^\(dynamic\) ([A-Za-z_$][\w$]*)$/.exec(site.action);
+      if (!identifier) return site.action;
+      const declared = new RegExp(
+        String.raw`\b(?:const|let|var)\s+` +
+          identifier[1] +
+          String.raw`\s*(?::[^=\n]+)?=\s*"([^"]+)"`,
+      ).exec(readSource(site.file));
+      return declared?.[1] ?? site.action;
+    };
+
     const offenders = census()
       .sites.filter(
         (site) =>
-          pinned.has(site.action) &&
+          pinned.has(resolveActionLiteral(site)) &&
           !(site.id in MEMBER_RECORD_ADMIN_CATEGORIES_2755) &&
           describeCategory(site.category) !== "admin",
       )
-      .map((site) => `${site.id} → ${site.action} → ${describeCategory(site.category)}`);
+      .map(
+        (site) =>
+          `${site.id} → ${resolveActionLiteral(site)} → ${describeCategory(site.category)}`,
+      );
 
     expect(
       offenders,
@@ -312,6 +365,26 @@ describe("audit writer census (#2581)", { timeout: 180_000 }, () => {
         "different domain — as `/api/profile` is, because there the actor is the " +
         "subject.",
     ).toEqual([]);
+
+    // The corpus gate: which FILES name these literals at all. Keyed on the
+    // census's own scan list, so this gate and the census cannot disagree about
+    // what the tree is. It fires on a mention rather than on a write, which is the
+    // point — a mention is cheap to review, and a new writer cannot avoid one.
+    const literalFiles = census()
+      .files.filter((file) =>
+        MEMBER_RECORD_ADMIN_ACTIONS_2755.some((action) =>
+          readSource(file).includes(action),
+        ),
+      )
+      .sort();
+    expect(
+      literalFiles,
+      "A file that is not on the reviewed list names one of the six member-record " +
+        "action literals. If it writes audit rows it must file `admin` " +
+        "(`INV-PRIV-012`) — a fourth screen for this act does not get its own " +
+        "answer. If it only mentions the name, add it to " +
+        "MEMBER_RECORD_ACTION_LITERAL_FILES_2755.",
+    ).toEqual([...MEMBER_RECORD_ACTION_LITERAL_FILES_2755].sort());
 
     // And the bulk half of the action family is re-derived from the route's own
     // zod enum, so a fourth bulk action cannot mint an unpinned member-record
@@ -359,6 +432,78 @@ describe("audit writer census (#2581)", { timeout: 180_000 }, () => {
       "The member detail service can write an `admin.member.*` audit action that " +
         "MEMBER_RECORD_ADMIN_ACTIONS_2755 does not name. Add it there, and check " +
         "it files `admin` like its siblings.",
+    ).toEqual([]);
+  });
+
+  it("names every MEMBER-VISIBLE writer on the officer member-record surfaces, and keeps the named exceptions visible", () => {
+    /*
+      The gate keyed on WHERE a writer lives rather than on what it is called
+      (#2755 review), and it exists because the two gates above are both keyed on
+      the six action names. A fourth screen that invents a new name for the same act
+      — `admin.member.archived` on a quick-action route — satisfies both while
+      publishing an officer's edit of a member's record to that member. Today the
+      only assertion that would notice is the `account` distribution count, whose
+      message reads "a reclassification is visible" and invites bumping the number.
+
+      IT ALSO PINS THE OTHER DIRECTION, which is the half a category sweep gets
+      wrong. `INV-PRIV-012` is scoped to the six member-record actions, NOT to
+      "an officer acted": the member-photo pair and the cancellation-review writers
+      record an officer acting on somebody else's record and stay member-visible on
+      reviewed decisions (#2581 chose that for the photo on purpose). Measured here,
+      so a lane citing the unification to "finish the job" and move them to `admin`
+      fails with the withdrawal named instead of silently taking rows off members'
+      timelines.
+    */
+    const memberVisible = new Set<string>(
+      MEMBER_AUDIT_TIMELINE_CATEGORY_OPTIONS.map((option) => option.value),
+    );
+
+    // (a) Exhaustive over the surfaces: every member-visible writer there is named.
+    const unnamedOnSurface = census()
+      .sites.filter(
+        (site) =>
+          MEMBER_RECORD_ADMIN_SURFACES_2755.some((surface) =>
+            site.file.startsWith(surface),
+          ) &&
+          memberVisible.has(describeCategory(site.category)) &&
+          !(site.id in OFFICER_DRIVEN_MEMBER_VISIBLE_WRITERS_2755),
+      )
+      .map((site) => `${site.id} → ${describeCategory(site.category)}`);
+    expect(
+      unnamedOnSurface,
+      "A writer on an officer member-record surface files a MEMBER-VISIBLE " +
+        "category and is not one of the reviewed exceptions. That publishes an " +
+        "officer's action on a member's record to that member, and audit rows are " +
+        "append-only. If it is member-record administration it files `admin` " +
+        "(`INV-PRIV-012`). If it is genuinely a narrower domain that a member " +
+        "should see, add it to OFFICER_DRIVEN_MEMBER_VISIBLE_WRITERS_2755 with the " +
+        "reason — and say so in the changelog, because it is a readership change.",
+    ).toEqual([]);
+
+    // (b) The named exceptions still say what they are pinned to say. Measured from
+    // the tree, so moving one to `admin` fails here rather than only moving a count.
+    const measured = Object.fromEntries(
+      census()
+        .sites.filter(
+          (site) => site.id in OFFICER_DRIVEN_MEMBER_VISIBLE_WRITERS_2755,
+        )
+        .map((site) => [site.id, describeCategory(site.category)]),
+    );
+    expect(
+      measured,
+      "A reviewed member-visible officer-driven writer changed category or moved. " +
+        "If it moved to `admin` that WITHDRAWS a row from the subject member's own " +
+        "timeline — the direction `INV-PRIV-012` does not authorise, because the " +
+        "rule is scoped to the six member-record actions and these are its named " +
+        "exceptions. That needs the owner's decision, not a sweep.",
+    ).toEqual(OFFICER_DRIVEN_MEMBER_VISIBLE_WRITERS_2755);
+
+    // And every pinned exception really is member-visible, so the map cannot be
+    // quietly turned into a list of hidden writers while still passing (b).
+    expect(
+      Object.values(OFFICER_DRIVEN_MEMBER_VISIBLE_WRITERS_2755).filter(
+        (category) => !memberVisible.has(category),
+      ),
     ).toEqual([]);
   });
 
@@ -412,10 +557,13 @@ describe("audit writer census (#2581)", { timeout: 180_000 }, () => {
       their own account on their own activity list. They already saw NOTHING when
       an officer did the same thing from the member detail page, so the outcome is
       uniform invisibility rather than visibility decided by which screen the
-      officer opened, and the visibility question itself is now an explicit
-      per-event declaration (#2695) rather than a by-product of a label. Rows
-      already written keep their stored category, so nothing is withdrawn from a
-      member who has already seen it.
+      officer opened. The visibility question itself is meant to become an explicit
+      per-event declaration rather than a by-product of a label — #2695 decided
+      that on 9 Aug 2026 and it is NOT BUILT YET, so between this release and that
+      one these two events have no declaration path and are simply invisible to the
+      member. Rows already written keep their stored category, so nothing is
+      withdrawn from a member who has already seen it (#2763 holds that data
+      question).
     */
     // MEASURED from the tree, not read back out of the manifest, deliberately.
     // A pin that reads its own table only bites when somebody edits the table;

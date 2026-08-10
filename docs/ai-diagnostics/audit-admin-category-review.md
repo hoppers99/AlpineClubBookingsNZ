@@ -369,8 +369,10 @@ moving the OTHER TWO writers of the same act — both branches of
 `bulk-update/route.ts` — **into** `admin`, rather than by moving this one out.
 The split is gone and nothing crossed onto a member-facing surface. Its section
 below is kept and updated in place rather than deleted, because the comparison it
-sets out is the reasoning, and the six remaining held sites are still held on
-exactly the grounds it states. `INV-PRIV-012` is the rule that came out of it.
+sets out is the reasoning, and the **eight** remaining held sites — the six
+`member_lifecycle` sites and the two family-suggestion sites below — are still
+held on exactly the grounds it states. `INV-PRIV-012` is the rule that came out of
+it.
 
 ### `member_lifecycle.delete_*` and `archive_*` — 6 sites
 
@@ -427,14 +429,29 @@ officer deactivated them from the member page.
 
 **#2755 closed it by moving the bulk screen's two branches to `admin`, not by
 moving this site out.** The rule is that category follows the business domain
-affected, and an officer editing somebody else's member record is one domain: the
-administration of that record, however many screens reach it. Both alternatives
-were member-visible and all three writers pass `subjectMemberId`, so unifying on
-either would have published an officer's edits **to the member the record is
-about** — and audit rows are append-only, so that is not quietly reversible.
-Whether a member should see a given event is now an explicit per-event
-declaration at the writing site (#2695), denied by default, rather than a
-consequence of which label a classification sweep reached for.
+affected, and editing, activating, deactivating or re-roling somebody's member
+record is one domain: the administration of that record, however many screens
+reach it. Both alternatives were member-visible and all three rows reach the
+subject member's own timeline, so unifying on either would have published an
+officer's edits **to the member the record is about** — and audit rows are
+append-only, so that is not quietly reversible. (Only the detail writer passes
+`subjectMemberId`; the two bulk writers pass none and reach the member through
+`buildMemberAuditLogWhere`'s null-subject `targetId` leg. "Has no subject" is not
+a reason to think a move is invisible.) Whether a member should see a given event
+is meant to become an explicit per-event declaration at the writing site, denied
+by default, rather than a consequence of which label a classification sweep
+reached for — #2695 decided that on 9 Aug 2026 and it is **not built yet**, so in
+the meantime the category is the only lever and these two events are simply
+invisible to the member.
+
+**The rule that came out of this is scoped to those six actions, not to "an
+officer acted".** Other officer-driven writers file member-visible categories on
+purpose and stay that way: the member-photo pair (#2581's own worked example,
+`account` on the on-behalf branch deliberately — and the photo editor renders on
+this very screen in `mode="admin"`) and the officer-driven cancellation writers.
+`INV-PRIV-012` names them, and
+`OFFICER_DRIVEN_MEMBER_VISIBLE_WRITERS_2755` pins them from the tree, so citing
+the unification to sweep them into `admin` fails CI with the withdrawal named.
 
 **The last row of the table did not move, deliberately.** `/api/profile` is the
 member editing their own record: actor IS subject, no on-behalf path, so it is
@@ -454,12 +471,23 @@ classify `critical` under the old and new values alike. And as with bed
 allocation it moved the WRITERS, not the stored rows, so bulk member-record
 evidence recorded before the release is still `account`/`security`, still in the
 membership correlation entry and still on the member's own timeline. Both
-correlation entries' prose says so; #2751 holds the backfill question for this
-set as well as for bed allocation.
+correlation entries' prose says so. The backfill question is **#2763**, filed
+separately from #2751 rather than folded into it: #2751's bed-allocation rows move
+between two member-invisible categories, so no member's view changes either way,
+while rewriting these rows would **withdraw** entries a member can see about their
+own account today. That is a different decision, and it is the recommendation on
+#2763 to leave them alone.
 
-Pinned per site and by action name in `MEMBER_RECORD_ADMIN_CATEGORIES_2755` and
-`MEMBER_RECORD_ADMIN_ACTIONS_2755`, so a fourth screen for the same act cannot
-arrive with its own answer. Rule: `INV-PRIV-012`.
+Pinned in `MEMBER_RECORD_ADMIN_CATEGORIES_2755` (per site),
+`MEMBER_RECORD_ADMIN_ACTIONS_2755` (by action name, with one level of same-file
+`const` indirection resolved and a corpus gate over every file that names one of
+the six literals) and `MEMBER_RECORD_ADMIN_SURFACES_2755` (every member-visible
+writer on the officer member-record surfaces must be a reviewed exception). So a
+fourth screen for the same act fails CI if it reuses one of the six action names
+however it assembles the string, or if it invents a new name on those surfaces and
+files a member-visible category. What is still a review question rather than a
+mechanical one is a new name for the same act written somewhere else entirely.
+Rule: `INV-PRIV-012`.
 
 ## The open question this pass did not have a decision for
 
