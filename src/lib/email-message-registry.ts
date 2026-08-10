@@ -11,6 +11,7 @@ import {
   duplicateCaptureRefundOutcomeParagraph,
   lateCaptureAutoRefundLeadParagraph,
   lateCaptureHandBackConflictOutcomeParagraph,
+  lateCaptureHandBackConflictSubjectLabel,
   splitGuestPortionOwnBookingLine,
   wholeLodgeGuestNamesUrgencyNote,
 } from "@/lib/email-message-notes";
@@ -150,7 +151,8 @@ const LOCKED_DELIVERY_TEMPLATE_NAMES = new Set<EmailAuditTemplateName>([
   // owner ruled out. Locked here AND sent off the per-member preference, because
   // those are two separate mute vectors and the decision closed both.
   "admin-late-capture-auto-refund",
-  // #2774 (owner decision 11 Aug 2026): the same lock, for a stronger reason.
+  // #2774 (recommended default, PENDING the owner's decision): the same lock, for
+  // a stronger reason.
   // This alert reports either a refund the system deliberately did NOT send or a
   // capture that may have been paid back twice; in both directions it is the only
   // thing that pulls a person to reconcile real money, so it must not be
@@ -1208,6 +1210,12 @@ export function sampleValue(token: string): string {
   if (token === "handBackConflictNote") {
     return lateCaptureHandBackConflictOutcomeParagraph(false);
   }
+  // #2774: previewed as the WITHHELD arm to match {{handBackConflictNote}} above,
+  // so the preview reads as one coherent mail rather than a subject and a body that
+  // disagree. The refund-went-out-anyway arm is the sender's other branch.
+  if (token === "handBackConflictLabel") {
+    return lateCaptureHandBackConflictSubjectLabel(false);
+  }
   if (token === "settlementActionNote") {
     return adminSplitSettlementUnpaidLeadParagraph(false);
   }
@@ -1712,6 +1720,11 @@ const APPROVED_EMAIL_TEMPLATE_TOKENS = [
   // sender supplies the finished sentence rather than the facts behind it.
   "lateCaptureLeadNote",
   "handBackConflictNote",
+  // #2774: the same direction as a SUBJECT-length phrase. It exists because a
+  // subject token cannot be required, so the only way an override keeps the
+  // withheld/paid-twice distinction is for the direction to be a token the shipped
+  // default already carries — the {{bookingStateLabel}} construction (#2761).
+  "handBackConflictLabel",
   "refundMessage",
   "refundedAmount",
   "remainingAmount",

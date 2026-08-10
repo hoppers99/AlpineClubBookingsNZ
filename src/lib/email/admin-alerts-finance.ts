@@ -20,6 +20,7 @@ import {
   lateCaptureAutoRefundLeadParagraph,
   lateCaptureAutoRefundOutcomeParagraph,
   lateCaptureHandBackConflictOutcomeParagraph,
+  lateCaptureHandBackConflictSubjectLabel,
 } from "../email-message-notes";
 import { CLUB_BOOKINGS_NAME } from "@/config/club-identity";
 import { formatNZDate } from "../nzst-date";
@@ -169,8 +170,9 @@ export async function sendAdminLateCaptureAutoRefundAlert(data: {
 }
 
 /**
- * #2774 (owner decision 11 Aug 2026): the alert for a late capture that collided
- * with a hand-back an operator had already made.
+ * #2774 (on that issue's recommended default, PENDING the owner's decision — see
+ * the provenance note atop `cancelled-booking-late-capture.ts`): the alert for a
+ * late capture that collided with a hand-back an operator had already made.
  *
  * IT REPORTS A RECONCILIATION, NOT A REFUND, which is why it is not the alert
  * above. Either the automatic refund was WITHHELD because a `COMPLETED`
@@ -205,11 +207,14 @@ export async function sendAdminLateCaptureHandBackConflictAlert(data: {
 }) {
   const baseUrl = process.env.NEXTAUTH_URL || "http://localhost:3000";
   const reviewUrl = `${baseUrl}/admin/payments`;
+  const handBackConflictLabel = lateCaptureHandBackConflictSubjectLabel(
+    data.refundSent,
+  );
 
   await sendUnmuteableAdminAlert({
-    subject: data.refundSent
-      ? `Payment may have been refunded TWICE — reconcile: ${data.memberName}`
-      : `Automatic refund withheld — already paid back by hand: ${data.memberName}`,
+    // Composed from the SAME source as the {{handBackConflictLabel}} token below,
+    // so the sender's subject and an admin's saved override say the same direction.
+    subject: `${handBackConflictLabel}: ${data.memberName}`,
     html: adminLateCaptureHandBackConflictTemplate({ ...data, reviewUrl }),
     templateName: "admin-late-capture-hand-back-conflict",
     templateData: {
@@ -219,6 +224,13 @@ export async function sendAdminLateCaptureHandBackConflictAlert(data: {
       amount: formatMoneyCents(data.amountCents),
       bookingId: data.bookingId,
       paymentIntentId: data.paymentIntentId,
+      // THE DIRECTION, IN THE SUBJECT, AS A TOKEN. A stored subject override
+      // replaces the sender's subject unconditionally and a subject token cannot
+      // be made mandatory, so shipping one direction as literal default-subject
+      // text would title every double-payment notice "refund withheld" the moment
+      // any admin saved the template. The {{bookingStateLabel}} precedent (#2761),
+      // applied to the mail that may be reporting money leaving the club twice.
+      handBackConflictLabel,
       // The one sentence that says which way the money went, composed once and
       // shared with the hand-built HTML so an admin's saved default cannot state
       // the opposite of what happened (#2268 convention).

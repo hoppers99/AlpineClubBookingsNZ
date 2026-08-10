@@ -306,8 +306,14 @@ const EMAIL_AUDIT_DEFAULTS_BASE = {
   // the mail that says money may have left the club twice.
   // {{handBackConflictNote}} carries the one sentence saying which way the money
   // went, so an override stays correct on both.
+  // AND {{handBackConflictLabel}} carries the same direction in the SUBJECT, which
+  // is not a nicety: a stored subject override replaces the sender's computed
+  // subject unconditionally, and a subject token cannot be made mandatory, so a
+  // default subject with one direction written into it would title every suspected
+  // DOUBLE payment "Automatic refund withheld" the moment any admin saved this
+  // template. Same construction as its sibling's {{bookingStateLabel}} (#2761).
   "admin-late-capture-hand-back-conflict": {
-    "defaultSubject": "Automatic refund withheld - already paid back by hand: {{memberName}}",
+    "defaultSubject": "{{handBackConflictLabel}}: {{memberName}}",
     "defaultBody": "Late Capture vs Hand-Back - Reconcile By Hand\n\nA payment captured after the booking was cancelled has collided with a refund an operator had already paid back by hand.\n\n{{handBackConflictNote}}\n\nMember: {{memberName}}\nCheck-in: {{checkIn}}\nCheck-out: {{checkOut}}\nAmount captured: {{amount}}\nBooking: {{bookingId}}\nStripe PI: {{paymentIntentId}}\n\nView Payments: {{reviewUrl}}"
   },
   "admin-pending-deadline": {

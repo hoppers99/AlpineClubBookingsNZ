@@ -161,6 +161,39 @@ export function lateCaptureAutoRefundLeadParagraph(
 }
 
 /**
+ * #2774 — WHICH WAY THE MONEY WENT, as the short phrase the SUBJECT LINE needs.
+ *
+ * WHY A SUBJECT TOKEN AND NOT A FIXED DEFAULT SUBJECT (review finding). The body is
+ * protected from stating the wrong direction by the required `{{handBackConflictNote}}`
+ * token — but `prepareEmailMessage` lets a stored override replace the sender's
+ * computed SUBJECT unconditionally, and **a token in a subject can never be made
+ * mandatory** (`email-message-renderer.ts` says so outright: required tokens are
+ * body content). So a template shipped with one direction hard-coded into
+ * `defaultSubject` fails the moment any admin saves the Email Messages form — even
+ * untouched — and from then on every suspected DOUBLE payment arrives titled
+ * "Automatic refund withheld", asserting that no money left the club. On the one
+ * mail this path adds specifically to say money may have gone twice, the subject is
+ * the triage surface: an operator who files by subject files a double payment as
+ * "nothing to do".
+ *
+ * The fix is the `{{bookingStateLabel}}` precedent from #2761 applied to this
+ * template: the direction rides in the subject as a composed token, so an override
+ * keeps the distinction BY CONSTRUCTION rather than by an admin's care. This is the
+ * single source for both the sender's own subject and the shipped default, so the
+ * two cannot drift.
+ *
+ * No trailing punctuation and no member name: the sender appends ": <member>", and
+ * the default subject is `{{handBackConflictLabel}}: {{memberName}}`.
+ */
+export function lateCaptureHandBackConflictSubjectLabel(
+  refundSent: boolean,
+): string {
+  return refundSent
+    ? "Payment may have been refunded TWICE — reconcile"
+    : "Automatic refund withheld — already paid back by hand";
+}
+
+/**
  * #2774 — the paragraph that says which way the money went when a late capture
  * collided with a hand-back an operator had already made.
  *

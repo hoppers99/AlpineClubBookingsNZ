@@ -964,9 +964,21 @@ nobody told.
 
 **Every automatic refund of a late capture on a cancelled booking leaves a
 `ManualRefundTask`, and that row is visible on the operator surface rather than
-only in the database** (#2750, extended by #2760 and #2773 — owner decisions
-10 and 11 Aug 2026, each taken deliberately over the narrower recommendation;
+only in the database** (#2750, extended by #2760 — owner decision 10 Aug 2026,
+taken deliberately over the narrower recommendation — and by #2773, which is taken
+on that issue's **recommended default and is PENDING the owner's decision**;
 reversible).
+
+> **PROVENANCE OF THE #2773 / #2774 EXTENSIONS, STATED BECAUSE AN INVARIANT IS THE
+> PERMANENT RECORD.** #2760's and #2761's widenings are owner-decided on the #2760
+> thread (10 Aug 2026). Everything attributed to **#2773** or **#2774** in this file
+> — this invariant's lifted scoping clause, `INV-ADDPAY-038`'s, the `DISMISSED`
+> carve-out below, and the whole of `INV-ADDPAY-039` — is the **Recommended** option
+> from those issues, implemented and PENDING the owner's decision. At the time of
+> writing both issues carry `needs-decision`, no option is ticked and neither thread
+> records an answer. Do not read any of it as owner-settled, and do not cite it as
+> such, until the decision is on the issue thread. The half that WITHHOLDS a refund
+> (`INV-ADDPAY-039`, #2774 D2) is the one #2774 itself says needs its own review.
 
 **BOTH LATE-CAPTURE PATHS, SINCE #2773 — AND THE SCOPING CLAUSE THAT USED TO SIT
 HERE IS GONE BECAUSE THE CODE EARNED IT, NOT BECAUSE THE CLAIM WAS WIDENED.**
@@ -1042,8 +1054,9 @@ is worse than the partial claim it replaced:
   refund. It returns `alreadyRecorded: "hand-resolved"` and logs at **WARN** with
   the row's status, which is the only place that ordering is named.
 
-  **THE OWNER DECIDED TO KEEP THIS CARVE-OUT (#2774 D1, 11 Aug 2026), so it is
-  settled rather than pending.** Writing a second row was rejected on the reasoning
+  **#2774 D1 PROPOSES KEEPING THIS CARVE-OUT, and it is implemented on that
+  recommended default — PENDING the owner's decision, not settled.** Writing a
+  second row was rejected here on the reasoning
   above: one `ManualRefundTask` per capture is the property every lookup here
   protects, and two rows for one capture would put the same money on the hand-back
   queue and the record card at once. It applies to a **`DISMISSED`** hand
@@ -1216,7 +1229,9 @@ or by how much.
 **The alert for an automatically refunded late capture says what actually happened,
 cannot be muted, and stays the only notification for the event** (#2761, owner
 decision 10 Aug 2026, taken deliberately over the recommended badge option;
-extended to both handlers by #2773, 11 Aug 2026). Same scope as `INV-ADDPAY-037`
+extended to both handlers by #2773, on that issue's recommended default and PENDING
+the owner's decision — see the provenance note under `INV-ADDPAY-037`). Same scope
+as `INV-ADDPAY-037`
 and for the same reason: **both** late-capture handlers send this mail since #2773,
 and the muteable generic `sendAdminPaymentFailureAlert` the primary handler used to
 send — switchable off per admin in Notification Recipients and club-wide in
@@ -1317,7 +1332,13 @@ second time.** Before refunding, the handler looks for a `ManualRefundTask` for 
 `bookingId + paymentId` and this payment intent's `reason` set whose status is
 `COMPLETED`. If one exists the refund is **withheld**, a `critical` audit row is
 written and the club is told the money did **not** go out, so a person reconciles it
-(#2774 D2, owner decision 11 Aug 2026; reversible).
+(#2774 D2 — implemented on that issue's **recommended default and PENDING the
+owner's decision**; reversible in one place, the fence read in
+`findCompletedHandBackForLateCapture`). **This rule is not owner-settled.** #2774
+says in its own words that this is a change to a Critical money path needing its own
+review, and it offers "Leave it" as an option; the fence ships because refunding a
+member twice is the worse failure while the question is open, and the decision must
+be recorded on #2774 before this invariant is cited as settled.
 
 **THE MONEY BUG THIS CLOSES.** `resolveManualRefundTask` writes
 `applyLocalRefundAllocation` on — and only on — the `COMPLETED` resolution. That

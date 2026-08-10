@@ -34,6 +34,13 @@ vi.mock("@/lib/email/admin-alerts-shared", () => ({
 }));
 
 import { sendAdminLateCaptureHandBackConflictAlert } from "@/lib/email/admin-alerts-finance";
+import { EMAIL_AUDIT_DEFAULTS } from "@/lib/email-message-audit-defaults";
+import { getSensitiveEmailSubjectTokens } from "@/lib/email-message-registry";
+import {
+  neutraliseSensitiveSubjectContent,
+  renderTemplateString,
+  type EmailTemplateData,
+} from "@/lib/email-message-renderer";
 
 type CapturedAlert = {
   subject: string;
@@ -70,6 +77,20 @@ async function send(options: {
     refundSent: options.refundSent,
   });
   return captured();
+}
+
+/**
+ * The subject an admin's SAVED override produces. `prepareEmailMessage` renders a
+ * stored subject as `renderTemplateString(override.subject, subjectSafeData)`, and
+ * the Email Messages editor pre-populates the form with the shipped default — so
+ * the shipped `defaultSubject` rendered with the sender's own templateData is
+ * precisely what an admin who saves the form gets, now and forever after.
+ */
+function renderStoredDefaultSubject(templateData: Record<string, unknown>): string {
+  return renderTemplateString(
+    EMAIL_AUDIT_DEFAULTS["admin-late-capture-hand-back-conflict"].defaultSubject,
+    templateData as EmailTemplateData,
+  );
 }
 
 describe("sendAdminLateCaptureHandBackConflictAlert (#2774)", () => {
@@ -183,5 +204,70 @@ describe("sendAdminLateCaptureHandBackConflictAlert (#2774)", () => {
     mocks.sendUnmuteableAdminAlert.mockClear();
     const sent = await send({ refundSent: true });
     expect(sent.html).toContain("Yes — on top of the hand-back");
+  });
+
+  /**
+   * THE SUBJECT SURVIVES AN ADMIN SAVING THE TEMPLATE (review finding).
+   *
+   * The defect this pins is not hypothetical and it is not in the sender. It is in
+   * what happens AFTER: `prepareEmailMessage` replaces the sender's computed subject
+   * with any stored `EmailTemplateOverride.subject`, unconditionally, and a subject
+   * token can never be made required (`email-message-renderer.ts` states that
+   * required tokens are body content). The Email Messages editor pre-populates its
+   * form with the shipped default, so an admin who saves it untouched — or tweaks
+   * one word — stores that string. If `defaultSubject` carried one direction as
+   * literal text, from that moment every suspected DOUBLE payment would arrive
+   * titled "Automatic refund withheld — already paid back by hand": the subject
+   * asserting no money left the club, on the one mail this path adds to say it may
+   * have left twice. An operator who triages by subject files it as nothing to do.
+   *
+   * The render below is exactly the path `prepareEmailMessage` runs for a stored
+   * subject — `renderTemplateString(override.subject, subjectSafeData)` — over the
+   * shipped default, which is the string an admin's save actually stores.
+   *
+   * MUTATION PROOF, and it is the point of the test: put either direction's wording
+   * back into `defaultSubject` as literal text and this fails, because both
+   * directions then render identically. Drop the `handBackConflictLabel` supply line
+   * from the sender and it fails with an empty subject.
+   */
+  it("keeps the direction in the subject even when an admin has saved the template", async () => {
+    const withheldSubject = renderStoredDefaultSubject(
+      (await send({ refundSent: false })).templateData,
+    );
+    mocks.sendUnmuteableAdminAlert.mockClear();
+    const sentSubject = renderStoredDefaultSubject(
+      (await send({ refundSent: true })).templateData,
+    );
+
+    expect(withheldSubject).toContain("Automatic refund withheld");
+    expect(withheldSubject).not.toContain("TWICE");
+    expect(sentSubject).toContain("refunded TWICE");
+    expect(sentSubject).not.toContain("withheld");
+    // The load-bearing one: an override cannot collapse the two into one claim.
+    expect(sentSubject).not.toBe(withheldSubject);
+    // And the member is still named, so the mail is still triageable.
+    expect(withheldSubject).toContain("Alice Example");
+    expect(sentSubject).toContain("Alice Example");
+  });
+
+  it("keeps the direction token out of the sensitive-subject set, or it would be stripped", async () => {
+    /*
+      The token only works in a subject because it is not sensitive: the renderer
+      deletes sensitive tokens from subjects outright (door codes, credential
+      links). If somebody ever adds this one to that set the subject would silently
+      lose its direction and read as a bare member name — which is why the exclusion
+      is asserted rather than assumed.
+    */
+    expect([
+      ...getSensitiveEmailSubjectTokens("admin-late-capture-hand-back-conflict"),
+    ]).not.toContain("handBackConflictLabel");
+    const alert = await send({ refundSent: true });
+    expect(
+      neutraliseSensitiveSubjectContent(
+        renderStoredDefaultSubject(alert.templateData),
+        alert.templateData as EmailTemplateData,
+        "admin-late-capture-hand-back-conflict",
+      ),
+    ).toContain("refunded TWICE");
   });
 });
