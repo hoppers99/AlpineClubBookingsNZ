@@ -467,15 +467,28 @@ application's own authoritative calculations.** Sixteen entries. Full reference:
   `booking_block_state`, `booking_capacity_by_night` and `member_eligibility_state`
   run the platform's own soft-policy evaluator, review-reason derivation, capacity
   engine, member-night conflict scan, edit-window classifier, lifecycle resolver,
-  subscription-settlement rule and adult-member-host predicate. Each returns stable
-  codes in an argued priority order, and every code's operator sentence travels to
-  the model inside the entry's own **description** — deliberately, because a
-  description is always sent with the tool definition while `evidenceScope` is
-  attached to a RESULT, and a model has to know what a code means in order to decide
-  whether to ask for it. Each scope then repeats that the description holds the exact
-  meanings and that they must not be paraphrased. They compose multiple READ COMMITTED
-  reads rather than one snapshot, so `observedAtUtc` means assembly completion and
-  their scopes require a rerun before action or a definitive conclusion.
+  subscription-settlement rule and adult-member-host predicate. **Two of the three**
+  — `booking_block_state` and `member_eligibility_state` — return stable codes in an
+  argued priority order, and every code's operator sentence travels to the model
+  inside the entry's own **description**, with the scope repeating that the
+  description holds the exact meanings and that they must not be paraphrased.
+  That placement is deliberate and it is also a MEASURED constraint rather than a
+  preference: a description is always sent with the tool definition while
+  `evidenceScope` is attached to a RESULT, so a model has to have the meanings in
+  order to decide whether to ask for the tool at all — and the scope is spent out of
+  the same 8,000-character rendered evidence block the rows need. AID-6B put a
+  3,101-character catalogue in one scope and the empty block came to 7,545 of 8,000;
+  `tools.md` → "Adding an entry" records the measurement and the ceiling test that
+  now bounds it. `booking_capacity_by_night` deliberately has **no** code catalogue:
+  it is a per-night measurement, not a diagnosis, so there is no priority-ordered
+  list to place anywhere. Do not give a new multi-row entry a static catalogue in its
+  scope on the strength of this bullet.
+
+  All three run their whole read graph inside one `REPEATABLE READ` read-only
+  transaction, so the facts on a row are consistent with each other;
+  `observedAtUtc` is still assembly completion rather than the snapshot's own
+  timestamp, and their scopes require a rerun before action or a definitive
+  conclusion.
 - **Thirteen more relation grants, plus the widened `Member`.** The allowlist now
   names **twenty-six** relations, all by column. `Member` goes from two columns to
   twenty-three — the most scrutinised change the allowlist has had — while the birth

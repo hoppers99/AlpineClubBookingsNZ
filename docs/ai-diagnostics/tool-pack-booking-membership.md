@@ -1167,6 +1167,22 @@ capacity. `wholeLodgeHoldFlagStored` is the raw historical column. A cancelled,
 bumped, deleted or otherwise non-capacity-holding row may retain that raw flag, but
 it never reports an effective hold.
 
+**Every entry that projects the raw column names it `wholeLodgeHoldFlagStored` and
+says it is a stored request** — `booking_search`,
+`booking_diagnostic_summary`, `booking_linked_state` and
+`booking_capacity_by_night`, and a pack test asserts exactly those four with the
+sentence beside each. The rename first landed on two of them, and the consequence
+on `booking_diagnostic_summary` was not cosmetic: its field was called
+`wholeLodgeHold` while its description said the entry reports "whether it holds the
+whole lodge exclusively", which is an EFFECTIVE claim about a persisted REQUEST on an
+entry that calls no capacity predicate at all. Its scope simultaneously listed the
+whole-lodge flag among the things "not reported here", so one sentence-pair
+contradicted itself about the same field. An officer asking whether a cancelled
+booking still holds the lodge got `bookingStatus: CANCELLED`, a deletion instant and
+`wholeLodgeHold: true` under a contract saying that meant an exclusive hold — and
+the next step, chasing other bookings off those nights or refusing a new one, is
+wrong. The banned name is banned outright now, in every entry.
+
 **`waitlistPosition` is one-based, so `booking_search` reports it as absent rather
 than 0.** Every writer assigns from 1 (`booking-create.ts` counts the queue ahead
 and adds one; `waitlist.ts` renumbers each lodge's queue from 1) and every exit —

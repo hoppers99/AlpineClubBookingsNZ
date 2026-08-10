@@ -518,7 +518,7 @@ const EXAMPLE_RAW_ROWS: Record<string, Record<string, unknown>> = {
     draft_expires_at_utc: WIDEST_INSTANT,
     admin_review_status: "NOT_REQUIRED",
     hosting_review_status: "NOT_REQUIRED",
-    whole_lodge_hold: true,
+    whole_lodge_hold_flag_stored: true,
     deleted_at_utc: WIDEST_INSTANT,
     created_at_utc: WIDEST_INSTANT,
     updated_at_utc: WIDEST_INSTANT,
@@ -530,7 +530,7 @@ const EXAMPLE_RAW_ROWS: Record<string, Record<string, unknown>> = {
     booking_status: "WAITLIST_OFFERED",
     check_in: "2026-08-08",
     check_out: "2026-09-08",
-    whole_lodge_hold: true,
+    whole_lodge_hold_flag_stored: true,
     is_deleted: true,
   },
   [DIAGNOSTICS_BOOKING_PARTY_TOOL_ID]: {

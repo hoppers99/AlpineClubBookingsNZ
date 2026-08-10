@@ -96,11 +96,15 @@
   every deactivated member as possibly erased. The address stays a predicate and is
   never returned by a search.
 
-  Whole-lodge evidence now separates current effect from historical storage. A
-  booking is reported as effectively holding the lodge only when its raw flag is
-  set and its canonical lifecycle state still holds capacity. Cancelled, bumped,
-  deleted and otherwise non-capacity-holding records can still show the raw flag,
-  but never claim an active exclusive hold.
+  Whole-lodge evidence now separates current effect from historical storage,
+  everywhere it appears. A booking is reported as effectively holding the lodge only
+  when its raw flag is set and its canonical lifecycle state still holds capacity.
+  Cancelled, bumped, deleted and otherwise non-capacity-holding records can still
+  show the stored flag, but never claim an active exclusive hold — and all four tools
+  that report the stored flag now name it as stored and say where the current answer
+  lives. Two of them previously described it as whether the booking holds the lodge
+  exclusively, so an officer asking whether a cancelled booking still held the lodge
+  could be told that it did.
 
   Member eligibility now reads the persisted financial-year settings strictly. A
   genuinely absent singleton still uses the documented default; a rejected

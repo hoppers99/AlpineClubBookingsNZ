@@ -481,6 +481,74 @@ describe("AID-6B booking/membership pack: permissions (#2376)", () => {
     expect(guide).not.toContain("thisBookingHasWholeLodgeHoldFlag");
   });
 
+  it("names the raw whole-lodge flag STORED wherever it is projected, and says so", () => {
+    // THE FINDING. The stored-vs-effective rename landed on two of the four entries
+    // that project the raw column. `booking_diagnostic_summary` still called the
+    // field `wholeLodgeHold` and its description still said the entry reports
+    // "whether it holds the whole lodge exclusively" — an EFFECTIVE claim about a
+    // persisted REQUEST, on an entry with no `bookingHoldsCapacity` call anywhere.
+    // This branch's own fixture proves the state that breaks it exists: CANCELLED +
+    // deleted + `wholeLodgeHold` true yields stored true, effective false. So a model
+    // asked whether a cancelled booking still holds the lodge was handed the stored
+    // flag under a contract that said it meant an active exclusive hold, and the
+    // operator's next step — chase other bookings off those nights, or refuse a new
+    // one — is wrong.
+    //
+    // The pin is on the NAME and on the SENTENCE, because either alone leaves the
+    // trap: a correct name with no caveat still invites the inference, and a caveat
+    // under the name `wholeLodgeHold` is a caveat nobody reads.
+    const RAW_FLAG_KEY = "wholeLodgeHoldFlagStored";
+    let projectingEntries = 0;
+    for (const tool of packTools) {
+      const projected = Object.keys(
+        tool.project(
+          new Proxy(
+            {},
+            {
+              get: () => true,
+              has: () => true,
+            },
+          ) as Record<string, unknown>,
+        ),
+      );
+      // The ambiguous name is banned outright, in every entry.
+      expect(
+        projected,
+        `${tool.id} projects the ambiguous name; the raw column is a stored REQUEST`,
+      ).not.toContain("wholeLodgeHold");
+      if (!projected.includes(RAW_FLAG_KEY)) continue;
+      projectingEntries += 1;
+      const modelFacing = `${tool.description}\n${tool.evidenceScope ?? ""}`;
+      expect(
+        modelFacing,
+        `${tool.id} projects ${RAW_FLAG_KEY} without telling the model it is STORED`,
+      ).toContain("STORED");
+      expect(
+        modelFacing,
+        `${tool.id} projects ${RAW_FLAG_KEY} without forbidding the active-hold reading`,
+      ).toContain("never call it an active exclusive hold");
+      // Where the EFFECTIVE answer lives — except on the entry that IS the
+      // effective answer, which names its own field instead of pointing at itself.
+      if (projected.includes("thisBookingHoldsWholeLodge")) {
+        expect(modelFacing, tool.id).toContain("thisBookingHoldsWholeLodge is");
+      } else {
+        expect(
+          modelFacing,
+          `${tool.id} projects ${RAW_FLAG_KEY} without naming where the EFFECTIVE answer lives`,
+        ).toContain("booking_capacity_by_night");
+      }
+      // And no entry may assert the effective meaning of the stored flag.
+      expect(
+        modelFacing,
+        `${tool.id} claims the stored flag means an exclusive hold`,
+      ).not.toContain("whether it holds the whole lodge exclusively");
+    }
+    // Non-vacuous, and a census: four entries project the raw flag today
+    // (booking_search, booking_diagnostic_summary, booking_linked_state,
+    // booking_capacity_by_night). A fifth has to be argued for here.
+    expect(projectingEntries).toBe(4);
+  });
+
   it("marks every entry that can identify a person, and only those", () => {
     // ADR-004 §1's flag, asserted exactly rather than as a floor, so an entry
     // that stops projecting a person also has to stop declaring one.
@@ -1183,8 +1251,16 @@ describe("AID-6B booking/membership pack: the search argument schemas (#2376)", 
         ...lodgeArm,
         window,
       });
-      // Bound as the number of DAYS, positionally — the statement multiplies it
-      // by `INTERVAL '1 day'`, so a wrong mapping here silently widens the read.
+      // Bound as the number of DAYS, positionally — the statement ADDS it to a
+      // `date` as an integer (`$5::date + ($6)::int`), so a wrong mapping here
+      // silently widens the read.
+      //
+      // NOT `* INTERVAL '1 day'`, which is what this comment said until #2679's
+      // review caught it: that form promotes a lodge night to a `timestamp`, and
+      // the test at the bottom of this file now asserts `not.toMatch(/INTERVAL/i)`
+      // over every AID-6B statement (INV-DATE-003/008). A maintainer who "restored"
+      // the multiplication on the strength of this comment would reintroduce the
+      // defect and then hit that guard with no explanation of why.
       expect(params[5], window).toBe(days);
     }
     for (const window of ["90d", "5y", "365d", "0d", "", "1D"]) {
