@@ -1434,7 +1434,8 @@ webhook's own close took the row off the only screen it ever appeared on, so tha
 durable record of an automatic refund was visible only to somebody who thought to
 query the table.
 
-**That card is complete since #2760, and it used not to be.** As #2750 shipped it
+**That card is complete for the booking-change path since #2760, and it used not
+to be.** As #2750 shipped it
 the task had a single creator — the confirm-modification-payment endpoint — so a row
 existed only on the ordering where the member's browser got there before the webhook
 did. Webhook first (the healthy case), a member who closes the tab after paying, and
@@ -1443,11 +1444,22 @@ capture and left nothing for the close to claim, and the raise never fired at al
 for a booking that is CANCELLED but not deleted. The webhook now writes the
 DISMISSED row itself when its OPEN-fenced close claims nothing, for both
 populations (`recordAutomaticCancelledBookingRefundTask`, owner decision 10 Aug
-2026) — so every automatic refund of a late capture inside the card's window is on
-the card, and the card groups the deleted rows apart from the merely cancelled ones
-so normal operation cannot bury the interesting case. What is still bounded is the
-window, not the record: the row and the
+2026) — so every automatic refund of a late BOOKING-CHANGE capture inside the
+card's window is on the card, and the card groups the deleted rows apart from the
+merely cancelled ones so normal operation cannot bury the interesting case. What
+is still bounded is the window, not the record: the row and the
 `booking.payment.refunded_after_cancellation` audit entry are permanent.
+
+**Three things that word "booking-change" and the exceptions in
+`INV-ADDPAY-037` cover, and a reader of this diagram should not assume away.** A
+late capture of a booking's ORIGINAL payment goes through the sibling handler
+`handleCancelledBookingPaymentSucceeded`, which refunds the same way and writes no
+task at all (#2773). An operator who resolves the `OPEN` task by hand before the
+refund lands leaves a row that matches neither the close nor the card's filter, so
+that refund reaches no card and is named only at WARN (#2774). And if the record
+write itself fails the handler still answers 200, so the row is lost for good — the
+`critical` `booking.payment.auto_refund_record_failed` audit entry is the only
+place it surfaces.
 
 #2750 asked whether the #1350 automatic refund should instead be **gated**,
 leaving the task OPEN so a person decides. It was not, and the reasoning is

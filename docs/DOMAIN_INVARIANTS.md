@@ -538,8 +538,8 @@ Prefix `INV-ADDPAY`.
 | `INV-ADDPAY-034` | One shared "cancelled or removed" sentence for the surfaces that explain rather than 404 |
 | `INV-ADDPAY-035` | A soft-deleted booking takes no member-guest consent answer, from any role, either arm |
 | `INV-ADDPAY-036` | A modification payment captured on a deleted booking is recorded and queued for a human, never auto-refunded from that path |
-| `INV-ADDPAY-037` | Every auto-refunded late capture on a cancelled booking leaves a DISMISSED refund task the finance queue shows, grouped by whether the booking was deleted, and the refund stays automatic |
-| `INV-ADDPAY-038` | The automatic-refund alert names what happened for both populations, cannot be muted or left with no recipient, and stays the event's only notification |
+| `INV-ADDPAY-037` | An auto-refunded late BOOKING-CHANGE capture on a cancelled booking leaves a DISMISSED refund task the finance queue shows, grouped by whether the booking was deleted, with two named exceptions and the refund staying automatic |
+| `INV-ADDPAY-038` | That booking-change alert names what happened for both populations, cannot be muted, resolves a real recipient rather than the bootstrap literal, and stays the event's only notification |
 
 ## Analytics And Privacy
 

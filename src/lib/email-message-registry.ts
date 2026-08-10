@@ -638,8 +638,25 @@ const TEMPLATE_TRIGGER_METADATA: Partial<
   "admin-late-capture-auto-refund": {
     triggerSummary:
       "Stripe captured a booking-change payment after the booking had already been cancelled (deleted or not), so the capture was refunded in full automatically and recorded on the payments board",
+    // The frequency sentence used to claim "webhook redeliveries do not
+    // re-send", and that was not true. The record write is idempotent on the
+    // payment intent; this mail is not. A Stripe redelivery re-enters the
+    // handler whenever the first attempt failed AFTER the alert — the COMPLETED
+    // stamp or the webhook log throwing sends the request to the outer catch,
+    // which deletes the lease claim and answers 500 — and a lease takeover after
+    // expiry does the same (`stripe-webhook-service.ts` says outright that a
+    // handler may legitimately run more than once for one event).
+    //
+    // The honest wording is shipped rather than the send being deduped, and that
+    // is a deliberate choice on a money notification: the alert is the event's
+    // ONE notification (`INV-ADDPAY-037`), it is fire-and-forget with a `.catch`
+    // that only logs, and gating it on the record writer's `alreadyRecorded`
+    // outcome would mean a redelivery after a FAILED send is silent — trading a
+    // rare duplicate for a rare silence, on the path where the owner's #2761
+    // decision was that this must not be silenceable. A duplicate says the same
+    // true thing twice; a silence says nothing about money that moved.
     frequency:
-      "On each late capture the webhook refunds automatically — rare; once per payment intent, and webhook redeliveries do not re-send",
+      "On each late capture the webhook refunds automatically — rare; once per payment intent per delivery, and a Stripe redelivery of the same event can re-send it",
   },
   "admin-minors-review": {
     triggerSummary:

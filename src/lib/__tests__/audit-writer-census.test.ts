@@ -564,6 +564,23 @@ describe("audit writer census (#2581)", { timeout: 180_000 }, () => {
       member. Rows already written keep their stored category, so nothing is
       withdrawn from a member who has already seen it (#2763 holds that data
       question).
+
+      54 -> 55 (#2760), AND IT IS THE PROXY MOVING RATHER THAN THE BOUNDARY. The
+      new writer is `booking.payment.auto_refund_record_failed`, categorised
+      `payment` — which IS in the member-visible set, so the count above has to
+      move. What does not move is what any member can actually see: the count is
+      taken over the sites listed in `APPLIED_AUDIT_CATEGORIES`, and #2760 pinned
+      BOTH ordinals at `handleCancelledBookingAdditionalPaymentSucceeded` where
+      only `#0` had been listed, so the +1 is the second ordinal being named, not
+      a row being published. Neither site reaches a self-timeline: the member query
+      is `buildMemberVisibleAuditLogWhere`, which requires the row to carry the
+      member as `subjectMemberId`, `actorMemberId`, `memberId` or `targetId`
+      (`buildMemberAuditLogWhere`), and both of these rows carry a BOOKING id in
+      `targetId` and no member column at all — the same shape the
+      `booking.payment.refunded_after_cancellation` row beside them has always
+      had. The `payment` category is what gates the ADMIN read (`support` plus
+      `finance`), which is the gate the finance operator who has to reconcile the
+      lost row already holds.
     */
     // MEASURED from the tree, not read back out of the manifest, deliberately.
     // A pin that reads its own table only bites when somebody edits the table;
@@ -584,7 +601,7 @@ describe("audit writer census (#2581)", { timeout: 180_000 }, () => {
         "That publishes an event on a member-facing surface, or withdraws one " +
         "from it — never a side effect of a refactor. Say which way it moved and " +
         "why the row is safe for the member it is about.",
-    ).toBe(54);
+    ).toBe(55);
     expect([...new Set(hidden)].sort()).toEqual(["admin", "lodge", "xero"]);
     expect(hidden).toHaveLength(29);
   });

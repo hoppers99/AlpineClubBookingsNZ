@@ -800,7 +800,7 @@ async function handleAdditionalModificationPaymentSucceeded(
   // unmuteable `admin-late-capture-auto-refund` mail and writes a DISMISSED
   // `ManualRefundTask` (#2760), while `handleCancelledBookingPaymentSucceeded`
   // still sends the generic muteable "Payment Failed" mail and writes no record.
-  // That gap is deliberate scope, not an oversight — see #2774.
+  // That gap is deliberate scope, not an oversight — see #2773.
   const bookingRecord = await prisma.booking.findUnique({
     where: { id: bookingId },
     include: {

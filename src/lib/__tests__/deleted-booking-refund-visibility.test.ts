@@ -469,9 +469,59 @@ describe("the record is complete: every ordering, both populations (#2760)", () 
 
     const second = await record(true);
 
-    expect(second).toEqual({ closed: 0, created: false, alreadyRecorded: true });
+    // `"self"`, not a bare `true`: the writer recognises its OWN row (DISMISSED,
+    // no acting member, its note prefix) and says so, because the caller has to
+    // tell that apart from a row an operator resolved by hand — which is on no
+    // card at all. See the next case.
+    expect(second).toEqual({
+      closed: 0,
+      created: false,
+      alreadyRecorded: "self",
+    });
     expect(rows).toHaveLength(1);
     expect(rows[0].note).toBe(noteAfterFirst);
+  });
+
+  it("an operator who closed the hand-back task by hand first leaves the refund on NO card, and the writer says so", async () => {
+    /*
+      THE ONE ORDERING THIS RECORD DOES NOT COVER, pinned against the real store
+      rather than left unasserted (review of #2760 found nothing pinned it either
+      way). The confirm route raised an OPEN task, an operator resolved it
+      themselves before Stripe's refund landed, and the refund then arrives.
+
+      The OPEN-fenced close claims nothing (the row has moved), and the writer
+      refuses to create a second row — one `ManualRefundTask` per capture is the
+      property every lookup here protects, and widening the card's filter to admit
+      actor-bearing rows would present a hand dismissal as an automatic refund,
+      which is the #2750 defect. So the row stays exactly as the operator left it,
+      the card's filter does not match it, and the outcome is `"hand-resolved"` so
+      the caller can name the gap. Whether the webhook should write its own row
+      anyway is #2774.
+    */
+    const rows = installTaskStore();
+
+    const raised = await raise();
+    expect(raised.created).toBe(true);
+    // The operator resolves it: their own note, their member id, no longer OPEN.
+    rows[0].status = "DISMISSED";
+    rows[0].completedByMemberId = "member-operator";
+    rows[0].note = "Rang the member and sorted it out on the phone.";
+
+    const outcome = await record(true);
+
+    expect(outcome).toEqual({
+      closed: 0,
+      created: false,
+      alreadyRecorded: "hand-resolved",
+    });
+    expect(rows).toHaveLength(1);
+    // Untouched: not re-dated, not re-noted, not reopened.
+    expect(rows[0].completedByMemberId).toBe("member-operator");
+    expect(rows[0].note).toBe("Rang the member and sorted it out on the phone.");
+    // And it is on neither card: the hand-back queue lists OPEN, and the record
+    // card's filter needs a null acting member and the automatic note prefix.
+    expect(rows[0].status).not.toBe("OPEN");
+    expect(matchesFilter(rows[0])).toBe(false);
   });
 
   it("a confirm retry after the webhook has recorded raises nothing", async () => {

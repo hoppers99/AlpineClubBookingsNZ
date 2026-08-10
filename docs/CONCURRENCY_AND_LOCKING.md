@@ -2199,13 +2199,42 @@ capture — `refundedAmountCents >= amountCents`, which is the field that surviv
 interleaving it exists to catch: a webhook refund committing between the check
 and the create.
 
-Its counterpart writer takes **no** lock at all and deliberately so:
-`closeDeletedBookingModificationRefundTaskAfterAutomaticRefund` is a
-status-fenced `updateMany` on `OPEN`, which is its own claim. A webhook replay,
-or an operator who closed the task first, simply claims nothing. That close
-covers only one ordering — a webhook arriving after the task exists — which is
-the whole reason the fence above is inside the lock: the reverse interleaving
-has no task for the close to claim.
+Its counterpart writer is the **second `lock(1)` site in that file, and it did
+not used to take a lock at all** — read this before assuming the webhook path
+holds nothing. Until #2760 it was
+`closeDeletedBookingModificationRefundTaskAfterAutomaticRefund`, a status-fenced
+`updateMany` on `OPEN`, which is its own claim and needs no key: a webhook
+replay, or an operator who closed the task first, simply claimed nothing. That
+close covered only one ordering — a webhook arriving after the task exists — so
+on every other ordering the automatic refund left no row at all.
+
+It is now `recordAutomaticCancelledBookingRefundTask`, which **closes or
+creates**, and that is a find-then-write rather than a single fenced statement.
+Two Stripe deliveries of one capture, or a delivery racing the raise above,
+would each see no row and each write one. So it takes `pg_advisory_xact_lock(1)`
+— joining this cohort rather than minting a keyspace, the same key the raise
+above and `booking-cancel.ts` take when they create a `ManualRefundTask` — and
+**nothing else**, holding it across an `updateMany`, a `findFirst` and at most
+one `create`. No provider call happens inside it: the Stripe refund that
+triggers it has already returned before it is called, and the caller re-reads
+`Booking.deletedAt` outside the transaction. It composes with nothing and
+reverses no order.
+
+**Its budget is `{ maxWait: 5_000, timeout: 10_000 }`, and this is the cohort's
+only webhook-triggered participant, which is why the number differs from the
+admin precedent.** The advisory wait counts against the interactive-transaction
+budget, so Prisma's 2s/5s default is not survivable here: the longest-lived
+holder of `lock(1)` in the tree is `assignBedRange`, which runs on
+`{ maxWait: 10_000, timeout: 30_000 }` for a range write of up to 366 nights, so
+an admin assigning a bed range concurrently with a Stripe delivery would blow a
+defaulted budget with a `P2028`. Copying the admin precedent is the wrong fix in
+the other direction — a webhook has Stripe's own delivery timeout over it, and a
+handler that sits on a lock for 30s trades a lost row for a lost delivery. The
+caller must answer 200 (the money is already back with the member, and a 500
+replays the whole refund path for a bookkeeping row), so Stripe never
+redelivers: a failure here is unrecoverable, and the caller therefore writes a
+`critical` `booking.payment.auto_refund_record_failed` audit row rather than
+only logging. See `INV-ADDPAY-037`.
 
 Note what `softDeleteCancelledBooking` does NOT do here. It cancels the deleted
 booking's in-flight Stripe PaymentIntents **after** its transaction commits,

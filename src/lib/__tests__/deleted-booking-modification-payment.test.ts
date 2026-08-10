@@ -98,6 +98,7 @@ vi.mock("@/lib/prisma", () => ({
 }));
 
 import {
+  AUTOMATIC_CANCELLED_BOOKING_REFUND_NOTE_PREFIX,
   automaticCancelledBookingRefundNote,
   automaticCancelledBookingRefundTaskReasons,
   cancelledBookingModificationRefundReason,
@@ -471,9 +472,21 @@ describe("recordAutomaticCancelledBookingRefundTask (#2700 close, #2760 write)",
     expect(created.data.paymentId).toBe(PAYMENT_ID);
     // The captured cents, as they were captured. Nothing recomputes a refund.
     expect(created.data.amountCents).toBe(AMOUNT_CENTS);
+    // The CREATED arm's note, which shares the frozen prefix the card filters on
+    // and differs after it: nothing was closed here, so a row that opened
+    // "Closed automatically ... so there is nothing left to pay back by hand" and
+    // stopped there told the operator reading the card something untrue about the
+    // majority of its rows (review of #2760).
     expect(created.data.note).toBe(
-      automaticCancelledBookingRefundNote(INTENT_ID),
+      automaticCancelledBookingRefundNote(INTENT_ID, "created"),
     );
+    expect(created.data.note).not.toBe(
+      automaticCancelledBookingRefundNote(INTENT_ID, "closed"),
+    );
+    expect(created.data.note).toContain(
+      AUTOMATIC_CANCELLED_BOOKING_REFUND_NOTE_PREFIX,
+    );
+    expect(created.data.note).toContain("this row is the record itself");
     // No acting member, which is the claim the finance card makes on screen.
     expect(created.data.completedByMemberId).toBeUndefined();
     // `completedAt` is written: the card's 30-day window and its ordering both
@@ -540,7 +553,7 @@ describe("recordAutomaticCancelledBookingRefundTask (#2700 close, #2760 write)",
   it("reports a HAND-resolved row as such, and warns, because that refund reaches no card", async () => {
     /*
       The one ordering the finance card cannot show, found in review of #2760 and
-      left as the conservative behaviour pending an owner ruling (#2775). An
+      left as the conservative behaviour pending an owner ruling (#2774). An
       operator resolved the confirm route's OPEN task themselves before Stripe's
       refund landed, so the row carries THEIR note and `completedByMemberId` and
       matches neither the OPEN-fenced close nor

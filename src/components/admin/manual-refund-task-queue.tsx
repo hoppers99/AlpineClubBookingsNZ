@@ -136,14 +136,39 @@ function AutomaticRefundNoticeRow({ notice }: { notice: AutoRefundedNotice }) {
  * interesting case cannot be lost in the ordinary one. Grouping rather than
  * re-sorting keeps each group newest-first, which is the order the route answers
  * in and the order an operator reads "what happened lately" in.
+ *
+ * A THIRD, NEUTRAL GROUP FOR A ROW WHOSE POPULATION IS UNKNOWN (review of #2760).
+ * `bookingDeleted` is optional on the wire so a cached pre-#2760 client bundle
+ * still renders, and the first cut of the grouping treated absent as "not
+ * deleted" on the grounds that the cancelled group claims less. It claims less
+ * about the WORK and more about the BOOKING - "cancelled and is still on file" is
+ * a positive statement, and if that row's booking was in fact deleted the heading
+ * is wrong about the only case here that needs a person. So an unknown row gets a
+ * heading that asserts nothing beyond what the card already says, and asks for a
+ * reload. Unreachable against the current route, which always sends the field;
+ * this is for the minutes after a deploy.
  */
 function AutomaticRefundNoticesCard({
   notices,
 }: {
   notices: AutoRefundedNotice[];
 }) {
-  const deletedNotices = notices.filter((notice) => notice.bookingDeleted);
-  const cancelledNotices = notices.filter((notice) => !notice.bookingDeleted);
+  // `=== true` / `=== false`, NOT truthiness, and the third bucket is why. A row
+  // with `bookingDeleted` absent is a stale client bundle talking to the current
+  // route (which always sends the field), and it is genuinely UNKNOWN - so it
+  // belongs in neither group, because each group's heading makes a positive claim
+  // about the booking's state. Filing an unknown row under "cancelled and is
+  // still on file" claims LESS about the work and MORE about the world, and if
+  // that booking was in fact deleted it hides the one case that needs a person.
+  const deletedNotices = notices.filter(
+    (notice) => notice.bookingDeleted === true,
+  );
+  const cancelledNotices = notices.filter(
+    (notice) => notice.bookingDeleted === false,
+  );
+  const unknownNotices = notices.filter(
+    (notice) => notice.bookingDeleted === undefined,
+  );
 
   return (
     <Card data-testid="automatic-refund-notices">
@@ -166,11 +191,22 @@ function AutomaticRefundNoticesCard({
           row itself on every ordering and for both populations, so the card IS
           the list - and the audit log is named as the permanent record because
           this card is bounded to the last 30 days, not because it misses events.
+
+          ONE CLAUSE OF EXCEPTION, NOT A PARAGRAPH, and it is there because the
+          claim would otherwise be false (review of #2760). If an operator closed
+          the hand-back task themselves before Stripe's refund landed, the row
+          carries THEIR name and note, so it is on neither card - the writer will
+          not put two rows on one capture. A footnote an operator reads in passing
+          keeps the claim honest; the old partial-list paragraph told them to
+          distrust the whole card, which is how a card stops being read.
+          `INV-ADDPAY-037` carries the reasoning and #2774 the open question.
         */}
         <p className="text-sm text-muted-foreground">
           This is every automatic refund of a late booking-change payment from
-          the last 30 days. Older ones are not shown here: the permanent record
-          is the booking&apos;s audit log (the{" "}
+          the last 30 days &mdash; unless somebody had already closed the
+          hand-back task for it by hand, in which case their own record of it is
+          in the booking&apos;s history instead. Older ones are not shown here:
+          the permanent record is the booking&apos;s audit log (the{" "}
           <span className="font-mono text-xs">
             booking.payment.refunded_after_cancellation
           </span>{" "}
@@ -215,6 +251,27 @@ function AutomaticRefundNoticesCard({
             </p>
             <ul className="space-y-3">
               {cancelledNotices.map((notice) => (
+                <AutomaticRefundNoticeRow key={notice.id} notice={notice} />
+              ))}
+            </ul>
+          </section>
+        ) : null}
+        {unknownNotices.length > 0 ? (
+          <section
+            className="space-y-2"
+            data-testid="automatic-refund-notices-unknown"
+          >
+            <h3 className="text-sm font-medium text-foreground">
+              Refunded automatically ({unknownNotices.length})
+            </h3>
+            <p className="text-sm text-muted-foreground">
+              Reload the page to sort these into the two groups above. The money
+              has already gone back either way, so there is nothing to pay back
+              &mdash; but if the club deleted one of these bookings, remaking it
+              means charging the member again.
+            </p>
+            <ul className="space-y-3">
+              {unknownNotices.map((notice) => (
                 <AutomaticRefundNoticeRow key={notice.id} notice={notice} />
               ))}
             </ul>

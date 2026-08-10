@@ -417,14 +417,18 @@ booking has to be made again and the member charged again, because the refund ha
 already gone out.
 
 The record card states, on screen, exactly what it covers: **every** automatic
-refund of a late booking-change payment from the last 30 days, with the booking's
-audit entry (`booking.payment.refunded_after_cancellation`) named as the permanent
-record for anything older. Until #2760 that copy said the opposite — the card was a
-partial list, because a row only existed on one of the four possible orderings —
-and reinstating either claim in the wrong direction is a defect: an operator who
-reads an empty card as proof that no automatic refund happened would be worse off
-than before the card existed, and one told to distrust a complete list stops
-reading it.
+refund of a late booking-change payment from the last 30 days — with one clause
+naming the single exception, an operator who closed the hand-back task by hand
+before the refund landed — and the booking's audit entry
+(`booking.payment.refunded_after_cancellation`) named as the permanent record for
+anything older. Until #2760 that copy said the opposite — the card was a partial
+list, because a row only existed on one of the four possible orderings — and
+reinstating either claim in the wrong direction is a defect: an operator who reads
+an empty card as proof that no automatic refund happened would be worse off than
+before the card existed, and one told to distrust a complete list stops reading
+it. The exception is deliberately a clause and not a paragraph, for that second
+reason; `INV-ADDPAY-037` carries the full reasoning and the follow-ups (#2773 for
+the original-payment handler, #2774 for the hand-resolved ordering).
 
 The moment-of-event notice is the admin email, and since #2761 it has its own
 subject naming what happened and which population it was ("Payment refunded

@@ -416,11 +416,16 @@ describe("ManualRefundTaskQueue — automatically refunded late captures (#2750)
     ).not.toBeInTheDocument();
   });
 
-  it("treats a row from an older route with no population as the cancelled case", async () => {
+  it("puts a row from an older route with no population in NEITHER claiming group", async () => {
     /*
-      A cached client against a pre-#2760 route. The cancelled group claims less —
-      "normally nothing to do" — so an unknown row belongs there rather than in the
-      group that tells an operator the booking was deleted.
+      A cached client against a pre-#2760 route. The first cut of this filed such a
+      row under "cancelled and is still on file", reasoning that the cancelled group
+      claims less — and a review of #2760 refuted that: it claims less about the
+      WORK and more about the BOOKING. "Still on file" is a positive statement about
+      a state we do not know, and if that booking was in fact deleted the heading
+      hides the one case on this card that needs a person (remake it and charge the
+      member again). So it goes in a neutral third group that asserts nothing and
+      asks for a reload, and it must NOT land in either claiming group.
     */
     const { bookingDeleted: _omitted, ...withoutPopulation } = AUTO_REFUND;
     stubLoad({ tasks: [], autoRefunded: [withoutPopulation] });
@@ -429,15 +434,24 @@ describe("ManualRefundTaskQueue — automatically refunded late captures (#2750)
 
     await waitFor(() =>
       expect(
-        screen.getByTestId("automatic-refund-notices-cancelled"),
+        screen.getByTestId("automatic-refund-notices-unknown"),
       ).toBeInTheDocument(),
     );
     expect(
       screen.queryByTestId("automatic-refund-notices-deleted"),
     ).not.toBeInTheDocument();
     expect(
-      screen.getByTestId("automatic-refund-notices-cancelled"),
-    ).toHaveTextContent("Grace Hopper");
+      screen.queryByTestId("automatic-refund-notices-cancelled"),
+    ).not.toBeInTheDocument();
+    const unknown = screen.getByTestId("automatic-refund-notices-unknown");
+    expect(unknown).toHaveTextContent("Grace Hopper");
+    // Neither claiming heading appears over it. (The row's own stored `reason`
+    // sentence still says what produced the payment — that is the row's data, not
+    // this group's claim, and it is the same text every group prints.)
+    expect(unknown).not.toHaveTextContent("The booking was deleted");
+    expect(unknown).not.toHaveTextContent(
+      "The booking was cancelled and is still on file",
+    );
   });
 
   it("offers no booking link on a record row, in either group", async () => {

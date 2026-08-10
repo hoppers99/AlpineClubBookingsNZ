@@ -114,7 +114,15 @@ means the Full Admins and the Treasurer.
 
 If a club has nobody holding the area at all, the alert is not dropped: the refund
 notice falls back to Support & System editors, and then to the club's own support
-address, so it can never be sent to nobody.
+address — the one set in [Email Messages](email-messages.md), or the address in the
+club's configuration if none is set — so it can never be sent to nobody.
+
+Two things worth knowing about that fallback. It only happens when **no** role can
+edit Finance, and while it lasts a Support & System editor receives the member's
+name, stay dates, refunded amount and payment identifiers even if their role has no
+Finance access at all — reaching somebody is treated as better than reaching nobody,
+and each fallback step is logged. The fix is to give somebody Finance edit, which
+takes the notice back to the intended audience.
 
 Which means, out of the box:
 

@@ -214,10 +214,16 @@ the money went back and the stay, and it covers the last 30 days.
 
 1. **There are no buttons, and that is on purpose.** The money has already gone
    back to the member. Marking it as paid back would record the same refund twice.
-2. **The card is the list.** It shows every automatic refund of this kind from the
-   last 30 days — an empty card means none happened in that window, not "none
-   recorded". Older ones live in the booking's audit log; a Full Admin can look for a
-   `booking.payment.refunded_after_cancellation` entry.
+2. **The card is the list, with one exception.** It shows every automatic refund of
+   this kind from the last 30 days — an empty card means none happened in that
+   window, not "none recorded". The exception: if somebody had already closed the
+   hand-back task for that payment **by hand** before Stripe's refund arrived, their
+   own record of it is in the booking's history and the refund is not repeated here,
+   because one payment never gets two refund tasks. Older ones live in the booking's
+   audit log; a Full Admin can look for a
+   `booking.payment.refunded_after_cancellation` entry. This card is about payments
+   for booking **changes**; a late payment of a booking's original amount is
+   refunded the same way but is not listed here.
 3. **You are also emailed at the time.** The subject says what happened — *Payment
    refunded automatically — booking already deleted*, or *… already cancelled* — and
    it cannot be switched off in [Notification Recipients](notification-recipients.md)

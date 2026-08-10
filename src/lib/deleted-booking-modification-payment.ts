@@ -276,11 +276,27 @@ export async function raiseDeletedBookingModificationRefundTask(params: {
 export const AUTOMATIC_CANCELLED_BOOKING_REFUND_NOTE_PREFIX =
   "Closed automatically: Stripe refunded this capture under the cancelled-booking late-capture path";
 
-/** The full note, per payment intent. Trimmed to the column's 500 chars. */
+/**
+ * The full note, per payment intent. Trimmed to the column's 500 chars.
+ *
+ * THE TAIL VARIES BY ARM, THE PREFIX NEVER DOES (review of #2760). The prefix
+ * above is stored data and the reader's `startsWith` key, so it cannot say
+ * anything arm-specific — but since #2760 made the CREATE the common arm (a
+ * healthy webhook arrives before the member's browser), most rows an operator
+ * reads on the card were born `DISMISSED` with nothing ever open to close, while
+ * the sentence opened "Closed automatically". The prefix stays exactly as it is
+ * and the tail says which arm wrote the row, so the card is accurate without any
+ * historical row falling off it.
+ */
 export function automaticCancelledBookingRefundNote(
   paymentIntentId: string,
+  arm: "closed" | "created" = "closed",
 ): string {
-  return `${AUTOMATIC_CANCELLED_BOOKING_REFUND_NOTE_PREFIX}, so there is nothing left to pay back by hand (payment intent ${paymentIntentId}).`.slice(
+  const tail =
+    arm === "created"
+      ? "so there is nothing left to pay back by hand, and no hand-back task had been raised for it - this row is the record itself"
+      : "so there is nothing left to pay back by hand";
+  return `${AUTOMATIC_CANCELLED_BOOKING_REFUND_NOTE_PREFIX}, ${tail} (payment intent ${paymentIntentId}).`.slice(
     0,
     500,
   );
@@ -398,7 +414,7 @@ export const AUTOMATIC_REFUND_NOTICE_WINDOW_DAYS = 30;
  * The card copy, `docs/guides/payments.md` and `INV-ADDPAY-037` all carry that one
  * carve-out explicitly rather than letting an empty card assert something the code
  * cannot. Whether the webhook should write its own row anyway in that state is an
- * owner decision, not this writer's (see #2775).
+ * owner decision, not this writer's (see #2774).
  *
  * BUDGETED FOR LOCK(1) CONTENTION, NOT LEFT ON PRISMA'S DEFAULTS. The advisory
  * wait counts against the interactive-transaction budget, and the default is
@@ -451,7 +467,16 @@ export async function recordAutomaticCancelledBookingRefundTask(params: {
   const { bookingId, paymentId, paymentIntentId, amountCents, bookingDeleted } =
     params;
   const reasons = automaticCancelledBookingRefundTaskReasons(paymentIntentId);
-  const note = automaticCancelledBookingRefundNote(paymentIntentId);
+  // Same frozen prefix on both arms - it is the card's filter key - and a tail
+  // that tells the truth about which arm wrote the row. See the note builder.
+  const closedNote = automaticCancelledBookingRefundNote(
+    paymentIntentId,
+    "closed",
+  );
+  const createdNote = automaticCancelledBookingRefundNote(
+    paymentIntentId,
+    "created",
+  );
 
   const outcome = await prisma.$transaction(
     async (tx) => {
@@ -467,7 +492,7 @@ export async function recordAutomaticCancelledBookingRefundTask(params: {
         data: {
           status: ManualRefundTaskStatus.DISMISSED,
           completedAt: new Date(),
-          note,
+          note: closedNote,
         },
       });
       if (closed.count > 0) {
@@ -527,7 +552,7 @@ export async function recordAutomaticCancelledBookingRefundTask(params: {
           // The card's window and ordering both read `completedAt`, so a row
           // without it would be invisible to the surface it exists for.
           completedAt: new Date(),
-          note,
+          note: createdNote,
         },
         select: { id: true },
       });
@@ -557,7 +582,7 @@ export async function recordAutomaticCancelledBookingRefundTask(params: {
     );
   } else if (outcome.alreadyRecorded === "hand-resolved") {
     // WARN, not info: this is the one ordering where the automatic refund reaches
-    // no card, so the log line is the only place it is named. See #2775.
+    // no card, so the log line is the only place it is named. See #2774.
     logger.warn(
       {
         bookingId,
