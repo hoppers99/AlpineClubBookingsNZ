@@ -29,6 +29,10 @@ export interface EmailTemplateDefinition {
   defaultBody: string;
   allowedTokens: string[];
   requiredTokens: string[];
+  // #2774: tokens an override may not drop from the SUBJECT. Separate from
+  // requiredTokens, which is body-only by design — see
+  // REQUIRED_SUBJECT_TEMPLATE_TOKENS for why one template needs this.
+  requiredSubjectTokens: string[];
   // #2267: per required token, the other tokens an override may use instead
   // and still satisfy the requirement (see REQUIRED_TOKEN_ALTERNATIVES).
   requiredTokenAlternatives: Record<string, string[]>;
@@ -151,8 +155,8 @@ const LOCKED_DELIVERY_TEMPLATE_NAMES = new Set<EmailAuditTemplateName>([
   // owner ruled out. Locked here AND sent off the per-member preference, because
   // those are two separate mute vectors and the decision closed both.
   "admin-late-capture-auto-refund",
-  // #2774 (recommended default, PENDING the owner's decision): the same lock, for
-  // a stronger reason.
+  // #2774 (the orchestrator's call on the Recommended option; the owner has not
+  // ruled — `INV-ADDPAY-039`): the same lock, for a stronger reason.
   // This alert reports either a refund the system deliberately did NOT send or a
   // capture that may have been paid back twice; in both directions it is the only
   // thing that pulls a person to reconcile real money, so it must not be
@@ -615,6 +619,41 @@ const REQUIRED_TEMPLATE_TOKENS: Partial<Record<EmailAuditTemplateName, string[]>
   "hosting-coverage-lost": ["checkIn", "checkOut", "uncoveredNights"],
 };
 
+/**
+ * Tokens an override may not drop from the SUBJECT LINE (#2774).
+ *
+ * WHY THIS TABLE HAS TO EXIST AT ALL, AND WHY IT IS SEPARATE FROM
+ * `REQUIRED_TEMPLATE_TOKENS`. That table is deliberately body-only, and says so:
+ * required tokens are body CONTENT (a door code, a pay link), and a token sitting
+ * in the subject was never allowed to satisfy the requirement. That is right for
+ * content — but it left a real hole for a template whose subject has to state
+ * WHICH WAY something went, because `prepareEmailMessage` replaces the sender's
+ * computed subject with a stored override unconditionally and nothing checked what
+ * the override said.
+ *
+ * The `admin-late-capture-hand-back-conflict` alert is the case that forced it. It
+ * is sent in two opposite directions — a refund the system WITHHELD, or one that
+ * may have paid a member TWICE — and the subject is the triage surface: an operator
+ * who files by subject files a suspected double payment as "nothing to do". With a
+ * direction written into `defaultSubject` as literal text, every double-payment
+ * notice would have arrived titled "Automatic refund withheld" from the moment any
+ * admin pressed Save on the Email Messages form, untouched. The direction therefore
+ * rides in the subject as `{{handBackConflictLabel}}`, and this table is what stops
+ * an admin editing it back out. The body's own `{{handBackConflictNote}}` requirement
+ * is unchanged and independent — the two fields are protected separately because
+ * either one alone can be read as the whole message.
+ *
+ * KEEP THIS TABLE SMALL. A subject token is a poor place for content, so the bar is
+ * the one this entry meets: the mail is sent in more than one direction from ONE
+ * template, and a subject asserting the wrong direction would be read as a
+ * statement about money. Anything less belongs in `REQUIRED_TEMPLATE_TOKENS`.
+ */
+const REQUIRED_SUBJECT_TEMPLATE_TOKENS: Partial<
+  Record<EmailAuditTemplateName, string[]>
+> = {
+  "admin-late-capture-hand-back-conflict": ["handBackConflictLabel"],
+};
+
 const TEMPLATE_TRIGGER_METADATA: Partial<
   Record<EmailAuditTemplateName, { triggerSummary: string; frequency: string }>
 > = {
@@ -669,8 +708,12 @@ const TEMPLATE_TRIGGER_METADATA: Partial<
     frequency: "On cancellation of a cash-settled booking with a non-zero refund",
   },
   "admin-late-capture-auto-refund": {
+    // #2773: BOTH handlers send this now, so the summary may not say
+    // "booking-change payment" — this is the Email Messages list's one-line
+    // description of when the mail goes out, and naming one of the two payments
+    // would tell an admin the other kind sends nothing.
     triggerSummary:
-      "Stripe captured a booking-change payment after the booking had already been cancelled (deleted or not), so the capture was refunded in full automatically and recorded on the payments board",
+      "Stripe captured a payment after the booking had already been cancelled (deleted or not) - either the booking's own payment or one for a change to it - so the capture was refunded in full automatically and recorded on the payments board",
     // The frequency sentence used to claim "webhook redeliveries do not
     // re-send", and that was not true. The record write is idempotent on the
     // payment intent; this mail is not. A Stripe redelivery re-enters the
@@ -1439,6 +1482,7 @@ export const EMAIL_TEMPLATE_DEFINITIONS: EmailTemplateDefinition[] = (
     defaultBody: defaults.defaultBody,
     allowedTokens,
     requiredTokens: REQUIRED_TEMPLATE_TOKENS[key] ?? [],
+    requiredSubjectTokens: REQUIRED_SUBJECT_TEMPLATE_TOKENS[key] ?? [],
     requiredTokenAlternatives: REQUIRED_TOKEN_ALTERNATIVES[key] ?? {},
     sampleData: Object.fromEntries(
       allowedTokens.map((token) => [
@@ -1720,10 +1764,10 @@ const APPROVED_EMAIL_TEMPLATE_TOKENS = [
   // sender supplies the finished sentence rather than the facts behind it.
   "lateCaptureLeadNote",
   "handBackConflictNote",
-  // #2774: the same direction as a SUBJECT-length phrase. It exists because a
-  // subject token cannot be required, so the only way an override keeps the
-  // withheld/paid-twice distinction is for the direction to be a token the shipped
-  // default already carries — the {{bookingStateLabel}} construction (#2761).
+  // #2774: the same direction as a SUBJECT-length phrase, so the withheld and
+  // paid-twice arms cannot collapse into one claim when an admin saves the template
+  // — the {{bookingStateLabel}} construction (#2761), plus the subject requirement
+  // in REQUIRED_SUBJECT_TEMPLATE_TOKENS above.
   "handBackConflictLabel",
   "refundMessage",
   "refundedAmount",

@@ -107,9 +107,9 @@ export function cancelledBookingModificationRefundReason(
 }
 
 /**
- * WHICH LATE CAPTURE THIS RECORD IS ABOUT (#2773, on that issue's recommended
- * default and PENDING the owner's decision — see the provenance note at the top of
- * `cancelled-booking-late-capture.ts`).
+ * WHICH LATE CAPTURE THIS RECORD IS ABOUT (#2773 — the orchestrator's call on that
+ * issue's Recommended option; the owner has not ruled. `INV-ADDPAY-039`'s authority
+ * line states the provenance in full).
  *
  * There are TWO late-capture handlers on a cancelled booking, and until #2773
  * only one of them recorded anything:
@@ -214,11 +214,11 @@ export function automaticCancelledBookingRefundTaskReasons(
 /**
  * The one row that means an operator has ALREADY handed this capture back by
  * hand, and therefore that refunding it at Stripe would pay the member TWICE
- * (#2774 D2 — the fence half, taken on that issue's recommended default and
- * PENDING the owner's decision; #2774 states outright that this is a change to a
- * Critical money path needing its own review, and it is the ONE place to revert if
- * the owner chooses "Leave it". See the provenance note at the top of
- * `cancelled-booking-late-capture.ts`).
+ * (#2774 D2 — the fence half. The orchestrator's call on that issue's Recommended
+ * option; the owner has NOT ruled, #2774 says outright that this changes a Critical
+ * money path and needs its own review, and this read is the ONE place to revert if
+ * the answer comes back "Leave it". `INV-ADDPAY-039`'s authority line states the
+ * provenance in full.)
  *
  * WHY `COMPLETED` AND NOTHING ELSE. `resolveManualRefundTask` in
  * `manual-booking-payment.ts` writes `applyLocalRefundAllocation` on — and only
@@ -583,10 +583,9 @@ export const AUTOMATIC_REFUND_NOTICE_WINDOW_DAYS = 30;
  * carve-out explicitly rather than letting an empty card assert something the code
  * cannot.
  *
- * #2774 D1 PROPOSES KEEPING THAT CARVE-OUT, and this branch takes that recommended
- * default PENDING THE OWNER'S DECISION — it is not settled, and the alternative
- * (write a second row) stays open until the owner rules on #2774 D1. Writing a
- * second row was rejected here
+ * KEEPING THAT CARVE-OUT IS #2774 D1 — the orchestrator's call on the Recommended
+ * option, and the owner has not ruled, so the alternative (write a second row) stays
+ * open (`INV-ADDPAY-039`'s authority line). Writing a second row was rejected here
  * for the reason above: one `ManualRefundTask` per capture is the property every
  * lookup here protects, and two rows for one capture would put the same money on
  * the hand-back queue and the record card at once.

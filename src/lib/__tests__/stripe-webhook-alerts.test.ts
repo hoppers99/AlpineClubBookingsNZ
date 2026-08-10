@@ -1918,8 +1918,8 @@ describe("Stripe webhook Xero alerting", () => {
 
     it("does NOT escalate the ordinary hand-DISMISSED carve-out (#2774 D1)", async () => {
       /*
-        #2774 D1 proposes keeping this carve-out, and it is taken on that
-        recommended default pending the owner's decision. A DISMISSED row means an operator
+        #2774 D1 keeps this carve-out - the orchestrator's call on that issue's
+        Recommended option, not the owner's. A DISMISSED row means an operator
         settled the matter another way and wrote NO refund allocation, so nothing
         was paid twice; the only consequence is that the automatic refund reaches no
         finance card, which `INV-ADDPAY-037` and the card copy both name. Escalating

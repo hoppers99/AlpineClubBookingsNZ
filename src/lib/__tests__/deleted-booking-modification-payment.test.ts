@@ -599,8 +599,8 @@ describe("recordAutomaticCancelledBookingRefundTask (#2700 close, #2760 write)",
       closed: 0,
       created: false,
       alreadyRecorded: "hand-resolved",
-      // #2774 D1: DISMISSED is the carve-out that issue proposes keeping (taken on
-      // its recommended default, pending the owner's decision) - settled another
+      // #2774 D1: DISMISSED is the carve-out that issue keeps (the orchestrator's
+      // call on its Recommended option, not the owner's) - settled another
       // way, no allocation written, nobody paid twice. COMPLETED in this field is
       // what the caller escalates as a suspected double payment.
       existingStatus: "DISMISSED",

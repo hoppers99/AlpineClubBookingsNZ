@@ -1224,10 +1224,10 @@ async function alertSupersededGroupSettlementIntent(
  * `cancelled-booking-late-capture.ts` since #2773, SHARED with the sibling handler
  * rather than copied into it.
  *
- * ONE THING THAT CAN NOW STOP THE REFUND, AND IT IS NOT A GATE (#2774 D2, taken on
- * that issue's recommended default and PENDING the owner's decision — the
- * provenance note atop `cancelled-booking-late-capture.ts` says why that matters on
- * this path). If a `ManualRefundTask` for this capture is already
+ * ONE THING THAT CAN NOW STOP THE REFUND, AND IT IS NOT A GATE (#2774 D2 — the
+ * orchestrator's call on that issue's Recommended option; the owner has not ruled,
+ * and it is reversible. `INV-ADDPAY-039`'s authority line has the full statement).
+ * If a `ManualRefundTask` for this capture is already
  * `COMPLETED`, an operator has paid the member back by hand and the ledger holds
  * their allocation — so Stripe's refund on top of it pays the member TWICE. The
  * refund is withheld, a `critical` audit row is written and the club is told the
@@ -1470,9 +1470,9 @@ async function handleCancelledBookingAdditionalPaymentSucceeded(
  * truthfully, refund it in full under an idempotent per-intent key, alert the
  * admins, and skip Xero invoice creation.
  *
- * WHAT #2773 CHANGED HERE (that issue's recommended default, PENDING the owner's
- * decision), and why it needed its own
- * decision. #2760/#2761 fixed the booking-CHANGE handler only, and scoped
+ * WHAT #2773 CHANGED HERE (the orchestrator's call on that issue's Recommended
+ * option; the owner has not ruled — `INV-ADDPAY-039`'s authority line), and why it
+ * needed a decision at all. #2760/#2761 fixed the booking-CHANGE handler only, and scoped
  * `INV-ADDPAY-037` / `INV-ADDPAY-038` to it rather than letting them overclaim. So
  * this handler kept refunding with the same `cancelled_booking_late_capture`
  * reason and writing the same `booking.payment.refunded_after_cancellation` audit

@@ -39,6 +39,7 @@ import { getSensitiveEmailSubjectTokens } from "@/lib/email-message-registry";
 import {
   neutraliseSensitiveSubjectContent,
   renderTemplateString,
+  validateEmailTemplateContent,
   type EmailTemplateData,
 } from "@/lib/email-message-renderer";
 
@@ -211,15 +212,14 @@ describe("sendAdminLateCaptureHandBackConflictAlert (#2774)", () => {
    *
    * The defect this pins is not hypothetical and it is not in the sender. It is in
    * what happens AFTER: `prepareEmailMessage` replaces the sender's computed subject
-   * with any stored `EmailTemplateOverride.subject`, unconditionally, and a subject
-   * token can never be made required (`email-message-renderer.ts` states that
-   * required tokens are body content). The Email Messages editor pre-populates its
-   * form with the shipped default, so an admin who saves it untouched — or tweaks
-   * one word — stores that string. If `defaultSubject` carried one direction as
-   * literal text, from that moment every suspected DOUBLE payment would arrive
-   * titled "Automatic refund withheld — already paid back by hand": the subject
-   * asserting no money left the club, on the one mail this path adds to say it may
-   * have left twice. An operator who triages by subject files it as nothing to do.
+   * with any stored `EmailTemplateOverride.subject`, unconditionally. The Email
+   * Messages editor pre-populates its form with the shipped default, so an admin who
+   * saves it untouched — or tweaks one word — stores that string. If `defaultSubject`
+   * carried one direction as literal text, from that moment every suspected DOUBLE
+   * payment would arrive titled "Automatic refund withheld — already paid back by
+   * hand": the subject asserting no money left the club, on the one mail this path
+   * adds to say it may have left twice. An operator who triages by subject files it
+   * as nothing to do.
    *
    * The render below is exactly the path `prepareEmailMessage` runs for a stored
    * subject — `renderTemplateString(override.subject, subjectSafeData)` — over the
@@ -269,5 +269,89 @@ describe("sendAdminLateCaptureHandBackConflictAlert (#2774)", () => {
         "admin-late-capture-hand-back-conflict",
       ),
     ).toContain("refunded TWICE");
+  });
+
+  /**
+   * AND AN ADMIN CANNOT TYPE THE DIRECTION BACK OUT (#2774).
+   *
+   * The shipped default carrying the token covers the admin who presses Save on the
+   * pre-populated form, which is the common case and the one the test above pins. It
+   * does NOT cover the admin who rewrites the subject in their own words — and on a
+   * template sent in two opposite directions about money, "we wrote a good default"
+   * is not a guarantee. `REQUIRED_TEMPLATE_TOKENS` could not express this: it is
+   * body-only by design and says so in the renderer, so #2774 added
+   * `REQUIRED_SUBJECT_TEMPLATE_TOKENS` — this is the first and only entry.
+   *
+   * MUTATION PROOF: remove the template's entry from
+   * `REQUIRED_SUBJECT_TEMPLATE_TOKENS`, or make the renderer's subject check accept
+   * a body-supplied token, and the first assertion fails with `valid: true` — a save
+   * that pins every future send to one direction going through unchallenged.
+   */
+  it("refuses a saved subject that drops the direction token", () => {
+    const conflictBody =
+      EMAIL_AUDIT_DEFAULTS["admin-late-capture-hand-back-conflict"].defaultBody;
+
+    const handTyped = validateEmailTemplateContent({
+      templateName: "admin-late-capture-hand-back-conflict",
+      // Exactly the failure: an admin rewrites the subject in one direction's words.
+      subject: "Automatic refund withheld - already paid back by hand: {{memberName}}",
+      bodyText: conflictBody,
+    });
+    expect(handTyped.valid).toBe(false);
+    expect(handTyped.missingRequiredSubjectTokens).toEqual([
+      "handBackConflictLabel",
+    ]);
+    const issue = handTyped.issues.find(
+      (candidate) => candidate.code === "missing_required_subject_token",
+    );
+    expect(issue?.field).toBe("subject");
+    // The message has to say what the subject must be able to say, not just name a
+    // token: an admin told "add {{handBackConflictLabel}}" learns nothing about why.
+    expect(issue?.message).toContain("two opposite directions");
+
+    // The body's own requirement is NOT what satisfied it, and cannot be: the two
+    // fields are protected separately because either is read as the whole message.
+    expect(
+      validateEmailTemplateContent({
+        templateName: "admin-late-capture-hand-back-conflict",
+        subject: "Reconcile a late capture: {{memberName}}",
+        bodyText: `{{handBackConflictLabel}}\n\n${conflictBody}`,
+      }).missingRequiredSubjectTokens,
+    ).toEqual(["handBackConflictLabel"]);
+
+    // The shipped default passes, so the club that never customises is never nagged
+    // and the requirement can never be unsatisfiable.
+    const shipped = validateEmailTemplateContent({
+      templateName: "admin-late-capture-hand-back-conflict",
+      subject:
+        EMAIL_AUDIT_DEFAULTS["admin-late-capture-hand-back-conflict"]
+          .defaultSubject,
+      bodyText: conflictBody,
+    });
+    expect(shipped.missingRequiredSubjectTokens).toEqual([]);
+    expect(shipped.valid).toBe(true);
+
+    // A BLANK stored subject means "use the built-in wording", which carries the
+    // token — reporting it as missing would be false drift on a row that renders
+    // exactly the shipped subject. Same rule the body requirement already follows.
+    expect(
+      validateEmailTemplateContent({
+        templateName: "admin-late-capture-hand-back-conflict",
+        subject: "   ",
+        bodyText: conflictBody,
+      }).missingRequiredSubjectTokens,
+    ).toEqual([]);
+
+    // And it is scoped to the one template that needs it: its sibling ships a
+    // {{bookingStateLabel}} subject but is not under this rule, so a club that has
+    // reworded that subject is not suddenly refused.
+    expect(
+      validateEmailTemplateContent({
+        templateName: "admin-late-capture-auto-refund",
+        subject: "A late payment was refunded: {{memberName}}",
+        bodyText:
+          EMAIL_AUDIT_DEFAULTS["admin-late-capture-auto-refund"].defaultBody,
+      }).missingRequiredSubjectTokens,
+    ).toEqual([]);
   });
 });

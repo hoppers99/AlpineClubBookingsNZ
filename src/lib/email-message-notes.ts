@@ -166,11 +166,10 @@ export function lateCaptureAutoRefundLeadParagraph(
  * WHY A SUBJECT TOKEN AND NOT A FIXED DEFAULT SUBJECT (review finding). The body is
  * protected from stating the wrong direction by the required `{{handBackConflictNote}}`
  * token — but `prepareEmailMessage` lets a stored override replace the sender's
- * computed SUBJECT unconditionally, and **a token in a subject can never be made
- * mandatory** (`email-message-renderer.ts` says so outright: required tokens are
- * body content). So a template shipped with one direction hard-coded into
- * `defaultSubject` fails the moment any admin saves the Email Messages form — even
- * untouched — and from then on every suspected DOUBLE payment arrives titled
+ * computed SUBJECT unconditionally. A template shipped with one direction hard-coded
+ * into `defaultSubject` therefore fails the moment any admin saves the Email
+ * Messages form — even untouched, because the editor pre-populates it with the
+ * shipped default — and from then on every suspected DOUBLE payment arrives titled
  * "Automatic refund withheld", asserting that no money left the club. On the one
  * mail this path adds specifically to say money may have gone twice, the subject is
  * the triage surface: an operator who files by subject files a double payment as
@@ -181,6 +180,14 @@ export function lateCaptureAutoRefundLeadParagraph(
  * keeps the distinction BY CONSTRUCTION rather than by an admin's care. This is the
  * single source for both the sender's own subject and the shipped default, so the
  * two cannot drift.
+ *
+ * AND THE TOKEN IS REQUIRED IN THE SUBJECT, which nothing in this tree could ask for
+ * until #2774. `REQUIRED_TEMPLATE_TOKENS` is body-only by design, so the shipped
+ * default alone would have covered the admin who saves the form untouched and left
+ * the admin who rewrites the subject in their own words free to pin every future
+ * send to one direction. `REQUIRED_SUBJECT_TEMPLATE_TOKENS` in
+ * `email-message-registry.ts` closes that, and the save is refused with the reason
+ * spelled out rather than the mail going wrong months later.
  *
  * No trailing punctuation and no member name: the sender appends ": <member>", and
  * the default subject is `{{handBackConflictLabel}}: {{memberName}}`.

@@ -485,9 +485,9 @@ describe("recordAutomaticLateCaptureRefund (#2773 — the record)", () => {
   });
 
   it("does NOT report a hand-DISMISSED row, which is the documented carve-out", async () => {
-    // #2774 D1 proposes keeping it, and this is written on that recommended
-    // default PENDING the owner's decision. No allocation exists, nothing was paid
-    // twice, and the only consequence is that the refund reaches no finance card.
+    // #2774 D1 keeps it - the orchestrator's call, not the owner's. No allocation
+    // exists, nothing was paid twice, and the only consequence is that the refund
+    // reaches no finance card.
     mocks.recordAutomaticCancelledBookingRefundTask.mockResolvedValueOnce({
       closed: 0,
       created: false,

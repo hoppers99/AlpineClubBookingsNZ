@@ -379,14 +379,15 @@ actorless system change.
 
 | Admin/finance dataset review              | Return a list, queue, ledger, or report to its known default without losing work context                                                   | Change search, filters, explicit sort, or page; use the always-visible **Reset** action; stay on the same lodge, season, tab, cohort, focused record, or Finance view where that value is context rather than dataset state                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  | Use one visible label, **Reset**, across the audited 22 dataset surfaces. Keep it rendered at the default but natively disabled; its accessible name explains that search, filters, sort, and page are already at defaults. URL-backed resets use replace-style navigation, remove only known dataset keys, preserve unknown forward-compatible keys, and do not add history entries. Payments returns to the rolling NZ three-month Updated range through today; Reports returns to its rolling default through current month-end while keeping lodge; Subscriptions keeps season; Finance Dashboard restores Last Month / Previous Period / Next Month and empty cost filters while keeping view and lodge                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      | Search-only, filter-only, sort-only, page-only, and combined dirty state; default state; a focused record or non-default lodge/season/tab/Finance view; unknown URL key; Xero sibling-panel params                                                                                                                                                                                                                                                                                                                                                                                                                                                     | Members, Bookings, Payments, Subscriptions, Reports, Finance Dashboard, Audit Log, Refund Requests, Waitlist, both Xero panels, Family Groups, Issue Reports, Deletion Requests, Membership Cancellations, Member Applications, all three Booking Request tabs, Induction Register, Promo Redemptions, Lockers |
 
-## Automatically refunded late captures (#2750, completed by #2760)
+## Automatically refunded late captures (#2750, #2760, both handlers since #2773)
 
 A finance-view admin opens `/admin/payments`. Above the filters, up to two refund
 cards can appear, and they make opposite claims. **"Refunds to pay back by hand"**
 (#2262) is work: cash-settled cancellations the club still owes, each with **Mark
 paid back** and **Dismiss**. **"Refunded automatically — nothing to pay back"**
-(#2750) is a record: a booking-change payment that landed after the booking had
-already been cancelled, which Stripe returned to the member automatically. It shows
+(#2750) is a record: a payment that landed after the booking had already been
+cancelled — the booking's OWN payment or one for a change to it, both since #2773 —
+which Stripe returned to the member automatically. It shows
 the member, the amount, the day the money went back, the stay dates, the booking
 identifier as plain text, and both the reason the payment was queued and the note
 saying it is already settled.
@@ -429,9 +430,10 @@ reinstating either claim in the wrong direction is a defect: an operator who rea
 an empty card as proof that no automatic refund happened would be worse off than
 before the card existed, and one told to distrust a complete list stops reading
 it. The exception is deliberately a clause and not a paragraph, for that second
-reason; `INV-ADDPAY-037` carries the full reasoning, and #2774 settled the
+reason; `INV-ADDPAY-037` carries the full reasoning, and #2774 D1 keeps the
 hand-resolved carve-out as documented behaviour rather than writing a second row
-for one capture.
+for one capture — an orchestrator decision the owner has not ruled on, reversible,
+with the authority line under `INV-ADDPAY-039`.
 
 The moment-of-event notice is the admin email, and since #2761 it has its own
 subject naming what happened and which population it was ("Payment refunded

@@ -170,9 +170,9 @@ export async function sendAdminLateCaptureAutoRefundAlert(data: {
 }
 
 /**
- * #2774 (on that issue's recommended default, PENDING the owner's decision — see
- * the provenance note atop `cancelled-booking-late-capture.ts`): the alert for a
- * late capture that collided with a hand-back an operator had already made.
+ * #2774 (the orchestrator's call on that issue's Recommended option; the owner has
+ * not ruled — `INV-ADDPAY-039`'s authority line): the alert for a late capture that
+ * collided with a hand-back an operator had already made.
  *
  * IT REPORTS A RECONCILIATION, NOT A REFUND, which is why it is not the alert
  * above. Either the automatic refund was WITHHELD because a `COMPLETED`

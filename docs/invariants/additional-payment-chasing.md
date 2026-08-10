@@ -965,20 +965,9 @@ nobody told.
 **Every automatic refund of a late capture on a cancelled booking leaves a
 `ManualRefundTask`, and that row is visible on the operator surface rather than
 only in the database** (#2750, extended by #2760 — owner decision 10 Aug 2026,
-taken deliberately over the narrower recommendation — and by #2773, which is taken
-on that issue's **recommended default and is PENDING the owner's decision**;
-reversible).
-
-> **PROVENANCE OF THE #2773 / #2774 EXTENSIONS, STATED BECAUSE AN INVARIANT IS THE
-> PERMANENT RECORD.** #2760's and #2761's widenings are owner-decided on the #2760
-> thread (10 Aug 2026). Everything attributed to **#2773** or **#2774** in this file
-> — this invariant's lifted scoping clause, `INV-ADDPAY-038`'s, the `DISMISSED`
-> carve-out below, and the whole of `INV-ADDPAY-039` — is the **Recommended** option
-> from those issues, implemented and PENDING the owner's decision. At the time of
-> writing both issues carry `needs-decision`, no option is ticked and neither thread
-> records an answer. Do not read any of it as owner-settled, and do not cite it as
-> such, until the decision is on the issue thread. The half that WITHHOLDS a refund
-> (`INV-ADDPAY-039`, #2774 D2) is the one #2774 itself says needs its own review.
+taken deliberately over the narrower recommendation — and by #2773, an
+**orchestrator** decision the owner has not ruled on; reversible. The authority
+line under `INV-ADDPAY-039` covers every #2773 / #2774 clause in this file).
 
 **BOTH LATE-CAPTURE PATHS, SINCE #2773 — AND THE SCOPING CLAUSE THAT USED TO SIT
 HERE IS GONE BECAUSE THE CODE EARNED IT, NOT BECAUSE THE CLAIM WAS WIDENED.**
@@ -1054,9 +1043,9 @@ is worse than the partial claim it replaced:
   refund. It returns `alreadyRecorded: "hand-resolved"` and logs at **WARN** with
   the row's status, which is the only place that ordering is named.
 
-  **#2774 D1 PROPOSES KEEPING THIS CARVE-OUT, and it is implemented on that
-  recommended default — PENDING the owner's decision, not settled.** Writing a
-  second row was rejected here on the reasoning
+  **KEEPING THIS CARVE-OUT IS #2774 D1 — the orchestrator's call, not the owner's,
+  and the owner has not ruled** (authority line under `INV-ADDPAY-039`; reversible).
+  Writing a second row was rejected here on the reasoning
   above: one `ManualRefundTask` per capture is the property every lookup here
   protects, and two rows for one capture would put the same money on the hand-back
   queue and the record card at once. It applies to a **`DISMISSED`** hand
@@ -1229,8 +1218,8 @@ or by how much.
 **The alert for an automatically refunded late capture says what actually happened,
 cannot be muted, and stays the only notification for the event** (#2761, owner
 decision 10 Aug 2026, taken deliberately over the recommended badge option;
-extended to both handlers by #2773, on that issue's recommended default and PENDING
-the owner's decision — see the provenance note under `INV-ADDPAY-037`). Same scope
+extended to both handlers by #2773 — an orchestrator decision the owner has not
+ruled on; see the authority line under `INV-ADDPAY-039`). Same scope
 as `INV-ADDPAY-037`
 and for the same reason: **both** late-capture handlers send this mail since #2773,
 and the muteable generic `sendAdminPaymentFailureAlert` the primary handler used to
@@ -1332,13 +1321,51 @@ second time.** Before refunding, the handler looks for a `ManualRefundTask` for 
 `bookingId + paymentId` and this payment intent's `reason` set whose status is
 `COMPLETED`. If one exists the refund is **withheld**, a `critical` audit row is
 written and the club is told the money did **not** go out, so a person reconciles it
-(#2774 D2 — implemented on that issue's **recommended default and PENDING the
-owner's decision**; reversible in one place, the fence read in
-`findCompletedHandBackForLateCapture`). **This rule is not owner-settled.** #2774
-says in its own words that this is a change to a Critical money path needing its own
-review, and it offers "Leave it" as an option; the fence ships because refunding a
-member twice is the worse failure while the question is open, and the decision must
-be recorded on #2774 before this invariant is cited as settled.
+(#2774 D2).
+
+> **WHO DECIDED THIS — THE ORCHESTRATOR, NOT THE OWNER. This is the authority line
+> every #2773 / #2774 citation in the tree points at, and it is stated at this
+> length once because an invariant is the permanent record and a future agent will
+> cite it as authority.**
+>
+> Every direction attributed to **#2773** or **#2774** anywhere in this repository —
+> this rule, `INV-ADDPAY-037`'s lifted scoping clause and its `DISMISSED` carve-out
+> (#2774 D1), and `INV-ADDPAY-038`'s extension to both handlers — was chosen by the
+> **orchestrator**, taking each issue's own **Recommended** option under the owner's
+> standing instruction to work the backlog down. **The owner has not ruled on #2773
+> or #2774.** At the time of writing both issues still carry `needs-decision`, no
+> option is ticked, and neither thread records an answer.
+>
+> **So cite it as an orchestrator decision. Attributing #2773 or #2774 to the owner
+> is false**, and that is not a hypothetical: the first version of this branch
+> attributed both to the owner, with a date, in eighteen places — including this
+> file, this invariant's own rule text, and a comment beside operator-facing copy.
+> Two review lenses caught it and the owner held the branch (see the comment threads
+> on #2773 and #2774, and #2713). Nothing in the repository can tell an owner's
+> decision from an agent's, because every agent drives `gh` as the owner's account —
+> so the only defence is that an attribution is written accurately in the first
+> place.
+>
+> **The neighbouring #2760 and #2761 citations, dated 10 Aug 2026, are by contrast
+> real** — each of those threads carries the owner's own "ready to action" comment.
+> Check the thread before you repeat any citation of this kind: deleting a true one
+> is as damaging as inventing a false one, and one sat next to the other here.
+>
+> **It is reversible, and the reversal is small in each part.** #2774 D2 (this rule)
+> is one read — `findCompletedHandBackForLateCapture`; drop the call and the refund
+> goes out as it did before, with nothing to migrate, because the fence writes no
+> state of its own beyond an audit row and an alert. #2774 D1 (the carve-out) is the
+> `DISMISSED` branch of `recordAutomaticCancelledBookingRefundTask`, whose
+> alternative — write a second row — is still open. #2773 is the `captureKind`
+> argument threaded from the primary handler; the `reason` sentences it selects are
+> frozen either way (they are the idempotency key), so a reversal stops writing the
+> primary sentences rather than editing them.
+>
+> **#2774 D2 is the one to put to the owner first.** #2774 says in its own words
+> that it changes a Critical money path and needs its own review, and it offers
+> "Leave it" as an option. The fence ships ahead of that answer because refunding a
+> member twice is the worse failure while the question is open — not because the
+> question is closed.
 
 **THE MONEY BUG THIS CLOSES.** `resolveManualRefundTask` writes
 `applyLocalRefundAllocation` on — and only on — the `COMPLETED` resolution. That

@@ -40,6 +40,7 @@ interface EmailTemplateValidationIssue {
     | "unknown_token"
     | "disallowed_token"
     | "missing_required_token"
+    | "missing_required_subject_token"
     | "sign_prefixed_token"
     | "sensitive_subject_token"
     | "subject_line_break"
@@ -59,6 +60,7 @@ export interface EmailTemplateValidationResult {
   unknownTokens: string[];
   disallowedTokens: string[];
   missingRequiredTokens: string[];
+  missingRequiredSubjectTokens: string[];
   signPrefixedTokens: string[];
   sensitiveSubjectTokens: string[];
   unsafeLinks: string[];
@@ -90,6 +92,15 @@ const REQUIRED_TOKEN_GUIDANCE: Record<string, string> = {
     "this email must show members how a promo code changed their price — keep {{promoSummary}}, or show the adjustment yourself with {{promoAdjustment}} or {{discount}} (a {{subtotal}} line on its own is not an explanation)",
   doorCodeNote:
     "this email must tell members how to get into the lodge — keep {{doorCodeNote}}, or write your own label around the bare {{doorCode}} value",
+};
+
+// #2774: the same plain-English treatment for the SUBJECT requirements. Naming a
+// token and stopping would read as pedantry on the one alert where a wrong subject
+// is a statement about money, so the message says what the subject has to be able
+// to say and why a fixed wording cannot say it.
+const REQUIRED_SUBJECT_TOKEN_GUIDANCE: Record<string, string> = {
+  handBackConflictLabel:
+    "this email is sent in two opposite directions — a refund that was withheld, and one that may have paid a member twice — so its subject must keep {{handBackConflictLabel}}, which fills in whichever happened. A subject with the wording typed in by hand would title every double payment as a withheld refund",
 };
 
 function findSignPrefixedTokens(value: string): string[] {
@@ -210,7 +221,10 @@ export function validateEmailTemplateContent({
 
   // Required tokens are body content (door codes, credential links), so they
   // must be present in the body itself — a token in the subject does not
-  // satisfy the requirement. An empty body override falls back to the default
+  // satisfy the requirement. The converse is enforced separately, just below:
+  // #2774 added a small SUBJECT requirement table for the one thing a subject
+  // has to be able to promise, and neither field's requirement is satisfied by
+  // the other. An empty body override falls back to the default
   // body, which already carries the required tokens, so it is not checked.
   // A required token may also be satisfied by a registered alternative that
   // carries the same information (#2267): the booking-confirmed body now uses
@@ -240,6 +254,43 @@ export function validateEmailTemplateContent({
           ? `Required template tokens are missing from the body: ${guidance.join("; ")}`
           : "Required template tokens are missing from the body",
       tokens: missingRequiredTokens,
+    });
+  }
+
+  // #2774: the SUBJECT half, and it is a different rule rather than the same one
+  // widened. A subject may not drop a token the registry declares load-bearing
+  // FOR THE SUBJECT — today only the direction on the late-capture hand-back
+  // conflict alert, whose two arms say opposite things about whether money left
+  // the club. Same empty-value rule as the body: a blank stored subject means
+  // "use the built-in wording", which already carries the token, so it passes.
+  //
+  // This is what makes the protection structural instead of advisory. The
+  // shipped `defaultSubject` carrying `{{handBackConflictLabel}}` already covers
+  // the admin who saves the form untouched, which is the common case; this
+  // covers the admin who rewrites the subject in their own words and would
+  // otherwise pin every future send to one direction. No alternatives table:
+  // the label is composed by the sender precisely so there is one spelling of
+  // it, and a hand-written substitute is the failure being prevented.
+  const requiredSubjectTokenSet = new Set(definition?.requiredSubjectTokens ?? []);
+  const subjectTokenSet = new Set(subjectTokens);
+  const missingRequiredSubjectTokens =
+    subject.trim().length > 0
+      ? Array.from(requiredSubjectTokenSet).filter(
+          (token) => !subjectTokenSet.has(token),
+        )
+      : [];
+  if (missingRequiredSubjectTokens.length > 0) {
+    const guidance = missingRequiredSubjectTokens
+      .map((token) => REQUIRED_SUBJECT_TOKEN_GUIDANCE[token])
+      .filter((entry): entry is string => Boolean(entry));
+    issues.push({
+      code: "missing_required_subject_token",
+      field: "subject",
+      message:
+        guidance.length > 0
+          ? `Required template tokens are missing from the subject: ${guidance.join("; ")}`
+          : "Required template tokens are missing from the subject",
+      tokens: missingRequiredSubjectTokens,
     });
   }
 
@@ -336,6 +387,7 @@ export function validateEmailTemplateContent({
     unknownTokens,
     disallowedTokens,
     missingRequiredTokens,
+    missingRequiredSubjectTokens,
     signPrefixedTokens,
     sensitiveSubjectTokens,
     unsafeLinks,

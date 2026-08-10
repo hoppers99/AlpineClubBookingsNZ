@@ -1444,8 +1444,8 @@ capture and left nothing for the close to claim, and the raise never fired at al
 for a booking that is CANCELLED but not deleted. The webhook now writes the
 DISMISSED row itself when its OPEN-fenced close claims nothing, for both
 populations (`recordAutomaticCancelledBookingRefundTask`, owner decision 10 Aug
-2026) — and #2773 (that issue's recommended default, PENDING the owner's decision)
-routed the SIBLING handler for a
+2026) — and #2773 (an orchestrator decision the owner has not ruled on; authority
+line under `INV-ADDPAY-039`) routed the SIBLING handler for a
 booking's OWN payment, `handleCancelledBookingPaymentSucceeded`, through the same
 writer, so every automatic refund of a late capture inside the card's window is on
 the card. The card groups the deleted rows apart from the merely cancelled ones so
@@ -1463,9 +1463,9 @@ print an operator-facing falsehood.
 **Two exceptions in `INV-ADDPAY-037` remain, and a reader of this diagram should not
 assume them away.** An operator who resolves the `OPEN` task by hand before the
 refund lands leaves a row that matches neither the close nor the card's filter, so
-that refund reaches no card and is named only at WARN — the carve-out #2774 D1
-proposes keeping, taken on that issue's recommended default and pending the owner's
-decision. And if the record write itself fails the handler still
+that refund reaches no card and is named only at WARN — the carve-out #2774 D1 keeps,
+an orchestrator decision the owner has not ruled on (authority line under
+`INV-ADDPAY-039`). And if the record write itself fails the handler still
 answers 200, so the row is lost for good; the `critical`
 `booking.payment.auto_refund_record_failed` audit entry is the only place it
 surfaces.

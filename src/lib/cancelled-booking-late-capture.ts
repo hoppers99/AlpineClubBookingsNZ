@@ -15,16 +15,12 @@ import { prisma } from "@/lib/prisma";
  * The shared epilogue of BOTH late-capture handlers on a cancelled booking
  * (#2773 / #2774).
  *
- * PROVENANCE, STATED HONESTLY BECAUSE THE REST OF THIS FILE READS AS SETTLED.
- * Every direction taken here is the **Recommended** option written into #2773 and
- * #2774, and it is taken PENDING THE OWNER'S DECISION — at the time of writing both
- * issues still carry `needs-decision`, no option is ticked, and neither thread
- * records an answer. Nothing in this file, in `INV-ADDPAY-037`, `INV-ADDPAY-038` or
- * `INV-ADDPAY-039` may be read as owner-settled until that decision is on the
- * issue thread, which `CLAUDE.md` makes the audit trail. The half that WITHHOLDS a
- * refund (#2774 D2) is the one #2774 says needs its own review, so it is the one to
- * put to the owner first; it is deliberately reversible in one place (the fence in
- * `deleted-booking-modification-payment.ts`).
+ * WHO DECIDED THIS: THE ORCHESTRATOR. Every direction taken here is the
+ * **Recommended** option from #2773 / #2774, chosen by the orchestrator under the
+ * owner's standing instruction to work the backlog down. The owner has NOT ruled on
+ * either issue, and it is reversible. `INV-ADDPAY-039`'s authority line states this
+ * in full and is what to cite — do not upgrade any of it to an "owner decision"
+ * without a comment on the issue thread to point at.
  *
  * WHY THIS MODULE EXISTS. Since #1350 the Stripe webhook has refunded a capture
  * that lands on an already-`CANCELLED` booking, and it does so from two sibling
@@ -123,7 +119,9 @@ export type LateCaptureRecordOutcome = {
  * REDELIVERY of the same event can re-send it — accepted and documented in the
  * registry's frequency note for the same reason it is there: a duplicate says the
  * same true thing twice, whereas deduping would make a redelivery after a FAILED
- * send silent, on a money notification the owner ruled must not be silenceable.
+ * send silent, on a money notification that must not be silenceable — the owner's
+ * #2761 ruling (10 Aug 2026), which the orchestrator extended to this alert under
+ * #2774 (`INV-ADDPAY-039`'s authority line).
  *
  * NO PARTIAL TOP-UP REFUND, DELIBERATELY. The hand-back's amount is carried into
  * both the audit row and the mail so a person can see whether it covered the whole
@@ -271,9 +269,8 @@ async function resolveLateCaptureBookingDeleted(capture: {
  * probably been paid twice. The ordinary `DISMISSED` hand-resolution is NOT
  * escalated — no allocation exists, nothing was paid twice, and the only
  * consequence is that the refund reaches no finance card — the carve-out #2774 D1
- * proposes keeping, taken on that issue's recommended default and PENDING the
- * owner's decision, reported at WARN by the record writer and named in
- * `INV-ADDPAY-037` and the card copy.
+ * keeps (the orchestrator's call, not the owner's), reported at WARN by the record
+ * writer and named in `INV-ADDPAY-037` and the card copy.
  *
  * A RECORD-WRITE FAILURE REPORTS NO CONFLICT, and that is honest rather than
  * convenient: the writer is the only thing that reads the row's status, so when it

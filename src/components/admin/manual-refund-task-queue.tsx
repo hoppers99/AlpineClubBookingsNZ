@@ -206,9 +206,11 @@ function AutomaticRefundNoticesCard({
           not put two rows on one capture. A footnote an operator reads in passing
           keeps the claim honest; the old partial-list paragraph told them to
           distrust the whole card, which is how a card stops being read.
-          `INV-ADDPAY-037` carries the reasoning; #2774 D1 proposes keeping the
-          carve-out rather than writing a second row, and this copy is written on
-          that recommended default PENDING the owner's decision.
+          `INV-ADDPAY-037` carries the reasoning; keeping the carve-out rather
+          than writing a second row is #2774 D1, the orchestrator's call on that
+          issue's Recommended option, which the owner has not ruled on
+          (`INV-ADDPAY-039`'s authority line). This copy describes what the code
+          does either way - it makes no claim about who chose it.
 
           AND #2773 LIFTED THE OTHER QUALIFICATION: this used to say "of a late
           booking-change payment", because the sibling handler for a booking's OWN

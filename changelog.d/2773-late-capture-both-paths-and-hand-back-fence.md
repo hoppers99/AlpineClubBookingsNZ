@@ -19,11 +19,15 @@
 
 - **A late payment you have already handed back by hand is no longer refunded a
   second time (#2774).** This was a real way for the club to lose money. When a
-  payment is captured against a cancelled booking, a hand-back task can sit on
-  Admin → Payments waiting for somebody — and clicking **Mark paid back** is what
-  records the refund in the ledger. If Stripe's own automatic refund then arrived,
-  it went out as well, and the member had been paid twice. Nothing stopped it, and
-  only a reconciliation would have caught it.
+  payment for a *change* to a booking is captured against a cancelled booking, a
+  hand-back task can sit on Admin → Payments waiting for somebody — and clicking
+  **Mark paid back** is what records the refund in the ledger. If Stripe's own
+  automatic refund then arrived, it went out as well, and the member had been paid
+  twice. Nothing stopped it, and only a reconciliation would have caught it.
+
+  A payment for the booking *itself* never raises a task you can mark paid back, so
+  this is the payment kind the problem arises on. The new check runs on both kinds
+  anyway, so it cannot be reopened by that changing.
 
   Now the system checks first. If the hand-back task for that payment is already
   marked paid back, the automatic refund is **not** sent. You are emailed

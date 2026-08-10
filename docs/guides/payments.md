@@ -237,10 +237,16 @@ the money went back and the stay, and it covers the last 30 days.
 
 ### When you have already paid a late capture back yourself
 
-If you click **Mark paid back** on a hand-back task and Stripe's automatic refund
-for the same payment arrives afterwards, the system does **not** send the money a
-second time. Marking a task paid back is what records the refund in the ledger, so
-refunding at Stripe on top of it would pay the member twice.
+If you click **Mark paid back** on the hand-back task for a late capture and
+Stripe's automatic refund for that same payment arrives afterwards, the system does
+**not** send the money a second time. Marking a task paid back is what records the
+refund in the ledger, so refunding at Stripe on top of it would pay the member twice.
+
+**In practice this only comes up for a payment for a *change* to a booking.** That
+is the only late capture a task is ever raised for and therefore the only one you
+can mark paid back; a booking's own late payment is recorded automatically and
+arrives with no buttons. The check itself runs on both kinds, so nothing depends on
+that staying true.
 
 Instead you are emailed *Automatic refund withheld — already paid back by hand*, and
 the booking's audit log carries a

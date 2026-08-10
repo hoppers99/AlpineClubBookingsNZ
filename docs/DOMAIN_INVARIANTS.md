@@ -540,7 +540,7 @@ Prefix `INV-ADDPAY`.
 | `INV-ADDPAY-036` | A modification payment captured on a deleted booking is recorded and queued for a human, never auto-refunded from that path |
 | `INV-ADDPAY-037` | EITHER late-capture path's auto-refund on a cancelled booking leaves a DISMISSED refund task the finance queue shows, grouped by whether the booking was deleted, with two named exceptions and the refund staying automatic |
 | `INV-ADDPAY-038` | That alert names what happened — which payment, which population — cannot be muted, resolves a real recipient rather than the bootstrap literal, and stays the event's only notification |
-| `INV-ADDPAY-039` | A late capture an operator has already paid back by hand is never refunded again: the automatic refund is withheld, audited and alerted, and a hand-back landing mid-refund is reported as a possible double payment — implemented on #2774's recommended default and PENDING the owner's decision, so not yet citable as owner-settled |
+| `INV-ADDPAY-039` | A late capture an operator has already paid back by hand is never refunded again: the automatic refund is withheld, audited and alerted, and a hand-back landing mid-refund is reported as a possible double payment — an orchestrator decision on #2774's Recommended option that the owner has not ruled on, so never cite it as owner-settled |
 
 ## Analytics And Privacy
 
