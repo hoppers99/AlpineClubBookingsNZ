@@ -39,6 +39,20 @@ edit or delete an entry. Retention and optional archival are governed by the
    user agent, retention class, and every drill-down target. Use **Reset** to
    restore search, filters, and page while keeping unrelated URL context.
 
+### Sharing or bookmarking a filtered view
+
+The filters live in the page address, so a link or a bookmark restores the same
+view. The **Member** filter travels as the member's **id only** — never their
+name or email address, because a page address reaches browser history, every
+proxy or CDN access log in front of the site, and the `Referer` header of any
+link you follow out of the page (#2733). When the page loads such a link it looks
+the member up and shows their name on the chip, so an id-only address still reads
+normally.
+
+If your role can read the audit log but not the membership roll (support access
+without membership access), the chip reads **Selected member** instead of a name.
+The filter itself still works — only the label needs membership access.
+
 ## Settings reference
 
 The audit log has no editable settings. Its filters:
@@ -47,7 +61,7 @@ The audit log has no editable settings. Its filters:
 | --- | --- |
 | Event Type | Restrict to one recorded event action |
 | Category | One of account, booking, payment, family, admin, security, lodge, xero, communication, privacy, system |
-| Member + Member Scope | A specific member, matched as the actor, the subject, or either (*Involves*) |
+| Member + Member Scope | A specific member, matched as the actor, the subject, or either (*Involves*). Shared and bookmarked links carry the member's id only; the name on the chip is looked up from that id (#2733) |
 | Date range | From/To, with the standard presets |
 | Outcome | The recorded result (e.g. success/failure), from the events present |
 | Severity | The recorded severity, from the events present |

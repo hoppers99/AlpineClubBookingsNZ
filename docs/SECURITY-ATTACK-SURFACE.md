@@ -528,6 +528,18 @@ than only a token being redacted. The full statement of what is covered, what is
 NOT, and what audit rows deliberately keep instead is
 [`INV-PRIV-011`](invariants/analytics-and-privacy.md#inv-priv-011).
 
+**Redaction only covers the places this application writes to.** A person's name
+or email address in a page's own URL also reaches browser history on a shared or
+unlocked admin machine, the access log of any proxy, load balancer or CDN in
+front of the app, and the `Referer` header of every link the page offers — none
+of which passes through `redactSensitiveJson`, because none of them is ours. The
+mitigation is the same one `INV-GUEST-016` and `INV-LIFE-068` already apply to
+the officer's member pickers: an admin URL carries the member **id**, and the
+display name is resolved from it behind the existing permission gate. #2733
+removed the last surface that did otherwise (the audit log's member filter chip
+carried `memberName` and `memberEmail`); a filtered address stays shareable
+because the id alone restores the view.
+
 **Coverage is by key spelling and is therefore a floor, not a guarantee.** A
 call site that composes a person's name into a key the denylist does not carry
 defeats it, and names and addresses have no value-shaped fallback the way emails
