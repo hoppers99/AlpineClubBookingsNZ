@@ -18,22 +18,39 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
  * the money side: still exactly one task per capture, still closed exactly once,
  * replays included.
  *
- * WHAT THE CARD DOES NOT SHOW is pinned here too, because the surface is a
- * partial record by construction: only the ordering where the confirm endpoint
- * raised a task first ever produces a row. See "what the card cannot show" below,
- * and the qualification in `INV-ADDPAY-037`.
+ * THE CARD IS COMPLETE SINCE #2760 (owner decision 10 Aug 2026), and the
+ * orderings that used to leave no row are pinned below as rows that now exist.
+ * #2750 shipped a partial record: a `ManualRefundTask` existed only where the
+ * member's browser reached the confirm endpoint before the Stripe webhook did,
+ * and the confirm route only raises one for a DELETED booking at all. The webhook
+ * now writes the row itself whenever its fenced close claims nothing — for a
+ * deleted booking AND for one that is cancelled but still on file, which the
+ * owner chose deliberately over the narrower recommendation. "What the card
+ * cannot show" below is therefore now "what the card shows on every ordering",
+ * and `INV-ADDPAY-037`'s qualification is lifted in the same change.
+ *
+ * BOTH POPULATIONS, EVERY ORDERING, EXACTLY ONE ROW. That is the acceptance
+ * criterion the owner extended the issue body with, and the round trips at the
+ * bottom are it: webhook-first, confirm-first, member-never-returns, interleaved,
+ * plus Stripe redelivery and confirm retries, on a deleted booking and on a
+ * merely cancelled one.
+ *
+ * NO MONEY BEHAVIOUR CHANGED. Still one row per capture, still DISMISSED, still
+ * no allocation and no operator queued.
  *
  * MUTATION PROOF. Reword the note prefix and "pins the stored bytes of the note
  * prefix" fails — that one assertion is a golden string precisely because every
  * other one derives its expectation from the constant and so cannot catch a
- * reword. Reword the close's note without moving the shared constant and
- * "the note the close writes is the note the surface matches on" fails. Drop
+ * reword. Reword the writer's note without moving the shared constant and
+ * "the note the writer writes is the note the surface matches on" fails. Drop
  * `completedByMemberId: null` from the filter and "an operator's own dismissal is
  * never presented as an automatic refund" fails on its first row; drop the note
  * condition and the same test fails on its second, which is the row the schema's
  * `onDelete: SetNull` produces. Widen the filter to any DISMISSED row and "an
- * OPEN task is work, not a notice" fails. Break the raise's idempotence or the
- * close's OPEN fence and "raises and closes exactly one task per capture" fails.
+ * OPEN task is work, not a notice" fails. Break the raise's idempotence, the
+ * close's OPEN fence, or the writer's duplicate check and one of the six ordering
+ * round trips fails. Write the created row OPEN, or with an acting member, and
+ * every ordering that goes through the webhook stops matching the filter.
  */
 
 const mocks = vi.hoisted(() => ({
@@ -47,21 +64,21 @@ const mocks = vi.hoisted(() => ({
 
 vi.mock("@/lib/prisma", () => ({
   prisma: {
-    manualRefundTask: {
-      updateMany: (...args: unknown[]) =>
-        mocks.manualRefundTaskUpdateMany(...args),
-    },
+    // #2760: the writer became close-or-create and moved inside a transaction
+    // under the same global lock the raise takes, so there is no bare
+    // `prisma.manualRefundTask` call left in the module.
     $transaction: (...args: unknown[]) => mocks.transaction(...args),
   },
 }));
 
 import {
   AUTOMATIC_CANCELLED_BOOKING_REFUND_NOTE_PREFIX,
+  cancelledBookingModificationRefundReason,
   AUTOMATIC_REFUND_NOTICE_WINDOW_DAYS,
   automaticCancelledBookingRefundNote,
   automaticallyRefundedManualRefundTaskFilter,
-  closeDeletedBookingModificationRefundTaskAfterAutomaticRefund,
   raiseDeletedBookingModificationRefundTask,
+  recordAutomaticCancelledBookingRefundTask,
 } from "@/lib/deleted-booking-modification-payment";
 
 const BOOKING_ID = "booking-1";
@@ -84,6 +101,8 @@ const tx = {
   manualRefundTask: {
     findFirst: (...args: unknown[]) => mocks.manualRefundTaskFindFirst(...args),
     create: (...args: unknown[]) => mocks.manualRefundTaskCreate(...args),
+    updateMany: (...args: unknown[]) =>
+      mocks.manualRefundTaskUpdateMany(...args),
   },
   paymentTransaction: {
     findUnique: (...args: unknown[]) =>
@@ -100,11 +119,14 @@ function raise() {
   });
 }
 
-function close() {
-  return closeDeletedBookingModificationRefundTaskAfterAutomaticRefund({
+/** The webhook's writer: closes an OPEN raise, or writes the row itself. */
+function record(bookingDeleted = true) {
+  return recordAutomaticCancelledBookingRefundTask({
     bookingId: BOOKING_ID,
     paymentId: PAYMENT_ID,
     paymentIntentId: INTENT_ID,
+    amountCents: AMOUNT_CENTS,
+    bookingDeleted,
   });
 }
 
@@ -150,7 +172,7 @@ beforeEach(() => {
   });
 });
 
-describe("the note the close writes and the surface reads (#2750)", () => {
+describe("the note the writer writes and the surface reads (#2750)", () => {
   it("pins the stored bytes of the note prefix, which are data and not copy", () => {
     /*
       A GOLDEN STRING, deliberately, and the one assertion in this file that does
@@ -174,10 +196,10 @@ describe("the note the close writes and the surface reads (#2750)", () => {
     );
   });
 
-  it("the note the close writes is the note the surface matches on", async () => {
+  it("the note the writer writes is the note the surface matches on", async () => {
     // Two copies of one sentence would not fail a build. It would silently empty
     // the card, which is the entire mechanism by which anybody is told.
-    await close();
+    await record();
 
     const call = mocks.manualRefundTaskUpdateMany.mock.calls[0][0] as {
       data: { note: string };
@@ -198,12 +220,13 @@ describe("the note the close writes and the surface reads (#2750)", () => {
   });
 
   it("leaves no acting member, which is what the card claims on screen", async () => {
-    await close();
+    await record();
 
     const call = mocks.manualRefundTaskUpdateMany.mock.calls[0][0] as {
       data: Record<string, unknown>;
     };
-    // The close never writes `completedByMemberId`, so the column keeps its NULL.
+    // Neither the close nor the create writes `completedByMemberId`, so the
+    // column keeps its NULL and the card's "no person did this" claim holds.
     expect(call.data.completedByMemberId).toBeUndefined();
     expect(automaticallyRefundedManualRefundTaskFilter).toMatchObject({
       status: "DISMISSED",
@@ -270,139 +293,278 @@ describe("which rows the operator surface shows (#2750)", () => {
   });
 });
 
-describe("what the card cannot show, and why the claim is qualified (#2750 review)", () => {
+/**
+ * A fake `ManualRefundTask` table, one row per create, shared by every ordering
+ * round trip below.
+ *
+ * A unit test has no database, so the orderings are only meaningful if the raise
+ * and the webhook writer see each other's writes. This is the smallest store that
+ * makes them: it honours the `reason IN (...)` match both writers use, the OPEN
+ * fence on the close, and the "across every status" duplicate check, so a broken
+ * fence or a per-population key shows up as a second row rather than as a passing
+ * assertion about mock arguments.
+ */
+interface TaskWhere {
+  bookingId: string;
+  paymentId: string;
+  reason: string | { in: string[] };
+  status?: string;
+}
+
+function installTaskStore() {
+  const rows: StoredTask[] = [];
+  let nextId = 1;
+
+  const matches = (row: StoredTask, where: TaskWhere) =>
+    row.bookingId === where.bookingId &&
+    row.paymentId === where.paymentId &&
+    (typeof where.reason === "string"
+      ? row.reason === where.reason
+      : where.reason.in.includes(row.reason)) &&
+    (where.status === undefined || row.status === where.status);
+
+  mocks.manualRefundTaskFindFirst.mockImplementation(
+    async (args: { where: TaskWhere }) =>
+      rows.find((row) => matches(row, args.where)) ?? null,
+  );
+  mocks.manualRefundTaskCreate.mockImplementation(
+    async (args: { data: Record<string, unknown> }) => {
+      const row: StoredTask = {
+        id: `task-${nextId++}`,
+        bookingId: args.data.bookingId as string,
+        paymentId: args.data.paymentId as string,
+        reason: args.data.reason as string,
+        status: args.data.status as string,
+        note: (args.data.note as string | undefined) ?? null,
+        completedByMemberId:
+          (args.data.completedByMemberId as string | undefined) ?? null,
+      };
+      rows.push(row);
+      return { id: row.id };
+    },
+  );
+  mocks.manualRefundTaskUpdateMany.mockImplementation(
+    async (args: { where: TaskWhere; data: { status: string; note: string } }) => {
+      const claimed = rows.filter((row) => matches(row, args.where));
+      for (const row of claimed) {
+        row.status = args.data.status;
+        row.note = args.data.note;
+      }
+      return { count: claimed.length };
+    },
+  );
+
+  return rows;
+}
+
+describe("the record is complete: every ordering, both populations (#2760)", () => {
   /*
-    THE CARD IS A PARTIAL RECORD BY CONSTRUCTION, and this is where that is
-    stated in code rather than only in a document.
+    WHAT THIS DESCRIBE REPLACED, AND WHY THAT IS THE POINT.
 
-    A row reaches the card only when the confirm endpoint raised a
-    `ManualRefundTask` first, because that endpoint is the ONLY writer of one on
-    this path. Two real orderings therefore produce an automatic refund with no
-    row at all: the webhook arriving first (which includes the member who simply
-    closes the tab after paying, so the confirm endpoint is never called), and the
-    webhook completing inside the confirm route's own Stripe round trip. Neither
-    is exotic — webhook-first is the healthy case.
+    Until #2760 this file carried "what the card cannot show": two tests pinning
+    that a webhook-first refund and the interleaved ordering left NO row, because
+    the confirm endpoint was the only writer of one and the card was therefore a
+    partial record. The owner's 10 Aug 2026 decision reversed that on purpose — the
+    webhook writes the row itself when its fenced close claims nothing — and
+    widened it to every cancelled booking rather than only deleted ones. So the
+    same orderings are pinned here with the opposite expectation, which is exactly
+    the "changed on purpose" the old comment asked for.
 
-    These tests exist so that a future agent who reads `INV-ADDPAY-037` as "every
-    automatic refund appears on the finance queue" is corrected by the suite. If
-    somebody makes the record complete — the follow-up option is for the webhook
-    to write the DISMISSED row itself when its fenced close claims nothing — these
-    are the tests that must be changed on purpose, and the invariant's
-    qualification lifted in the same commit.
+    Each case runs the writers against one in-memory table and asserts EXACTLY ONE
+    row that the finance card's filter matches. One row, not "at least one": two
+    rows for one refund would show a single money movement twice on a card whose
+    entire job is to be trusted.
   */
-  it("a close that claims no row creates nothing, so a webhook-first refund reaches no card", async () => {
-    // The healthy ordering: the webhook refunds and closes before any task
-    // exists, so its OPEN-fenced `updateMany` claims nothing. It must not invent
-    // a row (that is the follow-up decision, not this change), and the absence is
-    // what makes the card's coverage partial.
-    mocks.manualRefundTaskUpdateMany.mockResolvedValue({ count: 0 });
+  it("webhook first, on a deleted booking: the webhook writes the row itself", async () => {
+    // The ordinary healthy case. Nothing raised a task, so the OPEN-fenced close
+    // claims nothing and the row is created already DISMISSED.
+    const rows = installTaskStore();
 
-    expect(await close()).toBe(0);
-    expect(mocks.manualRefundTaskCreate).not.toHaveBeenCalled();
+    const outcome = await record(true);
+
+    expect(outcome.created).toBe(true);
+    expect(rows).toHaveLength(1);
+    expect(rows[0].status).toBe("DISMISSED");
+    expect(matchesFilter(rows[0])).toBe(true);
   });
 
-  it("the interleaved ordering is fenced off with no row, on purpose", async () => {
-    // Stripe refunded the capture inside the confirm route's own round trip. The
-    // raise refuses rather than queueing an operator to hand back money that has
-    // already gone — so again there is a real automatic refund and no row.
+  it("webhook first, on a booking cancelled but not deleted: also a row", async () => {
+    // The population #2760 added. The confirm route's raise NEVER fires here — it
+    // is gated on `deletedAt` — so before #2760 this refund reached no screen at
+    // all, whichever order things arrived in.
+    const rows = installTaskStore();
+
+    const outcome = await record(false);
+
+    expect(outcome.created).toBe(true);
+    expect(rows).toHaveLength(1);
+    expect(matchesFilter(rows[0])).toBe(true);
+  });
+
+  it("the member never returns to the confirm step: still exactly one row", async () => {
+    /*
+      The member pays and closes the tab, so the confirm endpoint is never called
+      at all. Indistinguishable from webhook-first as far as this module can see —
+      and that is the assertion: the record does not depend on the member's
+      browser coming back, which is what made it partial before.
+    */
+    const rows = installTaskStore();
+
+    await record(true);
+    // Stripe redelivers the same event; the member still never returns.
+    await record(true);
+
+    expect(rows).toHaveLength(1);
+    expect(mocks.manualRefundTaskCreate).toHaveBeenCalledTimes(1);
+  });
+
+  it("confirm first: the raise's OPEN task is closed, never duplicated", async () => {
+    // The one ordering that produced a row before #2760, unchanged: the raise
+    // creates it OPEN, the webhook's close claims it, and nothing is created.
+    const rows = installTaskStore();
+
+    const raised = await raise();
+    expect(raised.created).toBe(true);
+    expect(rows[0].status).toBe("OPEN");
+
+    const outcome = await record(true);
+
+    expect(outcome).toEqual({ closed: 1, created: false, alreadyRecorded: false });
+    expect(rows).toHaveLength(1);
+    expect(rows[0].status).toBe("DISMISSED");
+    expect(matchesFilter(rows[0])).toBe(true);
+  });
+
+  it("interleaved: the raise still declines, and the webhook's row is the record", async () => {
+    /*
+      Stripe refunded the capture inside the confirm route's own round trip. The
+      raise's refund fence still declines to queue an operator to hand back money
+      that has already gone — that behaviour is deliberately unchanged — but the
+      refund is no longer invisible, because the webhook wrote the row.
+    */
+    const rows = installTaskStore();
+
+    await record(true);
+    // The confirm route now catches up. Its transaction row shows the refund.
     mocks.paymentTransactionFindUnique.mockResolvedValue({
       status: "REFUNDED",
       refundedAmountCents: AMOUNT_CENTS,
       amountCents: AMOUNT_CENTS,
     });
 
-    const result = await raise();
+    const raised = await raise();
 
-    expect(result).toEqual({
-      taskId: null,
-      created: false,
-      alreadyRefunded: true,
-    });
-    expect(mocks.manualRefundTaskCreate).not.toHaveBeenCalled();
+    // It finds the webhook's row on the duplicate check, so it does not even
+    // reach the refund fence — either way, no second row and no OPEN task.
+    expect(raised.created).toBe(false);
+    expect(rows).toHaveLength(1);
+    expect(rows[0].status).toBe("DISMISSED");
   });
-});
 
-describe("one task per capture, closed once (#2750 acceptance)", () => {
-  it("raises and closes exactly one task per capture, replays included", async () => {
+  it("Stripe redelivery does not re-date or duplicate the row", async () => {
+    const rows = installTaskStore();
+
+    await record(true);
+    const noteAfterFirst = rows[0].note;
+
+    const second = await record(true);
+
+    // `"self"`, not a bare `true`: the writer recognises its OWN row (DISMISSED,
+    // no acting member, its note prefix) and says so, because the caller has to
+    // tell that apart from a row an operator resolved by hand — which is on no
+    // card at all. See the next case.
+    expect(second).toEqual({
+      closed: 0,
+      created: false,
+      alreadyRecorded: "self",
+    });
+    expect(rows).toHaveLength(1);
+    expect(rows[0].note).toBe(noteAfterFirst);
+  });
+
+  it("an operator who closed the hand-back task by hand first leaves the refund on NO card, and the writer says so", async () => {
     /*
-      The acceptance criterion as a round trip over one in-memory row, rather
-      than as two separate assertions about mock arguments. Sequence: the confirm
-      route raises, the webhook closes, Stripe redelivers so the webhook closes
-      again, and the confirm route is retried so the raise runs again. One row,
-      one close, and no money decision left behind.
+      THE ONE ORDERING THIS RECORD DOES NOT COVER, pinned against the real store
+      rather than left unasserted (review of #2760 found nothing pinned it either
+      way). The confirm route raised an OPEN task, an operator resolved it
+      themselves before Stripe's refund landed, and the refund then arrives.
+
+      The OPEN-fenced close claims nothing (the row has moved), and the writer
+      refuses to create a second row — one `ManualRefundTask` per capture is the
+      property every lookup here protects, and widening the card's filter to admit
+      actor-bearing rows would present a hand dismissal as an automatic refund,
+      which is the #2750 defect. So the row stays exactly as the operator left it,
+      the card's filter does not match it, and the outcome is `"hand-resolved"` so
+      the caller can name the gap. Whether the webhook should write its own row
+      anyway is #2774.
     */
-    const rows: StoredTask[] = [];
-    let nextId = 1;
+    const rows = installTaskStore();
 
-    mocks.manualRefundTaskFindFirst.mockImplementation(
-      async (args: {
-        where: { bookingId: string; paymentId: string; reason: string };
-      }) =>
-        rows.find(
-          (row) =>
-            row.bookingId === args.where.bookingId &&
-            row.paymentId === args.where.paymentId &&
-            row.reason === args.where.reason,
-        ) ?? null,
-    );
-    mocks.manualRefundTaskCreate.mockImplementation(
-      async (args: { data: Record<string, unknown> }) => {
-        const row: StoredTask = {
-          id: `task-${nextId++}`,
-          bookingId: args.data.bookingId as string,
-          paymentId: args.data.paymentId as string,
-          reason: args.data.reason as string,
-          status: args.data.status as string,
-          note: null,
-          completedByMemberId: null,
-        };
-        rows.push(row);
-        return { id: row.id };
-      },
-    );
-    mocks.manualRefundTaskUpdateMany.mockImplementation(
-      async (args: {
-        where: {
-          bookingId: string;
-          paymentId: string;
-          reason: string;
-          status: string;
-        };
-        data: { status: string; note: string };
-      }) => {
-        const claimed = rows.filter(
-          (row) =>
-            row.bookingId === args.where.bookingId &&
-            row.paymentId === args.where.paymentId &&
-            row.reason === args.where.reason &&
-            row.status === args.where.status,
-        );
-        for (const row of claimed) {
-          row.status = args.data.status;
-          row.note = args.data.note;
-        }
-        return { count: claimed.length };
-      },
-    );
+    const raised = await raise();
+    expect(raised.created).toBe(true);
+    // The operator resolves it: their own note, their member id, no longer OPEN.
+    rows[0].status = "DISMISSED";
+    rows[0].completedByMemberId = "member-operator";
+    rows[0].note = "Rang the member and sorted it out on the phone.";
 
-    const first = await raise();
-    expect(first.created).toBe(true);
+    const outcome = await record(true);
+
+    expect(outcome).toEqual({
+      closed: 0,
+      created: false,
+      alreadyRecorded: "hand-resolved",
+    });
     expect(rows).toHaveLength(1);
+    // Untouched: not re-dated, not re-noted, not reopened.
+    expect(rows[0].completedByMemberId).toBe("member-operator");
+    expect(rows[0].note).toBe("Rang the member and sorted it out on the phone.");
+    // And it is on neither card: the hand-back queue lists OPEN, and the record
+    // card's filter needs a null acting member and the automatic note prefix.
+    expect(rows[0].status).not.toBe("OPEN");
+    expect(matchesFilter(rows[0])).toBe(false);
+  });
 
-    expect(await close()).toBe(1);
-    // Stripe redelivers. The OPEN fence means the second close claims nothing,
-    // so the row is not re-dated and the card does not gain a duplicate.
-    expect(await close()).toBe(0);
+  it("a confirm retry after the webhook has recorded raises nothing", async () => {
+    // The retried confirm matches across EVERY status and both population
+    // sentences, so the webhook's DISMISSED row stops it raising an OPEN one for
+    // money already returned.
+    const rows = installTaskStore();
 
-    // The retried confirm finds the row it already raised — matched across EVERY
-    // status, so a closed one still counts — and raises nothing.
+    await record(true);
     const retry = await raise();
-    expect(retry.created).toBe(false);
-    expect(retry.taskId).toBe(first.taskId);
-    expect(rows).toHaveLength(1);
-    expect(mocks.manualRefundTaskCreate).toHaveBeenCalledTimes(1);
 
-    // And that single row is exactly what the operator surface shows.
-    expect(matchesFilter(rows[0])).toBe(true);
+    expect(retry.created).toBe(false);
+    expect(retry.taskId).toBe(rows[0].id);
+    expect(rows).toHaveLength(1);
+  });
+
+  it("a deletion landing between two deliveries still leaves one row", async () => {
+    // Delivery 1 sees a cancelled booking, delivery 2 sees a deleted one. Keyed
+    // per population, the second delivery would write a second row for one
+    // refund.
+    const rows = installTaskStore();
+
+    await record(false);
+    const second = await record(true);
+
+    expect(second.created).toBe(false);
+    expect(rows).toHaveLength(1);
+    // The row keeps the sentence that was true when it was written.
+    expect(rows[0].reason).toBe(
+      cancelledBookingModificationRefundReason(INTENT_ID),
+    );
+  });
+
+  it("never leaves an OPEN row behind, on either population", async () => {
+    // An OPEN row is work an operator is asked to do, and there is none: Stripe
+    // returned the money before anybody saw the capture, and completing such a
+    // task throws out of `applyLocalRefundAllocation`.
+    const deletedRows = installTaskStore();
+    await record(true);
+    expect(deletedRows.every((row) => row.status === "DISMISSED")).toBe(true);
+
+    const cancelledRows = installTaskStore();
+    await record(false);
+    expect(cancelledRows.every((row) => row.status === "DISMISSED")).toBe(true);
   });
 });

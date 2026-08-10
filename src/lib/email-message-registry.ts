@@ -59,6 +59,13 @@ const ADMIN_SYSTEM_TEMPLATE_NAMES = new Set<EmailAuditTemplateName>([
   // notification preference at send time, like their siblings.
   "admin-manual-settlement-conflict",
   "admin-manual-refund-task",
+  // #2761: the alert for an automatically refunded late capture on a cancelled
+  // booking. Ships to admins, so admin audience — but through the unmuteable
+  // sender rather than sendToAdmins, because it reports an automatic MONEY
+  // MOVEMENT. It is delivery-locked below, and its send path reads no per-member
+  // notification preference at all. It REPLACES the generic payment-failure mail
+  // this path used to send; it is not a second notification (`INV-ADDPAY-037`).
+  "admin-late-capture-auto-refund",
   "admin-pending-deadline",
   "admin-booking-bumped",
   "admin-capacity-warning",
@@ -127,6 +134,13 @@ const LOCKED_DELIVERY_TEMPLATE_NAMES = new Set<EmailAuditTemplateName>([
   // member whole-lodge booking go un-invoiced while the member has been told an
   // invoice is coming.
   "admin-whole-lodge-manual-invoice",
+  // #2761 (owner decision 10 Aug 2026): an automatic money movement must not be
+  // silenceable. This alert is the moment-of-event notice for a late capture the
+  // webhook refunded on its own, and the club's only other trace is a row on a
+  // card and an audit entry — so muting it club-wide is exactly the state the
+  // owner ruled out. Locked here AND sent off the per-member preference, because
+  // those are two separate mute vectors and the decision closed both.
+  "admin-late-capture-auto-refund",
 ]);
 
 const CONTENT_ONLY_DEFAULT_TEMPLATE_NAMES = new Set<EmailAuditTemplateName>([
@@ -474,6 +488,18 @@ const REQUIRED_TEMPLATE_TOKENS: Partial<Record<EmailAuditTemplateName, string[]>
   // admin action link (the payments board), mirroring the other admin alerts.
   "admin-manual-settlement-conflict": ["memberName", "reviewUrl"],
   "admin-manual-refund-task": ["memberName", "reviewUrl"],
+  // #2761: memberName and reviewUrl as its siblings, plus the two tokens that
+  // carry WHICH of the two populations this was. An override that drops
+  // {{bookingStateLabel}} or {{refundOutcomeNote}} leaves an operator unable to
+  // tell "the booking was deleted, remake it and charge again" from "the booking
+  // was cancelled, this is normal" — the whole reason the owner asked for wording
+  // covering both cases.
+  "admin-late-capture-auto-refund": [
+    "memberName",
+    "reviewUrl",
+    "bookingStateLabel",
+    "refundOutcomeNote",
+  ],
   "admin-split-settlement-unpaid": ["memberName", "reviewUrl"],
   // #1993 Part A: terminal notice — memberName identifies the member and
   // reviewUrl is the admin action link, mirroring the recurring alert.
@@ -608,6 +634,29 @@ const TEMPLATE_TRIGGER_METADATA: Partial<
     triggerSummary:
       "A booking settled in cash (or by an off-Xero bank transfer) was cancelled with a refund owing, so a hand-back task was raised for an admin to pay the member back",
     frequency: "On cancellation of a cash-settled booking with a non-zero refund",
+  },
+  "admin-late-capture-auto-refund": {
+    triggerSummary:
+      "Stripe captured a booking-change payment after the booking had already been cancelled (deleted or not), so the capture was refunded in full automatically and recorded on the payments board",
+    // The frequency sentence used to claim "webhook redeliveries do not
+    // re-send", and that was not true. The record write is idempotent on the
+    // payment intent; this mail is not. A Stripe redelivery re-enters the
+    // handler whenever the first attempt failed AFTER the alert — the COMPLETED
+    // stamp or the webhook log throwing sends the request to the outer catch,
+    // which deletes the lease claim and answers 500 — and a lease takeover after
+    // expiry does the same (`stripe-webhook-service.ts` says outright that a
+    // handler may legitimately run more than once for one event).
+    //
+    // The honest wording is shipped rather than the send being deduped, and that
+    // is a deliberate choice on a money notification: the alert is the event's
+    // ONE notification (`INV-ADDPAY-037`), it is fire-and-forget with a `.catch`
+    // that only logs, and gating it on the record writer's `alreadyRecorded`
+    // outcome would mean a redelivery after a FAILED send is silent — trading a
+    // rare duplicate for a rare silence, on the path where the owner's #2761
+    // decision was that this must not be silenceable. A duplicate says the same
+    // true thing twice; a silence says nothing about money that moved.
+    frequency:
+      "On each late capture the webhook refunds automatically — rare; once per payment intent per delivery, and a Stripe redelivery of the same event can re-send it",
   },
   "admin-minors-review": {
     triggerSummary:
@@ -1405,6 +1454,12 @@ const APPROVED_EMAIL_TEMPLATE_TOKENS = [
   // #2307: the member who made the booking and put this member down as a guest.
   "bookerName",
   "bookingId",
+  // #2761: "already deleted" / "already cancelled" — which population an
+  // automatically refunded late capture belonged to. Composed by the sender
+  // because the render path has no conditional syntax, and it appears in the
+  // subject as well as the body: the whole point of the new alert is that its
+  // subject says what happened.
+  "bookingStateLabel",
   "bookingReference",
   "bookingUrl",
   "bookingReferenceNote",
