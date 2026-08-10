@@ -20,6 +20,11 @@ COOKIE=""
 PAGE_ID=""
 PAGE_ARMED=false
 PAGE_RECOVERY_ALLOWED=false
+# Set only once the supported DELETE endpoint has removed the row AND that
+# removal has been verified in the database. Cleanup then skips its own
+# unpublish-and-raw-delete path, because the product's supported lifecycle step
+# already performed it; it still proves the row is gone.
+PAGE_DELETED_VIA_API=false
 AUDIT_BEFORE=""
 CLEANUP_INVOKED=false
 
@@ -41,6 +46,16 @@ capture() {
   status="$(curl "${args[@]}" "$CORRECTNESS_BASE_URL$PATHNAME")"
   printf '%s\n' "$status" > "$PRODUCER_RAW/$label.status"
 }
+# A public route that is NOT the disposable page, used by MC-03D to tell the two
+# reasons a deleted address could 404 apart: the row simply being gone, versus
+# the canonical site-wide public-content invalidation actually firing. Same
+# convention `public-layout-writers` uses for its own warm-/about sequences.
+capture_about() {
+  local label="$1" status
+  status="$(curl -sS -D "$PRODUCER_RAW/$label.headers" -o "$PRODUCER_RAW/$label.body.html" -w '%{http_code}' "$CORRECTNESS_BASE_URL/about")"
+  [[ "$status" == 200 ]]
+  assert_private_no_store "$PRODUCER_RAW/$label.headers"
+}
 recover_page_id() {
   local count
   count="$(psql_scalar "SELECT count(*) FROM \"PageContent\" WHERE \"slug\"='$SLUG' AND \"path\"='$PATHNAME' AND \"caption\"='$TITLE' AND \"title\"='$TITLE' AND \"sortOrder\"=9342;")"
@@ -52,7 +67,19 @@ cleanup() {
   local original_status=$? failed=false count audit_after
   trap - EXIT
   set +e
-  if [[ "$PAGE_ARMED" == true ]]; then
+  if [[ "$PAGE_ARMED" == true && "$PAGE_DELETED_VIA_API" == true ]]; then
+    # The supported endpoint already removed the row through the product's own
+    # path, so there is nothing to unpublish and nothing to delete out from
+    # under the app. The container is still recreated, because every other
+    # producer that follows expects a cold, unmutated app.
+    docker restart "$CORRECTNESS_APP_CONTAINER" > "$PRODUCER_RAW/cleanup-restart.txt" 2>&1 || failed=true
+    healthy=false
+    for _ in $(seq 1 60); do
+      if curl -fsS "$CORRECTNESS_BASE_URL/api/health" > "$PRODUCER_RAW/cleanup-health.json"; then healthy=true; break; fi
+      sleep 1
+    done
+    [[ "$healthy" == true ]] || failed=true
+  elif [[ "$PAGE_ARMED" == true ]]; then
     if [[ -z "$PAGE_ID" && "$PAGE_RECOVERY_ALLOWED" == true ]]; then
       PAGE_ID="$(recover_page_id 2>/dev/null)" || failed=true
     fi
@@ -207,18 +234,82 @@ if [[ "$CORRECTNESS_SIDE" == current ]]; then
   capture after-republish
   [[ "$(<"$PRODUCER_RAW/after-republish.status")" == 200 ]]
   grep -Fq "$V2" "$PRODUCER_RAW/after-republish.body.html"
-fi
 
-set_published false final-unpublish
-capture final-404
-[[ "$(<"$PRODUCER_RAW/final-404.status")" == 404 ]]
+  # ---- MC-03D: deletion through the supported admin API (#2637, #2663) -------
+  # MC-03D used to report OWNER_DISPOSITION_NEEDED because the product had no
+  # supported way to delete a CMS page, so deletion invalidation could not be
+  # observed at all. `DELETE /api/admin/page-content` is now that supported way,
+  # so the check is measured here the same way MC-03A-C are, against the
+  # product's own endpoint rather than a mechanism invented by the harness.
+  #
+  # Two things have to be true, and they are deliberately separated because only
+  # one of them is about caching. First the address must stop answering with the
+  # body that is sitting in the store — a 404 alone would also be produced by a
+  # store that was never cleared but happened to be re-rendered. Second, the
+  # canonical site-wide invalidation must actually have fired, which is what a
+  # warm SIBLING route dropping to MISS proves and what the deleted page's own
+  # 404 cannot.
+  capture pre-delete-hit
+  [[ "$(<"$PRODUCER_RAW/pre-delete-hit.status")" == 200 ]]
+  [[ "$(header_value "$PRODUCER_RAW/pre-delete-hit.headers" x-nextjs-cache)" == HIT ]]
+  grep -Fq "$V2" "$PRODUCER_RAW/pre-delete-hit.body.html"
+  capture_about pre-delete-about-miss
+  capture_about pre-delete-about-hit
+  [[ "$(header_value "$PRODUCER_RAW/pre-delete-about-hit.headers" x-nextjs-cache)" == HIT ]]
+
+  printf '{"id":"%s"}' "$PAGE_ID" > "$PRODUCER_RAW/delete.request.json"
+  api DELETE /api/admin/page-content "$PRODUCER_RAW/delete.json" "$PRODUCER_RAW/delete.request.json"
+  node - "$PRODUCER_RAW/delete.json" "$PAGE_ID" "$SLUG" "$PATHNAME" <<'NODE'
+const body = require(process.argv[2]);
+if (body?.ok !== true) throw new Error("the supported delete did not report success");
+if (body?.page?.id !== process.argv[3] || body.page.slug !== process.argv[4] || body.page.path !== process.argv[5]) {
+  throw new Error("the delete response did not bind the unique disposable page");
+}
+// The route answers 200 with this false when the row went but the cache flush
+// threw, which is honest of it and is exactly the case MC-03D must not accept.
+if (body?.publicCacheCleared !== true) throw new Error("the route reported that it could not clear the public site cache");
+NODE
+
+  # The row is gone through the product's own path, so cleanup must not try to
+  # remove it again.
+  psql_scalar "SELECT count(*) FROM \"PageContent\" WHERE \"id\"='$PAGE_ID' OR \"slug\"='$SLUG' OR \"path\"='$PATHNAME';" > "$PRODUCER_RAW/delete-row-count.txt"
+  [[ "$(<"$PRODUCER_RAW/delete-row-count.txt")" == 0 ]]
+  PAGE_DELETED_VIA_API=true
+  psql_scalar "SELECT count(*) FROM \"AuditLog\" WHERE \"action\"='PAGE_CONTENT_DELETED' AND \"entityType\"='PageContent' AND \"entityId\"='$PAGE_ID';" > "$PRODUCER_RAW/delete-audit-count.txt"
+  [[ "$(<"$PRODUCER_RAW/delete-audit-count.txt")" == 1 ]]
+
+  # Not served stale: the address that was a HIT one request ago now 404s, and
+  # the body that was in the store does not come back with it.
+  capture after-delete
+  [[ "$(<"$PRODUCER_RAW/after-delete.status")" == 404 ]]
+  ! grep -Fq "$V2" "$PRODUCER_RAW/after-delete.body.html"
+
+  # The invalidation was the canonical site-wide one, not the row merely
+  # vanishing: the sibling route that was warm a moment ago was dropped from the
+  # store by the same call, rebuilds on the next request, and carries no link to
+  # the address that has just been deleted.
+  capture_about after-delete-about-miss
+  [[ "$(header_value "$PRODUCER_RAW/after-delete-about-miss.headers" x-nextjs-cache)" == MISS ]]
+  capture_about after-delete-about-hit
+  [[ "$(header_value "$PRODUCER_RAW/after-delete-about-hit.headers" x-nextjs-cache)" == HIT ]]
+  ! grep -Fq "\"$PATHNAME\"" "$PRODUCER_RAW/after-delete-about-hit.body.html"
+else
+  set_published false final-unpublish
+  capture final-404
+  [[ "$(<"$PRODUCER_RAW/final-404.status")" == 404 ]]
+fi
 
 # Cleanup is deliberately invoked before the result is written. A failed cleanup
 # therefore cannot leave a producer result that the finalizer could accept.
 docker logs --since "$PRODUCER_STARTED_AT" "$CORRECTNESS_APP_CONTAINER" > "$PRODUCER_RAW/app-scenario.log" 2>&1
 producer_complete_cleanup cleanup "$PRODUCER_RAW/mutation-cleanup.json"
-producer_write_cleanup_passed "unique CMS page deleted exactly; app restarted; immutable audit entries retained" \
-  "mutation-cleanup.json" "cleanup-delete.txt" "cleanup-health.json"
+if [[ "$PAGE_DELETED_VIA_API" == true ]]; then
+  producer_write_cleanup_passed "unique CMS page removed exactly once through the supported DELETE endpoint under test; app restarted; immutable audit entries retained" \
+    "mutation-cleanup.json" "delete-row-count.txt" "cleanup-health.json"
+else
+  producer_write_cleanup_passed "unique CMS page deleted exactly; app restarted; immutable audit entries retained" \
+    "mutation-cleanup.json" "cleanup-delete.txt" "cleanup-health.json"
+fi
 
 V1_HEADERS="$(producer_relative "$PRODUCER_RAW/v1-miss.headers")"
 V1_BODY="$(producer_relative "$PRODUCER_RAW/v1-miss.body.html")"
@@ -235,12 +326,21 @@ else
   V2_ANON="$(producer_relative "$PRODUCER_RAW/v2-anonymous.body.html")"
   UNPUBLISHED="$(producer_relative "$PRODUCER_RAW/after-unpublish.status")"
   REPUBLISHED="$(producer_relative "$PRODUCER_RAW/after-republish.body.html")"
+  PRE_DELETE_HIT="$(producer_relative "$PRODUCER_RAW/pre-delete-hit.headers")"
+  DELETE_RESPONSE="$(producer_relative "$PRODUCER_RAW/delete.json")"
+  AFTER_DELETE_STATUS="$(producer_relative "$PRODUCER_RAW/after-delete.status")"
+  AFTER_DELETE_BODY="$(producer_relative "$PRODUCER_RAW/after-delete.body.html")"
+  ABOUT_WARM="$(producer_relative "$PRODUCER_RAW/pre-delete-about-hit.headers")"
+  ABOUT_INVALIDATED="$(producer_relative "$PRODUCER_RAW/after-delete-about-miss.headers")"
+  DELETE_ROWS="$(producer_relative "$PRODUCER_RAW/delete-row-count.txt")"
+  DELETE_AUDIT="$(producer_relative "$PRODUCER_RAW/delete-audit-count.txt")"
   cat > "$PRODUCER_RAW/observations.json" <<JSON
 [
   {"check_id":"MC-02","outcome":"PASS","assertions":["an authenticated first render and the following anonymous HIT were byte-identical and contained no session token"],"evidence_paths":["$V2_AUTH","$V2_ANON"]},
   {"check_id":"MC-03A","outcome":"PASS","assertions":["republishing restored the exact unique route on the next request"],"evidence_paths":["$REPUBLISHED"]},
   {"check_id":"MC-03B","outcome":"PASS","assertions":["saving v2 invalidated warm v1; the authenticated next request was MISS and anonymous follow-up was byte-identical HIT"],"evidence_paths":["$V2_AUTH","$V2_ANON"]},
   {"check_id":"MC-03C","outcome":"PASS","assertions":["unpublishing changed the exact unique route to 404 on the next request"],"evidence_paths":["$UNPUBLISHED"]},
+  {"check_id":"MC-03D","outcome":"PASS","assertions":["the disposable page was served from the ISR store as a HIT immediately before deletion, and a sibling public route was warm as a HIT at the same moment","the supported DELETE /api/admin/page-content endpoint removed the page by body id, reported ok with publicCacheCleared true, and left exactly zero PageContent rows for the slug or path","the deleted address answered 404 on the next request and did not return the stored body, so it was never served stale","the canonical site-wide public-content invalidation actually fired: the warm sibling route dropped to MISS on the same call and rebuilt to a HIT carrying no link to the deleted address","exactly one PAGE_CONTENT_DELETED audit entry was written for the page, and the product's own supported path performed the cleanup the harness would otherwise have done itself"],"evidence_paths":["$PRE_DELETE_HIT","$ABOUT_WARM","$DELETE_RESPONSE","$AFTER_DELETE_STATUS","$AFTER_DELETE_BODY","$ABOUT_INVALIDATED","$DELETE_ROWS","$DELETE_AUDIT"]},
   {"check_id":"BND-02","outcome":"PASS","assertions":["the first exact-body request was MISS and the byte-identical second request was HIT, both private,no-store; exact four-route timing bindings were typed from raw responses"],"evidence_paths":["$V1_HEADERS","$V1_BODY","$ROUTE_BINDING","$CLEANUP"]}
 ]
 JSON

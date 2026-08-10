@@ -210,9 +210,40 @@ printf reached > "$MARKER"
   if (sourceCensus.writer_count !== 39 || !sourceCensus.structural_census_complete || !sourceCensus.canonical_invalidation_complete || !sourceCensus.archive_membership_complete || sourceCensus.runtime_exhaustive || sourceCensus.focused_contract_evidence.length !== 6) {
     throw new Error("writer census did not preserve complete structural proof and honest representative-runtime labelling");
   }
-  if (sourceCensus.cms_page_content_endpoint.delete_endpoint_present !== false || sourceCensus.cms_page_content_endpoint.disposition !== "OWNER_DISPOSITION_NEEDED") {
-    throw new Error("CMS delete applicability did not remain blocked");
+  if (sourceCensus.cms_page_content_endpoint.delete_endpoint_present !== true
+    || sourceCensus.cms_page_content_endpoint.disposition !== "SUPPORTED_DELETE_ENDPOINT_PRESENT"
+    || !sourceCensus.cms_page_content_endpoint.exported_methods.includes("DELETE")
+    || sourceCensus.cms_page_content_endpoint.delete_identifier_source !== "request-body-id"
+    || sourceCensus.cms_page_content_endpoint.delete_runtime_producer !== "cms-lifecycle") {
+    throw new Error("CMS delete applicability did not bind the supported endpoint MC-03D now measures");
   }
+
+  // The MC-03D tripwire was inverted, not deleted (#2663). These refute the new
+  // direction: each mutation is byte-length-preserving, so the archive stays a
+  // valid tar and only the property under test moves.
+  const mutatedArchive = (name, from, to) => {
+    if (Buffer.byteLength(from) !== Buffer.byteLength(to)) throw new Error(`archive mutation is not length preserving: ${name}`);
+    const bytes = readFileSync(sourceArchive);
+    const index = bytes.indexOf(from);
+    if (index < 0 || bytes.indexOf(from, index + 1) >= 0) throw new Error(`archive mutation anchor is not unique: ${name}`);
+    bytes.write(to, index);
+    const path = join(temp, `${name}.tar`);
+    writeFileSync(path, bytes);
+    return path;
+  };
+  const censusArgs = (archivePath, outName) => [
+    "measurement/current-main-refresh/bin/generate-source-census.mjs",
+    "--expected", archivedWriterCensus, "--app-source-archive", archivePath, "--app-source-commit", head,
+    "--out", join(temp, outName),
+  ];
+  // 1. The supported deletion writer is withdrawn entirely.
+  run(process.execPath, censusArgs(mutatedArchive("delete-withdrawn",
+    "export async function DELETE(request: NextRequest) {\n  // Same gate as editing",
+    "export async funktion DELETE(request: NextRequest) {\n  // Same gate as editing"), "delete-withdrawn.json"), false);
+  // 2. It survives but stops clearing the public site through the canonical helper.
+  run(process.execPath, censusArgs(mutatedArchive("delete-uninvalidated", "    revalidatePublicPageContent();\n  } catch (err) {", "    revalidatePublicPageContenT();\n  } catch (err) {"), "delete-uninvalidated.json"), false);
+  // 3. It stops accepting the body id the runtime producer addresses it by.
+  run(process.execPath, censusArgs(mutatedArchive("delete-shape", "const deleteSchema = z\n  .object({\n    id: z.string()", "const deleteSchema = z\n  .object({\n    ID: z.string()"), "delete-shape.json"), false);
 
   const makeRun = (name) => {
     const root = join(temp, name);
@@ -233,13 +264,13 @@ printf reached > "$MARKER"
     ];
   };
   const validObservation = [{
-    check_id: "MC-03D", outcome: "OWNER_DISPOSITION_NEEDED", assertions: ["page-content has no DELETE export"],
+    check_id: "MC-03D", outcome: "PASS", assertions: ["page-content exports the supported DELETE writer"],
     evidence_paths: ["raw/source-census/evidence.txt"],
   }];
   const positiveRoot = makeRun("writer-positive");
   run(process.execPath, writerArgs(positiveRoot, validObservation));
   const producerResult = JSON.parse(readFileSync(join(positiveRoot, "producer-results", "source-census.json"), "utf8"));
-  if (producerResult.cleanup.status !== "passed" || producerResult.observations[0].outcome !== "OWNER_DISPOSITION_NEEDED") throw new Error("producer result normalization failed");
+  if (producerResult.cleanup.status !== "passed" || producerResult.observations[0].outcome !== "PASS") throw new Error("producer result normalization failed");
   if (!Array.isArray(producerResult.owned_artifacts) || producerResult.owned_artifacts.length !== 3 || producerResult.owned_artifacts.some((row) => !row.path.startsWith("raw/source-census/") || !/^[a-f0-9]{64}$/.test(row.sha256) || !Number.isSafeInteger(row.size_bytes))) {
     throw new Error("producer result did not enumerate exact owned raw artifacts");
   }

@@ -19,7 +19,7 @@ export const CORRECTNESS_CENSUS = Object.freeze([
   check("MC-01A", "mandatory_pass", ["current"], ["browser-suite"]), check("MC-01B", "mandatory_pass", ["current"], ["browser-suite"]),
   check("MC-02", "mandatory_pass", ["current"], ["browser-suite", "cms-lifecycle"]),
   check("MC-03A", "mandatory_pass", ["current"], ["cms-lifecycle"]), check("MC-03B", "mandatory_pass", ["current"], ["cms-lifecycle"]), check("MC-03C", "mandatory_pass", ["current"], ["cms-lifecycle"]),
-  check("MC-03D", "owner_disposition", ["current"], ["source-census"]),
+  check("MC-03D", "mandatory_pass", ["current"], ["cms-lifecycle", "source-census"]),
   check("MC-04A", "mandatory_pass", ["current"], ["public-layout-writers"]), check("MC-04B", "mandatory_pass", ["current"], ["public-layout-writers"]), check("MC-04C", "mandatory_pass", ["current"], ["public-layout-writers"]),
   check("MC-04D", "mandatory_pass", ["current"], ["source-census", "adult-hosting"]),
   check("MC-05", "mandatory_pass", ["current"], ["stored-404", "wire-security"]), check("MC-06", "mandatory_pass", ["current"], ["browser-suite", "wire-security"]),
@@ -68,7 +68,7 @@ export const PRODUCER_SOURCE_REGISTRY = Object.freeze({
 export const PRODUCER_CHECK_SCHEMA = Object.freeze({
   current: Object.freeze({
     "route-manifests": Object.freeze(["BND-01"]),
-    "cms-lifecycle": Object.freeze(["MC-02", "MC-03A", "MC-03B", "MC-03C", "BND-02"]),
+    "cms-lifecycle": Object.freeze(["MC-02", "MC-03A", "MC-03B", "MC-03C", "MC-03D", "BND-02"]),
     "cache-fault": Object.freeze(["MC-07", "MC-08A"]),
     "source-census": Object.freeze(["MC-03D", "MC-04D"]),
     "browser-suite": Object.freeze(["MC-01A", "MC-01B", "MC-06", "MC-11A", "MC-11B", "MC-11C", "MC-11D", "MC-11E"]),
@@ -400,7 +400,13 @@ export function validateProducerResult(value, { immutable, producerId }) {
   for (const observation of value.observations) {
     exactKeys(observation, ["check_id", "outcome", "assertions", "evidence_paths"], `producer observation ${producerId}`);
     const checkDefinition = CORRECTNESS_CENSUS.find((candidate) => candidate.id === observation.check_id);
-    const allowedOutcomes = observation.check_id === "MC-03D" ? ["OWNER_DISPOSITION_NEEDED"] : ["PASS", "FAIL", "UNVERIFIED"];
+    // MC-03D lost its OWNER_DISPOSITION_NEEDED carve-out when the supported
+    // `DELETE /api/admin/page-content` writer landed (#2637) and the check
+    // became measurable like every other one (#2663). The outcome vocabulary is
+    // now uniform; `OWNER_DISPOSITION_NEEDED` survives in `OUTCOMES` and in the
+    // pre-timing classifier so a future blocked check can still be reported
+    // honestly rather than forced into a PASS/FAIL it does not fit.
+    const allowedOutcomes = ["PASS", "FAIL", "UNVERIFIED"];
     if (!checkDefinition?.required_sides.includes(immutable.side) || !checkDefinition.allowed_producers.includes(producerId) || !allowedOutcomes.includes(observation.outcome) || seenChecks.has(observation.check_id) || !Array.isArray(observation.assertions) || !observation.assertions.length || observation.assertions.some((item) => typeof item !== "string" || !item) || !Array.isArray(observation.evidence_paths) || !observation.evidence_paths.length) fail(`producer observation is invalid: ${producerId}:${observation.check_id}`);
     seenChecks.add(observation.check_id);
     for (const [index, rawPath] of observation.evidence_paths.entries()) paths.add(canonicalRelative(rawPath, `${producerId} evidence path ${index}`));
@@ -519,8 +525,7 @@ export function deriveCorrectnessReport(root, immutable, rawEntries, secretScan)
     if (deferred) {
       if (observations.length || JSON.stringify(check.allowed_producers) !== JSON.stringify(["phase2-evidence"])) fail(`phase2-only check has an invalid pre-timing producer contract: ${check.id}`);
       outcome = "DEFERRED_TO_PHASE2";
-    } else if (check.id === "MC-03D") outcome = "OWNER_DISPOSITION_NEEDED";
-    else if (observations.some((item) => item.outcome === "FAIL" || !item.producer_ok)) outcome = "FAIL";
+    } else if (observations.some((item) => item.outcome === "FAIL" || !item.producer_ok)) outcome = "FAIL";
     else if (observations.some((item) => item.outcome === "PASS" && item.producer_ok)) outcome = "PASS";
     else outcome = "UNVERIFIED";
     const evidencePaths = [...new Set(observations.flatMap((item) => item.evidence_paths))].sort();
@@ -529,7 +534,7 @@ export function deriveCorrectnessReport(root, immutable, rawEntries, secretScan)
       if (!entry || !entry.check_ids.includes(check.id)) fail(`report evidence is not bound to the check in the raw manifest: ${check.id}:${path}`);
       return { path, sha256: entry.sha256 };
     });
-    return { id: check.id, requirement_class: check.requirement_class, applicability: deferred ? "deferred_to_phase2" : check.id === "MC-03D" ? "owner_disposition_needed" : "required", outcome, producer_ids: [...new Set(observations.map((item) => item.producer_id))].sort(), evidence, owner_disposition: null };
+    return { id: check.id, requirement_class: check.requirement_class, applicability: deferred ? "deferred_to_phase2" : "required", outcome, producer_ids: [...new Set(observations.map((item) => item.producer_id))].sort(), evidence, owner_disposition: null };
   });
   const result = classifyPreTimingResult(immutable.side, checks, secretScan);
   return {

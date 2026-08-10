@@ -59,9 +59,35 @@ const focusedEvidence = [
   return { path, source_sha256: evidence.source_sha256, archive_member: true, evidence_level: path.startsWith("e2e/") ? "tracked-real-server-test-source" : "tracked-focused-unit-or-route-test-source" };
 });
 
+// MC-03D's structural half. The tripwire here is kept and inverted, never
+// removed (#2663).
+//
+// It first fired because PR #2637 ADDED this export: MC-03D's old answer — "the
+// product supports no CMS page deletion, so deletion invalidation cannot be
+// observed at all" — had become a stale description of a tree that had moved on,
+// and reporting a stale answer is the one thing this suite exists not to do.
+// The supported endpoint now exists and MC-03D is a real check with a runtime
+// producer (`cms-lifecycle`), so the stale answer to refuse is the mirror image:
+// a future tree where the deletion writer has been withdrawn, or still exists
+// but no longer clears the public site through the canonical invalidator, must
+// stop the run for re-evaluation rather than inherit a PASS that was derived
+// from a shape which is no longer there. Both directions now fail closed.
 const pageRoute = member("src/app/api/admin/page-content/route.ts");
 const methods = [...pageRoute.source.matchAll(/export\s+async\s+function\s+(GET|POST|PUT|PATCH|DELETE)\b/g)].map((match) => match[1]);
-if (methods.includes("DELETE")) fail("page-content DELETE endpoint now exists; MC-03D must be re-evaluated, not silently kept blocked");
+if (!methods.includes("DELETE")) fail("page-content DELETE endpoint has been withdrawn; MC-03D must be re-evaluated, not silently kept passing");
+// Scoped to the DELETE handler's own body rather than the whole file, because
+// POST, PUT and PATCH all call the same helper — a file-wide match would keep
+// passing after the deletion writer alone stopped invalidating.
+const deleteStart = pageRoute.source.indexOf("export async function DELETE");
+const nextExport = pageRoute.source.indexOf("\nexport ", deleteStart + 1);
+const deleteHandler = pageRoute.source.slice(deleteStart, nextExport === -1 ? undefined : nextExport);
+if (!/\brevalidatePublicPageContent\(\)/.test(deleteHandler)) fail("page-content DELETE no longer clears public content through the canonical invalidator; MC-03D must be re-evaluated, not silently kept passing");
+// The runtime producer addresses the page by id in the request body. A move to a
+// path parameter would leave `cms-lifecycle` deleting nothing while still
+// reading a success, so the shape it depends on is asserted here.
+if (!/const deleteSchema = z\s*\n?\s*\.object\(\{\s*\n?\s*id: z\.string\(\)/.test(pageRoute.source)) fail("page-content DELETE no longer accepts the reviewed body-id shape; MC-03D must be re-evaluated");
+const pageRouteCensusEntry = expectedByPath.get(pageRoute.path);
+if (pageRouteCensusEntry?.mechanism !== "revalidatePublicPageContent" || pageRouteCensusEntry.runtime_producer !== "cms-lifecycle") fail("page-content route is no longer the reviewed cms-lifecycle canonical writer; MC-03D must be re-evaluated");
 const inventory = expected.writers.map((writer) => ({
   ...writer,
   source_sha256: discoveredByPath.get(writer.path).source_sha256,
@@ -90,6 +116,16 @@ const result = {
   canonical_helper: { path: canonicalHelper.path, source_sha256: canonicalHelper.source_sha256, archive_member: true, full_route_and_tagged_data: true },
   focused_contract_evidence: focusedEvidence,
   writers: inventory,
-  cms_page_content_endpoint: { path: pageRoute.path, source_sha256: pageRoute.source_sha256, archive_member: true, exported_methods: methods.sort(), delete_endpoint_present: false, disposition: "OWNER_DISPOSITION_NEEDED" },
+  cms_page_content_endpoint: {
+    path: pageRoute.path,
+    source_sha256: pageRoute.source_sha256,
+    archive_member: true,
+    exported_methods: methods.sort(),
+    delete_endpoint_present: true,
+    delete_identifier_source: "request-body-id",
+    delete_canonical_resolution: "revalidatePublicPageContent -> revalidatePublicSite -> full-route plus tagged-data invalidation",
+    delete_runtime_producer: "cms-lifecycle",
+    disposition: "SUPPORTED_DELETE_ENDPOINT_PRESENT",
+  },
 };
 writeFileSync(out, `${JSON.stringify(result, null, 2)}\n`, { encoding: "utf8", flag: "wx" });

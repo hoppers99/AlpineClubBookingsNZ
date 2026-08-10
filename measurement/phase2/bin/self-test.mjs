@@ -582,11 +582,16 @@ function prepareComposedCorrectness(name, side, mutation = {}) {
     const ownedPaths = [genericPath, ...(producerId === "cms-lifecycle" ? routePaths : [])].sort((left, right) => left.localeCompare(right));
     const observations = checkIds.map((checkId) => ({
       check_id: checkId,
-      outcome: checkId === "MC-03D" ? "OWNER_DISPOSITION_NEEDED" : "PASS",
+      outcome: "PASS",
       assertions: [`fixture assertion for ${checkId}`],
       evidence_paths: [checkId === "BND-02" && producerId === "cms-lifecycle" ? "raw/cms-lifecycle/route-response-evidence.json" : genericPath],
     }));
     if (mutation.cyclicEvidence && producerId === Object.keys(PRODUCER_CHECK_SCHEMA[side])[0]) observations[0].evidence_paths = ["raw-evidence-manifest.json"];
+    // A chain that seals honestly but does not pass. It replaced MC-03D's
+    // permanent OWNER_DISPOSITION_NEEDED as the fixture guarding the
+    // "not pre-timing ready" gate, once MC-03D became a measurable check
+    // (#2663) and every current-side check began passing.
+    if (mutation.unverifiedCheck && producerId === Object.keys(PRODUCER_CHECK_SCHEMA[side])[0]) observations[0].outcome = "UNVERIFIED";
     writeJson(join(root, "producer-results", `${producerId}.json`), {
       schema_version: 1, run_id: name, producer_id: producerId, side,
       started_at: "2026-08-06T00:02:00.000Z", ended_at: "2026-08-06T00:03:00.000Z", exit_code: 0,
@@ -614,10 +619,17 @@ assert.equal(baselineVerified.report.result, "pre_timing_passed");
 assert.deepEqual(baselineVerified.report.checks.filter((check) => check.outcome === "DEFERRED_TO_PHASE2").map((check) => check.id), ["BND-09"]);
 const currentComposed = prepareComposedCorrectness("current-composed", "current");
 finalizeCorrectnessEvidence(currentComposed, finalizerTestOptions);
-const currentVerified = verifyCorrectnessCompletion(join(currentComposed, "COMPLETED.json"), { requirePassed: false, runtimeContext: runtimeFixtureContext });
-assert.equal(currentVerified.report.result, "owner_disposition_needed");
+const currentVerified = verifyCorrectnessCompletion(join(currentComposed, "COMPLETED.json"), { runtimeContext: runtimeFixtureContext });
+assert.equal(currentVerified.report.result, "pre_timing_passed");
 assert.deepEqual(currentVerified.report.checks.filter((check) => check.outcome === "DEFERRED_TO_PHASE2").map((check) => check.id), ["MC-08B", "BND-09"]);
-assert.throws(() => verifyCorrectnessCompletion(join(currentComposed, "COMPLETED.json"), { runtimeContext: runtimeFixtureContext }), /not pre-timing ready/);
+// MC-03D is a measured check now, so no side is permanently blocked and the
+// current side reaches pre_timing_passed. The gate that refuses a sealed but
+// non-passing chain still has to hold, so it is proved against a chain that is
+// honestly unverified rather than against MC-03D's old standing block.
+const currentUnverified = prepareComposedCorrectness("current-unverified", "current", { unverifiedCheck: true });
+finalizeCorrectnessEvidence(currentUnverified, finalizerTestOptions);
+assert.equal(verifyCorrectnessCompletion(join(currentUnverified, "COMPLETED.json"), { requirePassed: false, runtimeContext: runtimeFixtureContext }).report.result, "unverified");
+assert.throws(() => verifyCorrectnessCompletion(join(currentUnverified, "COMPLETED.json"), { runtimeContext: runtimeFixtureContext }), /not pre-timing ready/);
 
 for (const [name, mutation, pattern] of [
   ["schema-drift", { schemaDrift: true }, /invalid schema/],

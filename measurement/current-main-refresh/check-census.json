@@ -16,7 +16,7 @@
     { "id": "MC-03A", "requirement_class": "mandatory_pass", "required_sides": ["current"], "allowed_producers": ["cms-lifecycle"] },
     { "id": "MC-03B", "requirement_class": "mandatory_pass", "required_sides": ["current"], "allowed_producers": ["cms-lifecycle"] },
     { "id": "MC-03C", "requirement_class": "mandatory_pass", "required_sides": ["current"], "allowed_producers": ["cms-lifecycle"] },
-    { "id": "MC-03D", "requirement_class": "owner_disposition", "required_sides": ["current"], "allowed_producers": ["source-census"] },
+    { "id": "MC-03D", "requirement_class": "mandatory_pass", "required_sides": ["current"], "allowed_producers": ["cms-lifecycle", "source-census"] },
     { "id": "MC-04A", "requirement_class": "mandatory_pass", "required_sides": ["current"], "allowed_producers": ["public-layout-writers"] },
     { "id": "MC-04B", "requirement_class": "mandatory_pass", "required_sides": ["current"], "allowed_producers": ["public-layout-writers"] },
     { "id": "MC-04C", "requirement_class": "mandatory_pass", "required_sides": ["current"], "allowed_producers": ["public-layout-writers"] },

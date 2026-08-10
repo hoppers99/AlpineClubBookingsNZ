@@ -19,11 +19,12 @@ cat > "$PRODUCER_RAW/observations.json" <<JSON
 [
   {
     "check_id": "MC-03D",
-    "outcome": "OWNER_DISPOSITION_NEEDED",
+    "outcome": "PASS",
     "assertions": [
-      "page-content endpoint exports no DELETE operation",
-      "absence of an endpoint is not itself an owner disposition",
-      "producer never converts structural absence into PASS or NOT_APPLICABLE"
+      "the measured application archive exports a supported DELETE operation on src/app/api/admin/page-content/route.ts, hash-bound to the archive member",
+      "that DELETE handler's own body clears public content through the canonical revalidatePublicPageContent helper, which the census independently resolves to revalidatePublicSite full-route plus tagged-data invalidation",
+      "the endpoint still addresses a page by request-body id, which is the shape the cms-lifecycle runtime producer exercises",
+      "structural evidence only; the runtime half of MC-03D is produced by cms-lifecycle against the running image and neither producer can pass this check alone"
     ],
     "evidence_paths": ["$SOURCE_EVIDENCE"]
   },
