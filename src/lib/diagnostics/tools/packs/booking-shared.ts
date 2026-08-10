@@ -70,6 +70,17 @@
  * `docs/ai-diagnostics/tool-pack-booking-membership.md`, those columns are not
  * merely unprojected: they are not granted to the SELECT-only role at all, so
  * PostgreSQL itself refuses them (42501).
+ *
+ * "UNPROJECTED" AND "UNGRANTED" ARE NOT THE SAME ANSWER EVERYWHERE, and reading
+ * them as one is how a future edit widens disclosure believing it cannot. Two
+ * classes exist. Columns this pack READS but never projects — the five
+ * `BookingGuest` consent discriminators, `Member."email"` as the search predicate
+ * and the erasure marker, the three `Member` phone parts as the mobile predicate —
+ * are granted BY NECESSITY, because a PostgreSQL column privilege covers every
+ * reference to the column and not only a projected one. And `AuditLog."requestId"`
+ * is granted for AID-6A's correlation entries and read by NO entry in this pack at
+ * all, so it is reach the role holds that no statement here exercises. Each
+ * relation's own grant docblock states which of its columns fall in which class.
  */
 
 import "server-only";

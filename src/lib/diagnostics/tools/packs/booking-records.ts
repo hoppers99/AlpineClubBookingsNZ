@@ -132,9 +132,22 @@
  *   (predicate + projected), id, action, severity, outcome, createdAt.
  *  NOT READ, NOT GRANTED: `memberId`, `actorMemberId`, `subjectMemberId`,
  *  `targetId` (all name people), `summary`, `details` (free text), `metadata`
- *  (arbitrary Json), `ipAddress`, `userAgent`, `requestId`, `retentionClass`,
- *  `expiresAt`, `archivedAt`, `incidentPreserved`. Exactly AID-6A's eight
- *  columns plus `entityId`, which AID-6C already added for the same purpose.
+ *  (arbitrary Json), `ipAddress`, `userAgent`, `retentionClass`, `expiresAt`,
+ *  `archivedAt`, `incidentPreserved`.
+ *  NOT READ, BUT GRANTED — one column, named separately because it is the single
+ *  place on this relation where those two answers differ, and because an earlier
+ *  revision of this paragraph listed it above and then contradicted itself in its
+ *  own closing sentence: `requestId`. AID-6A granted it for the five correlation
+ *  entries, which project it as their correlation key; these two record-audit
+ *  entries simply do not read it. Two consequences a reader must not get wrong.
+ *  A future entry here could project it with NO grant review and without tripping
+ *  `undeclaredReadableColumns` — the grant already exists. And `tools/render.ts`
+ *  identifies `requestId` as verbatim client header text, i.e. attacker-chosen
+ *  free text, which is why the substrate had to add value quoting at all. Anyone
+ *  tightening this allowlist must treat it as reach the role already has.
+ *  So the AuditLog grant is NINE columns — AID-6A's eight plus `entityId`, which
+ *  AID-6C added for the same purpose — and these two entries read eight of them.
+ *  `membership-records.ts` states the same accounting for its own audit entry.
  *
  * THE PRESENCE-BOOLEAN TRAP, and it is the most important finding in this
  * module. `notes IS NOT NULL` needs the SELECT privilege on `notes`:
@@ -143,11 +156,18 @@
  * SELECT-only role the ability to read every booking note in a `psql` session —
  * which would break the property this pack states plainly, that the withheld
  * columns "are not granted to the SELECT-only role at all, so PostgreSQL itself
- * refuses them (42501)". A boolean is not worth trading that for, so five
+ * refuses them (42501)". A boolean is not worth trading that for, so SIX
  * presence booleans that #2376's plan asked for are NOT projected here:
  * `hasNotes`, `hasAdminReviewNotes`, `hasMemberReviewJustification`,
  * `hasHostingReviewSnapshot` (entry 1), `hasLastConflictReason` and
- * `hasProposalSnapshot` (entry 4). Almost nothing is lost: `conflictCount > 0`
+ * `hasProposalSnapshot` (entry 4) — six names, and the count says six because an
+ * earlier revision of this sentence said five while enumerating them all, in the
+ * one place the rest of the tree redirects to. Every one of the six was dropped for
+ * a GRANT reason and not for the 24-field cap: each needs SELECT on free text or
+ * raw JSON (`Booking."notes"`, `"adminReviewNotes"`, `"memberReviewJustification"`,
+ * `"adultMemberHostingReview"`, `BookingChangeRequest."lastConflictReason"`,
+ * `"proposalSnapshot"`), so widening the cap recovers none of them.
+ * Almost nothing is lost: `conflictCount > 0`
  * with `lastConflictAtUtc` already says a conflict happened, `requestKind =
  * POLICY_EXCEPTION` already implies a frozen proposal, and each entry's scope
  * line names the administration screen that shows the text itself.
@@ -707,9 +727,23 @@ const bookingLinkedState = defineDiagnosticsTool<BookingIdArgs>({
  * `member-guest-consent.ts`, and `member-guest-consent.test.ts` fails unless the
  * comment matches it verbatim. Seven codes cover the eight shapes: TARGET_APPROVED
  * and DELEGATE_APPROVED are told apart only by whether `consentRespondedByMemberId`
- * is the guest themself, that column names a person and is NOT granted, so the
- * two share `approved_on_request` and this catalogue says so rather than picking
- * one.
+ * is the guest themself, and that column names a person, so the two share
+ * `approved_on_request` and this catalogue says so rather than picking one.
+ *
+ * THE COLUMN IS GRANTED AND READ — say so, because an earlier revision of this
+ * sentence said it was "NOT granted" and that is a trap in both directions. It is
+ * in the `BookingGuest` allowlist in `provision-role.ts`, this module's own grant
+ * table lists it among the five consent discriminators "READ BUT NEVER PROJECTED",
+ * `BOOKING_PARTY_SQL` selects it, and `consentSubStateOf` passes it into
+ * `classifyMemberGuestConsent` — which cannot classify a CONFIRMED row without it
+ * (it returns null, mapped to `unrecognised_consent_shape`, when the responder is
+ * absent). A reader who believed the "NOT granted" line and tightened the
+ * allowlist would take the grant away and break `booking_party_state` with a 42501
+ * for EVERY booking, because a column privilege covers a SELECT-list reference. A
+ * reader going the other way would think reporting WHICH of the two approved it
+ * needs a fresh grant, and widen disclosure on a false premise. What withholds the
+ * responder is the PROJECTION, not the server: the id is compared to the target id
+ * and never emitted — the same thing this module says correctly in its grant table.
  */
 export const BOOKING_GUEST_CONSENT_SUB_STATES = {
   family_or_legacy:

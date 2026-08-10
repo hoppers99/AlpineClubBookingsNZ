@@ -82,12 +82,16 @@
  *     id                    E1 memberRef; E3 relatedMemberRef + relationRef (legs B/C)
  *     firstName             E1; E3 relatedFirstName
  *     lastName              E1; E3 relatedLastName
- *     email                 E1 — the ONLY projected email address in the whole pack
+ *     email                 E1 — the ONLY projected email address in the whole pack,
+ *                           AND the erasure marker predicate behind E1
+ *                           lifecycleDeleted (`deletedAccountEmailMarkerSql`).
+ *                           Dropping this column from the projection would NOT free
+ *                           the grant: see "erasure is defined by its markers" below.
  *     ageTier               E1; E3 relatedAgeTier
- *     active                E1 isActive + lifecycleDeleted; E3 relatedIsActive
+ *     active                E1 isActive; E3 relatedIsActive
  *     canLogin              E1
- *     cancelledAt           E1 instant + lifecycleDeleted; E3 relatedIsCancelled (bool)
- *     archivedAt            E1 instant + lifecycleDeleted; E3 relatedIsArchived (bool)
+ *     cancelledAt           E1 instant; E3 relatedIsCancelled (bool)
+ *     archivedAt            E1 instant; E3 relatedIsArchived (bool)
  *     joinedDate            E1
  *     lifeMemberDate        E1
  *     requiresInduction     E1
@@ -185,6 +189,10 @@
  *   E5 adds nothing. Still ungranted and still not read: `memberId`,
  *   `actorMemberId`, `subjectMemberId`, `summary`, `details`, `metadata`,
  *   `ipAddress`, `userAgent`.
+ *   GRANTED BUT NOT READ, one column: `requestId`. AID-6A granted it for the five
+ *   correlation entries that project it as their correlation key; E5 does not read
+ *   it, so a future field here would need no grant change — and `tools/render.ts`
+ *   flags it as verbatim client header text, which is why that matters.
  *
  * ---------------------------------------------------------------------------
  * TWO PROPERTIES THAT ARE PROPERTIES OF THE CODE
@@ -338,7 +346,19 @@ const memberIdInputSchema = {
  * wrong action; erasure is defined by its MARKERS, never by the absence of other
  * markers. The column now runs `deletedAccountEmailMarkerSql`, the SQL half of the
  * platform's own `isDeletedAccountRecord` (`INV-LIFE-013`), keyed on the anonymised
- * address the deletion writes. `diagnostics.member_eligibility_state` is the entry
+ * address the deletion writes.
+ *
+ * SO `Member."email"` IS NOW A PREDICATE AS WELL AS A PROJECTION, and the grant
+ * table above says so on its own row rather than leaving it to this paragraph.
+ * `active`, `cancelledAt` and `archivedAt` no longer contribute to
+ * `lifecycleDeleted` at all — they are read for their own projected fields and
+ * nothing else. The reason to state it twice is a concrete trap: a later privacy
+ * tightening that drops the email ADDRESS from this entry's projection (plausible —
+ * `member_search` already refuses to project it) would look at a table attributing
+ * the erasure marker to the three lifecycle columns, drop the `email` grant with the
+ * field, and turn the marker into a runtime 42501 on the one entry whose whole point
+ * is that erasure is not inferred from inactivity.
+ * `diagnostics.member_eligibility_state` is the entry
  * that tests BOTH markers — it compares the sentinel password hash inside
  * PostgreSQL, a column this role is not granted — and gives the platform's own
  * authoritative lifecycle label.

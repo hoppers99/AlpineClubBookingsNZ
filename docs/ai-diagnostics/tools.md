@@ -89,9 +89,16 @@ the thirteen booking and membership relations AID-6B argues for one at a time �
 which `public."PolicyExceptionReservationNight"` is now the narrowest, at a single
 column. `public."Member"` is the one entry two packs share: AID-6C granted `id` and
 `xeroContactId` for the Xero contact linkage, and AID-6B **widens** it to
-twenty-three columns of identity and membership lifecycle plus the predicate-only
-phone country code, argued column by column on
-the grant itself and in the pack doc. Everything else in the schema is unreadable
+**twenty-three columns in total** — identity and membership lifecycle, plus
+`email`, plus **all three** predicate-only phone parts (`phoneCountryCode`,
+`phoneAreaCode` and `phoneNumber`) — argued column by column on
+the grant itself and in the pack doc. Read the phone parts carefully: `SELECT` on
+`phoneNumber` **is** granted, because `member_search`'s mobile arm needs it as a
+predicate and a PostgreSQL column privilege covers every reference to a column. What
+withholds a member's number is the projection, not the server — no entry in either
+pack returns one, and the member summary reports only whether a number is on file.
+That is a code-enforced guarantee rather than a server-enforced one, which is
+exactly the distinction this page exists to state. Everything else in the schema is unreadable
 by the diagnostics role, including `IntegrationCredential` (encrypted provider
 secrets) and `XeroToken` (**plaintext** OAuth access and refresh tokens), both
 permanently out of scope under ADR-007 §1. And so is every other column of the
