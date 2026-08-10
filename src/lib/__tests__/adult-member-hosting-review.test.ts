@@ -11,6 +11,28 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("server-only", () => ({}));
 
+/**
+ * ONE export replaced: #2543's subscription bridge.
+ *
+ * Everything else in `subscription-lockout-enforcement` stays genuine. The bridge
+ * is stubbed to "nobody is unpaid", which is byte-identical to what the real one
+ * returns in this environment — it short-circuits outside `NON_MEMBER_PRICING` and
+ * this suite has no lockout-settings row — with the difference that the SEASON it
+ * is asked about becomes observable. That season is the whole subject of the
+ * `seasonYear` tests at the end of this file, and it is otherwise invisible: the
+ * bridge is the only thing in the hosting rule that uses it.
+ */
+const subscriptionBridge = vi.hoisted(() => ({
+  loadUnpaidSubscriptionMemberIds: vi.fn(async () => new Set<string>()),
+}));
+vi.mock("@/lib/subscription-lockout-enforcement", async (importOriginal) => ({
+  ...(await importOriginal<
+    typeof import("@/lib/subscription-lockout-enforcement")
+  >()),
+  loadUnpaidSubscriptionMemberIds:
+    subscriptionBridge.loadUnpaidSubscriptionMemberIds,
+}));
+
 import {
   evaluatePersistedBookingAdultMemberHostingReadOnly,
   evaluateProposedAdultMemberHosting,
@@ -1025,5 +1047,50 @@ describe("pre-persist evaluation for the create path (#2364)", () => {
       },
     );
     expect(violation!.affectedNights).toEqual(["2026-07-05"]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The season the subscription bridge is asked about (#2376).
+// ---------------------------------------------------------------------------
+
+describe("the read-only form's season basis (#2376)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    subscriptionBridge.loadUnpaidSubscriptionMemberIds.mockResolvedValue(
+      new Set<string>(),
+    );
+  });
+
+  /** The season the bridge was actually asked about. */
+  function seasonAsked(): unknown {
+    const call = subscriptionBridge.loadUnpaidSubscriptionMemberIds.mock
+      .calls[0] as [unknown, { seasonYear?: number }] | undefined;
+    return call?.[1]?.seasonYear;
+  }
+
+  it("derives the season from the check-in night when no caller supplies one", async () => {
+    // Unchanged behaviour for every writer: they reach this rule through a gated
+    // request that has already seeded the process-level financial-year cache, so
+    // `getSeasonYear(checkIn)` is correct for them. The fixture's check-in is
+    // 4 July 2026, which is season 2026 on the default 31-March year-end.
+    const { db } = makeDb(bookingRow(), [CLUB_ON]);
+    await evaluatePersistedBookingAdultMemberHostingReadOnly("booking-1", db);
+    expect(seasonAsked()).toBe(2026);
+  });
+
+  it("uses the season the caller resolved, when it resolved one", async () => {
+    // THE SEAM #2376 NEEDS. A read-only evidence caller has no gated request
+    // behind it, so nothing has seeded that cache and a club whose financial year
+    // does not end in March would have its hosts judged against another season's
+    // `MemberSubscription` rows. AI Diagnostics resolves the year-end month from
+    // stored state, refuses when it cannot, and passes the season here — and the
+    // number below is deliberately one no derivation from this fixture produces,
+    // so a dropped parameter cannot pass by coincidence.
+    const { db } = makeDb(bookingRow(), [CLUB_ON]);
+    await evaluatePersistedBookingAdultMemberHostingReadOnly("booking-1", db, {
+      seasonYear: 2029,
+    });
+    expect(seasonAsked()).toBe(2029);
   });
 });

@@ -238,6 +238,68 @@ function assertPopulationWithinCeiling(
   }
 }
 
+/**
+ * THE MEMBERSHIP SEASON A DATE FALLS IN, FROM STORED STATE ONLY.
+ *
+ * ONE definition for this pack, because the two entries that need a season would
+ * otherwise answer one question two ways: `member_eligibility_state` asks it about
+ * "now", `booking_block_state` asks it about a booking's check-in night, and both
+ * must derive it identically or they contradict each other for whichever part of
+ * the year the two answers straddle.
+ *
+ * WHY NOT `getSeasonYear`. That helper — the platform's one derivation, shared by
+ * ~40 call sites — reads the process-level year-end month cached in
+ * `financial-year.ts`. The cache is seeded by `refreshFinancialYearConfig()`, which
+ * is called by exactly three product paths (the membership-lockout settings write,
+ * the finance dashboard page, and the subscription-eligibility gate). NOTHING on a
+ * diagnostics path calls it. So on a cold process the cache is still
+ * `DEFAULT_FINANCIAL_YEAR_END_MONTH` — March — and a club with any other year-end
+ * month gets evidence judged in the WRONG SEASON: the paid-up-adult rule and the
+ * hosting subscription bridge both read `MemberSubscription` by
+ * `(memberId, seasonYear)`, so the wrong season silently reports a settled member
+ * as unfinancial or an unfinancial member as settled, depending on which side of
+ * the real season start the date sits. Warming the cache from here would be worse
+ * still: a diagnostics read would then change what every other request in the
+ * process computes.
+ *
+ * WHY IT CAN REFUSE. `getStoredFinancialYearResolution` answers from persisted
+ * state alone: a stored admin override is authoritative, and March is authoritative
+ * only when persisted state proves no Xero tenant is connected. A club that FOLLOWS
+ * Xero for its financial year has that month in Xero and nowhere else, and this
+ * pack does not call providers. Guessing March there is the defect; the honest
+ * answer is `evidence_unavailable`, which the executor renders from this rejection
+ * and which the owner's result contract names explicitly. Setting the override in
+ * membership settings is the operator's remedy, so the message says so.
+ */
+async function resolveStoredSeasonYear(date: Date): Promise<number> {
+  const financialYear = await getStoredFinancialYearResolution();
+  if (!financialYear.ok) {
+    throw new Error(
+      "AI Diagnostics AID-6B: this club follows its connected Xero organisation for the financial year and that year-end month is not stored locally, so the membership season for these dates cannot be resolved without a provider call. Set the financial year-end month override in membership settings to make this evidence available.",
+    );
+  }
+  return getSeasonYearForYearEndMonth(date, financialYear.effectiveMonth);
+}
+
+/**
+ * The season, or a refusal — for the two call sites that MUST NOT fall back.
+ *
+ * `booking_block_state` resolves the season only on a live booking, because a
+ * suppressed one evaluates neither subscription-sensitive rule. This turns that
+ * conditional into a fence: if a future edit ever un-suppresses those rules without
+ * resolving the season first, the read REFUSES instead of quietly reverting to the
+ * process-level cache this whole helper exists to avoid. A `?? undefined` in its
+ * place would be exactly that silent revert.
+ */
+function requireResolvedSeasonYear(seasonYear: number | null): number {
+  if (seasonYear === null) {
+    throw new Error(
+      "AI Diagnostics AID-6B: a subscription-sensitive rule was reached before the membership season was resolved from stored state; refusing rather than judging the party in whichever season this process happens to have cached",
+    );
+  }
+  return seasonYear;
+}
+
 type GuestNightFootprint = {
   stayStart: Date;
   stayEnd: Date;
@@ -595,6 +657,20 @@ async function readBookingBlockState(
   const checkInDay = formatDateOnly(booking.checkIn);
   const checkOutDay = formatDateOnly(booking.checkOut);
 
+  /**
+   * The season the two subscription-sensitive rules will be judged in, resolved
+   * from STORED state and keyed on the CHECK-IN night — a stay is judged in the
+   * season it falls in, not the season the diagnostic is run in.
+   *
+   * RESOLVED ONLY WHEN IT WILL BE USED. A deleted or terminal booking runs neither
+   * rule (see the four suppressed calls below), so asking for the season there
+   * would let a club that follows Xero for its financial year lose ALL block-state
+   * evidence about a cancelled booking over a question that booking never asks.
+   * `null` on those rows is "not needed", and it is never passed anywhere.
+   */
+  const seasonYear =
+    deleted || terminal ? null : await resolveStoredSeasonYear(booking.checkIn);
+
   /** The open exception requests, and whether any of them is actually holding beds. */
   const openRequests = await prisma.bookingChangeRequest.findMany({
     where: { bookingId, status: "REQUESTED" },
@@ -661,10 +737,17 @@ async function readBookingBlockState(
           requestedByMemberId: booking.memberId,
           bookingId: booking.id,
           },
+          // The paid-up-adult rule reads `MemberSubscription` by
+          // `(memberId, seasonYear)`. Left to itself it would take the season from
+          // the process-level financial-year cache no diagnostics path seeds.
+          { seasonYear: requireResolvedSeasonYear(seasonYear) },
         ),
     deleted || terminal
       ? Promise.resolve(null)
-      : evaluatePersistedBookingAdultMemberHostingReadOnly(booking.id, prisma),
+      : evaluatePersistedBookingAdultMemberHostingReadOnly(booking.id, prisma, {
+          // Same reason, for #2543's subscription bridge inside the hosting rule.
+          seasonYear: requireResolvedSeasonYear(seasonYear),
+        }),
     deleted || terminal
       ? Promise.resolve(null)
       : checkCapacity(
@@ -1238,23 +1321,16 @@ async function readMemberEligibility(
    * `qualifiesAsAdultMemberHost: false` — against a fully paid-up adult member.
    *
    * IT ALSO MADE TWO ENTRIES IN THIS PACK CONTRADICT EACH OTHER.
-   * `booking_block_state` reaches the same question through
-   * `evaluateProposedPaidUpAdultPresence`, which already calls the canonical
-   * helper keyed on the BOOKING's check-in night, because a stay is judged in the
-   * season it falls in. This entry is MEMBER-scoped with no booking to key on, so
-   * "now" is the right instant here — but the derivation has to be the same one,
-   * or the two entries answer one question two ways for a quarter of every year.
+   * `booking_block_state` reaches the same question through the paid-up-adult rule
+   * and the hosting subscription bridge, both keyed on the BOOKING's check-in
+   * night, because a stay is judged in the season it falls in. This entry is
+   * MEMBER-scoped with no booking to key on, so "now" is the right instant here —
+   * but the derivation has to be the same one, or the two entries answer one
+   * question two ways for a quarter of every year. Both now go through
+   * `resolveStoredSeasonYear`, which is the single definition and the reason
+   * neither depends on the process-level financial-year cache.
    */
-  const financialYear = await getStoredFinancialYearResolution();
-  if (!financialYear.ok) {
-    throw new Error(
-      "AI Diagnostics AID-6B: the connected Xero financial year is not stored locally; member eligibility is unavailable without a provider call",
-    );
-  }
-  const seasonYear = getSeasonYearForYearEndMonth(
-    new Date(),
-    financialYear.effectiveMonth,
-  );
+  const seasonYear = await resolveStoredSeasonYear(new Date());
 
   const member = await prisma.member.findUnique({
     where: { id: memberId },

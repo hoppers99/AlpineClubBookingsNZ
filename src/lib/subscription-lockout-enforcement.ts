@@ -674,11 +674,32 @@ export async function evaluateProposedPaidUpAdultPresence(
      * modification (the live booking's own owner does).
      */
     bookingOwnerMemberId?: string | null;
+    /**
+     * The membership season these nights fall in, when the caller has already
+     * resolved it AUTHORITATIVELY.
+     *
+     * Omit it and the season comes from `getSeasonYear`, which reads the
+     * process-level financial-year cache in `financial-year.ts`. Every product
+     * caller of this function is a booking write behind a gated request that has
+     * seeded that cache, so omitting it is correct for them and this parameter
+     * changes nothing about their answer.
+     *
+     * A READ-ONLY EVIDENCE caller cannot rely on that. Nothing on a diagnostics
+     * path calls `refreshFinancialYearConfig`, so on a cold process the cache is
+     * still the March default and a club with any other year-end month would be
+     * judged in the WRONG SEASON — reporting a paid-up member as unfinancial
+     * (or the reverse) from a season row that is not theirs. Such a caller
+     * resolves the year-end month from stored state itself, refuses when it
+     * cannot, and passes the season here so the answer never depends on whatever
+     * happened to warm the cache. Same shape and same reason as
+     * `resolveMembershipTypePolicy`'s own `seasonYear` input.
+     */
+    seasonYear?: number;
   },
 ): Promise<PaidUpAdultMemberPolicyExceptionViolation | null> {
   const requirements = await evaluateNonMemberPricingRequirements(db, {
     lodgeId: input.lodgeId,
-    seasonYear: getSeasonYear(input.checkIn),
+    seasonYear: input.seasonYear ?? getSeasonYear(input.checkIn),
     checkIn: input.checkIn,
     checkOut: input.checkOut,
     bookingOwnerMemberId: input.bookingOwnerMemberId ?? null,

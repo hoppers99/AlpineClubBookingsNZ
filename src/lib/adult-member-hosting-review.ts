@@ -536,6 +536,14 @@ async function evaluateLoadedBookingAdultMemberHosting(
   booking: LoadedHostingBooking,
   db: AdultMemberHostingReadDb,
   acquireCoverageOwnerLock: (() => Promise<void>) | null,
+  /**
+   * The season the subscription bridge judges settlement in, when the caller has
+   * already resolved it authoritatively. Omitted by every writer, which runs
+   * behind a gated request that has seeded the financial-year cache; supplied by
+   * read-only evidence callers, which cannot. See
+   * `evaluatePersistedBookingAdultMemberHostingReadOnly`.
+   */
+  seasonYear?: number,
 ): Promise<{
   violation: AdultMemberHostingPolicyExceptionViolation | null;
   resolved: ResolvedAdultMemberHostingPolicy;
@@ -585,7 +593,7 @@ async function evaluateLoadedBookingAdultMemberHosting(
           : []),
       ],
       db,
-      getSeasonYear(booking.checkIn),
+      seasonYear ?? getSeasonYear(booking.checkIn),
     );
   }
   const violation = evaluateAdultMemberHostingWithPolicy(participants, resolved);
@@ -627,10 +635,22 @@ export async function evaluateBookingAdultMemberHosting(
  * the lock-owning reconciler above. It deliberately takes no advisory lock: a
  * diagnostic read may span READ COMMITTED instants and must report that limitation,
  * but it must never join a writer lock cohort or mutate database state.
+ *
+ * `seasonYear` EXISTS BECAUSE THIS FORM HAS NO GATED REQUEST BEHIND IT. The
+ * subscription bridge (#2543) judges settlement in a membership season, and the
+ * season comes from `getSeasonYear`, which reads the process-level financial-year
+ * cache in `financial-year.ts`. Writers reach this rule through routes that have
+ * already called `refreshFinancialYearConfig`; a read-only evidence caller has
+ * not, so on a cold process the cache is still the March default and a club with
+ * any other year-end month would have its hosts judged against a season row that
+ * is not theirs — silently, and in whichever direction the calendar happens to
+ * fall. Such a caller resolves the year-end month from STORED state, refuses when
+ * it cannot be resolved without a provider call, and passes the season here.
  */
 export async function evaluatePersistedBookingAdultMemberHostingReadOnly(
   bookingId: string,
   db: AdultMemberHostingReadDb = prisma,
+  options?: { seasonYear?: number },
 ): Promise<{
   violation: AdultMemberHostingPolicyExceptionViolation | null;
   resolved: ResolvedAdultMemberHostingPolicy;
@@ -640,7 +660,12 @@ export async function evaluatePersistedBookingAdultMemberHostingReadOnly(
     select: BOOKING_HOSTING_SELECT,
   })) as LoadedHostingBooking | null;
   if (!booking) return null;
-  return evaluateLoadedBookingAdultMemberHosting(booking, db, null);
+  return evaluateLoadedBookingAdultMemberHosting(
+    booking,
+    db,
+    null,
+    options?.seasonYear,
+  );
 }
 
 

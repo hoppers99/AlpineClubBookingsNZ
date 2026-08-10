@@ -285,7 +285,9 @@ and returns evidence unavailable when a connected tenant's unstored month would
 otherwise require cache state or a provider call. The settings row is read
 strictly: a genuinely absent singleton uses the canonical defaults, while a
 rejected database read propagates as `evidence_unavailable` rather than being
-misreported as an observed March default.
+misreported as an observed March default. The same resolution feeds the season the
+booking rules are judged in — see "The season comes from stored state, never from
+the process cache".
 
 **Persisted hosting is evaluated as persisted hosting.** The read-only diagnostic
 seam and the lock-owning lifecycle evaluator share one internal canonical
@@ -1011,13 +1013,53 @@ which the same scope line calls *no season row exists at all*; and the settlemen
 rule then raised `subscription_unpaid`, and with it `qualifiesAsAdultMemberHost:
 false`, against a fully paid-up adult member. It also made two entries in this pack
 contradict each other for a quarter of the year: `booking_block_state` reaches the
-same question through `evaluateProposedPaidUpAdultPresence`, which already uses the
-canonical helper keyed on the **booking's own check-in night**, because a stay is
-judged in the season it falls in. `member_eligibility_state` is member-scoped with
-no booking to key on, so "now" is the right instant there — but the derivation has
-to be the same one. The suite could not see it because the repo-wide frozen clock
-sits at 1 July, inside the season under both rules; it now pins its own instants on
-both sides of the boundary, including a club on a December year-end.
+same question through the paid-up-adult rule and the hosting subscription bridge,
+both keyed on the **booking's own check-in night**, because a stay is judged in the
+season it falls in. `member_eligibility_state` is member-scoped with no booking to
+key on, so "now" is the right instant there — but the derivation has to be the same
+one. The suite could not see it because the repo-wide frozen clock sits at 1 July,
+inside the season under both rules; it now pins its own instants on both sides of
+the boundary, including a club on a December year-end.
+
+#### The season comes from stored state, never from the process cache
+
+`getSeasonYear` is the platform's one derivation, and it reads the year-end month
+**cached in the process** by `refreshFinancialYearConfig()`. Three product paths
+call that — the membership-lockout settings write, the finance dashboard page and
+the subscription-eligibility gate — and **no diagnostics path does**. So a
+diagnostics read that let the rules derive their own season was reading, on a cold
+process, the March default: a club with any other financial year-end would have the
+paid-up-adult rule and the hosting subscription bridge look up `MemberSubscription`
+by the wrong `(memberId, seasonYear)` and report a settled member as unfinancial, or
+an unfinancial member as settled, depending on which side of the real season start
+the nights fall.
+
+Both entries therefore resolve the season themselves, through one helper, from
+`getStoredFinancialYearResolution`:
+
+- a stored override is authoritative;
+- March is authoritative only when persisted state proves no Xero tenant is
+  connected;
+- a connected tenant whose month lives only in Xero is `evidence_unavailable`, and
+  the message names the remedy (set the override in membership settings), because
+  this pack calls no provider and will not guess;
+- a rejected settings read propagates rather than becoming an observed default.
+
+The resolved season is then **passed into** the canonical evaluators — a new
+optional `seasonYear` on `evaluatePersistedBookingNonHostingPolicyViolations`,
+`evaluateProposedPaidUpAdultPresence` and
+`evaluatePersistedBookingAdultMemberHostingReadOnly`. Omitted, every one of them
+behaves exactly as before, which is correct for the writers: they run behind a gated
+request that has already seeded the cache. Nothing warms the cache from a
+diagnostics path, because a read that changed what every other request in the
+process computes would be a mutation in all but name.
+
+`booking_block_state` resolves the season **only for a live booking**. A deleted or
+terminal booking runs neither rule, so demanding a season there would cost a
+Xero-following club all its block-state evidence about cancelled bookings over a
+question those bookings never ask. The internal guard that carries this refuses if a
+future edit ever reaches a subscription-sensitive rule without a resolved season,
+rather than silently reverting to the cache.
 
 ## Audit categories
 

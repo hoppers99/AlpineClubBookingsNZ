@@ -727,8 +727,27 @@ export async function evaluatePersistedBookingNonHostingPolicyViolations(
   lodgeId: string,
   party: ProposalParty,
   presence: { requestedByMemberId?: string | null; bookingId: string },
+  options?: {
+    /**
+     * The membership season these nights fall in, resolved authoritatively by the
+     * caller. See the same parameter on `evaluateProposedPaidUpAdultPresence` for
+     * why a read-only evidence caller must resolve it rather than letting the
+     * paid-up-adult rule read the process-level financial-year cache: nothing on a
+     * diagnostics path seeds that cache, so a club whose year-end month is not
+     * March would have its party judged in the wrong season. Omitted by every
+     * product caller, whose gated request has already seeded it.
+     */
+    seasonYear?: number;
+  },
 ): Promise<PolicyExceptionViolation[]> {
-  return evaluatePartyViolations(db, lodgeId, party, presence, false);
+  return evaluatePartyViolations(
+    db,
+    lodgeId,
+    party,
+    presence,
+    false,
+    options?.seasonYear,
+  );
 }
 
 async function evaluatePartyViolations(
@@ -739,6 +758,7 @@ async function evaluatePartyViolations(
     | { requestedByMemberId?: string | null; bookingId?: string | null }
     | undefined,
   includeProposedHosting: boolean,
+  seasonYear?: number,
 ): Promise<PolicyExceptionViolation[]> {
   const checkIn = parseDateOnly(party.checkIn);
   const checkOut = parseDateOnly(party.checkOut);
@@ -790,6 +810,7 @@ async function evaluatePartyViolations(
       ...guest,
       operationallyPresent: operationallyPresentFor(guest.memberId),
     })),
+    seasonYear,
   });
   if (paidUpAdult) {
     violations.push(paidUpAdult);

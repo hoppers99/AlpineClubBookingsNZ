@@ -3116,6 +3116,147 @@ describe("member eligibility: the season year is the SEASON's, not the calendar'
   });
 });
 
+// ---------------------------------------------------------------------------
+// 8b. booking_block_state — the season the subscription rules are judged in.
+// ---------------------------------------------------------------------------
+
+describe("booking block state: the season comes from STORED state, not the process cache (#2376)", () => {
+  /**
+   * A CHECK-IN INSIDE THE THREE MONTHS WHERE THE ANSWER DEPENDS ON THE CLUB.
+   *
+   * February 2027. On the NZ 31-March convention the season starts in April, so
+   * these nights belong to season 2026. On a December year-end the season starts in
+   * January, so the SAME nights belong to season 2027. One fixture, two correct
+   * answers, and which one is right is a stored setting — which is exactly why the
+   * two rules that read `MemberSubscription` by `(memberId, seasonYear)` may not
+   * take it from whatever this process happens to have cached.
+   */
+  const SEASON_BOUNDARY_CHECK_IN = "2027-02-10";
+  const SEASON_BOUNDARY_CHECK_OUT = "2027-02-12";
+
+  function seedSeasonBoundaryBooking(scenario: BookingScenario = {}): void {
+    seedBooking({
+      checkIn: SEASON_BOUNDARY_CHECK_IN,
+      checkOut: SEASON_BOUNDARY_CHECK_OUT,
+      ...scenario,
+    });
+  }
+
+  /** The season each evaluator was actually handed. */
+  function seasonsPassed(): { nonHosting: unknown; hosting: unknown } {
+    const nonHostingArgs = evaluatePersistedNonHostingViolationsMock.mock
+      .calls[0] as [unknown, unknown, unknown, unknown, { seasonYear?: number }?];
+    const hostingArgs = evaluatePersistedHostingMock.mock.calls[0] as [
+      unknown,
+      unknown,
+      { seasonYear?: number }?,
+    ];
+    return {
+      nonHosting: nonHostingArgs?.[4]?.seasonYear,
+      hosting: hostingArgs?.[2]?.seasonYear,
+    };
+  }
+
+  afterEach(() => {
+    __setFinancialYearEndMonthForTesting(DEFAULT_FINANCIAL_YEAR_END_MONTH);
+  });
+
+  it("hands both subscription-sensitive rules the season of the CHECK-IN night", async () => {
+    // Not the season the diagnostic runs in. The suite's frozen instant is July
+    // 2026 (season 2026 under the default year-end) and these nights are in
+    // February 2027 (also season 2026 under it) — so this arm alone cannot tell the
+    // two apart. The next one can, which is why both exist.
+    seedSeasonBoundaryBooking();
+    await blockStateRow();
+    expect(seasonsPassed()).toEqual({ nonHosting: 2026, hosting: 2026 });
+  });
+
+  it("moves the season with the club's STORED year-end month", async () => {
+    // THE MUTATION THIS FIX EXISTS FOR. A December year-end starts the season in
+    // January, so the same February nights are season 2027 — and if the season came
+    // from the process-level cache (still March here, deliberately left at the
+    // default) both rules would look up the wrong year's `MemberSubscription` row
+    // and report a paid-up member as unfinancial, or the reverse.
+    __setFinancialYearEndMonthForTesting(DEFAULT_FINANCIAL_YEAR_END_MONTH);
+    prismaMock.membershipLockoutSettings.findUnique.mockResolvedValue({
+      financialYearEndMonthOverride: 12,
+    });
+    seedSeasonBoundaryBooking();
+    await blockStateRow();
+    expect(seasonsPassed()).toEqual({ nonHosting: 2027, hosting: 2027 });
+  });
+
+  it("refuses rather than guessing March when the club follows Xero", async () => {
+    // The month lives in Xero and nowhere local, and this pack does not call
+    // providers. `evidence_unavailable` is the honest outcome; the alternative is a
+    // confident answer computed in a season that may not be this club's.
+    prismaMock.membershipLockoutSettings.findUnique.mockResolvedValue({
+      financialYearEndMonthOverride: null,
+    });
+    prismaMock.xeroToken.findFirst.mockResolvedValue({ id: "xero-token" });
+    seedSeasonBoundaryBooking();
+    await expect(
+      readBookingBlockStateEvidence({ bookingId: BOOKING_ID }),
+    ).rejects.toThrow(/not stored locally/);
+    // AND NEITHER RULE RAN. A refusal that still evaluated the party would have
+    // done the wrong-season lookup on the way to reporting itself unavailable.
+    expect(evaluatePersistedNonHostingViolationsMock).not.toHaveBeenCalled();
+    expect(evaluatePersistedHostingMock).not.toHaveBeenCalled();
+  });
+
+  it("propagates a rejected settings read instead of falling back to a default", async () => {
+    prismaMock.membershipLockoutSettings.findUnique.mockRejectedValueOnce(
+      new Error("settings database unavailable"),
+    );
+    seedSeasonBoundaryBooking();
+    await expect(
+      readBookingBlockStateEvidence({ bookingId: BOOKING_ID }),
+    ).rejects.toThrow("settings database unavailable");
+    expect(evaluatePersistedNonHostingViolationsMock).not.toHaveBeenCalled();
+    expect(evaluatePersistedHostingMock).not.toHaveBeenCalled();
+  });
+
+  it("uses March only once stored state proves no Xero tenant is connected", async () => {
+    prismaMock.membershipLockoutSettings.findUnique.mockResolvedValue({
+      financialYearEndMonthOverride: null,
+    });
+    prismaMock.xeroToken.findFirst.mockResolvedValue(null);
+    seedSeasonBoundaryBooking();
+    await blockStateRow();
+    expect(seasonsPassed()).toEqual({ nonHosting: 2026, hosting: 2026 });
+  });
+
+  it.each([
+    ["terminal", { status: "CANCELLED" }],
+    [
+      "deleted",
+      {
+        status: "CANCELLED",
+        deletedAt: new Date("2026-12-20T00:00:00.000Z"),
+      },
+    ],
+  ] satisfies [string, BookingScenario][])(
+    "asks for no season at all on a %s booking, so a Xero-following club keeps that evidence",
+    async (_label, scenario) => {
+      // The reason the resolution is conditional rather than unconditional. A
+      // suppressed booking runs neither subscription rule, so demanding a season
+      // there would cost a club that follows Xero ALL its block-state evidence
+      // about cancelled and deleted bookings — over a question those bookings never
+      // ask. The Xero tenant is connected here, which is the arm that refuses on a
+      // live booking two tests above.
+      prismaMock.membershipLockoutSettings.findUnique.mockResolvedValue({
+        financialYearEndMonthOverride: null,
+      });
+      prismaMock.xeroToken.findFirst.mockResolvedValue({ id: "xero-token" });
+      seedSeasonBoundaryBooking(scenario);
+      const row = await blockStateRow();
+      expect(row.booking_id).toBe(BOOKING_ID);
+      expect(prismaMock.membershipLockoutSettings.findUnique).not.toHaveBeenCalled();
+      expect(prismaMock.xeroToken.findFirst).not.toHaveBeenCalled();
+    },
+  );
+});
+
 describe("member eligibility: induction does NOT gate a booking (#2376)", () => {
   it("says so on the row itself, even when the induction is the only finding", async () => {
     // THE MOST USEFUL SENTENCE THIS TOOL CARRIES. #2376 lists induction among the

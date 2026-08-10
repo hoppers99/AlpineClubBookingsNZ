@@ -951,6 +951,48 @@ describe("evaluateProposedPaidUpAdultPresence (#2543 <-> #2365)", () => {
       }),
     ).resolves.toBeNull();
   });
+
+  /** The season the requirement's membership-type read was keyed on. */
+  function seasonAsked(): unknown {
+    const call = mocks.resolveMembershipTypePoliciesForMembers.mock.calls[0] as
+      | [unknown, { seasonYear?: number }]
+      | undefined;
+    return call?.[1]?.seasonYear;
+  }
+
+  it("derives the season from the check-in night when the caller supplies none", async () => {
+    // Every product caller: a booking write behind a gated request that has
+    // already seeded the process-level financial-year cache, so the derivation is
+    // correct for them and this parameter changed nothing about their answer. The
+    // fixture's check-in is 4 July 2026, season 2026 on the default 31-March
+    // year-end.
+    await evaluateProposedPaidUpAdultPresence(makeDb([UNPAID_ADULT]), {
+      lodgeId: "lodge-1",
+      checkIn: CHECK_IN,
+      checkOut: CHECK_OUT,
+      guests: [{ isMember: true, memberId: "adult-unpaid" }],
+    });
+    expect(seasonAsked()).toBe(SEASON);
+  });
+
+  it("uses the season the caller resolved, when it resolved one (#2376)", async () => {
+    // THE SEAM AI DIAGNOSTICS NEEDS. A read-only evidence caller has no gated
+    // request behind it, so nothing has seeded that cache: on a cold process it is
+    // still the March default, and a club with any other financial year-end would
+    // have this requirement read `MemberSubscription` for a season that is not the
+    // one these nights fall in — reporting a paid-up member as unfinancial, or the
+    // reverse. Such a caller resolves the year-end month from stored state,
+    // refuses when it cannot, and passes the season here. 2029 is deliberately a
+    // year no derivation from this fixture produces.
+    await evaluateProposedPaidUpAdultPresence(makeDb([UNPAID_ADULT]), {
+      lodgeId: "lodge-1",
+      checkIn: CHECK_IN,
+      checkOut: CHECK_OUT,
+      guests: [{ isMember: true, memberId: "adult-unpaid" }],
+      seasonYear: 2029,
+    });
+    expect(seasonAsked()).toBe(2029);
+  });
 });
 
 describe("loadUnpaidSubscriptionMemberIds — the hosting bridge (#2543 <-> #2364)", () => {
