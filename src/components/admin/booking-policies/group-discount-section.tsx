@@ -27,11 +27,18 @@ interface GroupDiscountDraft {
   summerOnly: boolean
   enabled: boolean
   /**
+   * Whether a later edit to an existing booking earns the discount on the
+   * nights it newly buys (#2770, INV-MOD-026). Ticked by default, which is what
+   * every edit path already did, so the control appearing changes no club's
+   * prices.
+   */
+  applyToEdits: boolean
+  /**
    * Whether a row is actually persisted, as reported by the GET (#2142). The
    * route SYNTHESISES the defaults when there is no row, so on a club that has
    * never saved this policy the draft equals the snapshot and the #2143 dirty
    * gate would make creating the row unreachable. This flag is never sent to
-   * the server — the PUT body is built from the three real policy fields.
+   * the server — the PUT body is built from the real policy fields only.
    */
   configured: boolean
 }
@@ -46,6 +53,7 @@ const GROUP_DISCOUNT_DEFAULTS: GroupDiscountDraft = {
   minGroupSize: 5,
   summerOnly: true,
   enabled: false,
+  applyToEdits: true,
 }
 
 const ENDPOINT = "/api/admin/booking-policies/group-discount"
@@ -54,12 +62,18 @@ function toDraft(data: {
   minGroupSize: number
   summerOnly: boolean
   enabled: boolean
+  applyToEdits?: boolean
   configured?: boolean
 }): GroupDiscountDraft {
   return {
     minGroupSize: data.minGroupSize,
     summerOnly: data.summerOnly,
     enabled: data.enabled,
+    // The column is NOT NULL with a `true` default, so the server always sends a
+    // boolean; the `?? true` is the FAIL-SAFE for a response that predates the
+    // column (a fork mid-upgrade), where the behaviour in force is the old
+    // always-on one and showing the box ticked is what is actually true.
+    applyToEdits: data.applyToEdits ?? true,
     // The PUT response is the persisted row itself and carries no `configured`
     // flag; reaching it at all means the row now exists.
     configured: data.configured ?? true,
@@ -85,12 +99,13 @@ export function GroupDiscountSection() {
       const res = await fetch(ENDPOINT, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
-        // Only the three real policy fields; `configured` is a client-side view
-        // of the GET, not part of the write contract.
+        // Only the real policy fields — four of them since #2770; `configured` is
+        // a client-side view of the GET, not part of the write contract.
         body: JSON.stringify({
           minGroupSize: draft.minGroupSize,
           summerOnly: draft.summerOnly,
           enabled: draft.enabled,
+          applyToEdits: draft.applyToEdits,
         }),
       })
       if (!res.ok) {
@@ -117,7 +132,8 @@ export function GroupDiscountSection() {
       !draft.configured ||
       draft.minGroupSize !== saved.minGroupSize ||
       draft.summerOnly !== saved.summerOnly ||
-      draft.enabled !== saved.enabled,
+      draft.enabled !== saved.enabled ||
+      draft.applyToEdits !== saved.applyToEdits,
   })
 
   const { draft, editing, saving, dirty, error, success } = section
@@ -238,6 +254,40 @@ export function GroupDiscountSection() {
                 disabled={!editing}
               />
               <Label htmlFor="groupSummerOnly">Summer seasons only</Label>
+            </div>
+
+            {/*
+              #2770 (INV-MOD-026). One switch for EVERY way a booking can be
+              edited later, which is the point of it: before this, one edit path
+              priced a night differently from the others (#2756). It is stated
+              here as well as beside the price the member sees, because the
+              admin turning it off is the only person who can explain it.
+            */}
+            <div className="space-y-2">
+              <div className="flex items-center space-x-2">
+                <input
+                  type="checkbox"
+                  id="groupApplyToEdits"
+                  checked={draft.applyToEdits}
+                  onChange={(e) =>
+                    section.setDraft({ applyToEdits: e.target.checked })
+                  }
+                  className="rounded border-input"
+                  disabled={!editing}
+                />
+                <Label htmlFor="groupApplyToEdits">
+                  Apply to nights added after booking
+                </Label>
+              </div>
+              <p className="text-xs text-muted-foreground">
+                On (the default): when a booking is edited later to add nights or
+                guests, those new nights get the discount too, exactly as they
+                would if they had been booked at the start. Off: only the
+                original booking is discounted, and anything added later is
+                charged at the ordinary rate. Either way, nights already booked
+                keep the price they were booked at &mdash; turning this off never
+                re-charges anyone for a night they have already paid for.
+              </p>
             </div>
 
             {editing && (

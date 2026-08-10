@@ -46,6 +46,12 @@ interface PromoCodeInputProps {
   // explains why.
   disabled?: boolean;
   disabledReason?: string;
+  // True when this widget sits on an EDIT to an existing booking rather than in
+  // a create flow (#2770, INV-MOD-026). It decides which group-discount mapper
+  // the validator uses, because the club's `applyToEdits` switch governs edits
+  // only — so a switch-off club's promo preview stops sizing its adjustment on
+  // discounted rates the quote beside it will not give.
+  forBookingEdit?: boolean;
 }
 
 export function PromoCodeInput({
@@ -59,6 +65,7 @@ export function PromoCodeInput({
   prefillCode,
   disabled = false,
   disabledReason,
+  forBookingEdit = false,
 }: PromoCodeInputProps) {
   const [code, setCode] = useState(appliedPromo?.code || "");
   const [validating, setValidating] = useState(false);
@@ -104,6 +111,9 @@ export function PromoCodeInput({
           ...(selectionRequired ? { promoGuestIndexes: selectedGuestIndexes } : {}),
           ...(forMemberId ? { forMemberId } : {}),
           ...(lodgeId ? { lodgeId } : {}),
+          // #2770: sent only when it is true, so the create flows' request
+          // bodies are byte-identical to what they send today.
+          ...(forBookingEdit ? { forBookingEdit: true } : {}),
         }),
       });
 

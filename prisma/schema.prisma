@@ -5865,6 +5865,19 @@ model GroupDiscountSetting {
   // rate, exactly as the old boolean flip did. Members keep their own type's
   // rate and TYPE_POLICY_FORCED members are excluded (#1930, E4, D-note).
   rateMembershipTypeId String?
+  // Whether a LATER EDIT to an existing booking may earn this discount on the
+  // nights it newly buys — added nights on a date change or check-out
+  // extension, and a guest added to a qualifying party (#2770, INV-MOD-026).
+  // One switch for EVERY edit path, so the ordinary planner and the
+  // in-progress planner can never price the same night differently again.
+  // Default true: that is what every edit path already did (INV-MOD-006), so
+  // no club's prices move because this column exists. When false, newly bought
+  // nights on an edit price without the discount; nights a guest already
+  // bought keep their stored price either way (INV-MOD-005), so turning it off
+  // never re-rates history. Creation, the waitlist offer reprice and the
+  // booking-request approval paths are unaffected — they are the first
+  // purchase, not a later edit.
+  applyToEdits Boolean @default(true)
   createdAt    DateTime @default(now())
   updatedAt    DateTime @updatedAt
 }

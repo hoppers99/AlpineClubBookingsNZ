@@ -379,6 +379,29 @@ actorless system change.
 
 | Admin/finance dataset review              | Return a list, queue, ledger, or report to its known default without losing work context                                                   | Change search, filters, explicit sort, or page; use the always-visible **Reset** action; stay on the same lodge, season, tab, cohort, focused record, or Finance view where that value is context rather than dataset state                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  | Use one visible label, **Reset**, across the audited 22 dataset surfaces. Keep it rendered at the default but natively disabled; its accessible name explains that search, filters, sort, and page are already at defaults. URL-backed resets use replace-style navigation, remove only known dataset keys, preserve unknown forward-compatible keys, and do not add history entries. Payments returns to the rolling NZ three-month Updated range through today; Reports returns to its rolling default through current month-end while keeping lodge; Subscriptions keeps season; Finance Dashboard restores Last Month / Previous Period / Next Month and empty cost filters while keeping view and lodge                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      | Search-only, filter-only, sort-only, page-only, and combined dirty state; default state; a focused record or non-default lodge/season/tab/Finance view; unknown URL key; Xero sibling-panel params                                                                                                                                                                                                                                                                                                                                                                                                                                                     | Members, Bookings, Payments, Subscriptions, Reports, Finance Dashboard, Audit Log, Refund Requests, Waitlist, both Xero panels, Family Groups, Issue Reports, Deletion Requests, Membership Cancellations, Member Applications, all three Booking Request tabs, Induction Register, Promo Redemptions, Lockers |
 
+## Group discount on nights added later (#2770)
+
+Admin → Booking Policies → Group Discount carries a fourth control, **Apply to
+nights added after booking**, beside Enabled / Minimum group size / Summer
+seasons only, and it is staged through the same per-section Edit → Save/Cancel
+step as its neighbours (no control auto-persists, and the dirty gate tracks this
+field like the rest, so an admin who changes only this one can still save). It is
+ticked by default, which is what every club already did, and its own help text
+says both halves of the choice in plain English — including that nights already
+booked keep the price they were booked at, so nobody is re-charged by unticking
+it.
+
+The other half of the story is on the edit panel, not the settings page. When the
+club runs a group discount and has switched it off for later edits, the
+modify-quote response carries `groupDiscountEditNotice` and the panel renders it
+verbatim in the same slot as the #2543 subscription-rate notice: a plain
+`role="status"` note beside the number, not a warning, because nothing has gone
+wrong. It is read straight off the quote, so it cannot outlive the quote it
+arrived on — a later quote without it, or a refusal that clears the quote, drops
+the note with it. A club whose switch is on, or which runs no group discount at
+all, sees no note, because there is nothing to explain. The rule behind both
+surfaces is INV-MOD-026.
+
 ## Automatically refunded late captures (#2750, completed by #2760)
 
 A finance-view admin opens `/admin/payments`. Above the filters, up to two refund

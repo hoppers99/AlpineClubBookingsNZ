@@ -329,6 +329,13 @@ function makeTx(
       enabled: boolean;
       minGroupSize: number;
       summerOnly: boolean;
+      /**
+       * #2770 (INV-MOD-026): whether a LATER EDIT earns the discount on the
+       * nights it buys. Omitted means `true` below, which is the column's own
+       * NOT NULL default and the behaviour every edit path already had — so a
+       * case that does not mention it reads exactly as it did before #2770.
+       */
+      applyToEdits?: boolean;
     } | null;
   },
 ) {
@@ -395,7 +402,11 @@ function makeTx(
         .fn()
         .mockResolvedValue(
           options?.groupDiscountSetting
-            ? { ...options.groupDiscountSetting, rateMembershipTypeId: "type-full" }
+            ? {
+                applyToEdits: true,
+                ...options.groupDiscountSetting,
+                rateMembershipTypeId: "type-full",
+              }
             : null,
         ),
     },
@@ -608,6 +619,37 @@ describe("group discount on edit-path repricing (#1095)", () => {
     ]);
   });
 
+  it("does not discount the added guest when the club has switched the discount off for later edits (#2770)", async () => {
+    // Same club, same qualifying party, same edit as the case above — the only
+    // difference is `applyToEdits: false`. Every night the addition buys is then
+    // charged at the ordinary non-member rate, and the total is the one a club
+    // with no group discount at all would charge (INV-MOD-026).
+    const booking = makeBooking();
+    const tx = makeTx(booking, {
+      groupDiscountSetting: { ...QUALIFYING, applyToEdits: false },
+    });
+    mockTransaction.mockImplementation((fn: any) => fn(tx));
+    const { POST } = await import("@/app/api/bookings/[id]/guests/route");
+
+    const req = new NextRequest("http://localhost/api/bookings/bk1/guests", {
+      method: "POST",
+      body: JSON.stringify({
+        guests: [{ firstName: "Bob", lastName: "Jones", ageTier: "ADULT", isMember: true }],
+      }),
+    });
+    const res = await POST(req, { params: Promise.resolve({ id: "bk1" }) });
+    expect(res.status).toBe(200);
+
+    const createArgs = tx.bookingGuest.create.mock.calls[0][0].data;
+    // 4 nights at the undiscounted 8000, where the ON case above paid
+    // 6000/8000/6000/8000 = 28000. Strictly dearer, which is what proves the
+    // switch reached this route rather than the plumbing being inert.
+    expect(createArgs.priceCents).toBe(32000);
+    expect(createArgs.nights.create.map((n: any) => n.priceCents)).toEqual([
+      8000, 8000, 8000, 8000,
+    ]);
+  });
+
   it("does not discount an addition that leaves the party below the minimum", async () => {
     const booking = makeBooking();
     const tx = makeTx(booking, {
@@ -654,5 +696,41 @@ describe("group discount on edit-path repricing (#1095)", () => {
       .map(([args]: any[]) => args.data)
       .find((data: any) => data.totalPriceCents !== undefined);
     expect(bookingUpdate.totalPriceCents).toBe(26000 + 28000);
+  });
+
+  it("does not discount a date extension's new nights when the club has switched the discount off for later edits (#2770)", async () => {
+    // The other edit path, the same switch, and the same shape of proof: identical
+    // to the case above except `applyToEdits: false`. The nights the extension
+    // buys go back to the ordinary non-member rate, while the nights g2 already
+    // BOUGHT under the discount keep their locked 5000s in both states
+    // (INV-MOD-005) — turning the switch off never re-rates what was paid.
+    const booking = makeBooking();
+    booking.guests[1].isMember = false;
+    const tx = makeTx(booking, {
+      groupDiscountSetting: {
+        enabled: true,
+        minGroupSize: 2,
+        summerOnly: false,
+        applyToEdits: false,
+      },
+    });
+    mockTransaction.mockImplementation((fn: any) => fn(tx));
+    const { PUT } = await import("@/app/api/bookings/[id]/modify-dates/route");
+
+    const req = new NextRequest("http://localhost/api/bookings/bk1/modify-dates", {
+      method: "PUT",
+      body: JSON.stringify({ checkIn: "2026-08-01", checkOut: "2026-08-06" }),
+    });
+    const res = await PUT(req, { params: Promise.resolve({ id: "bk1" }) });
+    expect(res.status).toBe(200);
+
+    // g1 (member) is untouched at 26000. g2 keeps her locked Aug 1/3 at 5000 and
+    // pays the undiscounted 8000 for each of Aug 2/4/5 = 34000, where the ON case
+    // paid 28000. The 6000 difference is exactly three discounted nights.
+    const bookingUpdate = tx.booking.update.mock.calls
+      .map(([args]: any[]) => args.data)
+      .find((data: any) => data.totalPriceCents !== undefined);
+    expect(bookingUpdate.totalPriceCents).toBe(26000 + 34000);
+    expect(bookingUpdate.totalPriceCents).toBeGreaterThan(26000 + 28000);
   });
 });
