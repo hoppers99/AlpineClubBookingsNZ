@@ -842,7 +842,7 @@ member is double-booked sends them to the wrong screen.
 | # | Code | Why it sits here |
 | --- | --- | --- |
 | 1 | `booking_deleted` | **Existence first.** A deleted or terminal booking makes every other question moot. Reporting a policy failure on a cancelled booking is the "confidently wrong about a healthy record" failure in its purest form: the booking is not broken, it is over. |
-| 2 | `booking_lifecycle_terminal` | As above — `CANCELLED` or `BUMPED`. |
+| 2 | `booking_lifecycle_terminal` | As above — `CANCELLED` or `BUMPED`. Raised only when the deletion is **not** what makes the booking terminal: see "one code, not two" below. |
 | 3 | `booking_waitlisted` | **The waitlist next**, because it explains the capacity shortfall that would otherwise be reported as the primary fault. A waitlisted booking does not fit by definition. |
 | 4 | `member_night_conflict` | **The hard stops.** A member already staying that night under another booking; the platform refuses to double-book a member's night. |
 | 5 | `capacity_exceeded` | A party that needs more beds than the lodge has left on an ordinary-capacity night. Only a deliberate admin over-capacity confirmation can admit it; an exclusive whole-lodge hold is deliberately excluded and reported only by the next code. |
@@ -865,12 +865,32 @@ blockers alive on a terminal booking because money outlives the booking; nothing
 in this pack does. A cancelled booking cannot exceed capacity, cannot break a
 minimum stay, and cannot be blocked from a check-in that will never happen.
 
+#### One code, not two, on a deleted booking
+
+A deleted booking is **always** cancelled as well. `deleteBooking` refuses any
+status but `CANCELLED`, it is the only writer of `Booking.deletedAt` in the tree,
+and there is no restore path — so on every deleted row `booking_deleted` and
+`booking_lifecycle_terminal` were both true of the same single event.
+
+Emitting both reported one fact twice, put `blockerCount: 2` on a booking with one
+problem, and sent an operator to two screens when only one has a next step: the
+deleted-bookings view. So `booking_lifecycle_terminal` is raised only when the
+booking is terminal *and* not deleted. The deletion is the wider fact, its
+sentence says explicitly that the cancellation is not repeated beside it, and the
+ordinary cancelled booking — much the more common record — still reports
+`booking_lifecycle_terminal` exactly as before.
+
+Terminal-ness itself is not narrowed: a deleted booking still suppresses every
+downstream blocker, and still skips the policy, capacity and conflict reads.
+This is about what is reported, not about what is evaluated.
+
 Two fields say why a suppressed row is not a healthy one.
 `bookingLifecycleState` is a single three-valued field (`live`, `terminal`,
-`deleted`) rather than two booleans, because a soft-deleted booking whose status
-is still `PAID` would carry `terminal: false` beside a deliberately empty blocker
-list, and "not terminal, no blockers" is the healthiest-looking row this pack can
-emit about a booking the member can no longer see.
+`deleted`) rather than two booleans, because `deleted: true, terminal: true` makes
+a reader work out which of the two is the fact and which is its precondition.
+`deleted` wins because the operator's next step differs: a cancelled booking has a
+cancellation record to read, a deleted one is in the deleted-bookings view. The
+blocker list now resolves the same ambiguity the same way.
 
 And **four figures are absent rather than 0 when the calculation behind them did
 not run**: `tightestSpareBeds`, `memberNightConflictCount`, `shortfallNightCount`

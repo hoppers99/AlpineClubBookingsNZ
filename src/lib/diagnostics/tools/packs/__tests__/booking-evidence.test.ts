@@ -1334,8 +1334,12 @@ describe("booking block state: terminal and deleted suppression (#2376)", () => 
   );
 
   it("runs none of the three on a SOFT-DELETED booking either", async () => {
+    // CANCELLED, because that is the only status a deleted booking can carry:
+    // `deleteBooking` 400s on anything else and nothing else in the tree writes
+    // `deletedAt`. A `PAID` + deleted fixture would be testing a row the product
+    // cannot produce.
     seedBooking({
-      status: "PAID",
+      status: "CANCELLED",
       deletedAt: new Date("2026-06-20T00:00:00.000Z"),
       violations: [{ reasonCode: "MINIMUM_STAY" }],
       conflicts: [{ memberId: MEMBER_ID }],
@@ -1392,32 +1396,38 @@ describe("booking block state: terminal and deleted suppression (#2376)", () => 
     expect(row.member_can_modify).toBe(false);
   });
 
-  it("says DELETED, not terminal, for a soft-deleted booking whose status is still PAID", async () => {
-    // The case the source's own docblock calls out. `booking_lifecycle_state` is
-    // ONE field with three values rather than two booleans precisely because
-    // `terminal: false` beside a deliberately emptied blocker list is the
-    // healthiest-looking row this pack can emit about a booking the member can no
-    // longer see. `deleted` wins because the operator's next step differs: a
-    // cancelled booking has a cancellation record, a deleted one is in the
-    // deleted-bookings view.
-    seedBooking({ status: "PAID", deletedAt: new Date("2026-06-20T00:00:00.000Z") });
-    const row = await blockStateRow();
-    expect(row.booking_lifecycle_state).toBe("deleted");
-    expect(row.booking_status).toBe("PAID");
-    expect(blockers(row)).toEqual(["booking_deleted"]);
-  });
-
-  it("ranks deleted ABOVE terminal when a cancelled booking is also soft-deleted", async () => {
+  it("reports the deletion ALONE, not beside the cancellation it presupposes", async () => {
+    // THE ONLY SHAPE A DELETED BOOKING COMES IN. `deleteBooking` refuses any
+    // status but `CANCELLED`, it is the single writer of `Booking.deletedAt`, and
+    // there is no restore path — so a deleted booking is ALWAYS also terminal.
+    //
+    // That is why raising both codes was a defect rather than thoroughness: it
+    // reported one fact twice, inflated `blocker_count` to 2, and sent an operator
+    // to two screens (the deleted-bookings view AND a cancellation record) when
+    // only the first is a real next step. `booking_lifecycle_state` already
+    // resolved the same ambiguity the same way, and the blocker list now agrees
+    // with it.
     seedBooking({
       status: "CANCELLED",
       deletedAt: new Date("2026-06-20T00:00:00.000Z"),
     });
     const row = await blockStateRow();
     expect(row.booking_lifecycle_state).toBe("deleted");
-    expect(blockers(row)).toEqual([
-      "booking_deleted",
-      "booking_lifecycle_terminal",
-    ]);
+    expect(row.booking_status).toBe("CANCELLED");
+    expect(blockers(row)).toEqual(["booking_deleted"]);
+    expect(row.blocker_codes).toBe("booking_deleted");
+    expect(row.blocker_count).toBe(1);
+  });
+
+  it("still reports the cancellation on a booking that is terminal WITHOUT being deleted", async () => {
+    // The other half of the exclusion, so narrowing `booking_lifecycle_terminal`
+    // cannot silently swallow the ordinary cancelled booking — which is the far
+    // more common record of the two.
+    seedBooking({ status: "CANCELLED" });
+    const row = await blockStateRow();
+    expect(row.booking_lifecycle_state).toBe("terminal");
+    expect(blockers(row)).toEqual(["booking_lifecycle_terminal"]);
+    expect(row.blocker_count).toBe(1);
   });
 
   it("says LIVE for an ordinary booking and raises nothing", async () => {
@@ -1458,8 +1468,14 @@ describe("booking block state: terminal and deleted suppression (#2376)", () => 
  */
 const BLOCKER_FIXTURES: [string, BookingScenario, string[]][] = [
   [
+    // CANCELLED with it, because that is the only status a deleted booking has —
+    // and the expected list is STILL one code, which is the whole point: the
+    // cancellation is the deletion's precondition, not a second finding.
     "booking_deleted",
-    { deletedAt: new Date("2026-06-20T00:00:00.000Z") },
+    {
+      status: "CANCELLED",
+      deletedAt: new Date("2026-06-20T00:00:00.000Z"),
+    },
     ["booking_deleted"],
   ],
   ["booking_lifecycle_terminal", { status: "CANCELLED" }, ["booking_lifecycle_terminal"]],
@@ -1675,10 +1691,9 @@ describe("booking block state: every blocker code, ranked (#2376)", () => {
       requests: [{ id: "open-1", reservationNights: 2 }],
     });
     const row = await blockStateRow();
-    expect(blockers(row)).toEqual([
-      "booking_deleted",
-      "booking_lifecycle_terminal",
-    ]);
+    // ONE code, not two: the deletion presupposes the cancellation, so the
+    // cancellation is not reported beside it.
+    expect(blockers(row)).toEqual(["booking_deleted"]);
     // ALL FOUR MEASUREMENTS ARE ABSENT, not zero, and this assertion is the
     // reason the suite was written before the pack was reviewed. It read
     // `member_night_conflict_count === 0` when this file was first written, which
@@ -2147,7 +2162,23 @@ describe("booking capacity by night (#2376)", () => {
     ["converted pending", { status: "PENDING", isRequestConverted: true }, true],
     ["cancelled", { status: "CANCELLED" }, false],
     [
-      "deleted confirmed",
+      // The shape the product actually produces: deletion is only reachable from
+      // CANCELLED.
+      "deleted and cancelled",
+      {
+        status: "CANCELLED",
+        deletedAt: new Date("2026-06-20T00:00:00.000Z"),
+      },
+      false,
+    ],
+    [
+      // DELIBERATELY AN UNREACHABLE ROW, and the label says so. `deleteBooking`
+      // cannot produce a CONFIRMED deleted booking, so this arm is not a product
+      // state — it isolates the `deletedAt === null` clause of the effective-hold
+      // predicate from `bookingHoldsCapacity`, which is a capacity predicate and
+      // knows nothing about deletion. Drop the clause and the row above still
+      // passes on the status alone; this arm is what fails.
+      "deleted while still CONFIRMED (unreachable; isolates the deletion clause)",
       { deletedAt: new Date("2026-06-20T00:00:00.000Z") },
       false,
     ],
@@ -2202,7 +2233,13 @@ describe("booking capacity by night (#2376)", () => {
 
   it.each([
     ["terminal", { status: "CANCELLED" }],
-    ["deleted", { deletedAt: new Date("2026-06-20T00:00:00.000Z") }],
+    [
+      "deleted",
+      {
+        status: "CANCELLED",
+        deletedAt: new Date("2026-06-20T00:00:00.000Z"),
+      },
+    ],
     ["waitlisted", { status: "WAITLISTED" }],
   ])("refuses an oversized %s block-state span before any population read", async (_label, state) => {
     seedBooking({

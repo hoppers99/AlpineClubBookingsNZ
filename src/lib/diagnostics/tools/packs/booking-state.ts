@@ -124,7 +124,7 @@ export const BOOKING_BLOCKER_DESCRIPTIONS: Record<
   string
 > = {
   booking_deleted:
-    "This booking has been soft-deleted. The member cannot see it, nothing will act on it, and every other check below is suppressed because it no longer applies.",
+    "This booking has been soft-deleted. The member cannot see it, nothing will act on it, and every other check below is suppressed because it no longer applies. A booking can only be deleted after it is cancelled, so the CANCELLED blocker is deliberately NOT repeated beside this one — its absence does not mean the booking is still live.",
   booking_lifecycle_terminal:
     "This booking is CANCELLED or BUMPED. Nothing more can be confirmed, allocated or reviewed against it, and every other check below is suppressed because it no longer applies. Its MONEY may still need attention — that is a finance question this tool cannot see.",
   booking_waitlisted:

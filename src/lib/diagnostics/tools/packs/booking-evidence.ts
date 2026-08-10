@@ -352,7 +352,10 @@ const WAITLIST_BOOKING_STATUSES: readonly string[] = [
  *       "confidently wrong about a healthy record" failure in its purest form —
  *       the booking is not broken, it is over. Every downstream blocker is
  *       SUPPRESSED on these two, exactly as AID-6C suppresses payment-progress
- *       blockers on a terminal booking.
+ *       blockers on a terminal booking. They are also MUTUALLY EXCLUSIVE as
+ *       emitted: deletion is only reachable from `CANCELLED`, so the deleted row
+ *       reports the deletion alone rather than the same fact twice. See the
+ *       predicate for `booking_lifecycle_terminal` below.
  *  3.   WAITLIST NEXT, because it explains the capacity shortfall that would
  *       otherwise be reported as the primary fault.
  *  4-6. HARD STOPS. A member double-booked on a night, a party that does not fit,
@@ -813,7 +816,29 @@ async function readBookingBlockState(
    */
   const raised: Record<BookingBlockerCode, boolean> = {
     booking_deleted: deleted,
-    booking_lifecycle_terminal: terminal,
+    /**
+     * TERMINAL ONLY WHEN IT IS NOT THE DELETION SAYING SO.
+     *
+     * Every deleted booking is already CANCELLED. `deleteBooking` in
+     * `src/lib/booking-delete.ts` refuses any other status (it 400s unless the row
+     * is `CANCELLED`), it is the only writer of `Booking.deletedAt` in the tree,
+     * and there is no restore path — so `deleted === true` implies
+     * `terminal === true` for every row this source can read.
+     *
+     * Raising both therefore reported ONE fact twice, as two separate blockers,
+     * with `blocker_count` inflated to match: an operator reading
+     * "booking_deleted, booking_lifecycle_terminal" is told to go to the
+     * deleted-bookings view AND to read a cancellation record, when the second is
+     * only the mechanical precondition of the first. The deletion is the wider
+     * fact and it is the one whose next step is real, so it is the only one
+     * emitted — the same reason `booking_lifecycle_state` reports `deleted` rather
+     * than `terminal` on the same row.
+     *
+     * `terminal` itself is NOT narrowed: it still drives `suppressed` below, so a
+     * deleted booking keeps suppressing every downstream blocker exactly as
+     * before. This is about what gets REPORTED, not about what gets evaluated.
+     */
+    booking_lifecycle_terminal: terminal && !deleted,
     booking_waitlisted: waitlisted,
     member_night_conflict: conflicts.length > 0,
     // A waitlisted booking does not fit BY DEFINITION. Reporting the shortfall as
@@ -855,14 +880,18 @@ async function readBookingBlockState(
       /**
        * ONE field for three states, and not two booleans, because the substrate
        * caps a row at 24 fields and because two booleans are misreadable in
-       * combination. A soft-deleted booking whose status is still `PAID` would
-       * carry `terminal: false` beside a blocker list this source has deliberately
-       * emptied, and "not terminal, no blockers" is the healthiest-looking row this
-       * pack can emit about a booking the member can no longer see.
+       * combination — a reader who sees `deleted: true, terminal: true` has to
+       * work out which of the two is the fact and which is its precondition.
        *
        * `deleted` wins over `terminal` because it is the wider fact and the
        * operator's next step differs: a cancelled booking has a cancellation record
-       * to read, a deleted one is in the deleted-bookings view.
+       * to read, a deleted one is in the deleted-bookings view. Deletion is only
+       * reachable FROM `CANCELLED` (`deleteBooking` refuses any other status and is
+       * the only writer of `deletedAt`), so every deleted booking is terminal too
+       * and this ordering is what makes the field answer the operator's question
+       * rather than the schema's. The blocker list is narrowed on exactly the same
+       * ground: `booking_lifecycle_terminal` is not raised beside
+       * `booking_deleted`.
        */
       booking_lifecycle_state: deleted ? "deleted" : terminal ? "terminal" : "live",
       // The ADMIN review gate, as the platform's own check-in predicate answers it.
