@@ -30,8 +30,16 @@
   linking one placeholder to a real member no longer re-prices everybody ELSE on
   the booking at today's rates: the rest of the party keeps the price that was
   negotiated with them, which is what the booking-request edit rules were always
-  meant to protect. That last one changes what that screen charges, so it is
-  called out for the committee rather than buried.
+  meant to protect.
+
+  **That last one changes what that screen charges, and it can move a bill in
+  either direction, so it is a committee decision rather than something folded
+  in quietly.** If the club's rates went UP after the price was agreed, the
+  member is now charged less than the old behaviour would have taken off them.
+  If the rates went DOWN, they are charged more, because the price that stands
+  is the one that was agreed rather than whichever happened to be cheaper on the
+  day an officer clicked Link. Only the person actually linked is re-rated,
+  which is what that button has always been for.
 
   **For whoever runs the upgrade:** the repair of existing bookings runs before
   the switch-over, so any request approved in the minutes between the two is not

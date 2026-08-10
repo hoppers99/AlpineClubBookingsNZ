@@ -2226,9 +2226,17 @@ describe("approveMemberWholeLodgeRequest (#2263)", () => {
       whole-lodge basis the block exists to protect was silently replaced —
       exactly the #1032 harm, leaking through the exemption.
 
-      Now the approval writes them, so the negotiated price holds. This asserts
-      the join: the rows this pipeline produces are non-empty locks, and pricing
-      honours them over a season rate that has since moved.
+      Now the approval writes them, so the negotiated price holds.
+
+      BOTH SIDES OF THE CHANGE ARE ASSERTED HERE, not just the new one, because
+      this is a money behaviour change put to the owner and the size and the
+      DIRECTION of it are what they are being asked about. The same unlinked
+      placeholder is priced twice against the same moved season rate: once with
+      the empty lock set the pipeline used to leave behind (the old total), and
+      once with the rows it now writes (the new total). The rate is moved UP in
+      one case and DOWN in the other, because the old behaviour did not always
+      overcharge — when rates had fallen it undercharged, and the change takes
+      that back too.
     */
     await approveMemberWholeLodgeRequest({
       requestId: "req-member",
@@ -2244,41 +2252,59 @@ describe("approveMemberWholeLodgeRequest (#2263)", () => {
       }
     ).create;
 
+    // AFTER: the rows this pipeline now writes, read by the real lock reader.
     const locks = lockedNightPricesForGuest({ nights: storedNights });
     expect(locks).toHaveLength(2);
+    // BEFORE: what the same reader returned while the pipeline wrote no rows at
+    // all. Not a stand-in — a night-less guest is exactly what it was handed.
+    const noLocks = lockedNightPricesForGuest({ nights: [] });
+    expect(noLocks).toEqual([]);
 
-    // The club puts its rates up before the officer performs the link.
-    const priced = calculateBookingPrice(
-      CHECK_IN,
-      CHECK_OUT,
-      [
-        {
-          ageTier: "ADULT",
-          isMember: false,
-          rateMembershipTypeId: "type-nonmember",
-          rateSource: "NON_MEMBER_DEFAULT" as const,
-          lockedNightPrices: locks,
-        },
-      ],
-      [
-        {
-          seasonId: "season-1",
-          startDate: new Date("2026-07-01T00:00:00.000Z"),
-          endDate: new Date("2026-09-01T00:00:00.000Z"),
-          rates: [
-            {
-              ageTier: "ADULT",
-              membershipTypeId: "type-nonmember",
-              pricePerNightCents: 9900,
-            },
-          ],
-        },
-      ],
-    );
+    /** What the #2337 link charges this untouched placeholder, at `rateCents`. */
+    const priceUnlinkedPlaceholderAt = (
+      rateCents: number,
+      lockedNightPrices: Array<{ stayDate: Date; priceCents: number }>,
+    ) =>
+      calculateBookingPrice(
+        CHECK_IN,
+        CHECK_OUT,
+        [
+          {
+            ageTier: "ADULT",
+            isMember: false,
+            rateMembershipTypeId: "type-nonmember",
+            rateSource: "NON_MEMBER_DEFAULT" as const,
+            lockedNightPrices,
+          },
+        ],
+        [
+          {
+            seasonId: "season-1",
+            startDate: new Date("2026-07-01T00:00:00.000Z"),
+            endDate: new Date("2026-09-01T00:00:00.000Z"),
+            rates: [
+              {
+                ageTier: "ADULT",
+                membershipTypeId: "type-nonmember",
+                pricePerNightCents: rateCents,
+              },
+            ],
+          },
+        ],
+      ).guests[0].priceCents;
 
-    // The negotiated $100, not the new season's $198. With no night rows this
-    // guest would have no locks at all and would come back at 19800.
-    expect(priced.guests[0].priceCents).toBe(10000);
+    // The club put its rates UP to $99 a night after the quote was agreed.
+    // Old: the placeholder nobody touched was re-priced to $198. New: the
+    // negotiated $100 stands, so this member is charged $98 LESS than before.
+    expect(priceUnlinkedPlaceholderAt(9900, noLocks)).toBe(19800);
+    expect(priceUnlinkedPlaceholderAt(9900, locks)).toBe(10000);
+
+    // And the other direction, which is the half a reader assumes away: rates
+    // fell to $30. Old: the same untouched placeholder dropped to $60. New: the
+    // negotiated $100 stands, so this member is charged $40 MORE than before.
+    // The change protects the price that was AGREED, not the cheaper one.
+    expect(priceUnlinkedPlaceholderAt(3000, noLocks)).toBe(6000);
+    expect(priceUnlinkedPlaceholderAt(3000, locks)).toBe(10000);
   });
 
   it("stamps NO nonMemberHoldUntil on the confirmed whole-lodge booking", async () => {

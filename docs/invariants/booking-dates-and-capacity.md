@@ -598,9 +598,17 @@ derivation).
     on an already-raised invoice reads as a change to push.
 - **The rows are the #1036 locked prices on the one edit path that reaches these
   bookings, and that is deliberate.** Standard edits refuse a booking-request
-  booking outright (`isQuotePricedBooking`, #1032), with one sanctioned
-  exemption: a link-only #2337 placeholder→member request on a member whole-lodge
-  booking. That path reprices, and `prepareGuestPlan` passes
+  booking outright (`assertBookingNotQuotePriced` / `isQuotePricedBooking`,
+  #1032) — including the admin date shift
+  (`booking-date-modification-service.ts`) and guest removal
+  (`booking-guest-removal-service.ts`), both of which assert before they ever
+  reach `lockedNightPricesForGuest`. `booking-batch-modification-service.ts`
+  exempts three request shapes from that block, and only ONE of them prices:
+  identity-only (#1099) and credit-election-only (#2266) take
+  `buildIdentityOnlyPricing`, which echoes the stored totals and never runs the
+  engine, so no lock set can reach them. The third is a link-only #2337
+  placeholder→member request on a member whole-lodge booking. That path
+  reprices, and `prepareGuestPlan` passes
   `link ? [] : lockedNightPricesForGuest(guest)` — so the LINKED row re-rates at
   the member rate (its locks are cleared on purpose) while every UNLINKED
   placeholder is protected only by its stored night rows. While this pipeline
@@ -609,8 +617,22 @@ derivation).
   the #1032 block exists to protect. Writing the rows closes that leak, so the
   negotiated price now holds; the join is asserted in
   `src/lib/__tests__/school-booking-request.test.ts` with the real reader and the
-  real engine. **This is a real change to what that path charges**, declared in
-  the changelog and flagged for owner review rather than folded in silently.
+  real engine.
+  **This is a real change to what that path charges, and it needs the owner's
+  approval before it ships** — it is not an incidental consequence to be waved
+  through as part of a bed-board fix. It moves a bill in BOTH directions,
+  which is the part a reader assumes away: rates up since the quote means the
+  member is now charged LESS than the old behaviour took, rates down means they
+  are charged MORE, because what stands is the price that was agreed rather than
+  whichever was cheaper on the day an officer clicked Link. Both totals are
+  pinned as executable assertions in that same test — the old empty lock set and
+  the new stored one, priced against the same moved rate — so the size of the
+  change is a fact in the suite rather than a claim in prose. The alternative
+  considered and rejected was suppressing the locked prices on this path: it
+  would have kept the leak open by design, broken this invariant's own
+  reconcile-to-`priceCents` rule, and needed a booking-request special case
+  inside the shared edit planner, which is a wider money surface than the one
+  being protected.
 - **The backfill for existing rows is `20260810010000_backfill_booking_request_guest_nights`**,
   the exact complement of #1098's `20260704150000_backfill_booking_guest_nights`.
   It is idempotent (per-guest "has no rows at all" guard plus
