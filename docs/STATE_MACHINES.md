@@ -822,15 +822,24 @@ In `"in-progress"` mode the plan that prices the change
 `BookingGuestNight` set, not from their `stayStart`/`stayEnd` envelope
 (#2736, `INV-MOD-025`). A guest with a gap in their stay keeps the gap: it is
 not charged, not written back as a night row and not given a bed, while an
-extension still buys contiguous new nights after their last held one. For a
-contiguous stay every number is exactly what it was before. Bookings edited
-before that fix keep the rows and the price they were given — history is not
-repriced (#2745 carries the decision about whether anything is done about
-them). One edit is newly refused: a check-out pulled back past the last night
-any remaining guest still holds, which would leave the booking with a night
-nobody occupies; the refusal names the check-out that would work. Three money
-shapes on this path are frozen rather than fixed — see `INV-MOD-025` and
-#2743 / #2744.
+extension still buys contiguous new nights after their last held one. The edit
+also sells only the nights it creates (#2743): a night is added to an existing
+guest only when the check-out actually moves, and only past the OLD check-out,
+so an edit that leaves the dates alone — a name correction, a guest added or
+removed — cannot add a night to anybody. A guest whose own stay has already
+finished is therefore no longer put back on the booking for the rest of its
+nights and charged for them; extending the check-out does still admit them for
+the nights it adds, because an in-progress edit carries no per-guest end date
+and cannot say "this one is not coming back". For an ordinary stay that runs to
+the booking's check-out, every number is exactly what it was before. Bookings
+edited before those fixes keep the rows and the price they were given — history
+is not repriced (#2745 carries the decision about whether anything is done about
+them). Two edits are newly refused, both because the booking would be left with
+future nights nobody occupies: a check-out pulled back past the last night any
+remaining guest still holds, and a save on a booking whose check-out is still
+ahead but whose guests have all finished their stays. Both name the check-out
+that would work. Two money shapes on this path are frozen rather than fixed —
+see `INV-MOD-025` and #2744.
 
 Self-service cancellation of a **started** stay is blocked (#2029). Once
 `checkIn <= todayNZ`, the member-facing cancel route
