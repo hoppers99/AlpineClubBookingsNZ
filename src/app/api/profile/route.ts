@@ -342,6 +342,16 @@ export async function PUT(req: NextRequest) {
         data: updateData,
         select: PROFILE_XERO_SYNC_SELECT,
       }),
+      // `account`, and DELIBERATELY NOT joined to the `admin` unification that
+      // #2755 applied to the three officer-driven member-record writers
+      // (`INV-PRIV-012`). This route's actor IS its subject — `where: { id:
+      // session.user.id }`, no on-behalf path — so it is a member editing their
+      // own record, not an officer administering somebody else's. Same fields,
+      // different business domain: self-service rather than administration.
+      //
+      // Filing it `admin` would hide a member's own action from their own
+      // timeline, which is a narrowing in the one direction nobody argued for.
+      // #2755's issue body listed this site as part of the split; it is not.
       prisma.auditLog.create(
         buildStructuredAuditLogCreateArgs({
           action: "member.profile.updated",

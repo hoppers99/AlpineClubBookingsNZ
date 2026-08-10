@@ -643,14 +643,21 @@ describe("AID-6A correlation SQL shape (#2375)", () => {
     // (`invoke.ts`), so measuring without one measured a block this pack never emits.
     //
     // THE SCOPE LINES AND THE ROWS SHARE ONE BUDGET, which is the reason to keep this
-    // per entry rather than on the widest. Re-measured after #2730 lengthened two of
-    // them: they now run from 432 to 1 002 characters, and the five entries still
-    // render all 22 whole rows — the system entry with 132 characters of the 8 000 to
-    // spare and the lodge entry with 185. This assertion has already earned that:
-    // #2730's first draft of the system `scope` overran by seven characters and the
-    // block silently dropped a row, which is exactly the failure "room to spare" would
-    // have hidden. A prose edit here is a capacity edit; re-run this before assuming
-    // otherwise.
+    // per entry rather than on the widest. Re-measured after #2755 lengthened the
+    // system and membership entries: they now run from 432 to 1 094 characters, and
+    // the five entries still render all 22 whole rows — the system entry with 40
+    // characters of the 8 000 to spare, the membership entry with 55 and the lodge
+    // entry with 185. This assertion has already earned that TWICE: #2730's first
+    // draft of the system `scope` overran by seven characters and the block silently
+    // dropped a row, and #2755's first draft overran by 252 and dropped two, which is
+    // exactly the failure "room to spare" would have hidden.
+    //
+    // THE SYSTEM ENTRY IS THE TIGHT ONE, and its ceiling is now known exactly: 1 134
+    // characters of `scope` render 22 rows and 1 136 render 21. It is the entry every
+    // classification change has to annotate, because `admin` is where the catch-all
+    // lives, so expect the next such change to have to BUY its words by shortening
+    // something rather than by appending. A prose edit here is a capacity edit; re-run
+    // this before assuming otherwise.
     for (const entry of DIAGNOSTICS_SUPPORT_CORRELATION_TOOLS) {
       expect(entry.rowLimit).toBe(22);
       const evidence = renderToolResultEvidence({
