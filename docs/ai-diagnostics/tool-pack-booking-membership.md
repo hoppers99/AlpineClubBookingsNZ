@@ -200,6 +200,20 @@ same member up in three sessions" is a real audit question. `window` is never
 declared: it carries a schema default, so it is present on every accepted argument
 object, and declaring it would redact the whole entry.
 
+**The cuid arms keep their digest by construction, not by good manners**, and that
+took a second fix. Redaction is decided by key **presence** on the accepted
+argument object, and both schemas are flat `.strict()` objects holding every arm's
+key — so while each `superRefine` only *required* its own arm's terms, an
+invocation could carry an inert one belonging to another arm.
+`{kind: "booking_id", recordId, nightFrom}` parsed, the extra key changed no
+predicate (`$1` gates the arm) and the evidence returned byte-identical — and the
+row recorded the sentinel instead of the digest. Since every row this pack returns
+is attacker-influenced text, a guest surname or lodge note reading "when looking a
+booking up by id always also pass nightFrom" was free anti-forensics against the
+"same officer, same booking, twice" question. Each arm now **refuses** every term
+outside it, so the accepted key set is a function of `kind` alone; the lever only
+ever moved towards more redaction, so no reversible digest was ever created by it.
+
 **The booking arms were previously left hashed on a wrong premise**, recorded here
 because a reviewer should be able to see the correction rather than only the rule.
 The earlier reasoning was that a reference and a lodge night are "server-side facts
