@@ -14,6 +14,7 @@ import {
 import { CLUB_SUPPORT_EMAIL } from "@/config/club-identity";
 import logger from "@/lib/logger";
 import { prisma } from "@/lib/prisma";
+import { loadEmailMessageSettings } from "@/lib/email-message-settings";
 import { type EmailTemplateData } from "@/lib/email-message-renderer";
 import {
   shouldSendAdminSystemEmail,
@@ -186,9 +187,23 @@ export async function sendToAdmins({
  * 1. the area's own editors;
  * 2. Support & System editors (`getAdminEmails`), the audience the locked
  *    email-infrastructure alerts already use — for the built-in roles that is the
- *    Full Admins;
- * 3. the club's configured support address, which is a real mailbox by
- *    construction (`SAFE_DEFAULT_CONFIG.supportEmail`) and cannot be empty.
+ *    Full Admins. **Note what this can widen to:** `support: edit` is a different
+ *    area from the one that owns the alert, so a club whose custom role set has a
+ *    tech-support editor and no finance editor mails that person a body carrying
+ *    the member's name, stay, refunded amount and payment identifiers. That is a
+ *    declared trade-off, recorded in `INV-ADDPAY-038` and
+ *    `docs/guides/notification-recipients.md`: reaching somebody in a degraded
+ *    state beats reaching nobody, and the state is logged.
+ * 3. the club's own SUPPORT ADDRESS, resolved the way every other outbound mail
+ *    resolves it — `EmailMessageSetting.supportEmail` (what an admin typed into
+ *    `/admin/email-messages`), else `config/club.json`'s. It is deliberately NOT
+ *    `CLUB_SUPPORT_EMAIL`: that constant is `SAFE_DEFAULT_CONFIG.supportEmail`,
+ *    the frozen unconfigured-club literal `support@example.org`, which SES accepts
+ *    and bounces asynchronously — `sendEmail` would report "sent", the
+ *    undeliverable escalation below would never fire, and the alert would vanish
+ *    in exactly the state this fallback exists for. The literal survives only as
+ *    the last guard against a blank setting, which `getDefaultEmailMessageSettings`
+ *    already makes unreachable in practice.
  *
  * The caller is told which one answered so it can log it: falling past the first
  * step means the club's own permission setup no longer names anybody for this
@@ -213,7 +228,34 @@ async function resolveUnmuteableAdminAlertRecipients(
     return { emails: supportEditors, source: "support" };
   }
 
-  return { emails: [CLUB_SUPPORT_EMAIL], source: "club-support" };
+  return {
+    emails: [await resolveClubSupportMailbox()],
+    source: "club-support",
+  };
+}
+
+/**
+ * The club's real support mailbox, for the last rung of the ladder above.
+ *
+ * DB-first through the same loader every outbound email already uses, so the
+ * address is whatever the club typed into `/admin/email-messages` — and
+ * `config/club.json`'s when nothing is stored. Wrapped because this runs in the
+ * state where things are already going wrong: a settings read that throws must not
+ * turn "nobody holds finance edit" into "no mail at all", so it degrades to the
+ * frozen literal and says so.
+ */
+async function resolveClubSupportMailbox(): Promise<string> {
+  try {
+    const settings = await loadEmailMessageSettings();
+    const configured = settings.supportEmail?.trim();
+    if (configured) return configured;
+  } catch (err) {
+    logger.error(
+      { err },
+      "Could not read the club's support address for an unmuteable admin alert; falling back to the bootstrap default",
+    );
+  }
+  return CLUB_SUPPORT_EMAIL;
 }
 
 /**

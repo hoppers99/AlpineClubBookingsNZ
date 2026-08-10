@@ -70,7 +70,10 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
  * no task was raised" fails; write it OPEN and the same test fails; share one
  * reason sentence between the populations and "stores the cancelled-population
  * sentence for a booking that is not deleted" fails; narrow either lookup to one
- * population and "finds a row of EITHER population" fails.
+ * population and "finds a row of EITHER population" fails. Take Prisma's default
+ * transaction budget and "budgets its transaction for lock(1) contention" fails;
+ * collapse the hand-resolved case back into one `alreadyRecorded: true` and
+ * "reports a HAND-resolved row as such, and warns" fails.
  */
 
 const mocks = vi.hoisted(() => ({
@@ -80,7 +83,10 @@ const mocks = vi.hoisted(() => ({
   paymentTransactionFindUnique: vi.fn(),
   executeRaw: vi.fn(),
   transaction: vi.fn(),
+  logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() },
 }));
+
+vi.mock("@/lib/logger", () => ({ default: mocks.logger }));
 
 vi.mock("@/lib/prisma", () => ({
   prisma: {
@@ -118,6 +124,20 @@ const tx = {
       mocks.paymentTransactionFindUnique(...args),
   },
 };
+
+/**
+ * A row shaped the way THIS writer writes one: DISMISSED, no acting member, and
+ * carrying the automatic note. That trio is what tells "my own row, redelivered"
+ * apart from "an operator closed this by hand", which the card cannot show.
+ */
+function ownRecordRow() {
+  return {
+    id: "task-existing",
+    status: "DISMISSED",
+    completedByMemberId: null,
+    note: automaticCancelledBookingRefundNote(INTENT_ID),
+  };
+}
 
 function raise() {
   return raiseDeletedBookingModificationRefundTask({
@@ -499,17 +519,107 @@ describe("recordAutomaticCancelledBookingRefundTask (#2700 close, #2760 write)",
     expect(created.data.reason.length).toBeLessThanOrEqual(500);
   });
 
-  it("leaves an already-recorded row exactly as it is", async () => {
-    // Stripe redelivery, or a row an operator closed by hand first. Nothing is
-    // re-dated, re-noted, or duplicated — and a COMPLETED row is emphatically not
-    // reopened or rewritten.
+  it("leaves a row it wrote itself exactly as it is, and calls it its own", async () => {
+    // Stripe redelivery of one capture. Nothing is re-dated, re-noted, or
+    // duplicated, and the outcome says the record already exists rather than that
+    // something else accounted for it.
     mocks.manualRefundTaskUpdateMany.mockResolvedValue({ count: 0 });
-    mocks.manualRefundTaskFindFirst.mockResolvedValue({ id: "task-existing" });
+    mocks.manualRefundTaskFindFirst.mockResolvedValue(ownRecordRow());
 
     const outcome = await record();
 
-    expect(outcome).toEqual({ closed: 0, created: false, alreadyRecorded: true });
+    expect(outcome).toEqual({
+      closed: 0,
+      created: false,
+      alreadyRecorded: "self",
+    });
     expect(mocks.manualRefundTaskCreate).not.toHaveBeenCalled();
+    expect(mocks.logger.warn).not.toHaveBeenCalled();
+  });
+
+  it("reports a HAND-resolved row as such, and warns, because that refund reaches no card", async () => {
+    /*
+      The one ordering the finance card cannot show, found in review of #2760 and
+      left as the conservative behaviour pending an owner ruling (#2775). An
+      operator resolved the confirm route's OPEN task themselves before Stripe's
+      refund landed, so the row carries THEIR note and `completedByMemberId` and
+      matches neither the OPEN-fenced close nor
+      `automaticallyRefundedManualRefundTaskFilter`. Writing a second row would put
+      two `ManualRefundTask` rows on one capture - the property every lookup here
+      exists to prevent - so the row is left alone and the gap is named at WARN,
+      which is the only place it is named at all.
+    */
+    mocks.manualRefundTaskUpdateMany.mockResolvedValue({ count: 0 });
+    mocks.manualRefundTaskFindFirst.mockResolvedValue({
+      id: "task-hand-dismissed",
+      status: "DISMISSED",
+      completedByMemberId: "member-operator",
+      note: "Rang the member, sorted it out on the phone.",
+    });
+
+    const outcome = await record();
+
+    expect(outcome).toEqual({
+      closed: 0,
+      created: false,
+      alreadyRecorded: "hand-resolved",
+    });
+    expect(mocks.manualRefundTaskCreate).not.toHaveBeenCalled();
+    expect(mocks.logger.warn).toHaveBeenCalledTimes(1);
+    expect(mocks.logger.warn.mock.calls[0][0]).toMatchObject({
+      bookingId: BOOKING_ID,
+      paymentIntentId: INTENT_ID,
+      existingStatus: "DISMISSED",
+    });
+  });
+
+  it("treats a hand COMPLETED row the same way, and never reopens or rewrites it", async () => {
+    // A human handed the money back before the webhook arrived. Reopening or
+    // re-noting it would rewrite an operator's own record of a refund they made.
+    mocks.manualRefundTaskUpdateMany.mockResolvedValue({ count: 0 });
+    mocks.manualRefundTaskFindFirst.mockResolvedValue({
+      id: "task-hand-completed",
+      status: "COMPLETED",
+      completedByMemberId: "member-operator",
+      note: "Paid back by internet banking.",
+    });
+
+    const outcome = await record();
+
+    expect(outcome.alreadyRecorded).toBe("hand-resolved");
+    expect(mocks.manualRefundTaskCreate).not.toHaveBeenCalled();
+    expect(mocks.manualRefundTaskUpdateMany).toHaveBeenCalledTimes(1);
+    expect(
+      (
+        mocks.manualRefundTaskUpdateMany.mock.calls[0][0] as {
+          where: { status: string };
+        }
+      ).where.status,
+    ).toBe("OPEN");
+  });
+
+  it("budgets its transaction for lock(1) contention rather than taking Prisma's defaults", async () => {
+    /*
+      The blocker this pins (review of #2760). The advisory wait counts against the
+      interactive-transaction budget, and Prisma's default is maxWait 2s / timeout
+      5s while the longest-lived holder of lock(1) in the tree - `assignBedRange` -
+      runs on `{ maxWait: 10_000, timeout: 30_000 }`. On the defaults an admin
+      assigning a bed range concurrently with a Stripe delivery blows this
+      transaction with a P2028; the caller must not fail the webhook, so the row
+      would simply be lost and Stripe never redelivers a 200. Tighter than the
+      admin precedent on purpose: a webhook has Stripe's delivery timeout over it.
+    */
+    await record();
+
+    const [, options] = mocks.transaction.mock.calls[0] as [
+      unknown,
+      { maxWait?: number; timeout?: number } | undefined,
+    ];
+    expect(options).toBeDefined();
+    expect(options?.timeout).toBeGreaterThan(5_000);
+    expect(options?.timeout).toBeLessThan(30_000);
+    expect(options?.maxWait).toBeGreaterThan(2_000);
+    expect(options?.maxWait).toBeLessThan(10_000);
   });
 
   it("finds a row of EITHER population, so a deletion between deliveries writes no second row", async () => {
@@ -523,6 +633,7 @@ describe("recordAutomaticCancelledBookingRefundTask (#2700 close, #2760 write)",
     mocks.manualRefundTaskUpdateMany.mockResolvedValue({ count: 0 });
     const rows = [
       {
+        ...ownRecordRow(),
         id: "task-cancelled-population",
         reason: cancelledBookingModificationRefundReason(INTENT_ID),
       },
@@ -535,7 +646,7 @@ describe("recordAutomaticCancelledBookingRefundTask (#2700 close, #2760 write)",
     const outcome = await record(true);
 
     expect(outcome.created).toBe(false);
-    expect(outcome.alreadyRecorded).toBe(true);
+    expect(outcome.alreadyRecorded).toBe("self");
     expect(mocks.manualRefundTaskCreate).not.toHaveBeenCalled();
   });
 

@@ -793,8 +793,14 @@ async function handleAdditionalModificationPaymentSucceeded(
   // sits ahead of the primary path's cancelled-booking check, so without it a
   // stale-tab confirm of the additional payment racing (or following) a
   // cancel was recorded as paid, released the supplementary Xero invoice,
-  // and was never refunded or alerted. Route it through the same
-  // refund-and-alert treatment as the primary late-capture path instead.
+  // and was never refunded or alerted. Route it through the same REFUND
+  // treatment as the primary late-capture path instead.
+  //
+  // The ALERT treatment stopped being shared at #2761: this path sends the
+  // unmuteable `admin-late-capture-auto-refund` mail and writes a DISMISSED
+  // `ManualRefundTask` (#2760), while `handleCancelledBookingPaymentSucceeded`
+  // still sends the generic muteable "Payment Failed" mail and writes no record.
+  // That gap is deliberate scope, not an oversight — see #2774.
   const bookingRecord = await prisma.booking.findUnique({
     where: { id: bookingId },
     include: {
@@ -1302,19 +1308,72 @@ async function handleCancelledBookingAdditionalPaymentSucceeded(
   // AFTER the refund, deliberately, and outside every provider call: it opens its
   // own short transaction holding pg_advisory_xact_lock(1), and no Stripe round
   // trip happens inside it.
+  //
+  // `deletedAt` IS RE-READ HERE, NOT TRUSTED FROM THE OPENING READ, for the same
+  // reason the confirm route re-reads it: the booking was loaded before
+  // `refundPaymentTransactions` made a live Stripe round trip, and an admin
+  // deleting the booking inside that window would otherwise store the
+  // "cancelled, still on file" sentence and mail "normally nothing to do" for the
+  // one population whose follow-up the alert exists to state. Deletion is one-way
+  // (`INV-ADDPAY-030`) and has a single writer, so the two reads can only disagree
+  // in one direction — the stale read can only ever under-report a deletion. Only
+  // queried when the opening read saw no deletion, and a failure here must not
+  // take the bookkeeping row down with it, so it falls back to the opening value.
+  let bookingDeleted = Boolean(booking.deletedAt);
+  if (!bookingDeleted) {
+    try {
+      const freshBooking = await prisma.booking.findUnique({
+        where: { id: booking.id },
+        select: { deletedAt: true },
+      });
+      bookingDeleted = Boolean(freshBooking?.deletedAt);
+    } catch (deletedAtErr) {
+      logger.error(
+        {
+          err: deletedAtErr,
+          bookingId: booking.id,
+          paymentIntentId: paymentIntent.id,
+        },
+        "Could not re-read deletedAt after the automatic late-capture refund; recording the population from the opening read"
+      );
+    }
+  }
+
   try {
     await recordAutomaticCancelledBookingRefundTask({
       bookingId: booking.id,
       paymentId: booking.payment.id,
       paymentIntentId: paymentIntent.id,
       amountCents: paymentIntent.amount,
-      bookingDeleted: Boolean(booking.deletedAt),
+      bookingDeleted,
     });
   } catch (taskErr) {
     logger.error(
       { err: taskErr, bookingId: booking.id, paymentIntentId: paymentIntent.id },
       "Failed to record the automatically refunded late capture on a cancelled booking"
     );
+    // The webhook still answers 200 (the money is back with the member and a 500
+    // would replay the whole refund path for a bookkeeping row), so Stripe never
+    // redelivers and NOTHING else in the tree ever writes this row. A container
+    // log is not a record: the finance card and `INV-ADDPAY-037` both assert the
+    // record is complete, so a lost row has to be findable on the surface the
+    // card itself names as permanent. `critical` because the gap is silent and
+    // unrecoverable without it.
+    logAudit({
+      action: "booking.payment.auto_refund_record_failed",
+      category: "payment",
+      severity: "critical",
+      outcome: "failure",
+      entityType: "Booking",
+      entityId: booking.id,
+      targetId: booking.id,
+      details: JSON.stringify({
+        paymentIntentId: paymentIntent.id,
+        amountCents: paymentIntent.amount,
+        bookingDeleted,
+        error: taskErr instanceof Error ? taskErr.message : String(taskErr),
+      }),
+    });
   }
 
   logAudit({
@@ -1353,7 +1412,10 @@ async function handleCancelledBookingAdditionalPaymentSucceeded(
     amountCents: paymentIntent.amount,
     paymentIntentId: paymentIntent.id,
     bookingId: booking.id,
-    bookingDeleted: Boolean(booking.deletedAt),
+    // The SAME resolved value the row stored, from the re-read above — so the
+    // subject, the body's follow-up sentence and the card's grouping cannot
+    // disagree about which population this capture belonged to.
+    bookingDeleted,
   }).catch((err) =>
     logger.error(
       { err, bookingId: booking.id },

@@ -13,11 +13,20 @@ const mocks = vi.hoisted(() => ({
   sendEmail: vi.fn(),
   shouldSendAdminSystemEmail: vi.fn(),
   recordEscalation: vi.fn(),
+  // #2761 fix: the last-resort recipient is the club's OWN support address, read
+  // through the same `EmailMessageSetting` row every outbound email reads.
+  emailMessageSettingFindUnique: vi.fn(),
   logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() },
 }));
 
 vi.mock("@/lib/prisma", () => ({
-  prisma: { member: { findMany: mocks.findMany } },
+  prisma: {
+    member: { findMany: mocks.findMany },
+    emailMessageSetting: {
+      findUnique: (...args: unknown[]) =>
+        mocks.emailMessageSettingFindUnique(...args),
+    },
+  },
 }));
 vi.mock("@/lib/logger", () => ({ default: mocks.logger }));
 vi.mock("@/lib/notification-delivery-policies", () => ({
@@ -39,6 +48,13 @@ import {
 } from "@/lib/admin-notification-preferences";
 import { ADMIN_CAPABLE_MEMBER_WHERE } from "@/lib/access-role-definitions";
 import { CLUB_SUPPORT_EMAIL } from "@/config/club-identity";
+
+/**
+ * A club that has actually configured its support mailbox. Deliberately NOT the
+ * safe default (`support@example.org`), which is the documentation-domain literal
+ * `CLUB_SUPPORT_EMAIL` resolves to — the whole point of the assertions below.
+ */
+const CONFIGURED_CLUB_SUPPORT_EMAIL = "club.office@realclub.test";
 
 type Candidate = {
   email: string;
@@ -266,15 +282,22 @@ describe("stored preferences still gate delivery (#2548)", () => {
  * editors even when every one of them has muted the category" fails. Drop the
  * Support & System fallback and "falls back to Support & System editors" fails;
  * drop the club-address fallback and "never resolves an empty recipient set"
- * fails. Consult the delivery policy and "does not consult the club-wide delivery
- * policy" fails. Stop escalating and "escalates when not one recipient received
- * it" fails.
+ * fails; resolve that last rung from the `CLUB_SUPPORT_EMAIL` bootstrap constant
+ * instead of the club's stored setting and "sends the last resort to the club's
+ * CONFIGURED address" fails. Consult the delivery policy and "does not consult the
+ * club-wide delivery policy" fails. Stop escalating and "escalates when not one
+ * recipient received it" fails.
  */
 describe("unmuteable admin alerts (#2761)", () => {
   beforeEach(() => {
     // The real escalation writer is async, and the send path attaches a `.catch`
     // to it so a failed audit entry cannot take the alert down with it.
     mocks.recordEscalation.mockResolvedValue(undefined);
+    // A club that HAS configured its support address, so the last-resort rung is
+    // distinguishable from the frozen unconfigured-club literal.
+    mocks.emailMessageSettingFindUnique.mockResolvedValue({
+      supportEmail: CONFIGURED_CLUB_SUPPORT_EMAIL,
+    });
   });
 
   async function sendAlert(candidates: Candidate[]) {
@@ -327,9 +350,40 @@ describe("unmuteable admin alerts (#2761)", () => {
   });
 
   it("never resolves an empty recipient set, even with no admins at all", async () => {
-    // The club's configured support address is a real mailbox by construction, so
-    // "no recipients" is not a state this alert can reach.
-    expect(await sendAlert([])).toEqual([CLUB_SUPPORT_EMAIL]);
+    // "No recipients" is not a state this alert can reach.
+    expect(await sendAlert([])).toEqual([CONFIGURED_CLUB_SUPPORT_EMAIL]);
+  });
+
+  it("sends the last resort to the club's CONFIGURED address, not the unconfigured-club literal", async () => {
+    /*
+      The bug this pins (found in review of #2761): the fallback used to be the
+      constant `CLUB_SUPPORT_EMAIL`, which is `SAFE_DEFAULT_CONFIG.supportEmail` —
+      the frozen documentation-domain literal `support@example.org`, NOT the address
+      the club typed into /admin/email-messages. SES accepts that address and
+      bounces it asynchronously, so `sendEmail` reports "sent", the undeliverable
+      escalation below never fires, and the alert vanishes in exactly the state the
+      fallback exists for. Asserting a CONFIGURED address distinct from the literal
+      is what makes reverting to the constant fail.
+    */
+    expect(CONFIGURED_CLUB_SUPPORT_EMAIL).not.toBe(CLUB_SUPPORT_EMAIL);
+    expect(await sendAlert([])).toEqual([CONFIGURED_CLUB_SUPPORT_EMAIL]);
+    expect(mocks.emailMessageSettingFindUnique).toHaveBeenCalled();
+  });
+
+  it("still mails exactly one recipient when the stored support address is unreadable", async () => {
+    /*
+      The fallback runs in a state where things are already going wrong, so a
+      settings read that fails must not turn "nobody holds finance edit" into "no
+      mail at all". The loader degrades to the config-derived default rather than
+      throwing, and the guarantee under test is the count: never zero.
+    */
+    mocks.emailMessageSettingFindUnique.mockRejectedValueOnce(
+      new Error("settings table unreachable"),
+    );
+
+    const emails = await sendAlert([]);
+    expect(emails).toHaveLength(1);
+    expect(emails[0]).toMatch(/@/);
   });
 
   it("does not consult the club-wide delivery policy", async () => {
