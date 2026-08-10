@@ -232,6 +232,19 @@ describe("DELETE /api/admin/other-lodges/[id]", () => {
     );
   });
 
+  it("returns 409 when the lodge is referenced by a booking request (#2749)", async () => {
+    mocks.findUnique.mockResolvedValue(record());
+    mocks.del.mockRejectedValue(
+      new Prisma.PrismaClientKnownRequestError("FK violation", {
+        code: "P2003",
+        clientVersion: "test",
+      }),
+    );
+    const response = await DELETE(jsonRequest("DELETE"), params("ol-1"));
+    expect(response.status).toBe(409);
+    expect(mocks.auditLogCreate).not.toHaveBeenCalled();
+  });
+
   it("rejects non-admin members", async () => {
     mocks.auth.mockResolvedValue(memberSession);
     const response = await DELETE(jsonRequest("DELETE"), params("ol-1"));

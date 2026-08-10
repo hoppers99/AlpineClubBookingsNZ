@@ -18,9 +18,11 @@ lodge** exists — a single-lodge club sees no lodge pickers.
 The same page also carries an **Other lodges** panel — a separate registry of
 *other clubs'* lodges the club recognises (name, location, booking officer
 contact, and bed capacity). These are **not** the club's own lodges: they take no
-bookings and have no configuration hub. Their names are intended to populate a
-drop-down for non-members who indicate they belong to another lodge. The panel
-uses the same **lodge edit** permission as the properties above.
+bookings and have no configuration hub. Their names populate an **"Are you a
+member of another lodge?"** drop-down on the public
+[booking request form](booking-requests.md) (it defaults to **No**); the chosen
+lodge is saved with the request for use when it is reviewed. The panel uses the
+same **lodge edit** permission as the properties above.
 
 ## When you'd use it
 

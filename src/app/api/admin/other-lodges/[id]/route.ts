@@ -161,7 +161,25 @@ export async function DELETE(
     return NextResponse.json({ error: "Lodge not found" }, { status: 404 });
   }
 
-  await prisma.otherLodge.delete({ where: { id: existing.id } });
+  try {
+    await prisma.otherLodge.delete({ where: { id: existing.id } });
+  } catch (error) {
+    // Restrict FK from BookingRequest.otherLodgeId (#2749): a lodge a requester
+    // has cited cannot be deleted out from under the approval process.
+    if (
+      error instanceof Prisma.PrismaClientKnownRequestError &&
+      error.code === "P2003"
+    ) {
+      return NextResponse.json(
+        {
+          error:
+            "This lodge is referenced by one or more booking requests and can't be deleted.",
+        },
+        { status: 409 },
+      );
+    }
+    throw error;
+  }
 
   await prisma.auditLog.create(
     buildStructuredAuditLogCreateArgs({
