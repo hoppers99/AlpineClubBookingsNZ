@@ -1325,6 +1325,16 @@ export function PublicBookingRequestsPanel({
                     <div>
                       <span className="text-muted-foreground">Guests:</span> {request.guests.length}
                     </div>
+                    {/* Only GENERAL public requests are asked the "other lodge"
+                        question on the form (#2749). */}
+                    {memberWholeLodge || request.type === "SCHOOL" ? null : (
+                      <div>
+                        <span className="text-muted-foreground">
+                          Member of another Lodge :
+                        </span>{" "}
+                        {request.otherLodgeName ?? "No"}
+                      </div>
+                    )}
                     {request.indicativePriceCents != null ? (
                       <div>
                         <span className="text-muted-foreground">Indicative price:</span>{" "}
@@ -1903,18 +1913,6 @@ export function PublicBookingRequestsPanel({
                           disabled={actionsBlocked}
                         />
                       ) : null}
-
-                      {/* Only GENERAL public requests are asked the "other
-                          lodge" question on the form; SCHOOL and member
-                          whole-lodge requests never carry it (#2749). */}
-                      {memberWholeLodge || request.type === "SCHOOL" ? null : (
-                        <p className="text-sm">
-                          <span className="font-medium">
-                            Member of another Lodge :
-                          </span>{" "}
-                          {request.otherLodgeName ?? "No"}
-                        </p>
-                      )}
 
                       <div className="space-y-1">
                         <Label htmlFor={`decline-reason-${request.id}`}>
