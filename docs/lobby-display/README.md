@@ -82,9 +82,15 @@ browse all variants and iterations.
 
 ### Everyday board — booking bars
 
-The bread-and-butter view: each booking is one continuous bar across the nights
-it covers, carrying its check-out date; bars wrap to show up to five names, then
-"+N".
+The bread-and-butter view: each booking is a bar across the nights it covers,
+carrying its check-out date; bars wrap to show up to five names, then "+N".
+
+A booking whose guests are booked for some nights and not others — in on Friday,
+home on Saturday, back on Monday — draws **one bar per unbroken run of nights**
+with the empty night visible between them, each bar labelled with the day that
+part of the stay ends (#2735). The single continuous bar this replaced claimed a
+bed on a night nobody had booked. An ordinary stay with no gap is one bar,
+exactly as before.
 
 ![Everyday board — booking bars](mockups/screenshots/everyday-bar-board.png)
 

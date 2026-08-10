@@ -491,39 +491,44 @@ export function getEarliestCurrentBedNightDate(
 }
 
 /**
- * LEGACY lodge-date visibility. Frozen, not the operational-day rule (#2622).
+ * Lodge-date visibility for the lobby wall. Both branches now delegate to a
+ * named model; this function chooses between them and holds nothing of its own.
  *
- * `includeDepartureDate: false` is the night model and delegates to it — the
- * two branches were byte-equivalent, so that is a proven no-op.
+ * `includeDepartureDate: false` is the NIGHT model (INV-DATE-005): who holds a
+ * bed on the lodge night `date`.
  *
- * `includeDepartureDate: true` deliberately keeps the SHIPPED legacy meaning:
- * an explicit night set admits its own nights plus the single morning after the
- * FINAL listed night, and an envelope stay is the closed range
- * `[stayStart, stayEnd]`. It is NOT `getOperationallyPresentGuestsForDay`.
+ * `includeDepartureDate: true` is the OPERATIONAL DAY (INV-DATE-004): who is in
+ * the lodge at any point on NZ day `date`, which is the guest whose night `date`
+ * or whose night `date - 1` is booked. That is per SEGMENT, so a guest booked on
+ * nights {10, 12} is visible on the 10th, the 11th, the 12th and the 13th — the
+ * 11th being a morning they really are in the building until midday.
  *
- * Why it must not be: `lodge-display-state.ts` — the unauthenticated lobby wall
- * — derives its NIGHT counts by subtracting only the envelope end from this
- * list (`getGuestStayEnd(...) !== date`). Give it D-M4 per-segment presence and
- * a sparse stay's mid-stay gap morning is counted as a phantom night, which
- * breaks sole-occupancy detection (issue #58) and flips guest names and phone
- * numbers on and off a public screen. The per-segment rule therefore lives only
- * in the named operational-day helpers, which every converted surface calls
- * directly.
+ * ## What changed, and why it is safe now (#2735)
  *
- * #2631 converted the two kiosk read surfaces that used to call this, so the
- * lobby wall is the last caller — and it is a PERMANENT one, not a pending
- * migration. Do not "finish the job" by pointing it at the operational day.
+ * This branch used to be narrower on one shape and one shape only: for an
+ * explicit night set it admitted the morning after the FINAL listed night and no
+ * other, so a sparse stay's intermediate departure mornings were missing. Every
+ * other operational surface — the roster, the kiosk badges, the kiosk
+ * check-in/check-out buttons — was made per-segment by #2628; the wall was
+ * deliberately left behind, and #2622/#2628 both refused to move it.
  *
- * #2628 REPEATS THAT ANSWER, because the request came back in a different
- * shape. "Make this D or D-1" and "make this per-segment" are the same edit as
- * "point it at the operational day", and they have the same consequence on the
- * lobby wall: for nights {10, 12} the wall would read the 11th's departure
- * morning back as a phantom NIGHT, lose sole-occupancy detection, and publish
- * guest names and phone numbers. The genuinely live half of that complaint was
- * the kiosk DEPART lookup, which was keyed on `stayEnd` and so could only ever
- * record a sparse stay's FINAL departure; it now reads
- * {@link isGuestDepartureMorning}, which is per-segment correct, and this
- * predicate did not move.
+ * They refused because of the COUNT, not the rule. `lodge-display-state.ts` is
+ * the club's unauthenticated public screen, and its guest-name privacy gate is a
+ * sole-occupancy count over NIGHTS (INV-DATE-006, issue #58). That count used to
+ * be derived from this list — "everyone visible except whoever's `stayEnd` is
+ * today" — so widening this predicate by one morning would have added a phantom
+ * NIGHT, dropped a sole-occupancy blockout and published guest names and phone
+ * numbers. #2628 moved the count onto the night model; #2735 took it off this
+ * list entirely, so it is now derived from the booking's whole guest set and
+ * shares nothing with visibility in either direction. Widening this can no
+ * longer move a night count. THAT ORDER IS THE WHOLE SAFETY ARGUMENT — if the
+ * count is ever coupled back to this list, this predicate has to narrow again
+ * first.
+ *
+ * Unchanged for every contiguous stay, envelope or explicit: "night `date` or
+ * night `date - 1`" over `[stayStart, stayEnd)` is exactly the closed range
+ * `[stayStart, stayEnd]` this used to compute, and a contiguous night set has
+ * exactly one departure morning, the one after its final night.
  */
 function isGuestVisibleOnLodgeDate(
   guest: GuestStayRange,
@@ -534,31 +539,7 @@ function isGuestVisibleOnLodgeDate(
   if (!options?.includeDepartureDate) {
     return isGuestActiveOnNight(guest, date, booking);
   }
-
-  const dateKey = dateOnlyKey(date);
-
-  // For explicit night sets, "visible on a lodge date" means the guest stays
-  // that night, plus the morning after their last included night (the
-  // checkout-day visibility the board uses).
-  const nightKeySet = getGuestNightKeySet(guest);
-  if (nightKeySet) {
-    if (nightKeySet.has(dateKey)) {
-      return true;
-    }
-    let maxKey: string | null = null;
-    for (const key of nightKeySet) {
-      if (maxKey === null || key > maxKey) maxKey = key;
-    }
-    if (maxKey !== null) {
-      return dateKey === shiftDateOnlyKey(maxKey, 1);
-    }
-    return false;
-  }
-
-  const stayStartKey = dateOnlyKey(getGuestStayStart(guest, booking));
-  const stayEndKey = dateOnlyKey(getGuestStayEnd(guest, booking));
-
-  return stayStartKey <= dateKey && dateKey <= stayEndKey;
+  return isGuestOperationallyPresentOnDay(guest, date, booking);
 }
 
 /**
@@ -566,12 +547,13 @@ function isGuestVisibleOnLodgeDate(
  * `getOperationallyPresentGuestsForDay` for the operational day, or
  * `getActiveGuestsForNight` for the night model.
  *
- * This wrapper is the LEGACY lodge-date list, unchanged in behaviour — see
- * `isGuestVisibleOnLodgeDate` above for why its `includeDepartureDate: true`
- * branch must not become the operational-day rule. Since #2631 it has exactly
- * one caller, `lodge-display-state.ts` (the fenced, privacy-load-bearing lobby
- * wall), and `booking-guest-stay-ranges-contract.test.ts` freezes that list so
- * no new caller can appear.
+ * Since #2631 this has exactly one caller — `lodge-display-state.ts`, the
+ * fenced, privacy-load-bearing lobby wall — and
+ * `booking-guest-stay-ranges-contract.test.ts` freezes that list so no new
+ * caller can appear. It survives as the wall's single named entry point rather
+ * than as a distinct rule: since #2735 both of its branches are a straight
+ * delegation to a named model (see `isGuestVisibleOnLodgeDate` above), so
+ * nothing is defined here and nothing can drift out of step.
  */
 export function getLodgeVisibleGuestsForDate<Guest extends GuestStayRange>(
   guests: Guest[] | null | undefined,

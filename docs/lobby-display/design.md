@@ -214,6 +214,12 @@ interface DisplayStateGuest {
   label: string;              // privacy-reduced name (per granularity)
   stayStart: string;          // NZ date-only
   stayEnd: string;            // NZ date-only (check-out)
+  /** Every lodge night this guest holds a bed for, sorted (#2735). The
+   *  envelope above cannot express a gap — in Friday, home Saturday, back
+   *  Monday has the same stayStart/stayEnd as an unbroken stay — so this is
+   *  what the bars are drawn from. Identical to the expanded envelope for a
+   *  contiguous stay. */
+  nights: readonly string[];
   /** Adult member phone — present ONLY under the two-sided consent gate
    *  (phone-visibility.md); omitted otherwise. */
   phone?: string;
@@ -229,6 +235,13 @@ interface DisplayStateBooking {
   guestCount: number;
   stayStart: string;          // earliest guest stay-start on the row
   stayEnd: string;            // latest guest stay-end on the row
+  /** Union of the row's guests' lodge nights, sorted (#2735). Present on
+   *  every row, including one whose names are withheld — a bar has to be
+   *  drawn for a family, an organisation and a blockout too, and it names
+   *  nobody. Read by no count in the serialiser; on the client it is what
+   *  the bars, the per-segment statuses, the blockout span and the
+   *  `occupancy:whole-lodge-today` condition are all derived from. */
+  nights: readonly string[];
   /** Expected arrival time, "HH:mm" (#2621) — display-only information so the
    *  wall can say when arrivals are due. Non-null ONLY on a row that is already
    *  naming individuals (the same `namesAllowed` decision that fills `guests`),
@@ -968,6 +981,26 @@ upstream owner's input on discussion #964):
    which names this wall's night counts as deliberately fenced): a group
    leaving in the morning keeps its blockout even when the next booking
    arrives that evening.
+
+   **Withholding the names and painting a blockout are two decisions, not
+   one** (#2735). A group can appear on the wall on a day it holds no night —
+   the morning it checks out, when it is here until midday. The names stay
+   withheld there (it had the building to itself on the night that put it on
+   this wall, so naming it is the same disclosure this rule exists to
+   prevent), but `DisplayStateBooking.wholeLodge` stays **false**, because the
+   lodge is not blocked out tonight and the wall must not say it is. So the
+   serialiser keeps two sets: `wholeLodgeBookingIds` (holds a night inside the
+   window → the blockout view) and `soleOccupancyBookingIds`, a superset that
+   also covers that departure morning and is what `namesAllowedForBooking`
+   asks. Being a superset is the safety property — it can only ever withhold
+   more names. Chore assignee labels ask the same superset, so an assignee is
+   never named more precisely than their own booking's row.
+
+   A `wholeLodge` row is **not guaranteed contiguous**: the flagged hold is,
+   but the heuristic only checks the nights the booking covers and never looks
+   between them. Anything that paints "whole lodge booked" across DAYS — the
+   blockout panel, the week strip — must be driven by the row's `nights`, not
+   by its envelope, or it claims the lodge on a night nobody booked (#2735).
 3. **Bookings containing minors** (`ageTier` INFANT/CHILD/YOUTH): collapse
    to a family label — "«Surname» family" at the two fuller levels,
    "Family of N" at `FIRST_NAME_ONLY` — and guests are never listed.
@@ -989,6 +1022,18 @@ avoid. Two further conditions: the arrival must fall inside the board window (a
 time printed against a stay that began earlier reads as tonight), and the stored
 value must match the canonical `HH:00`/`HH:30` shape, so a malformed legacy row
 degrades to no time rather than to arbitrary text on a lobby TV.
+
+**The sole-occupancy count is independent of what the wall shows** (#2735,
+`INV-DATE-023`). Rule 2's night count is taken from the booking's whole guest
+set through the night model, never by filtering or subtracting from the visible
+list, so no change to who is DISPLAYED can add or remove a night. That
+separation is what let the wall become per-segment: since #2735 a guest is shown
+on every morning they leave — including a mid-stay one, when they are physically
+here until midday — and their bar is drawn from their night set with the gap in
+it, matching the roster and the kiosk (#2628). Before the count was decoupled,
+that same widening would have read a sparse stay's gap morning back as a phantom
+night, dropped a blockout, and published the names it was withholding. The order
+matters and is the standing rule: decouple first, widen second.
 
 **Window**: default 3 days, hard cap 7 (`DISPLAY_WINDOW_MAX_DAYS`) — an
 out-of-range request clamps rather than erroring.

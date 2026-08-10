@@ -97,7 +97,7 @@ export async function PUT(request: Request) {
       memberId: guard.session.user.id,
       entityType: "BedAllocationSettings",
       entityId: lodgeId,
-      category: "admin",
+      category: "lodge",
       severity: "important",
       outcome: "success",
       summary: "Bed allocation settings updated",
