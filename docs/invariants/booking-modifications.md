@@ -437,33 +437,71 @@ more than the club had ever charged and could leave a guest who genuinely slept
 at the lodge with a negative stored price. Both windows, not just the old one:
 the locks are what make a night the guest KEEPS carry one price on either side of
 the difference and cancel to nothing, so an extension's delta is still exactly
-the nights it adds and no night anybody already bought is ever re-rated
-(INV-MOD-005, INV-MOD-006). This is the rule every other edit path already
-followed; the in-progress plan was the sole exception, and it no longer is.
+the nights it adds and no night anybody already bought is ever re-rated. That
+half of INV-MOD-006 — **locks win over the discount** — is now satisfied here as
+it is everywhere else, so a removal no longer strips a group discount the member
+bought (INV-MOD-005, INV-MOD-006). The other half is not, and this plan cannot
+satisfy it: **it prices each guest on their own**, one `calculateBookingPrice`
+call per guest with no group-discount config, so the party size it sees is always
+one. Nights a guest already held are unaffected (their locked price is
+discount-inclusive), but nights an in-progress edit newly BUYS carry no group
+discount, where the same nights bought by an edit to a stay that has not started
+would. On a club with the discount switched on that is an overcharge running
+against the member. It is pre-existing, it is stated here rather than implied,
+and it is carried as its own decision on **#2756** — not as an unqualified
+INV-MOD-006 citation.
 
 **The per-night amounts written back are each night's real rate (#2744), not an
 average.** A kept night keeps its stored price, a newly bought night takes its
 own season rate, and the list is what `BookingGuestNight.priceCents` receives —
 which is what the NEXT edit will be told the member paid. Where a guest's stored
-rows cannot account for their stored total — rows carrying no price at all
-(pre-#713, or a booking converted from a request), or a total that has drifted
-from the rows — the amounts fall back to the even split this always used, over
-the whole guest, because a distribution invented from numbers that disagree is a
-guess dressed as a rate. Either way the per-night amounts sum to the guest's
-total EXACTLY, in integer cents with any remainder spread one cent at a time
-including for a negative total, so the runs Xero rebuilds its invoice lines from
-still multiply back out and no phantom balance can appear (INV-MONEY-001,
-INV-MONEY-003). The degradation is deliberate and is the same one INV-MOD-005
-already names for a legacy guest: with no stored price there is nothing to
-recover, and that night is valued at today's rate.
+rows cannot account for their stored total — no night rows at all (pre-#713, or
+a booking created by approving a booking request, which still writes none,
+#2739), or a stored total that has drifted from the rows — the amounts fall back
+to the even split this always used, over the whole guest, because a distribution
+invented from numbers that disagree is a guess dressed as a rate. Either way the
+per-night amounts sum to the guest's total EXACTLY, in integer cents with any
+remainder spread one cent at a time including for a negative total, so the runs
+Xero rebuilds its invoice lines from still multiply back out and no phantom
+balance can appear (INV-MONEY-001, INV-MONEY-003). The one shape that cannot sum
+is a guest left holding no nights at all — removed before their stay began —
+where there is nothing to distribute across: a guest whose rows account for their
+total lands on exactly zero, and a guest whose total has drifted keeps the drift,
+neither invented nor erased. The degradation is deliberate and is the same one
+INV-MOD-005 already names for a legacy guest: with no stored price there is
+nothing to recover, and that night is valued at today's rate.
+
+**No edit leaves a guest owing less than nothing (#2744).** Valuing a night at
+today's rate is a degradation, not a licence: after a rate rise it can credit
+back more than the club ever charged, which is how a guest who genuinely slept at
+the lodge finished with a negative stored price and negative night rows. The
+credit on the old-price window is therefore capped at what the guest is actually
+carrying — their stored price plus whatever this edit charges them for the nights
+they keep — so their price lands at worst on zero. The cap cannot bind on a guest
+whose nights cost no more than they paid, which is every healthy booking and
+every case in the contiguous equivalence matrix. Symmetrically, a **negative**
+stored `BookingGuestNight.priceCents` is refused as a sold price and treated as
+no recoverable price at all: the column is a bare `Int`, the pre-fix arithmetic
+could write negative rows, and honouring one would invert the edit so that giving
+a night back CHARGED the member. **History is not repriced by either rule.** A
+guest already below zero is left exactly as found — not driven deeper, not
+repaired — because correcting what the old arithmetic wrote is an owner decision
+with its own audit. **#2745** carries it, and its scope includes rows that are
+negative, not only rows that are averaged.
 
 The **contiguous equivalence** above survives this unchanged, and is still proven
-rather than asserted: the matrix runs every ordinary edit three ways — rows
+rather than asserted: the matrix runs every ordinary edit four ways — rows
 carrying today's rate as their stored price (the ordinary live booking, whose
-rate has not moved), rows carrying no price, and no rows at all — and all three
-agree with the pre-#2736 arithmetic to the cent. What moves, deliberately, is a
-refund on a stay whose season rate HAS changed since it was made: it is now what
-the club charged rather than what it would charge today.
+rate has not moved), that same guest with a stored total that has drifted from
+the rows, rows arriving without their price, and no rows at all — and all four
+agree with the pre-#2736 arithmetic to the cent. Rows arriving without a price is
+a thinner `select`, not a state the database can hold (`BookingGuestNight.
+priceCents` is NOT NULL); it is in the matrix because the plan cannot tell it
+from a guest who was never priced, and
+`in-progress-edit-sold-price-census.test.ts` is what stops a loader producing it.
+What moves, deliberately, is a refund on a stay whose season rate HAS changed
+since it was made: it is now what the club charged rather than what it would
+charge today.
 
 **One money shape is frozen here, not endorsed.** Correcting it moves the price
 of ordinary contiguous edits, which would give up the equivalence above, so it is
