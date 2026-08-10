@@ -1317,7 +1317,7 @@ export function PublicBookingRequestsPanel({
                   </div>
                 </CardHeader>
                 <CardContent className="space-y-4">
-                  <div className="grid gap-3 text-sm sm:grid-cols-2 lg:grid-cols-4">
+                  <div className="grid gap-3 text-sm sm:grid-cols-2 lg:grid-cols-5">
                     <div>
                       <span className="text-muted-foreground">Dates:</span>{" "}
                       {formatDate(request.checkIn)} to {formatDate(request.checkOut)}
