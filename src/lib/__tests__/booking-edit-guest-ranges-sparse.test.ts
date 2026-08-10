@@ -94,20 +94,26 @@ type TestGuest = {
  * the night rows always agree, exactly as they do in the database.
  *
  * `withNightRows: false` drops the rows and leaves only the envelope: a legacy
- * guest, or one on a booking converted from a request (#2739). That guest must
- * keep behaving exactly as before.
+ * guest from before `BookingGuestNight` existed, or one on a booking created by
+ * approving a booking request, which still writes no rows at all (#2739). That
+ * guest must keep behaving exactly as before.
  *
  * `withStoredPrices: true` puts the CURRENT season rate on each row, which is
  * every booking where no rate has moved since it was made (#2744). Those guests
  * must also come out exactly where they came out before — the locked price and
  * the fresh lookup are the same number — which is what the matrix below uses to
  * separate "honours what was paid" from "changes ordinary bookings".
+ *
+ * `driftCents` moves the guest's stored TOTAL away from the sum of their rows,
+ * which is the one fallback that can happen to a guest whose rows are all
+ * present and priced.
  */
 function guestFromNights(
   nights: string[],
   id = "g1",
   withNightRows = true,
   withStoredPrices = false,
+  driftCents = 0,
 ): TestGuest {
   const sorted = [...nights].sort();
   const last = sorted[sorted.length - 1];
@@ -130,7 +136,7 @@ function guestFromNights(
           })),
         }
       : {}),
-    priceCents: priceNights(sorted),
+    priceCents: priceNights(sorted) + driftCents,
   };
 }
 
@@ -323,20 +329,34 @@ describe("#2736 contiguous stays are unchanged", () => {
     "2026-08-28",
   ];
 
-  // What the guest's stored `BookingGuestNight` rows look like. All three must
+  // What the guest's stored `BookingGuestNight` rows look like. All four must
   // agree with the pre-#2736 arithmetic:
   //
   //  - `rows+prices` is the ordinary live booking whose rates have not moved
   //    since it was made, so #2744's locked prices ARE the current rates and
   //    every number has to come out the same. Without this row the matrix could
   //    not tell "honours what was paid" apart from "changes ordinary bookings",
-  //    because the other two carry no price to honour.
-  //  - `rows` is a guest whose rows carry no price (loaded without it).
-  //  - `envelope` is a legacy guest with no rows at all (#2739).
+  //    because the others carry no price to honour.
+  //  - `drifted` is that same guest with a stored TOTAL that no longer matches
+  //    the sum of their rows. Their nights still price at what they paid, but
+  //    the per-night amounts written back fall back to the even split, because a
+  //    distribution built from numbers that disagree would be a guess. It is the
+  //    only fallback reachable by a guest whose rows are all present and priced,
+  //    which is why it is worth a whole matrix pass.
+  //  - `rows` is a guest whose rows arrive WITHOUT their price. The schema makes
+  //    `BookingGuestNight.priceCents` NOT NULL and both production loaders ask
+  //    for it, so this is not a state the database can hold — it is the shape a
+  //    THINNER `select` would produce, and it is here because that select is a
+  //    one-word edit away and the plan cannot tell it from a guest who was never
+  //    priced. `in-progress-edit-sold-price-census.test.ts` is what stops it
+  //    happening; this row is what proves the degradation stays safe if it did.
+  //  - `envelope` is a guest with no rows at all: pre-`BookingGuestNight`, or a
+  //    booking created by approving a request, which still writes none (#2739).
   const ROW_VARIANTS = [
-    { label: "rows+prices", withNightRows: true, withStoredPrices: true },
-    { label: "rows", withNightRows: true, withStoredPrices: false },
-    { label: "envelope", withNightRows: false, withStoredPrices: false },
+    { label: "rows+prices", withNightRows: true, withStoredPrices: true, driftCents: 0 },
+    { label: "drifted", withNightRows: true, withStoredPrices: true, driftCents: 101 },
+    { label: "rows", withNightRows: true, withStoredPrices: false, driftCents: 0 },
+    { label: "envelope", withNightRows: false, withStoredPrices: false, driftCents: 0 },
   ];
 
   const cases: Array<{
@@ -360,12 +380,14 @@ describe("#2736 contiguous stays are unchanged", () => {
                       "g1",
                       variant.withNightRows,
                       variant.withStoredPrices,
+                      variant.driftCents,
                     ),
                     guestFromNights(
                       ["2026-08-20", "2026-08-21", "2026-08-22"],
                       "g2",
                       variant.withNightRows,
                       variant.withStoredPrices,
+                      variant.driftCents,
                     ),
                   ],
                   editableFrom,
@@ -464,6 +486,16 @@ describe("#2736 contiguous stays are unchanged", () => {
       // `BookingGuestNight.priceCents`, so on every one of these edits they must
       // be one integer per night that adds back to the guest's total. Anything
       // else is a phantom balance the moment Xero rebuilds its lines.
+      //
+      // ONE carve-out, and the `drifted` variant is what found it: a guest who
+      // ends the edit holding NO nights at all — removed before their stay
+      // begins — has nothing to distribute across. A guest whose rows account
+      // for their total lands exactly on zero there, because the credit is all
+      // of their nights at all of their own prices. A guest whose total has
+      // DRIFTED from their rows keeps the drift, and that residual is neither
+      // invented nor erased here: it is what the pre-#2736 arithmetic left too
+      // (`priceCents` is compared against it above, case by case), and what to
+      // do about a total that no longer matches its rows is #2745's decision.
       for (const entry of [
         ...plan.proposedExistingGuests,
         ...plan.proposedAddedGuests,
@@ -475,10 +507,12 @@ describe("#2736 contiguous stays are unchanged", () => {
           entry.perNightCents.every((cents) => Number.isInteger(cents)),
           testCase.name,
         ).toBe(true);
-        expect(
-          entry.perNightCents.reduce((sum, cents) => sum + cents, 0),
-          testCase.name,
-        ).toBe(entry.priceCents);
+        if (entry.nights.length > 0) {
+          expect(
+            entry.perNightCents.reduce((sum, cents) => sum + cents, 0),
+            testCase.name,
+          ).toBe(entry.priceCents);
+        }
       }
     }
   });
@@ -1163,6 +1197,171 @@ describe("#2744 a night is credited back at the price it was sold for", () => {
     );
     expect(entry.perNightCents.reduce((a, b) => a + b, 0)).toBe(entry.priceCents);
     expect(entry.perNightCents.every(Number.isInteger)).toBe(true);
+  });
+
+  it("never credits back more than the guest paid, even with nothing per night to recover", () => {
+    // Acceptance criterion 1 in the case the locked prices CANNOT reach: a guest
+    // with no `BookingGuestNight` rows at all — a booking that predates them, or
+    // one created by approving a booking request, which still writes none
+    // (#2739). Their nights have no sold price, so the old-price leg values them
+    // at TODAY's rate, and after a rate rise that is more than the club ever
+    // charged. Three nights bought for 3 x LOW; the last two are now HIGH.
+    //
+    // Raw, the credit would be 2 x HIGH = 18000 against a stored 15000, leaving
+    // the guest at -3000 — the issue's own reproduction, and negative rows for
+    // the next edit to read as a sold price. The ceiling is what they are
+    // carrying, so the credit stops at 15000 and they land on zero.
+    const nights = ["2026-08-22", "2026-08-23", "2026-08-24"];
+    const noPerNightRecord: TestGuest = {
+      ...guestFromNights(nights, "g1", false),
+      priceCents: 3 * LOW,
+    };
+    const plan = buildInProgressGuestRangePlan(
+      planInput({
+        guests: [noPerNightRecord, guestFromNights(nights, "g2")],
+        editableFrom: "2026-08-23",
+        newCheckOut: "2026-08-25",
+        removeGuestIds: ["g1"],
+        checkIn: "2026-08-22",
+        checkOut: "2026-08-25",
+      }),
+    );
+    const entry = plan.proposedExistingGuests[0];
+
+    // Not 2 x HIGH, which is what pricing those two nights at today's rate says.
+    expect(2 * HIGH).toBeGreaterThan(3 * LOW);
+    expect(entry.oldFuturePriceCents).toBe(3 * LOW);
+    expect(entry.futureDeltaCents).toBe(-3 * LOW);
+    expect(entry.priceCents).toBe(0);
+    expect(entry.priceCents).toBeGreaterThanOrEqual(0);
+    // And nothing negative reaches the rows the NEXT edit will read.
+    expect(entry.perNightCents.every((cents) => cents >= 0)).toBe(true);
+    expect(entry.perNightCents.reduce((a, b) => a + b, 0)).toBe(entry.priceCents);
+  });
+
+  it("keeps the clamp off every guest whose nights cost no more than they paid", () => {
+    // The ceiling is a floor under the money, not a change to the arithmetic. A
+    // guest whose stored rows record what they paid is credited exactly those
+    // amounts and the ceiling never comes near — asserted here so a future
+    // tightening of the clamp cannot quietly start binding on healthy bookings
+    // (the 720-case contiguous matrix above is the other half of that guard).
+    const paidHigh = guestWhoPaid(
+      { "2026-08-23": HIGH, "2026-08-24": HIGH, "2026-08-25": HIGH },
+      "g1",
+    );
+    const plan = buildInProgressGuestRangePlan(
+      planInput({
+        guests: [
+          paidHigh,
+          guestFromNights(["2026-08-23", "2026-08-24", "2026-08-25"], "g2"),
+        ],
+        editableFrom: "2026-08-24",
+        newCheckOut: "2026-08-26",
+        removeGuestIds: ["g1"],
+      }),
+    );
+    const entry = plan.proposedExistingGuests[0];
+
+    expect(entry.oldFuturePriceCents).toBe(2 * HIGH);
+    expect(entry.priceCents).toBe(HIGH);
+  });
+
+  it("leaves a guest removed before their stay began at nothing owing, and keeps a drift where it was", () => {
+    // The one shape where the per-night amounts cannot add back to the guest's
+    // total, because there are no nights to add across. The `drifted` row of the
+    // matrix above is what found it, so it is asserted here rather than merely
+    // excepted there.
+    //
+    // A guest whose rows account for their total is credited all of their own
+    // nights at all of their own prices, so they land on EXACTLY nothing owing.
+    const wholeStay = ["2026-08-22", "2026-08-23"];
+    const settled = guestWhoPaid({ "2026-08-22": LOW, "2026-08-23": LOW }, "g1");
+    const plan = buildInProgressGuestRangePlan(
+      planInput({
+        guests: [settled, guestFromNights(wholeStay, "g2")],
+        // Before their stay starts, so the whole of it is inside the window.
+        editableFrom: "2026-08-21",
+        newCheckOut: "2026-08-24",
+        removeGuestIds: ["g1"],
+        checkIn: "2026-08-21",
+        checkOut: "2026-08-24",
+      }),
+    );
+    const entry = plan.proposedExistingGuests[0];
+
+    expect(entry.nights).toEqual([]);
+    expect(entry.perNightCents).toEqual([]);
+    expect(entry.priceCents).toBe(0);
+
+    // A guest whose stored total has DRIFTED from their rows keeps the drift.
+    // It is not invented and not erased: the pre-#2736 arithmetic left the same
+    // residual, and what to do about a total that no longer matches its rows is
+    // an owner decision on #2745.
+    const drifted: TestGuest = {
+      ...settled,
+      priceCents: settled.priceCents + 101,
+    };
+    const driftedPlan = buildInProgressGuestRangePlan(
+      planInput({
+        guests: [drifted, guestFromNights(wholeStay, "g2")],
+        editableFrom: "2026-08-21",
+        newCheckOut: "2026-08-24",
+        removeGuestIds: ["g1"],
+        checkIn: "2026-08-21",
+        checkOut: "2026-08-24",
+      }),
+    );
+    const driftedEntry = driftedPlan.proposedExistingGuests[0];
+
+    expect(driftedEntry.nights).toEqual([]);
+    expect(driftedEntry.perNightCents).toEqual([]);
+    expect(driftedEntry.priceCents).toBe(101);
+  });
+
+  it("refuses a NEGATIVE stored row as a sold price, so giving a night back never charges the member", () => {
+    // The rows this bug itself wrote. Before the fix, an in-progress edit that
+    // drove a guest's total below zero split that negative total evenly across
+    // their nights, so `BookingGuestNight.priceCents` — a bare `Int` with no
+    // non-negative constraint — could hold -3000. Honouring that as a "sold
+    // price" inverts the edit: the old-price window comes out at -2 x 3000, so
+    // the delta is POSITIVE and taking the guest off CHARGES them $60 on a
+    // booking the old arithmetic had already damaged.
+    //
+    // A negative row is treated as no recoverable price at all, which drops the
+    // night into the documented today's-rate degradation — where the ceiling
+    // above holds it, because a guest already below zero has a ceiling of zero.
+    // The damaged total is left exactly as it was found: what to do about it is
+    // an owner decision with its own audit (#2745), not this edit's to make.
+    const damaged: TestGuest = {
+      ...guestWhoPaid(
+        {
+          "2026-08-23": -3000,
+          "2026-08-24": -3000,
+          "2026-08-25": -3000,
+        },
+        "g1",
+      ),
+      priceCents: -9000,
+    };
+    const plan = buildInProgressGuestRangePlan(
+      planInput({
+        guests: [
+          damaged,
+          guestFromNights(["2026-08-23", "2026-08-24", "2026-08-25"], "g2"),
+        ],
+        editableFrom: "2026-08-24",
+        newCheckOut: "2026-08-26",
+        removeGuestIds: ["g1"],
+      }),
+    );
+    const entry = plan.proposedExistingGuests[0];
+
+    // The direction is the whole point: surrendering nights can never bill.
+    expect(entry.futureDeltaCents).toBeLessThanOrEqual(0);
+    expect(entry.futureDeltaCents).toBe(0);
+    expect(entry.oldFuturePriceCents).toBe(0);
+    // Not made worse, and not silently repaired either.
+    expect(entry.priceCents).toBe(-9000);
   });
 });
 

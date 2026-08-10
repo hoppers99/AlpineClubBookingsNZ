@@ -228,7 +228,21 @@ function dateOnlyKey(value: Date): string {
  * carrying no night rows. Absence is therefore a documented, pre-existing
  * degradation rather than a new silent fallback — but it IS a degradation, and
  * for a booking that predates `BookingGuestNight` it means the old behaviour:
- * the night is credited back at today's rate.
+ * the night is credited back at today's rate. The `refundCeilingCents` clamp
+ * below is what stops that degradation handing back more than the member paid.
+ *
+ * A NEGATIVE stored price is treated the same way — as no recoverable price at
+ * all — and that is a deliberate refusal, not tidiness. `BookingGuestNight.
+ * priceCents` is a bare `Int` with no non-negative constraint, and the very
+ * arithmetic this change replaces could write negative rows: the old even split
+ * of a guest whose total had been driven below zero by a today's-rate refund
+ * spread that negative total across their nights. Trusting such a row as a
+ * "sold price" would invert the whole edit — the old-price window would come out
+ * negative, so GIVING A NIGHT BACK would CHARGE the member — on a booking the
+ * pre-fix bug had already damaged. Skipping it drops that night into the
+ * documented "nothing to recover" degradation instead, where the clamp holds it.
+ * Nothing already stored is rewritten: what those rows should become is a
+ * separate, audited decision on #2745.
  */
 function storedNightPricesByKey(
   guest: Pick<ExistingBookingEditGuest, "nights">
@@ -239,7 +253,11 @@ function storedNightPricesByKey(
       continue;
     }
     const priceCents = "priceCents" in entry ? entry.priceCents : undefined;
-    if (typeof priceCents !== "number" || !Number.isFinite(priceCents)) {
+    if (
+      typeof priceCents !== "number" ||
+      !Number.isFinite(priceCents) ||
+      priceCents < 0
+    ) {
       continue;
     }
     // Keyed through the SAME canonical helper that builds `heldNightKeys`, one
@@ -379,6 +397,13 @@ function distributeEvenlyCents(totalCents: number, count: number): number[] {
  * edit's delta), because that is the number written to `BookingGuest.priceCents`
  * and summed into the booking total; a per-night list that disagreed with it
  * would leave a phantom balance the moment Xero rebuilt its lines from the runs.
+ * The one shape where it cannot is a guest left holding NO nights — removed
+ * before their stay began — where there is nothing to distribute across. A
+ * guest whose rows account for their total lands on exactly zero there, so the
+ * empty list is the whole of it; a guest whose total has drifted from their rows
+ * keeps the drift, which this rule neither invents nor erases (it is what the
+ * pre-#2736 arithmetic left too, and #2745 owns what to do about it).
+ *
  * The future part sums to its own total by construction, so the real rates can
  * be written only when the stored past prices account EXACTLY for the rest —
  * every past night has one, and together they come to `totalCents` less the
@@ -460,6 +485,21 @@ function composeProposedNightPrices(args: {
  * where it did, and so does a guest carrying no stored prices at all. What DOES
  * move, deliberately, is a refund on a stay whose rate has changed since: it is
  * now what the club charged rather than what it would charge today.
+ *
+ * **And a floor under it: no edit leaves a guest owing less than nothing.** The
+ * locked prices cure the cause wherever a guest's rows record what they paid,
+ * but a guest with no per-night record at all — a booking that predates
+ * `BookingGuestNight`, or one created by approving a booking request, which
+ * still writes no rows (#2739) — has nothing to recover, so their nights are
+ * valued on the old leg at today's rate and after a rate rise the credit can
+ * exceed everything the club ever charged them. `refundCeilingCents` caps the
+ * credit at what the guest is actually carrying, so their price lands at worst
+ * on zero and no negative amount is ever written to a night row for the next
+ * edit to read back as a sold price. It cannot bind on a guest whose nights cost
+ * no more than they paid, which is every healthy booking and every case in the
+ * contiguous equivalence matrix. Guests ALREADY below zero from an edit made
+ * before this change are left exactly as found — not driven deeper, not
+ * repaired; that correction is an owner decision with its own audit, on #2745.
  */
 export function buildInProgressGuestRangePlan(
   input: BuildInProgressGuestRangePlanInput
@@ -513,8 +553,11 @@ export function buildInProgressGuestRangePlan(
     // the locked prices below, falling back to the current season rate only for
     // a night that has no stored price to recover. This is the leg a removal or
     // a shortened check-out credits back, so it is the one that decides whether
-    // the club hands back what it took.
-    const oldFuturePriceCents = priceGuestNights(
+    // the club hands back what it took. "Raw" because a night with no
+    // recoverable price is valued here at TODAY's rate, which after a rate rise
+    // can exceed what the member was ever charged; `refundCeilingCents` below
+    // is what stops that leaving the wire.
+    const rawOldFuturePriceCents = priceGuestNights(
       heldNightKeys.filter(
         (key) => key >= oldFutureStartKey && key < stayEndKey
       ),
@@ -607,6 +650,41 @@ export function buildInProgressGuestRangePlan(
           storedNightPriceByKey
         );
     const newFuturePriceCents = newFuture.totalCents;
+    // #2744, acceptance criterion 1: an edit can never leave a guest owing less
+    // than nothing. The locked prices above cure the CAUSE for every guest whose
+    // rows record what they paid, but they cannot help a guest with no
+    // recoverable price at all — a booking that predates `BookingGuestNight`,
+    // or one created by approving a booking request, which still writes no rows
+    // (#2739). Those nights are valued at today's rate on the old leg, so after
+    // a rate rise the credit can exceed the guest's whole stored total and the
+    // club hands back money it never took.
+    //
+    // The ceiling is what the guest is actually carrying: their stored price,
+    // plus whatever this edit is charging them for the nights they keep. Credit
+    // more than that and their price goes negative. Below the ceiling nothing
+    // moves, which is why this is a floor under the money rather than a change
+    // to the arithmetic — for a guest whose nights are priced at or under what
+    // they paid (every healthy booking, and every case in the contiguous
+    // equivalence matrix, where the old window prices a SUBSET of the nights the
+    // stored total covers) the clamp cannot bind.
+    //
+    // Clamped here, on the old-price leg, and not on the delta: the leg is what
+    // the modify-quote route itemises as the "removed from future nights"
+    // credit, so quote and charge stay the same number, and
+    // `newFuture - oldFuture === futureDelta` stays true for every consumer.
+    //
+    // `Math.max(guest.priceCents, 0)` and not the stored price itself: a guest
+    // whose price is ALREADY below zero was damaged by an edit made before this
+    // change, and their ceiling is 0 — no further credit — so this edit cannot
+    // drive them deeper. It does not lift them back to zero either. Correcting
+    // what the old arithmetic already wrote is an owner decision with its own
+    // audit, tracked on #2745; refusing to make it worse is not.
+    const refundCeilingCents =
+      Math.max(guest.priceCents, 0) + newFuturePriceCents;
+    const oldFuturePriceCents = Math.min(
+      rawOldFuturePriceCents,
+      refundCeilingCents
+    );
     const futureDeltaCents = newFuturePriceCents - oldFuturePriceCents;
     const priceCents = guest.priceCents + futureDeltaCents;
 
