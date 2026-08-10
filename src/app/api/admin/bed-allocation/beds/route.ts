@@ -47,7 +47,7 @@ export async function POST(request: Request) {
       memberId: guard.session.user.id,
       entityType: "LodgeBed",
       entityId: bed.id,
-      category: "admin",
+      category: "lodge",
       outcome: "success",
       summary: "Bed allocation bed created",
       metadata: {

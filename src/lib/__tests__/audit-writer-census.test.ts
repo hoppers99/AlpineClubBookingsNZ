@@ -48,6 +48,7 @@ import {
   AUDIT_CENSUS_TOTALS,
   AUDIT_WRITER_WRAPPERS,
   AUDIT_WRITERS_WITHOUT_ENTITY_IDENTIFIER,
+  REVIEWED_ADMIN_CATEGORIES_2730,
   UNCATEGORISED_AUDIT_WRITERS,
 } from "../../../scripts/audit/audit-writer-census-manifest";
 
@@ -151,6 +152,61 @@ describe("audit writer census (#2581)", { timeout: 180_000 }, () => {
         "in their own timeline, so this is a readership change: update " +
         "APPLIED_AUDIT_CATEGORIES and say what moved in the changelog.",
     ).toEqual(APPLIED_AUDIT_CATEGORIES);
+  });
+
+  it("keeps every RE-classification #2730 applied exactly where it was reviewed", () => {
+    /*
+      The same swap gate, for the other reviewed population.
+
+      #2581 child 2 classified the 83 sites that recorded NO category and pinned
+      them above. It explicitly did not read the 118 that already said `admin`,
+      and #2730 was the pass that did: 22 of them were moved to `lodge` and 96
+      were kept. Those 22 need the identical protection and did not have it —
+      the distribution pin alone cannot see a compensating pair (one of these
+      back to `admin`, one `admin` site into `lodge` leaves `admin: 96` and
+      `lodge: 52` untouched while both rows change who may read them).
+
+      MEASURED FROM THE TREE, not read back out of the manifest, so this bites
+      when somebody edits a ROUTE rather than only when they edit the table.
+    */
+    const measured = Object.fromEntries(
+      census()
+        .sites.filter((site) => site.id in REVIEWED_ADMIN_CATEGORIES_2730)
+        .map((site) => [site.id, describeCategory(site.category)]),
+    );
+
+    expect(
+      measured,
+      "A writer #2730 reviewed now records a different category, or has moved " +
+        "and taken its identity with it. These are the bed-allocation and " +
+        "lodge-display sites that were split across two permission gates until " +
+        "#2730 read them: reverting one re-opens the split silently, because " +
+        "the category distribution can stay identical while it happens. Update " +
+        "REVIEWED_ADMIN_CATEGORIES_2730 and say what moved in the changelog.",
+    ).toEqual(REVIEWED_ADMIN_CATEGORIES_2730);
+
+    // The property that made the move safe, asserted rather than asserted-in-prose:
+    // every destination is a category a member CANNOT see in their own timeline,
+    // so none of the 22 crossed the member self-timeline boundary. If a future
+    // edit sends one of them somewhere member-visible, this fails with the
+    // direction named even if the id-to-category map above was updated to match.
+    const memberVisible = new Set<string>(
+      MEMBER_AUDIT_TIMELINE_CATEGORY_OPTIONS.map((option) => option.value),
+    );
+    expect(
+      Object.values(REVIEWED_ADMIN_CATEGORIES_2730).filter((category) =>
+        memberVisible.has(category),
+      ),
+      "A site #2730 moved now lands in a MEMBER-VISIBLE category. #2730 took " +
+        "only the narrowings and left every widening to the owner, so this is " +
+        "a decision, not a reclassification: the row would appear on the acting " +
+        "administrator's own activity page and, where a subject member is set, " +
+        "on theirs.",
+    ).toEqual([]);
+    expect([...new Set(Object.values(REVIEWED_ADMIN_CATEGORIES_2730))]).toEqual([
+      "lodge",
+    ]);
+    expect(Object.keys(REVIEWED_ADMIN_CATEGORIES_2730)).toHaveLength(22);
   });
 
   it("pins which classified writers a MEMBER can now see about themselves", () => {

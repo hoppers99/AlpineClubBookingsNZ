@@ -105,14 +105,14 @@ correctly, and for anyone extending the taxonomy in AID-6B or AID-6C.
 | Category | Correlation entry | Reader needs | What actually records there |
 | --- | --- | --- | --- |
 | `system`, `security` | System | `support:view` | Setup, credentials, password/magic-link policy, backups, auth events and auth bounces, PIN login |
-| `admin` | System | `support:view` | **The cross-domain catch-all** — the largest category in the codebase (118 write sites). Member merge, member-lifecycle delete/archive, member import, lodge-access changes, seasonal membership assignments, internet-banking **payment settings**, booking-request **settings**, chores, lockers, rooms, bed allocation, lodge settings, access roles, modules |
+| `admin` | System | `support:view` | **The cross-domain catch-all** — still the largest category in the codebase (96 write sites, down from 118 in #2730). Member merge, member-lifecycle delete/archive, member import, lodge-access changes, seasonal membership assignments, internet-banking **payment settings**, booking-request **settings**, chores, lockers, work parties, lodge instructions, lodge settings, the `LODGE_*` lodge records themselves, access roles, modules. **Not bed allocation** any more, and not the lodge display configuration — both are `lodge` for rows written from #2730 onwards |
 | `booking` | Booking | `support:view` + `bookings:view` | Member-facing and system booking events. Not booking *settings* — those are `admin` |
 | `account` | Membership | `support:view` + `membership:view` | Member self-service: profile edits, notification preferences, post-login landing, membership cancellation, member photos, membership applications and nomination |
 | `family` | Membership | `support:view` + `membership:view` | Family groups, partner links, login-holder changes, dependents |
 | `communication` | Membership | `support:view` + `membership:view` | Bulk email, notices, delivery suppressions, credential-email reissues, age-up parent handoffs |
 | `privacy` | Membership | `support:view` + `membership:view` | Deletion requests, member export, member-guest resolution, **admin issue reports** — even though Issue Reports is a `support` screen |
 | `payment`, `xero` | Finance | `support:view` + `finance:view` | Payments, refunds, reconciliation, Xero sync. Not payment *settings* — those are `admin` |
-| `lodge` | Lodge | `support:view` + `lodge:view` | Rosters, guest arrival/departure, bed-allocation lifecycle, display built-ins, and **induction** — even though Induction is a `membership` screen |
+| `lodge` | Lodge | `support:view` + `lodge:view` | Rosters, guest arrival/departure, **all** bed allocation (an administrator's manual, bulk, range and approval actions as well as the automatic lifecycle ones, #2730), display built-ins and the **lodge display configuration**, and **induction** — even though Induction is a `membership` screen |
 
 That table is **derived from one map**, not maintained here by hand:
 `AUDIT_CATEGORY_CORRELATION_DOMAIN` in `src/lib/audit-categories.ts` sends every
@@ -128,6 +128,48 @@ not tidying:
 - **`family` joined Membership**, having previously been in **no** entry at all. 27
   production write sites' evidence was invisible to every correlation tool and is now
   readable with `support:view` plus `membership:view`.
+
+**One category's contents changed in #2730, and that is a behaviour change too.** The
+map above is untouched — no category moved between entries — but 22 write sites moved
+between categories, out of `admin` and into `lodge`:
+
+- **All 21 admin-initiated bed-allocation writers.** Bed allocation was split down the
+  middle: the automatic lifecycle promotions said `lodge` and the manual, bulk and range
+  ones an administrator performed said `admin`, so **the same action name answered to two
+  different permissions** and neither entry could return the whole night. A lodge manager
+  correlating "who moved this guest" got the automatic promotions and a silent absence
+  where the manual ones should have been. Bed allocation is now wholly `lodge`.
+- **`LODGE_DISPLAY_CONFIG_UPDATED`**, which was the one writer under `/admin/display/**`
+  still saying `admin` while its ten siblings said `lodge` — and the most lodge-scoped of
+  them, since it names the Lodge itself as its entity.
+
+**Both are narrowings, and somebody loses something.** A support-only operator can
+correlate those 22 sites' rows today and will need `lodge:view` as well after this — and
+so will a **Booking Officer holding `support` + `bookings` but not `lodge`**, who is the
+person actually performing these allocations, since the routes are gated `bookings:edit`
+rather than `lodge:edit`. They are all still readable in **Admin → Audit Log** with
+Support access, exactly as before — the change is to AI Diagnostics only. Nothing became
+readable to anybody new: neither `admin` nor `lodge` is a category members can see in
+their own activity list, so no row crossed onto a member-facing surface, and no row's
+retention class changed.
+
+**It moved the WRITERS, not the stored rows, and both entries say so.** A row already in
+`AuditLog` keeps the category it was written with, and `buildAuditCategoryWhere` ORs its
+legacy action-name guess in only for rows whose category is NULL — so a bed-allocation row
+recorded before this release carries a hard `admin` and is returned by the **system** entry
+alone, permanently. Bed-allocation evidence is therefore split by DATE across two entries
+until the backfill in #2751 runs. The lodge entry's `description` no longer claims to hold
+it "in full" and the system entry's `scope` says it still holds the older half; a pack test
+pins both sentences. `SHARED_DESCRIPTION_TAIL` does **not** cover this case — it warns
+about rows with no category, and these rows have one.
+
+The other 96 `admin` writers were read in the same pass: 87 were deliberately kept and
+nine are held for an owner decision, because their destinations are member-visible and the
+move would publish the row on a member-facing surface.
+[**The `admin` audit category, reviewed site by site**](audit-admin-category-review.md)
+records the verdict and the reason for every one of them, the alternative reading where
+there was a real one, and the fifteen lodge-gated sites that are an open question rather
+than a settled keep.
 
 The consequence to keep in mind: a correlation tool answering "nothing matched" is
 answering about **its own categories**, not about the domain. A Membership Officer

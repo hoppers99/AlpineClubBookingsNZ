@@ -706,7 +706,7 @@ export async function applyBedAllocationRemoval(input: {
           authoritative.preview.context.bookingId ??
           authoritative.matchingRows[0]?.bookingId,
         entityType: "BedAllocationRemoval",
-        category: "admin",
+        category: "lodge",
         outcome: "success",
         summary: "Bed allocations removed through reviewed preview",
         details: `Affected bookings: ${searchableAffectedBookingIds.join(", ")}${authoritative.preview.affectedBookingCount > searchableAffectedBookingIds.length ? `. Showing ${searchableAffectedBookingIds.length} of ${authoritative.preview.affectedBookingCount} booking IDs; metadata.affectedBookingIds contains a bounded sample of ${affectedBookingIdentitySummary.ids.length} IDs and omits ${affectedBookingIdentitySummary.omittedCount}.` : ""}`,
@@ -761,7 +761,7 @@ export async function applyBedAllocationRemoval(input: {
             authoritative.preview.context.bookingId ??
             authoritative.matchingRows[0]?.bookingId,
           entityType: "BedAllocation",
-          category: "admin",
+          category: "lodge",
           outcome: "success",
           summary: `${authoritative.causalSiblings.length} second occupant${authoritative.causalSiblings.length === 1 ? "" : "s"} auto-promoted to primary after reviewed allocation removal`,
           details: `Promoted partner bookings: ${searchableBookingIds.join(", ")}${promotedBookingIds.length > searchableBookingIds.length ? `. Showing ${searchableBookingIds.length} of ${promotedBookingIds.length} booking IDs; metadata.promotions contains a bounded sample of ${promotionIdentitySummary.length} of ${authoritative.causalSiblings.length} promotion records and omits ${authoritative.causalSiblings.length - promotionIdentitySummary.length}.` : ""}`,
