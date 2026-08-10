@@ -139,23 +139,70 @@ export function computeBarLayout(
 
 /** "Jane S, Rewi P +2" — up to max names, then an explicit overflow count. When
  * `leadOnly` (name-style: lead-count, mock A2) only the first guest shows, with
- * everyone else folded into the +N overflow ("Jane S +2"). */
+ * everyone else folded into the +N overflow ("Jane S +2").
+ *
+ * `segment` (#2735) narrows the row to the people actually in a bed during that
+ * run of nights. A row draws one bar per run, and each bar now carries that
+ * run's own check-out — so naming the whole row on every bar would attach a
+ * specific departure day to people who are not in that run at all. Omit it and
+ * the whole row is named, which is the same answer whenever the row has one
+ * segment. */
 export function barNames(
   row: DisplayStateBooking,
   maxNames: number,
-  leadOnly = false
+  leadOnly = false,
+  segment?: { stayStart: string; stayEnd: string }
 ): { names: string[]; overflow: number } {
   if (!row.guests || row.guests.length === 0) {
     return { names: [row.label], overflow: 0 };
   }
+  // A run of the row's nights is the union of its guests' nights, so at least
+  // one guest is always in it; the `|| row.guests` is belt and braces for a
+  // hand-built row whose guest nights do not add up to its own.
+  const inSegment = segment
+    ? row.guests.filter((guest) =>
+        guest.nights.some(
+          (night) => night >= segment.stayStart && night < segment.stayEnd
+        )
+      )
+    : row.guests;
+  const guests = inSegment.length > 0 ? inSegment : row.guests;
   if (leadOnly) {
     return {
-      names: [row.guests[0].label],
-      overflow: Math.max(0, row.guests.length - 1),
+      names: [guests[0].label],
+      overflow: Math.max(0, guests.length - 1),
     };
   }
-  const names = row.guests.slice(0, maxNames).map((guest) => guest.label);
-  return { names, overflow: Math.max(0, row.guests.length - names.length) };
+  const names = guests.slice(0, maxNames).map((guest) => guest.label);
+  return { names, overflow: Math.max(0, guests.length - names.length) };
+}
+
+/**
+ * The names printed on ONE bar — the shared label for both bar boards.
+ *
+ * A component rather than a call in the parent (#2735) because the names now
+ * depend on the segment, so they have to be resolved per bar rather than once
+ * per row, and this keeps that resolution in one place for the everyday board
+ * and the blockout board alike.
+ */
+export function BarNamesLabel({
+  row,
+  maxNames,
+  leadOnly = false,
+  segment,
+}: {
+  row: DisplayStateBooking;
+  maxNames: number;
+  leadOnly?: boolean;
+  segment: BarSegment;
+}) {
+  const { names, overflow } = barNames(row, maxNames, leadOnly, segment);
+  return (
+    <span className="display-bar-names">
+      {row.guests === null ? `${row.label} · ${row.guestCount}` : names.join(", ")}
+      {overflow > 0 && <span className="display-bar-overflow"> +{overflow}</span>}
+    </span>
+  );
 }
 
 export function windowDatesOf(state: DisplayState): string[] {
@@ -260,11 +307,12 @@ export function ArrivalsBoard({
             )}
             <div className="display-board-lanes">
               {group.rows.flatMap((row) => {
-                const { names, overflow } = barNames(row, maxNames, leadOnly);
                 const grouped = row.guests === null;
                 // One bar per contiguous run of the row's nights (#2735), so a
                 // stay with a gap in it leaves a visible hole rather than
-                // claiming a bed on a night nobody booked.
+                // claiming a bed on a night nobody booked. Names are resolved
+                // per bar, not once per row: two people in one booking can hold
+                // different runs, and each bar names only that run's occupants.
                 return computeBarSegments(row, windowDates).map((layout, segmentIndex) => (
                   <div
                     key={`${row.key}-${segmentIndex}`}
@@ -279,12 +327,12 @@ export function ArrivalsBoard({
                       gridColumnEnd: `span ${layout.spanColumns}`,
                     }}
                   >
-                    <span className="display-bar-names">
-                      {grouped ? `${row.label} · ${row.guestCount}` : names.join(", ")}
-                      {overflow > 0 && (
-                        <span className="display-bar-overflow"> +{overflow}</span>
-                      )}
-                    </span>
+                    <BarNamesLabel
+                      row={row}
+                      maxNames={maxNames}
+                      leadOnly={leadOnly}
+                      segment={layout}
+                    />
                     {/* #2621: the expected arrival time, for tonight's (or a
                         later window day's) arrivals. Three conditions, and this
                         module enforces all three itself rather than trusting the

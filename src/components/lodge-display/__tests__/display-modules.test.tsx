@@ -291,6 +291,47 @@ describe("bar names overflow (AC2)", () => {
     expect(result.names).toEqual(["A X"]);
     expect(result.overflow).toBe(6);
   });
+
+  it("names only the guests in the bar's own run of nights (#2735)", () => {
+    // One booking, one room, two people who are never here at the same time.
+    // The row's night union is {13, 15}, so it draws two bars — and each bar
+    // now carries its own check-out, so naming the whole row on both would
+    // attach "out Tue 14" to someone whose bed is on the 15th.
+    const split = row({
+      guests: [
+        { label: "Ari A", stayStart: "2026-04-13", stayEnd: "2026-04-14", nights: ["2026-04-13"] },
+        { label: "Bex B", stayStart: "2026-04-15", stayEnd: "2026-04-16", nights: ["2026-04-15"] },
+      ],
+      guestCount: 2,
+      stayStart: "2026-04-13",
+      stayEnd: "2026-04-16",
+      nights: ["2026-04-13", "2026-04-15"],
+    });
+    expect(barNames(split, 5, false, { stayStart: "2026-04-13", stayEnd: "2026-04-14" }).names)
+      .toEqual(["Ari A"]);
+    expect(barNames(split, 5, false, { stayStart: "2026-04-15", stayEnd: "2026-04-16" }).names)
+      .toEqual(["Bex B"]);
+    // No segment given → the whole row, exactly as before.
+    expect(barNames(split, 5).names).toEqual(["Ari A", "Bex B"]);
+  });
+
+  it("ArrivalsBoard labels each bar of a split row with only that run's people (#2735)", () => {
+    const split = row({
+      guests: [
+        { label: "Ari A", stayStart: "2026-04-13", stayEnd: "2026-04-14", nights: ["2026-04-13"] },
+        { label: "Bex B", stayStart: "2026-04-15", stayEnd: "2026-04-16", nights: ["2026-04-15"] },
+      ],
+      guestCount: 2,
+      stayStart: "2026-04-13",
+      stayEnd: "2026-04-16",
+      nights: ["2026-04-13", "2026-04-15"],
+    });
+    const { container } = render(<ArrivalsBoard state={state({ bookings: [split] })} />);
+    const bars = Array.from(container.querySelectorAll(".display-bar")) as HTMLElement[];
+    expect(bars).toHaveLength(2);
+    expect(bars[0].querySelector(".display-bar-names")?.textContent).toBe("Ari A");
+    expect(bars[1].querySelector(".display-bar-names")?.textContent).toBe("Bex B");
+  });
 });
 
 describe("ArrivalsBoard name-style option (A2)", () => {
@@ -640,6 +681,65 @@ describe("OccupancyGrid / WelcomePanel (whole-lodge treatment, AC3/AC5)", () => 
     const rooms = container.querySelectorAll(".display-board-room");
     expect(rooms[1].hasAttribute("data-live")).toBe(true);
     expect(rooms[0].hasAttribute("data-live")).toBe(false);
+  });
+
+  // A whole-lodge row is NOT guaranteed contiguous. The explicit hold flag is,
+  // but `wholeLodge` is also set by the sole-occupancy heuristic — sole on every
+  // night the booking covers — which never looks at the nights in between. A
+  // group alone on the 13th and the 15th but not the 14th satisfies it, and the
+  // envelope spans all three days.
+  const gappyBlockout = row({
+    key: "row-wl-gap",
+    wholeLodge: true,
+    label: "Harakeke College",
+    guests: null,
+    guestCount: 14,
+    roomId: null,
+    stayStart: "2026-04-13",
+    stayEnd: "2026-04-16",
+    nights: ["2026-04-13", "2026-04-15"],
+  });
+
+  it("statement variant leaves a gapped hold's free night unblocked (#2735)", () => {
+    const { container } = render(
+      <OccupancyGrid state={state({ bookings: [gappyBlockout] })} />
+    );
+    const blocked = Array.from(
+      container.querySelectorAll(".display-week-bar > span")
+    ).map((bar) => bar.hasAttribute("data-blocked"));
+    // The 14th is nobody's night — the strip must not paint "whole lodge
+    // booked" over a day whose own count reads 0.
+    expect(blocked).toEqual([true, false, true]);
+  });
+
+  it("board variant draws one block per run of a gapped hold, kicker on the first (#2735)", () => {
+    const withRooms = state({
+      rooms: [{ id: "room-1", name: "A - Kea" }],
+      bookings: [gappyBlockout],
+    });
+    const { container } = render(<OccupancyGrid state={withRooms} />);
+    const blocks = Array.from(
+      container.querySelectorAll(".display-blockout-panel")
+    ) as HTMLElement[];
+    expect(blocks).toHaveLength(2);
+    expect(blocks[0].style.gridColumnStart).toBe("2"); // the 13th
+    expect(blocks[0].style.gridColumnEnd).toBe("span 1");
+    expect(blocks[1].style.gridColumnStart).toBe("4"); // the 15th
+    expect(blocks[1].style.gridColumnEnd).toBe("span 1");
+    // One panel per blockout: the kicker, label, headcount and dates are
+    // printed once, on the first block, and the resumption is bare.
+    expect(container.querySelectorAll(".display-blockout-kicker")).toHaveLength(1);
+    expect(blocks[1].textContent).toBe("");
+    expect(blocks[1].getAttribute("data-continuation")).toBe("true");
+  });
+
+  it("welcome counts the nights a gapped hold really holds, not the envelope (#2735)", () => {
+    const { container } = render(
+      <WelcomePanel state={state({ bookings: [gappyBlockout] })} />
+    );
+    // 13 → 16 is a three-day envelope over two booked nights.
+    expect(container.textContent).toContain("· 2 nights");
+    expect(container.textContent).not.toContain("· 3 nights");
   });
 });
 

@@ -39,8 +39,18 @@ export function shiftDateOnly(date: string, days: number): string {
   return day.toISOString().slice(0, 10);
 }
 
+/** A status plus the run of nights it was read from. */
+export interface StaySegment {
+  status: StayStatus;
+  /** This segment's own first night. */
+  stayStart: string;
+  /** This segment's own check-out morning — the day after its last night. */
+  stayEnd: string;
+}
+
 /**
- * Classify a stay on one window date `date`.
+ * Classify a stay on one window date `date`, AND return the run of nights that
+ * classification came from.
  *
  * A stay occupies the MORNING half of `date` when night `date - 1` is one of
  * its nights, and the EVENING half when night `date` is (INV-DATE-004). The
@@ -56,26 +66,58 @@ export function shiftDateOnly(date: string, days: number): string {
  * `departing` on the 11th and `arriving` again on the 12th, instead of reading
  * as one unbroken stay that leaves only once.
  *
+ * THE SEGMENT IS RETURNED WITH THE STATUS, not derived separately, because the
+ * two have to agree. A panel that classified per segment while labelling with
+ * the row's overall check-out printed "Leaving today · Gappy G · Mon 13 – Thu
+ * 16" — a check-out three days after the day it says they leave — and one
+ * look-ahead panel said "→ Thu 16" in the 13th's column and "leaves" in the
+ * 14th's. Every board that prints dates beside the status labels from
+ * `stayStart`/`stayEnd` HERE: `Mon 13 – Tue 14` on the 14th, `Wed 15 – Thu 16`
+ * when they come back.
+ *
+ * Which run: the one containing night `date` when they sleep here tonight,
+ * otherwise the one ending on night `date - 1`. Those are the same run whenever
+ * both are booked, because a run is contiguous by construction — so there is
+ * never a choice to make.
+ *
  * When `nights` is absent the same rule is evaluated against the half-open
- * envelope `[stayStart, stayEnd)`, which is the classification this function
- * has always made: evening-only is `stayStart` and nothing else, morning-only
- * is `stayEnd` and nothing else, and both is strictly between them. So the two
- * branches agree on every contiguous stay and differ only where an envelope
- * cannot say what a night set can.
+ * envelope `[stayStart, stayEnd)`, and the whole envelope is returned as the
+ * segment. That is the classification this has always made — evening-only is
+ * `stayStart` and nothing else, morning-only is `stayEnd` and nothing else, and
+ * both is strictly between them — so the two branches agree on every contiguous
+ * stay and differ only where an envelope cannot say what a night set can. Same
+ * fallback shape as `computeBarSegments`, and for the same reason: every row the
+ * serialiser emits carries its nights, so it is for direct unit tests and for a
+ * payload served by an older deploy.
  */
-export function stayStatusOn(
+export function staySegmentOn(
   stay: { stayStart: string; stayEnd: string; nights?: readonly string[] },
   date: string
-): StayStatus | null {
+): StaySegment | null {
   if (stay.nights) {
-    const evening = stay.nights.includes(date);
-    const morning = stay.nights.includes(shiftDateOnly(date, -1));
-    if (evening) return morning ? "staying" : "arriving";
-    return morning ? "departing" : null;
+    const nights = new Set(stay.nights);
+    const previous = shiftDateOnly(date, -1);
+    const evening = nights.has(date);
+    const morning = nights.has(previous);
+    if (!evening && !morning) return null;
+    // Walk out from the night we matched to the ends of its contiguous run.
+    const anchor = evening ? date : previous;
+    let first = anchor;
+    while (nights.has(shiftDateOnly(first, -1))) first = shiftDateOnly(first, -1);
+    let last = anchor;
+    while (nights.has(shiftDateOnly(last, 1))) last = shiftDateOnly(last, 1);
+    return {
+      status: evening ? (morning ? "staying" : "arriving") : "departing",
+      stayStart: first,
+      stayEnd: shiftDateOnly(last, 1),
+    };
   }
-  if (stay.stayStart === date) return "arriving";
-  if (stay.stayEnd === date) return "departing";
-  if (stay.stayStart < date && stay.stayEnd > date) return "staying";
+  const envelope = { stayStart: stay.stayStart, stayEnd: stay.stayEnd };
+  if (stay.stayStart === date) return { status: "arriving", ...envelope };
+  if (stay.stayEnd === date) return { status: "departing", ...envelope };
+  if (stay.stayStart < date && stay.stayEnd > date) {
+    return { status: "staying", ...envelope };
+  }
   return null;
 }
 

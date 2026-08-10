@@ -299,13 +299,108 @@ describe("a stay with a gap, per segment (#2735)", () => {
     nights: ["2026-04-13", "2026-04-15"],
   });
 
+  // The wall as it stands on the GAP MORNING itself — window.start = the 14th.
+  // This is the day the three tonight/look-ahead panels get wrong if they read
+  // the envelope, so it is where their assertions have to be made.
+  const onGapMorning = (overrides: Partial<DisplayState>) =>
+    state({
+      window: { start: "2026-04-14", days: 3 },
+      occupancy: ["2026-04-14", "2026-04-15", "2026-04-16"].map((date) => ({
+        date,
+        arriving: 0,
+        departing: 0,
+        staying: 0,
+      })),
+      ...overrides,
+    });
+
+  it("RoomCards: on the gap morning they are LEAVING, not staying", () => {
+    // Contiguous parity is the case below; this is the one that fails without
+    // the night-set branch, because the envelope says "staying" all week.
+    const { container } = render(
+      <RoomCards
+        state={onGapMorning({ rooms: [{ id: "r1", name: "Kea" }], bookings: [gapRow] })}
+      />
+    );
+    expect(
+      statusOf(container as unknown as HTMLElement, "Gappy G", "display-room-dot")
+    ).toBe("departing");
+    expect(container.querySelector(".display-room-span")?.textContent).toBe(
+      "leaves today"
+    );
+  });
+
+  it("RoomCards: on their return night the card names THAT segment's span, not the whole envelope", () => {
+    const { container } = render(
+      <RoomCards
+        state={state({
+          window: { start: "2026-04-15", days: 1 },
+          occupancy: [{ date: "2026-04-15", arriving: 0, departing: 0, staying: 1 }],
+          rooms: [{ id: "r1", name: "Kea" }],
+          bookings: [gapRow],
+        })}
+      />
+    );
+    // The second segment is 15 → 16. The envelope is 13 → 16, so an envelope
+    // label would start the stay two days before they came back.
+    expect(container.querySelector(".display-room-span")?.textContent).toBe(
+      "Wed 15 – Thu 16"
+    );
+  });
+
   it("RoomCards: tonight they are arriving, exactly as an ordinary first night", () => {
+    // Contiguous-parity check: on the FIRST night the night model and the
+    // envelope agree, and this asserts the fix did not disturb that.
     const { container } = render(
       <RoomCards state={state({ rooms: [{ id: "r1", name: "Kea" }], bookings: [gapRow] })} />
     );
     expect(
       statusOf(container as unknown as HTMLElement, "Gappy G", "display-room-dot")
     ).toBe("arriving");
+    // …and the span is the FIRST segment, 13 → 14 — not the 13 → 16 envelope,
+    // which would promise a bed on the 14th that nobody booked.
+    expect(container.querySelector(".display-room-span")?.textContent).toBe(
+      "Mon 13 – Tue 14"
+    );
+  });
+
+  it("StatusBoard: on the gap morning they are under Leaving today, with THAT segment's dates", () => {
+    const { container } = render(
+      <StatusBoard state={onGapMorning({ bookings: [gapRow] })} />
+    );
+    const departing = container.querySelector(
+      '.display-status-group[data-status="departing"]'
+    ) as HTMLElement;
+    expect(within(departing).getByText("Gappy G")).toBeDefined();
+    // "Leaving today · Gappy G · Mon 13 – Thu 16" was the contradiction: a
+    // check-out two days after the day it says they leave.
+    expect(departing.querySelector(".display-status-span")?.textContent).toBe(
+      "Mon 13 – Tue 14"
+    );
+  });
+
+  it("StatusBoard: on the first night the check-out is this segment's, not the envelope's", () => {
+    const { container } = render(<StatusBoard state={state({ bookings: [gapRow] })} />);
+    const arriving = container.querySelector(
+      '.display-status-group[data-status="arriving"]'
+    ) as HTMLElement;
+    expect(arriving.querySelector(".display-status-span")?.textContent).toBe(
+      "→ Tue 14"
+    );
+  });
+
+  it("NightColumns: each column's check-out is its own segment's", () => {
+    const { container } = render(
+      <NightColumns state={state({ bookings: [gapRow] })} />
+    );
+    const spans = Array.from(
+      container.querySelectorAll(".display-night-col")
+    ).map(
+      (column) => column.querySelector(".display-night-span")?.textContent ?? null
+    );
+    // One panel used to say "→ Thu 16" in the 13th's column and "leaves" in the
+    // 14th's — contradicting itself about whether the bed was taken.
+    expect(spans).toEqual(["→ Tue 14", "leaves", "→ Thu 16"]);
   });
 
   it("NightColumns: they leave on the gap morning and arrive again on their return night", () => {
