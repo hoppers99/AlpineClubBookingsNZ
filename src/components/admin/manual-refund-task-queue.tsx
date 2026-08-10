@@ -37,6 +37,97 @@ interface ManualRefundTask {
 }
 
 /**
+ * A refund the club never decided: a payment landed on a booking that had
+ * already been deleted, and Stripe handed it straight back (#2750).
+ */
+interface AutoRefundedNotice {
+  id: string;
+  bookingId: string;
+  amountCents: number;
+  reason: string;
+  note: string | null;
+  refundedAt: string | null;
+  memberName: string;
+  checkIn: string;
+  checkOut: string;
+}
+
+/**
+ * The read-only record of a refund nobody authorised (#2750).
+ *
+ * Deliberately buttonless. There is no decision left on these rows — Stripe
+ * returned the money before anybody saw the capture — and a control here would
+ * imply otherwise. What it does carry is the one thing an operator needs if the
+ * deletion, not the payment, was the mistake: that the refund has already gone
+ * out, so putting the booking back means charging the member again.
+ *
+ * A separate component from the queue above because it is a different claim
+ * about the world, and mixing "you owe this member money" rows with "this money
+ * has already gone back" rows in one list is how somebody pays a refund twice.
+ */
+function AutomaticRefundNoticesCard({
+  notices,
+}: {
+  notices: AutoRefundedNotice[];
+}) {
+  return (
+    <Card data-testid="automatic-refund-notices">
+      <CardHeader>
+        <CardTitle className="text-base">
+          Refunded automatically — nothing to pay back ({notices.length})
+        </CardTitle>
+      </CardHeader>
+      <CardContent className="space-y-3">
+        <p className="text-sm text-muted-foreground">
+          A payment for a booking change arrived after the booking had already
+          been deleted. Stripe returned the money to the member straight away, so
+          there is nothing for you to pay back and nothing to close here. This
+          card is here so somebody sees it happened: if deleting the booking was
+          the mistake rather than the payment, the booking has to be made again
+          and the member charged again — the refund has already gone out.
+        </p>
+        <ul className="space-y-3">
+          {notices.map((notice) => (
+            <li
+              key={notice.id}
+              className="space-y-1 rounded-md border border-border px-3 py-2 text-sm"
+            >
+              <p className="font-medium text-foreground">
+                {notice.memberName} — {formatCents(notice.amountCents)} refunded
+                {notice.refundedAt
+                  ? ` on ${formatNZDate(new Date(notice.refundedAt))}`
+                  : ""}
+              </p>
+              <p className="text-muted-foreground">
+                {formatNZDate(new Date(notice.checkIn))} to{" "}
+                {formatNZDate(new Date(notice.checkOut))} ·{" "}
+                <Link
+                  className="underline"
+                  href={`/bookings/${notice.bookingId}`}
+                >
+                  View booking
+                </Link>
+              </p>
+              {/*
+                Both sentences, not one. The reason names the situation that
+                produced the payment; the note says that Stripe already handed
+                the money back. An operator reading only the reason — which asks
+                them to decide whether to refund — would think the decision is
+                still theirs.
+              */}
+              <p className="text-xs text-muted-foreground">{notice.reason}</p>
+              {notice.note ? (
+                <p className="text-xs text-muted-foreground">{notice.note}</p>
+              ) : null}
+            </li>
+          ))}
+        </ul>
+      </CardContent>
+    </Card>
+  );
+}
+
+/**
  * B5 (#2262): the cash hand-back queue.
  *
  * A cancelled booking that was settled in cash (or by an off-Xero bank
@@ -45,10 +136,28 @@ interface ManualRefundTask {
  * "Paid back" writes the refund allocation and the REFUNDED booking event —
  * that is the moment the ledger says the money went back — and "dismiss"
  * (which requires a note) closes it without moving anything.
+ *
+ * TWO CARDS SINCE #2750, and only the first is a queue. The second is the
+ * operator surface for a refund nobody authorised: when a modification payment
+ * is captured against a booking the club has already deleted, the Stripe webhook
+ * has refunded it in full since #1350, and #2700 made that leave a
+ * `ManualRefundTask` behind — which the webhook then closes itself, because
+ * there is genuinely nothing left to pay back by hand. Closing it took it off
+ * this screen, since the queue lists OPEN rows, so the one durable record of the
+ * money movement was visible only to somebody who thought to query the table.
+ *
+ * The decision #2750 recorded is that the automatic refund STAYS: money going
+ * back to the member is the safe direction when nobody is watching. What it adds
+ * is that the record is seen. That is why the second card carries no buttons —
+ * there is no action, and offering one would imply the refund is still open to
+ * decide. What an operator does with it is off-screen work: if the DELETION was
+ * the mistake rather than the payment, the booking has to be put back and the
+ * member charged again, and the card says so in those words.
  */
 export function ManualRefundTaskQueue() {
   const canEdit = useAdminAreaEditAccess("finance");
   const [tasks, setTasks] = useState<ManualRefundTask[] | null>(null);
+  const [autoRefunded, setAutoRefunded] = useState<AutoRefundedNotice[]>([]);
   const [target, setTarget] = useState<
     null | { task: ManualRefundTask; resolution: "completed" | "dismissed" }
   >(null);
@@ -87,12 +196,18 @@ export function ManualRefundTaskQueue() {
       const response = await fetch("/api/admin/payments/manual-refund-tasks");
       if (!response.ok) {
         setTasks([]);
+        setAutoRefunded([]);
         return;
       }
-      const data = (await response.json()) as { tasks: ManualRefundTask[] };
+      const data = (await response.json()) as {
+        tasks: ManualRefundTask[];
+        autoRefunded?: AutoRefundedNotice[];
+      };
       setTasks(data.tasks ?? []);
+      setAutoRefunded(data.autoRefunded ?? []);
     } catch {
       setTasks([]);
+      setAutoRefunded([]);
     }
   }, []);
 
@@ -158,171 +273,186 @@ export function ManualRefundTaskQueue() {
     }
   }
 
-  if (tasks !== null && tasks.length === 0) return null;
+  /*
+    The hand-back queue keeps its original behaviour exactly: it shows while the
+    load is still in flight (`tasks === null`) and disappears once the load says
+    there is nothing to pay back. The automatic-refund card is independent — one
+    can be present without the other, and when both are empty this component
+    still renders nothing at all.
+  */
+  const showQueue = tasks === null || tasks.length > 0;
+  if (!showQueue && autoRefunded.length === 0) return null;
 
   return (
-    <Card data-testid="manual-refund-task-queue">
-      <CardHeader>
-        <CardTitle className="text-base">
-          Refunds to pay back by hand
-          {tasks ? ` (${tasks.length})` : ""}
-        </CardTitle>
-      </CardHeader>
-      <CardContent className="space-y-3">
-        <p className="text-sm text-muted-foreground">
-          These bookings were paid in cash or by a bank transfer that never
-          reached Xero, and have since been cancelled. There is no card payment
-          to reverse, so the club has to pay the member back directly. Mark a
-          refund as paid back once the money has actually gone — that is when
-          the ledger records it.
-        </p>
-        {tasks === null ? (
-          <p className="text-sm text-muted-foreground">Loading…</p>
-        ) : (
-          <ul className="space-y-3">
-            {tasks.map((task) => (
-              <li
-                key={task.id}
-                className="flex flex-wrap items-start justify-between gap-3 rounded-md border border-border px-3 py-2"
-              >
-                <div className="space-y-1 text-sm">
-                  <p className="font-medium text-foreground">
-                    {task.memberName} — {formatCents(task.amountCents)}
-                  </p>
-                  <p className="text-muted-foreground">
-                    {formatNZDate(new Date(task.checkIn))} to{" "}
-                    {formatNZDate(new Date(task.checkOut))} ·{" "}
-                    <Link
-                      className="underline"
-                      href={`/bookings/${task.bookingId}`}
-                    >
-                      View booking
-                    </Link>
-                  </p>
-                  <p className="text-xs text-muted-foreground">{task.reason}</p>
-                </div>
-                <div className="flex gap-2">
-                  <ViewOnlyActionButton
-                    canEdit={canEdit}
-                    type="button"
-                    variant="outline"
-                    onClick={() => {
-                      setNote("");
-                      setUnverified(null);
-                      setTarget({ task, resolution: "completed" });
-                    }}
+    <div className="space-y-6">
+      {showQueue ? (
+        <Card data-testid="manual-refund-task-queue">
+          <CardHeader>
+            <CardTitle className="text-base">
+              Refunds to pay back by hand
+              {tasks ? ` (${tasks.length})` : ""}
+            </CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-3">
+            <p className="text-sm text-muted-foreground">
+              These bookings were paid in cash or by a bank transfer that never
+              reached Xero, and have since been cancelled. There is no card payment
+              to reverse, so the club has to pay the member back directly. Mark a
+              refund as paid back once the money has actually gone — that is when
+              the ledger records it.
+            </p>
+            {tasks === null ? (
+              <p className="text-sm text-muted-foreground">Loading…</p>
+            ) : (
+              <ul className="space-y-3">
+                {tasks.map((task) => (
+                  <li
+                    key={task.id}
+                    className="flex flex-wrap items-start justify-between gap-3 rounded-md border border-border px-3 py-2"
                   >
-                    Mark paid back
-                  </ViewOnlyActionButton>
-                  <ViewOnlyActionButton
-                    canEdit={canEdit}
-                    type="button"
-                    variant="ghost"
-                    onClick={() => {
-                      setNote("");
-                      setUnverified(null);
-                      setTarget({ task, resolution: "dismissed" });
-                    }}
-                  >
-                    Dismiss
-                  </ViewOnlyActionButton>
-                </div>
-              </li>
-            ))}
-          </ul>
-        )}
-      </CardContent>
+                    <div className="space-y-1 text-sm">
+                      <p className="font-medium text-foreground">
+                        {task.memberName} — {formatCents(task.amountCents)}
+                      </p>
+                      <p className="text-muted-foreground">
+                        {formatNZDate(new Date(task.checkIn))} to{" "}
+                        {formatNZDate(new Date(task.checkOut))} ·{" "}
+                        <Link
+                          className="underline"
+                          href={`/bookings/${task.bookingId}`}
+                        >
+                          View booking
+                        </Link>
+                      </p>
+                      <p className="text-xs text-muted-foreground">{task.reason}</p>
+                    </div>
+                    <div className="flex gap-2">
+                      <ViewOnlyActionButton
+                        canEdit={canEdit}
+                        type="button"
+                        variant="outline"
+                        onClick={() => {
+                          setNote("");
+                          setUnverified(null);
+                          setTarget({ task, resolution: "completed" });
+                        }}
+                      >
+                        Mark paid back
+                      </ViewOnlyActionButton>
+                      <ViewOnlyActionButton
+                        canEdit={canEdit}
+                        type="button"
+                        variant="ghost"
+                        onClick={() => {
+                          setNote("");
+                          setUnverified(null);
+                          setTarget({ task, resolution: "dismissed" });
+                        }}
+                      >
+                        Dismiss
+                      </ViewOnlyActionButton>
+                    </div>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </CardContent>
 
-      <Dialog
-        open={target !== null}
-        onOpenChange={(open) => {
-          // The notice belongs to the attempt that produced it; a stale one
-          // over the next task would read as that task's outcome.
-          if (!open) {
-            setTarget(null);
-            setUnverified(null);
-          }
-        }}
-      >
-        <DialogContent>
-          {target && (
-            <>
-              <DialogHeader>
-                <DialogTitle>
-                  {target.resolution === "completed"
-                    ? `Record ${formatCents(target.task.amountCents)} as paid back to ${target.task.memberName}?`
-                    : `Dismiss the refund for ${target.task.memberName}?`}
-                </DialogTitle>
-                <DialogDescription>
-                  {target.resolution === "completed"
-                    ? "Only do this once the money has actually gone back to the member. It writes the refund into the payment ledger and records a refund on the booking's history."
-                    : "Dismissing closes the task without refunding anything — for a member who declined the refund, or money settled another way. Say which, so the record makes sense later."}
-                </DialogDescription>
-              </DialogHeader>
-              <div className="space-y-2">
-                <Label htmlFor="manual-refund-task-note">
-                  Note{target.resolution === "dismissed" ? " (required)" : " (optional)"}
-                </Label>
-                <Textarea
-                  id="manual-refund-task-note"
-                  value={note}
-                  maxLength={NOTE_MAX_LENGTH}
-                  onChange={(event) => setNote(event.target.value)}
-                  {...noteHint.fieldProps}
-                />
-                <FieldHint {...noteHint.hintProps}>
-                  {target.resolution === "completed"
-                    ? "e.g. cash handed back at the lodge"
-                    : "e.g. member asked us to keep it as a donation"}
-                </FieldHint>
-              </div>
-              {/*
-                #2668 SF-5. The house recovery alert (`focused-action-error.tsx`,
-                #2597 / #2635): permanently mounted so the live region exists
-                before it has anything to say — one injected already-populated is
-                silently dropped by some screen-reader/browser pairings —
-                assertive, and it takes focus when the message arrives, which is
-                what keeps the operator from being dropped to `<body>` as the
-                button they just pressed is disabled behind it.
-              */}
-              <FocusedActionError
-                id="manual-refund-unverified-notice"
-                error={unverified ?? ""}
-                attentionKey={unverifiedAttention}
-              />
-              <DialogFooter className="gap-2 sm:gap-2">
-                {/*
-                  After an unread outcome "Cancel" would itself be a claim —
-                  there may be nothing left to cancel — so the way out is named
-                  for what it does.
-                */}
-                <Button
-                  variant="ghost"
-                  onClick={() => {
-                    setTarget(null);
-                    setUnverified(null);
-                  }}
-                  disabled={submitting}
-                >
-                  {unverified ? "Close and check" : "Cancel"}
-                </Button>
-                <Button
-                  onClick={submit}
-                  disabled={
-                    submitting ||
-                    unverified !== null ||
-                    (target.resolution === "dismissed" && note.trim().length === 0)
-                  }
-                >
-                  {target.resolution === "completed"
-                    ? "Record as paid back"
-                    : "Dismiss refund"}
-                </Button>
-              </DialogFooter>
-            </>
-          )}
-        </DialogContent>
-      </Dialog>
-    </Card>
+          <Dialog
+            open={target !== null}
+            onOpenChange={(open) => {
+              // The notice belongs to the attempt that produced it; a stale one
+              // over the next task would read as that task's outcome.
+              if (!open) {
+                setTarget(null);
+                setUnverified(null);
+              }
+            }}
+          >
+            <DialogContent>
+              {target && (
+                <>
+                  <DialogHeader>
+                    <DialogTitle>
+                      {target.resolution === "completed"
+                        ? `Record ${formatCents(target.task.amountCents)} as paid back to ${target.task.memberName}?`
+                        : `Dismiss the refund for ${target.task.memberName}?`}
+                    </DialogTitle>
+                    <DialogDescription>
+                      {target.resolution === "completed"
+                        ? "Only do this once the money has actually gone back to the member. It writes the refund into the payment ledger and records a refund on the booking's history."
+                        : "Dismissing closes the task without refunding anything — for a member who declined the refund, or money settled another way. Say which, so the record makes sense later."}
+                    </DialogDescription>
+                  </DialogHeader>
+                  <div className="space-y-2">
+                    <Label htmlFor="manual-refund-task-note">
+                      Note{target.resolution === "dismissed" ? " (required)" : " (optional)"}
+                    </Label>
+                    <Textarea
+                      id="manual-refund-task-note"
+                      value={note}
+                      maxLength={NOTE_MAX_LENGTH}
+                      onChange={(event) => setNote(event.target.value)}
+                      {...noteHint.fieldProps}
+                    />
+                    <FieldHint {...noteHint.hintProps}>
+                      {target.resolution === "completed"
+                        ? "e.g. cash handed back at the lodge"
+                        : "e.g. member asked us to keep it as a donation"}
+                    </FieldHint>
+                  </div>
+                  {/*
+                    #2668 SF-5. The house recovery alert (`focused-action-error.tsx`,
+                    #2597 / #2635): permanently mounted so the live region exists
+                    before it has anything to say — one injected already-populated is
+                    silently dropped by some screen-reader/browser pairings —
+                    assertive, and it takes focus when the message arrives, which is
+                    what keeps the operator from being dropped to `<body>` as the
+                    button they just pressed is disabled behind it.
+                  */}
+                  <FocusedActionError
+                    id="manual-refund-unverified-notice"
+                    error={unverified ?? ""}
+                    attentionKey={unverifiedAttention}
+                  />
+                  <DialogFooter className="gap-2 sm:gap-2">
+                    {/*
+                      After an unread outcome "Cancel" would itself be a claim —
+                      there may be nothing left to cancel — so the way out is named
+                      for what it does.
+                    */}
+                    <Button
+                      variant="ghost"
+                      onClick={() => {
+                        setTarget(null);
+                        setUnverified(null);
+                      }}
+                      disabled={submitting}
+                    >
+                      {unverified ? "Close and check" : "Cancel"}
+                    </Button>
+                    <Button
+                      onClick={submit}
+                      disabled={
+                        submitting ||
+                        unverified !== null ||
+                        (target.resolution === "dismissed" && note.trim().length === 0)
+                      }
+                    >
+                      {target.resolution === "completed"
+                        ? "Record as paid back"
+                        : "Dismiss refund"}
+                    </Button>
+                  </DialogFooter>
+                </>
+              )}
+            </DialogContent>
+          </Dialog>
+        </Card>
+      ) : null}
+      {autoRefunded.length > 0 ? (
+        <AutomaticRefundNoticesCard notices={autoRefunded} />
+      ) : null}
+    </div>
   );
 }
