@@ -100,24 +100,23 @@ derivation).
   both the admin roster service and the kiosk generate route; roster-confirm
   validation and both chore-cleanup paths read the same helpers (D-M6), and the
   arriving/departing labels are derived from the night set on the operational
-  date. **The sparse fix applies per converted surface, not globally.**
-  `getLodgeVisibleGuestsForDate` survives as a deprecated wrapper carrying the
-  LEGACY lodge-date meaning unchanged: `includeDepartureDate: false` is the
-  night model, and `includeDepartureDate: true` admits the guest's own nights
-  plus the single morning after their FINAL listed night (or, for an
-  envelope-only guest, the closed range `[stayStart, stayEnd]`). It is
-  deliberately NOT `getOperationallyPresentGuestsForDay`: the lobby wall
-  (fenced, below) derives its night counts by subtracting only the envelope end
-  from that list, so per-segment presence there would count a sparse stay's gap
-  morning as a phantom night and put guest names on a public screen. A source
-  contract freezes both the legacy semantics and the wrapper's remaining caller
-  list. #2631 converted the two kiosk read surfaces that used to call it
-  (`api/lodge/week` and `api/lodge/guests/[date]`) onto the named operational-day
-  helpers, so `lodge-display-state` — the lobby wall — is now its **only**
-  caller, and a PERMANENT one rather than a pending migration: nobody is to
-  "finish the job" by pointing it at the operational day, for the privacy reason
-  above (issue #58). The same statement lives beside the code in
-  `booking-guest-stay-ranges.ts`. No surface may grow a second call.
+  date. **Every read surface is now converted.**
+  `getLodgeVisibleGuestsForDate` survives as a deprecated wrapper that DEFINES
+  NOTHING: since #2735 both of its branches are a straight delegation, with
+  `includeDepartureDate: false` the night model and `includeDepartureDate: true`
+  `isGuestOperationallyPresentOnDay`. It exists only so the lobby wall keeps a
+  single named entry point that a source contract can fence. It carried the
+  LEGACY lodge-date meaning until #2735 — the guest's own nights plus the single
+  morning after their FINAL listed night — and #2622 and #2628 both refused to
+  widen it, because the lobby wall (fenced, below) derived its night counts from
+  that list and a per-segment gap morning would have become a phantom night on a
+  public screen (issue #58). #2735 removed that coupling FIRST and widened the
+  predicate second; see [INV-DATE-023], which is the standing rule that keeps
+  them apart. A source contract freezes the wrapper's caller list. #2631
+  converted the two kiosk read surfaces that used to call it (`api/lodge/week`
+  and `api/lodge/guests/[date]`) onto the named operational-day helpers, so
+  `lodge-display-state` — the lobby wall — is its **only** caller. No surface may
+  grow a second call.
 
 ### INV-DATE-020
 
@@ -237,12 +236,52 @@ derivation).
 
 ### INV-DATE-006
 
-- **The lobby wall is deliberately mixed and stays fenced** (issue #58): its
-  guest-name privacy gate (sole-occupancy detection) uses NIGHT counts while
-  its visibility rows are checkout-inclusive. It keeps its own code path
-  (`src/lib/lodge-display-state.ts`) and is never unified onto either helper
-  family — widening its night counts would put guest names on an
-  unauthenticated public screen during back-to-back handovers.
+- **The lobby wall is deliberately mixed and stays fenced** (issue #58): it asks
+  BOTH models, each for its own job, and keeps its own code path
+  (`src/lib/lodge-display-state.ts`). Its guest-name privacy gate
+  (sole-occupancy detection) is a NIGHT count. Everything a viewer reads — who
+  is listed, the arriving/departing/staying counters, the bars — is the
+  OPERATIONAL DAY, so a guest is shown on every morning they leave, including a
+  mid-stay one, and their bar is drawn from their night set with the gap in it
+  (#2735). Being mixed is the point: the two answers are different on a
+  changeover day and each is right for its own question. The fence is that the
+  wall may not be unified onto one family, and that the night count is derived
+  independently of the visible list [INV-DATE-023] — widening its night counts
+  would put guest names on an unauthenticated public screen during back-to-back
+  handovers.
+
+### INV-DATE-023
+
+- **The lobby wall's night count is derived independently of what the wall
+  shows** (#2735). `nightTotals` in `src/lib/lodge-display-state.ts` — the input
+  to sole-occupancy / whole-lodge detection, which is what decides whether an
+  unauthenticated public screen prints guests' names and phone numbers — is
+  taken from the booking's whole guest set through the night model
+  (`getActiveGuestsForNight`), never by filtering, subtracting from or otherwise
+  reading the visible list. It shares no term with the visibility rule in either
+  direction, so no change to who is DISPLAYED can add or remove a night. This
+  ordering is the standing safety rule and not an implementation detail: the
+  wall's visibility predicate could only be widened to per-segment presence
+  because the count had already been decoupled, and anything that couples them
+  again must narrow the predicate back first. A departure morning is never a
+  night (INV-DATE-003), and `lodge-display-state.test.ts` fails on a sparse-stay
+  fixture if one is ever counted as one.
+- **Withholding names and drawing a blockout are separate decisions on that
+  wall** (#2735). The serialiser keeps two sets: `wholeLodgeBookingIds` (the
+  group holds a night INSIDE the window → `DisplayStateBooking.wholeLodge`, the
+  blockout panel, the week strip, the rotating `occupancy:whole-lodge-*`
+  conditions) and `soleOccupancyBookingIds`, a SUPERSET that also covers a group
+  whose only presence in the window is its departure morning. The privacy gate
+  (`namesAllowedForBooking`, and the chore-assignee labels that reuse it) asks
+  the superset; the blockout view asks the narrow set. Being a superset is the
+  safety property — a widening here can only withhold more names. A row that
+  reaches the wall on a departure morning alone must NOT be flagged
+  `wholeLodge`: it holds no night tonight, and a "the lodge is fully booked"
+  statement over an empty lodge is its own kind of wrong. A `wholeLodge` row is
+  also not guaranteed contiguous — the heuristic never inspects the nights
+  between the ones a booking covers — so any DAY span painted from such a row
+  (blockout panel, week strip, night count on the welcome panel) is derived from
+  the row's `nights`, never from its envelope.
 
 ### INV-DATE-007
 

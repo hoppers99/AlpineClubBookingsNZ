@@ -59,7 +59,7 @@ export async function POST(request: Request) {
       action: "BED_ALLOCATION_AUTO_RUN",
       memberId: guard.session.user.id,
       entityType: "BedAllocation",
-      category: "admin",
+      category: "lodge",
       outcome: "success",
       summary: "Bed allocation auto allocation run",
       metadata: { range, createdCount: result.count },

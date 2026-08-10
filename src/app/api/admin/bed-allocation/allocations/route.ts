@@ -91,7 +91,7 @@ export async function POST(request: Request) {
       targetId: allocation.bookingId,
       entityType: "BedAllocation",
       entityId: allocation.id,
-      category: "admin",
+      category: "lodge",
       outcome: "success",
       summary: "Manual bed allocation set",
       metadata: {
@@ -111,7 +111,7 @@ export async function POST(request: Request) {
         targetId: promotedPartner.bookingId,
         entityType: "BedAllocation",
         entityId: promotedPartner.id,
-        category: "admin",
+        category: "lodge",
         outcome: "success",
         summary:
           "Second occupant auto-promoted to primary after the shared double's primary was moved to another bed",

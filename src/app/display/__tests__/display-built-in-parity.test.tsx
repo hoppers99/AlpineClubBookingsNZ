@@ -34,11 +34,19 @@ function everydayState(): import("@/lib/lodge-display-state").DisplayState {
         wholeLodge: false,
         roomId: null,
         guests: [
-          { label: "Jane S", stayStart: "2026-04-13", stayEnd: "2026-04-15" },
+          {
+            label: "Jane S",
+            stayStart: "2026-04-13",
+            stayEnd: "2026-04-15",
+            nights: ["2026-04-13", "2026-04-14"],
+          },
         ],
         guestCount: 1,
         stayStart: "2026-04-13",
         stayEnd: "2026-04-15",
+        // #2735: the expanded envelope, which is what the serialiser emits for
+        // a contiguous stay.
+        nights: ["2026-04-13", "2026-04-14"],
       },
     ],
     occupancy: [

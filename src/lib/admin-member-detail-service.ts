@@ -1419,6 +1419,26 @@ export async function updateAdminMember(params: {
         }
       }
 
+      // `admin`, KEPT PENDING AN OWNER DECISION rather than settled (#2730).
+      //
+      // Read against the owner's rule this is the weakest `admin` left in the
+      // tree, and the comparison is inside the platform: the identical acts
+      // performed from the bulk screen write `account` (`member.bulk-deactivate`
+      // / `-reactivate`) and `security` (`member.bulk-set-role`), and the member's
+      // own edit of the same fields writes `account` (`/api/profile`). So today
+      // the same business act is filed three ways depending on the SCREEN — which
+      // is initiator reasoning wearing a different hat, and `bulk-update/route.ts`
+      // names it as "the exact thing the owner rule forbids".
+      //
+      // It was not moved here because both destinations are MEMBER-VISIBLE
+      // (`MEMBER_VISIBLE_AUDIT_CATEGORIES`), so the move publishes this row on the
+      // subject member's own activity page. That is a widening, and #2730's rule
+      // is that a widening is the owner's to take, not a lane's — it is on the
+      // issue beside the `member_lifecycle.delete_*` and family-suggestion
+      // questions. If it is approved, the fix is the split
+      // `bulk-update/route.ts` already uses: `security` when the change set is
+      // access roles, `account` otherwise, written as two calls with LITERAL
+      // categories (the census contract forbids a conditional category).
       await tx.auditLog.create(
         buildStructuredAuditLogCreateArgs({
           action: auditAction.action,

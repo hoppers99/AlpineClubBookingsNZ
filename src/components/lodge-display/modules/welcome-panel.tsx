@@ -17,9 +17,23 @@ function shortDate(date: string): string {
   return `${DISPLAY_SHORT_WEEKDAY.format(day)} ${day.getUTCDate()}`;
 }
 
-function nightsBetween(start: string, end: string): number {
-  const a = new Date(`${start}T00:00:00Z`).getTime();
-  const b = new Date(`${end}T00:00:00Z`).getTime();
+/**
+ * How many nights the group actually holds (#2735).
+ *
+ * Counted from the row's own night set, not from the envelope: `stayStart` to
+ * `stayEnd` cannot see a gap, so a hold on Monday and Wednesday but not Tuesday
+ * used to be announced as three nights. `nights` is required on the payload; the
+ * envelope difference is the fallback for a row from an older deploy, and it is
+ * the same number for every contiguous stay.
+ */
+function nightsHeld(row: {
+  stayStart: string;
+  stayEnd: string;
+  nights?: readonly string[];
+}): number {
+  if (row.nights) return Math.max(1, row.nights.length);
+  const a = new Date(`${row.stayStart}T00:00:00Z`).getTime();
+  const b = new Date(`${row.stayEnd}T00:00:00Z`).getTime();
   return Math.max(1, Math.round((b - a) / 86_400_000));
 }
 
@@ -52,9 +66,7 @@ export function WelcomePanel({
             <span className="display-tile-key">Staying</span>
             <span className="display-tile-value">
               {shortDate(wholeLodgeRow.stayStart)} → {shortDate(wholeLodgeRow.stayEnd)}{" "}
-              <small>
-                · {nightsBetween(wholeLodgeRow.stayStart, wholeLodgeRow.stayEnd)} nights
-              </small>
+              <small>· {nightsHeld(wholeLodgeRow)} nights</small>
             </span>
           </span>
           {bunksNote && (

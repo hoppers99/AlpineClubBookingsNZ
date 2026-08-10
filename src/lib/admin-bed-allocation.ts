@@ -3104,7 +3104,7 @@ export async function moveBedAllocationsSameDateWithLocksHeld(
         targetId: firstAllocation.bookingId,
         entityType: "BedAllocation",
         entityId: isBulk ? undefined : firstAllocation.id,
-        category: "admin",
+        category: "lodge",
         outcome: "success",
         summary: isBulk
           ? "Bed allocation set across multiple nights"
@@ -3141,7 +3141,7 @@ export async function moveBedAllocationsSameDateWithLocksHeld(
           targetId: promotedPartner.bookingId,
           entityType: "BedAllocation",
           entityId: promotedPartner.id,
-          category: "admin",
+          category: "lodge",
           outcome: "success",
           summary:
             "Second occupant auto-promoted to primary after the shared double's primary was moved to another bed",
@@ -3805,7 +3805,7 @@ async function recordRangeAssignAudit(
       memberId: actorMemberId,
       targetId: result.bookingId,
       entityType: "BedAllocation",
-      category: "admin",
+      category: "lodge",
       outcome: result.applied ? "success" : "failure",
       summary: result.applied
         ? `Bed assigned across ${result.writtenNights.length} night${result.writtenNights.length === 1 ? "" : "s"}${result.partialByConsent ? " (a subset the admin chose)" : ""}`
@@ -3889,7 +3889,7 @@ async function recordRangeAssignAudit(
         memberId: actorMemberId,
         targetId: result.bookingId,
         entityType: "BedAllocation",
-        category: "admin",
+        category: "lodge",
         outcome: "success",
         summary: `${result.promotedPartners.length} second occupant${result.promotedPartners.length === 1 ? "" : "s"} auto-promoted to primary after a range assignment moved the shared double's primary to another bed`,
         details: `Promoted partner bookings: ${searchableBookingIds.join(", ")}${overflow > 0 ? ` (+${overflow} more in metadata.promotions)` : ""}`,
@@ -4460,7 +4460,7 @@ export async function approveBedAllocations(input: ApproveBedAllocationsInput) {
         action: "BED_ALLOCATION_APPROVED",
         memberId: input.approvedByMemberId,
         entityType: "BedAllocation",
-        category: "admin",
+        category: "lodge",
         outcome: "success",
         summary: "Bed allocations approved",
         targetId: input.bookingId,

@@ -46,6 +46,32 @@ export const DISPLAY_RELEVANT_MODULE_KEYS = {
   chores: "chores",
 } as const satisfies Partial<Record<ModuleKey, string>>;
 
+/**
+ * Does this row hold a bed on the lodge night `date`?
+ *
+ * Asked of the row's own night set (#2735). It used to be
+ * `stayStart <= date < stayEnd`, which is the same nights for a contiguous row
+ * and fills the gaps of one that is not: a row whose guests are here Friday and
+ * Monday but not Saturday claimed the lodge on the Saturday. A departure
+ * morning is not a night either way.
+ *
+ * `nights` is REQUIRED on the payload, so the envelope branch is unreachable
+ * from a live serialiser. It is kept because this is the one consumer that
+ * would otherwise THROW on a row without it — a lobby TV polling an instance
+ * still serving the previous deploy's shape would go blank rather than fall
+ * back, and the condition engine takes the whole screen down with it. The two
+ * other `nights` consumers (`computeBarSegments`, `staySegmentOn`) already
+ * degrade this way.
+ */
+function holdsNight(
+  booking: { stayStart: string; stayEnd: string; nights?: readonly string[] },
+  date: string
+): boolean {
+  return booking.nights
+    ? booking.nights.includes(date)
+    : booking.stayStart <= date && date < booking.stayEnd;
+}
+
 /** The window.start ("today") occupancy entry, or null when none is present. */
 function todayOccupancy(state: DisplayState): DisplayState["occupancy"][number] | null {
   return (
@@ -67,14 +93,10 @@ const CORE_CONDITIONS: DisplayConditionDefinition[] = [
     name: "occupancy:whole-lodge-today",
     family: "occupancy",
     description: "A whole-lodge booking occupies the lodge tonight.",
-    // Sole-occupancy on today's NIGHT: today falls on or after the stay start
-    // and strictly before the departure date (departure day is not a night).
+    // Today's NIGHT, from the row's own night set — see `holdsNight` (#2735).
     evaluate: (state) =>
       state.bookings.some(
-        (booking) =>
-          booking.wholeLodge &&
-          booking.stayStart <= state.window.start &&
-          state.window.start < booking.stayEnd
+        (booking) => booking.wholeLodge && holdsNight(booking, state.window.start)
       ),
   },
   {
