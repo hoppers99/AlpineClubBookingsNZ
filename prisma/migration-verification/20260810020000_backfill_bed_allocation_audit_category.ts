@@ -208,9 +208,9 @@ const verification: DataMigrationVerification = {
                        jsonb_array_length("metadata" -> 'measured' -> 'rewrittenActions')
                          AS "distinctActions",
                        -- Containment, not an ordered comparison: the migration's
-                       -- ORDER BY is collation-dependent (an `en_US` database
-                       -- orders `PARTNERS_` against `PARTNER_` differently from a
-                       -- `C` one), and only the SET is load-bearing.
+                       -- ORDER BY is collation-dependent (an en_US database
+                       -- orders PARTNERS_ against PARTNER_ differently from a
+                       -- C one), and only the SET is load-bearing.
                        ("metadata" -> 'measured' -> 'rewrittenActions')
                          @> ${dollarQuoted(JSON.stringify([...TARGETED_ACTIONS]))}::jsonb
                          AS "namesEveryAction"
@@ -254,10 +254,17 @@ const verification: DataMigrationVerification = {
         {
           claim:
             "the backfill row's own retention is the seven years `classifyAuditRetention` would have derived, stated rather than left NULL because raw SQL bypasses the audit boundary",
-          sql: `SELECT "expiresAt" = "createdAt" + interval '7 years' AS "sevenYears",
-                       "createdAt" IS NOT NULL AS "hasCreatedAt"
+          // Both sides through to_char, and compared to each OTHER rather than to
+          // a literal: the row is stamped with statement_timestamp(), so its
+          // absolute value is not knowable from a fixture, but the seven-year
+          // relationship is — and comparing rendered characters keeps it
+          // zone-independent on a Pacific/Auckland machine as well as in UTC CI.
+          sql: `SELECT to_char("expiresAt", 'YYYY-MM-DD HH24:MI:SS.MS')
+                         = to_char("createdAt" + interval '7 years',
+                                   'YYYY-MM-DD HH24:MI:SS.MS')
+                         AS "expiresSevenYearsAfterItWasWritten"
                   FROM "AuditLog" WHERE "action" = 'AUDIT_CATEGORY_BACKFILLED'`,
-          rows: [{ sevenYears: true, hasCreatedAt: true }],
+          rows: [{ expiresSevenYearsAfterItWasWritten: true }],
         },
       ],
     },
