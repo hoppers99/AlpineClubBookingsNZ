@@ -35,6 +35,16 @@ export async function GET() {
     member: { select: { firstName: true, lastName: true } },
   } as const;
 
+  /*
+    An INSTANT window, not a calendar day, which is why it reads the raw clock
+    rather than the club's calendar. `INV-DATE-019` governs deriving "today" as a
+    `yyyy-MM-dd` day — the mistake it forbids is turning an instant into a UTC
+    day string, which lands on the previous NZ day all morning. Nothing here is
+    turned into a day: `completedAt` is a `DateTime` and this compares it against
+    a `DateTime` thirty times twenty-four hours ago. Sending it through
+    `getTodayDateOnly()` would make the window's edge depend on the time of day
+    the page was opened, which is worse rather than better.
+  */
   const noticesSince = new Date(
     Date.now() - AUTOMATIC_REFUND_NOTICE_WINDOW_DAYS * 24 * 60 * 60 * 1000,
   );
@@ -65,7 +75,15 @@ export async function GET() {
         completedAt: { gte: noticesSince },
       },
       orderBy: { completedAt: "desc" },
-      take: 20,
+      /*
+        The same 100 as the queue above, on purpose. The card prints its own
+        length as a count, so a tighter `take` would silently make that count a
+        lie about a money movement the moment a club had more of them than the
+        limit — and the honest bound here is the thirty-day window, not a row
+        cap. A club with 100 of these inside a month has a problem it needs to
+        see in full.
+      */
+      take: 100,
       select: {
         id: true,
         bookingId: true,

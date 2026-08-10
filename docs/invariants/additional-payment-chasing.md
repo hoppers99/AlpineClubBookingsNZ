@@ -968,6 +968,16 @@ the only list the finance queue showed, so the sole durable record of a money
 movement nobody authorised appeared on no screen at all. "A human is told" was
 true of the database and false of every human. Three obligations:
 
+**One thing was already in place and must not be built twice.**
+`handleCancelledBookingAdditionalPaymentSucceeded` has always sent
+`sendAdminPaymentFailureAlert` on this path, naming the member, the stay, the
+amount, the payment intent, and the fact that the capture was auto-refunded and
+the supplementary Xero invoice was not released. So the club is emailed at the
+moment it happens; what was missing was somewhere to look afterwards, which is
+what this rule adds. Anyone tempted to "add an alert" here should check that
+mail first — a second notification for one event is noise, and noise is how the
+first one stops being read.
+
 - **The finance queue on `/admin/payments` renders those rows** as a second,
   read-only card beneath the hand-back queue. It renders **even when no `OPEN`
   task exists**, which is the ordinary case for a healthy webhook and the exact

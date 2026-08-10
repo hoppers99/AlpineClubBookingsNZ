@@ -1432,7 +1432,10 @@ leaving the task OPEN so a person decides. It was not, and the reasoning is
 recorded rather than assumed: the member's money returning is the safe direction
 when nobody is watching, gating it means the club holds a member's money until
 somebody acts, and it would put a new condition on a Critical webhook money
-path. So the record is made visible instead of the refund being held. The card
+path. The club is already emailed the moment it happens —
+`handleCancelledBookingAdditionalPaymentSucceeded` has always sent the admin
+payment alert on this path, naming the amount and the auto-refund — so what was
+missing was somewhere to look afterwards, not a notification. The card
 carries no controls — there is no decision left, and "Mark paid back" on such a
 row would write a second refund allocation — and its copy names the one thing an
 operator may still have to do: if the deletion rather than the payment was the
