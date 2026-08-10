@@ -356,9 +356,15 @@ export const AUDIT_CENSUS_TOTALS = {
     // Neither category is member-visible, so no row reaches a member who could
     // not read it before, and `classifyAuditRetention` returns `critical` for
     // every one of the 22 under both the old and the new value — no row's
-    // retention changes. See `docs/ai-diagnostics/audit-admin-category-review.md`
-    // for the per-site verdict on all 118, including the 96 that were KEPT and
-    // why.
+    // retention changes. It also moves NO ROW ALREADY WRITTEN: a stored row keeps
+    // the category it was written with, so bed-allocation history is split by
+    // date until the backfill in #2751 runs, and both correlation entries' prose
+    // says which half they hold. See
+    // `docs/ai-diagnostics/audit-admin-category-review.md` for the per-site
+    // verdict on all 118 — 22 moved, 87 kept, 9 held for an owner decision
+    // because their destinations are member-visible. The 22 are pinned per site
+    // in `REVIEWED_ADMIN_CATEGORIES_2730` below, because this count alone cannot
+    // see a compensating swap.
     admin: 96,
     // 16 -> 19 (#2581 child 2): `member.password-reset-sent` and
     // `member.setup-invite-sent` (decision 3 — the affected domain is the
@@ -640,6 +646,77 @@ export const APPLIED_AUDIT_CATEGORIES: Readonly<Record<string, string>> = {
   // evidence behind `support:view` alone.
   "src/app/api/admin/communications/send/route.ts::POST#0": "communication",
   "src/app/api/admin/email-suppressions/[id]/clear/route.ts::POST#0": "communication",
+};
+
+/**
+ * The category #2730 RE-classified at each site it moved out of `admin`.
+ *
+ * WHY A SECOND MAP RATHER THAN MORE ROWS IN `APPLIED_AUDIT_CATEGORIES`. That one
+ * is #2581 child 2's reversal record — the sites that had NO category and were
+ * given one — and three assertions read it as exactly that population: the swap
+ * gate, the 56/27 member-visibility split, and the no-entity-identifier
+ * allowlist. Folding 22 unrelated sites in would move all three numbers for a
+ * reason none of their comments describes. These sites are a different decision
+ * with a different before-state (`admin`, not null), so they get their own
+ * record and their own assertion.
+ *
+ * WHY IT EXISTS AT ALL. `categoryValues` is a DISTRIBUTION, and a distribution
+ * cannot see a swap: move one of these 22 back to `admin` and any one `admin`
+ * site into `lodge`, and every count in the census is identical while two rows
+ * changed who may read them. #2730's whole thesis is that unreviewed `admin`
+ * classifications drift silently, so its own corrections are pinned per site
+ * rather than left under an aggregate that a compensating pair defeats.
+ *
+ * ALL 22 MOVED `admin` -> `lodge`, and the direction matters twice over. Neither
+ * category is member-visible, so no row crossed the member self-timeline
+ * boundary in either direction — which is why this pin does not need a
+ * visible/hidden split the way #2581's does. And `classifyAuditRetention`
+ * returns `critical` for every one of these actions under BOTH values, so the
+ * move changed no row's expiry.
+ *
+ * WHAT IT DOES NOT COVER: rows already written. A stored row keeps the category
+ * it was written with, so bed-allocation history is split by date until the
+ * backfill in #2751 runs. That is a data question, not a writer question, and no
+ * census gate can see it.
+ */
+export const REVIEWED_ADMIN_CATEGORIES_2730: Readonly<Record<string, string>> = {
+  // ─── Bed allocation: 21 admin-initiated writers → `lodge` ──────────────────
+  // The affected domain is a bed in a lodge room on a lodge night, whoever moved
+  // it. Before this, `BED_ALLOCATION_PARTNER_PROMOTED` and
+  // `BED_ALLOCATION_PARTNERS_PROMOTED` were each written into TWO permission
+  // gates depending on whether an administrator or the lifecycle wrote them, so
+  // neither correlation entry could return a whole night.
+  "src/app/api/admin/bed-allocation/allocations/bulk/route.ts::POST#0": "lodge",
+  "src/app/api/admin/bed-allocation/allocations/bulk/route.ts::POST#1": "lodge",
+  "src/app/api/admin/bed-allocation/allocations/route.ts::POST#0": "lodge",
+  "src/app/api/admin/bed-allocation/allocations/route.ts::POST#1": "lodge",
+  "src/app/api/admin/bed-allocation/auto-allocate/route.ts::POST#0": "lodge",
+  "src/app/api/admin/bed-allocation/beds/[id]/route.ts::DELETE#0": "lodge",
+  "src/app/api/admin/bed-allocation/beds/[id]/route.ts::PATCH#0": "lodge",
+  "src/app/api/admin/bed-allocation/beds/route.ts::POST#0": "lodge",
+  "src/app/api/admin/bed-allocation/rooms/[id]/route.ts::DELETE#0": "lodge",
+  "src/app/api/admin/bed-allocation/rooms/[id]/route.ts::PATCH#0": "lodge",
+  "src/app/api/admin/bed-allocation/rooms/bulk/route.ts::POST#0": "lodge",
+  "src/app/api/admin/bed-allocation/rooms/import-from-config/route.ts::POST#0":
+    "lodge",
+  "src/app/api/admin/bed-allocation/rooms/route.ts::POST#0": "lodge",
+  "src/app/api/admin/bed-allocation/settings/route.ts::PUT#0": "lodge",
+  "src/lib/admin-bed-allocation.ts::approveBedAllocations#0": "lodge",
+  "src/lib/admin-bed-allocation.ts::moveBedAllocationsSameDateWithLocksHeld.moveUnderLock#0":
+    "lodge",
+  "src/lib/admin-bed-allocation.ts::moveBedAllocationsSameDateWithLocksHeld.moveUnderLock#1":
+    "lodge",
+  "src/lib/admin-bed-allocation.ts::recordRangeAssignAudit#0": "lodge",
+  "src/lib/admin-bed-allocation.ts::recordRangeAssignAudit#1": "lodge",
+  "src/lib/bed-allocation-removal.ts::applyBedAllocationRemoval#0": "lodge",
+  "src/lib/bed-allocation-removal.ts::applyBedAllocationRemoval#1": "lodge",
+
+  // ─── The last lodge-display writer → `lodge` ───────────────────────────────
+  // Moved because it SPLIT a subsystem: ten siblings under `/api/admin/display/**`
+  // already said `lodge`. The other `entityType: "Lodge"` writers (`LODGE_CREATED`,
+  // `LODGE_UPDATED`, `LODGE_SETTINGS_UPDATED`, `LODGE_INSTRUCTION_UPDATED`) are
+  // uniform at `admin` and stay there — see the comment at this route.
+  "src/app/api/admin/display/lodge-config/route.ts::PUT#0": "lodge",
 };
 
 /**

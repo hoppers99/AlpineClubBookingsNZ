@@ -82,7 +82,8 @@ There are eleven, and each one belongs to exactly one AI Diagnostics area:
 | `communication` | Bulk email, member notices, **delivery-suppression clearances**, credential-email reissues | Support **+ Membership** |
 | `privacy` | **Deletion requests and the decisions on them**, member exports, member-guest lookups, **issue reports** (even though Issue Reports sits under Support) | Support **+ Membership** |
 
-**Two of those rows changed in this release, and both change who can see what.**
+**Three of those rows changed in this release, and all three change who can see
+what.**
 
 - **Communication entries now need Membership access to correlate**, not Support
   alone. Somebody with Support access only can no longer pull bulk-email or
@@ -93,25 +94,44 @@ There are eleven, and each one belongs to exactly one AI Diagnostics area:
   AI Diagnostics area, so family-group, partner-link and login-holder history was
   invisible to every one of its tools. It is now readable with Support plus
   Membership.
+- **Bed allocation is now `lodge`, all of it.** It used to be filed two ways
+  depending on who started it: the automatic promotions the platform performs
+  when a booking changes were `lodge`, and the manual, bulk and range allocations
+  an administrator performed were `admin`. Nobody could get a complete answer — a
+  Lodge Manager pulling bed-allocation history got the automatic half and no sign
+  that a manual half existed. The lodge display configuration moved with it: it
+  was the last display setting still filed as `admin`.
 
-**Bed allocation also changed category in this release, and that changes who can
-correlate it.** It used to be filed two ways depending on who started it: the
-automatic promotions the platform performs when a booking changes were `lodge`,
-and the manual, bulk and range allocations an administrator performed were
-`admin`. Nobody could get a complete answer — a Lodge Manager pulling
-bed-allocation history got the automatic half and no sign that a manual half
-existed. **All of it is `lodge` now**, together with the lodge display
-configuration, which was the last display setting still filed as `admin`.
+  Two groups of people need **Lodge** access to correlate bed allocation in AI
+  Diagnostics after this release and did not before: anyone holding **Support
+  access alone**, and — worth naming, because these are the people who actually
+  perform the allocations — a **Booking Officer holding Support and Bookings but
+  not Lodge**. The bed-allocation screens are gated on Bookings, not Lodge, so a
+  Booking Officer can still make every allocation and can still read the full
+  record here on this screen, but will no longer see their own allocations
+  through AI Diagnostics. Everyone in both groups keeps Admin → Audit Log.
 
-If you hold Support access only, you could pull that history through AI
-Diagnostics before and now you will need Lodge access too. **This screen is
-unaffected** — Admin → Audit Log still shows every entry to anyone with Support
-access, and the Category filter simply lists those entries under **Lodge**
-instead of **Admin**.
+**None of the three changes affects what this screen shows you. Admin → Audit Log
+shows every entry to anyone with Support access**, exactly as before — the
+categories above only govern the AI Diagnostics tools, which are deliberately
+narrower.
 
-Neither change affects this screen. **Admin → Audit Log shows every entry to
-anyone with Support access**, exactly as before — the categories above only
-govern the AI Diagnostics tools, which are deliberately narrower.
+**But the bed-allocation change does affect the Category *filter* on this screen,
+and it will not fix itself.** An entry keeps the category it was given when it
+was written, and this release did not rewrite the entries already recorded. So
+bed-allocation history is now **split by date**:
+
+- Filter by **Lodge** and you see bed-allocation entries recorded from this
+  release onwards.
+- Filter by **Admin** and you see the ones recorded before it.
+- **Clear the filter (or use All) to see the whole run** — that is the reliable
+  way to answer "what happened to the beds that weekend" across the release date.
+
+This is the same shape as the `booking` → `payment` split described further down:
+older entries stay where they were. In AI Diagnostics the split disappears about
+a week after the release, because the widest correlation window there is 7 days;
+on this screen it lasts until the entries are reclassified, which is a separate
+reviewed change.
 
 **A larger set of entries moved in this release**, because 82 kinds of entry that
 had never carried a category were given one. The bold items in the table above are

@@ -3,9 +3,16 @@
 **What this page is.** A record of every production audit writer that recorded
 `category: "admin"`, read one at a time against the owner's rule that **the
 category follows the business domain the event affected, never who performed
-it**. Twenty-two were wrong and were moved; ninety-six were read and kept, and
-this page says why each was kept rather than leaving `admin` to look like the
-absence of a decision.
+it**. Twenty-two were wrong and were moved, eighty-seven were read and kept, and
+nine are held for an owner decision because moving them would publish rows on a
+member-facing surface. This page says why for each, rather than leaving `admin`
+to look like the absence of a decision.
+
+**What this page is not.** It is a record of where the platform FILES new rows.
+It changed no row already in the database: a stored row keeps the category it was
+written with, so bed-allocation history is split by date until the backfill in
+[#2751](https://github.com/thatskiff33/AlpineClubBookingsNZ/issues/2751) runs.
+See [Rows already written](#rows-already-written-what-the-move-does-not-touch).
 
 **Why it exists.** `AuditLog.category` is a permission decision, not a label.
 It decides which AI Diagnostics correlation entry can return the row — and
@@ -103,13 +110,60 @@ replaced with one that states the affected-domain reason instead.
 
 `src/app/api/admin/display/lodge-config/route.ts`. The last writer under
 `/api/admin/display/**` still saying `admin` while its ten siblings said
-`lodge` — and the most lodge-scoped of them, with `entityType: "Lodge"` and
-`entityId: lodgeId`, on a route gated `lodge:edit`. Nine of the ten siblings were
-among #2676's 82, so that sweep is what turned a uniformly `admin` subsystem into
-a split one. An operator with Support + Lodge could see every layout, template and
-device change for a misbehaving kiosk but not the config change that caused it.
+`lodge`. Nine of the ten siblings were among #2676's 82, so that sweep is what
+turned a uniformly `admin` subsystem into a split one. An operator with Support +
+Lodge could see every layout, template and device change for a misbehaving kiosk
+but not the config change that caused it.
 
-## Kept: 96 sites
+**The rule this was moved on, stated because other writers pass the same
+surface tests and were NOT moved.** It is not "does it name a Lodge" and not "is
+the route gated `lodge:edit`": `LODGE_CREATED`, `LODGE_UPDATED`,
+`LODGE_SETTINGS_UPDATED` and `LODGE_INSTRUCTION_UPDATED` all carry
+`entityType: "Lodge"` or sit on a `lodge:edit` route, and all of them stay
+`admin`. The test is **whether the site split a subsystem** — whether some other
+writer of the same objects already answered to a different gate, so that no
+operator could get a complete answer. That was true here (ten `lodge` siblings,
+one `admin`) and true of bed allocation (two action names written into two
+gates). It is not true of the `LODGE_*` records-and-settings group, which is
+uniform at `admin`: moving it is a readership change of its own size rather than
+the closing of a split, and it is recorded as the open question below. The rule
+is repeated in a comment at the writer so the next author does not have to find
+this page.
+
+## Rows already written: what the move does not touch
+
+**The 22 edits changed where the platform files a NEW row. No stored row was
+rewritten, and no filter rescues the old ones.** `buildAuditCategoryWhere`
+(`src/lib/audit-query.ts`) ORs its legacy action-name guess in only for rows
+whose `category` is NULL; a bed-allocation row written before this release
+carries a hard `"admin"`, matches neither `{category: "lodge"}` nor the legacy
+`LODGE_`/`lodge` clause, and is returned under the Admin filter alone —
+permanently.
+
+So bed-allocation evidence is now split by **date** rather than by initiator:
+
+- **Admin → Audit Log** (unbounded history). Filter by Lodge and you get rows
+  from this release forwards; filter by Admin and you get the older ones. Neither
+  filter answers a question spanning the release. Clearing the filter still shows
+  everything, which is the workaround an operator needs to be told about — and
+  is, so [the audit-log guide](../guides/audit-log.md) says it.
+- **AI Diagnostics** (7-day maximum window). The Lodge entry returns the newer
+  half and the System entry the older half. This half self-heals seven days after
+  the release, because `CORRELATION_WINDOWS` caps the window at 7 days — but it
+  is live and wrong for that week, so both entries' `scope` and `description`
+  say which half they hold. A pack test pins those sentences.
+
+Retention is unaffected either way: `classifyAuditRetention` returns `critical`
+for every one of these actions under both categories, so no stored row's expiry
+moved and none was brought forward for deletion.
+
+Fixing the data is a separate, reviewed decision — a one-off exact-action
+`UPDATE` over live audit records, which narrows who can correlate the older rows
+exactly as this change narrowed the newer ones. It is filed as
+[#2751](https://github.com/thatskiff33/AlpineClubBookingsNZ/issues/2751) with the
+options and the checks already done, not left as a note.
+
+## Kept: 87 sites
 
 Each group states the affected domain that makes `admin` right, and — where the
 alternative reading is real — what taking it would have cost.
@@ -179,8 +233,9 @@ categories.
 
 ### Lodge-gated operational configuration — 15 sites
 
-Chores (3), lockers (4), lodge instructions (2), lodge settings (1), lodge
-entities (2), work parties (3).
+Chores (3), lockers (4), lodge instructions (2), lodge settings (1), the `LODGE_*`
+lodge records themselves — `LODGE_CREATED` and the `LODGE_UPDATED` /
+`LODGE_ACTIVATED` / `LODGE_DEACTIVATED` writer (2) — and work parties (3).
 
 **Kept in this pass, but this is the group most likely to move next, and it is
 recorded as an open question rather than a settled keep.** Every one of these
@@ -198,6 +253,21 @@ would be a narrowing, member-invisible in both directions, and retention-neutral
 word). The lockers writers are the odd ones out: their routes are gated
 `membership:*` and a locker is allocated to a named member, so `lodge` is not
 obviously their answer either.
+
+**Why `LODGE_DISPLAY_CONFIG_UPDATED` moved and `LODGE_UPDATED` did not**, since
+both name a Lodge on a `lodge:edit` route: the display writer was closing a
+**split** — ten siblings in the same subsystem already said `lodge` — whereas
+this group is uniform at `admin`, so moving it would not remove a
+two-gates-for-one-thing defect but open a new readership question. That is the
+rule the whole pass ran on, and it is repeated in a comment at the display
+writer.
+
+**The cost while they stay here is a silent absence, and it is closed.** Before
+this pass the Lodge correlation entry's `scope` named chores, lockers, work
+parties and lodge settings as `admin` but not lodge instructions and not the
+`LODGE_*` records — so "when was this lodge deactivated" returned nothing from
+the Lodge entry with no warning that the answer was in another tool. Both
+entries' `scope` and the Lodge entry's `description` now name the whole set.
 
 ### Induction templates — 4 sites
 
@@ -233,7 +303,7 @@ rather than a reclassification. The support pack's model-facing description also
 names "member merges are recorded under admin" to stop an operator reading an
 empty membership-entry result as absence.
 
-### Member import, lodge access, admin member detail — 3 sites
+### Member import and lodge access — 2 sites
 
 - `member.imported` (`admin/members/import`): a bulk administrative import.
 - `MEMBER_LODGE_ACCESS_UPDATED` (`admin/members/[id]/lodge-access`): **kept, with
@@ -242,16 +312,26 @@ empty membership-entry result as absence.
   category is `admin`. Under `lodge` or `account` the same row becomes `critical`
   and is kept for **seven years**. Moving it is therefore a data-lifecycle change
   as well as a permission change, and needs to be decided as one.
-- The dynamic writer in `admin-member-detail-service.ts`: an administrator's edit
-  to another member's record. `account` is arguable and member-visible; the
-  member-facing half of this surface is already covered by the `account` writers
-  #2676 classified.
+
+(The third writer on this surface — the dynamic one in
+`admin-member-detail-service.ts` — was moved out of this section on review. It is
+**held for an owner decision** below.)
 
 ### Seasonal membership assignments — 4 sites
 
 `src/lib/seasonal-membership-assignments.ts`. Bulk administrative assignment of
-season membership tiers. The support pack already names these to operators as
-`admin`.
+season membership tiers.
+
+**Kept because the affected record is the club's seasonal roll-forward, not any
+one member's account** — three of the four writers act on a whole season at once
+and the fourth records one assignment inside that same mechanism. `account` is
+the live alternative and is not dismissed lightly: `saveSeasonalMembershipAssignment`
+carries `subjectMemberId`, so under `account` the row would appear on that
+member's own activity page. That makes the move a **widening**, which is why it
+is not taken here — but the domain argument above is the reason it is filed as
+`admin`, not the fact that the support pack's model-facing description already
+names it that way. (It does, and that description would need updating with any
+move.) Grouped with the held decisions below for whoever takes the next pass.
 
 ### Xero member-import membership types — 1 site
 
@@ -267,11 +347,12 @@ is a genuine alternative — consent is the privacy domain (`INV-PRIV`) — but
 would publish a settings change on the acting administrator's activity page and
 narrow the operator gate at the same time. Kept, and flagged as re-decidable.
 
-## Held for an owner decision: 8 sites
+## Held for an owner decision: 9 sites
 
-These are the two #2730 findings this pass **did not** apply, because both
-destinations are member-visible and each move publishes rows on a member-facing
-surface. A widening is not a refactor and is not this lane's to take.
+Two of #2730's own findings, plus one the sweep turned up, that this pass **did
+not** apply. Every destination is member-visible, so each move publishes rows on
+a member-facing surface. A widening is not a refactor and is not this lane's to
+take.
 
 ### `member_lifecycle.delete_*` and `archive_*` — 6 sites
 
@@ -304,6 +385,57 @@ officer's** own activity page. The names in the row travel in `metadata`, which
 the member projection withholds. It is the smallest widening on this page and
 still a widening.
 
+### `admin.member.updated` / `.deactivated` / `.reactivated` — 1 site
+
+`src/lib/admin-member-detail-service.ts`. **Not one of #2730's four findings —
+the sweep turned it up, and it is the weakest `admin` left in the tree.** It is
+filed by the SCREEN the officer used, which is initiator reasoning wearing a
+different hat:
+
+| The same business act | Where it is filed |
+| --- | --- |
+| Deactivate one member from the member page | `admin` — this site |
+| Deactivate the same members from the bulk screen (`member.bulk-deactivate`) | `account` |
+| Change one member's access roles from the member page | `admin` — this site, as `admin.member.updated` |
+| Change the same roles from the bulk screen (`member.bulk-set-role`) | `security` |
+| The member edits the same profile fields themselves | `account` |
+
+The comparison is inside the platform, not imported: `bulk-update/route.ts` sets
+out the rule in its own comment — the account itself is `account`, what a member
+is permitted to do is `security` — and names picking by who acted as "the exact
+thing the owner rule forbids". The consequence for a member is visible: they see
+a bulk deactivation on their own activity list and see **nothing** when an
+officer deactivates them from the member page.
+
+It is held rather than kept because both destinations are member-visible and this
+writer passes `subjectMemberId`, so the move publishes the row **to the member it
+is about**. If the owner approves, the fix is the split `bulk-update/route.ts`
+already uses — `security` when the change set is access roles, `account`
+otherwise — written as two calls with literal categories, never a conditional
+(the census contract pins that no production writer picks its category with a
+conditional expression). If the owner declines, the keep needs a domain argument
+that survives the comparison above; "another writer already covers the
+member-facing half" is not one, which is why the earlier draft of this page
+recording it as a settled keep was wrong.
+
+## The open question this pass did not have a decision for
+
+The **fifteen lodge-gated operational sites** in the keeps above (chores, lockers,
+lodge instructions, lodge settings, the `LODGE_*` records, work parties) are
+recorded as an open question rather than a settled keep, and the reasoning is in
+that section. Moving them would be a **narrowing** — member-invisible in both
+directions and retention-neutral — which is a materially easier question than the
+three widenings above, but it is still fifteen more sites out of the support-only
+gate and no ticked option on #2730 covers it.
+
+While they stay `admin`, the model-facing prose has to say so or an empty lodge
+correlation reads as absence: the Lodge entry's `scope` and `description` both
+name chores, lockers, work parties, lodge instructions, lodge settings **and the
+lodge records themselves** as `admin`, and the System entry's `scope` names the
+same set. That was a real gap — "when was this lodge deactivated" returned
+nothing from the Lodge entry with no warning — and it is fixed whichever way the
+decision goes.
+
 ## How to check this page is still true
 
 `npm run audit:census` prints the live distribution, and
@@ -317,3 +449,19 @@ category values: admin 96, booking 101, xero 34, family 34, payment 33,
                  lodge 52, account 20, security 19, privacy 19,
                  communication 14, system 4
 ```
+
+96 = 87 kept + 9 held. The 22 moves are pinned **per site**, not only by that
+distribution: `REVIEWED_ADMIN_CATEGORIES_2730` in
+`scripts/audit/audit-writer-census-manifest.ts` records each one, and the census
+contract test measures the tree against it. A distribution cannot see a swap —
+send one of these back to `admin` and one `admin` site into `lodge` and every
+count is identical while both rows change who may read them — so the per-site pin
+is what makes a reversal a named diff. The same test asserts that none of the 22
+lands in a member-visible category, which is the property that made the move a
+narrowing rather than a decision for the owner.
+
+The sentences that tell the model which half of bed-allocation history each
+correlation entry holds are pinned in
+`src/lib/diagnostics/tools/packs/__tests__/support-correlation.test.ts`
+("tells the model that #2730 moved the WRITERS and not the stored rows"), so they
+cannot be tidied away while the split is still real.

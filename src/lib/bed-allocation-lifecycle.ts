@@ -1890,9 +1890,14 @@ async function recordPartnerShareSweepAudits(
   for (const group of groups.values()) {
     // Best-effort for the #1756 lifecycle events, mirroring
     // recordPartnerPromotionAudit: an audit-write failure must never roll back a
-    // committed sweep. There is no acting member — the removal is a system
-    // consequence of the pair breaking — so this is a "lodge" system event
-    // recorded against each affected booking.
+    // committed sweep. It is recorded against each affected booking.
+    //
+    // `lodge` because the AFFECTED DOMAIN is a bed in a lodge room on a lodge
+    // night — not because the removal is a system consequence of the pair
+    // breaking and no member acted (#2730). This comment used to give that
+    // second reason, which is classification by INITIATOR and is what the
+    // owner's rule on #2581 forbids; the pointer above now leads to a corrected
+    // rationale rather than the one that propagated the split.
     try {
       await createAuditLog(
         {

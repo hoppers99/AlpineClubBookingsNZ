@@ -159,6 +159,18 @@ export async function PUT(req: NextRequest) {
       ? ["showGuestPhonesOnScreens"]
       : []),
   ];
+  // `lodge`, moved out of `admin` in #2730, and the rule it was moved on is worth
+  // stating because other `entityType: "Lodge"` writers were deliberately NOT
+  // moved with it. The test is not "does it name a Lodge" and not "is the route
+  // gated `lodge:edit`" — `LODGE_CREATED`, `LODGE_UPDATED`, `LODGE_SETTINGS_UPDATED`
+  // and `LODGE_INSTRUCTION_UPDATED` all pass both of those and all stay `admin`.
+  // The test is whether the site SPLIT a subsystem: this was the one writer under
+  // `/api/admin/display/**` still saying `admin` while its ten siblings said
+  // `lodge`, so the display subsystem answered to two permission gates and a
+  // kiosk correlation returned the layout change but not the config change that
+  // caused it. The `LODGE_*` records-and-settings group is uniform at `admin`, so
+  // moving it is a readership change of its own and is #2730's open question,
+  // recorded per group in `docs/ai-diagnostics/audit-admin-category-review.md`.
   await createAuditLog({
     action: "LODGE_DISPLAY_CONFIG_UPDATED",
     memberId: guard.session.user.id,
