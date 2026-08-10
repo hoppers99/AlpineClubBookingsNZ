@@ -5,5 +5,6 @@
   section grouping. Every element carries a stable `wcx-*` class so the exact
   look (card lift, accent keyline, heading treatment, table polish) is applied
   and tweaked from **Admin → Setup & Configuration → Site Appearance & Content →
-  Raw CSS**, without a deploy. The underlying report data and its section
-  visibility toggles are unchanged.
+  Raw CSS**, without a deploy. The ready-to-paste house skin and its `wcx-*` hooks
+  are documented in the [Mountain Conditions guide](../docs/guides/mountain-conditions.md).
+  The underlying report data and its section visibility toggles are unchanged.
