@@ -857,7 +857,12 @@ money shape stated rather than fixed on this path is now fixed too (#2756): the
 plan priced each guest on their own, so nights an in-progress edit newly BOUGHT
 carried no group discount; it prices the whole party in one pass per window, and
 a night the guest already holds is valued identically on both sides of the edit so
-nothing already bought moves — see `INV-MOD-025`.
+nothing already bought moves — see `INV-MOD-025`. The same change fixed a wider
+fault behind it: every edit path built its season data without the season's `type`,
+so on the DEFAULT summer-only setting no edit of any kind could qualify for the
+discount, whichever planner ran. Season loading now goes through the one
+`toSeasonRateData` mapper, which is a price change to ordinary edits as well —
+see `INV-MOD-006`.
 
 Self-service cancellation of a **started** stay is blocked (#2029). Once
 `checkIn <= todayNZ`, the member-facing cancel route

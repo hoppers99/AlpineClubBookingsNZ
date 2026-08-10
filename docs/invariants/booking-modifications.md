@@ -124,6 +124,34 @@ that keeps it safe: a night the guest keeps is valued identically on both sides 
 the edit, so no held night is re-rated when the party crosses the minimum in
 either direction.
 
+**"Passes the discount into pricing" includes the season's `type`, and every edit
+path had been failing that half in silence** (#2756). `summerOnly` is `true` by
+`prisma/schema.prisma`'s default, by `DEFAULT_GROUP_DISCOUNT_SETTING` and by the
+admin section's own default, so `isGroupDiscountApplicable` tests
+`findSeasonForDate(night, seasons)?.type === "SUMMER"` for the configuration a real
+club is most likely in. `SeasonRateData.type` is optional, and all five edit paths
+— the modify quote, the modify apply's `loadActiveSeasonRates`, the guest-add
+route, the date-modification service and the guest-removal service — hand-rolled a
+four-key season literal that omitted it, while every creation path mapped through
+`toSeasonRateData` and carried it. So a default-configured club had its booking
+discounted when it was made and **every later edit priced at the full rate**,
+whichever planner ran: the parity this invariant asserts was false in exactly the
+direction that costs the member money, and no test could see it. All season
+loading now goes through `toSeasonRateData`, which is the ONLY production mapping
+by census, because a second one is free to drop the field again and the type system
+cannot object. Correcting this changes prices on ordinary (not-in-progress) edits
+too at any summer-only club with the discount enabled — it is the same defect, not
+a separate one, and the fix could not be confined to the in-progress branch
+because both branches read the same season array.
+
+The **substitution's two consequences** reach every path this invariant covers,
+including the in-progress planner since #2756: a `rateMembershipTypeId` whose rows
+are dearer than `NON_MEMBER`'s makes a qualifying night cost MORE, and a
+substituted type with no row for some age tier in some season throws where the
+guest's own type would have resolved. The admin group-discount route validates
+neither. Members are never affected (only `NON_MEMBER_DEFAULT` is substituted —
+INV-MOD-007).
+
 ## INV-MOD-007
 
 Hut nightly rates are keyed by membership type, not a member/non-member boolean
@@ -583,11 +611,35 @@ passes, and which party each counts is the rule:
   stop at the edit window, a shortened check-out drops its own tail, and a
   partial-stay guest is counted only on the nights they hold, so an absent night
   cannot make up the minimum.
-- The **pre-edit** party, over the nights each guest currently holds inside the
-  edit window, values a night this edit takes AWAY. A night given back is worth
-  what it was worth to the party that held it, so a party dropping below the
-  minimum on removal is credited at the discounted rate it bought rather than at
-  today's undiscounted one — which the club never charged.
+- The **pre-edit** window, over the nights each guest currently holds inside the
+  edit window, values a night this edit takes AWAY — and it is passed **no discount
+  config at all**, so it is byte-identical to what it was before #2756, discount
+  configured or not. #2756 reaches the nights an edit BUYS and nothing else.
+
+  That is a money decision, not an oversight, and it is the second thing an
+  obvious-looking fix gets wrong. INV-MOD-006's "a party dropping below the minimum
+  on removal never loses a discount it bought" is achieved by the **lock**, which
+  covers every guest whose `BookingGuestNight` rows record what they paid and needs
+  no party counted. Passing the config would only ever have changed the guests the
+  lock cannot reach — a booking predating the rows, or one created by approving a
+  request (#2739 backfills those but cannot empty the population) — and for them
+  today's party is a guess, so it can only ever SHRINK the credit. A removal on
+  such a booking credited $160 for nights the club had charged $240 for, and a
+  shortened check-out kept $480 across six guests. `refundCeilingCents` caps this
+  leg from ABOVE only, so that direction has no floor: the club would have kept
+  money it should have returned, on the credit leg, which is the leg #2744 exists
+  to keep honest.
+
+  So a night with **no recoverable stored price** is credited at the guest's own
+  rate type at today's rate, no substitution — which errs TOWARD the member for any
+  sane rate table, and is bounded above by `refundCeilingCents` so it can still
+  never hand back more than the guest is carrying. That is the documented
+  pre-existing degradation this file already names above, unchanged. The accurate
+  answer is that guest's own stored per-night average, which is right in both
+  directions where neither today's-rate rule is; it also moves the
+  discount-DISABLED path and therefore the 960-case equivalence matrix, so it is a
+  change to ordinary bookings and belongs with #2745's repricing decision rather
+  than here.
 
 **A night the guest KEEPS is valued from the post-edit pass in BOTH windows**, and
 that is the property that makes a party-aware discount safe on live bookings, not
@@ -601,7 +653,23 @@ they had already had, and a removal would CHARGE them for the same nights
 (INV-MOD-005). The pass is bounded below by the earliest night the edit actually
 prices, so it demands a season rate for no night that nobody is repricing, and
 reaches back below the edit window only for the #2029 check-out-day night the
-plan can genuinely buy there. The 960-case contiguous equivalence matrix is
+plan can genuinely buy there.
+
+**A night below a guest's OWN first priced night is in that pass for the party
+COUNT only, and is carried only when its price is locked.** The floor is party-wide,
+so in #2029's shape it can sit below one guest's own future window and reach back
+over one of their earlier nights. Nobody reads that night's price. Asking the season
+table for it anyway turned an edit that previously succeeded into a thrown
+"No rate found" whenever the booking's night rows had drifted past its own check-out
+(INV-DATE-012) and the covering season had no row for that guest's tier and rate
+type — no season gap required. A locked night short-circuits the rate lookup, so it
+joins the count and cannot fail; an unlocked one is dropped, which costs at most the
+count on that one night — the pre-#2756 answer for it, able to withhold a discount
+but never to invent one. Refusing the edit is the worse outcome. The apply path now
+maps a plan failure to the same 400 the quote route already returned, so preview and
+apply agree on the refusal as well as on the price.
+
+The 960-case contiguous equivalence matrix is
 untouched by every bit of this, and not by luck: it configures no discount and
 prices every guest on their own membership type's rows, so the substitution can
 reach no case in it and the same buckets still hold, per variant and in total. An
@@ -611,6 +679,17 @@ edits from here on, nothing already charged, refunded or invoiced is recalculate
 and a correction to a member charged the undiscounted rate by an earlier
 in-progress edit is a separate, audited adjustment — the same treatment #2744 and
 #2736 had, and the decision recorded on **#2756**.
+
+**What #2756 did NOT build, stated here rather than left to be discovered.** The
+owner's decision on that issue added a scope item to D1: an admin-controlled option
+on the group-discount setup for *whether bookings edited later receive the
+discount*, governing every edit path uniformly, defaulting to ON. This change
+implements the D1 behaviour — which is that default — but not the switch, so a club
+cannot yet turn edit-time discounting off. That is a new club-facing setting with a
+schema column, an admin section, settings-census registration and both-state tests,
+and it carries its own issue. Until it lands, edit-time discounting is always on for
+a club whose discount is enabled, which is the documented default and no club's
+current correct behaviour changes because of the switch's absence.
 
 **The per-night amounts written back are each night's real rate (#2744), not an
 average.** A kept night keeps its stored price, a newly bought night takes its

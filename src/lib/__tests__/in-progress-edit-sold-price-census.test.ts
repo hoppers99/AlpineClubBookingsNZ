@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
+import { toSeasonRateData } from "@/lib/policies/booking-route-decisions";
 
 /**
  * Census: every loader that feeds an in-progress edit must select the column
@@ -100,6 +101,19 @@ const PLAN_BUILDER_CALL = /(?<!function\s)\bbuildInProgressGuestRangePlan\s*\(/g
  * these two call sites and a false FAILURE here is cheap to diagnose while a
  * false pass is the thing being guarded against.
  */
+/**
+ * The same text with `//` and block comments blanked out.
+ *
+ * Both checks below read source text for the presence of a field, and prose
+ * mentioning the field is not the field. Newlines are preserved so a stripped
+ * comment cannot join two lines into something that matches.
+ */
+function withoutComments(source: string): string {
+  return source
+    .replace(/\/\*[\s\S]*?\*\//g, (match) => match.replace(/[^\n]/g, " "))
+    .replace(/\/\/[^\n]*/g, (match) => " ".repeat(match.length));
+}
+
 function balancedArgumentList(source: string, openIndex: number): string {
   let depth = 0;
   for (let index = openIndex; index < source.length; index++) {
@@ -224,11 +238,102 @@ describe("in-progress edit sold-price census (#2744)", () => {
         // than the same night bought before the stay began — and nothing else in
         // the tree goes red, because the argument is optional by design (a club
         // that has not switched the discount on passes nothing).
-        expect(
+        const argumentList = withoutComments(
           balancedArgumentList(source, openIndex),
+        );
+        expect(
+          argumentList,
           `${site.file} must pass groupDiscount to buildInProgressGuestRangePlan (INV-MOD-006, #2756)`,
         ).toContain("groupDiscount");
+        // And pass something. A bare `toContain` passes on
+        // `groupDiscount: undefined`, which type-checks (the argument is optional),
+        // throws nothing and prices every night undiscounted — the defect itself,
+        // wearing the name of the fix. Comments are stripped first for the same
+        // reason: the modify-quote call site carries a four-line comment INSIDE its
+        // argument list, so prose mentioning the field could otherwise satisfy the
+        // check on its own.
+        expect(
+          argumentList,
+          `${site.file} must pass a DEFINED groupDiscount, not \`groupDiscount: undefined\` (INV-MOD-006, #2756)`,
+        ).toMatch(/\bgroupDiscount\b(?!\s*:\s*(?:undefined|null)\b)/);
       }
     }
+  });
+});
+
+/**
+ * `SeasonRateData.type` — the second optional field the whole #2756 fix rests on,
+ * and the one that made the first draft of it INERT.
+ *
+ * `isGroupDiscountApplicable` tests `findSeasonForDate(night, seasons)?.type ===
+ * "SUMMER"` whenever `summerOnly` is set, and `summerOnly` is `true` by
+ * `prisma/schema.prisma`'s default, by `DEFAULT_GROUP_DISCOUNT_SETTING` and by the
+ * admin section's default — so for the most likely real configuration a season
+ * that arrives without its `type` turns the discount OFF. The field is optional on
+ * `SeasonRateData`, so a mapping that omits it compiles, throws nothing and fails
+ * no unit test: the plan-level suites hand seasons in by hand, so they can only
+ * ever prove that pricing HONOURS the field, never that a production loader
+ * carries it.
+ *
+ * That is not hypothetical. Creation, the quote route, booking requests, group and
+ * school bookings and the waitlist reprice all mapped through `toSeasonRateData`
+ * and carried `type`, while all five EDIT paths hand-rolled their own four-key
+ * literal without it — so a default-configured club had its booking discounted
+ * when it was made and every later edit priced at the full rate, which is
+ * INV-MOD-006's parity claim being false in the exact direction that costs the
+ * member money.
+ *
+ * The guard is therefore two-part: the one mapper must carry the field, and it must
+ * stay the ONLY production mapping, because a second one is free to drop it again.
+ */
+const SEASON_RATE_MAPPER_FILE =
+  "src/lib/policies/booking-route-decisions.ts";
+
+/**
+ * A season row being mapped into `SeasonRateData` — `seasonId: <something>.id`.
+ *
+ * Deliberately narrow: it matches the mapping and not the many other uses of the
+ * word (`seasonId: string` in a type, `seasonId: true` in a Prisma select,
+ * `seasonId: season.seasonId` passing an already-mapped value through).
+ */
+const SEASON_RATE_MAPPING = /seasonId:\s*[A-Za-z_$][\w$]*\.id\b/g;
+
+describe("season rate data census (#2756)", () => {
+  it("carries the season type through the one mapper", () => {
+    const [mapped] = toSeasonRateData([
+      {
+        id: "s1",
+        startDate: new Date("2026-08-01T00:00:00.000Z"),
+        endDate: new Date("2026-08-31T00:00:00.000Z"),
+        type: "SUMMER",
+        membershipTypeRates: [
+          { membershipTypeId: "t1", ageTier: "ADULT", pricePerNightCents: 5000 },
+        ],
+      },
+    ]);
+
+    // Without this the group discount is off for every summer-only club, on every
+    // path that loads seasons — silently.
+    expect(mapped.type).toBe("SUMMER");
+  });
+
+  it("keeps that mapper the only production season mapping", () => {
+    const found = allSourceFiles(SRC_ROOT)
+      .filter(
+        (absolute) =>
+          [
+            ...withoutComments(fs.readFileSync(absolute, "utf8")).matchAll(
+              SEASON_RATE_MAPPING,
+            ),
+          ].length > 0,
+      )
+      .map(repoRelative)
+      .sort();
+
+    // A second mapper is how `type` went missing on five edit paths at once. If a
+    // new loader needs season rates, call `toSeasonRateData` rather than mapping
+    // the rows again — the type system cannot object, because the field is
+    // optional.
+    expect(found).toEqual([SEASON_RATE_MAPPER_FILE]);
   });
 });

@@ -214,6 +214,19 @@ export interface BuildInProgressGuestRangePlanInput {
   // it (INV-MOD-006); this plan was the sole exception, so nights an in-progress
   // edit newly bought were charged undiscounted while the same nights bought a
   // day earlier were not. Callers pass `toGroupDiscountConfig(setting)`.
+  //
+  // It reaches the POST-EDIT pass only — the nights this edit buys. The pre-edit
+  // window, which values a night the edit takes away, is deliberately priced
+  // without it; the reasoning is at that pass.
+  //
+  // A qualifying night SUBSTITUTES `rateMembershipTypeId`'s rate rows for a
+  // NON_MEMBER_DEFAULT guest (INV-MOD-007), so two consequences that hold on every
+  // other pricing path now hold here too, and neither is new behaviour anywhere
+  // else: a substituted type whose rows are DEARER than NON_MEMBER's charges more,
+  // and a substituted type with no row for some age tier in some season throws
+  // where the guest's own type would have resolved. The admin group-discount route
+  // validates neither. Members are unaffected either way (OWN_TYPE and
+  // TYPE_POLICY_FORCED are never substituted).
   groupDiscount?: GroupDiscountConfig;
 }
 
@@ -441,6 +454,55 @@ function nightPricesFrom(
 /** Sum integer cents. No float, no rounding (INV-MONEY-001). */
 function sumCents(values: readonly number[]): number {
   return values.reduce((sum, cents) => sum + cents, 0);
+}
+
+/**
+ * Which of one guest's proposed nights go into the POST-EDIT pass (#2756).
+ *
+ * Two kinds of night, and only the first is ever read back out:
+ *
+ *  - **PRICED** — from the guest's own first future night on. These are the nights
+ *    this edit reprices for them, and every amount either window sums comes from
+ *    here: the new-price leg sums `futureNightKeys`, and the old-price leg's KEPT
+ *    nights are a subset of them, because `oldFutureStart` is never earlier than
+ *    `newFutureStart`.
+ *  - **COUNT-ONLY** — their own earlier nights that ANOTHER guest's window reaches
+ *    back over, i.e. at or after the party-wide `pricingFloorKey` but before their
+ *    own first priced night. Nobody reads their prices. They are in the pass so
+ *    that `countActiveGuestsForNight` sees them on a night the edit really is
+ *    buying, which needs a night before `editableFrom` to be priced at all —
+ *    #2029's check-out-day extension — plus a second guest whose stored nights
+ *    claim that same night, which takes drifted data (INV-DATE-012).
+ *
+ * **A count-only night is included only when its price is LOCKED**, and that is
+ * the fix for the one direction the floor got wrong. `calculateBookingPrice` looks
+ * a lock up before it looks a season rate up, so a locked night joins the party
+ * count and can never fail. An UNLOCKED count-only night would instead demand a
+ * season rate for a night nobody is repricing, and on a drifted booking whose past
+ * night sits outside every active season — or whose tier/rate-type row has since
+ * been removed — that turned an edit which previously succeeded into a thrown
+ * "No rate found": a hard refusal, arriving as a 400 on the quote and, before the
+ * guard added alongside this, an unmapped failure on the apply.
+ *
+ * Dropping such a night costs at most the party count on it, which is the
+ * pre-#2756 answer for that night (every count was 1 then) and can only withhold
+ * a discount, never invent one. Refusing the edit outright is worse than pricing
+ * one rare drifted night as the old code priced it.
+ */
+function proposedPassNightKeys(
+  entry: {
+    proposedNightKeys: readonly string[];
+    futureNightKeys: readonly string[];
+    storedNightPriceByKey: ReadonlyMap<string, number>;
+  },
+  pricingFloorKey: string
+): string[] {
+  const firstPricedKey = entry.futureNightKeys[0];
+  return entry.proposedNightKeys.filter((key) => {
+    if (key < pricingFloorKey) return false;
+    if (firstPricedKey !== undefined && key >= firstPricedKey) return true;
+    return entry.storedNightPriceByKey.has(key);
+  });
 }
 
 /**
@@ -835,7 +897,7 @@ export function buildInProgressGuestRangePlan(
   // `undefined` means nobody holds a future night at all, so there is nothing to
   // price (the refusal below usually follows).
   //
-  // It bounds what the proposed pass PRICES, and the bound is load-bearing in both
+  // It bounds what the proposed pass covers, and the bound is load-bearing in both
   // directions. Too high and the party count would miss a guest who holds a priced
   // night as one of their OWN past nights, so a night the edit really is buying
   // could miss a discount the party had earned. That needs a night before
@@ -851,6 +913,13 @@ export function buildInProgressGuestRangePlan(
   // season, or whose age-tier rate row has since been removed, would fail where it
   // used to succeed. A guest who went home a week ago makes that difference a week
   // wide.
+  //
+  // The floor alone is not enough for that second direction, which is why
+  // `proposedPassNightKeys` also decides per guest: a night below a guest's OWN
+  // first priced night is in the pass for the COUNT only, so it is carried only
+  // when its price is locked and can never reach the season table. Without that,
+  // the reach-back in #2029's shape could still demand a rate for a drifted
+  // guest's past night and refuse an edit that used to work.
   //
   // Read off the night LISTS rather than off `newFutureStart`, which is a pricing
   // anchor that reaches back to a departed guest's own stay end and would drag the
@@ -870,26 +939,57 @@ export function buildInProgressGuestRangePlan(
     addGuests.length > 0 ? addedGuestNightKeys[0] : undefined
   );
 
-  // #2756: THE PRE-EDIT PARTY, over the nights each guest currently holds inside
-  // the edit window. This is the leg a removal or a shortened check-out credits
-  // back, so it is the one that decides whether the club hands back what it took
-  // — and the party that has to be counted for it is the party that actually held
-  // those nights, which is why added guests are absent from this pass and a
-  // removed guest is present in it. Each night is valued at the price it was SOLD
-  // for (#2744) through the locked prices, falling back to the current season
-  // rate — now under the real party size rather than a party of one — only for a
+  // #2756: THE PRE-EDIT WINDOW, over the nights each guest currently holds inside
+  // the edit window. It is read for one thing only — a night this edit takes AWAY,
+  // which appears in no other pass — so it decides whether the club hands back
+  // what it took. Each night is valued at the price it was SOLD for (#2744)
+  // through the locked prices, falling back to the current season rate only for a
   // night with no stored price to recover.
   //
-  // Ordered first so that a booking with no rate for one of its nights throws
-  // naming the same night it named before, rather than one from the other pass.
+  // **NO GROUP DISCOUNT IS PASSED HERE, and that is a money decision rather than
+  // an oversight.** #2756 reaches the nights an edit BUYS and nothing else, so
+  // this leg is byte-identical to what it was before #2756, discount configured
+  // or not. Passing the config would have valued a night with no recoverable
+  // price under TODAY's party and TODAY's config, which can only ever SHRINK the
+  // credit: a removal on a booking whose rows are missing credited $160 for
+  // nights the club had charged $240 for, and `refundCeilingCents` below caps the
+  // credit from above only, so there is no floor under that direction. The club
+  // would have kept money it should have returned, on the credit leg, which is
+  // the leg #2744 exists to keep honest.
+  //
+  // What survives is the pre-#2756 rule and its two halves, and every guest falls
+  // under one of them:
+  //
+  //  - A guest whose `BookingGuestNight` rows record what they paid is credited
+  //    EXACTLY that, discount-inclusive, through the lock — which is how
+  //    INV-MOD-006's "a party dropping below the minimum on removal never loses a
+  //    discount it bought" is actually achieved, and it needs no party count.
+  //  - A guest with NOTHING recorded (a booking predating the rows, or one created
+  //    by approving a request — #2739 backfills those but cannot empty the
+  //    population) has no per-night evidence at all, so this errs TOWARD the
+  //    member: their own rate type at today's rate, no substitution, which is at
+  //    or above the discounted rate for any sane rate table. The over-credit that
+  //    direction allows is bounded by `refundCeilingCents`, is the documented
+  //    pre-existing degradation INV-MOD-005 already names, and is unchanged here.
+  //
+  // The accurate answer for that second guest is their own stored per-night
+  // average — right in both directions, where neither today's-rate rule is — but
+  // it moves the discount-DISABLED path too, so it is a change to ordinary
+  // bookings and the 960-case equivalence matrix, and it belongs to its own issue
+  // with #2745's repricing decision rather than to this one.
+  //
+  // Still a party-wide pass, for one reason: with no config the party count cannot
+  // change a price (`isGroupDiscountApplicable` refuses before it is read and no
+  // rate can be substituted), so this is the per-guest arithmetic in one call, and
+  // ordering it first makes a booking with no rate for one of its nights throw
+  // naming the same night it named before rather than one from the other pass.
   const heldWindowPrices = pricePartyNights(
     existingNightPlans.map((entry) => ({
       guest: entry.guest,
       nightKeys: entry.oldWindowNightKeys,
       lockedNightPricesByKey: entry.storedNightPriceByKey,
     })),
-    input.seasons,
-    input.groupDiscount
+    input.seasons
   );
 
   // #2756: THE POST-EDIT PARTY, over the nights each guest ends up holding — the
@@ -907,14 +1007,10 @@ export function buildInProgressGuestRangePlan(
     [
       ...existingNightPlans.map((entry) => ({
         guest: entry.guest,
-        // Every night they end up holding from the floor on: the nights this edit
-        // prices for them, plus any of their own earlier nights that another
-        // guest's window reaches back over, which are what keep the party count
-        // honest there.
         nightKeys:
           pricingFloorKey === undefined
             ? []
-            : entry.proposedNightKeys.filter((key) => key >= pricingFloorKey),
+            : proposedPassNightKeys(entry, pricingFloorKey),
         lockedNightPricesByKey: entry.storedNightPriceByKey,
       })),
       // No stored night prices to honour: every night is being bought now, so
@@ -959,10 +1055,15 @@ export function buildInProgressGuestRangePlan(
     //    the party for nights they already held, and removing one would have
     //    CHARGED them more for the same nights (INV-MOD-005, INV-MOD-006).
     //  - A night they GIVE BACK appears in this window only, so there is nothing
-    //    to cancel against and it is valued in the world it belonged to: the
-    //    pre-edit pass, under the party that held it. A party dropping below the
-    //    minimum on removal therefore never strips a discount it had earned from
-    //    the credit for the nights it is handing back (INV-MOD-006).
+    //    to cancel against, and it is valued exactly as it was before #2756: from
+    //    the pre-edit window, which is passed NO discount config. A guest whose
+    //    rows record what they paid is credited that, discount included, through
+    //    the lock — which is how INV-MOD-006's "a party dropping below the minimum
+    //    on removal never loses a discount it bought" is really achieved. A guest
+    //    with nothing recorded has no per-night evidence, so the fallback errs
+    //    toward the member at their own type's rate rather than guessing today's
+    //    party onto a night it may never have priced. See the pass itself for why
+    //    the more accurate stored-average valuation is a separate change.
     const rawOldFuturePriceCents = sumCents(
       oldWindowNightKeys.map((key) =>
         proposedNightKeySet.has(key)

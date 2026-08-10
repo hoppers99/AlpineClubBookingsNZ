@@ -102,6 +102,7 @@ import {
 import {
   calculateBookingHoldDecision,
   toGroupDiscountConfig,
+  toSeasonRateData,
 } from "@/lib/policies/booking-route-decisions";
 import {
   lockRosterDateRangesAndDates,
@@ -506,16 +507,11 @@ export async function modifyBookingDates({
       include: { membershipTypeRates: true },
     });
 
-    const seasonRateData: SeasonRateData[] = seasons.map((s) => ({
-      seasonId: s.id,
-      startDate: s.startDate,
-      endDate: s.endDate,
-      rates: s.membershipTypeRates.map((r) => ({
-        membershipTypeId: r.membershipTypeId,
-        ageTier: r.ageTier,
-        pricePerNightCents: r.pricePerNightCents,
-      })),
-    }));
+    // #2756: through the shared mapper, which carries the season's `type`. This
+    // is the ordinary date change INV-MOD-006 lists as a path the discount
+    // already reached; the hand-rolled literal it used dropped `type`, so at a
+    // club on the DEFAULT `summerOnly: true` setting it never did.
+    const seasonRateData: SeasonRateData[] = toSeasonRateData(seasons);
 
     const guestsForPricing = booking.guests.map((g) => ({
       bookingGuestId: g.id,

@@ -15,6 +15,7 @@ import {
 } from "@prisma/client";
 
 import { ApiError } from "@/lib/api-error";
+import logger from "@/lib/logger";
 import {
   ADULT_SUPERVISION_REVIEW_REASON,
   requiresAdultSupervisionReview,
@@ -51,7 +52,10 @@ import {
   MembershipTypeBookingPolicyError,
   priceBookingGuestsWithMembershipTypePolicy,
 } from "@/lib/membership-type-policy";
-import { toGroupDiscountConfig } from "@/lib/policies/booking-route-decisions";
+import {
+  toGroupDiscountConfig,
+  toSeasonRateData,
+} from "@/lib/policies/booking-route-decisions";
 import {
   deletePromoRedemptionAndAdjustCount,
   lockAndRefreshPromoCodeUsage,
@@ -1069,16 +1073,13 @@ export async function loadActiveSeasonRates(
     where: { active: true, ...lodgeNullTolerantScope(lodgeId) },
     include: { membershipTypeRates: true },
   });
-  return seasons.map((s) => ({
-    seasonId: s.id,
-    startDate: s.startDate,
-    endDate: s.endDate,
-    rates: s.membershipTypeRates.map((r) => ({
-      membershipTypeId: r.membershipTypeId,
-      ageTier: r.ageTier,
-      pricePerNightCents: r.pricePerNightCents,
-    })),
-  }));
+  // #2756: through the shared mapper, which carries the season's `type`. This
+  // used to hand-roll a four-key literal without it, and because
+  // `SeasonRateData.type` is optional that compiled silently and switched the
+  // group discount off for every club on the DEFAULT `summerOnly: true` setting —
+  // on this function's two consumers, which are the apply path's in-progress
+  // planner and its ordinary pricing pass alike.
+  return toSeasonRateData(seasons);
 }
 
 export type PricingResult = {
@@ -1325,23 +1326,46 @@ export async function calculateModifiedPricing(
 
   let inProgressPlan: BookingEditGuestRangePlan | null = null;
   if (isInProgressEdit && editableFrom) {
-    inProgressPlan = buildInProgressGuestRangePlan({
-      booking: {
-        checkIn: booking.checkIn,
-        checkOut: booking.checkOut,
-        totalPriceCents: booking.totalPriceCents,
-        discountCents: booking.discountCents,
-        promoAdjustmentCents: booking.promoAdjustmentCents,
-        finalPriceCents: booking.finalPriceCents,
-        guests: policyAdjustedExistingGuests,
-      },
-      editableFrom,
-      newCheckOut,
-      addGuests: policyAdjustedAddGuests,
-      removeGuestIds,
-      seasons: seasonRateData,
-      groupDiscount,
-    });
+    // #2756: the same mapping the QUOTE route already applies around its own call
+    // to this planner (`modify-quote/route.ts`, "Unable to price the requested
+    // future-night changes", 400). The plan can fail for the one reason the
+    // ordinary pricing pass below can — no season rate covers a night it has to
+    // price — and that pass has been mapped to a 400 all along, from inside the
+    // `try` further down. This call sits outside it because the capacity check
+    // needs the plan first, so the same failure surfaced as an unmapped error on
+    // apply while the preview returned a clean 400. Preview and apply now agree on
+    // the refusal as well as on the price.
+    try {
+      inProgressPlan = buildInProgressGuestRangePlan({
+        booking: {
+          checkIn: booking.checkIn,
+          checkOut: booking.checkOut,
+          totalPriceCents: booking.totalPriceCents,
+          discountCents: booking.discountCents,
+          promoAdjustmentCents: booking.promoAdjustmentCents,
+          finalPriceCents: booking.finalPriceCents,
+          guests: policyAdjustedExistingGuests,
+        },
+        editableFrom,
+        newCheckOut,
+        addGuests: policyAdjustedAddGuests,
+        removeGuestIds,
+        seasons: seasonRateData,
+        groupDiscount,
+      });
+    } catch (error) {
+      // An ApiError is already a decided refusal with its own wording and status
+      // (the plan's own guards do not raise one today, but re-throwing keeps this
+      // from ever swallowing one that is added later).
+      if (error instanceof ApiError) {
+        throw error;
+      }
+      logger.error(
+        { err: error, bookingId: booking.id },
+        "Failed to build the in-progress edit plan",
+      );
+      throw new ApiError("No season rate found for the requested dates", 400);
+    }
   }
 
   const pricingLodgeId = booking.lodgeId ?? (await getDefaultLodgeId(tx));
