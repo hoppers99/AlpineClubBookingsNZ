@@ -105,9 +105,9 @@ correctly, and for anyone extending the taxonomy in AID-6B or AID-6C.
 | Category | Correlation entry | Reader needs | What actually records there |
 | --- | --- | --- | --- |
 | `system`, `security` | System | `support:view` | Setup, credentials, password/magic-link policy, backups, auth events and auth bounces, PIN login |
-| `admin` | System | `support:view` | **The cross-domain catch-all** — still the largest category in the codebase (96 write sites, down from 118 in #2730). Member merge, member-lifecycle delete/archive, member import, lodge-access changes, seasonal membership assignments, internet-banking **payment settings**, booking-request **settings**, chores, lockers, work parties, lodge instructions, lodge settings, the `LODGE_*` lodge records themselves, access roles, modules. **Not bed allocation** any more, and not the lodge display configuration — both are `lodge`, for the rows already written as well as the new ones (#2730 moved the writers, #2751 moved the rows) |
+| `admin` | System | `support:view` | **The cross-domain catch-all** — still the largest category in the codebase (98 write sites: 118 before #2730, 96 after it, 98 after #2755). Member merge, member-lifecycle delete/archive, member import, lodge-access changes, seasonal membership assignments, internet-banking **payment settings**, booking-request **settings**, chores, lockers, work parties, lodge instructions, lodge settings, the `LODGE_*` lodge records themselves, access roles, modules. Also **an officer editing another member's record** — every field, plus activate, deactivate and role changes — from the member page *and* the bulk screen alike, for rows written from #2755 onwards. **Not bed allocation** any more, and not the lodge display configuration — both are `lodge`, for the rows already written as well as the new ones (#2730 moved the writers, #2751 moved the rows) |
 | `booking` | Booking | `support:view` + `bookings:view` | Member-facing and system booking events. Not booking *settings* — those are `admin` |
-| `account` | Membership | `support:view` + `membership:view` | Member self-service: profile edits, notification preferences, post-login landing, membership cancellation, member photos, membership applications and nomination |
+| `account` | Membership | `support:view` + `membership:view` | Member self-service **only**: profile edits, notification preferences, post-login landing, membership cancellation, member photos, membership applications and nomination. An officer editing somebody else's record is `admin` from #2755 onwards, including the bulk screen's activate/deactivate, which recorded here before |
 | `family` | Membership | `support:view` + `membership:view` | Family groups, partner links, login-holder changes, dependents |
 | `communication` | Membership | `support:view` + `membership:view` | Bulk email, notices, delivery suppressions, credential-email reissues, age-up parent handoffs |
 | `privacy` | Membership | `support:view` + `membership:view` | Deletion requests, member export, member-guest resolution, **admin issue reports** — even though Issue Reports is a `support` screen |
@@ -172,12 +172,36 @@ generalised rule is **INV-OPS-012** — an audit reclassification ships its back
 one — with the honest note that only the pinned population can be checked mechanically.
 
 The other 96 `admin` writers were read in the same pass: 87 were deliberately kept and
-nine are held for an owner decision, because their destinations are member-visible and the
+nine were held for a decision, because their destinations are member-visible and the
 move would publish the row on a member-facing surface.
 [**The `admin` audit category, reviewed site by site**](audit-admin-category-review.md)
 records the verdict and the reason for every one of them, the alternative reading where
 there was a real one, and the fifteen lodge-gated sites that are an open question rather
 than a settled keep.
+
+**One of those nine was resolved in #2755, and it moved TWO more writers IN rather than
+out.** Editing, activating, deactivating or re-roling a member's record from an officer
+screen was filed by the SCREEN used — `admin` from the member detail page, `account` and
+`security` from the bulk screen — so one business act answered to two different
+correlation entries and a category-scoped reader saw part of the picture with nothing to
+say so. All three now say `admin`, which keeps them in this entry. `account` and
+`security` are both member-visible and all three rows reach the subject member's own
+timeline, so unifying on either would have published an officer's edits of a member's
+record on that member's own timeline; declaring visibility per event instead is decided
+(#2695) but not yet built, so until it lands the category is the only lever. **The cost,
+stated plainly:** the bulk activate/deactivate rows move from `support` + `membership` to
+`support` alone, so a support-only operator gains them — the same gate the member-page
+equivalent has always answered to — and the subject member stops seeing them on their own
+timeline. As with bed allocation this moved the WRITERS and not the stored rows, so bulk
+member-record evidence recorded before the release is returned by the **membership** entry
+and stays member-visible: split by date, with the backfill question filed as #2763 (and
+deliberately not folded into #2751, because rewriting these rows would withdraw entries a
+member can see today, which bed allocation's rewrite would not).
+
+The rule this produced (`INV-PRIV-012`) is scoped to those six action names, **not** to
+"an officer acted": a member's photo changed by an officer on their behalf, and an
+officer's decisions on a member's cancellation, stay `account` and stay in the
+**membership** entry on purpose.
 
 The consequence to keep in mind: a correlation tool answering "nothing matched" is
 answering about **its own categories**, not about the domain. A Membership Officer

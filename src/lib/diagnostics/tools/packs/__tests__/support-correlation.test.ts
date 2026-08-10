@@ -653,16 +653,25 @@ describe("AID-6A correlation SQL shape (#2375)", () => {
     //
     // THE SCOPE LINES AND THE ROWS SHARE ONE BUDGET, which is the reason to keep this
     // per entry rather than on the widest. Re-measured after #2751 rewrote the two
-    // bed-allocation sentences (#2730's own re-measure read 432 to 1 002 characters,
-    // with 132 spare on the system entry and 185 on the lodge one): the scopes now run
-    // from 432 to 1 025 characters, and the five entries still render all 22 whole
-    // rows — the system entry with 109 characters of the 8 000 to spare, the lodge
-    // entry with 230. The system entry is now the tighter of the two, because closing
-    // the date split moved words OFF the lodge entry and ONTO it. This assertion has
-    // already earned its keep:
-    // #2730's first draft of the system `scope` overran by seven characters and the
-    // block silently dropped a row, which is exactly the failure "room to spare" would
-    // have hidden. A prose edit here is a capacity edit; re-run this before assuming
+    // bed-allocation sentences on top of #2755's system and membership additions
+    // (#2730 read 432 to 1 002 characters with 132 spare on the system entry;
+    // #2755 read 432 to 1 094 with 40 spare on system, 55 on membership and 185 on
+    // lodge): the scopes now run from 432 to 1 080 characters, and the five entries
+    // still render all 22 whole rows — the system entry with 64 characters of the
+    // 8 000 to spare, the membership entry with 55 and the lodge entry with 230.
+    // This assertion has already earned that TWICE: #2730's first draft of the
+    // system `scope`
+    // overran by seven characters and the block silently dropped a row, and #2755's
+    // first draft overran by 252 and dropped two, which is exactly the failure
+    // "room to spare" would have hidden.
+    //
+    // THE SYSTEM ENTRY IS THE TIGHT ONE, and its ceiling is known exactly: 1 134
+    // characters of `scope` render 22 rows and 1 136 render 21. It is the entry every
+    // classification change has to annotate, because `admin` is where the catch-all
+    // lives, so expect the next such change to have to BUY its words by shortening
+    // something rather than by appending — which is what #2751 did here, replacing
+    // the bed-allocation split sentence with a shorter one that says the split is
+    // closed. A prose edit here is a capacity edit; re-run this before assuming
     // otherwise.
     for (const entry of DIAGNOSTICS_SUPPORT_CORRELATION_TOOLS) {
       expect(entry.rowLimit).toBe(22);

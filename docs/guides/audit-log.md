@@ -70,20 +70,20 @@ There are eleven, and each one belongs to exactly one AI Diagnostics area:
 
 | Category | What records there | Who can correlate it in AI Diagnostics |
 | --- | --- | --- |
-| `admin` | The **catch-all for anything an administrator did** that has no narrower home — member merges, lifecycle decisions, imports, seasonal assignments, booking message wording, internet-banking settings, and settings for chores, lockers, work parties, lodges and lodge instructions. Still the largest category by a long way | Support only |
-| `security` | Credentials, password and magic-link policy, PIN login, sign-in problems, AI Diagnostics use itself, **sending a member a password reset or a setup invite**, and **bulk role changes** | Support only |
+| `admin` | The **catch-all for anything an administrator did** that has no narrower home — member merges, lifecycle decisions, imports, seasonal assignments, booking message wording, internet-banking settings, and settings for chores, lockers, work parties, lodges and lodge instructions. Also **an officer editing a member's record** — their fields, plus activate, deactivate and role changes — from the member page *and* from the bulk screen alike. Still the largest category by a long way | Support only |
+| `security` | Credentials, password and magic-link policy, PIN login, sign-in problems, AI Diagnostics use itself, and **sending a member a password reset or a setup invite**. Bulk role changes used to record here and are now `admin`, with the member-page equivalent | Support only |
 | `system` | Setup, backups, platform-level events | Support only |
 | `booking` | Member-facing and automatic booking events, **and the booking rules themselves** — booking policies, booking periods, age tiers, seasons and promotional codes | Support **+ Bookings** |
 | `payment` | Charges, refunds, credits, settlements, **subscription billing, member credit adjustments and fee configuration** | Support **+ Finance** |
 | `xero` | Xero sync, mappings, reconciliation, **settings, replays and retries** | Support **+ Finance** |
 | `lodge` | Rosters, guest arrival and departure, **all bed allocation** — an administrator's manual, bulk, range and approval actions as well as the automatic ones — **display layouts, templates, devices and the lodge display configuration, lodge kiosk accounts**, and **induction** (even though Induction sits under Membership) | Support **+ Lodge** |
-| `account` | A member's own record: profile edits, notification preferences, membership cancellation, photos, **membership applications and nominations**, and **bulk activate/deactivate** | Support **+ Membership** |
+| `account` | A member's **own** record: profile edits, notification preferences, membership cancellation, photos, **membership applications and nominations**. An officer *editing the record's fields or activating, deactivating or re-roling the member* is `admin` instead, whichever screen they used. Two things an officer does are deliberately still here, because the thing itself belongs to the member: changing a member's **photo** for them, and deciding a member's **cancellation** | Support **+ Membership** |
 | `family` | Family groups, partner links, login-holder changes, **dependant links and unlinks** | Support **+ Membership** |
 | `communication` | Bulk email, member notices, **delivery-suppression clearances**, credential-email reissues | Support **+ Membership** |
 | `privacy` | **Deletion requests and the decisions on them**, member exports, member-guest lookups, **issue reports** (even though Issue Reports sits under Support) | Support **+ Membership** |
 
-**Three of those rows changed in this release, and all three change who can see
-what.**
+**Several of those rows changed in this release, and every one of them changes who
+can see what.**
 
 - **Communication entries now need Membership access to correlate**, not Support
   alone. Somebody with Support access only can no longer pull bulk-email or
@@ -164,19 +164,60 @@ the new arrivals. Four things are worth an operator's attention:
   credit adjustments and fee configuration correlate through the Finance tool, on
   the same "nobody loses anything" footing.
 - **Only three kinds of entry joined the Support-only categories**: sending a
-  member a password reset, sending a setup invite, and a bulk role change. All
-  three are about a *credential or a permission*, which is why they are `security`
-  rather than `communication` or `account`. AI Diagnostics never returns the
-  stored details of an entry — only the action, category, severity, outcome, what
-  kind of record it concerned and when — so the recipient's email address in those
-  entries does not travel with them.
+  member a password reset, sending a setup invite, and a bulk role change. The
+  first two are about a *credential*, which is why they are `security` rather than
+  `communication` or `account`; the bulk role change went to `security` at first
+  and then to `admin`, in the change described below. AI Diagnostics never returns
+  the stored details of an entry — only the action, category, severity, outcome,
+  what kind of record it concerned and when — so the recipient's email address in
+  those entries does not travel with them.
+- **An officer editing a member's record is now `admin` whichever screen they
+  used**, and this is the one change in this release that takes something away
+  from a member rather than from an operator. The same act used to be filed three
+  ways: editing or deactivating one member from the member page recorded `admin`;
+  doing it to a selection from the bulk screen recorded `account`; and a bulk role
+  change recorded `security`. So the category — and therefore who could find the
+  entry — depended on which screen the officer happened to open, which is exactly
+  what the category is not supposed to mean.
+
+  All three now record `admin`. **What a member loses:** they could see a bulk
+  deactivation or bulk role change of their own account on their own profile
+  timeline, and can no longer — but they never saw the same act done from the
+  member page, so what actually changes is that the answer is now consistent
+  instead of depending on the officer's route. Making these entries member-visible
+  everywhere was the alternative and is a bigger decision: it will be taken per
+  kind of entry, at the point each entry is recorded, rather than as a side effect
+  of tidying the labels. That approach is decided but **not built yet**, so for now
+  the category is the only control there is and these two kinds of entry are simply
+  not on the member's timeline. **What an operator gains:** bulk deactivations and
+  bulk role changes now correlate with **Support** access alone, where the bulk
+  activate/deactivate half previously needed Membership too — the same access the
+  member-page equivalent has always needed.
+
+  **Three things an officer does are deliberately unchanged**, because what they
+  touch belongs to the member rather than to the administration of the record: a
+  member editing their own profile stays `account` (it is the member's own action);
+  an officer changing a member's **photo** for them stays `account` and stays on
+  that member's timeline, which was itself a deliberate correction in an earlier
+  release; and an officer's decision on a member's **cancellation** stays `account`,
+  because the member asked for it and should see the answer. The scope of this
+  change is the member's fields, activation and roles — not "anything an officer
+  did to a member".
+
+  As with bed allocation, this moved where *new* entries are filed and rewrote
+  nothing already recorded, so bulk member entries recorded before this release
+  are still found under **Account** and **Security** and are still on the
+  member's own timeline. Whether to rewrite them is a separate question, and the
+  recommendation is to leave them alone — rewriting would take entries away from
+  members who can see them today.
 - **A few kinds of entry also change which Category filter finds them, so this is
   not purely a list of arrivals.** An entry with no category is placed by
   guesswork on its action name, and that guess can file one entry under *several*
   filters at once; an entry that carries a category is returned by that category
   and by **All**, and by nothing else. So: card payment results on a booking move
-  out of **Bookings** into **Payments**; password resets, setup invites and bulk
-  role changes move out of **Account** into **Security**; clearing a delivery
+  out of **Bookings** into **Payments**; password resets and setup invites move
+  out of **Account** into **Security**, and bulk role changes and bulk
+  activate/deactivate out of **Account** into **Admin**; clearing a delivery
   suppression moves out of **Account** into **Communication**; credit
   adjustments, dependant links and unlinks, and deletion requests and the
   decisions on them stop doubling up under **Account** and now appear only under
@@ -195,7 +236,15 @@ Admin, Lodge, Xero or System. Three sets of entries were recorded under category
 names that did not exist (`membership` on membership applications, `auth` on
 sign-in bounces) or under `admin` (an administrator changing a member's photo for
 them), so members could not see them; corrected to real categories, they now
-appear. Each entry concerns the member reading it, and a member's view never
+appear — and the photo one **stays** corrected, because the photo is the member's
+own whoever uploaded it. Two sets moved the other way in the same release: a bulk
+deactivation and a bulk role change of a member's own account are now `admin`, so
+they leave the member's timeline — see the officer-edit change above for why, and
+note that entries already recorded keep the category they were written with and
+stay visible. If the two look inconsistent, the line between them is *what was
+touched*: a member's own photo or their own cancellation request stays theirs to
+see, while the administration of their record — fields, activation, roles — does
+not. Each entry concerns the member reading it, and a member's view never
 shows the stored metadata, the request ID, the IP address, the user agent, the
 retention class or any drill-down link. It **does** show the entry's own
 free-text line where it has one: that line is dropped only when what the entry

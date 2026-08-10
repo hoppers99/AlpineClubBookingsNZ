@@ -4,9 +4,18 @@
 `category: "admin"`, read one at a time against the owner's rule that **the
 category follows the business domain the event affected, never who performed
 it**. Twenty-two were wrong and were moved, eighty-seven were read and kept, and
-nine are held for an owner decision because moving them would publish rows on a
+nine were held for a decision because moving them would publish rows on a
 member-facing surface. This page says why for each, rather than leaving `admin`
 to look like the absence of a decision.
+
+**One of the nine has since been resolved, and the resolution went the other
+way.** #2755 unified the three writers of *an officer editing somebody else's
+member record* on `admin` by moving the two bulk-screen branches IN, rather than
+moving the member-page writer out into a member-visible category. Eight of the
+nine remain held. `admin` therefore reads 98 sites now, not 96, and the rule that
+came out of it is `INV-PRIV-012` — which is also where the fifteen lodge-gated
+sites and the unresolved `lockers` group are now recorded, instead of only in the
+open-question section at the foot of this page.
 
 **What this page is not.** It is a record of where the platform FILES new rows. It
 changed no row already in the database, which left bed-allocation history split by
@@ -370,12 +379,23 @@ is a genuine alternative — consent is the privacy domain (`INV-PRIV`) — but
 would publish a settings change on the acting administrator's activity page and
 narrow the operator gate at the same time. Kept, and flagged as re-decidable.
 
-## Held for an owner decision: 9 sites
+## Held for an owner decision: 9 sites, of which 8 are still held
 
 Two of #2730's own findings, plus one the sweep turned up, that this pass **did
 not** apply. Every destination is member-visible, so each move publishes rows on
 a member-facing surface. A widening is not a refactor and is not this lane's to
 take.
+
+**One of the three has since been resolved, and not by widening.** The
+member-record writer below (`admin.member.*`, 1 site) was closed in #2755 by
+moving the OTHER TWO writers of the same act — both branches of
+`bulk-update/route.ts` — **into** `admin`, rather than by moving this one out.
+The split is gone and nothing crossed onto a member-facing surface. Its section
+below is kept and updated in place rather than deleted, because the comparison it
+sets out is the reasoning, and the **eight** remaining held sites — the six
+`member_lifecycle` sites and the two family-suggestion sites below — are still
+held on exactly the grounds it states. `INV-PRIV-012` is the rule that came out of
+it.
 
 ### `member_lifecycle.delete_*` and `archive_*` — 6 sites
 
@@ -408,38 +428,89 @@ officer's** own activity page. The names in the row travel in `metadata`, which
 the member projection withholds. It is the smallest widening on this page and
 still a widening.
 
-### `admin.member.updated` / `.deactivated` / `.reactivated` — 1 site
+### `admin.member.updated` / `.deactivated` / `.reactivated` — 1 site — RESOLVED in #2755
 
 `src/lib/admin-member-detail-service.ts`. **Not one of #2730's four findings —
-the sweep turned it up, and it is the weakest `admin` left in the tree.** It is
+the sweep turned it up, and it was the weakest `admin` left in the tree.** It was
 filed by the SCREEN the officer used, which is initiator reasoning wearing a
 different hat:
 
-| The same business act | Where it is filed |
-| --- | --- |
-| Deactivate one member from the member page | `admin` — this site |
-| Deactivate the same members from the bulk screen (`member.bulk-deactivate`) | `account` |
-| Change one member's access roles from the member page | `admin` — this site, as `admin.member.updated` |
-| Change the same roles from the bulk screen (`member.bulk-set-role`) | `security` |
-| The member edits the same profile fields themselves | `account` |
+| The same business act | Where #2730 left it | Where #2755 files it |
+| --- | --- | --- |
+| Deactivate one member from the member page | `admin` — this site | `admin` |
+| Deactivate the same members from the bulk screen (`member.bulk-deactivate`) | `account` | `admin` |
+| Change one member's access roles from the member page | `admin` — this site, as `admin.member.updated` | `admin` |
+| Change the same roles from the bulk screen (`member.bulk-set-role`) | `security` | `admin` |
+| The member edits the same profile fields themselves (`/api/profile`) | `account` | `account` — unchanged |
 
-The comparison is inside the platform, not imported: `bulk-update/route.ts` sets
+The comparison was inside the platform, not imported: `bulk-update/route.ts` set
 out the rule in its own comment — the account itself is `account`, what a member
-is permitted to do is `security` — and names picking by who acted as "the exact
-thing the owner rule forbids". The consequence for a member is visible: they see
-a bulk deactivation on their own activity list and see **nothing** when an
-officer deactivates them from the member page.
+is permitted to do is `security` — and named picking by who acted as "the exact
+thing the owner rule forbids". The consequence for a member was visible: they saw
+a bulk deactivation on their own activity list and saw **nothing** when an
+officer deactivated them from the member page.
 
-It is held rather than kept because both destinations are member-visible and this
-writer passes `subjectMemberId`, so the move publishes the row **to the member it
-is about**. If the owner approves, the fix is the split `bulk-update/route.ts`
-already uses — `security` when the change set is access roles, `account`
-otherwise — written as two calls with literal categories, never a conditional
-(the census contract pins that no production writer picks its category with a
-conditional expression). If the owner declines, the keep needs a domain argument
-that survives the comparison above; "another writer already covers the
-member-facing half" is not one, which is why the earlier draft of this page
-recording it as a settled keep was wrong.
+**#2755 closed it by moving the bulk screen's two branches to `admin`, not by
+moving this site out.** The rule is that category follows the business domain
+affected, and editing, activating, deactivating or re-roling somebody's member
+record is one domain: the administration of that record, however many screens
+reach it. Both alternatives were member-visible and all three rows reach the
+subject member's own timeline, so unifying on either would have published an
+officer's edits **to the member the record is about** — and audit rows are
+append-only, so that is not quietly reversible. (Only the detail writer passes
+`subjectMemberId`; the two bulk writers pass none and reach the member through
+`buildMemberAuditLogWhere`'s null-subject `targetId` leg. "Has no subject" is not
+a reason to think a move is invisible.) Whether a member should see a given event
+is meant to become an explicit per-event declaration at the writing site, denied
+by default, rather than a consequence of which label a classification sweep
+reached for — #2695 decided that on 9 Aug 2026 and it is **not built yet**, so in
+the meantime the category is the only lever and these two events are simply
+invisible to the member.
+
+**The rule that came out of this is scoped to those six actions, not to "an
+officer acted".** Other officer-driven writers file member-visible categories on
+purpose and stay that way: the member-photo pair (#2581's own worked example,
+`account` on the on-behalf branch deliberately — and the photo editor renders on
+this very screen in `mode="admin"`) and the officer-driven cancellation writers.
+`INV-PRIV-012` names them, and
+`OFFICER_DRIVEN_MEMBER_VISIBLE_WRITERS_2755` pins them from the tree, so citing
+the unification to sweep them into `admin` fails CI with the withdrawal named.
+
+**The last row of the table did not move, deliberately.** `/api/profile` is the
+member editing their own record: actor IS subject, no on-behalf path, so it is
+self-service rather than administration. Filing it `admin` would hide a member's
+own action from their own timeline. #2755's issue body listed it among the split
+sites and gave an anchor (`api/admin/members/[id]/profile/route.ts`) that does not
+exist in the tree; the `security` site it meant is the bulk screen's set-role
+branch.
+
+**What the resolution costs, since it is a narrowing in two directions.** The
+subject member stops seeing a bulk deactivation or bulk role change of their own
+account (they already saw nothing when an officer used the member page, so the
+result is uniform invisibility rather than visibility decided by screen), and the
+two bulk rows move from `support` + `membership` to `support` alone — the gate
+this site has always answered to. Retention is untouched: all six action names
+classify `critical` under the old and new values alike. And as with bed
+allocation it moved the WRITERS, not the stored rows, so bulk member-record
+evidence recorded before the release is still `account`/`security`, still in the
+membership correlation entry and still on the member's own timeline. Both
+correlation entries' prose says so. The backfill question is **#2763**, filed
+separately from #2751 rather than folded into it: #2751's bed-allocation rows move
+between two member-invisible categories, so no member's view changes either way,
+while rewriting these rows would **withdraw** entries a member can see about their
+own account today. That is a different decision, and it is the recommendation on
+#2763 to leave them alone.
+
+Pinned in `MEMBER_RECORD_ADMIN_CATEGORIES_2755` (per site),
+`MEMBER_RECORD_ADMIN_ACTIONS_2755` (by action name, with one level of same-file
+`const` indirection resolved and a corpus gate over every file that names one of
+the six literals) and `MEMBER_RECORD_ADMIN_SURFACES_2755` (every member-visible
+writer on the officer member-record surfaces must be a reviewed exception). So a
+fourth screen for the same act fails CI if it reuses one of the six action names
+however it assembles the string, or if it invents a new name on those surfaces and
+files a member-visible category. What is still a review question rather than a
+mechanical one is a new name for the same act written somewhere else entirely.
+Rule: `INV-PRIV-012`.
 
 ## The open question this pass did not have a decision for
 
@@ -459,6 +530,20 @@ same set. That was a real gap — "when was this lodge deactivated" returned
 nothing from the Lodge entry with no warning — and it is fixed whichever way the
 decision goes.
 
+**#2755 promoted both halves of that from a page note to an invariant, and left
+them at `admin`.** `INV-PRIV-012` records the fifteen as a deliberate keep with
+the rule they were measured against — *did this site split a subsystem*, not *does
+it name a lodge* and not *is the route gated `lodge:edit`* — and records that
+`lockers` (4 of the fifteen) is **unresolved rather than settled**, because its
+routes are gated `membership:*` and a locker is allocated to a named member, so
+`lodge` is not obviously its answer either. The point of moving it into the
+invariant is that a decision recorded only in a page attached to a closed issue is
+a decision the next author will not find; the fifteen were nearly re-swept twice
+already. The census distribution alone cannot protect them — it counts `admin`
+without saying which sites are in it — so if a later pass moves any of them, that
+is a readership change to argue for and the invariant is where the argument has to
+land.
+
 ## How to check this page is still true
 
 `npm run audit:census` prints the live distribution, and
@@ -466,14 +551,17 @@ decision goes.
 manifest moving with it. The numbers this page was written against:
 
 ```
-row-producing sites:  427
+row-producing sites:  428
 uncategorised:        0
-category values: admin 96, booking 101, xero 34, family 34, payment 33,
-                 lodge 52, account 20, security 19, privacy 19,
+category values: admin 98, booking 101, xero 34, family 34, payment 34,
+                 lodge 52, account 19, security 18, privacy 19,
                  communication 14, system 4
 ```
 
-96 = 87 kept + 9 held. The 22 moves are pinned **per site**, not only by that
+`admin` was 96 when this page was written for #2730 (87 kept + 9 held) and is 98
+after #2755 moved the two `bulk-update/route.ts` branches in, against `account`
+20 → 19 and `security` 19 → 18. The site total is unchanged at 428: #2755 moved
+categories and added no writer. The 22 moves are pinned **per site**, not only by that
 distribution: `REVIEWED_ADMIN_CATEGORIES_2730` in
 `scripts/audit/audit-writer-census-manifest.ts` records each one, and the census
 contract test measures the tree against it. A distribution cannot see a swap —

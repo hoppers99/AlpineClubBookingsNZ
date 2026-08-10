@@ -43,6 +43,7 @@ import {
   fontCssVariable,
   fontLabel,
   getContrastWarnings,
+  sanitiseRawCss,
   themeSeedsFromValues,
   type ClubThemeColourKey,
   type ClubThemeFontKey,
@@ -187,8 +188,18 @@ export function SiteStyleWizard({ initialTheme }: SiteStyleWizardProps) {
     bodyFontKey: initialTheme.bodyFontKey,
     logoUrl: initialTheme.logoUrl ?? null,
     logoDataUrl: initialTheme.logoDataUrl,
+    // Held for type completeness and merged into the save payload from the
+    // separate `rawCss` buffer below. Live edits never write it, so a keystroke
+    // in the Raw CSS tab does not change `values`' identity and therefore does
+    // not re-run the (expensive) colour-scale memos keyed on `[values]`.
     rawCss: initialTheme.rawCss ?? "",
   });
+  // Raw CSS lives in its own state so typing it stays cheap: it feeds none of
+  // the Radix colour-scale generation (contrast warnings, seed adjustments, the
+  // live preview, the generated-CSS core) — it is only appended, as a string,
+  // to the generated stylesheet. Keeping it out of `values` means those memos
+  // and the preview do not recompute on every character (perf fix).
+  const [rawCss, setRawCss] = useState<string>(initialTheme.rawCss ?? "");
   const [completedAt, setCompletedAt] = useState(initialTheme.completedAt);
   const [step, setStep] = useState<StepId>("colours");
   const [saving, setSaving] = useState(false);
@@ -248,7 +259,9 @@ export function SiteStyleWizard({ initialTheme }: SiteStyleWizardProps) {
       setFieldErrors({});
       return;
     }
-    const parsed = updateSchema.safeParse(themePayload(values, false));
+    const parsed = updateSchema.safeParse(
+      themePayload({ ...values, rawCss }, false),
+    );
     const errors: Record<string, string[] | undefined> = parsed.success
       ? {}
       : parsed.error.flatten().fieldErrors;
@@ -267,7 +280,7 @@ export function SiteStyleWizard({ initialTheme }: SiteStyleWizardProps) {
     }
 
     setFieldErrors(errors);
-  }, [updateSchema, values, logoBudget]);
+  }, [updateSchema, values, rawCss, logoBudget]);
   const contrastWarnings = useMemo(() => getContrastWarnings(values), [values]);
   // #2187: a seed is never rejected for contrast — the generator adjusts a
   // pathological pick and the substrate clears the guarantee sweep by
@@ -278,7 +291,23 @@ export function SiteStyleWizard({ initialTheme }: SiteStyleWizardProps) {
     () => contrastWarnings.filter((warning) => warning.ratio === null),
     [contrastWarnings],
   );
-  const cssPreview = useMemo(() => buildClubThemeCss(values), [values]);
+  // Memoised once and shared by both preview panes below. `previewStyle` runs
+  // the full app-token generation (two substrate builds); calling it inline in
+  // JSX ran it twice per render, so this both dedupes it and keeps it off the
+  // Raw CSS keystroke path (it does not depend on rawCss).
+  const previewStyleValue = useMemo(() => previewStyle(values), [values]);
+  // The generated-CSS preview is split so a Raw CSS keystroke never re-runs the
+  // colour pipeline. `coreThemeCss` (keyed on `values`) is the heavy part; the
+  // live rawCss is only appended — sanitised the same way buildClubThemeCss does
+  // it internally — so the result stays byte-identical to what ships.
+  const coreThemeCss = useMemo(
+    () => buildClubThemeCss({ ...values, rawCss: "" }),
+    [values],
+  );
+  const cssPreview = useMemo(() => {
+    const safe = sanitiseRawCss(rawCss);
+    return safe ? `${coreThemeCss}\n${safe}` : coreThemeCss;
+  }, [coreThemeCss, rawCss]);
 
   function updateColour(key: ClubThemeColourKey, value: string) {
     setValues((current) => ({ ...current, [key]: value }));
@@ -294,7 +323,7 @@ export function SiteStyleWizard({ initialTheme }: SiteStyleWizardProps) {
   }
 
   function updateRawCss(value: string) {
-    setValues((current) => ({ ...current, rawCss: value }));
+    setRawCss(value);
     setSavedMessage("");
   }
 
@@ -309,7 +338,7 @@ export function SiteStyleWizard({ initialTheme }: SiteStyleWizardProps) {
         method: "PUT",
         credentials: "same-origin",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(themePayload(values, completeSetup)),
+        body: JSON.stringify(themePayload({ ...values, rawCss }, completeSetup)),
       });
       const body = await response.json().catch(() => null);
       if (!response.ok || !body?.theme) {
@@ -330,6 +359,8 @@ export function SiteStyleWizard({ initialTheme }: SiteStyleWizardProps) {
         logoDataUrl: theme.logoDataUrl,
         rawCss: theme.rawCss ?? "",
       });
+      // Keep the live Raw CSS buffer in step with what the server persisted.
+      setRawCss(theme.rawCss ?? "");
       // The server is now the authority on what is stored, so the "unchanged"
       // baseline for the 64KB budget moves with it (#2322).
       serverLogoDataUrlRef.current = theme.logoDataUrl ?? null;
@@ -372,6 +403,7 @@ export function SiteStyleWizard({ initialTheme }: SiteStyleWizardProps) {
     logoGenerationRef.current += 1;
     setUploadingLogo(false);
     setValues(DEFAULT_CLUB_THEME_VALUES);
+    setRawCss(DEFAULT_CLUB_THEME_VALUES.rawCss);
     setCompletedAt(null);
     setSavedMessage("");
     setError("");
@@ -636,7 +668,7 @@ export function SiteStyleWizard({ initialTheme }: SiteStyleWizardProps) {
                   possible.
                 </p>
                 <textarea
-                  value={values.rawCss}
+                  value={rawCss}
                   onChange={(e) => updateRawCss(e.target.value)}
                   rows={16}
                   spellCheck={false}
@@ -644,9 +676,9 @@ export function SiteStyleWizard({ initialTheme }: SiteStyleWizardProps) {
                   placeholder={`/* Example */\n.dynamic-header {\n  background: linear-gradient(135deg, #1a1a2e, #16213e);\n}`}
                   className="w-full rounded-md border border-slate-300 bg-white p-3 font-mono text-xs text-slate-900 focus:outline-none focus:ring-2 focus:ring-slate-400"
                 />
-                {values.rawCss.length > 45_000 && (
+                {rawCss.length > 45_000 && (
                   <p className="text-sm text-warning-11">
-                    {values.rawCss.length.toLocaleString()} / 50,000 characters
+                    {rawCss.length.toLocaleString()} / 50,000 characters
                     used.
                   </p>
                 )}
@@ -749,13 +781,13 @@ export function SiteStyleWizard({ initialTheme }: SiteStyleWizardProps) {
                     {cssPreview}
                   </pre>
                 </div>
-                {values.rawCss && (
+                {rawCss && (
                   <div className="space-y-1">
                     <p className="text-xs font-medium text-foreground">
                       Raw CSS
                     </p>
                     <pre className="max-h-40 overflow-auto rounded-md bg-slate-950 p-3 text-xs text-slate-100">
-                      {values.rawCss}
+                      {rawCss}
                     </pre>
                   </div>
                 )}
@@ -766,7 +798,7 @@ export function SiteStyleWizard({ initialTheme }: SiteStyleWizardProps) {
           <aside className="space-y-4">
             <div
               className="website-theme overflow-hidden rounded-md border border-brand-ridge/25 bg-brand-snow text-brand-deep"
-              style={previewStyle(values)}
+              style={previewStyleValue}
             >
               <div className="bg-brand-charcoal px-5 py-4 text-brand-snow">
                 <div className="flex items-center gap-3">
@@ -803,7 +835,7 @@ export function SiteStyleWizard({ initialTheme }: SiteStyleWizardProps) {
 
             <div
               className="app-theme-scope space-y-4 overflow-hidden rounded-md border bg-background p-5 text-foreground"
-              style={previewStyle(values)}
+              style={previewStyleValue}
             >
               <div>
                 <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
