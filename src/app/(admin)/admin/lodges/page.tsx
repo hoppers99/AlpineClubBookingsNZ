@@ -409,7 +409,7 @@ export default function AdminLodgesPage() {
         </CardContent>
       </Card>
 
-      <OtherLodgesPanel />
+      <OtherLodgesPanel ancestorRendersViewOnlyBanner />
       </div>
     </div>
   );

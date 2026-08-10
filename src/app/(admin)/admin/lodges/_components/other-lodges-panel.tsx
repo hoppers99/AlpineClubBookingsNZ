@@ -23,7 +23,6 @@ import {
 import { useAdminAreaEditAccess } from "@/hooks/use-admin-area-edit-access";
 import {
   ADMIN_FORBIDDEN_SAVE_REASON,
-  AdminViewOnlySectionBanner,
   ViewOnlyActionButton,
 } from "@/components/admin/view-only-action";
 
@@ -80,7 +79,16 @@ function formPayload(form: OtherLodgeFormState) {
   };
 }
 
-export function OtherLodgesPanel() {
+export function OtherLodgesPanel({
+  // #2160/#2168 vouch: the Lodges page renders one lodge-area
+  // AdminViewOnlySectionBanner above this panel and passes `true` at the render
+  // site, so this panel does not render its own banner (that would nest two) and
+  // its controls opt out of the per-button reason. Defaults false so the panel
+  // still explains itself if ever rendered without a covering banner.
+  ancestorRendersViewOnlyBanner = false,
+}: {
+  ancestorRendersViewOnlyBanner?: boolean;
+}) {
   // Same edit gate as the club's own lodges: the write routes enforce lodge:edit,
   // so a lodge:view admin sees this panel read-only.
   const canEdit = useAdminAreaEditAccess("lodge");
@@ -220,11 +228,6 @@ export function OtherLodgesPanel() {
 
   return (
     <div className="space-y-4">
-      <AdminViewOnlySectionBanner canEdit={canEdit}>
-        Your admin role can view other lodges but cannot change them. Lodge edit
-        access is required.
-      </AdminViewOnlySectionBanner>
-
       <div className="flex items-center justify-between">
         <div>
           <h2 className="text-xl font-semibold">Other lodges</h2>
@@ -236,7 +239,7 @@ export function OtherLodgesPanel() {
         </div>
         <ViewOnlyActionButton
           canEdit={canEdit}
-          describeReason={false}
+          describeReason={!ancestorRendersViewOnlyBanner}
           onClick={startCreate}
           disabled={saving || showForm}
         >
@@ -358,7 +361,7 @@ export function OtherLodgesPanel() {
             <div className="flex gap-2">
               <ViewOnlyActionButton
                 canEdit={canEdit}
-                describeReason={false}
+                describeReason={!ancestorRendersViewOnlyBanner}
                 onClick={() => void submitForm()}
                 disabled={saving}
               >
@@ -440,7 +443,7 @@ export function OtherLodgesPanel() {
                         <div className="flex justify-end gap-2">
                           <ViewOnlyActionButton
                             canEdit={canEdit}
-                            describeReason={false}
+                            describeReason={!ancestorRendersViewOnlyBanner}
                             variant="outline"
                             size="sm"
                             onClick={() => startEdit(lodge)}
@@ -451,7 +454,7 @@ export function OtherLodgesPanel() {
                           </ViewOnlyActionButton>
                           <ViewOnlyActionButton
                             canEdit={canEdit}
-                            describeReason={false}
+                            describeReason={!ancestorRendersViewOnlyBanner}
                             variant="outline"
                             size="sm"
                             onClick={() => void deleteLodge(lodge)}
