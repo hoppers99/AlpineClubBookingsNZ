@@ -39,6 +39,31 @@ edit or delete an entry. Retention and optional archival are governed by the
    user agent, retention class, and every drill-down target. Use **Reset** to
    restore search, filters, and page while keeping unrelated URL context.
 
+### Sharing or bookmarking a filtered view
+
+The filters live in the page address, so a link or a bookmark restores the same
+view. The **Member** filter travels as the member's **id only** — never their
+name or email address, because a page address reaches browser history, every
+proxy or CDN access log in front of the site, and the `Referer` header of any
+link you follow out of the page (#2733). When the page loads such a link it looks
+the member up and shows their name on the chip, so an id-only address still reads
+normally.
+
+If your role can read the audit log but not the membership roll (support access
+without membership access), the name on the chip comes from the audit entries on
+screen instead, and reads **Selected member** only when none of them names that
+member. Either way the filter itself works — only the label depends on where the
+name can be read from.
+
+A bookmark saved **before** this change still has the name and email in it. From
+the first time you open it, the page drops them from the address so they are not
+carried on into new history entries or passed to the next page you click through
+to. That is a fix going forward, not a clean-up: the visit itself has already been
+recorded — in this browser's history, and in the access log of anything sitting in
+front of the site — and nothing the page does afterwards can remove those. If that
+matters for a particular bookmark, replace the bookmark and clear that history
+entry on the machine that holds it.
+
 ## Settings reference
 
 The audit log has no editable settings. Its filters:
@@ -47,7 +72,7 @@ The audit log has no editable settings. Its filters:
 | --- | --- |
 | Event Type | Restrict to one recorded event action |
 | Category | One of account, booking, payment, family, admin, security, lodge, xero, communication, privacy, system |
-| Member + Member Scope | A specific member, matched as the actor, the subject, or either (*Involves*) |
+| Member + Member Scope | A specific member, matched as the actor, the subject, or either (*Involves*). Shared and bookmarked links carry the member's id only; the name on the chip is looked up from that id (#2733) |
 | Date range | From/To, with the standard presets |
 | Outcome | The recorded result (e.g. success/failure), from the events present |
 | Severity | The recorded severity, from the events present |
