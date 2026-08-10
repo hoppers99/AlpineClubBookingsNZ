@@ -1,4 +1,4 @@
-import { ManualRefundTaskStatus, PaymentStatus } from "@prisma/client";
+import { ManualRefundTaskStatus, PaymentStatus, Prisma } from "@prisma/client";
 import logger from "@/lib/logger";
 import { prisma } from "@/lib/prisma";
 
@@ -164,6 +164,86 @@ export async function raiseDeletedBookingModificationRefundTask(params: {
 }
 
 /**
+ * The opening words of the note the automatic close writes, and the phrase the
+ * operator surface matches on (#2750).
+ *
+ * IT IS A SHARED CONSTANT, not two copies of one sentence, because the writer
+ * below and the finance queue's reader
+ * (`/api/admin/payments/manual-refund-tasks`) have to agree on it exactly. A
+ * reworded note in one place and not the other does not fail a build, it
+ * silently empties the list of automatically-refunded captures — the surface
+ * whose entire purpose is that this money movement does not go unseen.
+ *
+ * Only the close below ever writes it, so it is the load-bearing half of the
+ * filter. Kept short of the full sentence on purpose: the sentence ends with the
+ * payment intent id, so a prefix is what a `startsWith` can match.
+ *
+ * THESE BYTES ARE STORED DATA, NOT DISPLAY COPY (#2750 review). Sharing the
+ * constant keeps writer and reader from drifting apart, but it does NOT make the
+ * value safe to edit: `startsWith` is evaluated against notes already written to
+ * rows, so rewording this would leave every test that derives its expectation
+ * from the constant green while making every automatic refund the club has
+ * already had disappear from the card — the exact defect #2750 exists to close.
+ * `deleted-booking-refund-visibility.test.ts` therefore pins these bytes as a
+ * golden string. Changing them needs a migration that rewrites the stored notes,
+ * or a reader that accepts the old prefix as well, in the same commit.
+ */
+export const AUTOMATIC_CANCELLED_BOOKING_REFUND_NOTE_PREFIX =
+  "Closed automatically: Stripe refunded this capture under the cancelled-booking late-capture path";
+
+/** The full note, per payment intent. Trimmed to the column's 500 chars. */
+export function automaticCancelledBookingRefundNote(
+  paymentIntentId: string,
+): string {
+  return `${AUTOMATIC_CANCELLED_BOOKING_REFUND_NOTE_PREFIX}, so there is nothing left to pay back by hand (payment intent ${paymentIntentId}).`.slice(
+    0,
+    500,
+  );
+}
+
+/**
+ * Which `ManualRefundTask` rows the finance queue shows as "refunded
+ * automatically" (#2750, `INV-ADDPAY-037`).
+ *
+ * TWO CONDITIONS, AND NEITHER IS REDUNDANT.
+ *
+ * - **The note prefix** is what actually identifies this writer. Nothing else in
+ *   the tree writes that sentence.
+ * - **`completedByMemberId: null`** says no person did it, which is the claim the
+ *   card makes on screen.
+ *
+ * The tempting simplification — drop the note and keep only "DISMISSED with no
+ * acting member" — is wrong, and the schema is why. `ManualRefundTask.completedBy`
+ * is `onDelete: SetNull`, so deleting the member who dismissed a task by hand
+ * NULLs that column and turns their deliberate dismissal into a row this filter
+ * would present as an automatic refund the club never made. Requiring the note
+ * closes that. The reverse simplification — note only — would let a future writer
+ * of the same sentence *with* an acting member in as well.
+ *
+ * Deliberately NOT matched on `reason`: the reason carries the payment intent id,
+ * so matching it would mean a second per-intent string to keep in step for no
+ * extra precision.
+ */
+export const automaticallyRefundedManualRefundTaskFilter: Prisma.ManualRefundTaskWhereInput =
+  {
+    status: ManualRefundTaskStatus.DISMISSED,
+    completedByMemberId: null,
+    note: { startsWith: AUTOMATIC_CANCELLED_BOOKING_REFUND_NOTE_PREFIX },
+  };
+
+/**
+ * How far back the finance queue looks for automatic refunds (#2750).
+ *
+ * A window, not the whole history: the card exists to be *reviewed*, and an
+ * unbounded list of long-settled rows is the state that makes an operator stop
+ * reading it. The row itself is durable — this bounds one card's reach, nothing
+ * else. Thirty days comfortably covers the club's own reconciliation rhythm, and
+ * the audit entry `booking.payment.refunded_after_cancellation` remains the
+ * permanent record for anything older.
+ */
+export const AUTOMATIC_REFUND_NOTICE_WINDOW_DAYS = 30;
+
+/**
  * Close the task raised above once Stripe has already returned the money.
  *
  * A status-fenced `updateMany` on `OPEN`, so it needs no lock of its own and is
@@ -178,6 +258,16 @@ export async function raiseDeletedBookingModificationRefundTask(params: {
  * refunded this one and `refundPaymentTransactions` already wrote the
  * allocation, so COMPLETED here would be both untrue and a second allocation
  * for one refund. `completedByMemberId` stays null because no member did it.
+ *
+ * CLOSED IS NOT HIDDEN (#2750). The task is the only durable record that this
+ * particular money movement happened, and until #2750 closing it took it off the
+ * only screen it ever appeared on — the finance queue lists OPEN rows. The
+ * `/admin/payments` queue now also shows rows matching
+ * `automaticallyRefundedManualRefundTaskFilter` as a read-only "refunded
+ * automatically" card, so "a human is told" reaches somebody who is looking at
+ * refunds rather than only somebody who thinks to query the table. The note
+ * below is that card's text as well as this row's, which is why its opening
+ * words are a shared constant.
  */
 export async function closeDeletedBookingModificationRefundTaskAfterAutomaticRefund(params: {
   bookingId: string;
@@ -197,10 +287,7 @@ export async function closeDeletedBookingModificationRefundTaskAfterAutomaticRef
     data: {
       status: ManualRefundTaskStatus.DISMISSED,
       completedAt: new Date(),
-      note: `Closed automatically: Stripe refunded this capture under the cancelled-booking late-capture path, so there is nothing left to pay back by hand (payment intent ${paymentIntentId}).`.slice(
-        0,
-        500,
-      ),
+      note: automaticCancelledBookingRefundNote(paymentIntentId),
     },
   });
 

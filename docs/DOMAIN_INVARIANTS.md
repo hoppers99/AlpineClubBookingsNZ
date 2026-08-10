@@ -538,6 +538,7 @@ Prefix `INV-ADDPAY`.
 | `INV-ADDPAY-034` | One shared "cancelled or removed" sentence for the surfaces that explain rather than 404 |
 | `INV-ADDPAY-035` | A soft-deleted booking takes no member-guest consent answer, from any role, either arm |
 | `INV-ADDPAY-036` | A modification payment captured on a deleted booking is recorded and queued for a human, never auto-refunded from that path |
+| `INV-ADDPAY-037` | Where an auto-refunded late capture left a closed refund task, the finance queue shows it (not a complete list of such refunds — see the rule), and the refund stays automatic |
 
 ## Analytics And Privacy
 
