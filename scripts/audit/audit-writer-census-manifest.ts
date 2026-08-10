@@ -396,10 +396,11 @@ export const AUDIT_CENSUS_TOTALS = {
     // Neither category is member-visible, so no row reaches a member who could
     // not read it before, and `classifyAuditRetention` returns `critical` for
     // every one of the 22 under both the old and the new value — no row's
-    // retention changes. It also moves NO ROW ALREADY WRITTEN: a stored row keeps
-    // the category it was written with, so bed-allocation history is split by
-    // date until the backfill in #2751 runs, and both correlation entries' prose
-    // says which half they hold. See
+    // retention changes. It moved NO ROW ALREADY WRITTEN, which left
+    // bed-allocation history split by DATE: that half is closed by #2751's
+    // backfill (`20260810020000_backfill_bed_allocation_audit_category`), which
+    // rewrote the pre-release rows to `lodge` and is why both correlation
+    // entries' prose no longer names an older half. See
     // `docs/ai-diagnostics/audit-admin-category-review.md` for the per-site
     // verdict on all 118 — 22 moved, 87 kept, 9 held for an owner decision
     // because their destinations are member-visible. The 22 are pinned per site
@@ -768,10 +769,17 @@ export const APPLIED_AUDIT_CATEGORIES: Readonly<Record<string, string>> = {
  * returns `critical` for every one of these actions under BOTH values, so the
  * move changed no row's expiry.
  *
- * WHAT IT DOES NOT COVER: rows already written. A stored row keeps the category
- * it was written with, so bed-allocation history is split by date until the
- * backfill in #2751 runs. That is a data question, not a writer question, and no
- * census gate can see it.
+ * ROWS ALREADY WRITTEN ARE COVERED NOW, and they were not when #2730 shipped. A
+ * stored row keeps the category it was written with, so bed-allocation history
+ * was split by DATE until #2751's backfill
+ * (`prisma/migrations/20260810020000_backfill_bed_allocation_audit_category`)
+ * rewrote the pre-release rows to `lodge`. No census gate can see a stored row,
+ * which is why the two are tied together by a test instead:
+ * `src/lib/__tests__/bed-allocation-audit-category-backfill.test.ts` fails if a
+ * site is added to this map whose action the backfill does not name, or if the
+ * backfill names an action no site here writes. That is the mechanical half of
+ * INV-OPS-012 — adding a 23rd site without extending the backfill fails CI by
+ * name rather than re-opening the split silently.
  */
 export const REVIEWED_ADMIN_CATEGORIES_2730: Readonly<Record<string, string>> = {
   // ─── Bed allocation: 21 admin-initiated writers → `lodge` ──────────────────
@@ -1271,6 +1279,10 @@ export const APPROVED_MIGRATION_AUDIT_SQL: Readonly<Record<string, string>> = {
     "Door-code redaction: the final sweep pass.",
   "prisma/migrations/20260801150000_strip_email_override_bracket_annotations/migration.sql::insert#0":
     "Email-override cleanup: records one EMAIL_TEMPLATE_OVERRIDE_UPDATED row per template the upgrade rewrote. Names `\"category\"` and writes `admin`, plus an explicit severity, retentionClass and expiresAt.",
+  "prisma/migrations/20260810020000_backfill_bed_allocation_audit_category/migration.sql::update#0":
+    "The #2751 backfill: rewrites `category` from `admin` to `lodge` on the bed-allocation and lodge-display rows written before #2730 moved their writers, matched by an EXACT literal list of the 18 action names those 22 sites write (never a prefix). It is the only column in the SET clause, so severity, retentionClass, expiresAt, createdAt, details, metadata and every actor column keep the bytes they were written with — and retention cannot move, because prune and archive select on the stored retentionClass/expiresAt and never read `category`. Pinned against `REVIEWED_ADMIN_CATEGORIES_2730` by src/lib/__tests__/bed-allocation-audit-category-backfill.test.ts and executed against a real PostgreSQL by its verification fixture.",
+  "prisma/migrations/20260810020000_backfill_bed_allocation_audit_category/migration.sql::insert#0":
+    "The same backfill's record of itself: one AUDIT_CATEGORY_BACKFILLED row carrying the before/after counts decision B asked for, written only when rows actually moved so a replay appends nothing. Names `\"category\"` and writes `admin` — the support-only category, on purpose, so the operator who just lost these rows from their system correlation entry can see in that entry why — plus an explicit severity, retentionClass and expiresAt.",
 };
 
 /**

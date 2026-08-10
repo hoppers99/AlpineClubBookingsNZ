@@ -76,6 +76,28 @@ export function toGroupDiscountConfig(
   };
 }
 
+/**
+ * The ONE mapper from loaded `Season` rows to the shape every pricing pass reads.
+ *
+ * **It is the only one on purpose, and `type` is why (#2756).** The group
+ * discount's `summerOnly` flag — `true` by `prisma/schema.prisma`'s own default,
+ * by `DEFAULT_GROUP_DISCOUNT_SETTING`, and by the admin section's default — makes
+ * `isGroupDiscountApplicable` test `findSeasonForDate(night, seasons)?.type ===
+ * "SUMMER"`. `SeasonRateData.type` is OPTIONAL, because a caller that never
+ * configures a discount has no use for it, so a mapping that simply omits the
+ * field compiles silently, throws nothing, fails no test — and turns the discount
+ * OFF for every summer-only club, on whichever paths use that mapping.
+ *
+ * That is exactly what had happened: creation, the quote route, booking requests,
+ * group and school bookings and the waitlist reprice all came through here and
+ * carried `type`, while all five EDIT paths hand-rolled their own four-key literal
+ * without it. So a club on the default setting had its booking discounted when it
+ * was made and every later edit priced at the full rate — INV-MOD-006's parity
+ * claim was false for the most likely real configuration, and the money ran
+ * against the member. Route new season loads through this function rather than
+ * mapping them again; `in-progress-edit-sold-price-census.test.ts` fails a second
+ * production mapper, because the type system cannot.
+ */
 export function toSeasonRateData(seasons: SeasonRateSource[]): SeasonRateData[] {
   return seasons.map((season) => ({
     seasonId: season.id,

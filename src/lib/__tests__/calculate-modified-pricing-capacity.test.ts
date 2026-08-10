@@ -115,6 +115,16 @@ const WHOLE_LODGE_HELD = {
   ],
 };
 
+// #2756: `calculateModifiedPricing` now reads the club's group-discount setting
+// once, up front, and hands the same config to whichever pricing path runs — so
+// every double for it has to carry that row. `null` is a club that has NOT
+// switched the discount on, which is every case in this file: these cases are
+// about capacity ranges and per-night prices, and they must all come out exactly
+// where they came out before the discount reached this planner.
+const NO_DISCOUNT_TX = {
+  groupDiscountSetting: { findUnique: async () => null },
+} as never;
+
 beforeEach(() => {
   vi.clearAllMocks();
 });
@@ -127,7 +137,7 @@ describe("calculateModifiedPricing capacity (issue #1668)", () => {
     h.checkCapacityForGuestRanges.mockResolvedValue(OVER_CAPACITY);
 
     await expect(
-      calculateModifiedPricing({} as never, {
+      calculateModifiedPricing(NO_DISCOUNT_TX, {
         ...baseArgs(),
         adminOverride: false,
       }),
@@ -142,7 +152,7 @@ describe("calculateModifiedPricing capacity (issue #1668)", () => {
     h.checkCapacityForGuestRanges.mockResolvedValue(OVER_CAPACITY);
 
     await expect(
-      calculateModifiedPricing({} as never, {
+      calculateModifiedPricing(NO_DISCOUNT_TX, {
         ...baseArgs(),
         adminOverride: true,
         confirmOverCapacity: false,
@@ -154,7 +164,7 @@ describe("calculateModifiedPricing capacity (issue #1668)", () => {
     h.checkCapacityForGuestRanges.mockResolvedValue(WHOLE_LODGE_HELD);
 
     await expect(
-      calculateModifiedPricing({} as never, {
+      calculateModifiedPricing(NO_DISCOUNT_TX, {
         ...baseArgs(),
         adminOverride: false,
       }),
@@ -169,7 +179,7 @@ describe("calculateModifiedPricing capacity (issue #1668)", () => {
     h.checkCapacityForGuestRanges.mockResolvedValue(WHOLE_LODGE_HELD);
 
     await expect(
-      calculateModifiedPricing({} as never, {
+      calculateModifiedPricing(NO_DISCOUNT_TX, {
         ...baseArgs(),
         adminOverride: true,
         confirmOverCapacity: false,
@@ -182,7 +192,7 @@ describe("calculateModifiedPricing capacity (issue #1668)", () => {
 
     let thrown: unknown;
     try {
-      await calculateModifiedPricing({} as never, {
+      await calculateModifiedPricing(NO_DISCOUNT_TX, {
         ...baseArgs(),
         adminOverride: true,
         confirmOverCapacity: true,
@@ -328,7 +338,7 @@ describe("calculateModifiedPricing in-progress check-out-day capacity (#2029)", 
     h.checkCapacityForGuestRanges.mockResolvedValue(FULL);
 
     await expect(
-      calculateModifiedPricing({} as never, {
+      calculateModifiedPricing(NO_DISCOUNT_TX, {
         ...inProgressArgs({ editableFrom: "2026-08-25", newCheckOut: "2026-08-25" }),
       }),
     ).rejects.toMatchObject({
@@ -350,7 +360,7 @@ describe("calculateModifiedPricing in-progress check-out-day capacity (#2029)", 
   it("(b) succeeds when the check-out-day night has capacity, checking that night", async () => {
     h.checkCapacityForGuestRanges.mockResolvedValue(AVAILABLE);
 
-    const result = await calculateModifiedPricing({} as never, {
+    const result = await calculateModifiedPricing(NO_DISCOUNT_TX, {
       ...inProgressArgs({ editableFrom: "2026-08-25", newCheckOut: "2026-08-25" }),
     });
 
@@ -362,7 +372,7 @@ describe("calculateModifiedPricing in-progress check-out-day capacity (#2029)", 
   it("(c) mid-stay extension checks from editableFrom (regression pin — unchanged)", async () => {
     h.checkCapacityForGuestRanges.mockResolvedValue(AVAILABLE);
 
-    await calculateModifiedPricing({} as never, {
+    await calculateModifiedPricing(NO_DISCOUNT_TX, {
       ...inProgressArgs({ editableFrom: "2026-08-22", newCheckOut: "2026-08-26" }),
     });
 
@@ -381,7 +391,7 @@ describe("calculateModifiedPricing in-progress check-out-day capacity (#2029)", 
     });
 
     await expect(
-      calculateModifiedPricing({} as never, {
+      calculateModifiedPricing(NO_DISCOUNT_TX, {
         ...inProgressArgs({
           editableFrom: "2026-08-25",
           newCheckOut: "2026-08-25",
@@ -403,7 +413,7 @@ describe("calculateModifiedPricing in-progress check-out-day capacity (#2029)", 
     h.checkCapacityForGuestRanges.mockResolvedValue(AVAILABLE);
 
     // Guest occupies [08-22, 08-24); editableFrom is 08-21 (they arrive later).
-    await calculateModifiedPricing({} as never, {
+    await calculateModifiedPricing(NO_DISCOUNT_TX, {
       ...inProgressArgs({
         editableFrom: "2026-08-21",
         newCheckOut: "2026-08-26",
@@ -497,7 +507,7 @@ describe("calculateModifiedPricing in-progress per-night breakdown (#2736)", () 
     h.checkCapacityForGuestRanges.mockResolvedValue(AVAILABLE);
 
     const result = await calculateModifiedPricing(
-      {} as never,
+      NO_DISCOUNT_TX,
       sparseArgs(2 * RATE),
     );
 
@@ -528,7 +538,7 @@ describe("calculateModifiedPricing in-progress per-night breakdown (#2736)", () 
     // the matrix in `booking-edit-guest-ranges-sparse.test.ts`.
     h.checkCapacityForGuestRanges.mockResolvedValue(AVAILABLE);
 
-    const result = await calculateModifiedPricing({} as never, sparseArgs(1001));
+    const result = await calculateModifiedPricing(NO_DISCOUNT_TX, sparseArgs(1001));
     const guest = result.priceBreakdown.guests[0];
 
     expect(guest.perNightCents).toHaveLength(guest.nightDates.length);
@@ -643,7 +653,7 @@ describe("calculateModifiedPricing in-progress departed guest (#2743)", () => {
     h.checkCapacityForGuestRanges.mockResolvedValue(AVAILABLE);
 
     const result = await calculateModifiedPricing(
-      {} as never,
+      NO_DISCOUNT_TX,
       departedGuestArgs("2026-08-23"),
     );
     const [gone, present] = result.priceBreakdown.guests;
@@ -673,7 +683,7 @@ describe("calculateModifiedPricing in-progress departed guest (#2743)", () => {
     h.checkCapacityForGuestRanges.mockResolvedValue(AVAILABLE);
 
     const result = await calculateModifiedPricing(
-      {} as never,
+      NO_DISCOUNT_TX,
       departedGuestArgs("2026-08-25"),
     );
     const [gone] = result.priceBreakdown.guests;
@@ -793,7 +803,7 @@ describe("calculateModifiedPricing in-progress per-night prices (#2744)", () => 
     // the average (7000 each); they are the real rates now.
     h.checkCapacityForGuestRanges.mockResolvedValue(AVAILABLE);
 
-    const result = await calculateModifiedPricing({} as never, args());
+    const result = await calculateModifiedPricing(NO_DISCOUNT_TX, args());
     const guest = result.priceBreakdown.guests[0];
 
     expect(guest.nightDates).toEqual([
@@ -900,7 +910,7 @@ describe("calculateModifiedPricing in-progress per-night prices (#2744)", () => 
     // exactly the 23rd they slept, at what they paid for it.
     h.checkCapacityForGuestRanges.mockResolvedValue(AVAILABLE);
 
-    const result = await calculateModifiedPricing({} as never, removalArgs());
+    const result = await calculateModifiedPricing(NO_DISCOUNT_TX, removalArgs());
     const guest = result.priceBreakdown.guests[0];
     const plan = result.inProgressPlan?.proposedExistingGuests[0];
 
@@ -930,7 +940,7 @@ describe("calculateModifiedPricing in-progress per-night prices (#2744)", () => 
     h.checkCapacityForGuestRanges.mockResolvedValue(AVAILABLE);
 
     const result = await calculateModifiedPricing(
-      {} as never,
+      NO_DISCOUNT_TX,
       removalArgs({
         withNightRows: false,
         // Removed from the 23rd, so BOTH nights are given back and the raw

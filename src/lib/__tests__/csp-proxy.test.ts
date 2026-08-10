@@ -539,6 +539,57 @@ describe("CSP proxy", () => {
     ).toBe("/dashboard?tab=bookings");
   });
 
+  // #2733: the audit-log page's own rewrite of the pre-#2733 `memberName`/
+  // `memberEmail` filter keys runs in the browser, so it cannot act on the
+  // request the server has already been handed. This header is where a legacy
+  // bookmark's person fields would otherwise persist server-side: the admin
+  // layout turns it into the 2FA gate's `callbackUrl` and into
+  // `recordAuthBounce`'s `requestedPath`, which lands in a durable
+  // `AuthBounceRecord` row.
+  it("drops the pre-#2733 member name and email query keys from the requested-path header", async () => {
+    const response = await proxy(
+      new NextRequest(
+        "https://example.org/admin/audit-log?memberId=cmf1a2b3c4d5e6f7g8h9i0jk&memberName=Jane+Doe&memberEmail=jane%40example.test&page=2",
+      ),
+    );
+
+    const requestedPath = response.headers.get(
+      `x-middleware-request-${REQUEST_PATH_HEADER}`,
+    );
+
+    expect(requestedPath).toBe(
+      "/admin/audit-log?memberId=cmf1a2b3c4d5e6f7g8h9i0jk&page=2",
+    );
+    expect(requestedPath).not.toContain("memberName");
+    expect(requestedPath).not.toContain("memberEmail");
+    expect(requestedPath).not.toContain("Jane");
+    expect(requestedPath).not.toContain("jane");
+  });
+
+  it("leaves a query string that carries neither legacy key byte-identical", async () => {
+    // The strip must not become a re-encoder for every request on the site: a
+    // round trip through URLSearchParams would rewrite `%20` as `+` here.
+    const response = await proxy(
+      new NextRequest("https://example.org/admin/audit-log?q=late%20checkout&page=3"),
+    );
+
+    expect(
+      response.headers.get(`x-middleware-request-${REQUEST_PATH_HEADER}`),
+    ).toBe("/admin/audit-log?q=late%20checkout&page=3");
+  });
+
+  it("keeps a value that merely spells a legacy key", async () => {
+    // `memberName` as part of a VALUE is not a legacy key and must survive; only
+    // an exact key match is deleted.
+    const response = await proxy(
+      new NextRequest("https://example.org/admin/audit-log?q=memberName"),
+    );
+
+    expect(
+      response.headers.get(`x-middleware-request-${REQUEST_PATH_HEADER}`),
+    ).toBe("/admin/audit-log?q=memberName");
+  });
+
   it("generates a different nonce per request outside the public website", async () => {
     const a = await proxy(new NextRequest("https://example.org/dashboard"));
     const b = await proxy(new NextRequest("https://example.org/dashboard"));
