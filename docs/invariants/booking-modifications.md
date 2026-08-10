@@ -391,11 +391,10 @@ buys, which run contiguously from the morning after their **last held night**
 reopen the gap). Everything downstream reads that list: the future window is
 priced night by night through `calculateBookingPrice`'s explicit-nights branch
 so seasonal, age-tier and rate-membership-type differences still apply per
-night; the per-night split (`splitGuestNightsEvenly`) splits the list rather
-than re-expanding a range, so the `BookingGuestNight` rows written back cover
-the right nights and a later edit no longer inherits a locked price for a night
-the guest never held (their per-night AMOUNTS are a separate question — see the
-carve-outs below); the capacity ranges carry
+night; the per-night amounts (`composeProposedNightPrices`) are computed over
+that list rather than by re-expanding a range, so the `BookingGuestNight` rows
+written back cover the right nights and a later edit no longer inherits a locked
+price for a night the guest never held; the capacity ranges carry
 their nights, so no bed is claimed on a night the guest is not there; and a
 guest is "active for the future" when they hold a future night, not when a
 window is nominally open. Two consequences are load-bearing and must not be
@@ -409,10 +408,14 @@ plan reaches the night set through the canonical helpers
 fallback for a guest with no night rows), so the expander's half-open contract
 is untouched (INV-DATE-020) and the bed-allocation planner's one-pseudo-guest-
 per-night feed cannot grow a phantom second night. **History is not repriced.**
-A booking already edited under the envelope arithmetic keeps the rows and the
-price it was given; this rule binds edits from here on, and any correction to a
-member who was charged or refunded for gap nights is an owner decision and a
-separate, audited adjustment — **#2745** carries that decision with its options.
+A booking already edited under the envelope arithmetic — or under the
+today's-rate refund and averaged per-night rows this rule also corrects — keeps
+the rows and the price it was given; this rule binds edits from here on, and any
+correction to a member who was charged or refunded wrongly is an owner decision
+and a separate, audited adjustment. **#2745** carries that decision with its
+options; it was filed for the gap-night exposure and the #2744 over-refund is
+recorded on it as a second, wider one, because that error needed no gap in the
+stay to happen — only a season rate that had moved.
 
 The rule refuses one edit the envelope arithmetic allowed: when no remaining
 guest holds a night from the edit window on, the booking would be left with
@@ -425,34 +428,61 @@ change. Removing every guest still lands on the original sentence, and the
 refusal is unreachable for a contiguous stay, so no ordinary edit's wording
 moves.
 
-**Three money shapes are frozen here, not endorsed.** Correcting any of them
-moves the price of ordinary contiguous edits, which would give up the
-equivalence above, so each is carried as its own decision and pinned by a test
-in `booking-edit-guest-ranges-sparse.test.ts` that must be rewritten rather than
-deleted:
+**A night is worth what it was sold for, in both directions (#2744).** The plan
+passes the guest's stored `BookingGuestNight.priceCents` as `lockedNightPrices`
+to the old-price window and the new-price window alike, so a night given back by
+a removal or a shortened check-out is credited at the price the member actually
+paid — never at the current season rate, which after a rate rise handed back
+more than the club had ever charged and could leave a guest who genuinely slept
+at the lodge with a negative stored price. Both windows, not just the old one:
+the locks are what make a night the guest KEEPS carry one price on either side of
+the difference and cancel to nothing, so an extension's delta is still exactly
+the nights it adds and no night anybody already bought is ever re-rated
+(INV-MOD-005, INV-MOD-006). This is the rule every other edit path already
+followed; the in-progress plan was the sole exception, and it no longer is.
 
-1. **A guest whose stay already ended is re-admitted** (#2743). The #2029
-   reach-back (`maxDate(stayStart, minDate(editableFrom, stayEnd))`) is right
-   when a guest's stay ended one day behind the edit window and wrong when it
-   ended a week behind: a #713 partial-stay guest who has gone home is put back
-   on the booking for every remaining night and charged for them, on any edit —
-   including one that does not move the check-out.
-2. **A refund is valued at today's rate** (#2744). The old-price leg passes no
-   `lockedNightPrices`, so nights given back are credited at the current season
-   rate rather than what the member paid; after a rate rise a removal can credit
-   back more than was ever charged, leaving a negative stored price.
-3. **The per-night amounts written back are an even split** (#2744). The rows
-   cover the right nights, but each carries the guest's total divided by their
-   night count, so an edit spanning a season boundary stores the average and the
-   next edit locks that in. Sums always reconcile, so nothing goes out of
-   balance; the snapshot simply is not the price list.
+**The per-night amounts written back are each night's real rate (#2744), not an
+average.** A kept night keeps its stored price, a newly bought night takes its
+own season rate, and the list is what `BookingGuestNight.priceCents` receives —
+which is what the NEXT edit will be told the member paid. Where a guest's stored
+rows cannot account for their stored total — rows carrying no price at all
+(pre-#713, or a booking converted from a request), or a total that has drifted
+from the rows — the amounts fall back to the even split this always used, over
+the whole guest, because a distribution invented from numbers that disagree is a
+guess dressed as a rate. Either way the per-night amounts sum to the guest's
+total EXACTLY, in integer cents with any remainder spread one cent at a time
+including for a negative total, so the runs Xero rebuilds its invoice lines from
+still multiply back out and no phantom balance can appear (INV-MONEY-001,
+INV-MONEY-003). The degradation is deliberate and is the same one INV-MOD-005
+already names for a legacy guest: with no stored price there is nothing to
+recover, and that night is valued at today's rate.
+
+The **contiguous equivalence** above survives this unchanged, and is still proven
+rather than asserted: the matrix runs every ordinary edit three ways — rows
+carrying today's rate as their stored price (the ordinary live booking, whose
+rate has not moved), rows carrying no price, and no rows at all — and all three
+agree with the pre-#2736 arithmetic to the cent. What moves, deliberately, is a
+refund on a stay whose season rate HAS changed since it was made: it is now what
+the club charged rather than what it would charge today.
+
+**One money shape is frozen here, not endorsed.** Correcting it moves the price
+of ordinary contiguous edits, which would give up the equivalence above, so it is
+carried as its own decision and pinned by a test in
+`booking-edit-guest-ranges-sparse.test.ts` that must be rewritten rather than
+deleted: **a guest whose stay already ended is re-admitted** (#2743). The #2029
+reach-back (`maxDate(stayStart, minDate(editableFrom, stayEnd))`) is right when a
+guest's stay ended one day behind the edit window and wrong when it ended a week
+behind: a #713 partial-stay guest who has gone home is put back on the booking
+for every remaining night and charged for them, on any edit — including one that
+does not move the check-out.
 
 One shape moves money UP, and only for data that has drifted: a guest whose
 stored `stayEnd` claims more nights than their rows do. The rows are canonical
 (INV-DATE-012), so an extension starts after their real last night and the
 nights the envelope had imagined are charged once rather than cancelling in both
 windows. That is the coherent answer and it is pinned by its own case, because
-the 480-case matrix derives every envelope from the rows and can never reach it.
+the contiguous matrix derives every envelope from the rows and can never reach
+it.
 
 A guest ADDED during an in-progress edit is a deliberate exception in one
 respect only: they are admitted for the booking's remaining future nights,

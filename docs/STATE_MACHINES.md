@@ -828,9 +828,11 @@ before that fix keep the rows and the price they were given — history is not
 repriced (#2745 carries the decision about whether anything is done about
 them). One edit is newly refused: a check-out pulled back past the last night
 any remaining guest still holds, which would leave the booking with a night
-nobody occupies; the refusal names the check-out that would work. Three money
-shapes on this path are frozen rather than fixed — see `INV-MOD-025` and
-#2743 / #2744.
+nobody occupies; the refusal names the check-out that would work. A night the
+edit gives back is credited at the price the member paid rather than at today's
+season rate, and the per-night rows written back are each night's real rate
+rather than the guest's average (#2744, `INV-MOD-025`). One money shape on this
+path is still frozen rather than fixed — see `INV-MOD-025` and #2743.
 
 Self-service cancellation of a **started** stay is blocked (#2029). Once
 `checkIn <= todayNZ`, the member-facing cancel route
