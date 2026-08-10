@@ -16,7 +16,6 @@ CREATE TABLE "OtherLodge" (
     "bookingOfficerEmail" VARCHAR(320),
     "bookingOfficerPhone" VARCHAR(50),
     "bedCapacity" INTEGER,
-    "active" BOOLEAN NOT NULL DEFAULT true,
     "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
     "updatedAt" TIMESTAMP(3) NOT NULL,
 
@@ -25,6 +24,3 @@ CREATE TABLE "OtherLodge" (
 
 -- CreateIndex
 CREATE UNIQUE INDEX "OtherLodge_name_key" ON "OtherLodge"("name");
-
--- CreateIndex
-CREATE INDEX "OtherLodge_active_idx" ON "OtherLodge"("active");

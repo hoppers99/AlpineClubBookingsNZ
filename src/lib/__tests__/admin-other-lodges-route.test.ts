@@ -57,7 +57,6 @@ function record(overrides: Record<string, unknown> = {}) {
     bookingOfficerEmail: "jo@example.com",
     bookingOfficerPhone: "021 555 0000",
     bedCapacity: 40,
-    active: true,
     createdAt: now,
     updatedAt: now,
     ...overrides,
@@ -116,7 +115,6 @@ describe("GET /api/admin/other-lodges", () => {
       id: "ol-1",
       name: "Ruapehu Ski Club",
       bedCapacity: 40,
-      active: true,
     });
     // Dates are serialized to ISO strings, not Date objects.
     expect(data.otherLodges[0].createdAt).toBe(now.toISOString());
@@ -159,7 +157,6 @@ describe("POST /api/admin/other-lodges", () => {
           location: null,
           bookingOfficerEmail: null,
           bedCapacity: 24,
-          active: true,
         }),
       }),
     );
@@ -199,19 +196,6 @@ describe("PATCH /api/admin/other-lodges/[id]", () => {
       }),
     );
     expect(mocks.auditLogCreate).toHaveBeenCalledTimes(1);
-  });
-
-  it("toggles active without touching other fields", async () => {
-    mocks.findUnique.mockResolvedValue(record());
-    mocks.update.mockResolvedValue(record({ active: false }));
-    const response = await PATCH(
-      jsonRequest("PATCH", { active: false }),
-      params("ol-1"),
-    );
-    expect(response.status).toBe(200);
-    expect(mocks.update).toHaveBeenCalledWith(
-      expect.objectContaining({ data: { active: false } }),
-    );
   });
 
   it("returns 409 when renaming onto an existing name", async () => {

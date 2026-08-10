@@ -7,9 +7,9 @@
   These are deliberately separate from your own lodges: they take no bookings and
   have no configuration hub. The bed capacity here is just a note about the other
   lodge — it is never used as this system's booking capacity, which still comes
-  from your own lodges' rooms and beds. You can add, edit, deactivate (kept for
-  history), or delete entries, and the same **lodge edit** permission that governs
-  your own lodges governs this panel.
+  from your own lodges' rooms and beds. You can add, edit, or delete entries, and
+  the same **lodge edit** permission that governs your own lodges governs this
+  panel.
 
   The registry ships **pre-populated** with the recognised Ruapehu-area clubs and
   lodges (names, and where known, location, booking-officer email, and bed

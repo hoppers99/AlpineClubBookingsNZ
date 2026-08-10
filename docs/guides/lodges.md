@@ -74,10 +74,8 @@ uses the same **lodge edit** permission as the properties above.
    other lodge**, enter at least a **Name** (the only required field), optionally
    fill in **Location**, the **booking officer's** name/email/phone, and a
    **Bed capacity**, then **Save**.
-2. Use **Edit** to change a lodge, **Deactivate/Activate** to keep it for history
-   while hiding it from the future non-member drop-down, or **Delete** to remove
-   it for good. Names must be unique — a duplicate is rejected with a clear
-   message.
+2. Use **Edit** to change a lodge, or **Delete** to remove it from the list.
+   Names must be unique — a duplicate is rejected with a clear message.
 
 ## Settings reference
 
@@ -102,7 +100,6 @@ uses the same **lodge edit** permission as the properties above.
 | Booking officer's email | Contact email | — | Optional; must be a valid email; up to 320 characters |
 | Booking officer's phone | Contact phone | — | Optional; up to 50 characters |
 | Bed capacity | Informational bed count of the other lodge | — | Optional; whole number ≥ 0. Not this system's booking capacity |
-| Active | Whether the lodge appears in the future non-member drop-down | on | Inactive lodges are kept for history |
 
 ## Troubleshooting
 

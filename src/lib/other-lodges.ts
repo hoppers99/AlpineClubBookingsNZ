@@ -14,7 +14,6 @@ export const otherLodgeSelect = {
   bookingOfficerEmail: true,
   bookingOfficerPhone: true,
   bedCapacity: true,
-  active: true,
   createdAt: true,
   updatedAt: true,
 } satisfies Prisma.OtherLodgeSelect;
@@ -29,7 +28,6 @@ export interface SerializedOtherLodge {
   bookingOfficerEmail: string | null;
   bookingOfficerPhone: string | null;
   bedCapacity: number | null;
-  active: boolean;
   createdAt: string;
   updatedAt: string;
 }
@@ -45,7 +43,6 @@ export function serializeOtherLodge(
     bookingOfficerEmail: lodge.bookingOfficerEmail,
     bookingOfficerPhone: lodge.bookingOfficerPhone,
     bedCapacity: lodge.bedCapacity,
-    active: lodge.active,
     createdAt: lodge.createdAt.toISOString(),
     updatedAt: lodge.updatedAt.toISOString(),
   };

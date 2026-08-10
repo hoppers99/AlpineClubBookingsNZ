@@ -4377,8 +4377,8 @@ model Lodge {
 // here is INFORMATIONAL only (a fact about the partner lodge) and is never this
 // system's booking capacity — that is derived from Lodge rooms/beds. `name` is
 // unique because it will populate a non-member "which lodge are you a member
-// of" drop-down (follow-up); `active` lets an admin retire a lodge from that
-// future list without deleting its history.
+// of" drop-down (follow-up). An admin removes a lodge from the list by deleting
+// it (there is no active/inactive state — that was dropped as unneeded).
 model OtherLodge {
   id                  String   @id @default(cuid())
   name                String   @unique
@@ -4387,11 +4387,8 @@ model OtherLodge {
   bookingOfficerEmail String?  @db.VarChar(320)
   bookingOfficerPhone String?  @db.VarChar(50)
   bedCapacity         Int?
-  active              Boolean  @default(true)
   createdAt           DateTime @default(now())
   updatedAt           DateTime @updatedAt
-
-  @@index([active])
 }
 
 model LodgeSettings {

@@ -34,7 +34,6 @@ const otherLodgeCreateSchema = z
     // Informational bed count of the partner lodge; non-negative, capped well
     // above any real lodge so a fat-fingered value is caught but real ones pass.
     bedCapacity: z.number().int().min(0).max(100000).nullable().optional(),
-    active: z.boolean().optional().default(true),
   })
   .strict();
 
@@ -92,7 +91,6 @@ export async function POST(request: Request) {
           parsed.data.bookingOfficerPhone,
         ),
         bedCapacity: parsed.data.bedCapacity ?? null,
-        active: parsed.data.active,
       },
       select: otherLodgeSelect,
     });

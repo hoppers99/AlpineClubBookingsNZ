@@ -2,7 +2,6 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { Building, Pencil, Plus, Trash2, X } from "lucide-react";
-import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
   Card,
@@ -36,7 +35,6 @@ type OtherLodgeRecord = {
   bookingOfficerEmail: string | null;
   bookingOfficerPhone: string | null;
   bedCapacity: number | null;
-  active: boolean;
 };
 
 type OtherLodgeFormState = {
@@ -181,33 +179,6 @@ export function OtherLodgesPanel() {
       await loadLodges();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to save lodge");
-    } finally {
-      setSaving(false);
-    }
-  }
-
-  async function setActive(lodge: OtherLodgeRecord, active: boolean) {
-    setSaving(true);
-    setError(null);
-    try {
-      const response = await fetch(`/api/admin/other-lodges/${lodge.id}`, {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ active }),
-      });
-      if (response.status === 403) {
-        setError(ADMIN_FORBIDDEN_SAVE_REASON);
-        return;
-      }
-      if (!response.ok) {
-        const data = (await response.json().catch(() => null)) as {
-          error?: string;
-        } | null;
-        throw new Error(data?.error ?? "Failed to update lodge");
-      }
-      await loadLodges();
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to update lodge");
     } finally {
       setSaving(false);
     }
@@ -409,8 +380,8 @@ export function OtherLodgesPanel() {
             Other lodges
           </CardTitle>
           <CardDescription>
-            Inactive lodges are kept for history but will be hidden from the
-            non-member drop-down.
+            These names will be offered to non-members who indicate they are a
+            member of another lodge. Use Delete to remove one from the list.
           </CardDescription>
         </CardHeader>
         <CardContent>
@@ -438,12 +409,7 @@ export function OtherLodgesPanel() {
                   {lodges.map((lodge) => (
                     <TableRow key={lodge.id}>
                       <TableCell>
-                        <div className="flex items-center gap-2">
-                          <span className="font-medium">{lodge.name}</span>
-                          {!lodge.active ? (
-                            <Badge variant="secondary">Inactive</Badge>
-                          ) : null}
-                        </div>
+                        <span className="font-medium">{lodge.name}</span>
                       </TableCell>
                       <TableCell className="text-muted-foreground">
                         {lodge.location ?? "—"}
@@ -482,18 +448,6 @@ export function OtherLodgesPanel() {
                           >
                             <Pencil className="mr-2 h-4 w-4" />
                             Edit
-                          </ViewOnlyActionButton>
-                          <ViewOnlyActionButton
-                            canEdit={canEdit}
-                            describeReason={false}
-                            variant="outline"
-                            size="sm"
-                            onClick={() =>
-                              void setActive(lodge, !lodge.active)
-                            }
-                            disabled={saving}
-                          >
-                            {lodge.active ? "Deactivate" : "Activate"}
                           </ViewOnlyActionButton>
                           <ViewOnlyActionButton
                             canEdit={canEdit}

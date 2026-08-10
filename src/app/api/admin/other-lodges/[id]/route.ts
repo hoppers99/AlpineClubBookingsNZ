@@ -28,7 +28,6 @@ const patchSchema = z
     bookingOfficerEmail: optionalEmail,
     bookingOfficerPhone: z.string().trim().max(50).nullable().optional(),
     bedCapacity: z.number().int().min(0).max(100000).nullable().optional(),
-    active: z.boolean().optional(),
   })
   .strict();
 
@@ -93,7 +92,6 @@ export async function PATCH(
   if (parsed.data.bedCapacity !== undefined) {
     data.bedCapacity = parsed.data.bedCapacity;
   }
-  if (parsed.data.active !== undefined) data.active = parsed.data.active;
 
   if (Object.keys(data).length === 0) {
     return NextResponse.json({ otherLodge: serializeOtherLodge(existing) });
