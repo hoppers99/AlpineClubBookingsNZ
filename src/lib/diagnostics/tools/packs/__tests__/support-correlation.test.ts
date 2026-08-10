@@ -408,42 +408,51 @@ describe("AID-6A correlation category sets (#2375)", () => {
     );
   });
 
-  it("tells the model that #2730 moved the WRITERS and not the stored rows", () => {
+  it("tells the model that bed allocation is WHOLLY lodge now, older rows included", () => {
     /*
-      The fourth trap, and the one this pack creates for itself.
+      The fourth trap, and the one this pack created for itself.
 
       #2730 changed 22 bed-allocation and lodge-display writers from `admin` to
-      `lodge`. It rewrote no stored row, and `buildAuditCategoryWhere` ORs the
-      legacy action-name guess in only for rows whose category IS NULL — so a
-      bed-allocation row written before that release carries a hard `"admin"`
-      and is returned by the SYSTEM entry alone, permanently.
+      `lodge` and rewrote no stored row. `buildAuditCategoryWhere` ORs the legacy
+      action-name guess in only for rows whose category IS NULL, so a
+      bed-allocation row written before that release carried a hard `"admin"` and
+      was returned by the SYSTEM entry alone — bed-allocation evidence split by
+      DATE across two entries. This test pinned that split in the prose of both
+      entries, so that the lodge entry could not tell the model it held bed
+      allocation "in full" while returning the post-release half.
 
-      That splits bed-allocation evidence by DATE across two entries, and the
-      failure it produces is the exact one `SHARED_DESCRIPTION_TAIL` exists to
-      prevent, one step removed: the tail warns about rows with NO category, and
-      these rows have one, so it does not fire. Without these sentences the lodge
-      entry would tell the model it holds bed allocation "in full", return the
-      post-release half, and have the model narrate a bounded absence over a
-      partial answer — for the very question ("who put whom in which bed") the
-      entry advertises itself as the right tool for.
+      #2751 CLOSED THE SPLIT, so the sentences this test used to pin are now the
+      false ones and the assertions are inverted rather than deleted. The
+      migration `20260810020000_backfill_bed_allocation_audit_category` rewrote
+      the stored rows for exactly the 18 action names those 22 sites write, so the
+      lodge entry really does hold the whole family and the system entry holds
+      none of it.
 
-      Pinned on BOTH entries because the misdirection is symmetric: the lodge
-      entry must not overclaim, and the system entry must not disclaim rows it
-      still holds.
+      STILL PINNED ON BOTH ENTRIES, because the misdirection is still symmetric —
+      only the direction changed. The lodge entry must not go back to disclaiming
+      rows it now holds (which would send the model to a tool that has none of
+      them), and the system entry must not claim an older half it no longer has
+      (which would have it report a bounded absence as an answer). Both are what a
+      revert of the backfill, or a future reclassification that ships no backfill,
+      would produce — see INV-OPS-012.
     */
     const lodge = tool(DIAGNOSTICS_LODGE_CORRELATION_TOOL_ID);
     const system = tool(DIAGNOSTICS_SYSTEM_CORRELATION_TOOL_ID);
 
-    // The overclaim that was there before, in the words it was written in.
-    expect(lodge.description).not.toContain("Bed allocation is recorded here in full");
-    expect(lodge.description).toContain("no stored row was rewritten");
+    // The lodge entry names the older rows as its own, and no longer sends the
+    // model to the system entry for them.
+    expect(lodge.description).toContain("#2751 backfill moved them here");
+    expect(lodge.description).not.toContain("no stored row was rewritten");
     expect(lodge.evidenceScope).toContain(
-      "Bed-allocation rows recorded BEFORE that release still carry `admin`",
+      "moved the stored rows here",
     );
-    // The mirror: the system entry says it still HOLDS the older half rather
-    // than only that bed allocation has left.
-    expect(system.evidenceScope).toContain("ARE returned here");
-    expect(system.evidenceScope).toContain("recorded BEFORE that release");
+    expect(lodge.evidenceScope).not.toContain(
+      "still carry `admin`",
+    );
+    // The mirror: the system entry disclaims bed allocation outright instead of
+    // holding half of it.
+    expect(system.evidenceScope).toContain("BED ALLOCATION is NOT here at all");
+    expect(system.evidenceScope).not.toContain("ARE returned here");
   });
 
   it("renders the scope INSIDE the evidence block, above the rows", () => {
@@ -643,10 +652,14 @@ describe("AID-6A correlation SQL shape (#2375)", () => {
     // (`invoke.ts`), so measuring without one measured a block this pack never emits.
     //
     // THE SCOPE LINES AND THE ROWS SHARE ONE BUDGET, which is the reason to keep this
-    // per entry rather than on the widest. Re-measured after #2730 lengthened two of
-    // them: they now run from 432 to 1 002 characters, and the five entries still
-    // render all 22 whole rows — the system entry with 132 characters of the 8 000 to
-    // spare and the lodge entry with 185. This assertion has already earned that:
+    // per entry rather than on the widest. Re-measured after #2751 rewrote the two
+    // bed-allocation sentences (#2730's own re-measure read 432 to 1 002 characters,
+    // with 132 spare on the system entry and 185 on the lodge one): the scopes now run
+    // from 432 to 1 025 characters, and the five entries still render all 22 whole
+    // rows — the system entry with 109 characters of the 8 000 to spare, the lodge
+    // entry with 230. The system entry is now the tighter of the two, because closing
+    // the date split moved words OFF the lodge entry and ONTO it. This assertion has
+    // already earned its keep:
     // #2730's first draft of the system `scope` overran by seven characters and the
     // block silently dropped a row, which is exactly the failure "room to spare" would
     // have hidden. A prose edit here is a capacity edit; re-run this before assuming
