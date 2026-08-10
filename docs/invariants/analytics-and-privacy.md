@@ -267,10 +267,14 @@ from that release onward and is not reversible for rows already written.
   actions classify `critical` under the old and the new value alike. Rows already
   written keep their stored category, so nothing is withdrawn from a member who has
   already seen it, and bulk member-record history is split by date the way
-  bed-allocation history is; the two backfills are separate questions and separate
+  bed-allocation history was; the two backfills are separate questions and separate
   issues, because #2751's bed-allocation rows move between two member-invisible
   categories while these rows are member-visible today, so rewriting them would
-  **withdraw** something a member can see (#2763).
+  **withdraw** something a member can see (#2763). #2751's backfill has since
+  shipped and closed its half of the split; #2763's is still open, and that
+  asymmetry is the reason `INV-OPS-012` — which requires a reclassification to ship
+  its backfill or file one — carves the member-visible boundary out as an owner
+  decision rather than an automatic consequence.
 
   **This rule is scoped to those six actions. It is not "an officer acted, so
   `admin`",** and it must never be read that way, because "who acted" is the
