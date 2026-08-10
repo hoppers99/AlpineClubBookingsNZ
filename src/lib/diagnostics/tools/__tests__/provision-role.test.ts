@@ -769,6 +769,98 @@ describe("the SELECT-only grant allowlist matches what the statements read", () 
     }
   });
 
+  it("names this release's readiness answer, and the columns that make it that answer", () => {
+    // THE FINDING. Both documents state the precedence rule correctly — excess
+    // privilege beats missing grants — but the operator troubleshooting table
+    // promised `under_provisioned` after the AID-6B deploy, and that is wrong for
+    // the path essentially every deployment is on.
+    //
+    // AID-6B does not only ADD. It REMOVES seven columns AID-6C granted, forced by
+    // this branch's own no-exemption "reads every column it grants" test. So during
+    // the documented window a role provisioned for AID-6C holds seven columns the new
+    // declaration omits: `isDiagnosticsRolePrivilegeSafe` requires
+    // `undeclaredReadableColumns === 0`, `onlyMissingGrants` re-tests safety with only
+    // the two missing-grant counters zeroed — and the seven extras survive that
+    // zeroing, which is that gate's whole design — so the reason is
+    // `database_role_unsafe` and readiness maps it to `over_privileged`.
+    //
+    // The runtime is CORRECT in both states: each refuses every SQL-backed tool, fail
+    // closed. The defect was remediation guidance — an operator whose tools had all
+    // failed read `over_privileged` on screen, found no row for it, read the state as
+    // documented ("holds a privilege ADR-007 forbids ... or is not even the role the
+    // connection string names") and escalated a suspected credential-tampering
+    // incident on a Critical security surface, instead of running the provisioner
+    // sitting on the row they were told did not apply.
+    const REMOVED_BY_THIS_RELEASE: ReadonlyArray<readonly [string, string]> = [
+      ["PaymentTransaction", "xeroInvoiceId"],
+      ["PaymentRefund", "paymentTransactionId"],
+      ["PaymentRefund", "stripePaymentIntentId"],
+      ["PaymentRecoveryOperation", "bookingId"],
+      ["ManualRefundTask", "bookingId"],
+      ["XeroInboundEvent", "source"],
+      ["XeroSyncOperation", "entityType"],
+    ];
+    const packDoc = readFileSync(
+      join(REPO_ROOT, "docs", "ai-diagnostics", "tool-pack-booking-membership.md"),
+      "utf8",
+    );
+    const deploymentDoc = readFileSync(
+      join(REPO_ROOT, "docs", "ai-diagnostics", "deployment.md"),
+      "utf8",
+    );
+
+    // 1. The removals are REAL: each relation is still declared and no longer grants
+    //    that column. If a future change grants one back, this release's answer stops
+    //    being `over_privileged` and the guidance below stops being true.
+    for (const [relation, column] of REMOVED_BY_THIS_RELEASE) {
+      const grant = SELECT_GRANTS.find((entry) => entry.relation === relation);
+      expect(grant, `${relation} is no longer declared at all`).toBeDefined();
+      expect(
+        grant?.columns ?? [],
+        `${relation}."${column}" is granted again; the deploy-window readiness state is no longer over_privileged`,
+      ).not.toContain(column);
+    }
+
+    // 2. Both documents name the answer AND the reason, so neither can be read as the
+    //    smaller problem and neither drifts from the other.
+    for (const [name, raw] of [
+      ["tool-pack-booking-membership.md", packDoc],
+      ["deployment.md", deploymentDoc],
+    ] as const) {
+      // Whitespace-collapsed, because prose wraps: the phrase below spans a line
+      // break in one of the two documents and a raw substring match would pass on
+      // one page and fail on the other for a reason that is not about the content.
+      const document = raw.replace(/\s+/g, " ");
+      expect(document, `${name} does not name over_privileged`).toContain(
+        "`over_privileged`",
+      );
+      // AND THE EXPECTED-STATE MARKER IS ON THE RIGHT ROW. Merely naming
+      // `over_privileged` somewhere is not enough — the previous wording named it in
+      // the precedence paragraph while the operator table still promised
+      // `under_provisioned`, which is the whole defect.
+      expect(
+        document,
+        `${name} attributes the deploy-window state to under_provisioned`,
+      ).not.toContain("`under_provisioned` | **THIS IS THE EXPECTED STATE");
+      expect(
+        document,
+        `${name} does not say the removals are what make it that state`,
+      ).toContain("REMOVES seven columns AID-6C granted");
+      expect(
+        document,
+        `${name} does not tell the operator when to escalate instead`,
+      ).toMatch(/still `over_privileged` after re-provisioning/i);
+      // And each names every removed column, so the list cannot rot against the
+      // allowlist assertion above.
+      for (const [relation, column] of REMOVED_BY_THIS_RELEASE) {
+        expect(
+          document,
+          `${name} does not name ${relation}."${column}"`,
+        ).toContain(`${relation}."${column}"`);
+      }
+    }
+  });
+
   it("publishes the exact grant sets bidirectionally, so a same-count swap fails", () => {
     const deploymentDoc = readFileSync(
       join(REPO_ROOT, "docs", "ai-diagnostics", "deployment.md"),

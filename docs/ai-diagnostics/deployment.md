@@ -391,7 +391,21 @@ is `over_privileged`**, because a role that can read more than the allowlist dec
 is the more serious of the two facts and must not be reported as merely
 incomplete. `checkDiagnosticsDatabaseReadiness` derives that ordering structurally:
 it reports missing grants only when zeroing them would make the privilege report
-safe. That is
+safe.
+
+**THIS IS THE EXPECTED STATE of an un-reprovisioned AID-6B deploy: for THIS release the answer is `over_privileged`, on the path essentially every
+deployment is on.** AID-6B does not only add: it REMOVES seven columns AID-6C
+granted — `PaymentTransaction."xeroInvoiceId"`, `PaymentRefund."paymentTransactionId"`,
+`PaymentRefund."stripePaymentIntentId"`, `PaymentRecoveryOperation."bookingId"`,
+`ManualRefundTask."bookingId"`, `XeroInboundEvent."source"` and
+`XeroSyncOperation."entityType"` — forced by the no-exemption "reads every column it
+grants" test. A role provisioned for AID-6C therefore holds seven columns the new
+declaration omits, so zeroing the missing-grant counters does not make it safe and
+the state is `over_privileged`. `under_provisioned` is reported only from an AID-6A
+role, whose nine `AuditLog` columns this release leaves untouched and which is
+therefore a strict subset. Neither state is an incident: both refuse every SQL-backed
+tool, fail closed. Escalate as privilege drift only if the state is still
+`over_privileged` AFTER re-provisioning. That is
 ADR-007's deliberate friction, and it is the same step AID-6A and AID-6C each
 required. The three `server_owned` entries in AID-6B do not read through this
 credential and are unaffected, so a deployment that has not been re-provisioned can

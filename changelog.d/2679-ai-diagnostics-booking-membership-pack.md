@@ -116,7 +116,14 @@
   match. It uses one fixed PostgreSQL punctuation translation rather than wildcard
   or regular-expression language, and no tool returns the phone number.
 
-  Operators must re-run `npm run diagnostics:provision-role` after deployment. The
+  Operators must re-run `npm run diagnostics:provision-role` after deployment, and the
+  guides now say plainly what the readiness screen will show until they do. This
+  release both adds and removes column grants, and holding a grant the new declaration
+  does not include outranks missing one — so on the ordinary upgrade path readiness
+  reports "over-privileged", not "under-provisioned". Both states refuse every
+  SQL-backed tool and neither is an incident; the troubleshooting table used to name
+  only the second, so an operator whose tools had all failed could read the screen as
+  a suspected tampered credential and escalate instead of re-running provisioning. The
   allowlist is still exactly 26 relations and 243 columns, including 23 on
   `Member`; the deployment guide now publishes every exact relation-column set and
   a test compares those sets with the source declaration in both directions, so a
