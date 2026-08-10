@@ -35,6 +35,8 @@ import { prisma } from "@/lib/prisma";
  *
  * - **Webhook first.** It records and refunds; the confirm endpoint then finds
  *   the transaction already captured and returns early, so no task is raised.
+ *   Since #2760 the webhook WRITES the record itself in that case, already
+ *   DISMISSED — see `recordAutomaticCancelledBookingRefundTask`.
  * - **Confirm endpoint first.** It records and raises the task; the webhook's
  *   refund then satisfies that task's whole question, so the webhook CLOSES it
  *   with a note rather than leaving an operator to complete a task for money
@@ -50,6 +52,18 @@ import { prisma } from "@/lib/prisma";
  * so it does not contradict the no-automatic-refund decision above; the refund
  * it records was already the webhook's established #1350 behaviour and is not
  * introduced here.
+ *
+ * TWO POPULATIONS SINCE #2760 (owner decision 10 Aug 2026), and the record now
+ * covers both. #1350's refund fires on `Booking.status === "CANCELLED"`, not on
+ * `deletedAt`, so a late capture on a booking that is cancelled but still on file
+ * is auto-refunded exactly the same way — and used to leave no row at all,
+ * because the confirm route's raise only fires on a deleted booking. The webhook
+ * now writes a DISMISSED row for either population. The owner took that wider
+ * option over the narrower recommendation knowing it makes the card busier: for a
+ * merely cancelled booking the refund is usually the expected outcome, so those
+ * rows are records of normal operation. `cancelledBookingModificationRefundReason`
+ * keeps them distinguishable from the deleted ones, which are the interesting
+ * case.
  */
 export function deletedBookingModificationRefundReason(
   paymentIntentId: string,
@@ -58,6 +72,65 @@ export function deletedBookingModificationRefundReason(
     0,
     500,
   );
+}
+
+/**
+ * The same sentence for the OTHER population #2760 widened this record to: a
+ * late capture on a booking that is CANCELLED but has not been deleted.
+ *
+ * WHY A SECOND STRING AND NOT ONE SHARED SENTENCE. The reason is stored on the
+ * row and printed on the finance card, so the sentence above — which says the
+ * booking "had already been deleted" and asks an operator to decide — would be
+ * false on both counts for a booking that is merely cancelled. Two honest
+ * sentences beat one that is wrong for half the rows it now covers.
+ *
+ * AND WHY THE FIRST ONE'S BYTES DID NOT CHANGE. `reason` is the idempotency key
+ * (`bookingId + paymentId + reason`) that the confirm route's raise and the
+ * webhook's close/record both match on. Rewording it would leave any OPEN task
+ * raised before this deploy unmatchable: the webhook would create a second,
+ * DISMISSED row and leave the OPEN one in the hand-back queue asking an operator
+ * to hand back money Stripe had already returned. So the deleted-population
+ * sentence is frozen, this one is new, and every lookup matches BOTH — see
+ * `automaticCancelledBookingRefundTaskReasons`.
+ *
+ * NO "decide by hand" CLAUSE, deliberately. Only the webhook writes this
+ * variant, and only already-DISMISSED, so there has never been a decision on one
+ * of these rows.
+ */
+export function cancelledBookingModificationRefundReason(
+  paymentIntentId: string,
+): string {
+  return `Booking modification payment ${paymentIntentId} was captured against a booking the club had already cancelled (#2760). Nothing was owed on a cancelled booking, so there is no hand-back to make — but if the cancellation was itself the mistake, put that right rather than treating this as a refund somebody still owes.`.slice(
+    0,
+    500,
+  );
+}
+
+/**
+ * Every `reason` this record can carry for one payment intent, for the writers
+ * that must find a row REGARDLESS of which population produced it (#2760).
+ *
+ * THE KEY MUST NOT DEPEND ON THE POPULATION, and that is the whole reason this
+ * exists. A booking can be deleted BETWEEN two Stripe deliveries of the same
+ * capture — deletion is one-way (`INV-ADDPAY-030`), but it can arrive at any
+ * moment — so a redelivery would see the deleted population where the first
+ * delivery saw the cancelled one. Keyed per population, that redelivery finds no
+ * row and writes a SECOND one for a single refund. Matching both sentences makes
+ * the lookup population-independent while each row still stores the sentence
+ * that was true when it was written.
+ *
+ * The confirm route's raise matches this list too, so a webhook-created row of
+ * either kind stops it raising a duplicate OPEN task. Its refund fence would
+ * also decline that raise — this is deliberate belt and braces on the one path
+ * where a duplicate would be an operator asked to hand back money twice.
+ */
+export function automaticCancelledBookingRefundTaskReasons(
+  paymentIntentId: string,
+): string[] {
+  return [
+    deletedBookingModificationRefundReason(paymentIntentId),
+    cancelledBookingModificationRefundReason(paymentIntentId),
+  ];
 }
 
 /**
@@ -120,7 +193,17 @@ export async function raiseDeletedBookingModificationRefundTask(params: {
     await tx.$executeRaw`SELECT pg_advisory_xact_lock(1)`;
 
     const existing = await tx.manualRefundTask.findFirst({
-      where: { bookingId, paymentId, reason },
+      // BOTH population sentences (#2760), even though this writer only ever
+      // fires on a deleted booking: since #2760 the webhook may already have
+      // written the cancelled-population row for this same capture, and the
+      // booking may have been deleted afterwards. Matching only this path's own
+      // sentence would then miss that row and raise a duplicate — an OPEN task
+      // asking an operator to hand back money Stripe has already returned.
+      where: {
+        bookingId,
+        paymentId,
+        reason: { in: automaticCancelledBookingRefundTaskReasons(paymentIntentId) },
+      },
       select: { id: true },
     });
     if (existing) {
@@ -164,8 +247,9 @@ export async function raiseDeletedBookingModificationRefundTask(params: {
 }
 
 /**
- * The opening words of the note the automatic close writes, and the phrase the
- * operator surface matches on (#2750).
+ * The opening words of the note the automatic writer writes — whether it closes a
+ * raised task or creates the record itself (#2760) — and the phrase the operator
+ * surface matches on (#2750).
  *
  * IT IS A SHARED CONSTANT, not two copies of one sentence, because the writer
  * below and the finance queue's reader
@@ -174,7 +258,8 @@ export async function raiseDeletedBookingModificationRefundTask(params: {
  * silently empties the list of automatically-refunded captures — the surface
  * whose entire purpose is that this money movement does not go unseen.
  *
- * Only the close below ever writes it, so it is the load-bearing half of the
+ * Only `recordAutomaticCancelledBookingRefundTask` below ever writes it — on both
+ * arms, the close AND the #2760 create — so it is the load-bearing half of the
  * filter. Kept short of the full sentence on purpose: the sentence ends with the
  * payment intent id, so a prefix is what a `startsWith` can match.
  *
@@ -191,11 +276,27 @@ export async function raiseDeletedBookingModificationRefundTask(params: {
 export const AUTOMATIC_CANCELLED_BOOKING_REFUND_NOTE_PREFIX =
   "Closed automatically: Stripe refunded this capture under the cancelled-booking late-capture path";
 
-/** The full note, per payment intent. Trimmed to the column's 500 chars. */
+/**
+ * The full note, per payment intent. Trimmed to the column's 500 chars.
+ *
+ * THE TAIL VARIES BY ARM, THE PREFIX NEVER DOES (review of #2760). The prefix
+ * above is stored data and the reader's `startsWith` key, so it cannot say
+ * anything arm-specific — but since #2760 made the CREATE the common arm (a
+ * healthy webhook arrives before the member's browser), most rows an operator
+ * reads on the card were born `DISMISSED` with nothing ever open to close, while
+ * the sentence opened "Closed automatically". The prefix stays exactly as it is
+ * and the tail says which arm wrote the row, so the card is accurate without any
+ * historical row falling off it.
+ */
 export function automaticCancelledBookingRefundNote(
   paymentIntentId: string,
+  arm: "closed" | "created" = "closed",
 ): string {
-  return `${AUTOMATIC_CANCELLED_BOOKING_REFUND_NOTE_PREFIX}, so there is nothing left to pay back by hand (payment intent ${paymentIntentId}).`.slice(
+  const tail =
+    arm === "created"
+      ? "so there is nothing left to pay back by hand, and no hand-back task had been raised for it - this row is the record itself"
+      : "so there is nothing left to pay back by hand";
+  return `${AUTOMATIC_CANCELLED_BOOKING_REFUND_NOTE_PREFIX}, ${tail} (payment intent ${paymentIntentId}).`.slice(
     0,
     500,
   );
@@ -244,12 +345,24 @@ export const automaticallyRefundedManualRefundTaskFilter: Prisma.ManualRefundTas
 export const AUTOMATIC_REFUND_NOTICE_WINDOW_DAYS = 30;
 
 /**
- * Close the task raised above once Stripe has already returned the money.
+ * The record of one automatic refund: close the task if the confirm route raised
+ * one, and WRITE it if nothing did (#2760, owner decision 10 Aug 2026).
  *
- * A status-fenced `updateMany` on `OPEN`, so it needs no lock of its own and is
- * safe to replay: a webhook retry, or an operator who closed the task first,
- * simply claims nothing. It never touches a task it did not raise — the reason
- * match pins it to this exact payment intent.
+ * WHAT CHANGED, AND WHY. Until #2760 this only closed. A row therefore existed
+ * on exactly one of the four orderings — the confirm endpoint winning the race —
+ * because that endpoint is the only other writer of one of these tasks. On the
+ * ordinary healthy ordering (webhook first), on a member who closes the tab after
+ * paying, and on the interleaved ordering the raise's refund fence declines, the
+ * money went back with no row at all, so the finance card was a partial record
+ * and said so. The owner chose the wider fix over the recommendation: the webhook
+ * writes the row itself, for EVERY auto-refunded late capture on a cancelled
+ * booking — deleted or not — so the card is now complete for both populations.
+ *
+ * ALREADY-DISMISSED, NEVER OPEN. An OPEN row is work, and there is none: Stripe
+ * returned the money before anybody saw the capture. An OPEN row here would
+ * queue an operator to hand back money that has already gone, and completing it
+ * throws out of `applyLocalRefundAllocation` ("Refund amount exceeds captured
+ * payments"), so it would look unresolvable as well as being wrong.
  *
  * DISMISSED, not COMPLETED, and the distinction is load-bearing. In
  * `manual-booking-payment.ts` COMPLETED means "an operator handed the money back
@@ -258,6 +371,62 @@ export const AUTOMATIC_REFUND_NOTICE_WINDOW_DAYS = 30;
  * refunded this one and `refundPaymentTransactions` already wrote the
  * allocation, so COMPLETED here would be both untrue and a second allocation
  * for one refund. `completedByMemberId` stays null because no member did it.
+ *
+ * NO MONEY DECISION IS MADE OR CHANGED HERE. The refund, its amount and its
+ * timing are #1350's, decided and executed by the caller before this runs. This
+ * writes one bookkeeping row.
+ *
+ * WHY THE LOCK NOW, WHEN THE CLOSE NEEDED NONE. The close was a single
+ * status-fenced `updateMany`, atomic on its own. Close-or-create is a
+ * find-then-write, which is not: two Stripe deliveries of one capture landing
+ * together — or a delivery racing the confirm route's raise — would each see no
+ * row and each write one, and the card would show one refund twice. It takes
+ * `pg_advisory_xact_lock(1)`, the canonical global booking/settlement-money key
+ * this file's raise already holds and `booking-cancel.ts` holds when IT creates a
+ * `ManualRefundTask`, so this joins an existing cohort rather than minting a
+ * keyspace. It takes that key and nothing else, holds it across an `updateMany`,
+ * a `findFirst` and at most one `create` — no provider call, no capacity or
+ * member-credit tier — so it composes with nothing and reverses no order. The
+ * caller's Stripe refund has already returned by the time this is called.
+ *
+ * IDEMPOTENT ON THE INTENT, ACROSS BOTH POPULATIONS. Every lookup matches
+ * `bookingId + paymentId + reason IN {deleted, cancelled}` (see
+ * `automaticCancelledBookingRefundTaskReasons`), so Stripe redelivery, a confirm
+ * retry, and a deletion that lands between two deliveries all resolve to the one
+ * row. The `updateMany` stays fenced on OPEN so it can only ever close a raise,
+ * never re-date a row it already wrote.
+ *
+ * NEVER FLIPS AN EXISTING ROW BACK. If a row exists in any non-OPEN state —
+ * already DISMISSED by this writer, DISMISSED by an operator, or COMPLETED
+ * because a human handed money back before the webhook arrived — it is left
+ * exactly as it is. This writer only ever creates a DISMISSED row or closes an
+ * OPEN one.
+ *
+ * ONE ORDERING THE RECORD DOES NOT COVER, AND IT IS REPORTED RATHER THAN
+ * SWALLOWED. If an operator resolved the confirm route's OPEN task BY HAND before
+ * Stripe's refund landed, that row is already non-OPEN and carries the operator's
+ * own note and `completedByMemberId`, so it matches neither the OPEN-fenced close
+ * nor `automaticallyRefundedManualRefundTaskFilter` — the automatic refund appears
+ * on no card. Writing a second row instead would put two `ManualRefundTask` rows
+ * on one capture, which is the property every lookup here exists to prevent, so
+ * this writer leaves the operator's row alone and returns
+ * `alreadyRecorded: "hand-resolved"` while logging at WARN with the row's status.
+ * The card copy, `docs/guides/payments.md` and `INV-ADDPAY-037` all carry that one
+ * carve-out explicitly rather than letting an empty card assert something the code
+ * cannot. Whether the webhook should write its own row anyway in that state is an
+ * owner decision, not this writer's (see #2774).
+ *
+ * BUDGETED FOR LOCK(1) CONTENTION, NOT LEFT ON PRISMA'S DEFAULTS. The advisory
+ * wait counts against the interactive-transaction budget, and the default is
+ * `maxWait: 2s / timeout: 5s` while the longest-lived holder of `lock(1)` in the
+ * tree — `assignBedRange` — runs on `{ maxWait: 10_000, timeout: 30_000 }`. An
+ * admin assigning a bed range concurrently with a Stripe delivery would therefore
+ * blow this transaction's budget with a P2028, and because the caller must not
+ * fail the webhook the row would simply be lost: Stripe never redelivers a 200.
+ * It takes a wider budget than the default and a TIGHTER one than the admin
+ * precedent — Stripe's own delivery timeout is the ceiling on a webhook handler,
+ * so copying 30s here would trade a lost row for a lost delivery. The caller
+ * writes a `critical` audit row if it still fails.
  *
  * CLOSED IS NOT HIDDEN (#2750). The task is the only durable record that this
  * particular money movement happened, and until #2750 closing it took it off the
@@ -269,34 +438,167 @@ export const AUTOMATIC_REFUND_NOTICE_WINDOW_DAYS = 30;
  * below is that card's text as well as this row's, which is why its opening
  * words are a shared constant.
  */
-export async function closeDeletedBookingModificationRefundTaskAfterAutomaticRefund(params: {
+export async function recordAutomaticCancelledBookingRefundTask(params: {
   bookingId: string;
   paymentId: string;
   paymentIntentId: string;
-}): Promise<number> {
-  const { bookingId, paymentId, paymentIntentId } = params;
-  const reason = deletedBookingModificationRefundReason(paymentIntentId);
+  /**
+   * The captured amount Stripe has just returned, in integer cents. Written to
+   * the row as-is: nothing here recomputes a refund.
+   */
+  amountCents: number;
+  /**
+   * Which population this capture belongs to, read from `Booking.deletedAt` at
+   * the moment of the refund. It selects the row's stored `reason` sentence and
+   * nothing else — every lookup matches both sentences.
+   */
+  bookingDeleted: boolean;
+}): Promise<{
+  closed: number;
+  created: boolean;
+  /**
+   * `false` when this call is the record; `"self"` when this writer had already
+   * written it (a Stripe redelivery); `"hand-resolved"` when an operator had
+   * closed the confirm route's OPEN task themselves before the refund landed, so
+   * the automatic refund is on no card and the caller must say so.
+   */
+  alreadyRecorded: false | "self" | "hand-resolved";
+}> {
+  const { bookingId, paymentId, paymentIntentId, amountCents, bookingDeleted } =
+    params;
+  const reasons = automaticCancelledBookingRefundTaskReasons(paymentIntentId);
+  // Same frozen prefix on both arms - it is the card's filter key - and a tail
+  // that tells the truth about which arm wrote the row. See the note builder.
+  const closedNote = automaticCancelledBookingRefundNote(
+    paymentIntentId,
+    "closed",
+  );
+  const createdNote = automaticCancelledBookingRefundNote(
+    paymentIntentId,
+    "created",
+  );
 
-  const closed = await prisma.manualRefundTask.updateMany({
-    where: {
-      bookingId,
-      paymentId,
-      reason,
-      status: ManualRefundTaskStatus.OPEN,
-    },
-    data: {
-      status: ManualRefundTaskStatus.DISMISSED,
-      completedAt: new Date(),
-      note: automaticCancelledBookingRefundNote(paymentIntentId),
-    },
-  });
+  const outcome = await prisma.$transaction(
+    async (tx) => {
+      await tx.$executeRaw`SELECT pg_advisory_xact_lock(1)`;
 
-  if (closed.count > 0) {
+      const closed = await tx.manualRefundTask.updateMany({
+        where: {
+          bookingId,
+          paymentId,
+          reason: { in: reasons },
+          status: ManualRefundTaskStatus.OPEN,
+        },
+        data: {
+          status: ManualRefundTaskStatus.DISMISSED,
+          completedAt: new Date(),
+          note: closedNote,
+        },
+      });
+      if (closed.count > 0) {
+        return {
+          closed: closed.count,
+          created: false,
+          alreadyRecorded: false as const,
+          existingStatus: null,
+        };
+      }
+
+      // Nothing was OPEN. Either this writer (or a hand dismissal, or a hand
+      // completion) already accounted for the capture, or no row exists at all and
+      // this is one of the three orderings that used to leave the refund unrecorded.
+      // `completedByMemberId` and `note` come back too, so the caller can tell the
+      // two apart: this writer's own row IS the record, and a hand-resolved row is
+      // the one ordering the card cannot show.
+      const existing = await tx.manualRefundTask.findFirst({
+        where: { bookingId, paymentId, reason: { in: reasons } },
+        select: {
+          id: true,
+          status: true,
+          completedByMemberId: true,
+          note: true,
+        },
+      });
+      if (existing) {
+        const writtenByThisWriter =
+          existing.status === ManualRefundTaskStatus.DISMISSED &&
+          existing.completedByMemberId === null &&
+          (existing.note ?? "").startsWith(
+            AUTOMATIC_CANCELLED_BOOKING_REFUND_NOTE_PREFIX,
+          );
+        return {
+          closed: 0,
+          created: false,
+          alreadyRecorded: writtenByThisWriter
+            ? ("self" as const)
+            : ("hand-resolved" as const),
+          existingStatus: existing.status,
+        };
+      }
+
+      await tx.manualRefundTask.create({
+        data: {
+          bookingId,
+          paymentId,
+          amountCents,
+          reason: bookingDeleted
+            ? deletedBookingModificationRefundReason(paymentIntentId)
+            : cancelledBookingModificationRefundReason(paymentIntentId),
+          // Written EXPLICITLY, against a schema that defaults to OPEN. The
+          // owner's rule is that this row is never OPEN, and a default that lives
+          // only in the database cannot be asserted — stating it here makes the
+          // property the code's and lets a test prove it.
+          status: ManualRefundTaskStatus.DISMISSED,
+          // The card's window and ordering both read `completedAt`, so a row
+          // without it would be invisible to the surface it exists for.
+          completedAt: new Date(),
+          note: createdNote,
+        },
+        select: { id: true },
+      });
+      return {
+        closed: 0,
+        created: true,
+        alreadyRecorded: false as const,
+        existingStatus: null,
+      };
+    },
+    // See "BUDGETED FOR LOCK(1) CONTENTION" above: wider than Prisma's 2s/5s
+    // default because the advisory wait counts against it, tighter than
+    // `assignBedRange`'s admin precedent because a webhook has Stripe's delivery
+    // timeout over it.
+    { maxWait: 5_000, timeout: 10_000 },
+  );
+
+  if (outcome.closed > 0) {
     logger.info(
-      { bookingId, paymentId, paymentIntentId, closed: closed.count },
-      "Closed the deleted-booking modification refund task after the automatic refund",
+      { bookingId, paymentId, paymentIntentId, closed: outcome.closed },
+      "Closed the cancelled-booking modification refund task after the automatic refund",
+    );
+  } else if (outcome.created) {
+    logger.info(
+      { bookingId, paymentId, paymentIntentId, amountCents, bookingDeleted },
+      "Recorded an automatically refunded late capture that no confirm route had raised (#2760)",
+    );
+  } else if (outcome.alreadyRecorded === "hand-resolved") {
+    // WARN, not info: this is the one ordering where the automatic refund reaches
+    // no card, so the log line is the only place it is named. See #2774.
+    logger.warn(
+      {
+        bookingId,
+        paymentId,
+        paymentIntentId,
+        amountCents,
+        bookingDeleted,
+        existingStatus: outcome.existingStatus,
+      },
+      "An operator had already closed this refund task by hand, so the automatic refund is recorded on no finance card (#2760)",
     );
   }
 
-  return closed.count;
+  return {
+    closed: outcome.closed,
+    created: outcome.created,
+    alreadyRecorded: outcome.alreadyRecorded,
+  };
 }

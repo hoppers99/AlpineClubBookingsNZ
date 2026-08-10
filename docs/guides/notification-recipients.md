@@ -90,22 +90,39 @@ offered to them at all:
 | Booking review required | Bookings | A booking needs admin review before confirmation |
 | Member delete requests | Membership | A hard-delete of a member is requested (two-admin rule) |
 
-### Always-on system alerts
+### Always-on alerts
 
-Two email-infrastructure alerts are sent outside this grid. They have no
-checkbox anywhere and cannot be muted — not here, and not in
-[Delivery Rules](notification-rules.md), because their template
-(`admin-email-failure`) is locked to always-send:
+Three alerts are sent outside this grid. They have no checkbox anywhere and cannot
+be muted — not here, and not in [Delivery Rules](notification-rules.md), because
+their templates (`admin-email-failure`, `admin-late-capture-auto-refund`) are
+locked to always-send:
 
 | Alert | Goes to | Sent when |
 | --- | --- | --- |
 | *An email to a member could not be sent* | Every admin whose role can **edit** Support & System | The system could not read a booking's "No emails" setting, so it withheld a member email rather than risk sending one that was meant to be held back |
 | *Email delivery permanently failed* | Every admin whose role can **edit** Support & System | A member email has used up its automatic retries and will not be retried |
+| *Payment refunded automatically — booking already deleted / already cancelled* | Every admin whose role can **edit** Finance | A member paid for a booking change after the booking had already been cancelled, so the charge was returned to them automatically. Nothing failed and nothing is owed — the mail exists so the money movement is not invisible, and it names whether the booking was also deleted, in which case remaking it means charging the member again |
 
-Both name the intended recipient's email address and the template that failed, so
-they are operational detail rather than routine notification. The only way to
-change who receives them is to change who holds Support & System edit access —
-which for the built-in roles means the Full Admins.
+The first two name the intended recipient's email address and the template that
+failed, so they are operational detail rather than routine notification. The refund
+notice is money moving without anybody deciding it, which is why a club cannot
+switch it off; it is the same event the **"Refunded automatically — nothing to pay
+back"** card on [Payments](payments.md) records. The only way to change who receives
+one of these is to change who holds the access it is sent to — Support & System edit
+for the first two, Finance edit for the refund notice, which for the built-in roles
+means the Full Admins and the Treasurer.
+
+If a club has nobody holding the area at all, the alert is not dropped: the refund
+notice falls back to Support & System editors, and then to the club's own support
+address — the one set in [Email Messages](email-messages.md), or the address in the
+club's configuration if none is set — so it can never be sent to nobody.
+
+Two things worth knowing about that fallback. It only happens when **no** role can
+edit Finance, and while it lasts a Support & System editor receives the member's
+name, stay dates, refunded amount and payment identifiers even if their role has no
+Finance access at all — reaching somebody is treated as better than reaching nobody,
+and each fallback step is logged. The fix is to give somebody Finance edit, which
+takes the notice back to the intended audience.
 
 Which means, out of the box:
 
@@ -125,7 +142,7 @@ Which means, out of the box:
 | Scope | Every **active** admin user who can sign in appears — Full Admins, scoped officers and custom roles alike. Deactivating an admin, or turning off their login, removes them from the grid and from every alert |
 | Upstream | [Delivery Rules](notification-rules.md) can mute a template club-wide; that wins over anything ticked here |
 | Save granularity | Only changed admins are PUT; unchanged cards are left untouched, and if one admin's save is refused the others still save |
-| Outside the grid | Two locked email-failure alerts go to Support & System editors regardless — see *Always-on system alerts* above |
+| Outside the grid | Two locked email-failure alerts go to Support & System editors, and the automatic-refund notice goes to Finance editors, regardless of anything ticked here — see *Always-on alerts* above |
 
 ## Troubleshooting
 
@@ -139,7 +156,7 @@ Which means, out of the box:
 | Save failed with a permission error | The write route rejected a support-view session | Ask a full admin to make the change |
 | One admin's card would not save but the rest did | That admin's save was refused on its own — usually a stale page whose role has since changed | Reload the page and redo just that card |
 | The page opens but no admin cards are listed | Your role has Support & System view but no Membership view, so the roster is withheld | Ask a full admin to widen your access role, or to make the change for you |
-| Someone still gets email-failure alerts with every box unticked | Those two alerts are locked and follow Support & System edit access | Remove Support & System edit from their role, or accept them — see *Always-on system alerts* |
+| Someone still gets email-failure or automatic-refund alerts with every box unticked | Those alerts are locked and follow area edit access — Support & System for the email-failure pair, Finance for the automatic-refund notice | Remove that area's edit access from their role, or accept them — see *Always-on alerts* |
 
 ## Related links
 

@@ -933,6 +933,9 @@ orderings must not pay the member twice:
 
 - **Webhook first** — it records and refunds; the confirm endpoint then finds
   the transaction already captured, takes its early return, and raises no task.
+  Since #2760 the webhook writes the record itself in that case, already
+  `DISMISSED` (`INV-ADDPAY-037`), so "no task is raised" no longer means "no row
+  exists" — it means no OPEN one does.
 - **Confirm endpoint first** — it records and raises the task; the webhook's
   refund then answers that task's whole question, so the webhook **closes** it
   as `DISMISSED` with a note. `DISMISSED`, never `COMPLETED`: in
@@ -949,58 +952,148 @@ orderings must not pay the member twice:
 
 Closing a task whose subject is already resolved moves no money, so it does not
 contradict the no-automatic-refund rule; the refund it records is #1350's
-established behaviour and is not introduced by #2700. **The consequence worth
-naming: on the common path where webhooks are healthy, the member is refunded
-automatically and the task is a record rather than a decision.** The task earns
+established behaviour and is not introduced by #2700. Nor does #2760's write: an
+already-`DISMISSED` row asks nobody for anything and moves nothing. **The
+consequence worth naming: on the common path where webhooks are healthy, the member
+is refunded automatically and the task is a record rather than a decision.** The task earns
 its place in the orderings where the webhook does not arrive, is disabled, or
 fails — which is precisely when the club would otherwise be holding money with
 nobody told.
 
 ### INV-ADDPAY-037
 
-**Where an automatic refund of a late capture leaves a closed `ManualRefundTask`,
-that row is visible on the operator surface rather than only in the database**
-(#2750, orchestrator decision 10 Aug 2026 under the owner's standing backlog
-instruction; reversible). `INV-ADDPAY-036`'s consequence — that on a healthy
-webhook the member is refunded automatically and the task is a record rather than
-a decision — was only half delivered: the webhook's own close moved the row out of
-the `OPEN` list, which is the only list the finance queue showed, so that durable
-record of a money movement nobody authorised appeared on no screen at all. "A
-human is told" was true of the database and false of every human.
+**Every automatic refund of a late BOOKING-CHANGE capture on a cancelled booking
+leaves a `ManualRefundTask`, and that row is visible on the operator surface
+rather than only in the database** (#2750, extended by #2760 — owner decision
+10 Aug 2026, taken deliberately over the narrower recommendation; reversible).
 
-**READ THE SCOPE IN THAT HEADLINE BEFORE RELYING ON THIS RULE.** It is about rows
-that exist, and not every automatic refund produces one. The task is created in
-exactly one place — the confirm-modification-payment endpoint, on the ordering
-where the member's browser reaches it before the webhook does — so a webhook-first
-refund (the ordinary healthy case), a member who closes the tab after paying, and
-the interleaved ordering the raise's refund fence declines all move money with no
-row for this card to show. The #1350 refund also fires on
-`Booking.status === "CANCELLED"` rather than on `deletedAt`, so an auto-refunded
-late capture on a cancelled-but-live booking is outside this rule as well. **For
-those, the record is the `booking.payment.refunded_after_cancellation` audit entry
-plus the admin payment alert described below** — the card is not a complete list of
-automatic refunds and must not be documented, described in a PR, or relied on as
-one. #2760 carries the option of making it complete (the webhook writing the
-DISMISSED row itself when its fenced close claims nothing); lifting the
-qualification is that issue's job, in the same PR as the code.
+**READ THE SCOPE IN THAT HEADLINE BEFORE RELYING ON THIS RULE.** "Booking-change"
+is load-bearing, and it is the whole scope: this covers
+`handleCancelledBookingAdditionalPaymentSucceeded`, the handler for a payment for
+a *change* to a booking. A late capture of a booking's ORIGINAL payment goes
+through the sibling handler `handleCancelledBookingPaymentSucceeded`, which
+refunds with the same `cancelled_booking_late_capture` reason and writes the same
+`booking.payment.refunded_after_cancellation` audit entry — and writes **no
+`ManualRefundTask` and sends the old muteable generic "Payment Failed" mail**.
+That path is not covered by this rule or by `INV-ADDPAY-038`, and closing it is
+tracked as its own owner decision in **#2773**. So an operator holding a
+`refunded_after_cancellation` audit entry with no card row is not looking at a
+broken card until they have established which handler wrote it.
+`INV-ADDPAY-036`'s consequence — that on a healthy webhook the member is refunded
+automatically and the task is a record rather than a decision — was only half
+delivered: the webhook's own close moved the row out of the `OPEN` list, which is
+the only list the finance queue showed, so that durable record of a money movement
+nobody authorised appeared on no screen at all. "A human is told" was true of the
+database and false of every human.
 
-Five obligations:
+**THE RECORD IS COMPLETE FOR THIS PATH, AND #2760 IS WHAT MADE IT SO — WITH TWO
+NAMED EXCEPTIONS AND NOT ONE MORE.** As #2750 shipped it, a
+row existed only where the confirm-modification-payment endpoint had raised one —
+one of four orderings — so a webhook-first refund (the ordinary healthy case), a
+member who closes the tab after paying, and the interleaved ordering the raise's
+refund fence declines all moved money with no row at all. The #1350 refund also
+fires on `Booking.status === "CANCELLED"` rather than on `deletedAt`, and the raise
+only fires on `deletedAt`, so a late capture on a cancelled-but-live booking
+produced nothing either. **The webhook now writes the row itself** —
+`recordAutomaticCancelledBookingRefundTask`, already `DISMISSED`, whenever its
+OPEN-fenced close claims nothing — **for both populations.** The qualification that
+used to sit here, and the "this card does not catch every one" copy that went with
+it, are lifted. What remains bounded is the CARD's thirty-day window, not the
+record: the row and the `booking.payment.refunded_after_cancellation` audit entry
+stay permanent.
 
-**One thing was already in place and must not be built twice.**
-`handleCancelledBookingAdditionalPaymentSucceeded` has always sent
-`sendAdminPaymentFailureAlert` on this path, naming the member, the stay, the
-amount, the payment intent, and the fact that the capture was auto-refunded and
-the supplementary Xero invoice was not released. So the club is emailed at the
-moment it happens; what was missing was somewhere to look afterwards, which is
-what this rule adds. Anyone tempted to "add an alert" here should check that
-mail first — a second notification for one event is noise, and noise is how the
-first one stops being read. **State that mail's limits honestly** rather than
-treating it as a guarantee: it carries `preferenceKey: "adminPaymentFailure"`, so
-recipients can mute it and the recipient set can be empty; the webhook sends it
-fire-and-forget with a `.catch` that only logs; and its subject is the generic
-"Payment Failed". No pending count anywhere reaches these rows either, because
-every one of them counts `status: "OPEN"` — #2761 holds that decision. So the card
-is the place to look, and nothing currently sends an operator there.
+The two exceptions are stated here, on the card and in
+`docs/guides/payments.md`, because a completeness claim with an undisclosed hole
+is worse than the partial claim it replaced:
+
+- **An operator who resolved the confirm route's `OPEN` task BY HAND before
+  Stripe's refund landed.** That row is already non-`OPEN` and carries the
+  operator's own note and `completedByMemberId`, so it matches neither the
+  `OPEN`-fenced close nor `automaticallyRefundedManualRefundTaskFilter`, and the
+  automatic refund reaches no card. The writer deliberately does NOT write a
+  second row — one `ManualRefundTask` per capture is the property every lookup on
+  this path protects, and widening the card's filter to admit actor-bearing rows
+  would reintroduce #2750's defect of presenting a hand dismissal as an automatic
+  refund. It returns `alreadyRecorded: "hand-resolved"` and logs at **WARN** with
+  the row's status, which is the only place that ordering is named. Whether the
+  webhook should write its own row anyway, and the pre-existing double-refund the
+  `COMPLETED` variant of the same ordering allows, are **#2774**.
+- **The record write itself failing.** The caller must answer 200 — the money is
+  already back with the member and a 500 replays the whole refund path for a
+  bookkeeping row — so Stripe never redelivers and nothing else in the tree ever
+  writes that row. A container log is not a record when the card claims
+  completeness, so the caller writes
+  `booking.payment.auto_refund_record_failed` (`severity: "critical"`,
+  `outcome: "failure"`, `category: "payment"`, carrying the booking and the
+  payment intent) beside the `refunded_after_cancellation` entry. **That audit row
+  is the recovery surface**: it is the one place a finance operator can find an
+  automatic refund the card does not hold. Removing it, or downgrading it to a log
+  line, breaks this rule.
+
+**The writer's obligations, none of them optional:**
+
+- **Already `DISMISSED`, never `OPEN`.** An `OPEN` row is work an operator is asked
+  to do, and there is none — Stripe returned the money before anybody saw the
+  capture. Worse, completing such a task throws out of
+  `applyLocalRefundAllocation` ("Refund amount exceeds captured payments"), so it
+  would look unresolvable as well as being wrong. `COMPLETED` is equally forbidden
+  and for the reason given below: it writes a second refund allocation for one
+  refund. No allocation is written, no operator is queued, and the refund's amount
+  and timing are untouched — this is a bookkeeping row for a decision #1350
+  already made.
+- **Idempotent on the payment intent, across both populations.** The key is
+  `bookingId + paymentId + reason`, and every lookup matches BOTH population
+  sentences (`automaticCancelledBookingRefundTaskReasons`). That is not
+  belt-and-braces: a booking can be deleted BETWEEN two Stripe deliveries of one
+  capture, so a per-population key would let the second delivery write a second row
+  for a single refund. The confirm route's raise matches the same pair, so a
+  webhook-written row of either kind stops it raising a duplicate `OPEN` task.
+- **The deleted population's `reason` bytes are frozen.** `reason` IS the
+  idempotency key, so rewording it would leave any `OPEN` task raised before a
+  deploy unmatchable — the webhook would create a second DISMISSED row and leave
+  the OPEN one in the hand-back queue asking an operator to hand back money Stripe
+  had already returned. The merely-cancelled population therefore got its own NEW
+  sentence (`cancelledBookingModificationRefundReason`) rather than the existing one
+  being generalised, and each row stores the sentence that was true when it was
+  written.
+- **Under `pg_advisory_xact_lock(1)`, and that is a change from #2750.** The close
+  alone was a single status-fenced `updateMany`, atomic on its own and holding no
+  lock. Close-or-create is a find-then-write: two deliveries of one capture, or a
+  delivery racing the raise, would each find no row and each write one. It takes
+  the same canonical global key the raise takes — the cohort `booking-cancel.ts` is
+  already in when IT creates a `ManualRefundTask` — and nothing else, holding it
+  across an `updateMany`, a `findFirst` and at most one `create`. No provider call
+  happens inside it; the refund that triggers it has already returned.
+- **Budgeted `{ maxWait: 5_000, timeout: 10_000 }`, not left on Prisma's
+  defaults, and NOT given the admin precedent either.** The advisory wait counts
+  against the interactive-transaction budget, and the longest-lived holder of
+  `lock(1)` in the tree — `assignBedRange`, up to 366 nights — runs on
+  `{ maxWait: 10_000, timeout: 30_000 }`, so on the 2s/5s default an admin
+  assigning a bed range concurrently with a Stripe delivery blows this
+  transaction with a `P2028` and the row is lost for good (see the second
+  exception above). Copying the 30s admin precedent into a webhook is the
+  opposite error: Stripe's delivery timeout is the ceiling on a handler, so it
+  would trade a lost row for a lost delivery. This is the `lock(1)` cohort's only
+  webhook-triggered participant, and `docs/CONCURRENCY_AND_LOCKING.md` records it
+  as such. Changing either number is a decision about which failure the club
+  prefers, not a tuning detail.
+- **Never flips an existing row.** A row in any non-`OPEN` state — written by this
+  writer, dismissed by an operator, or `COMPLETED` because a human handed money
+  back first — is left exactly as it is, not re-dated, re-noted or duplicated.
+
+Five further obligations, on the surface:
+
+**One notification for this event, and it already exists — do not build a
+second.** `handleCancelledBookingAdditionalPaymentSucceeded` has always mailed the
+club at the moment it happens, naming the member, the stay, the amount, the payment
+intent, and the fact that the capture was auto-refunded and the supplementary Xero
+invoice was not released. What was missing was somewhere to look afterwards, which
+is what this rule adds. Anyone tempted to "add an alert" here should read
+`INV-ADDPAY-038` first: that mail was rewritten by #2761 rather than joined by
+another, because a second notification for one event is noise, and noise is how the
+first one stops being read. No pending count anywhere reaches these rows either —
+every one of them counts `status: "OPEN"`, and #2761's owner decision explicitly
+left badges and the digest alone.
 
 - **The finance queue on `/admin/payments` renders those rows** as a second,
   read-only card beneath the hand-back queue. It renders **even when no `OPEN`
@@ -1010,13 +1103,27 @@ is the place to look, and nothing currently sends an operator there.
   `AUTOMATIC_REFUND_NOTICE_WINDOW_DAYS`, because an unbounded list of long-settled
   rows is the state that makes an operator stop reading a card; the row itself and
   the `booking.payment.refunded_after_cancellation` audit entry stay permanent.
-  **The card says on screen that it is not a complete list** and names that audit
-  entry and the alert mail as the record that is, so a short or empty card is read
-  as "none recorded here" rather than "none happened". No row carries a **View
-  booking** link, unlike the hand-back queue beside it: every booking here is
-  soft-deleted, and the booking detail page 404s a deleted booking for anybody who
-  is not a Full Admin, while this card is gated on `finance:view` — which a Finance
-  Viewer and a Treasurer hold without it. The identifiers are printed as text
+  **The card says on screen what it covers** — every automatic refund of a late
+  booking-change payment from the last thirty days, **with the one hand-resolved
+  exception named in the copy** — and names the audit entry as the permanent record
+  beyond that window. It must not claim more (it is bounded, it is scoped to the
+  booking-change handler, and the hand-resolved ordering is real) and must not go
+  back to claiming less (#2750's "this card does not catch every one" is false since
+  #2760, and reinstating it would tell an operator to distrust a list that is now
+  complete). The exception is one clause, not a paragraph: a footnote an operator
+  can read in passing keeps the claim true, while the old partial-list paragraph
+  invited them to stop trusting the card altogether.
+  **It groups the two populations**, deleted first: widening to every cancelled
+  booking added rows for what is usually normal operation — cancel a booking
+  somebody is part-way through paying for and this is the expected outcome — and in
+  one flat list those would bury the case that needs a person, a refund on a
+  booking the club DELETED where remaking it means charging the member again. Each
+  group says which it is and what to do about it. No row carries a **View booking**
+  link, unlike the hand-back queue beside it: a deleted booking's detail page 404s
+  for anybody who is not a Full Admin, and a merely cancelled booking's page is
+  gated on `bookings:view` while this card is gated on `finance:view` — which a
+  Finance Viewer holds with no bookings access at all — so the link is a dead end
+  for part of this card's audience either way. The identifiers are printed as text
   instead; **widening who may open a deleted booking to make a link work is not an
   acceptable fix** and would need its own owner decision.
 - **Which rows those are is defined once**, in
@@ -1064,3 +1171,87 @@ effect of work in this area** — reversing this needs a fresh owner decision, a
 test pinning that the capture is not auto-refunded and the task stays `OPEN`, and
 its own review of the webhook path. Nothing here changes what money moves, when,
 or by how much.
+
+### INV-ADDPAY-038
+
+**The alert for an automatically refunded late BOOKING-CHANGE capture says what
+actually happened, cannot be muted, and stays the only notification for the
+event** (#2761, owner decision 10 Aug 2026, taken deliberately over the
+recommended badge option). Same scope as `INV-ADDPAY-037` and for the same
+reason: this is `handleCancelledBookingAdditionalPaymentSucceeded`'s mail. The
+sibling handler for a booking's ORIGINAL payment still sends the muteable generic
+`sendAdminPaymentFailureAlert`, and **that** mail can be switched off per admin
+and club-wide — #2773.
+`INV-ADDPAY-037` put the durable record on a screen; nothing pulled an operator to
+that screen, and the one thing that fired at the moment it happened was weaker than
+it looked. It went out as `sendAdminPaymentFailureAlert`: subject "Payment Failed",
+gated on the per-member `adminPaymentFailure` preference, with a recipient set that
+could be empty. Nothing failed on this path — a booking-change payment was captured
+after the booking had gone and the money went straight back — so the subject
+misdescribed the event, which is how it got triaged as noise.
+
+Four obligations:
+
+- **Its own template and subject, naming the money movement and which population
+  it was.** `admin-late-capture-auto-refund`, subject "Payment refunded
+  automatically — booking already deleted: <member>" or "… — booking already
+  cancelled: <member>". Both populations, because #2760 widened what fires it, and
+  they need different follow-up: a deleted booking may have been deleted by
+  mistake, in which case remaking it means charging the member again, while a
+  merely cancelled one is normally the expected outcome and needs nothing. The
+  distinguishing sentence is composed once
+  (`lateCaptureAutoRefundOutcomeParagraph`) and shared by the hand-built HTML and
+  the `{{refundOutcomeNote}}` token, so an admin's saved default cannot describe a
+  different population from the mail. `{{bookingStateLabel}}` and
+  `{{refundOutcomeNote}}` are both REQUIRED tokens: an override that drops either
+  leaves an operator unable to tell the two cases apart.
+- **Its own registry entry, not a variant of `admin-payment-failure`.** Sharing the
+  key would let an admin's override of the routine payment-failure wording rewrite
+  this notice, and would put both under one delivery switch. Same reasoning as
+  `admin-booking-request-hold-cancelled` and `admin-split-settlement-cancelled`.
+- **Delivery is not opt-in, on either mute vector.** The template is in
+  `LOCKED_DELIVERY_TEMPLATE_NAMES`, so `/admin/notification-delivery-policies`
+  refuses to change its mode; and it ships through `sendUnmuteableAdminAlert`,
+  which reads no per-member notification preference and does not consult the
+  club-wide policy row at all (the lock is enforced on write, not on read, so
+  reading it would leave one more way to silence an automatic money movement — the
+  fail-closed withhold alert in `email/core.ts` takes the same direct route). The
+  permission matrix still decides the audience: whoever can EDIT finance. That is
+  who the club made responsible, not a mute. **The recipient set cannot be
+  silently empty:** no finance editors falls back to Support & System editors, and
+  no admins at all falls back to the club's support address, with a warning logged
+  whenever it falls past the first step and the existing undeliverable escalation
+  recorded when not one recipient received it.
+
+  **The last rung must resolve the club's OWN address, not the bootstrap
+  literal.** It reads `EmailMessageSetting.supportEmail` through
+  `loadEmailMessageSettings` — the same DB-first resolution every other outbound
+  mail uses, so it is whatever an admin typed into `/admin/email-messages`, and
+  `config/club.json`'s address when nothing is stored. It is deliberately **not**
+  `CLUB_SUPPORT_EMAIL`: that constant is `SAFE_DEFAULT_CONFIG.supportEmail`, the
+  frozen unconfigured-club literal `support@example.org`, which SES accepts and
+  bounces asynchronously — `sendEmail` would report `sent`, the undeliverable
+  escalation would never fire, the `EmailLog` row would say SENT, and the alert
+  would vanish in exactly the state the fallback exists for (while feeding hard
+  bounces into the club's sender reputation). A recipient that cannot receive mail
+  is a silently empty recipient set with an extra step. The literal survives only
+  as the guard against a blank setting and a settings read that throws.
+
+  **A declared widening, not an accident:** step 2 resolves `support: edit`, a
+  different area from the one that owns the alert. For the built-in roles that is
+  the Full Admins, but the state this fallback exists for is a club with a custom
+  role set and no finance editor — and there a tech-support editor with no finance
+  access receives a body carrying the member's name, stay dates, refunded amount,
+  booking id and Stripe payment-intent id. That is accepted deliberately: reaching
+  somebody in a degraded state beats reaching nobody, the step is logged, and the
+  club chose the role set. It is recorded here and in
+  `docs/guides/notification-recipients.md` so it is a decision on the record rather
+  than a surprise. Narrowing the fallback body instead — naming no member and no
+  amount — stays available if a club objects.
+- **Still exactly one notification, and no badge or digest changed.** This replaced
+  the previous mail; it did not join it. `AdminPendingCounts` and the count/census
+  fixtures are untouched by design, and the digest keeps its explicit template
+  allowlist — so these events no longer land in its "Payment Failures" count,
+  which is a correction rather than a loss: nothing failed. The webhook still sends
+  it fire-and-forget with a `.catch` that only logs, because webhooks stay
+  non-blocking and the durable record is the row plus the audit entry.
