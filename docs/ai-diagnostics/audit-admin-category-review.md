@@ -17,6 +17,13 @@ came out of it is `INV-PRIV-012` — which is also where the fifteen lodge-gated
 sites and the unresolved `lockers` group are now recorded, instead of only in the
 open-question section at the foot of this page.
 
+**And the open question at the foot of this page is closed: they stay (#2765).**
+The test that decided it — *did this site split a subsystem*, not *does it name a
+lodge* — is `INV-PRIV-013`, and the fifteen are pinned per site in
+`LODGE_GATED_ADMIN_CATEGORIES_2765` so the keep no longer depends on the next
+author reading this page. `lockers` is the one subgroup still open, and #2765
+records why in terms that can be re-measured rather than re-argued.
+
 **What this page is not.** It is a record of where the platform FILES new rows. It
 changed no row already in the database, which left bed-allocation history split by
 date — a separate reviewed decision, taken in
@@ -286,6 +293,24 @@ word). The lockers writers are the odd ones out: their routes are gated
 `membership:*` and a locker is allocated to a named member, so `lodge` is not
 obviously their answer either.
 
+**Both halves of that were decided on #2765 (11 August 2026), and the group is now
+pinned per site.** The fifteen stay `admin` under the rule they were always
+measured against — *did this site split a subsystem* — which is written down as
+`INV-PRIV-013` and enforced by `LODGE_GATED_ADMIN_CATEGORIES_2765`
+(`scripts/audit/audit-writer-census-manifest.ts`), measured from the tree, so a
+third pass that disagrees fails CI instead of landing the change and finding the
+argument afterwards. **`lockers` was decided for `membership` and the move was
+refused on measurement, which is the interesting part:** `membership` is a
+permission area and a correlation domain here, not a category — `category:
+"membership"` is a compile error and it is one of the two invented values #2581
+removed — and every category that DOES route to the membership correlation entry
+(`account`, `family`, `communication`, `privacy`) is member-visible. The four
+locker writers pass `memberId: <the acting officer>` with no `subjectMemberId`, so
+a member-visible destination would put every locker change on the acting officer's
+own activity page. That crossing is the owner's decision under `INV-PRIV-012` and
+`INV-OPS-012`, so the sites stay `admin` and the question stays open with its
+reason measured rather than argued.
+
 **Why `LODGE_DISPLAY_CONFIG_UPDATED` moved and `LODGE_UPDATED` did not**, since
 both name a Lodge on a `lodge:edit` route: the display writer was closing a
 **split** — ten siblings in the same subsystem already said `lodge` — whereas
@@ -529,6 +554,13 @@ lodge records themselves** as `admin`, and the System entry's `scope` names the
 same set. That was a real gap — "when was this lodge deactivated" returned
 nothing from the Lodge entry with no warning — and it is fixed whichever way the
 decision goes.
+
+**#2765 closed this open question, and the answer was "they stay".** The rule that
+decided it is now `INV-PRIV-013` and the fifteen are pinned per site in
+`LODGE_GATED_ADMIN_CATEGORIES_2765`, so the keep is enforced rather than argued
+each time. `lockers` remains the one unresolved subgroup, for a measured reason
+rather than a stylistic one — see the section above. Read the two paragraphs below
+as the history of how it got there.
 
 **#2755 promoted both halves of that from a page note to an invariant, and left
 them at `admin`.** `INV-PRIV-012` records the fifteen as a deliberate keep with

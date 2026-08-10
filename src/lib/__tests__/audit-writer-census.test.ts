@@ -52,6 +52,9 @@ import {
   AUDIT_CENSUS_TOTALS,
   AUDIT_WRITER_WRAPPERS,
   AUDIT_WRITERS_WITHOUT_ENTITY_IDENTIFIER,
+  LODGE_GATED_ADMIN_ACTIONS_2765,
+  LODGE_GATED_ADMIN_CATEGORIES_2765,
+  MEMBERSHIP_GATED_LOCKER_SITES_2765,
   MEMBER_RECORD_ACTION_LITERAL_FILES_2755,
   MEMBER_RECORD_ADMIN_ACTIONS_2755,
   MEMBER_RECORD_ADMIN_CATEGORIES_2755,
@@ -529,6 +532,181 @@ describe("audit writer census (#2581)", { timeout: 180_000 }, () => {
         ).toBe("critical");
       }
     }
+  });
+
+  it("keeps the fifteen lodge-gated operational sites at `admin`, where two passes left them", () => {
+    /*
+      The drift gate for the population #2730 and #2755 read and did NOT move, and
+      the reason it is a fourth map rather than rows in the three above (#2765).
+
+      Those three maps are reversal records: sites that were given a category, or
+      moved, or unified. This one records a KEEP, which needs the identical
+      protection and had none — `admin` counts 98 sites and the distribution pin
+      cannot say WHICH, so any of these fifteen could move out under a compensating
+      pair and nothing would fail. The keep has been re-proposed twice on the
+      surface reading ("the route says `lodge`"), which is exactly the drift a
+      per-site pin exists to make loud.
+
+      The rule that decided it is `INV-PRIV-013`: did this site SPLIT a subsystem —
+      is the same act already filed under another gate by another writer — and NOT
+      "does it name a lodge". This group is uniform at `admin`, so there is no split
+      to close, and moving it would open a fresh readership question of its own size
+      rather than fix a defect.
+
+      MEASURED FROM THE TREE, so editing a ROUTE fails this and not only editing the
+      manifest.
+    */
+    const measured = Object.fromEntries(
+      census()
+        .sites.filter((site) => site.id in LODGE_GATED_ADMIN_CATEGORIES_2765)
+        .map((site) => [site.id, describeCategory(site.category)]),
+    );
+
+    expect(
+      measured,
+      "A lodge-gated operational writer no longer records `admin`, or has moved " +
+        "and taken its identity with it. These fifteen are a recorded KEEP, not an " +
+        "unexamined default: two passes read them and left them because the group " +
+        "is uniform, so there is no two-gates-for-one-thing split to close " +
+        "(INV-PRIV-013). Moving one is a readership change — it takes the row out " +
+        "of the support-only gate and out of the System correlation entry the " +
+        "Diagnostics scope strings promise it is in — so it needs a decision, a " +
+        "backfill answer and a measured before/after audience per site " +
+        "(INV-OPS-012), then this map updated.",
+    ).toEqual(LODGE_GATED_ADMIN_CATEGORIES_2765);
+
+    expect(Object.keys(LODGE_GATED_ADMIN_CATEGORIES_2765)).toHaveLength(15);
+    expect([
+      ...new Set(Object.values(LODGE_GATED_ADMIN_CATEGORIES_2765)),
+    ]).toEqual(["admin"]);
+
+    // The property that makes staying a non-event on the member-facing axis:
+    // `admin` is member-INVISIBLE, so none of these rows reaches a member timeline
+    // through its category, whatever identity fields the writer passes.
+    const memberVisible = new Set<string>(
+      MEMBER_AUDIT_TIMELINE_CATEGORY_OPTIONS.map((option) => option.value),
+    );
+    expect(
+      Object.values(LODGE_GATED_ADMIN_CATEGORIES_2765).filter((category) =>
+        memberVisible.has(category),
+      ),
+    ).toEqual([]);
+
+    // And the retention-neutrality that every proposal to move this group has
+    // claimed: `critical` under `admin` AND under `lodge`, so the "easy narrowing"
+    // framing is measured rather than repeated. `classifyAuditRetention` reads the
+    // ACTION too — an access-shaped action under `admin` or `security` expires at
+    // 24 months instead of seven years — so it is checked per action, not inferred
+    // from the category.
+    for (const action of LODGE_GATED_ADMIN_ACTIONS_2765) {
+      for (const category of ["admin", "lodge"] as const) {
+        expect(
+          classifyAuditRetention({ action, category }),
+          `${action} under ${category} no longer classifies as critical`,
+        ).toBe("critical");
+      }
+    }
+  });
+
+  it("names the four locker sites as membership-gated, and no destination exists that does not widen", () => {
+    /*
+      The open half of #2765, kept measurable instead of kept in prose.
+
+      THE FOUR LOCKER WRITERS ARE THE ODD ONES OUT of the fifteen, and this asserts
+      the reason from the routes' own source rather than from a comment: eleven of
+      the fifteen are gated `lodge:*`, these four are gated `membership:*`. So the
+      surface reading and the access model disagree here in a way they do not for
+      chores, work parties, lodge settings, lodge instructions or the lodge records.
+
+      AND THIS IS WHY THE OWNER'S ANSWER — "move them to `membership`" — could not be
+      applied as written. `membership` is a permission area and a correlation domain
+      in this codebase; it is NOT a category. It is pinned false in
+      `isAuditCategory` at the foot of this file, because it is one of the two
+      invented values #2581 removed from the open union. And every canonical
+      category that DOES route to the membership correlation entry is
+      member-VISIBLE, which the loop below measures rather than assumes. These four
+      writers pass `memberId: <the acting officer>` and no `subjectMemberId`, so
+      `buildMemberAuditLogWhere`'s null-subject `memberId` leg (pinned in
+      `audit.test.ts`) would put every locker change on the acting officer's own
+      activity page — a widening onto a member-facing surface, which `INV-PRIV-012`
+      and `INV-OPS-012` both reserve to the owner.
+
+      IF THIS TEST EVER FAILS ON THE EMPTY-SET ASSERTION, that is the useful signal
+      rather than a nuisance: a member-INVISIBLE category has joined the membership
+      correlation domain, so #2765's question finally has a destination that does
+      not publish an officer's locker admin to a member, and the decision can be
+      put again on those terms.
+    */
+    expect(MEMBERSHIP_GATED_LOCKER_SITES_2765).toHaveLength(4);
+    for (const id of MEMBERSHIP_GATED_LOCKER_SITES_2765) {
+      expect(
+        LODGE_GATED_ADMIN_CATEGORIES_2765[id],
+        `${id} must be one of the fifteen kept at admin`,
+      ).toBe("admin");
+    }
+
+    // Measured from each route's own guard, not from the map's comment.
+    const gateOf = (file: string): "lodge" | "membership" | "other" => {
+      const source = readFileSync(join(process.cwd(), file), "utf8");
+      if (/permission:\s*\{\s*area:\s*"membership"/.test(source)) {
+        return /permission:\s*\{\s*area:\s*"lodge"/.test(source)
+          ? "other"
+          : "membership";
+      }
+      return /permission:\s*\{\s*area:\s*"lodge"/.test(source)
+        ? "lodge"
+        : "other";
+    };
+    const files = [
+      ...new Set(
+        Object.keys(LODGE_GATED_ADMIN_CATEGORIES_2765).map(
+          (id) => id.split("::")[0],
+        ),
+      ),
+    ];
+    const membershipGatedFiles = files.filter(
+      (file) => gateOf(file) === "membership",
+    );
+    expect(
+      membershipGatedFiles.sort(),
+      "The permission gate on a lodge-gated operational route changed. The whole " +
+        "reason lockers are an open question and the other eleven are not is that " +
+        "these four routes require `membership` and the rest require `lodge`; if " +
+        "that stops being true, the question changes shape (INV-PRIV-013).",
+    ).toEqual([
+      "src/app/api/admin/lockers/[id]/route.ts",
+      "src/app/api/admin/lockers/bulk/route.ts",
+      "src/app/api/admin/lockers/route.ts",
+    ]);
+    expect(files.filter((file) => gateOf(file) === "lodge")).toHaveLength(8);
+    expect(files.filter((file) => gateOf(file) === "other")).toEqual([]);
+
+    // The measurement that stops D2 being implementable by a lane.
+    const memberVisible = new Set<string>(
+      MEMBER_AUDIT_TIMELINE_CATEGORY_OPTIONS.map((option) => option.value),
+    );
+    const membershipDomainCategories = AUDIT_CATEGORIES.filter(
+      (category) =>
+        AUDIT_CATEGORY_CORRELATION_DOMAIN[category] === "membership",
+    );
+    expect(membershipDomainCategories).toEqual([
+      "account",
+      "family",
+      "communication",
+      "privacy",
+    ]);
+    expect(
+      membershipDomainCategories.filter(
+        (category) => !memberVisible.has(category),
+      ),
+      "A member-INVISIBLE category now routes to the membership correlation " +
+        "entry. That changes #2765: until now, filing the locker writers where a " +
+        "Membership Officer could correlate them meant filing them somewhere a " +
+        "member can read, and these four writers reach the acting officer's own " +
+        "timeline through the null-subject `memberId` leg. With a member-invisible " +
+        "destination available the question can be put to the owner again on those " +
+        "terms — it is still the owner's, not a lane's (INV-PRIV-012).",
+    ).toEqual([]);
   });
 
   it("pins which classified writers a MEMBER can now see about themselves", () => {

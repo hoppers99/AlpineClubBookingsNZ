@@ -562,6 +562,7 @@ Prefix `INV-PRIV`.
 | `INV-PRIV-010` | Every one of these fails closed, and the public website still renders normally |
 | `INV-PRIV-011` | Which person fields the log/Sentry redactor strips by key, that key coverage is not exhaustive, and that audit rows deliberately keep name and street address |
 | `INV-PRIV-012` | Audit category follows the affected domain; member visibility declared separately; rows already written are `INV-OPS-012` |
+| `INV-PRIV-013` | An `admin` writer moves only to close a SPLIT, never on a surface reading; the fifteen lodge-gated keeps and why `lockers` has no member-invisible destination |
 
 ## Membership Lifecycle
 
@@ -699,7 +700,7 @@ File: [`invariants/operations.md`](invariants/operations.md). Prefix `INV-OPS`.
 | --- | --- |
 | `INV-OPS-001` | Raw SQL never declares its own result shape: lock raw and read typed, or validate the rows |
 | `INV-OPS-002` | Production deployment must respect `docs/BLUE_GREEN_MIGRATION_POLICY.md` |
-| `INV-OPS-012` | An audit reclassification ships its backfill or files one, never neither |
+| `INV-OPS-012` | An audit reclassification ships its backfill or files one, never neither — and states its MEASURED before/after audience per site |
 | `INV-OPS-005` | A doomed column needs `@ignore`: static defaults and implicit `RETURNING` still name it |
 | `INV-OPS-006` | Post-drop the compiler catches only `where`; `select` and `create` fail at runtime |
 | `INV-OPS-007` | The surviving guard test pins the generated client's shape and raw SQL |

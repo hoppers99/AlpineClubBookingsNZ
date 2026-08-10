@@ -364,3 +364,72 @@ and #2763's bulk member-record rows were not.
   than any widening — but it is still a readership change, so it needs a decision
   rather than a sweep. `docs/ai-diagnostics/audit-admin-category-review.md`
   carries the per-site verdict for all 118 and the alternative reading for each.
+
+## INV-PRIV-013
+
+The test that decides whether an `admin` audit writer moves in a sweep, and the
+one destination a lane may never choose for itself. Owner decisions of 11 August
+2026 on #2765, D1 and D2.
+
+- **The test is: did this site SPLIT a subsystem? Not: does this site name a
+  lodge, a member or a payment.** A split is the defect — some other writer of
+  the same objects already answers to a different gate, so no operator can get a
+  complete answer and nothing tells them the answer is partial. That, and not the
+  surface reading of an entity type or a route prefix, is what #2730 and #2755
+  actually applied, and stating it is the point of this rule: the fifteen
+  lodge-gated operational sites in `INV-PRIV-012` have now been proposed for
+  `lodge` twice on the surface reading, and each pass has had to re-derive the
+  same answer from scratch. **A group that is UNIFORM has no split to close, so
+  moving it fixes nothing and opens a fresh readership question of its own size.**
+  `LODGE_DISPLAY_CONFIG_UPDATED` moved and `LODGE_UPDATED` did not for exactly
+  this reason, on the same route prefix and the same entity type: the display
+  writer had ten siblings already saying `lodge`. Both are pinned per site —
+  the mover in `REVIEWED_ADMIN_CATEGORIES_2730`, the fifteen keeps in
+  `LODGE_GATED_ADMIN_CATEGORIES_2765`
+  (`scripts/audit/audit-writer-census-manifest.ts`), measured from the tree — so
+  a third sweep that disagrees fails CI with the rule named instead of landing
+  the change and discovering the argument afterwards.
+  **The `INV-PRIV-012` sentence that calls moving this group "a narrowing,
+  member-invisible in both directions" is scoped to `lodge` as the destination.**
+  It is true of `lodge` and measurably false of the membership correlation
+  entry — see the next bullet — so do not carry that sentence to another
+  destination.
+- **The whole fifteen stay `admin`, including `lockers`, and `lockers` stays for a
+  different reason from the other eleven — measured, not inherited.** The four
+  locker writers are gated `membership:view`/`membership:edit` rather than
+  `lodge:*`, and a locker is allocated to a named member, so the surface reading
+  and the access model disagree there. The answer that follows from the access
+  model — file them where a Membership Officer can correlate them — **does not
+  exist as a category, and the nearest thing to it is a widening onto a
+  member-facing surface**:
+  - `membership` is a **permission area** and an AI Diagnostics **correlation
+    domain** in this codebase. It is not a category. `AUDIT_CATEGORIES` has no
+    such member, `category: "membership"` is a compile error (TS2322) at the write
+    site, `assertCanonicalAuditCategory` throws and rolls the write back if one
+    ever reaches the audit boundary, and it is one of the two invented values
+    #2581 removed from the old open union.
+  - Every canonical category that DOES route to the membership correlation entry —
+    `account`, `family`, `communication`, `privacy` — is **member-visible**. So
+    there is no member-invisible way to put a row where a Membership Officer
+    correlates it, and this is asserted as an empty set in
+    `src/lib/__tests__/audit-writer-census.test.ts` rather than left as prose: if a
+    member-invisible category ever joins that domain, the failure message says the
+    question has become answerable.
+  - The crossing is not hypothetical for these four. They pass
+    `memberId: <the acting officer>` and no `subjectMemberId`, so
+    `buildMemberAuditLogWhere`'s null-subject `memberId` leg returns them on the
+    acting officer's OWN activity page. A member-visible destination therefore
+    publishes locker administration to a member, and audit rows are append-only.
+  Per `INV-PRIV-012` and `INV-OPS-012` a crossing of that boundary is the owner's
+  decision and not a lane's, so `lockers` stays `admin` and stays recorded as an
+  open question — with the reason now measured — rather than being resolved by an
+  implementor to the value that reads best.
+- **While any of the fifteen stays `admin`, both correlation tools' evidence scope
+  must keep NAMING it.** The cost of the keep is a silent absence: a Lodge
+  correlation entry that returns nothing to "when was this lodge deactivated?"
+  reads as evidence that nothing happened. The Lodge entry's `scope` and
+  `description` and the System entry's `scope` therefore name chores, lockers,
+  work parties, lodge instructions, lodge settings and the `LODGE_*` records as
+  `admin`, so an empty answer reads as a **known gap**. A scope string that stops
+  naming this set — or that starts implying completeness — is a defect of the same
+  kind as the mis-classification, in the opposite direction.
