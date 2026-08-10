@@ -105,10 +105,12 @@
  *
  * READ ONLY, AND NO PROVIDER, AND NO LOCK. Every data call below is a Prisma
  * `findUnique`, `findFirst`, `findMany`, `count` or a read-only helper built from
- * those. The bounded BedAllocation count runs in the one short interactive
- * transaction: its first command makes PostgreSQL refuse writes, its second sets
- * a server-side statement timeout, and then it issues one bounded `findMany`.
- * Those two fixed tagged-template controls are the only raw executions here.
+ * those, and every one of them runs inside the ONE interactive transaction
+ * `withBoundedReadOnlyTransaction` opens per invocation: its first command makes
+ * PostgreSQL refuse writes, its second sets a server-side statement timeout, and
+ * the reads follow. Those two fixed tagged-template controls are the only raw
+ * executions here — the second one binds its value as an ordinary parameter
+ * through `set_config`, so neither is string-built SQL.
  * There is no data write, advisory lock or HTTP request of any kind. The
  * lock-taking and write-performing siblings of several helpers used here are
  * named in the pack doc precisely so a future edit cannot reach for one by
@@ -118,14 +120,17 @@
  * `processWaitlistForDates`, `confirmWaitlistOffer` and
  * `replaceBedAllocationsForBooking` all write and are NOT used.
  *
- * MULTIPLE READ COMMITTED INSTANTS. Each source composes ordinary Prisma reads
- * and authoritative helpers without one shared transaction fence. The bounded
- * allocation sub-read has its own read-only transaction, but it does not turn the
- * rest of capacity assembly into one snapshot. `observed_at_utc` is
- * captured only after assembly completes; it is not a shared database snapshot
- * timestamp. Facts can therefore span instants and be internally stale. The
- * registry scope tells the model to rerun before acting or reaching a definitive
- * conclusion and to compare source timestamps where a source supplies them.
+ * ONE SNAPSHOT PER INVOCATION, AND NOTHING WIDER THAN THAT. Each source runs its
+ * whole read graph — ordinary Prisma reads and authoritative helpers alike —
+ * inside one `REPEATABLE READ` read-only transaction, so the facts on one row were
+ * all read at one committed instant and a row can no longer report a party
+ * measured at instant A against occupancy measured at instant B. What that does
+ * NOT buy: `observed_at_utc` is captured after assembly completes and is not the
+ * snapshot's own timestamp; the snapshot is as old as the moment the transaction
+ * took it, so the row can be stale with respect to now; and two invocations see
+ * two different snapshots. The registry scope tells the model exactly that — rerun
+ * before acting or reaching a definitive conclusion, and compare per-source
+ * timestamps where a source supplies them.
  *
  * BOOKING DATES ARE NZ DATE-ONLY LODGE NIGHTS THROUGHOUT. Every date this module
  * emits goes through `formatDateOnly`, never `toISOString()`, so a night is a
@@ -184,8 +189,43 @@ import type { DiagnosticsToolRawRow } from "../define";
  * the exact failure mode this pack is designed against. `evidence_unavailable` is
  * the honest outcome and the executor's own message tells the operator so.
  */
-const AID6B_EVIDENCE_DEADLINE_MS = 10_000;
-const AID6B_DATABASE_STATEMENT_TIMEOUT_MS = 5_000;
+export const AID6B_EVIDENCE_DEADLINE_MS = 10_000;
+
+/**
+ * THE ONE DATABASE BOUND, IN ONE PLACE, IN ONE UNIT.
+ *
+ * It used to exist in three unlinked representations: this constant, a literal
+ * `'5s'` inside the `SET LOCAL` statement, and hardcoded `7_000`/`10_000` numbers in
+ * the tests — hardcoded because the constants were module-private, so no test could
+ * derive them. Nothing linked any pair, and narrowing the constant would have left
+ * PostgreSQL still cancelling at five seconds while the interactive-transaction
+ * timeout dropped BELOW it, inverting the design: the database is supposed to refuse
+ * first so the operator gets the specific `57014 query_canceled` refusal rather than
+ * a Prisma transaction timeout. Every test would still have passed.
+ *
+ * So the statement derives its value from this constant, the transaction timeout
+ * derives from it, both are exported, and a test asserts the ordering
+ * statement < transaction < JS deadline rather than three literals.
+ *
+ * HOW IT REACHES POSTGRESQL. `SET LOCAL statement_timeout = $1` is invalid — `SET`
+ * takes no placeholders — so this uses `set_config(..., is_local => true)`, which
+ * takes the value as an ORDINARY BOUND PARAMETER and is therefore expressible as a
+ * fixed Prisma tagged template, with no SQL built by string concatenation and no
+ * unsafe raw executor. `setTransactionLockTimeout` in
+ * `adult-member-hosting-queue-participants.ts` chose it over `SET LOCAL` for exactly
+ * this reason and is the precedent. The value is a millisecond integer, which is the
+ * unit `statement_timeout` takes bare, and it is stringified because `set_config`'s
+ * second argument is `text`.
+ */
+export const AID6B_DATABASE_STATEMENT_TIMEOUT_MS = 5_000;
+
+/**
+ * The interactive-transaction ceiling: strictly ABOVE the statement timeout so the
+ * database's own cancellation is what a slow read hits, and strictly below
+ * `AID6B_EVIDENCE_DEADLINE_MS` so this process is still waiting to report it.
+ */
+export const AID6B_TRANSACTION_TIMEOUT_MS =
+  AID6B_DATABASE_STATEMENT_TIMEOUT_MS + 2_000;
 
 /**
  * How many nights one capacity read may report. Kept in step with
@@ -589,12 +629,13 @@ async function withDeadline<T>(work: Promise<T>, label: string): Promise<T> {
  * read. Under a queue of diagnostics invocations that is how a read-only feature
  * becomes a database incident.
  *
- * SO THE BOUND IS AT THE DATABASE. `SET LOCAL statement_timeout` makes PostgreSQL
- * itself cancel any statement that overruns, and the interactive-transaction
- * `timeout` bounds the whole graph. Both fire whether or not this process is still
- * waiting, and the timeout literal is below `withDeadline`'s ceiling so the
- * database refuses first and the operator gets a specific message rather than a
- * race.
+ * SO THE BOUND IS AT THE DATABASE. A transaction-local `statement_timeout` makes
+ * PostgreSQL itself cancel any statement that overruns, and the
+ * interactive-transaction `timeout` bounds the whole graph. Both fire whether or
+ * not this process is still waiting, and all three bounds are DERIVED from the one
+ * constant in the ordering `statement < transaction < withDeadline`, so the
+ * database refuses first and the operator gets a specific `57014 query_canceled`
+ * message rather than a race.
  *
  * `SET TRANSACTION READ ONLY` is the second half and it is not decoration: it is
  * PostgreSQL refusing a write in this transaction even where a grant would permit
@@ -602,19 +643,53 @@ async function withDeadline<T>(work: Promise<T>, label: string): Promise<T> {
  * — they are `server_owned`, not `select_only_sql`, so the AID-5 role's grants are
  * not the boundary here — and this is what makes "the agent must remain completely
  * read-only" a property the database enforces rather than a property of the code
- * being careful. Both statements are fixed literals with no interpolation.
+ * being careful. Both statements are fixed tagged templates: the first has no
+ * interpolation at all and the second interpolates only as a BOUND PARAMETER,
+ * because `set_config` takes its value as `text` where `SET LOCAL` would have
+ * needed the number built into the SQL.
  *
- * ONE SNAPSHOT, WHICH IS ALSO AN ANSWER TO A REVIEW FINDING. Every read in one
- * invocation now sees the same committed state, so a row can no longer report a
- * party assembled at one instant against a capacity figure measured at another.
- * The module header's "multiple READ COMMITTED instants" caveat applies BETWEEN
- * invocations, not within one.
+ * ONE SNAPSHOT, AND THE ISOLATION LEVEL IS WHAT MAKES IT ONE — not the
+ * transaction. An earlier revision of this docblock claimed the snapshot property
+ * while passing no `isolationLevel`, which meant PostgreSQL's default READ
+ * COMMITTED: there every STATEMENT takes a fresh snapshot, so being inside one
+ * interactive transaction bought ordering and cancellation but not a shared read
+ * instant. An administrator over-capacity-confirming another booking between the
+ * guest read and the `checkCapacity` call of ONE invocation could still make this
+ * row report a party measured at instant A against occupancy measured at instant B,
+ * and emit — or omit — `capacity_exceeded` for a state that never existed. Two
+ * invocations would disagree with no marker.
+ *
+ * `REPEATABLE READ` is therefore explicit, and on a read-only transaction it is
+ * close to free: one snapshot is registered at the first statement that reads data
+ * and every later statement reuses it. It is NOT `Serializable` — that would add
+ * predicate locking and a 40001 retry contract this evidence path has no business
+ * carrying — and a REPEATABLE READ transaction that performs no write cannot raise
+ * a serialization failure at all, because 40001 there arises from write conflicts.
+ * `SET TRANSACTION READ ONLY` is orthogonal to isolation and implies no snapshot,
+ * which is exactly the confusion the earlier claim rested on.
+ *
+ * Why fix the isolation rather than delete the claim: #2375's evidence contract
+ * requires stable states with an observed-at timestamp and forbids presenting an
+ * inference as a confirmed blocker. A row assembled across instants IS such an
+ * inference, and documenting it honestly would have left the defect standing in the
+ * one entry whose whole job is "what is actually blocking this booking". Fixing the
+ * isolation makes `observedAtUtc` mean something; the mixed-instant disclosure the
+ * three entries carry now describes what genuinely remains, which is that two
+ * INVOCATIONS see different states.
  *
  * WHAT A CALLER MUST DO WITH `tx`: pass it to every collaborator. A helper that
  * silently fell back to the global client would run outside both the snapshot and
  * the timeout, which is the whole boundary this helper exists to create — so the
  * canonical seams below all take a client, and none of these three readers names
  * `prisma` after opening the transaction.
+ *
+ * THAT RULE IS PINNED AT THE SOURCE, not by the unit assertions, because the unit
+ * assertions structurally cannot pin it: a new read written on the global client is
+ * not a collaborator, so no argument assertion sees it, and it calls the same
+ * doubled function the transaction client does. `booking-membership-pack.test.ts`
+ * therefore strips this file's comments and asserts that `prisma.` reaches exactly
+ * one property in the remaining code — `$transaction`. A second one has to be
+ * argued for in that test.
  */
 async function withBoundedReadOnlyTransaction<T>(
   run: (tx: Prisma.TransactionClient) => Promise<T>,
@@ -622,12 +697,13 @@ async function withBoundedReadOnlyTransaction<T>(
   return prisma.$transaction(
     async (tx: Prisma.TransactionClient) => {
       await tx.$executeRaw`SET TRANSACTION READ ONLY`;
-      await tx.$executeRaw`SET LOCAL statement_timeout = '5s'`;
+      await tx.$executeRaw`SELECT pg_catalog.set_config('statement_timeout', ${String(AID6B_DATABASE_STATEMENT_TIMEOUT_MS)}, true)`;
       return run(tx);
     },
     {
+      isolationLevel: "RepeatableRead",
       maxWait: 2_000,
-      timeout: AID6B_DATABASE_STATEMENT_TIMEOUT_MS + 2_000,
+      timeout: AID6B_TRANSACTION_TIMEOUT_MS,
     },
   );
 }

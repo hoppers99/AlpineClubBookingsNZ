@@ -34,8 +34,12 @@
   with a five-second statement timeout, and the transaction is passed to every
   collaborator they call. A JavaScript deadline only stops waiting: it cannot cancel
   a query, so a slow read used to keep running against the database after the
-  operator had already been told the evidence was unavailable. One transaction also
-  means every fact in a row is read from the same committed state. The widest read —
+  operator had already been told the evidence was unavailable. That transaction is
+  opened at repeatable-read isolation, which is what makes every fact in a row come
+  from one committed instant — inside an ordinary transaction PostgreSQL still takes
+  a fresh read of the data for each statement, so a row could otherwise pair a party
+  counted at one moment with the lodge's occupancy counted at another. Each row still
+  says plainly that being consistent is not the same as being current. The widest read —
   the sibling bookings that can supply hosting cover — gets a deterministic ceiling
   for diagnostics and refuses rather than returning a short list; the booking
   lifecycle's own evaluation is unchanged and still reads every sibling.

@@ -121,6 +121,7 @@ import {
 
 const {
   prismaMock,
+  txMock,
   checkCapacityMock,
   evaluatePersistedNonHostingViolationsMock,
   evaluatePersistedHostingMock,
@@ -128,8 +129,8 @@ const {
   resolveMembershipTypePolicyForMemberMock,
   getAgeTierSettingsMock,
   peekSubscriptionLockoutModeMock,
-} = vi.hoisted(() => ({
-  prismaMock: {
+} = vi.hoisted(() => {
+  const prismaMock = {
     booking: { findUnique: vi.fn() },
     bookingGuest: { findMany: vi.fn() },
     bookingChangeRequest: { findMany: vi.fn() },
@@ -141,15 +142,36 @@ const {
     xeroToken: { findFirst: vi.fn() },
     $executeRaw: vi.fn(),
     $transaction: vi.fn(),
-  },
-  checkCapacityMock: vi.fn(),
-  evaluatePersistedNonHostingViolationsMock: vi.fn(),
-  evaluatePersistedHostingMock: vi.fn(),
-  findBookingMemberNightConflictsMock: vi.fn(),
-  resolveMembershipTypePolicyForMemberMock: vi.fn(),
-  getAgeTierSettingsMock: vi.fn(),
-  peekSubscriptionLockoutModeMock: vi.fn(),
-}));
+  };
+  /**
+   * A DISTINCT OBJECT, THE SAME FUNCTIONS.
+   *
+   * `$transaction` used to hand the callback `prismaMock` itself, which made every
+   * "the collaborator received the transaction client" assertion vacuous: the two
+   * clients were one object, so `toBe(prismaMock)` passed whether the code passed
+   * `tx` or reached for the global client. This is a shallow copy — a different
+   * object identity, holding the SAME `vi.fn()` instances — so
+   * `toBe(txMock)`/`not.toBe(prismaMock)` is now a real discrimination while every
+   * `prismaMock.booking.findUnique` assertion in this file keeps working unchanged.
+   *
+   * `$transaction` is deliberately NOT copied: a `Prisma.TransactionClient` has no
+   * such method, so a nested interactive transaction throws here instead of quietly
+   * opening a second pool connection.
+   */
+  const { $transaction: _omitted, ...transactionClientSurface } = prismaMock;
+  const txMock = { ...transactionClientSurface };
+  return {
+    prismaMock,
+    txMock,
+    checkCapacityMock: vi.fn(),
+    evaluatePersistedNonHostingViolationsMock: vi.fn(),
+    evaluatePersistedHostingMock: vi.fn(),
+    findBookingMemberNightConflictsMock: vi.fn(),
+    resolveMembershipTypePolicyForMemberMock: vi.fn(),
+    getAgeTierSettingsMock: vi.fn(),
+    peekSubscriptionLockoutModeMock: vi.fn(),
+  };
+});
 
 vi.mock("@/lib/prisma", () => ({ prisma: prismaMock }));
 vi.mock("@/lib/capacity", () => ({ checkCapacity: checkCapacityMock }));
@@ -187,8 +209,11 @@ vi.mock("@/lib/member-subscription-eligibility", async (importOriginal) => ({
 import {
   AID6B_BOOKING_GUEST_CEILING,
   AID6B_CAPACITY_NIGHT_CEILING,
+  AID6B_DATABASE_STATEMENT_TIMEOUT_MS,
+  AID6B_EVIDENCE_DEADLINE_MS,
   AID6B_HOSTING_SIBLING_CEILING,
   AID6B_OPEN_REQUEST_CEILING,
+  AID6B_TRANSACTION_TIMEOUT_MS,
   BOOKING_BLOCKER_CODES,
   MEMBER_ELIGIBILITY_CODES,
   readBookingBlockStateEvidence,
@@ -701,8 +726,7 @@ function wirePrisma(): void {
   );
   prismaMock.$executeRaw.mockResolvedValue(0);
   prismaMock.$transaction.mockImplementation(
-    async (callback: (tx: typeof prismaMock) => Promise<unknown>) =>
-      callback(prismaMock),
+    async (callback: (tx: typeof txMock) => Promise<unknown>) => callback(txMock),
   );
 }
 
@@ -1992,7 +2016,7 @@ describe("booking block state: reviews and the party footprint (#2376)", () => {
       day(CHECK_OUT),
       0,
       BOOKING_ID,
-      prismaMock,
+      txMock,
     );
   });
 });
@@ -2033,7 +2057,17 @@ describe("server-owned evidence is bounded at the database, not only in JS (#237
       expect(prismaMock.$transaction).toHaveBeenCalledTimes(1);
       expect(prismaMock.$transaction).toHaveBeenCalledWith(
         expect.any(Function),
-        expect.objectContaining({ maxWait: 2_000, timeout: 7_000 }),
+        expect.objectContaining({
+          // REPEATABLE READ, and the point is that being inside a transaction is
+          // NOT what makes one snapshot. PostgreSQL's default READ COMMITTED takes
+          // a fresh snapshot per STATEMENT, and `SET TRANSACTION READ ONLY` is
+          // orthogonal to isolation — so without this option the row could still
+          // pair a party read at instant A with occupancy read at instant B, which
+          // is exactly what the entry's own copy promises it cannot.
+          isolationLevel: "RepeatableRead",
+          maxWait: 2_000,
+          timeout: AID6B_TRANSACTION_TIMEOUT_MS,
+        }),
       );
       // READ ONLY first, then the timeout: PostgreSQL refuses a write in this
       // transaction even where a grant would permit one, which is what makes
@@ -2044,22 +2078,41 @@ describe("server-owned evidence is bounded at the database, not only in JS (#237
       expect(prismaMock.$executeRaw.mock.calls[0]?.[0]?.[0]).toBe(
         "SET TRANSACTION READ ONLY",
       );
+      // The timeout arrives as a BOUND PARAMETER through `set_config`, not built
+      // into the SQL: `SET LOCAL` takes no placeholders, and the literal it forced
+      // is the one that used to be able to diverge from the constant.
       expect(prismaMock.$executeRaw.mock.calls[1]?.[0]?.[0]).toBe(
-        "SET LOCAL statement_timeout = '5s'",
+        "SELECT pg_catalog.set_config('statement_timeout', ",
+      );
+      expect(prismaMock.$executeRaw.mock.calls[1]?.[0]?.[1]).toBe(", true)");
+      expect(prismaMock.$executeRaw.mock.calls[1]?.[1]).toBe(
+        String(AID6B_DATABASE_STATEMENT_TIMEOUT_MS),
       );
     },
   );
 
-  it("sets the statement timeout below the JS deadline, so the database refuses first", async () => {
-    // A timeout above the deadline would make the race the effective bound again,
-    // and the operator would get the generic "exceeded 10000ms" instead of a
-    // specific database refusal.
+  it("orders the three bounds statement < transaction < JS deadline", async () => {
+    // ONE ordering assertion instead of three literals, which is the whole reason
+    // the constants are exported. The bound used to exist in three unlinked
+    // representations — the constant, a `'5s'` literal in the statement, and
+    // hardcoded 7_000/10_000 numbers here — so narrowing the constant would have
+    // left PostgreSQL cancelling at five seconds with the transaction ceiling BELOW
+    // it: the operator gets a generic Prisma transaction timeout instead of the
+    // specific 57014 refusal, and every assertion still passes.
     seedBooking();
     await blockStateRow();
     const options = prismaMock.$transaction.mock.calls[0]?.[1] as {
       timeout: number;
     };
-    expect(options.timeout).toBeLessThan(10_000);
+    expect(AID6B_DATABASE_STATEMENT_TIMEOUT_MS).toBeLessThan(
+      AID6B_TRANSACTION_TIMEOUT_MS,
+    );
+    expect(AID6B_TRANSACTION_TIMEOUT_MS).toBeLessThan(AID6B_EVIDENCE_DEADLINE_MS);
+    expect(options.timeout).toBe(AID6B_TRANSACTION_TIMEOUT_MS);
+    // And the statement's own value is the same constant, not a parallel literal.
+    expect(prismaMock.$executeRaw.mock.calls[1]?.[1]).toBe(
+      String(AID6B_DATABASE_STATEMENT_TIMEOUT_MS),
+    );
   });
 
   it("hands the transaction client to EVERY collaborator on the block-state graph", async () => {
@@ -2070,20 +2123,27 @@ describe("server-owned evidence is bounded at the database, not only in JS (#237
     // site.
     seedBooking();
     await blockStateRow();
-    expect(evaluatePersistedNonHostingViolationsMock.mock.calls[0]?.[0]).toBe(
-      prismaMock,
-    );
-    expect(evaluatePersistedHostingMock.mock.calls[0]?.[1]).toBe(prismaMock);
-    expect(findBookingMemberNightConflictsMock.mock.calls[0]?.[0]).toBe(
-      prismaMock,
-    );
-    expect(checkCapacityMock.mock.calls[0]?.[5]).toBe(prismaMock);
+    // `txMock` is a DISTINCT object from `prismaMock` holding the same doubled
+    // functions, so each pair of assertions really discriminates: passing the global
+    // client would satisfy every behavioural expectation in this file and fail here.
+    for (const received of [
+      evaluatePersistedNonHostingViolationsMock.mock.calls[0]?.[0],
+      evaluatePersistedHostingMock.mock.calls[0]?.[1],
+      findBookingMemberNightConflictsMock.mock.calls[0]?.[0],
+      checkCapacityMock.mock.calls[0]?.[5],
+    ]) {
+      expect(received).toBe(txMock);
+      expect(received).not.toBe(prismaMock);
+    }
   });
 
   it("hands it to every collaborator on the member-eligibility graph too", async () => {
     seedMember({});
     await eligibilityRow();
     expect(resolveMembershipTypePolicyForMemberMock.mock.calls[0]?.[0]).toBe(
+      txMock,
+    );
+    expect(resolveMembershipTypePolicyForMemberMock.mock.calls[0]?.[0]).not.toBe(
       prismaMock,
     );
     // The strict settings readers and the induction read take a client for the same
@@ -2543,14 +2603,17 @@ describe("booking capacity by night (#2376)", () => {
     });
     expect(prismaMock.$transaction).toHaveBeenCalledWith(
       expect.any(Function),
-      expect.objectContaining({ timeout: 7_000 }),
+      expect.objectContaining({
+        isolationLevel: "RepeatableRead",
+        timeout: AID6B_TRANSACTION_TIMEOUT_MS,
+      }),
     );
     expect(prismaMock.$executeRaw).toHaveBeenCalledTimes(2);
     expect(prismaMock.$executeRaw.mock.calls[0]?.[0]?.[0]).toBe(
       "SET TRANSACTION READ ONLY",
     );
-    expect(prismaMock.$executeRaw.mock.calls[1]?.[0]?.[0]).toBe(
-      "SET LOCAL statement_timeout = '5s'",
+    expect(prismaMock.$executeRaw.mock.calls[1]?.[1]).toBe(
+      String(AID6B_DATABASE_STATEMENT_TIMEOUT_MS),
     );
   });
 

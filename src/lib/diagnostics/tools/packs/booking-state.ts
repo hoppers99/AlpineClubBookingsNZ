@@ -99,12 +99,26 @@ export const DIAGNOSTICS_MEMBER_ELIGIBILITY_TOOL_ID =
   "diagnostics.member_eligibility_state";
 
 /**
- * These tools deliberately reuse production readers, which currently compose
- * multiple ordinary READ COMMITTED statements rather than one transaction
- * snapshot. The timestamp therefore describes assembly, not a shared read instant.
+ * What `observedAtUtc` does and does not mean on a server-owned row.
+ *
+ * These tools deliberately reuse production readers, and `booking-evidence.ts` runs
+ * each one's whole read graph inside ONE `REPEATABLE READ` read-only transaction —
+ * so within an invocation the facts share a snapshot, and the row cannot pair a
+ * party read at one instant with occupancy read at another. That is a property of
+ * the isolation level, not of the timestamp: the timestamp is taken when assembly
+ * finishes, the snapshot was taken earlier, and a second invocation reads a
+ * different snapshot. Both halves have to reach the model, because a model told
+ * only "one snapshot" would treat the row as current and a model told only
+ * "different instants" would distrust a row that is internally consistent.
+ *
+ * This wording replaced an earlier disclosure that said the tools composed multiple
+ * READ COMMITTED statements. That was true when it was written and false once the
+ * transaction existed — and it was ALSO false in the interval when the transaction
+ * existed without an explicit isolation level, in the other direction, because the
+ * docblock beside it claimed a snapshot the default isolation does not give.
  */
-const AID6B_MIXED_INSTANT_DISCLOSURE =
-  "observedAtUtc is when assembly completed, not a database snapshot time. This tool composes multiple READ COMMITTED statements; its facts may have been read at different instants and can be internally stale. Rerun it before any action or definitive conclusion, and compare per-source timestamps where they are present.";
+const AID6B_SNAPSHOT_AND_STALENESS_DISCLOSURE =
+  "All of this tool's database reads share ONE REPEATABLE READ snapshot, so its facts are consistent with each other. observedAtUtc is when assembly completed, not a database snapshot time: the snapshot was taken earlier, the state may have moved since, and a later invocation reads a different snapshot, so this row can be internally consistent and still stale. Rerun it before any action or definitive conclusion, and compare per-source timestamps where they are present.";
 
 /**
  * The operator-facing description of every booking blocker code, kept beside the
@@ -239,7 +253,7 @@ const bookingBlockState = defineDiagnosticsTool<BookingIdArgs>({
   label: "Authoritative booking block state",
   description: `Returns this platform's OWN authoritative answer for why ONE booking cannot proceed — not a second reading of its columns. It runs the same soft-policy evaluator a member's exception request runs through (minimum stay, adult-member hosting, paid-up adult member), the same review-reason derivation the officer queue renders, the same per-night capacity engine every booking path checks against, the same member-night conflict scan, and the same edit-window classifier the member's own Edit button obeys. It gives the booking's lifecycle state, whether a Booking Officer review or an adult-member hosting review is still pending, the review reason codes, the live policy violation codes and whether an exception request for them would HOLD beds, the number of nights short of capacity and the tightest spare-bed figure, the nights another booking holds exclusively, how many member-night conflicts exist, the open exception requests and how many bed-nights they are actually holding with the deadline, whether the MEMBER could change the booking themselves, and stable blocker codes in the order they should be acted on. Needs BOTH bookings and membership access. BLOCKER CODES, in priority order — use these exact meanings and do not paraphrase them: ${BOOKING_BLOCKER_CATALOGUE_TEXT} ${AID6B_DESCRIPTION_TAIL}`,
   requiredAreas: ["bookings", "membership"],
-  evidenceScope: `The authoritative blocking state of ONE booking, computed by the same code the booking and officer surfaces use. ${AID6B_MIXED_INSTANT_DISCLOSURE}
+  evidenceScope: `The authoritative blocking state of ONE booking, computed by the same code the booking and officer surfaces use. ${AID6B_SNAPSHOT_AND_STALENESS_DISCLOSURE}
 
 WHAT EACH FIELD MEANS WHERE IT IS NOT OBVIOUS. bookingLifecycleState is "live", "terminal" (CANCELLED or BUMPED) or "deleted" (soft-deleted). ON A TERMINAL OR DELETED BOOKING EVERY OTHER CHECK IS SUPPRESSED — no policy is evaluated, no capacity is read, no conflict is scanned, and blockerCodes carries only the lifecycle code. That is deliberate: a cancelled booking cannot break a minimum stay or exceed capacity, and reporting that it does would be a false and actionable finding about a booking that is simply over. Such a booking's MONEY may still need attention and this tool cannot see it — that needs finance access and the finance diagnostics tools.
 
@@ -329,7 +343,7 @@ const bookingCapacityByNight = defineDiagnosticsTool<BookingIdArgs>({
   label: "Booking capacity by night",
   description: `Returns ONE row per New Zealand lodge night of a booking's stay, computed by the SAME capacity engine every booking path checks against — not a count of bookings. For each night it gives the beds the rest of the lodge occupies and the beds left (both with THIS booking excluded, so the figures answer "what room is there for it"), how many beds this booking's own party needs that night, the spare beds that would remain, whether it fits, whether another booking holds sole occupancy of the lodge that night, whether this booking EFFECTIVELY holds the whole lodge now, whether its raw whole-lodge flag is stored for history, whether it carries a deliberate admin over-capacity override, how many bed-nights are actually allocated to it, and whether the booking itself is still live, terminal or deleted. The occupancy figure already includes custodian bed holds and beds held by pending policy-exception requests, neither of which has a booking to show for it. At most ${AID6B_NIGHT_ROW_LIMIT} nights. ${AID6B_DESCRIPTION_TAIL}`,
   requiredAreas: ["bookings"],
-  evidenceScope: `Per-night capacity for ONE booking's own nights, from the platform's own capacity engine. ${AID6B_MIXED_INSTANT_DISCLOSURE}
+  evidenceScope: `Per-night capacity for ONE booking's own nights, from the platform's own capacity engine. ${AID6B_SNAPSHOT_AND_STALENESS_DISCLOSURE}
 
 WHY THE FIGURES EXCLUDE THIS BOOKING. occupiedBedsExcludingThisBooking and availableBedsExcludingThisBooking are computed with this booking taken out of the population, so availableBeds minus partyBedsThisNight is the honest answer to "does it fit". If you want the lodge's total occupancy INCLUDING this booking, add partyBedsThisNight back.
 
@@ -420,7 +434,7 @@ const memberEligibilityState = defineDiagnosticsTool<MemberIdArgs>({
   label: "Authoritative member eligibility state",
   description: `Returns this platform's OWN authoritative answer for ONE member's standing — not a second reading of their columns. It runs the same lifecycle resolver the admin badge shows (including the erasure test, which a plain three-column read misses), the same membership-type resolution the season assignment drives, the same subscription-settlement rule every booking gate shares, the club's own subscription lockout MODE, the same adult-member-host predicate the hosting policy enforces, and the member's induction state. It gives the lifecycle label, whether the account is active and can log in, the age tier, the season year, the membership type key and where that type came from, what the type does to booking and to subscriptions, the stored subscription status and how it was settled, whether a subscription is required and whether it is unsettled, the club's lockout mode, whether the member QUALIFIES as an adult-member host, their induction state, whether an induction gates a booking at all, and stable eligibility codes in the order they should be acted on. ELIGIBILITY CODES, in priority order — use these exact meanings and do not paraphrase them: ${MEMBER_ELIGIBILITY_CATALOGUE_TEXT} ${AID6B_DESCRIPTION_TAIL}`,
   requiredAreas: ["membership"],
-  evidenceScope: `The authoritative standing of ONE member, computed by the same code the membership surfaces use. ${AID6B_MIXED_INSTANT_DISCLOSURE}
+  evidenceScope: `The authoritative standing of ONE member, computed by the same code the membership surfaces use. ${AID6B_SNAPSHOT_AND_STALENESS_DISCLOSURE}
 
 THE FACT AND THE CONSEQUENCE ARE SEPARATE FIELDS, and conflating them is the most likely way to get this wrong. subscriptionUnpaid is the FACT that a required season subscription is unsettled. subscriptionLockoutMode is the club POLICY that decides what it costs: NO_BLOCK means nothing happens, NON_MEMBER_PRICING means the member and their party are repriced at non-member rates, HARD_BLOCK means they cannot book at all. The same unpaid fact is harmless at one club and a refusal at the next, so never state a consequence without reading the mode.
 

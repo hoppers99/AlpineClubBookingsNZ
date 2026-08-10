@@ -370,25 +370,37 @@ of invocations that is how a read-only feature becomes a database incident. Only
 bed-allocation sub-read had a real boundary.
 
 All three `server_owned` entries now run their whole read graph inside **one**
-interactive transaction that begins with two fixed control statements — the only
-`$executeRaw` calls in the pack:
+`REPEATABLE READ` interactive transaction that begins with two fixed control
+statements — the only `$executeRaw` calls in the pack:
 
 ```
 SET TRANSACTION READ ONLY
-SET LOCAL statement_timeout = '5s'
+SELECT pg_catalog.set_config('statement_timeout', $1, true)
 ```
 
 - **The timeout is PostgreSQL's**, so it fires whether or not this process is still
   waiting, and it sits below the JS deadline so the database refuses first and the
-  operator gets a specific message rather than a race.
+  operator gets a specific `57014 query_canceled` message rather than a race. It
+  arrives as a **bound parameter**: `SET LOCAL` takes no placeholders, so the value
+  would have had to be built into the SQL, and one constant
+  (`AID6B_DATABASE_STATEMENT_TIMEOUT_MS`) now yields the statement's value, the
+  transaction ceiling and the assertions, in the order
+  statement < transaction < JS deadline.
 - **`READ ONLY` is the database refusing a write**, in a transaction on the
   application's own full-privilege connection. These entries are `server_owned`, not
   `select_only_sql`, so the AID-5 role's grants are not the boundary here: this is
   what makes "the agent remains completely read-only" enforced rather than intended.
-- **One snapshot.** Every read in one invocation sees the same committed state, so a
-  row can no longer report a party assembled at one instant against a capacity figure
-  measured at another. The "multiple READ COMMITTED instants" caveat applies between
-  invocations, not within one.
+- **One snapshot, and the isolation level is what makes it one.** The transaction is
+  opened at `REPEATABLE READ`, so one snapshot is registered at the first data
+  statement and every later statement reuses it, and a row can no longer report a
+  party assembled at one instant against a capacity figure measured at another.
+  Being inside a transaction is not enough on its own: PostgreSQL's default
+  `READ COMMITTED` takes a fresh snapshot per statement, and `SET TRANSACTION
+  READ ONLY` is orthogonal to isolation and implies no snapshot. It is deliberately
+  not `Serializable` — that would add predicate locking and a 40001 retry contract
+  an evidence read has no business carrying, and a transaction that writes nothing
+  cannot raise a serialization failure anyway. The caveat that genuinely remains is
+  that two **invocations** see two different snapshots.
 - **The transaction client goes to every collaborator** — the policy evaluator, the
   read-only hosting seam, the capacity engine, the conflict scan, the membership-type
   resolver, the strict settings readers, the stored financial-year resolution and the
@@ -485,15 +497,18 @@ The capacity source's `allocatedBedNights` aggregate is bounded too. It selects
 only allocations for the chosen booking whose `stayDate` is inside
 `[checkIn, checkOut)` and whose guest belongs to the same booking, orders them,
 takes the 30-guests × 31-nights ceiling plus one, and aggregates locally. An
-oversized corrupt population is refused rather than clipped. The short read-only
-transaction gives PostgreSQL its own five-second statement timeout; the outer
-JavaScript deadline is not presented as SQL cancellation.
+oversized corrupt population is refused rather than clipped. It runs inside its
+caller's read-only transaction, so PostgreSQL's own five-second statement timeout
+covers it; the outer JavaScript deadline is not presented as SQL cancellation.
 
-**These three sources do not run inside one database snapshot.** They compose
-multiple ordinary READ COMMITTED statements and authoritative helpers. Their
-`observedAtUtc` is captured when assembly completes, not when one shared snapshot
-was observed; facts may span instants and can be internally stale. Rerun before an
-action or definitive conclusion, and compare per-source timestamps where present.
+**One invocation is one snapshot; two invocations are two.** Each of these three
+sources runs its whole read graph inside one `REPEATABLE READ` read-only
+transaction, so the facts on a row were all read at one committed instant. What that
+does not buy: `observedAtUtc` is captured when assembly completes and is not the
+snapshot's own timestamp, the snapshot is as old as the moment it was taken so the
+row can be stale with respect to now, and a second invocation reads a different
+snapshot. Rerun before an action or definitive conclusion, and compare per-source
+timestamps where present.
 
 ## The relation grants
 

@@ -2479,19 +2479,55 @@ describe("AID-6B booking/membership pack: read-only (#2376)", () => {
       }
     }
 
-    // The one interactive transaction is a refusal boundary around the bounded
-    // BedAllocation read, not a mutation: PostgreSQL is told READ ONLY before the
-    // first data statement and receives its own statement timeout. The tagged
-    // templates are fixed, carry no interpolation, and are the only raw execution
-    // controls permitted in a server-owned pack source.
+    // The one interactive transaction is a refusal boundary around the whole
+    // server-owned read graph, not a mutation: PostgreSQL is told READ ONLY before
+    // the first data statement and receives its own statement timeout. Both tagged
+    // templates are fixed; the timeout's only interpolation is a BOUND PARAMETER
+    // (`set_config` takes the value as text, where `SET LOCAL` would have needed the
+    // number built into the SQL). They are the only raw execution controls permitted
+    // in a server-owned pack source.
     const evidence = packSource("booking-evidence.ts");
     expect(evidence.match(/\.\$transaction\(/g)).toHaveLength(1);
     expect(evidence.match(/\.\$executeRaw`/g)).toHaveLength(2);
     expect(evidence).toContain("await tx.$executeRaw`SET TRANSACTION READ ONLY`");
     expect(evidence).toContain(
-      "await tx.$executeRaw`SET LOCAL statement_timeout = '5s'`",
+      "await tx.$executeRaw`SELECT pg_catalog.set_config('statement_timeout', ${String(AID6B_DATABASE_STATEMENT_TIMEOUT_MS)}, true)`",
     );
     expect(evidence).not.toContain("$executeRawUnsafe");
+    // The timeout value is DERIVED, never a second literal. `'5s'` beside a constant
+    // called AID6B_DATABASE_STATEMENT_TIMEOUT_MS is how the two silently diverge:
+    // narrow the constant and PostgreSQL keeps cancelling at five seconds while the
+    // transaction ceiling drops below it, inverting which bound fires first.
+    expect(evidence).not.toContain("statement_timeout = '");
+  });
+
+  it("names the global Prisma client nowhere except opening the transaction", () => {
+    // THE GUARD THE UNIT DOUBLES CANNOT BE. `booking-evidence.test.ts` stubs
+    // `$transaction` and hands the callback a client; even with a distinct `txMock`
+    // object it can only prove that COLLABORATORS received the transaction client,
+    // because a brand-new direct read written on the global client is not a
+    // collaborator and calls the same doubled function. Such a read would compile,
+    // is not a write, names no forbidden relation, and would run outside the
+    // snapshot, outside the statement timeout and outside the READ ONLY fence on the
+    // application's full-privilege connection — with every unit assertion green.
+    //
+    // So the module's use of the global client is pinned by CENSUS over its CODE —
+    // comments stripped first, because the docblocks discuss `prisma` by name on
+    // purpose and a census that counted prose would break on every wording change
+    // and teach the next author to widen it.
+    const evidence = packSource("booking-evidence.ts");
+    const code = evidence
+      .replace(/\/\*[\s\S]*?\*\//g, "")
+      .replace(/^[ \t]*\/\/.*$/gm, "");
+    // Exactly one property is ever reached on the global client, and it is the one
+    // that opens the bounded transaction.
+    expect(code.match(/prisma\.[A-Za-z$]+/g)).toEqual(["prisma.$transaction"]);
+    // Non-vacuous: the stripped code still holds the module, and the import the
+    // census is about.
+    expect(code).toContain('import { prisma } from "@/lib/prisma"');
+    expect(code.length).toBeGreaterThan(evidence.length / 4);
+    // And the rule itself is stated where a future author will read it.
+    expect(evidence).toContain("none of these three readers names");
   });
 
   it("makes no provider call — no client is imported and nothing calls fetch", () => {
@@ -3234,21 +3270,33 @@ describe("AID-6B booking/membership pack: the audit subject maps (#2376)", () =>
     expect(bookingScope).not.toContain("actively reclassifying");
   });
 
-  it("discloses mixed READ COMMITTED instants on every server-owned result", () => {
+  it("discloses BOTH halves of the snapshot story on every server-owned result", () => {
+    // BOTH, because either half alone misleads. A model told only "one snapshot"
+    // treats the row as current; a model told only "different instants" distrusts a
+    // row that is internally consistent. The wording here has been wrong in both
+    // directions already: it claimed multiple READ COMMITTED statements after the
+    // transaction landed, and the docblock beside it claimed a snapshot during the
+    // interval when the transaction carried no explicit isolation level.
     for (const id of [
       DIAGNOSTICS_BOOKING_BLOCK_STATE_TOOL_ID,
       DIAGNOSTICS_BOOKING_CAPACITY_TOOL_ID,
       DIAGNOSTICS_MEMBER_ELIGIBILITY_TOOL_ID,
     ]) {
       const scope = entry(id).evidenceScope ?? "";
+      // Half one: the facts on the row agree with each other, and WHY.
+      expect(scope, id).toContain("ONE REPEATABLE READ snapshot");
+      expect(scope, id).toContain("consistent with each other");
+      // Half two: consistent is not current.
       expect(scope, id).toContain("assembly completed, not a database snapshot time");
-      expect(scope, id).toContain("multiple READ COMMITTED statements");
-      expect(scope, id).toContain("can be internally stale");
+      expect(scope, id).toContain("a later invocation reads a different snapshot");
+      expect(scope, id).toContain("internally consistent and still stale");
       expect(scope, id).toContain(
         "Rerun it before any action or definitive conclusion",
       );
       expect(scope, id).toContain("compare per-source timestamps");
       expect(scope, id).not.toContain("true as at its own observed instant");
+      // The retired claim, which the transaction made false.
+      expect(scope, id).not.toContain("multiple READ COMMITTED statements");
     }
   });
 });
