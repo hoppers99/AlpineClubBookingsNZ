@@ -114,6 +114,82 @@ export function lateCaptureAutoRefundOutcomeParagraph(
 }
 
 /**
+ * #2773 — WHICH payment was captured late, as the noun phrase every piece of
+ * late-capture copy needs mid-sentence.
+ *
+ * The two late-capture handlers were sending the same words about different
+ * things. `handleCancelledBookingAdditionalPaymentSucceeded` handles a payment for
+ * a *change* to a booking; `handleCancelledBookingPaymentSucceeded` handles the
+ * booking's OWN payment. #2761's copy hard-coded "a booking-change payment", so
+ * routing the second handler through the same alert unchanged would have sent an
+ * operator a mail that misdescribed the event — the exact defect #2761 was filed
+ * about, arriving through the back door.
+ *
+ * A bare noun phrase, so it reads correctly wherever it is dropped in: "A
+ * booking-change payment was captured…", "the member paid for a booking change".
+ */
+export function lateCapturePaymentLabel(
+  captureKind: "modification" | "primary",
+): string {
+  return captureKind === "primary"
+    ? "the booking's own payment"
+    : "a booking-change payment";
+}
+
+/**
+ * #2773 — the lead paragraph of a late-capture notice, which says what the money
+ * was for and what happened to the paperwork behind it.
+ *
+ * THE XERO SENTENCE IS WHY THIS IS COMPOSED RATHER THAN ONE FIXED STRING. The
+ * booking-change path leaves a *supplementary* invoice operation unreleased (the
+ * change was voided by the cancellation, so releasing it would post a paid invoice
+ * for a refunded charge). The primary path has no supplementary invoice at all —
+ * it credit-notes the booking's own invoice when one exists. #2761's copy asserted
+ * the first unconditionally, so on the primary path it would have told an operator
+ * something untrue about the club's accounting.
+ *
+ * Shared by the hand-built HTML and the `{{lateCaptureLeadNote}}` token the
+ * admin-editable body renders (#2268 convention): one source, so an admin's saved
+ * default cannot describe a different capture from the mail.
+ */
+export function lateCaptureAutoRefundLeadParagraph(
+  captureKind: "modification" | "primary",
+): string {
+  return captureKind === "primary"
+    ? "Nothing failed and no money is missing. The member's payment for the booking itself landed while the booking was on its way out, so the charge was returned to them as soon as Stripe told us about it. No new Xero invoice was created for it; if the booking already had one, a credit note is queued against it."
+    : "Nothing failed and no money is missing. The member paid for a booking change while the booking was on its way out, so the charge was returned to them as soon as Stripe told us about it. The supplementary Xero invoice for the change was not released.";
+}
+
+/**
+ * #2774 — the paragraph that says which way the money went when a late capture
+ * collided with a hand-back an operator had already made.
+ *
+ * ONE TEMPLATE, TWO DIRECTIONS, AND THE DIRECTION IS THE WHOLE MESSAGE. Both arms
+ * report the same situation — an operator resolved this capture's hand-back task
+ * as "paid back by hand", which writes a refund allocation in the ledger — and
+ * differ only in whether Stripe's refund also went out:
+ *
+ * - `refundSent: false` — the fence caught it first, so the club has paid the
+ *   member ONCE, by hand, and this system deliberately did not send a second
+ *   refund. The capture is still sitting at Stripe.
+ * - `refundSent: true` — the operator's completion landed inside the webhook's own
+ *   Stripe round trip, so the fence read the task as unresolved. The member has
+ *   very likely been paid TWICE.
+ *
+ * Sharing one paragraph source between the hand-built HTML and the
+ * `{{handBackConflictNote}}` token is the #2268 rule: the flat admin-editable body
+ * has no conditional syntax, so a body that stated one direction would tell an
+ * operator the opposite of what happened on the other.
+ */
+export function lateCaptureHandBackConflictOutcomeParagraph(
+  refundSent: boolean,
+): string {
+  return refundSent
+    ? "The money may have gone back TWICE. An operator marked the hand-back task for this capture as paid back by hand at almost exactly the moment Stripe's automatic refund was being made, so the check that would have withheld the automatic refund could not see their work yet. Assume the member has been paid twice until you have confirmed otherwise: compare the refund on the Stripe payment against the hand-back the operator recorded, and recover the difference if there is one."
+    : "The money has NOT been sent back a second time, and that is deliberate. An operator had already marked the hand-back task for this capture as paid back by hand, which records a refund in the club's ledger, so sending Stripe's automatic refund on top of it would have paid the member twice. The automatic refund was withheld instead. Check that the hand-back really happened and covers the whole amount — if it did not, the capture is still sitting at Stripe and has to be refunded from there.";
+}
+
+/**
  * #2268 — the outcome-dependent lead paragraph of the recurring split-settlement
  * alert, shared by the hand-built HTML below and the `{{settlementActionNote}}`
  * token the admin-editable body renders. The flat body used to assert that a

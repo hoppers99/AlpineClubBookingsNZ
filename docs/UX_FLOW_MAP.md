@@ -417,25 +417,42 @@ booking has to be made again and the member charged again, because the refund ha
 already gone out.
 
 The record card states, on screen, exactly what it covers: **every** automatic
-refund of a late booking-change payment from the last 30 days — with one clause
-naming the single exception, an operator who closed the hand-back task by hand
-before the refund landed — and the booking's audit entry
+refund of a late payment from the last 30 days — with one clause naming the single
+exception, an operator who closed the hand-back task by hand before the refund
+landed — and the booking's audit entry
 (`booking.payment.refunded_after_cancellation`) named as the permanent record for
-anything older. Until #2760 that copy said the opposite — the card was a partial
+anything older. It said "booking-change payment" until #2773, which was honest
+while the sibling handler for a booking's OWN payment wrote no row at all; both
+handlers write these rows now, through one shared writer, so the word came out. Until #2760 that copy said the opposite — the card was a partial
 list, because a row only existed on one of the four possible orderings — and
 reinstating either claim in the wrong direction is a defect: an operator who reads
 an empty card as proof that no automatic refund happened would be worse off than
 before the card existed, and one told to distrust a complete list stops reading
 it. The exception is deliberately a clause and not a paragraph, for that second
-reason; `INV-ADDPAY-037` carries the full reasoning and the follow-ups (#2773 for
-the original-payment handler, #2774 for the hand-resolved ordering).
+reason; `INV-ADDPAY-037` carries the full reasoning, and #2774 settled the
+hand-resolved carve-out as documented behaviour rather than writing a second row
+for one capture.
 
 The moment-of-event notice is the admin email, and since #2761 it has its own
 subject naming what happened and which population it was ("Payment refunded
 automatically — booking already deleted" / "… — booking already cancelled"), cannot
 be muted by a notification preference or a delivery rule, and always resolves at
-least one recipient. It is still the only notification for the event: no badge and
-no digest row was added (`INV-ADDPAY-038`).
+least one recipient. Since #2773 the body also names WHICH payment was captured —
+the booking's own, or one for a change to it — because the two have different Xero
+consequences and a notice that misdescribes the event is what #2761 was filed about.
+It is still the only notification for the event: no badge and no digest row was
+added (`INV-ADDPAY-038`).
+
+**One case sends a different mail instead, never as well (#2774,
+`INV-ADDPAY-039`).** When an operator has already paid a capture back by hand, the
+automatic refund is withheld and the club gets *Automatic refund withheld — already
+paid back by hand*; when their hand-back landed during the refund, it gets *Payment
+may have been refunded TWICE — reconcile*. Both are unmuteable, both go to Finance
+editors, and neither is a variant of the auto-refund notice — that template's body
+says the money went back and there is nothing to pay back, which is false in one
+direction and the opposite of the truth in the other. Neither case produces a row on
+the record card: no refund was made in the first, and the operator's own row is the
+record in both.
 
 Each card renders only when it has rows, independently of the other, and the
 component renders nothing when both are empty. The record card must appear when

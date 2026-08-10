@@ -9,6 +9,8 @@ import {
   bookingPaymentDueNote,
   checkoutDayChoreNote,
   duplicateCaptureRefundOutcomeParagraph,
+  lateCaptureAutoRefundLeadParagraph,
+  lateCaptureHandBackConflictOutcomeParagraph,
   splitGuestPortionOwnBookingLine,
   wholeLodgeGuestNamesUrgencyNote,
 } from "@/lib/email-message-notes";
@@ -66,6 +68,13 @@ const ADMIN_SYSTEM_TEMPLATE_NAMES = new Set<EmailAuditTemplateName>([
   // notification preference at all. It REPLACES the generic payment-failure mail
   // this path used to send; it is not a second notification (`INV-ADDPAY-037`).
   "admin-late-capture-auto-refund",
+  // #2774: the sibling notice for the same event class when the capture collides
+  // with a hand-back an operator had already made - either the automatic refund
+  // was withheld to stop a second payment, or it went out anyway inside the
+  // fence's blind window and the member may have been paid twice. Same admin
+  // audience and the same unmuteable sender, and delivery-locked below: this is
+  // the one mail on the path that says money may have left the club twice.
+  "admin-late-capture-hand-back-conflict",
   "admin-pending-deadline",
   "admin-booking-bumped",
   "admin-capacity-warning",
@@ -141,6 +150,12 @@ const LOCKED_DELIVERY_TEMPLATE_NAMES = new Set<EmailAuditTemplateName>([
   // owner ruled out. Locked here AND sent off the per-member preference, because
   // those are two separate mute vectors and the decision closed both.
   "admin-late-capture-auto-refund",
+  // #2774 (owner decision 11 Aug 2026): the same lock, for a stronger reason.
+  // This alert reports either a refund the system deliberately did NOT send or a
+  // capture that may have been paid back twice; in both directions it is the only
+  // thing that pulls a person to reconcile real money, so it must not be
+  // silenceable club-wide any more than its sibling.
+  "admin-late-capture-hand-back-conflict",
 ]);
 
 const CONTENT_ONLY_DEFAULT_TEMPLATE_NAMES = new Set<EmailAuditTemplateName>([
@@ -494,11 +509,27 @@ const REQUIRED_TEMPLATE_TOKENS: Partial<Record<EmailAuditTemplateName, string[]>
   // tell "the booking was deleted, remake it and charge again" from "the booking
   // was cancelled, this is normal" — the whole reason the owner asked for wording
   // covering both cases.
+  // #2773 adds {{lateCaptureLeadNote}}: BOTH late-capture handlers send this
+  // alert now, and that token is the only thing in the body that says WHICH
+  // payment was captured (the booking's own, or one for a change to it) and what
+  // became of the Xero paperwork - which differs between them. An override that
+  // drops it leaves an operator unable to tell the two apart, and the shipped
+  // default used to assert the booking-change wording for both.
   "admin-late-capture-auto-refund": [
     "memberName",
     "reviewUrl",
     "bookingStateLabel",
     "refundOutcomeNote",
+    "lateCaptureLeadNote",
+  ],
+  // #2774: {{handBackConflictNote}} is the whole message - it is the sentence
+  // that says whether the money went out or was withheld. An override that drops
+  // it turns a reconciliation notice into an unexplained mention of a booking, on
+  // the one alert that may be reporting a double payment.
+  "admin-late-capture-hand-back-conflict": [
+    "memberName",
+    "reviewUrl",
+    "handBackConflictNote",
   ],
   "admin-split-settlement-unpaid": ["memberName", "reviewUrl"],
   // #1993 Part A: terminal notice — memberName identifies the member and
@@ -657,6 +688,17 @@ const TEMPLATE_TRIGGER_METADATA: Partial<
     // true thing twice; a silence says nothing about money that moved.
     frequency:
       "On each late capture the webhook refunds automatically — rare; once per payment intent per delivery, and a Stripe redelivery of the same event can re-send it",
+  },
+  "admin-late-capture-hand-back-conflict": {
+    triggerSummary:
+      "A late capture on a cancelled booking collided with a hand-back an operator had already recorded as paid: either the automatic refund was withheld so the member is not paid twice (#2774), or it had already gone out and may have paid them twice",
+    // Same honest wording as its sibling above, and for the same reason: the fence
+    // read and the record write are idempotent on the payment intent, this mail is
+    // not, and a Stripe redelivery re-enters the handler whenever the first attempt
+    // failed after the alert. Deduping it would make a redelivery after a FAILED
+    // send silent on money that may have moved twice.
+    frequency:
+      "Only when an operator's hand-back and the automatic refund claim the same capture - rare; once per delivery, and a Stripe redelivery of the same event can re-send it",
   },
   "admin-minors-review": {
     triggerSummary:
@@ -1152,6 +1194,19 @@ export function sampleValue(token: string): string {
   if (token === "rebookPath") return "/book";
   if (token === "refundOutcomeNote") {
     return duplicateCaptureRefundOutcomeParagraph(false);
+  }
+  // #2773: previewed as the booking-CHANGE arm, which is what the shipped default
+  // has always rendered and the commoner of the two captures; the primary arm is
+  // the sender's other branch of lateCaptureAutoRefundLeadParagraph.
+  if (token === "lateCaptureLeadNote") {
+    return lateCaptureAutoRefundLeadParagraph("modification");
+  }
+  // #2774: previewed as the WITHHELD arm, matching the shipped default subject.
+  // That is deliberately the arm an operator is likelier to receive - the fence
+  // fires whenever the hand-completion had already committed - and the
+  // refund-went-out-anyway arm is the sender's other branch.
+  if (token === "handBackConflictNote") {
+    return lateCaptureHandBackConflictOutcomeParagraph(false);
   }
   if (token === "settlementActionNote") {
     return adminSplitSettlementUnpaidLeadParagraph(false);
@@ -1652,6 +1707,11 @@ const APPROVED_EMAIL_TEMPLATE_TOKENS = [
   "rebookPath",
   "refundAmount",
   "refundOutcomeNote",
+  // #2773 / #2774: pre-composed whole paragraphs, the {{refundOutcomeNote}}
+  // precedent - the flat admin-editable body has no conditional syntax, so the
+  // sender supplies the finished sentence rather than the facts behind it.
+  "lateCaptureLeadNote",
+  "handBackConflictNote",
   "refundMessage",
   "refundedAmount",
   "remainingAmount",
