@@ -66,7 +66,7 @@ id and need the file it lives in.
 | Applications, cancellation, roles, family groups, member merge | `INV-LIFE` (except `INV-LIFE-062`) → [`membership-lifecycle.md`](docs/invariants/membership-lifecycle.md) | [`guides/membership-cancellations.md`](docs/guides/membership-cancellations.md) |
 | Public fee/policy page content and named lodge tokens | `INV-PUB` → [`public-content.md`](docs/invariants/public-content.md) | [`PUBLIC_PAGE_CONTENT_TOKENS.md`](docs/PUBLIC_PAGE_CONTENT_TOKENS.md) |
 | Analytics, the consent banner, what leaves this application for Google | `INV-PRIV` → [`analytics-and-privacy.md`](docs/invariants/analytics-and-privacy.md) | [`guides/integrations.md`](docs/guides/integrations.md) |
-| An audit writer's `category`, or which audit rows a reader or a member can see | `INV-PRIV` → [`analytics-and-privacy.md`](docs/invariants/analytics-and-privacy.md) | [`guides/audit-log.md`](docs/guides/audit-log.md), [`ai-diagnostics/audit-admin-category-review.md`](docs/ai-diagnostics/audit-admin-category-review.md) |
+| An audit writer's `category`, or which audit rows a reader or a member can see | `INV-PRIV` → [`analytics-and-privacy.md`](docs/invariants/analytics-and-privacy.md), plus `INV-OPS-012` → [`operations.md`](docs/invariants/operations.md) for the rows **already written**, which a code change never moves | [`guides/audit-log.md`](docs/guides/audit-log.md), [`ai-diagnostics/audit-admin-category-review.md`](docs/ai-diagnostics/audit-admin-category-review.md) |
 | Webhooks, cron idempotency, provider callbacks, Xero member grouping | `INV-INT` → [`integrations.md`](docs/invariants/integrations.md) | [`xero/ARCHITECTURE.md`](docs/xero/ARCHITECTURE.md) |
 | An email, a notification, a template, or who receives one | — | [`guides/email-messages.md`](docs/guides/email-messages.md), [`guides/notification-rules.md`](docs/guides/notification-rules.md), [`guides/notification-recipients.md`](docs/guides/notification-recipients.md), [`guides/communications.md`](docs/guides/communications.md), [`guides/email-deliverability.md`](docs/guides/email-deliverability.md), and "Email Retry Lifecycle" in [`STATE_MACHINES.md`](docs/STATE_MACHINES.md) |
 | Raw SQL, row locking, production deployment, what may be used as test input | `INV-OPS` → [`operations.md`](docs/invariants/operations.md) | [`CONCURRENCY_AND_LOCKING.md`](docs/CONCURRENCY_AND_LOCKING.md), [`BLUE_GREEN_MIGRATION_POLICY.md`](docs/BLUE_GREEN_MIGRATION_POLICY.md) |
@@ -280,8 +280,10 @@ an orchestrator with subagents, not a single agent doing everything inline:
   task complexity. Work in gated areas (money movement, booking capacity,
   membership/family lifecycle, schema, auth/security, live providers) keeps
   the strongest available model at high reasoning effort, per the rule above —
-  and auth/security work goes to `max`, since an uncertain security blocker
-  escalates in effort, never in model tier (see "Model selection").
+  and auth/security work runs at `xhigh` — the effort ceiling for all work
+  (owner directive, 10 Aug 2026: `max` overthinks and produces worse outcomes) —
+  since an uncertain security blocker escalates in effort toward that ceiling,
+  never in model tier (see "Model selection").
 - **Parallel lanes:** multiple issues may run concurrently, each in its own
   worktree/branch/PR, only when their code surfaces do not clash. Shared
   documentation files (for example `docs/DOMAIN_INVARIANTS.md`) are acceptable
@@ -556,7 +558,7 @@ handed an epic-with-children or asked to run several related issues at once.
   backfill correctness, or irreversible member-merge + DMMF-completeness
   reasoning. Scale model *and* reasoning effort to the task; do not use the top
   tier blanket for everything labelled "Critical".
-- **Never route security work to the top tier — keep it on Opus at `max`
+- **Never route security work to the top tier — keep it on Opus at `xhigh`
   reasoning effort.** Fable's safety classifiers target cyber content, so a
   security review or exploit analysis can come back *refused* rather than
   answered. The refusal arrives as `stop_reason: "refusal"` on an HTTP 200, not
@@ -565,6 +567,11 @@ handed an epic-with-children or asked to run several related issues at once.
   analysis, so the escalation buys nothing here even when it does answer. Opus
   refuses far less on this material and falls back rather than stopping outright,
   which is why an uncertain security blocker escalates in *effort*, not in tier.
+- **`xhigh` is the effort ceiling — never use `max`, on any lane** (owner
+  directive, 10 Aug 2026). At `max` the model overthinks and the outcome gets
+  *worse*, not better; `xhigh` is sufficient for the hardest security and
+  Critical work. Effort escalation for an uncertain blocker therefore tops out
+  at `xhigh`.
 
 ### 5. Per-issue pipeline
 

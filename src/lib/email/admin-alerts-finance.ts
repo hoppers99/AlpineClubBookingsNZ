@@ -1,4 +1,5 @@
 import {
+  adminLateCaptureAutoRefundTemplate,
   adminPaymentFailureTemplate,
   adminDuplicateCaptureRefundTemplate,
   adminManualSettlementConflictTemplate,
@@ -14,13 +15,18 @@ import {
 import {
   composeOptionalEmailLine,
   duplicateCaptureRefundOutcomeParagraph,
+  lateCaptureAutoRefundBookingStateLabel,
+  lateCaptureAutoRefundOutcomeParagraph,
 } from "../email-message-notes";
 import { CLUB_BOOKINGS_NAME } from "@/config/club-identity";
 import { formatNZDate } from "../nzst-date";
 import { formatCents as formatMoneyCents } from "@/lib/utils";
 import { applyXeroOrgShortCode } from "@/lib/xero-links";
 import { getXeroOrgShortCode } from "@/lib/xero-link-short-code";
-import { sendToAdmins } from "./admin-alerts-shared";
+import {
+  sendToAdmins,
+  sendUnmuteableAdminAlert,
+} from "./admin-alerts-shared";
 
 /**
  * Stamp the club's Xero organisation onto an outbound deep link, at SEND time
@@ -77,6 +83,73 @@ export async function sendAdminPaymentFailureAlert(data: {
       amount: formatMoneyCents(data.amountCents),
     },
     preferenceKey: "adminPaymentFailure",
+  });
+}
+
+/**
+ * #2761 (owner decision 10 Aug 2026): the alert for a late capture the Stripe
+ * webhook refunded on its own, replacing the generic payment-failure mail this
+ * path used to send.
+ *
+ * ITS OWN SUBJECT, because the old one was wrong. "Payment Failed" describes
+ * nothing that happened here — a booking-change payment was captured after the
+ * booking had gone and the money went straight back — and a subject that
+ * misdescribes an event gets triaged as noise. The subject now names the money
+ * movement AND which of the two populations #2760 widened this to: "booking
+ * already deleted" or "booking already cancelled". That is what lets an operator
+ * recognise it and, for the ordinary cancelled case, dismiss it at a glance.
+ *
+ * NOT GATED ON A NOTIFICATION PREFERENCE, and delivery-locked in the registry.
+ * The two mute vectors are the per-member `adminPaymentFailure` checkbox and the
+ * club-wide delivery mode; the owner's decision closes both, because an automatic
+ * money movement should not be silenceable and the recipient set must not be able
+ * to be silently empty. `sendUnmuteableAdminAlert` owns both halves.
+ *
+ * STILL EXACTLY ONE NOTIFICATION FOR THE EVENT (`INV-ADDPAY-037`). This is not an
+ * addition — the webhook's single `sendAdminPaymentFailureAlert` call became this
+ * single call. Nothing else mails on this path, and no badge or digest changed.
+ *
+ * The caller keeps it fire-and-forget with a `.catch` that logs: webhooks stay
+ * non-blocking, and the durable record is the DISMISSED `ManualRefundTask` plus
+ * the `booking.payment.refunded_after_cancellation` audit entry.
+ */
+export async function sendAdminLateCaptureAutoRefundAlert(data: {
+  memberName: string;
+  checkIn: Date;
+  checkOut: Date;
+  amountCents: number;
+  paymentIntentId: string;
+  bookingId: string;
+  bookingDeleted: boolean;
+}) {
+  const baseUrl = process.env.NEXTAUTH_URL || "http://localhost:3000";
+  const reviewUrl = `${baseUrl}/admin/payments`;
+  const bookingStateLabel = lateCaptureAutoRefundBookingStateLabel(
+    data.bookingDeleted,
+  );
+
+  await sendUnmuteableAdminAlert({
+    subject: `Payment refunded automatically — booking ${bookingStateLabel}: ${data.memberName}`,
+    html: adminLateCaptureAutoRefundTemplate({ ...data, reviewUrl }),
+    templateName: "admin-late-capture-auto-refund",
+    templateData: {
+      memberName: data.memberName,
+      checkIn: formatNZDate(data.checkIn),
+      checkOut: formatNZDate(data.checkOut),
+      amount: formatMoneyCents(data.amountCents),
+      bookingId: data.bookingId,
+      paymentIntentId: data.paymentIntentId,
+      bookingStateLabel,
+      // The same composed sentence the hand-built HTML renders, so an admin's
+      // saved default cannot describe a different population from the mail.
+      refundOutcomeNote: lateCaptureAutoRefundOutcomeParagraph(
+        data.bookingDeleted,
+      ),
+      reviewUrl,
+    },
+    // The people who reconcile the club's money own this, exactly as they own
+    // every other finance alert. This is the audience rule, not a mute.
+    requirement: { area: "finance", level: "edit" },
   });
 }
 

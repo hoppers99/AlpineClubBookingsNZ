@@ -48,6 +48,7 @@ import {
   AUTOMATIC_REFUND_NOTICE_WINDOW_DAYS,
   automaticCancelledBookingRefundNote,
   automaticallyRefundedManualRefundTaskFilter,
+  cancelledBookingModificationRefundReason,
   deletedBookingModificationRefundReason,
 } from "@/lib/deleted-booking-modification-payment";
 
@@ -78,8 +79,21 @@ const AUTO_ROW = {
   booking: {
     checkIn: CHECK_IN,
     checkOut: CHECK_OUT,
+    // #2760: the card groups the two populations, so the route reads the
+    // booking's deletion state and answers it as a boolean.
+    deletedAt: new Date("2026-06-27T00:00:00.000Z"),
     member: { firstName: "Grace", lastName: "Hopper" },
   },
+};
+
+/** #2760's second population: auto-refunded on a booking still on file. */
+const AUTO_ROW_CANCELLED_ONLY = {
+  ...AUTO_ROW,
+  id: "task-auto-cancelled",
+  bookingId: "booking-cancelled-live",
+  reason: cancelledBookingModificationRefundReason("pi_modification_2"),
+  note: automaticCancelledBookingRefundNote("pi_modification_2"),
+  booking: { ...AUTO_ROW.booking, deletedAt: null },
 };
 
 /** The route's two `findMany` calls, in the order it issues them. */
@@ -193,9 +207,48 @@ describe("GET manual-refund-tasks (#2262, #2750)", () => {
       reason: deletedBookingModificationRefundReason("pi_modification"),
       note: automaticCancelledBookingRefundNote("pi_modification"),
       refundedAt: REFUNDED_AT.toISOString(),
+      bookingDeleted: true,
       memberName: "Grace Hopper",
       checkIn: CHECK_IN.toISOString(),
       checkOut: CHECK_OUT.toISOString(),
+    });
+  });
+
+  it("says which population each row is, and sends no deletion date (#2760)", async () => {
+    /*
+      The card groups a refund on a DELETED booking (remake it and charge again)
+      apart from one on a booking that is merely cancelled (normal operation), so
+      the row has to carry which it was. A boolean, not the date: the date is not
+      the operator's business on this card and there is no reason to put it on the
+      wire.
+    */
+    mocks.manualRefundTaskFindMany
+      .mockReset()
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([AUTO_ROW, AUTO_ROW_CANCELLED_ONLY]);
+
+    const body = (await (await GET()).json()) as {
+      autoRefunded: Record<string, unknown>[];
+    };
+
+    expect(body.autoRefunded.map((row) => row.bookingDeleted)).toEqual([
+      true,
+      false,
+    ]);
+    expect(body.autoRefunded[0]).not.toHaveProperty("deletedAt");
+    // And the row keeps the sentence that was true when the money went back.
+    expect(body.autoRefunded[1].reason).toBe(
+      cancelledBookingModificationRefundReason("pi_modification_2"),
+    );
+  });
+
+  it("asks the database for the deletion state it groups on", async () => {
+    // Without it in the select, every row would answer `bookingDeleted: false`
+    // and the interesting population would silently merge into the ordinary one.
+    await GET();
+
+    expect(calls()[1].select).toMatchObject({
+      booking: { select: { deletedAt: true } },
     });
   });
 

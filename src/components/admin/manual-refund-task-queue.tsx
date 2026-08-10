@@ -38,7 +38,8 @@ interface ManualRefundTask {
 
 /**
  * A refund the club never decided: a payment landed on a booking that had
- * already been deleted, and Stripe handed it straight back (#2750).
+ * already been cancelled — deleted or not — and Stripe handed it straight back
+ * (#2750, widened to both populations by #2760).
  */
 interface AutoRefundedNotice {
   id: string;
@@ -47,125 +48,235 @@ interface AutoRefundedNotice {
   reason: string;
   note: string | null;
   refundedAt: string | null;
+  /**
+   * #2760: the booking has since been deleted, as opposed to being cancelled and
+   * still on file. It decides which group the row is shown in, because the two
+   * need different follow-up. Optional so a cached client against a pre-#2760
+   * route still renders (it falls into the cancelled group, which claims less).
+   */
+  bookingDeleted?: boolean;
   memberName: string;
   checkIn: string;
   checkOut: string;
 }
 
 /**
- * The read-only record of a refund nobody authorised (#2750).
+ * One row of the record. Extracted when #2760 gave the card two groups, so both
+ * groups print identical rows and neither can drift into saying more than the
+ * other about a money movement.
  *
- * Deliberately buttonless. There is no decision left on these rows — Stripe
- * returned the money before anybody saw the capture — and a control here would
+ * NO "View booking" LINK, unlike the hand-back queue above, and the difference is
+ * not an oversight (#2750 review, re-justified for #2760's second population).
+ *
+ * For a DELETED booking the detail page 404s for anybody who is not a Full Admin.
+ * For a booking that is merely cancelled the page exists - but it is gated on
+ * `bookings:view`, and this card is gated on `finance:view`, which a Finance
+ * Viewer holds with no bookings access at all. So a link would be a dead end for
+ * part of this card's audience either way, and widening who may open a deleted
+ * booking is explicitly not on the table. The identifiers are printed as plain
+ * text instead, which is what a Full Admin needs to look the booking up and what a
+ * finance operator needs to quote it to somebody who can.
+ */
+function AutomaticRefundNoticeRow({ notice }: { notice: AutoRefundedNotice }) {
+  return (
+    <li className="space-y-1 rounded-md border border-border px-3 py-2 text-sm">
+      <p className="font-medium text-foreground">
+        {notice.memberName} - {formatCents(notice.amountCents)} refunded
+        {notice.refundedAt
+          ? ` on ${formatNZDate(new Date(notice.refundedAt))}`
+          : ""}
+      </p>
+      <p className="text-muted-foreground">
+        {formatNZDate(new Date(notice.checkIn))} to{" "}
+        {formatNZDate(new Date(notice.checkOut))} - booking{" "}
+        <span className="font-mono text-xs">{notice.bookingId}</span>
+      </p>
+      {/*
+        Both sentences, not one. The reason names the situation that produced the
+        payment; the note says that Stripe already handed the money back. An
+        operator reading only the reason - which, on a deleted booking, asks them
+        to decide whether to refund - would think the decision is still theirs.
+      */}
+      <p className="text-xs text-muted-foreground">{notice.reason}</p>
+      {notice.note ? (
+        <p className="text-xs text-muted-foreground">{notice.note}</p>
+      ) : null}
+    </li>
+  );
+}
+
+/**
+ * The read-only record of a refund nobody authorised (#2750, completed by #2760).
+ *
+ * Deliberately buttonless. There is no decision left on these rows - Stripe
+ * returned the money before anybody saw the capture - and a control here would
  * imply otherwise. What it does carry is the one thing an operator needs if the
- * deletion, not the payment, was the mistake: that the refund has already gone
- * out, so putting the booking back means charging the member again.
+ * cancellation or deletion, not the payment, was the mistake: that the refund has
+ * already gone out, so putting the booking back means charging the member again.
  *
  * A separate component from the queue above because it is a different claim
  * about the world, and mixing "you owe this member money" rows with "this money
  * has already gone back" rows in one list is how somebody pays a refund twice.
  *
- * A PARTIAL RECORD, AND IT SAYS SO. A row exists only where the member's browser
- * reached the confirm endpoint before the Stripe webhook did: that is the one
- * ordering that raises a `ManualRefundTask` at all. Webhook-first (and the member
- * who simply closes the tab after paying) refunds the capture and leaves no task
- * for the close to find, and the interleaved ordering is fenced off deliberately
- * — see `deleted-booking-modification-payment.ts`. The card therefore names the
- * audit entry and the alert email as the complete record rather than letting a
- * short list read as "that is all of them" (`INV-ADDPAY-037`).
+ * A COMPLETE RECORD SINCE #2760, and the copy says that instead of the
+ * qualification it used to carry. Until #2760 a row existed only where the
+ * member's browser reached the confirm endpoint before the Stripe webhook did -
+ * one of four orderings - so the card was a partial list and said so. The webhook
+ * now writes the row itself whenever its fenced close finds nothing, for a
+ * deleted AND a merely cancelled booking, so every automatic refund of a late
+ * capture inside the window is here.
+ *
+ * TWO GROUPS, AND THAT IS WHY (#2760, implementor's call under the owner's
+ * decision). Widening to every cancelled booking adds rows for what is usually
+ * normal operation: cancel a booking somebody is part-way through paying for and
+ * this is the expected outcome. Listed together, those rows would bury the case
+ * that actually needs a person - a payment refunded on a booking the club
+ * DELETED, where remaking the booking means charging the member again. The
+ * deleted group is printed first and each group says what it means, so the
+ * interesting case cannot be lost in the ordinary one. Grouping rather than
+ * re-sorting keeps each group newest-first, which is the order the route answers
+ * in and the order an operator reads "what happened lately" in.
+ *
+ * A THIRD, NEUTRAL GROUP FOR A ROW WHOSE POPULATION IS UNKNOWN (review of #2760).
+ * `bookingDeleted` is optional on the wire so a cached pre-#2760 client bundle
+ * still renders, and the first cut of the grouping treated absent as "not
+ * deleted" on the grounds that the cancelled group claims less. It claims less
+ * about the WORK and more about the BOOKING - "cancelled and is still on file" is
+ * a positive statement, and if that row's booking was in fact deleted the heading
+ * is wrong about the only case here that needs a person. So an unknown row gets a
+ * heading that asserts nothing beyond what the card already says, and asks for a
+ * reload. Unreachable against the current route, which always sends the field;
+ * this is for the minutes after a deploy.
  */
 function AutomaticRefundNoticesCard({
   notices,
 }: {
   notices: AutoRefundedNotice[];
 }) {
+  // `=== true` / `=== false`, NOT truthiness, and the third bucket is why. A row
+  // with `bookingDeleted` absent is a stale client bundle talking to the current
+  // route (which always sends the field), and it is genuinely UNKNOWN - so it
+  // belongs in neither group, because each group's heading makes a positive claim
+  // about the booking's state. Filing an unknown row under "cancelled and is
+  // still on file" claims LESS about the work and MORE about the world, and if
+  // that booking was in fact deleted it hides the one case that needs a person.
+  const deletedNotices = notices.filter(
+    (notice) => notice.bookingDeleted === true,
+  );
+  const cancelledNotices = notices.filter(
+    (notice) => notice.bookingDeleted === false,
+  );
+  const unknownNotices = notices.filter(
+    (notice) => notice.bookingDeleted === undefined,
+  );
+
   return (
     <Card data-testid="automatic-refund-notices">
       <CardHeader>
         <CardTitle className="text-base">
-          Refunded automatically — nothing to pay back ({notices.length})
+          Refunded automatically &mdash; nothing to pay back ({notices.length})
         </CardTitle>
       </CardHeader>
-      <CardContent className="space-y-3">
+      <CardContent className="space-y-4">
         <p className="text-sm text-muted-foreground">
           A payment for a booking change arrived after the booking had already
-          been deleted. Stripe returned the money to the member straight away, so
-          there is nothing for you to pay back and nothing to close here. This
-          card is here so somebody sees it happened: if deleting the booking was
-          the mistake rather than the payment, the booking has to be made again
-          and the member charged again — the refund has already gone out.
+          been cancelled. Stripe returned the money to the member straight away,
+          so there is nothing for you to pay back and nothing to close here. This
+          card is here so somebody sees it happened.
         </p>
         {/*
-          #2750 review: the card is a partial record, and it says so rather than
-          letting an operator read a short list as "that is all of them".
+          #2760 replaced the "this card does not catch every one" paragraph that
+          #2750 shipped. It was true then: the row only existed on one of the four
+          orderings, so an empty card was not evidence. The webhook now writes the
+          row itself on every ordering and for both populations, so the card IS
+          the list - and the audit log is named as the permanent record because
+          this card is bounded to the last 30 days, not because it misses events.
 
-          Only one of the ways this can happen leaves a row here: the member's
-          browser has to finish the payment step before Stripe's notification
-          reaches us. If the notification lands first, or the member closes the
-          tab after paying, the refund still happens and this card never learns
-          about it. The permanent record for every ordering is the booking's
-          audit log entry plus the payment alert email the club is sent at the
-          time, so those are named here — an operator who trusts an empty card as
-          proof no automatic refund happened is the failure this whole card
-          exists to prevent, and it would be a worse one than the original.
+          ONE CLAUSE OF EXCEPTION, NOT A PARAGRAPH, and it is there because the
+          claim would otherwise be false (review of #2760). If an operator closed
+          the hand-back task themselves before Stripe's refund landed, the row
+          carries THEIR name and note, so it is on neither card - the writer will
+          not put two rows on one capture. A footnote an operator reads in passing
+          keeps the claim honest; the old partial-list paragraph told them to
+          distrust the whole card, which is how a card stops being read.
+          `INV-ADDPAY-037` carries the reasoning and #2774 the open question.
         */}
         <p className="text-sm text-muted-foreground">
-          This card does not catch every one. Whether a refund shows up here
-          depends on the order the member&apos;s browser and Stripe&apos;s
-          notification reached us in, so an empty or short list means &ldquo;none
-          recorded here&rdquo; rather than &ldquo;none happened&rdquo;. The
-          complete record is the booking&apos;s audit log (the{" "}
+          This is every automatic refund of a late booking-change payment from
+          the last 30 days &mdash; unless somebody had already closed the
+          hand-back task for it by hand, in which case their own record of it is
+          in the booking&apos;s history instead. Older ones are not shown here:
+          the permanent record is the booking&apos;s audit log (the{" "}
           <span className="font-mono text-xs">
             booking.payment.refunded_after_cancellation
           </span>{" "}
           entry) together with the payment alert email the club is sent at the
           time.
         </p>
-        <ul className="space-y-3">
-          {notices.map((notice) => (
-            <li
-              key={notice.id}
-              className="space-y-1 rounded-md border border-border px-3 py-2 text-sm"
-            >
-              <p className="font-medium text-foreground">
-                {notice.memberName} — {formatCents(notice.amountCents)} refunded
-                {notice.refundedAt
-                  ? ` on ${formatNZDate(new Date(notice.refundedAt))}`
-                  : ""}
-              </p>
-              {/*
-                NO "View booking" LINK ON THIS CARD, unlike the hand-back queue
-                above, and the difference is not an oversight (#2750 review).
-
-                Every row here is a booking that has been DELETED, and the
-                booking detail page 404s a deleted booking for anybody who is not
-                a Full Admin — while this card is gated on finance:view, which a
-                Finance Viewer and a Treasurer hold without it. So the link would
-                be a dead end for exactly the audience the card is for. Widening
-                that page's audience to make a link work is not on the table; the
-                identifiers are printed as plain text instead, which is what a
-                Full Admin needs to look the booking up and what a finance
-                operator needs to quote it to somebody who can.
-              */}
-              <p className="text-muted-foreground">
-                {formatNZDate(new Date(notice.checkIn))} to{" "}
-                {formatNZDate(new Date(notice.checkOut))} · booking{" "}
-                <span className="font-mono text-xs">{notice.bookingId}</span>
-              </p>
-              {/*
-                Both sentences, not one. The reason names the situation that
-                produced the payment; the note says that Stripe already handed
-                the money back. An operator reading only the reason — which asks
-                them to decide whether to refund — would think the decision is
-                still theirs.
-              */}
-              <p className="text-xs text-muted-foreground">{notice.reason}</p>
-              {notice.note ? (
-                <p className="text-xs text-muted-foreground">{notice.note}</p>
-              ) : null}
-            </li>
-          ))}
-        </ul>
+        {deletedNotices.length > 0 ? (
+          <section
+            className="space-y-2"
+            data-testid="automatic-refund-notices-deleted"
+          >
+            <h3 className="text-sm font-medium text-foreground">
+              The booking was deleted ({deletedNotices.length})
+            </h3>
+            <p className="text-sm text-muted-foreground">
+              Worth a look. If deleting the booking was the mistake rather than
+              the payment, the booking has to be made again and the member charged
+              again &mdash; the refund has already gone out.
+            </p>
+            <ul className="space-y-3">
+              {deletedNotices.map((notice) => (
+                <AutomaticRefundNoticeRow key={notice.id} notice={notice} />
+              ))}
+            </ul>
+          </section>
+        ) : null}
+        {cancelledNotices.length > 0 ? (
+          <section
+            className="space-y-2"
+            data-testid="automatic-refund-notices-cancelled"
+          >
+            <h3 className="text-sm font-medium text-foreground">
+              The booking was cancelled and is still on file (
+              {cancelledNotices.length})
+            </h3>
+            <p className="text-sm text-muted-foreground">
+              Normally nothing to do. This is the expected outcome when a booking
+              is cancelled while the member is part-way through paying for a
+              change. If the cancellation was the mistake, the same applies as
+              above: the money has gone back, so the booking has to be remade and
+              charged again.
+            </p>
+            <ul className="space-y-3">
+              {cancelledNotices.map((notice) => (
+                <AutomaticRefundNoticeRow key={notice.id} notice={notice} />
+              ))}
+            </ul>
+          </section>
+        ) : null}
+        {unknownNotices.length > 0 ? (
+          <section
+            className="space-y-2"
+            data-testid="automatic-refund-notices-unknown"
+          >
+            <h3 className="text-sm font-medium text-foreground">
+              Refunded automatically ({unknownNotices.length})
+            </h3>
+            <p className="text-sm text-muted-foreground">
+              Reload the page to sort these into the two groups above. The money
+              has already gone back either way, so there is nothing to pay back
+              &mdash; but if the club deleted one of these bookings, remaking it
+              means charging the member again.
+            </p>
+            <ul className="space-y-3">
+              {unknownNotices.map((notice) => (
+                <AutomaticRefundNoticeRow key={notice.id} notice={notice} />
+              ))}
+            </ul>
+          </section>
+        ) : null}
       </CardContent>
     </Card>
   );
@@ -183,20 +294,27 @@ function AutomaticRefundNoticesCard({
  *
  * TWO CARDS SINCE #2750, and only the first is a queue. The second is the
  * operator surface for a refund nobody authorised: when a modification payment
- * is captured against a booking the club has already deleted, the Stripe webhook
- * has refunded it in full since #1350, and #2700 made that leave a
+ * is captured against a booking the club has already cancelled, the Stripe
+ * webhook has refunded it in full since #1350, and #2700 made that leave a
  * `ManualRefundTask` behind — which the webhook then closes itself, because
  * there is genuinely nothing left to pay back by hand. Closing it took it off
  * this screen, since the queue lists OPEN rows, so the one durable record of the
  * money movement was visible only to somebody who thought to query the table.
  *
+ * #2760 finished that: the webhook now WRITES the DISMISSED row itself when its
+ * close finds nothing, so the three orderings that used to leave no row leave one
+ * — and it does so for a booking that is cancelled but not deleted as well, which
+ * the confirm route's raise never covered at all. The second card is a complete
+ * list of the last thirty days rather than one ordering's worth, and it groups the
+ * two populations so the deleted case is not buried by the ordinary one.
+ *
  * The decision #2750 recorded is that the automatic refund STAYS: money going
  * back to the member is the safe direction when nobody is watching. What it adds
  * is that the record is seen. That is why the second card carries no buttons —
  * there is no action, and offering one would imply the refund is still open to
- * decide. What an operator does with it is off-screen work: if the DELETION was
- * the mistake rather than the payment, the booking has to be put back and the
- * member charged again, and the card says so in those words.
+ * decide. What an operator does with it is off-screen work: if the cancellation
+ * or the DELETION was the mistake rather than the payment, the booking has to be
+ * put back and the member charged again, and the card says so in those words.
  */
 export function ManualRefundTaskQueue() {
   const canEdit = useAdminAreaEditAccess("finance");

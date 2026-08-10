@@ -227,12 +227,27 @@ export const AUDIT_CENSUS_TOTALS = {
    * throw. Categorised `payment` at the site, so it does not join
    * `UNCATEGORISED_AUDIT_WRITERS` below, and it carries
    * `entityType`/`entityId` so it correlates to the booking.
+   *
+   * 428 -> 429 (#2760): the automatic-refund record write can fail, and when it
+   * does nothing else in the tree ever writes that row —
+   * `handleCancelledBookingAdditionalPaymentSucceeded` answers 200 so the money
+   * is not re-refunded, which means Stripe never redelivers and the bookkeeping
+   * row is gone for good. `INV-ADDPAY-037` and the finance card both now assert
+   * that the record is complete, so the gap has to be findable on the surface the
+   * card itself names as the permanent record:
+   * `booking.payment.auto_refund_record_failed`, `severity: "critical"`,
+   * `outcome: "failure"`, categorised `payment` at the site and carrying
+   * `entityType`/`entityId`. `logAudit` for the same reason #2700's sibling above
+   * uses it: the block it sits in is already the handler's must-never-throw
+   * region, and an audit write that threw would turn a lost row into a replayed
+   * refund path.
    */
-  // 428 -> 431 (#2749): the three Other Lodges admin CRUD audit writers
+  // 428 -> 429 (#2760): `booking.payment.auto_refund_record_failed`, above.
+  // 429 -> 432 (#2749): the three Other Lodges admin CRUD audit writers
   // (OTHER_LODGE_CREATED/UPDATED/DELETED), all `auditLog.create`, category
-  // `admin`. Re-measured with `npm run audit:census` (431 TS sites; the raw
-  // `sql.insert` seed row is tracked in `sqlStatements`, not here).
-  writeSites: 431,
+  // `admin`. Re-measured with `npm run audit:census` on the merged tree (432 TS
+  // sites; the raw `sql.insert` seed row is tracked in `sqlStatements`, not here).
+  writeSites: 432,
   /**
    * Of those, sites whose event object carries no `category` key.
    *
@@ -260,7 +275,11 @@ export const AUDIT_CENSUS_TOTALS = {
     // in is the one path in the delete that must never throw — the booking is
     // already durably deleted, so an error there would tell the admin the
     // deletion failed and invite a retry that answers 409.
-    logAudit: { total: 242, uncategorised: 0 },
+    // 242 -> 243 (#2760): `booking.payment.auto_refund_record_failed`, above,
+    // and the same reasoning applies twice over — it is written FROM a catch
+    // block on a path that must answer 200, so an awaited write that rejected
+    // would replay a refund for the sake of recording that a record was lost.
+    logAudit: { total: 243, uncategorised: 0 },
     // 101 -> 102 (#2627): the deletion-approval release, above.
     // 102 -> 104 (#2595): the two reviewed-move writes, above.
     // 104 -> 105 (#2649): the return-to-waitlist repair, above.
@@ -373,7 +392,12 @@ export const AUDIT_CENSUS_TOTALS = {
     // widens nobody's access: whoever has to act on it — cancel the intent by
     // hand in Stripe, or wait for the manual refund task the capture would
     // raise — already holds `finance`.
-    payment: 34,
+    // 34 -> 35 (#2760): `booking.payment.auto_refund_record_failed`. Same gate
+    // and the same argument — the row says the club's own record of an automatic
+    // refund was not written, which only a finance reader can act on (find the
+    // `booking.payment.refunded_after_cancellation` entry beside it and reconcile
+    // by hand), and every operator who could act on it already holds `finance`.
+    payment: 35,
     // 27 -> 34 (#2581 child 2): the five family-group writers and the two
     // dependants writers. Both dependants writers also moved off a hand-built
     // Prisma literal and onto the audit boundary in the same change.
@@ -401,10 +425,11 @@ export const AUDIT_CENSUS_TOTALS = {
     // Neither category is member-visible, so no row reaches a member who could
     // not read it before, and `classifyAuditRetention` returns `critical` for
     // every one of the 22 under both the old and the new value — no row's
-    // retention changes. It also moves NO ROW ALREADY WRITTEN: a stored row keeps
-    // the category it was written with, so bed-allocation history is split by
-    // date until the backfill in #2751 runs, and both correlation entries' prose
-    // says which half they hold. See
+    // retention changes. It moved NO ROW ALREADY WRITTEN, which left
+    // bed-allocation history split by DATE: that half is closed by #2751's
+    // backfill (`20260810020000_backfill_bed_allocation_audit_category`), which
+    // rewrote the pre-release rows to `lodge` and is why both correlation
+    // entries' prose no longer names an older half. See
     // `docs/ai-diagnostics/audit-admin-category-review.md` for the per-site
     // verdict on all 118 — 22 moved, 87 kept, 9 held for an owner decision
     // because their destinations are member-visible. The 22 are pinned per site
@@ -640,7 +665,15 @@ export const APPLIED_AUDIT_CATEGORIES: Readonly<Record<string, string>> = {
   "src/lib/member-credit.ts::reviewAdminAdjustmentRequest.result#0": "payment",
   "src/lib/member-credit.ts::reviewAdminAdjustmentRequest.result#1": "payment",
   "src/lib/membership-subscription-billing.ts::confirmSubscriptionBillingPreview#0": "payment",
+  // #2760 INSERTED A WRITER AHEAD OF THE ONE THAT USED TO BE `#0` HERE, which is
+  // the renumbering hazard this file's header warns about: `#0` was
+  // `booking.payment.refunded_after_cancellation` and is now
+  // `booking.payment.auto_refund_record_failed`, with the refund row pushed to
+  // `#1`. Both are `payment`, so the identity pin would have passed while
+  // silently meaning something else — BOTH ordinals are listed now so the next
+  // insertion at this symbol has to say so out loud.
   "src/lib/stripe-webhook-service.ts::handleCancelledBookingAdditionalPaymentSucceeded#0": "payment",
+  "src/lib/stripe-webhook-service.ts::handleCancelledBookingAdditionalPaymentSucceeded#1": "payment",
   "src/lib/stripe-webhook-service.ts::handleCancelledBookingPaymentSucceeded#0": "payment",
   "src/lib/stripe-webhook-service.ts::handlePaymentIntentCanceled#0": "payment",
   "src/lib/stripe-webhook-service.ts::handlePaymentIntentFailed#0": "payment",
@@ -777,10 +810,17 @@ export const APPLIED_AUDIT_CATEGORIES: Readonly<Record<string, string>> = {
  * returns `critical` for every one of these actions under BOTH values, so the
  * move changed no row's expiry.
  *
- * WHAT IT DOES NOT COVER: rows already written. A stored row keeps the category
- * it was written with, so bed-allocation history is split by date until the
- * backfill in #2751 runs. That is a data question, not a writer question, and no
- * census gate can see it.
+ * ROWS ALREADY WRITTEN ARE COVERED NOW, and they were not when #2730 shipped. A
+ * stored row keeps the category it was written with, so bed-allocation history
+ * was split by DATE until #2751's backfill
+ * (`prisma/migrations/20260810020000_backfill_bed_allocation_audit_category`)
+ * rewrote the pre-release rows to `lodge`. No census gate can see a stored row,
+ * which is why the two are tied together by a test instead:
+ * `src/lib/__tests__/bed-allocation-audit-category-backfill.test.ts` fails if a
+ * site is added to this map whose action the backfill does not name, or if the
+ * backfill names an action no site here writes. That is the mechanical half of
+ * INV-OPS-012 — adding a 23rd site without extending the backfill fails CI by
+ * name rather than re-opening the split silently.
  */
 export const REVIEWED_ADMIN_CATEGORIES_2730: Readonly<Record<string, string>> = {
   // ─── Bed allocation: 21 admin-initiated writers → `lodge` ──────────────────
@@ -1280,6 +1320,10 @@ export const APPROVED_MIGRATION_AUDIT_SQL: Readonly<Record<string, string>> = {
     "Door-code redaction: the final sweep pass.",
   "prisma/migrations/20260801150000_strip_email_override_bracket_annotations/migration.sql::insert#0":
     "Email-override cleanup: records one EMAIL_TEMPLATE_OVERRIDE_UPDATED row per template the upgrade rewrote. Names `\"category\"` and writes `admin`, plus an explicit severity, retentionClass and expiresAt.",
+  "prisma/migrations/20260810020000_backfill_bed_allocation_audit_category/migration.sql::update#0":
+    "The #2751 backfill: rewrites `category` from `admin` to `lodge` on the bed-allocation and lodge-display rows written before #2730 moved their writers, matched by an EXACT literal list of the 18 action names those 22 sites write (never a prefix). It is the only column in the SET clause, so severity, retentionClass, expiresAt, createdAt, details, metadata and every actor column keep the bytes they were written with — and retention cannot move, because prune and archive select on the stored retentionClass/expiresAt and never read `category`. Pinned against `REVIEWED_ADMIN_CATEGORIES_2730` by src/lib/__tests__/bed-allocation-audit-category-backfill.test.ts and executed against a real PostgreSQL by its verification fixture.",
+  "prisma/migrations/20260810020000_backfill_bed_allocation_audit_category/migration.sql::insert#0":
+    "The same backfill's record of itself: one AUDIT_CATEGORY_BACKFILLED row carrying the before/after counts decision B asked for, written only when rows actually moved so a replay appends nothing. Names `\"category\"` and writes `admin` — the support-only category, on purpose, so the operator who just lost these rows from their system correlation entry can see in that entry why — plus an explicit severity, retentionClass and expiresAt.",
 };
 
 /**

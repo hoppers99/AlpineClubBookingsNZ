@@ -528,6 +528,34 @@ than only a token being redacted. The full statement of what is covered, what is
 NOT, and what audit rows deliberately keep instead is
 [`INV-PRIV-011`](invariants/analytics-and-privacy.md#inv-priv-011).
 
+**Redaction only covers the places this application writes to.** A person's name
+or email address in a page's own URL also reaches browser history on a shared or
+unlocked admin machine, the access log of any proxy, load balancer or CDN in
+front of the app, and the `Referer` header of every link the page offers — none
+of which passes through `redactSensitiveJson`, because none of them is ours. The
+mitigation is the same one `INV-GUEST-016` and `INV-LIFE-068` already apply to
+the officer's member pickers: an admin URL carries the member **id**, and the
+display name is resolved from it behind the existing permission gate. #2733
+brought the last **app-composed page address** into line — the audit log's member
+filter wrote `memberName` and `memberEmail` into the address bar — and a filtered
+address stays shareable, because the id alone restores the view.
+
+That claim is deliberately narrow, and the following are all still true:
+
+- **Only addresses this app composes.** Text an operator TYPES into a filter box
+  still travels verbatim: the audit log's own free-text `q=` will carry a name
+  the moment somebody searches for one, and no code change can prevent that.
+- **Only PAGE addresses.** The fetch-request URLs behind these pages still carry
+  person text where a search needs it (`/api/admin/members?q=…`), and a proxy or
+  CDN logs a request line for `/api/*` exactly as it logs one for a page.
+- **Nothing is retroactive.** The page rewrites a pre-#2733 bookmark's address so
+  the person fields are not carried FORWARD, but that rewrite runs in the browser
+  after the server has already been handed the legacy address: the proxy access
+  log line for it, and the browser's own visit record, already hold the name and
+  email. `src/proxy.ts` keeps those two keys out of the one server-side copy that
+  would otherwise persist — the `x-pathname` header, which becomes the 2FA gate's
+  redirect `callbackUrl` and an `AuthBounceRecord.path` row.
+
 **Coverage is by key spelling and is therefore a floor, not a guarantee.** A
 call site that composes a person's name into a key the denylist does not carry
 defeats it, and names and addresses have no value-shaped fallback the way emails
