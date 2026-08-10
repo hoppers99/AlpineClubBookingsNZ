@@ -53,7 +53,7 @@ import {
   priceBookingGuestsWithMembershipTypePolicy,
 } from "@/lib/membership-type-policy";
 import {
-  toGroupDiscountConfig,
+  toEditTimeGroupDiscountConfig,
   toSeasonRateData,
 } from "@/lib/policies/booking-route-decisions";
 import {
@@ -1320,7 +1320,15 @@ export async function calculateModifiedPricing(
   // planner came to be the one edit path that priced without it — so a stay
   // already under way bought its new nights undiscounted. One query either way,
   // on the connection this function is already using, and it takes no lock.
-  const groupDiscount = toGroupDiscountConfig(
+  //
+  // #2770 (INV-MOD-026): resolved through the EDIT-time mapper, because both
+  // branches below are edits. That is what makes the club's `applyToEdits`
+  // switch mean ONE thing per edit: the in-progress planner and the ordinary
+  // pricing pass are handed the same value, so they can never disagree about a
+  // night's price the way #2756 had them disagree. Off resolves to no config at
+  // all — byte-identical to a club that never enabled the discount — and nights
+  // already bought keep their stored prices in either state (INV-MOD-005).
+  const groupDiscount = toEditTimeGroupDiscountConfig(
     await tx.groupDiscountSetting.findUnique({ where: { id: "default" } }),
   );
 
@@ -1464,6 +1472,9 @@ export async function calculateModifiedPricing(
           checkOut: newCheckOut,
           guests: policyAdjustedGuestsForPricing,
           seasons: seasonRateData,
+          // The one gated value hoisted above (#2756 read-once, #2770 gate) —
+          // the same object the in-progress planner was handed, so the two
+          // branches cannot price a night differently.
           groupDiscount,
           seasonYear,
           skipAuthorization,

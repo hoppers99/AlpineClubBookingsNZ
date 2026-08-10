@@ -213,7 +213,10 @@ export interface BuildInProgressGuestRangePlanInput {
   // config and no rate can be substituted. Every other edit path already passes
   // it (INV-MOD-006); this plan was the sole exception, so nights an in-progress
   // edit newly bought were charged undiscounted while the same nights bought a
-  // day earlier were not. Callers pass `toGroupDiscountConfig(setting)`.
+  // day earlier were not. Callers pass the value the EDIT-time mapper resolves
+  // (`toEditTimeGroupDiscountConfig`, #2770/INV-MOD-026) — the same one they
+  // hand their ordinary pricing pass, so the two branches cannot disagree — and
+  // it is absent when the club has switched the discount off for later edits.
   //
   // It reaches the POST-EDIT pass only — the nights this edit buys. The pre-edit
   // window, which values a night the edit takes away, is deliberately priced

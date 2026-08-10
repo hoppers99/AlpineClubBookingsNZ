@@ -22,7 +22,7 @@ import {
   type PromoCoverageNotice,
 } from "@/lib/promo-cap-coverage";
 import {
-  toGroupDiscountConfig,
+  toEditTimeGroupDiscountConfig,
   toSeasonRateData,
 } from "@/lib/policies/booking-route-decisions";
 import {
@@ -583,7 +583,18 @@ export async function removeBookingGuestInTransaction({
     // Group discount applies to any newly priced nights (#1095); remaining
     // guests' locked nights keep their booked (discount-inclusive) prices, so
     // a party dropping below the minimum never loses a discount it bought.
-    groupDiscount: toGroupDiscountConfig(groupDiscountSetting),
+    //
+    // Edit-time mapper (#2770, INV-MOD-026). A removal buys nothing, so on a
+    // healthy booking every remaining night is locked and the switch cannot
+    // move a cent either way. It is still gated here rather than left on the
+    // creation mapper, because ONE value per edit is the invariant: a club with
+    // the switch off must not have its add priced one way and its removal
+    // another. Where it can be observed is the documented degradation both
+    // INV-MOD-005 and INV-MOD-025 already name — a legacy guest with no stored
+    // night rows, whose nights price at current rates; with the switch off
+    // those rates are undiscounted, which is the club's stated intent for the
+    // edit rather than a reprice of history (no stored price is overwritten).
+    groupDiscount: toEditTimeGroupDiscountConfig(groupDiscountSetting),
     seasonYear,
     skipAuthorization: actorRole === "ADMIN",
   });

@@ -11,7 +11,11 @@ import {
   type GroupDiscountConfig,
   type SeasonRateData,
 } from "@/lib/pricing";
-import { toSeasonRateData } from "@/lib/policies/booking-route-decisions";
+import {
+  toEditTimeGroupDiscountConfig,
+  toGroupDiscountConfig,
+  toSeasonRateData,
+} from "@/lib/policies/booking-route-decisions";
 import {
   getMembershipTypeBookingPolicyErrorBody,
   MembershipTypeBookingPolicyError,
@@ -68,6 +72,20 @@ const validateSchema = z
     // Omitted resolves to the default lodge, so single-lodge clients keep
     // working unchanged.
     lodgeId: z.string().min(1).optional(),
+    // WHICH KIND OF PURCHASE this preview is for (#2770, INV-MOD-026). This one
+    // route serves both the create wizard (a first purchase) and the edit panel
+    // (a later edit), and the two resolve their group discount through different
+    // mappers, because the club's `applyToEdits` switch governs edits only. The
+    // caller has to say which, because the route cannot tell from the body: the
+    // guests, dates and code look the same either way.
+    //
+    // Optional and defaulting to a FIRST purchase, so every existing client — the
+    // member wizard, the admin book page — keeps behaving exactly as it does now.
+    // A client that lied about this could only mislead ITSELF: the preview is
+    // never the charge. `modify-quote` recomputes the promo on its own gated
+    // pricing and the save path recomputes it again, so the money is decided
+    // there, not here (#1095).
+    forBookingEdit: z.boolean().optional(),
   })
   .refine((data) => Boolean(data.code) !== Boolean(data.workPartyEventId), {
     message: "Provide either a promo code or a working bee event, not both",
@@ -218,20 +236,31 @@ export async function POST(req: NextRequest) {
   // ONLY production season mapping, which is what the census can then enforce.
   const seasonData: SeasonRateData[] = toSeasonRateData(seasons);
 
-  let groupDiscount: GroupDiscountConfig | undefined;
+  // #2770 (INV-MOD-026): through the shared mappers, never hand-rolled.
+  //
+  // This used to build the four-key `GroupDiscountConfig` literal inline behind
+  // `if (gds?.enabled)`, which is the same defect class #2756 closed for seasons:
+  // a second, hand-written copy of a config the tree resolves in one place, free
+  // to drift from it silently. Here it had already drifted — it consulted
+  // `enabled` alone, so the club's edit-time switch never reached the promo
+  // preview, and the edit panel could show a promo adjustment sized on
+  // group-discounted per-night rates while the quote beside it, and the save
+  // behind it, priced the same nights undiscounted.
+  //
+  // The mapper is chosen by what is being priced, exactly as everywhere else: an
+  // edit consults the switch, a first purchase does not. Only ONE of the two runs
+  // per request, so this route never holds two different configs at once. The
+  // rate membership type the discount substitutes for true non-members (#1930,
+  // E4) comes across in the mapper, so it is no longer restated here.
+  // `group-discount-edit-switch-census.test.ts` declares this file with both
+  // counts and refuses any file that builds such a literal by hand again.
   const gds = await prisma.groupDiscountSetting.findUnique({
     where: { id: "default" },
   });
-  if (gds?.enabled) {
-    groupDiscount = {
-      minGroupSize: gds.minGroupSize,
-      summerOnly: gds.summerOnly,
-      enabled: true,
-      // Group discount substitutes this rate membership type for true
-      // non-members (#1930, E4).
-      rateMembershipTypeId: gds.rateMembershipTypeId,
-    };
-  }
+  const groupDiscount: GroupDiscountConfig | undefined = parsed.data
+    .forBookingEdit
+    ? toEditTimeGroupDiscountConfig(gds)
+    : toGroupDiscountConfig(gds);
 
   try {
     const price = await priceBookingGuestsWithMembershipTypePolicy(prisma, {
