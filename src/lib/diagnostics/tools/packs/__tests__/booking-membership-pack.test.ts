@@ -2868,6 +2868,15 @@ describe("AID-6B booking/membership pack: the code catalogues (#2376)", () => {
     expect(order.indexOf("admin_review_pending")).toBeLessThan(
       order.indexOf("hosting_review_pending"),
     );
+    // The club's own flat subscription refusal outranks the exception-eligible
+    // subscription rule, because no officer can except it — the only remedy is
+    // payment — and the two sit ADJACENT so an operator reading one sees the
+    // other's sentence beside it. They belong to different lockout modes and are
+    // mutually exclusive in practice, which is exactly why the difference has to be
+    // legible in the catalogue rather than inferred.
+    expect(order.indexOf("subscription_unpaid_hard_block")).toBe(
+      order.indexOf("policy_paid_up_adult_member") - 1,
+    );
     // The edit window is last: it constrains HOW a fix is applied rather than
     // whether the booking is sound.
     expect(order[order.length - 1]).toBe("edit_window_locked");
@@ -3287,6 +3296,7 @@ describe("AID-6B booking/membership pack: the audit subject maps (#2376)", () =>
       expect(scope, id).toContain("ONE REPEATABLE READ snapshot");
       expect(scope, id).toContain("consistent with each other");
       // Half two: consistent is not current.
+      expect(scope, id).toContain("not necessarily current");
       expect(scope, id).toContain("assembly completed, not a database snapshot time");
       expect(scope, id).toContain("a later invocation reads a different snapshot");
       expect(scope, id).toContain("internally consistent and still stale");

@@ -154,12 +154,23 @@ const {
    * `toBe(txMock)`/`not.toBe(prismaMock)` is now a real discrimination while every
    * `prismaMock.booking.findUnique` assertion in this file keeps working unchanged.
    *
-   * `$transaction` is deliberately NOT copied: a `Prisma.TransactionClient` has no
-   * such method, so a nested interactive transaction throws here instead of quietly
-   * opening a second pool connection.
+   * Written out field by field rather than spread-minus-a-key, so that
+   * `$transaction`'s ABSENCE is a line somebody chose: a `Prisma.TransactionClient`
+   * has no such method, and a nested interactive transaction therefore throws here
+   * instead of quietly opening a second pool connection.
    */
-  const { $transaction: _omitted, ...transactionClientSurface } = prismaMock;
-  const txMock = { ...transactionClientSurface };
+  const txMock = {
+    booking: prismaMock.booking,
+    bookingGuest: prismaMock.bookingGuest,
+    bookingChangeRequest: prismaMock.bookingChangeRequest,
+    bedAllocation: prismaMock.bedAllocation,
+    member: prismaMock.member,
+    memberSubscription: prismaMock.memberSubscription,
+    memberInduction: prismaMock.memberInduction,
+    membershipLockoutSettings: prismaMock.membershipLockoutSettings,
+    xeroToken: prismaMock.xeroToken,
+    $executeRaw: prismaMock.$executeRaw,
+  };
   return {
     prismaMock,
     txMock,
@@ -287,6 +298,12 @@ const MODELS: Record<ModelName, ModelSpec> = {
         row.originBookingRequest && typeof row.originBookingRequest === "object"
           ? (row.originBookingRequest as Row)
           : null,
+      // The OWNER, resolved through `memberId` exactly as the schema relation
+      // does. The block-state select reaches it for one field — the live age tier
+      // the club's subscription refusal reads — and the `member` model spec above
+      // is what makes a select of any OTHER column throw here.
+      member: (row, state) =>
+        state.member.find((candidate) => candidate.id === row.memberId) ?? null,
     },
   },
   bookingRequest: {
@@ -635,6 +652,7 @@ function relationModel(model: ModelName, relation: string): ModelName {
   if (model === "bedAllocation" && relation === "bookingGuest") {
     return "bookingGuest";
   }
+  if (model === "booking" && relation === "member") return "member";
   throw new Error(
     `booking-evidence test double: no model registered for ${model}.${relation}`,
   );
@@ -747,6 +765,14 @@ const CHECK_OUT = "2026-07-12";
 const NIGHT_ONE = "2026-07-10";
 const NIGHT_TWO = "2026-07-11";
 
+/**
+ * The membership season `CHECK_IN` falls in, with the default 31-March year end:
+ * a July night belongs to the season that opened on 1 April 2026. The owner's
+ * subscription row is keyed on it, because the club's refusal is judged in the
+ * season of the STAY and not the season the diagnostic runs in.
+ */
+const BOOKING_SEASON_YEAR = 2026;
+
 function day(dateOnly: string): Date {
   return new Date(`${dateOnly}T00:00:00.000Z`);
 }
@@ -838,6 +864,26 @@ interface BookingScenario {
   conflicts?: Row[];
   /** Booking row absent altogether. */
   missing?: boolean;
+  /**
+   * The club's subscription-lockout mode, as the STRICT reader answers it.
+   *
+   * Defaults to the platform's own default, `HARD_BLOCK`
+   * (`src/config/club-settings-defaults.ts`), because a suite whose default mode
+   * was the permissive one could never see the refusal the default mode applies —
+   * which is exactly how `booking_block_state` came to answer "nothing is
+   * blocking" about a draft the club refuses.
+   */
+  lockoutMode?: string;
+  /** The OWNER's live `Member.ageTier`, the one input the refusal reads about them. */
+  ownerAgeTier?: string;
+  /** The owner's effective membership-type subscription behaviour. */
+  ownerSubscriptionBehavior?: string;
+  /**
+   * The owner's season `MemberSubscription.status`. `undefined` means NO ROW,
+   * which is a different fact from a status — and for a tier that owes one, the
+   * unpaid case.
+   */
+  ownerSubscriptionStatus?: string;
 }
 
 interface MemberScenario {
@@ -1109,9 +1155,67 @@ function seedBooking(scenario: BookingScenario = {}): void {
   findBookingMemberNightConflictsMock.mockImplementation(
     async () => scenario.conflicts ?? [],
   );
+
+  /**
+   * THE OWNER'S OWN MEMBERSHIP FACTS, seeded for every booking scenario.
+   *
+   * `booking_block_state` needs three things about the owner before it can say
+   * whether the club's HARD_BLOCK refusal stands: the club's mode, the owner's live
+   * age tier, and their season subscription. The mode DEFAULTS TO `HARD_BLOCK`
+   * here, which is the platform default and the mode the missing blocker was found
+   * under — a suite defaulting to `NO_BLOCK` would have proved nothing.
+   *
+   * The owner is seeded PAID by default, so an existing fixture raises no new code
+   * and any fixture that DOES raise it is asking for it explicitly. `ADULT` +
+   * `REQUIRED` + a `PAID` row is the ordinary financial member.
+   */
+  store.member.push({
+    id: MEMBER_ID,
+    email: "owner@example.test",
+    passwordHash: "owner-hash",
+    ageTier: scenario.ownerAgeTier ?? "ADULT",
+    active: true,
+    canLogin: true,
+    cancelledAt: null,
+    archivedAt: null,
+    requiresInduction: false,
+    hutLeaderEligible: false,
+    joinedDate: null,
+    firstName: "Owner",
+    lastName: "Under-Test",
+  });
+  store.memberSubscription.push({
+    memberId: MEMBER_ID,
+    seasonYear: BOOKING_SEASON_YEAR,
+    status: scenario.ownerSubscriptionStatus ?? "PAID",
+    paidAt: null,
+    manuallyMarkedPaidAt: null,
+  });
+  resolveMembershipTypePolicyForMemberMock.mockImplementation(async () => ({
+    memberId: MEMBER_ID,
+    seasonYear: BOOKING_SEASON_YEAR,
+    source: "assignment",
+    membershipType: { key: "FULL", name: "Full Member" },
+    bookingBehavior: "MEMBER_RATE",
+    subscriptionBehavior: scenario.ownerSubscriptionBehavior ?? "REQUIRED",
+  }));
+  peekSubscriptionLockoutModeMock.mockImplementation(
+    async () => scenario.lockoutMode ?? "HARD_BLOCK",
+  );
 }
 
 function seedMember(scenario: MemberScenario = {}): void {
+  /**
+   * `seedBooking` now seeds the same member id — the booking's OWNER, whose live
+   * age tier and season subscription the club's HARD_BLOCK refusal reads. When a
+   * test seeds BOTH, the member-scoped scenario is the one under test and has to
+   * win, so its own rows replace the owner defaults rather than sitting behind
+   * them where `findUnique` would never reach them.
+   */
+  store.member = store.member.filter((row) => row.id !== MEMBER_ID);
+  store.memberSubscription = store.memberSubscription.filter(
+    (row) => row.memberId !== MEMBER_ID,
+  );
   if (!scenario.missing) {
     store.member.push({
       id: MEMBER_ID,
@@ -1566,8 +1670,26 @@ const BLOCKER_FIXTURES: [string, BookingScenario, string[]][] = [
     ["policy_adult_member_hosting"],
   ],
   [
+    // The club's own flat refusal, on the platform's DEFAULT mode, and the ONLY
+    // code raised: a future-dated draft is otherwise sound, which is precisely the
+    // shape that used to return `blockerCount: 0` on a booking the club refuses.
+    "subscription_unpaid_hard_block",
+    {
+      status: "DRAFT",
+      lockoutMode: "HARD_BLOCK",
+      ownerSubscriptionStatus: "UNPAID",
+    },
+    ["subscription_unpaid_hard_block"],
+  ],
+  [
+    // NON_MEMBER_PRICING, so the club does NOT refuse and only the
+    // exception-eligible rule can fire. Set explicitly because the suite's default
+    // mode is HARD_BLOCK: under that mode this violation cannot be produced at all.
     "policy_paid_up_adult_member",
-    { violations: [{ reasonCode: "PAID_UP_ADULT_MEMBER_REQUIRED" }] },
+    {
+      lockoutMode: "NON_MEMBER_PRICING",
+      violations: [{ reasonCode: "PAID_UP_ADULT_MEMBER_REQUIRED" }],
+    },
     ["policy_paid_up_adult_member"],
   ],
   [
@@ -1656,7 +1778,14 @@ describe("booking block state: every blocker code, ranked (#2376)", () => {
     // `AWAITING_REVIEW` is the status because it is neither terminal nor
     // waitlisted (so nothing is suppressed) and is not member-editable (so the
     // edit-window blocker is genuinely raised rather than staged).
+    //
+    // ELEVEN AND NOT TWELVE, because the catalogue's two subscription codes cannot
+    // both be true: `policy_paid_up_adult_member` is a NON_MEMBER_PRICING-only
+    // violation and `subscription_unpaid_hard_block` is a HARD_BLOCK-only refusal.
+    // The mode is set here so this fixture is a booking that can exist — under
+    // HARD_BLOCK the paid-up-adult violation below could never have been produced.
     seedBooking({
+      lockoutMode: "NON_MEMBER_PRICING",
       status: "AWAITING_REVIEW",
       requiresAdminReview: true,
       adminReviewStatus: "PENDING",
@@ -1745,6 +1874,7 @@ describe("booking block state: every blocker code, ranked (#2376)", () => {
 
   it("reports NO_HOLD when violations exist but none of them holds beds", async () => {
     seedBooking({
+      lockoutMode: "NON_MEMBER_PRICING",
       violations: [
         { reasonCode: "MINIMUM_STAY", capacityMode: "NO_HOLD" },
         { reasonCode: "PAID_UP_ADULT_MEMBER_REQUIRED", capacityMode: "NO_HOLD" },
@@ -1752,6 +1882,211 @@ describe("booking block state: every blocker code, ranked (#2376)", () => {
     });
     const row = await blockStateRow();
     expect(row.policy_capacity_mode).toBe("NO_HOLD");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 2b. booking_block_state — the club's own HARD_BLOCK subscription refusal.
+// ---------------------------------------------------------------------------
+
+/**
+ * WHY THIS SUITE EXISTS.
+ *
+ * `booking_block_state` could return `blockerCodes: null, blockerCount: 0` — with
+ * a scope line telling the model "absent means nothing is blocking" — about a saved
+ * draft the club will refuse outright, on the platform's DEFAULT lockout mode. The
+ * paid-up-adult rule structurally cannot cover it:
+ * `evaluateNonMemberPricingRequirements` returns `null` unless the mode is
+ * `NON_MEMBER_PRICING`, so under `HARD_BLOCK` the soft-policy evaluator is silent
+ * and the refusal lives at the route as a flat 403. The officer was told the
+ * booking was clear; the member's confirm then returned "Your membership
+ * subscription for the 2026/2027 season is not paid".
+ *
+ * WHAT IS ASSERTED. Not just that the code appears, but the four boundaries that
+ * keep it from becoming a fabricated blocker of its own: it is scoped to the status
+ * whose confirm is gated, it is scoped to the mode that refuses, it honours the
+ * CANONICAL settlement rule rather than a local re-reading of the rows, and it
+ * fails closed on an unreadable input instead of guessing.
+ */
+describe("booking block state: the club's HARD_BLOCK subscription refusal (#2376)", () => {
+  it("raises it on a DRAFT whose owner owes an unpaid season subscription", async () => {
+    seedBooking({
+      status: "DRAFT",
+      lockoutMode: "HARD_BLOCK",
+      ownerSubscriptionStatus: "UNPAID",
+    });
+    const row = await blockStateRow();
+    expect(blockers(row)).toEqual(["subscription_unpaid_hard_block"]);
+    expect(row.blocker_count).toBe(1);
+    // And NOT as a policy violation, because the evaluator produced none: the
+    // refusal is the club's, not an exception-eligible rule.
+    expect(row.policy_violation_codes).toBeNull();
+    expect(row.policy_capacity_mode).toBeNull();
+  });
+
+  it("does not raise it for an owner who has PAID", async () => {
+    seedBooking({ status: "DRAFT", lockoutMode: "HARD_BLOCK" });
+    const row = await blockStateRow();
+    expect(blockers(row)).toEqual([]);
+    expect(row.blocker_count).toBe(0);
+  });
+
+  it.each(["NO_BLOCK", "NON_MEMBER_PRICING"])(
+    "does not raise it under %s, and does not even read the owner's settlement",
+    async (lockoutMode) => {
+      // Under NO_BLOCK the club does not care; under NON_MEMBER_PRICING the unpaid
+      // member confirms and is REPRICED, which is `policy_paid_up_adult_member`'s
+      // territory. Reporting a refusal in either mode would be a fabricated
+      // blocker. The reads are asserted absent as well, because the enforcement
+      // sites short-circuit on the mode in exactly this order and a diagnostic that
+      // read the rows anyway would be paying for an answer it must discard.
+      seedBooking({ status: "DRAFT", lockoutMode, ownerSubscriptionStatus: "UNPAID" });
+      const row = await blockStateRow();
+      expect(blockers(row)).toEqual([]);
+      expect(resolveMembershipTypePolicyForMemberMock).not.toHaveBeenCalled();
+      expect(getAgeTierSettingsMock).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each(["CONFIRMED", "PAID", "PENDING", "AWAITING_REVIEW", "PAYMENT_PENDING"])(
+    "does not raise it on a %s booking, whose confirm the club does not gate",
+    async (status) => {
+      // THE SCOPING DECISION, asserted rather than left implicit. The HARD_BLOCK
+      // refusal sits on `POST /api/bookings/[id]/confirm-draft`, which 400s on any
+      // status but DRAFT before it reaches the subscription gate, and on creation,
+      // which has no persisted booking to diagnose. On an already-confirmed booking
+      // the owner's unpaid subscription blocks nothing about THAT booking, so
+      // raising it would be exactly the false actionable finding this pack exists
+      // to avoid. `member_eligibility_state` is where the member-level fact lives.
+      seedBooking({ status, lockoutMode: "HARD_BLOCK", ownerSubscriptionStatus: "UNPAID" });
+      const row = await blockStateRow();
+      expect(blockers(row)).not.toContain("subscription_unpaid_hard_block");
+      expect(resolveMembershipTypePolicyForMemberMock).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each([
+    // The canonical rule's three exemptions, each of which a local re-reading of
+    // `MemberSubscription.status` would have got wrong.
+    [
+      "a NOT_REQUIRED membership type",
+      { ownerSubscriptionBehavior: "NOT_REQUIRED", ownerSubscriptionStatus: "UNPAID" },
+    ],
+    [
+      "a BASED_ON_AGE_TIER type whose season row says NOT_REQUIRED",
+      {
+        ownerSubscriptionBehavior: "BASED_ON_AGE_TIER",
+        ownerSubscriptionStatus: "NOT_REQUIRED",
+      },
+    ],
+    [
+      "an age tier the club exempts",
+      { ownerAgeTier: "CHILD", ownerSubscriptionStatus: "UNPAID" },
+    ],
+  ] satisfies [string, BookingScenario][])(
+    "honours the canonical settlement rule: %s owes nothing",
+    async (_label, scenario) => {
+      seedBooking({ status: "DRAFT", lockoutMode: "HARD_BLOCK", ...scenario });
+      const row = await blockStateRow();
+      expect(blockers(row)).toEqual([]);
+    },
+  );
+
+  it("treats an owner whose Member row cannot be resolved as OWING one", async () => {
+    // `resolveMemberSubscriptionSettlement` documents this direction: an id that
+    // does not resolve must never silently price at member rates. For evidence the
+    // same direction is right — a booking whose owner cannot be read is not a
+    // booking anyone should be told is clear.
+    seedBooking({ status: "DRAFT", lockoutMode: "HARD_BLOCK" });
+    // The whole owner, gone: no `Member` row and therefore no season subscription
+    // either, which is the only shape a cascading delete could leave behind. The
+    // tier is then unresolvable, and the canonical rule requires a subscription of
+    // a member it cannot read.
+    store.member = store.member.filter((row) => row.id !== MEMBER_ID);
+    store.memberSubscription = store.memberSubscription.filter(
+      (row) => row.memberId !== MEMBER_ID,
+    );
+    const row = await blockStateRow();
+    expect(blockers(row)).toEqual(["subscription_unpaid_hard_block"]);
+  });
+
+  it("REFUSES when the strict age-tier read fails, rather than answering without it", async () => {
+    // The swallowing reader would have returned `AGE_TIER_DEFAULTS` here and the
+    // row would have carried a confident refusal — or a confident absence — derived
+    // from a club rule nobody observed. `evidence_unavailable` is the honest answer.
+    seedBooking({
+      status: "DRAFT",
+      lockoutMode: "HARD_BLOCK",
+      ownerSubscriptionStatus: "UNPAID",
+    });
+    getAgeTierSettingsMock.mockRejectedValueOnce(
+      new Error("age tier settings unavailable"),
+    );
+    await expect(
+      readBookingBlockStateEvidence({ bookingId: BOOKING_ID }),
+    ).rejects.toThrow("age tier settings unavailable");
+  });
+
+  it("judges the owner in the season the BOOKING's check-in falls in", async () => {
+    // The season is the stored one keyed on the stay, not on "now" and not on the
+    // process-level financial-year cache. A club whose year ends in JUNE puts this
+    // July stay in the 2026 season that opened on 1 July 2026 — the same year here,
+    // so the discriminating assertion is the LOOKUP: the row read has to be the one
+    // for the booking's season, and a subscription row filed under any other season
+    // must not settle the owner.
+    seedBooking({
+      status: "DRAFT",
+      lockoutMode: "HARD_BLOCK",
+      ownerSubscriptionStatus: "UNPAID",
+    });
+    // A PAID row for the NEXT season, which must not clear the stay's own season.
+    store.memberSubscription.push({
+      memberId: MEMBER_ID,
+      seasonYear: BOOKING_SEASON_YEAR + 1,
+      status: "PAID",
+      paidAt: null,
+      manuallyMarkedPaidAt: null,
+    });
+    const row = await blockStateRow();
+    expect(blockers(row)).toEqual(["subscription_unpaid_hard_block"]);
+    expect(
+      resolveMembershipTypePolicyForMemberMock.mock.calls[0]?.[1],
+    ).toMatchObject({ seasonYear: BOOKING_SEASON_YEAR });
+  });
+
+  it.each([
+    ["deleted", { status: "CANCELLED", deletedAt: new Date("2026-06-20T00:00:00.000Z") }],
+    ["terminal", { status: "CANCELLED" }],
+  ] satisfies [string, BookingScenario][])(
+    "asks nothing about the owner's subscription on a %s booking",
+    async (_label, scenario) => {
+      seedBooking({
+        ...scenario,
+        lockoutMode: "HARD_BLOCK",
+        ownerSubscriptionStatus: "UNPAID",
+      });
+      await blockStateRow();
+      expect(resolveMembershipTypePolicyForMemberMock).not.toHaveBeenCalled();
+      expect(getAgeTierSettingsMock).not.toHaveBeenCalled();
+      expect(peekSubscriptionLockoutModeMock).not.toHaveBeenCalled();
+    },
+  );
+
+  it("reads the owner's settlement inside the entry's own transaction client", async () => {
+    // Not the global client: this read joins the same read-only REPEATABLE READ
+    // snapshot and the same statement timeout as every other read on the graph, or
+    // the newest read on the entry is the one the database cannot cancel.
+    seedBooking({
+      status: "DRAFT",
+      lockoutMode: "HARD_BLOCK",
+      ownerSubscriptionStatus: "UNPAID",
+    });
+    await blockStateRow();
+    expect(resolveMembershipTypePolicyForMemberMock.mock.calls[0]?.[0]).toBe(txMock);
+    expect(resolveMembershipTypePolicyForMemberMock.mock.calls[0]?.[0]).not.toBe(
+      prismaMock,
+    );
+    expect(getAgeTierSettingsMock.mock.calls[0]?.[0]).toBe(txMock);
   });
 });
 
@@ -3465,8 +3800,7 @@ describe("booking block state: the season comes from STORED state, not the proce
     // disagree if an administrator saves the settings panel between them, and this
     // row would then report a policy violation judged under one regime beside a
     // hosting answer judged under another.
-    peekSubscriptionLockoutModeMock.mockResolvedValue("NON_MEMBER_PRICING");
-    seedSeasonBoundaryBooking();
+    seedSeasonBoundaryBooking({ lockoutMode: "NON_MEMBER_PRICING" });
     await blockStateRow();
     expect(peekSubscriptionLockoutModeMock).toHaveBeenCalledTimes(1);
     const passed = optionsPassed();

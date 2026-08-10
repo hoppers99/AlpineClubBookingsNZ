@@ -48,6 +48,17 @@
   after it is cancelled, so the blocker list used to carry both facts and send an
   operator to two screens when only one has a next step.
 
+  The blocker list now includes the club's own subscription refusal. On the default
+  policy, a member who owes an unpaid season subscription cannot confirm a draft
+  booking at all — and because that refusal is a flat refusal at the confirm rather
+  than an exception a Booking Officer can grant, the soft-policy evaluator this tool
+  reuses had nothing to report, so the tool answered "nothing is blocking" about a
+  booking the club would refuse. It now names the refusal, in the club's own terms,
+  using the platform's single definition of an unsettled subscription so the booking
+  answer and the member answer cannot disagree. It is reported only on a draft,
+  because a draft's confirm is the door the policy gates; for the member-level fact
+  on any other booking, the member eligibility tool answers on any status.
+
   Membership seasons are resolved from stored settings rather than from whatever the
   process happens to have cached. The paid-up-adult rule and the hosting
   subscription bridge are handed the season the booking's own check-in night falls

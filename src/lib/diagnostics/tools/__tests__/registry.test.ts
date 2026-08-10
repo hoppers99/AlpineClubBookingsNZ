@@ -1227,6 +1227,71 @@ describe("diagnostics tool registry contract (#2374)", () => {
   );
 
   it.each(DIAGNOSTICS_TOOLS.map((tool) => [tool.id, tool] as const))(
+    "%s leaves a QUARTER of the rendered budget for evidence, not just a byte",
+    (_id, tool) => {
+      const raw = EXAMPLE_RAW_ROWS[tool.id] as Record<string, unknown>;
+      // THE CLIFF THE TEST ABOVE FALLS OFF WITHOUT WARNING. "At least one row
+      // rendered" is an all-or-nothing assertion: an entry can sit one character
+      // inside it for releases and then lose its whole evidence block to a
+      // three-sentence scope edit, with the only symptom a suite that suddenly says
+      // `expected 0 to be greater than 0`. It is not hypothetical — AID-6B put a
+      // 3,101-character code catalogue in one entry's SCOPE and the empty block came
+      // to 7,545 of 8,000, which is the measurement `docs/ai-diagnostics/tools.md`
+      // records and the reason those sentences travel in the entry DESCRIPTION now.
+      //
+      // So the fixed cost is bounded instead: everything the block carries before a
+      // single row — the header, the scope, the audit footer — must leave a QUARTER
+      // of the budget for the rows the tool exists to return. The description is
+      // deliberately NOT part of this: it reaches the model through the tool
+      // definition and costs this block nothing, which is exactly why it is where a
+      // long code catalogue belongs.
+      const fixedCost = renderToolResultEvidenceBlock({
+        schemaVersion: 1,
+        status: "ok",
+        toolId: tool.id,
+        label: tool.label,
+        rows: [],
+        truncated: false,
+        ...(tool.evidenceScope ? { evidenceScope: tool.evidenceScope } : {}),
+        observedAt: "2026-08-03T09:00:00.000Z",
+        audit: {
+          toolId: tool.id,
+          areasChecked: [...tool.requiredAreas],
+          authOutcome: "allowed",
+          failureReason: null,
+          argsHash: "a".repeat(64),
+          resultHash: "b".repeat(64),
+          rowCount: 0,
+          byteCount: 0,
+          durationMs: 1,
+          roundIndex: 0,
+          observedAt: "2026-08-03T09:00:00.000Z",
+        },
+      }).length;
+      const oneRow = renderToolResultEvidenceBlock({
+        schemaVersion: 1, status: "ok", toolId: tool.id, label: tool.label,
+        rows: [tool.project(raw)], truncated: false,
+        ...(tool.evidenceScope ? { evidenceScope: tool.evidenceScope } : {}),
+        observedAt: "2026-08-03T09:00:00.000Z",
+        audit: { toolId: tool.id, areasChecked: [...tool.requiredAreas], authOutcome: "allowed",
+          failureReason: null, argsHash: "a".repeat(64), resultHash: "b".repeat(64),
+          rowCount: 1, byteCount: 0, durationMs: 1, roundIndex: 0, observedAt: "2026-08-03T09:00:00.000Z" },
+      }).length;
+      const rowCost = oneRow - fixedCost;
+      // The bound, stated as the thing that actually breaks: the fixed cost plus ONE
+      // of this entry's widest rows, plus 400 characters of slack so the guard fires
+      // BEFORE the cliff rather than on it. Measured at this head, the two tightest
+      // entries are `booking_block_state` (6,347 + 1,101 = 7,448) and
+      // `booking_capacity_by_night` (6,629 + 451 = 7,080), so the slack is real and
+      // the guard is not vacuous for anything else either.
+      expect(
+        fixedCost + rowCost,
+        `${tool.id} spends ${fixedCost} characters before its first row and ${rowCost} on the row itself, of ${DIAGNOSTICS_TOOL_BOUNDS.renderedBlockMaxChars}; move guidance out of evidenceScope and into the entry description, which reaches the model through the tool definition and costs this block nothing`,
+      ).toBeLessThanOrEqual(DIAGNOSTICS_TOOL_BOUNDS.renderedBlockMaxChars - 400);
+    },
+  );
+
+  it.each(DIAGNOSTICS_TOOLS.map((tool) => [tool.id, tool] as const))(
     "%s REJECTS an unknown argument rather than ignoring it",
     (_id, tool) => {
       // The behavioural equivalent of asserting `.strict()`, and a better test:

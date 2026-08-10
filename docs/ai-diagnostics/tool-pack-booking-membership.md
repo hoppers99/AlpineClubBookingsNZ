@@ -962,12 +962,13 @@ member is double-booked sends them to the wrong screen.
 | 6 | `whole_lodge_held` | Another booking holds sole occupancy of a night — and this one is **not** bypassable by the admin over-capacity override, which is why it sits with the hard stops. |
 | 7 | `admin_review_pending` | **The child-safety gate.** A pending Booking Officer review blocks arrival at the door, which is more urgent than a membership rule. Today its only cause is a party of under-18s with no adult. |
 | 8 | `hosting_review_pending` | **The hosting review**, which deliberately does **not** block arrival: it is a club membership rule an administrator may accept, and it clears itself the moment an adult member covers the nights. |
-| 9 | `policy_minimum_stay` | **The soft policies**, in the order the platform's own `sortPolicyExceptionViolations` already puts them. Each is exception-eligible, which is what makes it softer than a hard stop. |
+| 9 | `policy_minimum_stay` | **The soft policies that are not about a subscription**, in the order the platform's own `sortPolicyExceptionViolations` already puts them. Each is exception-eligible, which is what makes it softer than a hard stop. |
 | 10 | `policy_adult_member_hosting` | As above. |
-| 11 | `policy_paid_up_adult_member` | As above. An adult member whose season subscription is unsettled does not count. |
-| 12 | `exception_request_open` | **The officer's own queue.** The ball is with an officer and nothing has been granted. |
-| 13 | `exception_hold_expiring` | An open request is holding real beds with a deadline; if nobody decides, the reaper releases them and the member loses their place. Urgent — but only after the reason they asked. |
-| 14 | `edit_window_locked` | **Last**, because it constrains **how** a fix is applied rather than whether the booking is sound. |
+| 11 | `subscription_unpaid_hard_block` | **The club's own refusal**, and the only code here the soft-policy evaluator structurally cannot produce. Under `HARD_BLOCK` an owner who owes an unpaid season subscription cannot confirm their own draft at all, and no officer can except it — the remedy is payment. It therefore outranks the exception-eligible rule below, and sits adjacent to it so the difference is legible. See "the blocker the evaluator cannot produce". |
+| 12 | `policy_paid_up_adult_member` | As above (rows 9-10). An adult member whose season subscription is unsettled does not count. A `NON_MEMBER_PRICING`-only rule, so it and row 11 are mutually exclusive in practice. |
+| 13 | `exception_request_open` | **The officer's own queue.** The ball is with an officer and nothing has been granted. |
+| 14 | `exception_hold_expiring` | An open request is holding real beds with a deadline; if nobody decides, the reaper releases them and the member loses their place. Urgent — but only after the reason they asked. |
+| 15 | `edit_window_locked` | **Last**, because it constrains **how** a fix is applied rather than whether the booking is sound. |
 
 **On a terminal or deleted booking every other check is suppressed and no blocker
 survives.** No policy is evaluated, no capacity is read and no conflict is scanned
@@ -977,6 +978,59 @@ argue for an exception in one visible place. AID-6C keeps its **bookkeeping**
 blockers alive on a terminal booking because money outlives the booking; nothing
 in this pack does. A cancelled booking cannot exceed capacity, cannot break a
 minimum stay, and cannot be blocked from a check-in that will never happen.
+
+#### The blocker the evaluator cannot produce
+
+`booking_block_state` could return `blockerCodes: null`, `blockerCount: 0` — under
+a scope line telling the model that an absent list means nothing is blocking —
+about a saved draft the club will refuse outright, on the platform's **default**
+lockout mode.
+
+The reason is structural rather than an oversight in this pack.
+`evaluateNonMemberPricingRequirements` returns `null` unless the club chose
+`NON_MEMBER_PRICING`, by design: under `HARD_BLOCK` the refusal is not an
+exception-eligible policy violation at all, it is a flat 403 at
+`POST /api/bookings/[id]/confirm-draft` ("Your membership subscription for the
+2026/2027 season is not paid"). So the soft-policy evaluator this entry delegates
+to was correctly silent, and the entry read that silence as "nothing is blocking".
+The officer was told the booking was clear; the member's confirm then failed.
+
+`subscription_unpaid_hard_block` closes it, and it is composed rather than
+reimplemented:
+
+- the **fact** is `resolveMemberSubscriptionSettlement`, the single definition #2543
+  created so the owner gate, the member-guest gate and the reprice cannot drift —
+  a `NOT_REQUIRED` type owes nothing, a `BASED_ON_AGE_TIER` type with a
+  `NOT_REQUIRED` season row owes nothing, otherwise the per-tier flag decides, and
+  an owner whose `Member` row cannot be read is treated as owing one;
+- the **predicate** is `subscriptionIsUnpaid`, which is what
+  `member_eligibility_state` already reads, so the two entries in this pack now
+  answer one question one way;
+- the **mode** is the strictly-read club setting already in hand, so a failed
+  settings read stays `evidence_unavailable` rather than becoming `NO_BLOCK`;
+- the **season** is the stored one keyed on the booking's own check-in night.
+
+It deliberately does **not** call `requiresPaidSubscriptionForMemberForBooking`,
+which is the function the routes call. That function reaches
+`requiresPaidSubscriptionForBooking`, which consults `resolveSubscriptionLockoutMode()`
+and the **cached** age-tier settings reader — both of which turn a database failure
+into a confident default, which is the exact defect the strict seams exist to keep
+out of an evidence path. What it computes is the same three branches, minus those
+two swallowing reads; the Xero-off bypass it also carries is covered here by the
+mode itself, because the strict mode reader already answers `NO_BLOCK` when the
+Xero module is effectively off.
+
+**It is scoped to a `DRAFT`, and that scope is part of the fix.** The refusal sits
+on the draft's confirm and on creation; creation has no persisted booking to
+diagnose, and on an already-confirmed booking the owner's unpaid subscription
+blocks nothing about that booking, so raising it there would be a fabricated
+blocker of the kind this pack exists to avoid. The entry's scope line therefore
+says in as many words that the code's absence on a confirmed booking is not a
+statement about the owner's subscription — `member_eligibility_state` answers that
+on any status. What a **future** change to the booking would be refused is also
+outside it: under `HARD_BLOCK`, adding a member guest who owes an unpaid
+subscription is refused at the add and modify paths, which is a fact about that
+edit rather than about this booking, and the entry's description says so.
 
 #### One code, not two, on a deleted booking
 

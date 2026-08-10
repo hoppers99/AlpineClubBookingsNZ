@@ -140,7 +140,7 @@
 
 import "server-only";
 
-import type { Prisma } from "@prisma/client";
+import type { AgeTier, Prisma } from "@prisma/client";
 
 import { evaluatePersistedBookingAdultMemberHostingReadOnly } from "@/lib/adult-member-hosting-review";
 import { getLifecycleStatusConfig } from "@/lib/admin-member-badges";
@@ -515,13 +515,23 @@ const WAITLIST_BOOKING_STATUSES: readonly string[] = [
  *  7.   THE CHILD-SAFETY GATE. A pending minors review blocks arrival at the door,
  *       which is more urgent than a membership rule.
  *  8.   THE HOSTING REVIEW, which deliberately does NOT block arrival.
- *  9-11. THE SOFT POLICIES, in the order `sortPolicyExceptionViolations` already
- *       puts them. Each is exception-eligible, which is what makes them softer
- *       than the hard stops above.
- *  12-13. THE OFFICER'S OWN QUEUE. An open exception request means the ball is with
+ *  9-10. THE SOFT POLICIES that are not about a subscription, in the order
+ *       `sortPolicyExceptionViolations` already puts them. Each is
+ *       exception-eligible, which is what makes them softer than the hard stops.
+ *  11.  THE CLUB'S OWN SUBSCRIPTION REFUSAL, immediately ABOVE the
+ *       exception-eligible subscription rule it is otherwise easy to confuse with.
+ *       Under `HARD_BLOCK` — the platform and database DEFAULT — an owner who owes
+ *       an unpaid season subscription cannot confirm their own draft at all, and no
+ *       officer can except it: the only remedy is payment. It therefore outranks
+ *       `policy_paid_up_adult_member`, which has an exception door and is a
+ *       `NON_MEMBER_PRICING`-only rule. The two are mutually exclusive in practice
+ *       because each belongs to a different mode, and putting them adjacent is
+ *       deliberate: an operator reading one must see the other's sentence beside it.
+ *  12.  THE EXCEPTION-ELIGIBLE PAID-UP-ADULT RULE.
+ *  13-14. THE OFFICER'S OWN QUEUE. An open exception request means the ball is with
  *       an officer, and an expiring hold means the member's beds are about to be
  *       released — urgent, but only after the reason they asked.
- *  14.  THE EDIT WINDOW, last, because it constrains HOW a fix is applied rather
+ *  15.  THE EDIT WINDOW, last, because it constrains HOW a fix is applied rather
  *       than whether the booking is sound.
  */
 export const BOOKING_BLOCKER_CODES = [
@@ -535,6 +545,7 @@ export const BOOKING_BLOCKER_CODES = [
   "hosting_review_pending",
   "policy_minimum_stay",
   "policy_adult_member_hosting",
+  "subscription_unpaid_hard_block",
   "policy_paid_up_adult_member",
   "exception_request_open",
   "exception_hold_expiring",
@@ -730,6 +741,20 @@ const BLOCK_STATE_BOOKING_SELECT = {
   requiresAdminReview: true,
   adminReviewStatus: true,
   adultMemberHostingReviewStatus: true,
+  /**
+   * THE OWNER'S LIVE AGE TIER, AND NOTHING ELSE OFF `Member`.
+   *
+   * `resolveMemberSubscriptionSettlement` takes the tier as an input and treats an
+   * unresolvable one as OWING a subscription, so it has to come from the live row
+   * rather than from anything cached on the booking. `confirm-draft` reads exactly
+   * this field for exactly this gate (`booking.member.ageTier`).
+   *
+   * ONE field, because the header's rule applies with full force to a nested
+   * select: `Member` is the relation carrying `comments`, `dateOfBirth`,
+   * `passwordHash` and `totpSecret`, and this is the module where the named
+   * `select` IS the boundary. It is a PREDICATE input and appears in no projection.
+   */
+  member: { select: { ageTier: true } },
 } as const;
 
 /**
@@ -750,10 +775,103 @@ const BLOCK_STATE_BOOKING_SELECT = {
  * Every remaining column has a named consumer: `id`, `memberId` and `lodgeId` are
  * the projection and the three subsystem calls; `status` and `deletedAt` decide
  * suppression; `checkIn`/`checkOut` are the capacity window and the edit policy;
- * and `requiresAdminReview`, `adminReviewStatus` and
+ * `requiresAdminReview`, `adminReviewStatus` and
  * `adultMemberHostingReviewStatus` are the three fields the platform's own review
- * predicates are called with, field by field.
+ * predicates are called with, field by field; and `member.ageTier` is the one
+ * input the club's own subscription refusal needs about the owner.
  */
+
+/**
+ * THE STATUS THE CLUB'S SUBSCRIPTION REFUSAL ACTUALLY GATES.
+ *
+ * `HARD_BLOCK` refuses an unfinancial member at two doors: creating a booking, and
+ * confirming a draft they already saved (`POST /api/bookings/[id]/confirm-draft`,
+ * which 400s on any status but `DRAFT` before it reaches the subscription gate).
+ * Creation is not a persisted booking and cannot be diagnosed. So the one door this
+ * entry can honestly report on is the draft's own confirm.
+ *
+ * A NARROW LIST ON PURPOSE. Raising the code on a `CONFIRMED` or `PAID` booking
+ * would be a fabricated blocker: nothing about that booking is waiting on the
+ * owner's subscription, and the pack's whole discipline is that a blocker is
+ * something with a real next step. `member_eligibility_state` is where the
+ * member-level fact belongs, and it reports `subscription_unpaid` with the mode
+ * beside it regardless of any booking.
+ *
+ * If a future release adds a member-facing confirm on another status, this constant
+ * is the one place that has to change, and the blocker's own sentence names the
+ * route so the two cannot drift silently.
+ */
+const SUBSCRIPTION_HARD_BLOCK_GATED_STATUSES: readonly string[] = ["DRAFT"];
+
+/**
+ * Does the club's own `HARD_BLOCK` refusal stand against this booking's OWNER?
+ *
+ * WHY THIS EXISTS AT ALL. `booking_block_state` used to be able to answer
+ * "nothing is blocking this booking" — `blockerCodes: null`, `blockerCount: 0` —
+ * about a draft the club will refuse outright, on the platform's DEFAULT lockout
+ * mode. The paid-up-adult rule cannot cover it: `evaluateNonMemberPricingRequirements`
+ * short-circuits to `null` unless the mode is `NON_MEMBER_PRICING`, by design, so
+ * under `HARD_BLOCK` no policy violation is produced and the row was silent. The
+ * member then hits a 403 from the confirm route, and the entry's own scope had told
+ * the model that an absent blocker list means nothing is blocking.
+ *
+ * WHY IT IS NOT A SECOND IMPLEMENTATION OF THE RULE. Three of the four inputs are
+ * the canonical ones and the fourth is a status list:
+ *
+ *  - the FACT comes from `resolveMemberSubscriptionSettlement`, which is the single
+ *    definition #2543 created precisely so the owner gate, the member-guest gate and
+ *    the reprice cannot drift — its own docblock forbids a caller adding a condition;
+ *  - `subscriptionIsUnpaid` is the same predicate `member_eligibility_state` reads,
+ *    so the two entries in this pack now answer one question one way;
+ *  - the MODE is the strictly-read club setting already in hand, so a failed
+ *    settings read stays `evidence_unavailable` rather than becoming `NO_BLOCK`;
+ *  - the SEASON is the stored one keyed on the booking's check-in night.
+ *
+ * WHAT IT DELIBERATELY DOES NOT USE. `requiresPaidSubscriptionForMemberForBooking`
+ * is the function the routes call, and it would have been the obvious reuse — but it
+ * reaches `requiresPaidSubscriptionForBooking`, which calls
+ * `resolveSubscriptionLockoutMode()` and the CACHED age-tier settings reader, and
+ * both turn a database failure into a confident default. That is the exact defect
+ * the strict seams exist to keep out of an evidence path. What it computes is the
+ * same three branches this composition does, minus those two swallowing reads: a
+ * `NOT_REQUIRED` type owes nothing, a `BASED_ON_AGE_TIER` type with a `NOT_REQUIRED`
+ * season row owes nothing, otherwise the per-tier flag decides. The Xero-off bypass
+ * that function also carries is covered here by the mode itself, because the strict
+ * mode reader already answers `NO_BLOCK` when the Xero module is effectively off.
+ */
+async function readOwnerSubscriptionHardBlock(
+  tx: Prisma.TransactionClient,
+  input: {
+    memberId: string;
+    seasonYear: number;
+    ageTier: AgeTier | null;
+  },
+): Promise<boolean> {
+  const [typePolicy, subscription, ageTierSettings] = await Promise.all([
+    resolveMembershipTypePolicyForMember(tx, {
+      memberId: input.memberId,
+      seasonYear: input.seasonYear,
+    }),
+    tx.memberSubscription.findUnique({
+      where: {
+        memberId_seasonYear: {
+          memberId: input.memberId,
+          seasonYear: input.seasonYear,
+        },
+      },
+      select: { status: true },
+    }),
+    getAgeTierSettingsStrict(tx),
+  ]);
+  return subscriptionIsUnpaid(
+    resolveMemberSubscriptionSettlement({
+      subscriptionBehavior: typePolicy?.subscriptionBehavior ?? null,
+      subscriptionStatus: subscription?.status ?? null,
+      ageTier: input.ageTier,
+      ageTierSettings,
+    }),
+  );
+}
 
 /**
  * THE authoritative answer to "what is actually blocking this booking".
@@ -849,7 +967,7 @@ async function readBookingBlockState(
    * season it falls in, not the season the diagnostic is run in.
    *
    * RESOLVED ONLY WHEN IT WILL BE USED. A deleted or terminal booking runs neither
-   * rule (see the four suppressed calls below), so asking for the season there
+   * rule (see the five suppressed calls below), so asking for the season there
    * would let a club that follows Xero for its financial year lose ALL block-state
    * evidence about a cancelled booking over a question that booking never asks.
    * `null` on those rows is "not needed", and it is never passed anywhere.
@@ -933,7 +1051,13 @@ async function readBookingBlockState(
    * row shows its working for rather than a boolean the engine returns for a
    * headcount that ignores non-contiguous stays.
    */
-  const [nonHostingViolations, hostingEvaluation, capacity, conflicts] =
+  const [
+    nonHostingViolations,
+    hostingEvaluation,
+    capacity,
+    conflicts,
+    ownerSubscriptionHardBlocked,
+  ] =
     await Promise.all([
     // Terminal and deleted bookings skip the policy evaluation entirely. It is not
     // an optimisation: evaluating a cancelled booking's party would produce
@@ -1018,6 +1142,29 @@ async function readBookingBlockState(
             ),
           })),
           excludeBookingId: booking.id,
+        }),
+    /**
+     * THE CLUB'S OWN `HARD_BLOCK` REFUSAL, and the one gate in this list that is
+     * skipped for a reason other than suppression.
+     *
+     * Three conditions, all of them the enforcement site's own: the booking is on a
+     * status whose member-facing next step is gated (see
+     * `SUBSCRIPTION_HARD_BLOCK_GATED_STATUSES`), the club's strictly-read mode is
+     * `HARD_BLOCK`, and only then is the owner's settlement read at all. The routes
+     * short-circuit in exactly that order — `subscriptionLockoutMode ===
+     * "HARD_BLOCK" && await requiresPaidSubscriptionForMemberForBooking(...)` — so
+     * a `NO_BLOCK` or `NON_MEMBER_PRICING` club pays for no extra read and gets no
+     * finding, which is correct: under those modes the club does not refuse.
+     */
+    deleted ||
+    terminal ||
+    !SUBSCRIPTION_HARD_BLOCK_GATED_STATUSES.includes(booking.status) ||
+    requireResolvedLockoutMode(subscriptionLockoutMode) !== "HARD_BLOCK"
+      ? Promise.resolve(false)
+      : readOwnerSubscriptionHardBlock(tx, {
+          memberId: booking.memberId,
+          seasonYear: requireResolvedSeasonYear(seasonYear),
+          ageTier: booking.member?.ageTier ?? null,
         }),
     ]);
 
@@ -1171,6 +1318,17 @@ async function readBookingBlockState(
     hosting_review_pending: hostingReviewPending,
     policy_minimum_stay: reasonCodes.has("MINIMUM_STAY"),
     policy_adult_member_hosting: reasonCodes.has("ADULT_MEMBER_HOSTING_REQUIRED"),
+    /**
+     * THE ONE BLOCKER THE POLICY EVALUATOR STRUCTURALLY CANNOT PRODUCE.
+     *
+     * Every other `policy_*` code above comes from a violation the soft-policy
+     * evaluator returned. This one cannot: `evaluateNonMemberPricingRequirements`
+     * returns `null` unless the club chose `NON_MEMBER_PRICING`, so under the
+     * DEFAULT `HARD_BLOCK` the evaluator is silent by design — the refusal there is
+     * a flat 403 at the route, not an exception-eligible violation. Reading that
+     * silence as "nothing is blocking" is what this entry did before.
+     */
+    subscription_unpaid_hard_block: ownerSubscriptionHardBlocked,
     policy_paid_up_adult_member: reasonCodes.has("PAID_UP_ADULT_MEMBER_REQUIRED"),
     exception_request_open: openRequests.length > 0,
     exception_hold_expiring: nextHoldExpiresAt !== null,
