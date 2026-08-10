@@ -4,7 +4,8 @@ import { describe, expect, it } from "vitest";
 
 /**
  * Census: every loader that feeds an in-progress edit must select the column
- * that says what a night was SOLD for (#2744).
+ * that says what a night was SOLD for (#2744), and every builder of the plan must
+ * hand it the club's group-discount config (#2756).
  *
  * `buildInProgressGuestRangePlan` credits a night given back at the price
  * recorded on its `BookingGuestNight` row, and falls back to the CURRENT season
@@ -33,12 +34,21 @@ import { describe, expect, it } from "vitest";
  *
  * It is a SOURCE-TEXT census over `src/`. It guarantees that no production call
  * to `buildInProgressGuestRangePlan` or `calculateModifiedPricing` can appear
- * without being declared, and that every `nights: { select: … }` inside a
- * declared LOADER asks for `priceCents`. It cannot follow a booking loaded in
+ * without being declared, that every `nights: { select: … }` inside a
+ * declared LOADER asks for `priceCents`, and that every call that BUILDS the plan
+ * passes `groupDiscount`. It cannot follow a booking loaded in
  * one file and passed through three others, which is why the table records the
  * route from loader to plan in prose and why `booking-modify-plan.ts` is
  * declared as a `plan-builder` that loads nothing: the check that matters for
  * that file is that its two callers are both on this list.
+ *
+ * The group-discount half exists for the same reason as the price half: the
+ * argument is OPTIONAL on the plan's input, because a club that has not switched
+ * the discount on passes nothing, so a caller that drops it type-checks, throws
+ * nothing and fails no other test — the only symptom is a member being charged
+ * the undiscounted rate for a night an earlier edit would have discounted
+ * (INV-MOD-006, #2756). It cannot check that the config passed is the RIGHT one;
+ * `groupDiscount` here is the same variable both pricing paths in that file use.
  */
 
 const SRC_ROOT = path.resolve(process.cwd(), "src");
@@ -73,6 +83,39 @@ const PLAN_CALL =
 const NIGHTS_SELECT = /nights:\s*\{\s*select:\s*\{([^}]*)\}/g;
 
 /**
+ * A call to the plan BUILDER itself — the one whose argument object has to carry
+ * the group-discount config (#2756). `calculateModifiedPricing` is deliberately
+ * not in it: that function reads the setting and forwards it, and its own callers
+ * pass a transaction rather than a config.
+ */
+const PLAN_BUILDER_CALL = /(?<!function\s)\bbuildInProgressGuestRangePlan\s*\(/g;
+
+/**
+ * The balanced `( … )` starting at `openIndex` (the index OF the `(`).
+ *
+ * Brace-matched by hand rather than by regex: the argument is a nested object
+ * literal several levels deep, so `[^)]*` stops at the first inner `)` and would
+ * report a caller that passes the config as one that does not. Strings and
+ * comments are not tracked, because neither appears with an unbalanced bracket in
+ * these two call sites and a false FAILURE here is cheap to diagnose while a
+ * false pass is the thing being guarded against.
+ */
+function balancedArgumentList(source: string, openIndex: number): string {
+  let depth = 0;
+  for (let index = openIndex; index < source.length; index++) {
+    const character = source[index];
+    if (character === "(") depth += 1;
+    if (character === ")") {
+      depth -= 1;
+      if (depth === 0) {
+        return source.slice(openIndex, index + 1);
+      }
+    }
+  }
+  throw new Error(`unbalanced argument list at index ${openIndex}`);
+}
+
+/**
  * Every production file that puts a booking through the in-progress plan.
  *
  *  - `loader` — reads the booking from the database and hands it to the plan.
@@ -83,6 +126,8 @@ const NIGHTS_SELECT = /nights:\s*\{\s*select:\s*\{([^}]*)\}/g;
  *
  * `calls` is declared rather than counted so that a second call added to a file
  * already here fails the census instead of hiding behind the first.
+ * `planBuilderCalls` is the subset of them that build the plan directly and must
+ * therefore pass the group discount (#2756).
  */
 const PLAN_CALL_SITES = [
   {
@@ -91,6 +136,7 @@ const PLAN_CALL_SITES = [
     calls: 1,
     what: "the APPLY path: re-reads the booking under the lodge capacity lock, then prices the edit through calculateModifiedPricing",
     nightsSelects: 1,
+    planBuilderCalls: 0,
   },
   {
     file: "src/app/api/bookings/[id]/modify-quote/route.ts",
@@ -98,6 +144,7 @@ const PLAN_CALL_SITES = [
     calls: 1,
     what: "the QUOTE path: previews the same edit, and must reach the same numbers as the apply path or the member is quoted one price and charged another",
     nightsSelects: 1,
+    planBuilderCalls: 1,
   },
   {
     file: "src/lib/booking-modify-plan.ts",
@@ -105,6 +152,7 @@ const PLAN_CALL_SITES = [
     calls: 1,
     what: "calculateModifiedPricing — builds the plan from the booking its caller loaded",
     nightsSelects: 0,
+    planBuilderCalls: 1,
   },
 ] as const;
 
@@ -154,6 +202,32 @@ describe("in-progress edit sold-price census (#2744)", () => {
           select,
           `${site.file} must select priceCents on the nights relation (INV-MOD-005, #2744)`,
         ).toContain("priceCents");
+      }
+    }
+  });
+
+  it("keeps every builder of the plan passing the club's group discount", () => {
+    for (const site of PLAN_CALL_SITES) {
+      const source = fs.readFileSync(
+        path.resolve(process.cwd(), site.file),
+        "utf8",
+      );
+      const builderCalls = [...source.matchAll(PLAN_BUILDER_CALL)];
+
+      expect(builderCalls.length, `${site.file} plan-builder calls`).toBe(
+        site.planBuilderCalls,
+      );
+      for (const call of builderCalls) {
+        const openIndex = (call.index ?? 0) + call[0].length - 1;
+        // INV-MOD-006: without the config the plan prices the party it is given
+        // with no discount at all, so a night an in-progress edit BUYS costs more
+        // than the same night bought before the stay began — and nothing else in
+        // the tree goes red, because the argument is optional by design (a club
+        // that has not switched the discount on passes nothing).
+        expect(
+          balancedArgumentList(source, openIndex),
+          `${site.file} must pass groupDiscount to buildInProgressGuestRangePlan (INV-MOD-006, #2756)`,
+        ).toContain("groupDiscount");
       }
     }
   });
