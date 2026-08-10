@@ -32,10 +32,14 @@
  *     real money moved the wrong way: a mid-stay REMOVAL and a SHORTENED
  *     check-out both used to refund the guest for gap nights they had never been
  *     charged for in the first place.
- *  3. `#2743` covers the re-admission itself, boundary by boundary — a guest who
- *     is still here, one whose stay ends on the booking's check-out day, and one
- *     who went home a week ago — plus the two things the fix deliberately does
- *     NOT do.
+ *  3. `#2743` covers the re-admission itself, boundary by boundary. The
+ *     discriminator is NOT "has the guest gone home" — it is whether their held
+ *     nights reach the BOOKING'S own check-out — so the cases are: a guest who
+ *     runs to it, one whose stay ends on the check-out day (#2029), one who is
+ *     in the lodge tonight but leaves early, and one who went home a week ago.
+ *     Plus the state the fix newly makes reachable (a check-out ahead of the
+ *     last night anybody holds), the refusal it newly makes (proved re-runnable
+ *     with the date it names), and the two things it deliberately does NOT do.
  */
 import { describe, expect, it } from "vitest";
 import {
@@ -848,6 +852,64 @@ describe("#2736 a sparse stay", () => {
     );
   });
 
+  it("does NOT land back on the legacy answer when the drifted envelope runs past the booking's check-out", () => {
+    // The other drift configuration, and the reason INV-MOD-025 states the money
+    // direction with a scope rather than as a blanket. The case above has the
+    // envelope ending exactly ON the booking's check-out, so #2743 stops selling
+    // the imagined nights and the money lands back where the pre-#2736
+    // arithmetic had it. Here the envelope claims the 30th while the booking
+    // itself ends on the 27th.
+    //
+    // The pre-#2736 arithmetic compared an eight-night old window
+    // [22, 30) against a five-night new one [22, 27) and produced a REFUND for
+    // three nights the member never bought. #2736 removed that phantom refund
+    // deliberately, and #2743 does not put it back — nothing here is sold, so
+    // the delta is zero. Zero is ABOVE the legacy refund. So a shape does exist
+    // in which the answer sits higher than the pre-#2736 one, it is drifted data
+    // only, and it is the phantom refund's disappearance rather than a charge.
+    // The 480-case matrix can never reach it: it derives every envelope from the
+    // rows, the way the writer does.
+    const driftedPastCheckOut = {
+      ...guestFromNights(["2026-08-20", "2026-08-21"], "g1"),
+      stayEnd: D("2026-08-30"),
+    };
+    const plan = buildInProgressGuestRangePlan(
+      planInput({
+        guests: [
+          driftedPastCheckOut,
+          guestFromNights(
+            [
+              "2026-08-18", "2026-08-19", "2026-08-20", "2026-08-21",
+              "2026-08-22", "2026-08-23", "2026-08-24", "2026-08-25",
+              "2026-08-26",
+            ],
+            "g2",
+          ),
+        ],
+        editableFrom: "2026-08-22",
+        newCheckOut: "2026-08-27",
+        checkIn: "2026-08-18",
+        checkOut: "2026-08-27",
+      }),
+    );
+    const entry = plan.proposedExistingGuests[0];
+
+    // Their rows are canonical, so nothing is added and nothing is taken away.
+    expect(entry.nights.map(key)).toEqual(["2026-08-20", "2026-08-21"]);
+    expect(entry.futureDeltaCents).toBe(0);
+    expect(entry.priceCents).toBe(driftedPastCheckOut.priceCents);
+    // And the legacy arithmetic's answer for the same edit, stated as the number
+    // it is: a refund. Zero is strictly greater, which is the claim.
+    const legacyDeltaCents =
+      priceNights(["2026-08-22", "2026-08-23", "2026-08-24", "2026-08-25", "2026-08-26"]) -
+      priceNights([
+        "2026-08-22", "2026-08-23", "2026-08-24", "2026-08-25", "2026-08-26",
+        "2026-08-27", "2026-08-28", "2026-08-29",
+      ]);
+    expect(legacyDeltaCents).toBeLessThan(0);
+    expect(entry.futureDeltaCents).toBeGreaterThan(legacyDeltaCents);
+  });
+
   it("keeps every cent an integer, with no float anywhere in the sum", () => {
     // INV-MONEY-001 / INV-MONEY-003. Every term here is a season rate in cents;
     // the plan only ever adds and subtracts them.
@@ -897,6 +959,21 @@ describe("#2736 the edit it now refuses", () => {
     // And plainly NOT the old sentence, which describes the rule rather than the
     // mistake — the booking does still have a guest.
     expect(build).not.toThrow(/at least one guest for future nights/);
+
+    // #2743 clamps the suggestion at `editableFrom`. This case's own answer
+    // already sat exactly there — the 20th plus one — so its wording is
+    // byte-identical, which is the pin that the clamp changed nothing here. The
+    // advice is followable: re-run with the 21st and the plan builds.
+    const followTheAdvice = buildInProgressGuestRangePlan(
+      planInput({
+        guests: [guestFromNights(["2026-08-20", "2026-08-22"])],
+        editableFrom: "2026-08-21",
+        newCheckOut: "2026-08-21",
+      }),
+    );
+    expect(followTheAdvice.proposedExistingGuests[0].nights.map(key)).toEqual([
+      "2026-08-20",
+    ]);
   });
 
   it("keeps the original wording for the refusal it always made", () => {
@@ -943,8 +1020,14 @@ describe("#2743 a guest whose stay already ended", () => {
 
   it("is not re-admitted, and an edit that leaves the check-out alone costs nothing", () => {
     // The issue's worked example. The guest holds two nights, the 18th and the
-    // 19th, and went home a week ago; the officer saves a name correction. That
-    // used to add seven nights to their bill.
+    // 19th, and went home a week ago; the officer saves an edit that leaves the
+    // dates alone. That used to add seven nights to their bill.
+    //
+    // NOT a name-only edit, which never reaches this plan: a name-only request
+    // is identity-only on both routes and takes the price-preserving echo
+    // (`buildIdentityOnlyPricing` on apply, a `priceDiffCents: 0` early return
+    // on quote). The edits that DO land here are adding a guest, removing a
+    // guest, moving the check-out, and a promo or member-link change.
     const departed = guestFromNights(["2026-08-18", "2026-08-19"], "g1");
     const plan = buildInProgressGuestRangePlan(
       bookingOf([departed, guestFromNights(WHOLE_RUN, "g2")], "2026-08-27"),
@@ -962,7 +1045,7 @@ describe("#2743 a guest whose stay already ended", () => {
     ]);
     expect(plan.futureActiveGuestCount).toBe(1);
     // The guest who is actually there is unchanged, and the save moves no money
-    // at all — which is what a name correction should cost.
+    // at all — which is what an edit that touches no date should cost.
     expect(present.futureDeltaCents).toBe(0);
     expect(plan.priceDiffCents).toBe(0);
   });
@@ -989,12 +1072,13 @@ describe("#2743 a guest whose stay already ended", () => {
     expect(plan.priceDiffCents).toBe(0);
   });
 
-  it("leaves a guest who is still here exactly as they were, extension and all", () => {
-    // The other boundary: their last night is on or after the window opens, so
-    // every future night they hold is kept and repriced as before, and an
-    // extension buys them exactly the nights past the old check-out. If the
-    // bound ever reached further back than the booking's check-out, this is the
-    // guest it would start stealing nights from.
+  it("leaves a guest who runs to the booking's own check-out exactly as they were, extension and all", () => {
+    // The ordinary stay, and the guest the bound would start stealing nights
+    // from if it ever reached further back than the booking's check-out. Their
+    // last held night is the night before it, so `heldEndExclusive` already
+    // EQUALS `bookingCheckOut` and the new bound is a no-op by construction —
+    // which is exactly why this case cannot fail on a revert, and why the
+    // boundary it is named after needs the case below as well.
     const plan = buildInProgressGuestRangePlan(
       bookingOf([guestFromNights(WHOLE_RUN, "g1")], "2026-08-29"),
     );
@@ -1008,6 +1092,154 @@ describe("#2743 a guest whose stay already ended", () => {
       "2026-08-22", "2026-08-23", "2026-08-24", "2026-08-25", "2026-08-26",
       "2026-08-27", "2026-08-28",
     ]);
+  });
+
+  it("gives a guest who is IN THE LODGE TONIGHT but leaving early a gap and a smaller bill too", () => {
+    // The boundary the rule is really about, and the one a reader would get
+    // wrong from "still here — nothing moves". This guest arrived on the 18th
+    // and leaves on the 24th: their last night, the 23rd, is AFTER the window
+    // opens on the 22nd, so they are unambiguously still in the lodge. But their
+    // stay stops SHORT of the booking's own check-out on the 27th, so the bound
+    // bites for them exactly as it does for somebody who went home a week ago.
+    //
+    // The officer extends the booking to the 29th. The nights of the 24th to the
+    // 26th are the rest of somebody else's stay, not something this edit
+    // created, so they are not sold to this guest — they get the two nights past
+    // the OLD check-out and a three-night hole in front of them. Money goes DOWN
+    // (the direction #2743 always moves), but it moves for a guest who is
+    // present, and the bed board shows them out for three nights and back for
+    // two. That is the honest consequence of the rule, and it is stated in
+    // INV-MOD-025 and the changelog rather than left for a reader to discover.
+    const stillHereLeavingEarly = guestFromNights(
+      [
+        "2026-08-18", "2026-08-19", "2026-08-20", "2026-08-21", "2026-08-22",
+        "2026-08-23",
+      ],
+      "g1",
+    );
+    const plan = buildInProgressGuestRangePlan(
+      bookingOf([stillHereLeavingEarly, guestFromNights(WHOLE_RUN, "g2")], "2026-08-29"),
+    );
+    const entry = plan.proposedExistingGuests[0];
+
+    expect(entry.nights.map(key)).toEqual([
+      "2026-08-18", "2026-08-19", "2026-08-20", "2026-08-21", "2026-08-22",
+      "2026-08-23",
+      // the gap: 24th, 25th, 26th
+      "2026-08-27", "2026-08-28",
+    ]);
+    expect(entry.futureDeltaCents).toBe(
+      priceNights(["2026-08-27", "2026-08-28"]),
+    );
+    // And emphatically NOT the back-filled answer, which is what this same edit
+    // charged before #2743 — five nights, not two.
+    expect(entry.futureDeltaCents).not.toBe(
+      priceNights([
+        "2026-08-24", "2026-08-25", "2026-08-26", "2026-08-27", "2026-08-28",
+      ]),
+    );
+    // They keep the future nights they genuinely hold, so they are still
+    // future-active and still hold a bed on the 22nd and 23rd.
+    expect(entry.futureNights.map(key)).toEqual([
+      "2026-08-22", "2026-08-23", "2026-08-27", "2026-08-28",
+    ]);
+  });
+
+  it("lets a removal leave the booking's check-out ahead of the last night anybody holds", () => {
+    // The state #2743 newly makes reachable, pinned so it is visible rather than
+    // discovered. Three guests: one gone home after the 19th, one there for the
+    // whole run, one in for the 22nd and 23rd. The officer removes the whole-run
+    // guest and touches no date.
+    //
+    // Before #2743 the other two were back-filled to the 26th, so somebody
+    // always ran to the check-out. Now nobody does: the last night anybody holds
+    // is the 23rd while `Booking.checkOut` still says the 27th. The save is
+    // ACCEPTED — refusing it would refuse the ordinary "remove the guest who was
+    // staying longest" edit, and the containment triggers permit it because they
+    // test containment, never coverage.
+    //
+    // The counterpart is the second half of this case: a few days later, once
+    // the 22nd and 23rd are behind the window too, the booking walks into the
+    // widened refusal — which is why that refusal has to name a check-out the
+    // plan accepts, and does.
+    const departed = guestFromNights(["2026-08-18", "2026-08-19"], "g1");
+    const shortStay = guestFromNights(["2026-08-22", "2026-08-23"], "g3");
+    const plan = buildInProgressGuestRangePlan(
+      planInput({
+        guests: [departed, guestFromNights(WHOLE_RUN, "g2"), shortStay],
+        editableFrom: "2026-08-22",
+        newCheckOut: "2026-08-27",
+        removeGuestIds: ["g2"],
+        checkIn: "2026-08-18",
+        checkOut: "2026-08-27",
+      }),
+    );
+
+    expect(plan.futureActiveGuestCount).toBe(1);
+    expect(plan.proposedExistingGuests[0].nights.map(key)).toEqual([
+      "2026-08-18",
+      "2026-08-19",
+    ]);
+    expect(plan.proposedExistingGuests[2].nights.map(key)).toEqual([
+      "2026-08-22",
+      "2026-08-23",
+    ]);
+    // Nobody holds the 24th, 25th or 26th, and the booking's check-out is still
+    // the 27th. Neither remaining guest was back-filled to cover them.
+    const everyNightHeld = plan.proposedExistingGuests
+      .filter((entry) => !entry.removedFromFuture)
+      .flatMap((entry) => entry.nights.map(key));
+    expect(everyNightHeld).not.toContain("2026-08-24");
+    expect(everyNightHeld).not.toContain("2026-08-26");
+
+    // Later, with the window opened past the last remaining night: the same
+    // booking is now refused, and the named check-out is one that works.
+    const later = () =>
+      buildInProgressGuestRangePlan(
+        planInput({
+          guests: [departed, shortStay],
+          editableFrom: "2026-08-25",
+          newCheckOut: "2026-08-27",
+          checkIn: "2026-08-18",
+          checkOut: "2026-08-27",
+        }),
+      );
+    expect(later).toThrow(/Set the check-out to 2026-08-25 instead/);
+    expect(
+      buildInProgressGuestRangePlan(
+        planInput({
+          guests: [departed, shortStay],
+          editableFrom: "2026-08-25",
+          newCheckOut: "2026-08-25",
+          checkIn: "2026-08-18",
+          checkOut: "2026-08-27",
+        }),
+      ).priceDiffCents,
+    ).toBe(0);
+  });
+
+  it("does not drag the capacity window back over nights this edit puts nobody on", () => {
+    // `futureStart` is the PRICING anchor and reaches back to a guest's own stay
+    // end, which for somebody who left a week ago is a week behind the window.
+    // The capacity window must not follow it there: `checkCapacityForGuestRanges`
+    // evaluates every night in `[capacityRangeStart, newCheckOut)`, so a past
+    // night over capacity (#1668 admin override) or under a whole-lodge hold
+    // (never admin-overridable, ADR-001 decision 5) would refuse an extension
+    // that adds nobody to it.
+    const departed = guestFromNights(["2026-08-18", "2026-08-19"], "g1");
+    const plan = buildInProgressGuestRangePlan(
+      bookingOf([departed, guestFromNights(WHOLE_RUN, "g2")], "2026-08-30"),
+    );
+
+    // Their pricing anchor is still the 20th — that is what makes the #2029
+    // check-out-day night chargeable — but the window starts where the edit
+    // genuinely begins.
+    expect(key(plan.proposedExistingGuests[0].futureStart)).toBe("2026-08-20");
+    expect(key(plan.capacityRangeStart)).toBe("2026-08-22");
+    // Never later than the earliest night any included range actually occupies.
+    for (const range of plan.capacityGuestRanges) {
+      expect(key(range.nights[0]) >= key(plan.capacityRangeStart)).toBe(true);
+    }
   });
 
   it("still buys the check-out-day night on a +1 extension (#2029 boundary)", () => {
@@ -1041,14 +1273,22 @@ describe("#2743 a guest whose stay already ended", () => {
 
   it("is still admitted for the nights an extension genuinely creates, which the software cannot refuse for them", () => {
     // STATED, not endorsed. Extending a booking's check-out admits every guest
-    // still on it, and a guest who has gone home is still on it — the software
-    // has no way to say "this one is not coming back", and this plan cannot
-    // invent one, because an in-progress edit carries no per-guest stay end.
+    // still on it, and a guest who has gone home is still on it. Not because the
+    // request cannot CARRY a per-guest end — `BatchModifyInput.guestStayRanges`
+    // exists — but because this plan deliberately overrides it for every
+    // existing guest and the edit panel does not offer the control on an
+    // in-progress edit, so there is no honoured way to say "this one is not
+    // coming back".
     //
     // What #2743 removes is the back-fill: the seven nights between their last
     // one and the old check-out. What is left is the three nights the officer
-    // has just added to the booking. It is smaller, it is visible in the quote,
-    // and it is recorded in INV-MOD-025 rather than left to be discovered.
+    // has just added to the booking. It is smaller, and it is recorded in
+    // INV-MOD-025 rather than left to be discovered — but it is NOT itemized:
+    // the quote pushes a single aggregate "Future-night date change" line
+    // summing every existing guest's delta, with no per-guest and no per-night
+    // breakdown, and the in-progress panel renders no per-guest night grid. So
+    // the officer sees one dollar figure, not "this departed guest is being
+    // charged for three nights". That is the residual, stated as what it is.
     const departed = guestFromNights(["2026-08-18", "2026-08-19"], "g1");
     const plan = buildInProgressGuestRangePlan(
       bookingOf([departed, guestFromNights(WHOLE_RUN, "g2")], "2026-08-30"),
@@ -1071,12 +1311,20 @@ describe("#2743 a guest whose stay already ended", () => {
     );
   });
 
-  it("refuses an edit to a booking whose guests have all gone, and names the check-out that fits", () => {
+  it("refuses an edit to a booking whose guests have all gone, and names a check-out the plan will actually accept", () => {
     // The one edit #2743 newly refuses. The booking's check-out says the 27th but
     // the only guest went home on the 20th, so there is nothing left to sell the
     // remaining nights to. It used to save by charging them to the guest who had
     // left. The message is a log line (#1888 keeps it off the wire), and it names
     // the check-out that matches who is actually there.
+    //
+    // The named date is CLAMPED at the edit window. The morning after their last
+    // night is the 20th, and a check-out of the 20th is refused by this
+    // function's own first guard and by `resolveTargetDates` before it — so an
+    // unclamped message would hand the officer a remedy the code rejects and
+    // leave the booking editable by no route at all. Under #2736 alone the
+    // suggestion always landed on `editableFrom`, so the trap only opens for
+    // #2743's shape: a guest who left well before the window.
     const build = () =>
       buildInProgressGuestRangePlan(
         bookingOf(
@@ -1088,7 +1336,33 @@ describe("#2743 a guest whose stay already ended", () => {
     expect(build).toThrow(
       /No remaining guest is booked for a night on or after 2026-08-22/,
     );
-    expect(build).toThrow(/Set the check-out to 2026-08-20 instead/);
+    expect(build).toThrow(/Set the check-out to 2026-08-22 instead/);
+    // Emphatically NOT the unclamped answer, which is a date the very next line
+    // proves nothing can save.
+    expect(build).not.toThrow(/Set the check-out to 2026-08-20 instead/);
+    expect(() =>
+      buildInProgressGuestRangePlan(
+        bookingOf(
+          [guestFromNights(["2026-08-18", "2026-08-19"], "g1")],
+          "2026-08-20",
+        ),
+      ),
+    ).toThrow(/Check-out cannot move before NZ tomorrow/);
+
+    // And the advice actually works: re-run the same edit with the check-out it
+    // names and the plan builds, moving no money. This is the assertion that
+    // makes the message a remedy rather than a description.
+    const followTheAdvice = buildInProgressGuestRangePlan(
+      bookingOf(
+        [guestFromNights(["2026-08-18", "2026-08-19"], "g1")],
+        "2026-08-22",
+      ),
+    );
+    expect(followTheAdvice.priceDiffCents).toBe(0);
+    expect(followTheAdvice.proposedExistingGuests[0].nights.map(key)).toEqual([
+      "2026-08-18",
+      "2026-08-19",
+    ]);
   });
 
   it("keeps every cent an integer and never charges more than it used to", () => {
