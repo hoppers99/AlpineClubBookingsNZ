@@ -497,6 +497,26 @@ async function loadSameBookingOwnerHosts(
   >,
   db: Pick<AdultMemberHostingReviewDb, "booking">,
   excludeBookingIds: readonly string[],
+  /**
+   * A DETERMINISTIC CEILING, supplied only by a read-only evidence caller — the
+   * same distinction `loadSiblingHosts` draws, for the same reason, on the OTHER
+   * host population.
+   *
+   * The writer's `SAME_OWNER_COVERAGE_SOURCE_LIMIT` truncates, and the docblock on
+   * that constant argues correctly that truncating is safe FOR A WRITER: fewer
+   * hosts are seen, so a night reads as uncovered and the booking is flagged or
+   * refused rather than quietly allowed. That argument INVERTS for evidence. A
+   * diagnostic that misses the sibling carrying the covering adult reports
+   * `policy_adult_member_hosting` as a LIVE BLOCKER on a booking that is actually
+   * covered — a fabricated finding, which is the opposite of safe — and because the
+   * writer's read carries no `orderBy`, two invocations could disagree about the
+   * same booking with nothing on the row to say so.
+   *
+   * So an evidence caller passes a ceiling, gets a total order and `ceiling + 1`
+   * rows, and gets a REFUSAL when the bound binds. Omitted by every writer, whose
+   * read is byte-identical to before.
+   */
+  sameOwnerSourceCeiling?: number,
 ): Promise<HostingParticipant[]> {
   const where = sameBookingOwnerCoverageSourceWhere(booking);
   const sources = (await db.booking.findMany({
@@ -504,7 +524,17 @@ async function loadSameBookingOwnerHosts(
       excludeBookingIds.length > 0
         ? { ...where, id: { not: booking.id, notIn: [...excludeBookingIds] } }
         : where,
-    take: SAME_OWNER_COVERAGE_SOURCE_LIMIT,
+    take:
+      sameOwnerSourceCeiling === undefined
+        ? SAME_OWNER_COVERAGE_SOURCE_LIMIT
+        : sameOwnerSourceCeiling + 1,
+    ...(sameOwnerSourceCeiling === undefined
+      ? {}
+      : {
+          // A total order, so a bound that binds binds reproducibly rather than
+          // returning any N of the matching rows.
+          orderBy: [{ checkIn: "asc" as const }, { id: "asc" as const }],
+        }),
     select: {
       id: true,
       guests: {
@@ -514,6 +544,12 @@ async function loadSameBookingOwnerHosts(
       },
     },
   })) as Array<{ id: string; guests: LoadedHostingBooking["guests"] }>;
+  if (
+    sameOwnerSourceCeiling !== undefined &&
+    sources.length > sameOwnerSourceCeiling
+  ) {
+    throw new HostingSameOwnerSourceCeilingExceededError(sameOwnerSourceCeiling);
+  }
 
   return sources
     .filter((source) => Array.isArray(source.guests))
@@ -538,6 +574,27 @@ export class HostingSiblingCeilingExceededError extends Error {
       `Adult-member hosting evidence: more than ${ceiling} sibling bookings could cover these nights; refusing an inconclusive answer`,
     );
     this.name = "HostingSiblingCeilingExceededError";
+  }
+}
+
+/**
+ * The same refusal for the OTHER host population, and a separate class rather than
+ * a shared one.
+ *
+ * The two populations are different questions with different remedies: a bound
+ * sibling read means a #738 split family has grown implausibly wide, and a bound
+ * same-owner read means one member holds more than the ceiling of active bookings
+ * at ONE lodge overlapping ONE stay. An operator handed "I cannot tell you" needs to
+ * know which, and a single message naming both would name the wrong one half the
+ * time. It is the same reason the writer keeps `SAME_OWNER_COVERAGE_SOURCE_LIMIT`
+ * and `SAME_OWNER_COVERAGE_DEPENDENT_LIMIT` apart at the same number.
+ */
+export class HostingSameOwnerSourceCeilingExceededError extends Error {
+  constructor(ceiling: number) {
+    super(
+      `Adult-member hosting evidence: more than ${ceiling} same-owner bookings at this lodge could cover these nights; refusing an inconclusive answer`,
+    );
+    this.name = "HostingSameOwnerSourceCeilingExceededError";
   }
 }
 
@@ -596,6 +653,12 @@ async function evaluateLoadedBookingAdultMemberHosting(
   subscriptionLockoutMode?: SubscriptionLockoutMode,
   /** See `loadSiblingHosts`; supplied only by a read-only evidence caller. */
   siblingCeiling?: number,
+  /**
+   * See `loadSameBookingOwnerHosts`. The OTHER host population, with its own
+   * ceiling because it is a different population — a wide split family and a member
+   * holding many bookings at one lodge are different data problems.
+   */
+  sameOwnerSourceCeiling?: number,
 ): Promise<{
   violation: AdultMemberHostingPolicyExceptionViolation | null;
   resolved: ResolvedAdultMemberHostingPolicy;
@@ -641,7 +704,12 @@ async function evaluateLoadedBookingAdultMemberHosting(
         ...toHostingParticipants(booking),
         ...siblings.participants,
         ...(resolved.hostScopes.sameBookingOwner
-          ? await loadSameBookingOwnerHosts(booking, db, siblings.siblingIds)
+          ? await loadSameBookingOwnerHosts(
+              booking,
+              db,
+              siblings.siblingIds,
+              sameOwnerSourceCeiling,
+            )
           : []),
       ],
       db,
@@ -712,6 +780,13 @@ export async function evaluatePersistedBookingAdultMemberHostingReadOnly(
      * because truncating that read would change the hosting rule.
      */
     siblingCeiling?: number;
+    /**
+     * The same, for the SAME-OWNER coverage sources. Separate from
+     * `siblingCeiling` because the populations are separate: the writer's own read
+     * TRUNCATES at 25 with no order, which errs towards flagging for a writer and
+     * towards a FABRICATED blocker for evidence.
+     */
+    sameOwnerSourceCeiling?: number;
   },
 ): Promise<{
   violation: AdultMemberHostingPolicyExceptionViolation | null;
@@ -729,6 +804,7 @@ export async function evaluatePersistedBookingAdultMemberHostingReadOnly(
     options?.seasonYear,
     options?.subscriptionLockoutMode,
     options?.siblingCeiling,
+    options?.sameOwnerSourceCeiling,
   );
 }
 

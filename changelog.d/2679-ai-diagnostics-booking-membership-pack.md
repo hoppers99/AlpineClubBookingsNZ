@@ -42,7 +42,13 @@
   says plainly that being consistent is not the same as being current. The widest read —
   the sibling bookings that can supply hosting cover — gets a deterministic ceiling
   for diagnostics and refuses rather than returning a short list; the booking
-  lifecycle's own evaluation is unchanged and still reads every sibling.
+  lifecycle's own evaluation is unchanged and still reads every sibling. The other
+  place hosting cover can come from — the member's own other bookings at the same
+  lodge — is bounded the same way, and for the opposite reason to the one that made
+  the booking lifecycle's bound safe: seeing fewer possible hosts makes a booking
+  writer cautious, but it makes a diagnostic report a hosting problem on a booking
+  that is actually covered. Diagnostics now refuses instead, naming which population
+  it could not read.
 
   A deleted booking now reports its deletion once. A booking can only be deleted
   after it is cancelled, so the blocker list used to carry both facts and send an

@@ -222,6 +222,7 @@ import {
   AID6B_CAPACITY_NIGHT_CEILING,
   AID6B_DATABASE_STATEMENT_TIMEOUT_MS,
   AID6B_EVIDENCE_DEADLINE_MS,
+  AID6B_HOSTING_SAME_OWNER_SOURCE_CEILING,
   AID6B_HOSTING_SIBLING_CEILING,
   AID6B_OPEN_REQUEST_CEILING,
   AID6B_TRANSACTION_TIMEOUT_MS,
@@ -2497,8 +2498,17 @@ describe("server-owned evidence is bounded at the database, not only in JS (#237
     await blockStateRow();
     const options = evaluatePersistedHostingMock.mock.calls[0]?.[2] as {
       siblingCeiling?: number;
+      sameOwnerSourceCeiling?: number;
     };
     expect(options.siblingCeiling).toBe(AID6B_HOSTING_SIBLING_CEILING);
+    // BOTH host populations, because the sibling ceiling covered only one of them.
+    // `loadSameBookingOwnerHosts` runs whenever the lodge has the
+    // same-booking-owner scope on, and its writer bound TRUNCATES with no order —
+    // which for a diagnostic means dropping the booking that carries the covering
+    // adult and reporting `policy_adult_member_hosting` on a covered booking.
+    expect(options.sameOwnerSourceCeiling).toBe(
+      AID6B_HOSTING_SAME_OWNER_SOURCE_CEILING,
+    );
   });
 });
 

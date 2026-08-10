@@ -262,6 +262,26 @@ export const AID6B_OPEN_REQUEST_CEILING = 18;
  */
 export const AID6B_HOSTING_SIBLING_CEILING = 25;
 
+/**
+ * How many SAME-OWNER coverage sources the hosting evidence read may consider.
+ *
+ * A SECOND ceiling, at the same number, because it bounds a second population and
+ * the two say different things when they bind: the sibling bound means a #738 split
+ * family has grown implausibly wide, this one means a member holds more than
+ * twenty-five active bookings at ONE lodge overlapping ONE stay. Naming them apart
+ * is the same discipline the reconciler applies to its own SOURCE and DEPENDENT
+ * limits, which are also both twenty-five and also deliberately separate.
+ *
+ * IT EXISTS BECAUSE THE WRITER'S BOUND FAILS THE OTHER WAY. That read truncates at
+ * twenty-five with no `orderBy`, and the reconciler argues correctly that truncating
+ * is safe for a WRITER — fewer hosts means a night reads as uncovered, so the
+ * booking is flagged or refused rather than quietly allowed. For EVIDENCE the same
+ * direction fabricates: miss the sibling carrying the covering adult and the row
+ * reports `policy_adult_member_hosting` as a live blocker on a booking that is
+ * actually covered, and with no order two invocations could disagree.
+ */
+export const AID6B_HOSTING_SAME_OWNER_SOURCE_CEILING = 25;
+
 const UTC_DAY_MS = 24 * 60 * 60 * 1000;
 
 /**
@@ -1101,6 +1121,18 @@ async function readBookingBlockState(
            * a refusal rather than a quietly short host list.
            */
           siblingCeiling: AID6B_HOSTING_SIBLING_CEILING,
+          /**
+           * AND THE OTHER HOST POPULATION, which the sibling ceiling did not cover.
+           *
+           * `loadSameBookingOwnerHosts` is reached whenever the lodge has the
+           * same-booking-owner host scope on, and its writer bound TRUNCATES with no
+           * order. For a writer that errs towards flagging; here it would drop the
+           * sibling carrying the covering adult and report
+           * `policy_adult_member_hosting` as a live blocker on a covered booking,
+           * non-deterministically. Two ceilings, because they bound two populations
+           * whose bindings mean different things to an operator.
+           */
+          sameOwnerSourceCeiling: AID6B_HOSTING_SAME_OWNER_SOURCE_CEILING,
           subscriptionLockoutMode: requireResolvedLockoutMode(
             subscriptionLockoutMode,
           ),

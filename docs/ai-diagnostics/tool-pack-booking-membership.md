@@ -411,12 +411,30 @@ SELECT pg_catalog.set_config('statement_timeout', $1, true)
   sub-read joins its caller's transaction rather than opening a second: a nested
   interactive transaction is a second pool connection, which is the pool-starvation
   shape `docs/CONCURRENCY_AND_LOCKING.md` forbids.
-- **The sibling fan-out has a deterministic ceiling.** It is the widest read in either
-  pack, because each sibling arrives with its guests and their night rows. It stays
-  **unbounded for a writer** — a hosting answer must see every booking that could
-  cover a night, so truncating it would change the rule — and an evidence caller
-  passes a ceiling of 25, reads `ceiling + 1` under a total order, and **refuses**
-  rather than returning a quietly short host list.
+- **Both host populations have a deterministic ceiling, and they are separate
+  ceilings.** The sibling fan-out is the widest read in either pack, because each
+  sibling arrives with its guests and their night rows. It stays **unbounded for a
+  writer** — a hosting answer must see every booking that could cover a night, so
+  truncating it would change the rule — and an evidence caller passes a ceiling of
+  25, reads `ceiling + 1` under a total order, and **refuses** rather than returning
+  a quietly short host list.
+
+  The **same-owner coverage sources** now get the same treatment, and did not at
+  first. That read already had a writer's bound — `take: 25` with no `orderBy` — and
+  the reconciler argues correctly that truncating there is safe **for a writer**:
+  fewer hosts means a night reads as uncovered, so the booking is flagged or refused
+  rather than quietly allowed. **That argument inverts for evidence.** Miss the
+  booking carrying the covering adult and the row reports
+  `policy_adult_member_hosting` as a live blocker on a booking that is actually
+  covered — a fabricated finding, the opposite of safe — and with no order two
+  invocations could disagree about the same booking with nothing on the row to say
+  which 25 each saw. So an evidence caller passes a second ceiling and gets an
+  ordered `ceiling + 1` read and its own named refusal. Two ceilings rather than one
+  because they bound two populations whose bindings mean different things: a bound
+  sibling read means a split family has grown implausibly wide, a bound same-owner
+  read means one member holds more than 25 active bookings at one lodge over one
+  window, and an operator told "I cannot tell you" needs to know which. Writers
+  still omit both, so their reads are byte-identical.
 
 ### The server-owned residual, stated plainly
 
