@@ -2748,7 +2748,10 @@ function parseAdminTeachers(raw: unknown) {
 }
 
 export function serializeBookingRequestForAdmin(
-  request: BookingRequest & { lodge?: { name: string } | null }
+  request: BookingRequest & {
+    lodge?: { name: string } | null;
+    otherLodge?: { name: string } | null;
+  }
 ) {
   // #2342: an admin READ never dies on one malformed historical row. This is
   // the single serialiser behind BOTH the queue list
@@ -2774,6 +2777,11 @@ export function serializeBookingRequestForAdmin(
     // included the lodge relation.
     lodgeId: request.lodgeId,
     lodgeName: request.lodge?.name ?? null,
+    // Other/partner lodge the requester said they belong to (#2749). Null
+    // otherLodgeId means "No"; otherLodgeName is present only when the caller
+    // included the otherLodge relation.
+    otherLodgeId: request.otherLodgeId,
+    otherLodgeName: request.otherLodge?.name ?? null,
     // Whole-lodge exclusivity (ADR-001). Emitted so the admin queue can badge
     // it — for SCHOOL rows too, closing a display gap that predates #2263 — and
     // so the member-origin approval branch can be selected at all.
