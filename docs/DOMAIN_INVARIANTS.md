@@ -564,7 +564,7 @@ Prefix `INV-PRIV`.
 | `INV-PRIV-010` | Every one of these fails closed, and the public website still renders normally |
 | `INV-PRIV-011` | Which person fields the log/Sentry redactor strips by key, that key coverage is not exhaustive, and that audit rows deliberately keep name and street address |
 | `INV-PRIV-012` | Audit category follows the affected domain; member visibility declared separately; rows already written are `INV-OPS-012` |
-| `INV-PRIV-013` | An `admin` writer moves only to close a SPLIT, never on a surface reading; the fifteen lodge-gated keeps, with `lockers` settled at `admin` (#2777) after the new-category alternative was costed and declined — reopening it is the owner's |
+| `INV-PRIV-013` | An `admin` writer moves only to close a SPLIT, never on a surface reading; the fifteen lodge-gated keeps and the `lockers` settlement (#2777: stay `admin`) |
 
 ## Membership Lifecycle
 

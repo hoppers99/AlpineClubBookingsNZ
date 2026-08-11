@@ -1176,22 +1176,15 @@ export const LODGE_GATED_ADMIN_CATEGORIES_2765: Readonly<
  * obviously their domain, and unlike the other eleven the surface reading and the
  * access model disagree.
  *
- * WHY THE ANSWER `membership` COULD NOT SIMPLY BE APPLIED, measured on #2765 and
- * recorded here because the next reader will reach for it too. `membership` is a
- * PERMISSION AREA and a CORRELATION DOMAIN in this codebase; it is not an audit
- * category. `AUDIT_CATEGORIES` has no such member (`isAuditCategory("membership")`
- * is pinned false), `category: "membership"` is TS2322 at the write site, and
- * `assertCanonicalAuditCategory` would throw and roll back the locker write if one
- * ever reached the boundary — it is one of the two invented values #2581 removed.
- * Every canonical category that DOES route to the membership correlation entry —
- * `account`, `family`, `communication`, `privacy` — is member-VISIBLE, and these
- * four writers pass `memberId: <the acting officer>` with no `subjectMemberId`, so
- * `buildMemberAuditLogWhere`'s null-subject `memberId` leg would put every locker
- * change on the acting officer's own activity page. That is a WIDENING onto a
- * member-facing surface, which `INV-PRIV-012` and `INV-OPS-012` both reserve to the
- * owner. The census test pins the emptiness of "member-invisible categories in the
- * membership correlation domain", so if that ever stops being true the failure
- * message says the question has become answerable.
+ * WHY THE ANSWER `membership` COULD NOT SIMPLY BE APPLIED: `membership` is a
+ * permission area and a correlation domain here, not an audit category, and every
+ * category that does route to the membership correlation entry is member-visible.
+ * The measurement, the declined alternative and the accepted cost are recorded
+ * once, in `INV-PRIV-013` (narrative on #2777). The census test asserts the
+ * load-bearing facts rather than trusting this comment: `isAuditCategory
+ * ("membership")` is pinned false, and "member-invisible categories in the
+ * membership correlation domain" is pinned as an empty set, so if that ever stops
+ * being true the failure message says the question has become answerable.
  */
 export const MEMBERSHIP_GATED_LOCKER_SITES_2765: readonly string[] = [
   "src/app/api/admin/lockers/route.ts::POST.locker#0",

@@ -1243,7 +1243,7 @@ describe("audit writer census (#2581)", { timeout: 180_000 }, () => {
         "the reason a general reclassification gate is not available, and " +
         "`bed-allocation-audit-category-backfill.test.ts` quotes them again. Update " +
         "both, in the same pull request as this line (INV-OPS-012).",
-    ).toEqual({ pinned: 121, unpinned: 307 });
+    ).toEqual({ pinned: 122, unpinned: 307 });
   });
 
   it("pins which classified writers a MEMBER can now see about themselves", () => {

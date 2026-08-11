@@ -148,7 +148,7 @@ rules first written here. #2765 extended it with the measured-audience half.
   still unreleased and unapplied anywhere. A GENERAL "did a reclassification ship
   without a
   backfill" check is **not available**, and pretending otherwise would be worse
-  than having none: the audit-writer census pins only 121 of its 428 write sites
+  than having none: the audit-writer census pins only 122 of its 429 write sites
   per-site — the union of `APPLIED_AUDIT_CATEGORIES`,
   `REVIEWED_ADMIN_CATEGORIES_2730`, `MEMBER_RECORD_ADMIN_CATEGORIES_2755` and
   `LODGE_GATED_ADMIN_CATEGORIES_2765`, counted rather than added up, and asserted
@@ -195,10 +195,8 @@ rules first written here. #2765 extended it with the measured-audience half.
   not the end of the obligation — the question went back to the owner as **#2777**,
   a filed issue with the measurement and the costed alternatives, because a
   carry-forward named in a pull request and nowhere else is the defect #2765 was
-  itself opened to fix. #2777 was decided on 11 August 2026 — the four locker
-  writers stay `admin`, the new-category alternative declined — which is the shape
-  the obligation asks for: measured, filed, decided, and recorded
-  (`INV-PRIV-013`).
+  itself opened to fix. #2777 was decided on 11 August 2026; `INV-PRIV-013`
+  records the settlement.
 
 ## INV-OPS-005
 

@@ -300,36 +300,13 @@ measured against — *did this site split a subsystem* — which is written down
 `INV-PRIV-013` and enforced by `LODGE_GATED_ADMIN_CATEGORIES_2765`
 (`scripts/audit/audit-writer-census-manifest.ts`), measured from the tree, so a
 third pass that disagrees fails CI instead of landing the change and finding the
-argument afterwards. **`lockers` was decided for `membership` and the move was
-refused on measurement, which is the interesting part:** `membership` is a
-permission area and a correlation domain here, not a category — `category:
-"membership"` is a compile error and it is one of the two invented values #2581
-removed — and every category that DOES route to the membership correlation entry
-(`account`, `family`, `communication`, `privacy`) is member-visible. The four
-locker writers pass `memberId: <the acting officer>` with no `subjectMemberId`, so
-a member-visible destination would put every locker change on the acting officer's
-own activity page — not on the page of the member the locker is allocated to, whose
-id is only inside `metadata` and is no query leg at all. That crossing is the
-owner's decision under `INV-PRIV-012` and `INV-OPS-012`, so the sites stay `admin`
-and the question went back as its own filed decision, **#2777**, with the reason
-measured rather than argued. **#2777 was decided on 11 August 2026: the four
-locker writers stay `admin`.** The accepted trade-off is a permission
-requirement, not a choice of tool: the correlation path for these rows is the
-System entry, which requires `support`, so a Membership Officer who does not
-also hold Support & System cannot correlate a member's locker history at all —
-a stated gap, because the System and Lodge entries' scope strings keep naming
-lockers as `admin`.
-
-**#2777 also carried — and the owner declined — the option the refusal on its
-own does not:** a NEW canonical category mapped to the membership correlation
-domain and deliberately left off
-`MEMBER_VISIBLE_AUDIT_CATEGORIES` is member-invisible and delivers what the access
-model asks for. "No member-invisible destination" is a fact about today's closed
-taxonomy, not an impossibility — see `INV-PRIV-013`, which also carries the reason
-such a category must not reuse the string `membership`: three pre-#2581 writers
-stored that value in real rows, no migration ever rewrote them, so reviving the
-name would make rows already written correlatable by anyone with support and
-membership access.
+argument afterwards. **`lockers` was decided for `membership`, the move was
+refused on measurement — the intended destination turned out to be
+member-visible, reaching the acting officer's own activity page — and the
+question went back as its own filed decision, #2777, which the owner settled on
+11 August 2026: the four stay `admin`.** The measurement, the declined
+extend-the-taxonomy alternative and the accepted cost are recorded once, in
+`INV-PRIV-013`, with the full option set on #2777 itself.
 
 **Why `LODGE_DISPLAY_CONFIG_UPDATED` moved and `LODGE_UPDATED` did not**, since
 both name a Lodge on a `lodge:edit` route: the display writer was closing a
