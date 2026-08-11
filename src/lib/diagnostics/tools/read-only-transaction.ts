@@ -160,33 +160,40 @@ export const DIAGNOSTICS_READ_ONLY_STATEMENT_TIMEOUT_MS =
   DIAGNOSTICS_TOOL_BOUNDS.statementTimeoutMs;
 
 /**
- * How much longer the whole transaction may run than any one statement in it.
- *
- * Named rather than inlined so the ORDERING is legible: the ceiling has to sit
- * strictly above the statement timeout, or Prisma's transaction timeout fires
- * first and the operator gets a generic transaction error instead of PostgreSQL's
- * specific cancellation. It is a margin over one statement, not a second bound in
- * its own right, which is why it is small.
- */
-const READ_ONLY_TRANSACTION_MARGIN_MS = 2_000;
-
-/**
  * The interactive-transaction ceiling: strictly ABOVE the statement timeout so the
  * database's own cancellation is what a slow read hits, and strictly below every
  * evidence source's JavaScript deadline so this process is still waiting to report
  * it. The ordering statement < transaction < source deadline is asserted rather
  * than assumed.
+ *
+ * The margin that produces it moved into `types.ts` with the rest of the ladder
+ * (#2804), because the source deadline and the executor's outer race now DERIVE
+ * from it too — and a margin that three bounds depend on cannot live in the one
+ * module that only needs two of them.
  */
 export const DIAGNOSTICS_READ_ONLY_TRANSACTION_TIMEOUT_MS =
-  DIAGNOSTICS_READ_ONLY_STATEMENT_TIMEOUT_MS + READ_ONLY_TRANSACTION_MARGIN_MS;
+  DIAGNOSTICS_TOOL_BOUNDS.readOnlyTransactionTimeoutMs;
 
 /**
  * How long Prisma may wait for a pool connection before giving up on opening the
- * transaction at all. Unchanged from #2376: a diagnostics read that cannot get a
- * connection within two seconds should refuse, not join the queue that is already
- * the problem.
+ * transaction at all.
+ *
+ * WAS TWO SECONDS, AND THE REASONING FOR THAT WAS NEVER REALLY TESTED. It came
+ * from #2376 as "a diagnostics read that cannot get a connection within two
+ * seconds should refuse, not join the queue that is already the problem" — which
+ * sounds right and quietly assumed the queue is always pathological. Usually it
+ * is not: it is a second admin looking at a page. Owner decision #2804 is that an
+ * admin would rather wait for a busy database than be told to try again, so this
+ * is now twenty seconds, and a read that gives up says `evidence_database_busy`
+ * rather than being folded in with a genuine fault.
+ *
+ * It stays FINITE, and that is not a compromise on the decision — it is the
+ * decision's own limit. An unbounded queue of readers each holding a pool slot is
+ * precisely the incident this seam exists to prevent, and Prisma requires a number
+ * regardless.
  */
-const READ_ONLY_TRANSACTION_MAX_WAIT_MS = 2_000;
+const READ_ONLY_TRANSACTION_MAX_WAIT_MS =
+  DIAGNOSTICS_TOOL_BOUNDS.readOnlyMaxWaitMs;
 
 /**
  * Run one `server_owned` evidence read inside a `REPEATABLE READ`, READ ONLY,
@@ -212,6 +219,39 @@ export async function withBoundedReadOnlyTransaction<T>(
       timeout: DIAGNOSTICS_READ_ONLY_TRANSACTION_TIMEOUT_MS,
     },
   );
+}
+
+/**
+ * Did this failure mean "the database was too busy to even start", as opposed to
+ * "the read ran and something went wrong"? (#2804)
+ *
+ * Prisma raises `P2024` when `maxWait` expires without a free pool connection.
+ * That is the ONE failure on this path where nothing is broken — the database is
+ * reachable, the query is fine, every connection was simply in use — and it is
+ * therefore the one an operator must not be sent to debug.
+ *
+ * IT MATTERS MORE NOW THAN IT DID. At a two-second wait this was a rare event
+ * folded into the generic refusal without much cost. At twenty seconds, an admin
+ * who has watched a spinner for twenty seconds is owed an accurate reason for it,
+ * and "the system evidence could not be gathered" would send them looking for a
+ * fault that does not exist.
+ *
+ * MATCHED ON THE CODE, NOT THE MESSAGE. `P2024`'s human text has been reworded
+ * across Prisma releases and is not a contract; the code is. The `instanceof`
+ * check is deliberately avoided in favour of a structural read, because a driver
+ * adapter can wrap the error and `instanceof` then quietly stops matching — which
+ * would silently reclassify every busy refusal as a fault, in the direction that
+ * loses information rather than the direction that fails loudly.
+ */
+export function isDiagnosticsPoolWaitTimeout(error: unknown): boolean {
+  if (typeof error !== "object" || error === null) return false;
+  const code = (error as { code?: unknown }).code;
+  if (code === "P2024") return true;
+  // The adapter wraps the original; check one level down rather than reaching
+  // arbitrarily deep, so this cannot start matching something unrelated.
+  const cause = (error as { cause?: unknown }).cause;
+  if (typeof cause !== "object" || cause === null) return false;
+  return (cause as { code?: unknown }).code === "P2024";
 }
 
 /**

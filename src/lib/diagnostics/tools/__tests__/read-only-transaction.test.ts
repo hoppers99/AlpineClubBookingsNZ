@@ -43,6 +43,7 @@ import {
 import {
   DIAGNOSTICS_READ_ONLY_STATEMENT_TIMEOUT_MS,
   DIAGNOSTICS_READ_ONLY_TRANSACTION_TIMEOUT_MS,
+  isDiagnosticsPoolWaitTimeout,
   withBoundedReadOnlyTransaction,
 } from "../read-only-transaction";
 
@@ -127,7 +128,8 @@ describe("the seam opens ONE bounded read-only transaction (#2786)", () => {
         // STATEMENT, so an evidence row assembled across several statements could
         // mix instants — which is exactly what these entries promise they do not.
         isolationLevel: "RepeatableRead",
-        maxWait: 2_000,
+        // Derived, never a literal (#2804). See the ladder in `types.ts`.
+        maxWait: DIAGNOSTICS_TOOL_BOUNDS.readOnlyMaxWaitMs,
         timeout: DIAGNOSTICS_READ_ONLY_TRANSACTION_TIMEOUT_MS,
       }),
     );
@@ -173,6 +175,39 @@ describe("the seam opens ONE bounded read-only transaction (#2786)", () => {
     expect(received).toBe(tx);
   });
 
+  it("recognises a pool-wait timeout, and only that (#2804)", () => {
+    // P2024 is Prisma's "waited maxWait and no connection came free". It is the
+    // ONE failure on this path where nothing is broken, and at a twenty-second
+    // wait an admin is owed that distinction rather than a generic fault.
+    expect(isDiagnosticsPoolWaitTimeout({ code: "P2024" })).toBe(true);
+    // Wrapped one level by the driver adapter, which is how it actually arrives.
+    expect(
+      isDiagnosticsPoolWaitTimeout({ cause: { code: "P2024" } }),
+    ).toBe(true);
+
+    // Everything else is a real fault and must NOT be softened into "just busy" —
+    // that direction loses information an operator needs.
+    expect(isDiagnosticsPoolWaitTimeout({ code: "P2010" })).toBe(false);
+    expect(isDiagnosticsPoolWaitTimeout(new Error("connection refused"))).toBe(
+      false,
+    );
+    expect(isDiagnosticsPoolWaitTimeout(null)).toBe(false);
+    expect(isDiagnosticsPoolWaitTimeout(undefined)).toBe(false);
+    expect(isDiagnosticsPoolWaitTimeout("P2024")).toBe(false);
+    // Matched on the CODE, not the message: P2024's wording has changed across
+    // Prisma releases and is not a contract.
+    expect(
+      isDiagnosticsPoolWaitTimeout({
+        message: "Timed out fetching a new connection from the connection pool",
+      }),
+    ).toBe(false);
+    // And it does not reach arbitrarily deep, so it cannot start matching
+    // something unrelated that happens to nest a code two levels down.
+    expect(
+      isDiagnosticsPoolWaitTimeout({ cause: { cause: { code: "P2024" } } }),
+    ).toBe(false);
+  });
+
   it("lets a rejection out rather than converting it into a row", async () => {
     const failure = new Error("the database stopped answering");
     await expect(
@@ -195,6 +230,56 @@ describe("the seam opens ONE bounded read-only transaction (#2786)", () => {
     expect(DIAGNOSTICS_READ_ONLY_STATEMENT_TIMEOUT_MS).toBeLessThan(
       DIAGNOSTICS_READ_ONLY_TRANSACTION_TIMEOUT_MS,
     );
+  });
+
+  it("keeps the whole four-bound ladder in order (#2804)", () => {
+    const {
+      statementTimeoutMs,
+      readOnlyMaxWaitMs,
+      readOnlyTransactionTimeoutMs,
+      serverEvidenceDeadlineMs,
+      serverEvidenceTimeoutMs,
+    } = DIAGNOSTICS_TOOL_BOUNDS;
+
+    // THE ORDER IS THE CONTRACT, and #2804 is why it is asserted across all four
+    // rather than the two the seam owns. Raising the wait for a connection from
+    // 2 s to 20 s pushed the database's own worst case (wait + transaction) from
+    // 9 s to 27 s — straight past a source deadline that was a hand-set 10 000 and
+    // an executor race that was a hand-set 15 000. Both would have gone on
+    // "passing" while firing BEFORE the read they were supposed to be backstops
+    // for, turning "the database was busy" into a generic timeout. Nothing in the
+    // old suite would have failed.
+    expect(statementTimeoutMs).toBeLessThan(readOnlyTransactionTimeoutMs);
+
+    // The source deadline must clear the worst case the database can impose, or a
+    // read that queued and then ran perfectly well is killed for the time it spent
+    // waiting.
+    expect(readOnlyMaxWaitMs + readOnlyTransactionTimeoutMs).toBeLessThan(
+      serverEvidenceDeadlineMs,
+    );
+
+    // And the executor's race is the OUTER backstop, so the source's own specific
+    // refusal always wins.
+    expect(serverEvidenceDeadlineMs).toBeLessThan(serverEvidenceTimeoutMs);
+
+    // The readiness answer INCLUDES the role-privilege probe, so the outer race
+    // must clear that too or "the role could not be reached, and readiness says
+    // so" becomes a timeout that says nothing.
+    expect(DIAGNOSTICS_TOOL_BOUNDS.privilegeProbeTimeoutMs).toBeLessThan(
+      serverEvidenceTimeoutMs,
+    );
+  });
+
+  it("holds the owner's decided wait, so shortening it is a visible change (#2804)", () => {
+    // The one number in the ladder that is a CHOICE rather than a derivation, so
+    // it is pinned on its own. Everything else follows from it; quietly restoring
+    // 2_000 would silently undo an owner decision and every derived bound would
+    // shrink with it, still "in order" and still green.
+    expect(DIAGNOSTICS_TOOL_BOUNDS.readOnlyMaxWaitMs).toBe(20_000);
+    // The statement timeout deliberately did NOT move. Waiting longer to start is
+    // what was asked for; letting a running query run longer is the half that
+    // actually loads the database.
+    expect(DIAGNOSTICS_TOOL_BOUNDS.statementTimeoutMs).toBe(5_000);
   });
 });
 

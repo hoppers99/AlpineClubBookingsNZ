@@ -194,6 +194,50 @@ describe("server-owned evidence: the gates that still apply (#2375)", () => {
     expect(auditMock.mock.calls[0][0].audit.authOutcome).toBe("allowed");
   });
 
+  it("reports a BUSY POOL as its own reason, not as a fault (#2804)", async () => {
+    // The owner raised the wait for a connection from 2 s to 20 s so an admin
+    // waits for a busy database rather than being told to try again. An admin who
+    // has waited that long is then owed an accurate reason: nothing is broken,
+    // every connection was simply in use. Folding this into
+    // `evidence_unavailable` would send them looking for a fault that does not
+    // exist — the message for that one says the evidence "could not be gathered".
+    findToolMock.mockReturnValue(
+      serverOwnedEntry({
+        read: async () => {
+          throw Object.assign(
+            new Error(
+              "Timed out fetching a new connection from the connection pool",
+            ),
+            { code: "P2024" },
+          );
+        },
+      }),
+    );
+
+    const result = await invoke();
+
+    expect(result.status).toBe("error");
+    if (result.status !== "error") return;
+    expect(result.reason).toBe("evidence_database_busy");
+    expect(result.reason).not.toBe("evidence_unavailable");
+    // The operator sentence has to carry the distinction, not just the code —
+    // the code is what the model sees, the sentence is what the human reads.
+    expect(result.message).toMatch(/busy/i);
+    expect(result.message).toMatch(/nothing is broken/i);
+    // The flag is set ONLY by the source's own P2024 rejection, never by the
+    // deadline arm — "we waited for a connection and gave up" and "the whole graph
+    // overran" are different answers. The existing "gives up on a source that never
+    // answers" test below pins that the deadline still reports
+    // `evidence_unavailable`, so this does not need a duplicate of it (and a
+    // duplicate without fake timers would have cost CI 45 real seconds).
+    // Still fails closed, still audited as an allowed call that then failed.
+    expect(result.rows ?? []).toHaveLength(0);
+    expect(auditMock.mock.calls[0][0].audit.failureReason).toBe(
+      "evidence_database_busy",
+    );
+    expect(auditMock.mock.calls[0][0].audit.authOutcome).toBe("allowed");
+  });
+
   it("reports a source that throws SYNCHRONOUSLY the same way", async () => {
     findToolMock.mockReturnValue(
       serverOwnedEntry({

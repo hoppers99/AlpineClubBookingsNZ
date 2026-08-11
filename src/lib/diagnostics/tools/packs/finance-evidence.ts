@@ -131,6 +131,7 @@ import { getPaymentDisplayStatus } from "@/lib/payment-status-display";
 
 import type { DiagnosticsToolRawRow } from "../define";
 import { withBoundedReadOnlyTransaction } from "../read-only-transaction";
+import { DIAGNOSTICS_TOOL_BOUNDS } from "../types";
 
 /**
  * This source's OWN deadline, below the executor's 15-second wait.
@@ -154,7 +155,8 @@ import { withBoundedReadOnlyTransaction } from "../read-only-transaction";
  * database refuses first and the operator gets the specific `57014 query_canceled`
  * cause rather than a race.
  */
-const BOOKING_FINANCE_DEADLINE_MS = 10_000;
+const BOOKING_FINANCE_DEADLINE_MS =
+  DIAGNOSTICS_TOOL_BOUNDS.serverEvidenceDeadlineMs;
 
 /**
  * The maximum attempts the payment-recovery cron makes before a `FAILED`

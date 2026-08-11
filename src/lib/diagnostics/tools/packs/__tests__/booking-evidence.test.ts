@@ -221,6 +221,7 @@ import {
   DIAGNOSTICS_READ_ONLY_STATEMENT_TIMEOUT_MS,
   DIAGNOSTICS_READ_ONLY_TRANSACTION_TIMEOUT_MS,
 } from "../../read-only-transaction";
+import { DIAGNOSTICS_TOOL_BOUNDS } from "../../types";
 import {
   AID6B_BOOKING_GUEST_CEILING,
   AID6B_CAPACITY_NIGHT_CEILING,
@@ -2558,7 +2559,10 @@ describe("server-owned evidence is bounded at the database, not only in JS (#237
           // pair a party read at instant A with occupancy read at instant B, which
           // is exactly what the entry's own copy promises it cannot.
           isolationLevel: "RepeatableRead",
-          maxWait: 2_000,
+          // Derived, never a literal (#2804): the owner raised the wait and a
+          // hardcoded 2_000 here would have gone on passing against a bound that
+          // had moved. The assertion follows the ladder or it is not an assertion.
+          maxWait: DIAGNOSTICS_TOOL_BOUNDS.readOnlyMaxWaitMs,
           timeout: DIAGNOSTICS_READ_ONLY_TRANSACTION_TIMEOUT_MS,
         }),
       );

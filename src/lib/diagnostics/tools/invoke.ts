@@ -92,6 +92,7 @@ import {
   type DiagnosticsToolRow,
   type DiagnosticsToolSuccess,
 } from "./types";
+import { isDiagnosticsPoolWaitTimeout } from "./read-only-transaction";
 
 export interface InvokeDiagnosticsToolInput {
   /** UNTRUSTED: the tool id the model asked for. Looked up, never trusted. */
@@ -353,10 +354,17 @@ async function readServerOwnedEvidence(
   read: () => Promise<readonly DiagnosticsToolRawRow[]>,
 ): Promise<
   | { ok: true; rows: readonly DiagnosticsToolRawRow[]; durationMs: number }
-  | { ok: false; durationMs: number }
+  | { ok: false; durationMs: number; busy: boolean }
 > {
   const startedAt = Date.now();
   let timer: ReturnType<typeof setTimeout> | undefined;
+  // Set by the catch below when the source failed ONLY because the pool never
+  // freed a connection (#2804). It is a `let` beside the race rather than part of
+  // the sentinel because the deadline arm resolves the same sentinel and must NOT
+  // be reported as busy: "we waited for a connection and gave up" and "the whole
+  // graph overran" are different answers, and the deadline is not evidence of
+  // which. It stays false unless the source itself rejected with P2024.
+  let poolBusy = false;
 
   try {
     const source = Promise.resolve()
@@ -365,6 +373,7 @@ async function readServerOwnedEvidence(
       // callback; an inferred return widens it to `symbol`, and the `===` below then
       // narrows nothing.
       .catch((err: unknown): typeof NO_EVIDENCE => {
+        poolBusy = isDiagnosticsPoolWaitTimeout(err);
         // Recorded once, here, so the reason is diagnosable even though the failure
         // the operator sees is deliberately generic. The error object is NOT
         // forwarded: a first-party calculation can wrap a driver error whose message
@@ -392,11 +401,11 @@ async function readServerOwnedEvidence(
 
     const outcome = await Promise.race([source, deadline]);
     if (outcome === NO_EVIDENCE) {
-      return { ok: false, durationMs: Date.now() - startedAt };
+      return { ok: false, durationMs: Date.now() - startedAt, busy: poolBusy };
     }
     return { ok: true, rows: outcome, durationMs: Date.now() - startedAt };
   } catch {
-    return { ok: false, durationMs: Date.now() - startedAt };
+    return { ok: false, durationMs: Date.now() - startedAt, busy: poolBusy };
   } finally {
     if (timer !== undefined) clearTimeout(timer);
   }
@@ -877,7 +886,10 @@ export async function invokeDiagnosticsTool(
       //     diagnostics role is the fault.
       const serverRead = await readServerOwnedEvidence(tool.id, binding.read);
       if (!serverRead.ok) {
-        return await fail("evidence_unavailable", {
+        // A busy pool is not a fault, and #2804 made the wait long enough that
+        // saying so matters: an admin who waited twenty seconds is owed the
+        // difference between "nothing is broken, try again" and "go and look".
+        return await fail(serverRead.busy ? "evidence_database_busy" : "evidence_unavailable", {
           toolId: tool.id,
           areasChecked: tool.requiredAreas,
           authOutcome: "allowed",

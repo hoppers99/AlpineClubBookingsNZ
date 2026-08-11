@@ -353,6 +353,37 @@ makes the reads share one snapshot. It sets no `lock_timeout`: the SELECT-only e
 does, and adding one here would change when the re-homed entries refuse, so the exposure
 is bounded by the statement timeout instead (a slower refusal, never an unbounded wait).
 
+**The four bounds are one derived ladder, and the order is the contract** (#2804):
+
+| bound | value | covers |
+|---|---|---|
+| `readOnlyMaxWaitMs` | 20 000 ms | waiting for a pool connection |
+| `readOnlyTransactionTimeoutMs` | 7 000 ms | the read once it has started |
+| `serverEvidenceDeadlineMs` | 32 000 ms | one source's whole evidence graph |
+| `serverEvidenceTimeoutMs` | 45 000 ms | the executor's outer race |
+
+Only the wait and the statement timeout are chosen; the other three are computed from
+them in `types.ts`. That is deliberate. The wait was 2 000 ms until an owner decision in
+August 2026 said an admin would rather wait for a busy database than be told to try
+again — and raising it pushed the database's own worst case from 9 s to 27 s, straight
+past a source deadline that was a hand-set 10 000 and an outer race that was a hand-set
+15 000. Both would have gone on "passing" while firing *before* the read they exist to
+back stop. Deriving them means moving the wait moves everything that depends on it.
+
+**The statement timeout deliberately did not move.** Waiting longer to *start* is what
+was asked for; letting a running query run longer is the half that actually loads the
+database.
+
+A read that waits the full 20 s and never gets a connection refuses with
+`evidence_database_busy`, not `evidence_unavailable`. The distinction is the point: the
+second means the calculation ran and could not answer, so go and look for a fault; the
+first means the database is reachable and busy, nothing is broken, and the answer is to
+try again shortly. At a two-second wait that was a rare event not worth its own code; at
+twenty seconds, an admin who waited that long is owed an accurate reason for it. A UI
+showing this **must** also show progress while it waits — a 27-second wait with no
+feedback makes an admin reload, and a reload during contention adds another queued
+reader.
+
 **Every `server_owned` spec must declare `readOnlySeam`**, and the field is required, so
 a new entry cannot compile without answering. It says whether the entry threads its own
 reads through the seam, which declared exemptions it reads through, or both.

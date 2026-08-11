@@ -239,6 +239,13 @@ export const DIAGNOSTICS_EVIDENCE_STATE_DESCRIPTIONS: Record<
  *    the same words, and telling an operator their question is unanswerable when one
  *    tick would answer it is the same defect this issue fixed for the record gate.
  *    `consent_required` stays separate from it because the two remedies differ.
+ *  - `evidence_database_busy` becomes `temporarily_unavailable`, NOT
+ *    `evidence_unavailable` (#2804). It joins `metering_unavailable` and friends
+ *    for the reason that group exists: a later attempt may well not hit it. The
+ *    database was reachable and every connection was simply in use, so nothing is
+ *    configured wrongly and nothing has drifted — mapping it to
+ *    `evidence_unavailable` would tell an operator the evidence could not be
+ *    gathered, when the truthful answer is that it was not attempted yet.
  *  - `record_not_included` becomes `consent_required`, the same state as
  *    `sensitive_consent_required`. The refusals differ in what the entry would have
  *    returned — codes and instants versus personal details — but the operator's move
@@ -264,6 +271,7 @@ const EVIDENCE_STATE_FOR_FAILURE: Record<
   database_grants_missing: "not_ready",
   query_failed: "tool_failed",
   evidence_unavailable: "evidence_unavailable",
+  evidence_database_busy: "temporarily_unavailable",
   result_too_large: "limit_exceeded",
   redaction_failed: "tool_failed",
   audit_unavailable: "temporarily_unavailable",
