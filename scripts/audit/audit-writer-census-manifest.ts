@@ -279,7 +279,14 @@ export const AUDIT_CENSUS_TOTALS = {
    * rejected would replay a refund for the sake of recording something about a
    * refund. `filesScanned` moved 1895 -> 1901 across the merged tree.
    */
-  writeSites: 431,
+  // 428 -> 429 (#2760): `booking.payment.auto_refund_record_failed`, above.
+  // 429 -> 432 (#2749): the three Other Lodges admin CRUD audit writers
+  // (OTHER_LODGE_CREATED/UPDATED/DELETED), all `auditLog.create`, category
+  // `admin`. Re-measured with `npm run audit:census` on the merged tree (432 TS
+  // sites; the raw `sql.insert` seed row is tracked in `sqlStatements`, not here).
+  // 432 -> 434 (#2773/#2774): the two late-capture writers this branch
+  // adds. Re-measured with `npm run audit:census` on the merged tree.
+  writeSites: 434,
   /**
    * Of those, sites whose event object carries no `category` key.
    *
@@ -358,7 +365,8 @@ export const AUDIT_CENSUS_TOTALS = {
     // 72 -> 70 (#2581 child 2): the two dependants writes, above.
     // 70 -> 69 (#2581 child 2 review): the age-up handoff write, above. No
     // hand-built `auditLog.create` remains outside a declared wrapper.
-    "auditLog.create": { total: 69, uncategorised: 0 },
+    // 69 -> 72 (#2749): the three Other Lodges admin CRUD writers, above.
+    "auditLog.create": { total: 72, uncategorised: 0 },
   },
   /**
    * Literal category values written, and by how many sites. The three `membership`
@@ -516,7 +524,11 @@ export const AUDIT_CENSUS_TOTALS = {
     // below, with an action-name gate and a surface gate beside it, because this
     // count cannot see a compensating swap and cannot see a FOURTH member-record
     // screen arriving with a different answer. Full rule: `INV-PRIV-012`.
-    admin: 98,
+    // 98 -> 101 (#2749): the three Other Lodges admin CRUD writers. `admin` is
+    // readable with support:view alone, so this widens the weakest-gate set by
+    // three (the derived support:view total moves 120 -> 123) — the officers who
+    // curate the Other Lodges registry, not a new class of reader.
+    admin: 101,
     // 16 -> 19 (#2581 child 2): `member.password-reset-sent` and
     // `member.setup-invite-sent` (decision 3 — the affected domain is the
     // CREDENTIAL, not the mailing), plus the `member.bulk-set-role` branch

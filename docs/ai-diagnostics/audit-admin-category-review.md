@@ -12,7 +12,7 @@ to look like the absence of a decision.
 way.** #2755 unified the three writers of *an officer editing somebody else's
 member record* on `admin` by moving the two bulk-screen branches IN, rather than
 moving the member-page writer out into a member-visible category. Eight of the
-nine remain held. `admin` therefore reads 98 sites now, not 96, and the rule that
+nine remain held. `admin` therefore reads 101 sites now, not 96, and the rule that
 came out of it is `INV-PRIV-012` — which is also where the fifteen lodge-gated
 sites and the unresolved `lockers` group are now recorded, instead of only in the
 open-question section at the foot of this page.
@@ -551,17 +551,21 @@ land.
 manifest moving with it. The numbers this page was written against:
 
 ```
-row-producing sites:  428
+row-producing sites:  434
 uncategorised:        0
-category values: admin 98, booking 101, xero 34, family 34, payment 34,
+category values: admin 101, booking 101, xero 34, family 34, payment 37,
                  lodge 52, account 19, security 18, privacy 19,
                  communication 14, system 4
 ```
 
 `admin` was 96 when this page was written for #2730 (87 kept + 9 held) and is 98
 after #2755 moved the two `bulk-update/route.ts` branches in, against `account`
-20 → 19 and `security` 19 → 18. The site total is unchanged at 428: #2755 moved
-categories and added no writer. The 22 moves are pinned **per site**, not only by that
+20 → 19 and `security` 19 → 18. #2755 moved categories and added no writer;
+#2760 then added the late-capture auto-refund record writer (`payment` 34 → 35),
+taking the total from 428 to 429. Since then #2749 added the three Other Lodges
+admin CRUD writers (`admin` 98 → 101, 429 → 432) and #2773/#2774 added the two
+late-capture writers this page's own subject depends on (`payment` 35 → 37,
+432 → 434), which is the figure above. The 22 moves are pinned **per site**, not only by that
 distribution: `REVIEWED_ADMIN_CATEGORIES_2730` in
 `scripts/audit/audit-writer-census-manifest.ts` records each one, and the census
 contract test measures the tree against it. A distribution cannot see a swap —
