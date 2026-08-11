@@ -110,6 +110,42 @@ what that member receives.
    email member** or **Create without emailing**. Your choice is recorded in the
    audit log. (An Internet Banking Xero invoice email still sends regardless.)
 
+### Leave it for the member to pay: Save as Draft
+
+**Save as Draft** creates the booking but does not take any money. The member
+signs in, opens it, and pays for it themselves — and *paying* is what confirms
+the booking, so nobody has to come back to you.
+
+Three things are worth knowing before you use it:
+
+- **It works for a member you have locked out.** If your club stops unpaid
+  members from booking (see [Subscription Lockout](subscription-lockout.md)),
+  that stops them *starting* a booking. It has never stopped them paying for one
+  you made for them. So a member who owes their subscription and needs a bed this
+  weekend can be booked in this way, and they settle the hut fee themselves. Their
+  subscription is a separate debt and is still owed.
+- **The member sees it.** It appears on their dashboard as a draft labelled
+  "Saved for you by the club", with a **Review & pay** button. There is no
+  automatic email about a draft, so tell them it is waiting.
+- **Drafts are removed after 72 hours.** An unpaid draft is deleted, not
+  cancelled — after that there is nothing to pay and the booking has to be made
+  again. If the member cannot pay within three days, confirm the booking instead
+  and chase the money the usual way.
+
+**A non-member owner with no login can never pick a draft up.** The wizard also
+books a non-member as the owner (see "When you'd use it" above — someone with no
+login at all). They have no dashboard to open, no way to sign in, and nothing is
+emailed about a draft — so a draft saved for them is a booking nobody can pay,
+and it is **deleted after 72 hours** with the beds never held. The review screen
+says so where you choose. Press **Confirm Booking** for that owner, or save the
+draft only if *you* are coming back to confirm it within three days.
+
+**A $0 booking has nothing for the member to pay, so confirm that one
+yourself.** With no money owing there is no payment step on their screen — the
+booking offers them a **Confirm** button instead, and that button refuses a
+member whose subscription is unpaid. Use **Confirm Booking** here rather than
+**Save as Draft**, or confirm it from the booking's own page afterwards.
+
 ## Settings reference
 
 This is a wizard, not a settings page. The inputs it collects:
@@ -136,12 +172,16 @@ This is a wizard, not a settings page. The inputs it collects:
 | "Some nights are over lodge capacity" panel | The booking exceeds available beds | Review the per-night list and press **Confirm over-capacity and create**, or reduce guests/dates |
 | Confirm fails with a XERO_PERIOD_LOCKED error | The Xero accounting period for that date is locked | Choose a date outside the locked period, or unlock the period in Xero |
 | Cannot Save as Draft | The booking is retroactive or over-capacity | Confirm it instead — drafts are not allowed for those |
+| The member says the draft you saved has disappeared | Unpaid drafts are removed 72 hours after they are saved | Make the booking again, and either confirm it yourself or ask them to pay within three days |
+| A locked-out member cannot complete the free booking you saved for them | A $0 draft has no payment step, and the confirm button refuses an unpaid member | Confirm it for them from the booking page, or use **Confirm Booking** instead of **Save as Draft** |
+| You saved a draft for a non-member owner and nothing happened | They have no login, no dashboard and no draft email, so nobody can pay it — and it is deleted after 72 hours | Confirm the booking instead, or open the draft yourself and confirm it within three days |
 
 ## Related links
 
 - Back to the [documentation hub](../README.md).
 - Sibling guides: [Bookings](bookings.md), [Booking Requests](booking-requests.md),
-  [Promo Codes](promo-codes.md), [Bed Allocation](bed-allocation.md).
+  [Promo Codes](promo-codes.md), [Bed Allocation](bed-allocation.md),
+  [Subscription Lockout](subscription-lockout.md).
 - Reference: [`CONFIGURATION.md`](../../CONFIGURATION.md#book-on-behalf) for the
   book-on-behalf rules, the
   [booking/payment flow](../ARCHITECTURE.md#booking-and-payment-flow), and
