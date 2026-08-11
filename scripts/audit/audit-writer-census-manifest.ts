@@ -1256,6 +1256,15 @@ export const LODGE_GATED_ADMIN_CATEGORIES_2765: Readonly<
   "src/app/api/admin/work-parties/route.ts::POST#0": "admin",
   "src/app/api/admin/work-parties/[id]/route.ts::PUT#0": "admin",
   "src/app/api/admin/work-parties/[id]/route.ts::DELETE#0": "admin",
+
+  // ─── Other-lodges registry (#2749, arrived after the #2765 decision) ────────
+  // Classified under INV-PRIV-013's own rule rather than re-decided: a NEW
+  // uniform subsystem (no sibling writer files elsewhere, so no split to close),
+  // gated `lodge:view`/`lodge:edit`, filing `admin`. Pinned on arrival so the
+  // next change is deliberate.
+  "src/app/api/admin/other-lodges/route.ts::POST#0": "admin",
+  "src/app/api/admin/other-lodges/[id]/route.ts::PATCH#0": "admin",
+  "src/app/api/admin/other-lodges/[id]/route.ts::DELETE#0": "admin",
 };
 
 /**
@@ -1287,8 +1296,8 @@ export const MEMBERSHIP_GATED_LOCKER_SITES_2765: readonly string[] = [
 ];
 
 /**
- * Every action name the fifteen sites above write, for the retention assertion
- * (#2765).
+ * Every action name the sites above write, for the retention assertion
+ * (#2765; the #2749 other-lodges trio arrived later and is derived the same way).
  *
  * DERIVED FROM THE CENSUS, NOT HAND-MAINTAINED — the census test asserts set
  * equality between this list and the actions the fifteen sites actually write, so
@@ -1325,11 +1334,15 @@ export const LODGE_GATED_ADMIN_ACTIONS_2765: readonly string[] = [
   "workparty.create",
   "workparty.update",
   "workparty.delete",
+  "OTHER_LODGE_CREATED",
+  "OTHER_LODGE_UPDATED",
+  "OTHER_LODGE_DELETED",
 ];
 
 /**
- * The six admin route directories the #2765 keep speaks for, so the UNIFORMITY
- * premise is measured rather than assumed.
+ * The admin route directories the keep speaks for (six from #2765, plus the
+ * #2749 other-lodges registry), so the UNIFORMITY premise is measured rather
+ * than assumed.
  *
  * WHY THIS EXISTS. `INV-PRIV-013`'s whole argument is that this group is *uniform*
  * at `admin`, so there is no split to close. That premise is a fact about the tree,
@@ -1355,6 +1368,7 @@ export const LODGE_GATED_ADMIN_SUBSYSTEM_PREFIXES_2765: readonly string[] = [
   "src/app/api/admin/lodge-instructions/",
   "src/app/api/admin/lodge-settings/",
   "src/app/api/admin/lodges/",
+  "src/app/api/admin/other-lodges/",
   "src/app/api/admin/work-parties/",
 ];
 

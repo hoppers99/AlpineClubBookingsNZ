@@ -479,11 +479,12 @@ describe("AID-6A correlation category sets (#2375)", () => {
     );
   });
 
-  it("keeps naming the fifteen `admin` lodge-operations subsystems, so the keep's cost stays visible", () => {
+  it("keeps naming the `admin` lodge-operations subsystems, so the keep's cost stays visible", () => {
     /*
       ENFORCES `INV-PRIV-013` (docs/invariants/analytics-and-privacy.md), the
       standing obligation attached to #2765's decision to leave fifteen lodge-gated
-      writers at `admin`.
+      writers at `admin` — and to any later writer pinned into the same map under
+      the same rule (#2749's other-lodges registry is the first).
 
       THE COST OF THAT KEEP IS A SILENT ABSENCE, and it is the whole reason the keep
       was affordable. A Lodge correlation entry that returns nothing to "when was
@@ -495,7 +496,7 @@ describe("AID-6A correlation category sets (#2375)", () => {
       WHICH MADE IT THE ONE HALF OF #2765 NOTHING CHECKED. The category side is
       pinned per site from the tree in `audit-writer-census.test.ts`; the naming
       side was three string literals in one file that a copy-edit could quietly
-      shorten. Six subsystem words, on the three strings the invariant names.
+      shorten. Seven subsystem words, on the three strings the invariant names.
     */
     const lodge = tool(DIAGNOSTICS_LODGE_CORRELATION_TOOL_ID);
     const system = tool(DIAGNOSTICS_SYSTEM_CORRELATION_TOOL_ID);
@@ -506,6 +507,7 @@ describe("AID-6A correlation category sets (#2375)", () => {
       "lodge instruction",
       "lodge setting",
       "the lodge records",
+      "other-lodges registry",
     ];
     const strings: readonly [string, string | undefined][] = [
       ["system entry scope", system.evidenceScope],
@@ -521,7 +523,7 @@ describe("AID-6A correlation category sets (#2375)", () => {
         expect(
           lowered,
           `The ${label} no longer names "${subsystem}" as filed under \`admin\`. ` +
-            "INV-PRIV-013: while any of the fifteen stays `admin`, both " +
+            "INV-PRIV-013: while any writer pinned in the keep stays `admin`, both " +
             "correlation tools' evidence scope must keep naming it, so an empty " +
             "lodge answer reads as a known gap rather than as evidence that " +
             "nothing happened. If a subsystem MOVED, the rule changes with it — " +

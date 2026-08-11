@@ -386,9 +386,11 @@ costed options live on those issues, not here.
   complete answer and nothing tells them the answer is partial. **A group that
   is UNIFORM has no split to close, so moving it fixes nothing and opens a fresh
   readership question of its own size.** Enforced per site, measured from the
-  tree: the #2730 movers in `REVIEWED_ADMIN_CATEGORIES_2730`, the fifteen keeps
-  in `LODGE_GATED_ADMIN_CATEGORIES_2765`
-  (`scripts/audit/audit-writer-census-manifest.ts`) — a sweep that disagrees
+  tree: the #2730 movers in `REVIEWED_ADMIN_CATEGORIES_2730`, the keeps in
+  `LODGE_GATED_ADMIN_CATEGORIES_2765`
+  (`scripts/audit/audit-writer-census-manifest.ts`) — #2765's fifteen plus any
+  later lodge-gated `admin` writer classified under this rule on arrival
+  (#2749's other-lodges registry is the first) — a sweep that disagrees
   fails CI with the rule named. Per-site verdicts and worked examples:
   `docs/ai-diagnostics/audit-admin-category-review.md`. The `INV-PRIV-012`
   sentence calling a move of this group "a narrowing, member-invisible in both
@@ -415,19 +417,18 @@ costed options live on those issues, not here.
   null-subject `memberId` leg, so every member-visible destination is a
   widening reserved to the owner (`INV-PRIV-012`, `INV-OPS-012`). The full
   reasoning, options and costs: #2777.
-- **While any of the fifteen stays `admin`, both correlation tools' evidence scope
-  must keep NAMING it.** The cost of the keep is a silent absence: a Lodge
-  correlation entry that returns nothing to "when was this lodge deactivated?"
-  reads as evidence that nothing happened. The Lodge entry's `scope` and
-  `description` and the System entry's `scope` therefore name chores, lockers,
-  work parties, lodge instructions, lodge settings and the `LODGE_*` records as
-  `admin`, so an empty answer reads as a **known gap**. A scope string that stops
-  naming this set — or that starts implying completeness — is a defect of the same
-  kind as the mis-classification, in the opposite direction. **Pinned, not left to
-  a reviewer:** `src/lib/diagnostics/tools/packs/__tests__/support-correlation.test.ts`
-  asserts that the System entry's `scope` and the Lodge entry's `scope` and
-  `description` each still name chores, lockers, work parties, lodge instructions,
-  lodge settings and the lodge records, so a copy-edit that drops one fails by name.
-  The population here is three string literals in one file, which is why this half
-  is pinned rather than reviewer-enforced like the 307 unpinned write sites in
-  `INV-OPS-012`.
+- **While any writer pinned in that map stays `admin`, both correlation tools'
+  evidence scope must keep NAMING its subsystem.** The cost of the keep is a
+  silent absence: a Lodge correlation entry that returns nothing to "when was
+  this lodge deactivated?" reads as evidence that nothing happened. The Lodge
+  entry's `scope` and `description` and the System entry's `scope` therefore
+  name chores, lockers, work parties, lodge instructions, lodge settings, the
+  `LODGE_*` records and the other-lodges registry as `admin`, so an empty
+  answer reads as a **known gap**. A scope string that stops naming this set —
+  or that starts implying completeness — is a defect of the same kind as the
+  mis-classification, in the opposite direction. **Pinned, not left to a
+  reviewer:** `src/lib/diagnostics/tools/packs/__tests__/support-correlation.test.ts`
+  asserts all three strings name every subsystem in the set, so a copy-edit
+  that drops one fails by name. The population here is three string literals in
+  one file, which is why this half is pinned rather than reviewer-enforced like
+  the 307 unpinned write sites in `INV-OPS-012`.

@@ -797,7 +797,9 @@ describe("audit writer census (#2581)", { timeout: 180_000 }, () => {
         "(INV-OPS-012), then this map updated.",
     ).toEqual(LODGE_GATED_ADMIN_CATEGORIES_2765);
 
-    expect(Object.keys(LODGE_GATED_ADMIN_CATEGORIES_2765)).toHaveLength(15);
+    // #2765's fifteen, plus #2749's three other-lodges sites classified under
+    // the same rule on arrival (INV-PRIV-013).
+    expect(Object.keys(LODGE_GATED_ADMIN_CATEGORIES_2765)).toHaveLength(18);
     expect([
       ...new Set(Object.values(LODGE_GATED_ADMIN_CATEGORIES_2765)),
     ]).toEqual(["admin"]);
@@ -994,7 +996,9 @@ describe("audit writer census (#2581)", { timeout: 180_000 }, () => {
       "src/app/api/admin/lockers/bulk/route.ts",
       "src/app/api/admin/lockers/route.ts",
     ]);
-    expect(files.filter((file) => gateOf(file) === "lodge")).toHaveLength(8);
+    // Eight files from #2765's fifteen sites, plus #2749's two other-lodges
+    // route files.
+    expect(files.filter((file) => gateOf(file) === "lodge")).toHaveLength(10);
     expect(files.filter((file) => gateOf(file) === "other")).toEqual([]);
 
     /*
@@ -1023,10 +1027,12 @@ describe("audit writer census (#2581)", { timeout: 180_000 }, () => {
     expect(
       lodgeGatedAdminWriters,
       "A writer on a `lodge:*` gated admin route records `admin` without being " +
-        "one of the fifteen #2765 kept. Either it belongs to the keep — add it to " +
-        "LODGE_GATED_ADMIN_CATEGORIES_2765 — or the group is no longer the closed, " +
-        "uniform population INV-PRIV-013 reasons about, in which case the rule " +
-        "needs re-deriving rather than the map extending.",
+        "pinned in the keep (#2765's fifteen, plus later arrivals classified " +
+        "under INV-PRIV-013's rule, like #2749's other-lodges trio). Either it " +
+        "belongs there — add it to LODGE_GATED_ADMIN_CATEGORIES_2765 with its " +
+        "reason, and extend the scope-string naming set — or the group is no " +
+        "longer the closed, uniform population INV-PRIV-013 reasons about, in " +
+        "which case the rule needs re-deriving rather than the map extending.",
     ).toEqual(
       Object.keys(LODGE_GATED_ADMIN_CATEGORIES_2765)
         .filter((id) => gateOf(id.split("::")[0]) === "lodge")
@@ -1243,7 +1249,7 @@ describe("audit writer census (#2581)", { timeout: 180_000 }, () => {
         "the reason a general reclassification gate is not available, and " +
         "`bed-allocation-audit-category-backfill.test.ts` quotes them again. Update " +
         "both, in the same pull request as this line (INV-OPS-012).",
-    ).toEqual({ pinned: 122, unpinned: 307 });
+    ).toEqual({ pinned: 127, unpinned: 307 });
   });
 
   it("pins which classified writers a MEMBER can now see about themselves", () => {

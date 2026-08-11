@@ -29,3 +29,9 @@
   (a brand-new, members-can't-see-it audit category) considered and declined.
   Nothing an operator does changes; the record of why simply exists now, and a
   future change of mind will fail the build unless it is deliberate.
+
+  The new "other lodges" registry (added separately, for booking requests that
+  name another club's lodge) files its audit events under **Admin** too, for the
+  same reason, and the AI Diagnostics descriptions now say so — so an operator
+  asking a lodge question is told where those records live instead of being
+  shown an empty answer.
