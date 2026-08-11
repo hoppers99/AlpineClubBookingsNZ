@@ -1,8 +1,10 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 /**
- * #2320 review (MED-3) — bind the four "false claim" senders to the composed
- * note tokens their shipped default bodies depend on.
+ * #2320 review (MED-3) — bind the "false claim" senders to the composed note
+ * tokens their shipped default bodies depend on. Four at #2320; the fifth
+ * (`admin-late-capture-auto-refund`) joined at #2761, which is when a review found
+ * that nothing pinned its population sentence either.
  *
  * The #2268 guards prove properties of the REGISTRY (defaults, approvals,
  * optional declarations), and the note helpers have their own unit truth — but
@@ -19,6 +21,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const mocks = vi.hoisted(() => ({
   sendEmail: vi.fn(),
   sendToAdmins: vi.fn(),
+  sendUnmuteableAdminAlert: vi.fn(),
 }));
 
 vi.mock("@/lib/email/core", () => ({
@@ -27,6 +30,9 @@ vi.mock("@/lib/email/core", () => ({
 
 vi.mock("@/lib/email/admin-alerts-shared", () => ({
   sendToAdmins: mocks.sendToAdmins,
+  // #2761: the late-capture auto-refund alert ships through the unmuteable path,
+  // so its composed note has to be captured from there, not from sendToAdmins.
+  sendUnmuteableAdminAlert: mocks.sendUnmuteableAdminAlert,
 }));
 
 import { EMAIL_AUDIT_DEFAULTS } from "@/lib/email-message-audit-defaults";
@@ -38,7 +44,10 @@ import {
   sendAdminSplitSettlementCancelledAlert,
   sendAdminSplitSettlementUnpaidAlert,
 } from "@/lib/email/admin-alerts-booking";
-import { sendAdminDuplicateCaptureRefundAlert } from "@/lib/email/admin-alerts-finance";
+import {
+  sendAdminDuplicateCaptureRefundAlert,
+  sendAdminLateCaptureAutoRefundAlert,
+} from "@/lib/email/admin-alerts-finance";
 import {
   sendBookingBumpedEmail,
   sendSplitGuestPortionCancelledEmail,
@@ -47,6 +56,14 @@ import {
 function capturedAdminTemplateData(): EmailTemplateData {
   expect(mocks.sendToAdmins).toHaveBeenCalledTimes(1);
   const [args] = mocks.sendToAdmins.mock.calls[0] as [
+    { templateData: EmailTemplateData },
+  ];
+  return args.templateData;
+}
+
+function capturedUnmuteableTemplateData(): EmailTemplateData {
+  expect(mocks.sendUnmuteableAdminAlert).toHaveBeenCalledTimes(1);
+  const [args] = mocks.sendUnmuteableAdminAlert.mock.calls[0] as [
     { templateData: EmailTemplateData },
   ];
   return args.templateData;
@@ -67,6 +84,7 @@ describe("#2320 review — senders supply the composed notes their defaults rend
     vi.clearAllMocks();
     mocks.sendEmail.mockResolvedValue(undefined);
     mocks.sendToAdmins.mockResolvedValue(undefined);
+    mocks.sendUnmuteableAdminAlert.mockResolvedValue(undefined);
   });
 
   it("admin-split-settlement-unpaid: {{settlementActionNote}} is supplied and renders its lead sentence", async () => {
@@ -166,6 +184,56 @@ describe("#2320 review — senders supply the composed notes their defaults rend
     expect(failedRendered).toContain("the refund could not complete inline");
     expect(failedRendered).toContain("Failure detail: card_declined");
     expect(failedRendered).not.toContain("refunded in full");
+  });
+
+  it("admin-late-capture-auto-refund: {{refundOutcomeNote}} names the right population on both arms", async () => {
+    /*
+      #2761. The two arms need genuinely different follow-up — a DELETED booking
+      may have been deleted by mistake, in which case it has to be remade and the
+      member charged again, while a merely cancelled one is normal operation — so
+      dropping the supply line here would render the token as "" for every club
+      override and delete exactly the sentence that tells the two apart.
+    */
+    await sendAdminLateCaptureAutoRefundAlert({
+      memberName: "Alice Example",
+      checkIn: new Date("2026-08-01"),
+      checkOut: new Date("2026-08-03"),
+      amountCents: 2500,
+      paymentIntentId: "pi_additional_late",
+      bookingId: "booking-9",
+      bookingDeleted: true,
+    });
+
+    const deletedData = capturedUnmuteableTemplateData();
+    expect(typeof deletedData.refundOutcomeNote).toBe("string");
+    expect(String(deletedData.refundOutcomeNote).trim()).not.toBe("");
+    const deletedRendered = renderDefaultBody(
+      "admin-late-capture-auto-refund",
+      deletedData,
+    );
+    expect(deletedRendered).toContain("had already been DELETED");
+    expect(deletedRendered).toContain("charged again");
+    expect(deletedRendered).not.toContain("there is usually nothing to do");
+
+    mocks.sendUnmuteableAdminAlert.mockClear();
+    await sendAdminLateCaptureAutoRefundAlert({
+      memberName: "Alice Example",
+      checkIn: new Date("2026-08-01"),
+      checkOut: new Date("2026-08-03"),
+      amountCents: 2500,
+      paymentIntentId: "pi_additional_late",
+      bookingId: "booking-9",
+      bookingDeleted: false,
+    });
+
+    const cancelledData = capturedUnmuteableTemplateData();
+    const cancelledRendered = renderDefaultBody(
+      "admin-late-capture-auto-refund",
+      cancelledData,
+    );
+    expect(cancelledRendered).toContain("had already been CANCELLED");
+    expect(cancelledRendered).toContain("there is usually nothing to do");
+    expect(cancelledRendered).not.toContain("had already been DELETED");
   });
 
   it("split-guest-portion-cancelled: {{ownBookingNote}} is supplied and renders its reassurance sentence", async () => {

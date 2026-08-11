@@ -27,17 +27,29 @@ import { ManualRefundTaskQueue } from "@/components/admin/manual-refund-task-que
  * The card is named here, which is the issue's acceptance criterion: the finance
  * queue on `/admin/payments`, `data-testid="automatic-refund-notices"`.
  *
+ * COMPLETE SINCE #2760, AND GROUPED. The webhook now writes the DISMISSED row
+ * itself when nothing raised one, and does it for a booking that is cancelled but
+ * not deleted as well — so the card is the list rather than one ordering's worth
+ * of it, and the "this card does not catch every one" paragraph is gone. What
+ * replaces it says the card covers the last thirty days and names the audit log as
+ * the permanent record for anything older. The rows are split into two groups
+ * because the widening added rows for what is usually normal operation, and those
+ * would otherwise bury the case that needs a person: a refund on a booking the
+ * club DELETED.
+ *
  * MUTATION PROOF. Return the automatic refunds as part of `tasks` instead of
  * their own list and "never renders an automatic refund with a button" fails.
  * Keep the component's original `tasks.length === 0` early return and "shows the
  * record even when nothing is waiting to be paid back by hand" fails. Drop the
  * note or the reason from the row and "says both what happened and that the money
  * has already gone" fails. Render the card on an empty list and "renders nothing
- * at all when there is neither work nor a record" fails. Drop the partial-record
- * paragraph and "says the list is partial" fails; put a `View booking` link back
- * on a record row and "offers no booking link on a record row" fails; blank the
- * screen silently on a failed or degraded read and the two "could not be loaded"
- * tests fail.
+ * at all when there is neither work nor a record" fails. Claim the card is
+ * complete for all time and "names the audit log as the record beyond its window"
+ * fails; put a `View booking` link back on a record row and "offers no booking
+ * link on a record row" fails; blank the screen silently on a failed or degraded
+ * read and the two "could not be loaded" tests fail. Merge the two groups into one
+ * list and "separates a deleted booking from one that is merely cancelled" fails;
+ * print the cancelled group first and "puts the deleted group first" fails.
  */
 
 const OPEN_TASK = {
@@ -59,9 +71,29 @@ const AUTO_REFUND = {
     "Booking modification payment pi_modification was captured against a booking the club had already deleted (#2700). Decide by hand whether to refund it.",
   note: "Closed automatically: Stripe refunded this capture under the cancelled-booking late-capture path, so there is nothing left to pay back by hand (payment intent pi_modification).",
   refundedAt: "2026-06-28T09:00:00Z",
+  bookingDeleted: true,
   memberName: "Grace Hopper",
   checkIn: "2026-08-10T00:00:00Z",
   checkOut: "2026-08-12T00:00:00Z",
+};
+
+/**
+ * #2760's second population: the same automatic refund on a booking that is
+ * cancelled but has NOT been deleted. Usually normal operation, which is why it
+ * gets its own group rather than sitting in the same list as the deleted rows.
+ */
+const AUTO_REFUND_CANCELLED_ONLY = {
+  id: "task-auto-cancelled",
+  bookingId: "booking-cancelled-live",
+  amountCents: 4500,
+  reason:
+    "Booking modification payment pi_modification_2 was captured against a booking the club had already cancelled (#2760).",
+  note: "Closed automatically: Stripe refunded this capture under the cancelled-booking late-capture path, so there is nothing left to pay back by hand (payment intent pi_modification_2).",
+  refundedAt: "2026-06-29T09:00:00Z",
+  bookingDeleted: false,
+  memberName: "Katherine Johnson",
+  checkIn: "2026-08-14T00:00:00Z",
+  checkOut: "2026-08-16T00:00:00Z",
 };
 
 /** Serves one load of the queue endpoint and nothing else. */
@@ -282,14 +314,15 @@ describe("ManualRefundTaskQueue — automatically refunded late captures (#2750)
     expect(container).not.toBeEmptyDOMElement();
   });
 
-  it("says the list is partial, naming the audit log as the complete record", async () => {
+  it("names the audit log as the record beyond its window, without claiming the card is partial", async () => {
     /*
-      #2750 review. A row only exists where the member's browser reached the
-      confirm endpoint before Stripe's webhook did. Webhook-first — the healthy
-      case — and a member who closes the tab after paying both refund the capture
-      and leave no row, so a short or empty card is not proof that no automatic
-      refund happened. Saying otherwise on this card would replace "nobody is
-      told" with "somebody is told something false", which is worse.
+      #2760 replaced #2750's "this card does not catch every one" paragraph. That
+      sentence was true then — a row existed only where the member's browser
+      reached the confirm endpoint before Stripe's webhook did — and it is false
+      now: the webhook writes the row on every ordering and for both populations.
+      What remains honest is the WINDOW: the card reaches back thirty days, and the
+      audit entry is the permanent record. Saying either more or less than that on
+      a card about money is the failure this test guards.
     */
     stubLoad({ tasks: [], autoRefunded: [AUTO_REFUND] });
 
@@ -299,21 +332,143 @@ describe("ManualRefundTaskQueue — automatically refunded late captures (#2750)
       expect(screen.getByTestId("automatic-refund-notices")).toBeInTheDocument(),
     );
     const card = screen.getByTestId("automatic-refund-notices");
-    expect(card).toHaveTextContent(/does not catch every one/i);
+    expect(card).toHaveTextContent(/every automatic refund/i);
+    expect(card).toHaveTextContent(/last 30 days/i);
+    expect(card).not.toHaveTextContent(/does not catch every one/i);
     expect(card).toHaveTextContent(
       /booking\.payment\.refunded_after_cancellation/,
     );
   });
 
-  it("offers no booking link on a record row, because every one of them is deleted", async () => {
+  it("separates a deleted booking from one that is merely cancelled (#2760)", async () => {
     /*
-      The booking detail page 404s a soft-deleted booking for anybody who is not a
-      Full Admin, and this card is gated on finance:view — which a Finance Viewer
-      and a Treasurer hold WITHOUT Full Admin. A "View booking" link here is a
-      dead end for exactly the audience the card is for, and the fix is not to
-      widen who may open a deleted booking. The identifiers are printed instead.
+      Widening the record to every cancelled booking adds rows for what is usually
+      the expected outcome of a cancellation. In one flat list they would bury the
+      row that actually needs a person — a refund on a booking the club DELETED,
+      where remaking it means charging the member again. Each group says what it
+      means, and each row sits in the right one.
     */
-    stubLoad({ tasks: [OPEN_TASK], autoRefunded: [AUTO_REFUND] });
+    stubLoad({
+      tasks: [],
+      autoRefunded: [AUTO_REFUND, AUTO_REFUND_CANCELLED_ONLY],
+    });
+
+    render(<ManualRefundTaskQueue />);
+
+    await waitFor(() =>
+      expect(screen.getByTestId("automatic-refund-notices")).toBeInTheDocument(),
+    );
+    const deleted = screen.getByTestId("automatic-refund-notices-deleted");
+    const cancelled = screen.getByTestId("automatic-refund-notices-cancelled");
+    expect(deleted).toHaveTextContent("Grace Hopper");
+    expect(deleted).not.toHaveTextContent("Katherine Johnson");
+    expect(cancelled).toHaveTextContent("Katherine Johnson");
+    expect(cancelled).not.toHaveTextContent("Grace Hopper");
+    // The deleted group says what to do; the cancelled group says there is
+    // usually nothing to do, which is what lets it be skimmed.
+    expect(deleted).toHaveTextContent(/charged again/i);
+    expect(cancelled).toHaveTextContent(/nothing to do/i);
+    // The count in the title still covers both groups.
+    expect(screen.getByTestId("automatic-refund-notices")).toHaveTextContent(
+      /nothing to pay back \(2\)/i,
+    );
+  });
+
+  it("puts the deleted group first, so normal operation cannot bury it", async () => {
+    stubLoad({
+      tasks: [],
+      // Answered newest-first by the route, and the cancelled row is the newer
+      // one here — so ordering alone would put the interesting case second.
+      autoRefunded: [AUTO_REFUND_CANCELLED_ONLY, AUTO_REFUND],
+    });
+
+    render(<ManualRefundTaskQueue />);
+
+    await waitFor(() =>
+      expect(
+        screen.getByTestId("automatic-refund-notices-deleted"),
+      ).toBeInTheDocument(),
+    );
+    const card = screen.getByTestId("automatic-refund-notices");
+    const groups = card.querySelectorAll("section[data-testid]");
+    expect(groups[0].getAttribute("data-testid")).toBe(
+      "automatic-refund-notices-deleted",
+    );
+    expect(groups[1].getAttribute("data-testid")).toBe(
+      "automatic-refund-notices-cancelled",
+    );
+  });
+
+  it("shows only the group it has rows for", async () => {
+    // An empty "the booking was deleted (0)" heading asserts something about
+    // money that the list does not contain.
+    stubLoad({ tasks: [], autoRefunded: [AUTO_REFUND_CANCELLED_ONLY] });
+
+    render(<ManualRefundTaskQueue />);
+
+    await waitFor(() =>
+      expect(
+        screen.getByTestId("automatic-refund-notices-cancelled"),
+      ).toBeInTheDocument(),
+    );
+    expect(
+      screen.queryByTestId("automatic-refund-notices-deleted"),
+    ).not.toBeInTheDocument();
+  });
+
+  it("puts a row from an older route with no population in NEITHER claiming group", async () => {
+    /*
+      A cached client against a pre-#2760 route. The first cut of this filed such a
+      row under "cancelled and is still on file", reasoning that the cancelled group
+      claims less — and a review of #2760 refuted that: it claims less about the
+      WORK and more about the BOOKING. "Still on file" is a positive statement about
+      a state we do not know, and if that booking was in fact deleted the heading
+      hides the one case on this card that needs a person (remake it and charge the
+      member again). So it goes in a neutral third group that asserts nothing and
+      asks for a reload, and it must NOT land in either claiming group.
+    */
+    const { bookingDeleted: _omitted, ...withoutPopulation } = AUTO_REFUND;
+    stubLoad({ tasks: [], autoRefunded: [withoutPopulation] });
+
+    render(<ManualRefundTaskQueue />);
+
+    await waitFor(() =>
+      expect(
+        screen.getByTestId("automatic-refund-notices-unknown"),
+      ).toBeInTheDocument(),
+    );
+    expect(
+      screen.queryByTestId("automatic-refund-notices-deleted"),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByTestId("automatic-refund-notices-cancelled"),
+    ).not.toBeInTheDocument();
+    const unknown = screen.getByTestId("automatic-refund-notices-unknown");
+    expect(unknown).toHaveTextContent("Grace Hopper");
+    // Neither claiming heading appears over it. (The row's own stored `reason`
+    // sentence still says what produced the payment — that is the row's data, not
+    // this group's claim, and it is the same text every group prints.)
+    expect(unknown).not.toHaveTextContent("The booking was deleted");
+    expect(unknown).not.toHaveTextContent(
+      "The booking was cancelled and is still on file",
+    );
+  });
+
+  it("offers no booking link on a record row, in either group", async () => {
+    /*
+      For a DELETED booking the detail page 404s for anybody who is not a Full
+      Admin, and this card is gated on finance:view — which a Finance Viewer and a
+      Treasurer hold WITHOUT Full Admin. #2760 added rows whose booking is still on
+      file, where the page exists — but it is gated on `bookings:view`, and the
+      Finance Viewer bundle carries no bookings access at all, so the link is a
+      dead end for part of this card's audience either way. Widening who may open a
+      deleted booking is still not on the table; the identifiers are printed as
+      text instead.
+    */
+    stubLoad({
+      tasks: [OPEN_TASK],
+      autoRefunded: [AUTO_REFUND, AUTO_REFUND_CANCELLED_ONLY],
+    });
 
     render(<ManualRefundTaskQueue />);
 

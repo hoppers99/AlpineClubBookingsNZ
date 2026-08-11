@@ -77,6 +77,43 @@ export function duplicateCaptureRefundOutcomeParagraph(
 }
 
 /**
+ * #2761 — which of the two populations an automatically refunded late capture
+ * belonged to, as the two words the subject and the body both need.
+ *
+ * Composed rather than conditional for the usual reason: the admin-editable
+ * render path has no conditional syntax, so the sender supplies whole values.
+ * Kept to a bare adjective phrase so it reads correctly in both places it is
+ * used — "booking already deleted" in the subject, and after "Booking status when
+ * the payment arrived:" in the body.
+ */
+export function lateCaptureAutoRefundBookingStateLabel(
+  bookingDeleted: boolean,
+): string {
+  return bookingDeleted ? "already deleted" : "already cancelled";
+}
+
+/**
+ * #2761 — the follow-up sentence that differs between the two populations,
+ * shared by the hand-built HTML and the `{{refundOutcomeNote}}` token the
+ * admin-editable body renders.
+ *
+ * The two need genuinely different follow-up, which is why the owner asked for
+ * wording covering both. A DELETED booking is the interesting case: if deleting
+ * it was the mistake rather than the payment, the refund has already gone and the
+ * booking has to be remade and charged again. A booking that is merely cancelled
+ * is normal operation — the refund is the expected outcome and there is usually
+ * nothing to do — and saying so is what lets an operator dismiss the mail at a
+ * glance instead of opening an investigation.
+ */
+export function lateCaptureAutoRefundOutcomeParagraph(
+  bookingDeleted: boolean,
+): string {
+  return bookingDeleted
+    ? "The booking had already been DELETED when the payment arrived. Worth one check: if deleting the booking was the mistake rather than the payment, the refund has already gone out — the booking has to be made again and the member charged again."
+    : "The booking had already been CANCELLED but is still on file. This is normally the expected outcome of cancelling a booking somebody was part-way through paying for, so there is usually nothing to do. If the cancellation was itself the mistake, the refund has already gone out — the booking has to be made again and the member charged again.";
+}
+
+/**
  * #2268 — the outcome-dependent lead paragraph of the recurring split-settlement
  * alert, shared by the hand-built HTML below and the `{{settlementActionNote}}`
  * token the admin-editable body renders. The flat body used to assert that a

@@ -227,8 +227,22 @@ export const AUDIT_CENSUS_TOTALS = {
    * throw. Categorised `payment` at the site, so it does not join
    * `UNCATEGORISED_AUDIT_WRITERS` below, and it carries
    * `entityType`/`entityId` so it correlates to the booking.
+   *
+   * 428 -> 429 (#2760): the automatic-refund record write can fail, and when it
+   * does nothing else in the tree ever writes that row —
+   * `handleCancelledBookingAdditionalPaymentSucceeded` answers 200 so the money
+   * is not re-refunded, which means Stripe never redelivers and the bookkeeping
+   * row is gone for good. `INV-ADDPAY-037` and the finance card both now assert
+   * that the record is complete, so the gap has to be findable on the surface the
+   * card itself names as the permanent record:
+   * `booking.payment.auto_refund_record_failed`, `severity: "critical"`,
+   * `outcome: "failure"`, categorised `payment` at the site and carrying
+   * `entityType`/`entityId`. `logAudit` for the same reason #2700's sibling above
+   * uses it: the block it sits in is already the handler's must-never-throw
+   * region, and an audit write that threw would turn a lost row into a replayed
+   * refund path.
    */
-  writeSites: 428,
+  writeSites: 429,
   /**
    * Of those, sites whose event object carries no `category` key.
    *
@@ -256,7 +270,11 @@ export const AUDIT_CENSUS_TOTALS = {
     // in is the one path in the delete that must never throw — the booking is
     // already durably deleted, so an error there would tell the admin the
     // deletion failed and invite a retry that answers 409.
-    logAudit: { total: 242, uncategorised: 0 },
+    // 242 -> 243 (#2760): `booking.payment.auto_refund_record_failed`, above,
+    // and the same reasoning applies twice over — it is written FROM a catch
+    // block on a path that must answer 200, so an awaited write that rejected
+    // would replay a refund for the sake of recording that a record was lost.
+    logAudit: { total: 243, uncategorised: 0 },
     // 101 -> 102 (#2627): the deletion-approval release, above.
     // 102 -> 104 (#2595): the two reviewed-move writes, above.
     // 104 -> 105 (#2649): the return-to-waitlist repair, above.
@@ -368,7 +386,12 @@ export const AUDIT_CENSUS_TOTALS = {
     // widens nobody's access: whoever has to act on it — cancel the intent by
     // hand in Stripe, or wait for the manual refund task the capture would
     // raise — already holds `finance`.
-    payment: 34,
+    // 34 -> 35 (#2760): `booking.payment.auto_refund_record_failed`. Same gate
+    // and the same argument — the row says the club's own record of an automatic
+    // refund was not written, which only a finance reader can act on (find the
+    // `booking.payment.refunded_after_cancellation` entry beside it and reconcile
+    // by hand), and every operator who could act on it already holds `finance`.
+    payment: 35,
     // 27 -> 34 (#2581 child 2): the five family-group writers and the two
     // dependants writers. Both dependants writers also moved off a hand-built
     // Prisma literal and onto the audit boundary in the same change.
@@ -632,7 +655,15 @@ export const APPLIED_AUDIT_CATEGORIES: Readonly<Record<string, string>> = {
   "src/lib/member-credit.ts::reviewAdminAdjustmentRequest.result#0": "payment",
   "src/lib/member-credit.ts::reviewAdminAdjustmentRequest.result#1": "payment",
   "src/lib/membership-subscription-billing.ts::confirmSubscriptionBillingPreview#0": "payment",
+  // #2760 INSERTED A WRITER AHEAD OF THE ONE THAT USED TO BE `#0` HERE, which is
+  // the renumbering hazard this file's header warns about: `#0` was
+  // `booking.payment.refunded_after_cancellation` and is now
+  // `booking.payment.auto_refund_record_failed`, with the refund row pushed to
+  // `#1`. Both are `payment`, so the identity pin would have passed while
+  // silently meaning something else — BOTH ordinals are listed now so the next
+  // insertion at this symbol has to say so out loud.
   "src/lib/stripe-webhook-service.ts::handleCancelledBookingAdditionalPaymentSucceeded#0": "payment",
+  "src/lib/stripe-webhook-service.ts::handleCancelledBookingAdditionalPaymentSucceeded#1": "payment",
   "src/lib/stripe-webhook-service.ts::handleCancelledBookingPaymentSucceeded#0": "payment",
   "src/lib/stripe-webhook-service.ts::handlePaymentIntentCanceled#0": "payment",
   "src/lib/stripe-webhook-service.ts::handlePaymentIntentFailed#0": "payment",

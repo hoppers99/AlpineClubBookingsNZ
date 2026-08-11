@@ -11,6 +11,24 @@ const groupDiscountSchema = z.object({
   minGroupSize: z.number().int().min(2).max(200),
   summerOnly: z.boolean(),
   enabled: z.boolean(),
+  // #2770 (INV-MOD-026): whether a later edit earns the discount on the nights
+  // it newly buys.
+  //
+  // OPTIONAL, and the failure modes are why. A body that predates the column —
+  // an admin tab left open across the deploy, or any scripted caller — would be
+  // rejected outright by a required field, losing the whole policy save over a
+  // key it has never heard of. Optional cannot silently re-arm the switch
+  // either: `update` is `parsed.data`, and an absent optional key is simply not
+  // in that object, so Prisma leaves the column exactly as the club set it. On
+  // `create` the column's own `@default(true)` applies. Absent therefore means
+  // "do not touch this", which is the strictly safer of the two behaviours for a
+  // field that decides what a member is charged.
+  //
+  // Note the deliberate asymmetry with `EditTimeGroupDiscountSettingLike`, where
+  // the same field is REQUIRED: there it is being READ to price a booking, and an
+  // absent value would silently withhold a discount the club left on. Here it is
+  // being WRITTEN, and absent means unchanged.
+  applyToEdits: z.boolean().optional(),
 });
 
 export async function GET() {
@@ -98,7 +116,11 @@ export async function PUT(req: NextRequest) {
     memberId: session.user.id,
     entityType: "GroupDiscountSetting",
     entityId: result.id,
-    details: `Group discount: minSize=${parsed.data.minGroupSize}, summerOnly=${parsed.data.summerOnly}, enabled=${parsed.data.enabled}`,
+    // `result.applyToEdits`, not `parsed.data.applyToEdits`: the field is
+    // optional, so a body that omitted it would log `undefined` for a column that
+    // in fact still holds the club's answer. The audit line states what is now
+    // PERSISTED (#2770).
+    details: `Group discount: minSize=${parsed.data.minGroupSize}, summerOnly=${parsed.data.summerOnly}, enabled=${parsed.data.enabled}, applyToEdits=${result.applyToEdits}`,
   });
 
   revalidatePublicPageContent();
