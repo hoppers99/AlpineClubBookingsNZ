@@ -2282,6 +2282,10 @@ describe("the evidence modules are SERVER-ONLY (#2375)", () => {
     "packs/support-correlation.ts",
     "packs/support-evidence.ts",
     "packs/support-system.ts",
+    // The shared read-only seam (#2786). It holds the application's Prisma client
+    // and opens the transaction every server-owned evidence read runs inside, so
+    // it belongs on this list for exactly the reason `database.ts` does.
+    "read-only-transaction.ts",
   ] as const;
 
   it.each(SERVER_ONLY_MODULES)("%s imports server-only", (relativePath) => {
