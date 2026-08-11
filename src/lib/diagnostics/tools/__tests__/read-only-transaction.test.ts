@@ -57,7 +57,10 @@ const REPO_ROOT = join(import.meta.dirname, "..", "..", "..", "..", "..");
  * here — so adding an entry whose evidence lives somewhere new fails rather than
  * passing unnoticed.
  */
-const SERVER_OWNED_EVIDENCE_MODULES = ["packs/booking-evidence.ts"] as const;
+const SERVER_OWNED_EVIDENCE_MODULES = [
+  "packs/booking-evidence.ts",
+  "packs/finance-evidence.ts",
+] as const;
 
 function toolsSource(relativePath: string): string {
   return readFileSync(join(TOOLS_DIR, relativePath), "utf8");
