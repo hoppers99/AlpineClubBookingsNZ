@@ -312,8 +312,9 @@ module boundaries, data model, integrations, cron jobs, and the mermaid maps.
   opt-in, and the untrusted-evidence render.
 - [`ai-diagnostics/tools.md`](ai-diagnostics/tools.md) — the SELECT-only tool
   substrate (AID-5, #2374): the server-owned typed registry with no model SQL, the
-  ten fail-closed gates, per-invocation `area:view` re-checks, the row/byte/loop
-  bounds, and the approved audit metadata.
+  twelve fail-closed gates (the channel and consent gates included),
+  per-invocation `area:view` re-checks, the row/byte/loop bounds, and the approved
+  audit metadata.
 - [`ai-diagnostics/tool-pack-support.md`](ai-diagnostics/tool-pack-support.md) — the
   support tool pack (AID-6A, #2375): the registered deployment, configuration,
   readiness, budget, background-job and audit-correlation tools, the permission each

@@ -21,6 +21,7 @@ import { recordDiagnosticsToolAudit } from "../audit";
 import { authorizeDiagnosticsToolCall } from "../authorize";
 import { getDiagnosticsDatabase, runDiagnosticsReadOnlyQuery } from "../database";
 import type { DiagnosticsToolEntry, DiagnosticsToolRawRow } from "../define";
+import { createEmptyDiagnosticsConsentLedger } from "../consent";
 import { invokeDiagnosticsTool } from "../invoke";
 import { findDiagnosticsTool } from "../registry";
 import { createDiagnosticsToolSession } from "../session";
@@ -84,6 +85,8 @@ function invoke() {
     args: {},
     actingMemberId: "member-1",
     session,
+    invocationChannel: "model_tool_use",
+    consent: createEmptyDiagnosticsConsentLedger(),
     observedAt: OBSERVED_AT,
   });
 }
@@ -346,6 +349,8 @@ describe("server-owned evidence: the gates that still apply (#2375)", () => {
         args: {},
         actingMemberId: "member-1",
         session,
+        invocationChannel: "model_tool_use",
+        consent: createEmptyDiagnosticsConsentLedger(),
         observedAt: OBSERVED_AT,
       });
       expect(result.status).toBe("ok");
@@ -355,6 +360,8 @@ describe("server-owned evidence: the gates that still apply (#2375)", () => {
       args: {},
       actingMemberId: "member-1",
       session,
+      invocationChannel: "model_tool_use",
+      consent: createEmptyDiagnosticsConsentLedger(),
       observedAt: OBSERVED_AT,
     });
     expect(exhausted.status).toBe("error");

@@ -95,7 +95,7 @@ tool that spans two domains rather than a judgement call:
 
 **An argument can never decide which permission set applies.** `requiredAreas` is
 fixed on the registry entry, and `invoke.ts` authorises **before** it parses
-arguments (see [tools.md](tools.md), "The ten gates, in order"). So a single
+arguments (see [tools.md](tools.md), "The twelve gates, in order"). So a single
 `record_search` taking `subject: "booking" | "member"`, or a single
 `member_detail` taking `include: "bookings" | "family"`, would have had exactly
 two options and both are wrong:
@@ -220,8 +220,12 @@ The earlier reasoning was that a reference and a lodge night are "server-side fa
 an audit reader already sees on the row they are auditing". They are not:
 `auditMetadata` in `tools/audit.ts` builds the durable object field by field and it
 carries exactly `toolId`, `areasChecked`, `authOutcome`, `failureReason`,
-`argsHash`, `resultHash`, `rowCount`, `byteCount`, `durationMs`, `roundIndex` and
-`observedAt`. Recovering the term therefore yields what the row withholds, to a
+`argsHash`, `resultHash`, `rowCount`, `byteCount`, `durationMs`, `roundIndex`,
+`observedAt` and — since AID-7a (#2785) — `invocationChannel`,
+`sensitiveInclusion`, `consentRecordKind`, `consentRecordOrigin`,
+`recordConsentTick` and `peopleSearchTick`. Seventeen fields, every one a closed
+enum, a count, a non-reversible hash or an instant; no argument value and no record
+id. Recovering the term therefore yields what the row withholds, to a
 `support:view`-only audit reader who does **not** hold `bookings:view`. The
 recovered value is a booking or a lodge and a night rather than a person, which is
 why this was a reversibility defect against ADR-004 §4 rather than a privacy
@@ -1466,7 +1470,9 @@ only spend the byte ceiling. The three member-identifying columns, the free text
 the arbitrary metadata JSON and the network fields all stay ungranted, so these
 entries can say that an event of this kind occurred on this record at this instant
 with this outcome, and cannot say who did it, from where, or what they typed. They
-are the only two entries in the pack that declare `surfacesPersonalData: false`.
+are the only two entries in the pack that declare `surfacesPersonalData: false` —
+and both are still bound to the operator's investigation, because reading one named
+record's history is per-record evidence whether or not the row carries a name.
 
 ## Bounds
 
@@ -1579,19 +1585,56 @@ that it approved one, and a Booking Officer who believes an exception has been
 granted does not grant it — so the member's beds are released by the hold reaper
 instead.
 
-### `surfacesPersonalData` is declared and not yet enforced
+### `surfacesPersonalData` is declared AND enforced (since AID-7a, #2785)
 
 Fourteen of the sixteen entries set `surfacesPersonalData: true`, truthfully: a
 name, an email address, a member id or a booking reference plus a set of nights is
 per-person information.
 
-**Nothing in the shipped code implements ADR-004's per-invocation operator opt-in.**
-The flag **records** that a row can identify a person; it does not gate the entry.
-That gate is a prerequisite recorded on #2378, and until it lands the flag **must
-not be described or relied on as a control**. The controls that actually run are
-the fixed `requiredAreas` check re-read on every invocation, the exact-identifier
-argument shape, the registry projection, the column grant, the row and byte
-ceilings, and the audit row.
+This pack shipped with that flag recording a fact and gating nothing, and said so.
+AID-7a (#2785) closed it. Each entry now also declares what consent is **about**:
+
+- the fourteen per-record entries name the record they read —
+  `consentRecordKind: "booking"` with `consentRecordArgKey: "bookingId"`, or
+  `"member"` with `"memberId"` — and the executor refuses the invocation unless the
+  operator included that record in this investigation. For the twelve that surface
+  personal data the refusal is `sensitive_consent_required` and the operator's
+  personal-details tick is required as well; for the two audit-history entries,
+  which surface none, it is `record_not_included` and the record scope is the whole
+  of it;
+- `booking_search` and `member_search` are declared `operatorOnly` instead. They
+  return bounded LISTS of bookings and people, which is how a model would otherwise
+  choose a subject for itself, so they run as the operator's own record-picker
+  action or — per the owner's 11 Aug 2026 decision on #2378 — as a model tool call
+  on a request where the operator ticked people-search. Unticked, they refuse with
+  `operator_action_required`;
+- eight entries in this pack declare `relatedRecordRefs`, the projected fields an
+  investigation may follow (ten registry-wide, the other two being
+  `payment_summary` and `booking_finance_state` in the finance pack). Five are on
+  the booking half: `booking_block_state` and `booking_diagnostic_summary` expose
+  `ownerMemberRef` (and the latter `parentBookingRef`), `booking_party_state`
+  exposes `guestMemberRef`, `booking_linked_state` the linked `bookingRef`, and
+  `booking_exception_request_state` the `requestedByMemberRef`. Three are on the
+  membership half: `member_summary` exposes both parent refs, `member_family_state`
+  the `relatedMemberRef`, and `member_booking_summary` the member's `bookingRef`.
+  `guestRef` is a BookingGuest row and `familyGroupRef` a group, so neither is
+  declared: consent is expressed in bookings, members and payments only. An entry
+  may only declare related refs if it declares `surfacesPersonalData` — widening the
+  investigation is a consent decision, so the entry making it has to be one that was
+  reviewed as a consent surface — and `registry.test.ts` holds the population to this
+  exact list;
+- `member_record_audit_history` surfaces no personal data and is still bound to the
+  investigation, because reading ONE named record's history is per-record evidence
+  whatever the row carries. Its record KIND is its `subject` argument, so it declares
+  `consentRecordKindByArg`: `member` maps to the member kind, and `family_request`,
+  `partner_link` and `cancellation_request` map to an explicit `null` — records an
+  operator cannot select, which therefore refuse with `record_not_included` rather
+  than running for any id the model can name.
+
+The controls that ran before are unchanged and still run first: the fixed
+`requiredAreas` check re-read on every invocation, the exact-identifier argument
+shape, the registry projection, the column grant, the row and byte ceilings, and the
+audit row — which now also records whether consent was granted or refused.
 
 ## Operator troubleshooting
 
@@ -1618,8 +1661,10 @@ Incident response is unchanged from AID-6A: the audit trail for tool use is
 `sensitive_access` (24 months), recording the acting administrator, the tool id,
 the areas checked, the allow/deny outcome, the stable failure reason,
 non-reversible hashes of the accepted arguments and of the result, row and byte
-counts, duration, round index and the observed-at instant — and never the
-arguments, the results, the question or the answer.
+counts, duration, round index and the observed-at instant — and, since AID-7a (#2785), the invocation channel, the ADR-004 §1
+inclusion decision, the KIND and provenance of the consented record, and the
+people-search tick — and never the arguments, the results, the question or the
+answer.
 
 ## Adding to this pack
 

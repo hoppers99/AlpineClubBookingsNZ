@@ -144,7 +144,7 @@ may never be a write, a provider call, or anything that takes a caller-supplied
 source: `readEvidence` names a function in this repository's own code, resolved at
 review time.
 
-## The ten gates, in order
+## The twelve gates, in order
 
 `invokeDiagnosticsTool` (`invoke.ts`) is the only entry point. The order is the
 contract, and none of the gates can be reached out of order. Every exit returns a
@@ -156,6 +156,8 @@ typed result carrying **no rows**.
 | 2 | **Loop budget** | no round is open, or the round/session tool-call allowance is spent |
 | 3 | **Authorize** | the caller's freshly re-read matrix lacks `view` on **any** area the tool declares, or their account is locked out |
 | 4 | **Arguments** | the entry's `.strict()` schema rejects them, or they carry a reserved key |
+| 4a | **Channel** | the entry is a record **search** (`operatorOnly`) and this is neither the operator's own record-picker action nor a request on which they ticked people-search |
+| 4b | **Consent** | the entry reads about **one named record** and this investigation does not cover that record, or the entry also surfaces personal data and the operator did not tick personal details (ADR-004 §1) |
 | 5 | **Metering** | AID-2's metering circuit breaker is open |
 | 6 | **Credential** | (`select_only_sql` only) the dedicated role is absent, malformed, carries a connection parameter that would redirect it, is the app's own role, is unverifiable, under-provisioned, or over-privileged (including table-wide SELECT on a column declaration) |
 | 7 | **Read** | the entry's parameters do not match the `$n` its SQL references, the statement fails, or the statement timeout cancels it — or, for a `server_owned` entry, its source refuses or misses its deadline |
@@ -163,7 +165,7 @@ typed result carrying **no rows**.
 | 9 | **Size** | the projected result exceeds the tool's byte ceiling — a **refusal**, never a silent trim |
 | 10 | **Audit** | the approved-metadata row cannot be written — the evidence is then discarded |
 
-Two ordering choices are load-bearing:
+Three ordering choices are load-bearing:
 
 - **Authorization runs before argument parsing.** Parsing first would let an
   unauthorized caller use the difference between "invalid arguments" and
@@ -172,11 +174,18 @@ Two ordering choices are load-bearing:
 - **The audit row is written before any evidence is returned.** An unauditable
   evidence retrieval is what ADR-004 exists to prevent, so it is not an outcome
   the substrate offers.
+- **The consent gates sit after arguments and before metering.** After, so a
+  malformed call is still `invalid_args` and the gate reads arguments a schema has
+  accepted; before, so a refused call costs no metering, no credential and no
+  database work.
 
 The loop budget is claimed even for a call that is about to be denied — including a
-call naming an id that is **not in the registry** — so a caller cannot probe for
-free, round after round. Without that, one provider round of sixty hallucinated ids
-would write sixty audit rows with the round budget never engaging.
+call naming an id that is **not in the registry**, and a call whose consent ledger
+belongs to a different question — so a caller cannot probe for free, round after
+round. Without that, one provider round of sixty hallucinated ids would write sixty
+audit rows with the round budget never engaging; and a loop that reused one ledger
+across turns would take that exit on **every** block of every round with the
+counters still reading zero.
 
 ## Authorization is per invocation, and withholding is not authorization
 
@@ -195,6 +204,73 @@ be refused. It is **not** a security control. An invocation naming a withheld to
 id — because the model hallucinated it, because a request was replayed, or because
 a role was revoked between the definition list and the call — is authorized and
 denied on its own merits.
+
+The same is true of the consent filtering added in AID-7a (#2785): search entries
+are withheld from the model on a request with no people-search tick, and
+personal-data entries are withheld where no inclusion was given, but gates 4a and 4b
+refuse the invocation regardless. Those refusals are the control.
+
+## Consent is an investigation, not a single record
+
+ADR-004 §1 requires an explicit per-invocation inclusion before personal fields
+reach the model. AID-7a (#2785) implements it as a **server-held ledger, built for
+one request and discarded with it** (`src/lib/diagnostics/tools/consent.ts`).
+
+The bound it enforces has **two conditions**, and they govern different populations.
+The **record scope** binds every entry that reads about one identified subject —
+`booking_audit_history` returns nothing but codes and instants and is bound by it
+just as `booking_party_state` is, because "what happened to this booking" is
+per-record evidence whatever the row carries. The **personal-details tick** binds
+only the entries that surface personal fields, because that is what the operator's
+checkbox says. So a booking's audit history is readable for a booking in the
+investigation without the tick, and the owner's name is not.
+
+An entry whose record KIND is itself an argument — `{subject, recordId}`,
+`{localModel, localId}` — declares `consentRecordKindByArg`, a map from every value
+that argument accepts to a consent kind, or to an explicit `null` for a subject the
+ledger cannot hold (a manual refund task, a partner link, a Xero-linked credit
+note). The map must be exhaustive over the argument's own declared enum or
+`defineDiagnosticsTool` throws, so adding a subject to a schema is a consent decision
+somebody has to take rather than one that can be skipped. A `null` subject refuses
+with `record_not_included`.
+
+It is not one `{kind, id}` pair, because the tool graph is not. The flagship
+question — "why will this booking not confirm?" — crosses record kinds by the
+registry's own authored guidance: `booking_block_state`'s scope text says that the
+subscription blocker's absence "says nothing about the owner's subscription;
+`member_eligibility_state` answers that". A booking-scoped consent refuses that
+second call.
+
+Four rules keep the investigation bounded:
+
+1. **Seeded only from what the operator picked.** The ask route re-resolves every
+   submitted record id under the operator's own authority first — client-provided
+   record values are selectors, not facts — and the ledger refuses anything that is
+   not id-shaped.
+2. **Extended only by the server, from server-owned projections.** After a
+   successful, authorised, audited call, the ledger absorbs the values of the fields
+   that entry **declares** in `relatedRecordRefs` — for example
+   `booking_block_state`'s `ownerMemberRef`. Never from model text, never from free
+   text, never from the client, never from a failed call.
+3. **One hop.** Absorption only runs for a call whose own record the operator
+   selected. A derived record can be read — that is the point — but not used to
+   derive further, so the reachable set is the operator's selections plus their
+   direct links, not a walk of the club's membership graph.
+4. **One question, never persisted.** Nothing is written to a database, a cookie or
+   a session — and, since the #2785 review, that is not left to a caller to
+   remember: the ledger binds itself to the first tool session it serves and refuses
+   a second. A new submission opens a new session, so a ledger kept across turns
+   gets no rows rather than reading records on consent that has since been
+   withdrawn. Building a fresh ledger per submission is the only thing that works.
+
+**Record search is separately gated.** The four search entries carry
+`operatorOnly: true`. They run as the operator's own record-picker action — which
+renders to the browser and sends nothing to the provider — or, on the owner's
+decision of 11 Aug 2026 (#2378 Q2), as a model tool call on a request where the
+operator ticked an explicit **people-search** box. That tick is off by default,
+covers one request, is never persisted, and is recorded in the audit row. The two
+ticks are independent: an included record does not permit searching, and a permitted
+search does not include a record.
 
 ## Bounds
 
@@ -338,9 +414,31 @@ plausible:
 not permitted, and nothing inferred it from elsewhere) · `not_configured` (this
 deployment has not set it up) · `evidence_unavailable` (the source could not be
 reached). `result_truncated`, `ambiguous`, `stale`, `indeterminate`,
-`limit_exceeded`, `actor_blocked`, `unsupported`, `not_ready`,
-`temporarily_unavailable`, `provider_check_required` and `tool_failed` complete the
-list.
+`limit_exceeded`, `actor_blocked`, `consent_required`, `search_consent_required`,
+`unsupported`, `not_ready`, `temporarily_unavailable`, `provider_check_required` and
+`tool_failed` complete the list.
+
+`consent_required` and `search_consent_required` are AID-7a's (#2785). Both are
+**withheld** evidence, like `permission_denied` and `actor_blocked`, and both are
+kept separate from those two because the operator's move is the one thing they can
+fix themselves — and separate from each other because the move differs: select the
+record or tick personal details, versus tick people-search. `consent_required`'s
+sentence names **both** of its own controls and asserts neither cause, because four
+refusals land on it and the state cannot tell them apart: an earlier version said
+"this question does not include the record it is about", which is false for the
+operator who selected the record and left the personal-details box unticked, and it
+sent them back to the record picker while the control that would fix it went unnamed
+(#2785 delta review). A refused search must not be reported as
+`unsupported`: "Diagnostics has no tool that can answer that" is the opposite of the
+truth when the tool exists and one tick would run it.
+
+`withheldAreas` is derived from `permission_denied` sources **only**. Its fallback
+names a source's own required areas when the source reports no missing ones, and
+three withheld states report none — a consent refusal, a search refusal and a
+locked-out actor. For a blocked account no area unlocks anything at all, so listing
+the entry's areas there told the operator to go and be granted four permissions that
+change nothing. `summariseDiagnosticCase` reports `hasConsentWithheld` and
+`hasSearchWithheld` instead, and both name a control rather than an area.
 
 `provider_check_required` is AID-6C's (#2377), and the executor does not produce it:
 it means the stored evidence was retrieved and settling the question needs a **live**
@@ -387,7 +485,28 @@ archive runbook.
 Recorded, exhaustively: tool id, the areas checked, the auth outcome, the failure
 reason, a sha256 of the canonical JSON of the **accepted** arguments, a sha256 of
 the canonical JSON of the projected rows, row count, byte count, duration, round
-index, observed-at.
+index, observed-at, and the six consent fields AID-7a (#2785) added —
+`invocationChannel` (`operator_action` / `model_tool_use`), `sensitiveInclusion`
+(`not_applicable` / `not_reached` / `granted` / `refused`), `consentRecordKind`,
+`consentRecordOrigin` (`operator_selected` / `derived` / null), `recordConsentTick`
+and `peopleSearchTick`.
+
+The consent fields exist because without them a `surfacesPersonalData` read taken
+**with** the operator's inclusion was indistinguishable in the durable log from one
+taken without it. They add no identifier: the **kind** of record and the **origin**
+of the decision are recorded, never the record id — `argsHash` already pins which
+record non-reversibly.
+
+Read together, they also keep the three causes of a consent refusal apart, which one
+row could not do while the origin was recorded only on the success path (#2785
+review). A refusal with **no kind** resolved nothing to check; a **kind with a null
+origin** is a real record this investigation does not cover — on a `model_tool_use`
+row, the pivot outside the operator's investigation that the ledger exists to catch;
+a **kind with a real origin** beside `recordConsentTick: "withheld"` is the
+operator's own record, refused only for the unticked box. Both ticks are recorded on
+**every** row, because "was the assistant allowed to read personal details / look
+people up during this question" is request-level state that the rows which did not
+use it must also answer.
 
 Never recorded: raw arguments, raw results, the operator's question, the model's
 answer, provider payloads, credentials, or any identifier beyond the acting admin's
@@ -411,7 +530,20 @@ never echoes caller input: `unknown_tool`, `invalid_args`,
 `actor_blocked`, `actor_read_failed`, `permission_denied`,
 `database_not_configured`, `database_role_unsafe`, `database_grants_missing`, `query_failed`,
 `evidence_unavailable`, `result_too_large`, `redaction_failed`,
-`audit_unavailable`, `internal_error`.
+`audit_unavailable`, `internal_error`, `sensitive_consent_required`,
+`record_not_included`, `operator_action_required`.
+
+The last three are AID-7a's (#2785). `sensitive_consent_required` stays distinct
+from `permission_denied` because the caller may hold every area the entry declares —
+what is missing is the operator's own inclusion of that record — and reporting it as
+a permission denial would send an administrator to a Full Admin for access they
+already have. `record_not_included` is the same refusal for an entry that reads one
+named record and surfaces **no** personal field: it shares the `consent_required`
+state because the remedy is identical, and it is its own reason because telling that
+operator "this tool reads personal details" would be false and because an auditor
+counting personal-inclusion refusals would otherwise over-count.
+`operator_action_required` maps to `search_consent_required` — its own state, added
+by this issue's review, pointing at the people-search tick.
 
 `evidence_unavailable` is AID-6A's, and it stays distinct from `query_failed` because
 the operator's next step differs: `query_failed` points at the diagnostics role and a
@@ -433,8 +565,13 @@ escaping exception would be a worse one.
 
 A fault that happens **after** authorization succeeded is audited as what it was: an
 `allowed` call that then failed, with the areas it checked and the hash of the
-arguments it accepted intact. Only a fault before or during authorization is recorded
-as `denied`, which is what `audit.ts` turns into a `blocked` outcome.
+arguments it accepted intact. A fault before or during authorization is still
+recorded as `denied` — nothing had been allowed at that point — but since the #2785
+review an `internal_error` row is **never** classified as a security block:
+`audit.ts` gives it outcome `failure` at severity `info`, because a defect is not a
+permission incident and no admin was blocked by it. Every other `denied` row is a
+`blocked` outcome at `important`. The reason and the auth outcome are in the metadata
+either way, and the fault itself is reported to Sentry where faults are read.
 
 ## Adding a tool
 
@@ -466,8 +603,33 @@ The checklist a reviewer should hold you to:
    every column of it is appropriate diagnostics evidence; the runtime self-check
    verifies the granted columns against the allowlist, so a grant that widens to the
    whole table fails readiness closed.
-7. `surfacesPersonalData` is true if any projected field identifies a person;
-   ADR-004 §1 then requires a per-invocation opt-in from the operator.
+7. `surfacesPersonalData` is true if any projected field identifies a person. Since
+   AID-7a (#2785) that flag is **enforced**, not merely declared: it is what makes
+   the operator's personal-details tick a requirement for the entry. Separately —
+   and whatever that flag says — an entry that reads **one named record** must say
+   which: `consentRecordKind` + `consentRecordArgKey`, or `consentRecordKindByArg` +
+   `consentRecordArgKey` when the kind is itself an argument, or `operatorOnly: true`
+   if it is a record **search**. `defineDiagnosticsTool` throws at definition time on
+   a personal-data entry that declares neither, on a half declaration, on both kinds
+   at once, and on a kind map that does not cover its argument's enum — the registry
+   does not build. Declare `relatedRecordRefs` for any projected field that carries a
+   directly linked record's own id, and only for those: that is what the
+   investigation's consent ledger is allowed to follow, and only an entry that
+   declares `surfacesPersonalData` may declare them at all.
+
+   **This is not a checklist item you can forget.** Since the #2785 delta review the
+   definer reads the rule off the ARGUMENT SCHEMA: an entry with a **required**
+   argument that accepts an exact identifier and refuses free text is an entry asked
+   about one identified thing, and it must name its record, declare itself a search,
+   or carry a `consentRecordExemption` — a reviewed sentence saying why what it names
+   is not a record an operator could ever have included. Anything else throws at
+   module-body time. The detector is the schema probe rather than a `*Id` name
+   convention, so `eventRef` or `subjectKey` cannot slip past it, and an OPTIONAL
+   identifier does not trip it (the correlation entries read a window of events and
+   filter inside it). There is exactly one exemption in the tree — the finance webhook
+   timeline, keyed on a provider event reference — and `registry.test.ts` pins both
+   that population and, by a second and independent probe over `inputSchema.required`,
+   that every per-record entry in the shipped registry answers the question.
 8. Know which projected values are **server-defined codes** and which are not. A
    column whose value originates in a request — a header, a name, a note — is
    attacker-chosen text, and the projection re-validates it against a known shape and

@@ -291,8 +291,29 @@ line to a booking, and #2377 lists it as approved evidence. It is bounded to 64
 characters (well below the substrate's own 200), stripped of control characters,
 quotes and angle brackets, whitespace-collapsed, and marked when clipped. Because
 payers routinely type their own name into it, **every entry that projects one
-declares `surfacesPersonalData: true`**, which triggers ADR-004's per-invocation
-operator opt-in.
+declares `surfacesPersonalData: true`**.
+
+Since AID-7a (#2785) that declaration is **enforced** rather than aspirational. Each
+per-record entry also names the record it reads — `payment_summary` and
+`payment_attempt_ledger` are keyed on `paymentId`, `xero_contact_linkage` on
+`memberId`, `booking_finance_state` on `bookingId` — and the executor refuses the
+invocation with `sensitive_consent_required` unless the operator included that
+record in this investigation. The two search entries are declared `operatorOnly`
+instead: they run as the operator's own record-picker action, or as a model tool call
+only on a request where the operator ticked people-search. `payment_summary` declares
+its projected `bookingId`, and `booking_finance_state` its projected `paymentRef`, as
+related-record refs, so an investigation opened on either one can follow the money to
+the other. The provider references beside them (Stripe ids, Xero invoice numbers,
+bank references) are deliberately **not** declared: they name provider records, not
+records this platform's consent is expressed in.
+
+The one entry in this pack that takes an exact identifier and names no consent record
+is the **webhook timeline**, whose `eventRef` is a provider event id, a Xero resource
+id or a correlation key. Since the #2785 delta review that is a declaration rather
+than a comment — `consentRecordExemption`, carrying the reason — because the definer
+now refuses to define an entry that takes an identifier and answers neither the record
+question nor the search one. Adding a second exemption to this pack means writing that
+reason in the diff and adding the entry to the census in `registry.test.ts`.
 
 ## Stored evidence only, and saying so
 
@@ -594,13 +615,18 @@ extend the test.
 | `booking_finance_state` reports a non-zero `ledgerVarianceCents` | The platform's own stored figures disagree | This is a real finding. Compare `payment_diagnostic_summary` and `payment_attempt_ledger` before changing anything |
 | The webhook timeline is empty for an event Stripe shows as delivered | Webhook logs are pruned after ~30 days, or the event id is wrong | Check the processing lease row, which is not pruned on that schedule |
 
-Incident response is unchanged from AID-6A: the audit trail for tool use is
-`ai_diagnostics.tool_invocation` in `AuditLog`, retention class `sensitive_access`
-(24 months), recording the acting administrator, the tool id, the areas checked, the
-allow/deny outcome, the stable failure reason, non-reversible hashes of the accepted
-arguments and of the result, row and byte counts, duration, round index and the
-observed-at instant — and never the arguments, the results, the question or the
-answer.
+Incident response is the AID-6A trail plus AID-7a's consent fields: the audit trail
+for tool use is `ai_diagnostics.tool_invocation` in `AuditLog`, retention class
+`sensitive_access` (24 months), recording the acting administrator, the tool id, the
+areas checked, the allow/deny outcome, the stable failure reason, non-reversible
+hashes of the accepted arguments and of the result, row and byte counts, duration,
+round index, the observed-at instant, and — since AID-7a (#2785) — the invocation
+channel, the ADR-004 §1 inclusion decision, the KIND and provenance of the record it
+was about, and the two per-request ticks (personal details, people search).
+Seventeen fields, and never the arguments, the results, the question or the answer.
+Those last six are what answer "was this personal read consented, was the model
+allowed to search, and was it asking about a record this operator had included?"
+during an incident.
 
 ## Adding to this pack
 

@@ -178,6 +178,12 @@ function correlationSuccess(
       durationMs: 1,
       roundIndex: 0,
       observedAt: "2026-08-03T09:00:00.000Z",
+      invocationChannel: "model_tool_use",
+      sensitiveInclusion: "not_applicable",
+      consentRecordKind: null,
+      consentRecordOrigin: null,
+      peopleSearchTick: "withheld",
+      recordConsentTick: "withheld",
     },
   };
 }

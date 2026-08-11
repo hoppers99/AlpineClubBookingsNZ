@@ -22,6 +22,7 @@ import {
   runDiagnosticsReadOnlyQuery,
 } from "../database";
 import { recordDiagnosticsToolAudit } from "../audit";
+import { createEmptyDiagnosticsConsentLedger } from "../consent";
 import { invokeDiagnosticsTool } from "../invoke";
 import { createDiagnosticsToolSession } from "../session";
 import type { DiagnosticsToolEntry } from "../define";
@@ -95,6 +96,8 @@ function invoke() {
     args: {},
     actingMemberId: "member-1",
     session,
+    invocationChannel: "model_tool_use",
+    consent: createEmptyDiagnosticsConsentLedger(),
     observedAt: new Date("2026-08-02T00:00:00.000Z"),
   });
 }

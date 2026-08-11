@@ -196,6 +196,11 @@ The xero_invoice_missing blocker is deliberately WIDER than xeroState: it asks w
   // No name, no email, no member id — but a booking reference plus a credit
   // balance is per-person financial information, and ADR-004's opt-in applies.
   surfacesPersonalData: true,
+  consentRecordKind: "booking",
+  consentRecordArgKey: "bookingId",
+  // The payment record this booking's money sits in, projected as the Payment row's
+  // own id, so a booking investigation can follow the money to the payment tools.
+  relatedRecordRefs: [{ field: "paymentRef", kind: "payment" }],
 });
 
 /** The AID-6C authoritative half. */
