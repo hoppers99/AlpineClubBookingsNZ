@@ -128,6 +128,56 @@ describe("booking wizard unpaid-subscription banner is lockout-mode aware (#2543
     ).toHaveAttribute("href", INVOICE_URL);
   });
 
+  // #2779. HARD_BLOCK stops a member STARTING a booking; it has never stopped
+  // them paying for one an admin saved on their behalf, and that is the club's
+  // supported way to get a locked-out member into a bed. A member who reads
+  // "contact the club before booking" and nothing else reasonably concludes
+  // every door is shut, and never looks at My Bookings.
+  it("HARD_BLOCK also points at a booking already saved for them", async () => {
+    renderWizard({ subscriptionLockoutMode: "HARD_BLOCK" });
+
+    const note = await screen.findByTestId(
+      "subscription-hard-block-pickup-note",
+    );
+    expect(note).toHaveTextContent("This stops you starting a new booking.");
+    expect(note).toHaveTextContent(
+      "If the club has already saved a booking for you, you can still open it from My Bookings and pay for it.",
+    );
+    expect(screen.getByRole("link", { name: "My Bookings" })).toHaveAttribute(
+      "href",
+      "/bookings",
+    );
+  });
+
+  // The first sentence alone was an over-promise. A $0 draft has no payment card
+  // — the booking page gates it on `finalPriceCents > 0` — so the member is shown
+  // Confirm instead, and `confirm-draft` answers them 403 under HARD_BLOCK. The
+  // wizard fetches no bookings and cannot know which kind is waiting, so the copy
+  // has to cover both rather than sending that member to a button that refuses
+  // them (INV-LOCKOUT-070).
+  it("HARD_BLOCK does not promise a pay step for a draft that has nothing to pay", async () => {
+    renderWizard({ subscriptionLockoutMode: "HARD_BLOCK" });
+
+    const note = await screen.findByTestId(
+      "subscription-hard-block-pickup-note",
+    );
+    expect(note).toHaveTextContent(
+      "If there is nothing to pay on it, ask the club to confirm that one for you.",
+    );
+  });
+
+  it.each(["NON_MEMBER_PRICING", "NO_BLOCK"] as const)(
+    "%s says nothing about picking a booking up — nothing is blocked to work around",
+    async (mode) => {
+      renderWizard({ subscriptionLockoutMode: mode });
+
+      await screen.findByTestId("subscription-unpaid-banner");
+      expect(
+        screen.queryByTestId("subscription-hard-block-pickup-note"),
+      ).not.toBeInTheDocument();
+    },
+  );
+
   it("HARD_BLOCK with no invoice link keeps today's contact-the-club copy", async () => {
     renderWizard({
       subscriptionLockoutMode: "HARD_BLOCK",
