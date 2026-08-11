@@ -515,14 +515,24 @@ application's own authoritative calculations.** Sixteen entries. Full reference:
   has no role column, bed allocation is not capacity, a booking's money is the
   finance pack's, and an empty audit result is not evidence that nothing happened.
 
-### ADR-004's per-invocation opt-in is declared, not enforced
+### ADR-004's per-invocation opt-in is now enforced (AID-7a, #2785)
 
-Fourteen of the sixteen entries set `surfacesPersonalData: true` truthfully, but
-**nothing in the shipped code implements a per-invocation operator consent**. The
-flag records that a row can identify a person; it does not gate the entry, and it
-must not be described as a control. Implementing the opt-in is a prerequisite
-recorded on AID-7 (#2378). What actually bounds the pack today is the fresh AND-ed
-area check, the exact-identifier argument shapes, the fixed projections, the column
+This section previously recorded the gap: `surfacesPersonalData` was declared
+truthfully across the packs and gated nothing. AID-7a closed it.
+
+An entry that surfaces personal data now either names the record it reads or
+declares itself a record **search**, and `defineDiagnosticsTool` refuses to define
+one that does neither — the registry does not build. The executor then refuses a
+per-record read whose record the operator did not include
+(`sensitive_consent_required`), and refuses a model-invoked search on a request with
+no people-search tick (`operator_action_required`). Consent itself is a server-held
+per-request ledger, seeded only from the operator's server-revalidated selections and
+extended only by absorbing the projected fields an entry declares, one hop out. The
+durable audit row records the decision. See [`tools.md`](tools.md) → "Consent is an
+investigation, not a single record" and ADR-004's implementation note.
+
+Everything that bounded the packs before still runs first: the fresh AND-ed area
+check, the exact-identifier argument shapes, the fixed projections, the column
 grants, the row/byte/field ceilings, the 16-call-per-session ceiling and the audit
 row.
 

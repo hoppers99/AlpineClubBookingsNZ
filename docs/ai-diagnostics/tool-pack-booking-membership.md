@@ -1579,19 +1579,40 @@ that it approved one, and a Booking Officer who believes an exception has been
 granted does not grant it — so the member's beds are released by the hold reaper
 instead.
 
-### `surfacesPersonalData` is declared and not yet enforced
+### `surfacesPersonalData` is declared AND enforced (since AID-7a, #2785)
 
 Fourteen of the sixteen entries set `surfacesPersonalData: true`, truthfully: a
 name, an email address, a member id or a booking reference plus a set of nights is
 per-person information.
 
-**Nothing in the shipped code implements ADR-004's per-invocation operator opt-in.**
-The flag **records** that a row can identify a person; it does not gate the entry.
-That gate is a prerequisite recorded on #2378, and until it lands the flag **must
-not be described or relied on as a control**. The controls that actually run are
-the fixed `requiredAreas` check re-read on every invocation, the exact-identifier
-argument shape, the registry projection, the column grant, the row and byte
-ceilings, and the audit row.
+This pack shipped with that flag recording a fact and gating nothing, and said so.
+AID-7a (#2785) closed it. Each entry now also declares what consent is **about**:
+
+- the twelve per-record entries name the record they read —
+  `personalDataRecordKind: "booking"` with `personalDataRecordArgKey: "bookingId"`,
+  or `"member"` with `"memberId"` — and the executor refuses the invocation with
+  `sensitive_consent_required` unless the operator included that record in this
+  investigation;
+- `booking_search` and `member_search` are declared `operatorOnly` instead. They
+  return bounded LISTS of bookings and people, which is how a model would otherwise
+  choose a subject for itself, so they run as the operator's own record-picker
+  action or — per the owner's 11 Aug 2026 decision on #2378 — as a model tool call
+  on a request where the operator ticked people-search. Unticked, they refuse with
+  `operator_action_required`;
+- five entries declare `relatedRecordRefs`, the projected fields an investigation
+  may follow: `booking_block_state` and `booking_diagnostic_summary` expose
+  `ownerMemberRef` (and the latter `parentBookingRef`), `booking_party` exposes
+  `guestMemberRef`, `booking_linked_state` the linked `bookingRef`, and
+  `booking_exception_request_state` the `requestedByMemberRef`. On the membership
+  half, `member_summary` exposes both parent refs, `member_family_state` the
+  `relatedMemberRef`, and `member_booking_summary` the member's `bookingRef`.
+  `guestRef` is a BookingGuest row and `familyGroupRef` a group, so neither is
+  declared: consent is expressed in bookings, members and payments only.
+
+The controls that ran before are unchanged and still run first: the fixed
+`requiredAreas` check re-read on every invocation, the exact-identifier argument
+shape, the registry projection, the column grant, the row and byte ceilings, and the
+audit row — which now also records whether consent was granted or refused.
 
 ## Operator troubleshooting
 

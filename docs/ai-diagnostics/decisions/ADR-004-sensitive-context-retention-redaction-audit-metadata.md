@@ -79,6 +79,50 @@ the model's answer, raw provider payloads, credentials, or unrestricted personal
 identifiers (a member's name, email, or raw id where a hash suffices). This
 mirrors and extends the Page help "never store the question text" rule.
 
+## Implementation note — how §1 is enforced in the tool channel (AID-7a, #2785)
+
+This note records how the decision above was implemented; it does not change it.
+
+**The tool channel takes §1's SECOND branch.** §1 offers two ways to behave absent
+explicit inclusion: non-identifying aggregates, **or** an explicit "personal detail
+omitted — include the record to see it". Field-level omission would mean a second
+projection for every flagged entry, doubling the surface every pack review has
+already covered, so the tool channel refuses the invocation instead and returns
+exactly that notice as its operator sentence
+(`sensitive_consent_required` → evidence state `consent_required`). The case reports
+itself incomplete. The page-context channel is unchanged and still omits fields.
+
+**Inclusion is per request, over a bounded investigation.** A single
+`{recordKind, recordId}` consent cannot drive a tool graph whose flagship
+investigation crosses record kinds by the registry's own authored guidance. So
+consent is a server-held ledger (`src/lib/diagnostics/tools/consent.ts`), built for
+one request and discarded with it: seeded only from records the operator selected
+and the server re-resolved under their own authority, extended only by absorbing the
+projected fields an entry **declares** as related-record refs after a successful,
+authorised, audited call, and bounded to **one hop** from an operator selection. The
+model can never write to it. This is what epic #2369's owner comment authorises —
+"for an explicit bounded investigation the agent may receive the personal and
+financial information reasonably required… the restriction is against unrestricted
+or bulk access".
+
+**Record search is a separate, explicitly granted capability.** The four search
+entries return bounded LISTS of people, bookings or payments, which is how a model
+would otherwise choose a subject for itself. They are declared `operatorOnly` and run
+only as the operator's own record-picker action, or — on the owner's decision of
+11 Aug 2026 (#2378 Q2) — as a model tool call on a request where the operator ticked
+an explicit people-search box, off by default and never persisted. The gate is a
+typed, server-owned invocation channel on the executor's input, not the free-form
+`surface` label.
+
+**Five fields are added to §4's approved set**, and they are inside it rather than an
+extension of it: §4 permits recording the auth outcome, and consent is the second
+half of the authorisation. They are `invocationChannel`, `sensitiveInclusion`,
+`consentRecordKind`, `consentRecordOrigin` and `peopleSearchTick` — every one a
+closed enum or null. **No subject record id is recorded**: `argsHash` already pins
+which record non-reversibly, and adding the identifier would put an unrestricted
+personal identifier into a 24-month row, which §4 forbids. Without these fields a
+consented read and an unconsented one were the same durable row.
+
 ## Consequences
 
 ### Positive

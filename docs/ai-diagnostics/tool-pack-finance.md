@@ -291,8 +291,21 @@ line to a booking, and #2377 lists it as approved evidence. It is bounded to 64
 characters (well below the substrate's own 200), stripped of control characters,
 quotes and angle brackets, whitespace-collapsed, and marked when clipped. Because
 payers routinely type their own name into it, **every entry that projects one
-declares `surfacesPersonalData: true`**, which triggers ADR-004's per-invocation
-operator opt-in.
+declares `surfacesPersonalData: true`**.
+
+Since AID-7a (#2785) that declaration is **enforced** rather than aspirational. Each
+per-record entry also names the record it reads — `payment_summary` and
+`payment_attempt_ledger` are keyed on `paymentId`, `xero_contact_linkage` on
+`memberId`, `booking_finance_state` on `bookingId` — and the executor refuses the
+invocation with `sensitive_consent_required` unless the operator included that
+record in this investigation. The two search entries are declared `operatorOnly`
+instead: they run as the operator's own record-picker action, or as a model tool call
+only on a request where the operator ticked people-search. `payment_summary` declares
+its projected `bookingId`, and `booking_finance_state` its projected `paymentRef`, as
+related-record refs, so an investigation opened on either one can follow the money to
+the other. The provider references beside them (Stripe ids, Xero invoice numbers,
+bank references) are deliberately **not** declared: they name provider records, not
+records this platform's consent is expressed in.
 
 ## Stored evidence only, and saying so
 
