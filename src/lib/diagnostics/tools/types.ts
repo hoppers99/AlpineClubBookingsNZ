@@ -240,6 +240,58 @@ export type DiagnosticsToolFailureReason =
  */
 export const DIAGNOSTICS_ARGS_HASH_REDACTED = "low_entropy_args_redacted";
 
+/**
+ * WHERE AN INVOCATION CAME FROM — a server-owned, closed discriminant (AID-7a,
+ * #2785).
+ *
+ * It is NOT `surface`. That field is free-form, defaulted by the executor and
+ * consumed only inside the audit row's description sentence; a gate cannot be built
+ * on a string any caller may invent. This one is a required field on every
+ * invocation with no default, so a new call site has to state which of the two
+ * things it is, and a reviewer sees it in the diff:
+ *
+ *  - `operator_action` — the operator themselves, through a server route that
+ *    renders the result to their own browser and sends nothing to the model
+ *    provider. The record picker is the only such caller.
+ *  - `model_tool_use` — the bounded provider loop, executing a `tool_use` block the
+ *    MODEL chose. Everything an attacker can write into evidence text reaches tool
+ *    arguments through this channel, so it is the one the gates are written for.
+ */
+export type DiagnosticsInvocationChannel = "operator_action" | "model_tool_use";
+
+/**
+ * The record kinds a consent decision can be about (AID-7a, #2785; ADR-004 §1).
+ *
+ * Closed, and matching the argument shapes the packs already take: every entry that
+ * surfaces personal data names its record with a `bookingId`, a `memberId` or a
+ * `paymentId`. A kind that is not on this list cannot be consented to, which is the
+ * fail-closed default a future pack should have to argue against.
+ */
+export const DIAGNOSTICS_CONSENT_RECORD_KINDS = [
+  "booking",
+  "member",
+  "payment",
+] as const;
+
+export type DiagnosticsConsentRecordKind =
+  (typeof DIAGNOSTICS_CONSENT_RECORD_KINDS)[number];
+
+/**
+ * A PROJECTED field that names a directly linked record, declared by the entry that
+ * projects it (AID-7a, #2785).
+ *
+ * The point of declaring it on the entry rather than deriving it from a field name
+ * is that the derivation would be a guess about server data. This is a statement by
+ * the tool author, reviewed with the entry, that this exact projected column carries
+ * the identifier of a record of this exact kind — which is what makes it safe for
+ * the consent ledger to follow.
+ */
+export interface DiagnosticsRelatedRecordRef {
+  /** The key in the entry's own PROJECTED row. Never a raw column name. */
+  field: string;
+  kind: DiagnosticsConsentRecordKind;
+}
+
 /** A projected scalar. Deliberately not `unknown`: a tool returns flat scalars. */
 export type DiagnosticsToolFieldValue = string | number | boolean | null;
 
