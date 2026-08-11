@@ -1,0 +1,105 @@
+// #2779 — the member booking page's DRAFT "Complete Booking" card, which is
+// where a subscription-locked member actually pays for a booking an admin saved
+// on their behalf (`INV-LOCKOUT-069`).
+//
+// WHY THIS IS A SOURCE-TEXT CONTRACT AND NOT A RENDER TEST. Same reasoning as
+// `arrival-instructions-consent-gate.test.ts` beside it: the card lives inside an
+// async React Server Component two thousand lines long that loads a booking, a
+// session, module flags, payments, credits, group state and lodge settings before
+// it renders anything. Standing all of that up tests the mocks. What has to be
+// true here is narrow and structural, and each item below is a way the journey
+// has a real failure mode:
+//
+//  * the card must stay OWNER-ONLY. It holds the member's own card-entry
+//    controls (#1303), and #2779 changed the copy inside it — a widened
+//    condition would put those controls in front of every officer who opens the
+//    booking;
+//  * the copy must distinguish a booking the CLUB made from one the member
+//    saved. A booking a member never made, described as "your saved draft", reads
+//    as somebody's mistake — and this member is being asked to pay for it;
+//  * the deletion deadline must be stated HERE, not only on the dashboard. The
+//    nightly `draft-cleanup` job DELETES an expired draft rather than cancelling
+//    it, so a member who waits a week finds nothing at all (`INV-LOCKOUT-070`).
+//
+// Comments are stripped before matching, so the paragraph explaining a guard can
+// never stand in for the guard.
+import { readFileSync } from "fs";
+import path from "path";
+import { describe, expect, it } from "vitest";
+
+const PAGE = "src/app/(authenticated)/bookings/[id]/page.tsx";
+
+function readPageSource(): string {
+  // Test helper: a fixed repo file under process.cwd(), not user input.
+  // nosemgrep: javascript.lang.security.audit.path-traversal.path-join-resolve-traversal.path-join-resolve-traversal
+  return readFileSync(path.resolve(process.cwd(), PAGE), "utf8");
+}
+
+/** Strip `//` and block comments so only EXECUTABLE text is matched. */
+function stripComments(source: string): string {
+  let out = "";
+  let state: "code" | "line" | "block" = "code";
+  for (let i = 0; i < source.length; i++) {
+    const c = source[i];
+    const next = source[i + 1];
+    if (state === "code") {
+      if (c === "/" && next === "/") {
+        state = "line";
+        i++;
+        continue;
+      }
+      if (c === "/" && next === "*") {
+        state = "block";
+        i++;
+        continue;
+      }
+      out += c;
+      continue;
+    }
+    if (state === "line") {
+      if (c === "\n") {
+        state = "code";
+        out += c;
+      }
+      continue;
+    }
+    if (c === "*" && next === "/") {
+      state = "code";
+      i++;
+    }
+  }
+  return out;
+}
+
+describe("#2779 draft pick-up-and-pay card (INV-LOCKOUT-069/070)", () => {
+  const source = stripComments(readPageSource());
+
+  it("stays owner-only, DRAFT-only and priced-only", () => {
+    // A $0 draft deliberately gets the ConfirmDraftButton branch instead — there
+    // is nothing to pay, so an unpaid member cannot pick that one up at all and
+    // an admin confirms it (INV-LOCKOUT-070).
+    expect(source).toContain(
+      "{isBookingOwner && !isDeleted && isDraft && booking.finalPriceCents > 0 && (",
+    );
+    expect(source).toContain(
+      "{canManageBooking && !isDeleted && isDraft && booking.finalPriceCents === 0 && (",
+    );
+  });
+
+  it("says the club saved it when an admin created it on the member's behalf", () => {
+    expect(source).toContain("booking.createdBy");
+    expect(source).toContain(
+      "The club saved this booking for you. Review the details above, then pay to confirm it.",
+    );
+    // And still says the ordinary thing for a draft the member saved themselves.
+    expect(source).toContain("This is a saved draft.");
+  });
+
+  it("states the deletion deadline on the page that takes the money", () => {
+    expect(source).toContain('data-testid="draft-expiry-notice"');
+    expect(source).toContain("booking.draftExpiresAt ? (");
+    expect(source).toContain("formatNZDateTime(booking.draftExpiresAt)");
+    // "removed", not "cancelled": the job deletes the row.
+    expect(source).toMatch(/is removed and the booking will need to be made again/);
+  });
+});

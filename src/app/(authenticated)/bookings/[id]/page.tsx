@@ -1934,9 +1934,30 @@ export default async function BookingDetailPage({
           </CardHeader>
           <CardContent>
             <p className="text-sm text-muted-foreground mb-4">
-              This is a saved draft. Review the details above, then confirm when
-              you&apos;re ready to pay and finalise the booking.
+              {booking.createdBy
+                ? // #2779 — the pick-up-and-pay journey. An admin saved this
+                  // booking on the member's behalf; the member confirms it by
+                  // paying for it, and that works even while an unpaid
+                  // subscription blocks them from STARTING a booking
+                  // (INV-LOCKOUT-069). Say who it came from, so the member does
+                  // not read a booking they never made as somebody's mistake.
+                  "The club saved this booking for you. Review the details above, then pay to confirm it."
+                : "This is a saved draft. Review the details above, then confirm when you're ready to pay and finalise the booking."}
             </p>
+            {booking.draftExpiresAt ? (
+              // #2779 — the 72-hour draft clock. `draft-cleanup` DELETES an
+              // expired draft outright (instrumentation.node.ts), so a member
+              // who leaves it a week finds nothing at all. The dashboard card
+              // has always shown this deadline; the page where the money is
+              // actually taken did not.
+              <p
+                className="text-sm text-warning-11 mb-4"
+                data-testid="draft-expiry-notice"
+              >
+                Pay by {formatNZDateTime(booking.draftExpiresAt)} or this draft
+                is removed and the booking will need to be made again.
+              </p>
+            ) : null}
             <BookingPaymentSection
               bookingId={booking.id}
               amountCents={booking.finalPriceCents}

@@ -396,6 +396,8 @@ Prefix `INV-LOCKOUT`.
 | `INV-LOCKOUT-011` | The financial-year reseed is gated on the Xero module, not on the mode |
 | `INV-LOCKOUT-012` | Only the refusals are mode-gated; the unpaid-member-guest lookups still run for the privacy rule |
 | `INV-LOCKOUT-013` | There are six mode-gated refusal sites: the five routes plus the modify apply path |
+| `INV-LOCKOUT-069` | The payment path carries no subscription gate by design, so a locked-out member can pay an on-behalf booking |
+| `INV-LOCKOUT-070` | That journey's two non-payment edges: the 72-hour draft clock, and a $0 draft only an admin can confirm |
 | `INV-LOCKOUT-014` | The paid-up-adult rule is evaluated on removals too; a consent decline or expiry is exempt |
 | `INV-LOCKOUT-015` | The waitlist is the sixth money path: the offer states the reason, confirm re-checks without consuming |
 | `INV-LOCKOUT-016` | D-12 applies on every path from the real consent column; a pending invite cannot be the paid-up adult |

@@ -227,3 +227,72 @@ describe("DashboardPage summary card drill-downs", () => {
     expect(html).not.toContain("Lodge occupancy for your dates");
   });
 });
+
+/**
+ * #2779 — the draft card is the locked-out member's only route back to a booking
+ * the club made for them, so it has to read as the club's booking and lead with
+ * paying. "Resume" describes something you started; nobody started this one.
+ */
+describe("DashboardPage draft bookings saved by the club (#2779)", () => {
+  function draftRow(createdById: string | null) {
+    return {
+      id: "draft-1",
+      checkIn: new Date("2026-09-07T00:00:00.000Z"),
+      checkOut: new Date("2026-09-09T00:00:00.000Z"),
+      finalPriceCents: 24000,
+      draftExpiresAt: new Date("2026-08-13T00:00:00.000Z"),
+      createdById,
+      _count: { guests: 1 },
+    };
+  }
+
+  function seedWithDraft(createdById: string | null) {
+    mocks.bookingFindMany.mockReset();
+    mocks.bookingFindMany
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([draftRow(createdById)])
+      .mockResolvedValueOnce([]);
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mocks.auth.mockResolvedValue({ user: { id: "member-1", name: "Mere Member" } });
+    mocks.bookingFindFirst.mockResolvedValue(null);
+    mocks.getMemberCreditBalance.mockResolvedValue(0);
+    mocks.getAvailablePromoCodesForMember.mockResolvedValue([]);
+    mocks.lockerFindMany.mockResolvedValue([]);
+    mocks.calendarEventFindMany.mockResolvedValue([]);
+    mocks.memberFindUnique.mockResolvedValue({
+      requiresInduction: false,
+      inductions: [],
+    });
+    mocks.loadEffectiveModuleFlags.mockResolvedValue(moduleFlags());
+    mocks.hasAccessRole.mockReturnValue(false);
+  });
+
+  it("labels an admin-created draft and leads with paying it", async () => {
+    seedWithDraft("admin-9");
+
+    const html = await renderDashboardPage();
+
+    expect(html).toContain("Saved for you by the club");
+    expect(html).toContain("Review &amp; pay");
+    expect(html).not.toContain(">Resume<");
+    // The acting admin's identity belongs on the booking page's own "Created by"
+    // line, not on a dashboard card.
+    expect(html).not.toContain("admin-9");
+    // The deletion deadline stays visible, because the draft is deleted rather
+    // than cancelled when it expires.
+    expect(html).toContain("Expires");
+  });
+
+  it("leaves a draft the member saved themselves reading as their own", async () => {
+    seedWithDraft(null);
+
+    const html = await renderDashboardPage();
+
+    expect(html).toContain("Resume");
+    expect(html).not.toContain("Saved for you by the club");
+  });
+});

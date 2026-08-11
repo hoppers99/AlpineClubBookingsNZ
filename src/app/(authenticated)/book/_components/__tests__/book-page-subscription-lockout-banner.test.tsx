@@ -128,6 +128,39 @@ describe("booking wizard unpaid-subscription banner is lockout-mode aware (#2543
     ).toHaveAttribute("href", INVOICE_URL);
   });
 
+  // #2779. HARD_BLOCK stops a member STARTING a booking; it has never stopped
+  // them paying for one an admin saved on their behalf, and that is the club's
+  // supported way to get a locked-out member into a bed. A member who reads
+  // "contact the club before booking" and nothing else reasonably concludes
+  // every door is shut, and never looks at My Bookings.
+  it("HARD_BLOCK also points at a booking already saved for them", async () => {
+    renderWizard({ subscriptionLockoutMode: "HARD_BLOCK" });
+
+    const note = await screen.findByTestId(
+      "subscription-hard-block-pickup-note",
+    );
+    expect(note).toHaveTextContent("This stops you starting a new booking.");
+    expect(note).toHaveTextContent(
+      "If the club has already saved a booking for you, you can still open it from My Bookings and pay for it.",
+    );
+    expect(screen.getByRole("link", { name: "My Bookings" })).toHaveAttribute(
+      "href",
+      "/bookings",
+    );
+  });
+
+  it.each(["NON_MEMBER_PRICING", "NO_BLOCK"] as const)(
+    "%s says nothing about picking a booking up — nothing is blocked to work around",
+    async (mode) => {
+      renderWizard({ subscriptionLockoutMode: mode });
+
+      await screen.findByTestId("subscription-unpaid-banner");
+      expect(
+        screen.queryByTestId("subscription-hard-block-pickup-note"),
+      ).not.toBeInTheDocument();
+    },
+  );
+
   it("HARD_BLOCK with no invoice link keeps today's contact-the-club copy", async () => {
     renderWizard({
       subscriptionLockoutMode: "HARD_BLOCK",

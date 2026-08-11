@@ -177,6 +177,96 @@ describe("the HARD_BLOCK refusals are mode-gated, and only the refusals (#2543)"
   );
 });
 
+describe("the payment path is DELIBERATELY ungated (#2779, INV-LOCKOUT-069)", () => {
+  // Owner decision, 11 Aug 2026. #2779 was filed as an enforcement gap — under
+  // HARD_BLOCK an unpaid member cannot confirm a FREE draft but can confirm a
+  // PRICED one by paying for it — and the owner ruled that the asymmetry is the
+  // feature: it is what lets an admin book on behalf of a locked-out member and
+  // have that member sign in, pick the booking up and pay for it.
+  //
+  // STRUCTURAL, and it has to be. The claim is "no file in these two trees
+  // refuses the booking owner over their subscription", which is a statement
+  // about a SET OF FILES. A behavioural test of create-payment-intent passes
+  // just as green while a later agent, reading this issue's original framing,
+  // adds the gate to charge-saved-method instead — and the member it silently
+  // strands is the one who was told to log in and pay.
+  // CALL shapes, not bare identifiers — every entry carries its opening paren or
+  // its property key. That is deliberate: the whole point of this issue is that
+  // the absence is documented, so a comment in a payment route explaining why
+  // there is no `SUBSCRIPTION_REQUIRED` refusal here must not trip the guard that
+  // protects it. What is forbidden is CALLING the resolver or ANSWERING with the
+  // refusal, and neither can be done without these exact strings.
+  const LOCKOUT_IDENTIFIERS = [
+    "resolveSubscriptionLockoutMode(",
+    "peekSubscriptionLockoutMode(",
+    "peekSubscriptionLockoutModeStrict(",
+    "requiresPaidSubscriptionForMemberForBooking(",
+    "requiresPaidSubscriptionForBooking(",
+    'code: "SUBSCRIPTION_REQUIRED"',
+  ] as const;
+
+  const UNGATED_TREES = [
+    "src/app/api/payments/",
+    "src/app/api/webhooks/",
+  ] as const;
+
+  it.each(LOCKOUT_IDENTIFIERS)(
+    "no payment or webhook route names %s",
+    (identifier) => {
+      const offenders = sourceFilesNaming(identifier).filter((file) =>
+        UNGATED_TREES.some((tree) => file.startsWith(tree)),
+      );
+      expect(
+        offenders,
+        `INV-LOCKOUT-069 (#2779): the payment path carries no subscription gate ` +
+          `on purpose — it is the only way a subscription-locked member can pay ` +
+          `for a booking an admin made on their behalf. ${identifier} appeared ` +
+          `in: ${offenders.join(", ")}. If the club really does want to refuse ` +
+          `payment while a subscription is owed, that is an owner decision and a ` +
+          `new issue, not a fix here.`,
+      ).toEqual([]);
+    },
+  );
+
+  it("confirm-draft's subscription refusal can only ever bite a ZERO-price draft", () => {
+    // The narrowness is positional and invisible from behaviour: the 400 for a
+    // priced draft is returned BEFORE the subscription gate is reached, so a
+    // priced draft never meets it. Move the gate above that check and a
+    // locked-out member is refused on the very door #2779 exists to keep open,
+    // with every service-level test still green.
+    const source = readRepoFile(
+      "src/app/api/bookings/[id]/confirm-draft/route.ts",
+    );
+    const pricedDraftRefusal = source.indexOf(
+      "Use the payment flow to complete non-zero bookings",
+    );
+    const subscriptionGate = source.indexOf(
+      'subscriptionLockoutMode === "HARD_BLOCK"',
+    );
+
+    expect(pricedDraftRefusal).toBeGreaterThan(-1);
+    expect(subscriptionGate).toBeGreaterThan(-1);
+    expect(
+      pricedDraftRefusal,
+      "INV-LOCKOUT-069 (#2779): the priced-draft hand-off must stay ABOVE the " +
+        "HARD_BLOCK refusal, so the refusal only reaches a $0 draft.",
+    ).toBeLessThan(subscriptionGate);
+  });
+
+  it("the booking-create HARD_BLOCK gate still exempts an authorised on-behalf create", () => {
+    // The other half of the journey: without this term the admin could not make
+    // the booking in the first place, and nothing downstream would matter.
+    const source = readRepoFile("src/app/api/bookings/route.ts");
+    const gate = source.indexOf('subscriptionLockoutMode === "HARD_BLOCK"');
+    expect(gate).toBeGreaterThan(-1);
+    expect(
+      source.slice(gate, gate + 200),
+      "INV-LOCKOUT-069 (#2779): an admin must be able to book on behalf of a " +
+        "subscription-locked member.",
+    ).toContain("!isAuthorizedOnBehalf");
+  });
+});
+
 describe("no lockout policy read inside a booking transaction (#2543)", () => {
   const TRANSACTIONAL_SITES = [
     {

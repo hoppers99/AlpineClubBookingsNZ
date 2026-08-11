@@ -193,6 +193,19 @@ export default function BookPage() {
           and the HARD_BLOCK branch is deliberately byte-identical to the
           pre-#2543 copy so no club whose mode did not move sees new wording.
 
+          #2779 adds ONE sentence to the HARD_BLOCK branch, and only that branch.
+          HARD_BLOCK stops a member STARTING a booking; it has never stopped them
+          paying for one an admin already saved on their behalf — the create gate
+          carries `!isAuthorizedOnBehalf` and the payment routes carry no
+          subscription gate at all (INV-LOCKOUT-069). That is deliberate: it is
+          the whole "admin books on behalf, the locked-out member picks it up and
+          pays" journey. But a member reading "contact the club before booking"
+          reasonably concludes that nothing is open to them, and closes the tab
+          before they ever look at My bookings. The sentence is conditional in its
+          wording ("if the club has already saved a booking for you"), so it is
+          true for a member who has none, and the wizard needs no extra fetch to
+          say it.
+
           The NON_MEMBER_PRICING explanation is the SERVER's own sentence
           (`memberRateNotice`, built by `formatUnpaidSubscriptionRateReason` in
           the subscription-status route), rendered verbatim so the wizard and the
@@ -229,6 +242,16 @@ export default function BookPage() {
               )
             ) : null}
           </p>
+          {subscriptionLockout.mode === "HARD_BLOCK" ? (
+            <p data-testid="subscription-hard-block-pickup-note">
+              This stops you starting a new booking. If the club has already
+              saved a booking for you, you can still open it from{" "}
+              <Link href="/bookings" className="underline font-medium">
+                My Bookings
+              </Link>{" "}
+              and pay for it.
+            </p>
+          ) : null}
           {subscriptionLockout.mode === "NON_MEMBER_PRICING" &&
           subscriptionLockout.memberRateNotice ? (
             <p data-testid="subscription-non-member-pricing-notice">

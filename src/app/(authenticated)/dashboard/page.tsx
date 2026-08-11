@@ -223,6 +223,12 @@ export default async function DashboardPage() {
         checkOut: true,
         finalPriceCents: true,
         draftExpiresAt: true,
+        // #2779 — whether an ADMIN saved this draft on the member's behalf.
+        // `booking-create.ts` writes `createdById` only for an on-behalf create,
+        // so a non-null value is exactly that case. Read here to drive a label
+        // and a CTA, never rendered: the acting admin's identity belongs on the
+        // booking detail page's own "Created by …" line, not on a dashboard card.
+        createdById: true,
         _count: { select: { guests: true } },
       },
     }),
@@ -647,7 +653,13 @@ export default async function DashboardPage() {
           <Card>
             <CardContent className="pt-4">
               <div className="divide-y">
-                {draftBookings.map((booking) => (
+                {draftBookings.map((booking) => {
+                  // #2779 — an on-behalf draft is one the member never started,
+                  // so "Resume" was the wrong word for the one case where the
+                  // member most needs to act: a subscription-locked member whose
+                  // only open door is picking this booking up and paying for it.
+                  const savedByClub = booking.createdById !== null;
+                  return (
                   <div
                     key={booking.id}
                     className="flex items-center justify-between py-3"
@@ -671,6 +683,15 @@ export default async function DashboardPage() {
                           </span>
                         )}
                       </p>
+                      {savedByClub && (
+                        <p
+                          className="text-xs text-info-11"
+                          data-testid="draft-saved-by-club"
+                        >
+                          Saved for you by the club — open it to check the
+                          details and pay.
+                        </p>
+                      )}
                     </div>
                     <Button asChild size="sm" variant="outline">
                       <Link
@@ -679,11 +700,12 @@ export default async function DashboardPage() {
                           "/dashboard",
                         )}
                       >
-                        Resume
+                        {savedByClub ? "Review & pay" : "Resume"}
                       </Link>
                     </Button>
                   </div>
-                ))}
+                  );
+                })}
               </div>
             </CardContent>
           </Card>

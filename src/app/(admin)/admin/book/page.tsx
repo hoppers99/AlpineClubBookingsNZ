@@ -1153,6 +1153,25 @@ export default function AdminBookPage() {
             </div>
           )}
 
+          {/* #2779 — what "Save as Draft" actually means for the member, stated
+              where the officer chooses it. Two facts an officer cannot see from
+              the button: the member pays for the draft themselves (this is the
+              supported way to get a booking to a member whose unpaid
+              subscription blocks them from booking), and the draft is DELETED
+              72 hours after it is saved. */}
+          <div className="rounded-md border border-border bg-muted p-3 text-sm text-muted-foreground">
+            <p>
+              <strong>Save as Draft</strong> leaves the booking for the member to
+              pay for themselves. It appears on their dashboard as &ldquo;Saved
+              for you by the club&rdquo;, and paying it confirms the booking —
+              which still works if an unpaid subscription is blocking them from
+              making their own bookings. Drafts are removed{" "}
+              <strong>72 hours</strong> after they are saved, so tell the member
+              it is waiting. A $0 booking has nothing to pay: confirm that one
+              here instead.
+            </p>
+          </div>
+
           <div className="flex justify-between">
             <Button variant="outline" onClick={() => setStep("guests")}>
               Back
