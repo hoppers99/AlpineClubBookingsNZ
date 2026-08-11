@@ -210,20 +210,69 @@ describe("the payment path is DELIBERATELY ungated (#2779, INV-LOCKOUT-069)", ()
     "src/app/api/webhooks/",
   ] as const;
 
+  // The route trees ALONE are close to vacuous, and measurement said so. The
+  // Stripe webhook route is ~100 lines of signature verification that delegates
+  // to `stripe-webhook-service.ts`, and the pay route delegates its settlement to
+  // the credit/reconciliation modules — so injecting a real
+  // `resolveSubscriptionLockoutMode()` call into `payment-reconciliation.ts`
+  // (which owns `markBookingPaymentSucceeded`, the function that actually
+  // confirms a paid booking) left the tree-only census GREEN while the same
+  // injection into a payments ROUTE turned it red. An agent reading #2779's
+  // original framing would have added the gate exactly there.
+  //
+  // Listed EXPLICITLY rather than derived from the routes' transitive `@/lib`
+  // imports, and the difference matters: the transitive closure of
+  // `create-payment-intent` reaches pricing and booking-policy modules that
+  // legitimately DO carry the gate (`membership-type-policy.ts`,
+  // `booking-policy-exceptions.ts`, `waitlist.ts` …), so a closure-based census
+  // would forbid the rule where the rule belongs. What is forbidden is the gate
+  // on the modules that CLAIM or SETTLE a payment for the booking's owner.
+  //
+  // `booking-error-payment-targets.ts` is deliberately NOT here despite its name:
+  // it maps refusal reasons (SUBSCRIPTION_REQUIRED among them) onto UI targets,
+  // and reporting a refusal some other path already raised is not raising one.
+  const UNGATED_SETTLEMENT_MODULES = [
+    // Stripe webhook confirmation — the route is a shim, this is the logic.
+    "src/lib/stripe-webhook-service.ts",
+    // markBookingPaymentSucceeded: the PAID claim itself.
+    "src/lib/payment-reconciliation.ts",
+    // settleFullyCreditCoveredBooking: the $0/credit-covered PAID claim.
+    "src/lib/booking-credit-election.ts",
+    // canCreateImmediatePaymentIntent: whether the owner may pay at all.
+    "src/lib/booking-payment-flow.ts",
+    // Payment row writes shared by every settle path.
+    "src/lib/payment-transactions.ts",
+    // The emailed pay-by-link door onto the same journey.
+    "src/lib/payment-link.ts",
+  ] as const;
+
+  it.each(UNGATED_SETTLEMENT_MODULES)(
+    "%s still exists, so the census below is not silently empty",
+    (file) => {
+      // A census that names a file by string goes quiet the day the file is
+      // renamed. Fail loudly instead, and make whoever moved it re-point the list.
+      expect(() => readRepoFile(file)).not.toThrow();
+    },
+  );
+
   it.each(LOCKOUT_IDENTIFIERS)(
-    "no payment or webhook route names %s",
+    "no payment route, webhook route or settlement module names %s",
     (identifier) => {
-      const offenders = sourceFilesNaming(identifier).filter((file) =>
-        UNGATED_TREES.some((tree) => file.startsWith(tree)),
+      const offenders = sourceFilesNaming(identifier).filter(
+        (file) =>
+          UNGATED_TREES.some((tree) => file.startsWith(tree)) ||
+          (UNGATED_SETTLEMENT_MODULES as readonly string[]).includes(file),
       );
       expect(
         offenders,
         `INV-LOCKOUT-069 (#2779): the payment path carries no subscription gate ` +
           `on purpose — it is the only way a subscription-locked member can pay ` +
           `for a booking an admin made on their behalf. ${identifier} appeared ` +
-          `in: ${offenders.join(", ")}. If the club really does want to refuse ` +
-          `payment while a subscription is owed, that is an owner decision and a ` +
-          `new issue, not a fix here.`,
+          `in: ${offenders.join(", ")}. That covers the payment/webhook route ` +
+          `trees AND the modules those routes delegate settlement to, because a ` +
+          `gate one layer down strands exactly the same member. If the club ` +
+          `really does want to refuse payment while a subscription is owed, that ` +
+          `is an owner decision and a new issue, not a fix here.`,
       ).toEqual([]);
     },
   );
@@ -264,6 +313,57 @@ describe("the payment path is DELIBERATELY ungated (#2779, INV-LOCKOUT-069)", ()
       "INV-LOCKOUT-069 (#2779): an admin must be able to book on behalf of a " +
         "subscription-locked member.",
     ).toContain("!isAuthorizedOnBehalf");
+  });
+});
+
+describe("INV-LOCKOUT-070's zero-price bullet states what is true (#2779)", () => {
+  // The bullet FIRST shipped saying a $0 draft "cannot be picked up by a
+  // locked-out member … the only door is confirm-draft". That was false, and an
+  // invariant that is false is worse than no invariant: this one told the next
+  // agent that a door which is open does not exist, and forbade closing it.
+  //
+  // What is actually true is narrower and worth writing down precisely. There is
+  // no member-facing CONTROL for a $0 draft — the booking page gates its payment
+  // card on `finalPriceCents > 0` — but `POST /api/payments/create-payment-intent`
+  // admits a DRAFT with no price precondition and decides the zero case inside
+  // its own transaction, settling PAYMENT_PENDING -> PAID through
+  // `settleFullyCreditCoveredBooking`. A member calling that route directly does
+  // confirm a $0 draft, locked out or not.
+  //
+  // That is ACCEPTED (it follows from INV-LOCKOUT-069, and no money moves), not
+  // absent. These two assertions are a pair on purpose: the first stops the
+  // false sentence coming back, the second fails the day the route's zero-dollar
+  // branch is removed or renamed — at which point the invariant is describing a
+  // branch that no longer exists and must be rewritten again.
+  const INVARIANT_DOC = "docs/invariants/subscription-lockout-pricing.md";
+  const PAY_ROUTE = "src/app/api/payments/create-payment-intent/route.ts";
+
+  it("does not claim a $0 draft cannot be settled at all", () => {
+    const doc = readRepoFile(INVARIANT_DOC);
+
+    expect(
+      doc,
+      "INV-LOCKOUT-070 (#2779): the pay route's zero-dollar settle branch is a " +
+        "second, ungated door onto a $0 draft. Do not restore the claim that " +
+        "confirm-draft is the only one.",
+    ).not.toContain("A $0 on-behalf draft cannot be picked up");
+    expect(doc).toContain("create-payment-intent");
+    expect(doc).toContain("settleFullyCreditCoveredBooking");
+  });
+
+  it("and the pay route branch the invariant describes still exists", () => {
+    const route = readRepoFile(PAY_ROUTE);
+
+    // DRAFT is admitted, with no price precondition anywhere above the
+    // transaction — the `effectivePriceCents <= 0` refusal sits BELOW it and is
+    // only reached when the zero case was not already settled.
+    expect(route).toContain('booking.status !== "DRAFT"');
+    expect(route).toContain("settledEffectivePriceCents <= 0");
+    expect(
+      route,
+      "INV-LOCKOUT-070 (#2779) describes this branch by name. If it has moved, " +
+        "rewrite the invariant rather than deleting this assertion.",
+    ).toContain("settleFullyCreditCoveredBooking(tx, {");
   });
 });
 

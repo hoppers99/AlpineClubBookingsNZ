@@ -61,8 +61,28 @@ import {
  * be ON for the lockout to bite at all — subscriptions are invoiced through Xero,
  * so `resolveSubscriptionLockoutMode` answers NO_BLOCK while the module is off.
  *
- * WINDOW: base index 10 — disjoint from every other stayWindow spec (attempts
- * land on 10 / 26 / 42, none of which another base index reaches).
+ * WINDOW: base index 28 — attempts land on 28 / 44 / 60.
+ *
+ * Base 10 was WRONG and is the kind of wrong that hides: it is already
+ * `COMPLIANT_WINDOW_INDEX` in `member-policy-exception-requests.spec.ts`, and its
+ * retry-1 index 26 is also reached by `multi-lodge/policy-exception-second-lodge.spec.ts`
+ * (`stayWindow(25 + retry)`). One worker and `fullyParallel: false` keep the two
+ * specs from ever running together, and they book different members, so nothing
+ * failed — but this spec can leave a PAID/CONFIRMED booking on those nights when
+ * Stripe test keys are configured, and #1703 / #2625 are both collisions that
+ * were "harmless" until they were not.
+ *
+ * 28 / 44 / 60 is no longer a hand-checked claim: it is asserted by
+ * `src/lib/__tests__/e2e-stay-window-disjointness.test.ts`, which parses every
+ * spec's window calls (including the `n + retry * k` shapes), fails on any
+ * collision with this band, and fails if this very comment stops matching the
+ * code. Move the base index and that test tells you what is free.
+ *
+ * The MAX_MONTH_HOPS ceiling documented on `RETRY_WINDOW_STRIDE` does not bind
+ * here: this spec never clicks the booking calendar — it creates every booking
+ * over the API and opens pages by URL — so a far-out window costs no navigation.
+ * `stayWindow` still throws loudly if index 60 ever falls outside the seeded
+ * seasons.
  *
  * STRIPE: the final card charge is skipped unless real test-mode keys are
  * configured, exactly as `stripe-payment.spec.ts` does. Everything that #2779 is
@@ -162,7 +182,7 @@ test.beforeAll(async ({ browser }) => {
 
   memberId = await resolveMemberId();
 
-  const window = stayWindowForAttempt(10, test.info().retry);
+  const window = stayWindowForAttempt(28, test.info().retry);
   WINDOW = { checkIn: window.checkIn, checkOut: window.checkOut };
 
   // Retry idempotency (#2302): a previous attempt may have left this member's

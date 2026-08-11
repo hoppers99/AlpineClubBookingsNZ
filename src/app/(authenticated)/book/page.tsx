@@ -193,7 +193,7 @@ export default function BookPage() {
           and the HARD_BLOCK branch is deliberately byte-identical to the
           pre-#2543 copy so no club whose mode did not move sees new wording.
 
-          #2779 adds ONE sentence to the HARD_BLOCK branch, and only that branch.
+          #2779 adds a note to the HARD_BLOCK branch, and only that branch.
           HARD_BLOCK stops a member STARTING a booking; it has never stopped them
           paying for one an admin already saved on their behalf — the create gate
           carries `!isAuthorizedOnBehalf` and the payment routes carry no
@@ -205,6 +205,15 @@ export default function BookPage() {
           wording ("if the club has already saved a booking for you"), so it is
           true for a member who has none, and the wizard needs no extra fetch to
           say it.
+
+          The second sentence exists because the first would otherwise be a
+          promise this member cannot always keep. A $0 draft has no payment card
+          (the booking page gates it on `finalPriceCents > 0`); the member is
+          offered Confirm instead, and `confirm-draft` answers them 403 under
+          HARD_BLOCK. Without the qualifier the banner sends that member to a
+          button that refuses them (INV-LOCKOUT-070). The wizard cannot know
+          which kind of draft is waiting — it fetches none — so the copy covers
+          both rather than guessing.
 
           The NON_MEMBER_PRICING explanation is the SERVER's own sentence
           (`memberRateNotice`, built by `formatUnpaidSubscriptionRateReason` in
@@ -249,7 +258,8 @@ export default function BookPage() {
               <Link href="/bookings" className="underline font-medium">
                 My Bookings
               </Link>{" "}
-              and pay for it.
+              and pay for it. If there is nothing to pay on it, ask the club to
+              confirm that one for you.
             </p>
           ) : null}
           {subscriptionLockout.mode === "NON_MEMBER_PRICING" &&

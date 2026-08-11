@@ -234,16 +234,25 @@ describe("DashboardPage summary card drill-downs", () => {
  * paying. "Resume" describes something you started; nobody started this one.
  */
 describe("DashboardPage draft bookings saved by the club (#2779)", () => {
-  function draftRow(createdById: string | null) {
+  function draftRow(createdById: string | null, finalPriceCents = 24000) {
     return {
       id: "draft-1",
       checkIn: new Date("2026-09-07T00:00:00.000Z"),
       checkOut: new Date("2026-09-09T00:00:00.000Z"),
-      finalPriceCents: 24000,
+      finalPriceCents,
       draftExpiresAt: new Date("2026-08-13T00:00:00.000Z"),
       createdById,
       _count: { guests: 1 },
     };
+  }
+
+  function seedWithZeroPricedDraft(createdById: string | null) {
+    mocks.bookingFindMany.mockReset();
+    mocks.bookingFindMany
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([draftRow(createdById, 0)])
+      .mockResolvedValueOnce([]);
   }
 
   function seedWithDraft(createdById: string | null) {
@@ -294,5 +303,24 @@ describe("DashboardPage draft bookings saved by the club (#2779)", () => {
 
     expect(html).toContain("Resume");
     expect(html).not.toContain("Saved for you by the club");
+  });
+
+  // A $0 club-saved draft has no pay step at all: the booking page gates its
+  // payment card on `finalPriceCents > 0` and offers ConfirmDraftButton instead,
+  // which `confirm-draft` refuses for a locked-out non-admin. "Review & pay" on
+  // that row sends the one member this journey exists for to a button that 403s
+  // them (INV-LOCKOUT-070). The price is already selected for the line above, so
+  // there is nothing to trade off.
+  it("does not promise a payment step for a $0 draft the club saved", async () => {
+    seedWithZeroPricedDraft("admin-9");
+
+    const html = await renderDashboardPage();
+
+    expect(html).toContain("Saved for you by the club");
+    expect(html).toContain("there is nothing to pay, so ask the club to confirm it");
+    expect(html).not.toContain("Review &amp; pay");
+    expect(html).not.toContain("open it to check the details and pay");
+    // Still reachable — the member should be able to look at it.
+    expect(html).toContain(">Open<");
   });
 });

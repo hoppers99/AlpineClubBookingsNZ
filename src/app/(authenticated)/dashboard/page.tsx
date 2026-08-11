@@ -659,6 +659,15 @@ export default async function DashboardPage() {
                   // member most needs to act: a subscription-locked member whose
                   // only open door is picking this booking up and paying for it.
                   const savedByClub = booking.createdById !== null;
+                  // …but only a PRICED draft has that door. At $0 the booking
+                  // page shows no payment card (it gates on finalPriceCents > 0)
+                  // and offers Confirm instead, which `confirm-draft` refuses for
+                  // a locked-out non-admin — so "Review & pay" would send this
+                  // member to a button that 403s them (INV-LOCKOUT-070). The
+                  // price is already selected for the line above it, so telling
+                  // the truth here costs nothing.
+                  const savedByClubAndPayable =
+                    savedByClub && booking.finalPriceCents > 0;
                   return (
                   <div
                     key={booking.id}
@@ -688,8 +697,9 @@ export default async function DashboardPage() {
                           className="text-xs text-info-11"
                           data-testid="draft-saved-by-club"
                         >
-                          Saved for you by the club — open it to check the
-                          details and pay.
+                          {savedByClubAndPayable
+                            ? "Saved for you by the club — open it to check the details and pay."
+                            : "Saved for you by the club — there is nothing to pay, so ask the club to confirm it."}
                         </p>
                       )}
                     </div>
@@ -700,7 +710,11 @@ export default async function DashboardPage() {
                           "/dashboard",
                         )}
                       >
-                        {savedByClub ? "Review & pay" : "Resume"}
+                        {savedByClubAndPayable
+                          ? "Review & pay"
+                          : savedByClub
+                            ? "Open"
+                            : "Resume"}
                       </Link>
                     </Button>
                   </div>

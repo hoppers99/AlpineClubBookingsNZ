@@ -149,6 +149,23 @@ describe("booking wizard unpaid-subscription banner is lockout-mode aware (#2543
     );
   });
 
+  // The first sentence alone was an over-promise. A $0 draft has no payment card
+  // — the booking page gates it on `finalPriceCents > 0` — so the member is shown
+  // Confirm instead, and `confirm-draft` answers them 403 under HARD_BLOCK. The
+  // wizard fetches no bookings and cannot know which kind is waiting, so the copy
+  // has to cover both rather than sending that member to a button that refuses
+  // them (INV-LOCKOUT-070).
+  it("HARD_BLOCK does not promise a pay step for a draft that has nothing to pay", async () => {
+    renderWizard({ subscriptionLockoutMode: "HARD_BLOCK" });
+
+    const note = await screen.findByTestId(
+      "subscription-hard-block-pickup-note",
+    );
+    expect(note).toHaveTextContent(
+      "If there is nothing to pay on it, ask the club to confirm that one for you.",
+    );
+  });
+
   it.each(["NON_MEMBER_PRICING", "NO_BLOCK"] as const)(
     "%s says nothing about picking a booking up — nothing is blocked to work around",
     async (mode) => {

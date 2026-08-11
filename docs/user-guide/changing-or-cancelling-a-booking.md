@@ -87,6 +87,20 @@ change fee, and beds are only claimed when you confirm and pay. If you saved a
 credit choice, the booking page reminds you: *"Your $X credit choice is saved
 and will be applied when you confirm."*
 
+**A draft the club saved for you** looks slightly different. It is labelled
+**"Saved for you by the club"** and its button reads **Review & pay** rather than
+**Resume**, because you never started it — someone at the club made the booking
+for you and left the payment to you. Open it, check the dates and the party, and
+pay; paying is what confirms it. If the booking comes to **$0** there is nothing
+for you to pay, so the button just opens it and the club confirms that one for
+you. See [Booking a stay](booking-a-stay.md#a-booking-the-club-saved-for-you).
+
+> **Drafts do not wait forever.** An unpaid draft is **removed 72 hours** after
+> it is saved — deleted, not cancelled, so there is nothing left to re-open and
+> the booking has to be made again. The dashboard card and the booking page both
+> show the deadline. Nothing is emailed about a draft, so if the club saved one
+> for you, pay it within three days or ask them to confirm it instead.
+
 ### Cancel a booking — and check the refund first
 
 1. Open the booking. The Help widget's **Page guide** shows the **booking status

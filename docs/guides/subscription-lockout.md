@@ -223,10 +223,11 @@ Two limits are worth knowing before you rely on it:
   cancelled: after three days there is nothing left to pay and the booking must
   be made again. If the member cannot pay that quickly, confirm the booking
   yourself and collect the money the usual way.
-- **A $0 booking cannot be picked up.** With nothing to pay there is no payment
-  step, and the confirm button refuses a member whose subscription is unpaid. Free
-  bookings are confirmed by an admin — press **Confirm Booking** instead of
-  **Save as Draft**, or confirm it from the booking's own page afterwards.
+- **A $0 booking has nothing to pick up.** With nothing to pay there is no
+  payment step on the member's screen, and the **Confirm** button they are
+  offered instead refuses a member whose subscription is unpaid. Free bookings
+  are confirmed by an admin — press **Confirm Booking** instead of **Save as
+  Draft**, or confirm it from the booking's own page afterwards.
 
 If your club is on **Let them book, at non-member rates** instead, none of this
 is needed: the member books for themselves and their own nights are simply

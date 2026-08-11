@@ -132,10 +132,19 @@ Three things are worth knowing before you use it:
   again. If the member cannot pay within three days, confirm the booking instead
   and chase the money the usual way.
 
-**A $0 booking cannot be picked up this way.** There is nothing to pay, so the
-member has no payment step to complete — and if they are locked out, the confirm
-button refuses them. Confirm a free booking yourself, either here with **Confirm
-Booking** or from the booking's own page afterwards.
+**A non-member owner with no login can never pick a draft up.** The wizard also
+books a non-member as the owner (see "When you'd use it" above — someone with no
+login at all). They have no dashboard to open, no way to sign in, and nothing is
+emailed about a draft — so a draft saved for them is a booking nobody can pay,
+and it is **deleted after 72 hours** with the beds never held. The review screen
+says so where you choose. Press **Confirm Booking** for that owner, or save the
+draft only if *you* are coming back to confirm it within three days.
+
+**A $0 booking has nothing for the member to pay, so confirm that one
+yourself.** With no money owing there is no payment step on their screen — the
+booking offers them a **Confirm** button instead, and that button refuses a
+member whose subscription is unpaid. Use **Confirm Booking** here rather than
+**Save as Draft**, or confirm it from the booking's own page afterwards.
 
 ## Settings reference
 
@@ -165,6 +174,7 @@ This is a wizard, not a settings page. The inputs it collects:
 | Cannot Save as Draft | The booking is retroactive or over-capacity | Confirm it instead — drafts are not allowed for those |
 | The member says the draft you saved has disappeared | Unpaid drafts are removed 72 hours after they are saved | Make the booking again, and either confirm it yourself or ask them to pay within three days |
 | A locked-out member cannot complete the free booking you saved for them | A $0 draft has no payment step, and the confirm button refuses an unpaid member | Confirm it for them from the booking page, or use **Confirm Booking** instead of **Save as Draft** |
+| You saved a draft for a non-member owner and nothing happened | They have no login, no dashboard and no draft email, so nobody can pay it — and it is deleted after 72 hours | Confirm the booking instead, or open the draft yourself and confirm it within three days |
 
 ## Related links
 
