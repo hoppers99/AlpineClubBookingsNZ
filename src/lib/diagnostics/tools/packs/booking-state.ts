@@ -264,6 +264,10 @@ const bookingIdInputSchema = {
 const bookingBlockState = defineDiagnosticsTool<BookingIdArgs>({
   id: DIAGNOSTICS_BOOKING_BLOCK_STATE_TOOL_ID,
   source: "server_owned",
+  // Every read — the booking, the policy evaluators, the capacity engine, the
+  // member-night conflict scan — takes the transaction client from
+  // `readBookingBlockState`. Nothing here relies on an exemption.
+  readOnlySeam: { threadsOwnReads: true },
   label: "Authoritative booking block state",
   description: `Returns this platform's OWN authoritative answer for why ONE booking cannot proceed — not a second reading of its columns. It runs the same soft-policy evaluator a member's exception request runs through (minimum stay, adult-member hosting, paid-up adult member), the same review-reason derivation the officer queue renders, the same per-night capacity engine every booking path checks against, the same member-night conflict scan, the same edit-window classifier the member's own Edit button obeys, and the club's own subscription-lockout refusal as the confirm route applies it. It gives the booking's lifecycle state, whether a Booking Officer review or an adult-member hosting review is still pending, the review reason codes, the live policy violation codes and whether an exception request for them would HOLD beds, the number of nights short of capacity and the tightest spare-bed figure, the nights another booking holds exclusively, how many member-night conflicts exist, the open exception requests and how many bed-nights they are actually holding with the deadline, whether the MEMBER could change the booking themselves, and stable blocker codes in the order they should be acted on. Needs BOTH bookings and membership access. It describes the booking AS IT STANDS and does not predict what a future change to it would be refused — notably, under HARD_BLOCK, adding a member guest who owes an unpaid subscription is refused at the add and modify paths, which is a fact about that edit rather than about this booking. BLOCKER CODES, in priority order — use these exact meanings and do not paraphrase them: ${BOOKING_BLOCKER_CATALOGUE_TEXT} ${AID6B_DESCRIPTION_TAIL}`,
   requiredAreas: ["bookings", "membership"],
@@ -362,6 +366,9 @@ WHAT THIS DOES NOT COVER. A NEW-BOOKING policy-exception request lives in a diff
 const bookingCapacityByNight = defineDiagnosticsTool<BookingIdArgs>({
   id: DIAGNOSTICS_BOOKING_CAPACITY_TOOL_ID,
   source: "server_owned",
+  // `checkCapacity` and `readBoundedAllocationCounts` both take the transaction
+  // client, so the occupancy figures and the allocation counts share one snapshot.
+  readOnlySeam: { threadsOwnReads: true },
   label: "Booking capacity by night",
   description: `Returns ONE row per New Zealand lodge night of a booking's stay, computed by the SAME capacity engine every booking path checks against — not a count of bookings. For each night it gives the beds the rest of the lodge occupies and the beds left (both with THIS booking excluded, so the figures answer "what room is there for it"), how many beds this booking's own party needs that night, the spare beds that would remain, whether it fits, whether another booking holds sole occupancy of the lodge that night, whether this booking EFFECTIVELY holds the whole lodge now, whether its raw whole-lodge flag is stored for history, whether it carries a deliberate admin over-capacity override, how many bed-nights are actually allocated to it, and whether the booking itself is still live, terminal or deleted. The occupancy figure already includes custodian bed holds and beds held by pending policy-exception requests, neither of which has a booking to show for it. At most ${AID6B_NIGHT_ROW_LIMIT} nights. ${AID6B_DESCRIPTION_TAIL}`,
   requiredAreas: ["bookings"],
@@ -457,6 +464,9 @@ type MemberIdArgs = z.infer<typeof memberIdArgsSchema>;
 const memberEligibilityState = defineDiagnosticsTool<MemberIdArgs>({
   id: DIAGNOSTICS_MEMBER_ELIGIBILITY_TOOL_ID,
   source: "server_owned",
+  // Lifecycle, membership-type, subscription-settlement and induction all resolve
+  // from the transaction client threaded through `readMemberEligibility`.
+  readOnlySeam: { threadsOwnReads: true },
   label: "Authoritative member eligibility state",
   description: `Returns this platform's OWN authoritative answer for ONE member's standing — not a second reading of their columns. It runs the same lifecycle resolver the admin badge shows (including the erasure test, which a plain three-column read misses), the same membership-type resolution the season assignment drives, the same subscription-settlement rule every booking gate shares, the club's own subscription lockout MODE, the same adult-member-host predicate the hosting policy enforces, and the member's induction state. It gives the lifecycle label, whether the account is active and can log in, the age tier, the season year, the membership type key and where that type came from, what the type does to booking and to subscriptions, the stored subscription status and how it was settled, whether a subscription is required and whether it is unsettled, the club's lockout mode, whether the member QUALIFIES as an adult-member host, their induction state, whether an induction gates a booking at all, and stable eligibility codes in the order they should be acted on. ELIGIBILITY CODES, in priority order — use these exact meanings and do not paraphrase them: ${MEMBER_ELIGIBILITY_CATALOGUE_TEXT} ${AID6B_DESCRIPTION_TAIL}`,
   requiredAreas: ["membership"],

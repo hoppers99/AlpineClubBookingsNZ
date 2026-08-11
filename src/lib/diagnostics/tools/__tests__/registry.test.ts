@@ -19,6 +19,7 @@ import {
   declaresConsentRecord,
 } from "../consent";
 import { readSqlPlaceholderNumbers } from "../database";
+import { READ_ONLY_SEAM_EXEMPTION_IDS } from "../read-only-seam-exemptions";
 import {
   defineDiagnosticsTool,
   DIAGNOSTICS_TOOL_EVIDENCE_SOURCES,
@@ -2167,6 +2168,164 @@ describe("ADR-004 §1 consent declarations (#2785)", () => {
         argsSchema: z.object({ window: z.enum(["1h", "24h"]) }).strict(),
       }),
     ).toThrow(/exempt from nothing/);
+  });
+});
+
+describe("read-only seam declarations (#2786)", () => {
+  /**
+   * A `server_owned` fixture that is complete APART from the declaration under
+   * test, so each expectation below fails for exactly one reason.
+   */
+  const base = {
+    id: "diagnostics.seam_fixture",
+    label: "Seam fixture",
+    description:
+      "Test-only entry used to pin the definition-time read-only seam invariant.",
+    requiredAreas: ["support"] as const,
+    source: "server_owned" as const,
+    argsSchema: z.object({}).strict(),
+    inputSchema: {
+      type: "object" as const,
+      properties: {},
+      additionalProperties: false as const,
+    },
+    readEvidence: async () => [],
+    project: (row: Record<string, unknown>) => ({ ok: row.ok === true }),
+    rowLimit: 1,
+    byteLimit: 64,
+    surfacesPersonalData: false,
+  };
+
+  it("registers EVERY server-owned entry with a declaration that holds up", () => {
+    // The census half. The two tests below prove the assert refuses a bad
+    // declaration; this proves it was actually APPLIED to the real registry, which
+    // is the property that would silently lapse if a future entry were built by
+    // some path that skipped `defineDiagnosticsTool`.
+    const serverOwned = DIAGNOSTICS_TOOLS.filter(
+      (tool) => tool.source === "server_owned",
+    );
+    expect(serverOwned.length).toBeGreaterThan(0);
+
+    for (const tool of serverOwned) {
+      const declaration = tool.readOnlySeam;
+      expect(declaration, `${tool.id} carries no readOnlySeam`).toBeDefined();
+      expect(typeof declaration.threadsOwnReads, tool.id).toBe("boolean");
+      // Says something: threads its own reads, or names what it reads through.
+      expect(
+        declaration.threadsOwnReads || (declaration.exemptions?.length ?? 0) > 0,
+        `${tool.id} declares neither threaded reads nor an exemption`,
+      ).toBe(true);
+      for (const id of declaration.exemptions ?? []) {
+        expect(
+          READ_ONLY_SEAM_EXEMPTION_IDS,
+          `${tool.id} names undeclared exemption "${id}"`,
+        ).toContain(id);
+      }
+    }
+  });
+
+  it("refuses, at definition time, a declaration that cannot be true", () => {
+    // Reaches its evidence in some third way nobody has reviewed.
+    expect(() =>
+      defineDiagnosticsTool({
+        ...base,
+        readOnlySeam: { threadsOwnReads: false },
+      }),
+    ).toThrow(/names no exemption/);
+
+    // An id that is not in the table. This is the clause that keeps the table
+    // CLOSED: without it, a typo or a deleted row leaves a declaration that still
+    // reads as a reviewed decision while pointing at nothing.
+    expect(() =>
+      defineDiagnosticsTool({
+        ...base,
+        readOnlySeam: {
+          threadsOwnReads: false,
+          exemptions: ["readiness-own-pools"],
+        },
+      }),
+    ).toThrow(/not in READ_ONLY_SEAM_EXEMPTIONS/);
+
+    // "Declared nothing" and "declared an empty list" must not read alike.
+    expect(() =>
+      defineDiagnosticsTool({
+        ...base,
+        readOnlySeam: { threadsOwnReads: true, exemptions: [] },
+      }),
+    ).toThrow(/Omit it rather than declaring nothing/);
+
+    // One reliance, stated once.
+    expect(() =>
+      defineDiagnosticsTool({
+        ...base,
+        readOnlySeam: {
+          threadsOwnReads: false,
+          exemptions: ["cron-runs-own-budget", "cron-runs-own-budget"],
+        },
+      }),
+    ).toThrow(/more than once/);
+  });
+
+  it("accepts each of the three shapes an honest entry can have", () => {
+    // Threads everything.
+    expect(() =>
+      defineDiagnosticsTool({
+        ...base,
+        readOnlySeam: { threadsOwnReads: true },
+      }),
+    ).not.toThrow();
+
+    // Threads nothing, and says what it reads through instead.
+    expect(() =>
+      defineDiagnosticsTool({
+        ...base,
+        readOnlySeam: {
+          threadsOwnReads: false,
+          exemptions: ["deployment-no-database"],
+        },
+      }),
+    ).not.toThrow();
+
+    // Both — the usage-health shape, which is the one an "either/or" rule would
+    // have forced into a lie.
+    expect(() =>
+      defineDiagnosticsTool({
+        ...base,
+        readOnlySeam: {
+          threadsOwnReads: true,
+          exemptions: ["usage-summary-no-tx-client"],
+        },
+      }),
+    ).not.toThrow();
+  });
+
+  it("asks nothing of a SELECT-only entry, which PostgreSQL already bounds", () => {
+    // The seam exists because a server-owned entry runs on the application's
+    // full-privilege connection. A `select_only_sql` entry runs as the read-only
+    // role on its own pool inside `BEGIN READ ONLY`, so requiring a declaration
+    // from it would be ceremony that teaches nothing.
+    expect(() =>
+      defineDiagnosticsTool({
+        id: "diagnostics.seam_fixture_sql",
+        label: "Seam fixture (SQL)",
+        description:
+          "Test-only entry pinning that the seam declaration is a server-owned concern.",
+        requiredAreas: ["support"],
+        source: "select_only_sql",
+        argsSchema: z.object({}).strict(),
+        inputSchema: {
+          type: "object",
+          properties: {},
+          additionalProperties: false,
+        },
+        sql: "SELECT true AS ok",
+        bind: () => [],
+        project: (row: Record<string, unknown>) => ({ ok: row.ok === true }),
+        rowLimit: 1,
+        byteLimit: 64,
+        surfacesPersonalData: false,
+      }),
+    ).not.toThrow();
   });
 });
 

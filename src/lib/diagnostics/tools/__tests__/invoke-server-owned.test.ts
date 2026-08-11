@@ -58,6 +58,14 @@ function serverOwnedEntry(options: {
   return {
     id: TOOL_ID,
     source: "server_owned",
+    // The fixture's `read` is a stub that touches no database, so it declares the
+    // same thing the one real entry in that position declares (#2786). Having to
+    // write this line at all is the forcing function doing its job: a server-owned
+    // entry cannot be constructed, even in a test, without saying where it reads.
+    readOnlySeam: {
+      threadsOwnReads: false,
+      exemptions: ["deployment-no-database"],
+    },
     label: "Server-owned fixture",
     description: "A registry entry that exists only to exercise the gates.",
     requiredAreas: ["support"],

@@ -36,11 +36,13 @@ vi.mock("@/lib/prisma", () => ({
 
 import { DIAGNOSTICS_TOOL_BOUNDS } from "../types";
 import {
-  DIAGNOSTICS_READ_ONLY_STATEMENT_TIMEOUT_MS,
-  DIAGNOSTICS_READ_ONLY_TRANSACTION_TIMEOUT_MS,
   READ_ONLY_SEAM_EXEMPTIONS,
   READ_ONLY_SEAM_EXEMPTION_IDS,
   isReadOnlySeamExemptionId,
+} from "../read-only-seam-exemptions";
+import {
+  DIAGNOSTICS_READ_ONLY_STATEMENT_TIMEOUT_MS,
+  DIAGNOSTICS_READ_ONLY_TRANSACTION_TIMEOUT_MS,
   withBoundedReadOnlyTransaction,
 } from "../read-only-transaction";
 
@@ -182,7 +184,14 @@ describe("the seam is the ONLY place the global client is reached (#2786)", () =
     // Non-vacuous: the stripped code still holds the import the census is about, so
     // a single match means "one reference", never "the strip ate the file".
     expect(code).toContain('import { prisma } from "@/lib/prisma"');
-    expect(code.length).toBeGreaterThan(source.length / 8);
+    // And it still holds the RUNTIME BODY. This was a `length > source/8` ratio,
+    // which is a proxy for the property rather than the property — and a brittle
+    // one: moving the exemption table to its own module (#2786) left a file that is
+    // mostly docblock by design, so the ratio failed while nothing it existed to
+    // protect had changed. Naming the code that must survive the strip says what is
+    // actually meant and does not move when the prose does.
+    expect(code).toContain("export async function withBoundedReadOnlyTransaction");
+    expect(code).toContain("isolationLevel");
   });
 
   it("executes exactly the two control statements and nothing unsafe", () => {
@@ -215,11 +224,16 @@ describe("the seam is the ONLY place the global client is reached (#2786)", () =
 
 describe("what the seam cannot cover is DECLARED, not assumed (#2786)", () => {
   it("is a closed world: exactly these rows, in this order", () => {
-    // Pinning the id set exactly is the point. A fifth exemption is a decision
+    // Pinning the id set exactly is the point. A sixth exemption is a decision
     // somebody has to make in a diff and argue for in review, not something that
     // appears because a new entry found the seam inconvenient.
+    //
+    // The fifth row is here because the definition-time check FOUND it: the AID-7
+    // plan predicted four, and making the readiness entry answer for itself
+    // surfaced a module-flags read on the global client that no row named.
     expect(READ_ONLY_SEAM_EXEMPTION_IDS).toEqual([
       "readiness-own-pool",
+      "readiness-module-flags-fault-tolerant",
       "deployment-no-database",
       "usage-summary-no-tx-client",
       "cron-runs-own-budget",
