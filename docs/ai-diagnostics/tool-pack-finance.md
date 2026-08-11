@@ -607,13 +607,16 @@ extend the test.
 | `booking_finance_state` reports a non-zero `ledgerVarianceCents` | The platform's own stored figures disagree | This is a real finding. Compare `payment_diagnostic_summary` and `payment_attempt_ledger` before changing anything |
 | The webhook timeline is empty for an event Stripe shows as delivered | Webhook logs are pruned after ~30 days, or the event id is wrong | Check the processing lease row, which is not pruned on that schedule |
 
-Incident response is unchanged from AID-6A: the audit trail for tool use is
-`ai_diagnostics.tool_invocation` in `AuditLog`, retention class `sensitive_access`
-(24 months), recording the acting administrator, the tool id, the areas checked, the
-allow/deny outcome, the stable failure reason, non-reversible hashes of the accepted
-arguments and of the result, row and byte counts, duration, round index and the
-observed-at instant — and never the arguments, the results, the question or the
-answer.
+Incident response is the AID-6A trail plus AID-7a's consent fields: the audit trail
+for tool use is `ai_diagnostics.tool_invocation` in `AuditLog`, retention class
+`sensitive_access` (24 months), recording the acting administrator, the tool id, the
+areas checked, the allow/deny outcome, the stable failure reason, non-reversible
+hashes of the accepted arguments and of the result, row and byte counts, duration,
+round index, the observed-at instant, and — since AID-7a (#2785) — the invocation
+channel, the ADR-004 §1 inclusion decision, the KIND and provenance of the consented
+record, and the people-search tick. Sixteen fields, and never the arguments, the
+results, the question or the answer. Those last five are what answer "was this
+personal read consented, and was the model allowed to search?" during an incident.
 
 ## Adding to this pack
 

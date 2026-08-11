@@ -30,13 +30,16 @@
  * when clipped), and the four entries that project a person's identifier declare
  * `surfacesPersonalData`.
  *
- * ADR-004's PER-INVOCATION OPT-IN IS DECLARED HERE, NOT IMPLEMENTED. Setting
- * `surfacesPersonalData: true` records that a row can identify a person; the
- * substrate does not yet gate such an entry behind an operator's per-invocation
- * consent. That gate is a prerequisite recorded on #2378 and it must NOT be
- * leaned on as a control while reading this module: today the only controls that
- * actually run are the fixed `bookings:view` requirement, the exact-id argument
- * shape, the column allowlist, the column GRANT, and the audit row.
+ * ADR-004's PER-INVOCATION OPT-IN IS ENFORCED (AID-7a, #2785). Setting
+ * `surfacesPersonalData: true` records that a row can identify a person, and it is
+ * now what makes `invoke.ts` gate 4b require the operator's personal-details tick
+ * for that entry. Every entry below therefore also declares WHICH record it is
+ * about (`consentRecordKind` + `consentRecordArgKey`), because the gate refuses an
+ * entry whose record it cannot identify, and `defineDiagnosticsTool` refuses to
+ * define one that surfaces personal data and names neither a record nor a search.
+ * It sits on top of the controls that were always here: the fixed `bookings:view`
+ * requirement, the exact-id argument shape, the column allowlist, the column
+ * GRANT, and the audit row.
  *
  * ------------------------------------------------------------------------------
  * THE COLUMN GRANT — the exhaustive list, relation by relation
@@ -629,8 +632,8 @@ const bookingSummary = defineDiagnosticsTool<BookingIdArgs>({
   rowLimit: 1,
   byteLimit: AID6B_SINGLE_ROW_BYTE_LIMIT,
   // No name is projected, but `ownerMemberRef` identifies a person to anyone who
-  // can resolve it. ADR-004's per-invocation opt-in is DECLARED by this flag and
-  // is not yet implemented (prerequisite on #2378), so it is not a control.
+  // can resolve it. This flag is what makes ADR-004 §1's personal-details tick a
+  // requirement for this entry at `invoke.ts` gate 4b (AID-7a, #2785).
   surfacesPersonalData: true,
   // ADR-004 §1's consent record (AID-7a, #2785): this entry is about ONE booking,
   // named by its `bookingId` argument. The owner is projected as a real member id
@@ -941,10 +944,10 @@ const bookingPartyState = defineDiagnosticsTool<BookingIdArgs>({
   // ordinary ceiling, and gate 9 REFUSES rather than trims.
   byteLimit: AID6B_WIDE_BYTE_LIMIT,
   // Every row carries a person's given and family name, and a member guest's
-  // row carries their member id. ADR-004's per-invocation opt-in is DECLARED by
-  // this flag and is not yet implemented (prerequisite on #2378), so it is not a
-  // control — the controls that run are the `bookings:view` requirement, the
-  // exact booking id, the column allowlist and the column grant.
+  // row carries their member id. This flag is what makes ADR-004 §1's
+  // personal-details tick a requirement here (`invoke.ts` gate 4b), on top of the
+  // `bookings:view` requirement, the exact booking id, the column allowlist and
+  // the column grant.
   surfacesPersonalData: true,
   // The party of the consented booking: `guestMemberRef` is the member id of a
   // guest who is a member (null for a non-member guest, which the ledger drops).
@@ -1134,9 +1137,8 @@ const bookingBedAllocationState = defineDiagnosticsTool<BookingIdArgs>({
   rowLimit: AID6B_ALLOCATION_ROW_LIMIT,
   byteLimit: AID6B_WIDE_BYTE_LIMIT,
   // No name and no member id — but a booking-guest id resolves to a named person
-  // through `booking_party_state`, so the flag is
-  // set conservatively. ADR-004's per-invocation opt-in is DECLARED by it and is
-  // not yet implemented (prerequisite on #2378), so it is not a control.
+  // through `booking_party_state`, so the flag is set conservatively, and setting
+  // it is what requires ADR-004 §1's personal-details tick here (gate 4b).
   surfacesPersonalData: true,
   // No related ref: the only identifier projected is `guestRef`, the BookingGuest
   // row's own id, which is not a record kind consent is expressed in.
@@ -1291,8 +1293,8 @@ const bookingExceptionRequestState = defineDiagnosticsTool<BookingIdArgs>({
   // ONE member id per row: `requestedByMemberRef`, who asked. Who DECIDED is not
   // projected and `reviewedByMemberId` is not granted — the docblock above gives the
   // reason, and this comment said "two member ids" from a draft in which it was.
-  // ADR-004's per-invocation opt-in is DECLARED by this flag and is not yet
-  // implemented (prerequisite on #2378), so it is not a control.
+  // Setting this flag is what requires ADR-004 §1's personal-details tick here
+  // (`invoke.ts` gate 4b).
   surfacesPersonalData: true,
   consentRecordKind: "booking",
   consentRecordArgKey: "bookingId",

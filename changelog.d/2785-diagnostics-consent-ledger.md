@@ -12,11 +12,19 @@
   answer to "why will this booking not confirm". It cannot keep walking outwards
   from there.
 
+  The box says what that actually means before it is ticked: reading a linked
+  member's details can name their partner, parents and dependents, and can list the
+  bookings they own or were a guest on. Choosing the records also bounds the reads
+  that carry no personal detail at all — a booking's own history of codes and
+  timestamps is still about one booking, so the assistant can only ask for it about
+  a booking that was chosen for this question.
+
   There is a second, separate tick: whether the assistant may **search** for people
   and records itself. Left off — which is the default — the administrator chooses
   every record, and the assistant can only read the ones they chose. Ticked, the
   assistant may also run searches that return lists of members, bookings and
-  payments. The two ticks are independent, and neither implies the other.
+  payments — and those lists carry names, which the tick now says plainly, because
+  the two ticks are independent and neither implies the other.
 
   When a read is refused for either reason, the answer says so plainly and points at
   the control that would allow it, instead of naming a permission the administrator

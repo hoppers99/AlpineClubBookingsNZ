@@ -339,11 +339,10 @@ WHAT THIS DOES NOT COVER. A NEW-BOOKING policy-exception request lives in a diff
   byteLimit: AID6B_SINGLE_ROW_BYTE_LIMIT,
   // No name and no email — but the booking's owner member id identifies a person to
   // anyone who can resolve it, and the booking reference plus nights is per-person
-  // information. ADR-004's per-invocation opt-in applies.
-  //
-  // ADR-004's opt-in is DECLARED and NOT YET ENFORCED: nothing in the shipped code
-  // implements a per-invocation operator consent, and that is recorded as a
-  // prerequisite on #2378. This flag must therefore not be leaned on as a control.
+  // information. ADR-004's per-invocation opt-in applies, and this flag is what
+  // applies it: `invoke.ts` gate 4b refuses this entry unless the operator ticked
+  // personal details AND this investigation covers the booking it names (AID-7a,
+  // #2785). The declaration below says which record that is.
   surfacesPersonalData: true,
   // ADR-004 §1's consent record (AID-7a, #2785). The related ref is the reason the
   // ledger exists: this entry's OWN scope text says the subscription blocker's
@@ -439,8 +438,8 @@ ALLOCATION IS NOT CAPACITY. allocatedBedNights counts the bed-allocation rows th
   // refused capacity read is worse than a clipped listing that says it clipped.
   byteLimit: AID6B_WIDE_BYTE_LIMIT,
   // A booking reference and a set of nights is per-person information even without
-  // a name. See `booking_block_state` on ADR-004's opt-in being declared and not
-  // yet enforced.
+  // a name, so ADR-004 §1's personal-details tick is required here — see
+  // `booking_block_state` for how the flag and the declaration below drive gate 4b.
   surfacesPersonalData: true,
   // No related ref: this entry projects the booking, the lodge and per-night bed
   // counts, and a lodge is not a record kind consent is expressed in.
@@ -538,8 +537,8 @@ This is a MEMBER-scoped answer. Whether they are present on a particular night, 
   rowLimit: 1,
   byteLimit: AID6B_SINGLE_ROW_BYTE_LIMIT,
   // No name, no email, no phone — but a member id plus a membership and
-  // subscription standing is per-person information. See `booking_block_state` on
-  // ADR-004's opt-in being declared and not yet enforced.
+  // subscription standing is per-person information, so ADR-004 §1's
+  // personal-details tick is required here. See `booking_block_state`.
   surfacesPersonalData: true,
   // The member named by the argument, and nothing linked: every other projected
   // field is a state, a code or a count about that same person.

@@ -71,6 +71,13 @@ A Diagnostics audit/metering row may record **only**:
 - **timing** — started-at, duration;
 - **hash** — a stable, non-reversible hash of a query key or record reference
   where correlation across rows is needed without storing the identifier itself;
+- **consent outcome** — the per-invocation §1 decision and what it was about:
+  which channel invoked the tool, whether the inclusion was not-applicable /
+  not-reached / granted / refused, the **kind** of record it concerned, whether the
+  operator selected that record or the server derived it, and the state of the
+  people-search tick. Every one a closed enum or null, and **never** the record id
+  itself. *(Amended for AID-7a, #2785 — the five fields are named in the
+  implementation note below, which is the only place they are listed.)*;
 - the metering fields of ADR-001 §3 (model, token counts, integer-cent cost,
   success/failure).
 
@@ -81,7 +88,11 @@ mirrors and extends the Page help "never store the question text" rule.
 
 ## Implementation note — how §1 is enforced in the tool channel (AID-7a, #2785)
 
-This note records how the decision above was implemented; it does not change it.
+This note records how the decision above was implemented. It changes it in exactly
+one respect, deliberately and with the authority to do so: §4's approved set gains a
+**consent outcome** bullet, per #2785's scope item 3 and the owner's 11 Aug 2026
+decision on #2378 that the people-search tick "be recorded in the durable audit
+metadata". The bullet is in §4 above; the fields are named once, here.
 
 **The tool channel takes §1's SECOND branch.** §1 offers two ways to behave absent
 explicit inclusion: non-identifying aggregates, **or** an explicit "personal detail
@@ -92,7 +103,15 @@ exactly that notice as its operator sentence
 (`sensitive_consent_required` → evidence state `consent_required`). The case reports
 itself incomplete. The page-context channel is unchanged and still omits fields.
 
-**Inclusion is per request, over a bounded investigation.** A single
+**The bound is about RECORDS; the tick is about personal fields.** An entry that
+reads one named record is refused for a record outside the investigation even when
+its rows carry no personal field at all (`record_not_included` → the same
+`consent_required` state), because per-record evidence about an identified subject is
+what §1 bounds. The personal-details tick is the additional condition on the entries
+whose rows name people. A refused **search** has its own state,
+`search_consent_required`, naming the tick that would allow it.
+
+**Inclusion is per QUESTION, over a bounded investigation, and enforced as such.** A single
 `{recordKind, recordId}` consent cannot drive a tool graph whose flagship
 investigation crosses record kinds by the registry's own authored guidance. So
 consent is a server-held ledger (`src/lib/diagnostics/tools/consent.ts`), built for
@@ -100,7 +119,9 @@ one request and discarded with it: seeded only from records the operator selecte
 and the server re-resolved under their own authority, extended only by absorbing the
 projected fields an entry **declares** as related-record refs after a successful,
 authorised, audited call, and bounded to **one hop** from an operator selection. The
-model can never write to it. This is what epic #2369's owner comment authorises —
+model can never write to it, and it binds itself to the first tool session it serves
+and refuses a second, so a multi-turn loop cannot carry one question's consent into
+the next. This is what epic #2369's owner comment authorises —
 "for an explicit bounded investigation the agent may receive the personal and
 financial information reasonably required… the restriction is against unrestricted
 or bulk access".
@@ -114,11 +135,15 @@ an explicit people-search box, off by default and never persisted. The gate is a
 typed, server-owned invocation channel on the executor's input, not the free-form
 `surface` label.
 
-**Five fields are added to §4's approved set**, and they are inside it rather than an
-extension of it: §4 permits recording the auth outcome, and consent is the second
-half of the authorisation. They are `invocationChannel`, `sensitiveInclusion`,
-`consentRecordKind`, `consentRecordOrigin` and `peopleSearchTick` — every one a
-closed enum or null. **No subject record id is recorded**: `argsHash` already pins
+**The five fields §4's consent-outcome bullet covers** are `invocationChannel`,
+`sensitiveInclusion`, `consentRecordKind`, `consentRecordOrigin` and
+`peopleSearchTick` — every one a closed enum or null, and narrowed at the executor
+rather than trusted from the caller, so the "no free text" property holds of the row
+and not only of the type. Four of the five are this invocation's own authorisation
+outcome, which §4 already permitted; `peopleSearchTick` is request-level state and is
+recorded on every row because "was the model allowed to look people up during this
+question" is answerable only if the rows that did **not** search carry it too — which
+is why the amendment above was needed rather than a reading of the existing bullet. **No subject record id is recorded**: `argsHash` already pins
 which record non-reversibly, and adding the identifier would put an unrestricted
 personal identifier into a 24-month row, which §4 forbids. Without these fields a
 consented read and an unconsented one were the same durable row.

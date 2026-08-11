@@ -139,7 +139,7 @@ child; the existing repository-wide documents they extend are linked.
 | Area | Planned subsystem doc (owner) | Existing docs it extends |
 | --- | --- | --- |
 | **Architecture** | `docs/ai-diagnostics/architecture.md` — runtime shape, the deployed-knowledge bundle, and end-to-end data flows (AID-2 #2371). The tool substrate's own shape is now documented in [`tools.md`](tools.md) | [`ARCHITECTURE.md`](../ARCHITECTURE.md), [`DOMAIN_INVARIANTS.md`](../DOMAIN_INVARIANTS.md) |
-| **Tool substrate** | [`tools.md`](tools.md) — the server-owned typed registry, the ten fail-closed gates, per-invocation authorization, bounds, untrusted-evidence render, approved audit metadata, and the rules for adding a tool (AID-5 #2374, **delivered**) | [ADR-001](decisions/ADR-001-separate-admin-only-diagnostics-product.md), [ADR-002](decisions/ADR-002-admission-and-per-tool-authorization-lattice.md), [ADR-004](decisions/ADR-004-sensitive-context-retention-redaction-audit-metadata.md), [ADR-007](decisions/ADR-007-least-privilege-select-only-database-credential.md) |
+| **Tool substrate** | [`tools.md`](tools.md) — the server-owned typed registry, the twelve fail-closed gates, per-invocation authorization, bounds, untrusted-evidence render, approved audit metadata, and the rules for adding a tool (AID-5 #2374, **delivered**) | [ADR-001](decisions/ADR-001-separate-admin-only-diagnostics-product.md), [ADR-002](decisions/ADR-002-admission-and-per-tool-authorization-lattice.md), [ADR-004](decisions/ADR-004-sensitive-context-retention-redaction-audit-metadata.md), [ADR-007](decisions/ADR-007-least-privilege-select-only-database-credential.md) |
 | **Page context** | [`page-context.md`](page-context.md) — the typed selector, the route registry, the permission-checked server re-fetch, the personal-detail opt-in, and the evidence block (AID-4 #2373, **delivered**) | [ADR-002](decisions/ADR-002-admission-and-per-tool-authorization-lattice.md), [ADR-003](decisions/ADR-003-untrusted-evidence-classes.md), [ADR-004](decisions/ADR-004-sensitive-context-retention-redaction-audit-metadata.md) |
 | **Security / privacy** | This hub's [threat model](threat-model.md) and [ADRs](decisions/) (AID-1, this issue); release hardening notes (AID-8 #2379) | [`SECURITY.md`](../SECURITY.md), [`SECURITY-ATTACK-SURFACE.md`](../SECURITY-ATTACK-SURFACE.md), [`agents/PROMPT_INJECTION_GUIDE.md`](../agents/PROMPT_INJECTION_GUIDE.md) |
 | **Deployment / operator** | [`deployment.md`](deployment.md) — setup order, provisioning and rotating the SELECT-only DB role, the credential, budget/limits, and reading readiness (AID-2 #2371 / AID-5 #2374, **delivered**); provider disclosure, zero-retention, and the private overlay still to come (AID-8 #2379) | [`../../DEPLOYMENT.md`](../../DEPLOYMENT.md), [`ONGOING_DEVELOPMENT_WORKFLOW.md`](../ONGOING_DEVELOPMENT_WORKFLOW.md) |
@@ -399,11 +399,13 @@ accepted; those become positional parameters and nothing else.
   undeclared read privilege, and membership in **any** other role are all absent.
   There is no fallback to `DATABASE_URL`, and a URL naming the application's own role
   is refused outright.
-- **Ten ordered fail-closed gates**, every one returning no rows: registry, loop
-  budget, fresh authorization, arguments, metering, credential, read, projection,
-  size, audit. Authorization runs **before** argument parsing so the difference
-  between "invalid arguments" and "permission denied" cannot be used as an oracle,
-  and the audit row is written **before** any evidence is returned.
+- **Twelve ordered fail-closed gates**, every one returning no rows: registry,
+  loop budget, fresh authorization, arguments, channel, consent, metering,
+  credential, read, projection, size, audit. Authorization runs **before** argument
+  parsing so the difference between "invalid arguments" and "permission denied"
+  cannot be used as an oracle; the two consent gates run after arguments and before
+  any database work; and the audit row is written **before** any evidence is
+  returned.
 - **Authorization is per invocation, and withholding is not authorization.** Tool
   definitions are hidden from the model when the caller lacks the area — a usability
   courtesy — while the server re-reads the caller's matrix from the database and
@@ -525,7 +527,11 @@ declares itself a record **search**, and `defineDiagnosticsTool` refuses to defi
 one that does neither — the registry does not build. The executor then refuses a
 per-record read whose record the operator did not include
 (`sensitive_consent_required`), and refuses a model-invoked search on a request with
-no people-search tick (`operator_action_required`). Consent itself is a server-held
+no people-search tick (`operator_action_required`). The record bound applies to an
+entry that reads one named record even when its rows carry no personal field at all
+— a booking's audit history is codes and instants, and it is still evidence about a
+subject the operator has to have put in scope (`record_not_included`); what the
+personal-details tick adds is the entries whose rows name people. Consent itself is a server-held
 per-request ledger, seeded only from the operator's server-revalidated selections and
 extended only by absorbing the projected fields an entry declares, one hop out. The
 durable audit row records the decision. See [`tools.md`](tools.md) → "Consent is an

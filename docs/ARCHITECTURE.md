@@ -3051,13 +3051,15 @@ COMMITTED statements without claiming a transaction snapshot: `observedAtUtc`
 means assembly completion, facts may span instants, and their model-facing scopes
 require a rerun before action or a definitive conclusion.
 
-Ten gates run in a fixed order and every one returns **no rows**: registry, loop
-budget, fresh authorization, arguments, metering, credential, read, projection,
-size, audit. Authorization runs *before* argument parsing so the difference between
-"invalid arguments" and "permission denied" cannot be used as an oracle for a
-tool's argument shape, and so an unauthorized invocation never opens a connection;
-the audit row is written *before* any evidence is returned, and evidence is
-discarded if it cannot be written. An over-size result is a refusal, never a silent
+Twelve gates run in a fixed order and every one returns **no rows**: registry,
+loop budget, fresh authorization, arguments, channel, consent, metering,
+credential, read, projection, size, audit. Authorization runs *before* argument
+parsing so the difference between "invalid arguments" and "permission denied"
+cannot be used as an oracle for a tool's argument shape, and so an unauthorized
+invocation never opens a connection; the channel and consent gates (ADR-004 §1)
+run after arguments and before any metering, credential or database work; the
+audit row is written *before* any evidence is returned, and evidence is discarded
+if it cannot be written. An over-size result is a refusal, never a silent
 trim. Withholding a tool definition from the model is a usability courtesy — the
 per-invocation permission re-read is the control. Full reference:
 [`ai-diagnostics/tools.md`](ai-diagnostics/tools.md); the registered tools, their
