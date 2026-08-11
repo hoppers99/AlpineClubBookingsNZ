@@ -609,6 +609,17 @@ function assertConsentDeclarationIsComplete<TArgs>(
  * field, so a new entry cannot COMPILE without an answer; this assert is what makes
  * the answer have to be a true one at runtime, including for the JavaScript callers
  * and dynamic registrations TypeScript never sees.
+ *
+ * THE THIRD GATE IS A SOURCE CENSUS, AND IT IS NOT OPTIONAL — say so plainly,
+ * because of what this assert CANNOT do (#2786 review). It can check that an
+ * exemption id exists, is not repeated, and is not an empty list; the exemption arm
+ * is therefore genuinely closed, and each row names a module and symbol a test then
+ * reads. It cannot check `threadsOwnReads` at all. That flag is an assertion by an
+ * author about code this function never sees, and it is the arm most entries carry.
+ * What can falsify it is the tree-wide census in
+ * `__tests__/read-only-transaction.test.ts`, which strips comments from every module
+ * in `packs/` and fails if any of them names `prisma`. Remove that census and
+ * `threadsOwnReads: true` becomes an unverified claim.
  */
 function assertReadOnlySeamDeclarationIsComplete<TArgs>(
   spec: DiagnosticsToolSpec<TArgs>,

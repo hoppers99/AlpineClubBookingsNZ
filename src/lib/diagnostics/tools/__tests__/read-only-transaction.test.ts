@@ -20,7 +20,7 @@
  * `server_owned` evidence module.
  */
 
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -50,19 +50,42 @@ const TOOLS_DIR = join(import.meta.dirname, "..");
 const REPO_ROOT = join(import.meta.dirname, "..", "..", "..", "..", "..");
 
 /**
- * Every `server_owned` evidence module in the tree, listed rather than globbed.
+ * EVERY pack module on disk, discovered rather than listed — and the anchor that
+ * stops the discovery from silently finding nothing.
  *
- * A glob would make this census silently shrink: rename a module or move an entry
- * into a new pack and the loop would simply have one fewer thing to check, which is
- * the failure mode a census exists to prevent. The list is pinned against the
- * registry itself below — every `server_owned` entry's pack must map to a module
- * here — so adding an entry whose evidence lives somewhere new fails rather than
- * passing unnoticed.
+ * A hand-written list was the first attempt and it failed in the way hand-written
+ * lists fail: it named `booking-evidence.ts` and `finance-evidence.ts` and simply
+ * omitted `packs/support-evidence.ts`, which holds the evidence functions for four
+ * of the eight `server_owned` entries. The comment above it claimed the list was
+ * "pinned against the registry itself below". It was not, and the cross-check it
+ * promised would have caught the omission on the diff that introduced it.
+ *
+ * So the census reads the directory. The objection to a glob is real — a glob can
+ * silently shrink — and `PACK_CENSUS_ANCHORS` is the answer to it: the discovered
+ * set must CONTAIN these, so renaming or moving a module out of `packs/` fails here
+ * rather than quietly leaving the loop with one fewer thing to check. Discovery
+ * handles the other direction, which is the one that actually bit: a NEW module
+ * cannot escape by not being added to a list.
  */
-const SERVER_OWNED_EVIDENCE_MODULES = [
+const PACK_MODULES: readonly string[] = readdirSync(join(TOOLS_DIR, "packs"))
+  .filter((name) => name.endsWith(".ts"))
+  .map((name) => `packs/${name}`)
+  .sort();
+
+/** Modules whose absence would mean the discovery above found the wrong place. */
+const PACK_CENSUS_ANCHORS = [
   "packs/booking-evidence.ts",
   "packs/finance-evidence.ts",
+  "packs/support-evidence.ts",
 ] as const;
+
+/**
+ * The three modules holding `server_owned` evidence functions. These are the ones
+ * that must IMPORT the seam; the prisma census below covers every pack module,
+ * because a pack module has no business reaching the global client whatever its
+ * entries' source is.
+ */
+const SERVER_OWNED_EVIDENCE_MODULES = PACK_CENSUS_ANCHORS;
 
 function toolsSource(relativePath: string): string {
   return readFileSync(join(TOOLS_DIR, relativePath), "utf8");
@@ -255,12 +278,37 @@ describe("what the seam cannot cover is DECLARED, not assumed (#2786)", () => {
     // The reason a table like this rots is that the code moves and the row does
     // not, leaving a declaration that reads as a reviewed decision while pointing
     // at nothing. Reading the file is what stops that.
+    //
+    // COMMENTS ARE STRIPPED FIRST (#2786 review). Searching the raw source would
+    // accept a symbol that survives only in a docblock discussing the function
+    // somebody deleted — which is precisely the rot this test exists to catch, and
+    // the deletion is the moment it most needs to fire.
     for (const exemption of READ_ONLY_SEAM_EXEMPTIONS) {
       const source = readFileSync(
         join(REPO_ROOT, ...exemption.module.split("/")),
         "utf8",
       );
-      expect(source, exemption.id).toContain(exemption.symbol);
+      expect(strippedCode(source), exemption.id).toContain(exemption.symbol);
+    }
+  });
+
+  it("states the residual wherever the reason does not already contain it", () => {
+    // Two rows carry one. The module-flags row, whose first draft claimed a fault
+    // marker the operator does not always get; and the cron-runs row, which is a
+    // design choice rather than a structural impossibility and now says so. A
+    // residual is optional because the other three genuinely have none — a read
+    // that touches no database is simply outside the seam's subject. What is NOT
+    // optional is that a row which has one states it at length rather than in
+    // passing, which is how the first one went wrong.
+    const withResidual = READ_ONLY_SEAM_EXEMPTIONS.filter(
+      (exemption) => exemption.residual !== undefined,
+    );
+    expect(withResidual.map((exemption) => exemption.id)).toEqual([
+      "readiness-module-flags-fault-tolerant",
+      "cron-runs-own-budget",
+    ]);
+    for (const exemption of withResidual) {
+      expect(exemption.residual!.length, exemption.id).toBeGreaterThan(120);
     }
   });
 
@@ -285,4 +333,52 @@ describe("the modules the seam exists for (#2786)", () => {
       expect(source).toContain("read-only-transaction");
     },
   );
+
+  it("discovered the pack directory, and all of it", () => {
+    // The guard on the guard. If `readdirSync` ever pointed somewhere else, every
+    // assertion below would pass over an empty list and this file would report a
+    // tree-wide census while checking nothing — which is the exact failure this
+    // whole block was written to correct.
+    for (const anchor of PACK_CENSUS_ANCHORS) {
+      expect(PACK_MODULES, `${anchor} is not in the discovered set`).toContain(
+        anchor,
+      );
+    }
+    expect(PACK_MODULES.length).toBeGreaterThanOrEqual(
+      PACK_CENSUS_ANCHORS.length,
+    );
+  });
+
+  it.each(PACK_MODULES)("%s names the global Prisma client nowhere", (relativePath) => {
+    // THE GUARD THE UNIT DOUBLES CANNOT BE, APPLIED TREE-WIDE.
+    //
+    // `booking-membership-pack.test.ts` has made this assertion about
+    // `booking-evidence.ts` since #2786's first commit, and both that file and the
+    // seam module's own docblock described a tree-wide version of it living here.
+    // It did not exist: this block checked only that two named modules imported the
+    // seam. So `support-evidence.ts` — threaded by this very PR — had no census at
+    // all, and a read written on the global client there would have compiled,
+    // linted, passed knip and passed all 1957 diagnostics tests while running on
+    // the application's full-privilege connection, outside the READ ONLY fence and
+    // outside the statement timeout.
+    //
+    // The Proxy escape recorders in the pack tests do not close this. They record
+    // only while a transaction callback is OPEN, so a read placed BEFORE the seam
+    // is invisible to them — and that pre-seam shape is precisely what produced
+    // exemption five. A source census is the only thing that sees it.
+    //
+    // It covers every pack module rather than only the evidence ones, because a
+    // pack module has no business reaching the global client whatever its entries'
+    // source is, and "which modules count" is one more thing nobody then has to
+    // remember.
+    const source = toolsSource(relativePath);
+    const code = strippedCode(source);
+
+    expect(code.match(/prisma\.[A-Za-z$]+/g)).toBeNull();
+    expect(code).not.toContain('from "@/lib/prisma"');
+    // Non-vacuous: the strip left real code behind, so a null match means "reaches
+    // the client nowhere" rather than "the strip ate the file".
+    expect(code.trim().length, `${relativePath} stripped to nothing`).toBeGreaterThan(0);
+    expect(code, relativePath).toContain('import "server-only"');
+  });
 });

@@ -53,6 +53,15 @@
  * remains is that two INVOCATIONS see different snapshots, which every entry's own
  * mixed-instant disclosure states.
  *
+ * NOR AN `idle_in_transaction_session_timeout`, and for a different reason than the
+ * one below. The SELECT-only executor sets one because that path holds a transaction
+ * open across a network round trip it does not control. This seam does not: the
+ * callback is ordinary in-process code between `BEGIN` and `COMMIT`, so the interval
+ * that setting protects against — a transaction left open while nothing runs — is
+ * already bounded by the interactive-transaction `timeout` below, which fires whether
+ * the process is busy or idle. Adding a second bound over the same interval would be
+ * two numbers to keep in step for one hazard.
+ *
  * NO `lock_timeout` HERE, AND THAT IS A DECISION RATHER THAN AN OVERSIGHT. The
  * SELECT-only executor sets one (`DIAGNOSTICS_TOOL_BOUNDS.lockTimeoutMs`) because
  * a diagnostics read must never queue behind a writer. This seam deliberately does
@@ -71,11 +80,27 @@
  * THAT RULE IS PINNED AT THE SOURCE, not by the unit assertions, because the unit
  * assertions structurally cannot pin it: a new read written on the global client is
  * not a collaborator, so no argument assertion sees it, and it calls the same
- * doubled function the transaction client does. `__tests__/read-only-transaction.test.ts`
- * therefore strips the comments from THIS file and asserts that `prisma.` reaches
- * exactly one property in the remaining code — `$transaction` — and strips every
- * `server_owned` evidence module and asserts `prisma.` reaches NOTHING in them. A
- * second reference in either place has to be argued for in that test.
+ * doubled function the transaction client does. Nor can the pack tests' escape
+ * recorders pin it — those record only while a transaction callback is OPEN, so a
+ * read placed BEFORE the seam, or one in an entry that opens no seam at all, is
+ * invisible to them. That pre-seam shape is not hypothetical: it is what produced
+ * the module-flags exemption.
+ *
+ * `__tests__/read-only-transaction.test.ts` therefore strips the comments from THIS
+ * file and asserts that `prisma.` reaches exactly one property in the remaining code
+ * — `$transaction` — and does the same to EVERY module in `packs/`, discovered by
+ * reading the directory rather than from a list, asserting `prisma.` reaches nothing
+ * in any of them. A list was the first attempt and it silently omitted
+ * `support-evidence.ts`, which is exactly how a census stops being one.
+ *
+ * AND THE SERVER ITSELF IS ASKED, because everything above is still only this
+ * process's intent. `src/lib/__tests__/ai-diagnostics-readonly-seam.realdb.test.ts`
+ * opens this seam against a real PostgreSQL and asserts what the SERVER reports:
+ * `transaction_read_only` is `on`, the isolation level really is `repeatable read`,
+ * `statement_timeout` really took, an INSERT is refused with SQLSTATE `25006` on a
+ * connection whose privileges would otherwise permit it, and the timeout is RELEASED
+ * at commit instead of leaking onto the pooled application connection. A mock cannot
+ * distinguish a working `set_config` from a no-op; that suite can.
  *
  * WHAT THE SEAM CANNOT COVER IS DECLARED, NEVER ASSUMED. Some evidence a
  * `server_owned` entry needs cannot be read through a transaction on this
@@ -100,16 +125,23 @@ import { DIAGNOSTICS_TOOL_BOUNDS } from "./types";
 /**
  * THE ONE DATABASE BOUND, IN ONE PLACE, IN ONE UNIT.
  *
- * It used to exist in four unlinked representations: a pack-local
- * `AID6B_DATABASE_STATEMENT_TIMEOUT_MS`, a literal `'5s'` inside a `SET LOCAL`
- * statement, hardcoded numbers in the tests, and `DIAGNOSTICS_TOOL_BOUNDS`'s own
- * `statementTimeoutMs` — which the SELECT-only executor has always used and whose
- * docblock has always described exactly this control. Nothing linked any pair.
- * Narrowing one would have left PostgreSQL cancelling at five seconds while the
- * interactive-transaction timeout dropped BELOW it, inverting the design: the
- * database is supposed to refuse first so the operator gets the specific
- * `57014 query_canceled` refusal rather than a Prisma transaction timeout. Every
- * test would still have passed.
+ * TWO NAMES FOR ONE BOUND, ON TWO DIFFERENT PATHS. The pack declared
+ * `AID6B_DATABASE_STATEMENT_TIMEOUT_MS = 5_000` for the `server_owned` path, and
+ * `DIAGNOSTICS_TOOL_BOUNDS.statementTimeoutMs` — also 5 000 — has always bounded the
+ * `select_only_sql` path, its docblock describing exactly this control. Nothing
+ * linked them.
+ *
+ * BE PRECISE ABOUT WHAT THAT RISKED, because an earlier draft of this comment
+ * overstated it (#2786 review). Within the pack the two were already safe from each
+ * other: `AID6B_TRANSACTION_TIMEOUT_MS` was DERIVED as the statement timeout plus two
+ * seconds, so narrowing the statement bound moved the ceiling with it and the
+ * ordering could not invert. The real exposure was ACROSS the two paths — tighten the
+ * substrate's bound because SELECT-only reads were hurting the database, and the
+ * server-owned reads, which run on the application's full-privilege connection and
+ * are the heavier of the two, would have gone on cancelling at the old five seconds
+ * with every test still green. One diagnostics feature would have had two different
+ * ideas of how long a read may take, and the more dangerous path would have kept the
+ * looser one.
  *
  * So both diagnostics database paths now derive from the SAME bound. It is a
  * derivation and not a copy: there is no second literal to keep in step.

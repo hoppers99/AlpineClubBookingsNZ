@@ -24,7 +24,7 @@
  * in its own `readOnlySeam` declaration; `define.ts` refuses at definition time to
  * register one that names an id absent from this table, and refuses one that neither
  * threads its own reads nor names anything — so this table, and not a reviewer's
- * memory, is the only sanctioned bypass. `__tests__/read-only-seam-exemptions.test.ts`
+ * memory, is the only sanctioned bypass. `__tests__/read-only-transaction.test.ts`
  * pins the row set exactly, so a sixth row is a decision somebody made in a diff.
  */
 
@@ -46,6 +46,17 @@ export interface DiagnosticsReadOnlySeamExemption {
   symbol: string;
   /** Why it structurally cannot run inside the seam. One sentence, reviewed. */
   reason: string;
+  /**
+   * What the exemption COSTS, where the cost is not obvious from the reason.
+   *
+   * Optional, because most rows cost nothing an operator could observe — a read that
+   * touches no database is simply outside the seam's subject. It exists because the
+   * first draft of the module-flags row justified itself with a claim that held only
+   * for a total outage and quietly failed for the partial one, and a table whose
+   * whole purpose is to name what the guarantee does NOT cover is the wrong place to
+   * round a residual down to zero.
+   */
+  residual?: string;
 }
 
 /**
@@ -93,7 +104,9 @@ export const READ_ONLY_SEAM_EXEMPTIONS: readonly DiagnosticsReadOnlySeamExemptio
       module: "src/lib/module-settings.ts",
       symbol: "loadEffectiveModuleFlags",
       reason:
-        "The readiness entry needs the club's module flags to say whether diagnostics is switched on, and it deliberately calls the fault-TOLERANT loader rather than the strict one a normal evidence caller must use, because a readiness check that cannot answer when the database is unreachable has failed at the one moment it exists for; the seam would convert that same fault into a rejection, and the row still reports the database fault itself through database_role_state and blocker_codes.",
+        "The readiness entry needs the club's module flags to say whether diagnostics is switched on, and it deliberately calls the fault-TOLERANT loader rather than the strict one a normal evidence caller must use, because a readiness check that cannot answer when the database is unreachable has failed at the one moment it exists for; the seam would convert that same fault into a rejection.",
+      residual:
+        "The tolerance is not free and the cost is not visible in the row. A TOTAL database outage also breaks the credential, budget and role reads, so the row reports resolve_error and an unverified database_role_state and the operator sees a fault. A NARROW failure of just this one query does not: loadEffectiveModuleFlags swallows it and returns every flag false, so the row reads module_enabled: false with blocker_codes: module_off and database_role_state: verified — indistinguishable from a club that genuinely switched diagnostics off, and the operator is sent to turn on something already on. The realistic trigger is a blue/green window where the deployed client selects a ClubModuleSettings column the migration has not added yet, or any single transient timeout on that query. Fixing it means reporting module_enabled as unknown behind a distinct module_flags_unreadable blocker, which is a change to what this entry returns and to the model-facing blocker catalogue — out of scope for a PR that promises no behaviour change, and filed as its own issue.",
     },
     {
       id: "deployment-no-database",
@@ -114,7 +127,9 @@ export const READ_ONLY_SEAM_EXEMPTIONS: readonly DiagnosticsReadOnlySeamExemptio
       module: "src/lib/admin-cron-runs.ts",
       symbol: "getCronRunsForAdminHealth",
       reason:
-        "It is shared with Admin > Health and enforces its own caller-supplied deadline, which the job-health entry deliberately sets below the executor's race; a transaction-scoped statement timeout would collide with that budget and change which of the two refuses first.",
+        "It is shared with Admin > Health and enforces its own caller-supplied deadline, which the job-health entry deliberately sets below the executor's race so a slow job table refuses rather than consuming the whole evidence budget; putting it inside a transaction-scoped statement timeout would give one read two competing deadlines and change which of them refuses first.",
+      residual:
+        "This one is a DESIGN choice rather than a structural impossibility, and the row says so rather than dressing it up: the helper takes a deadline, not a client, so threading it would mean giving a shared Admin > Health calculation a transaction client and then reconciling two bounds over one read. That is a reasonable future change and not a forced one. Until then the job-health reads run outside the READ ONLY fence, bounded only by their own deadline.",
     },
   ];
 
