@@ -14,6 +14,7 @@ import { z } from "zod";
 import { ADMIN_PERMISSION_AREAS } from "@/lib/admin-permissions";
 import { canonicalStringify, sha256Hex } from "@/lib/diagnostics/knowledge/hash";
 
+import { consentedRecordForToolCall } from "../consent";
 import { readSqlPlaceholderNumbers } from "../database";
 import {
   defineDiagnosticsTool,
@@ -81,7 +82,10 @@ import {
   DIAGNOSTICS_TOOLS,
   findDiagnosticsTool,
 } from "../registry";
-import { DIAGNOSTICS_TOOL_BOUNDS } from "../types";
+import {
+  DIAGNOSTICS_CONSENT_RECORD_KINDS,
+  DIAGNOSTICS_TOOL_BOUNDS,
+} from "../types";
 
 /**
  * Only the `select_only_sql` entries carry SQL, so the statement-shaped contracts
@@ -1555,6 +1559,183 @@ describe("diagnostics tool registry contract (#2374)", () => {
   it("returns undefined for an unknown id rather than a default tool", () => {
     expect(findDiagnosticsTool("diagnostics.does_not_exist")).toBeUndefined();
     expect(findDiagnosticsTool("")).toBeUndefined();
+  });
+});
+
+describe("ADR-004 §1 consent declarations (#2785)", () => {
+  const PERSONAL_DATA_TOOLS = DIAGNOSTICS_TOOLS.filter(
+    (tool) => tool.surfacesPersonalData,
+  );
+
+  it("has personal-data entries to check, so nothing below is vacuous", () => {
+    expect(PERSONAL_DATA_TOOLS.length).toBeGreaterThan(10);
+  });
+
+  it.each(PERSONAL_DATA_TOOLS.map((tool) => [tool.id, tool] as const))(
+    "%s names the record it is about, or declares itself a search",
+    (_id, tool) => {
+      // The gate `invoke.ts` runs has exactly two shapes — "did the operator include
+      // THIS record" and "did the operator allow searching" — so an entry that
+      // surfaces personal data and declares neither would have no gate at all.
+      // `defineDiagnosticsTool` throws on it; this is the same rule asserted over the
+      // registry that actually ships.
+      const namesRecord =
+        tool.personalDataRecordKind !== undefined &&
+        tool.personalDataRecordArgKey !== undefined;
+      expect(namesRecord || tool.operatorOnly === true).toBe(true);
+      expect(namesRecord && tool.operatorOnly === true).toBe(false);
+    },
+  );
+
+  it("pins the operator-only entries — the four that SEARCH", () => {
+    // A census, not a ceiling. A fifth search entry has to be added here in the same
+    // diff, and an entry that quietly stops being operator-only fails this.
+    expect(
+      DIAGNOSTICS_TOOLS.filter((tool) => tool.operatorOnly === true)
+        .map((tool) => tool.id)
+        .sort(),
+    ).toEqual(
+      [
+        DIAGNOSTICS_BOOKING_SEARCH_TOOL_ID,
+        DIAGNOSTICS_MEMBER_SEARCH_TOOL_ID,
+        DIAGNOSTICS_FINANCE_PAYMENT_SEARCH_TOOL_ID,
+        DIAGNOSTICS_FINANCE_AMOUNT_SEARCH_TOOL_ID,
+      ].sort(),
+    );
+  });
+
+  it.each(
+    DIAGNOSTICS_TOOLS.filter(
+      (tool) => tool.personalDataRecordArgKey !== undefined,
+    ).map((tool) => [tool.id, tool] as const),
+  )(
+    "%s declares an argument key its OWN schema accepts as the record id",
+    (_id, tool) => {
+      // A declared key the schema never produces would refuse every invocation of the
+      // entry — fail-closed, but silently and permanently. `EXAMPLE_ARGS` is the
+      // census of a realistic argument object per entry, so this checks the
+      // declaration against arguments the entry actually accepts.
+      const key = tool.personalDataRecordArgKey;
+      const example = EXAMPLE_ARGS[tool.id];
+      expect(example, `add an EXAMPLE_ARGS row for ${tool.id}`).toBeDefined();
+      const binding = tool.parseArgs(example);
+      expect(binding.ok, `${tool.id} rejected its own EXAMPLE_ARGS`).toBe(true);
+      if (!binding.ok) return;
+      expect(
+        consentedRecordForToolCall(tool, binding.args),
+        `${tool.id} declares ${key} but its accepted arguments carry no such record id`,
+      ).toEqual({ kind: tool.personalDataRecordKind, id: WIDEST_RECORD_ID });
+    },
+  );
+
+  it.each(
+    DIAGNOSTICS_TOOLS.filter((tool) => tool.relatedRecordRefs !== undefined).map(
+      (tool) => [tool.id, tool] as const,
+    ),
+  )("%s declares related refs its OWN projection produces", (_id, tool) => {
+    // The ledger reads these fields out of the PROJECTED row, so a declared field the
+    // projection does not emit is a declaration that can never fire — the ledger would
+    // silently fail to follow a link the entry was written to expose. Every projection
+    // is a fixed object literal, so projecting an empty raw row still yields the full
+    // key set.
+    const projectedKeys = Object.keys(tool.project({}));
+    for (const ref of tool.relatedRecordRefs ?? []) {
+      expect(
+        projectedKeys,
+        `${tool.id} declares related ref "${ref.field}" which its projection does not emit`,
+      ).toContain(ref.field);
+      expect(DIAGNOSTICS_CONSENT_RECORD_KINDS).toContain(ref.kind);
+      // A related ref that names the entry's OWN record is a no-op at best and a
+      // self-referential derivation at worst.
+      expect(ref.field).not.toBe(tool.personalDataRecordArgKey);
+    }
+  });
+
+  it("refuses, at definition time, an entry with no way to be gated", () => {
+    const base = {
+      id: "diagnostics.consent_fixture",
+      label: "Consent fixture",
+      description:
+        "Test-only entry used to pin the definition-time consent declaration invariant.",
+      requiredAreas: ["support"] as const,
+      source: "select_only_sql" as const,
+      argsSchema: z.object({ bookingId: z.string() }).strict(),
+      inputSchema: {
+        type: "object" as const,
+        properties: { bookingId: { type: "string" } },
+        additionalProperties: false as const,
+      },
+      sql: "SELECT true AS ok",
+      bind: () => [],
+      project: (row: Record<string, unknown>) => ({ ok: row.ok === true }),
+      rowLimit: 1,
+      byteLimit: 64,
+    };
+
+    // Surfaces personal data, names no record, is not a search: ungateable.
+    expect(() =>
+      defineDiagnosticsTool({ ...base, surfacesPersonalData: true }),
+    ).toThrow(/names neither the record it is about/);
+
+    // Half a record declaration.
+    expect(() =>
+      defineDiagnosticsTool({
+        ...base,
+        surfacesPersonalData: true,
+        personalDataRecordKind: "booking",
+      }),
+    ).toThrow(/travel together/);
+
+    // Both gates at once — a contradiction about which one governs it.
+    expect(() =>
+      defineDiagnosticsTool({
+        ...base,
+        surfacesPersonalData: true,
+        operatorOnly: true,
+        personalDataRecordKind: "booking",
+        personalDataRecordArgKey: "bookingId",
+      }),
+    ).toThrow(/one or the other/);
+
+    // Related refs with no record to derive FROM.
+    expect(() =>
+      defineDiagnosticsTool({
+        ...base,
+        surfacesPersonalData: false,
+        relatedRecordRefs: [{ field: "ownerMemberRef", kind: "member" }],
+      }),
+    ).toThrow(/nothing for the consent ledger to derive FROM/);
+
+    // An empty declaration, which reads as "considered and none" but declares nothing.
+    expect(() =>
+      defineDiagnosticsTool({
+        ...base,
+        surfacesPersonalData: true,
+        personalDataRecordKind: "booking",
+        personalDataRecordArgKey: "bookingId",
+        relatedRecordRefs: [],
+      }),
+    ).toThrow(/Omit it rather than declaring nothing/);
+
+    // The well-formed shapes still define.
+    expect(() =>
+      defineDiagnosticsTool({
+        ...base,
+        surfacesPersonalData: true,
+        personalDataRecordKind: "booking",
+        personalDataRecordArgKey: "bookingId",
+      }),
+    ).not.toThrow();
+    expect(() =>
+      defineDiagnosticsTool({
+        ...base,
+        surfacesPersonalData: true,
+        operatorOnly: true,
+      }),
+    ).not.toThrow();
+    expect(() =>
+      defineDiagnosticsTool({ ...base, surfacesPersonalData: false }),
+    ).not.toThrow();
   });
 });
 

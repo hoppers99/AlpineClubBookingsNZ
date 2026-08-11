@@ -470,6 +470,14 @@ const memberSummary = defineDiagnosticsTool<MemberIdArgs>({
   // A name, an email address and a member id. ADR-004's per-invocation opt-in
   // applies — DECLARED, not yet implemented (#2378).
   surfacesPersonalData: true,
+  personalDataRecordKind: "member",
+  personalDataRecordArgKey: "memberId",
+  // The parents this member is a dependent of. `familyGroupRef` and
+  // `billingFamilyGroupRef` name family GROUPS, which are not a consent record kind.
+  relatedRecordRefs: [
+    { field: "parentMemberRef", kind: "member" },
+    { field: "secondaryParentRef", kind: "member" },
+  ],
 });
 
 // ---------------------------------------------------------------------------
@@ -557,6 +565,10 @@ const memberSubscriptionState = defineDiagnosticsTool<MemberIdArgs>({
   // declaration is true and the opt-in applies (DECLARED, not yet implemented,
   // #2378).
   surfacesPersonalData: true,
+  // No related ref: subscription rows carry the season, the status and the Xero
+  // invoice number, and a Xero invoice is a provider record.
+  personalDataRecordKind: "member",
+  personalDataRecordArgKey: "memberId",
 });
 
 // ---------------------------------------------------------------------------
@@ -747,6 +759,11 @@ const memberFamilyState = defineDiagnosticsTool<MemberIdArgs>({
   // Names, member ids and a member-supplied family-group name on every row.
   // ADR-004's per-invocation opt-in applies (DECLARED, not yet implemented, #2378).
   surfacesPersonalData: true,
+  personalDataRecordKind: "member",
+  personalDataRecordArgKey: "memberId",
+  // Every row IS a family link — a partner, a parent or a dependent of the
+  // consented member — and `relatedMemberRef` is that person's member id.
+  relatedRecordRefs: [{ field: "relatedMemberRef", kind: "member" }],
 });
 
 // ---------------------------------------------------------------------------
@@ -916,6 +933,10 @@ const memberBookingSummary = defineDiagnosticsTool<MemberIdArgs>({
   // is keyed on a member id and every row is a fact about where that person slept.
   // ADR-004's per-invocation opt-in applies (DECLARED, not yet implemented, #2378).
   surfacesPersonalData: true,
+  personalDataRecordKind: "member",
+  personalDataRecordArgKey: "memberId",
+  // The bookings this member owns or is a guest on.
+  relatedRecordRefs: [{ field: "bookingRef", kind: "booking" }],
 });
 
 // ---------------------------------------------------------------------------

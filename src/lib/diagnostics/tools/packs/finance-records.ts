@@ -253,6 +253,11 @@ const paymentSummary = defineDiagnosticsTool<PaymentIdArgs>({
   // The internet-banking reference is whatever the payer typed into their bank,
   // and payers routinely type their own name.
   surfacesPersonalData: true,
+  personalDataRecordKind: "payment",
+  personalDataRecordArgKey: "paymentId",
+  // The booking this payment is for. The Stripe/Xero references projected beside it
+  // are PROVIDER references, not local records, and are deliberately not declared.
+  relatedRecordRefs: [{ field: "bookingId", kind: "booking" }],
 });
 
 // ---------------------------------------------------------------------------
@@ -386,6 +391,11 @@ const attemptLedger = defineDiagnosticsTool<PaymentIdArgs>({
   rowLimit: ATTEMPT_LEDGER_ROW_LIMIT,
   byteLimit: FINANCE_BYTE_LIMIT,
   surfacesPersonalData: true,
+  // No related ref: `entryRef` is the ledger row's own id, whose kind varies with
+  // `entryKind`, and `providerRef` is a provider reference. Neither is a local
+  // record this ledger could be asked about.
+  personalDataRecordKind: "payment",
+  personalDataRecordArgKey: "paymentId",
 });
 
 // ---------------------------------------------------------------------------
@@ -946,6 +956,8 @@ const xeroContactLinkage = defineDiagnosticsTool<MemberIdArgs>({
   byteLimit: FINANCE_BYTE_LIMIT,
   // A member id correlated with a Xero contact id is a fact about a person.
   surfacesPersonalData: true,
+  personalDataRecordKind: "member",
+  personalDataRecordArgKey: "memberId",
 });
 
 // ---------------------------------------------------------------------------

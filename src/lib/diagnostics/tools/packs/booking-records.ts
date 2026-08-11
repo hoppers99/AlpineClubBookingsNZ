@@ -632,6 +632,16 @@ const bookingSummary = defineDiagnosticsTool<BookingIdArgs>({
   // can resolve it. ADR-004's per-invocation opt-in is DECLARED by this flag and
   // is not yet implemented (prerequisite on #2378), so it is not a control.
   surfacesPersonalData: true,
+  // ADR-004 §1's consent record (AID-7a, #2785): this entry is about ONE booking,
+  // named by its `bookingId` argument. The owner is projected as a real member id
+  // and the parent booking as a real booking id, so an investigation the operator
+  // opened on this booking may follow both.
+  personalDataRecordKind: "booking",
+  personalDataRecordArgKey: "bookingId",
+  relatedRecordRefs: [
+    { field: "ownerMemberRef", kind: "member" },
+    { field: "parentBookingRef", kind: "booking" },
+  ],
 });
 
 // ---------------------------------------------------------------------------
@@ -686,6 +696,11 @@ const bookingLinkedState = defineDiagnosticsTool<BookingIdArgs>({
   // A booking reference plus lodge nights is still personal data even without a
   // name. ADR-004's declaration must describe the evidence actually returned.
   surfacesPersonalData: true,
+  // Every row IS a directly linked booking — `relationType` says how — so the
+  // linked booking's own id is the one related ref here.
+  personalDataRecordKind: "booking",
+  personalDataRecordArgKey: "bookingId",
+  relatedRecordRefs: [{ field: "bookingRef", kind: "booking" }],
 });
 
 // ---------------------------------------------------------------------------
@@ -931,6 +946,12 @@ const bookingPartyState = defineDiagnosticsTool<BookingIdArgs>({
   // control — the controls that run are the `bookings:view` requirement, the
   // exact booking id, the column allowlist and the column grant.
   surfacesPersonalData: true,
+  // The party of the consented booking: `guestMemberRef` is the member id of a
+  // guest who is a member (null for a non-member guest, which the ledger drops).
+  // `guestRef` is the BookingGuest row's own id and is NOT a consent record kind.
+  personalDataRecordKind: "booking",
+  personalDataRecordArgKey: "bookingId",
+  relatedRecordRefs: [{ field: "guestMemberRef", kind: "member" }],
 });
 
 // ---------------------------------------------------------------------------
@@ -1117,6 +1138,10 @@ const bookingBedAllocationState = defineDiagnosticsTool<BookingIdArgs>({
   // set conservatively. ADR-004's per-invocation opt-in is DECLARED by it and is
   // not yet implemented (prerequisite on #2378), so it is not a control.
   surfacesPersonalData: true,
+  // No related ref: the only identifier projected is `guestRef`, the BookingGuest
+  // row's own id, which is not a record kind consent is expressed in.
+  personalDataRecordKind: "booking",
+  personalDataRecordArgKey: "bookingId",
 });
 
 // ---------------------------------------------------------------------------
@@ -1269,6 +1294,11 @@ const bookingExceptionRequestState = defineDiagnosticsTool<BookingIdArgs>({
   // ADR-004's per-invocation opt-in is DECLARED by this flag and is not yet
   // implemented (prerequisite on #2378), so it is not a control.
   surfacesPersonalData: true,
+  personalDataRecordKind: "booking",
+  personalDataRecordArgKey: "bookingId",
+  // The member who asked for the exception. `requestRef`, `supersededByRequestRef`
+  // and `linkedModificationRef` name request/modification rows, not consent kinds.
+  relatedRecordRefs: [{ field: "requestedByMemberRef", kind: "member" }],
 });
 
 // ---------------------------------------------------------------------------

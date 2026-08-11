@@ -52,6 +52,8 @@ import {
   DIAGNOSTICS_ARGS_HASH_REDACTED,
   DIAGNOSTICS_TOOL_BOUNDS,
   DIAGNOSTICS_TOOL_ID_PATTERN,
+  type DiagnosticsConsentRecordKind,
+  type DiagnosticsRelatedRecordRef,
   type DiagnosticsToolRow,
 } from "./types";
 
@@ -110,6 +112,33 @@ interface DiagnosticsToolSpecBase<TArgs> {
   /** True when a projected field can identify a person (ADR-004 §1 opt-in). */
   surfacesPersonalData: boolean;
   /**
+   * The KIND of record this entry is about, when it is about exactly one (AID-7a,
+   * #2785). With `personalDataRecordArgKey` it is what lets the consent gate ask
+   * "did the operator include THIS record?" rather than "is consent on at all".
+   */
+  personalDataRecordKind?: DiagnosticsConsentRecordKind;
+  /**
+   * The ACCEPTED argument key that names that record — `bookingId`, `memberId`,
+   * `paymentId`. It must be a key the entry's own `argsSchema` accepts as a
+   * required exact identifier, because the consent gate reads the value out of the
+   * parsed arguments; a key the schema does not produce means every invocation
+   * refuses.
+   */
+  personalDataRecordArgKey?: string;
+  /**
+   * The PROJECTED fields of this entry that name a directly linked record (AID-7a,
+   * #2785). The consent ledger follows exactly these and nothing else, after a
+   * successful authorised call whose own record the operator selected.
+   *
+   * DECLARED RATHER THAN DERIVED, because deriving it from a field name would be a
+   * guess about server data made at runtime. This is a statement by the tool author,
+   * reviewed with the entry: this projected column carries a real identifier of this
+   * kind. Only declare a column whose value is the linked record's own primary key —
+   * a human-facing reference, a provider reference or a compound label is not one,
+   * and would enter the ledger as a record that can never be read.
+   */
+  relatedRecordRefs?: readonly DiagnosticsRelatedRecordRef[];
+  /**
    * Argument keys whose ACCEPTED value is LOW-ENTROPY — a value an offline reader
    * of the audit metadata could enumerate and match against an unkeyed digest.
    * When a parsed argument object carries any of them, the audit row records
@@ -139,6 +168,30 @@ interface DiagnosticsToolSpecBase<TArgs> {
    * a nice-to-have. Omission has no key to leak.
    */
   lowEntropyArgKeys?: readonly string[];
+  /**
+   * TRUE for an entry that SEARCHES — one that takes a search term and returns a
+   * bounded LIST of people, bookings or payments rather than evidence about one
+   * named record (AID-7a, #2785).
+   *
+   * WHY IT IS A DECLARATION AND NOT A JUDGEMENT AT CALL TIME. Choosing WHICH PERSON
+   * to investigate is an operator act. A search entry is the only way to turn a
+   * name, a phone number or an amount into a record id, and `booking_search`'s
+   * `lodge_nights` arm returns a whole lodge-window of bookings — bulk personal
+   * data. The model reaches tool arguments from evidence text an attacker can write
+   * (a booking note, a guest name, an internet-banking reference), so "the model
+   * decides who to look up" is a capability that has to be granted, not assumed.
+   *
+   * WHAT IT ACTUALLY GATES, after the owner's Q2 decision (#2378, 11 Aug 2026):
+   * the operator's own record-picker action always may (it renders to their browser
+   * and sends nothing to the provider), and the MODEL may only when the operator
+   * ticked the per-request people-search box. Unticked, `invoke.ts` refuses with
+   * `operator_action_required`. The tick is per request and never persisted.
+   *
+   * Withholding the DEFINITION from the model is courtesy on top of this, never the
+   * control — `definitions.ts` is explicit that withholding "may never become the
+   * only thing standing between a caller and a tool".
+   */
+  operatorOnly?: boolean;
   /**
    * Server-owned sentence naming WHAT this entry searched, rendered into the
    * evidence block above the rows (AID-6A, #2375).
@@ -222,6 +275,12 @@ interface DiagnosticsToolEntryBase {
   rowLimit: number;
   byteLimit: number;
   surfacesPersonalData: boolean;
+  /** See the spec fields: what ADR-004 §1's per-invocation opt-in is about. */
+  personalDataRecordKind?: DiagnosticsConsentRecordKind;
+  personalDataRecordArgKey?: string;
+  relatedRecordRefs?: readonly DiagnosticsRelatedRecordRef[];
+  /** See the spec field: a record SEARCH, gated on an operator act or their tick. */
+  operatorOnly?: boolean;
   /** See the spec field: keys whose accepted value must not reach a durable digest. */
   lowEntropyArgKeys?: readonly string[];
   evidenceScope?: string;
@@ -343,6 +402,70 @@ function hasReservedArgumentKey(raw: unknown): boolean {
 }
 
 /**
+ * THE DEFINITION-TIME INVARIANT for ADR-004 §1 (AID-7a, #2785).
+ *
+ * It throws, at module-body time, before `DIAGNOSTICS_TOOLS` can be assembled — so a
+ * registry that breaks it does not start, rather than starting with a gate that
+ * silently passes. That is the right trade for this rule: every consequence of
+ * getting it wrong is a personal-data read escaping the consent gate, and a
+ * diagnostics feature that refuses to boot is a far better outcome than one that
+ * quietly stops asking.
+ *
+ * THE RULE: an entry that surfaces personal data must say WHICH record it is about
+ * (kind + accepted argument key), or declare itself a SEARCH (`operatorOnly`).
+ * Those are the only two shapes the gates in `invoke.ts` can enforce — one is "did
+ * the operator include this record", the other is "did the operator allow searching
+ * at all" — and an entry that is neither would have no gate at all.
+ *
+ * The remaining clauses close the ways a declaration could be present and useless:
+ * a related-record declaration with no record of its own has no source to derive
+ * FROM, and an entry that is both a search and a per-record read is a contradiction
+ * about which gate governs it.
+ */
+function assertConsentDeclarationIsComplete<TArgs>(
+  spec: DiagnosticsToolSpec<TArgs>,
+): void {
+  const hasRecord =
+    spec.personalDataRecordKind !== undefined &&
+    spec.personalDataRecordArgKey !== undefined;
+  const isSearch = spec.operatorOnly === true;
+
+  // The half-declaration is checked FIRST because it is the more specific
+  // diagnosis: an author who wrote one of the pair gets told which half is missing,
+  // rather than the general "this entry cannot be gated" that is also true of it.
+  if (
+    (spec.personalDataRecordKind === undefined) !==
+    (spec.personalDataRecordArgKey === undefined)
+  ) {
+    throw new Error(
+      `Diagnostics tool ${spec.id} declares only half of its consent record: personalDataRecordKind and personalDataRecordArgKey travel together.`,
+    );
+  }
+  if (spec.surfacesPersonalData && !hasRecord && !isSearch) {
+    throw new Error(
+      `Diagnostics tool ${spec.id} declares surfacesPersonalData but names neither the record it is about (personalDataRecordKind + personalDataRecordArgKey) nor operatorOnly: true. ADR-004 §1's consent gate cannot be applied to it.`,
+    );
+  }
+  if (isSearch && hasRecord) {
+    throw new Error(
+      `Diagnostics tool ${spec.id} declares itself operatorOnly AND names a single consent record. A search and a per-record read are governed by different gates; an entry is one or the other.`,
+    );
+  }
+  if (spec.relatedRecordRefs !== undefined) {
+    if (!hasRecord) {
+      throw new Error(
+        `Diagnostics tool ${spec.id} declares relatedRecordRefs but names no record of its own, so there is nothing for the consent ledger to derive FROM.`,
+      );
+    }
+    if (spec.relatedRecordRefs.length === 0) {
+      throw new Error(
+        `Diagnostics tool ${spec.id} declares an empty relatedRecordRefs. Omit it rather than declaring nothing.`,
+      );
+    }
+  }
+}
+
+/**
  * Erase one typed spec into a registry entry. The single `as TArgs` inside is
  * sound because it is applied to the OUTPUT of `argsSchema.safeParse`, i.e. to a
  * value the schema itself has just validated — and it is applied ONCE, in the one
@@ -352,6 +475,8 @@ function hasReservedArgumentKey(raw: unknown): boolean {
 export function defineDiagnosticsTool<TArgs>(
   spec: DiagnosticsToolSpec<TArgs>,
 ): DiagnosticsToolEntry {
+  assertConsentDeclarationIsComplete(spec);
+
   const shared = {
     id: spec.id,
     label: spec.label,
@@ -362,6 +487,10 @@ export function defineDiagnosticsTool<TArgs>(
     rowLimit: spec.rowLimit,
     byteLimit: spec.byteLimit,
     surfacesPersonalData: spec.surfacesPersonalData,
+    personalDataRecordKind: spec.personalDataRecordKind,
+    personalDataRecordArgKey: spec.personalDataRecordArgKey,
+    relatedRecordRefs: spec.relatedRecordRefs,
+    operatorOnly: spec.operatorOnly,
     lowEntropyArgKeys: spec.lowEntropyArgKeys,
     evidenceScope: spec.evidenceScope,
   };

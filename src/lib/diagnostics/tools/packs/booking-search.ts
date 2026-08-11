@@ -478,6 +478,12 @@ const bookingSearch = defineDiagnosticsTool<BookingSearchArgs>({
   // row carries a member id, which identifies a person to anyone who can resolve
   // it. ADR-004's per-invocation opt-in applies.
   surfacesPersonalData: true,
+  // A SEARCH: it turns a name, a reference or a lodge-night window into a bounded
+  // LIST of bookings, and its `lodge_nights` arm returns a whole lodge window of
+  // them. Choosing which records to investigate is the operator's act — the model
+  // may run it only on a request where the operator ticked the people-search box
+  // (owner decision, #2378 Q2, 11 Aug 2026).
+  operatorOnly: true,
   /**
    * TWO OF THE FOUR BOOKING SEARCH ARMS ALSO MUST NOT REACH A DURABLE DIGEST, and
    * an earlier revision of this pack said the opposite for a reason that was
@@ -820,6 +826,9 @@ const memberSearch = defineDiagnosticsTool<MemberSearchArgs>({
   rowLimit: AID6B_SEARCH_ROW_LIMIT,
   byteLimit: AID6B_BYTE_LIMIT,
   surfacesPersonalData: true,
+  // A SEARCH over PEOPLE — the most direct route from a name, a mobile or an email
+  // to a member id there is. Same gate as `booking_search`.
+  operatorOnly: true,
   /**
    * THREE OF THE FOUR SEARCH TERMS MUST NEVER REACH A DURABLE DIGEST, and this is
    * the only entry in either pack that needs the declaration.

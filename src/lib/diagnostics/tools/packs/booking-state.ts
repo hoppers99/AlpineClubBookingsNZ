@@ -345,6 +345,15 @@ WHAT THIS DOES NOT COVER. A NEW-BOOKING policy-exception request lives in a diff
   // implements a per-invocation operator consent, and that is recorded as a
   // prerequisite on #2378. This flag must therefore not be leaned on as a control.
   surfacesPersonalData: true,
+  // ADR-004 §1's consent record (AID-7a, #2785). The related ref is the reason the
+  // ledger exists: this entry's OWN scope text says the subscription blocker's
+  // absence "says nothing about the owner's subscription; member_eligibility_state
+  // answers that" — so the investigation the operator opened on this booking has to
+  // be able to reach that member, and `ownerMemberRef` is the server's own
+  // projection of who they are.
+  personalDataRecordKind: "booking",
+  personalDataRecordArgKey: "bookingId",
+  relatedRecordRefs: [{ field: "ownerMemberRef", kind: "member" }],
 });
 
 // ---------------------------------------------------------------------------
@@ -433,6 +442,10 @@ ALLOCATION IS NOT CAPACITY. allocatedBedNights counts the bed-allocation rows th
   // a name. See `booking_block_state` on ADR-004's opt-in being declared and not
   // yet enforced.
   surfacesPersonalData: true,
+  // No related ref: this entry projects the booking, the lodge and per-night bed
+  // counts, and a lodge is not a record kind consent is expressed in.
+  personalDataRecordKind: "booking",
+  personalDataRecordArgKey: "bookingId",
 });
 
 // ---------------------------------------------------------------------------
@@ -528,6 +541,10 @@ This is a MEMBER-scoped answer. Whether they are present on a particular night, 
   // subscription standing is per-person information. See `booking_block_state` on
   // ADR-004's opt-in being declared and not yet enforced.
   surfacesPersonalData: true,
+  // The member named by the argument, and nothing linked: every other projected
+  // field is a state, a code or a count about that same person.
+  personalDataRecordKind: "member",
+  personalDataRecordArgKey: "memberId",
 });
 
 /** The AID-6B authoritative half, in presentation order. */
