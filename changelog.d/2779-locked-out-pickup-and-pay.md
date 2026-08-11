@@ -31,3 +31,9 @@
   guides (**Booking a stay**, **Changing or cancelling a booking**) describe it
   from the member's side, including the club-saved draft's own label and button
   and the three-day deadline.
+
+  **The pay card can now be found by screen-reader users too.** The "Complete
+  Booking" and "Complete Payment" cards on a booking page were headings to look
+  at but not to navigate to, so somebody using a screen reader's heading list
+  went straight past the one thing the page is for. They are now real level-2
+  headings under the page title. Nothing looks any different.

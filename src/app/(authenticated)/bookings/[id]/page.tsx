@@ -1930,7 +1930,18 @@ export default async function BookingDetailPage({
       {isBookingOwner && !isDeleted && isDraft && booking.finalPriceCents > 0 && (
         <Card>
           <CardHeader>
-            <CardTitle>Complete Booking</CardTitle>
+            {/* #2779 — real heading semantics on the pay door. `CardTitle`
+                renders a plain <div> (src/components/ui/card.tsx), so a member
+                navigating by headings never finds this card — and this is the
+                one card a subscription-locked member has to reach. Marked up
+                the way `roster-editor.tsx` already does it rather than as an
+                <h2>: `.app-theme-scope :is(h1,h2,h3,h4)` in globals.css swaps
+                real heading tags onto --font-heading, which would make this one
+                card title look unlike every other card title on the page. Level
+                2 sits directly under the page's single <h1> "Booking Details". */}
+            <CardTitle role="heading" aria-level={2}>
+              Complete Booking
+            </CardTitle>
           </CardHeader>
           <CardContent>
             <p className="text-sm text-muted-foreground mb-4">
@@ -2104,7 +2115,14 @@ export default async function BookingDetailPage({
       {showCompletePaymentCard && (
         <Card id="payment" className="scroll-mt-20">
           <CardHeader>
-            <CardTitle>Complete Payment</CardTitle>
+            {/* Same heading semantics as the DRAFT "Complete Booking" card
+                above, and for the same reason: this is the other door a member
+                pays through, and the two are mutually exclusive (DRAFT is not a
+                payment-owed status), so only one level-2 heading of this kind
+                is ever on the page. */}
+            <CardTitle role="heading" aria-level={2}>
+              Complete Payment
+            </CardTitle>
           </CardHeader>
           <CardContent>
             <p className="text-sm text-muted-foreground mb-4">

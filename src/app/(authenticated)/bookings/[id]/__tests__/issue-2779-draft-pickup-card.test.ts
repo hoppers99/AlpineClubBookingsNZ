@@ -95,6 +95,25 @@ describe("#2779 draft pick-up-and-pay card (INV-LOCKOUT-069/070)", () => {
     expect(source).toContain("This is a saved draft.");
   });
 
+  it("exposes the card title as a real level-2 heading", () => {
+    // A member navigating by headings has to be able to LAND on the pay door.
+    // `CardTitle` renders a bare <div> with no role (src/components/ui/card.tsx),
+    // so without this the card is findable by sighted scanning only — on the one
+    // page a subscription-locked member is sent to in order to pay. Explicit
+    // ARIA rather than an <h2> because `.app-theme-scope :is(h1,h2,h3,h4)` in
+    // globals.css puts real heading tags on --font-heading, which would restyle
+    // this title alone; `roster-editor.tsx` marks its card titles up the same
+    // way. Level 2 because the page's only <h1> is "Booking Details".
+    expect(source).toMatch(
+      /<CardTitle role="heading" aria-level=\{2\}>\s*Complete Booking\s*<\/CardTitle>/,
+    );
+    // The other payment door on the same page, kept consistent.
+    expect(source).toMatch(
+      /<CardTitle role="heading" aria-level=\{2\}>\s*Complete Payment\s*<\/CardTitle>/,
+    );
+    expect(source).toContain('<h1 className="text-3xl font-bold">Booking Details</h1>');
+  });
+
   it("states the deletion deadline on the page that takes the money", () => {
     expect(source).toContain('data-testid="draft-expiry-notice"');
     expect(source).toContain("booking.draftExpiresAt ? (");

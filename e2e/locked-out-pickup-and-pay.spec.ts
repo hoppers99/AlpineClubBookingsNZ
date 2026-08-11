@@ -302,17 +302,25 @@ test("the member finds it on their dashboard and it carries a pay action", async
       .click();
     await page.waitForURL(new RegExp(`/bookings/${draftBookingId}`));
 
-    // The pay door itself, on the page that takes the money.
+    // The pay door itself, on the page that takes the money. Asserted by ROLE
+    // and LEVEL, not by text: a member who navigates by headings has to be able
+    // to land on this card, and #2779 is the issue about this surface being
+    // findable. `CardTitle` renders a bare <div>, so the card carries explicit
+    // `role="heading" aria-level={2}` — losing that silently would leave the
+    // pay door invisible to assistive technology while still reading fine.
     await expect(
-      page.getByRole("heading", { name: "Complete Booking" }),
+      page.getByRole("heading", { name: "Complete Booking", level: 2 }),
     ).toBeVisible();
     await expect(page.getByText("The club saved this booking for you")).toBeVisible();
     // And the deadline, because the nightly draft-cleanup job DELETES an expired
     // draft rather than cancelling it (INV-LOCKOUT-070).
     await expect(page.getByTestId("draft-expiry-notice")).toContainText("Pay by");
+    // Visible AND enabled: "there is a pay button" is not the claim #2779
+    // makes — the claim is that a member whose subscription is unpaid can
+    // actually use it, so a disabled-by-lockout control must fail this test.
     await expect(
       page.getByRole("button", { name: "Confirm & Continue to Payment" }),
-    ).toBeVisible();
+    ).toBeEnabled();
   } finally {
     await page.close();
   }
@@ -361,7 +369,7 @@ test("and the card charge confirms the booking", async () => {
   try {
     await page.goto(`/bookings/${draftBookingId}`);
     await expect(
-      page.getByRole("heading", { name: "Complete Payment" }),
+      page.getByRole("heading", { name: "Complete Payment", level: 2 }),
     ).toBeVisible();
 
     await payWithCard(page, TEST_CARDS.success);

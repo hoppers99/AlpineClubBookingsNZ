@@ -310,3 +310,35 @@ pass verifies focusability, focus order, the visible focus ring, keyboard
 activation, and that the relevant ARIA attributes/live-regions update on
 interaction — the legitimate DOM-level proxy — but does not substitute for a
 real AT announcement check.
+
+## #2779 Pay-Door Heading Semantics (2026-08-11)
+
+Found while fixing a failing Playwright assertion on the locked-out
+pick-up-and-pay journey, and the failure was telling the truth about the page
+even though it was not telling the truth about the journey.
+
+`getByRole("heading", { name: "Complete Booking" })` could never match, because
+`CardTitle` (`src/components/ui/card.tsx`) renders a plain `<div>` with no role
+— the same trap #1242 Item 1 hit on `/login/enroll`. On
+`/bookings/[id]` that meant the **pay door itself** carried no heading
+semantics: a member navigating by headings found the page `<h1>` "Booking
+Details" and then nothing, on the one page a subscription-locked member is sent
+to in order to pay for a booking the club saved for them.
+
+Fixed on both payment cards in `src/app/(authenticated)/bookings/[id]/page.tsx`
+— the DRAFT "Complete Booking" card and the "Complete Payment" card — with
+`role="heading" aria-level={2}` on the `CardTitle`, the same markup
+`src/components/admin/roster-editor.tsx` already uses. Level 2 sits directly
+under the page's single `<h1>`, so there is no skipped level, and the two cards
+are mutually exclusive (`DRAFT` is not a payment-owed status) so only one such
+heading is ever present. No visual change: an actual `<h2>` would have been
+picked up by `.app-theme-scope :is(h1, h2, h3, h4)` in `globals.css` and
+restyled onto `--font-heading`, making this one card title look unlike every
+other card title on the page.
+
+**Still open, deliberately:** `CardTitle` renders a `<div>` app-wide, so most
+cards in the product still have no heading semantics. Changing the primitive
+touches every card in ~167 files and would put the wrong level on many of them,
+so it is not a fix to make in passing — tracked in #2796, which also records
+that this same trap has now been patched per-page three times (#1242,
+`roster-editor.tsx`, and this one).
