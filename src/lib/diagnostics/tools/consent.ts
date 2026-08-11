@@ -518,14 +518,14 @@ export const DIAGNOSTICS_TOOL_CONSENT_COPY = {
      * records name, and the first version of this sentence described only the first.
      * Picking one booking really can put a whole household in the answer: the owner
      * is a directly linked member, that member's family record projects the names of
-     * their partner, parents and dependents, and their booking summary lists every
-     * booking they own or were a guest on. An operator who reads "the records you
+     * their partner, parents and dependents, and their booking summary lists the
+     * recent bookings they own or were a guest on. An operator who reads "the records you
      * selected — and records directly linked to them" would not expect that, and a
      * checkbox whose label disagrees with the server's behaviour is worse than no
      * checkbox. So the words say it.
      */
     description:
-      "Off by default, and only for this question. When you tick this, the assistant may read the personal details of the records you selected — and of the records directly linked to them, such as the member who owns a booking you picked. That can name other people: a member's family details include their partner's, parents' and dependents' names, and a member summary lists the bookings they own or were a guest on. Without this tick those reads are refused, and the answer says so rather than guessing.",
+      "Off by default, and only for this question. When you tick this, the assistant may read the personal details of the records you selected — and of the records directly linked to them, such as the member who owns a booking you picked. That can name other people: a member's family details include their partner's, parents' and dependents' names, and a member summary lists recent bookings they own or were a guest on. Without this tick those reads are refused, and the answer says so rather than guessing.",
     /** What the operator is told when a read was refused for want of this tick. */
     refusedNotice:
       "Personal detail omitted. To see it, select the record it belongs to and tick “Include the personal details of the records I selected”.",
