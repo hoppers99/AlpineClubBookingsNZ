@@ -26,11 +26,13 @@
   payments — and those lists carry names, which the tick now says plainly, because
   the two ticks are independent and neither implies the other.
 
-  When a read is refused for either reason, the answer says so plainly and points at
-  the control that would allow it, instead of naming a permission the administrator
-  already holds or quietly leaving a gap. The audit trail now records, for every
-  diagnostics tool an administrator or the assistant runs, whether the personal
-  detail was allowed or refused and whether searching was permitted — without ever
+  When a read is refused for either reason, the answer says so plainly and names the
+  controls that would allow it — the record picker and the personal-details box, or
+  the search box — instead of naming a permission the administrator already holds,
+  guessing which of the two they forgot, or quietly leaving a gap. The audit trail
+  now records, for every diagnostics tool an administrator or the assistant runs,
+  whether the personal detail was allowed or refused, how the record it was about
+  came to be in the question, and which of the two boxes was ticked — without ever
   recording which person or booking it was about.
 
   Nothing an administrator could already see has changed, and no permission has been
