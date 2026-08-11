@@ -15,6 +15,7 @@ import { describe, expect, it } from "vitest";
 
 import type { AdminPermissionArea } from "@/lib/admin-permissions";
 
+import { DIAGNOSTICS_TOOL_CONSENT_COPY } from "../../tools/consent";
 import {
   DIAGNOSTICS_TOOL_FAILURE_MESSAGES,
   DIAGNOSTICS_TOOL_SCHEMA_VERSION,
@@ -257,6 +258,30 @@ describe("evidence states (#2375)", () => {
     expect(
       DIAGNOSTICS_EVIDENCE_STATE_DESCRIPTIONS.search_consent_required,
     ).toContain("search");
+  });
+
+  it("names both consent controls and asserts neither cause (#2785 delta review)", () => {
+    // Four causes land on this one state — no record could be resolved, the record is
+    // outside the investigation, the operator selected the record and left the
+    // personal-details box unticked, and the non-personal `record_not_included` — and
+    // the state cannot tell them apart. The first version of this sentence asserted
+    // one of them ("this question does not include the record it is about"), which
+    // reads as a flat falsehood to the operator who can see the record they selected,
+    // and sends them back to the record picker while the control that would actually
+    // fix it goes unnamed. So it names both and claims neither.
+    const description = DIAGNOSTICS_EVIDENCE_STATE_DESCRIPTIONS.consent_required;
+    expect(description).toContain("either");
+    expect(description).toContain("Select the record");
+    // The tick is named with the words the operator will actually see on it, so the
+    // sentence and the checkbox cannot drift apart.
+    expect(description).toContain(DIAGNOSTICS_TOOL_CONSENT_COPY.record.label);
+    // And the executor's own message for the reason underneath says the same thing:
+    // the two are read by the same operator, one in the transcript and one in the
+    // evidence block.
+    const message =
+      DIAGNOSTICS_TOOL_FAILURE_MESSAGES.sensitive_consent_required;
+    expect(message).toContain("personal-details box");
+    expect(message).not.toMatch(/this question does not include the record/);
   });
 
   it("sends a per-record refusal of a NON-personal entry to the same remedy (#2785 review)", () => {

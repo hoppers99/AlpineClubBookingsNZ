@@ -422,7 +422,13 @@ reached). `result_truncated`, `ambiguous`, `stale`, `indeterminate`,
 **withheld** evidence, like `permission_denied` and `actor_blocked`, and both are
 kept separate from those two because the operator's move is the one thing they can
 fix themselves — and separate from each other because the move differs: select the
-record, or tick people-search. A refused search must not be reported as
+record or tick personal details, versus tick people-search. `consent_required`'s
+sentence names **both** of its own controls and asserts neither cause, because four
+refusals land on it and the state cannot tell them apart: an earlier version said
+"this question does not include the record it is about", which is false for the
+operator who selected the record and left the personal-details box unticked, and it
+sent them back to the record picker while the control that would fix it went unnamed
+(#2785 delta review). A refused search must not be reported as
 `unsupported`: "Diagnostics has no tool that can answer that" is the opposite of the
 truth when the tool exists and one tick would run it.
 

@@ -538,8 +538,14 @@ export const DIAGNOSTICS_TOOL_FAILURE_MESSAGES: Record<
   // plain English and naming the control the operator can actually reach. It never
   // names the record it was asked about: the whole point is that the record was not
   // included, and echoing an id back would put an unincluded identifier on screen.
+  // It names BOTH controls and asserts NEITHER cause (#2785 delta review). One reason
+  // covers three conditions — no record to resolve, a record outside the
+  // investigation, and a record the operator DID select with the personal-details box
+  // unticked — so a sentence that says "this question does not include the record"
+  // tells an operator looking at their own selected record that they never selected
+  // it, and sends them back to the picker instead of to the tick.
   sensitive_consent_required:
-    "That diagnostics tool reads personal details, and this question does not include the record it was asked about, so it was not run. Select that record and include it to see those details.",
+    "That diagnostics tool reads personal details, and this question does not both include the record it was asked about and allow that record's personal details to be read, so it was not run. Select that record and tick the personal-details box to see those details.",
   record_not_included:
     "That diagnostics tool reads one specific record, and this question does not include the record it was asked about, so it was not run. Select that record to see its history.",
   operator_action_required:

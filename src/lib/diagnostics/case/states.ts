@@ -90,18 +90,29 @@ export const DIAGNOSTICS_EVIDENCE_STATES = [
    */
   "provider_check_required",
   /**
-   * The evidence exists and this caller may well be permitted to read it, but the
-   * operator did not include the record it is about in this question, so the personal
-   * detail was not retrieved (AID-7a, #2785; ADR-004 §1).
+   * The evidence exists and this caller may well be permitted to read it, but this
+   * question's inclusion does not cover it, so it was not retrieved (AID-7a, #2785;
+   * ADR-004 §1).
    *
    * IT SITS BESIDE `permission_denied` AND NOT INSIDE IT. Both are withheld rather
    * than absent — `isWithheldEvidenceState` covers both — but the operator's next move
    * is completely different, and it is the one thing they can fix themselves: select
-   * the record and include it. Folding it into `permission_denied` would tell an
-   * administrator who holds every relevant area to go and ask a Full Admin for access,
-   * which is both false and unactionable. That is also why `summariseDiagnosticCase`
-   * keeps consent refusals OUT of `withheldAreas`: naming an area there would say an
-   * area was denied when none was.
+   * the record, or tick the personal-details box. Folding it into `permission_denied`
+   * would tell an administrator who holds every relevant area to go and ask a Full
+   * Admin for access, which is both false and unactionable. That is also why
+   * `summariseDiagnosticCase` keeps consent refusals OUT of `withheldAreas`: naming an
+   * area there would say an area was denied when none was.
+   *
+   * ITS POPULATION IS FOUR CAUSES, WHICH IS WHY ITS SENTENCE ASSERTS NONE OF THEM
+   * (#2785 delta review). Gate 4b refuses when no record could be resolved, when the
+   * record is outside this investigation, and when the operator DID select the record
+   * and left the personal-details box unticked — and `record_not_included` maps here
+   * too. The first version of the description said "this question does not include the
+   * record it is about", which is flatly false of the third case: the operator can see
+   * the record is included, and being sent back to the record picker leaves the one
+   * control that would fix it unnamed. So the sentence names both controls and claims
+   * neither, the same correction `actor_blocked` got when it stopped naming areas that
+   * unlock nothing.
    */
   "consent_required",
   /**
@@ -169,8 +180,15 @@ export const DIAGNOSTICS_EVIDENCE_STATE_DESCRIPTIONS: Record<
     "The evidence was retrieved but does not settle the question either way.",
   provider_check_required:
     "This is what the platform last recorded, not a live answer from the provider. Settling it needs a check in Stripe's or Xero's own console, which Diagnostics deliberately cannot make.",
+  // Worded to be true of ALL FOUR causes that land here, because the state cannot tell
+  // them apart and a sentence that picks one is wrong for the others (#2785 delta
+  // review): the record may not be included, or it may be included with the
+  // personal-details box left unticked. Naming both controls and asserting neither
+  // cause is the honest version — the earlier "this question does not include the
+  // record it is about" told an operator looking at their own selected record that
+  // they had not selected it.
   consent_required:
-    "The evidence behind this was not retrieved, because this question does not include the record it is about. Select that record and include it to see it.",
+    "The evidence behind this was not retrieved: either this question does not include the record it is about, or it does not allow that record's personal details to be read. Select the record, and tick “Include the personal details of the records I selected” if what you asked for needs them.",
   search_consent_required:
     "The assistant was not allowed to search for people or records on this question, so it did not look. Tick “Let the assistant search for people and records” if you want it to.",
   permission_denied:
