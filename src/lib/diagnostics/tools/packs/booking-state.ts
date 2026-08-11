@@ -351,8 +351,8 @@ WHAT THIS DOES NOT COVER. A NEW-BOOKING policy-exception request lives in a diff
   // answers that" — so the investigation the operator opened on this booking has to
   // be able to reach that member, and `ownerMemberRef` is the server's own
   // projection of who they are.
-  personalDataRecordKind: "booking",
-  personalDataRecordArgKey: "bookingId",
+  consentRecordKind: "booking",
+  consentRecordArgKey: "bookingId",
   relatedRecordRefs: [{ field: "ownerMemberRef", kind: "member" }],
 });
 
@@ -444,8 +444,8 @@ ALLOCATION IS NOT CAPACITY. allocatedBedNights counts the bed-allocation rows th
   surfacesPersonalData: true,
   // No related ref: this entry projects the booking, the lodge and per-night bed
   // counts, and a lodge is not a record kind consent is expressed in.
-  personalDataRecordKind: "booking",
-  personalDataRecordArgKey: "bookingId",
+  consentRecordKind: "booking",
+  consentRecordArgKey: "bookingId",
 });
 
 // ---------------------------------------------------------------------------
@@ -543,8 +543,8 @@ This is a MEMBER-scoped answer. Whether they are present on a particular night, 
   surfacesPersonalData: true,
   // The member named by the argument, and nothing linked: every other projected
   // field is a state, a code or a count about that same person.
-  personalDataRecordKind: "member",
-  personalDataRecordArgKey: "memberId",
+  consentRecordKind: "member",
+  consentRecordArgKey: "memberId",
 });
 
 /** The AID-6B authoritative half, in presentation order. */

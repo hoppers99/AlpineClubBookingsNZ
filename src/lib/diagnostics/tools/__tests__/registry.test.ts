@@ -14,7 +14,10 @@ import { z } from "zod";
 import { ADMIN_PERMISSION_AREAS } from "@/lib/admin-permissions";
 import { canonicalStringify, sha256Hex } from "@/lib/diagnostics/knowledge/hash";
 
-import { consentedRecordForToolCall } from "../consent";
+import {
+  consentedRecordForToolCall,
+  declaresConsentRecord,
+} from "../consent";
 import { readSqlPlaceholderNumbers } from "../database";
 import {
   defineDiagnosticsTool,
@@ -1591,13 +1594,68 @@ describe("ADR-004 §1 consent declarations (#2785)", () => {
       // surfaces personal data and declares neither would have no gate at all.
       // `defineDiagnosticsTool` throws on it; this is the same rule asserted over the
       // registry that actually ships.
-      const namesRecord =
-        tool.personalDataRecordKind !== undefined &&
-        tool.personalDataRecordArgKey !== undefined;
+      const namesRecord = declaresConsentRecord(tool);
       expect(namesRecord || tool.operatorOnly === true).toBe(true);
       expect(namesRecord && tool.operatorOnly === true).toBe(false);
     },
   );
+
+  it("pins the PER-RECORD entries that surface no personal data (#2785 review)", () => {
+    // These six read about one identified subject and return only codes, amounts and
+    // instants, so they declared `surfacesPersonalData: false` and sat outside the
+    // consent gate entirely — the model could read the refund history of a payment
+    // the ledger had just refused. Five of them now name their record; the sixth is
+    // keyed on a PROVIDER event reference, which is not a record an operator can
+    // select or a kind the ledger can hold, and its entry says so in as many words.
+    const perRecordNonPersonal = DIAGNOSTICS_TOOLS.filter(
+      (tool) => !tool.surfacesPersonalData && declaresConsentRecord(tool),
+    ).map((tool) => tool.id);
+    expect(perRecordNonPersonal.sort()).toEqual(
+      [
+        DIAGNOSTICS_PAYMENT_REFUND_STATE_TOOL_ID,
+        DIAGNOSTICS_XERO_INVOICE_LINKAGE_TOOL_ID,
+        DIAGNOSTICS_FINANCE_AUDIT_HISTORY_TOOL_ID,
+        DIAGNOSTICS_MEMBER_AUDIT_HISTORY_TOOL_ID,
+        DIAGNOSTICS_BOOKING_AUDIT_HISTORY_TOOL_ID,
+      ].sort(),
+    );
+    const webhook = findDiagnosticsTool(
+      DIAGNOSTICS_FINANCE_WEBHOOK_TIMELINE_TOOL_ID,
+    );
+    expect(webhook && declaresConsentRecord(webhook)).toBe(false);
+  });
+
+  it("pins the entries whose record KIND is an argument (#2785 review)", () => {
+    // A static kind cannot express `{subject, recordId}` or `{localModel, localId}`,
+    // and declaring one anyway would gate every subject as the wrong kind. The map is
+    // exhaustive over the argument's own enum by definition-time invariant; this is
+    // the census that a new one has to be added here in the same diff.
+    const byArg = DIAGNOSTICS_TOOLS.filter(
+      (tool) => tool.consentRecordKindByArg !== undefined,
+    );
+    expect(byArg.map((tool) => tool.id).sort()).toEqual(
+      [
+        DIAGNOSTICS_XERO_INVOICE_LINKAGE_TOOL_ID,
+        DIAGNOSTICS_FINANCE_AUDIT_HISTORY_TOOL_ID,
+        DIAGNOSTICS_MEMBER_AUDIT_HISTORY_TOOL_ID,
+      ].sort(),
+    );
+    for (const tool of byArg) {
+      // Every mapped value is a real kind or a deliberate `null` refusal, and at
+      // least one is a real kind — a map of nothing but nulls is an entry no
+      // investigation could ever run, which is a mistake rather than a policy.
+      const values = Object.values(tool.consentRecordKindByArg?.kinds ?? {});
+      expect(values.length, tool.id).toBeGreaterThan(1);
+      for (const value of values) {
+        if (value === null) continue;
+        expect(DIAGNOSTICS_CONSENT_RECORD_KINDS, tool.id).toContain(value);
+      }
+      expect(
+        values.some((value) => value !== null),
+        `${tool.id} maps every subject to null, so it can never run`,
+      ).toBe(true);
+    }
+  });
 
   it("pins the operator-only entries — the four that SEARCH", () => {
     // A census, not a ceiling. A fifth search entry has to be added here in the same
@@ -1618,7 +1676,7 @@ describe("ADR-004 §1 consent declarations (#2785)", () => {
 
   it.each(
     DIAGNOSTICS_TOOLS.filter(
-      (tool) => tool.personalDataRecordArgKey !== undefined,
+      (tool) => tool.consentRecordArgKey !== undefined,
     ).map((tool) => [tool.id, tool] as const),
   )(
     "%s declares an argument key its OWN schema accepts as the record id",
@@ -1627,18 +1685,68 @@ describe("ADR-004 §1 consent declarations (#2785)", () => {
       // entry — fail-closed, but silently and permanently. `EXAMPLE_ARGS` is the
       // census of a realistic argument object per entry, so this checks the
       // declaration against arguments the entry actually accepts.
-      const key = tool.personalDataRecordArgKey;
+      const key = tool.consentRecordArgKey;
       const example = EXAMPLE_ARGS[tool.id];
       expect(example, `add an EXAMPLE_ARGS row for ${tool.id}`).toBeDefined();
       const binding = tool.parseArgs(example);
       expect(binding.ok, `${tool.id} rejected its own EXAMPLE_ARGS`).toBe(true);
       if (!binding.ok) return;
+      const record = consentedRecordForToolCall(tool, binding.args);
       expect(
-        consentedRecordForToolCall(tool, binding.args),
+        record,
         `${tool.id} declares ${key} but its accepted arguments carry no such record id`,
-      ).toEqual({ kind: tool.personalDataRecordKind, id: WIDEST_RECORD_ID });
+      ).not.toBeNull();
+      expect(record?.id, tool.id).toBe(WIDEST_RECORD_ID);
+      // The kind is the entry's own when it declares one, and the resolved one when
+      // the entry chooses it per invocation — either way it must be a kind the ledger
+      // can actually hold, or the gate has nothing to compare against.
+      if (tool.consentRecordKind !== undefined) {
+        expect(record?.kind, tool.id).toBe(tool.consentRecordKind);
+      }
+      expect(DIAGNOSTICS_CONSENT_RECORD_KINDS, tool.id).toContain(record?.kind);
     },
   );
+
+  it("pins the entries that WIDEN the investigation — the ten with related refs", () => {
+    // An exact-set census, and its absence was a real hole (#2785 review): the block
+    // below is an `it.each` over a filtered population, and `it.each([])` registers
+    // ZERO tests and reports green. Delete every `relatedRecordRefs` declaration in
+    // the tree and nothing else would have failed — `defineDiagnosticsTool` treats
+    // the field as optional, the ledger's own unit tests use hand-written fixtures,
+    // and the real-registry executor tests assert only `status`. The flagship derived
+    // flow (booking -> ownerMemberRef -> member_eligibility_state), which is the
+    // entire reason consent is a ledger rather than one {kind, id} pair, would have
+    // silently stopped working on every shipped entry.
+    expect(
+      DIAGNOSTICS_TOOLS.filter((tool) => tool.relatedRecordRefs !== undefined)
+        .map((tool) => tool.id)
+        .sort(),
+    ).toEqual(
+      [
+        DIAGNOSTICS_BOOKING_BLOCK_STATE_TOOL_ID,
+        DIAGNOSTICS_BOOKING_SUMMARY_TOOL_ID,
+        DIAGNOSTICS_BOOKING_PARTY_TOOL_ID,
+        DIAGNOSTICS_BOOKING_LINKED_STATE_TOOL_ID,
+        DIAGNOSTICS_BOOKING_EXCEPTION_REQUEST_TOOL_ID,
+        DIAGNOSTICS_MEMBER_SUMMARY_TOOL_ID,
+        DIAGNOSTICS_MEMBER_FAMILY_STATE_TOOL_ID,
+        DIAGNOSTICS_MEMBER_BOOKING_SUMMARY_TOOL_ID,
+        DIAGNOSTICS_PAYMENT_SUMMARY_TOOL_ID,
+        DIAGNOSTICS_BOOKING_FINANCE_STATE_TOOL_ID,
+      ].sort(),
+    );
+  });
+
+  it("lets only a reviewed consent surface widen the ledger (#2785 review)", () => {
+    // Absorbing extends the set of records the personal-data entries may then read,
+    // so the entry doing the widening has to be one somebody reviewed as a consent
+    // surface. Without this, a future non-personal linkage entry could seed member
+    // ids into the ledger while declaring itself outside the consent story entirely.
+    for (const tool of DIAGNOSTICS_TOOLS) {
+      if (tool.relatedRecordRefs === undefined) continue;
+      expect(tool.surfacesPersonalData, tool.id).toBe(true);
+    }
+  });
 
   it.each(
     DIAGNOSTICS_TOOLS.filter((tool) => tool.relatedRecordRefs !== undefined).map(
@@ -1659,7 +1767,7 @@ describe("ADR-004 §1 consent declarations (#2785)", () => {
       expect(DIAGNOSTICS_CONSENT_RECORD_KINDS).toContain(ref.kind);
       // A related ref that names the entry's OWN record is a no-op at best and a
       // self-referential derivation at worst.
-      expect(ref.field).not.toBe(tool.personalDataRecordArgKey);
+      expect(ref.field).not.toBe(tool.consentRecordArgKey);
     }
   });
 
@@ -1694,7 +1802,7 @@ describe("ADR-004 §1 consent declarations (#2785)", () => {
       defineDiagnosticsTool({
         ...base,
         surfacesPersonalData: true,
-        personalDataRecordKind: "booking",
+        consentRecordKind: "booking",
       }),
     ).toThrow(/travel together/);
 
@@ -1704,8 +1812,8 @@ describe("ADR-004 §1 consent declarations (#2785)", () => {
         ...base,
         surfacesPersonalData: true,
         operatorOnly: true,
-        personalDataRecordKind: "booking",
-        personalDataRecordArgKey: "bookingId",
+        consentRecordKind: "booking",
+        consentRecordArgKey: "bookingId",
       }),
     ).toThrow(/one or the other/);
 
@@ -1723,19 +1831,102 @@ describe("ADR-004 §1 consent declarations (#2785)", () => {
       defineDiagnosticsTool({
         ...base,
         surfacesPersonalData: true,
-        personalDataRecordKind: "booking",
-        personalDataRecordArgKey: "bookingId",
+        consentRecordKind: "booking",
+        consentRecordArgKey: "bookingId",
         relatedRecordRefs: [],
       }),
     ).toThrow(/Omit it rather than declaring nothing/);
+
+    // Related refs on an entry nobody reviewed as a consent surface (#2785 review).
+    expect(() =>
+      defineDiagnosticsTool({
+        ...base,
+        surfacesPersonalData: false,
+        consentRecordKind: "booking",
+        consentRecordArgKey: "bookingId",
+        relatedRecordRefs: [{ field: "ownerMemberRef", kind: "member" }],
+      }),
+    ).toThrow(/only an entry reviewed as a consent surface/);
+
+    // Two answers to "what kind of record is this about".
+    expect(() =>
+      defineDiagnosticsTool({
+        ...base,
+        surfacesPersonalData: false,
+        consentRecordKind: "booking",
+        consentRecordArgKey: "bookingId",
+        consentRecordKindByArg: {
+          argKey: "subject",
+          kinds: { booking: "booking" },
+        },
+      }),
+    ).toThrow(/exactly one way/);
+
+    // A per-argument kind map that does not cover the argument's own enum. This is
+    // the clause that makes adding a subject to a schema a decision rather than an
+    // omission: the registry refuses to build until somebody says which kind it is.
+    const withSubject = {
+      ...base,
+      argsSchema: z
+        .object({ subject: z.enum(["booking", "invoice"]), recordId: z.string() })
+        .strict(),
+      inputSchema: {
+        type: "object" as const,
+        properties: {
+          subject: { type: "string", enum: ["booking", "invoice"] },
+          recordId: { type: "string" },
+        },
+        additionalProperties: false as const,
+      },
+      surfacesPersonalData: false,
+      consentRecordArgKey: "recordId",
+    };
+    expect(() =>
+      defineDiagnosticsTool({
+        ...withSubject,
+        consentRecordKindByArg: {
+          argKey: "subject",
+          kinds: { booking: "booking" },
+        },
+      }),
+    ).toThrow(/unmapped: invoice/);
+    expect(() =>
+      defineDiagnosticsTool({
+        ...withSubject,
+        consentRecordKindByArg: {
+          argKey: "subject",
+          kinds: { booking: "booking", invoice: null, ghost: null },
+        },
+      }),
+    ).toThrow(/mapped but not accepted: ghost/);
+    // A discriminant with no closed enum cannot be mapped exhaustively at all.
+    expect(() =>
+      defineDiagnosticsTool({
+        ...withSubject,
+        consentRecordKindByArg: {
+          argKey: "recordId",
+          kinds: { booking: "booking" },
+        },
+      }),
+    ).toThrow(/no closed string enum/);
+    // And the exhaustive one defines, including its deliberate `null`.
+    expect(() =>
+      defineDiagnosticsTool({
+        ...withSubject,
+        consentRecordKindByArg: {
+          argKey: "subject",
+          kinds: { booking: "booking", invoice: null },
+        },
+      }),
+    ).not.toThrow();
 
     // The well-formed shapes still define.
     expect(() =>
       defineDiagnosticsTool({
         ...base,
         surfacesPersonalData: true,
-        personalDataRecordKind: "booking",
-        personalDataRecordArgKey: "bookingId",
+        consentRecordKind: "booking",
+        consentRecordArgKey: "bookingId",
       }),
     ).not.toThrow();
     expect(() =>

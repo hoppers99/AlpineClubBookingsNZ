@@ -37,7 +37,10 @@ import { getDiagnosticsDatabase, runDiagnosticsReadOnlyQuery } from "../database
 import type { DiagnosticsToolEntry } from "../define";
 import { invokeDiagnosticsTool } from "../invoke";
 import { findDiagnosticsTool } from "../registry";
-import { createDiagnosticsToolSession } from "../session";
+import {
+  createDiagnosticsToolSession,
+  type DiagnosticsToolSession,
+} from "../session";
 import {
   DIAGNOSTICS_TOOL_BOUNDS,
   type DiagnosticsInvocationChannel,
@@ -104,8 +107,8 @@ function entry(
 
 const PER_RECORD = entry({
   id: "diagnostics.per_record_fixture",
-  personalDataRecordKind: "booking",
-  personalDataRecordArgKey: "bookingId",
+  consentRecordKind: "booking",
+  consentRecordArgKey: "bookingId",
   relatedRecordRefs: [{ field: "ownerMemberRef", kind: "member" }],
 });
 
@@ -127,15 +130,32 @@ function consentTo(records: { kind: "booking" | "member"; id: string }[]) {
   });
 }
 
+/**
+ * ONE QUESTION IS ONE SESSION, and the ledger binds to it (#2785 review). Every test
+ * that runs two invocations under the SAME ledger has to run them under the same
+ * session too, exactly as the AID-7 loop will: a ledger presented to a second
+ * session is a ledger that outlived its question, and the executor refuses it.
+ * `question()` is that pairing, made explicit so a test cannot get it wrong silently.
+ */
+function question(consent?: DiagnosticsConsentLedger) {
+  const session = createDiagnosticsToolSession();
+  session.beginRound();
+  return { session, consent: consent ?? createEmptyDiagnosticsConsentLedger() };
+}
+
 function run(options: {
   tool: DiagnosticsToolEntry;
   args?: unknown;
   consent?: DiagnosticsConsentLedger;
+  session?: DiagnosticsToolSession;
   invocationChannel?: DiagnosticsInvocationChannel;
 }) {
   findToolMock.mockReturnValue(options.tool);
-  const session = createDiagnosticsToolSession();
-  session.beginRound();
+  let session = options.session;
+  if (!session) {
+    session = createDiagnosticsToolSession();
+    session.beginRound();
+  }
   return invokeDiagnosticsTool({
     toolId: options.tool.id,
     args: options.args ?? { bookingId: BOOKING_A },
@@ -182,12 +202,12 @@ describe("gate 4b — ADR-004 §1 record consent (#2785)", () => {
   });
 
   it("refuses a record the operator did not include, and allows the one they did", async () => {
-    const consent = consentTo([{ kind: "booking", id: BOOKING_A }]);
+    const asked = question(consentTo([{ kind: "booking", id: BOOKING_A }]));
 
     const other = await run({
+      ...asked,
       tool: PER_RECORD,
       args: { bookingId: BOOKING_B },
-      consent,
     });
     expect(other.status).toBe("error");
     if (other.status === "error") {
@@ -196,9 +216,9 @@ describe("gate 4b — ADR-004 §1 record consent (#2785)", () => {
 
     // The same entry, the same operator, the same permissions — one record apart.
     const included = await run({
+      ...asked,
       tool: PER_RECORD,
       args: { bookingId: BOOKING_A },
-      consent,
     });
     expect(included.status).toBe("ok");
   });
@@ -230,10 +250,99 @@ describe("gate 4b — ADR-004 §1 record consent (#2785)", () => {
     }
   });
 
-  it("does not gate an entry that surfaces no personal data", async () => {
+  it("does not gate an entry that is about no particular record", async () => {
     const result = await run({ tool: NON_SENSITIVE });
     expect(result.status).toBe("ok");
     expect(lastAuditMetadata().sensitiveInclusion).toBe("not_applicable");
+  });
+
+  it("gates a PER-RECORD entry even when it surfaces no personal data (#2785 review)", async () => {
+    // The hole this closes. `booking_audit_history`, `payment_refund_state` and the
+    // Xero linkage entry return codes, amounts and instants — no names — so they
+    // declared `surfacesPersonalData: false` and sat entirely outside the gate. The
+    // model could therefore read the refund history of a payment whose
+    // `payment_summary` the ledger had just refused, using an id it saw in a hop-1
+    // row. The record scope binds them now; the personal-details TICK still does not.
+    const perRecordCodes = entry({
+      id: "diagnostics.non_personal_per_record_fixture",
+      surfacesPersonalData: false,
+      consentRecordKind: "booking",
+      consentRecordArgKey: "bookingId",
+    });
+
+    const outside = await run({
+      tool: perRecordCodes,
+      args: { bookingId: BOOKING_B },
+      consent: consentTo([{ kind: "booking", id: BOOKING_A }]),
+    });
+    expect(outside.status).toBe("error");
+    if (outside.status === "error") {
+      // Its own reason: telling this operator "that tool reads personal details"
+      // would be false, and a durable row counted as a personal-inclusion refusal
+      // would overstate what was refused.
+      expect(outside.reason).toBe("record_not_included");
+    }
+    expect(runQueryMock).not.toHaveBeenCalled();
+    expect(lastAuditMetadata()).toMatchObject({
+      sensitiveInclusion: "not_applicable",
+      consentRecordKind: "booking",
+      consentRecordOrigin: null,
+      failureReason: "record_not_included",
+    });
+
+    // Non-vacuity: the same entry, the included record, and NO personal-details tick.
+    const untickedButSelected = createDiagnosticsConsentLedger({
+      recordConsentGranted: false,
+      peopleSearchGranted: false,
+      selectedRecords: [{ kind: "booking", id: BOOKING_A }],
+    });
+    const inside = await run({
+      tool: perRecordCodes,
+      args: { bookingId: BOOKING_A },
+      consent: untickedButSelected,
+    });
+    expect(inside.status).toBe("ok");
+    expect(lastAuditMetadata()).toMatchObject({
+      sensitiveInclusion: "not_applicable",
+      consentRecordKind: "booking",
+      consentRecordOrigin: "operator_selected",
+    });
+  });
+
+  it("refuses a subject whose kind the investigation cannot hold (#2785 review)", async () => {
+    // `finance_audit_history`'s shape: the record KIND is the `subject` argument, and
+    // two of its four subjects are records an operator cannot select. A static
+    // declaration could not express this at all, and leaving it undeclared left the
+    // whole entry ungated.
+    const auditHistory = entry({
+      id: "diagnostics.audit_history_fixture",
+      surfacesPersonalData: false,
+      consentRecordArgKey: "recordId",
+      consentRecordKindByArg: {
+        argKey: "subject",
+        kinds: { booking: "booking", manual_refund_task: null },
+      },
+    });
+    const asked = question(consentTo([{ kind: "booking", id: BOOKING_A }]));
+
+    const unmapped = await run({
+      ...asked,
+      tool: auditHistory,
+      args: { subject: "manual_refund_task", recordId: BOOKING_A },
+    });
+    expect(unmapped.status).toBe("error");
+    if (unmapped.status === "error") {
+      expect(unmapped.reason).toBe("record_not_included");
+    }
+    expect(lastAuditMetadata().consentRecordKind).toBeNull();
+
+    const mapped = await run({
+      ...asked,
+      tool: auditHistory,
+      args: { subject: "booking", recordId: BOOKING_A },
+    });
+    expect(mapped.status).toBe("ok");
+    expect(lastAuditMetadata().consentRecordKind).toBe("booking");
   });
 
   it("runs AFTER authorization, so a denied caller is told about the permission", async () => {
@@ -327,22 +436,22 @@ describe("the investigation widens only through a successful, audited call (#278
     // The flagship flow, through the executor rather than the ledger's own unit test:
     // booking A was selected, the projected owner is absorbed, and a second entry
     // keyed on that member is then allowed under the same consent.
-    const consent = consentTo([{ kind: "booking", id: BOOKING_A }]);
-    const first = await run({ tool: PER_RECORD, consent });
+    const asked = question(consentTo([{ kind: "booking", id: BOOKING_A }]));
+    const first = await run({ ...asked, tool: PER_RECORD });
     expect(first.status).toBe("ok");
-    expect(consent.has("member", MEMBER_M)).toBe(true);
-    expect(consent.originOf("member", MEMBER_M)).toBe("derived");
+    expect(asked.consent.has("member", MEMBER_M)).toBe(true);
+    expect(asked.consent.originOf("member", MEMBER_M)).toBe("derived");
 
     const memberTool = entry({
       id: "diagnostics.member_fixture",
       requiredAreas: ["membership"],
-      personalDataRecordKind: "member",
-      personalDataRecordArgKey: "memberId",
+      consentRecordKind: "member",
+      consentRecordArgKey: "memberId",
     });
     const second = await run({
+      ...asked,
       tool: memberTool,
       args: { memberId: MEMBER_M },
-      consent,
     });
     expect(second.status).toBe("ok");
   });
@@ -386,10 +495,63 @@ describe("the investigation widens only through a successful, audited call (#278
   });
 });
 
+describe("one ledger belongs to one question (#2785 review)", () => {
+  it("refuses every call once a ledger is presented to a SECOND question", async () => {
+    // The multi-turn failure. AID-7's loop builds the ledger when the conversation
+    // opens; on turn two the operator changes the record and clears the tick, and a
+    // ledger kept across turns would still hold turn one's records and read them as
+    // consented — recording `sensitiveInclusion: "granted"` for consent that had been
+    // withdrawn. "Per request" is now enforced rather than described.
+    const first = question(consentTo([{ kind: "booking", id: BOOKING_A }]));
+    const allowed = await run({ ...first, tool: PER_RECORD });
+    expect(allowed.status).toBe("ok");
+
+    const secondSubmission = createDiagnosticsToolSession();
+    secondSubmission.beginRound();
+    const stale = await run({
+      tool: PER_RECORD,
+      consent: first.consent,
+      session: secondSubmission,
+    });
+    expect(stale.status).toBe("error");
+    if (stale.status === "error") expect(stale.reason).toBe("internal_error");
+    // No rows, no database work — and the refusal is still audited.
+    expect(runQueryMock).toHaveBeenCalledTimes(1);
+    expect(lastAuditMetadata()).toMatchObject({
+      failureReason: "internal_error",
+      rowCount: 0,
+    });
+  });
+
+  it("does not throw, and still audits, when the ledger itself is missing", async () => {
+    // A #2378 wiring step that adds the parameter to one call path and not another.
+    // The tick read used to sit outside the try block, so this threw a TypeError
+    // before any `fail(...)` existed: the caller saw a rejected promise and NO audit
+    // row was written, which is the single outcome the never-throws wrapper exists to
+    // prevent.
+    findToolMock.mockReturnValue(NON_SENSITIVE);
+    const session = createDiagnosticsToolSession();
+    session.beginRound();
+    const result = await invokeDiagnosticsTool({
+      toolId: NON_SENSITIVE.id,
+      args: {},
+      actingMemberId: "member-1",
+      session,
+      invocationChannel: "model_tool_use",
+      consent: undefined as unknown as DiagnosticsConsentLedger,
+      observedAt: OBSERVED_AT,
+    });
+    expect(result.status).toBe("error");
+    if (result.status === "error") expect(result.reason).toBe("internal_error");
+    expect(auditMock).toHaveBeenCalledTimes(1);
+    expect(lastAuditMetadata().peopleSearchTick).toBe("withheld");
+  });
+});
+
 describe("the durable row records the consent decision (#2785)", () => {
   it("distinguishes a granted read from a refused one", async () => {
-    const consent = consentTo([{ kind: "booking", id: BOOKING_A }]);
-    await run({ tool: PER_RECORD, consent });
+    const asked = question(consentTo([{ kind: "booking", id: BOOKING_A }]));
+    await run({ ...asked, tool: PER_RECORD });
     expect(lastAuditMetadata()).toMatchObject({
       sensitiveInclusion: "granted",
       consentRecordKind: "booking",
@@ -398,7 +560,7 @@ describe("the durable row records the consent decision (#2785)", () => {
       peopleSearchTick: "withheld",
     });
 
-    await run({ tool: PER_RECORD, args: { bookingId: BOOKING_B }, consent });
+    await run({ ...asked, tool: PER_RECORD, args: { bookingId: BOOKING_B } });
     expect(lastAuditMetadata()).toMatchObject({
       sensitiveInclusion: "refused",
       consentRecordKind: "booking",
@@ -407,15 +569,15 @@ describe("the durable row records the consent decision (#2785)", () => {
   });
 
   it("records a DERIVED record as derived", async () => {
-    const consent = consentTo([{ kind: "booking", id: BOOKING_A }]);
-    await run({ tool: PER_RECORD, consent });
+    const asked = question(consentTo([{ kind: "booking", id: BOOKING_A }]));
+    await run({ ...asked, tool: PER_RECORD });
     const memberTool = entry({
       id: "diagnostics.member_fixture",
       requiredAreas: ["membership"],
-      personalDataRecordKind: "member",
-      personalDataRecordArgKey: "memberId",
+      consentRecordKind: "member",
+      consentRecordArgKey: "memberId",
     });
-    await run({ tool: memberTool, args: { memberId: MEMBER_M }, consent });
+    await run({ ...asked, tool: memberTool, args: { memberId: MEMBER_M } });
     expect(lastAuditMetadata()).toMatchObject({
       sensitiveInclusion: "granted",
       consentRecordKind: "member",
@@ -462,6 +624,61 @@ describe("the durable row records the consent decision (#2785)", () => {
       consentRecordKind: null,
       consentRecordOrigin: null,
     });
+  });
+
+  it("records the inclusion decision for an ALLOWED search, both ways in (#2785 review)", async () => {
+    // Untested before, and deleting the branch or flipping it to "refused" left every
+    // other consent test green while every durable row for an allowed search silently
+    // recorded "nobody established whether this was sensitive" — on the one invocation
+    // class that returns a bulk list of people.
+    const ticked = createDiagnosticsConsentLedger({
+      recordConsentGranted: false,
+      peopleSearchGranted: true,
+      selectedRecords: [],
+    });
+    await run({ tool: SEARCH, consent: ticked, invocationChannel: "model_tool_use" });
+    expect(lastAuditMetadata()).toMatchObject({
+      sensitiveInclusion: "granted",
+      peopleSearchTick: "granted",
+      invocationChannel: "model_tool_use",
+      consentRecordKind: null,
+    });
+
+    // The operator's own record-picker action is the SECOND way in, and the row still
+    // reads `granted` — their own act is the inclusion decision. `peopleSearchTick`
+    // and `invocationChannel` beside it are what say which of the two happened, which
+    // is why the field's own docblock now states both.
+    await run({
+      tool: SEARCH,
+      consent: createEmptyDiagnosticsConsentLedger(),
+      invocationChannel: "operator_action",
+    });
+    expect(lastAuditMetadata()).toMatchObject({
+      sensitiveInclusion: "granted",
+      peopleSearchTick: "withheld",
+      invocationChannel: "operator_action",
+    });
+
+    // And a REFUSED search is `refused`, not `not_reached`: the §1 decision was made.
+    await run({ tool: SEARCH, invocationChannel: "model_tool_use" });
+    expect(lastAuditMetadata()).toMatchObject({
+      sensitiveInclusion: "refused",
+      failureReason: "operator_action_required",
+    });
+  });
+
+  it("narrows the invocation channel before it reaches the durable row (#2785 review)", async () => {
+    // `audit.ts` asserts of the five new fields that "every one of them is a closed
+    // enum or null — there is no free text and no identifier here". TypeScript makes
+    // that true of in-repo call sites; this makes it true of the ROW, the same way
+    // `toolId` is sanitised rather than echoed. An unrecognised value narrows to the
+    // gated channel, so it cannot buy an operator's authority either.
+    const result = await run({
+      tool: NON_SENSITIVE,
+      invocationChannel: "operator_action; DROP" as DiagnosticsInvocationChannel,
+    });
+    expect(result.status).toBe("ok");
+    expect(lastAuditMetadata().invocationChannel).toBe("model_tool_use");
   });
 
   it("records the people-search tick on every row, not only on searches", async () => {

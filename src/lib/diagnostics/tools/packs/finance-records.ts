@@ -253,8 +253,8 @@ const paymentSummary = defineDiagnosticsTool<PaymentIdArgs>({
   // The internet-banking reference is whatever the payer typed into their bank,
   // and payers routinely type their own name.
   surfacesPersonalData: true,
-  personalDataRecordKind: "payment",
-  personalDataRecordArgKey: "paymentId",
+  consentRecordKind: "payment",
+  consentRecordArgKey: "paymentId",
   // The booking this payment is for. The Stripe/Xero references projected beside it
   // are PROVIDER references, not local records, and are deliberately not declared.
   relatedRecordRefs: [{ field: "bookingId", kind: "booking" }],
@@ -394,8 +394,8 @@ const attemptLedger = defineDiagnosticsTool<PaymentIdArgs>({
   // No related ref: `entryRef` is the ledger row's own id, whose kind varies with
   // `entryKind`, and `providerRef` is a provider reference. Neither is a local
   // record this ledger could be asked about.
-  personalDataRecordKind: "payment",
-  personalDataRecordArgKey: "paymentId",
+  consentRecordKind: "payment",
+  consentRecordArgKey: "paymentId",
 });
 
 // ---------------------------------------------------------------------------
@@ -531,6 +531,12 @@ const refundState = defineDiagnosticsTool<PaymentIdArgs>({
   byteLimit: FINANCE_BYTE_LIMIT,
   // No free text and no member reference reaches this projection.
   surfacesPersonalData: false,
+  // It is still evidence about ONE named payment, so the investigation has to cover
+  // that payment (#2785 review). Without this declaration the refund amounts,
+  // statuses and provider references of a payment the ledger has just refused for
+  // `payment_summary` would still be readable through this entry.
+  consentRecordKind: "payment",
+  consentRecordArgKey: "paymentId",
 });
 
 // ---------------------------------------------------------------------------
@@ -672,6 +678,15 @@ const webhookTimeline = defineDiagnosticsTool<WebhookArgs>({
   rowLimit: WEBHOOK_TIMELINE_ROW_LIMIT,
   byteLimit: FINANCE_BYTE_LIMIT,
   surfacesPersonalData: false,
+  // NO CONSENT RECORD, and deliberately (#2785 review). Every other per-record entry
+  // in this pack names a platform record the operator can select; this one is keyed
+  // on a PROVIDER event reference (a Stripe event id, a Xero resource id or a
+  // correlation key), which is not a record kind the investigation ledger can hold
+  // and not something an operator picks. There is therefore no inclusion decision
+  // that could ever cover it, and declaring a kind it does not have would refuse
+  // every invocation while pretending to be a gate. What bounds it instead: it reads
+  // webhook plumbing only — arrival, lease, delivery attempts, status codes — with no
+  // person, no amount and no record id of a consentable kind in the projection.
 });
 
 // ---------------------------------------------------------------------------
@@ -826,6 +841,27 @@ const xeroInvoiceLinkage = defineDiagnosticsTool<XeroLinkageArgs>({
   rowLimit: XERO_LINKAGE_ROW_LIMIT,
   byteLimit: FINANCE_BYTE_LIMIT,
   surfacesPersonalData: false,
+  // Per-record evidence whose record KIND is the `localModel` argument (#2785
+  // review). Two of the seven models are kinds an operator can include in an
+  // investigation; the other five are finance sub-records the ledger cannot express,
+  // so they are declared `null` and refuse. That is the fail-closed reading of
+  // ADR-004 §1's bound rather than a gap: a PaymentTransaction or a credit-note
+  // allocation is reachable through the payment or member it belongs to, and if an
+  // operator needs to name one directly that is a record-picker decision for #2378,
+  // not something this gate should quietly allow.
+  consentRecordArgKey: "localId",
+  consentRecordKindByArg: {
+    argKey: "localModel",
+    kinds: {
+      Booking: "booking",
+      Payment: "payment",
+      PaymentTransaction: null,
+      MemberCredit: null,
+      MemberCreditNoteAllocation: null,
+      MembershipSubscriptionCharge: null,
+      GroupBookingSettlement: null,
+    },
+  },
 });
 
 // ---------------------------------------------------------------------------
@@ -956,8 +992,8 @@ const xeroContactLinkage = defineDiagnosticsTool<MemberIdArgs>({
   byteLimit: FINANCE_BYTE_LIMIT,
   // A member id correlated with a Xero contact id is a fact about a person.
   surfacesPersonalData: true,
-  personalDataRecordKind: "member",
-  personalDataRecordArgKey: "memberId",
+  consentRecordKind: "member",
+  consentRecordArgKey: "memberId",
 });
 
 // ---------------------------------------------------------------------------
@@ -1131,6 +1167,21 @@ const financeAuditHistory = defineDiagnosticsTool<FinanceAuditArgs>({
   // Stable codes and an instant. No person, no free text, no identifier beyond
   // the audit row's own.
   surfacesPersonalData: false,
+  // The history of ONE named record, so the investigation must cover that record
+  // (#2785 review) — and the KIND is the `subject` argument, which is why the map
+  // exists at all. A manual refund task and a membership subscription are not kinds
+  // the ledger holds, so they refuse rather than running for any id the model can
+  // name.
+  consentRecordArgKey: "recordId",
+  consentRecordKindByArg: {
+    argKey: "subject",
+    kinds: {
+      payment: "payment",
+      booking: "booking",
+      manual_refund_task: null,
+      membership_subscription: null,
+    },
+  },
 });
 
 /** The AID-6C per-record half, in presentation order. */

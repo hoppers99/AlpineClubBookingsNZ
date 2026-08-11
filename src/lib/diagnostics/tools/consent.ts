@@ -42,11 +42,19 @@
  *     set is the operator's selections plus their direct links — and not a walk of
  *     the club's membership graph one family link at a time. The plan did not state a
  *     depth bound; without one there is no bound at all.
- *  4. PER REQUEST, AND NEVER PERSISTED. The ledger is built for one request and
- *     discarded with it. Nothing here is written to a database, a cookie or a
- *     session, so "reset on a new submission / a changed record / a changed
- *     investigation" is not a rule someone has to remember to apply — it is the only
- *     behaviour available.
+ *  4. ONE QUESTION, AND NEVER PERSISTED. Nothing here is written to a database, a
+ *     cookie or a session, so no consent survives the process. That alone does not
+ *     make "reset on a new submission / a changed record / a changed investigation"
+ *     automatic, and saying it did was the honest gap in the first cut of this
+ *     module: a multi-turn loop that built the ledger once when a conversation opened
+ *     would read, on turn two, records absorbed under a tick the operator had since
+ *     cleared. So the rule is ENFORCED rather than described. `bindToLoopSession`
+ *     attaches the ledger to the FIRST `DiagnosticsToolSession` it serves — the
+ *     substrate's own "one session per operator question" unit — and refuses a
+ *     second. A new submission opens a new session, the stale ledger refuses it, and
+ *     `invoke.ts` turns that into a no-rows `internal_error` rather than a read on
+ *     withdrawn consent. Building a fresh ledger per submission is therefore not an
+ *     instruction the AID-7 loop can forget: it is the only thing that works.
  *
  * THE MODEL CAN NEVER WRITE TO IT. There is no public method that takes an
  * arbitrary identifier. `absorbRelatedRecordRefs` is an instance method rather than
@@ -79,6 +87,17 @@ import {
  * own sentinels: `recordRefOrNull` returns the literal `(unparseable)` for a value
  * that is not id-shaped and the entries coalesce a missing ref to `""`. Neither can
  * match this pattern, so neither can enter the ledger as a record.
+ *
+ * IT IS DELIBERATELY NARROWER THAN `PROJECTABLE_RECORD_REF`, which admits
+ * `[A-Za-z0-9_-]` because "this codebase does hand-set ids in imports, fixtures and
+ * migrations". The ledger tracks the ARGUMENT schema instead, and the two must not be
+ * reconciled by widening this one: a record whose id no per-record entry will accept
+ * cannot be read whatever the ledger says, so consenting to it would only move the
+ * refusal one gate later and dress an argument rejection up as a consent decision.
+ * What the ledger owes the operator instead is a SIGNAL — `rejectedSelections.
+ * malformedId` — so the caller can say "diagnostics cannot read records with that
+ * kind of id" rather than leaving them to re-tick a box that was never the problem
+ * (#2785 review).
  */
 const CONSENT_RECORD_ID = /^[a-z0-9]{20,40}$/;
 
@@ -120,9 +139,65 @@ export interface DiagnosticsConsentEntry extends DiagnosticsConsentRecordRef {
  * A registry entry satisfies it structurally.
  */
 export interface DiagnosticsConsentToolDeclaration {
-  personalDataRecordKind?: DiagnosticsConsentRecordKind;
-  personalDataRecordArgKey?: string;
+  consentRecordKind?: DiagnosticsConsentRecordKind;
+  consentRecordArgKey?: string;
+  consentRecordKindByArg?: {
+    argKey: string;
+    kinds: Readonly<Record<string, DiagnosticsConsentRecordKind | null>>;
+  };
   relatedRecordRefs?: readonly DiagnosticsRelatedRecordRef[];
+}
+
+/** True when this entry reads about ONE named record, so gate 4b governs it. */
+export function declaresConsentRecord(
+  tool: DiagnosticsConsentToolDeclaration,
+): boolean {
+  return (
+    tool.consentRecordArgKey !== undefined &&
+    (tool.consentRecordKind !== undefined ||
+      tool.consentRecordKindByArg !== undefined)
+  );
+}
+
+/**
+ * Read one accepted argument WITHOUT invoking a getter. `acceptedArgs` is the parsed
+ * argument object, and the code deciding whether a call is consented must never run
+ * code the object carries.
+ */
+function acceptedArgValue(acceptedArgs: unknown, key: string): unknown {
+  if (typeof acceptedArgs !== "object" || acceptedArgs === null) return undefined;
+  const descriptor = Object.getOwnPropertyDescriptor(acceptedArgs, key);
+  if (!descriptor || !("value" in descriptor)) return undefined;
+  return descriptor.value;
+}
+
+/**
+ * The record KIND one invocation is about, or `null` when the entry declares none
+ * and when the arguments name a subject no consent kind covers (#2785 review).
+ *
+ * `null` is a REFUSAL, not a pass: `invoke.ts` treats an entry that reads one named
+ * record and cannot say which kind it is as consent refused. That is what makes the
+ * `null` values in a `consentRecordKindByArg` map — `manual_refund_task`,
+ * `membership_subscription`, `family_request`, a Xero-linked `MemberCredit` — refuse
+ * rather than run unbounded: those subjects are real records, but the investigation
+ * ledger holds bookings, members and payments only, so there is no inclusion decision
+ * that could ever cover them.
+ */
+function consentRecordKindForArgs(
+  tool: DiagnosticsConsentToolDeclaration,
+  acceptedArgs: unknown,
+): DiagnosticsConsentRecordKind | null {
+  if (tool.consentRecordKind !== undefined) return tool.consentRecordKind;
+  const byArg = tool.consentRecordKindByArg;
+  if (!byArg) return null;
+  const discriminant = acceptedArgValue(acceptedArgs, byArg.argKey);
+  if (typeof discriminant !== "string") return null;
+  // An OWN-property lookup: a subject named `toString` must not resolve through the
+  // map's prototype to something that is not a kind at all.
+  const mapped = Object.prototype.hasOwnProperty.call(byArg.kinds, discriminant)
+    ? byArg.kinds[discriminant]
+    : null;
+  return isConsentRecordKind(mapped) ? mapped : null;
 }
 
 export interface CreateDiagnosticsConsentLedgerInput {
@@ -144,9 +219,9 @@ export interface CreateDiagnosticsConsentLedgerInput {
    * THE CALLER MUST HAVE REVALIDATED THESE server-side, under this actor's own
    * freshly-read authority, before passing them: they arrive from a browser and are
    * selectors, not facts. An id this module cannot recognise as id-shaped is refused
-   * rather than trusted, and counted in `rejectedSelectionCount` so the caller can
-   * notice — but that check is a backstop for a malformed value, not a substitute
-   * for the re-resolution.
+   * rather than trusted, and counted in `rejectedSelections.malformedId` so the
+   * caller can SAY SO to the operator — but that check is a backstop for a malformed
+   * value, not a substitute for the re-resolution.
    */
   selectedRecords: readonly DiagnosticsConsentRecordRef[];
 }
@@ -181,24 +256,20 @@ function isConsentRecordId(value: unknown): value is string {
  * already accepted — or `null` when the entry declares no record, or the accepted
  * arguments do not carry a usable one.
  *
- * `null` is a REFUSAL for a personal-data entry, not a pass: `invoke.ts` treats "no
- * declared record" on an entry that surfaces personal data as consent refused, so a
- * declaration that goes missing closes the gate rather than opening it.
+ * `null` is a REFUSAL for a gated entry, not a pass: `invoke.ts` treats "no declared
+ * record" on an entry that surfaces personal data OR reads one named record as
+ * consent refused, so a declaration that goes missing closes the gate rather than
+ * opening it.
  */
 export function consentedRecordForToolCall(
   tool: DiagnosticsConsentToolDeclaration,
   acceptedArgs: unknown,
 ): DiagnosticsConsentRecordRef | null {
-  const kind = tool.personalDataRecordKind;
-  const argKey = tool.personalDataRecordArgKey;
-  if (kind === undefined || argKey === undefined) return null;
-  if (typeof acceptedArgs !== "object" || acceptedArgs === null) return null;
-  // A descriptor read, not a property read: `acceptedArgs` is the parsed argument
-  // object, and a getter on it must never be invoked by the code deciding whether
-  // this call is consented.
-  const descriptor = Object.getOwnPropertyDescriptor(acceptedArgs, argKey);
-  if (!descriptor || !("value" in descriptor)) return null;
-  const id: unknown = descriptor.value;
+  const argKey = tool.consentRecordArgKey;
+  if (argKey === undefined) return null;
+  const kind = consentRecordKindForArgs(tool, acceptedArgs);
+  if (kind === null) return null;
+  const id: unknown = acceptedArgValue(acceptedArgs, argKey);
   if (!isConsentRecordId(id)) return null;
   return { kind, id };
 }
@@ -211,33 +282,58 @@ export function consentedRecordForToolCall(
  * so the only ways to change them are the two this class offers — seeding at
  * construction, and `absorbRelatedRecordRefs` under the rules in the module
  * docblock.
+ *
+ * "FOR ONE REQUEST" IS ENFORCED, not assumed: `bindToLoopSession` ties the instance
+ * to the first tool session it serves and refuses a second, so a loop that kept one
+ * across submissions gets no rows rather than stale consent (rule 4).
  */
 export class DiagnosticsConsentLedger {
   /** The operator's per-request tick for personal details of selected records. */
   readonly recordConsentGranted: boolean;
   /** The operator's per-request tick allowing the model to run record search. */
   readonly peopleSearchGranted: boolean;
-  /** Selections that were not id-shaped and were refused rather than seeded. */
-  readonly rejectedSelectionCount: number;
+  /**
+   * The selections that were dropped at construction, BY CAUSE (#2785 review).
+   *
+   * Two causes with two different operator remedies, which one counter conflated
+   * into "some of your selections were not valid record ids" — advice that sends an
+   * operator to re-check ids that were perfectly good. The caller (#2378) must tell
+   * them apart before it says anything:
+   *
+   *  - `malformedId` — the id is not the shape any per-record entry accepts (see
+   *    `CONSENT_RECORD_ID`). The honest sentence is that diagnostics cannot read a
+   *    record with that kind of id, not that the operator should try again.
+   *  - `overCap` — the id was fine and the investigation was already at
+   *    `DIAGNOSTICS_CONSENT_LEDGER_MAX_ENTRIES`. The remedy is a narrower question.
+   */
+  readonly rejectedSelections: { malformedId: number; overCap: number };
 
   readonly #entries: Map<string, DiagnosticsConsentEntry>;
+
+  /**
+   * The ONE question's tool session this ledger serves, once it has served one.
+   * `undefined` until the first invocation binds it; see `bindToLoopSession`.
+   */
+  #boundSession: object | undefined;
 
   constructor(input: CreateDiagnosticsConsentLedgerInput) {
     this.recordConsentGranted = input.recordConsentGranted === true;
     this.peopleSearchGranted = input.peopleSearchGranted === true;
     this.#entries = new Map();
+    this.#boundSession = undefined;
 
-    let rejected = 0;
+    let malformedId = 0;
+    let overCap = 0;
     for (const selection of input.selectedRecords) {
       if (
         !isConsentRecordKind(selection?.kind) ||
         !isConsentRecordId(selection?.id)
       ) {
-        rejected += 1;
+        malformedId += 1;
         continue;
       }
       if (this.#entries.size >= DIAGNOSTICS_CONSENT_LEDGER_MAX_ENTRIES) {
-        rejected += 1;
+        overCap += 1;
         continue;
       }
       const key = ledgerKey(selection.kind, selection.id);
@@ -249,7 +345,40 @@ export class DiagnosticsConsentLedger {
         derivedFrom: null,
       });
     }
-    this.rejectedSelectionCount = rejected;
+    this.rejectedSelections = { malformedId, overCap };
+  }
+
+  /**
+   * Claim this ledger for ONE question's tool session, and refuse a second (rule 4).
+   *
+   * The first caller binds it; every later caller must present the SAME session
+   * object or be refused. Identity comparison rather than an id because the session
+   * has no id to compare and needs none: one question's loop holds exactly one
+   * session object, so "same object" is precisely "same question", and nothing a
+   * caller can name from outside can forge it.
+   *
+   * A LEDGER THAT GRANTS NOTHING IS EXEMPT, and that exemption is safe rather than
+   * convenient: `createEmptyDiagnosticsConsentLedger` has both ticks off and no
+   * entries, absorption requires a source record already in the ledger with origin
+   * `operator_selected`, so an empty ledger can never gain one and can never grant
+   * anything to anybody. Binding it would only make the fail-closed default fail
+   * differently on its second use.
+   */
+  bindToLoopSession(session: object): boolean {
+    if (this.#grantsNothing()) return true;
+    if (this.#boundSession === undefined) {
+      this.#boundSession = session;
+      return true;
+    }
+    return this.#boundSession === session;
+  }
+
+  #grantsNothing(): boolean {
+    return (
+      !this.recordConsentGranted &&
+      !this.peopleSearchGranted &&
+      this.#entries.size === 0
+    );
   }
 
   /** How many records this investigation covers. */
@@ -383,8 +512,20 @@ export const DIAGNOSTICS_TOOL_CONSENT_COPY = {
   /** The personal-details tick. */
   record: {
     label: "Include the personal details of the records I selected",
+    /**
+     * IT NAMES THE PEOPLE, not only the records (#2785 review). The one-hop rule
+     * bounds which RECORDS may be read; it does not bound how many PEOPLE those
+     * records name, and the first version of this sentence described only the first.
+     * Picking one booking really can put a whole household in the answer: the owner
+     * is a directly linked member, that member's family record projects the names of
+     * their partner, parents and dependents, and their booking summary lists every
+     * booking they own or were a guest on. An operator who reads "the records you
+     * selected — and records directly linked to them" would not expect that, and a
+     * checkbox whose label disagrees with the server's behaviour is worse than no
+     * checkbox. So the words say it.
+     */
     description:
-      "Off by default, and only for this question. When you tick this, the assistant may read the personal details of the records you selected — and of records directly linked to them, such as the member who owns a booking you picked. Without it those reads are refused, and the answer says so rather than guessing.",
+      "Off by default, and only for this question. When you tick this, the assistant may read the personal details of the records you selected — and of the records directly linked to them, such as the member who owns a booking you picked. That can name other people: a member's family details include their partner's, parents' and dependents' names, and a member summary lists the bookings they own or were a guest on. Without this tick those reads are refused, and the answer says so rather than guessing.",
     /** What the operator is told when a read was refused for want of this tick. */
     refusedNotice:
       "Personal detail omitted. To see it, select the record it belongs to and tick “Include the personal details of the records I selected”.",
@@ -392,8 +533,16 @@ export const DIAGNOSTICS_TOOL_CONSENT_COPY = {
   /** The people-search tick (owner decision, #2378 Q2, 11 Aug 2026). */
   search: {
     label: "Let the assistant search for people and records",
+    /**
+     * IT SAYS THAT THE LISTS CARRY NAMES (#2785 review). The two ticks are
+     * independent by design and neither implies the other — but that design only
+     * holds up if the operator can see it: leaving the personal-details box unticked
+     * while ticking this one produces member lists with real first and last names,
+     * and the earlier wording ("lists of members, bookings and payments") let a
+     * cautious operator believe the first box had refused exactly that.
+     */
     description:
-      "Off by default, and only for this question. Leave it off and you choose every record yourself; the assistant can then only read the ones you picked and what is directly linked to them. Tick it and the assistant may also run searches that return lists of members, bookings and payments.",
+      "Off by default, and only for this question. Leave it off and you choose every record yourself; the assistant can then only read the ones you picked and what is directly linked to them. Tick it and the assistant may also run searches that return lists of members, bookings and payments — and those lists carry names, so this is a separate way for personal details to reach the answer even with the box above unticked.",
     /** What the operator is told when a search was refused for want of this tick. */
     refusedNotice:
       "The assistant tried to search for records and was refused, because searching was not allowed for this question.",

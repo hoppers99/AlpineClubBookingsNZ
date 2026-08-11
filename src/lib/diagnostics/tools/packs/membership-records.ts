@@ -470,8 +470,8 @@ const memberSummary = defineDiagnosticsTool<MemberIdArgs>({
   // A name, an email address and a member id. ADR-004's per-invocation opt-in
   // applies — DECLARED, not yet implemented (#2378).
   surfacesPersonalData: true,
-  personalDataRecordKind: "member",
-  personalDataRecordArgKey: "memberId",
+  consentRecordKind: "member",
+  consentRecordArgKey: "memberId",
   // The parents this member is a dependent of. `familyGroupRef` and
   // `billingFamilyGroupRef` name family GROUPS, which are not a consent record kind.
   relatedRecordRefs: [
@@ -567,8 +567,8 @@ const memberSubscriptionState = defineDiagnosticsTool<MemberIdArgs>({
   surfacesPersonalData: true,
   // No related ref: subscription rows carry the season, the status and the Xero
   // invoice number, and a Xero invoice is a provider record.
-  personalDataRecordKind: "member",
-  personalDataRecordArgKey: "memberId",
+  consentRecordKind: "member",
+  consentRecordArgKey: "memberId",
 });
 
 // ---------------------------------------------------------------------------
@@ -759,8 +759,8 @@ const memberFamilyState = defineDiagnosticsTool<MemberIdArgs>({
   // Names, member ids and a member-supplied family-group name on every row.
   // ADR-004's per-invocation opt-in applies (DECLARED, not yet implemented, #2378).
   surfacesPersonalData: true,
-  personalDataRecordKind: "member",
-  personalDataRecordArgKey: "memberId",
+  consentRecordKind: "member",
+  consentRecordArgKey: "memberId",
   // Every row IS a family link — a partner, a parent or a dependent of the
   // consented member — and `relatedMemberRef` is that person's member id.
   relatedRecordRefs: [{ field: "relatedMemberRef", kind: "member" }],
@@ -933,8 +933,8 @@ const memberBookingSummary = defineDiagnosticsTool<MemberIdArgs>({
   // is keyed on a member id and every row is a fact about where that person slept.
   // ADR-004's per-invocation opt-in applies (DECLARED, not yet implemented, #2378).
   surfacesPersonalData: true,
-  personalDataRecordKind: "member",
-  personalDataRecordArgKey: "memberId",
+  consentRecordKind: "member",
+  consentRecordArgKey: "memberId",
   // The bookings this member owns or is a guest on.
   relatedRecordRefs: [{ field: "bookingRef", kind: "booking" }],
 });
@@ -1125,6 +1125,21 @@ const memberAuditHistory = defineDiagnosticsTool<MembershipAuditArgs>({
   // audit row's own — the caller's `recordId` is a predicate and is never echoed
   // back into a row.
   surfacesPersonalData: false,
+  // The history of ONE named record, so the investigation must cover it (#2785
+  // review), with the KIND coming from `subject`. Only `member` is a kind the ledger
+  // holds: a family join request, a partner link and a cancellation request are
+  // per-person records an operator cannot select, so they refuse rather than being
+  // readable for any id the model saw in an earlier row.
+  consentRecordArgKey: "recordId",
+  consentRecordKindByArg: {
+    argKey: "subject",
+    kinds: {
+      member: "member",
+      family_request: null,
+      partner_link: null,
+      cancellation_request: null,
+    },
+  },
 });
 
 /** The AID-6B per-member half, in presentation order. */

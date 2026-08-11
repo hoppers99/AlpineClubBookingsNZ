@@ -66,6 +66,7 @@ import { recordDiagnosticsToolAudit } from "./audit";
 import { authorizeDiagnosticsToolCall } from "./authorize";
 import {
   consentedRecordForToolCall,
+  declaresConsentRecord,
   type DiagnosticsConsentEntryOrigin,
   type DiagnosticsConsentLedger,
 } from "./consent";
@@ -82,6 +83,7 @@ import {
   DIAGNOSTICS_TOOL_BOUNDS,
   DIAGNOSTICS_TOOL_FAILURE_MESSAGES,
   DIAGNOSTICS_TOOL_SCHEMA_VERSION,
+  type DiagnosticsConsentRecordKind,
   type DiagnosticsInvocationChannel,
   type DiagnosticsToolAudit,
   type DiagnosticsToolFailure,
@@ -234,6 +236,22 @@ function sensitiveInclusionFor(
   return decision ?? "not_reached";
 }
 
+/**
+ * The invocation channel as a DURABLE row may record it (#2785 review).
+ *
+ * TypeScript admits only the two members at every in-repo call site, and this
+ * function is what makes that true of the audit row as well. `toolId` is sanitised
+ * ten lines below for exactly this reason — "a malformed id is recorded as `unknown`
+ * rather than echoed into a durable row" — and the channel is the same class of
+ * value: it arrives from a caller, and a route that derives it from request-adjacent
+ * data through an `any` would otherwise put free text into a 24-month,
+ * security-category row that `audit.ts` documents as carrying no free text at all.
+ * An unrecognised value narrows to the model channel, which is the gated one.
+ */
+function safeInvocationChannel(value: unknown): DiagnosticsInvocationChannel {
+  return value === "operator_action" ? "operator_action" : "model_tool_use";
+}
+
 function buildAudit(input: {
   toolId: string;
   areasChecked: readonly AdminPermissionArea[];
@@ -249,6 +267,7 @@ function buildAudit(input: {
   invocationChannel: DiagnosticsInvocationChannel;
   consentTool: DiagnosticsToolEntry | null;
   consentDecision: "granted" | "refused" | null;
+  consentRecordKind: DiagnosticsConsentRecordKind | null;
   consentRecordOrigin: DiagnosticsConsentEntryOrigin | null;
   peopleSearchGranted: boolean;
 }): DiagnosticsToolAudit {
@@ -264,12 +283,12 @@ function buildAudit(input: {
     durationMs: input.durationMs,
     roundIndex: input.roundIndex,
     observedAt: input.observedAt,
-    invocationChannel: input.invocationChannel,
+    invocationChannel: safeInvocationChannel(input.invocationChannel),
     sensitiveInclusion: sensitiveInclusionFor(
       input.consentTool,
       input.consentDecision,
     ),
-    consentRecordKind: input.consentTool?.personalDataRecordKind ?? null,
+    consentRecordKind: input.consentRecordKind,
     consentRecordOrigin: input.consentRecordOrigin,
     peopleSearchTick: input.peopleSearchGranted ? "granted" : "withheld",
   };
@@ -453,11 +472,38 @@ export async function invokeDiagnosticsTool(
    */
   let consentTool: DiagnosticsToolEntry | null = null;
   let consentDecision: "granted" | "refused" | null = null;
+  let consentRecordKind: DiagnosticsConsentRecordKind | null = null;
   let consentRecordOrigin: DiagnosticsConsentEntryOrigin | null = null;
-  // Read ONCE, synchronously, for the same reason `roundIndexAtEntry` is: the
-  // catch-all at the bottom must not call back into a caller-supplied object whose
-  // getter could throw and take the audit row with it.
-  const peopleSearchGranted = input.consent.peopleSearchGranted === true;
+
+  /**
+   * The two things this function must learn from the ledger BEFORE any exit can be
+   * taken — read once, synchronously, and INSIDE a try for the same reason
+   * `input.session.stats()` is (#2785 review).
+   *
+   * The earlier version hoisted the tick read out of the try block below and cited
+   * the session guard as its rationale, which inverted it: a caller reaching here
+   * with `consent` undefined — a JS call site, an `any`-typed route handler, a
+   * #2378 wiring step that added the parameter to one path and not another — threw a
+   * TypeError before any `fail(...)` existed, so the function REJECTED and no audit
+   * row was written. That is the one outcome the wrapper exists to prevent. Both
+   * defaults below are the fail-closed ones, so a caller bug costs the invocation and
+   * not the audit trail.
+   *
+   * `bindToLoopSession` is the ledger's own per-question binding: it returns false
+   * when this ledger has already served a DIFFERENT question's session, which is what
+   * makes "a new submission gets a new ledger" a property of the code rather than an
+   * instruction in a docblock.
+   */
+  let peopleSearchGranted = false;
+  let consentIsForThisQuestion = false;
+  try {
+    peopleSearchGranted = input.consent.peopleSearchGranted === true;
+    consentIsForThisQuestion =
+      input.consent.bindToLoopSession(input.session) === true;
+  } catch {
+    // A ledger that cannot answer for itself is a caller bug. Fall through with the
+    // closed defaults and let the guard below refuse; never let it abort the audit.
+  }
 
   const fail = async (
     reason: DiagnosticsToolFailureReason,
@@ -478,6 +524,7 @@ export async function invokeDiagnosticsTool(
       invocationChannel: input.invocationChannel,
       consentTool,
       consentDecision,
+      consentRecordKind,
       consentRecordOrigin,
       peopleSearchGranted,
     });
@@ -508,6 +555,36 @@ export async function invokeDiagnosticsTool(
   // throw would be a bug — but losing the audit trail to an escaping exception
   // would be a worse one. This wrapper is what makes "never throws" true.
   try {
+    // 0. THE LEDGER MUST BELONG TO THIS QUESTION (#2785 review).
+    //
+    //    ADR-004 §1's consent is per submission: a new question, a changed record or
+    //    a changed investigation starts again from nothing. Nothing enforced that
+    //    before — the ledger was a plain object a multi-turn loop could keep across
+    //    turns, which would read a record on consent the operator had since withdrawn
+    //    and record the read as `granted`. The ledger now binds itself to the first
+    //    tool session it serves, and a second session's invocation refuses here.
+    //
+    //    It is a caller bug rather than an operator or model act, so it is
+    //    `internal_error`: no rows, an honest durable row, and a reported fault. Fail
+    //    closed for the WHOLE invocation and not merely for the sensitive part —
+    //    every field of a ledger that belongs to another question is untrustworthy,
+    //    the `peopleSearchTick` this row would record included.
+    if (!consentIsForThisQuestion) {
+      reportAiError({
+        tag: "diagnostics-tool-consent",
+        message:
+          "Refusing a diagnostics tool call: its consent ledger belongs to a different question",
+        err: new Error("Diagnostics consent ledger reused across sessions"),
+        context: { toolId: safeToolId },
+      });
+      return await fail("internal_error", {
+        toolId: safeToolId,
+        areasChecked: [],
+        authOutcome: "denied",
+        roundIndex: roundIndexAtEntry,
+      });
+    }
+
     const tool = validId ? findDiagnosticsTool(requestedId) : undefined;
     if (!tool) {
       // The registry is still gate 1 — a hostile id reaches nothing else — but the
@@ -613,8 +690,18 @@ export async function invokeDiagnosticsTool(
       });
     }
 
-    // 4b. CONSENT — ADR-004 §1's per-invocation inclusion, for the entries that
-    //     surface personal data about one named record.
+    // 4b. CONSENT — ADR-004 §1's per-invocation inclusion, for every entry that is
+    //     ABOUT ONE NAMED RECORD, and for every entry that surfaces personal data.
+    //
+    //     TWO CONDITIONS, NOT ONE, and separating them is what the #2785 review
+    //     bought. The RECORD SCOPE binds every entry that reads about one identified
+    //     subject, whether or not its rows carry a person's details: `payment_summary`
+    //     and `payment_refund_state` are asked about the same payment, and it would be
+    //     incoherent to refuse the first for a payment outside the investigation and
+    //     answer the second. The PERSONAL-DETAILS TICK binds only the entries that
+    //     surface personal fields, because that is what the operator's checkbox says.
+    //     So a booking's audit history is readable for a booking in the investigation
+    //     without the tick, and the owner's name is not.
     //
     //     IT DOES NOT DEPEND ON THE CHANNEL. An `operator_action` invocation of a
     //     per-record entry is gated exactly as a model one is — no caller in this
@@ -625,29 +712,47 @@ export async function invokeDiagnosticsTool(
     //     A SEARCH entry is governed by gate 4a instead and is deliberately not
     //     re-checked here: it is about no single record, so there is no record to
     //     have included, and the operator's search tick IS its inclusion decision.
-    //     Everything else that surfaces personal data must name a record the
-    //     operator's investigation covers — a `null` record (an entry that lost its
-    //     declaration, or arguments that carry no id) is a REFUSAL, not a pass.
-    if (tool.surfacesPersonalData && tool.operatorOnly !== true) {
+    //     Everything else must name a record the operator's investigation covers — a
+    //     `null` record (an entry that lost its declaration, arguments that carry no
+    //     id, or a subject whose kind the ledger cannot hold at all) is a REFUSAL,
+    //     not a pass.
+    if (
+      tool.operatorOnly !== true &&
+      (tool.surfacesPersonalData || declaresConsentRecord(tool))
+    ) {
       const record = consentedRecordForToolCall(tool, binding.args);
       const origin = record
         ? input.consent.originOf(record.kind, record.id)
         : null;
-      if (!input.consent.recordConsentGranted || !record || origin === null) {
-        consentDecision = "refused";
-        return await fail("sensitive_consent_required", {
-          toolId: tool.id,
-          areasChecked: tool.requiredAreas,
-          authOutcome: "allowed",
-          argsHash,
-          roundIndex,
-        });
+      consentRecordKind = record?.kind ?? null;
+      const tickWithheld =
+        tool.surfacesPersonalData && !input.consent.recordConsentGranted;
+      if (!record || origin === null || tickWithheld) {
+        // The reason follows the ENTRY, so the sentence an operator reads is true of
+        // the tool that was refused: only an entry that really does surface personal
+        // details is reported as a personal-details refusal.
+        if (tool.surfacesPersonalData) consentDecision = "refused";
+        return await fail(
+          tool.surfacesPersonalData
+            ? "sensitive_consent_required"
+            : "record_not_included",
+          {
+            toolId: tool.id,
+            areasChecked: tool.requiredAreas,
+            authOutcome: "allowed",
+            argsHash,
+            roundIndex,
+          },
+        );
       }
-      consentDecision = "granted";
+      if (tool.surfacesPersonalData) consentDecision = "granted";
       consentRecordOrigin = origin;
     } else if (tool.surfacesPersonalData) {
-      // An allowed search. The personal data in its rows flows on the operator's
-      // tick, and the durable row says so rather than leaving the field ambiguous.
+      // An ALLOWED SEARCH, reached two ways: the operator ticked people-search, or
+      // the operator ran it themselves through the record picker. Both are the
+      // operator's own inclusion act for the personal data in its rows, and the
+      // durable row records `granted` for either rather than leaving the field
+      // ambiguous — `invocationChannel` and `peopleSearchTick` beside it say which.
       consentDecision = "granted";
     }
 
@@ -808,6 +913,7 @@ export async function invokeDiagnosticsTool(
       invocationChannel: input.invocationChannel,
       consentTool,
       consentDecision,
+      consentRecordKind,
       consentRecordOrigin,
       peopleSearchGranted,
     });

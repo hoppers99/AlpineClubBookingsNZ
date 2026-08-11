@@ -112,19 +112,53 @@ interface DiagnosticsToolSpecBase<TArgs> {
   /** True when a projected field can identify a person (ADR-004 §1 opt-in). */
   surfacesPersonalData: boolean;
   /**
-   * The KIND of record this entry is about, when it is about exactly one (AID-7a,
-   * #2785). With `personalDataRecordArgKey` it is what lets the consent gate ask
-   * "did the operator include THIS record?" rather than "is consent on at all".
+   * The KIND of record this entry is about, when it is about exactly one and the
+   * kind is the same on every invocation (AID-7a, #2785). With
+   * `consentRecordArgKey` it is what lets the consent gate ask "did the operator
+   * include THIS record?" rather than "is consent on at all".
+   *
+   * IT IS NOT ONLY FOR PERSONAL-DATA ENTRIES, and the rename from
+   * `personalDataRecordKind` is the point rather than a tidy-up (#2785 review).
+   * `invoke.ts` gate 4b bounds every entry that reads ONE NAMED RECORD to the
+   * records this investigation covers, whether or not the row it returns carries a
+   * person's details: `booking_audit_history` projects nothing but stable codes and
+   * an instant, and it is still per-record evidence about an identified subject. The
+   * personal-details TICK is what stays specific to `surfacesPersonalData`.
    */
-  personalDataRecordKind?: DiagnosticsConsentRecordKind;
+  consentRecordKind?: DiagnosticsConsentRecordKind;
   /**
    * The ACCEPTED argument key that names that record — `bookingId`, `memberId`,
-   * `paymentId`. It must be a key the entry's own `argsSchema` accepts as a
-   * required exact identifier, because the consent gate reads the value out of the
-   * parsed arguments; a key the schema does not produce means every invocation
+   * `paymentId`, `recordId`. It must be a key the entry's own `argsSchema` accepts
+   * as a required exact identifier, because the consent gate reads the value out of
+   * the parsed arguments; a key the schema does not produce means every invocation
    * refuses.
    */
-  personalDataRecordArgKey?: string;
+  consentRecordArgKey?: string;
+  /**
+   * For an entry whose record KIND IS ITSELF AN ARGUMENT: the argument that selects
+   * it, and the closed map from every value that argument accepts to the consent
+   * kind that value means (#2785 review).
+   *
+   * Three entries need it — `finance_audit_history` and `membership_audit_history`
+   * take `{subject, recordId}`, and `xero_invoice_linkage` takes
+   * `{localModel, localId}` — and a single static `consentRecordKind` cannot express
+   * any of them: declaring one kind would gate every subject as that kind, which
+   * silently refuses the others and, worse, would check the wrong ledger entry.
+   *
+   * THE MAP IS EXHAUSTIVE OVER THE ARGUMENT'S OWN ENUM, and `defineDiagnosticsTool`
+   * throws unless it is. A value the investigation cannot express is declared `null`
+   * — a deliberate, reviewed "no consent kind covers this subject" — and gate 4b
+   * REFUSES it rather than treating an unmapped value as unconstrained. That is the
+   * whole reason the map is a closed declaration rather than a lookup with a
+   * fallback: a new subject added to a schema fails the registry at definition time
+   * until somebody decides which record kind it is.
+   */
+  consentRecordKindByArg?: {
+    /** The accepted argument key that carries the discriminant. */
+    argKey: string;
+    /** Every value that key accepts, mapped to a kind or to `null` (refuse). */
+    kinds: Readonly<Record<string, DiagnosticsConsentRecordKind | null>>;
+  };
   /**
    * The PROJECTED fields of this entry that name a directly linked record (AID-7a,
    * #2785). The consent ledger follows exactly these and nothing else, after a
@@ -136,6 +170,12 @@ interface DiagnosticsToolSpecBase<TArgs> {
    * kind. Only declare a column whose value is the linked record's own primary key —
    * a human-facing reference, a provider reference or a compound label is not one,
    * and would enter the ledger as a record that can never be read.
+   *
+   * IT REQUIRES `surfacesPersonalData` (#2785 review). Absorbing widens the set of
+   * records the personal-data entries may then read, so the entry doing the widening
+   * has to be one that was itself reviewed as a consent surface. An entry that
+   * declared itself non-personal could otherwise seed member ids into the ledger
+   * without any reviewer ever having weighed that as a consent decision.
    */
   relatedRecordRefs?: readonly DiagnosticsRelatedRecordRef[];
   /**
@@ -275,9 +315,13 @@ interface DiagnosticsToolEntryBase {
   rowLimit: number;
   byteLimit: number;
   surfacesPersonalData: boolean;
-  /** See the spec fields: what ADR-004 §1's per-invocation opt-in is about. */
-  personalDataRecordKind?: DiagnosticsConsentRecordKind;
-  personalDataRecordArgKey?: string;
+  /** See the spec fields: which record ADR-004 §1's per-invocation gate is about. */
+  consentRecordKind?: DiagnosticsConsentRecordKind;
+  consentRecordArgKey?: string;
+  consentRecordKindByArg?: {
+    argKey: string;
+    kinds: Readonly<Record<string, DiagnosticsConsentRecordKind | null>>;
+  };
   relatedRecordRefs?: readonly DiagnosticsRelatedRecordRef[];
   /** See the spec field: a record SEARCH, gated on an operator act or their tick. */
   operatorOnly?: boolean;
@@ -412,38 +456,56 @@ function hasReservedArgumentKey(raw: unknown): boolean {
  * quietly stops asking.
  *
  * THE RULE: an entry that surfaces personal data must say WHICH record it is about
- * (kind + accepted argument key), or declare itself a SEARCH (`operatorOnly`).
- * Those are the only two shapes the gates in `invoke.ts` can enforce — one is "did
- * the operator include this record", the other is "did the operator allow searching
- * at all" — and an entry that is neither would have no gate at all.
+ * (a kind + the accepted argument key that names it), or declare itself a SEARCH
+ * (`operatorOnly`). Those are the only two shapes the gates in `invoke.ts` can
+ * enforce — one is "did the operator include this record", the other is "did the
+ * operator allow searching at all" — and an entry that is neither would have no gate
+ * at all.
+ *
+ * THE KIND MAY BE STATIC OR PER-INVOCATION, and exactly one of the two (#2785
+ * review). `consentRecordKind` is the same kind every time; `consentRecordKindByArg`
+ * is for the entries whose subject is chosen by an argument, and it must be
+ * EXHAUSTIVE over that argument's own declared enum so a subject cannot be added to
+ * a schema without a consent decision being made about it. An unmapped value is not
+ * a possibility left open here; it is a boot failure.
  *
  * The remaining clauses close the ways a declaration could be present and useless:
  * a related-record declaration with no record of its own has no source to derive
- * FROM, and an entry that is both a search and a per-record read is a contradiction
- * about which gate governs it.
+ * FROM, a related-record declaration on an entry nobody reviewed as a consent
+ * surface would widen the ledger without that review, and an entry that is both a
+ * search and a per-record read is a contradiction about which gate governs it.
  */
 function assertConsentDeclarationIsComplete<TArgs>(
   spec: DiagnosticsToolSpec<TArgs>,
 ): void {
-  const hasRecord =
-    spec.personalDataRecordKind !== undefined &&
-    spec.personalDataRecordArgKey !== undefined;
+  const hasKind =
+    spec.consentRecordKind !== undefined ||
+    spec.consentRecordKindByArg !== undefined;
+  const hasRecord = hasKind && spec.consentRecordArgKey !== undefined;
   const isSearch = spec.operatorOnly === true;
 
   // The half-declaration is checked FIRST because it is the more specific
   // diagnosis: an author who wrote one of the pair gets told which half is missing,
   // rather than the general "this entry cannot be gated" that is also true of it.
+  if (hasKind !== (spec.consentRecordArgKey !== undefined)) {
+    throw new Error(
+      `Diagnostics tool ${spec.id} declares only half of its consent record: a record kind (consentRecordKind or consentRecordKindByArg) and consentRecordArgKey travel together.`,
+    );
+  }
   if (
-    (spec.personalDataRecordKind === undefined) !==
-    (spec.personalDataRecordArgKey === undefined)
+    spec.consentRecordKind !== undefined &&
+    spec.consentRecordKindByArg !== undefined
   ) {
     throw new Error(
-      `Diagnostics tool ${spec.id} declares only half of its consent record: personalDataRecordKind and personalDataRecordArgKey travel together.`,
+      `Diagnostics tool ${spec.id} declares BOTH a fixed consentRecordKind and a per-argument one. An entry states its record kind exactly one way, or the gate has two answers to choose between.`,
     );
+  }
+  if (spec.consentRecordKindByArg !== undefined) {
+    assertConsentRecordKindMapIsExhaustive(spec);
   }
   if (spec.surfacesPersonalData && !hasRecord && !isSearch) {
     throw new Error(
-      `Diagnostics tool ${spec.id} declares surfacesPersonalData but names neither the record it is about (personalDataRecordKind + personalDataRecordArgKey) nor operatorOnly: true. ADR-004 §1's consent gate cannot be applied to it.`,
+      `Diagnostics tool ${spec.id} declares surfacesPersonalData but names neither the record it is about (a record kind + consentRecordArgKey) nor operatorOnly: true. ADR-004 §1's consent gate cannot be applied to it.`,
     );
   }
   if (isSearch && hasRecord) {
@@ -462,6 +524,54 @@ function assertConsentDeclarationIsComplete<TArgs>(
         `Diagnostics tool ${spec.id} declares an empty relatedRecordRefs. Omit it rather than declaring nothing.`,
       );
     }
+    if (!spec.surfacesPersonalData) {
+      throw new Error(
+        `Diagnostics tool ${spec.id} declares relatedRecordRefs but not surfacesPersonalData. Absorbing widens the records the personal-data entries may read, so only an entry reviewed as a consent surface may do it.`,
+      );
+    }
+  }
+}
+
+/**
+ * The per-argument kind map must cover the argument's OWN declared enum, exactly
+ * (#2785 review).
+ *
+ * It reads `inputSchema` rather than the Zod schema because `inputSchema` is the
+ * hand-written JSON Schema this repository already requires to be reviewable in the
+ * diff, and it is the same object the provider is handed — so "the model can send
+ * this value" and "this value is mapped" are checked against one list rather than
+ * two that can drift. A discriminant with no closed enum is refused outright: an
+ * open-ended kind selector cannot be mapped exhaustively, so it cannot be gated.
+ */
+function assertConsentRecordKindMapIsExhaustive<TArgs>(
+  spec: DiagnosticsToolSpec<TArgs>,
+): void {
+  const declaration = spec.consentRecordKindByArg;
+  if (!declaration) return;
+  const property: unknown = spec.inputSchema.properties[declaration.argKey];
+  const values =
+    typeof property === "object" &&
+    property !== null &&
+    "enum" in property &&
+    Array.isArray((property as { enum: unknown }).enum)
+      ? ((property as { enum: unknown[] }).enum.filter(
+          (value): value is string => typeof value === "string",
+        ) as string[])
+      : null;
+  if (!values || values.length === 0) {
+    throw new Error(
+      `Diagnostics tool ${spec.id} declares consentRecordKindByArg on "${declaration.argKey}", but that argument's inputSchema declares no closed string enum. A kind selector that is not a closed list cannot be mapped exhaustively.`,
+    );
+  }
+  const mapped = Object.keys(declaration.kinds);
+  const missing = values.filter((value) => !mapped.includes(value));
+  const extra = mapped.filter((value) => !values.includes(value));
+  if (missing.length > 0 || extra.length > 0) {
+    throw new Error(
+      `Diagnostics tool ${spec.id} declares a consentRecordKindByArg map that does not match the accepted values of "${declaration.argKey}"${
+        missing.length > 0 ? `; unmapped: ${missing.join(", ")}` : ""
+      }${extra.length > 0 ? `; mapped but not accepted: ${extra.join(", ")}` : ""}. Every value the schema accepts needs a decided kind, or an explicit null.`,
+    );
   }
 }
 
@@ -487,8 +597,9 @@ export function defineDiagnosticsTool<TArgs>(
     rowLimit: spec.rowLimit,
     byteLimit: spec.byteLimit,
     surfacesPersonalData: spec.surfacesPersonalData,
-    personalDataRecordKind: spec.personalDataRecordKind,
-    personalDataRecordArgKey: spec.personalDataRecordArgKey,
+    consentRecordKind: spec.consentRecordKind,
+    consentRecordArgKey: spec.consentRecordArgKey,
+    consentRecordKindByArg: spec.consentRecordKindByArg,
     relatedRecordRefs: spec.relatedRecordRefs,
     operatorOnly: spec.operatorOnly,
     lowEntropyArgKeys: spec.lowEntropyArgKeys,

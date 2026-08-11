@@ -32,7 +32,10 @@
 import type { AdminPermissionMatrix } from "@/lib/admin-permissions";
 
 import { hasAllAreaViews } from "../page-context/authorize";
-import type { DiagnosticsConsentLedger } from "./consent";
+import {
+  declaresConsentRecord,
+  type DiagnosticsConsentLedger,
+} from "./consent";
 import type { DiagnosticsToolEntry, DiagnosticsToolInputSchema } from "./define";
 import { DIAGNOSTICS_TOOLS } from "./registry";
 
@@ -49,9 +52,9 @@ export interface DiagnosticsToolProviderDefinition {
  * STILL COURTESY, STILL NOT SECURITY, and the consent additions do not change that:
  * `invoke.ts` gates 3, 4a and 4b run on every invocation whether the definition was
  * offered or not. What this buys is that the model is not shown a search tool on a
- * request where searching is off, or twenty per-record tools on a request that
- * included no records — so it does not spend the round proposing refusals and then
- * narrating them.
+ * request where searching is off, or a per-record tool on a request whose
+ * investigation holds no record for it to be about — so it does not spend the round
+ * proposing refusals and then narrating them.
  */
 function isOfferable(
   tool: DiagnosticsToolEntry,
@@ -60,6 +63,18 @@ function isOfferable(
 ): boolean {
   if (!hasAllAreaViews(matrix, tool.requiredAreas)) return false;
   if (tool.operatorOnly === true) return consent.peopleSearchGranted;
+  // AN EMPTY INVESTIGATION OFFERS NO PER-RECORD ENTRY, whatever the tick says
+  // (#2785 review). Search results are never absorbed into the ledger — rule 1 is
+  // that the operator chooses the subjects, not the model — so on a request with
+  // both boxes ticked and NO record selected, every per-record entry is guaranteed
+  // to refuse the ids a search just returned. Offering them anyway spent the round
+  // proposing refusals and then narrating them, which is the exact failure this
+  // filter exists to avoid. `size` counts operator selections and anything derived
+  // from them, so the moment the investigation has a record they are offered again.
+  if (declaresConsentRecord(tool)) {
+    if (consent.size === 0) return false;
+    return tool.surfacesPersonalData ? consent.recordConsentGranted : true;
+  }
   if (tool.surfacesPersonalData) return consent.recordConsentGranted;
   return true;
 }

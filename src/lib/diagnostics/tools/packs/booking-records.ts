@@ -636,8 +636,8 @@ const bookingSummary = defineDiagnosticsTool<BookingIdArgs>({
   // named by its `bookingId` argument. The owner is projected as a real member id
   // and the parent booking as a real booking id, so an investigation the operator
   // opened on this booking may follow both.
-  personalDataRecordKind: "booking",
-  personalDataRecordArgKey: "bookingId",
+  consentRecordKind: "booking",
+  consentRecordArgKey: "bookingId",
   relatedRecordRefs: [
     { field: "ownerMemberRef", kind: "member" },
     { field: "parentBookingRef", kind: "booking" },
@@ -698,8 +698,8 @@ const bookingLinkedState = defineDiagnosticsTool<BookingIdArgs>({
   surfacesPersonalData: true,
   // Every row IS a directly linked booking — `relationType` says how — so the
   // linked booking's own id is the one related ref here.
-  personalDataRecordKind: "booking",
-  personalDataRecordArgKey: "bookingId",
+  consentRecordKind: "booking",
+  consentRecordArgKey: "bookingId",
   relatedRecordRefs: [{ field: "bookingRef", kind: "booking" }],
 });
 
@@ -949,8 +949,8 @@ const bookingPartyState = defineDiagnosticsTool<BookingIdArgs>({
   // The party of the consented booking: `guestMemberRef` is the member id of a
   // guest who is a member (null for a non-member guest, which the ledger drops).
   // `guestRef` is the BookingGuest row's own id and is NOT a consent record kind.
-  personalDataRecordKind: "booking",
-  personalDataRecordArgKey: "bookingId",
+  consentRecordKind: "booking",
+  consentRecordArgKey: "bookingId",
   relatedRecordRefs: [{ field: "guestMemberRef", kind: "member" }],
 });
 
@@ -1140,8 +1140,8 @@ const bookingBedAllocationState = defineDiagnosticsTool<BookingIdArgs>({
   surfacesPersonalData: true,
   // No related ref: the only identifier projected is `guestRef`, the BookingGuest
   // row's own id, which is not a record kind consent is expressed in.
-  personalDataRecordKind: "booking",
-  personalDataRecordArgKey: "bookingId",
+  consentRecordKind: "booking",
+  consentRecordArgKey: "bookingId",
 });
 
 // ---------------------------------------------------------------------------
@@ -1294,8 +1294,8 @@ const bookingExceptionRequestState = defineDiagnosticsTool<BookingIdArgs>({
   // ADR-004's per-invocation opt-in is DECLARED by this flag and is not yet
   // implemented (prerequisite on #2378), so it is not a control.
   surfacesPersonalData: true,
-  personalDataRecordKind: "booking",
-  personalDataRecordArgKey: "bookingId",
+  consentRecordKind: "booking",
+  consentRecordArgKey: "bookingId",
   // The member who asked for the exception. `requestRef`, `supersededByRequestRef`
   // and `linkedModificationRef` name request/modification rows, not consent kinds.
   relatedRecordRefs: [{ field: "requestedByMemberRef", kind: "member" }],
@@ -1396,6 +1396,13 @@ const bookingRecordAuditHistory = defineDiagnosticsTool<BookingIdArgs>({
   // Stable codes and an instant. No person, no free text, no identifier beyond
   // the audit row's own — the caller's booking id is a predicate, not a column.
   surfacesPersonalData: false,
+  // Still the history of ONE named booking, so the investigation has to cover that
+  // booking (#2785 review). Codes and instants are not personal fields, but "what
+  // happened to this booking and when" is per-record evidence about an identified
+  // subject, and the operator's inclusion decision is what bounds which subjects the
+  // model may ask about.
+  consentRecordKind: "booking",
+  consentRecordArgKey: "bookingId",
 });
 
 /** The AID-6B per-booking half, in presentation order. */

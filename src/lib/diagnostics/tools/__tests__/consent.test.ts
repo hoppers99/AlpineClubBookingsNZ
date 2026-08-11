@@ -15,6 +15,7 @@ import {
   consentedRecordForToolCall,
   createDiagnosticsConsentLedger,
   createEmptyDiagnosticsConsentLedger,
+  declaresConsentRecord,
   type DiagnosticsConsentToolDeclaration,
 } from "../consent";
 import { RECORD_ID } from "../packs/finance-shared";
@@ -27,8 +28,8 @@ const PAYMENT_P = "ckpayment0000000000000001";
 
 /** `booking_block_state`'s real declaration shape. */
 const BLOCK_STATE: DiagnosticsConsentToolDeclaration = {
-  personalDataRecordKind: "booking",
-  personalDataRecordArgKey: "bookingId",
+  consentRecordKind: "booking",
+  consentRecordArgKey: "bookingId",
   relatedRecordRefs: [{ field: "ownerMemberRef", kind: "member" }],
 };
 
@@ -93,7 +94,7 @@ describe("consent ledger — seeding (#2785)", () => {
       ],
     });
     expect(ledger.size).toBe(1);
-    expect(ledger.rejectedSelectionCount).toBe(5);
+    expect(ledger.rejectedSelections).toEqual({ malformedId: 5, overCap: 0 });
     expect(ledger.has("member", MEMBER_M)).toBe(false);
   });
 
@@ -107,7 +108,7 @@ describe("consent ledger — seeding (#2785)", () => {
       ],
     });
     expect(ledger.size).toBe(1);
-    expect(ledger.rejectedSelectionCount).toBe(0);
+    expect(ledger.rejectedSelections).toEqual({ malformedId: 0, overCap: 0 });
   });
 
   it("keeps the two ticks independent — neither implies the other", () => {
@@ -154,9 +155,30 @@ describe("consent ledger — seeding (#2785)", () => {
       selectedRecords: many,
     });
     expect(ledger.size).toBe(DIAGNOSTICS_CONSENT_LEDGER_MAX_ENTRIES);
-    expect(ledger.rejectedSelectionCount).toBe(5);
+    // COUNTED AS A CAP OVERFLOW, not as a malformed id (#2785 review). One counter
+    // for both causes told an operator to re-check ids that were perfectly valid,
+    // when what actually happened is that the investigation is at its bound.
+    expect(ledger.rejectedSelections).toEqual({ malformedId: 0, overCap: 5 });
     // The first selection survived: nothing the operator chose was evicted.
     expect(ledger.has("member", many[0].id)).toBe(true);
+  });
+
+  it("keeps the two rejection causes apart when both happen at once", () => {
+    const ledger = createDiagnosticsConsentLedger({
+      recordConsentGranted: true,
+      peopleSearchGranted: false,
+      selectedRecords: [
+        { kind: "booking", id: "NOT-AN-ID" },
+        ...Array.from(
+          { length: DIAGNOSTICS_CONSENT_LEDGER_MAX_ENTRIES + 2 },
+          (_unused, index) => ({
+            kind: "member" as const,
+            id: `ckmember${String(index).padStart(16, "0")}`,
+          }),
+        ),
+      ],
+    });
+    expect(ledger.rejectedSelections).toEqual({ malformedId: 1, overCap: 2 });
   });
 
   it("hands out copies, so a caller cannot edit the ledger through its own entries", () => {
@@ -185,7 +207,7 @@ describe("consent ledger — the record one call is about (#2785)", () => {
     expect(consentedRecordForToolCall({}, { bookingId: BOOKING_A })).toBeNull();
     expect(
       consentedRecordForToolCall(
-        { personalDataRecordKind: "booking" },
+        { consentRecordKind: "booking" },
         { bookingId: BOOKING_A },
       ),
     ).toBeNull();
@@ -215,6 +237,129 @@ describe("consent ledger — the record one call is about (#2785)", () => {
     });
     expect(consentedRecordForToolCall(BLOCK_STATE, args)).toBeNull();
     expect(invoked).toBe(0);
+  });
+});
+
+describe("consent ledger — an entry whose record KIND is an argument (#2785)", () => {
+  /** `finance_audit_history`'s real declaration shape. */
+  const AUDIT_HISTORY: DiagnosticsConsentToolDeclaration = {
+    consentRecordArgKey: "recordId",
+    consentRecordKindByArg: {
+      argKey: "subject",
+      kinds: {
+        payment: "payment",
+        booking: "booking",
+        manual_refund_task: null,
+        membership_subscription: null,
+      },
+    },
+  };
+
+  it("resolves the kind the subject names, per invocation", () => {
+    expect(
+      consentedRecordForToolCall(AUDIT_HISTORY, {
+        subject: "payment",
+        recordId: PAYMENT_P,
+      }),
+    ).toEqual({ kind: "payment", id: PAYMENT_P });
+    expect(
+      consentedRecordForToolCall(AUDIT_HISTORY, {
+        subject: "booking",
+        recordId: BOOKING_A,
+      }),
+    ).toEqual({ kind: "booking", id: BOOKING_A });
+  });
+
+  it("REFUSES a subject the investigation cannot express, rather than passing it", () => {
+    // The whole point of the explicit `null`s. A manual refund task is a real record
+    // and an operator cannot select one, so there is no inclusion decision that could
+    // cover it — and a refusal is the only honest answer. Before the kind could vary
+    // per call, these entries were outside the gate entirely and ran for any id the
+    // model could name.
+    expect(
+      consentedRecordForToolCall(AUDIT_HISTORY, {
+        subject: "manual_refund_task",
+        recordId: PAYMENT_P,
+      }),
+    ).toBeNull();
+    expect(
+      consentedRecordForToolCall(AUDIT_HISTORY, {
+        subject: "membership_subscription",
+        recordId: PAYMENT_P,
+      }),
+    ).toBeNull();
+  });
+
+  it("refuses a subject that is unmapped, non-string, or reached through a prototype", () => {
+    expect(
+      consentedRecordForToolCall(AUDIT_HISTORY, {
+        subject: "invented",
+        recordId: PAYMENT_P,
+      }),
+    ).toBeNull();
+    expect(
+      consentedRecordForToolCall(AUDIT_HISTORY, { subject: 1, recordId: PAYMENT_P }),
+    ).toBeNull();
+    // `toString` is an inherited key of the map object. An own-property lookup is what
+    // stops it resolving to something that is not a kind at all.
+    expect(
+      consentedRecordForToolCall(AUDIT_HISTORY, {
+        subject: "toString",
+        recordId: PAYMENT_P,
+      }),
+    ).toBeNull();
+  });
+
+  it("knows which declarations gate 4b governs", () => {
+    expect(declaresConsentRecord(AUDIT_HISTORY)).toBe(true);
+    expect(declaresConsentRecord(BLOCK_STATE)).toBe(true);
+    expect(declaresConsentRecord({})).toBe(false);
+    // Half a declaration is not a declaration: `defineDiagnosticsTool` throws on it,
+    // and if one ever reached here it must not be treated as gated-and-satisfied.
+    expect(declaresConsentRecord({ consentRecordArgKey: "recordId" })).toBe(false);
+  });
+});
+
+describe("consent ledger — one ledger, one question (#2785 rule 4)", () => {
+  const sessionA = { id: "session-a" };
+  const sessionB = { id: "session-b" };
+
+  it("binds to the first session it serves and accepts that one again", () => {
+    const ledger = seeded();
+    expect(ledger.bindToLoopSession(sessionA)).toBe(true);
+    expect(ledger.bindToLoopSession(sessionA)).toBe(true);
+  });
+
+  it("REFUSES a second question's session, so consent cannot survive a new submission", () => {
+    // The failure this closes: AID-7's multi-turn loop builds the ledger once when the
+    // conversation opens; on turn two the operator clears the tick and changes the
+    // record, and the ledger still holds turn one's records and turn one's ticks.
+    // "Per request" was a description of intent, and is now the only behaviour
+    // available.
+    const ledger = seeded();
+    expect(ledger.bindToLoopSession(sessionA)).toBe(true);
+    expect(ledger.bindToLoopSession(sessionB)).toBe(false);
+    // And it stays refused — a stale ledger does not re-bind by being asked twice.
+    expect(ledger.bindToLoopSession(sessionB)).toBe(false);
+  });
+
+  it("exempts a ledger that grants nothing, because it can never grant anything", () => {
+    // The fail-closed default has both ticks off and no entries, and absorption needs
+    // an operator-selected source record it can never have — so it has nothing to leak
+    // between questions, and binding it would only make the default fail differently.
+    const empty = createEmptyDiagnosticsConsentLedger();
+    expect(empty.bindToLoopSession(sessionA)).toBe(true);
+    expect(empty.bindToLoopSession(sessionB)).toBe(true);
+  });
+
+  it("does NOT exempt a ledger that grants only the search tick", () => {
+    const searchOnly = createDiagnosticsConsentLedger({
+      recordConsentGranted: false,
+      peopleSearchGranted: true,
+      selectedRecords: [],
+    });
+    expect(searchOnly.bindToLoopSession(sessionA)).toBe(true);
+    expect(searchOnly.bindToLoopSession(sessionB)).toBe(false);
   });
 });
 
@@ -276,8 +421,8 @@ describe("consent ledger — absorbing related records (#2785)", () => {
     expect(ledger.originOf("member", MEMBER_M)).toBe("derived");
 
     const familyState: DiagnosticsConsentToolDeclaration = {
-      personalDataRecordKind: "member",
-      personalDataRecordArgKey: "memberId",
+      consentRecordKind: "member",
+      consentRecordArgKey: "memberId",
       relatedRecordRefs: [{ field: "relatedMemberRef", kind: "member" }],
     };
     const outcome = ledger.absorbRelatedRecordRefs({
@@ -311,8 +456,8 @@ describe("consent ledger — absorbing related records (#2785)", () => {
     const ledger = seeded();
     const outcome = ledger.absorbRelatedRecordRefs({
       tool: {
-        personalDataRecordKind: "booking",
-        personalDataRecordArgKey: "bookingId",
+        consentRecordKind: "booking",
+        consentRecordArgKey: "bookingId",
       },
       acceptedArgs: { bookingId: BOOKING_A },
       rows: [{ ownerMemberRef: MEMBER_M }],
@@ -323,8 +468,8 @@ describe("consent ledger — absorbing related records (#2785)", () => {
 
   it("absorbs every declared ref across every row, once each", () => {
     const partyTool: DiagnosticsConsentToolDeclaration = {
-      personalDataRecordKind: "booking",
-      personalDataRecordArgKey: "bookingId",
+      consentRecordKind: "booking",
+      consentRecordArgKey: "bookingId",
       relatedRecordRefs: [{ field: "guestMemberRef", kind: "member" }],
     };
     const ledger = seeded();
@@ -441,5 +586,26 @@ describe("consent ledger — contracts with the rest of the substrate (#2785)", 
     for (const copy of [record.label, record.description, search.label, search.description]) {
       expect(copy.length).toBeGreaterThan(20);
     }
+  });
+
+  it("tells the operator that one record can name other people (#2785 review)", () => {
+    // The one-hop rule bounds the RECORDS, not the PEOPLE. Reading a directly linked
+    // member's family record names their partner, parents and dependents, and their
+    // member summary lists every booking they own or were a guest on — so an operator
+    // who ticks this after selecting one booking has to be told that before they tick
+    // it, not after they read the answer.
+    const record = DIAGNOSTICS_TOOL_CONSENT_COPY.record;
+    expect(record.description).toContain("other people");
+    expect(record.description).toContain("family");
+    expect(record.description).toContain("dependents");
+  });
+
+  it("tells the operator that search results carry NAMES (#2785 review)", () => {
+    // The two ticks are independent by design, which means ticking search alone ships
+    // members' first and last names to the provider with the personal-details box
+    // still unticked. The design is fine; a control that does not say so is not.
+    const search = DIAGNOSTICS_TOOL_CONSENT_COPY.search;
+    expect(search.description).toContain("names");
+    expect(search.description.toLowerCase()).toContain("unticked");
   });
 });

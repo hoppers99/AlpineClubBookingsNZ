@@ -25,7 +25,10 @@ vi.mock("../../page-context/authorize", async (importOriginal) => {
 
 import { readFreshAdminPermissionMatrix } from "../../page-context/authorize";
 import { authorizeDiagnosticsToolCall } from "../authorize";
-import { createDiagnosticsConsentLedger } from "../consent";
+import {
+  createDiagnosticsConsentLedger,
+  declaresConsentRecord,
+} from "../consent";
 import {
   DIAGNOSTICS_NO_TOOLS_AVAILABLE_NOTICE,
   listDiagnosticsToolDefinitions,
@@ -33,18 +36,22 @@ import {
 } from "../definitions";
 import { DIAGNOSTICS_SUBSTRATE_PROBE_TOOL_ID, DIAGNOSTICS_TOOLS } from "../registry";
 
+/** A record id of the shape the ledger holds, for the investigations below. */
+const SELECTED_BOOKING = "ckbooking0000000000000001";
+
 /**
- * A ledger with BOTH per-request ticks on and no records selected (AID-7a, #2785).
+ * A ledger with BOTH per-request ticks on and ONE record selected (AID-7a, #2785).
  *
  * The permission assertions in this file are about the area filter, so they are run
  * with consent out of the way; the consent filter has its own describe block below.
- * The ticks are what the courtesy filter reads — record MEMBERSHIP is enforced by
- * `invoke.ts` gate 4b, not here.
+ * The selection is part of "out of the way" since the #2785 review: an investigation
+ * holding NO record offers no per-record entry at all, because every one of them
+ * would refuse.
  */
 const CONSENTED = createDiagnosticsConsentLedger({
   recordConsentGranted: true,
   peopleSearchGranted: true,
-  selectedRecords: [],
+  selectedRecords: [{ kind: "booking", id: SELECTED_BOOKING }],
 });
 
 function matrix(
@@ -247,18 +254,29 @@ describe("consent also decides what is worth OFFERING (#2785)", () => {
   const PERSONAL_DATA_TOOL_IDS = DIAGNOSTICS_TOOLS.filter(
     (tool) => tool.surfacesPersonalData && tool.operatorOnly !== true,
   ).map((tool) => tool.id);
+  /** Every entry gate 4b's RECORD SCOPE governs, personal-data ones included. */
+  const PER_RECORD_TOOL_IDS = DIAGNOSTICS_TOOLS.filter((tool) =>
+    declaresConsentRecord(tool),
+  ).map((tool) => tool.id);
+  const NON_PERSONAL_PER_RECORD_TOOL_IDS = DIAGNOSTICS_TOOLS.filter(
+    (tool) => declaresConsentRecord(tool) && !tool.surfacesPersonalData,
+  ).map((tool) => tool.id);
 
   function ledger(recordConsentGranted: boolean, peopleSearchGranted: boolean) {
     return createDiagnosticsConsentLedger({
       recordConsentGranted,
       peopleSearchGranted,
-      selectedRecords: [],
+      selectedRecords: [{ kind: "booking", id: SELECTED_BOOKING }],
     });
   }
 
-  it("has both populations to check, so nothing below is vacuous", () => {
+  it("has every population to check, so nothing below is vacuous", () => {
     expect(SEARCH_TOOL_IDS.length).toBe(4);
     expect(PERSONAL_DATA_TOOL_IDS.length).toBeGreaterThan(10);
+    expect(PER_RECORD_TOOL_IDS.length).toBeGreaterThan(
+      PERSONAL_DATA_TOOL_IDS.length,
+    );
+    expect(NON_PERSONAL_PER_RECORD_TOOL_IDS.length).toBe(5);
   });
 
   it("withholds the SEARCH tools until the operator ticks people-search", () => {
@@ -286,6 +304,51 @@ describe("consent also decides what is worth OFFERING (#2785)", () => {
       (definition) => definition.name,
     );
     for (const id of PERSONAL_DATA_TOOL_IDS) expect(on, id).toContain(id);
+  });
+
+  it("offers NO per-record tool while the investigation holds no record (#2785 review)", () => {
+    // Both boxes ticked, nothing selected — the shape of "why did Jane Smith's
+    // subscription lapse?" with no record picked. Search results are never absorbed
+    // into the ledger (the operator chooses the subjects, not the model), so every
+    // per-record entry offered here is one the model would spend a call on and be
+    // refused for, mid-loop, on the ids the search just returned. The searches stay
+    // on offer; the per-record reads arrive the moment the investigation has a record.
+    const empty = createDiagnosticsConsentLedger({
+      recordConsentGranted: true,
+      peopleSearchGranted: true,
+      selectedRecords: [],
+    });
+    const offered = listDiagnosticsToolDefinitions(ALL_AREAS, empty).map(
+      (definition) => definition.name,
+    );
+    for (const id of PER_RECORD_TOOL_IDS) expect(offered, id).not.toContain(id);
+    for (const id of SEARCH_TOOL_IDS) expect(offered, id).toContain(id);
+    expect(offered).toContain(DIAGNOSTICS_SUBSTRATE_PROBE_TOOL_ID);
+
+    // Non-vacuity: one selected record and the same ticks, and they are all back.
+    const withRecord = listDiagnosticsToolDefinitions(ALL_AREAS, ledger(true, true)).map(
+      (definition) => definition.name,
+    );
+    for (const id of PER_RECORD_TOOL_IDS) expect(withRecord, id).toContain(id);
+  });
+
+  it("offers a per-record entry that surfaces no personal data without the tick (#2785 review)", () => {
+    // The record scope and the personal-details tick are different conditions. A
+    // booking's audit history is codes and instants, so it needs the record in the
+    // investigation and not the tick — and the entries that DO surface personal
+    // details still need both.
+    const untickedButSelected = createDiagnosticsConsentLedger({
+      recordConsentGranted: false,
+      peopleSearchGranted: false,
+      selectedRecords: [{ kind: "booking", id: SELECTED_BOOKING }],
+    });
+    const offered = listDiagnosticsToolDefinitions(ALL_AREAS, untickedButSelected).map(
+      (definition) => definition.name,
+    );
+    for (const id of NON_PERSONAL_PER_RECORD_TOOL_IDS) {
+      expect(offered, id).toContain(id);
+    }
+    for (const id of PERSONAL_DATA_TOOL_IDS) expect(offered, id).not.toContain(id);
   });
 
   it("reports the consent-withheld ids as withheld", () => {
