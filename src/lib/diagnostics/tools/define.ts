@@ -49,6 +49,11 @@ import { z } from "zod";
 import type { AdminPermissionArea } from "@/lib/admin-permissions";
 
 import {
+  READ_ONLY_SEAM_EXEMPTION_IDS,
+  isReadOnlySeamExemptionId,
+  type DiagnosticsReadOnlySeamDeclaration,
+} from "./read-only-seam-exemptions";
+import {
   DIAGNOSTICS_ARGS_HASH_REDACTED,
   DIAGNOSTICS_TOOL_BOUNDS,
   DIAGNOSTICS_TOOL_ID_PATTERN,
@@ -297,6 +302,20 @@ export interface DiagnosticsServerOwnedToolSpec<TArgs>
    * that claims something it could not establish.
    */
   readEvidence: (args: TArgs) => Promise<readonly DiagnosticsToolRawRow[]>;
+  /**
+   * HOW THIS ENTRY STANDS WITH THE READ-ONLY SEAM (#2786). Required, because the
+   * whole point is that an author cannot decline to answer.
+   *
+   * A `select_only_sql` entry is read-only because PostgreSQL refuses it anything
+   * else. A `server_owned` entry runs on the application's own full-privilege
+   * connection, so it is read-only only if it reads inside
+   * `withBoundedReadOnlyTransaction` — or if what it reads through is a declared
+   * exemption. TypeScript refuses to compile a new `server_owned` entry that says
+   * neither, and `assertReadOnlySeamDeclarationIsComplete` refuses at definition time
+   * to register one whose declaration is unsatisfiable. Between them, "somebody
+   * forgot" stops being a way this guarantee can be lost.
+   */
+  readOnlySeam: DiagnosticsReadOnlySeamDeclaration;
 }
 
 export type DiagnosticsToolSpec<TArgs> =
@@ -390,6 +409,12 @@ export interface DiagnosticsSelectOnlyToolEntry extends DiagnosticsToolEntryBase
 export interface DiagnosticsServerOwnedToolEntry
   extends DiagnosticsToolEntryBase {
   source: "server_owned";
+  /**
+   * Carried onto the entry, not left behind on the spec, so the registry contract
+   * tests can assert the property across EVERY registered entry rather than across
+   * the specs a test file happens to import.
+   */
+  readOnlySeam: DiagnosticsReadOnlySeamDeclaration;
 }
 
 export type DiagnosticsToolEntry =
@@ -556,6 +581,77 @@ function assertConsentDeclarationIsComplete<TArgs>(
         `Diagnostics tool ${spec.id} declares relatedRecordRefs but not surfacesPersonalData. Absorbing widens the records the personal-data entries may read, so only an entry reviewed as a consent surface may do it.`,
       );
     }
+  }
+}
+
+/**
+ * THE DEFINITION-TIME INVARIANT for the read-only seam (AID-7b, #2786).
+ *
+ * It throws at module-body time for the same reason the consent assert does: a
+ * `server_owned` entry that reaches the database outside the seam is running on the
+ * application's full-privilege connection with nothing but authorship standing
+ * between it and a write, and a diagnostics feature that refuses to boot is a far
+ * better outcome than one that quietly stops being read-only.
+ *
+ * THE RULE: an entry either threads its own reads through the seam, or names the
+ * declared exemptions it reads through, or both. What is refused is the entry that
+ * says NEITHER — because that entry reaches the database in some third way, and the
+ * third way is precisely what nobody has reviewed.
+ *
+ * WHY THE ID CHECK MATTERS AS MUCH AS THE PRESENCE CHECK. A declaration naming
+ * `"legacy-thing"` would otherwise satisfy the rule while pointing at nothing: the
+ * table would stop being a closed world the moment a typo or a deleted row made an
+ * id stale, and it would fail SILENTLY, which is the failure mode this whole
+ * mechanism exists to remove. So an unknown id is a boot failure that names the ids
+ * that do exist.
+ *
+ * TYPES ARE THE FIRST GATE AND THIS IS THE SECOND. `readOnlySeam` is a required
+ * field, so a new entry cannot COMPILE without an answer; this assert is what makes
+ * the answer have to be a true one at runtime, including for the JavaScript callers
+ * and dynamic registrations TypeScript never sees.
+ *
+ * THE THIRD GATE IS A SOURCE CENSUS, AND IT IS NOT OPTIONAL — say so plainly,
+ * because of what this assert CANNOT do (#2786 review). It can check that an
+ * exemption id exists, is not repeated, and is not an empty list; the exemption arm
+ * is therefore genuinely closed, and each row names a module and symbol a test then
+ * reads. It cannot check `threadsOwnReads` at all. That flag is an assertion by an
+ * author about code this function never sees, and it is the arm most entries carry.
+ * What can falsify it is the tree-wide census in
+ * `__tests__/read-only-transaction.test.ts`, which strips comments from every module
+ * in `packs/` and fails if any of them names `prisma`. Remove that census and
+ * `threadsOwnReads: true` becomes an unverified claim.
+ */
+function assertReadOnlySeamDeclarationIsComplete<TArgs>(
+  spec: DiagnosticsToolSpec<TArgs>,
+): void {
+  if (spec.source !== "server_owned") return;
+  const declaration = spec.readOnlySeam;
+  const exemptions = declaration.exemptions;
+
+  if (exemptions !== undefined && exemptions.length === 0) {
+    throw new Error(
+      `Diagnostics tool ${spec.id} declares an empty readOnlySeam.exemptions. Omit it rather than declaring nothing, so "relies on no exemption" and "declared an empty list" cannot be read as the same statement.`,
+    );
+  }
+  if (!declaration.threadsOwnReads && exemptions === undefined) {
+    throw new Error(
+      `Diagnostics tool ${spec.id} declares readOnlySeam.threadsOwnReads: false and names no exemption, so it claims to reach its evidence in some way neither the seam nor the exemption table covers. Thread its reads through withBoundedReadOnlyTransaction, or declare the exemption it relies on.`,
+    );
+  }
+  for (const id of exemptions ?? []) {
+    if (!isReadOnlySeamExemptionId(id)) {
+      throw new Error(
+        `Diagnostics tool ${spec.id} names readOnlySeam exemption "${id}", which is not in READ_ONLY_SEAM_EXEMPTIONS. Declared exemptions are: ${READ_ONLY_SEAM_EXEMPTION_IDS.join(", ")}. Add a reviewed row with its reason, or thread the read through the seam.`,
+      );
+    }
+  }
+  const duplicates = (exemptions ?? []).filter(
+    (id, index) => (exemptions ?? []).indexOf(id) !== index,
+  );
+  if (duplicates.length > 0) {
+    throw new Error(
+      `Diagnostics tool ${spec.id} names readOnlySeam exemption "${duplicates[0]}" more than once. Each reliance is stated once.`,
+    );
   }
 }
 
@@ -732,6 +828,7 @@ export function defineDiagnosticsTool<TArgs>(
   spec: DiagnosticsToolSpec<TArgs>,
 ): DiagnosticsToolEntry {
   assertConsentDeclarationIsComplete(spec);
+  assertReadOnlySeamDeclarationIsComplete(spec);
 
   const shared = {
     id: spec.id,
@@ -782,6 +879,7 @@ export function defineDiagnosticsTool<TArgs>(
   return {
     ...shared,
     source: "server_owned",
+    readOnlySeam: spec.readOnlySeam,
     parseArgs: (raw) => {
       const accepted = accept(raw);
       if (!accepted.ok) return { ok: false };

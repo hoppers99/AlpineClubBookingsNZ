@@ -95,6 +95,12 @@ export const DIAGNOSTICS_BACKGROUND_JOB_HEALTH_TOOL_ID =
 const readinessTool = defineDiagnosticsTool({
   id: DIAGNOSTICS_READINESS_TOOL_ID,
   source: "server_owned",
+  // It opens no transaction of its own AT ALL, and that is the point: both of its
+  // reads must survive the application database being the very fault it reports.
+  readOnlySeam: {
+    threadsOwnReads: false,
+    exemptions: ["readiness-own-pool", "readiness-module-flags-fault-tolerant"],
+  },
   label: "AI Diagnostics readiness",
   description:
     "Reports whether AI Diagnostics itself is fully set up, and what is still blocking it if not: whether the module is on, whether the dedicated Anthropic credential is stored and usable (state only, never the key), the configured monthly budget in cents, the verified state of the read-only diagnostics database role, and stable blocker codes. Returns no secret value of any kind. Use it when asked why diagnostics is unavailable, degraded, or refusing to run tools.",
@@ -127,6 +133,12 @@ const readinessTool = defineDiagnosticsTool({
 const deploymentTool = defineDiagnosticsTool({
   id: DIAGNOSTICS_DEPLOYMENT_TOOL_ID,
   source: "server_owned",
+  // The only entry that reaches no database on any path, so there is nothing here
+  // for a transaction to bound.
+  readOnlySeam: {
+    threadsOwnReads: false,
+    exemptions: ["deployment-no-database"],
+  },
   label: "Deployment and release evidence",
   description:
     "Reports which release is running and whether its deployed code-knowledge bundle verified: the release identifier and where it came from, the application version, the Node version, the runtime role (for example web-blue or web-green), how long this container has been up, and the bundle's state, commit, build instant and entry count. Returns no configuration values and no secrets. Use it when asked what version is deployed, or why code explanations are unavailable.",
@@ -171,6 +183,12 @@ const deploymentTool = defineDiagnosticsTool({
 const usageHealthTool = defineDiagnosticsTool({
   id: DIAGNOSTICS_USAGE_HEALTH_TOOL_ID,
   source: "server_owned",
+  // BOTH, and the combination is the honest description: its own three reads run
+  // inside the seam, while the shared usage summary runs before it opens.
+  readOnlySeam: {
+    threadsOwnReads: true,
+    exemptions: ["usage-summary-no-tx-client"],
+  },
   label: "AI Diagnostics budget and usage health",
   description:
     "Reports this calendar month's AI Diagnostics spend and budget health in NZD cents: the configured monthly budget, settled cost, cost currently reserved by in-flight calls, remaining budget, budget status, request/roundtrip/failure counts, how many budget reservations have expired without settling, and the latest successful and failed call instants with the failure's stable code. Returns no prompt, answer, tool argument, tool result or provider error text. Use it when asked what diagnostics is costing, or why a diagnostics request was refused on budget.",
@@ -249,6 +267,12 @@ const usageHealthTool = defineDiagnosticsTool({
 const backgroundJobHealthTool = defineDiagnosticsTool({
   id: DIAGNOSTICS_BACKGROUND_JOB_HEALTH_TOOL_ID,
   source: "server_owned",
+  // Its every read belongs to the shared Admin > Health helper, which enforces a
+  // deadline of its own that a transaction-scoped timeout would race.
+  readOnlySeam: {
+    threadsOwnReads: false,
+    exemptions: ["cron-runs-own-budget"],
+  },
   label: "Background job health",
   description:
     "Reports the health of the scheduled background jobs, worst problems first: each job's name, classified status (current, stale, failed, skipped, missing, disabled or untracked), severity, whether it is enabled, its cron schedule, its staleness threshold in minutes, and the instants of its latest run, latest success and latest failure. Whether cron scheduling is enabled reflects this container's own configuration. Returns no job error text and no job result payloads. Use it when asked whether a scheduled job is running, late or failing.",

@@ -218,14 +218,16 @@ vi.mock("@/lib/member-subscription-eligibility", async (importOriginal) => ({
 }));
 
 import {
+  DIAGNOSTICS_READ_ONLY_STATEMENT_TIMEOUT_MS,
+  DIAGNOSTICS_READ_ONLY_TRANSACTION_TIMEOUT_MS,
+} from "../../read-only-transaction";
+import {
   AID6B_BOOKING_GUEST_CEILING,
   AID6B_CAPACITY_NIGHT_CEILING,
-  AID6B_DATABASE_STATEMENT_TIMEOUT_MS,
   AID6B_EVIDENCE_DEADLINE_MS,
   AID6B_HOSTING_SAME_OWNER_SOURCE_CEILING,
   AID6B_HOSTING_SIBLING_CEILING,
   AID6B_OPEN_REQUEST_CEILING,
-  AID6B_TRANSACTION_TIMEOUT_MS,
   BOOKING_BLOCKER_CODES,
   MEMBER_ELIGIBILITY_CODES,
   readBookingBlockStateEvidence,
@@ -2557,7 +2559,7 @@ describe("server-owned evidence is bounded at the database, not only in JS (#237
           // is exactly what the entry's own copy promises it cannot.
           isolationLevel: "RepeatableRead",
           maxWait: 2_000,
-          timeout: AID6B_TRANSACTION_TIMEOUT_MS,
+          timeout: DIAGNOSTICS_READ_ONLY_TRANSACTION_TIMEOUT_MS,
         }),
       );
       // READ ONLY first, then the timeout: PostgreSQL refuses a write in this
@@ -2577,7 +2579,7 @@ describe("server-owned evidence is bounded at the database, not only in JS (#237
       );
       expect(prismaMock.$executeRaw.mock.calls[1]?.[0]?.[1]).toBe(", true)");
       expect(prismaMock.$executeRaw.mock.calls[1]?.[1]).toBe(
-        String(AID6B_DATABASE_STATEMENT_TIMEOUT_MS),
+        String(DIAGNOSTICS_READ_ONLY_STATEMENT_TIMEOUT_MS),
       );
     },
   );
@@ -2595,14 +2597,14 @@ describe("server-owned evidence is bounded at the database, not only in JS (#237
     const options = prismaMock.$transaction.mock.calls[0]?.[1] as {
       timeout: number;
     };
-    expect(AID6B_DATABASE_STATEMENT_TIMEOUT_MS).toBeLessThan(
-      AID6B_TRANSACTION_TIMEOUT_MS,
+    expect(DIAGNOSTICS_READ_ONLY_STATEMENT_TIMEOUT_MS).toBeLessThan(
+      DIAGNOSTICS_READ_ONLY_TRANSACTION_TIMEOUT_MS,
     );
-    expect(AID6B_TRANSACTION_TIMEOUT_MS).toBeLessThan(AID6B_EVIDENCE_DEADLINE_MS);
-    expect(options.timeout).toBe(AID6B_TRANSACTION_TIMEOUT_MS);
+    expect(DIAGNOSTICS_READ_ONLY_TRANSACTION_TIMEOUT_MS).toBeLessThan(AID6B_EVIDENCE_DEADLINE_MS);
+    expect(options.timeout).toBe(DIAGNOSTICS_READ_ONLY_TRANSACTION_TIMEOUT_MS);
     // And the statement's own value is the same constant, not a parallel literal.
     expect(prismaMock.$executeRaw.mock.calls[1]?.[1]).toBe(
-      String(AID6B_DATABASE_STATEMENT_TIMEOUT_MS),
+      String(DIAGNOSTICS_READ_ONLY_STATEMENT_TIMEOUT_MS),
     );
   });
 
@@ -3105,7 +3107,7 @@ describe("booking capacity by night (#2376)", () => {
       expect.any(Function),
       expect.objectContaining({
         isolationLevel: "RepeatableRead",
-        timeout: AID6B_TRANSACTION_TIMEOUT_MS,
+        timeout: DIAGNOSTICS_READ_ONLY_TRANSACTION_TIMEOUT_MS,
       }),
     );
     expect(prismaMock.$executeRaw).toHaveBeenCalledTimes(2);
@@ -3113,7 +3115,7 @@ describe("booking capacity by night (#2376)", () => {
       "SET TRANSACTION READ ONLY",
     );
     expect(prismaMock.$executeRaw.mock.calls[1]?.[1]).toBe(
-      String(AID6B_DATABASE_STATEMENT_TIMEOUT_MS),
+      String(DIAGNOSTICS_READ_ONLY_STATEMENT_TIMEOUT_MS),
     );
   });
 

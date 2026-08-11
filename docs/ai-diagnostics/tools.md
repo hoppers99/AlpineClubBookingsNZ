@@ -335,6 +335,50 @@ that fans out or can be slow must therefore bound its own **work** — its own d
 below the executor's, and a batched rather than unbounded fan-out. AID-6A's job-health
 source is the worked example.
 
+### The read-only seam, and the five things outside it (AID-7b, #2786)
+
+A `select_only_sql` entry is read-only because PostgreSQL refuses it anything else. A
+`server_owned` entry has none of that: it is a first-party calculation running on the
+application's **own full-privilege Prisma connection**, where the SELECT-only role is
+not involved and a column grant is not the boundary. So "the agent stays read-only" was,
+for those entries, a property of the code rather than of the server.
+
+`withBoundedReadOnlyTransaction` (`src/lib/diagnostics/tools/read-only-transaction.ts`)
+is what makes it a property of the server. It opens one `REPEATABLE READ`, `READ ONLY`
+transaction with a transaction-scoped `statement_timeout`, so a server-owned source that
+drifts onto a write path fails at the database with SQLSTATE `25006` — the operator gets
+`evidence_unavailable` and nothing is mutated — rather than being caught, or not caught,
+in review. `REPEATABLE READ` is explicit because it, and not the transaction, is what
+makes the reads share one snapshot. It sets no `lock_timeout`: the SELECT-only executor
+does, and adding one here would change when the re-homed entries refuse, so the exposure
+is bounded by the statement timeout instead (a slower refusal, never an unbounded wait).
+
+**Every `server_owned` spec must declare `readOnlySeam`**, and the field is required, so
+a new entry cannot compile without answering. It says whether the entry threads its own
+reads through the seam, which declared exemptions it reads through, or both.
+`defineDiagnosticsTool` then refuses at definition time a declaration that cannot be
+true: one that says neither, one naming an id that is not in the table, an empty list, a
+repeated id. The registry does not boot rather than booting with a gate that silently
+passes.
+
+The exemptions are a closed table in `read-only-seam-exemptions.ts`, each row naming the
+module, the symbol and one reviewed sentence of why it structurally cannot run inside
+the seam — a readiness verdict that must stay answerable when the application connection
+is the fault, its fault-tolerant module-flags read, a read that touches no database, a
+shared admin calculation that accepts no transaction client, and a shared helper that
+enforces a deadline of its own. A census test pins the row set exactly, so a sixth is a
+decision somebody made in a diff. The claim "every server-owned entry reads through the
+seam" is **not** satisfiable, and a contract that overstates itself is worse than one
+that names its holes: it teaches the next author that the guarantee already covers the
+case they are about to add.
+
+Two further pins back this up. No `server_owned` evidence module names `prisma` at all —
+the seam module is the one place the global client is reached — and the pack tests hand
+out a transaction client that is a *distinct object holding the same doubles*, with a
+recorder that fails if anything touches the global client while the callback is running.
+That recorder is the only thing that can see a read which quietly used `prisma` instead
+of `tx`, because an argument assertion cannot tell shared doubles apart.
+
 The server-owned deadline sits **above** the privilege-probe deadline on purpose: the
 canonical readiness answer includes that probe, so a shorter deadline would turn "the
 role could not be reached, and readiness says so" into a timeout that says nothing.
@@ -661,7 +705,14 @@ The checklist a reviewer should hold you to:
 11. A `server_owned` source bounds its own **work**, not just the executor's wait: a
     deadline below the executor's, and a batched fan-out. A deadline **refuses**; it
     never returns a partial set that a classifier would read as a real absence.
-12. Document the entry in its pack's doc: what it answers, which permission, which
+12. A `server_owned` entry reads through the **seam** and says so. Wrap its reads in
+    `withBoundedReadOnlyTransaction`, pass the `tx` client to every collaborator, and
+    declare `readOnlySeam` — `{ threadsOwnReads: true }`, or the exemption ids it
+    relies on, or both. Naming an id that is not in `READ_ONLY_SEAM_EXEMPTIONS` fails
+    at definition time; needing a new one means adding a reviewed row with its reason,
+    and the census test that pins the row set will make you argue for it in the diff.
+    Do not reach `prisma` from an evidence module — a source pin refuses it.
+13. Document the entry in its pack's doc: what it answers, which permission, which
     columns it reads and why, and what it deliberately never returns.
 
 Secret-bearing relations (credentials, tokens, password/2FA, sessions) and raw

@@ -400,7 +400,11 @@ bed-allocation sub-read had a real boundary.
 
 All three `server_owned` entries now run their whole read graph inside **one**
 `REPEATABLE READ` interactive transaction that begins with two fixed control
-statements — the only `$executeRaw` calls in the pack:
+statements. Since #2786 those live in the shared seam
+(`src/lib/diagnostics/tools/read-only-transaction.ts`) rather than in this pack, and
+the pack census asserts this pack contains **no** `$executeRaw` and opens **no**
+transaction of its own — "exactly these two are fine here" is no longer a doorway a
+later edit can widen:
 
 ```
 SET TRANSACTION READ ONLY
@@ -411,10 +415,13 @@ SELECT pg_catalog.set_config('statement_timeout', $1, true)
   waiting, and it sits below the JS deadline so the database refuses first and the
   operator gets a specific `57014 query_canceled` message rather than a race. It
   arrives as a **bound parameter**: `SET LOCAL` takes no placeholders, so the value
-  would have had to be built into the SQL, and one constant
-  (`AID6B_DATABASE_STATEMENT_TIMEOUT_MS`) now yields the statement's value, the
-  transaction ceiling and the assertions, in the order
-  statement < transaction < JS deadline.
+  would have had to be built into the SQL. Since #2786 the one constant every
+  diagnostics database path derives from is `DIAGNOSTICS_TOOL_BOUNDS.statementTimeoutMs`
+  — it yields the statement's value, the transaction ceiling and the assertions, in
+  the order statement < transaction < JS deadline. The pack-local
+  `AID6B_DATABASE_STATEMENT_TIMEOUT_MS` was a second name for the same bound and is
+  gone; `AID6B_EVIDENCE_DEADLINE_MS` remains, because that one is the JavaScript
+  deadline rather than a database bound.
 - **`READ ONLY` is the database refusing a write**, in a transaction on the
   application's own full-privilege connection. These entries are `server_owned`, not
   `select_only_sql`, so the AID-5 role's grants are not the boundary here: this is

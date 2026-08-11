@@ -25,7 +25,10 @@ import { recordDiagnosticsToolAudit } from "../audit";
 import { createEmptyDiagnosticsConsentLedger } from "../consent";
 import { invokeDiagnosticsTool } from "../invoke";
 import { createDiagnosticsToolSession } from "../session";
-import type { DiagnosticsToolEntry } from "../define";
+import type {
+  DiagnosticsSelectOnlyToolEntry,
+  DiagnosticsToolEntry,
+} from "../define";
 import { DIAGNOSTICS_TOOL_BOUNDS, type DiagnosticsToolRow } from "../types";
 
 vi.mock("../authorize", () => ({ authorizeDiagnosticsToolCall: vi.fn() }));
@@ -64,7 +67,11 @@ const FULL_MATRIX = Object.fromEntries(
 
 function makeEntry(
   project: (row: Record<string, unknown>) => DiagnosticsToolRow,
-  overrides: Partial<DiagnosticsToolEntry> = {},
+  // Narrowed to the SELECT-only arm rather than the union (#2786). Every call site
+  // overrides a limit and none changes `source`, and a `Partial` of the union now
+  // widens `source` back to both arms — which would let a fixture claim to be
+  // server-owned while omitting the seam declaration that arm requires.
+  overrides: Partial<DiagnosticsSelectOnlyToolEntry> = {},
 ): DiagnosticsToolEntry {
   return {
     id: "diagnostics.hostile_probe",

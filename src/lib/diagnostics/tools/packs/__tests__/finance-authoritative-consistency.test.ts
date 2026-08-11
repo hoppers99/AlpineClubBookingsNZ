@@ -31,8 +31,24 @@
  */
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-vi.mock("@/lib/prisma", () => ({
-  prisma: {
+/**
+ * ONE SET OF DOUBLES, REACHED TWO WAYS — which is what makes this comparison mean
+ * anything (#2786).
+ *
+ * The whole point of this file is that the diagnostic and `/admin/payments` agree
+ * about ONE fixture row. Since #2786 the diagnostic reads inside the shared
+ * read-only seam and the admin service still reads on the global client, so the
+ * transaction client the seam hands out has to be backed by exactly the same
+ * `vi.fn()` instances — otherwise the two sides would be reading two fixtures and
+ * an agreement between them would prove nothing. It is a distinct OBJECT (a
+ * `Prisma.TransactionClient` is not the global client, and it has no
+ * `$transaction`, so a nested transaction throws here) holding identical functions.
+ */
+// Only `prismaMock` is returned: the transaction client is reached solely through
+// the `$transaction` double below, so hoisting a second binding out to module scope
+// would be an unused export of a test detail.
+const { prismaMock } = vi.hoisted(() => {
+  const models = {
     booking: { findUnique: vi.fn() },
     payment: { findUnique: vi.fn(), findMany: vi.fn(), count: vi.fn() },
     memberCredit: { findMany: vi.fn(), aggregate: vi.fn() },
@@ -41,8 +57,19 @@ vi.mock("@/lib/prisma", () => ({
     paymentRecoveryOperation: { findMany: vi.fn() },
     manualRefundTask: { count: vi.fn() },
     refundRequest: { count: vi.fn() },
-  },
-}));
+  };
+  const txMock = { ...models, $executeRaw: vi.fn().mockResolvedValue(0) };
+  return {
+    prismaMock: {
+      ...models,
+      $transaction: vi.fn(async (run: (tx: typeof txMock) => Promise<unknown>) =>
+        run(txMock),
+      ),
+    },
+  };
+});
+
+vi.mock("@/lib/prisma", () => ({ prisma: prismaMock }));
 
 import { adminPaymentsQuerySchema, listAdminPayments } from "@/lib/admin-payments-service";
 import { prisma } from "@/lib/prisma";

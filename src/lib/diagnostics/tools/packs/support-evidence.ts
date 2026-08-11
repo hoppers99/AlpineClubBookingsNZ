@@ -86,11 +86,11 @@ import {
   getDiagnosticsUsageSummary,
 } from "@/lib/ai-diagnostics-usage";
 import { loadEffectiveModuleFlags } from "@/lib/module-settings";
-import { prisma } from "@/lib/prisma";
 
 import { loadKnowledgeBundle } from "../../knowledge/load";
 import { isVerifiedCommitSha } from "../../knowledge/verify";
 import type { DiagnosticsToolRawRow } from "../define";
+import { withBoundedReadOnlyTransaction } from "../read-only-transaction";
 
 /** The stable "nothing to report" code, so an empty list is never an empty string. */
 export const NO_CODES = "none";
@@ -271,24 +271,41 @@ export async function readDiagnosticsDeploymentEvidence(
 export async function readDiagnosticsUsageHealthEvidence(
   now: Date = new Date(),
 ): Promise<readonly DiagnosticsToolRawRow[]> {
+  // THE SUMMARY RUNS BEFORE THE SEAM OPENS, and that ordering is the decision
+  // (#2786, exemption `usage-summary-no-tx-client`). `getDiagnosticsUsageSummary`
+  // is the admin usage panel's OWN shared calculation: it reads the global client
+  // and accepts no transaction client, so threading it would mean changing a
+  // non-diagnostics surface to satisfy a diagnostics contract. Calling it first
+  // rather than inside the callback is what keeps its reads from being a second
+  // statement inside a transaction that has already begun — the transaction stays
+  // as short as the reads it actually bounds.
+  //
+  // WHAT THAT COSTS, SAID PLAINLY: the summary's instant and the three reads below
+  // are not the same instant, so `stale_reservation_count` can be measured a moment
+  // after `active_reserved_cents`. It is the honest residual of an exemption rather
+  // than a hidden one, and it is narrow — these are monitoring counters about
+  // spend, not a reconciliation identity anyone acts on the difference of.
   const summary = await getDiagnosticsUsageSummary(now);
   const month = summary.month.month;
 
-  const [staleReservationCount, latestSuccess, latestFailure] = await Promise.all([
-    prisma.diagnosticsBudgetReservation.count({
-      where: { month, expiresAt: { lte: now } },
-    }),
-    prisma.diagnosticsUsageEvent.findFirst({
-      where: { month, success: true },
-      orderBy: { createdAt: "desc" },
-      select: { createdAt: true },
-    }),
-    prisma.diagnosticsUsageEvent.findFirst({
-      where: { month, success: false },
-      orderBy: { createdAt: "desc" },
-      select: { createdAt: true, errorCode: true },
-    }),
-  ]);
+  const [staleReservationCount, latestSuccess, latestFailure] =
+    await withBoundedReadOnlyTransaction((tx) =>
+      Promise.all([
+        tx.diagnosticsBudgetReservation.count({
+          where: { month, expiresAt: { lte: now } },
+        }),
+        tx.diagnosticsUsageEvent.findFirst({
+          where: { month, success: true },
+          orderBy: { createdAt: "desc" },
+          select: { createdAt: true },
+        }),
+        tx.diagnosticsUsageEvent.findFirst({
+          where: { month, success: false },
+          orderBy: { createdAt: "desc" },
+          select: { createdAt: true, errorCode: true },
+        }),
+      ]),
+    );
 
   return [
     {

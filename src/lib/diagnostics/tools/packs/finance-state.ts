@@ -134,6 +134,10 @@ const FINANCE_BLOCKER_CATALOGUE_TEXT = FINANCE_BLOCKER_CODES.map(
 const bookingFinanceState = defineDiagnosticsTool<BookingFinanceArgs>({
   id: DIAGNOSTICS_BOOKING_FINANCE_STATE_TOOL_ID,
   source: "server_owned",
+  // All eight reads and both member-credit collaborators take the transaction
+  // client (#2786), which is what makes creditLedgerVarianceCents a comparison of
+  // two figures from ONE instant rather than a variance the read itself invented.
+  readOnlySeam: { threadsOwnReads: true },
   label: "Authoritative booking finance state",
   description: `Returns this platform's OWN authoritative answer for ONE booking's money — the same figures and classifications Admin > Payments shows, not a second calculation. It gives the amount due, the account credit applied (from the credit LEDGER, not the copy stored on the payment), the amount actually captured, the amount refunded, what is outstanding NET of refunds, any uncollected additional payment that is still worth collecting, how much is still refundable, the member's credit balance, the payment display status, the settlement kind, the Xero state, whether the booking has reached a terminal status, and stable blocker codes in the order they should be acted on. Two fields are signed variances that are ZERO on a healthy booking: ledgerVarianceCents (the stored amounts do not add up to the final price) and creditLedgerVarianceCents (the payment's credit column disagrees with the credit ledger). A non-zero variance is a real discrepancy no screen surfaces. Needs BOTH finance and bookings access. All amounts are integer cents. ${FINANCE_DESCRIPTION_TAIL}`,
   requiredAreas: ["finance", "bookings"],
