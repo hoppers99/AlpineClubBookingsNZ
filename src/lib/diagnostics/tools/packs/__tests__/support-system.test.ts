@@ -630,6 +630,7 @@ describe("AID-6A background job health (#2375)", () => {
         consentRecordKind: null,
         consentRecordOrigin: null,
         peopleSearchTick: "withheld",
+        recordConsentTick: "withheld",
       },
     });
     // All eighteen present, which is why the ceiling is eighteen and not the twenty

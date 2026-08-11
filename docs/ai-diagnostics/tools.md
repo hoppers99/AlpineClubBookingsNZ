@@ -479,16 +479,28 @@ archive runbook.
 Recorded, exhaustively: tool id, the areas checked, the auth outcome, the failure
 reason, a sha256 of the canonical JSON of the **accepted** arguments, a sha256 of
 the canonical JSON of the projected rows, row count, byte count, duration, round
-index, observed-at, and the five consent fields AID-7a (#2785) added —
+index, observed-at, and the six consent fields AID-7a (#2785) added —
 `invocationChannel` (`operator_action` / `model_tool_use`), `sensitiveInclusion`
 (`not_applicable` / `not_reached` / `granted` / `refused`), `consentRecordKind`,
-`consentRecordOrigin` (`operator_selected` / `derived`) and `peopleSearchTick`.
+`consentRecordOrigin` (`operator_selected` / `derived` / null), `recordConsentTick`
+and `peopleSearchTick`.
 
 The consent fields exist because without them a `surfacesPersonalData` read taken
 **with** the operator's inclusion was indistinguishable in the durable log from one
 taken without it. They add no identifier: the **kind** of record and the **origin**
 of the decision are recorded, never the record id — `argsHash` already pins which
 record non-reversibly.
+
+Read together, they also keep the three causes of a consent refusal apart, which one
+row could not do while the origin was recorded only on the success path (#2785
+review). A refusal with **no kind** resolved nothing to check; a **kind with a null
+origin** is a real record this investigation does not cover — on a `model_tool_use`
+row, the pivot outside the operator's investigation that the ledger exists to catch;
+a **kind with a real origin** beside `recordConsentTick: "withheld"` is the
+operator's own record, refused only for the unticked box. Both ticks are recorded on
+**every** row, because "was the assistant allowed to read personal details / look
+people up during this question" is request-level state that the rows which did not
+use it must also answer.
 
 Never recorded: raw arguments, raw results, the operator's question, the model's
 answer, provider payloads, credentials, or any identifier beyond the acting admin's

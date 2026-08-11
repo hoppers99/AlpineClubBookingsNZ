@@ -60,6 +60,7 @@ function audit(
     consentRecordKind: null,
     consentRecordOrigin: null,
     peopleSearchTick: "withheld",
+    recordConsentTick: "withheld",
     ...overrides,
   };
 }

@@ -22,8 +22,8 @@
  * and of the result, row/byte counts, duration, round index, observed-at, and —
  * since AID-7a (#2785) — the consent state: which channel invoked it, whether
  * ADR-004 §1's inclusion was granted or refused, the KIND of record consent was
- * about, how that record entered the investigation, and the per-request
- * people-search tick.
+ * about, how that record entered the investigation (or that this investigation did
+ * not cover it), and the two per-request ticks, personal details and people search.
  *
  * WHY THE CONSENT FIELDS HAD TO BE ADDED. Without them a
  * `surfacesPersonalData: true` read taken WITH the operator's consent was
@@ -83,13 +83,14 @@ function auditMetadata(audit: DiagnosticsToolAudit): Record<string, unknown> {
     durationMs: audit.durationMs,
     roundIndex: audit.roundIndex,
     observedAt: audit.observedAt,
-    // The five consent fields (AID-7a, #2785). Every one of them is a closed enum or
+    // The six consent fields (AID-7a, #2785). Every one of them is a closed enum or
     // null — there is no free text and no identifier here, which is what keeps this
     // object inside ADR-004 §4's approved set. See the module docblock.
     invocationChannel: audit.invocationChannel,
     sensitiveInclusion: audit.sensitiveInclusion,
     consentRecordKind: audit.consentRecordKind,
     consentRecordOrigin: audit.consentRecordOrigin,
+    recordConsentTick: audit.recordConsentTick,
     peopleSearchTick: audit.peopleSearchTick,
   };
 }

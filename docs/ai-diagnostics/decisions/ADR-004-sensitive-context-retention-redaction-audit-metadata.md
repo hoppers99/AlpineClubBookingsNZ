@@ -74,9 +74,10 @@ A Diagnostics audit/metering row may record **only**:
 - **consent outcome** — the per-invocation §1 decision and what it was about:
   which channel invoked the tool, whether the inclusion was not-applicable /
   not-reached / granted / refused, the **kind** of record it concerned, whether the
-  operator selected that record or the server derived it, and the state of the
-  people-search tick. Every one a closed enum or null, and **never** the record id
-  itself. *(Amended for AID-7a, #2785 — the five fields are named in the
+  operator selected that record, the server derived it, or this investigation did not
+  cover it at all, and the state of the two per-request ticks (personal details,
+  people search). Every one a closed enum or null, and **never** the record id
+  itself. *(Amended for AID-7a, #2785 — the six fields are named in the
   implementation note below, which is the only place they are listed.)*;
 - the metering fields of ADR-001 §3 (model, token counts, integer-cent cost,
   success/failure).
@@ -135,18 +136,26 @@ an explicit people-search box, off by default and never persisted. The gate is a
 typed, server-owned invocation channel on the executor's input, not the free-form
 `surface` label.
 
-**The five fields §4's consent-outcome bullet covers** are `invocationChannel`,
-`sensitiveInclusion`, `consentRecordKind`, `consentRecordOrigin` and
-`peopleSearchTick` — every one a closed enum or null, and narrowed at the executor
-rather than trusted from the caller, so the "no free text" property holds of the row
-and not only of the type. Four of the five are this invocation's own authorisation
-outcome, which §4 already permitted; `peopleSearchTick` is request-level state and is
-recorded on every row because "was the model allowed to look people up during this
-question" is answerable only if the rows that did **not** search carry it too — which
-is why the amendment above was needed rather than a reading of the existing bullet. **No subject record id is recorded**: `argsHash` already pins
-which record non-reversibly, and adding the identifier would put an unrestricted
-personal identifier into a 24-month row, which §4 forbids. Without these fields a
-consented read and an unconsented one were the same durable row.
+**The six fields §4's consent-outcome bullet covers** are `invocationChannel`,
+`sensitiveInclusion`, `consentRecordKind`, `consentRecordOrigin`,
+`recordConsentTick` and `peopleSearchTick` — every one a closed enum or null, and
+narrowed at the executor rather than trusted from the caller, so the "no free text"
+property holds of the row and not only of the type. Four of the six are this
+invocation's own authorisation outcome, which §4 already permitted; the two TICKS are
+request-level state and are recorded on every row, because "was the assistant allowed
+to read personal details / look people up during this question" is answerable only if
+the rows that did **not** use the permission carry it too — which is why the amendment
+above was needed rather than a reading of the existing bullet. The record tick was
+added by the #2785 delta review, with `consentRecordOrigin` now kept on the refusal
+path as well: without both, the three causes of a consent refusal — nothing to
+resolve, a record outside the investigation, a selected record with the box unticked
+— collapsed into one indistinguishable row, so "the model asked about a record the
+operator never included", which is the injection signal the ledger exists to produce,
+read the same as "the operator forgot to tick a box". **No subject record id is
+recorded**: `argsHash` already pins which record non-reversibly, and adding the
+identifier would put an unrestricted personal identifier into a 24-month row, which
+§4 forbids. Without these fields a consented read and an unconsented one were the
+same durable row.
 
 ## Consequences
 

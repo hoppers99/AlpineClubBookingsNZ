@@ -222,9 +222,10 @@ an audit reader already sees on the row they are auditing". They are not:
 carries exactly `toolId`, `areasChecked`, `authOutcome`, `failureReason`,
 `argsHash`, `resultHash`, `rowCount`, `byteCount`, `durationMs`, `roundIndex`,
 `observedAt` and — since AID-7a (#2785) — `invocationChannel`,
-`sensitiveInclusion`, `consentRecordKind`, `consentRecordOrigin` and
-`peopleSearchTick`. Sixteen fields, every one a closed enum, a count, a
-non-reversible hash or an instant; no argument value and no record id. Recovering the term therefore yields what the row withholds, to a
+`sensitiveInclusion`, `consentRecordKind`, `consentRecordOrigin`,
+`recordConsentTick` and `peopleSearchTick`. Seventeen fields, every one a closed
+enum, a count, a non-reversible hash or an instant; no argument value and no record
+id. Recovering the term therefore yields what the row withholds, to a
 `support:view`-only audit reader who does **not** hold `bookings:view`. The
 recovered value is a booking or a lodge and a night rather than a person, which is
 why this was a reversibility defect against ADR-004 §4 rather than a privacy

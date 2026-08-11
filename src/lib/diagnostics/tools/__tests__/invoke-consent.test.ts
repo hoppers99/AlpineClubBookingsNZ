@@ -611,6 +611,62 @@ describe("the durable row records the consent decision (#2785)", () => {
     });
   });
 
+  it("keeps the THREE causes of a consent refusal apart (#2785 delta review)", async () => {
+    // All three refuse with `sensitive_consent_required` and
+    // `sensitiveInclusion: "refused"`, and `argsHash` is non-reversible by design, so
+    // if the row does not separate them nothing does. The one that matters is the
+    // middle one: on a `model_tool_use` row, "a record this investigation does not
+    // cover" is the pivot the ledger exists to catch — prompt-injected text in a
+    // booking note leading the model to a member the operator never selected — and it
+    // used to be indistinguishable from an operator who left a box unticked.
+
+    // 1. Nothing to resolve: the arguments name no record the ledger can hold.
+    const noRecord = question(consentTo([{ kind: "booking", id: BOOKING_A }]));
+    await run({ ...noRecord, tool: PER_RECORD, args: { somethingElse: "x" } });
+    expect(lastAuditMetadata()).toMatchObject({
+      failureReason: "sensitive_consent_required",
+      consentRecordKind: null,
+      consentRecordOrigin: null,
+      recordConsentTick: "granted",
+    });
+
+    // 2. A real record, OUTSIDE this investigation.
+    const outside = question(consentTo([{ kind: "booking", id: BOOKING_A }]));
+    await run({ ...outside, tool: PER_RECORD, args: { bookingId: BOOKING_B } });
+    expect(lastAuditMetadata()).toMatchObject({
+      failureReason: "sensitive_consent_required",
+      consentRecordKind: "booking",
+      consentRecordOrigin: null,
+      recordConsentTick: "granted",
+    });
+
+    // 3. The operator's OWN record, refused only for the unticked box. The origin is
+    //    kept here — the gate did resolve the record and did find it in the ledger.
+    const untickedButSelected = createDiagnosticsConsentLedger({
+      recordConsentGranted: false,
+      peopleSearchGranted: false,
+      selectedRecords: [{ kind: "booking", id: BOOKING_A }],
+    });
+    await run({ tool: PER_RECORD, consent: untickedButSelected });
+    expect(lastAuditMetadata()).toMatchObject({
+      failureReason: "sensitive_consent_required",
+      consentRecordKind: "booking",
+      consentRecordOrigin: "operator_selected",
+      recordConsentTick: "withheld",
+    });
+  });
+
+  it("records the personal-details tick on every row, not only on refusals", async () => {
+    // Request-level state, recorded the same way `peopleSearchTick` is: "was the
+    // assistant allowed to read personal details during this question" is answerable
+    // only if the rows that did not need the tick carry it too.
+    await run({ tool: NON_SENSITIVE, consent: consentTo([]) });
+    expect(lastAuditMetadata().recordConsentTick).toBe("granted");
+
+    await run({ tool: NON_SENSITIVE });
+    expect(lastAuditMetadata().recordConsentTick).toBe("withheld");
+  });
+
   it("records a DERIVED record as derived", async () => {
     const asked = question(consentTo([{ kind: "booking", id: BOOKING_A }]));
     await run({ ...asked, tool: PER_RECORD });

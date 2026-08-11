@@ -39,6 +39,7 @@ const audit: DiagnosticsToolAudit = {
   consentRecordKind: null,
   consentRecordOrigin: null,
   peopleSearchTick: "withheld",
+  recordConsentTick: "withheld",
 };
 
 function success(rows: DiagnosticsToolRow[], truncated = false): DiagnosticsToolSuccess {

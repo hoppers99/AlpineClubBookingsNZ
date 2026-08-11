@@ -385,9 +385,26 @@ export interface DiagnosticsToolAudit {
    */
   consentRecordKind: DiagnosticsConsentRecordKind | null;
   /**
-   * How the consented record came to be in the investigation — the operator picked
-   * it, or the server derived it from a declared projected field of an earlier
-   * consented call. Null when the consent gate did not match a record.
+   * How the record this invocation was about came to be in the investigation — the
+   * operator picked it, or the server derived it from a declared projected field of
+   * an earlier consented call. Null when this investigation does not cover that
+   * record at all, and null when no record was resolved or the gate never ran.
+   *
+   * IT IS RECORDED ON A REFUSAL TOO (#2785 review), and that is what makes the three
+   * causes of a consent refusal separable in the durable log. Read with
+   * `consentRecordKind` and `recordConsentTick`:
+   *
+   *  - kind `null` — the arguments named no record the ledger can hold, so nothing
+   *    was resolved to check;
+   *  - a kind with origin `null` — a real record this investigation does NOT cover.
+   *    On a `model_tool_use` row this is the pivot the ledger exists to catch: the
+   *    model asked about a record the operator never included;
+   *  - a kind with a real origin, beside `recordConsentTick: "withheld"` — a record
+   *    the operator DID include, refused only for the unticked personal-details box.
+   *
+   * Before this the first two and the third were one row, so "the model tried to
+   * reach outside the investigation" and "the operator forgot to tick a box" were
+   * indistinguishable to anyone reading the trail afterwards.
    *
    * NO SUBJECT RECORD ID, deliberately and in line with this type's own contract:
    * `argsHash` already pins WHICH record non-reversibly, and kind + origin +
@@ -395,6 +412,18 @@ export interface DiagnosticsToolAudit {
    * without adding an identifier to a durable row.
    */
   consentRecordOrigin: "operator_selected" | "derived" | null;
+  /**
+   * The per-request personal-details tick as it stood for this invocation (ADR-004
+   * §1). Recorded on EVERY row for the same reason `peopleSearchTick` is: it is
+   * request-level state, and answering "was the assistant allowed to read personal
+   * details during this question" from the rows that happen to be personal-data reads
+   * would answer it only where the permission was used.
+   *
+   * It is the tick, NOT the outcome. `sensitiveInclusion` is the decision this
+   * invocation reached; this field is the state of the operator's box, which is what
+   * separates a refusal caused by the box from a refusal caused by the record.
+   */
+  recordConsentTick: "granted" | "withheld";
   /**
    * The per-request people-search tick as it stood for this invocation (owner
    * decision, #2378 Q2, 11 Aug 2026). Recorded on EVERY row, not only on search

@@ -613,10 +613,12 @@ for tool use is `ai_diagnostics.tool_invocation` in `AuditLog`, retention class
 areas checked, the allow/deny outcome, the stable failure reason, non-reversible
 hashes of the accepted arguments and of the result, row and byte counts, duration,
 round index, the observed-at instant, and — since AID-7a (#2785) — the invocation
-channel, the ADR-004 §1 inclusion decision, the KIND and provenance of the consented
-record, and the people-search tick. Sixteen fields, and never the arguments, the
-results, the question or the answer. Those last five are what answer "was this
-personal read consented, and was the model allowed to search?" during an incident.
+channel, the ADR-004 §1 inclusion decision, the KIND and provenance of the record it
+was about, and the two per-request ticks (personal details, people search).
+Seventeen fields, and never the arguments, the results, the question or the answer.
+Those last six are what answer "was this personal read consented, was the model
+allowed to search, and was it asking about a record this operator had included?"
+during an incident.
 
 ## Adding to this pack
 

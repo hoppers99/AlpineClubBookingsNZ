@@ -2597,6 +2597,7 @@ describe("AID-6B booking/membership pack: a name is untrusted text (#2376)", () 
           consentRecordKind: null,
           consentRecordOrigin: null,
           peopleSearchTick: "withheld",
+          recordConsentTick: "withheld",
         },
       });
       // Exactly one opening and one closing delimiter: no projected value could

@@ -900,6 +900,7 @@ describe("AID-6C finance pack: stored text is untrusted (#2377)", () => {
           consentRecordKind: null,
           consentRecordOrigin: null,
           peopleSearchTick: "withheld",
+          recordConsentTick: "withheld",
         },
       });
       // Exactly one opening and one closing delimiter: a projected value could not

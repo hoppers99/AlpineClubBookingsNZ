@@ -41,6 +41,7 @@ const BASE_AUDIT: DiagnosticsToolAudit = {
   consentRecordKind: null,
   consentRecordOrigin: null,
   peopleSearchTick: "withheld",
+  recordConsentTick: "withheld",
 };
 
 function record(overrides: Partial<DiagnosticsToolAudit> = {}) {
@@ -103,6 +104,7 @@ describe("diagnostics tool audit row (#2374, ADR-004)", () => {
       "invocationChannel",
       "observedAt",
       "peopleSearchTick",
+      "recordConsentTick",
       "resultHash",
       "roundIndex",
       "rowCount",

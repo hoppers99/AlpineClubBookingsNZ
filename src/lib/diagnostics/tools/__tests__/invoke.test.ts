@@ -221,6 +221,7 @@ describe("invokeDiagnosticsTool — the happy path (#2374)", () => {
       "invocationChannel",
       "observedAt",
       "peopleSearchTick",
+      "recordConsentTick",
       "resultHash",
       "roundIndex",
       "rowCount",

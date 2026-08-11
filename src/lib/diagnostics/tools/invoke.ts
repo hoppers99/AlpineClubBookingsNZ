@@ -269,6 +269,7 @@ function buildAudit(input: {
   consentDecision: "granted" | "refused" | null;
   consentRecordKind: DiagnosticsConsentRecordKind | null;
   consentRecordOrigin: DiagnosticsConsentEntryOrigin | null;
+  recordConsentGranted: boolean;
   peopleSearchGranted: boolean;
 }): DiagnosticsToolAudit {
   return {
@@ -290,6 +291,7 @@ function buildAudit(input: {
     ),
     consentRecordKind: input.consentRecordKind,
     consentRecordOrigin: input.consentRecordOrigin,
+    recordConsentTick: input.recordConsentGranted ? "granted" : "withheld",
     peopleSearchTick: input.peopleSearchGranted ? "granted" : "withheld",
   };
 }
@@ -476,9 +478,15 @@ export async function invokeDiagnosticsTool(
   let consentRecordOrigin: DiagnosticsConsentEntryOrigin | null = null;
 
   /**
-   * The two things this function must learn from the ledger BEFORE any exit can be
+   * The three things this function must learn from the ledger BEFORE any exit can be
    * taken — read once, synchronously, and INSIDE a try for the same reason
    * `input.session.stats()` is (#2785 review).
+   *
+   * BOTH TICKS ARE READ HERE, not only the search one, because both are recorded on
+   * EVERY durable row and gate 4b's refusal has to be able to say which of its three
+   * causes it took. Reading the record tick at the gate instead left the row unable to
+   * distinguish "the operator did not include this record" from "they included it and
+   * left the personal-details box unticked".
    *
    * The earlier version hoisted the tick read out of the try block below and cited
    * the session guard as its rationale, which inverted it: a caller reaching here
@@ -495,9 +503,11 @@ export async function invokeDiagnosticsTool(
    * instruction in a docblock.
    */
   let peopleSearchGranted = false;
+  let recordConsentGranted = false;
   let consentIsForThisQuestion = false;
   try {
     peopleSearchGranted = input.consent.peopleSearchGranted === true;
+    recordConsentGranted = input.consent.recordConsentGranted === true;
     consentIsForThisQuestion =
       input.consent.bindToLoopSession(input.session) === true;
   } catch {
@@ -526,6 +536,7 @@ export async function invokeDiagnosticsTool(
       consentDecision,
       consentRecordKind,
       consentRecordOrigin,
+      recordConsentGranted,
       peopleSearchGranted,
     });
     await auditDenial(input.actingMemberId, surface, audit);
@@ -740,8 +751,19 @@ export async function invokeDiagnosticsTool(
         ? input.consent.originOf(record.kind, record.id)
         : null;
       consentRecordKind = record?.kind ?? null;
-      const tickWithheld =
-        tool.surfacesPersonalData && !input.consent.recordConsentGranted;
+      // RECORDED ON THE REFUSAL PATH TOO (#2785 review). This gate refuses for three
+      // distinct reasons and they used to leave one indistinguishable durable row,
+      // because `origin` was only kept on the success path. With it kept here, the
+      // row separates them: no resolvable record is `consentRecordKind: null`; a
+      // record outside the investigation is a kind with a null origin; a record the
+      // operator DID select, refused for the unticked box, is a kind with a real
+      // origin beside `recordConsentTick: "withheld"`. That is the difference between
+      // "the model tried to pivot to a record the operator never included" — the
+      // injection signal the ledger exists to produce — and "the operator forgot to
+      // tick a box", which an incident responder could not otherwise tell apart. It
+      // adds no identifier: origin is a two-value closed enum.
+      consentRecordOrigin = origin;
+      const tickWithheld = tool.surfacesPersonalData && !recordConsentGranted;
       if (!record || origin === null || tickWithheld) {
         // The reason follows the ENTRY, so the sentence an operator reads is true of
         // the tool that was refused: only an entry that really does surface personal
@@ -761,7 +783,6 @@ export async function invokeDiagnosticsTool(
         );
       }
       if (tool.surfacesPersonalData) consentDecision = "granted";
-      consentRecordOrigin = origin;
     } else if (tool.surfacesPersonalData) {
       // An ALLOWED SEARCH, reached two ways: the operator ticked people-search, or
       // the operator ran it themselves through the record picker. Both are the
@@ -930,6 +951,7 @@ export async function invokeDiagnosticsTool(
       consentDecision,
       consentRecordKind,
       consentRecordOrigin,
+      recordConsentGranted,
       peopleSearchGranted,
     });
     try {

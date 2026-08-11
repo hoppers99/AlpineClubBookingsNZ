@@ -625,9 +625,9 @@ Incident response: the audit trail for tool use is
 areas checked, the allow/deny outcome, the stable failure reason, a non-reversible
 hash of the accepted arguments and of the result, row and byte counts, duration,
 round index and the observed-at instant — and, since AID-7a (#2785), the invocation
-channel, the ADR-004 §1 inclusion decision, the KIND and provenance of the consented
-record, and the people-search tick. Sixteen fields, and never the arguments, the
-results, the question or the answer. There is no per-tool version field: a tool's contract is its
+channel, the ADR-004 §1 inclusion decision, the KIND and provenance of the record it
+was about, and the two per-request ticks (personal details, people search).
+Seventeen fields, and never the arguments, the results, the question or the answer. There is no per-tool version field: a tool's contract is its
 code, so the release identifier — which `diagnostics.deployment_evidence` reports —
 is what ties an audit row to the exact definition that produced it. To answer "what did this administrator look at",
 query that action for their member id; to answer "was this the same answer twice",
