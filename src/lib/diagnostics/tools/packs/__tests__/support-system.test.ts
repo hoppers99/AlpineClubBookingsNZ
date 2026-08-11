@@ -34,12 +34,54 @@ vi.mock("@/lib/admin-cron-runs", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/lib/admin-cron-runs")>();
   return { ...actual, getCronRunsForAdminHealth: vi.fn() };
 });
-vi.mock("@/lib/prisma", () => ({
-  prisma: {
-    diagnosticsBudgetReservation: { count: vi.fn() },
-    diagnosticsUsageEvent: { findFirst: vi.fn() },
+/**
+ * THE DOUBLE HAS TO MODEL THE SEAM, not just the reads inside it (#2786).
+ *
+ * The usage-health entry's three reads moved inside
+ * `withBoundedReadOnlyTransaction`, so a `prisma` double with no `$transaction`
+ * stops being a simplification and becomes a wrong answer: every one of those tests
+ * would fail on the double's shape rather than on anything the entry does.
+ *
+ * `txMock` is a DISTINCT OBJECT HOLDING THE SAME DOUBLE FUNCTIONS, which is the
+ * shape #2376 established and #2786 carried into the finance pack. Every existing
+ * `reservationCountMock` assertion in this file keeps working because the functions
+ * are shared — while the object identities differ, so a read that went to the global
+ * client instead of the transaction is visible rather than indistinguishable. It has
+ * no `$transaction` of its own, because a `Prisma.TransactionClient` does not: a
+ * nested interactive transaction throws here rather than quietly taking a second
+ * pool connection. `$executeRaw` is present because the seam's two control
+ * statements run on the transaction client.
+ */
+const { prismaMock, txMock, globalClientReads, recordingWindow } = vi.hoisted(
+  () => {
+    const models = {
+      diagnosticsBudgetReservation: { count: vi.fn() },
+      diagnosticsUsageEvent: { findFirst: vi.fn() },
+    };
+    const txMock = { ...models, $executeRaw: vi.fn().mockResolvedValue(0) };
+    /**
+     * And because the doubles ARE shared, an argument assertion cannot tell the two
+     * clients apart — so the escape is watched for directly. This Proxy records
+     * every property reached on the GLOBAL client while the transaction callback is
+     * running; inside that window the correct number is zero, and a read that
+     * quietly went to `prisma` instead of `tx` names itself here.
+     */
+    const globalClientReads: string[] = [];
+    const recordingWindow = { open: false };
+    const base = { ...models, $transaction: vi.fn() };
+    const prismaMock = new Proxy(base, {
+      get(target, property, receiver) {
+        if (recordingWindow.open && typeof property === "string") {
+          globalClientReads.push(property);
+        }
+        return Reflect.get(target, property, receiver);
+      },
+    }) as typeof base;
+    return { prismaMock, txMock, globalClientReads, recordingWindow };
   },
-}));
+);
+
+vi.mock("@/lib/prisma", () => ({ prisma: prismaMock }));
 
 import { getDiagnosticsReadiness } from "@/lib/ai-diagnostics-config";
 import { getDiagnosticsUsageSummary } from "@/lib/ai-diagnostics-usage";
@@ -89,6 +131,19 @@ beforeEach(() => {
   vi.clearAllMocks();
   resetDiagnosticsDeploymentEvidenceCacheForTests();
   flagsMock.mockResolvedValue({ aiDiagnostics: true } as never);
+  // Runs the caller's work against the transaction client, as the real seam does.
+  globalClientReads.length = 0;
+  recordingWindow.open = false;
+  prismaMock.$transaction.mockImplementation(
+    async (callback: (tx: typeof txMock) => Promise<unknown>) => {
+      recordingWindow.open = true;
+      try {
+        return await callback(txMock);
+      } finally {
+        recordingWindow.open = false;
+      }
+    },
+  );
 });
 
 afterEach(() => {
@@ -398,6 +453,54 @@ describe("AID-6A budget and usage health (#2375)", () => {
     expect(projected.latestFailureAtUtc).toBe("2026-08-02T01:02:03.000Z");
     expect(projected.latestFailureCode).toBe("rate_limit");
     expect(Number.isInteger(projected.remainingCents)).toBe(true);
+  });
+
+  it("reads its own three counts inside the seam, and reaches the global client for none of them (#2786)", async () => {
+    usageMock.mockResolvedValue(summary());
+    reservationCountMock.mockResolvedValue(3 as never);
+    usageEventMock.mockResolvedValue(null as never);
+
+    await readDiagnosticsUsageHealthEvidence(NOW);
+
+    // It opened the seam exactly once — not once per read, which would be three
+    // pool connections and three snapshots for one row of evidence.
+    expect(prismaMock.$transaction).toHaveBeenCalledTimes(1);
+    // And PostgreSQL was told READ ONLY before anything was read, on the
+    // transaction client rather than anywhere else.
+    expect(txMock.$executeRaw).toHaveBeenCalled();
+    // Nothing reached the global client while the callback was running. This is the
+    // assertion the shared doubles cannot make by identity, and the only one that
+    // would catch a fourth read added later on `prisma` instead of `tx`.
+    expect(globalClientReads).toEqual([]);
+  });
+
+  it("runs the shared usage summary BEFORE the seam opens, which is the declared exemption (#2786)", async () => {
+    // The ordering is a decision, not an accident: `getDiagnosticsUsageSummary` is
+    // the admin panel's own calculation and accepts no transaction client, so it is
+    // exempt (`usage-summary-no-tx-client`) and must not become a statement inside a
+    // transaction that has already begun. If it ever moved inside, this fails.
+    const order: string[] = [];
+    usageMock.mockImplementation(async () => {
+      order.push(recordingWindow.open ? "summary-inside-seam" : "summary");
+      return summary();
+    });
+    prismaMock.$transaction.mockImplementation(
+      async (callback: (tx: typeof txMock) => Promise<unknown>) => {
+        order.push("seam-opened");
+        recordingWindow.open = true;
+        try {
+          return await callback(txMock);
+        } finally {
+          recordingWindow.open = false;
+        }
+      },
+    );
+    reservationCountMock.mockResolvedValue(0 as never);
+    usageEventMock.mockResolvedValue(null as never);
+
+    await readDiagnosticsUsageHealthEvidence(NOW);
+
+    expect(order).toEqual(["summary", "seam-opened"]);
   });
 
   it("reports a negative remainder honestly rather than clamping it to zero", async () => {
