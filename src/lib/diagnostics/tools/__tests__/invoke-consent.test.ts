@@ -39,6 +39,7 @@ import { invokeDiagnosticsTool } from "../invoke";
 import { findDiagnosticsTool } from "../registry";
 import {
   createDiagnosticsToolSession,
+  DIAGNOSTICS_TOOL_SESSION_LIMITS,
   type DiagnosticsToolSession,
 } from "../session";
 import {
@@ -521,6 +522,48 @@ describe("one ledger belongs to one question (#2785 review)", () => {
       failureReason: "internal_error",
       rowCount: 0,
     });
+    // AND IT COST A CALL (#2785 review). Once a loop has made this mistake every
+    // tool_use block of every round takes this exit, so a refusal that cost nothing
+    // would leave `maxToolCallsPerRound` reading zero for the whole session while the
+    // audit table filled — the same "probing is free" defect the unregistered-id
+    // refusal was fixed for. The row records the round it was claimed in, not -1.
+    expect(secondSubmission.stats()).toMatchObject({
+      callsThisRound: 1,
+      callsThisSession: 1,
+    });
+    expect(lastAuditMetadata().roundIndex).toBe(0);
+  });
+
+  it("spends the SAME round budget every other refusal spends", async () => {
+    // What claiming actually buys, stated as the property rather than as a counter:
+    // a round in which the model sent four blocks against a stale ledger has used its
+    // four calls, so the fifth invocation of that round is out of budget — exactly as
+    // it would have been had those four been unregistered ids or ordinary reads.
+    // Before the claim, a session could take an unbounded number of these while
+    // `stats()` still read zero, and the per-round ceiling never engaged at all.
+    const staleLedger = consentTo([{ kind: "booking", id: BOOKING_A }]);
+    staleLedger.bindToLoopSession(createDiagnosticsToolSession());
+    const session = createDiagnosticsToolSession();
+    session.beginRound();
+
+    const perRound = DIAGNOSTICS_TOOL_SESSION_LIMITS.maxToolCallsPerRound;
+    for (let call = 0; call < perRound; call += 1) {
+      const refused = await run({ tool: PER_RECORD, consent: staleLedger, session });
+      expect(refused.status).toBe("error");
+      if (refused.status === "error") expect(refused.reason).toBe("internal_error");
+    }
+    expect(session.stats().callsThisRound).toBe(perRound);
+
+    // A perfectly good call, on this question's own ledger, in the same round.
+    const nextCall = await run({
+      tool: PER_RECORD,
+      consent: consentTo([{ kind: "booking", id: BOOKING_A }]),
+      session,
+    });
+    expect(nextCall.status).toBe("error");
+    if (nextCall.status === "error") {
+      expect(nextCall.reason).toBe("call_budget_exhausted");
+    }
   });
 
   it("does not throw, and still audits, when the ledger itself is missing", async () => {

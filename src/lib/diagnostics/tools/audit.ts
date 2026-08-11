@@ -106,8 +106,29 @@ export async function recordDiagnosticsToolAudit(
   input: DiagnosticsToolAuditInput,
 ): Promise<void> {
   const { audit } = input;
-  const denied = audit.authOutcome === "denied";
   const failed = audit.failureReason !== null;
+
+  /**
+   * An AUTHORIZATION denial — the only thing this row reports as a security block.
+   *
+   * `internal_error` is excluded, and that exclusion is the rule `invoke.ts` states
+   * for itself one level up (#2785 review). Every exit taken BEFORE the permission
+   * check records `authOutcome: "denied"`, because nothing had been allowed at that
+   * point; for an `internal_error` — a ledger that belongs to another question, a
+   * binding that disagrees with its own entry, a collaborator that threw where its
+   * contract says it returns — that combination used to produce a security-category,
+   * 24-month row at severity `important` with outcome `blocked`, "asserting a
+   * permission incident that never happened" (`invoke.ts`, the hoisted fault state).
+   * `invoke.ts` fixed it for the faults that happen after authorization by recording
+   * `allowed`; the ones that happen before it could not be fixed there without the
+   * row claiming an authorization that never ran. So the classification is fixed
+   * here, for the whole class: a defect is a `failure`, which is the outcome this
+   * function already has for it. The reason, the auth outcome and the consent state
+   * are all still recorded in the metadata, and `reportAiError` has already raised
+   * the fault where faults are read.
+   */
+  const deniedAuthorization =
+    audit.authOutcome === "denied" && audit.failureReason !== "internal_error";
 
   // `important` is reserved for an AUTHORIZATION denial, and a consent refusal is
   // deliberately not one (AID-7a, #2785). The caller passed every permission check;
@@ -117,7 +138,7 @@ export async function recordDiagnosticsToolAudit(
   // routine refusals and devalue the rows that are incidents. The refusal is still
   // fully recorded: outcome `failure`, `failureReason`, and `sensitiveInclusion:
   // "refused"` in the metadata.
-  const severity: AuditSeverity = denied ? "important" : "info";
+  const severity: AuditSeverity = deniedAuthorization ? "important" : "info";
 
   await createStructuredAuditLog({
     action: DIAGNOSTICS_TOOL_AUDIT_ACTION,
@@ -134,13 +155,13 @@ export async function recordDiagnosticsToolAudit(
     },
     category: "security",
     severity,
-    outcome: denied ? "blocked" : failed ? "failure" : "success",
+    outcome: deniedAuthorization ? "blocked" : failed ? "failure" : "success",
     // Fixed sentence plus the tool id above and a fixed enum. Nothing interpolated
     // here can come from the operator or from a database value, and the only
     // model-chosen part is a tool id already constrained to the registry key
     // pattern (see `entity.id`).
     summary: `Diagnostics tool ${audit.toolId} ${
-      denied ? "denied" : failed ? "failed" : "ran"
+      deniedAuthorization ? "denied" : failed ? "failed" : "ran"
     } on ${input.surface}`,
     metadata: auditMetadata(audit),
     // Diagnostics tool use IS sensitive access: an admin reading club data

@@ -569,6 +569,16 @@ export async function invokeDiagnosticsTool(
     //    closed for the WHOLE invocation and not merely for the sensitive part —
     //    every field of a ledger that belongs to another question is untrustworthy,
     //    the `peopleSearchTick` this row would record included.
+    //
+    //    THE LOOP BUDGET IS CLAIMED HERE TOO, before the refusal, for the same reason
+    //    the unregistered-id refusal below claims it and the budget refusal after that
+    //    already costs one: a refusal that writes a durable row and costs nothing is a
+    //    round the counters cannot see (#2785 review). Once a loop has made this
+    //    mistake EVERY tool_use block of every round takes this exit, so without the
+    //    claim `maxToolCallsPerRound` — the substrate's only bound on how many
+    //    invocations one round may make — stays inert at zero for the whole session
+    //    while the audit table fills. "A caller cannot probe for free" has to hold for
+    //    a ledger that belongs to another question as much as for a hallucinated id.
     if (!consentIsForThisQuestion) {
       reportAiError({
         tag: "diagnostics-tool-consent",
@@ -577,11 +587,16 @@ export async function invokeDiagnosticsTool(
         err: new Error("Diagnostics consent ledger reused across sessions"),
         context: { toolId: safeToolId },
       });
+      const consentClaim = input.session.claimToolCall();
       return await fail("internal_error", {
         toolId: safeToolId,
         areasChecked: [],
+        // `denied` is what every pre-authorization exit records — nothing had been
+        // allowed — and `audit.ts` is what keeps that from reading as a permission
+        // INCIDENT for a fault: an `internal_error` row is classified `failure` at
+        // `info`, never `blocked` at `important`, because no admin was blocked here.
         authOutcome: "denied",
-        roundIndex: roundIndexAtEntry,
+        roundIndex: consentClaim.ok ? consentClaim.roundIndex : roundIndexAtEntry,
       });
     }
 

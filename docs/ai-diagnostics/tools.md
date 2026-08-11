@@ -180,9 +180,12 @@ Three ordering choices are load-bearing:
   database work.
 
 The loop budget is claimed even for a call that is about to be denied — including a
-call naming an id that is **not in the registry** — so a caller cannot probe for
-free, round after round. Without that, one provider round of sixty hallucinated ids
-would write sixty audit rows with the round budget never engaging.
+call naming an id that is **not in the registry**, and a call whose consent ledger
+belongs to a different question — so a caller cannot probe for free, round after
+round. Without that, one provider round of sixty hallucinated ids would write sixty
+audit rows with the round budget never engaging; and a loop that reused one ledger
+across turns would take that exit on **every** block of every round with the
+counters still reading zero.
 
 ## Authorization is per invocation, and withholding is not authorization
 
@@ -544,8 +547,13 @@ escaping exception would be a worse one.
 
 A fault that happens **after** authorization succeeded is audited as what it was: an
 `allowed` call that then failed, with the areas it checked and the hash of the
-arguments it accepted intact. Only a fault before or during authorization is recorded
-as `denied`, which is what `audit.ts` turns into a `blocked` outcome.
+arguments it accepted intact. A fault before or during authorization is still
+recorded as `denied` — nothing had been allowed at that point — but since the #2785
+review an `internal_error` row is **never** classified as a security block:
+`audit.ts` gives it outcome `failure` at severity `info`, because a defect is not a
+permission incident and no admin was blocked by it. Every other `denied` row is a
+`blocked` outcome at `important`. The reason and the auth outcome are in the metadata
+either way, and the fault itself is reported to Sentry where faults are read.
 
 ## Adding a tool
 
