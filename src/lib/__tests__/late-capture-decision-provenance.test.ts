@@ -92,6 +92,11 @@ const PROVENANCE_SCANNED_FILES = [
   "docs/CONCURRENCY_AND_LOCKING.md",
   "docs/guides/payments.md",
   "docs/guides/notification-recipients.md",
+  // Cites #2773/#2774 only in its census lineage ("432 -> 434"), added when the
+  // two late-capture writers landed. No decision language, but the scan is by
+  // CITATION not by content — a file that names either issue must be checked,
+  // or the next author adds a claim here and nothing looks.
+  "docs/ai-diagnostics/audit-admin-category-review.md",
   "scripts/audit/audit-writer-census-manifest.ts",
   "src/app/api/admin/email-templates/route.ts",
   "src/lib/cancelled-booking-late-capture.ts",
