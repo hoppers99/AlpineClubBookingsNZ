@@ -44,7 +44,10 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
  * `Prisma.TransactionClient` is not the global client, and it has no
  * `$transaction`, so a nested transaction throws here) holding identical functions.
  */
-const { prismaMock, txMock } = vi.hoisted(() => {
+// Only `prismaMock` is returned: the transaction client is reached solely through
+// the `$transaction` double below, so hoisting a second binding out to module scope
+// would be an unused export of a test detail.
+const { prismaMock } = vi.hoisted(() => {
   const models = {
     booking: { findUnique: vi.fn() },
     payment: { findUnique: vi.fn(), findMany: vi.fn(), count: vi.fn() },
@@ -63,7 +66,6 @@ const { prismaMock, txMock } = vi.hoisted(() => {
         run(txMock),
       ),
     },
-    txMock,
   };
 });
 
