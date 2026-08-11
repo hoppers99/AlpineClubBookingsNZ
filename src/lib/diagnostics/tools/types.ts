@@ -157,6 +157,36 @@ export type DiagnosticsToolFailureReason =
   | "actor_read_failed"
   /** The caller lacks `view` on at least one area the tool declares. */
   | "permission_denied"
+  /**
+   * The entry surfaces personal data (`surfacesPersonalData: true`) and the record
+   * it was asked about is not one the operator consented to for this investigation
+   * (AID-7a, #2785; ADR-004 §1).
+   *
+   * DISTINCT FROM `permission_denied`, and the distinction is the whole point: the
+   * caller may well hold every area the entry declares. What is missing is the
+   * operator's own per-request inclusion of THAT record, which ADR-004 §1 requires
+   * on top of the permission check. Reporting it as a permission denial would send
+   * an operator to a Full Admin to be granted access they already have.
+   *
+   * It is ADR-004 §1's SECOND branch — "an explicit 'personal detail omitted —
+   * include the record to see it'" — taken at the whole-result level rather than
+   * field by field, because a second per-entry projection is out of scope for this
+   * substrate (recorded as an ADR-004 implementation note).
+   */
+  | "sensitive_consent_required"
+  /**
+   * The entry is declared `operatorOnly` — record SEARCH, which returns a bounded
+   * list of people or bookings — and this invocation is not one the operator
+   * authorised for the model (AID-7a, #2785).
+   *
+   * Two invocations are allowed and everything else refuses here: the operator's own
+   * record-picker action (`invocationChannel: "operator_action"`, which renders to
+   * the browser and sends nothing to the provider), and a model tool call on a
+   * request where the operator ticked the per-request people-search box (owner
+   * decision, #2378, 11 Aug 2026). The tick is per request, defaults off and is
+   * never persisted, so an otherwise identical later request refuses again.
+   */
+  | "operator_action_required"
   /** `AI_DIAGNOSTICS_DATABASE_URL` is absent, malformed, or reuses the app role. */
   | "database_not_configured"
   /** The connected role is NOT the least-privilege shape ADR-007 requires. */
@@ -329,6 +359,14 @@ export const DIAGNOSTICS_TOOL_FAILURE_MESSAGES: Record<
     "Your permissions could not be checked just now, so no diagnostics tool was run.",
   permission_denied:
     "You do not have view access to the area this diagnostics tool reads, so it was not run.",
+  // ADR-004 §1's "personal detail omitted — include the record to see it", said in
+  // plain English and naming the control the operator can actually reach. It never
+  // names the record it was asked about: the whole point is that the record was not
+  // included, and echoing an id back would put an unincluded identifier on screen.
+  sensitive_consent_required:
+    "That diagnostics tool reads personal details, and this question does not include the record it was asked about, so it was not run. Select that record and include it to see those details.",
+  operator_action_required:
+    "Searching for people or records needs your explicit go-ahead for this question, and it was not given, so that search was not run.",
   database_not_configured:
     "The read-only diagnostics database credential is not configured, so no tool was run.",
   database_role_unsafe:

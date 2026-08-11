@@ -34,6 +34,7 @@ import type { AdminPermissionArea } from "@/lib/admin-permissions";
 import type { DiagnosticsToolResult } from "../tools/types";
 import {
   evidenceStateForToolResult,
+  isConsentWithheldEvidenceState,
   isWithheldEvidenceState,
   worstEvidenceState,
   type DiagnosticsEvidenceState,
@@ -210,10 +211,30 @@ export function recordCaseEvidence(
 export interface DiagnosticCaseSummary {
   /** True only when every consulted source produced evidence. */
   complete: boolean;
-  /** True when at least one source was withheld for permissions. */
+  /**
+   * True when at least one source was withheld — for a permission, for a locked-out
+   * actor, or for a missing record inclusion. The broad "this case is incomplete
+   * because something was held back" flag; `withheldAreas` and `hasConsentWithheld`
+   * say which kind, and a caller must consult them before naming a remedy.
+   */
   hasWithheldEvidence: boolean;
-  /** The areas that would unlock the withheld sources, de-duplicated and sorted. */
+  /**
+   * The areas that would unlock the PERMISSION-withheld sources, de-duplicated and
+   * sorted.
+   *
+   * CONSENT REFUSALS ARE DELIBERATELY ABSENT (AID-7a, #2785). The derivation falls
+   * back to a source's own `areas` when it reports no `missingAreas`, and a consent
+   * refusal reports none — so including it here would fill this list with the areas
+   * the entry happens to require and tell the operator an area was denied when none
+   * was. The consent remedy is `hasConsentWithheld` and it is not an area at all.
+   */
   withheldAreas: AdminPermissionArea[];
+  /**
+   * True when at least one source was withheld because the operator did not include
+   * the record it is about (ADR-004 §1). The UI names the record and the inclusion
+   * control for this; it must never name an area.
+   */
+  hasConsentWithheld: boolean;
   /** True when at least one blocker is an authoritative rule result. */
   hasAuthoritativeBlocker: boolean;
   /** True when a blocker is only inferred — the model must not overstate it. */
@@ -229,6 +250,10 @@ export interface DiagnosticCaseSummary {
  * model to present an inference as though it were an authoritative rule result": a
  * caller (AID-7, #2378) can use it to frame the answer as a likely cause rather than
  * a verdict, without having to re-read every finding.
+ *
+ * `hasConsentWithheld` is the same idea for ADR-004 §1 (AID-7a, #2785): it lets the
+ * UI say "these personal details were not read because the record was not included"
+ * and point at the inclusion control, instead of naming an area nobody denied.
  */
 export function summariseDiagnosticCase(
   diagnosticCase: DiagnosticCase,
@@ -236,9 +261,18 @@ export function summariseDiagnosticCase(
   const withheld = diagnosticCase.sources.filter((source) =>
     isWithheldEvidenceState(source.state),
   );
+  // Split before deriving areas, not after: the fallback below reads a source's own
+  // required areas, so a consent refusal left in this list would be reported as a
+  // denied area. See `withheldAreas` on the summary type.
+  const consentWithheld = withheld.filter((source) =>
+    isConsentWithheldEvidenceState(source.state),
+  );
+  const permissionWithheld = withheld.filter(
+    (source) => !isConsentWithheldEvidenceState(source.state),
+  );
   const withheldAreas = [
     ...new Set(
-      withheld.flatMap((source) =>
+      permissionWithheld.flatMap((source) =>
         source.missingAreas.length > 0 ? source.missingAreas : source.areas,
       ),
     ),
@@ -254,6 +288,7 @@ export function summariseDiagnosticCase(
     ),
     hasWithheldEvidence: withheld.length > 0,
     withheldAreas,
+    hasConsentWithheld: consentWithheld.length > 0,
     hasAuthoritativeBlocker: blockerConfidences.has("authoritative_blocker"),
     hasInferredBlockerOnly:
       diagnosticCase.blockers.length > 0 &&

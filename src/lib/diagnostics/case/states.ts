@@ -89,6 +89,21 @@ export const DIAGNOSTICS_EVIDENCE_STATES = [
    * credential and audit story.
    */
   "provider_check_required",
+  /**
+   * The evidence exists and this caller may well be permitted to read it, but the
+   * operator did not include the record it is about in this question, so the personal
+   * detail was not retrieved (AID-7a, #2785; ADR-004 §1).
+   *
+   * IT SITS BESIDE `permission_denied` AND NOT INSIDE IT. Both are withheld rather
+   * than absent — `isWithheldEvidenceState` covers both — but the operator's next move
+   * is completely different, and it is the one thing they can fix themselves: select
+   * the record and include it. Folding it into `permission_denied` would tell an
+   * administrator who holds every relevant area to go and ask a Full Admin for access,
+   * which is both false and unactionable. That is also why `summariseDiagnosticCase`
+   * keeps consent refusals OUT of `withheldAreas`: naming an area there would say an
+   * area was denied when none was.
+   */
+  "consent_required",
   /** The caller lacks `view` on an area this evidence needs. NEVER inferred around. */
   "permission_denied",
   /** The acting admin account is locked out of the admin surface entirely. */
@@ -139,6 +154,8 @@ export const DIAGNOSTICS_EVIDENCE_STATE_DESCRIPTIONS: Record<
     "The evidence was retrieved but does not settle the question either way.",
   provider_check_required:
     "This is what the platform last recorded, not a live answer from the provider. Settling it needs a check in Stripe's or Xero's own console, which Diagnostics deliberately cannot make.",
+  consent_required:
+    "The personal details behind this were not retrieved, because this question does not include the record they belong to. Select that record and include it to see them.",
   permission_denied:
     "Your admin access does not include the area this evidence comes from, so it was not retrieved and was not inferred from anywhere else.",
   actor_blocked:
@@ -179,6 +196,12 @@ export const DIAGNOSTICS_EVIDENCE_STATE_DESCRIPTIONS: Record<
  *    `temporarily_unavailable` — all three are faults in a dependency that a later
  *    attempt may well not hit — while `redaction_failed` and `internal_error` become
  *    `tool_failed`, because those are defects and retrying is not the remedy.
+ *  - `operator_action_required` becomes `unsupported` rather than a consent state.
+ *    To the model — the only caller that can ever provoke it — "diagnostics has no
+ *    tool that can answer that" is exactly true: record search is not a capability
+ *    offered to it on this request. `consent_required` would be the wrong sentence,
+ *    because the operator's move for it (include the record) is not the move here
+ *    (tick the search box, if they want the model searching for people at all).
  */
 const EVIDENCE_STATE_FOR_FAILURE: Record<
   DiagnosticsToolFailureReason,
@@ -192,6 +215,8 @@ const EVIDENCE_STATE_FOR_FAILURE: Record<
   actor_blocked: "actor_blocked",
   actor_read_failed: "temporarily_unavailable",
   permission_denied: "permission_denied",
+  sensitive_consent_required: "consent_required",
+  operator_action_required: "unsupported",
   database_not_configured: "not_configured",
   database_role_unsafe: "not_ready",
   database_grants_missing: "not_ready",
@@ -256,9 +281,35 @@ export function worstEvidenceState(
  * absent from the system. The distinction a case summary must not lose: an
  * investigation that hit one of these is INCOMPLETE, and saying so is the honest
  * answer — not filling the gap from a source the caller does hold.
+ *
+ * `consent_required` is withheld too (AID-7a, #2785): the evidence exists and was
+ * deliberately not retrieved. What separates it from the other two is WHOSE decision
+ * withheld it and what fixes it — see `isConsentWithheldEvidenceState`.
  */
 export function isWithheldEvidenceState(
   state: DiagnosticsEvidenceState,
 ): boolean {
-  return state === "permission_denied" || state === "actor_blocked";
+  return (
+    state === "permission_denied" ||
+    state === "actor_blocked" ||
+    state === "consent_required"
+  );
+}
+
+/**
+ * True when the state means the evidence was withheld by the OPERATOR'S OWN
+ * inclusion decision rather than by a permission (AID-7a, #2785).
+ *
+ * It exists as a named predicate rather than a `=== "consent_required"` written out
+ * at each call site so the case layer and this vocabulary cannot drift: a caller that
+ * reports withheld evidence has to decide, at the point of use, whether it is naming
+ * a missing PERMISSION or a missing INCLUSION. `summariseDiagnosticCase` uses it to
+ * keep consent refusals out of `withheldAreas` — its fallback populates that list
+ * from the source's own required areas, which for a consent refusal would name an
+ * area the caller was never denied.
+ */
+export function isConsentWithheldEvidenceState(
+  state: DiagnosticsEvidenceState,
+): boolean {
+  return state === "consent_required";
 }

@@ -32,6 +32,7 @@ import {
   DIAGNOSTICS_EVIDENCE_STATES,
   DIAGNOSTICS_EVIDENCE_STATE_DESCRIPTIONS,
   evidenceStateForToolResult,
+  isConsentWithheldEvidenceState,
   isWithheldEvidenceState,
   worstEvidenceState,
 } from "../states";
@@ -195,12 +196,55 @@ describe("evidence states (#2375)", () => {
   });
 
   it("marks only the withheld states as withheld", () => {
-    expect(isWithheldEvidenceState("permission_denied")).toBe(true);
-    expect(isWithheldEvidenceState("actor_blocked")).toBe(true);
+    const withheld = ["permission_denied", "actor_blocked", "consent_required"];
+    for (const state of withheld) {
+      expect(
+        isWithheldEvidenceState(state as (typeof DIAGNOSTICS_EVIDENCE_STATES)[number]),
+        state,
+      ).toBe(true);
+    }
     for (const state of DIAGNOSTICS_EVIDENCE_STATES) {
-      if (state === "permission_denied" || state === "actor_blocked") continue;
+      if (withheld.includes(state)) continue;
       expect(isWithheldEvidenceState(state), state).toBe(false);
     }
+  });
+
+  it("separates a CONSENT refusal from a permission denial (#2785)", () => {
+    // Both are withheld. Only one of them is fixed by asking a Full Admin for access,
+    // and telling an operator who holds every relevant area to go and do that is both
+    // false and unactionable — so `isConsentWithheldEvidenceState` is the finer test
+    // every caller naming a remedy has to make.
+    expect(evidenceStateForToolResult(failure("sensitive_consent_required"))).toBe(
+      "consent_required",
+    );
+    expect(isWithheldEvidenceState("consent_required")).toBe(true);
+    expect(isConsentWithheldEvidenceState("consent_required")).toBe(true);
+    for (const state of DIAGNOSTICS_EVIDENCE_STATES) {
+      if (state === "consent_required") continue;
+      expect(isConsentWithheldEvidenceState(state), state).toBe(false);
+    }
+  });
+
+  it("reports an operator-only tool asked for by the MODEL as unsupported (#2785)", () => {
+    // Not `consent_required`: the operator's move for that one is to include a record,
+    // and the move here is a different control entirely (the people-search tick). To
+    // the model, "diagnostics has no tool that can answer that" is exactly true.
+    expect(evidenceStateForToolResult(failure("operator_action_required"))).toBe(
+      "unsupported",
+    );
+  });
+
+  it("orders `consent_required` just better than a permission denial", () => {
+    // The best-to-worst order is what `worstEvidenceState` folds on. A consent refusal
+    // is worse than every retrieved state and better than a denial, so a case holding
+    // both reports the denial as its worst outcome.
+    expect(worstEvidenceState("ok", "consent_required")).toBe("consent_required");
+    expect(worstEvidenceState("consent_required", "permission_denied")).toBe(
+      "permission_denied",
+    );
+    expect(worstEvidenceState("consent_required", "not_found")).toBe(
+      "consent_required",
+    );
   });
 });
 
@@ -382,6 +426,62 @@ describe("diagnostic case (#2375)", () => {
     expect(diagnosticCase.history).toHaveLength(1);
     expect(diagnosticCase.facts[0].confidence).toBe("confirmed_current");
     expect(diagnosticCase.history[0].confidence).toBe("historical");
+  });
+
+  it("keeps a CONSENT refusal out of `withheldAreas` and names it instead (#2785)", () => {
+    // The bug this pins: `withheldAreas` falls back to the source's own required areas
+    // whenever a withheld source names no `missingAreas`, and a consent refusal never
+    // names any. Left in, the summary would tell the operator that `bookings` and
+    // `membership` were denied — an area claim about a caller who was denied nothing.
+    const diagnosticCase = createDiagnosticCase("booking.cannot_confirm");
+    recordCaseEvidence(
+      diagnosticCase,
+      failure("sensitive_consent_required", {
+        toolId: "diagnostics.booking_block_state",
+        areasChecked: ["bookings", "membership"],
+      }),
+    );
+
+    const summary = summariseDiagnosticCase(diagnosticCase);
+    expect(summary.complete).toBe(false);
+    expect(summary.hasWithheldEvidence).toBe(true);
+    expect(summary.hasConsentWithheld).toBe(true);
+    expect(summary.withheldAreas).toEqual([]);
+    expect(summary.states).toEqual(["consent_required"]);
+  });
+
+  it("reports a consent refusal and a permission denial as the different things they are", () => {
+    // One case, both kinds of withholding. The UI has to name an area for one and the
+    // inclusion control for the other, so the summary has to keep them apart.
+    const diagnosticCase = createDiagnosticCase("booking.cannot_confirm");
+    recordCaseEvidence(
+      diagnosticCase,
+      failure("permission_denied", { missingAreas: ["finance"] }),
+    );
+    recordCaseEvidence(
+      diagnosticCase,
+      failure("sensitive_consent_required", {
+        toolId: "diagnostics.member_eligibility_state",
+        areasChecked: ["membership"],
+      }),
+    );
+
+    const summary = summariseDiagnosticCase(diagnosticCase);
+    expect(summary.hasWithheldEvidence).toBe(true);
+    expect(summary.hasConsentWithheld).toBe(true);
+    // `membership` came from the consent refusal and must not appear; `finance` is a
+    // real denial and must.
+    expect(summary.withheldAreas).toEqual(["finance"]);
+  });
+
+  it("leaves `hasConsentWithheld` false when nothing was withheld for consent", () => {
+    const diagnosticCase = createDiagnosticCase("booking.cannot_confirm");
+    recordCaseEvidence(diagnosticCase, success([{ action: "booking.confirm" }]));
+    recordCaseEvidence(
+      diagnosticCase,
+      failure("permission_denied", { missingAreas: ["finance"] }),
+    );
+    expect(summariseDiagnosticCase(diagnosticCase).hasConsentWithheld).toBe(false);
   });
 
   it("de-duplicates and sorts the areas that would complete the picture", () => {
