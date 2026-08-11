@@ -616,6 +616,12 @@ export async function invokeDiagnosticsTool(
     // 4b. CONSENT — ADR-004 §1's per-invocation inclusion, for the entries that
     //     surface personal data about one named record.
     //
+    //     IT DOES NOT DEPEND ON THE CHANNEL. An `operator_action` invocation of a
+    //     per-record entry is gated exactly as a model one is — no caller in this
+    //     substrate needs the looser rule, and "the operator asked for it directly"
+    //     is not the same fact as "the operator included this record", which is what
+    //     ADR-004 §1 requires.
+    //
     //     A SEARCH entry is governed by gate 4a instead and is deliberately not
     //     re-checked here: it is about no single record, so there is no record to
     //     have included, and the operator's search tick IS its inclusion decision.

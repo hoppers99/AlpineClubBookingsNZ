@@ -109,6 +109,14 @@ export async function recordDiagnosticsToolAudit(
   const denied = audit.authOutcome === "denied";
   const failed = audit.failureReason !== null;
 
+  // `important` is reserved for an AUTHORIZATION denial, and a consent refusal is
+  // deliberately not one (AID-7a, #2785). The caller passed every permission check;
+  // what was missing was the operator's own inclusion of a record, which is an
+  // ordinary and expected outcome of asking a question about a record you did not
+  // select. Raising it to `important` would fill the security-incident view with
+  // routine refusals and devalue the rows that are incidents. The refusal is still
+  // fully recorded: outcome `failure`, `failureReason`, and `sensitiveInclusion:
+  // "refused"` in the metadata.
   const severity: AuditSeverity = denied ? "important" : "info";
 
   await createStructuredAuditLog({
