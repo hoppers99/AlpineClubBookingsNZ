@@ -374,8 +374,14 @@ export interface DiagnosticsToolAudit {
    * Resolved per invocation rather than copied from the entry, because three entries
    * choose their subject with an argument (`{subject, recordId}`,
    * `{localModel, localId}`): for those the kind is not a property of the entry at
-   * all, and a row that recorded one would be recording the wrong one. Null on such
-   * an entry means the arguments never named a kind the investigation can hold.
+   * all, and a row that recorded one would be recording the wrong one.
+   *
+   * It is therefore `null` in three cases, and they are all the same fact — nobody
+   * established a kind: the entry names no record; the invocation was refused before
+   * the consent gate ran, so its arguments were never resolved (`sensitiveInclusion`
+   * reads `not_reached` beside it); or the arguments named a subject no consent kind
+   * covers. Reading the entry's static declaration onto a row whose arguments never
+   * parsed would assert a subject that was never identified.
    */
   consentRecordKind: DiagnosticsConsentRecordKind | null;
   /**

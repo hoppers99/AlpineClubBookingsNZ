@@ -604,7 +604,14 @@ describe("the durable row records the consent decision (#2785)", () => {
       missingAreas: ["bookings"],
     });
     await run({ tool: PER_RECORD });
-    expect(lastAuditMetadata().sensitiveInclusion).toBe("not_reached");
+    expect(lastAuditMetadata()).toMatchObject({
+      sensitiveInclusion: "not_reached",
+      // And no record KIND either: the arguments were never resolved, so nothing
+      // established what this invocation was about. Copying the entry's static
+      // declaration here would assert a subject nobody identified — and for the
+      // entries whose kind is an argument there is no static declaration to copy.
+      consentRecordKind: null,
+    });
 
     // And when no entry was identified at all.
     findToolMock.mockReturnValue(undefined);
