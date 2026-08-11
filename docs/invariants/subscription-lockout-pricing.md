@@ -289,6 +289,8 @@ and both must be stated wherever the journey is offered (#2779).**
   violate `INV-LOCKOUT-069`. Anyone who wants it closed needs a new owner
   decision, because the owner's stated rationale (refusing a member trying to give
   the club money) does not by itself reach a branch where no money changes hands.
+  That question is filed as #2792 and is open; until it is answered, the branch
+  stays as it is.
 
 The member-facing surfaces are copy only: no gate, price, capacity or settlement
 behaviour is decided here. Where they say a free booking is confirmed by the club,
