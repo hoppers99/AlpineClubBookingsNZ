@@ -610,6 +610,20 @@ The checklist a reviewer should hold you to:
    directly linked record's own id, and only for those: that is what the
    investigation's consent ledger is allowed to follow, and only an entry that
    declares `surfacesPersonalData` may declare them at all.
+
+   **This is not a checklist item you can forget.** Since the #2785 delta review the
+   definer reads the rule off the ARGUMENT SCHEMA: an entry with a **required**
+   argument that accepts an exact identifier and refuses free text is an entry asked
+   about one identified thing, and it must name its record, declare itself a search,
+   or carry a `consentRecordExemption` — a reviewed sentence saying why what it names
+   is not a record an operator could ever have included. Anything else throws at
+   module-body time. The detector is the schema probe rather than a `*Id` name
+   convention, so `eventRef` or `subjectKey` cannot slip past it, and an OPTIONAL
+   identifier does not trip it (the correlation entries read a window of events and
+   filter inside it). There is exactly one exemption in the tree — the finance webhook
+   timeline, keyed on a provider event reference — and `registry.test.ts` pins both
+   that population and, by a second and independent probe over `inputSchema.required`,
+   that every per-record entry in the shipped registry answers the question.
 8. Know which projected values are **server-defined codes** and which are not. A
    column whose value originates in a request — a header, a name, a note — is
    attacker-chosen text, and the projection re-validates it against a known shape and

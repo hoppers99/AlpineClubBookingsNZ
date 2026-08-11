@@ -307,6 +307,14 @@ the other. The provider references beside them (Stripe ids, Xero invoice numbers
 bank references) are deliberately **not** declared: they name provider records, not
 records this platform's consent is expressed in.
 
+The one entry in this pack that takes an exact identifier and names no consent record
+is the **webhook timeline**, whose `eventRef` is a provider event id, a Xero resource
+id or a correlation key. Since the #2785 delta review that is a declaration rather
+than a comment — `consentRecordExemption`, carrying the reason — because the definer
+now refuses to define an entry that takes an identifier and answers neither the record
+question nor the search one. Adding a second exemption to this pack means writing that
+reason in the diff and adding the entry to the census in `registry.test.ts`.
+
 ## Stored evidence only, and saying so
 
 For this first release the pack reads **only what the application already wrote

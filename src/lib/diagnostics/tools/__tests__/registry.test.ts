@@ -1628,6 +1628,84 @@ describe("ADR-004 §1 consent declarations (#2785)", () => {
     expect(webhook && declaresConsentRecord(webhook)).toBe(false);
   });
 
+  /**
+   * The registry-side half of the record-scope forcing function (#2785 delta review).
+   *
+   * `defineDiagnosticsTool` enforces the rule from the entry's ZOD schema at
+   * definition time. This census enforces the same rule over the registry that
+   * actually ships, by a DIFFERENT mechanism — the hand-written `inputSchema.required`
+   * list (the bytes the provider is handed) and the entry's own `parseArgs` — so the
+   * two cannot both stop working for one reason. It is also what makes the definer's
+   * detector non-vacuous: if the probe stopped recognising identifiers, this
+   * population would collapse and the count assertion below would fail.
+   */
+  function requiredIdentifierArgs(tool: DiagnosticsToolEntry): string[] {
+    const example = EXAMPLE_ARGS[tool.id];
+    if (typeof example !== "object" || example === null) return [];
+    const keys: string[] = [];
+    for (const key of tool.inputSchema.required ?? []) {
+      const acceptsId = tool.parseArgs({
+        ...example,
+        [key]: WIDEST_RECORD_ID,
+      }).ok;
+      const refusesText = !tool.parseArgs({
+        ...example,
+        [key]: "not a record id!",
+      }).ok;
+      if (acceptsId && refusesText) keys.push(key);
+    }
+    return keys;
+  }
+
+  it("makes every entry asked about ONE identified thing answer for it (#2785 delta review)", () => {
+    // The rule, over the registry rather than over one spec: an entry with a required
+    // argument that takes an exact identifier either names the record it is about, is
+    // a search governed by the channel gate, or carries a reviewed exemption saying
+    // why what it names is not a record an operator could have included. Nothing may
+    // simply not answer — that is how five per-record entries came to sit outside the
+    // consent gate in the first place.
+    const perRecordEntries = DIAGNOSTICS_TOOLS.filter(
+      (tool) => requiredIdentifierArgs(tool).length > 0,
+    );
+    // Non-vacuity, and the detector's own alarm: this population is most of the
+    // registry, so a probe that stopped recognising identifiers fails here.
+    expect(perRecordEntries.length).toBeGreaterThan(15);
+
+    for (const tool of perRecordEntries) {
+      const answered =
+        declaresConsentRecord(tool) ||
+        tool.operatorOnly === true ||
+        (tool.consentRecordExemption ?? "").trim().length > 0;
+      expect(
+        answered,
+        `${tool.id} takes ${requiredIdentifierArgs(tool).join(", ")} but names no consent record, is no search, and carries no consentRecordExemption`,
+      ).toBe(true);
+    }
+  });
+
+  it("pins the ONE reviewed exemption, and what it says (#2785 delta review)", () => {
+    // A census, not a ceiling — but a second one has to be added here in the same
+    // diff, which is the review step the exemption exists to force. The webhook
+    // timeline is keyed on a provider event reference: not a platform record id, not
+    // something an operator can select, and not a kind the ledger can hold, so
+    // declaring a record kind for it would refuse every invocation while looking like
+    // a gate.
+    const exempt = DIAGNOSTICS_TOOLS.filter(
+      (tool) => tool.consentRecordExemption !== undefined,
+    );
+    expect(exempt.map((tool) => tool.id)).toEqual([
+      DIAGNOSTICS_FINANCE_WEBHOOK_TIMELINE_TOOL_ID,
+    ]);
+    const webhook = exempt[0];
+    expect(webhook?.consentRecordExemption).toMatch(/provider event reference/i);
+    // The exemption is not a way to be gated more loosely: the entry still declares
+    // no consent record, still surfaces no personal data, and still cannot widen the
+    // investigation.
+    expect(declaresConsentRecord(webhook!)).toBe(false);
+    expect(webhook?.surfacesPersonalData).toBe(false);
+    expect(webhook?.relatedRecordRefs).toBeUndefined();
+  });
+
   it("pins the entries whose record KIND is an argument (#2785 review)", () => {
     // A static kind cannot express `{subject, recordId}` or `{localModel, localId}`,
     // and declaring one anyway would gate every subject as the wrong kind. The map is
@@ -1942,6 +2020,153 @@ describe("ADR-004 §1 consent declarations (#2785)", () => {
     expect(() =>
       defineDiagnosticsTool({ ...base, surfacesPersonalData: false }),
     ).not.toThrow();
+  });
+
+  it("refuses, at definition time, a per-record entry that answers nothing (#2785 delta review)", () => {
+    // THE HOLE THIS CLOSES. The definition-time invariant above only reaches entries
+    // that declare `surfacesPersonalData`. The five per-record entries that return
+    // codes, amounts and instants declared it false, named no record, and so sat
+    // outside gate 4b entirely until the fix lane bound them BY HAND — which binds the
+    // entries that exist, not the next one. `booking_hold_state({ bookingId })`,
+    // projecting nothing but status codes, would have defined cleanly, been offered on
+    // every request, and been readable for any booking id the model could name. The
+    // registry census cannot catch that either: it filters on entries that DECLARE a
+    // record, so an entry that never had a declaration never enters the comparison.
+    //
+    // So the signal is the ARGUMENT SCHEMA, which no author can forget to write: a
+    // REQUIRED argument that accepts an exact identifier and refuses free text.
+    const perRecordShape = {
+      id: "diagnostics.record_scope_fixture",
+      label: "Record scope fixture",
+      description:
+        "Test-only entry used to pin the definition-time record-scope invariant.",
+      requiredAreas: ["support"] as const,
+      source: "select_only_sql" as const,
+      argsSchema: z
+        .object({ bookingId: z.string().min(20).max(40).regex(/^[a-z0-9]+$/) })
+        .strict(),
+      inputSchema: {
+        type: "object" as const,
+        properties: { bookingId: { type: "string" } },
+        required: ["bookingId"],
+        additionalProperties: false as const,
+      },
+      sql: "SELECT true AS ok",
+      bind: () => [],
+      project: (row: Record<string, unknown>) => ({ ok: row.ok === true }),
+      rowLimit: 1,
+      byteLimit: 64,
+      surfacesPersonalData: false,
+    };
+
+    expect(() => defineDiagnosticsTool({ ...perRecordShape })).toThrow(
+      /asked about one identified thing/,
+    );
+
+    // The three ways to answer, all of which define.
+    expect(() =>
+      defineDiagnosticsTool({
+        ...perRecordShape,
+        consentRecordKind: "booking",
+        consentRecordArgKey: "bookingId",
+      }),
+    ).not.toThrow();
+    expect(() =>
+      defineDiagnosticsTool({ ...perRecordShape, operatorOnly: true }),
+    ).not.toThrow();
+    expect(() =>
+      defineDiagnosticsTool({
+        ...perRecordShape,
+        consentRecordExemption:
+          "The id names a provider event, not a platform record an operator can select.",
+      }),
+    ).not.toThrow();
+
+    // An OPTIONAL identifier is not what the entry is about — the audit-correlation
+    // entries read a window of events and filter inside it — so it does not trip.
+    expect(() =>
+      defineDiagnosticsTool({
+        ...perRecordShape,
+        argsSchema: z
+          .object({
+            window: z.enum(["1h", "24h"]),
+            requestId: z
+              .string()
+              .min(20)
+              .max(40)
+              .regex(/^[a-z0-9]+$/)
+              .optional(),
+          })
+          .strict(),
+      }),
+    ).not.toThrow();
+
+    // And an entry whose schema cannot be introspected at all fails CLOSED, because a
+    // detector that silently stops detecting is this assert's own failure mode.
+    expect(() =>
+      defineDiagnosticsTool({
+        ...perRecordShape,
+        argsSchema: z.union([
+          z.object({ bookingId: z.string() }).strict(),
+          z.object({ paymentId: z.string() }).strict(),
+        ]),
+      }),
+    ).toThrow(/not a plain object/);
+  });
+
+  it("refuses an exemption that excuses nothing (#2785 delta review)", () => {
+    const base = {
+      id: "diagnostics.exemption_fixture",
+      label: "Exemption fixture",
+      description:
+        "Test-only entry used to pin the consent-record exemption invariant.",
+      requiredAreas: ["support"] as const,
+      source: "select_only_sql" as const,
+      argsSchema: z
+        .object({ eventRef: z.string().min(20).max(40).regex(/^[a-z0-9]+$/) })
+        .strict(),
+      inputSchema: {
+        type: "object" as const,
+        properties: { eventRef: { type: "string" } },
+        required: ["eventRef"],
+        additionalProperties: false as const,
+      },
+      sql: "SELECT true AS ok",
+      bind: () => [],
+      project: (row: Record<string, unknown>) => ({ ok: row.ok === true }),
+      rowLimit: 1,
+      byteLimit: 64,
+      surfacesPersonalData: false,
+      consentRecordExemption: "A provider event reference, not a platform record.",
+    };
+
+    // A blank reason is not a review.
+    expect(() =>
+      defineDiagnosticsTool({ ...base, consentRecordExemption: "   " }),
+    ).toThrow(/empty consentRecordExemption/);
+
+    // An exemption beside a real consent declaration: one of the two is stale.
+    expect(() =>
+      defineDiagnosticsTool({
+        ...base,
+        consentRecordKind: "booking",
+        consentRecordArgKey: "eventRef",
+      }),
+    ).toThrow(/BOTH a consent record and a consentRecordExemption/);
+
+    // A search is governed by the channel gate, so there is nothing to excuse.
+    expect(() =>
+      defineDiagnosticsTool({ ...base, operatorOnly: true }),
+    ).toThrow(/nothing for the exemption to excuse/);
+
+    // And an exemption on an entry that takes no identifier at all is a declaration
+    // that stopped being true — the argument was removed and the excuse was left.
+    expect(() =>
+      defineDiagnosticsTool({
+        ...base,
+        argsSchema: z.object({ window: z.enum(["1h", "24h"]) }).strict(),
+      }),
+    ).toThrow(/exempt from nothing/);
   });
 });
 

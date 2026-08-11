@@ -179,6 +179,30 @@ interface DiagnosticsToolSpecBase<TArgs> {
    */
   relatedRecordRefs?: readonly DiagnosticsRelatedRecordRef[];
   /**
+   * The REVIEWED reason an entry that takes a record-id-shaped required argument
+   * nonetheless declares no consent record (#2785 delta review).
+   *
+   * `defineDiagnosticsTool` detects "this entry is asked about one identified thing"
+   * from the argument schema itself (see `assertConsentRecordScopeIsDeclared`) and
+   * refuses to define an entry that neither names its record, declares itself a
+   * search, nor carries one of these. So the record scope no longer rests on an
+   * author remembering the rule: it rests on the entry answering the question, one
+   * way or another, before the registry will build.
+   *
+   * IT IS A REASON RATHER THAN A FLAG, because the only honest exemption is one
+   * somebody argued in the diff. There is exactly one at this head, the finance
+   * webhook timeline, and its argument is a PROVIDER event reference — a Stripe event
+   * id, a Xero resource id or a correlation key. That is not a platform record id, not
+   * something an operator can select, and not a kind the investigation ledger can
+   * hold, so declaring a kind for it would refuse every invocation while pretending to
+   * be a gate.
+   *
+   * It may not travel with a consent record (the entry would then be gated anyway,
+   * and the two declarations would disagree) or with `operatorOnly` (gate 4a governs a
+   * search, so there is nothing to be exempt from).
+   */
+  consentRecordExemption?: string;
+  /**
    * Argument keys whose ACCEPTED value is LOW-ENTROPY — a value an offline reader
    * of the audit metadata could enumerate and match against an unkeyed digest.
    * When a parsed argument object carries any of them, the audit row records
@@ -323,6 +347,8 @@ interface DiagnosticsToolEntryBase {
     kinds: Readonly<Record<string, DiagnosticsConsentRecordKind | null>>;
   };
   relatedRecordRefs?: readonly DiagnosticsRelatedRecordRef[];
+  /** See the spec field: why this record-id-taking entry names no consent record. */
+  consentRecordExemption?: string;
   /** See the spec field: a record SEARCH, gated on an operator act or their tick. */
   operatorOnly?: boolean;
   /** See the spec field: keys whose accepted value must not reach a durable digest. */
@@ -503,6 +529,7 @@ function assertConsentDeclarationIsComplete<TArgs>(
   if (spec.consentRecordKindByArg !== undefined) {
     assertConsentRecordKindMapIsExhaustive(spec);
   }
+  assertConsentRecordScopeIsDeclared(spec, hasRecord, isSearch);
   if (spec.surfacesPersonalData && !hasRecord && !isSearch) {
     throw new Error(
       `Diagnostics tool ${spec.id} declares surfacesPersonalData but names neither the record it is about (a record kind + consentRecordArgKey) nor operatorOnly: true. ADR-004 §1's consent gate cannot be applied to it.`,
@@ -530,6 +557,125 @@ function assertConsentDeclarationIsComplete<TArgs>(
       );
     }
   }
+}
+
+/**
+ * A record id as this schema mints one — a cuid — and a string that is emphatically
+ * not one. Together they are how the assert below RECOGNISES a record-id argument
+ * without trusting its name.
+ *
+ * The pair is the whole detector: a key whose own schema accepts the first and
+ * refuses the second is a key that takes an exact identifier rather than free text,
+ * a code, a date or a number. A name heuristic (`*Id`) was the alternative and is
+ * strictly weaker — `eventRef`, `bookingRef`, `subjectKey` all escape it, and the
+ * point of this assert is the entry nobody thought about.
+ */
+const CONSENT_RECORD_ID_PROBE = "clz0000000abcdefghijklmno";
+const NOT_A_RECORD_ID_PROBE = "not a record id!";
+
+/**
+ * The REQUIRED arguments of this entry that take an exact identifier, or `null` when
+ * the schema cannot be introspected at all.
+ *
+ * `required` is deliberate: an entry whose identifier is OPTIONAL is not an entry
+ * about one record — it must have defined behaviour without it, which is what the
+ * five audit-correlation entries have (`{window, requestId?}` reads a window of
+ * events, and the request id is a correlation filter inside it, not the subject).
+ * A key that is required, and whose own schema takes an identifier and nothing else,
+ * is the entry saying what it is asked about.
+ *
+ * `null` means "this schema is not a plain object" — a union, a transform, something
+ * a future entry may reach for. The caller treats that as UNKNOWN and fail-closed
+ * rather than as "no record", because a detector that silently stops detecting is
+ * exactly the failure this assert exists to prevent.
+ */
+function requiredRecordIdArgKeys<TArgs>(
+  spec: DiagnosticsToolSpec<TArgs>,
+): string[] | null {
+  const schema: unknown = spec.argsSchema;
+  if (!(schema instanceof z.ZodObject)) return null;
+  const shape: unknown = schema.shape;
+  if (typeof shape !== "object" || shape === null) return null;
+  const keys: string[] = [];
+  for (const [key, field] of Object.entries(shape)) {
+    if (!(field instanceof z.ZodType)) return null;
+    // Optional, defaulted or nullable: the entry works without it, so it is not the
+    // record the entry is ABOUT.
+    if (field.safeParse(undefined).success) continue;
+    if (!field.safeParse(CONSENT_RECORD_ID_PROBE).success) continue;
+    if (field.safeParse(NOT_A_RECORD_ID_PROBE).success) continue;
+    keys.push(key);
+  }
+  return keys;
+}
+
+/**
+ * AN ENTRY THAT IS ASKED ABOUT ONE IDENTIFIED THING MUST SAY SO (#2785 delta review).
+ *
+ * `assertConsentDeclarationIsComplete` covers the entries that surface personal data.
+ * It could not cover the rest, and the rest are where the hole was: the five
+ * per-record entries that return only codes, amounts and instants shipped with
+ * `surfacesPersonalData: false` and no consent declaration at all, so gate 4b skipped
+ * them and the model could read the refund history of a payment the ledger had just
+ * refused. The fix lane bound those five by hand — and a hand fix binds the entries
+ * that exist, not the next one somebody writes. Nothing failed for
+ * `booking_hold_state({ bookingId })`, projecting nothing but status codes, declaring
+ * neither flag: it would define cleanly, be offered on every request, and be readable
+ * for any booking id the model could name. The registry census could not catch it
+ * either — it filters on entries that DECLARE a record, so an entry that never had a
+ * declaration never enters the comparison.
+ *
+ * So the rule is enforced from the ARGUMENT SCHEMA, which no author can forget to
+ * write: an entry with a required argument that takes an exact identifier must either
+ * name the record (a kind + `consentRecordArgKey`), declare itself a search
+ * (`operatorOnly`, governed by gate 4a instead), or carry a reviewed
+ * `consentRecordExemption` saying why the thing it names is not a record an operator
+ * could ever have included. It throws at module-body time, before `DIAGNOSTICS_TOOLS`
+ * is assembled, for the reason the sibling assert does: a diagnostics feature that
+ * refuses to boot is a far better outcome than one that quietly stops asking.
+ */
+function assertConsentRecordScopeIsDeclared<TArgs>(
+  spec: DiagnosticsToolSpec<TArgs>,
+  hasRecord: boolean,
+  isSearch: boolean,
+): void {
+  const recordIdKeys = requiredRecordIdArgKeys(spec);
+  const exemption = spec.consentRecordExemption;
+
+  if (exemption !== undefined) {
+    if (typeof exemption !== "string" || exemption.trim().length === 0) {
+      throw new Error(
+        `Diagnostics tool ${spec.id} declares an empty consentRecordExemption. The exemption is the reviewed REASON this entry's identifier is not a record an operator could include; there is no value in a blank one.`,
+      );
+    }
+    if (hasRecord) {
+      throw new Error(
+        `Diagnostics tool ${spec.id} declares BOTH a consent record and a consentRecordExemption. It is gated by the record it names, so the exemption is stale — remove it.`,
+      );
+    }
+    if (isSearch) {
+      throw new Error(
+        `Diagnostics tool ${spec.id} declares operatorOnly AND a consentRecordExemption. A search is governed by the channel gate, so there is nothing for the exemption to excuse.`,
+      );
+    }
+    if (recordIdKeys !== null && recordIdKeys.length === 0) {
+      throw new Error(
+        `Diagnostics tool ${spec.id} declares a consentRecordExemption but takes no required argument that accepts an exact identifier, so it is exempt from nothing. Remove it rather than leaving a declaration that stopped being true.`,
+      );
+    }
+    return;
+  }
+
+  if (hasRecord || isSearch) return;
+  if (recordIdKeys !== null && recordIdKeys.length === 0) return;
+
+  throw new Error(
+    `Diagnostics tool ${spec.id} is asked about one identified thing — ${
+      recordIdKeys === null
+        ? "its argument schema is not a plain object, so this cannot be checked"
+        : `its required argument(s) ${recordIdKeys.join(", ")} accept an exact identifier`
+    } — but names no consent record, declares no operatorOnly search, and carries no consentRecordExemption. ADR-004 §1 bounds every per-record read to the operator's investigation, whether or not the rows carry personal data, so declare a record kind + consentRecordArgKey, or say in a consentRecordExemption why what it names is not a record an operator could include.`,
+  );
 }
 
 /**
@@ -601,6 +747,7 @@ export function defineDiagnosticsTool<TArgs>(
     consentRecordArgKey: spec.consentRecordArgKey,
     consentRecordKindByArg: spec.consentRecordKindByArg,
     relatedRecordRefs: spec.relatedRecordRefs,
+    consentRecordExemption: spec.consentRecordExemption,
     operatorOnly: spec.operatorOnly,
     lowEntropyArgKeys: spec.lowEntropyArgKeys,
     evidenceScope: spec.evidenceScope,

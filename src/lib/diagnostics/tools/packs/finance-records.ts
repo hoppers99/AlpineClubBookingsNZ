@@ -678,15 +678,14 @@ const webhookTimeline = defineDiagnosticsTool<WebhookArgs>({
   rowLimit: WEBHOOK_TIMELINE_ROW_LIMIT,
   byteLimit: FINANCE_BYTE_LIMIT,
   surfacesPersonalData: false,
-  // NO CONSENT RECORD, and deliberately (#2785 review). Every other per-record entry
-  // in this pack names a platform record the operator can select; this one is keyed
-  // on a PROVIDER event reference (a Stripe event id, a Xero resource id or a
-  // correlation key), which is not a record kind the investigation ledger can hold
-  // and not something an operator picks. There is therefore no inclusion decision
-  // that could ever cover it, and declaring a kind it does not have would refuse
-  // every invocation while pretending to be a gate. What bounds it instead: it reads
-  // webhook plumbing only — arrival, lease, delivery attempts, status codes — with no
-  // person, no amount and no record id of a consentable kind in the projection.
+  // NO CONSENT RECORD, and deliberately (#2785 review) — now stated as a DECLARATION
+  // rather than a comment, because `defineDiagnosticsTool` refuses to define an entry
+  // that takes an exact identifier and answers none of the three ways (#2785 delta
+  // review). What bounds this one instead: it reads webhook plumbing only — arrival,
+  // lease, delivery attempts, status codes — with no person, no amount and no record
+  // id of a consentable kind in the projection.
+  consentRecordExemption:
+    "eventRef is a PROVIDER event reference — a Stripe event id, a Xero resource id or a correlation key — not a platform record id. It is not a kind the investigation ledger can hold and not something an operator can select, so no inclusion decision could ever cover it; declaring a record kind here would refuse every invocation while pretending to be a gate.",
 });
 
 // ---------------------------------------------------------------------------
