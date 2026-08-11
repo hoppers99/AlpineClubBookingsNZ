@@ -1241,6 +1241,11 @@ describe("diagnostics tool registry contract (#2374)", () => {
           durationMs: 1,
           roundIndex: 0,
           observedAt: "2026-08-03T09:00:00.000Z",
+          invocationChannel: "model_tool_use",
+          sensitiveInclusion: "not_applicable",
+          consentRecordKind: null,
+          consentRecordOrigin: null,
+          peopleSearchTick: "withheld",
         },
       });
       expect(block.length).toBeLessThanOrEqual(
@@ -1352,6 +1357,11 @@ describe("diagnostics tool registry contract (#2374)", () => {
           durationMs: 1,
           roundIndex: 0,
           observedAt: "2026-08-03T09:00:00.000Z",
+          invocationChannel: "model_tool_use",
+          sensitiveInclusion: "not_applicable",
+          consentRecordKind: null,
+          consentRecordOrigin: null,
+          peopleSearchTick: "withheld",
         },
       }).length;
       const oneRow = renderToolResultEvidenceBlock({
@@ -1361,7 +1371,9 @@ describe("diagnostics tool registry contract (#2374)", () => {
         observedAt: "2026-08-03T09:00:00.000Z",
         audit: { toolId: tool.id, areasChecked: [...tool.requiredAreas], authOutcome: "allowed",
           failureReason: null, argsHash: "a".repeat(64), resultHash: "b".repeat(64),
-          rowCount: 1, byteCount: 0, durationMs: 1, roundIndex: 0, observedAt: "2026-08-03T09:00:00.000Z" },
+          rowCount: 1, byteCount: 0, durationMs: 1, roundIndex: 0, observedAt: "2026-08-03T09:00:00.000Z",
+          invocationChannel: "model_tool_use", sensitiveInclusion: "not_applicable",
+          consentRecordKind: null, consentRecordOrigin: null, peopleSearchTick: "withheld" },
       }).length;
       const rowCost = oneRow - fixedCost;
       // The bound, stated as the thing that actually breaks: the fixed cost plus ONE

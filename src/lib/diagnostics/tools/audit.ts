@@ -19,12 +19,29 @@
  *
  * WHAT IT RECORDS (exhaustive, ADR-004 §4): tool id, the areas checked, the auth
  * outcome, the failure reason, non-reversible hashes of the accepted arguments
- * and of the result, row/byte counts, duration, round index, observed-at.
+ * and of the result, row/byte counts, duration, round index, observed-at, and —
+ * since AID-7a (#2785) — the consent state: which channel invoked it, whether
+ * ADR-004 §1's inclusion was granted or refused, the KIND of record consent was
+ * about, how that record entered the investigation, and the per-request
+ * people-search tick.
+ *
+ * WHY THE CONSENT FIELDS HAD TO BE ADDED. Without them a
+ * `surfacesPersonalData: true` read taken WITH the operator's consent was
+ * indistinguishable in the durable log from one taken without it — the same defect
+ * shape, one level up, that this whole substrate exists to avoid. ADR-004 §4 permits
+ * "auth outcome — allowed / denied, and the area/level checked"; consent is the
+ * second half of that authorisation, so recording its outcome is squarely inside the
+ * approved set rather than an extension of it.
  *
  * WHAT IT NEVER RECORDS: raw arguments, raw results, the operator's question, the
  * model's answer, provider payloads, credentials, or any unrestricted identifier
  * beyond the acting admin's own member id (which is the accountability field, and
  * is what every other admin audit row in the platform already carries).
+ *
+ * IN PARTICULAR IT STILL RECORDS NO SUBJECT RECORD ID. The consent fields carry the
+ * KIND of record and the ORIGIN of the operator's decision, never the id: `argsHash`
+ * already pins which record non-reversibly, and adding the identifier beside it
+ * would put an unrestricted personal identifier in a 24-month row.
  */
 
 import "server-only";
@@ -66,6 +83,14 @@ function auditMetadata(audit: DiagnosticsToolAudit): Record<string, unknown> {
     durationMs: audit.durationMs,
     roundIndex: audit.roundIndex,
     observedAt: audit.observedAt,
+    // The five consent fields (AID-7a, #2785). Every one of them is a closed enum or
+    // null — there is no free text and no identifier here, which is what keeps this
+    // object inside ADR-004 §4's approved set. See the module docblock.
+    invocationChannel: audit.invocationChannel,
+    sensitiveInclusion: audit.sensitiveInclusion,
+    consentRecordKind: audit.consentRecordKind,
+    consentRecordOrigin: audit.consentRecordOrigin,
+    peopleSearchTick: audit.peopleSearchTick,
   };
 }
 

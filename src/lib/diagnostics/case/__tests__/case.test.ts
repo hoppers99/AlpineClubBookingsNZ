@@ -54,6 +54,11 @@ function audit(
     durationMs: 1,
     roundIndex: 0,
     observedAt: OBSERVED_AT,
+    invocationChannel: "model_tool_use",
+    sensitiveInclusion: "not_applicable",
+    consentRecordKind: null,
+    consentRecordOrigin: null,
+    peopleSearchTick: "withheld",
     ...overrides,
   };
 }

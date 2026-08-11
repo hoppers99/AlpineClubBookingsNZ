@@ -2592,6 +2592,11 @@ describe("AID-6B booking/membership pack: a name is untrusted text (#2376)", () 
           durationMs: 1,
           roundIndex: 0,
           observedAt: "2026-08-09T09:00:00.000Z",
+          invocationChannel: "model_tool_use",
+          sensitiveInclusion: "not_applicable",
+          consentRecordKind: null,
+          consentRecordOrigin: null,
+          peopleSearchTick: "withheld",
         },
       });
       // Exactly one opening and one closing delimiter: no projected value could

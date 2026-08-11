@@ -17,6 +17,13 @@
  * is load-bearing for that, and nothing in this file may ever become the only
  * thing standing between a caller and a tool.
  *
+ * THE SAME IS TRUE OF THE CONSENT FILTERING added in AID-7a (#2785). A search entry
+ * is withheld on a request whose operator did not tick the people-search box, and a
+ * personal-data entry is withheld where no record consent was given — but an
+ * invocation naming either one is refused by `invoke.ts` gates 4a/4b regardless, and
+ * those refusals are the control. This is here so the model does not spend a round
+ * proposing tools that were always going to refuse.
+ *
  * The shape returned is the Anthropic tool-definition shape (`name`,
  * `description`, `input_schema`), built from server-owned registry text. No
  * operator input, model output or database value is interpolated into it.
@@ -25,7 +32,8 @@
 import type { AdminPermissionMatrix } from "@/lib/admin-permissions";
 
 import { hasAllAreaViews } from "../page-context/authorize";
-import type { DiagnosticsToolInputSchema } from "./define";
+import type { DiagnosticsConsentLedger } from "./consent";
+import type { DiagnosticsToolEntry, DiagnosticsToolInputSchema } from "./define";
 import { DIAGNOSTICS_TOOLS } from "./registry";
 
 export interface DiagnosticsToolProviderDefinition {
@@ -35,16 +43,44 @@ export interface DiagnosticsToolProviderDefinition {
 }
 
 /**
+ * Whether an entry is worth OFFERING on this request — permissions, plus the
+ * operator's consent decisions (AID-7a, #2785).
+ *
+ * STILL COURTESY, STILL NOT SECURITY, and the consent additions do not change that:
+ * `invoke.ts` gates 3, 4a and 4b run on every invocation whether the definition was
+ * offered or not. What this buys is that the model is not shown a search tool on a
+ * request where searching is off, or twenty per-record tools on a request that
+ * included no records — so it does not spend the round proposing refusals and then
+ * narrating them.
+ */
+function isOfferable(
+  tool: DiagnosticsToolEntry,
+  matrix: AdminPermissionMatrix,
+  consent: DiagnosticsConsentLedger,
+): boolean {
+  if (!hasAllAreaViews(matrix, tool.requiredAreas)) return false;
+  if (tool.operatorOnly === true) return consent.peopleSearchGranted;
+  if (tool.surfacesPersonalData) return consent.recordConsentGranted;
+  return true;
+}
+
+/**
  * The definitions this caller may be offered. Filtered by the SAME `AND`
  * predicate the executor authorizes with, from a matrix the caller must have
  * re-read freshly themselves (AID-7 reads it once per question to build this
- * list; `invoke.ts` re-reads it per call regardless).
+ * list; `invoke.ts` re-reads it per call regardless), and by this request's own
+ * consent state.
+ *
+ * `consent` is REQUIRED rather than optional: an omitted ledger would silently
+ * offer every sensitive entry on a request that consented to none, which is the
+ * failure mode this parameter exists to prevent.
  */
 export function listDiagnosticsToolDefinitions(
   matrix: AdminPermissionMatrix,
+  consent: DiagnosticsConsentLedger,
 ): DiagnosticsToolProviderDefinition[] {
   return DIAGNOSTICS_TOOLS.filter((tool) =>
-    hasAllAreaViews(matrix, tool.requiredAreas),
+    isOfferable(tool, matrix, consent),
   ).map((tool) => ({
     name: tool.id,
     description: tool.description,
@@ -55,9 +91,10 @@ export function listDiagnosticsToolDefinitions(
 /** The registry ids withheld from this caller. Audit/diagnostic use only. */
 export function listWithheldDiagnosticsToolIds(
   matrix: AdminPermissionMatrix,
+  consent: DiagnosticsConsentLedger,
 ): string[] {
   return DIAGNOSTICS_TOOLS.filter(
-    (tool) => !hasAllAreaViews(matrix, tool.requiredAreas),
+    (tool) => !isOfferable(tool, matrix, consent),
   ).map((tool) => tool.id);
 }
 

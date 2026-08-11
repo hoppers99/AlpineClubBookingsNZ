@@ -11,6 +11,11 @@
  *                   across every area the tool declares (ADR-002 §2/§3).
  *   4. ARGUMENTS    parsed by the entry's `.strict()` schema, then bound
  *                   POSITIONALLY. No caller text ever reaches SQL.
+ *   4a. CHANNEL     a SEARCH entry (`operatorOnly`) runs only as the operator's own
+ *                   action, or on a request where the operator ticked the
+ *                   people-search box (ADR-004 §1; owner decision #2378 Q2).
+ *   4b. CONSENT     an entry that surfaces personal data runs only for a record the
+ *                   operator included in THIS investigation (ADR-004 §1).
  *   5. METERING     AID-2's circuit breaker must be closed (ADR-005 §5).
  *   6. CREDENTIAL   for a `select_only_sql` entry, the dedicated SELECT-only role
  *                   must be configured AND verified least-privilege by the server
@@ -59,6 +64,11 @@ import { redactSensitiveText } from "@/lib/redact-sensitive-json";
 import { canonicalStringify, sha256Hex } from "../knowledge/hash";
 import { recordDiagnosticsToolAudit } from "./audit";
 import { authorizeDiagnosticsToolCall } from "./authorize";
+import {
+  consentedRecordForToolCall,
+  type DiagnosticsConsentEntryOrigin,
+  type DiagnosticsConsentLedger,
+} from "./consent";
 import { getDiagnosticsDatabase, runDiagnosticsReadOnlyQuery } from "./database";
 import {
   diagnosticsAuditArgsHash,
@@ -72,6 +82,7 @@ import {
   DIAGNOSTICS_TOOL_BOUNDS,
   DIAGNOSTICS_TOOL_FAILURE_MESSAGES,
   DIAGNOSTICS_TOOL_SCHEMA_VERSION,
+  type DiagnosticsInvocationChannel,
   type DiagnosticsToolAudit,
   type DiagnosticsToolFailure,
   type DiagnosticsToolFailureReason,
@@ -89,6 +100,28 @@ export interface InvokeDiagnosticsToolInput {
   actingMemberId: string;
   /** The per-question bounded loop. One session per operator question. */
   session: DiagnosticsToolSession;
+  /**
+   * WHO is invoking — the operator's own action, or the model's tool call (AID-7a,
+   * #2785).
+   *
+   * REQUIRED, WITH NO DEFAULT, and that is the point rather than an oversight. A
+   * default would be a value some future call site inherits without deciding, and
+   * the safe-looking default (`model_tool_use`) would silently disable the record
+   * picker while the unsafe one would hand the model an operator's authority. Every
+   * caller states it, and a reviewer sees it in the diff. It is also why this is not
+   * `surface`: that field is free-form, defaulted, and consumed only inside the
+   * audit description, so no gate can rest on it.
+   */
+  invocationChannel: DiagnosticsInvocationChannel;
+  /**
+   * This investigation's consent (ADR-004 §1). Server-held, built per request from
+   * the operator's own selections and ticks, and never writable by the model.
+   *
+   * REQUIRED for the same reason as the channel: an omitted ledger would be
+   * fail-closed but silent, and a caller that forgot it would see every personal-data
+   * entry refuse with no indication why.
+   */
+  consent: DiagnosticsConsentLedger;
   /** Server-owned surface label for the audit row. */
   surface?: string;
   /**
@@ -179,6 +212,28 @@ function projectRows(
   });
 }
 
+/**
+ * The ADR-004 §1 consent state of one invocation, as the durable row records it
+ * (AID-7a, #2785).
+ *
+ * It is derived from the ENTRY and the gate's own decision rather than passed in at
+ * each of the fifteen exits, because a per-exit argument is a per-exit chance to
+ * record the wrong thing — which is exactly how every `internal_error` row came to
+ * claim `authOutcome: "denied"` before that was fixed.
+ *
+ * `tool === null` means no entry was identified (a hallucinated or malformed id), so
+ * whether it would have been sensitive is genuinely unknown: `not_reached`, never
+ * `not_applicable`.
+ */
+function sensitiveInclusionFor(
+  tool: DiagnosticsToolEntry | null,
+  decision: "granted" | "refused" | null,
+): DiagnosticsToolAudit["sensitiveInclusion"] {
+  if (!tool) return "not_reached";
+  if (!tool.surfacesPersonalData) return "not_applicable";
+  return decision ?? "not_reached";
+}
+
 function buildAudit(input: {
   toolId: string;
   areasChecked: readonly AdminPermissionArea[];
@@ -191,6 +246,11 @@ function buildAudit(input: {
   durationMs: number;
   roundIndex: number;
   observedAt: string;
+  invocationChannel: DiagnosticsInvocationChannel;
+  consentTool: DiagnosticsToolEntry | null;
+  consentDecision: "granted" | "refused" | null;
+  consentRecordOrigin: DiagnosticsConsentEntryOrigin | null;
+  peopleSearchGranted: boolean;
 }): DiagnosticsToolAudit {
   return {
     toolId: input.toolId,
@@ -204,6 +264,14 @@ function buildAudit(input: {
     durationMs: input.durationMs,
     roundIndex: input.roundIndex,
     observedAt: input.observedAt,
+    invocationChannel: input.invocationChannel,
+    sensitiveInclusion: sensitiveInclusionFor(
+      input.consentTool,
+      input.consentDecision,
+    ),
+    consentRecordKind: input.consentTool?.personalDataRecordKind ?? null,
+    consentRecordOrigin: input.consentRecordOrigin,
+    peopleSearchTick: input.peopleSearchGranted ? "granted" : "withheld",
   };
 }
 
@@ -374,6 +442,23 @@ export async function invokeDiagnosticsTool(
   let faultArgsHash: string | null = null;
   let faultRoundIndex = roundIndexAtEntry;
 
+  /**
+   * The ADR-004 §1 consent state, tracked the same way and for the same reason: an
+   * exit must be able to record honestly what the consent gates had established by
+   * the time it was taken, without every exit carrying three more arguments.
+   *
+   * `consentTool` is set the moment an entry is identified, so even a refusal at the
+   * loop budget records whether the entry was a sensitive one. `consentDecision` and
+   * `consentRecordOrigin` are set only by the gates themselves.
+   */
+  let consentTool: DiagnosticsToolEntry | null = null;
+  let consentDecision: "granted" | "refused" | null = null;
+  let consentRecordOrigin: DiagnosticsConsentEntryOrigin | null = null;
+  // Read ONCE, synchronously, for the same reason `roundIndexAtEntry` is: the
+  // catch-all at the bottom must not call back into a caller-supplied object whose
+  // getter could throw and take the audit row with it.
+  const peopleSearchGranted = input.consent.peopleSearchGranted === true;
+
   const fail = async (
     reason: DiagnosticsToolFailureReason,
     detail: FailureDetail,
@@ -390,6 +475,11 @@ export async function invokeDiagnosticsTool(
       durationMs: detail.durationMs ?? 0,
       roundIndex: detail.roundIndex,
       observedAt,
+      invocationChannel: input.invocationChannel,
+      consentTool,
+      consentDecision,
+      consentRecordOrigin,
+      peopleSearchGranted,
     });
     await auditDenial(input.actingMemberId, surface, audit);
     const failure: DiagnosticsToolFailure = {
@@ -442,6 +532,7 @@ export async function invokeDiagnosticsTool(
     // Recorded before the claim, not after: a session whose `claimToolCall` throws
     // must not erase the areas of a tool we had already identified.
     faultAreasChecked = tool.requiredAreas;
+    consentTool = tool;
     const claim = input.session.claimToolCall();
     if (!claim.ok) {
       return await fail("call_budget_exhausted", {
@@ -490,6 +581,69 @@ export async function invokeDiagnosticsTool(
       sha256Hex(canonicalStringify(accepted)),
     );
     faultArgsHash = argsHash;
+
+    // 4a. CHANNEL — who is allowed to run a SEARCH (AID-7a, #2785; ADR-004 §1).
+    //
+    //     AFTER argument parsing so a malformed call is still `invalid_args`, and
+    //     BEFORE metering and the read so a refused search costs no database work.
+    //
+    //     Two invocations pass: the operator's own record-picker action, which
+    //     renders to their browser and sends nothing to the provider; and a model
+    //     tool call on a request where the operator ticked the people-search box
+    //     (owner decision, #2378 Q2, 11 Aug 2026 — the owner overrode a stricter
+    //     operator-only recommendation, and this gate is what makes that tick
+    //     enforceable rather than advisory). The tick is per request and is never
+    //     persisted, so the identical request tomorrow refuses again.
+    //
+    //     Withholding the DEFINITION from the model is courtesy layered on top of
+    //     this; `definitions.ts` is explicit that it may never be the only thing
+    //     standing between a caller and a tool. This is that thing.
+    if (
+      tool.operatorOnly === true &&
+      input.invocationChannel !== "operator_action" &&
+      !peopleSearchGranted
+    ) {
+      consentDecision = "refused";
+      return await fail("operator_action_required", {
+        toolId: tool.id,
+        areasChecked: tool.requiredAreas,
+        authOutcome: "allowed",
+        argsHash,
+        roundIndex,
+      });
+    }
+
+    // 4b. CONSENT — ADR-004 §1's per-invocation inclusion, for the entries that
+    //     surface personal data about one named record.
+    //
+    //     A SEARCH entry is governed by gate 4a instead and is deliberately not
+    //     re-checked here: it is about no single record, so there is no record to
+    //     have included, and the operator's search tick IS its inclusion decision.
+    //     Everything else that surfaces personal data must name a record the
+    //     operator's investigation covers — a `null` record (an entry that lost its
+    //     declaration, or arguments that carry no id) is a REFUSAL, not a pass.
+    if (tool.surfacesPersonalData && tool.operatorOnly !== true) {
+      const record = consentedRecordForToolCall(tool, binding.args);
+      const origin = record
+        ? input.consent.originOf(record.kind, record.id)
+        : null;
+      if (!input.consent.recordConsentGranted || !record || origin === null) {
+        consentDecision = "refused";
+        return await fail("sensitive_consent_required", {
+          toolId: tool.id,
+          areasChecked: tool.requiredAreas,
+          authOutcome: "allowed",
+          argsHash,
+          roundIndex,
+        });
+      }
+      consentDecision = "granted";
+      consentRecordOrigin = origin;
+    } else if (tool.surfacesPersonalData) {
+      // An allowed search. The personal data in its rows flows on the operator's
+      // tick, and the durable row says so rather than leaving the field ambiguous.
+      consentDecision = "granted";
+    }
 
     // 5. METERING. Can't-record ⇒ don't-read (ADR-005 §5), the same rule AID-2
     //    applies to paid provider calls.
@@ -645,6 +799,11 @@ export async function invokeDiagnosticsTool(
       durationMs: readDurationMs,
       roundIndex,
       observedAt,
+      invocationChannel: input.invocationChannel,
+      consentTool,
+      consentDecision,
+      consentRecordOrigin,
+      peopleSearchGranted,
     });
     try {
       await recordDiagnosticsToolAudit({
@@ -667,6 +826,40 @@ export async function invokeDiagnosticsTool(
         argsHash,
         durationMs: readDurationMs,
         roundIndex,
+      });
+    }
+
+    // 11. EXTEND THE INVESTIGATION, last (AID-7a, #2785).
+    //
+    //     HERE and not in the loop, deliberately. The plan put absorption in the
+    //     AID-7 conversation loop; doing it here means it can only ever follow a
+    //     call that was authorised, consented, read, projected, bounded AND audited,
+    //     because every one of those gates returns before this line. A loop that
+    //     forgot to call it, called it on a failure, or called it with the raw rows
+    //     instead of the projected ones is not a mistake anyone can make now.
+    //
+    //     The ledger applies its own rules on top (declared fields only, one hop
+    //     from an operator-selected record, id-shaped values only) — this is the
+    //     placement, not the policy.
+    //
+    //     GUARDED, because the audit row is already written by this point. A throw
+    //     from a caller-supplied ledger must not turn a read the durable log records
+    //     as a success into an `internal_error` for the caller — the two would then
+    //     disagree about what happened. Failing to absorb is fail-closed anyway: the
+    //     investigation simply does not widen.
+    try {
+      input.consent.absorbRelatedRecordRefs({
+        tool,
+        acceptedArgs: binding.args,
+        rows,
+      });
+    } catch (err) {
+      reportAiError({
+        tag: "diagnostics-tool-consent",
+        message:
+          "Could not extend the diagnostics consent ledger after a successful tool call",
+        err,
+        context: { toolId: tool.id },
       });
     }
 

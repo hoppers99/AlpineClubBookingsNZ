@@ -895,6 +895,11 @@ describe("AID-6C finance pack: stored text is untrusted (#2377)", () => {
           durationMs: 1,
           roundIndex: 0,
           observedAt: "2026-08-08T09:00:00.000Z",
+          invocationChannel: "model_tool_use",
+          sensitiveInclusion: "not_applicable",
+          consentRecordKind: null,
+          consentRecordOrigin: null,
+          peopleSearchTick: "withheld",
         },
       });
       // Exactly one opening and one closing delimiter: a projected value could not

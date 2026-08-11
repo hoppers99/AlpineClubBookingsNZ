@@ -36,6 +36,11 @@ const BASE_AUDIT: DiagnosticsToolAudit = {
   durationMs: 7,
   roundIndex: 0,
   observedAt: "2026-08-02T03:04:05.000Z",
+  invocationChannel: "model_tool_use",
+  sensitiveInclusion: "not_applicable",
+  consentRecordKind: null,
+  consentRecordOrigin: null,
+  peopleSearchTick: "withheld",
 };
 
 function record(overrides: Partial<DiagnosticsToolAudit> = {}) {
@@ -91,18 +96,54 @@ describe("diagnostics tool audit row (#2374, ADR-004)", () => {
       "argsHash",
       "authOutcome",
       "byteCount",
+      "consentRecordKind",
+      "consentRecordOrigin",
       "durationMs",
       "failureReason",
+      "invocationChannel",
       "observedAt",
+      "peopleSearchTick",
       "resultHash",
       "roundIndex",
       "rowCount",
+      "sensitiveInclusion",
       "toolId",
     ]);
     expect(metadata.argsHash).toBe("a".repeat(64));
     expect(metadata.resultHash).toBe("b".repeat(64));
     expect(metadata.rowCount).toBe(3);
     expect(metadata.byteCount).toBe(128);
+  });
+
+  it("carries the consent state through to the durable row (#2785)", async () => {
+    // Before this, a `surfacesPersonalData` read taken WITH the operator's consent
+    // was indistinguishable in the durable log from one taken without it. The
+    // fields are hand-copied in `auditMetadata`, so this is what proves they are
+    // actually copied rather than merely present on the type.
+    await record({
+      invocationChannel: "operator_action",
+      sensitiveInclusion: "granted",
+      consentRecordKind: "booking",
+      consentRecordOrigin: "derived",
+      peopleSearchTick: "granted",
+    });
+    expect(lastEvent().metadata).toMatchObject({
+      invocationChannel: "operator_action",
+      sensitiveInclusion: "granted",
+      consentRecordKind: "booking",
+      consentRecordOrigin: "derived",
+      peopleSearchTick: "granted",
+    });
+
+    await record({
+      sensitiveInclusion: "refused",
+      consentRecordKind: "member",
+      consentRecordOrigin: null,
+    });
+    expect(lastEvent().metadata).toMatchObject({
+      sensitiveInclusion: "refused",
+      consentRecordOrigin: null,
+    });
   });
 
   it("carries no raw argument, row value, question or answer", async () => {

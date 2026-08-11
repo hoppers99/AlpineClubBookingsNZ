@@ -309,6 +309,54 @@ export interface DiagnosticsToolAudit {
   /** The areas the tool declares, recorded even when the check denied. */
   areasChecked: AdminPermissionArea[];
   authOutcome: "allowed" | "denied";
+  /**
+   * Whether this invocation was the OPERATOR'S own action or a model tool call
+   * (AID-7a, #2785). Recorded because "an admin ran a search themselves" and "the
+   * model ran a search" are different events, and before this the durable row could
+   * not tell them apart at all.
+   */
+  invocationChannel: DiagnosticsInvocationChannel;
+  /**
+   * The ADR-004 §1 consent decision for this invocation. It records the DECISION,
+   * not whether data ultimately flowed: a consented read that then failed at the
+   * database is `granted`, because the operator's consent did cover it.
+   *
+   *  - `not_applicable` — the identified entry does not surface personal data;
+   *  - `not_reached` — the invocation was refused before the consent gate ran, or no
+   *    entry was identified at all (so whether it is sensitive is unknown);
+   *  - `granted` — consent covered this invocation;
+   *  - `refused` — it did not, and the invocation was refused for that reason.
+   *
+   * Four values rather than three on purpose: collapsing `not_reached` into
+   * `not_applicable` would put "this entry is not sensitive" on a row where nobody
+   * had established that.
+   */
+  sensitiveInclusion:
+    | "not_applicable"
+    | "not_reached"
+    | "granted"
+    | "refused";
+  /** The KIND of record the entry is about, or null when it names none. */
+  consentRecordKind: DiagnosticsConsentRecordKind | null;
+  /**
+   * How the consented record came to be in the investigation — the operator picked
+   * it, or the server derived it from a declared projected field of an earlier
+   * consented call. Null when the consent gate did not match a record.
+   *
+   * NO SUBJECT RECORD ID, deliberately and in line with this type's own contract:
+   * `argsHash` already pins WHICH record non-reversibly, and kind + origin +
+   * `argsHash` together are the forensic record that a deliberate act occurred
+   * without adding an identifier to a durable row.
+   */
+  consentRecordOrigin: "operator_selected" | "derived" | null;
+  /**
+   * The per-request people-search tick as it stood for this invocation (owner
+   * decision, #2378 Q2, 11 Aug 2026). Recorded on EVERY row, not only on search
+   * ones: "was the model allowed to look people up during this session" is a
+   * question about the request, and answering it from the rows that happen to be
+   * searches would answer it only when the capability was used.
+   */
+  peopleSearchTick: "granted" | "withheld";
   /** Set on every non-success exit; null on success. */
   failureReason: DiagnosticsToolFailureReason | null;
   /**

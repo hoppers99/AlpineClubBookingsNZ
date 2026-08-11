@@ -25,12 +25,27 @@ vi.mock("../../page-context/authorize", async (importOriginal) => {
 
 import { readFreshAdminPermissionMatrix } from "../../page-context/authorize";
 import { authorizeDiagnosticsToolCall } from "../authorize";
+import { createDiagnosticsConsentLedger } from "../consent";
 import {
   DIAGNOSTICS_NO_TOOLS_AVAILABLE_NOTICE,
   listDiagnosticsToolDefinitions,
   listWithheldDiagnosticsToolIds,
 } from "../definitions";
 import { DIAGNOSTICS_SUBSTRATE_PROBE_TOOL_ID, DIAGNOSTICS_TOOLS } from "../registry";
+
+/**
+ * A ledger with BOTH per-request ticks on and no records selected (AID-7a, #2785).
+ *
+ * The permission assertions in this file are about the area filter, so they are run
+ * with consent out of the way; the consent filter has its own describe block below.
+ * The ticks are what the courtesy filter reads — record MEMBERSHIP is enforced by
+ * `invoke.ts` gate 4b, not here.
+ */
+const CONSENTED = createDiagnosticsConsentLedger({
+  recordConsentGranted: true,
+  peopleSearchGranted: true,
+  selectedRecords: [],
+});
 
 function matrix(
   overrides: Partial<Record<keyof AdminPermissionMatrix, AdminPermissionLevel>> = {},
@@ -80,7 +95,7 @@ describe("diagnostics tool definitions offered to the model (#2374, ADR-002 §2)
     // membership, finance or lodge correlations, nor any of AID-6C's finance
     // entries, which need `finance:view` instead.
     const support = matrix({ support: "view" });
-    const offered = listDiagnosticsToolDefinitions(support).map(
+    const offered = listDiagnosticsToolDefinitions(support, CONSENTED).map(
       (definition) => definition.name,
     );
     expect(offered).toContain(DIAGNOSTICS_SUBSTRATE_PROBE_TOOL_ID);
@@ -88,7 +103,7 @@ describe("diagnostics tool definitions offered to the model (#2374, ADR-002 §2)
     expect(SUPPORT_ONLY_TOOL_IDS.length).toBeGreaterThan(1);
 
     expect(CROSS_AREA_TOOL_IDS.length).toBeGreaterThan(0);
-    expect(listWithheldDiagnosticsToolIds(support)).toEqual(
+    expect(listWithheldDiagnosticsToolIds(support, CONSENTED)).toEqual(
       NOT_SUPPORT_ONLY_TOOL_IDS,
     );
   });
@@ -100,7 +115,7 @@ describe("diagnostics tool definitions offered to the model (#2374, ADR-002 §2)
     // this pins that the model is OFFERED them, so the operator is not told the
     // feature is unavailable when it is not.
     const finance = matrix({ finance: "view" });
-    const offered = listDiagnosticsToolDefinitions(finance).map(
+    const offered = listDiagnosticsToolDefinitions(finance, CONSENTED).map(
       (definition) => definition.name,
     );
     expect(FINANCE_ONLY_TOOL_IDS.length).toBeGreaterThan(0);
@@ -112,7 +127,7 @@ describe("diagnostics tool definitions offered to the model (#2374, ADR-002 §2)
   });
 
   it("offers them at `edit` too — `view` is a floor, not an exact level", () => {
-    const definitions = listDiagnosticsToolDefinitions(matrix({ support: "edit" }));
+    const definitions = listDiagnosticsToolDefinitions(matrix({ support: "edit" }), CONSENTED);
     // Not `toHaveLength(SUPPORT_ONLY_TOOL_IDS.length)` alone: that comparison is
     // satisfied by 0 === 0 and would pass even if the filter withheld everything.
     expect(definitions.map((definition) => definition.name)).toEqual(
@@ -125,10 +140,10 @@ describe("diagnostics tool definitions offered to the model (#2374, ADR-002 §2)
     const all = Object.fromEntries(
       ADMIN_PERMISSION_AREAS.map((area) => [area.key, "view"]),
     ) as AdminPermissionMatrix;
-    expect(listDiagnosticsToolDefinitions(all).map((entry) => entry.name)).toEqual(
+    expect(listDiagnosticsToolDefinitions(all, CONSENTED).map((entry) => entry.name)).toEqual(
       DIAGNOSTICS_TOOLS.map((tool) => tool.id),
     );
-    expect(listWithheldDiagnosticsToolIds(all)).toEqual([]);
+    expect(listWithheldDiagnosticsToolIds(all, CONSENTED)).toEqual([]);
   });
 
   it("withholds a cross-area tool from an admin holding only ONE of its areas", () => {
@@ -139,7 +154,7 @@ describe("diagnostics tool definitions offered to the model (#2374, ADR-002 §2)
       { bookings: "view" } as const,
       { support: "view" } as const,
     ]) {
-      const offered = listDiagnosticsToolDefinitions(matrix(areas)).map(
+      const offered = listDiagnosticsToolDefinitions(matrix(areas), CONSENTED).map(
         (definition) => definition.name,
       );
       for (const id of CROSS_AREA_TOOL_IDS) {
@@ -157,18 +172,18 @@ describe("diagnostics tool definitions offered to the model (#2374, ADR-002 §2)
     // the opposite of its name. `lodge` is the remaining area no tool declares on
     // its own: the lodge correlation entry needs `support:view` beside it.
     const lodgeOnly = matrix({ lodge: "edit" });
-    expect(listDiagnosticsToolDefinitions(lodgeOnly)).toEqual([]);
-    expect(listWithheldDiagnosticsToolIds(lodgeOnly)).toEqual(
+    expect(listDiagnosticsToolDefinitions(lodgeOnly, CONSENTED)).toEqual([]);
+    expect(listWithheldDiagnosticsToolIds(lodgeOnly, CONSENTED)).toEqual(
       DIAGNOSTICS_TOOLS.map((tool) => tool.id),
     );
   });
 
   it("withholds everything from an empty matrix", () => {
-    expect(listDiagnosticsToolDefinitions(matrix())).toEqual([]);
+    expect(listDiagnosticsToolDefinitions(matrix(), CONSENTED)).toEqual([]);
   });
 
   it("hands the provider a closed schema and server-owned text only", () => {
-    const [definition] = listDiagnosticsToolDefinitions(matrix({ support: "view" }));
+    const [definition] = listDiagnosticsToolDefinitions(matrix({ support: "view" }), CONSENTED);
     expect(definition.input_schema.additionalProperties).toBe(false);
     // The name IS the registry key, so an accepted tool call maps back to exactly
     // one server-owned entry with no normalisation step in between.
@@ -199,8 +214,8 @@ describe("diagnostics tool definitions offered to the model (#2374, ADR-002 §2)
     expect(probe).toBeDefined();
     if (!probe) return;
 
-    expect(listDiagnosticsToolDefinitions(withholding)).toEqual([]);
-    expect(listWithheldDiagnosticsToolIds(withholding)).toContain(probe.id);
+    expect(listDiagnosticsToolDefinitions(withholding, CONSENTED)).toEqual([]);
+    expect(listWithheldDiagnosticsToolIds(withholding, CONSENTED)).toContain(probe.id);
 
     const verdict = await authorizeDiagnosticsToolCall({
       actingMemberId: "member-1",
@@ -218,5 +233,80 @@ describe("diagnostics tool definitions offered to the model (#2374, ADR-002 §2)
     for (const tool of DIAGNOSTICS_TOOLS) {
       expect(DIAGNOSTICS_NO_TOOLS_AVAILABLE_NOTICE).not.toContain(tool.id);
     }
+  });
+});
+
+describe("consent also decides what is worth OFFERING (#2785)", () => {
+  const ALL_AREAS = Object.fromEntries(
+    ADMIN_PERMISSION_AREAS.map((area) => [area.key, "view"]),
+  ) as AdminPermissionMatrix;
+
+  const SEARCH_TOOL_IDS = DIAGNOSTICS_TOOLS.filter(
+    (tool) => tool.operatorOnly === true,
+  ).map((tool) => tool.id);
+  const PERSONAL_DATA_TOOL_IDS = DIAGNOSTICS_TOOLS.filter(
+    (tool) => tool.surfacesPersonalData && tool.operatorOnly !== true,
+  ).map((tool) => tool.id);
+
+  function ledger(recordConsentGranted: boolean, peopleSearchGranted: boolean) {
+    return createDiagnosticsConsentLedger({
+      recordConsentGranted,
+      peopleSearchGranted,
+      selectedRecords: [],
+    });
+  }
+
+  it("has both populations to check, so nothing below is vacuous", () => {
+    expect(SEARCH_TOOL_IDS.length).toBe(4);
+    expect(PERSONAL_DATA_TOOL_IDS.length).toBeGreaterThan(10);
+  });
+
+  it("withholds the SEARCH tools until the operator ticks people-search", () => {
+    const off = listDiagnosticsToolDefinitions(ALL_AREAS, ledger(true, false)).map(
+      (definition) => definition.name,
+    );
+    for (const id of SEARCH_TOOL_IDS) expect(off, id).not.toContain(id);
+
+    const on = listDiagnosticsToolDefinitions(ALL_AREAS, ledger(true, true)).map(
+      (definition) => definition.name,
+    );
+    for (const id of SEARCH_TOOL_IDS) expect(on, id).toContain(id);
+  });
+
+  it("withholds the personal-data tools until the operator ticks inclusion", () => {
+    const off = listDiagnosticsToolDefinitions(ALL_AREAS, ledger(false, true)).map(
+      (definition) => definition.name,
+    );
+    for (const id of PERSONAL_DATA_TOOL_IDS) expect(off, id).not.toContain(id);
+    // …while the non-sensitive entries stay on offer, so an operator who ticked
+    // nothing still gets a working assistant for the questions that need no consent.
+    expect(off).toContain(DIAGNOSTICS_SUBSTRATE_PROBE_TOOL_ID);
+
+    const on = listDiagnosticsToolDefinitions(ALL_AREAS, ledger(true, true)).map(
+      (definition) => definition.name,
+    );
+    for (const id of PERSONAL_DATA_TOOL_IDS) expect(on, id).toContain(id);
+  });
+
+  it("reports the consent-withheld ids as withheld", () => {
+    const withheld = listWithheldDiagnosticsToolIds(ALL_AREAS, ledger(false, false));
+    for (const id of [...SEARCH_TOOL_IDS, ...PERSONAL_DATA_TOOL_IDS]) {
+      expect(withheld, id).toContain(id);
+    }
+    expect(withheld).not.toContain(DIAGNOSTICS_SUBSTRATE_PROBE_TOOL_ID);
+  });
+
+  it("is COURTESY: the offered list and the withheld list still partition the registry", () => {
+    // The invariant that makes the two lists trustworthy as a pair, now that two
+    // independent filters feed them. `invoke.ts` remains the control either way.
+    const consent = ledger(false, false);
+    const offered = listDiagnosticsToolDefinitions(ALL_AREAS, consent).map(
+      (definition) => definition.name,
+    );
+    const withheld = listWithheldDiagnosticsToolIds(ALL_AREAS, consent);
+    expect([...offered, ...withheld].sort()).toEqual(
+      DIAGNOSTICS_TOOLS.map((tool) => tool.id).sort(),
+    );
+    expect(offered.filter((id) => withheld.includes(id))).toEqual([]);
   });
 });

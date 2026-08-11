@@ -625,6 +625,11 @@ describe("AID-6A background job health (#2375)", () => {
         durationMs: 1,
         roundIndex: 0,
         observedAt: NOW.toISOString(),
+        invocationChannel: "model_tool_use",
+        sensitiveInclusion: "not_applicable",
+        consentRecordKind: null,
+        consentRecordOrigin: null,
+        peopleSearchTick: "withheld",
       },
     });
     // All eighteen present, which is why the ceiling is eighteen and not the twenty
