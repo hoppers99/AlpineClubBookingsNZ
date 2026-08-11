@@ -175,6 +175,26 @@ export type DiagnosticsToolFailureReason =
    */
   | "sensitive_consent_required"
   /**
+   * The entry reads ONE NAMED RECORD but surfaces no personal fields, and the record
+   * it was asked about is not one this investigation covers (#2785 review).
+   *
+   * A SECOND REASON RATHER THAN A WIDER FIRST ONE. `booking_audit_history`,
+   * `payment_refund_state`, `xero_invoice_linkage` and the two audit-history entries
+   * return stable codes, amounts and instants — no names — so telling their operator
+   * "that diagnostics tool reads personal details" would be false, and a durable row
+   * counted as a personal-inclusion refusal would overstate what was refused. What
+   * they DO have in common with the personal-data entries is the bound ADR-004 §1
+   * puts on the investigation: evidence about one identified subject flows only for
+   * subjects the operator put in scope. The remedy is the same (select the record),
+   * the sentence is honest, and an auditor can still count the two apart.
+   *
+   * It also carries the entries whose record KIND an argument chooses and whose
+   * chosen subject is not a kind the ledger can hold at all — a manual refund task,
+   * a partner link, a Xero-linked credit note. Those refuse here rather than running
+   * unbounded.
+   */
+  | "record_not_included"
+  /**
    * The entry is declared `operatorOnly` — record SEARCH, which returns a bounded
    * list of people or bookings — and this invocation is not one the operator
    * authorised for the model (AID-7a, #2785).
@@ -317,15 +337,27 @@ export interface DiagnosticsToolAudit {
    */
   invocationChannel: DiagnosticsInvocationChannel;
   /**
-   * The ADR-004 §1 consent decision for this invocation. It records the DECISION,
-   * not whether data ultimately flowed: a consented read that then failed at the
-   * database is `granted`, because the operator's consent did cover it.
+   * The ADR-004 §1 PERSONAL-DATA inclusion decision for this invocation. It records
+   * the DECISION, not whether data ultimately flowed: a consented read that then
+   * failed at the database is `granted`, because the operator's consent did cover it.
    *
-   *  - `not_applicable` — the identified entry does not surface personal data;
-   *  - `not_reached` — the invocation was refused before the consent gate ran, or no
+   *  - `not_applicable` — the identified entry does not surface personal data. A
+   *    per-record entry that was refused because the investigation does not cover its
+   *    record (`record_not_included`) is still `not_applicable`: no personal
+   *    inclusion decision was needed, and `failureReason` is what says it was refused;
+   *  - `not_reached` — the invocation was refused before the consent gates ran, or no
    *    entry was identified at all (so whether it is sensitive is unknown);
-   *  - `granted` — consent covered this invocation;
-   *  - `refused` — it did not, and the invocation was refused for that reason.
+   *  - `granted` — the inclusion was authorised. For a per-record entry that means
+   *    the operator ticked personal details AND this investigation covers the record;
+   *    for a SEARCH it means the operator ticked people-search, or ran the search
+   *    themselves through the record picker (`invocationChannel: "operator_action"`),
+   *    which is their own inclusion act and is why such a row can honestly read
+   *    `granted` beside `peopleSearchTick: "withheld"`;
+   *  - `refused` — the inclusion was not authorised and the invocation was refused
+   *    for that reason: `sensitive_consent_required` for a per-record entry,
+   *    `operator_action_required` for a search the operator did not allow the model
+   *    to run. Both are ADR-004 §1 refusals of personal data; `failureReason`
+   *    separates them, and an auditor counting §1 refusals wants both.
    *
    * Four values rather than three on purpose: collapsing `not_reached` into
    * `not_applicable` would put "this entry is not sensitive" on a row where nobody
@@ -336,7 +368,15 @@ export interface DiagnosticsToolAudit {
     | "not_reached"
     | "granted"
     | "refused";
-  /** The KIND of record the entry is about, or null when it names none. */
+  /**
+   * The KIND of record THIS INVOCATION was about, or null when the entry names none.
+   *
+   * Resolved per invocation rather than copied from the entry, because three entries
+   * choose their subject with an argument (`{subject, recordId}`,
+   * `{localModel, localId}`): for those the kind is not a property of the entry at
+   * all, and a row that recorded one would be recording the wrong one. Null on such
+   * an entry means the arguments never named a kind the investigation can hold.
+   */
   consentRecordKind: DiagnosticsConsentRecordKind | null;
   /**
    * How the consented record came to be in the investigation — the operator picked
@@ -465,6 +505,8 @@ export const DIAGNOSTICS_TOOL_FAILURE_MESSAGES: Record<
   // included, and echoing an id back would put an unincluded identifier on screen.
   sensitive_consent_required:
     "That diagnostics tool reads personal details, and this question does not include the record it was asked about, so it was not run. Select that record and include it to see those details.",
+  record_not_included:
+    "That diagnostics tool reads one specific record, and this question does not include the record it was asked about, so it was not run. Select that record to see its history.",
   operator_action_required:
     "Searching for people or records needs your explicit go-ahead for this question, and it was not given, so that search was not run.",
   database_not_configured:

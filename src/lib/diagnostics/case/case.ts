@@ -35,6 +35,7 @@ import type { DiagnosticsToolResult } from "../tools/types";
 import {
   evidenceStateForToolResult,
   isConsentWithheldEvidenceState,
+  isSearchWithheldEvidenceState,
   isWithheldEvidenceState,
   worstEvidenceState,
   type DiagnosticsEvidenceState,
@@ -213,20 +214,26 @@ export interface DiagnosticCaseSummary {
   complete: boolean;
   /**
    * True when at least one source was withheld — for a permission, for a locked-out
-   * actor, or for a missing record inclusion. The broad "this case is incomplete
-   * because something was held back" flag; `withheldAreas` and `hasConsentWithheld`
-   * say which kind, and a caller must consult them before naming a remedy.
+   * actor, for a missing record inclusion, or for a search the operator did not
+   * allow. The broad "this case is incomplete because something was held back" flag;
+   * `withheldAreas`, `hasConsentWithheld` and `hasSearchWithheld` say which kind, and
+   * a caller must consult them before naming a remedy.
    */
   hasWithheldEvidence: boolean;
   /**
-   * The areas that would unlock the PERMISSION-withheld sources, de-duplicated and
-   * sorted.
+   * The areas that would unlock the sources withheld by a PERMISSION DENIAL,
+   * de-duplicated and sorted.
    *
-   * CONSENT REFUSALS ARE DELIBERATELY ABSENT (AID-7a, #2785). The derivation falls
-   * back to a source's own `areas` when it reports no `missingAreas`, and a consent
-   * refusal reports none — so including it here would fill this list with the areas
-   * the entry happens to require and tell the operator an area was denied when none
-   * was. The consent remedy is `hasConsentWithheld` and it is not an area at all.
+   * IT IS DERIVED FROM `permission_denied` SOURCES ONLY, and the exclusions are the
+   * point (AID-7a, #2785, tightened by its own review). The derivation falls back to
+   * a source's own required `areas` when it reports no `missingAreas`, and three
+   * withheld states report none: a consent refusal, a search refusal and a
+   * locked-out actor. Any of them left in would fill this list with the areas the
+   * entry happens to require and tell the operator — or the Full Admin they escalate
+   * to — that granting those areas would complete the picture. For a blocked actor
+   * that is flatly false: the account is locked out of the admin surface entirely,
+   * and no grant changes it. Each of the three has its own remedy, and none of the
+   * three is an area.
    */
   withheldAreas: AdminPermissionArea[];
   /**
@@ -235,6 +242,13 @@ export interface DiagnosticCaseSummary {
    * control for this; it must never name an area.
    */
   hasConsentWithheld: boolean;
+  /**
+   * True when at least one source was withheld because the operator did not allow
+   * the assistant to search for records on this question (#2785 review; owner
+   * decision #2378 Q2). The UI names the people-search tick for this — not an area,
+   * and not a record.
+   */
+  hasSearchWithheld: boolean;
   /** True when at least one blocker is an authoritative rule result. */
   hasAuthoritativeBlocker: boolean;
   /** True when a blocker is only inferred — the model must not overstate it. */
@@ -254,6 +268,9 @@ export interface DiagnosticCaseSummary {
  * `hasConsentWithheld` is the same idea for ADR-004 §1 (AID-7a, #2785): it lets the
  * UI say "these personal details were not read because the record was not included"
  * and point at the inclusion control, instead of naming an area nobody denied.
+ * `hasSearchWithheld` is its sibling for the people-search tick, and the two are kept
+ * apart because their remedies are: one is "select the record", the other is "let the
+ * assistant look records up at all".
  */
 export function summariseDiagnosticCase(
   diagnosticCase: DiagnosticCase,
@@ -261,14 +278,19 @@ export function summariseDiagnosticCase(
   const withheld = diagnosticCase.sources.filter((source) =>
     isWithheldEvidenceState(source.state),
   );
-  // Split before deriving areas, not after: the fallback below reads a source's own
-  // required areas, so a consent refusal left in this list would be reported as a
-  // denied area. See `withheldAreas` on the summary type.
   const consentWithheld = withheld.filter((source) =>
     isConsentWithheldEvidenceState(source.state),
   );
+  const searchWithheld = withheld.filter((source) =>
+    isSearchWithheldEvidenceState(source.state),
+  );
+  // Named positively rather than as "everything that is not a consent refusal": the
+  // fallback below reads a source's own required areas, so ANY state that reports no
+  // `missingAreas` would be reported as a denied area if it were left in. That is
+  // true of a consent refusal, of a search refusal and of a blocked actor alike. See
+  // `withheldAreas` on the summary type.
   const permissionWithheld = withheld.filter(
-    (source) => !isConsentWithheldEvidenceState(source.state),
+    (source) => source.state === "permission_denied",
   );
   const withheldAreas = [
     ...new Set(
@@ -289,6 +311,7 @@ export function summariseDiagnosticCase(
     hasWithheldEvidence: withheld.length > 0,
     withheldAreas,
     hasConsentWithheld: consentWithheld.length > 0,
+    hasSearchWithheld: searchWithheld.length > 0,
     hasAuthoritativeBlocker: blockerConfidences.has("authoritative_blocker"),
     hasInferredBlockerOnly:
       diagnosticCase.blockers.length > 0 &&

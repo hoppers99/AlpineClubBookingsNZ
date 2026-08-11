@@ -104,6 +104,21 @@ export const DIAGNOSTICS_EVIDENCE_STATES = [
    * area was denied when none was.
    */
   "consent_required",
+  /**
+   * The assistant asked to SEARCH for records and was not allowed to on this
+   * question, so no search ran (#2785 review; owner decision #2378 Q2).
+   *
+   * IT IS NOT `unsupported`, which is where this used to land. "Diagnostics has no
+   * tool that can answer that" is the opposite of the truth here: the tool exists,
+   * the operator holds the permission, and one tick turns it on. Telling them
+   * otherwise sends a fixable question away as unanswerable, and makes a withheld
+   * capability indistinguishable from a hallucinated tool id.
+   *
+   * IT IS NOT `consent_required` EITHER, and merging them would be the other
+   * mistake: that state's remedy is "select the record this is about", which is not
+   * the move here. Two withholdings, two controls, two sentences.
+   */
+  "search_consent_required",
   /** The caller lacks `view` on an area this evidence needs. NEVER inferred around. */
   "permission_denied",
   /** The acting admin account is locked out of the admin surface entirely. */
@@ -155,7 +170,9 @@ export const DIAGNOSTICS_EVIDENCE_STATE_DESCRIPTIONS: Record<
   provider_check_required:
     "This is what the platform last recorded, not a live answer from the provider. Settling it needs a check in Stripe's or Xero's own console, which Diagnostics deliberately cannot make.",
   consent_required:
-    "The personal details behind this were not retrieved, because this question does not include the record they belong to. Select that record and include it to see them.",
+    "The evidence behind this was not retrieved, because this question does not include the record it is about. Select that record and include it to see it.",
+  search_consent_required:
+    "The assistant was not allowed to search for people or records on this question, so it did not look. Tick “Let the assistant search for people and records” if you want it to.",
   permission_denied:
     "Your admin access does not include the area this evidence comes from, so it was not retrieved and was not inferred from anywhere else.",
   actor_blocked:
@@ -196,12 +213,18 @@ export const DIAGNOSTICS_EVIDENCE_STATE_DESCRIPTIONS: Record<
  *    `temporarily_unavailable` — all three are faults in a dependency that a later
  *    attempt may well not hit — while `redaction_failed` and `internal_error` become
  *    `tool_failed`, because those are defects and retrying is not the remedy.
- *  - `operator_action_required` becomes `unsupported` rather than a consent state.
- *    To the model — the only caller that can ever provoke it — "diagnostics has no
- *    tool that can answer that" is exactly true: record search is not a capability
- *    offered to it on this request. `consent_required` would be the wrong sentence,
- *    because the operator's move for it (include the record) is not the move here
- *    (tick the search box, if they want the model searching for people at all).
+ *  - `operator_action_required` becomes `search_consent_required`, its OWN state.
+ *    It was `unsupported` in the first cut of #2785, on the argument that "to the
+ *    model, diagnostics has no tool for this is exactly true" — but these sentences
+ *    are operator-facing by their own contract (see
+ *    `DIAGNOSTICS_EVIDENCE_STATE_DESCRIPTIONS`), the UI and the evidence block show
+ *    the same words, and telling an operator their question is unanswerable when one
+ *    tick would answer it is the same defect this issue fixed for the record gate.
+ *    `consent_required` stays separate from it because the two remedies differ.
+ *  - `record_not_included` becomes `consent_required`, the same state as
+ *    `sensitive_consent_required`. The refusals differ in what the entry would have
+ *    returned — codes and instants versus personal details — but the operator's move
+ *    is identical (select the record), and the case layer names remedies.
  */
 const EVIDENCE_STATE_FOR_FAILURE: Record<
   DiagnosticsToolFailureReason,
@@ -216,7 +239,8 @@ const EVIDENCE_STATE_FOR_FAILURE: Record<
   actor_read_failed: "temporarily_unavailable",
   permission_denied: "permission_denied",
   sensitive_consent_required: "consent_required",
-  operator_action_required: "unsupported",
+  record_not_included: "consent_required",
+  operator_action_required: "search_consent_required",
   database_not_configured: "not_configured",
   database_role_unsafe: "not_ready",
   database_grants_missing: "not_ready",
@@ -282,9 +306,10 @@ export function worstEvidenceState(
  * investigation that hit one of these is INCOMPLETE, and saying so is the honest
  * answer — not filling the gap from a source the caller does hold.
  *
- * `consent_required` is withheld too (AID-7a, #2785): the evidence exists and was
- * deliberately not retrieved. What separates it from the other two is WHOSE decision
- * withheld it and what fixes it — see `isConsentWithheldEvidenceState`.
+ * `consent_required` and `search_consent_required` are withheld too (AID-7a, #2785):
+ * the evidence exists and was deliberately not retrieved. What separates them from
+ * the other two is WHOSE decision withheld it and what fixes it — see
+ * `isConsentWithheldEvidenceState` and `isSearchWithheldEvidenceState`.
  */
 export function isWithheldEvidenceState(
   state: DiagnosticsEvidenceState,
@@ -292,7 +317,8 @@ export function isWithheldEvidenceState(
   return (
     state === "permission_denied" ||
     state === "actor_blocked" ||
-    state === "consent_required"
+    state === "consent_required" ||
+    state === "search_consent_required"
   );
 }
 
@@ -312,4 +338,21 @@ export function isConsentWithheldEvidenceState(
   state: DiagnosticsEvidenceState,
 ): boolean {
   return state === "consent_required";
+}
+
+/**
+ * True when the state means the evidence was withheld because the operator did not
+ * allow the assistant to SEARCH on this question (#2785 review; owner decision #2378
+ * Q2).
+ *
+ * The third member of the same family as `isConsentWithheldEvidenceState`, and it
+ * exists for the same reason: a caller reporting withheld evidence has to name a
+ * remedy, and there are now three different ones. This one is a tick, not an area
+ * and not a record — so `summariseDiagnosticCase` keeps it out of `withheldAreas`
+ * exactly as it keeps consent refusals out, and surfaces it as `hasSearchWithheld`.
+ */
+export function isSearchWithheldEvidenceState(
+  state: DiagnosticsEvidenceState,
+): boolean {
+  return state === "search_consent_required";
 }

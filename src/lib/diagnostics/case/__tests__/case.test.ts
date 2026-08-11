@@ -33,6 +33,7 @@ import {
   DIAGNOSTICS_EVIDENCE_STATE_DESCRIPTIONS,
   evidenceStateForToolResult,
   isConsentWithheldEvidenceState,
+  isSearchWithheldEvidenceState,
   isWithheldEvidenceState,
   worstEvidenceState,
 } from "../states";
@@ -201,7 +202,12 @@ describe("evidence states (#2375)", () => {
   });
 
   it("marks only the withheld states as withheld", () => {
-    const withheld = ["permission_denied", "actor_blocked", "consent_required"];
+    const withheld = [
+      "permission_denied",
+      "actor_blocked",
+      "consent_required",
+      "search_consent_required",
+    ];
     for (const state of withheld) {
       expect(
         isWithheldEvidenceState(state as (typeof DIAGNOSTICS_EVIDENCE_STATES)[number]),
@@ -230,12 +236,34 @@ describe("evidence states (#2375)", () => {
     }
   });
 
-  it("reports an operator-only tool asked for by the MODEL as unsupported (#2785)", () => {
-    // Not `consent_required`: the operator's move for that one is to include a record,
-    // and the move here is a different control entirely (the people-search tick). To
-    // the model, "diagnostics has no tool that can answer that" is exactly true.
+  it("gives a refused SEARCH its own state, not `unsupported` (#2785 review)", () => {
+    // `unsupported` says "Diagnostics has no tool that can answer that", which is the
+    // opposite of the truth: the tool exists, the operator holds the permission, and
+    // one tick turns it on. These sentences are operator-facing by their own contract
+    // — the UI and the evidence block show the same words — so the state has to point
+    // at the control that would allow it, exactly as the record refusal does.
     expect(evidenceStateForToolResult(failure("operator_action_required"))).toBe(
-      "unsupported",
+      "search_consent_required",
+    );
+    expect(isWithheldEvidenceState("search_consent_required")).toBe(true);
+    expect(isSearchWithheldEvidenceState("search_consent_required")).toBe(true);
+    // And it is NOT merged with the record refusal: two withholdings, two controls.
+    expect(isConsentWithheldEvidenceState("search_consent_required")).toBe(false);
+    for (const state of DIAGNOSTICS_EVIDENCE_STATES) {
+      if (state === "search_consent_required") continue;
+      expect(isSearchWithheldEvidenceState(state), state).toBe(false);
+    }
+    expect(
+      DIAGNOSTICS_EVIDENCE_STATE_DESCRIPTIONS.search_consent_required,
+    ).toContain("search");
+  });
+
+  it("sends a per-record refusal of a NON-personal entry to the same remedy (#2785 review)", () => {
+    // `record_not_included` and `sensitive_consent_required` differ in what the entry
+    // would have returned — codes and instants versus personal details — and the
+    // operator's move for both is identical: select the record.
+    expect(evidenceStateForToolResult(failure("record_not_included"))).toBe(
+      "consent_required",
     );
   });
 
@@ -306,19 +334,56 @@ describe("diagnostic case (#2375)", () => {
     expect(summary.withheldAreas).toEqual(["finance"]);
   });
 
-  it("falls back to the tool's declared areas when a denial names none", () => {
-    // `missingAreas` is only populated for a per-area denial. For `actor_blocked` there
-    // is no authorized actor at all, so the areas the tool DECLARES are the honest
-    // answer to "what would this have needed".
+  it("names NO area for a locked-out actor, because no area unlocks one (#2785 review)", () => {
+    // `withheldAreas` is documented as "the areas that would unlock the withheld
+    // sources", and for `actor_blocked` no area would: the account is locked out of
+    // the admin surface entirely. Listing the tool's declared areas there sent the
+    // operator — or the Full Admin they escalate to — to grant four permissions that
+    // change nothing. The state itself is still reported, and still counts as
+    // withheld evidence; what it does not do is masquerade as a permission gap.
     const diagnosticCase = createDiagnosticCase("member.cannot_book");
     recordCaseEvidence(
       diagnosticCase,
       failure("actor_blocked", { areasChecked: ["support", "membership"] }),
     );
+    const summary = summariseDiagnosticCase(diagnosticCase);
+    expect(summary.withheldAreas).toEqual([]);
+    expect(summary.hasWithheldEvidence).toBe(true);
+    expect(summary.states).toEqual(["actor_blocked"]);
+  });
+
+  it("still falls back to the declared areas for a denial that names none", () => {
+    // `missingAreas` is only populated for a per-area denial, and a `permission_denied`
+    // that reports none still has an honest answer to "what would this have needed":
+    // the areas the tool itself declares.
+    const diagnosticCase = createDiagnosticCase("member.cannot_book");
+    recordCaseEvidence(
+      diagnosticCase,
+      failure("permission_denied", { areasChecked: ["support", "membership"] }),
+    );
     expect(summariseDiagnosticCase(diagnosticCase).withheldAreas).toEqual([
       "membership",
       "support",
     ]);
+  });
+
+  it("keeps a refused SEARCH out of `withheldAreas` and names its own remedy (#2785 review)", () => {
+    // The same trap as the consent refusal: a search refusal names no `missingAreas`,
+    // so the fallback would report the entry's own areas as denied.
+    const diagnosticCase = createDiagnosticCase("member.subscription_lapsed");
+    recordCaseEvidence(
+      diagnosticCase,
+      failure("operator_action_required", {
+        toolId: "diagnostics.member_search",
+        areasChecked: ["membership"],
+      }),
+    );
+    const summary = summariseDiagnosticCase(diagnosticCase);
+    expect(summary.withheldAreas).toEqual([]);
+    expect(summary.hasWithheldEvidence).toBe(true);
+    expect(summary.hasSearchWithheld).toBe(true);
+    expect(summary.hasConsentWithheld).toBe(false);
+    expect(summary.states).toEqual(["search_consent_required"]);
   });
 
   it("takes the recorded areas from the audit metadata, not from the caller", () => {
