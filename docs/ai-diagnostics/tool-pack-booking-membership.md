@@ -390,7 +390,7 @@ built from those. There is no data-write statement, advisory lock or HTTP reques
 
 #### Every server-owned answer is bounded at the database
 
-The entry-level ten-second deadline is a `Promise.race`. It stops this process
+The entry-level deadline is a `Promise.race`. It stops this process
 **waiting** and cancels nothing: no part of Prisma propagates a cancellation into an
 in-flight statement. So before this was fixed, a slow hosting sibling fan-out, member
 night-conflict scan or capacity read carried on running against the database after
@@ -555,7 +555,7 @@ projected. The column is not in the SELECT allowlist either, so no SQL entry cou
 name it.
 
 The sources bound their own **work** as well as the executor's wait: each carries a
-10-second deadline below the executor's 15 seconds, and it **refuses** rather than
+own deadline below the executor's outer race, and it **refuses** rather than
 returning a partial row. A block state assembled from some of its inputs would be
 a fabricated answer, not an absent one — a row reporting "no policy violations"
 because the policy evaluation timed out is exactly the failure this pack is
@@ -1501,7 +1501,7 @@ record's history is per-record evidence whether or not the row carries a name.
 | Person's name on the way out | 60 characters, clipping marked |
 | Room and bed label on the way out | 24 characters, clipping marked |
 | Rendered block | 8 000 characters — smaller than the byte ceilings, so three entries cannot list a **full** result inside it |
-| Server-owned read | 15 s deadline on the executor's **wait**; each source carries its own 10 s deadline on the **work**, and refuses rather than returning a partial row |
+| Server-owned read | The executor's outer race bounds the **wait**; each source carries its own deadline on the **work**, and refuses rather than returning a partial row. Both derive from the one ladder in `types.ts` (#2804) — see `tools.md` -> "The read-only seam" for the current values |
 | Per session | 16 tool calls, 4 per provider round |
 
 Both byte ceilings are **measured, not estimated**, and the measuring has to be

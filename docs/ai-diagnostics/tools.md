@@ -295,7 +295,7 @@ looser one.
 | Provider rounds | AID-2's `DIAGNOSTICS_MAX_TOOL_ROUNDS` | server-side session counter |
 | Pool connections | 3 | the dedicated `pg` pool, plus the role's `CONNECTION LIMIT` |
 | Rendered evidence block | 8,000 chars | whole rows dropped from the tail, and the rows header states how many of how many it listed |
-| Server-owned evidence read | 15,000 ms | explicit deadline on the **wait**; expiry and refusal both return no rows |
+| Server-owned evidence read | `serverEvidenceTimeoutMs`, derived — see "The read-only seam" | explicit deadline on the **wait**; expiry and refusal both return no rows |
 
 The rendered-block cap is what sets a tool pack's practical row ceiling. When a result
 is too wide for the block, the renderer drops **whole** rows from the tail and changes
@@ -328,8 +328,8 @@ to narrow a question that takes no arguments. A registry contract test now seria
 every entry's own projected shape at its own row limit and fails if the ceiling is
 unachievable.
 
-A `server_owned` entry gets the 15-second deadline on the **wait**, and that is all the
-substrate can give it: `Promise.race` does not cancel the loser, and nothing propagates
+A `server_owned` entry gets the executor's outer deadline on the **wait**, and that is
+all the substrate can give it: `Promise.race` does not cancel the loser, and nothing propagates
 a cancellation into Prisma, so an abandoned read keeps running. A first-party source
 that fans out or can be slow must therefore bound its own **work** — its own deadline,
 below the executor's, and a batched rather than unbounded fan-out. AID-6A's job-health
@@ -353,6 +353,63 @@ makes the reads share one snapshot. It sets no `lock_timeout`: the SELECT-only e
 does, and adding one here would change when the re-homed entries refuse, so the exposure
 is bounded by the statement timeout instead (a slower refusal, never an unbounded wait).
 
+**The four bounds are one derived ladder** (#2804). Say the relation carefully,
+because the obvious shorthand is wrong: the wait is not "smaller than" the transaction
+timeout, it comes BEFORE it and the two ADD. What must hold is
+
+```
+statement < transaction        and        (wait + transaction) < graph < outer race
+```
+
+A read can spend the full wait queuing and then still need the full transaction, so a
+graph deadline that only cleared the transaction would kill a read for time it spent
+waiting for a connection it went on to get.
+
+| bound | value | covers |
+|---|---|---|
+| pg `connectionTimeoutMillis` | 10 000 ms | **not ours** — the pool's own ceiling, from `pool_timeout` in `DATABASE_URL` |
+| `readOnlyMaxWaitMs` | 8 000 ms | waiting for a pool connection |
+| `readOnlyTransactionTimeoutMs` | 7 000 ms | the read once it has started |
+| `serverEvidenceDeadlineMs` | 20 000 ms | one source's whole evidence graph |
+| `serverEvidenceTimeoutMs` | 25 000 ms | the executor's outer race |
+
+Only the wait and the statement timeout are chosen; the lower three are computed from
+them in `types.ts`. That is deliberate. The wait was 2 000 ms until an owner decision in
+August 2026 said an admin would rather wait for a busy database than be told to try
+again — and raising it pushed the database's own worst case past a source deadline that
+was a hand-set 10 000 and an outer race that was a hand-set 15 000. Both would have gone
+on "passing" while firing *before* the read they exist to back stop. Deriving them means
+moving the wait moves everything that depends on it.
+
+**The top row is not ours, and forgetting that is how the first attempt failed.** pg's
+`connectionTimeoutMillis` covers time spent QUEUED, not just time spent connecting, so it
+caps the wait no matter what Prisma is asked for. A first draft set the wait to 20 000
+against that 10 000 ceiling: pg rejected first, with a bare `Error` carrying no code, so
+the longer wait never happened *and* the busy classification could never fire — while
+every unit test passed, because they hand-build the error. The wait therefore sits
+strictly below the pool ceiling, and
+`tools/__tests__/pool-acquisition-ladder.test.ts` asserts that against the real shipped
+connection strings. Raising it further means raising `pool_timeout`, which is a
+whole-application decision: that pool serves member traffic too.
+
+**The statement timeout deliberately did not move.** Waiting longer to *start* is what
+was asked for; letting a running query run longer is the half that actually loads the
+database.
+
+A read that waits the full 8 s and never gets a connection refuses with
+`evidence_database_busy`, not `evidence_unavailable`. The distinction is the point: the
+second means the calculation ran and could not answer, so go and look for a fault; the
+first means the database is reachable and busy, nothing is broken, and the answer is to
+try again shortly. At a two-second wait that was a rare event not worth its own code; at
+eight, an admin who waited that long is owed an accurate reason for it. A UI showing
+this **must** also show progress while it waits — a 15-second worst case with no feedback
+makes an admin reload, and a reload during contention adds another queued reader.
+
+**It does not apply to every entry.** `background_job_health` reads through a shared
+Admin > Health helper that takes no transaction client (exemption `cron-runs-own-budget`),
+so it never opens the seam and this wait does not govern it; it still refuses on its own
+read budget with `evidence_unavailable`.
+
 **Every `server_owned` spec must declare `readOnlySeam`**, and the field is required, so
 a new entry cannot compile without answering. It says whether the entry threads its own
 reads through the seam, which declared exemptions it reads through, or both.
@@ -364,7 +421,9 @@ passes.
 The exemptions are a closed table in `read-only-seam-exemptions.ts`, each row naming the
 module, the symbol and one reviewed sentence of why it structurally cannot run inside
 the seam — a readiness verdict that must stay answerable when the application connection
-is the fault, its fault-tolerant module-flags read, a read that touches no database, a
+is the fault, its module-flags read (which tolerates a failure of that one query by
+reporting the module state as **unknown**, never as *off* — #2803), a read that touches
+no database, a
 shared admin calculation that accepts no transaction client, and a shared helper that
 enforces a deadline of its own. A census test pins the row set exactly, so a sixth is a
 decision somebody made in a diff. The claim "every server-owned entry reads through the
@@ -573,9 +632,19 @@ never echoes caller input: `unknown_tool`, `invalid_args`,
 `call_budget_exhausted`, `metering_unavailable`, `actor_unresolved`,
 `actor_blocked`, `actor_read_failed`, `permission_denied`,
 `database_not_configured`, `database_role_unsafe`, `database_grants_missing`, `query_failed`,
-`evidence_unavailable`, `result_too_large`, `redaction_failed`,
+`evidence_unavailable`, `evidence_database_busy`, `result_too_large`,
+`redaction_failed`,
 `audit_unavailable`, `internal_error`, `sensitive_consent_required`,
 `record_not_included`, `operator_action_required`.
+
+`evidence_database_busy` is AID-7b's follow-up (#2804) and is deliberately NOT
+`evidence_unavailable`: that one means the first-party calculation ran and could not
+answer, so an operator should go and look for a fault; this one means the application
+database was reachable and every connection was simply in use, so nothing is broken and
+the answer is to try again shortly. Since the wait for a connection is now several times
+longer than it was, an administrator who waited it out is owed the difference. The
+current value is in the ladder table above rather than restated here — restating it is
+how this very sentence came to say "twenty seconds" after the number became eight.
 
 The last three are AID-7a's (#2785). `sensitive_consent_required` stays distinct
 from `permission_denied` because the caller may hold every area the entry declares —

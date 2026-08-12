@@ -27,7 +27,7 @@
  * APPLICATION connection pool per call. That was survivable as an admin page load and
  * is not survivable as a diagnostics tool: a model may spend up to
  * `maxToolCallsPerSession` calls on job health in one operator question, and each call
- * whose 15-second deadline expires abandons its queries WITHOUT cancelling them
+ * whose deadline expires abandons its queries WITHOUT cancelling them
  * (`Promise.race` does not cancel the loser, and nothing propagates a cancellation
  * into Prisma). So the per-job reads now run in bounded batches, and a caller may
  * supply a deadline after which no further batch is ISSUED — which is what actually

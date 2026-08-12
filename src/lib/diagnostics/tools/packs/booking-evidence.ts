@@ -204,9 +204,10 @@ import {
 
 import type { DiagnosticsToolRawRow } from "../define";
 import { withBoundedReadOnlyTransaction } from "../read-only-transaction";
+import { DIAGNOSTICS_TOOL_BOUNDS } from "../types";
 
 /**
- * These sources' OWN deadline, below the executor's 15-second wait.
+ * These sources' OWN deadline, below the executor's outer race.
  *
  * The executor's `Promise.race` does not cancel the loser and nothing propagates a
  * cancellation into Prisma, so a source that can be slow has to bound its own
@@ -230,8 +231,18 @@ import { withBoundedReadOnlyTransaction } from "../read-only-transaction";
  * definition instead of each pack keeping its own. The ordering
  * statement < transaction < this deadline is what makes PostgreSQL refuse first,
  * and it is asserted rather than assumed.
+ *
+ * DERIVED, NOT CHOSEN, SINCE #2804. It used to be a flat 10 000, which worked
+ * only because the wait for a connection was two seconds: worst case 2 000 +
+ * 7 000 = 9 000 fitted underneath with a second to spare. When the owner raised
+ * the wait to twenty seconds, a hand-set 10 000 would have sat BELOW the
+ * database's own worst case — so a read that queued for a connection and then ran
+ * perfectly well would have been killed by this deadline and reported as "took
+ * too long", which is not what happened. It now comes from the one ladder in
+ * `types.ts` and cannot fall behind it again.
  */
-export const AID6B_EVIDENCE_DEADLINE_MS = 10_000;
+export const AID6B_EVIDENCE_DEADLINE_MS =
+  DIAGNOSTICS_TOOL_BOUNDS.serverEvidenceDeadlineMs;
 
 /**
  * How many nights one capacity read may report. Kept in step with

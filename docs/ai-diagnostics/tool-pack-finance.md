@@ -201,7 +201,7 @@ dropped inside the function) and `Payment."manualPaymentNote"` — so **every ed
 needs the review a grant would get.
 
 It bounds its own **work** as well as the executor's wait: a constant six point
-reads and aggregates for one booking, under its own 10-second deadline that
+reads and aggregates for one booking, under its own deadline that
 **refuses** rather than returning a partial row. A finance state assembled from some
 of its inputs would be a fabricated answer, not an absent one.
 
@@ -565,7 +565,7 @@ never have matched a row.
 | Bytes, multi-row entries | 16 384 |
 | Bytes, single-row entries | 4 096 |
 | Free-text field cap | 64 characters, clipping marked |
-| Server-owned read | 15 s deadline on the **wait**; the source carries its own 10 s deadline on the **work**, and refuses rather than returning a partial row |
+| Server-owned read | The executor's outer race bounds the **wait**; the source carries its own deadline on the **work**, and refuses rather than returning a partial row. Both derive from the one ladder in `types.ts` (#2804) |
 
 Both byte ceilings are **measured, not estimated**: a registry contract test
 serialises every entry's own projected shape at its own row limit, at the widest

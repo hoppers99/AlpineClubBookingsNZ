@@ -292,7 +292,11 @@ Every gate denies the paid call on doubt — the concrete realisation of ADR-005
   `DIAGNOSTICS_METERING_FAILURE_THRESHOLD` (3) consecutive settle failures; the
   product route checks it BEFORE spending — can't-meter ⇒ don't-spend.
 - **Readiness** (`getDiagnosticsReadiness`) returns `ready: false` with a
-  `resolve_error` blocker on any DB fault rather than throwing.
+  `resolve_error` blocker on any DB fault rather than throwing. A failure of the
+  **module-flags read alone** is reported as its own state rather than folded into
+  either of those: `moduleEnabled: null` with a `module_flags_unreadable` blocker,
+  which blocks like any other but says *we could not tell* rather than *it is off*
+  (#2803). A surface rendering readiness must never show `null` as "off".
 - **Budget** defaults to NZ$0, so enabling the module alone authorises nothing.
 - The **rate limiters** are all `authSensitive`, so a degraded shared-store
   fallback runs at limit/4 — a store outage tightens, never loosens, the
