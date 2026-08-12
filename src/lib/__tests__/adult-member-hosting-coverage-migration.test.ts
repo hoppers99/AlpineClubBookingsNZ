@@ -4,6 +4,8 @@ import { spawnSync } from "node:child_process";
 
 import { describe, expect, it } from "vitest";
 
+import { MIGRATION_GATE_TIMEOUT_MS } from "./helpers/migration-gate-timeouts";
+
 const MIGRATION_NAME = "20260806010000_fence_hosting_coverage_delivery_claims";
 const MIGRATION_RELATIVE_PATH = `prisma/migrations/${MIGRATION_NAME}/migration.sql`;
 const LEDGER_RELATIVE_PATH = "docs/BLUE_GREEN_MIGRATION_SAFETY.tsv";
@@ -116,7 +118,11 @@ describe("hosting delivery fencing migration (#2596)", () => {
       BLUE_GREEN_OLD_APP_AND_WORKERS_STOPPED: "1",
     });
     expect(windowed.status, windowed.stderr).toBe(0);
-  });
+    // #2806: three real shell-outs to the bash gate. Measured at ~4.0 s on a
+    // Windows developer machine against Vitest's implicit 5 s default — 79% of
+    // budget — and it duly failed under load. Same budget, same reasoning, as
+    // the other suites that run these gates for real.
+  }, MIGRATION_GATE_TIMEOUT_MS);
 
   it("threads the stopped-runtime acknowledgement through the deployment validator", () => {
     const deploy = readFileSync(
