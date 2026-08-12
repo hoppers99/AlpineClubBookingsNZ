@@ -1192,8 +1192,10 @@ export const OFFICER_DRIVEN_MEMBER_VISIBLE_WRITERS_2755: Readonly<
 };
 
 /**
- * The FIFTEEN lodge-gated operational sites that #2730 and #2755 read and left at
- * `admin`, pinned per site so the next sweep cannot move them silently (#2765).
+ * The lodge-gated operational sites pinned at `admin`: the FIFTEEN that #2730 and
+ * #2755 read and #2765 kept, plus later arrivals classified under the same rule
+ * on arrival (#2749's other-lodges trio is the first). Pinned per site so the
+ * next sweep cannot move any of them silently.
  *
  * WHY THEY STAY, IN ONE SENTENCE. The test both passes actually applied was *did
  * this site SPLIT a subsystem* — did some other writer of the same objects already
@@ -1209,14 +1211,14 @@ export const OFFICER_DRIVEN_MEMBER_VISIBLE_WRITERS_2755: Readonly<
  * not only editing the table.
  *
  * WHAT THE ASSERTIONS BESIDE IT ESTABLISH, so the keep is a property and not a
- * claim: all fifteen record `admin`; `admin` is member-INVISIBLE, so nothing here
- * reaches a member timeline through the category; and `classifyAuditRetention`
- * returns `critical` for all fifteen actions under `admin` AND under `lodge`, so
- * the retention-neutrality that makes the move "easy" is measured rather than
- * asserted.
+ * claim: every pinned site records `admin`; `admin` is member-INVISIBLE, so
+ * nothing here reaches a member timeline through the category; and
+ * `classifyAuditRetention` returns `critical` for every pinned action under
+ * `admin` AND under `lodge`, so the retention-neutrality that makes the move
+ * "easy" is measured rather than asserted.
  *
- * ELEVEN ARE GATED `lodge:*` AND FOUR ARE GATED `membership:*`, and the census test
- * measures that split from the routes' own source rather than trusting this
+ * FOURTEEN ARE GATED `lodge:*` AND FOUR ARE GATED `membership:*`, and the census
+ * test measures that split from the routes' own source rather than trusting this
  * comment. The four are the lockers, listed again in
  * `MEMBERSHIP_GATED_LOCKER_SITES_2765` because they were settled on their own
  * reasoning (#2777, 11 August 2026: they stay `admin`), not by inheriting the
@@ -1258,9 +1260,11 @@ export const LODGE_GATED_ADMIN_CATEGORIES_2765: Readonly<
   "src/app/api/admin/work-parties/[id]/route.ts::DELETE#0": "admin",
 
   // ─── Other-lodges registry (#2749, arrived after the #2765 decision) ────────
-  // Classified under INV-PRIV-013's own rule rather than re-decided: a NEW
-  // uniform subsystem (no sibling writer files elsewhere, so no split to close),
-  // gated `lodge:view`/`lodge:edit`, filing `admin`. Pinned on arrival so the
+  // Classified under INV-PRIV-013's rule rather than re-decided, and not merely
+  // because it is new and uniform: its nearest analogue, the club's own lodge
+  // records (`admin/lodges/**`), files `admin` — so filing this registry `lodge`
+  // would itself OPEN a split of exactly the kind the rule exists to close.
+  // Gated `lodge:view`/`lodge:edit`, filing `admin`. Pinned on arrival so the
   // next change is deliberate.
   "src/app/api/admin/other-lodges/route.ts::POST#0": "admin",
   "src/app/api/admin/other-lodges/[id]/route.ts::PATCH#0": "admin",
@@ -1300,7 +1304,7 @@ export const MEMBERSHIP_GATED_LOCKER_SITES_2765: readonly string[] = [
  * (#2765; the #2749 other-lodges trio arrived later and is derived the same way).
  *
  * DERIVED FROM THE CENSUS, NOT HAND-MAINTAINED — the census test asserts set
- * equality between this list and the actions the fifteen sites actually write, so
+ * equality between this list and the actions the pinned sites actually write, so
  * a renamed action fails by name rather than dropping silently out of the
  * retention evidence. That gate is the whole reason this list can be trusted:
  * before it existed, renaming one of these to something access-shaped (say
@@ -1309,7 +1313,7 @@ export const MEMBERSHIP_GATED_LOCKER_SITES_2765: readonly string[] = [
  * instead of seven years and nothing objected — `classifyAuditRetention` reads
  * the ACTION as well as the category.
  *
- * ONE of the fifteen resolves its action from an expression rather than a
+ * ONE of the pinned sites resolves its action from an expression rather than a
  * literal — the lodge PATCH writer, which picks between `LODGE_UPDATED` /
  * `LODGE_ACTIVATED` / `LODGE_DEACTIVATED` — so the census reports it as
  * `(dynamic) …` and the test unfolds that one ternary from the route's own source.
@@ -1347,7 +1351,7 @@ export const LODGE_GATED_ADMIN_ACTIONS_2765: readonly string[] = [
  * WHY THIS EXISTS. `INV-PRIV-013`'s whole argument is that this group is *uniform*
  * at `admin`, so there is no split to close. That premise is a fact about the tree,
  * and until this list existed nothing checked it: the per-site map's assertions are
- * computed over the map's OWN keys, so a SIXTEENTH writer in one of these
+ * computed over the map's OWN keys, so a NEW writer in one of these
  * subsystems filing `lodge` would create exactly the split the invariant says does
  * not exist, with every test green. The census test asserts that every audit write
  * site under these prefixes is in `LODGE_GATED_ADMIN_CATEGORIES_2765` at `admin`.
@@ -1357,8 +1361,8 @@ export const LODGE_GATED_ADMIN_ACTIONS_2765: readonly string[] = [
  * file `lodge` — the display family was #2730's split-closing move. The uniformity
  * claim is per subsystem, which is why this is a list of directories rather than a
  * permission test; the census test covers the other direction separately, by
- * requiring every `lodge:*` gated admin writer that files `admin` to be one of the
- * fifteen. The known adjacency in the other direction is `lodge.chore.completed`
+ * requiring every `lodge:*` gated admin writer that files `admin` to be pinned in
+ * the map. The known adjacency in the other direction is `lodge.chore.completed`
  * in `src/app/api/lodge/roster/[date]/route.ts`: a different act (completing
  * tonight's chore) on a different object, outside these prefixes by design.
  */
@@ -1371,6 +1375,32 @@ export const LODGE_GATED_ADMIN_SUBSYSTEM_PREFIXES_2765: readonly string[] = [
   "src/app/api/admin/other-lodges/",
   "src/app/api/admin/work-parties/",
 ];
+
+/**
+ * The word each pinned subsystem must appear under in the correlation entries'
+ * evidence-scope strings, keyed by the SAME prefixes as the uniformity gate.
+ *
+ * WHY IT IS KEYED, NOT LISTED. `INV-PRIV-013`'s naming obligation follows the
+ * map, and the map is open-ended: a later arrival is pinned here on
+ * classification (#2749 was the first). A hand-typed word list in the scope test
+ * would let that arrival be pinned with every census assertion green while both
+ * correlation entries stay silent about it — the exact silent absence the
+ * obligation exists to prevent. The scope test asserts this record's keys equal
+ * `LODGE_GATED_ADMIN_SUBSYSTEM_PREFIXES_2765`, so adding a prefix without a
+ * naming word fails by name, and then asserts every value appears in all three
+ * pinned strings.
+ */
+export const LODGE_GATED_ADMIN_SUBSYSTEM_NAMING_2765: Readonly<
+  Record<string, string>
+> = {
+  "src/app/api/admin/chores/": "chore",
+  "src/app/api/admin/lockers/": "locker",
+  "src/app/api/admin/lodge-instructions/": "lodge instruction",
+  "src/app/api/admin/lodge-settings/": "lodge setting",
+  "src/app/api/admin/lodges/": "the lodge records",
+  "src/app/api/admin/other-lodges/": "other-lodges registry",
+  "src/app/api/admin/work-parties/": "work part",
+};
 
 /**
  * Sites among `APPLIED_AUDIT_CATEGORIES` that still carry NO entity identifier,
