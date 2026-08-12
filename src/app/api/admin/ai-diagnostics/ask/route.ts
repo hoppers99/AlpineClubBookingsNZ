@@ -101,14 +101,37 @@ const bodySchema = z
     allowPeopleSearch: z.boolean(),
     allowRecordPersonalDetails: z.boolean(),
     /**
+     * The record the operator has open, when the page they are on is a LIST rather
+     * than a detail URL.
+     *
+     * IT IS A SELECTOR, AND ONLY A SELECTOR. The server picks the KIND from the route
+     * it matched — `page-context/registry.ts`: "The client picks the ID; the SERVER
+     * picks the KIND — which is why a member id sent on a booking route can only ever
+     * fail to find a booking, never read a member" — then re-resolves the record under
+     * this admin's own freshly-read authority and returns a bounded projection. Nothing
+     * here is trusted; it selects what the server then re-establishes.
+     *
+     * IT HAS TO EXIST, and the first cut of this route left it out on the grounds that
+     * a request carrying no client identifier is safer. It is, and it also cannot
+     * answer the product's flagship question: this codebase has NO `/admin/bookings/[id]`
+     * page — bookings open from the list — so a URL-only rule means no booking can ever
+     * be the subject of an investigation. AID-4 anticipated exactly this, which is why
+     * its own selector schema makes `recordId` optional and why the LIST routes declare
+     * a `recordKind` despite having no dynamic segment.
+     *
+     * A record id in the URL wins over this one: an operator on a detail page is
+     * unambiguously asking about that record.
+     */
+    recordId: z.string().min(1).max(64).optional(),
+    /**
      * The operator's own allowlisted VIEW state for the page they are on — which tab
      * they have open, which status they filtered to.
      *
-     * It carries no route key and no record id: the server derives both from
-     * `pathname` (see gate 9). These fields are re-validated against the matched
-     * route's OWN declared tabs/steps/statuses by `parseDiagnosticsPageSelector`, so an
-     * unknown token is refused there rather than trusted here. Bounds are left to that
-     * parser too — restating them would be a second set to drift.
+     * It carries no route key: the server derives that from `pathname` (see gate 9).
+     * These fields are re-validated against the matched route's OWN declared
+     * tabs/steps/statuses by `parseDiagnosticsPageSelector`, so an unknown token is
+     * refused there rather than trusted here. Bounds are left to that parser too —
+     * restating them would be a second set to drift.
      */
     view: z
       .object({
@@ -196,6 +219,7 @@ export async function POST(request: Request) {
     transcript,
     allowPeopleSearch,
     allowRecordPersonalDetails,
+    recordId,
     view,
   } = parsed.data;
 
@@ -269,11 +293,18 @@ export async function POST(request: Request) {
   //    The resolver is still called, with no route, so the evidence block says what
   //    could not be established rather than silently omitting the section.
   const matched = matchDiagnosticsPageRoute(pathname);
+  // The URL's own record wins over the one the page registered: an operator on a
+  // detail page is unambiguously asking about that record, and a stale registration
+  // from a list they were on before must not override it. `recordId` is offered only
+  // where the matched route declares a kind for it — sending one for a static page
+  // would be selecting a record the route can never be about.
+  const selectedRecordId =
+    matched?.recordId ?? (matched?.route.recordKind ? recordId : undefined);
   const pageContext = await resolveDiagnosticsPageContext({
     selector: matched
       ? {
           routeKey: matched.route.key,
-          ...(matched.recordId ? { recordId: matched.recordId } : {}),
+          ...(selectedRecordId ? { recordId: selectedRecordId } : {}),
           ...(view ?? {}),
           includeSensitiveRecord: allowRecordPersonalDetails,
         }

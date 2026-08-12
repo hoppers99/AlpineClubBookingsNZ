@@ -62,6 +62,12 @@ const TURN_MAX_CHARS = 2_000;
 
 export interface DiagnosticsAskOptions {
   pathname: string;
+  /**
+   * The record the page registered as open, when the address does not name one.
+   * A SELECTOR: the server picks the kind from the route and re-resolves the record
+   * under the operator's own authority before reading a field.
+   */
+  recordId?: string;
   view?: Record<string, string>;
 }
 
@@ -189,6 +195,7 @@ export function useDiagnosticsChat(): UseDiagnosticsChat {
             transcript,
             allowPeopleSearch: askedWithPeopleSearch,
             allowRecordPersonalDetails: askedWithPersonalDetails,
+            ...(options.recordId ? { recordId: options.recordId } : {}),
             ...(options.view ? { view: options.view } : {}),
           }),
         });

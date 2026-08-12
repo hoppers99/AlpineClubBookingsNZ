@@ -28,6 +28,22 @@ import type { HelpQuestion, HelpSection } from "@/lib/contextual-help";
 export type HelpWidgetExtras = {
   sections?: HelpSection[];
   questions?: HelpQuestion[];
+  /**
+   * The record the operator currently has open, for AI Diagnostics (AID-7, #2378).
+   *
+   * WHY IT IS HERE AND NOT IN THE URL. Several admin surfaces open a record without
+   * navigating — there is no `/admin/bookings/[id]` page in this codebase, bookings
+   * open from the list — so the address alone cannot say which booking the operator is
+   * looking at. This is the same cross-tree channel the help extras already use, and
+   * registering an id costs a page one hook.
+   *
+   * IT IS AN ID AND NOTHING ELSE. No kind, no fields, no label. The kind comes from the
+   * route the SERVER matches, which is what keeps "a member id sent on a booking route
+   * can only ever fail to find a booking" true; the record is then re-resolved
+   * server-side under the operator's own authority before a single field is read. So
+   * the worst a wrong registration can do is select a record the server refuses.
+   */
+  diagnosticsRecordId?: string;
 };
 
 type Registration = { id: number; extras: HelpWidgetExtras };
@@ -47,11 +63,23 @@ const HelpWidgetContext = createContext<HelpWidgetContextValue | null>(null);
 function mergeRegistrations(registrations: Registration[]): HelpWidgetExtras {
   const sections: HelpSection[] = [];
   const questions: HelpQuestion[] = [];
+  // LAST registration wins for the diagnostics record, where sections and questions
+  // accumulate. A record is singular — an operator has one thing open — so merging
+  // would mean choosing between two, and the newest registration is the one that
+  // corresponds to what was most recently opened.
+  let diagnosticsRecordId: string | undefined;
   for (const { extras } of registrations) {
     if (extras.sections) sections.push(...extras.sections);
     if (extras.questions) questions.push(...extras.questions);
+    if (extras.diagnosticsRecordId) {
+      diagnosticsRecordId = extras.diagnosticsRecordId;
+    }
   }
-  return { sections, questions };
+  return {
+    sections,
+    questions,
+    ...(diagnosticsRecordId ? { diagnosticsRecordId } : {}),
+  };
 }
 
 export function HelpWidgetProvider({ children }: { children: ReactNode }) {

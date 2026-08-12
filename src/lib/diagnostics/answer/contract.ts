@@ -67,14 +67,21 @@ export interface DiagnosticsAskRequest {
   allowPeopleSearch: boolean;
   allowRecordPersonalDetails: boolean;
   /**
+   * The record the operator has open, when the page is a LIST rather than a detail
+   * URL — there is no `/admin/bookings/[id]` in this codebase, so without this the
+   * product could not answer its own flagship question.
+   *
+   * THERE IS NO ROUTE KEY HERE, and its absence is the design: the server derives the
+   * route from `pathname`, because naming the route key would be naming the record
+   * KIND, and `page-context/registry.ts` keeps that server-side on purpose — "a member
+   * id sent on a booking route can only ever fail to find a booking, never read a
+   * member." The id is a selector the server re-resolves under the operator's own
+   * authority; the kind is never the client's to choose.
+   */
+  recordId?: string;
+  /**
    * The operator's allowlisted VIEW state on that page — the tab they have open, the
    * status they filtered to.
-   *
-   * THERE IS NO ROUTE KEY AND NO RECORD ID HERE, and their absence is the design.
-   * The server derives both from `pathname`, because naming the route key would be
-   * naming the record KIND, and `page-context/registry.ts` keeps that server-side on
-   * purpose: "a member id sent on a booking route can only ever fail to find a
-   * booking, never read a member."
    */
   view?: {
     tab?: string;

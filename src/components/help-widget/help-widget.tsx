@@ -528,6 +528,7 @@ export function HelpWidget({
                 chat={diagnosticsChat}
                 pathname={pathname}
                 moduleEnabled={diagnostics.moduleEnabled}
+                recordId={extras.diagnosticsRecordId}
               />
             ) : tab === "ask" ? (
               <div className="flex flex-col gap-4">

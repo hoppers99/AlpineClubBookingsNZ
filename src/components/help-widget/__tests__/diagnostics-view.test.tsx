@@ -25,7 +25,8 @@ vi.mock("next/navigation", () => ({ usePathname: () => mocks.pathname }));
 
 const CONTENT: HelpPageContent = {
   title: "Bookings",
-  intro: "",
+  summary: "",
+  actions: [],
   sections: [],
   questions: [],
 };

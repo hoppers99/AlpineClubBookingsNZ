@@ -52,10 +52,13 @@ export function DiagnosticsView({
   chat,
   pathname,
   moduleEnabled,
+  recordId,
 }: {
   chat: UseDiagnosticsChat;
   pathname: string;
   moduleEnabled: boolean;
+  /** The record the page registered as open, when the address does not name one. */
+  recordId?: string;
 }) {
   const [draft, setDraft] = useState("");
   const searchTickId = useId();
@@ -96,7 +99,7 @@ export function DiagnosticsView({
     const question = draft.trim();
     if (!question) return;
     setDraft("");
-    void chat.ask(question, { pathname });
+    void chat.ask(question, { pathname, ...(recordId ? { recordId } : {}) });
   };
 
   return (
