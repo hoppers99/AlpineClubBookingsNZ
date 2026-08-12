@@ -21,9 +21,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("@/lib/ai-diagnostics-config", () => ({
   getDiagnosticsReadiness: vi.fn(),
-}));
-vi.mock("@/lib/module-settings", () => ({
-  loadEffectiveModuleFlags: vi.fn(),
+  // #2803: the module flag now comes from the readiness module's own TRI-STATE
+  // reader, not from the fault-tolerant flags loader, so this pack no longer
+  // decides for itself what a failed settings read means.
+  readDiagnosticsModuleFlag: vi.fn(),
 }));
 vi.mock("@/lib/ai-diagnostics-usage", async (importOriginal) => {
   const actual =
@@ -83,14 +84,20 @@ const { prismaMock, txMock, globalClientReads, recordingWindow } = vi.hoisted(
 
 vi.mock("@/lib/prisma", () => ({ prisma: prismaMock }));
 
-import { getDiagnosticsReadiness } from "@/lib/ai-diagnostics-config";
+import {
+  getDiagnosticsReadiness,
+  readDiagnosticsModuleFlag,
+} from "@/lib/ai-diagnostics-config";
+import {
+  DIAGNOSTICS_BLOCKER_CODES,
+  DIAGNOSTICS_BLOCKER_DESCRIPTIONS,
+} from "@/lib/ai-diagnostics-blockers";
 import { getDiagnosticsUsageSummary } from "@/lib/ai-diagnostics-usage";
 import {
   CronRunReadDeadlineError,
   getCronRunsForAdminHealth,
 } from "@/lib/admin-cron-runs";
 import { canonicalStringify } from "@/lib/diagnostics/knowledge/hash";
-import { loadEffectiveModuleFlags } from "@/lib/module-settings";
 import { prisma } from "@/lib/prisma";
 
 import { renderToolResultEvidenceBlock } from "../../render";
@@ -111,7 +118,7 @@ import {
 } from "../support-evidence";
 
 const readinessMock = vi.mocked(getDiagnosticsReadiness);
-const flagsMock = vi.mocked(loadEffectiveModuleFlags);
+const moduleFlagMock = vi.mocked(readDiagnosticsModuleFlag);
 const usageMock = vi.mocked(getDiagnosticsUsageSummary);
 const cronRunsMock = vi.mocked(getCronRunsForAdminHealth);
 const reservationCountMock = vi.mocked(prisma.diagnosticsBudgetReservation.count);
@@ -130,7 +137,7 @@ const NOW = new Date("2026-08-03T09:00:00.000Z");
 beforeEach(() => {
   vi.clearAllMocks();
   resetDiagnosticsDeploymentEvidenceCacheForTests();
-  flagsMock.mockResolvedValue({ aiDiagnostics: true } as never);
+  moduleFlagMock.mockResolvedValue(true);
   // Runs the caller's work against the transaction client, as the real seam does.
   globalClientReads.length = 0;
   recordingWindow.open = false;
@@ -198,7 +205,7 @@ describe("AID-6A readiness evidence (#2375)", () => {
 
     // The canonical function, called with the module flag the deployment resolved —
     // NOT a second readiness rule of this pack's own.
-    expect(flagsMock).toHaveBeenCalledTimes(1);
+    expect(moduleFlagMock).toHaveBeenCalledTimes(1);
     expect(readinessMock).toHaveBeenCalledWith({ aiDiagnostics: true });
 
     const projected = entry(DIAGNOSTICS_READINESS_TOOL_ID).project(rows[0]);
@@ -211,6 +218,93 @@ describe("AID-6A readiness evidence (#2375)", () => {
       blockerCodes: "credential_needs_reentry,database_role_unsafe",
       blockerCount: 2,
     });
+  });
+
+  it("carries an UNREADABLE module flag through as unknown, not as off (#2803)", async () => {
+    // The narrow-failure shape: the flags read failed, everything else answered.
+    moduleFlagMock.mockResolvedValue(null);
+    readinessMock.mockResolvedValue({
+      ready: false,
+      moduleEnabled: null,
+      keyState: "saved",
+      monthlyBudgetCents: 20_000,
+      databaseState: "verified",
+      blockers: ["module_flags_unreadable"],
+    });
+
+    const rows = await readDiagnosticsReadinessEvidence();
+
+    // The pack does not decide what a failed read means — it passes the unknown on.
+    expect(readinessMock).toHaveBeenCalledWith({ aiDiagnostics: null });
+    // And it is still ONE ROW. This must never become a rejection or an
+    // `evidence_unavailable`: readiness has to answer in exactly the case where the
+    // application database is the fault.
+    expect(rows).toHaveLength(1);
+
+    const projected = entry(DIAGNOSTICS_READINESS_TOOL_ID).project(rows[0]);
+    expect(projected.moduleEnabled).toBeNull();
+    expect(projected.blockerCodes).toBe("module_flags_unreadable");
+    expect(projected.readinessState).toBe("not_ready");
+    // The whole point, stated as a comparison: this row and a genuinely disabled
+    // module's row are not the same row.
+    expect(projected).not.toEqual(
+      entry(DIAGNOSTICS_READINESS_TOOL_ID).project({
+        ...rows[0],
+        module_enabled: false,
+        blocker_codes: "module_off",
+      }),
+    );
+  });
+
+  it("still projects a genuinely disabled module as off, with module_off alone", async () => {
+    moduleFlagMock.mockResolvedValue(false);
+    readinessMock.mockResolvedValue({
+      ready: false,
+      moduleEnabled: false,
+      keyState: "saved",
+      monthlyBudgetCents: 20_000,
+      databaseState: "verified",
+      blockers: ["module_off"],
+    });
+
+    const rows = await readDiagnosticsReadinessEvidence();
+    const projected = entry(DIAGNOSTICS_READINESS_TOOL_ID).project(rows[0]);
+    expect(projected.moduleEnabled).toBe(false);
+    expect(projected.blockerCodes).toBe("module_off");
+    expect(projected.blockerCount).toBe(1);
+  });
+
+  it("projects an absent or malformed module flag as unknown, never as off", () => {
+    // Fail-SAFE direction. The old `row.module_enabled === true` answered `false`
+    // for a field that was missing entirely, which is an assertion about a club's
+    // settings that no read ever made.
+    const project = entry(DIAGNOSTICS_READINESS_TOOL_ID).project;
+    const base = {
+      readiness_state: "not_ready",
+      credential_state: "saved",
+      monthly_budget_cents: 100,
+      database_role_state: "verified",
+      blocker_codes: "module_flags_unreadable",
+      blocker_count: 1,
+    };
+    expect(project(base).moduleEnabled).toBeNull();
+    expect(project({ ...base, module_enabled: "true" }).moduleEnabled).toBeNull();
+    expect(project({ ...base, module_enabled: 1 }).moduleEnabled).toBeNull();
+  });
+
+  it("gives the model every blocker code with its exact meaning (#2803)", () => {
+    // A stable code the model has to guess the meaning of is how `module_off`
+    // became "tell them to switch it on" for a module that was already on.
+    const { description } = entry(DIAGNOSTICS_READINESS_TOOL_ID);
+    for (const code of DIAGNOSTICS_BLOCKER_CODES) {
+      expect(description, code).toContain(
+        `${code} = ${DIAGNOSTICS_BLOCKER_DESCRIPTIONS[code]}`,
+      );
+    }
+    expect(description).toContain("BLOCKER CODES");
+    // The tri-state has to be readable from the description alone, because the
+    // model sees the row without this test's context.
+    expect(description).toMatch(/moduleEnabled is true, false, or NULL/);
   });
 
   it("says `none` rather than an empty string when nothing is blocking", async () => {

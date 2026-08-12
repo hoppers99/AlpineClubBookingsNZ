@@ -1,7 +1,9 @@
 import { NextResponse } from "next/server";
 import { requireAdmin } from "@/lib/session-guards";
-import { getDiagnosticsReadiness } from "@/lib/ai-diagnostics-config";
-import { loadEffectiveModuleFlags } from "@/lib/module-settings";
+import {
+  getDiagnosticsReadiness,
+  readDiagnosticsModuleFlag,
+} from "@/lib/ai-diagnostics-config";
 
 // GET /api/admin/ai-diagnostics/readiness — metadata-only setup readiness for the
 // AI Diagnostics product (AID-2, #2371; SELECT-only database role added by AID-5,
@@ -23,15 +25,20 @@ import { loadEffectiveModuleFlags } from "@/lib/module-settings";
 // Fail-closed: getDiagnosticsReadiness returns ready:false with a resolve_error
 // blocker on any DB fault rather than throwing, so a diagnostics surface never
 // treats an unknown state as ready.
+//
+// The module flag is read through readDiagnosticsModuleFlag (#2803), the SAME
+// tri-state reader the diagnostics readiness tool uses, so this endpoint and that
+// tool cannot disagree about a club's module state. When the settings read fails,
+// `moduleEnabled` is null and the blocker is `module_flags_unreadable` rather than
+// `module_off` — a screen must render that as "could not check", never as "off".
 export async function GET() {
   const guard = await requireAdmin({
     permission: { area: "support", level: "view" },
   });
   if (!guard.ok) return guard.response;
 
-  const flags = await loadEffectiveModuleFlags();
   const readiness = await getDiagnosticsReadiness({
-    aiDiagnostics: flags.aiDiagnostics,
+    aiDiagnostics: await readDiagnosticsModuleFlag(),
   });
 
   return NextResponse.json(readiness);

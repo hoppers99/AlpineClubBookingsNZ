@@ -369,6 +369,16 @@ SELECT-only database, and each has a specific reason:
   is the blocker. So the tool reads `getDiagnosticsReadiness`, the same function
   `GET /api/admin/ai-diagnostics/readiness` renders. There is no second readiness
   calculation that can drift from the admin screen.
+
+  The **module flag** it needs is read through `readDiagnosticsModuleFlag`, which
+  calls the *strict* loader and catches at the call site (#2803). The tolerance is
+  still there — this entry has to answer while the application database is
+  unreachable — but the failure is now visible instead of laundered:
+  `moduleEnabled: null` and a `module_flags_unreadable` blocker, which the
+  model-facing catalogue states in as many words is **not** evidence that the module
+  is off. It used to read `module_enabled: false`, `blocker_codes: module_off`,
+  `database_role_state: verified` — a row with no fault marker anywhere on it, which
+  sent operators to switch on a module that was already on.
 - **Deployment identity** lives in the image and on disk, not in the database.
 - **Budget and usage health** takes its money from `getDiagnosticsUsageSummary`, the
   admin panel's own numbers including the live reservation total the budget gate
@@ -614,6 +624,7 @@ instruction to obey.
 | Every correlation tool fails; readiness says `under_provisioned` | The release added a grant and provisioning has not been re-run | `npm run diagnostics:provision-role`, then re-check readiness |
 | Readiness says `not_configured` for the database role | `AI_DIAGNOSTICS_DATABASE_URL` is unset | Provision the role and set the variable ([deployment.md](deployment.md)) |
 | `diagnostics.readiness` answers, but no other tool will run | The diagnostics credential is the blocker | Read the `databaseRoleState` and `blockerCodes` this tool returns; that is what it is for |
+| Readiness says `module_flags_unreadable`, and `moduleEnabled` is `null` | The club's module settings could not be read — a transient database timeout, or a deploy window where the running code expects a `ClubModuleSettings` column the database does not have yet | Do **not** switch the module on; it may already be on. Check application database health and re-check readiness. `module_off` is the code that means someone really did switch it off |
 | A correlation tool returns nothing for a request id you can see in the admin audit log | The event is older than the window | Re-ask with a wider window, up to `7d` |
 | `evidence_unavailable` from a system tool | The application's own database or the deployed bundle could not be read | Check application health; this is not the diagnostics credential |
 | `knowledgeBundleState` is not `verified` | The deployed knowledge bundle is missing or failed verification | See [the bundle guide](../diagnostics/KNOWLEDGE_BUNDLE.md); code answers stay unavailable until it verifies |

@@ -421,7 +421,9 @@ passes.
 The exemptions are a closed table in `read-only-seam-exemptions.ts`, each row naming the
 module, the symbol and one reviewed sentence of why it structurally cannot run inside
 the seam — a readiness verdict that must stay answerable when the application connection
-is the fault, its fault-tolerant module-flags read, a read that touches no database, a
+is the fault, its module-flags read (which tolerates a failure of that one query by
+reporting the module state as **unknown**, never as *off* — #2803), a read that touches
+no database, a
 shared admin calculation that accepts no transaction client, and a shared helper that
 enforces a deadline of its own. A census test pins the row set exactly, so a sixth is a
 decision somebody made in a diff. The claim "every server-owned entry reads through the

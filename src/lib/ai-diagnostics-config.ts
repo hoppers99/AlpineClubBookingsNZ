@@ -43,12 +43,15 @@ import {
   getIntegrationCredentialValue,
   providerNeedsReentry,
 } from "@/lib/integration-credentials";
+import logger from "@/lib/logger";
 import { prisma } from "@/lib/prisma";
+import { DIAGNOSTICS_BLOCKER_CODES } from "@/lib/ai-diagnostics-blockers";
 import { loadDiagnosticsBudgetCents } from "@/lib/ai-diagnostics-usage";
 import {
   checkDiagnosticsDatabaseReadiness,
   type DiagnosticsDatabaseState,
 } from "@/lib/diagnostics/tools/database";
+import { loadEffectiveModuleFlagsStrict } from "@/lib/module-settings";
 
 /**
  * DEDICATED provider namespace — deliberately NOT the page-help "anthropic"
@@ -124,29 +127,61 @@ export async function getDiagnosticsSetupState(): Promise<DiagnosticsSetupState>
   return { state, keySetAt: row?.updatedAt.toISOString() ?? null };
 }
 
-export type DiagnosticsBlocker =
-  | "module_off"
-  | "credential_not_configured"
-  | "credential_needs_reentry"
-  | "budget_not_set"
-  /** `AI_DIAGNOSTICS_DATABASE_URL` is not set (AID-5, #2374). */
-  | "database_not_configured"
-  /** The role is safe but one or more release-declared SELECT grants are absent. */
-  | "database_grants_missing"
-  /**
-   * The credential is set but is not a usable least-privilege role: malformed,
-   * pointing at the application's own role, unreachable, or the server reports it
-   * is not SELECT-only. Deliberately ONE blocker for all four — every one of them
-   * is "an operator must fix the diagnostics role", and the distinct
-   * `databaseState` below says which.
-   */
-  | "database_role_unsafe"
-  | "resolve_error";
+/**
+ * One readiness blocker code. The closed, ordered catalogue — and the exact meaning
+ * of each code as the model is given it — lives in `ai-diagnostics-blockers.ts`.
+ */
+export type DiagnosticsBlocker = (typeof DIAGNOSTICS_BLOCKER_CODES)[number];
+
+/**
+ * Whether the club's AI Diagnostics module flag is on, off, or UNKNOWN.
+ *
+ * `null` is the answer that did not exist before #2803, and it is the point of this
+ * type: "we could not read the setting" is not "the setting is off". Anything that
+ * renders this must treat `null` as *unknown* — never as `false`, and never as a
+ * reason to tell an operator to switch a module on that may already be on.
+ */
+export type DiagnosticsModuleFlagState = boolean | null;
+
+/**
+ * READ THE CLUB'S MODULE FLAG FOR READINESS, tri-state (#2803).
+ *
+ * The STRICT loader, with the catch here rather than inside it. That is the whole
+ * fix: `loadEffectiveModuleFlags` returns every flag `false` on any error, so a
+ * single transient timeout on that one query — or a blue/green window where the
+ * deployed client selects a `ClubModuleSettings` column the migration has not added
+ * yet — used to reach readiness as a confident "the module is off", with every other
+ * read succeeding and nothing on the row marking a fault.
+ *
+ * It still never throws, and that is deliberate and load-bearing: a readiness check
+ * that cannot answer while the database is unreachable has failed at the one moment
+ * it exists for. What changes is that the failure is now VISIBLE — `null` here
+ * becomes `moduleEnabled: null` and a `module_flags_unreadable` blocker, distinct
+ * from `module_off`.
+ */
+export async function readDiagnosticsModuleFlag(): Promise<DiagnosticsModuleFlagState> {
+  try {
+    const flags = await loadEffectiveModuleFlagsStrict();
+    return flags.aiDiagnostics === true;
+  } catch (err) {
+    logger.error(
+      { err },
+      "Failed to read club module settings for AI Diagnostics readiness; reporting the module state as unknown",
+    );
+    return null;
+  }
+}
 
 export interface DiagnosticsReadiness {
   /** True ONLY when every gate passes; fail-closed on any fault. */
   ready: boolean;
-  moduleEnabled: boolean;
+  /**
+   * `true` on, `false` off, and `null` when the club's module settings could not be
+   * read at all (#2803) — which is reported beside a `module_flags_unreadable`
+   * blocker and always blocks. A consumer must render `null` as "unknown", never as
+   * "off": the two send an operator to different places.
+   */
+  moduleEnabled: DiagnosticsModuleFlagState;
   keyState: DiagnosticsKeyState;
   monthlyBudgetCents: number;
   /**
@@ -171,11 +206,22 @@ export interface DiagnosticsReadiness {
  * are per-call gates. Readiness is the stable "is this product set up" signal
  * the admin surface and the eventual product route consult before offering the
  * ask box.
+ *
+ * `modules.aiDiagnostics` is TRI-STATE (#2803). Pass `null` when you could not read
+ * the flag — `readDiagnosticsModuleFlag` above is the one caller-side reader that
+ * produces it — and the verdict says so, with `moduleEnabled: null` and a
+ * `module_flags_unreadable` blocker instead of the `module_off` that used to send an
+ * operator to switch on a module that was already on. It still blocks, because a
+ * module state nobody could establish is not a module state that authorises spend.
  */
 export async function getDiagnosticsReadiness(modules: {
-  aiDiagnostics: boolean;
+  aiDiagnostics: DiagnosticsModuleFlagState;
 }): Promise<DiagnosticsReadiness> {
-  const moduleEnabled = modules.aiDiagnostics === true;
+  // `null` — the caller could not read the flag — is preserved as `null` rather
+  // than collapsed by a `=== true` test, which is exactly how the unknown case used
+  // to become an assertion that the module was off (#2803).
+  const moduleEnabled: DiagnosticsModuleFlagState =
+    modules.aiDiagnostics === null ? null : modules.aiDiagnostics === true;
   try {
     const [setup, monthlyBudgetCents, database] = await Promise.all([
       getDiagnosticsSetupState(),
@@ -185,7 +231,13 @@ export async function getDiagnosticsReadiness(modules: {
     ]);
 
     const blockers: DiagnosticsBlocker[] = [];
-    if (!moduleEnabled) blockers.push("module_off");
+    // Unknown and off are DIFFERENT findings and are never both raised: one says the
+    // club turned diagnostics off, the other says we could not tell.
+    if (moduleEnabled === null) {
+      blockers.push("module_flags_unreadable");
+    } else if (!moduleEnabled) {
+      blockers.push("module_off");
+    }
     if (setup.state === "not_configured") {
       blockers.push("credential_not_configured");
     } else if (setup.state === "needs_reentry") {
