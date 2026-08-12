@@ -542,6 +542,69 @@ check, the exact-identifier argument shapes, the fixed projections, the column
 grants, the row/byte/field ceilings, the 16-call-per-session ceiling and the audit
 row.
 
+## Delivered capability: the admin workspace (AID-7, #2378) — IN PROGRESS
+
+**Partial.** The workspace, its admission and its readiness display are built; the
+question-and-answer surface is not. The page says so rather than showing an inert
+input, because a half-built feature that admits it is half-built costs an operator
+ten seconds and one that does not costs them a support request.
+
+### It has its own layout, and that is not its own security
+
+Diagnostics renders in the `(diagnostics)` route group with its own workspace chrome
+instead of the admin sidebar (owner decision Q4). It calls the SAME
+`guardAdminLayout` as `(admin)`: session, a member row re-read fresh from the
+database, active account, forced password change, two-factor gate, and area
+permission for the requested path. `admin-layout-guard-adoption.test.ts` fails if a
+second copy of that sequence appears in either group.
+
+**A route group is not a security boundary.** The parentheses change which layout
+renders and nothing else — they grant nothing, gate nothing, and do not appear in the
+URL. The boundary is the guard, plus the per-invocation checks the tool substrate
+already performs on every call.
+
+### Who may open it, and why that is `overview`
+
+Any admitted administrator may OPEN the workspace (owner decision Q6). The shell is
+deliberately NOT a `support:view` permission: gating it would hide the "here is who
+can fix this" message from precisely the admins who need to read it.
+
+`/admin/ai-diagnostics` was previously registered under the `support` area, added in
+anticipation of a UI that did not exist. AID-7 removes the PAGE from that list and
+keeps every `/api/admin/ai-diagnostics` route in it. Nothing is loosened: opening the
+shell grants no evidence, and each tool invocation re-derives the acting admin's
+areas server-side and refuses what they may not read. The page falls to the
+`overview` catch-all, recorded in `OVERVIEW_ALLOWLIST` with that reasoning, because
+it looks like a workaround and is not.
+
+### Readiness is tiered on the server
+
+| tier | who | sees |
+|---|---|---|
+| coarse | any admitted admin | usable or not, whether the module is on, and who can resolve it |
+| detailed | `support:view` | the full verdict — credential state, verified database-role state, budget, blockers |
+
+The coarse tier is **built** from the full verdict, not the full verdict with fields
+hidden by markup. A field that reaches the browser is disclosed whatever the
+component does with it, so the detailed fields are never sent to a coarse reader.
+`diagnostics-readiness-tiers.test.ts` asserts their absence on the object and on its
+serialisation, and is mutation-verified.
+
+The coarse reader gets "who can resolve this" instead of a blocker list, split by
+whether they can act themselves — telling somebody who only needed to switch the
+module on to "ask an administrator with support access" is wrong in the annoying
+direction.
+
+### Discovery, and the module switch
+
+The workspace appears in the admin sidebar and command palette under Monitoring &
+Support. It carries no flag of its own: visibility derives from the href against
+`FEATURE_ROUTE_RULES`, where the page prefix is registered under `aiDiagnostics`. So
+switching the module off removes it from both surfaces AND 404s the route, which
+matches — a palette entry that navigates to a 404 is worse than no entry. The
+readiness ENDPOINT stays exempt from that gate, as it must, so an admin can still
+see why the module is not ready and set it up.
+
 ## Maintenance rules
 
 - Do not point Diagnostics tools at the application's `DATABASE_URL`; update

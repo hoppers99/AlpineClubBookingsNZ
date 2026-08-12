@@ -15,8 +15,27 @@ const allOn: FeatureFlags = Object.fromEntries(
   MODULE_KEYS.map((key) => [key, true]),
 ) as FeatureFlags;
 
+/**
+ * Every `/admin/**` page on disk, from whichever route group it lives in.
+ *
+ * This walked `src/app/(admin)/admin` alone, which assumed admin pages only ever
+ * live in that one route group. AID-7 (#2378) broke that on purpose — the
+ * Diagnostics workspace has its own layout (owner decision Q4) and therefore its own
+ * group — and the assumption failed in the direction that MATTERS: a real, reachable
+ * page was reported as not existing, so a correct nav link looked like a broken one.
+ *
+ * It is the third guard in this repository to have made the same assumption (the
+ * others being the route-map drift guard's page walk and its feature-prefix check).
+ * A route group is a rendering concern; which pages exist is not. Discovering the
+ * groups keeps the two from being tied together again.
+ */
 function collectAdminPageRoutes() {
-  const root = path.join(process.cwd(), "src/app/(admin)/admin");
+  const appDir = path.join(process.cwd(), "src/app");
+  const roots = fs
+    .readdirSync(appDir, { withFileTypes: true })
+    .filter((entry) => entry.isDirectory() && entry.name.startsWith("("))
+    .map((group) => path.join(appDir, group.name, "admin"))
+    .filter((dir) => fs.existsSync(dir));
   const routes = new Set<string>();
 
   function walk(dir: string, segments: string[]) {
@@ -30,7 +49,7 @@ function collectAdminPageRoutes() {
     }
   }
 
-  walk(root, []);
+  for (const root of roots) walk(root, []);
   return routes;
 }
 

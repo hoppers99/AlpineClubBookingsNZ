@@ -21,6 +21,7 @@ import {
   CreditCard,
   FileText,
   Shield,
+  Stethoscope,
   Activity,
   Mail,
   Newspaper,
@@ -401,6 +402,31 @@ const navSections: NavSection[] = [
         label: "AI help assistant",
         icon: Bot,
         keywords: ["ai", "assistant", "anthropic", "llm", "help", "spend cap"],
+      },
+      {
+        // AI Diagnostics (AID-7, #2378) — a separate read-only investigation
+        // product, not the help assistant above. Listed here because "why is this
+        // booking stuck" is a support question, and this is where an admin already
+        // comes looking.
+        //
+        // No explicit flag is needed: `isFeatureHrefVisible` derives visibility
+        // from the href against FEATURE_ROUTE_RULES, and this PR registered
+        // "/admin/ai-diagnostics" under the `aiDiagnostics` rule — so with the
+        // module off the entry disappears from the sidebar AND the command palette
+        // (which builds its index from this same function), matching the 404 the
+        // route itself now returns.
+        href: "/admin/ai-diagnostics",
+        label: "AI Diagnostics",
+        icon: Stethoscope,
+        keywords: [
+          "diagnose",
+          "investigate",
+          "why",
+          "blocked",
+          "evidence",
+          "troubleshoot",
+          "explain",
+        ],
       },
       {
         href: "/admin/audit-log",
