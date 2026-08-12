@@ -71,17 +71,20 @@ function relative(absFile: string): string {
  * Every admin PAGE, from whichever route group it lives in.
  *
  * This used to walk `src/app/(admin)` alone, which quietly assumed admin pages only
- * ever live in that one group. AID-7 (#2378) broke the assumption on purpose: the
- * Diagnostics workspace has its own layout (owner decision Q4), so it lives in
- * `(diagnostics)` — and under the old walk it was INVISIBLE here. Both halves of
- * this guard went silent for it: it could have landed in the `overview` catch-all
- * unnoticed, and its feature-route prefix would have been reported as matching no
- * file.
+ * ever live in that one group.
+ *
+ * NO ADMIN PAGE LIVES OUTSIDE `(admin)` TODAY, so this is hardening rather than a
+ * fix — but the assumption was briefly false and nothing said so. A revision of
+ * AID-7 (#2378) put the Diagnostics page in its own `(diagnostics)` group, and this
+ * guard went silent for it in BOTH halves: the page could have landed in the
+ * `overview` catch-all unnoticed, and its feature-route prefix was reported as
+ * matching no file. That revision was withdrawn — the page now sits under `(admin)`
+ * like every other admin page — but the blindness it exposed was real.
  *
  * A route group is a rendering concern; this guard is a permissions concern. Tying
- * the second to the first meant "add a route group" was a way to leave the guard
- * without anybody deciding to. So the walk now covers every `(group)/admin/**` page
- * — a new group is picked up automatically rather than needing to be remembered.
+ * the second to the first made "add a route group" a way to leave the guard without
+ * anybody deciding to. The walk now covers every `(group)/admin/**` page, so if that
+ * ever happens again it is picked up rather than remembered.
  */
 const adminPageFiles = fs
   .readdirSync(path.join(process.cwd(), "src/app"), { withFileTypes: true })

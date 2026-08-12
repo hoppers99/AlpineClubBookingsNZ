@@ -1,12 +1,32 @@
 /**
- * AI Diagnostics workspace — the shell and its readiness state (AID-7, #2378).
+ * AI Diagnostics — the full page (AID-7, #2378).
  *
- * WHAT IS HERE AND WHAT IS NOT. This slice is the workspace itself: admission,
- * layout, and an honest readiness state at the tier the reader has earned. The
- * conversation surface is NOT built yet, and the page says so in as many words
- * rather than presenting an empty box that looks broken. A half-built feature that
- * admits it is half-built costs an operator ten seconds; one that does not costs
- * them a support request.
+ * IT LIVES INSIDE THE ADMIN PANEL, under Monitoring & Support, and inherits the
+ * ordinary admin layout, sidebar and chrome. An earlier revision gave it a separate
+ * `(diagnostics)` route group with its own workspace layout; the owner corrected that
+ * on 12 Aug 2026 (superseding decision Q4 on #2378): Diagnostics belongs in the Help
+ * chat bubble for an admin with the right permission, and a full page — where one is
+ * needed — belongs in the admin panel like every other admin screen rather than as a
+ * separate destination.
+ *
+ * WHY THAT IS BETTER HERE AND NOT MERELY DIFFERENT. Every question this product
+ * answers is about something the operator was already looking at in the admin panel:
+ * why this booking cannot be confirmed, why this member is blocked, why this payment
+ * is pending. Taking them out of the panel to ask about it, and giving them a screen
+ * with no sidebar to get back from, made the tool feel like a place to go instead of
+ * a thing to ask.
+ *
+ * SECURITY IS UNCHANGED BY THE MOVE, and that is worth stating because it is the
+ * whole reason the preamble was extracted first. The page is admitted by the same
+ * `guardAdminLayout` sequence as every other admin page — session, a member row
+ * re-read fresh, active, forced password change, two-factor gate, area permission —
+ * and now inherits it from `(admin)/layout.tsx` rather than from a second layout that
+ * had to be kept in step.
+ *
+ * WHAT IS HERE AND WHAT IS NOT. The page and its readiness state are built; the
+ * question-and-answer surface is not, and the page says so rather than showing an
+ * inert input. A half-built feature that admits it is half-built costs an operator
+ * ten seconds; one that does not costs them a support request.
  *
  * READINESS IS TIERED ON THE SERVER (owner decision Q6). `readinessForAdmin` narrows
  * the full verdict for an administrator without `support:view`, and the detailed

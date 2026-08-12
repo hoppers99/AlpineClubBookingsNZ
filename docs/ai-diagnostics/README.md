@@ -542,40 +542,46 @@ check, the exact-identifier argument shapes, the fixed projections, the column
 grants, the row/byte/field ceilings, the 16-call-per-session ceiling and the audit
 row.
 
-## Delivered capability: the admin workspace (AID-7, #2378) — IN PROGRESS
+## Delivered capability: the admin Diagnostics page (AID-7, #2378) — IN PROGRESS
 
-**Partial.** The workspace, its admission and its readiness display are built; the
+**Partial.** The page, its admission and its readiness display are built; the
 question-and-answer surface is not. The page says so rather than showing an inert
 input, because a half-built feature that admits it is half-built costs an operator
 ten seconds and one that does not costs them a support request.
 
-### It has its own layout, and that is not its own security
+### Where it lives, and a correction worth recording
 
-Diagnostics renders in the `(diagnostics)` route group with its own workspace chrome
-instead of the admin sidebar (owner decision Q4). It calls the SAME
-`guardAdminLayout` as `(admin)`: session, a member row re-read fresh from the
-database, active account, forced password change, two-factor gate, and area
-permission for the requested path. `admin-layout-guard-adoption.test.ts` fails if a
-second copy of that sequence appears in either group.
+`/admin/ai-diagnostics`, inside the admin panel under **Monitoring & Support**,
+inheriting the ordinary admin layout and sidebar.
 
-**A route group is not a security boundary.** The parentheses change which layout
-renders and nothing else — they grant nothing, gate nothing, and do not appear in the
-URL. The boundary is the guard, plus the per-invocation checks the tool substrate
-already performs on every call.
+An earlier revision gave Diagnostics its own `(diagnostics)` route group and a
+separate workspace layout, following decision Q4 on #2378. **The owner corrected that
+on 12 Aug 2026** and Q4 is superseded: Diagnostics belongs in the **Help chat bubble**
+for an administrator with the right permission, and a full page — where one is needed
+— belongs in the admin panel like every other admin screen.
+
+The reasoning holds up: every question this product answers is about something the
+operator was already looking at in the admin panel. Taking them out of the panel to
+ask about it, and handing them a screen with no sidebar to get back from, made the
+tool feel like a place to go rather than a thing to ask.
+
+Nothing about security changed with the move. The page is admitted by the same
+`guardAdminLayout` sequence as every other admin page, now inherited from
+`(admin)/layout.tsx` rather than duplicated in a second layout.
 
 ### Who may open it, and why that is `overview`
 
-Any admitted administrator may OPEN the workspace (owner decision Q6). The shell is
-deliberately NOT a `support:view` permission: gating it would hide the "here is who
-can fix this" message from precisely the admins who need to read it.
+Any admitted administrator may OPEN the page (owner decision Q6). It is deliberately
+NOT a `support:view` permission: gating it would hide the "here is who can fix this"
+message from precisely the admins who need to read it.
 
 `/admin/ai-diagnostics` was previously registered under the `support` area, added in
 anticipation of a UI that did not exist. AID-7 removes the PAGE from that list and
 keeps every `/api/admin/ai-diagnostics` route in it. Nothing is loosened: opening the
-shell grants no evidence, and each tool invocation re-derives the acting admin's
-areas server-side and refuses what they may not read. The page falls to the
-`overview` catch-all, recorded in `OVERVIEW_ALLOWLIST` with that reasoning, because
-it looks like a workaround and is not.
+page grants no evidence, and each tool invocation re-derives the acting admin's areas
+server-side and refuses what they may not read. The page falls to the `overview`
+catch-all, recorded in `OVERVIEW_ALLOWLIST` with that reasoning, because it looks
+like a workaround and is not.
 
 ### Readiness is tiered on the server
 
@@ -597,13 +603,18 @@ direction.
 
 ### Discovery, and the module switch
 
-The workspace appears in the admin sidebar and command palette under Monitoring &
-Support. It carries no flag of its own: visibility derives from the href against
+The page appears in the admin sidebar and command palette under Monitoring & Support.
+It carries no flag of its own: visibility derives from the href against
 `FEATURE_ROUTE_RULES`, where the page prefix is registered under `aiDiagnostics`. So
 switching the module off removes it from both surfaces AND 404s the route, which
 matches — a palette entry that navigates to a 404 is worse than no entry. The
-readiness ENDPOINT stays exempt from that gate, as it must, so an admin can still
-see why the module is not ready and set it up.
+readiness ENDPOINT stays exempt from that gate, as it must, so an admin can still see
+why the module is not ready and set it up.
+
+### Still to build
+
+The Help-bubble entry point for permitted administrators, and the
+question-and-answer surface with its evidence provenance.
 
 ## Maintenance rules
 
