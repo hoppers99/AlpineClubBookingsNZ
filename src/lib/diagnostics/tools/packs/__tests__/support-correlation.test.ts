@@ -25,6 +25,11 @@ import { ADMIN_PERMISSION_AREAS } from "@/lib/admin-permissions";
 import { AUDIT_CATEGORIES } from "@/lib/audit-categories";
 import { canonicalStringify } from "@/lib/diagnostics/knowledge/hash";
 
+import {
+  LODGE_GATED_ADMIN_SUBSYSTEM_NAMING_2765,
+  LODGE_GATED_ADMIN_SUBSYSTEM_PREFIXES_2765,
+} from "../../../../../../scripts/audit/audit-writer-census-manifest";
+
 import type {
   DiagnosticsSelectOnlyToolEntry,
   DiagnosticsToolEntry,
@@ -502,19 +507,34 @@ describe("AID-6A correlation category sets (#2375)", () => {
       WHICH MADE IT THE ONE HALF OF #2765 NOTHING CHECKED. The category side is
       pinned per site from the tree in `audit-writer-census.test.ts`; the naming
       side was three string literals in one file that a copy-edit could quietly
-      shorten. Seven subsystem words, on the three strings the invariant names.
+      shorten.
+
+      AND THE WORD LIST ITSELF USED TO BE HAND-TYPED HERE, which left a narrower
+      version of the same hole. A subsystem pinned into the keep with no word
+      added here passed every census assertion while both correlation entries
+      stayed silent about it — precisely the silent absence INV-PRIV-013 exists to
+      prevent, and exactly what would have happened to #2749's other-lodges
+      registry. The words now come from the manifest, KEYED by the same prefixes
+      the uniformity gate uses, and the first assertion below is that those keys
+      and those prefixes are the same set. So pinning a new subsystem without
+      naming it fails here by name.
     */
     const lodge = tool(DIAGNOSTICS_LODGE_CORRELATION_TOOL_ID);
     const system = tool(DIAGNOSTICS_SYSTEM_CORRELATION_TOOL_ID);
-    const subsystems = [
-      "chore",
-      "locker",
-      "work part",
-      "lodge instruction",
-      "lodge setting",
-      "the lodge records",
-      "other-lodges registry",
-    ];
+
+    expect(
+      Object.keys(LODGE_GATED_ADMIN_SUBSYSTEM_NAMING_2765).sort(),
+      "A prefix is pinned in LODGE_GATED_ADMIN_SUBSYSTEM_PREFIXES_2765 with no " +
+        "word in LODGE_GATED_ADMIN_SUBSYSTEM_NAMING_2765 (or the reverse). " +
+        "INV-PRIV-013's naming obligation follows the map, so a subsystem kept at " +
+        "`admin` without a word here would leave both correlation entries silent " +
+        "about it while every census assertion stayed green.",
+    ).toEqual([...LODGE_GATED_ADMIN_SUBSYSTEM_PREFIXES_2765].sort());
+
+    const subsystems = Object.values(LODGE_GATED_ADMIN_SUBSYSTEM_NAMING_2765);
+    // Non-vacuous: an empty map would make every `toContain` below pass while
+    // checking nothing, which is the failure this whole test exists to catch.
+    expect(subsystems.length).toBeGreaterThanOrEqual(7);
     const strings: readonly [string, string | undefined][] = [
       ["system entry scope", system.evidenceScope],
       ["lodge entry scope", lodge.evidenceScope],
