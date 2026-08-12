@@ -35,7 +35,7 @@ const APP_DIR = join(import.meta.dirname, "..", "..", "app");
  * products that perform no admin-area admission at all, and folding them in here
  * would assert a rule they do not have.
  */
-const ADMIN_LAYOUT_GROUPS = ["(admin)"] as const;
+const ADMIN_LAYOUT_GROUPS = ["(admin)", "(diagnostics)"] as const;
 
 /** Every `layout.tsx` under a route group directly inside `src/app`. */
 function discoverGroupLayouts(): { group: string; path: string }[] {
