@@ -30,9 +30,14 @@ import {
   type HelpPanelSizeChoice,
 } from "./help-widget-size";
 import { useHelpChat, type HelpChatSurface } from "./use-help-chat";
+import { DiagnosticsView } from "./diagnostics-view";
+import { useDiagnosticsChat } from "./use-diagnostics-chat";
 
 const GREETING = "Kia ora — need a hand with this page?";
 const MAX_CHIPS = 8;
+
+/** The panel's tabs. `diagnostics` renders only when the surface supplies it. */
+type HelpPanelTab = "ask" | "guide" | "diagnostics";
 
 export type HelpWidgetSurface = "public" | "member" | "admin" | "finance";
 
@@ -47,6 +52,21 @@ export type HelpWidgetProps = {
    * false. C4 supplies it and flips llmEnabled.
    */
   chatEndpoint?: string;
+  /**
+   * AI Diagnostics (AID-7, #2378). PRESENT means this operator may ask diagnostics
+   * questions from the bubble; absent means the tab does not exist for them.
+   *
+   * ITS PRESENCE IS THE PERMISSION, decided on the server. Owner decision Q6 is that
+   * any admitted administrator may open the Diagnostics shell and that the shell must
+   * NOT itself become a `support:view` permission — per-tool area gating happens at
+   * invocation, freshly, on every call. So the admin layout passes this and the public,
+   * member and lodge surfaces cannot: there is no client-side check here to get wrong,
+   * and no prop a non-admin surface could set.
+   *
+   * `moduleEnabled` is the club's aiDiagnostics switch, so the tab can say "switched
+   * off" instead of offering a box whose every question would be refused.
+   */
+  diagnostics?: { moduleEnabled: boolean };
 };
 
 /**
@@ -99,11 +119,23 @@ export function HelpWidget({
   resolveHelp,
   position = "app",
   chatEndpoint,
+  diagnostics,
 }: HelpWidgetProps) {
   const pathname = usePathname() ?? "/";
   const content = resolveHelp(pathname);
   const { extras, hintGroup } = useHelpWidgetState();
   const chat = useHelpChat({ llmEnabled, chatEndpoint });
+  /**
+   * Called unconditionally — hooks must be — but inert until the Diagnostics tab is
+   * rendered: it holds empty state, starts no timer while nothing is pending, and its
+   * only fetch is behind a submit the tab has to be open to reach.
+   *
+   * The two conversations are deliberately SEPARATE objects. Diagnostics is its own
+   * product sharing this doorway (#2378), and one shared transcript would send page-
+   * help turns to the diagnostics model and diagnostics answers — which carry evidence
+   * about real people — to the page-help endpoint.
+   */
+  const diagnosticsChat = useDiagnosticsChat();
 
   const [open, setOpen] = useState(false);
   /**
@@ -228,7 +260,7 @@ export function HelpWidget({
     [resizeBy],
   );
 
-  const [tab, setTab] = useState<"ask" | "guide">("ask");
+  const [tab, setTab] = useState<HelpPanelTab>("ask");
   const [viewportOffset, setViewportOffset] = useState(0);
   /**
    * Live viewport width, so a DRAGGED size applies only above the `sm:` breakpoint
@@ -269,8 +301,14 @@ export function HelpWidget({
   const consentBannerVisible = useConsentBannerVisible(surface === "public");
 
   // Route change: reset to the chip (Ask) view, but keep the transcript.
+  //
+  // DIAGNOSTICS IS EXEMPT, and that is the point of putting it in the bubble (owner
+  // decision D8): the operator asks from "whichever admin screen they are looking
+  // at", so navigating to the booking they are asking about must not close the
+  // investigation they are in the middle of. The Page guide is page-specific and
+  // genuinely is stale after a navigation, so it still falls back to Ask.
   useEffect(() => {
-    setTab("ask");
+    setTab((current) => (current === "diagnostics" ? current : "ask"));
   }, [pathname]);
 
   // Focus moves into the panel on open and returns to the launcher on close.
@@ -453,37 +491,45 @@ export function HelpWidget({
           </header>
 
           <div className="flex gap-1 border-b border-border px-2 py-2">
-            <button
-              type="button"
-              aria-pressed={tab === "ask"}
-              onClick={() => setTab("ask")}
-              className={`rounded-md px-3 py-2 text-sm font-medium focus:outline-none focus-visible:ring-2 focus-visible:ring-ring ${
-                tab === "ask"
-                  ? "bg-muted text-foreground"
-                  : "text-muted-foreground hover:text-foreground"
-              }`}
-            >
-              Ask
-            </button>
-            <button
-              type="button"
-              aria-pressed={tab === "guide"}
-              onClick={() => setTab("guide")}
-              className={`rounded-md px-3 py-2 text-sm font-medium focus:outline-none focus-visible:ring-2 focus-visible:ring-ring ${
-                tab === "guide"
-                  ? "bg-muted text-foreground"
-                  : "text-muted-foreground hover:text-foreground"
-              }`}
-            >
-              Page guide
-            </button>
+            {(
+              [
+                ["ask", "Ask"],
+                ["guide", "Page guide"],
+                // Diagnostics is offered ONLY when the server-rendered surface supplied
+                // the prop. There is no client-side permission test here to get wrong.
+                ...(diagnostics
+                  ? ([["diagnostics", "Diagnostics"]] as const)
+                  : []),
+              ] as const
+            ).map(([value, label]) => (
+              <button
+                key={value}
+                type="button"
+                aria-pressed={tab === value}
+                onClick={() => setTab(value)}
+                data-testid={`help-widget-tab-${value}`}
+                className={`rounded-md px-3 py-2 text-sm font-medium focus:outline-none focus-visible:ring-2 focus-visible:ring-ring ${
+                  tab === value
+                    ? "bg-muted text-foreground"
+                    : "text-muted-foreground hover:text-foreground"
+                }`}
+              >
+                {label}
+              </button>
+            ))}
           </div>
 
           <div
             onFocusCapture={handleBodyFocus}
             className="flex-1 overflow-y-auto overscroll-contain px-4 py-4"
           >
-            {tab === "ask" ? (
+            {tab === "diagnostics" && diagnostics ? (
+              <DiagnosticsView
+                chat={diagnosticsChat}
+                pathname={pathname}
+                moduleEnabled={diagnostics.moduleEnabled}
+              />
+            ) : tab === "ask" ? (
               <div className="flex flex-col gap-4">
                 <HelpChatThread
                   greeting={GREETING}

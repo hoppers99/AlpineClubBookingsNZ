@@ -22,11 +22,16 @@ export default async function AdminLayout({
 }: {
   children: React.ReactNode;
 }) {
-  // THE SECURITY PREAMBLE LIVES IN ONE PLACE (#2378). It used to be inline here,
-  // and #2378 adds a second admin-side layout for the Diagnostics workspace — so a
-  // copy of it would be a second place for the `active` check, the forced password
-  // change or the two-factor gate to drift, silently, in the direction that admits
-  // somebody. The owner asked for a separate layout, not for separate security.
+  // THE SECURITY PREAMBLE LIVES IN ONE PLACE (#2378). It used to be inline here, and
+  // #2378 was originally going to add a second admin-side layout for a Diagnostics
+  // workspace — so a copy of it would have been a second place for the `active` check,
+  // the forced password change or the two-factor gate to drift, silently, in the
+  // direction that admits somebody.
+  //
+  // The owner superseded that on 12 Aug 2026: Diagnostics is asked from the Help
+  // bubble, and its page lives under `/admin/*` like every other admin screen. The
+  // extraction stayed, and is now load-bearing for the opposite reason — that page
+  // INHERITS this one guard instead of carrying a second copy of it.
   const guard = await guardAdminLayout();
   if (guard.outcome === "redirect") redirect(guard.destination);
 
@@ -109,10 +114,18 @@ export default async function AdminLayout({
         </div>
         <MemberOnboardingWizard initialShouldShow={showOnboardingWizard} />
         <ReportIssueWidget avoidDesktopSidebar />
+        {/* AI Diagnostics rides in the Help bubble (AID-7, #2378; owner decision
+            12 Aug 2026 superseding Q4). The prop is passed HERE and only here: its
+            presence is what grants the tab, and this layout is the surface that has
+            already admitted an administrator through `guardAdminLayout`. Owner
+            decision Q6 — any admitted admin may open the shell, and the shell is not
+            itself a `support:view` permission; every tool re-checks its own area at
+            invocation. */}
         <HelpWidgetAdmin
           scope="admin"
           llmEnabled={llmEnabled}
           chatEndpoint="/api/help/chat"
+          diagnostics={{ moduleEnabled: effectiveModules.aiDiagnostics }}
         />
         </HelpWidgetProvider>
       </div>
