@@ -43,6 +43,8 @@ import { getDiagnosticsReadiness } from "@/lib/ai-diagnostics-config";
 import { readinessForAdmin } from "@/lib/diagnostics-readiness-tiers";
 import { loadEffectiveModuleFlags } from "@/lib/module-settings";
 
+import { DiagnosticsBudgetCard } from "./_components/diagnostics-budget-card";
+
 export const metadata = { title: "AI Diagnostics" };
 
 export default async function DiagnosticsPage() {
@@ -107,13 +109,6 @@ export default async function DiagnosticsPage() {
                 <dt className="text-muted-foreground">Database role</dt>
                 <dd>{readiness.databaseState}</dd>
               </div>
-              <div className="flex justify-between gap-4">
-                <dt className="text-muted-foreground">Monthly budget</dt>
-                <dd>
-                  {/* Integer cents throughout, formatted only at the edge. */}
-                  {`$${(readiness.monthlyBudgetCents / 100).toFixed(2)}`}
-                </dd>
-              </div>
             </dl>
             {readiness.blockers.length > 0 && (
               <div>
@@ -140,6 +135,24 @@ export default async function DiagnosticsPage() {
       </section>
 
       <section
+        aria-labelledby="diagnostics-budget-heading"
+        className="rounded-lg border border-border p-4"
+      >
+        <h2 id="diagnostics-budget-heading" className="text-base font-semibold">
+          Monthly budget
+        </h2>
+        {/* THE BUDGET LIVES HERE RATHER THAN IN THE READINESS BLOCK (owner decision
+            3). Readiness detail is tiered behind `support:view` because a blocker
+            list and a database role are operational internals; the budget is a
+            control with its own permission story — readable and editable under the
+            existing configuration-write boundary, and inert while the module is off.
+            Folding it into the detailed tier made it look like an internal too. */}
+        <div className="mt-3">
+          <DiagnosticsBudgetCard moduleEnabled={readiness.moduleEnabled} />
+        </div>
+      </section>
+
+      <section
         aria-labelledby="diagnostics-ask-heading"
         className="rounded-lg border border-dashed border-border p-4"
       >
@@ -155,10 +168,12 @@ export default async function DiagnosticsPage() {
         <p className="mt-2 text-sm text-muted-foreground">
           You ask Diagnostics from the <strong>Help</strong> button, on whichever
           admin screen you are looking at — so you can ask about the booking,
-          member or payment already in front of you. It is still being built.
+          member or payment already in front of you.
         </p>
         <p className="mt-2 text-sm text-muted-foreground">
-          Every answer will show where its evidence came from and when it was read.
+          On the bookings, waitlist and payments lists, the stethoscope beside a
+          row starts a question about that booking or payment. Every answer shows
+          where its evidence came from and when it was read.
         </p>
       </section>
     </div>
