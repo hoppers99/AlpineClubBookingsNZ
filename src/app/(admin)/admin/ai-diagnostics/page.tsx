@@ -23,10 +23,20 @@
  * and now inherits it from `(admin)/layout.tsx` rather than from a second layout that
  * had to be kept in step.
  *
- * WHAT IS HERE AND WHAT IS NOT. The page and its readiness state are built; the
- * question-and-answer surface is not, and the page says so rather than showing an
- * inert input. A half-built feature that admits it is half-built costs an operator
- * ten seconds; one that does not costs them a support request.
+ * WHAT IS HERE AND WHAT IS NOT. This page owns SETUP AND STATUS — readiness and the
+ * monthly budget. It owns no ask box, and that is owner decision D8 rather than an
+ * omission: all asking happens in the Help bubble, on whichever admin screen the
+ * operator is looking at, so the consent ticks, the evidence display and the
+ * transcript hardening are built and reviewed in one place instead of two that drift.
+ * The "Asking a question" section below says where to go, in prose, because an empty
+ * input that does nothing reads as a fault.
+ *
+ * THE MODULE FLAG IS TRI-STATE HERE, AND MUST BE READ AS ONE (#2803). `false` is
+ * unreachable on this page — the `aiDiagnostics` feature-route rule 404s it when the
+ * module is off — so every falsy value that reaches the markup is `null`, meaning the
+ * club's module settings could not be READ. A `!moduleEnabled` test or a two-armed
+ * ternary therefore does not merely risk being wrong; it is wrong every time it
+ * fires. Both are corrected below with the reasoning attached.
  *
  * READINESS IS TIERED ON THE SERVER (owner decision Q6). `readinessForAdmin` narrows
  * the full verdict for an administrator without `support:view`, and the detailed
@@ -35,7 +45,6 @@
  * whole point.
  */
 
-import Link from "next/link";
 import { redirect } from "next/navigation";
 
 import { guardAdminLayout } from "@/lib/admin-layout-guard";
@@ -99,7 +108,17 @@ export default async function DiagnosticsPage() {
             <dl className="grid grid-cols-1 gap-x-6 gap-y-1 sm:grid-cols-2">
               <div className="flex justify-between gap-4">
                 <dt className="text-muted-foreground">Module</dt>
-                <dd>{readiness.moduleEnabled ? "On" : "Off"}</dd>
+                {/* Tri-state (#2803), never a boolean read. `Off` is a fact about
+                    the club's settings; `Could not be read` is a fact about this
+                    request, and a ternary that prints "Off" for `null` states the
+                    first when only the second is true. */}
+                <dd>
+                  {readiness.moduleEnabled === null
+                    ? "Could not be read"
+                    : readiness.moduleEnabled
+                      ? "On"
+                      : "Off"}
+                </dd>
               </div>
               <div className="flex justify-between gap-4">
                 <dt className="text-muted-foreground">Credential</dt>
@@ -125,11 +144,27 @@ export default async function DiagnosticsPage() {
           </div>
         )}
 
-        {!readiness.moduleEnabled && (
-          <p className="mt-3 text-sm">
-            <Link className="underline" href="/admin/modules">
-              Open Feature modules
-            </Link>
+        {/* THE MODULE STATE COULD NOT BE READ (#2803).
+            `null` is not "off", and on THIS page it is the only falsy value that
+            can reach here: `/admin/ai-diagnostics` is gated by the `aiDiagnostics`
+            feature-route rule, so with the module genuinely off the page 404s and
+            never renders at all.
+
+            An earlier revision tested `!readiness.moduleEnabled` and offered "Open
+            Feature modules". Because `false` is unreachable, that link could only
+            ever appear for `null` — which means it was wrong every single time it
+            was shown, telling an administrator to go and switch on a module that
+            may well already be on, while the actual fault (the club's module
+            settings could not be read) went unmentioned. It is exactly the failure
+            #2803 was filed for, and the readiness contract states the rule in as
+            many words: a consumer must render `null` as "unknown", never as "off".
+            Testing `=== null` is what makes the branch mean what it says. */}
+        {readiness.moduleEnabled === null && (
+          <p className="mt-3 text-sm text-muted-foreground">
+            Whether the module is switched on could not be established — this is not
+            the same as it being off, so switching it on will not help. The blocker
+            list above names it, and it usually means the club settings could not be
+            read. Try again shortly.
           </p>
         )}
       </section>
