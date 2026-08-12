@@ -25,6 +25,11 @@ import { ADMIN_PERMISSION_AREAS } from "@/lib/admin-permissions";
 import { AUDIT_CATEGORIES } from "@/lib/audit-categories";
 import { canonicalStringify } from "@/lib/diagnostics/knowledge/hash";
 
+import {
+  LODGE_GATED_ADMIN_SUBSYSTEM_NAMING_2765,
+  LODGE_GATED_ADMIN_SUBSYSTEM_PREFIXES_2765,
+} from "../../../../../../scripts/audit/audit-writer-census-manifest";
+
 import type {
   DiagnosticsSelectOnlyToolEntry,
   DiagnosticsToolEntry,
@@ -483,6 +488,76 @@ describe("AID-6A correlation category sets (#2375)", () => {
     expect(lodge.description).not.toContain(
       "no longer needs the system correlation tool as well",
     );
+  });
+
+  it("keeps naming the `admin` lodge-operations subsystems, so the keep's cost stays visible", () => {
+    /*
+      ENFORCES `INV-PRIV-013` (docs/invariants/analytics-and-privacy.md), the
+      standing obligation attached to #2765's decision to leave fifteen lodge-gated
+      writers at `admin` — and to any later writer pinned into the same map under
+      the same rule (#2749's other-lodges registry is the first).
+
+      THE COST OF THAT KEEP IS A SILENT ABSENCE, and it is the whole reason the keep
+      was affordable. A Lodge correlation entry that returns nothing to "when was
+      this lodge deactivated?" reads to the model as evidence that nothing happened,
+      because the rows are filed `admin` and the Lodge entry cannot read `admin`.
+      The mitigation is prose: both entries name this set, so an empty answer reads
+      as a KNOWN GAP.
+
+      WHICH MADE IT THE ONE HALF OF #2765 NOTHING CHECKED. The category side is
+      pinned per site from the tree in `audit-writer-census.test.ts`; the naming
+      side was three string literals in one file that a copy-edit could quietly
+      shorten.
+
+      AND THE WORD LIST ITSELF USED TO BE HAND-TYPED HERE, which left a narrower
+      version of the same hole. A subsystem pinned into the keep with no word
+      added here passed every census assertion while both correlation entries
+      stayed silent about it — precisely the silent absence INV-PRIV-013 exists to
+      prevent, and exactly what would have happened to #2749's other-lodges
+      registry. The words now come from the manifest, KEYED by the same prefixes
+      the uniformity gate uses, and the first assertion below is that those keys
+      and those prefixes are the same set. So pinning a new subsystem without
+      naming it fails here by name.
+    */
+    const lodge = tool(DIAGNOSTICS_LODGE_CORRELATION_TOOL_ID);
+    const system = tool(DIAGNOSTICS_SYSTEM_CORRELATION_TOOL_ID);
+
+    expect(
+      Object.keys(LODGE_GATED_ADMIN_SUBSYSTEM_NAMING_2765).sort(),
+      "A prefix is pinned in LODGE_GATED_ADMIN_SUBSYSTEM_PREFIXES_2765 with no " +
+        "word in LODGE_GATED_ADMIN_SUBSYSTEM_NAMING_2765 (or the reverse). " +
+        "INV-PRIV-013's naming obligation follows the map, so a subsystem kept at " +
+        "`admin` without a word here would leave both correlation entries silent " +
+        "about it while every census assertion stayed green.",
+    ).toEqual([...LODGE_GATED_ADMIN_SUBSYSTEM_PREFIXES_2765].sort());
+
+    const subsystems = Object.values(LODGE_GATED_ADMIN_SUBSYSTEM_NAMING_2765);
+    // Non-vacuous: an empty map would make every `toContain` below pass while
+    // checking nothing, which is the failure this whole test exists to catch.
+    expect(subsystems.length).toBeGreaterThanOrEqual(7);
+    const strings: readonly [string, string | undefined][] = [
+      ["system entry scope", system.evidenceScope],
+      ["lodge entry scope", lodge.evidenceScope],
+      ["lodge entry description", lodge.description],
+    ];
+    for (const [label, text] of strings) {
+      // An entry with no scope at all would make every `toContain` below vacuous,
+      // so the absence is its own named failure rather than a silent skip.
+      expect(text, `${label} is missing entirely`).toBeTruthy();
+      const lowered = (text ?? "").toLowerCase();
+      for (const subsystem of subsystems) {
+        expect(
+          lowered,
+          `The ${label} no longer names "${subsystem}" as filed under \`admin\`. ` +
+            "INV-PRIV-013: while any writer pinned in the keep stays `admin`, both " +
+            "correlation tools' evidence scope must keep naming it, so an empty " +
+            "lodge answer reads as a known gap rather than as evidence that " +
+            "nothing happened. If a subsystem MOVED, the rule changes with it — " +
+            "state the measured before/after audience per site (INV-OPS-012) and " +
+            "update INV-PRIV-013, rather than only shortening the sentence.",
+        ).toContain(subsystem);
+      }
+    }
   });
 
   it("renders the scope INSIDE the evidence block, above the rows", () => {

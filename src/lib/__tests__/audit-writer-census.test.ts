@@ -24,7 +24,7 @@
  * deleting its manifest entry in the same diff, and adding one means adding an
  * entry a reviewer will see.
  */
-import { readFileSync, readdirSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { join, relative, resolve } from "node:path";
 
 import { describe, expect, it } from "vitest";
@@ -52,6 +52,10 @@ import {
   AUDIT_CENSUS_TOTALS,
   AUDIT_WRITER_WRAPPERS,
   AUDIT_WRITERS_WITHOUT_ENTITY_IDENTIFIER,
+  LODGE_GATED_ADMIN_ACTIONS_2765,
+  LODGE_GATED_ADMIN_CATEGORIES_2765,
+  LODGE_GATED_ADMIN_SUBSYSTEM_PREFIXES_2765,
+  MEMBERSHIP_GATED_LOCKER_SITES_2765,
   MEMBER_RECORD_ACTION_LITERAL_FILES_2755,
   MEMBER_RECORD_ADMIN_ACTIONS_2755,
   MEMBER_RECORD_ADMIN_CATEGORIES_2755,
@@ -750,6 +754,502 @@ describe("audit writer census (#2581)", { timeout: 180_000 }, () => {
         ).toBe("critical");
       }
     }
+  });
+
+  it("keeps the fifteen lodge-gated operational sites at `admin`, where two passes left them", () => {
+    /*
+      The drift gate for the population #2730 and #2755 read and did NOT move, and
+      the reason it is a fourth map rather than rows in the three above (#2765).
+
+      Those three maps are reversal records: sites that were given a category, or
+      moved, or unified. This one records a KEEP, which needs the identical
+      protection and had none — `admin` counts 98 sites and the distribution pin
+      cannot say WHICH, so any of these fifteen could move out under a compensating
+      pair and nothing would fail. The keep has been re-proposed twice on the
+      surface reading ("the route says `lodge`"), which is exactly the drift a
+      per-site pin exists to make loud.
+
+      The rule that decided it is `INV-PRIV-013`: did this site SPLIT a subsystem —
+      is the same act already filed under another gate by another writer — and NOT
+      "does it name a lodge". This group is uniform at `admin`, so there is no split
+      to close, and moving it would open a fresh readership question of its own size
+      rather than fix a defect.
+
+      MEASURED FROM THE TREE, so editing a ROUTE fails this and not only editing the
+      manifest.
+    */
+    const measured = Object.fromEntries(
+      census()
+        .sites.filter((site) => site.id in LODGE_GATED_ADMIN_CATEGORIES_2765)
+        .map((site) => [site.id, describeCategory(site.category)]),
+    );
+
+    expect(
+      measured,
+      "A lodge-gated operational writer no longer records `admin`, or has moved " +
+        "and taken its identity with it. These fifteen are a recorded KEEP, not an " +
+        "unexamined default: two passes read them and left them because the group " +
+        "is uniform, so there is no two-gates-for-one-thing split to close " +
+        "(INV-PRIV-013). Moving one is a readership change — it takes the row out " +
+        "of the support-only gate and out of the System correlation entry the " +
+        "Diagnostics scope strings promise it is in — so it needs a decision, a " +
+        "backfill answer and a measured before/after audience per site " +
+        "(INV-OPS-012), then this map updated.",
+    ).toEqual(LODGE_GATED_ADMIN_CATEGORIES_2765);
+
+    // #2765's fifteen, plus #2749's three other-lodges sites classified under
+    // the same rule on arrival (INV-PRIV-013).
+    expect(Object.keys(LODGE_GATED_ADMIN_CATEGORIES_2765)).toHaveLength(18);
+    expect([
+      ...new Set(Object.values(LODGE_GATED_ADMIN_CATEGORIES_2765)),
+    ]).toEqual(["admin"]);
+
+    // The property that makes staying a non-event on the member-facing axis:
+    // `admin` is member-INVISIBLE, so none of these rows reaches a member timeline
+    // through its category, whatever identity fields the writer passes.
+    const memberVisible = new Set<string>(
+      MEMBER_AUDIT_TIMELINE_CATEGORY_OPTIONS.map((option) => option.value),
+    );
+    expect(
+      Object.values(LODGE_GATED_ADMIN_CATEGORIES_2765).filter((category) =>
+        memberVisible.has(category),
+      ),
+    ).toEqual([]);
+
+    /*
+      THE UNIFORMITY PREMISE, MEASURED. `INV-PRIV-013`'s whole argument is that
+      this group is uniform at `admin`, so there is no split to close — and the
+      assertions above cannot see that, because they are computed over the map's
+      OWN keys. A SIXTEENTH writer in one of these six subsystems filing `lodge`
+      would create exactly the split the invariant says does not exist, with every
+      test green. So the population is re-derived from the tree by directory.
+    */
+    const inSubsystem = census().sites.filter((site) =>
+      LODGE_GATED_ADMIN_SUBSYSTEM_PREFIXES_2765.some((prefix) =>
+        site.file.startsWith(prefix),
+      ),
+    );
+    expect(
+      Object.fromEntries(
+        inSubsystem.map((site) => [site.id, describeCategory(site.category)]),
+      ),
+      "An audit writer in one of the six subsystems the #2765 keep speaks for — " +
+        "chores, lockers, lodge instructions, lodge settings, the lodge records, " +
+        "work parties — is either NEW and unpinned, or no longer records `admin`. " +
+        "Either one breaks the premise the keep rests on: the group is UNIFORM at " +
+        "`admin`, so there is no two-gates-for-one-thing split to close " +
+        "(INV-PRIV-013). Add it to LODGE_GATED_ADMIN_CATEGORIES_2765 to join the " +
+        "keep, or state deliberately — with a measured before/after audience per " +
+        "site (INV-OPS-012) — that you are opening a split.",
+    ).toEqual(LODGE_GATED_ADMIN_CATEGORIES_2765);
+
+    // And the prefix list cannot quietly stop covering the map: every pinned site
+    // must live under one of the prefixes, so dropping a prefix shrinks the gate
+    // above and fails here instead of passing silently.
+    expect(
+      Object.keys(LODGE_GATED_ADMIN_CATEGORIES_2765).filter(
+        (id) =>
+          !LODGE_GATED_ADMIN_SUBSYSTEM_PREFIXES_2765.some((prefix) =>
+            id.startsWith(prefix),
+          ),
+      ),
+      "A pinned site sits outside LODGE_GATED_ADMIN_SUBSYSTEM_PREFIXES_2765, so " +
+        "the uniformity gate above no longer covers its subsystem.",
+    ).toEqual([]);
+
+    /*
+      And the retention-neutrality that every proposal to move this group has
+      claimed: `critical` under `admin` AND under `lodge`, so the "easy narrowing"
+      framing is measured rather than repeated. `classifyAuditRetention` reads the
+      ACTION too — an access-shaped action under `admin` or `security` expires at
+      24 months instead of seven years — so it is checked per action.
+
+      THE ACTION LIST IS DERIVED FROM THE CENSUS FIRST, which is the half that was
+      missing (review of #2765). A hand-typed list makes the retention evidence
+      hand-maintained: rename `workparty.create` to anything access-shaped and the
+      loop below happily asserts `critical` for a name no site writes, while the
+      site that does exist drops from seven years to 24 months and nothing objects.
+      So the names are read off the tree and compared as a SET.
+    */
+    const literalsIn = (expression: string): string[] =>
+      [...expression.matchAll(/"([^"]+)"/g)].map((match) => match[1]);
+    const actionsOf = (site: AuditWriteSite): string[] => {
+      // `[\s\S]` rather than the `s` flag: a dynamic action can be a multi-line
+      // expression, and the compiler target predates dotAll.
+      const dynamic = /^\(dynamic\) ([\s\S]+)$/.exec(site.action);
+      if (!dynamic) return [site.action];
+      // One expression to unfold today — the lodges PATCH ternary over three
+      // literals. A dynamic action that names no literal is resolved one level
+      // through a same-file `const NAME = "literal"`, as the #2755 gate does; if
+      // neither works the raw expression is returned and the set equality below
+      // fails with the site named, which is the intended outcome.
+      const inline = literalsIn(dynamic[1]);
+      if (inline.length > 0) return inline;
+      const identifier = /^([A-Za-z_$][\w$]*)$/.exec(dynamic[1].trim());
+      if (identifier) {
+        const declared = new RegExp(
+          String.raw`\b(?:const|let|var)\s+` +
+            identifier[1] +
+            String.raw`\s*(?::[^=\n]+)?=\s*"([^"]+)"`,
+        ).exec(readFileSync(join(process.cwd(), site.file), "utf8"));
+        if (declared) return [declared[1]];
+      }
+      return [site.action];
+    };
+    const measuredActions = [
+      ...new Set(
+        census()
+          .sites.filter((site) => site.id in LODGE_GATED_ADMIN_CATEGORIES_2765)
+          .flatMap(actionsOf),
+      ),
+    ].sort();
+    expect(
+      measuredActions,
+      "The action names the fifteen kept sites write are no longer the names " +
+        "LODGE_GATED_ADMIN_ACTIONS_2765 lists. That matters because retention " +
+        "reads the ACTION as well as the category: an access-shaped name " +
+        "(`view`, `access`, `login`, `logout`, `search`) under `admin` classifies " +
+        "as sensitive_access and expires at 24 months instead of seven years " +
+        "(INV-OPS-012). Update the list so the retention loop below measures the " +
+        "actions the tree actually writes, and check the new name deliberately.",
+    ).toEqual([...LODGE_GATED_ADMIN_ACTIONS_2765].sort());
+
+    for (const action of LODGE_GATED_ADMIN_ACTIONS_2765) {
+      for (const category of ["admin", "lodge"] as const) {
+        expect(
+          classifyAuditRetention({ action, category }),
+          `${action} under ${category} no longer classifies as critical`,
+        ).toBe("critical");
+      }
+    }
+  });
+
+  it("names the four locker sites as membership-gated, and no destination exists that does not widen", () => {
+    /*
+      The half of #2765 that needed its own decision, kept measurable instead of
+      kept in prose — settled by #2777 on 11 August 2026: the four stay `admin`.
+
+      THE FOUR LOCKER WRITERS ARE THE ODD ONES OUT of the fifteen, and this asserts
+      the reason from the routes' own source rather than from a comment: eleven of
+      the fifteen are gated `lodge:*`, these four are gated `membership:*`. So the
+      surface reading and the access model disagree here in a way they do not for
+      chores, work parties, lodge settings, lodge instructions or the lodge records.
+
+      AND THIS IS WHY THE OWNER'S ANSWER — "move them to `membership`" — could not be
+      applied as written. `membership` is a permission area and a correlation domain
+      in this codebase; it is NOT a category. It is pinned false in
+      `isAuditCategory` at the foot of this file, because it is one of the two
+      invented values #2581 removed from the open union. And every canonical
+      category that DOES route to the membership correlation entry is
+      member-VISIBLE, which the loop below measures rather than assumes. These four
+      writers pass `memberId: <the acting officer>` and no `subjectMemberId`, so
+      `buildMemberAuditLogWhere`'s null-subject `memberId` leg (pinned in
+      `audit.test.ts`) would put every locker change on the acting officer's own
+      activity page — a widening onto a member-facing surface, which `INV-PRIV-012`
+      and `INV-OPS-012` both reserve to the owner.
+
+      IF THIS TEST EVER FAILS ON THE EMPTY-SET ASSERTION, that is the useful signal
+      rather than a nuisance: a member-INVISIBLE category has joined the membership
+      correlation domain, so the question #2777 settled finally has a destination
+      that does not publish an officer's locker admin to a member, and the decision
+      can be put to the owner again on those terms.
+    */
+    expect(MEMBERSHIP_GATED_LOCKER_SITES_2765).toHaveLength(4);
+    for (const id of MEMBERSHIP_GATED_LOCKER_SITES_2765) {
+      expect(
+        LODGE_GATED_ADMIN_CATEGORIES_2765[id],
+        `${id} must be one of the fifteen kept at admin`,
+      ).toBe("admin");
+    }
+
+    // Measured from each route's own guard, not from the map's comment.
+    const gateOf = (file: string): "lodge" | "membership" | "other" => {
+      const source = readFileSync(join(process.cwd(), file), "utf8");
+      if (/permission:\s*\{\s*area:\s*"membership"/.test(source)) {
+        return /permission:\s*\{\s*area:\s*"lodge"/.test(source)
+          ? "other"
+          : "membership";
+      }
+      return /permission:\s*\{\s*area:\s*"lodge"/.test(source)
+        ? "lodge"
+        : "other";
+    };
+    const files = [
+      ...new Set(
+        Object.keys(LODGE_GATED_ADMIN_CATEGORIES_2765).map(
+          (id) => id.split("::")[0],
+        ),
+      ),
+    ];
+    const membershipGatedFiles = files.filter(
+      (file) => gateOf(file) === "membership",
+    );
+    expect(
+      membershipGatedFiles.sort(),
+      "The permission gate on a lodge-gated operational route changed. The whole " +
+        "reason lockers needed their own decision (#2777) and the other eleven " +
+        "did not is that these four routes require `membership` and the rest " +
+        "require `lodge`; if that stops being true, the question changes shape " +
+        "(INV-PRIV-013).",
+    ).toEqual([
+      "src/app/api/admin/lockers/[id]/route.ts",
+      "src/app/api/admin/lockers/bulk/route.ts",
+      "src/app/api/admin/lockers/route.ts",
+    ]);
+    // Eight files from #2765's fifteen sites, plus #2749's two other-lodges
+    // route files.
+    expect(files.filter((file) => gateOf(file) === "lodge")).toHaveLength(10);
+    expect(files.filter((file) => gateOf(file) === "other")).toEqual([]);
+
+    /*
+      THE OTHER DIRECTION OF THE SAME PREMISE, measured across the whole admin
+      surface rather than across the map's own keys: any writer on a `lodge:*`
+      gated admin route that files `admin` belongs to this keep. A new one that
+      does not join it is a sixteenth member of a group the invariant describes as
+      closed, and nothing else would notice — the `admin` distribution count is a
+      number whose failure message invites bumping it.
+
+      This is deliberately NOT "every `lodge:*` gated admin route", because
+      `src/app/api/admin/display/**` and `src/app/api/admin/lodge/route.ts` are
+      gated `lodge:edit` and correctly file `lodge`: the display family was #2730's
+      split-closing move. Uniformity is claimed per subsystem, so this gate is
+      keyed on the category the writer chose.
+    */
+    const lodgeGatedAdminWriters = census()
+      .sites.filter(
+        (site) =>
+          describeCategory(site.category) === "admin" &&
+          site.file.startsWith("src/app/api/admin/") &&
+          gateOf(site.file) === "lodge",
+      )
+      .map((site) => site.id)
+      .sort();
+    expect(
+      lodgeGatedAdminWriters,
+      "A writer on a `lodge:*` gated admin route records `admin` without being " +
+        "pinned in the keep (#2765's fifteen, plus later arrivals classified " +
+        "under INV-PRIV-013's rule, like #2749's other-lodges trio). Either it " +
+        "belongs there — add it to LODGE_GATED_ADMIN_CATEGORIES_2765 with its " +
+        "reason, and extend the scope-string naming set — or the group is no " +
+        "longer the closed, uniform population INV-PRIV-013 reasons about, in " +
+        "which case the rule needs re-deriving rather than the map extending.",
+    ).toEqual(
+      Object.keys(LODGE_GATED_ADMIN_CATEGORIES_2765)
+        .filter((id) => gateOf(id.split("::")[0]) === "lodge")
+        .sort(),
+    );
+
+    // The measurement that stops D2 being implementable by a lane.
+    const memberVisible = new Set<string>(
+      MEMBER_AUDIT_TIMELINE_CATEGORY_OPTIONS.map((option) => option.value),
+    );
+    const membershipDomainCategories = AUDIT_CATEGORIES.filter(
+      (category) =>
+        AUDIT_CATEGORY_CORRELATION_DOMAIN[category] === "membership",
+    );
+    expect(membershipDomainCategories).toEqual([
+      "account",
+      "family",
+      "communication",
+      "privacy",
+    ]);
+    expect(
+      membershipDomainCategories.filter(
+        (category) => !memberVisible.has(category),
+      ),
+      "A member-INVISIBLE category now routes to the membership correlation " +
+        "entry. That changes the ground #2765 and #2777 were decided on: filing " +
+        "the locker writers where a Membership Officer could correlate them meant " +
+        "filing them somewhere a member can read, and these four writers reach " +
+        "the acting officer's own timeline through the null-subject `memberId` " +
+        "leg. #2777 settled them at `admin` on exactly those terms, so with a " +
+        "member-invisible destination available the question can be put to the " +
+        "owner again — it is still the owner's, not a lane's (INV-PRIV-012).",
+    ).toEqual([]);
+  });
+
+  it("pins the stored-row cost of ever re-introducing `membership` as a category", () => {
+    /*
+      The half of #2765's refusal that is about rows already written, not rows
+      written next — measured here so the successor decision (#2777, decided
+      11 August 2026: the lockers stay `admin`) was costed rather than argued.
+
+      THE ONE IMPLEMENTABLE MEMBER-INVISIBLE DESTINATION for the locker writers is a
+      NEW canonical category routed to the membership correlation domain and
+      deliberately left OUT of `MEMBER_VISIBLE_AUDIT_CATEGORIES`. `membership` is the
+      obvious name for it and is the one name it must not be, because it is not a
+      free string: three pre-#2581 nomination writers wrote `category = 'membership'`
+      into real rows, and NO migration ever rewrote them. The only migration that has
+      ever rewritten a stored `AuditLog.category` is #2751's bed-allocation backfill,
+      which this asserts from the migrations themselves.
+
+      SO THOSE LEGACY ROWS ARE CORRELATED BY NOBODY TODAY — `category = ANY ($1)`
+      never matches a value outside the taxonomy — and re-introducing the string
+      would make them readable by any support+membership operator, retroactively, on
+      an append-only table. That is a stored-row audience change nobody has decided,
+      and it is the reason the successor issue asked for a NEW name rather than the
+      old one. #2777 was decided with the lockers staying `admin`, so no such
+      category exists; if this test fails because another migration rewrites the
+      column, the measured cost that decision rested on has changed — re-measure it
+      before citing #2777.
+    */
+    const migrationsRoot = join(process.cwd(), "prisma", "migrations");
+    const rewriters = readdirSync(migrationsRoot, { withFileTypes: true })
+      .filter((entry) => entry.isDirectory())
+      .filter((entry) => {
+        const sqlPath = join(migrationsRoot, entry.name, "migration.sql");
+        if (!existsSync(sqlPath)) return false;
+        const sql = readFileSync(sqlPath, "utf8");
+        return (
+          /UPDATE\s+(?:public\.)?"AuditLog"/i.test(sql) &&
+          /SET\s+"category"/i.test(sql)
+        );
+      })
+      .map((entry) => entry.name)
+      .sort();
+
+    expect(
+      rewriters,
+      "A migration rewrites stored `AuditLog.category` values that #2765 did not " +
+        "know about. #2765 refused the locker move partly on the measured fact that " +
+        "legacy `category = 'membership'` rows from three pre-#2581 nomination " +
+        "writers were never backfilled and are therefore correlated by nobody — so " +
+        "re-introducing that string would widen who can read rows already written " +
+        "(INV-PRIV-013, INV-OPS-012). #2777 was decided on that measured cost — " +
+        "re-measure it and record the change before altering this list.",
+    ).toEqual(["20260810020000_backfill_bed_allocation_audit_category"]);
+
+    // And the name itself is still outside the taxonomy, which is what makes those
+    // legacy rows unreadable today rather than merely mis-filed.
+    expect(isAuditCategory("membership")).toBe(false);
+  });
+
+  it("keeps INV-PRIV-012's `narrowing` sentence scoped where a reclassifier will read it", () => {
+    /*
+      The #2751 trap, in the durable record rather than in the code: a rule that
+      says the opposite of the truth, sitting exactly where the routing table sends
+      the next person.
+
+      `AGENTS.md` routes "an audit writer's `category`" to `INV-PRIV`, and the rule
+      that states category-follows-domain is `INV-PRIV-012`. Its closing sentence
+      called moving either kept group "a narrowing, member-invisible in both
+      directions and retention-neutral". That is true of `lodge` and measurably
+      FALSE of the destination #2765's owner decision actually named: every category
+      routing to the membership correlation domain is member-visible, and the locker
+      writers reach the acting officer's own timeline through the null-subject
+      `memberId` leg. #2765 scoped the sentence in place — the file's own header
+      licenses correcting rules first written there — and this asserts the scope
+      survives, because a reader who looks the id up and never reaches
+      `INV-PRIV-013` would otherwise act on the unscoped version in a review, where
+      no CI gate is watching.
+    */
+    // Newlines normalised because `core.autocrlf=true` materialises CRLF for docs
+    // on a Windows checkout while every blob and every CI runner is LF. Without
+    // this the paragraph split below finds no `\n\n`, silently widens to the whole
+    // file, and the gate passes on any text at all — measured, not guessed.
+    const invariants = readFileSync(
+      join(process.cwd(), "docs/invariants/analytics-and-privacy.md"),
+      "utf8",
+    ).replace(/\r\n/g, "\n");
+    // Whitespace-tolerant on purpose: the phrase is prose that gets re-wrapped
+    // every time a word is added above it, and a line break must not be able to
+    // hide an occurrence from this gate. (It did, in the first draft of this test.)
+    const phrase = "member-invisible in both directions";
+    const occurrences = [
+      ...invariants.matchAll(/member-invisible\s+in\s+both\s+directions/g),
+    ];
+    expect(
+      occurrences.length,
+      `docs/invariants/analytics-and-privacy.md no longer says "${phrase}" at all. ` +
+        "If the sentence was rewritten, check the replacement still says which " +
+        "destination it is true of, then update this test.",
+    ).toBeGreaterThan(0);
+    // Which rule each occurrence lives under, so the assertion can be exact about
+    // where the pointer is required: the sentence inside INV-PRIV-013 is the
+    // correction itself and scopes itself, whereas the one inside INV-PRIV-012 is
+    // the one a reclassifier reaches by id and must not find unqualified.
+    const ruleAt = (index: number): string => {
+      const headings = [
+        ...invariants.slice(0, index).matchAll(/^#{2,4} (INV-PRIV-\d{3})\s*$/gm),
+      ];
+      return headings.at(-1)?.[1] ?? "(no rule)";
+    };
+
+    const rules = occurrences.map((occurrence) => ruleAt(occurrence.index ?? 0));
+    expect(
+      rules,
+      `No "${phrase}" sentence sits under INV-PRIV-012 any more. That is the rule ` +
+        "AGENTS.md routes a reclassifier to, so if the claim moved out of it, check " +
+        "that what replaced it is not a fresh unscoped absolute, then update this " +
+        "test deliberately.",
+    ).toContain("INV-PRIV-012");
+
+    /*
+      Scoped to the occurrence's own PARAGRAPH, not to a character window. A window
+      wide enough to hold the sentence also reaches the `## INV-PRIV-013` heading
+      that follows it, so an unscoped sentence passed a windowed version of this
+      test — measured, by reverting the scoping clause and watching it stay green.
+      The claim and its qualification have to live in the same breath.
+    */
+    const paragraphAt = (index: number): string => {
+      const start = invariants.lastIndexOf("\n\n", index);
+      const end = invariants.indexOf("\n\n", index);
+      return invariants.slice(
+        start === -1 ? 0 : start + 2,
+        end === -1 ? invariants.length : end,
+      );
+    };
+
+    for (const occurrence of occurrences) {
+      const at = occurrence.index ?? 0;
+      const rule = ruleAt(at);
+      const context = paragraphAt(at);
+      expect(
+        context,
+        `The "${phrase}" claim under ${rule} does not name \`lodge\` as ` +
+          "the destination it is scoped to. It is true of `lodge` and measurably " +
+          "false of the membership correlation domain, where every category is " +
+          "member-visible and the locker writers reach the acting officer's own " +
+          "timeline (INV-PRIV-013, measured on #2765).",
+      ).toMatch(/lodge/);
+      if (rule === "INV-PRIV-012") {
+        expect(
+          context,
+          'An unscoped "member-invisible in both directions" claim is back in ' +
+            "INV-PRIV-012, which is the rule the AGENTS.md routing table sends a " +
+            "reclassifier to. Point it at INV-PRIV-013, where the measurement and " +
+            "the one implementable member-invisible destination live, rather than " +
+            "leaving the absolute reading for the next sweep to cite.",
+        ).toMatch(/INV-PRIV-013/);
+      }
+    }
+  });
+
+  it("counts the pinned population the same way INV-OPS-012 does", () => {
+    /*
+      The number INV-OPS-012 quotes for why a GENERAL "did a reclassification ship
+      without a backfill" check is not available: how many write sites carry a
+      per-site baseline, and how many do not.
+
+      It is asserted rather than written down twice because it has already gone
+      stale twice — #2755 left it three low, #2765 sixteen — and it is quoted in two
+      places (INV-OPS-012 and the #2751 backfill test's own docstring). Counted as a
+      UNION of distinct site ids, because a site may appear in more than one map.
+    */
+    const pinned = new Set<string>([
+      ...Object.keys(APPLIED_AUDIT_CATEGORIES),
+      ...Object.keys(REVIEWED_ADMIN_CATEGORIES_2730),
+      ...Object.keys(MEMBER_RECORD_ADMIN_CATEGORIES_2755),
+      ...Object.keys(LODGE_GATED_ADMIN_CATEGORIES_2765),
+    ]);
+    expect(
+      { pinned: pinned.size, unpinned: census().sites.length - pinned.size },
+      "The pinned/unpinned split moved. That is expected whenever a map grows or a " +
+        "feature records something new, but INV-OPS-012 quotes these two numbers as " +
+        "the reason a general reclassification gate is not available, and " +
+        "`bed-allocation-audit-category-backfill.test.ts` quotes them again. Update " +
+        "both, in the same pull request as this line (INV-OPS-012).",
+    ).toEqual({ pinned: 127, unpinned: 307 });
   });
 
   it("pins which classified writers a MEMBER can now see about themselves", () => {
