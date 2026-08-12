@@ -419,3 +419,58 @@ describe("serializePageContext", () => {
     expect(text!.length).toBe(PAGE_CONTEXT_MAX_CHARS);
   });
 });
+
+describe("the panel can be resized, by keyboard (#2378 D8)", () => {
+  it("offers an ordinary button, not a drag-only handle", () => {
+    // The owner asked for drag-expandable. Drag is fine as an ENHANCEMENT, but a
+    // drag handle alone has no keyboard path and nothing for a screen reader to
+    // announce, and this issue requires keyboard-only operation as first class.
+    // So the control is a real <button>: Tab reaches it, Enter and Space fire it.
+    const panel = renderWidget("admin");
+    const resize = within(panel).getByTestId("help-widget-resize");
+
+    expect(resize.tagName).toBe("BUTTON");
+    expect(resize.getAttribute("type")).toBe("button");
+    // Not hidden from assistive technology, and not reachable only by pointer.
+    expect(resize.getAttribute("aria-hidden")).not.toBe("true");
+    expect(resize.getAttribute("tabindex")).not.toBe("-1");
+  });
+
+  it("names the size it will move TO, not the size it is at", () => {
+    // A screen-reader user needs to know what pressing it DOES. "Resize panel"
+    // tells them nothing; the current size tells them where they are but not what
+    // happens next.
+    const panel = renderWidget("admin");
+    const resize = within(panel).getByTestId("help-widget-resize");
+
+    expect(resize.getAttribute("data-panel-size")).toBe("comfortable");
+    expect(resize.getAttribute("aria-label")).toMatch(/tall/i);
+  });
+
+  it("steps through the sizes and wraps back, so there is always a way back", () => {
+    const panel = renderWidget("admin");
+    const resize = within(panel).getByTestId("help-widget-resize");
+
+    fireEvent.click(resize);
+    expect(resize.getAttribute("data-panel-size")).toBe("tall");
+    expect(screen.getByTestId("help-widget-panel").className).toContain(
+      "sm:w-[28rem]",
+    );
+
+    fireEvent.click(resize);
+    expect(resize.getAttribute("data-panel-size")).toBe("full");
+
+    // Wraps. An operator who reached the largest size must not be stranded there.
+    fireEvent.click(resize);
+    expect(resize.getAttribute("data-panel-size")).toBe("comfortable");
+    expect(screen.getByTestId("help-widget-panel").className).toContain(
+      "sm:w-[24rem]",
+    );
+  });
+
+  it("opens at the size it always had, so a help reader sees no change", () => {
+    const panel = renderWidget("member");
+    expect(panel.className).toContain("sm:w-[24rem]");
+    expect(panel.className).toContain("sm:max-h-[70vh]");
+  });
+});

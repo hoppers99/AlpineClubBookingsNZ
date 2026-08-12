@@ -1,6 +1,7 @@
 "use client";
 
 import {
+  useCallback,
   useEffect,
   useId,
   useRef,
@@ -8,7 +9,7 @@ import {
   type FocusEvent,
   type KeyboardEvent,
 } from "react";
-import { CircleHelp, X } from "lucide-react";
+import { CircleHelp, Maximize2, X } from "lucide-react";
 import { usePathname } from "next/navigation";
 import type { HelpQuestion, HelpSection } from "@/lib/contextual-help";
 import type { HelpPageContent } from "@/lib/help/types";
@@ -17,6 +18,15 @@ import { HelpChatThread } from "./help-chat-thread";
 import { HelpFreeTextInput } from "./help-free-text-input";
 import { serializePageContext } from "./help-page-context";
 import { useHelpWidgetState } from "./help-widget-context";
+import {
+  DEFAULT_HELP_PANEL_SIZE,
+  HELP_PANEL_SIZE_CLASSES,
+  HELP_PANEL_SIZE_LABELS,
+  nextHelpPanelSize,
+  readStoredHelpPanelSize,
+  storeHelpPanelSize,
+  type HelpPanelSize,
+} from "./help-widget-size";
 import { useHelpChat, type HelpChatSurface } from "./use-help-chat";
 
 const GREETING = "Kia ora — need a hand with this page?";
@@ -94,6 +104,24 @@ export function HelpWidget({
   const chat = useHelpChat({ llmEnabled, chatEndpoint });
 
   const [open, setOpen] = useState(false);
+  /**
+   * Panel size (#2378 D8). Starts at the DEFAULT rather than the stored value and
+   * is corrected after mount: reading `localStorage` during render would differ
+   * between server and client and hydrate mismatched.
+   */
+  const [panelSize, setPanelSize] = useState<HelpPanelSize>(
+    DEFAULT_HELP_PANEL_SIZE,
+  );
+  useEffect(() => {
+    setPanelSize(readStoredHelpPanelSize());
+  }, []);
+  const cyclePanelSize = useCallback(() => {
+    setPanelSize((current) => {
+      const next = nextHelpPanelSize(current);
+      storeHelpPanelSize(next);
+      return next;
+    });
+  }, []);
   const [tab, setTab] = useState<"ask" | "guide">("ask");
   const [viewportOffset, setViewportOffset] = useState(0);
 
@@ -220,7 +248,7 @@ export function HelpWidget({
           data-report-issue-ignore="true"
           onKeyDown={handleKeyDown}
           style={viewportOffset > 0 ? { bottom: viewportOffset } : undefined}
-          className="fixed inset-x-0 bottom-0 z-50 mx-auto flex max-h-[85dvh] w-full flex-col overflow-hidden rounded-t-xl border border-border bg-card text-foreground shadow-lg sm:inset-x-auto sm:bottom-20 sm:right-6 sm:w-[24rem] sm:max-h-[70vh] sm:rounded-xl print:hidden"
+          className={`fixed inset-x-0 bottom-0 z-50 mx-auto flex max-h-[85dvh] w-full flex-col overflow-hidden rounded-t-xl border border-border bg-card text-foreground shadow-lg sm:inset-x-auto sm:bottom-20 sm:right-6 sm:rounded-xl print:hidden ${HELP_PANEL_SIZE_CLASSES[panelSize]}`}
         >
           <header className="flex items-center justify-between border-b border-border px-4 py-3">
             <h2
@@ -231,6 +259,21 @@ export function HelpWidget({
             >
               Help
             </h2>
+            <div className="flex items-center">
+              {/* KEYBOARD-OPERABLE, not a drag handle (#2378 D8). An ordinary
+                  button: reachable by Tab, activated by Enter or Space, and its
+                  label announces the size it will move TO so a screen-reader user
+                  knows what pressing it does rather than only where it is now. */}
+              <button
+                type="button"
+                onClick={cyclePanelSize}
+                aria-label={`Resize help panel to ${HELP_PANEL_SIZE_LABELS[nextHelpPanelSize(panelSize)].toLowerCase()}`}
+                data-testid="help-widget-resize"
+                data-panel-size={panelSize}
+                className="hidden h-11 w-11 items-center justify-center rounded-md text-muted-foreground hover:bg-muted focus:outline-none focus-visible:ring-2 focus-visible:ring-ring sm:flex"
+              >
+                <Maximize2 aria-hidden="true" className="h-4 w-4" />
+              </button>
             <button
               type="button"
               onClick={close}
@@ -239,6 +282,7 @@ export function HelpWidget({
             >
               <X aria-hidden="true" className="h-4 w-4" />
             </button>
+            </div>
           </header>
 
           <div className="flex gap-1 border-b border-border px-2 py-2">

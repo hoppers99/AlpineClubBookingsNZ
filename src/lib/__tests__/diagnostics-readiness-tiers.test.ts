@@ -89,6 +89,33 @@ describe("readiness is tiered on the server, not in the markup (#2378 Q6)", () =
     expect(tiered.whoCanResolve).not.toMatch(/support access/i);
   });
 
+
+  it("never calls the module 'off' when the setting could not be READ (#2803)", () => {
+    // #2803 makes `moduleEnabled` tri-state: true / false / null, where null means
+    // the club's setting could not be read. A falsy check here would fold null in
+    // with false and tell the operator diagnostics is switched off — sending them
+    // to turn on something that may already be on. That is the exact misreport
+    // #2803 removes, and this tier sits directly above it.
+    //
+    // Cast because that PR is not merged yet; the branch is written now so the
+    // tri-state cannot arrive and find a falsy test waiting for it.
+    const unreadable = {
+      ...NOT_READY,
+      moduleEnabled: null,
+    } as unknown as DiagnosticsReadiness;
+
+    const tiered = readinessForAdmin(unreadable, matrixWith("none"));
+    if (tiered.tier !== "coarse") throw new Error("expected the coarse tier");
+
+    expect(tiered.whoCanResolve).not.toMatch(/switched off/i);
+    expect(tiered.whoCanResolve).not.toMatch(/Feature modules/i);
+    // It falls to the honest generic message instead.
+    expect(tiered.whoCanResolve).toMatch(/support access/i);
+    // And the unknown is carried through rather than flattened to a boolean, so a
+    // component can say "could not check" rather than having to guess.
+    expect(tiered.moduleEnabled).toBeNull();
+  });
+
   it("treats support:edit as implying support:view", () => {
     expect(readinessForAdmin(NOT_READY, matrixWith("edit")).tier).toBe(
       "detailed",

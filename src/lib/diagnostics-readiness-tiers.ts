@@ -41,8 +41,12 @@ export interface CoarseDiagnosticsReadiness {
    * Whether the club has switched the module on. Included because it is the one
    * blocker an ordinary admin may be able to act on themselves, and because
    * "diagnostics is off" is not an internal detail — it is a club setting.
+   *
+   * It carries the verdict's own value UNCHANGED, including the `null` that #2803
+   * introduces for "the setting could not be read". A consumer must render that as
+   * "could not check" — never as off, and never as a prompt to switch it on.
    */
-  moduleEnabled: boolean;
+  moduleEnabled: DiagnosticsReadiness["moduleEnabled"];
   /** Who to ask, in plain words. The question a coarse reader actually has. */
   whoCanResolve: string;
 }
@@ -67,7 +71,18 @@ export type TieredDiagnosticsReadiness =
  */
 function whoCanResolve(readiness: DiagnosticsReadiness): string {
   if (readiness.ready) return "AI Diagnostics is set up and ready to use.";
-  if (!readiness.moduleEnabled) {
+
+  // `=== false`, NOT `!moduleEnabled` — and this is the whole point of the branch.
+  // #2803 makes `moduleEnabled` tri-state: `true`, `false`, or `null` meaning the
+  // club's module setting could not be READ. A falsy test would fold `null` in with
+  // `false` and tell an operator the module is switched off when the truthful answer
+  // is "we could not check", sending them to turn on something that may already be
+  // on. That is precisely the misreport #2803 exists to remove, and it would have
+  // been reintroduced here, one layer above the fix.
+  //
+  // Written this way BEFORE #2803 merges, so the tri-state cannot arrive and quietly
+  // find a falsy test waiting for it.
+  if (readiness.moduleEnabled === false) {
     return "AI Diagnostics is switched off for this club. Someone who can manage Feature modules can turn it on.";
   }
   return "AI Diagnostics is not ready yet. Someone with support access can see what is still needed and finish the setup.";
