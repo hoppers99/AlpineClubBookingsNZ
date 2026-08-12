@@ -146,12 +146,19 @@ export default async function DiagnosticsPage() {
         <h2 id="diagnostics-ask-heading" className="text-base font-semibold">
           Asking a question
         </h2>
-        {/* Stated plainly rather than shown as an inert input. An empty box that
-            does nothing reads as a fault; a sentence reads as a roadmap. */}
+        {/* THE ASKING HAPPENS IN THE HELP BUBBLE, NOT HERE (owner decision 12 Aug
+            2026). This page owns setup and status; the bubble owns the
+            conversation, so the consent tick, the evidence display and the
+            transcript hardening are built and reviewed in ONE place rather than
+            two that drift. Said plainly rather than shown as an inert input: an
+            empty box that does nothing reads as a fault. */}
         <p className="mt-2 text-sm text-muted-foreground">
-          The question and answer view is still being built. When it arrives it will
-          appear here, and every answer will show where its evidence came from and
-          when it was read.
+          You ask Diagnostics from the <strong>Help</strong> button, on whichever
+          admin screen you are looking at — so you can ask about the booking,
+          member or payment already in front of you. It is still being built.
+        </p>
+        <p className="mt-2 text-sm text-muted-foreground">
+          Every answer will show where its evidence came from and when it was read.
         </p>
       </section>
     </div>
