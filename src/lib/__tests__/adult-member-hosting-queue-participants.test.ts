@@ -559,10 +559,21 @@ describe("hosting coverage queue participant fence (#2597)", () => {
  * so issuing one without the lock would not merely skip a check here, it would
  * silently switch the check off everywhere the proof travels.
  */
+/**
+ * A narrow double does not have the key AT ALL, so the fixture deletes it rather
+ * than spreading around it — the shape the real test doubles had is the shape the
+ * refusal has to catch. (Also drops the two unused-binding lint warnings the
+ * destructuring form left behind.)
+ */
+function withoutRawLockClient(db: ReturnType<typeof makeDb>): never {
+  const client: Record<string, unknown> = { ...db };
+  delete client.$executeRaw;
+  return client as never;
+}
+
 describe("participant proof cannot exist without its lock", () => {
   it("refuses a client that cannot take the row lock instead of issuing a proof", async () => {
-    const db = makeDb();
-    const { $executeRaw: _omitted, ...withoutRawLock } = db;
+    const withoutRawLock = withoutRawLockClient(makeDb());
 
     await expect(
       acquireHostingCoverageQueueParticipantProof(
@@ -575,8 +586,7 @@ describe("participant proof cannot exist without its lock", () => {
   it("does not dress the wiring fault as retryable contention", async () => {
     // A 409 retry contract here would invite an endless client retry loop: no
     // amount of retrying grows the client a $executeRaw method.
-    const db = makeDb();
-    const { $executeRaw: _omitted, ...withoutRawLock } = db;
+    const withoutRawLock = withoutRawLockClient(makeDb());
 
     const error = await acquireHostingCoverageQueueParticipantProof(
       { sources: [SOURCE], actorMemberId: "actor-1" },
