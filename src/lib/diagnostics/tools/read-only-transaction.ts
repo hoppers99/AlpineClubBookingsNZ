@@ -119,6 +119,7 @@ import "server-only";
 import type { Prisma } from "@prisma/client";
 
 import { prisma } from "@/lib/prisma";
+import { resolvePoolAcquisitionTimeoutMillis } from "@/lib/prisma-adapter";
 
 import { DIAGNOSTICS_TOOL_BOUNDS } from "./types";
 
@@ -160,33 +161,83 @@ export const DIAGNOSTICS_READ_ONLY_STATEMENT_TIMEOUT_MS =
   DIAGNOSTICS_TOOL_BOUNDS.statementTimeoutMs;
 
 /**
- * How much longer the whole transaction may run than any one statement in it.
- *
- * Named rather than inlined so the ORDERING is legible: the ceiling has to sit
- * strictly above the statement timeout, or Prisma's transaction timeout fires
- * first and the operator gets a generic transaction error instead of PostgreSQL's
- * specific cancellation. It is a margin over one statement, not a second bound in
- * its own right, which is why it is small.
- */
-const READ_ONLY_TRANSACTION_MARGIN_MS = 2_000;
-
-/**
  * The interactive-transaction ceiling: strictly ABOVE the statement timeout so the
  * database's own cancellation is what a slow read hits, and strictly below every
  * evidence source's JavaScript deadline so this process is still waiting to report
  * it. The ordering statement < transaction < source deadline is asserted rather
  * than assumed.
+ *
+ * The margin that produces it moved into `types.ts` with the rest of the ladder
+ * (#2804), because the source deadline and the executor's outer race now DERIVE
+ * from it too — and a margin that three bounds depend on cannot live in the one
+ * module that only needs two of them.
  */
 export const DIAGNOSTICS_READ_ONLY_TRANSACTION_TIMEOUT_MS =
-  DIAGNOSTICS_READ_ONLY_STATEMENT_TIMEOUT_MS + READ_ONLY_TRANSACTION_MARGIN_MS;
+  DIAGNOSTICS_TOOL_BOUNDS.readOnlyTransactionTimeoutMs;
+
+/**
+ * The gap this keeps between the diagnostics wait and pg's own ceiling.
+ *
+ * The two timers start together, so at equality it is a race — and the loser decides
+ * whether the operator gets a classifiable `P2028` or an anonymous pool error. A
+ * second is the smallest gap worth calling deliberate.
+ */
+const POOL_CEILING_MARGIN_MS = 1_000;
 
 /**
  * How long Prisma may wait for a pool connection before giving up on opening the
- * transaction at all. Unchanged from #2376: a diagnostics read that cannot get a
- * connection within two seconds should refuse, not join the queue that is already
- * the problem.
+ * transaction at all — CLAMPED to what pg will actually allow.
+ *
+ * WAS TWO SECONDS, AND THE REASONING FOR THAT WAS NEVER REALLY TESTED. It came from
+ * #2376 as "a diagnostics read that cannot get a connection within two seconds should
+ * refuse, not join the queue that is already the problem" — which sounds right and
+ * quietly assumes the queue is always pathological. Usually it is not: it is a second
+ * admin looking at a page. Owner decision #2804 is that an admin would rather wait.
+ *
+ * WHY THIS IS COMPUTED AND NOT JUST READ. pg's `connectionTimeoutMillis` covers time
+ * spent QUEUED, so it caps this no matter what Prisma is asked for. Ask for more than
+ * the pool allows and pg rejects first with a bare `Error` carrying NO CODE: the
+ * longer wait never happens, and `evidence_database_busy` becomes unreachable because
+ * there is nothing to classify. A first draft of #2804 did exactly that — 20 000
+ * against a 10 000 ceiling — and every unit test passed, because they hand-build the
+ * error object.
+ *
+ * A test asserting the relation was the first fix and it was not enough: it reads
+ * `docker-compose.yml`, and `.env.example`, `.env.staging.example` and the CI workflow
+ * declare no `pool_timeout` at all, so the adapter's 5 000 default applies and 8 000
+ * was unreachable there — the same bug, one file over (#2804 delta review). An
+ * assertion catches the connection strings somebody remembered to check. Clamping
+ * catches the ones nobody did.
+ *
+ * EXPORTED so callers and tests ask the code what wait is in force rather than
+ * recomputing it — three places already assert on it, and a fourth copy of the
+ * arithmetic is a fourth thing that can drift.
+ *
+ * So the wait is whichever is smaller: the owner's decided bound, or a second under
+ * whatever the pool actually permits. The clamp can only ever SHORTEN it, so it
+ * cannot smuggle in a longer wait than was decided, and
+ * `pool-acquisition-ladder.test.ts` still fails loudly if a shipped connection string
+ * would force the shortening — a silently degraded wait is a worse outcome than a
+ * failing test, so both exist.
  */
-const READ_ONLY_TRANSACTION_MAX_WAIT_MS = 2_000;
+export function resolveReadOnlyMaxWaitMs(): number {
+  const decided = DIAGNOSTICS_TOOL_BOUNDS.readOnlyMaxWaitMs;
+  const databaseUrl = process.env.DATABASE_URL;
+  if (!databaseUrl) return decided;
+  let poolCeilingMs: number;
+  try {
+    poolCeilingMs = resolvePoolAcquisitionTimeoutMillis(databaseUrl);
+  } catch {
+    // An unparseable URL is not this function's problem to report — the client
+    // itself will fail loudly on it. Fall back to the decided bound rather than
+    // inventing a number from a string nobody can read.
+    return decided;
+  }
+  // Never below the margin itself: a pathologically small pool timeout should not
+  // turn every diagnostics read into an instant refusal.
+  const allowed = Math.max(POOL_CEILING_MARGIN_MS, poolCeilingMs - POOL_CEILING_MARGIN_MS);
+  return Math.min(decided, allowed);
+}
 
 /**
  * Run one `server_owned` evidence read inside a `REPEATABLE READ`, READ ONLY,
@@ -208,9 +259,56 @@ export async function withBoundedReadOnlyTransaction<T>(
     },
     {
       isolationLevel: "RepeatableRead",
-      maxWait: READ_ONLY_TRANSACTION_MAX_WAIT_MS,
+      maxWait: resolveReadOnlyMaxWaitMs(),
       timeout: DIAGNOSTICS_READ_ONLY_TRANSACTION_TIMEOUT_MS,
     },
+  );
+}
+
+/** Prisma's `TransactionStartTimeoutError` — `maxWait` expired. Named so the one
+ * place it is compared against says what it means. */
+const DIAGNOSTICS_TRANSACTION_START_TIMEOUT_CODE = "P2028";
+
+/**
+ * Did this failure mean "the database was too busy to even start", as opposed to
+ * "the read ran and something went wrong"? (#2804)
+ *
+ * `maxWait` expiring is the ONE failure on this path where nothing is broken — the
+ * database is reachable, the query is fine, every connection was simply in use — so
+ * it is the one an operator must not be sent to debug. At a two-second wait that was
+ * rare enough to fold into the generic refusal; at eight it is worth its own answer.
+ *
+ * IT IS `P2028`, AND THE FIRST DRAFT SAID `P2024`. That was wrong, and only a real
+ * server showed it: `P2024` was the RUST engine's connection-pool error, and this
+ * application runs Prisma 7 with `@prisma/adapter-pg`, where there is no Prisma pool
+ * to raise it. `P2024` appears nowhere in the installed runtime. `maxWait` expiry
+ * surfaces as `TransactionStartTimeoutError`, which carries `P2028`. A predicate
+ * matching the old code returned false forever, so every busy refusal was reported
+ * as a fault — and every unit test passed, because they hand-build the error object.
+ *
+ * WHAT IS DELIBERATELY NOT MATCHED. If the wait were set above pg's own
+ * `connectionTimeoutMillis`, the POOL would reject first with a bare `Error` whose
+ * message is "timeout exceeded when trying to connect" and which carries no code at
+ * all. Matching that message would be worse than missing it: the identical error
+ * arises when the database is genuinely unreachable, so a real outage would be
+ * reported to an operator as "nothing is broken, try again shortly". The ladder
+ * keeps the wait BELOW the pool ceiling instead, so this case does not arise, and
+ * `pool-acquisition-ladder.test.ts` is what keeps it that way.
+ *
+ * MATCHED ON THE CODE, NOT THE MESSAGE — wording changes across releases and is not
+ * a contract — and one level into `cause`, because the driver adapter wraps. Not
+ * `instanceof`, which stops matching through a wrapper and would fail in the
+ * direction that loses information.
+ */
+export function isDiagnosticsPoolWaitTimeout(error: unknown): boolean {
+  if (typeof error !== "object" || error === null) return false;
+  const code = (error as { code?: unknown }).code;
+  if (code === DIAGNOSTICS_TRANSACTION_START_TIMEOUT_CODE) return true;
+  const cause = (error as { cause?: unknown }).cause;
+  if (typeof cause !== "object" || cause === null) return false;
+  return (
+    (cause as { code?: unknown }).code ===
+    DIAGNOSTICS_TRANSACTION_START_TIMEOUT_CODE
   );
 }
 

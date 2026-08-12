@@ -44,6 +44,92 @@ import type { AdminPermissionArea } from "@/lib/admin-permissions";
 export const DIAGNOSTICS_TOOL_SCHEMA_VERSION = 1 as const;
 
 /**
+ * THE SERVER-OWNED BOUND LADDER, IN ONE PLACE AND DERIVED (#2804).
+ *
+ * Four bounds govern one `server_owned` read, and the relation between them is
+ * worth stating carefully, because the obvious shorthand is WRONG (#2804 review).
+ * The wait is not "smaller than" the transaction timeout — it comes BEFORE it, and
+ * the two ADD:
+ *
+ *   statement < transaction      and      (wait + transaction) < graph < outer race
+ *
+ * "wait < read < graph < outer race" was true while the wait was 2 000 and became
+ * false the moment it became 20 000 — a fair illustration of why the numbers below
+ * are derived rather than merely described.
+ *
+ * Break the relation and the operator gets a vague answer instead of a specific one:
+ * a graph deadline clearing only the transaction would kill a read for the time it
+ * spent queuing for a connection it then went on to get, and call it "took too
+ * long". #2786 found the failure mode that makes this worth deriving rather
+ * than listing: two unlinked names for one bound, where narrowing one silently
+ * left the other behind and every test still passed. So the three upper bounds
+ * are COMPUTED from the two real choices below. There is no second literal to
+ * keep in step, and no way to move one without moving what depends on it.
+ *
+ * OWNER DECISION 12 Aug 2026 (#2804): a diagnostics read should WAIT for a busy
+ * database rather than give up. The wait went from 2 s to 8 s, which moves the
+ * worst case before a refusal from 9 s to 15 s.
+ *
+ * IT IS 8 AND NOT THE 20 FIRST CHOSEN, and the reason is the rung below: pg's own
+ * pool ceiling is 10 000 in production, so a longer wait is simply not reachable
+ * without raising a limit that member traffic shares. That was put back to the owner
+ * with the measurement, and 8 s inside the existing ceiling was chosen over changing
+ * the whole application's pool behaviour for an admin tool.
+ *
+ * The owner's condition stands: the UI shows a "still working" state (#2378). A
+ * 15-second wait with no feedback is worse than a fast refusal, because an admin
+ * reloads, and a reload during contention adds another queued reader.
+ *
+ * THE STATEMENT TIMEOUT DELIBERATELY DID NOT MOVE. Waiting longer to START is
+ * what was asked for. Letting an already-running query run longer is a different
+ * thing, and it is the half that actually loads the database.
+ */
+const READ_ONLY_STATEMENT_TIMEOUT_MS = 5_000;
+
+/**
+ * The owner's decision, and the only reason this ladder changed (#2804).
+ *
+ * IT IS BOUNDED BY SOMETHING THIS LADDER DOES NOT OWN, which is the whole story of
+ * how the first attempt got it wrong. pg's `connectionTimeoutMillis` — set from
+ * `pool_timeout` in `DATABASE_URL`, 10 000 in production — covers time spent QUEUED
+ * as well as time spent connecting. Ask Prisma to wait longer than that and pg
+ * rejects first, with a bare `Error` carrying no code: the longer wait never
+ * happens, the refusal cannot be classified, and every unit test still passes
+ * because they hand-build the error. A first draft of #2804 set this to 20 000
+ * against a 10 000 pool ceiling and claimed a 27-second worst case the code could
+ * not reach.
+ *
+ * So it sits deliberately BELOW the pool's own ceiling, which is what makes
+ * Prisma's own `maxWait` the thing that fires and `P2028` the error that arrives.
+ * `__tests__/pool-acquisition-ladder.test.ts` asserts that against the real
+ * production connection strings, so raising this without raising the pool — a
+ * whole-application decision, since that pool serves member traffic too — fails.
+ */
+const READ_ONLY_MAX_WAIT_MS = 8_000;
+
+/**
+ * How much longer the whole transaction may run than any one statement in it.
+ * A margin over one statement, not a bound in its own right — which is why it is
+ * small, and why it is expressed as a margin.
+ */
+const READ_ONLY_TRANSACTION_MARGIN_MS = 2_000;
+
+/**
+ * Room for the JavaScript either side of the database work — assembling the
+ * evidence rows, the collaborators' own pure computation — on top of the worst
+ * case the database itself can impose.
+ */
+const SERVER_EVIDENCE_MARGIN_MS = 5_000;
+
+/**
+ * The executor's own margin above one source's deadline. It exists so the
+ * SOURCE's specific refusal wins the race: the outer bound is the backstop for a
+ * calculation that hangs on something with no deadline at all, never the thing
+ * that normally fires.
+ */
+const SERVER_EVIDENCE_EXECUTOR_MARGIN_MS = 5_000;
+
+/**
  * Every ceiling the substrate enforces. They are deliberately small: a
  * diagnostics tool exists to answer "what does the deployed system currently say
  * about X", not to move data. A tool that wants more than this is a report, and
@@ -65,7 +151,40 @@ export const DIAGNOSTICS_TOOL_BOUNDS = {
   /** Cap on the number of projected columns one row may carry. */
   maxFieldsPerRow: 24,
   /** `statement_timeout` for the tool's read-only transaction. */
-  statementTimeoutMs: 5_000,
+  statementTimeoutMs: READ_ONLY_STATEMENT_TIMEOUT_MS,
+  /**
+   * How long a `server_owned` read waits for a connection from the application
+   * pool before refusing (Prisma's `maxWait`). Raised from 2 s by owner decision
+   * #2804: an admin would rather wait for a busy database than be told to try
+   * again.
+   *
+   * It is finite because it must be — but be precise about what it costs (#2804
+   * review). A WAITING read holds no pool connection; that is what waiting means.
+   * What grows is QUEUE DEPTH, not occupancy, and occupancy stays bounded by the
+   * unchanged 7 s transaction timeout. An unbounded wait would still be wrong — a
+   * queue nobody ever leaves is its own failure — but it is not the "every reader
+   * pins a connection" story that is easy to tell and wrong.
+   */
+  readOnlyMaxWaitMs: READ_ONLY_MAX_WAIT_MS,
+  /**
+   * The interactive-transaction ceiling: strictly ABOVE the statement timeout so
+   * the database's own cancellation is what a slow read hits and the operator
+   * gets `57014 query_canceled` rather than a generic Prisma transaction error.
+   */
+  readOnlyTransactionTimeoutMs:
+    READ_ONLY_STATEMENT_TIMEOUT_MS + READ_ONLY_TRANSACTION_MARGIN_MS,
+  /**
+   * Deadline on ONE `server_owned` evidence graph — the JavaScript race each
+   * source runs. Derived to sit above the worst case the database can impose
+   * (the full wait for a connection PLUS the full transaction), so a source
+   * never reports "took too long" for time it spent queuing for a connection
+   * that it would have got.
+   */
+  serverEvidenceDeadlineMs:
+    READ_ONLY_MAX_WAIT_MS +
+    READ_ONLY_STATEMENT_TIMEOUT_MS +
+    READ_ONLY_TRANSACTION_MARGIN_MS +
+    SERVER_EVIDENCE_MARGIN_MS,
   /** `lock_timeout` — a diagnostics read must never queue behind a writer. */
   lockTimeoutMs: 2_000,
   /** `idle_in_transaction_session_timeout` — a wedged read frees its backend. */
@@ -111,8 +230,20 @@ export const DIAGNOSTICS_TOOL_BOUNDS = {
    * answer an operator needs — into a timeout that says nothing. This bound is the
    * backstop for a calculation that hangs on something with no deadline of its own,
    * and it fails closed: an expired read returns `evidence_unavailable` and no rows.
+   *
+   * DERIVED from `serverEvidenceDeadlineMs` since #2804, not chosen. It is the
+   * OUTER race, so it has to stay above the source's own deadline or it fires
+   * first and replaces a specific refusal with a generic one. When the wait for a
+   * connection moved, this had to move with it; a hand-set 15 000 would sit at or
+   * below the source deadline and invert the ladder, and every existing test would
+   * still have passed. That is exactly the shape #2786 was filed about.
    */
-  serverEvidenceTimeoutMs: 15_000,
+  serverEvidenceTimeoutMs:
+    READ_ONLY_MAX_WAIT_MS +
+    READ_ONLY_STATEMENT_TIMEOUT_MS +
+    READ_ONLY_TRANSACTION_MARGIN_MS +
+    SERVER_EVIDENCE_MARGIN_MS +
+    SERVER_EVIDENCE_EXECUTOR_MARGIN_MS,
   /** Hard cap on the rendered evidence block handed to the model. */
   renderedBlockMaxChars: 8_000,
 } as const;
@@ -225,6 +356,25 @@ export type DiagnosticsToolFailureReason =
    * them would send an operator to the wrong credential.
    */
   | "evidence_unavailable"
+  /**
+   * The read never STARTED: it waited the full `readOnlyMaxWaitMs` for a
+   * connection from the application pool and did not get one (#2804).
+   *
+   * Distinct from `evidence_unavailable` because the operator's next step is
+   * different, and because the two are easy to confuse into one useless message.
+   * `evidence_unavailable` means the calculation ran and could not answer —
+   * usually the application database is unreachable, and the next step is to
+   * check that. This one means the database is REACHABLE and BUSY: nothing is
+   * broken, the read queued for the full wait and gave up, and the next step is
+   * to try again shortly or find what is holding connections. Telling an admin
+   * "evidence could not be gathered" when the true answer is "everything is fine,
+   * it is just busy" sends them to look for a fault that does not exist.
+   *
+   * It exists at all because #2804 made the wait long. At two seconds a busy
+   * refusal was rare enough to leave folded in; at eight seconds, an admin who
+   * waited that long is owed an accurate reason for it.
+   */
+  | "evidence_database_busy"
   /** The projected result exceeded the tool's byte ceiling. Never truncated. */
   | "result_too_large"
   /** A projection or redaction step threw. Evidence is discarded, not partial. */
@@ -560,6 +710,8 @@ export const DIAGNOSTICS_TOOL_FAILURE_MESSAGES: Record<
     "That diagnostics read did not complete (it may have taken too long), so no results are available.",
   evidence_unavailable:
     "The system evidence that diagnostics tool reads could not be gathered just now, so no results are available.",
+  evidence_database_busy:
+    "The database was too busy to start that diagnostics read, so no results are available. Nothing is broken — try again shortly.",
   result_too_large:
     "That diagnostics read returned more data than this feature is allowed to handle. Ask a narrower question.",
   redaction_failed:

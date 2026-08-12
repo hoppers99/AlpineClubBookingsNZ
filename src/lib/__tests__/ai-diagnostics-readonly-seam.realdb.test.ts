@@ -175,6 +175,14 @@ let statementTimeoutMs: number;
 
       // PostgreSQL normalises the milliseconds it was handed, so compare in
       // milliseconds rather than pinning whatever string form it chose ('5s').
+      //
+      // THIS ALSO COVERS #2804. The wait for a connection went 2 s -> 20 s and the
+      // statement timeout deliberately did not move; because this compares against
+      // the derived bound rather than a literal, raising the statement timeout by
+      // mistake fails here against the real server. An earlier draft added a second
+      // near-identical test to "prove" that separately — it proved nothing this one
+      // did not, and the literal 5_000 is pinned in the unit ladder test where the
+      // other decided numbers live.
       const applied = settings.statement_timeout;
       const appliedMs = applied.endsWith("ms")
         ? Number.parseInt(applied, 10)
