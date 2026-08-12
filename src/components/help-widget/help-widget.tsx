@@ -17,7 +17,11 @@ import { HelpBrowseView } from "./help-browse-view";
 import { HelpChatThread } from "./help-chat-thread";
 import { HelpFreeTextInput } from "./help-free-text-input";
 import { serializePageContext } from "./help-page-context";
-import { useHelpWidgetState } from "./help-widget-context";
+import {
+  useDiagnosticsRecord,
+  useHelpWidgetState,
+  usePublishDiagnosticsAvailable,
+} from "./help-widget-context";
 import {
   clampHelpPanelSize,
   DEFAULT_HELP_PANEL_SIZE,
@@ -124,6 +128,14 @@ export function HelpWidget({
   const pathname = usePathname() ?? "/";
   const content = resolveHelp(pathname);
   const { extras, hintGroup } = useHelpWidgetState();
+  const { record: diagnosticsRecord, clear: clearDiagnosticsRecord } =
+    useDiagnosticsRecord();
+  /**
+   * Tell the rest of the admin tree whether a row control should exist at all
+   * (#2378 D11). Both halves of the answer live in the `diagnostics` prop: its
+   * PRESENCE is the operator's permission, and `moduleEnabled` is the module flag.
+   */
+  usePublishDiagnosticsAvailable(Boolean(diagnostics?.moduleEnabled));
   const chat = useHelpChat({ llmEnabled, chatEndpoint });
   /**
    * Called unconditionally — hooks must be — but inert until the Diagnostics tab is
@@ -310,6 +322,34 @@ export function HelpWidget({
   useEffect(() => {
     setTab((current) => (current === "diagnostics" ? current : "ask"));
   }, [pathname]);
+
+  /**
+   * A chosen record does NOT follow the operator to another screen (#2378 D11).
+   *
+   * The conversation deliberately survives a navigation; the subject deliberately
+   * does not, and the asymmetry is the honest one. The record was chosen from a row
+   * on a particular list, and the server derives the record's KIND from whatever
+   * route the operator is on now — so carrying a booking id onto `/admin/payments`
+   * could only ever ask about a payment that does not exist. Dropping it means the
+   * next question is about the screen in front of them, which is what the answer
+   * would have said anyway.
+   */
+  useEffect(() => {
+    clearDiagnosticsRecord();
+  }, [pathname, clearDiagnosticsRecord]);
+
+  /**
+   * Choosing a record opens the panel on Diagnostics. Keyed on the NONCE, not the id:
+   * choosing the same row again after closing the panel has to reopen it, and an
+   * id-keyed effect would not re-run.
+   */
+  useEffect(() => {
+    if (!diagnosticsRecord || !diagnostics?.moduleEnabled) return;
+    setOpen(true);
+    setTab("diagnostics");
+    // The id is deliberately not a dependency — see above.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [diagnosticsRecord?.nonce, diagnostics?.moduleEnabled]);
 
   // Focus moves into the panel on open and returns to the launcher on close.
   useEffect(() => {
@@ -528,7 +568,7 @@ export function HelpWidget({
                 chat={diagnosticsChat}
                 pathname={pathname}
                 moduleEnabled={diagnostics.moduleEnabled}
-                recordId={extras.diagnosticsRecordId}
+                recordId={diagnosticsRecord?.id}
               />
             ) : tab === "ask" ? (
               <div className="flex flex-col gap-4">
