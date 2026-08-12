@@ -17,6 +17,7 @@ import { summariseDiagnosticCase, type DiagnosticCase } from "../../case/case";
 import { buildDiagnosticsProvenance } from "../provenance";
 import type { DiagnosticsAskSource } from "../contract";
 import {
+  DIAGNOSTICS_EVIDENCE_STATES,
   DIAGNOSTICS_EVIDENCE_STATE_DESCRIPTIONS,
   type DiagnosticsEvidenceState,
 } from "../../case/states";
@@ -251,4 +252,56 @@ describe("freshness is coarse in the line (#2378, D10)", () => {
     });
     expect(provenance.line).not.toContain("NaN");
   });
+});
+
+/**
+ * THE CENSUS. Derived from the evidence vocabulary itself rather than from a list
+ * somebody typed here, so it grows on its own.
+ *
+ * #2378 requires fourteen-odd failure states to be "first-class UX", and the way that
+ * requirement rots is not by someone deleting a case — it is by someone adding a
+ * SEVENTEENTH state to `DIAGNOSTICS_EVIDENCE_STATES` next year and never coming back
+ * to the collapsed line. So this iterates the real vocabulary and demands that each
+ * state be deliberately placed on one side or the other.
+ *
+ * FAIL-CLOSED BY CONSTRUCTION: the allowlist is the states that may pass WITHOUT a
+ * caveat, so an unrecognised new state lands on the "must carry a caveat" side and
+ * fails here until someone decides. The opposite arrangement — listing the states
+ * that need one — would let a new state ship silently uncaveated, which is the exact
+ * outcome D10 forbids.
+ */
+describe("every evidence state is placed deliberately (#2378 census)", () => {
+  /**
+   * The only states that are NOT a caveat, each because it is a complete, honest
+   * answer rather than a gap in one:
+   *
+   *  - `ok` — the evidence was retrieved.
+   *  - `not_found` — the query ran and matched nothing. "There is no such booking"
+   *    is an ANSWER, and marking it as a caveat would teach an operator to distrust
+   *    the one result they can most rely on.
+   */
+  const NOT_A_CAVEAT = new Set<DiagnosticsEvidenceState>(["ok", "not_found"]);
+
+  for (const state of DIAGNOSTICS_EVIDENCE_STATES) {
+    it(`places "${state}"`, () => {
+      const provenance = buildDiagnosticsProvenance({
+        sources: [source(state)],
+        summary: summariseDiagnosticCase(caseWith([{ state }])),
+        roundsUsed: 1,
+        now: NOW,
+      });
+
+      expect(provenance.hasCaveat).toBe(!NOT_A_CAVEAT.has(state));
+
+      // Whichever side it landed on, the operator gets a sentence for it — the
+      // server's own words, never the component's.
+      expect(DIAGNOSTICS_EVIDENCE_STATE_DESCRIPTIONS[state].length).toBeGreaterThan(0);
+      expect(provenance.sources[0].stateDescription).toBe(
+        DIAGNOSTICS_EVIDENCE_STATE_DESCRIPTIONS[state],
+      );
+
+      // And the line itself is never empty, whatever happened.
+      expect(provenance.line.trim().length).toBeGreaterThan(0);
+    });
+  }
 });
