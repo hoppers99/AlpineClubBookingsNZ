@@ -79,13 +79,15 @@ import {
   getAdminCronJobDefinitions,
 } from "@/lib/admin-cron-health";
 import { getCronRunsForAdminHealth } from "@/lib/admin-cron-runs";
-import { getDiagnosticsReadiness } from "@/lib/ai-diagnostics-config";
+import {
+  getDiagnosticsReadiness,
+  readDiagnosticsModuleFlag,
+} from "@/lib/ai-diagnostics-config";
 import {
   DIAGNOSTICS_MAX_TOOL_ROUNDS,
   WORST_CASE_ROUNDTRIP_CENTS,
   getDiagnosticsUsageSummary,
 } from "@/lib/ai-diagnostics-usage";
-import { loadEffectiveModuleFlags } from "@/lib/module-settings";
 
 import { loadKnowledgeBundle } from "../../knowledge/load";
 import { isVerifiedCommitSha } from "../../knowledge/verify";
@@ -114,18 +116,28 @@ function isoOrNull(value: Date | string | null | undefined): string | null {
  *
  * `getDiagnosticsReadiness` never throws: a fault resolves to `ready: false` with a
  * `resolve_error` blocker, which is the honest evidence an operator needs.
+ *
+ * NEITHER READ MAY BECOME A REJECTION (#2803). The module flag is read through
+ * `readDiagnosticsModuleFlag`, which uses the STRICT loader and catches, so a narrow
+ * failure of that one query reports `module_enabled: null` beside a
+ * `module_flags_unreadable` blocker — an answer an operator can tell apart from a
+ * club that genuinely switched diagnostics off. It is deliberately NOT an
+ * `evidence_unavailable`: this entry has to keep answering in exactly the case where
+ * the application database is the fault, which is the whole reason it is
+ * `server_owned` and carries the `readiness-module-flags-fault-tolerant` exemption.
  */
 export async function readDiagnosticsReadinessEvidence(): Promise<
   readonly DiagnosticsToolRawRow[]
 > {
-  const flags = await loadEffectiveModuleFlags();
   const readiness = await getDiagnosticsReadiness({
-    aiDiagnostics: flags.aiDiagnostics,
+    aiDiagnostics: await readDiagnosticsModuleFlag(),
   });
 
   return [
     {
       readiness_state: readiness.ready ? "ready" : "not_ready",
+      // `null` when the flags could not be read — NEVER coerced to a boolean here.
+      // `blocker_codes` carries `module_flags_unreadable` beside it.
       module_enabled: readiness.moduleEnabled,
       credential_state: readiness.keyState,
       monthly_budget_cents: readiness.monthlyBudgetCents,
