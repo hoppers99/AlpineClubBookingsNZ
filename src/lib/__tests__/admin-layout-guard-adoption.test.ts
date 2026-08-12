@@ -1,12 +1,19 @@
 /**
  * EVERY ADMIN-SIDE LAYOUT GOES THROUGH THE ONE GUARD (AID-7, #2378).
  *
- * `admin-layout-guard.ts` exists because #2378 adds a second admin-side layout — the
- * Diagnostics workspace, which by owner decision Q4 does not inherit the admin
- * sidebar. Extracting the preamble is only half the job. The half that lasts is this
- * census: without it, the next person to add an admin layout writes the sequence
- * again from memory, and the copy that omits the two-factor gate looks exactly like
- * the copy that does not.
+ * `admin-layout-guard.ts` was extracted because #2378 was originally going to add a
+ * second admin-side layout: owner decision Q4 gave Diagnostics its own workspace
+ * without the admin sidebar. **The owner superseded Q4 on 12 Aug 2026** — Diagnostics
+ * is asked from the Help bubble and its page lives under `/admin/*` like every other
+ * admin screen — so that second layout was built and then removed, and `(admin)` is
+ * once again the only group here.
+ *
+ * THE EXTRACTION AND THIS CENSUS BOTH SURVIVED THAT REVERSAL, and it is worth saying
+ * why rather than leaving a test whose stated reason no longer exists. The page now
+ * INHERITS the one guard instead of carrying a second copy of it, which is the same
+ * property this file protects from the other side: without the census, the next person
+ * to add an admin layout writes the sequence again from memory, and the copy that
+ * omits the two-factor gate looks exactly like the copy that does not.
  *
  * IT IS A SOURCE CENSUS BECAUSE THE UNIT TESTS CANNOT BE ONE. A layout that re-reads
  * the session itself and forgets `member.active` renders perfectly well; nothing
