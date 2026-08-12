@@ -346,6 +346,10 @@ const referenceSearch = defineDiagnosticsTool<ReferenceSearchArgs>({
   // routinely type their own name into it. That makes this projection capable of
   // identifying a person, so ADR-004's per-invocation opt-in applies.
   surfacesPersonalData: true,
+  // A SEARCH: it is the entry that turns a payment reference, a Stripe id or an
+  // internet-banking reference into the exact payment id every other finance tool
+  // needs. See `operatorOnly` in `define.ts` for the gate.
+  operatorOnly: true,
 });
 
 const amountSearchArgsSchema = z
@@ -391,6 +395,8 @@ const amountSearch = defineDiagnosticsTool<AmountSearchArgs>({
   rowLimit: FINANCE_SEARCH_ROW_LIMIT,
   byteLimit: FINANCE_BYTE_LIMIT,
   surfacesPersonalData: true,
+  // A SEARCH by AMOUNT — a bounded list of payments and the people behind them.
+  operatorOnly: true,
 });
 
 /** The AID-6C search half, in presentation order. */

@@ -214,6 +214,89 @@ family, and that privacy boundary is not the lockout policy's to relax.
 every regime, so a member was quoted the non-member price with an explanation and then
 refused on save with the pre-#2543 403: an edit that could never complete.
 
+### INV-LOCKOUT-069
+
+**The PAYMENT path carries no subscription gate, and that is the design, not a
+gap (#2779, owner decision 11 Aug 2026).** Nothing under
+`src/app/api/payments/` or `src/app/api/webhooks/`, **and nothing in the modules
+those routes delegate settlement to**, may consult
+`resolveSubscriptionLockoutMode` or
+`requiresPaidSubscriptionForMemberForBooking` to refuse the booking's OWNER.
+The settlement modules are named because the routes are thin: the Stripe webhook
+route is signature verification that hands off to `stripe-webhook-service.ts`,
+and the pay route hands its PAID claim to `payment-reconciliation.ts` /
+`booking-credit-election.ts`. A gate one layer down strands the same member as a
+gate in the route, so the census covers `stripe-webhook-service.ts`,
+`payment-reconciliation.ts`, `booking-credit-election.ts`,
+`booking-payment-flow.ts`, `payment-transactions.ts` and `payment-link.ts` by
+name. It does NOT cover the transitive import closure of those routes, which
+reaches pricing and booking-policy modules where the gate legitimately belongs.
+Together with the `!isAuthorizedOnBehalf` term on the create gate
+(`INV-LOCKOUT-003`), that is what makes one journey possible: an admin books on
+behalf of a member whose subscription is unpaid, and the member — still locked
+out — signs in, opens the booking and pays for it. Closing this "hole" would
+close that journey, and would also mean refusing a member who is trying to give
+the club money over a different debt entirely.
+
+Two consequences follow and are load-bearing:
+
+- **`confirm-draft`'s subscription refusal only ever bites a ZERO-price draft.**
+  The route returns 400 "Use the payment flow to complete non-zero bookings"
+  before it reaches the gate, so a priced draft is confirmed by paying for it,
+  never by that route. The refusal is therefore narrower than it looks, and
+  reading it as the general rule is what made this look like an enforcement gap
+  in the first place.
+- **`HARD_BLOCK` is not weakened anywhere.** The same member's own
+  `POST /api/bookings` is still refused 403 `SUBSCRIPTION_REQUIRED`, and their
+  own zero-price `confirm-draft` is still refused 403. Only what an admin
+  already created for them is payable.
+
+Enforced structurally by `src/lib/__tests__/subscription-lockout-call-sites.test.ts`,
+which fails if any non-test file under those two trees — or any of the named
+settlement modules — starts naming a lockout identifier, and names this ID in the
+failure message. The same census asserts each named module still exists, so a
+rename cannot quietly empty it.
+
+### INV-LOCKOUT-070
+
+**The pick-up-and-pay journey has exactly two edges that are NOT payment gates,
+and both must be stated wherever the journey is offered (#2779).**
+
+- **72 hours.** `createDraftBooking` sets `draftExpiresAt` to 72 hours out, and
+  the nightly `draft-cleanup` job DELETES an expired DRAFT outright rather than
+  cancelling it — so a member who takes a week finds no booking at all, not a
+  lapsed one. The admin booking page states the window where the officer chooses
+  "Save as Draft"; the member sees the deadline on the dashboard card and on the
+  booking page that takes the money.
+- **A $0 on-behalf draft has no pick-up-and-pay step, so the ADMIN confirms it.**
+  There is nothing to pay: the booking page gates the payment card on
+  `finalPriceCents > 0`, so the member is offered `ConfirmDraftButton` instead,
+  and `confirm-draft` refuses a locked-out non-admin. The admin confirms that one
+  — either straight from the admin booking page instead of saving it, or with the
+  confirm control on the booking, which takes the route's `isAdmin` bypass.
+
+  **This is the absence of a CONTROL, not the presence of a gate, and the
+  distinction is load-bearing.** `POST /api/payments/create-payment-intent`
+  admits a `DRAFT` with no price check, and its transaction decides the zero case
+  inside itself: `settledEffectivePriceCents <= 0` calls
+  `settleFullyCreditCoveredBooking`, which claims `PAYMENT_PENDING -> PAID`
+  (`src/lib/booking-credit-election.ts`). So a member who calls that route
+  directly with their own booking id — no UI offers it — does settle a $0 draft,
+  locked out or not. That follows from `INV-LOCKOUT-069`, which forbids a
+  subscription gate anywhere on that route, and it is ACCEPTED rather than
+  absent: no money moves, and the same owner decision that keeps the priced door
+  open keeps this one open. Do not "close" it by adding a gate — that would
+  violate `INV-LOCKOUT-069`. Anyone who wants it closed needs a new owner
+  decision, because the owner's stated rationale (refusing a member trying to give
+  the club money) does not by itself reach a branch where no money changes hands.
+  That question is filed as #2792 and is open; until it is answered, the branch
+  stays as it is.
+
+The member-facing surfaces are copy only: no gate, price, capacity or settlement
+behaviour is decided here. Where they say a free booking is confirmed by the club,
+they are describing the controls the member is offered, which is what a member can
+act on — not asserting that the pay route would refuse one.
+
 ### INV-LOCKOUT-014
 
 **The paid-up-adult requirement is evaluated on REMOVALS too, not only on additive

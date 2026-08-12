@@ -311,6 +311,13 @@ const dashboardHelp: HelpPageContent = {
       q: "I have just joined — what can I do here?",
       a: "Once your application is approved and you have set your password, you land here after signing in. From the dashboard you can make your first booking, complete your profile, and check your subscription status.",
     },
+    {
+      // #2779. The dashboard draft card is where a member first meets a booking
+      // the club made for them, and it is the only door left open to a member
+      // whose unpaid subscription blocks them from booking.
+      q: "There is a draft booking here that I did not make — what is it?",
+      a: "The club can make a booking on your behalf and leave the payment to you. It shows in Draft Bookings labelled 'Saved for you by the club' with a Review & pay button — open it, check the details, and pay; paying confirms it. This works even while an unpaid subscription is stopping you starting a booking of your own. Unpaid drafts are removed 72 hours after they are saved, so do not leave it. If the booking comes to $0 there is nothing to pay and the club confirms that one for you.",
+    },
   ],
 };
 

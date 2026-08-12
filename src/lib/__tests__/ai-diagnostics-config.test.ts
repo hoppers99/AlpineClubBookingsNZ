@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const mocks = vi.hoisted(() => ({
   credFindUnique: vi.fn(),
   settingsFindUnique: vi.fn(),
+  moduleSettingsFindUnique: vi.fn(),
   getIntegrationCredentialValue: vi.fn(),
   providerNeedsReentry: vi.fn(),
   checkDiagnosticsDatabaseReadiness: vi.fn(),
@@ -16,10 +17,16 @@ vi.mock("@/lib/diagnostics/tools/database", () => ({
   checkDiagnosticsDatabaseReadiness: mocks.checkDiagnosticsDatabaseReadiness,
 }));
 
+// The module-flags read is DELIBERATELY not mocked at the loader level (#2803): the
+// point of the fix is which loader readiness calls and where the catch sits, and a
+// doubled loader would prove neither. `clubModuleSettings` is the real query
+// `loadEffectiveModuleFlagsStrict` issues, so failing only THIS one is a genuinely
+// narrow failure — every other read below still succeeds.
 vi.mock("@/lib/prisma", () => ({
   prisma: {
     integrationCredential: { findUnique: mocks.credFindUnique },
     diagnosticsSettings: { findUnique: mocks.settingsFindUnique },
+    clubModuleSettings: { findUnique: mocks.moduleSettingsFindUnique },
   },
 }));
 
@@ -33,13 +40,19 @@ import {
   DIAGNOSTICS_PROVIDER,
   getDiagnosticsReadiness,
   getOperationalDiagnosticsApiKey,
+  readDiagnosticsModuleFlag,
 } from "@/lib/ai-diagnostics-config";
+import {
+  DIAGNOSTICS_BLOCKER_CODES,
+  DIAGNOSTICS_BLOCKER_DESCRIPTIONS,
+} from "@/lib/ai-diagnostics-blockers";
 import { ANTHROPIC_PROVIDER } from "@/lib/ai-assistant-config";
 
 beforeEach(() => {
   vi.clearAllMocks();
   mocks.credFindUnique.mockResolvedValue({ updatedAt: new Date("2026-08-02T00:00:00Z") });
   mocks.settingsFindUnique.mockResolvedValue({ monthlyBudgetCents: 1000 });
+  mocks.moduleSettingsFindUnique.mockResolvedValue({ aiDiagnostics: true });
   mocks.getIntegrationCredentialValue.mockResolvedValue("sk-ant-diag-xxx");
   mocks.providerNeedsReentry.mockResolvedValue(false);
   mocks.checkDiagnosticsDatabaseReadiness.mockResolvedValue({
@@ -167,6 +180,82 @@ describe("getDiagnosticsReadiness — fail-closed gate", () => {
     expect(r.blockers).not.toContain("database_role_unsafe");
   });
 
+  it("reports UNKNOWN, not off, when the module flags cannot be read (#2803)", async () => {
+    // THE NARROW FAILURE, and it is narrow on purpose: only the module-settings
+    // query fails. P2022 is the realistic trigger — a blue/green window where the
+    // deployed client selects a ClubModuleSettings column the migration has not
+    // added yet — and every other read below still succeeds, so nothing else on the
+    // row marks a fault. Before #2803 this produced module_enabled:false +
+    // module_off, and an operator was sent to switch on a module already on.
+    mocks.moduleSettingsFindUnique.mockRejectedValue(
+      new Error("P2022 column ClubModuleSettings.aiDiagnostics does not exist"),
+    );
+
+    const r = await getDiagnosticsReadiness({
+      aiDiagnostics: await readDiagnosticsModuleFlag(),
+    });
+
+    expect(r.ready).toBe(false);
+    expect(r.moduleEnabled).toBeNull();
+    expect(r.blockers).toContain("module_flags_unreadable");
+    // The distinction IS the fix: claiming the club switched it off is the defect.
+    expect(r.blockers).not.toContain("module_off");
+    // And the failure is narrow rather than an outage — everything else answered,
+    // which is exactly the case the old row could not be told apart from.
+    expect(r.keyState).toBe("saved");
+    expect(r.databaseState).toBe("verified");
+    expect(r.monthlyBudgetCents).toBe(1000);
+    expect(r.blockers).not.toContain("resolve_error");
+  });
+
+  it("still reports module_off, and NOTHING else, for a genuinely disabled module", async () => {
+    mocks.moduleSettingsFindUnique.mockResolvedValue({ aiDiagnostics: false });
+
+    const r = await getDiagnosticsReadiness({
+      aiDiagnostics: await readDiagnosticsModuleFlag(),
+    });
+
+    expect(r.ready).toBe(false);
+    expect(r.moduleEnabled).toBe(false);
+    // Exactly one blocker: a real setting is a real setting, and the unreadable
+    // code must never be raised beside it.
+    expect(r.blockers).toEqual(["module_off"]);
+  });
+
+  it("reads the flag through the STRICT loader and reports its real answer", async () => {
+    mocks.moduleSettingsFindUnique.mockResolvedValue({ aiDiagnostics: true });
+    expect(await readDiagnosticsModuleFlag()).toBe(true);
+
+    // A club that never saved the Modules panel has no row at all. That is an
+    // OBSERVATION with a documented default, not a failure, so it is `false` and
+    // not `null` — the strict loader normalises it rather than throwing.
+    mocks.moduleSettingsFindUnique.mockResolvedValue(null);
+    expect(await readDiagnosticsModuleFlag()).toBe(false);
+
+    mocks.moduleSettingsFindUnique.mockRejectedValue(new Error("timeout"));
+    expect(await readDiagnosticsModuleFlag()).toBeNull();
+  });
+
+  it("STAYS ANSWERABLE when the application database is unreachable", async () => {
+    // The constraint the fault-tolerance exists for, and the one #2803 must not
+    // break: every read fails, and readiness still RETURNS a verdict rather than
+    // throwing or refusing. Unknown module state, resolve_error, no exception.
+    const outage = new Error("could not connect to server");
+    mocks.moduleSettingsFindUnique.mockRejectedValue(outage);
+    mocks.credFindUnique.mockRejectedValue(outage);
+    mocks.settingsFindUnique.mockRejectedValue(outage);
+    mocks.checkDiagnosticsDatabaseReadiness.mockRejectedValue(outage);
+
+    const r = await getDiagnosticsReadiness({
+      aiDiagnostics: await readDiagnosticsModuleFlag(),
+    });
+
+    expect(r.ready).toBe(false);
+    expect(r.moduleEnabled).toBeNull();
+    expect(r.blockers).toEqual(["resolve_error"]);
+    expect(r.databaseState).toBe("unverified");
+  });
+
   it("never reports a role name on the readiness response (metadata only)", async () => {
     // The role name is deployment configuration, but a readiness response is JSON
     // an admin browser receives — nothing about the credential belongs in it
@@ -174,5 +263,62 @@ describe("getDiagnosticsReadiness — fail-closed gate", () => {
     const r = await getDiagnosticsReadiness({ aiDiagnostics: true });
     expect(JSON.stringify(r)).not.toContain("ai_diagnostics_ro");
     expect(Object.keys(r)).not.toContain("roleName");
+  });
+});
+
+describe("the readiness blocker catalogue is closed and complete (#2803)", () => {
+  it("gives every code a real sentence, and no duplicates", () => {
+    expect(new Set(DIAGNOSTICS_BLOCKER_CODES).size).toBe(
+      DIAGNOSTICS_BLOCKER_CODES.length,
+    );
+    for (const code of DIAGNOSTICS_BLOCKER_CODES) {
+      const description = DIAGNOSTICS_BLOCKER_DESCRIPTIONS[code];
+      // A code with no sentence is a token the model paraphrases, and the
+      // paraphrase is where a wrong operator instruction comes from.
+      expect(description?.trim().length, code).toBeGreaterThan(40);
+      expect(description, code).not.toContain(code);
+    }
+    // `none` is the ABSENCE of a blocker and must never be a code, or a caller can
+    // treat the healthy case as a finding.
+    expect(DIAGNOSTICS_BLOCKER_CODES).not.toContain("none");
+  });
+
+  it("says in as many words that unreadable is not off", () => {
+    // The one sentence this whole change exists for. If it ever softens, the model
+    // is free to render the unknown state as "the module is off" again.
+    const unreadable = DIAGNOSTICS_BLOCKER_DESCRIPTIONS.module_flags_unreadable;
+    expect(unreadable).toMatch(/not evidence that the module is off/i);
+    expect(unreadable).toMatch(/unknown/i);
+    expect(DIAGNOSTICS_BLOCKER_DESCRIPTIONS.module_off).toMatch(
+      /switched OFF/i,
+    );
+  });
+
+  it("emits blockers in declared catalogue order", async () => {
+    // Several can be true at once, and the first is reported as the primary
+    // problem — so the emission order has to BE the declared priority order.
+    mocks.moduleSettingsFindUnique.mockResolvedValue({ aiDiagnostics: false });
+    mocks.credFindUnique.mockResolvedValue(null);
+    mocks.settingsFindUnique.mockResolvedValue({ monthlyBudgetCents: 0 });
+    mocks.checkDiagnosticsDatabaseReadiness.mockResolvedValue({
+      state: "not_configured",
+      roleName: null,
+    });
+
+    const r = await getDiagnosticsReadiness({
+      aiDiagnostics: await readDiagnosticsModuleFlag(),
+    });
+
+    expect(r.blockers).toEqual([
+      "module_off",
+      "credential_not_configured",
+      "budget_not_set",
+      "database_not_configured",
+    ]);
+    const declared = r.blockers.map((code) =>
+      DIAGNOSTICS_BLOCKER_CODES.indexOf(code),
+    );
+    expect(declared).toEqual([...declared].sort((a, b) => a - b));
+    expect(declared).not.toContain(-1);
   });
 });

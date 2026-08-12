@@ -10,6 +10,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { splitSqlStatements } from "../../../prisma/migration-verification/split-statements";
+import { MIGRATION_GATE_TREE_TIMEOUT_MS } from "./helpers/migration-gate-timeouts";
 
 /**
  * #2418 — the coverage gate that makes a verification fixture non-optional.
@@ -33,7 +34,11 @@ const REPO_ROOT = process.cwd();
  * Spawning bash costs ~10s per call on Windows (process creation, not work), so
  * the default 5s test timeout trips on a developer machine while CI finishes in
  * milliseconds. Generous on purpose: a slow gate is not the failure being
- * tested.
+ * tested. The full measurements behind this whole family of budgets live in
+ * ./helpers/migration-gate-timeouts (#2806); this one covers the FIXTURE tests
+ * below, which measure 7.5 s at worst. The one that runs the gate over the
+ * whole committed migration tree is an order of magnitude bigger and uses
+ * MIGRATION_GATE_TREE_TIMEOUT_MS instead.
  */
 const GATE_TIMEOUT_MS = 120_000;
 
@@ -372,7 +377,10 @@ describe("data-migration verification coverage gate (#2418)", () => {
       encoding: "utf8",
     });
     expect(result.status, result.stderr).toBe(0);
-  }, GATE_TIMEOUT_MS);
+    // #2806: this one runs the gate over the WHOLE committed migration tree —
+    // 43.5 s on a Windows developer machine, and it blew past 120 s when other
+    // shell-out suites ran alongside it.
+  }, MIGRATION_GATE_TREE_TIMEOUT_MS);
 });
 
 describe("the two statement splitters agree (#2418)", () => {

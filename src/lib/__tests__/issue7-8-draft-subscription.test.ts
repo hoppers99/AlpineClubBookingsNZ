@@ -929,6 +929,143 @@ describe("Issue 10: Subscription check on booking creation", () => {
   });
 });
 
+// ─── #2779: locked-out member picks up and pays an on-behalf booking ─────────
+
+/**
+ * The journey the owner ruled is the POINT of the asymmetry this file's two
+ * halves describe (owner decision, 11 Aug 2026, issue #2779):
+ *
+ *   an admin books on behalf of a member whose subscription is unpaid
+ *     -> the member, STILL locked out, signs in
+ *     -> opens the draft the club saved for them
+ *     -> pays for it, and the booking is confirmed.
+ *
+ * Both halves are already tested above in isolation — the on-behalf create
+ * bypass (Issue 10) and the DRAFT -> PAYMENT_PENDING pay path (Issue 7) — and
+ * neither one shows the journey. What is asserted here is the COMPOSITION, plus
+ * the thing that makes it a journey rather than a hole: the very same member,
+ * in the very same club configuration, is still refused when they try to book
+ * for themselves. `HARD_BLOCK` is not weakened; it simply never applied to
+ * paying for a booking somebody else made (INV-LOCKOUT-069).
+ */
+describe("#2779: a subscription-locked member pays an on-behalf booking (INV-LOCKOUT-069)", () => {
+  beforeEach(async () => {
+    const stripe = await import("@/lib/stripe");
+    (stripe.createPaymentIntent as ReturnType<typeof vi.fn>).mockResolvedValue({
+      id: "pi_pickup",
+      client_secret: "secret_pickup",
+    });
+    (stripe.findOrCreateCustomer as ReturnType<typeof vi.fn>).mockResolvedValue({
+      id: "cus_pickup",
+    });
+    // The club is in the platform-default HARD_BLOCK regime with Xero on (the
+    // beforeEach flags), and this member has NO paid subscription for the
+    // season. That is the whole premise: if either of those moved, the journey
+    // below would prove nothing.
+    mockPrisma.memberSubscription.findFirst.mockResolvedValue(null);
+  });
+
+  it("an admin can save the draft, and the locked-out member can pay for it", async () => {
+    // 1. THE ADMIN CREATES IT. `!isAuthorizedOnBehalf` on the create gate is
+    //    what lets this through for a member the same route would refuse.
+    mockAuth.mockResolvedValue(adminSession());
+    mockPrisma.member.findUnique.mockResolvedValue({ active: true });
+    mockTx.booking.create.mockResolvedValue({
+      id: "on-behalf-draft",
+      status: "DRAFT",
+      finalPriceCents: 24000,
+      nonMemberHoldUntil: null,
+      draftExpiresAt: new Date(Date.now() + 72 * 60 * 60 * 1000),
+      guests: [{ id: "g1" }],
+    });
+
+    const created = await createBooking(
+      makeBookingBody({ forMemberId: "member-1", draft: true }),
+    );
+    expect(created.status).toBe(201);
+
+    // 2. THE MEMBER PAYS FOR IT. Same member, same unpaid subscription, same
+    //    HARD_BLOCK club — and the payment route admits them, because it holds
+    //    no subscription gate at all.
+    mockAuth.mockResolvedValue(memberSession());
+    const draftBooking = {
+      id: "on-behalf-draft",
+      memberId: "member-1",
+      status: "DRAFT",
+      finalPriceCents: 24000,
+      hasNonMembers: false,
+      requiresAdminReview: false,
+      adminReviewReason: null,
+      checkIn: new Date("2026-12-01"),
+      checkOut: new Date("2026-12-03"),
+      member: {
+        id: "member-1",
+        email: "locked.out@example.com",
+        firstName: "Locked",
+        lastName: "Out",
+      },
+      payment: null,
+    };
+    mockPrisma.booking.findUnique.mockResolvedValue(draftBooking);
+    mockPrisma.payment.upsert.mockResolvedValue({ id: "payment-pickup" });
+    mockPrisma.$transaction.mockImplementation(
+      async (fn: (tx: typeof mockTx) => Promise<unknown>) => {
+        mockTx.booking.findUnique.mockResolvedValue({
+          ...draftBooking,
+          guests: [
+            {
+              id: "g1",
+              stayStart: new Date("2026-12-01"),
+              stayEnd: new Date("2026-12-03"),
+            },
+          ],
+        });
+        mockTx.booking.update.mockResolvedValue({});
+        mockTx.booking.updateMany.mockResolvedValue({ count: 1 });
+        return fn(mockTx as unknown as typeof mockTx);
+      },
+    );
+
+    const paid = await createPaymentIntent(
+      new NextRequest("http://localhost/api/payments/create-payment-intent", {
+        method: "POST",
+        body: JSON.stringify({ bookingId: "on-behalf-draft" }),
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+
+    expect(paid.status).toBe(200);
+    expect((await paid.json()).clientSecret).toBe("secret_pickup");
+    expect(mockTx.booking.updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          id: "on-behalf-draft",
+          status: "DRAFT",
+        }),
+        data: expect.objectContaining({ status: "PAYMENT_PENDING" }),
+      }),
+    );
+
+    // Neither step ever asked whether the subscription was paid: the admin
+    // create skips the gate, and the payment route has no gate to skip.
+    expect(mockPrisma.memberSubscription.findFirst).not.toHaveBeenCalled();
+  });
+
+  it("but that same member still cannot start a booking of their own", async () => {
+    // The control. Without this the test above would be just as green if the
+    // HARD_BLOCK gate had been deleted, which is the opposite of what #2779
+    // decided.
+    mockAuth.mockResolvedValue(memberSession());
+
+    const res = await createBooking(makeBookingBody());
+
+    expect(res.status).toBe(403);
+    const data = await res.json();
+    expect(data.code).toBe("SUBSCRIPTION_REQUIRED");
+    expect(mockPrisma.memberSubscription.findFirst).toHaveBeenCalled();
+  });
+});
+
 // ─── Issue 7: Draft expiry cleanup logic ─────────────────────────────────────
 
 describe("Issue 7: Draft expiry cleanup logic", () => {

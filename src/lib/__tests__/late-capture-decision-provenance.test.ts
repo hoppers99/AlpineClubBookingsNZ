@@ -153,11 +153,27 @@ const PROVENANCE_SEARCH_SKIPPED_DIRECTORIES = new Set([
  * sentence is the obvious way round a date-only guard.
  */
 const SETTLED_DECISION_CLAIMS = [
-  // The date the fabricated clause carried. No owner decision bears it, so it has no
-  // legitimate use in these files at all — not even inside a warning about itself,
-  // which is why the authority line describes the incident rather than quoting it.
-  /11\s+Aug\s+2026/i,
-  /owner\s+decisions?\s+(?:10\s+and\s+)?11\b/i,
+  // THE BARE DATE PATTERN WAS REMOVED, and the reason matters more than the
+  // pattern did. It asserted that `11 Aug 2026` "has no legitimate use in these
+  // files at all" because no owner decision bore it. That was true when written
+  // and expired the same day: the owner really did decide #2779 on 11 Aug 2026,
+  // and END_TO_END_TEST_MATRIX.md cites it correctly. The guard then blocked that
+  // PR for telling the truth.
+  //
+  // A guard whose premise is a fact about the calendar rots the moment the
+  // calendar moves. What is actually forbidden is claiming an owner decision for
+  // #2773/#2774 — so the date is only suspicious NEXT TO those issue numbers,
+  // which the two scoped patterns below cover. Re-dating is still caught by the
+  // claim-shaped patterns further down, which carry no date at all.
+  // SCOPED TO THESE TWO ISSUES. This was date-only, so it flagged every
+  // legitimate `owner decision 11 Aug 2026` in any scanned file — and 11 Aug is
+  // the day the owner is actually deciding things, so it fired on #2779's REAL
+  // citation in END_TO_END_TEST_MATRIX.md and blocked that PR. A guard that
+  // cries wolf on true citations gets exempted, and then it is worth nothing.
+  // Re-dating is still caught: the claim-shaped patterns below carry no date.
+  // `[^.|]` so a match cannot span a Markdown table cell or a sentence end.
+  /#277[34][^.|]{0,80}owner\s+decisions?\s+(?:10\s+and\s+)?11/i,
+  /owner\s+decisions?\s+(?:10\s+and\s+)?11[^.|]{0,80}#277[34]/i,
   // The claims, independent of any date, because re-dating the same sentence is the
   // obvious way round a date-only guard. Each of these is a sentence this branch
   // actually shipped.

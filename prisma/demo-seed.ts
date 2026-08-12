@@ -50,6 +50,7 @@ import {
   ADDITIONAL_OWED_AMOUNT_CENTS,
   ADDITIONAL_OWED_BOOKING_ID,
   ADDITIONAL_OWED_WINDOW,
+  LOCKED_OUT_MEMBER,
   PAID_CANCEL_BOOKING_ID,
   PAID_CANCEL_WINDOW,
   ROLE_PERSONAS,
@@ -869,8 +870,15 @@ async function main() {
     last: string,
     dobIso: string,
     phoneNumber: string,
+    // #2779 — the same complete, self-confirmed profile with an UNPAID
+    // subscription, for the member the subscription-lockout journey needs. The
+    // profile is what stops the onboarding modal blocking their pages; only the
+    // subscription row differs, so the two personas cannot drift apart.
+    options: { subscriptionStatus?: "PAID" | "UNPAID"; xeroContactId?: string } = {},
   ) => {
+    const subscriptionStatus = options.subscriptionStatus ?? "PAID";
     const member = await makeMember(local, first, last, {
+      ...(options.xeroContactId ? { xeroContactId: options.xeroContactId } : {}),
       dateOfBirth: d(dobIso),
       phoneCountryCode: "64",
       phoneAreaCode: "21",
@@ -894,7 +902,14 @@ async function main() {
       data: { detailsConfirmedByMemberId: member.id },
     });
     await prisma.memberSubscription.create({
-      data: { memberId: member.id, seasonYear: SEASON_YEAR, status: "PAID", paidAt: d("2026-01-20") },
+      data: {
+        memberId: member.id,
+        seasonYear: SEASON_YEAR,
+        status: subscriptionStatus,
+        paidAt: subscriptionStatus === "PAID" ? d("2026-01-20") : null,
+        xeroInvoiceNumber:
+          subscriptionStatus === "UNPAID" ? "INV-SUB-LOCKED-2026" : null,
+      },
     });
     return member;
   };
@@ -907,6 +922,19 @@ async function main() {
     WAITLISTER.lastName,
     "1988-06-06",
     "5552002",
+  );
+
+  // #2779 — the subscription-locked member. Complete profile, Xero-linked, and
+  // deliberately UNPAID for the season, so the club's default HARD_BLOCK mode
+  // refuses them their own booking while an admin can still book on their
+  // behalf and they can still pay for what the admin saved.
+  await seedConfirmedPaidMember(
+    LOCKED_OUT_MEMBER.email.split("@")[0],
+    LOCKED_OUT_MEMBER.firstName,
+    LOCKED_OUT_MEMBER.lastName,
+    "1983-02-14",
+    "5552007",
+    { subscriptionStatus: "UNPAID", xeroContactId: "e2e-xero-contact-lockedout" },
   );
 
   // Second paid-up nominator (nomination #2), also complete-profile so its

@@ -95,7 +95,7 @@ tool that spans two domains rather than a judgement call:
 
 **An argument can never decide which permission set applies.** `requiredAreas` is
 fixed on the registry entry, and `invoke.ts` authorises **before** it parses
-arguments (see [tools.md](tools.md), "The ten gates, in order"). So a single
+arguments (see [tools.md](tools.md), "The twelve gates, in order"). So a single
 `record_search` taking `subject: "booking" | "member"`, or a single
 `member_detail` taking `include: "bookings" | "family"`, would have had exactly
 two options and both are wrong:
@@ -220,8 +220,12 @@ The earlier reasoning was that a reference and a lodge night are "server-side fa
 an audit reader already sees on the row they are auditing". They are not:
 `auditMetadata` in `tools/audit.ts` builds the durable object field by field and it
 carries exactly `toolId`, `areasChecked`, `authOutcome`, `failureReason`,
-`argsHash`, `resultHash`, `rowCount`, `byteCount`, `durationMs`, `roundIndex` and
-`observedAt`. Recovering the term therefore yields what the row withholds, to a
+`argsHash`, `resultHash`, `rowCount`, `byteCount`, `durationMs`, `roundIndex`,
+`observedAt` and — since AID-7a (#2785) — `invocationChannel`,
+`sensitiveInclusion`, `consentRecordKind`, `consentRecordOrigin`,
+`recordConsentTick` and `peopleSearchTick`. Seventeen fields, every one a closed
+enum, a count, a non-reversible hash or an instant; no argument value and no record
+id. Recovering the term therefore yields what the row withholds, to a
 `support:view`-only audit reader who does **not** hold `bookings:view`. The
 recovered value is a booking or a lodge and a night rather than a person, which is
 why this was a reversibility defect against ADR-004 §4 rather than a privacy
@@ -386,7 +390,7 @@ built from those. There is no data-write statement, advisory lock or HTTP reques
 
 #### Every server-owned answer is bounded at the database
 
-The entry-level ten-second deadline is a `Promise.race`. It stops this process
+The entry-level deadline is a `Promise.race`. It stops this process
 **waiting** and cancels nothing: no part of Prisma propagates a cancellation into an
 in-flight statement. So before this was fixed, a slow hosting sibling fan-out, member
 night-conflict scan or capacity read carried on running against the database after
@@ -396,7 +400,11 @@ bed-allocation sub-read had a real boundary.
 
 All three `server_owned` entries now run their whole read graph inside **one**
 `REPEATABLE READ` interactive transaction that begins with two fixed control
-statements — the only `$executeRaw` calls in the pack:
+statements. Since #2786 those live in the shared seam
+(`src/lib/diagnostics/tools/read-only-transaction.ts`) rather than in this pack, and
+the pack census asserts this pack contains **no** `$executeRaw` and opens **no**
+transaction of its own — "exactly these two are fine here" is no longer a doorway a
+later edit can widen:
 
 ```
 SET TRANSACTION READ ONLY
@@ -407,10 +415,13 @@ SELECT pg_catalog.set_config('statement_timeout', $1, true)
   waiting, and it sits below the JS deadline so the database refuses first and the
   operator gets a specific `57014 query_canceled` message rather than a race. It
   arrives as a **bound parameter**: `SET LOCAL` takes no placeholders, so the value
-  would have had to be built into the SQL, and one constant
-  (`AID6B_DATABASE_STATEMENT_TIMEOUT_MS`) now yields the statement's value, the
-  transaction ceiling and the assertions, in the order
-  statement < transaction < JS deadline.
+  would have had to be built into the SQL. Since #2786 the one constant every
+  diagnostics database path derives from is `DIAGNOSTICS_TOOL_BOUNDS.statementTimeoutMs`
+  — it yields the statement's value, the transaction ceiling and the assertions, in
+  the order statement < transaction < JS deadline. The pack-local
+  `AID6B_DATABASE_STATEMENT_TIMEOUT_MS` was a second name for the same bound and is
+  gone; `AID6B_EVIDENCE_DEADLINE_MS` remains, because that one is the JavaScript
+  deadline rather than a database bound.
 - **`READ ONLY` is the database refusing a write**, in a transaction on the
   application's own full-privilege connection. These entries are `server_owned`, not
   `select_only_sql`, so the AID-5 role's grants are not the boundary here: this is
@@ -544,7 +555,7 @@ projected. The column is not in the SELECT allowlist either, so no SQL entry cou
 name it.
 
 The sources bound their own **work** as well as the executor's wait: each carries a
-10-second deadline below the executor's 15 seconds, and it **refuses** rather than
+own deadline below the executor's outer race, and it **refuses** rather than
 returning a partial row. A block state assembled from some of its inputs would be
 a fabricated answer, not an absent one — a row reporting "no policy violations"
 because the policy evaluation timed out is exactly the failure this pack is
@@ -1466,7 +1477,9 @@ only spend the byte ceiling. The three member-identifying columns, the free text
 the arbitrary metadata JSON and the network fields all stay ungranted, so these
 entries can say that an event of this kind occurred on this record at this instant
 with this outcome, and cannot say who did it, from where, or what they typed. They
-are the only two entries in the pack that declare `surfacesPersonalData: false`.
+are the only two entries in the pack that declare `surfacesPersonalData: false` —
+and both are still bound to the operator's investigation, because reading one named
+record's history is per-record evidence whether or not the row carries a name.
 
 ## Bounds
 
@@ -1488,7 +1501,7 @@ are the only two entries in the pack that declare `surfacesPersonalData: false`.
 | Person's name on the way out | 60 characters, clipping marked |
 | Room and bed label on the way out | 24 characters, clipping marked |
 | Rendered block | 8 000 characters — smaller than the byte ceilings, so three entries cannot list a **full** result inside it |
-| Server-owned read | 15 s deadline on the executor's **wait**; each source carries its own 10 s deadline on the **work**, and refuses rather than returning a partial row |
+| Server-owned read | The executor's outer race bounds the **wait**; each source carries its own deadline on the **work**, and refuses rather than returning a partial row. Both derive from the one ladder in `types.ts` (#2804) — see `tools.md` -> "The read-only seam" for the current values |
 | Per session | 16 tool calls, 4 per provider round |
 
 Both byte ceilings are **measured, not estimated**, and the measuring has to be
@@ -1579,19 +1592,56 @@ that it approved one, and a Booking Officer who believes an exception has been
 granted does not grant it — so the member's beds are released by the hold reaper
 instead.
 
-### `surfacesPersonalData` is declared and not yet enforced
+### `surfacesPersonalData` is declared AND enforced (since AID-7a, #2785)
 
 Fourteen of the sixteen entries set `surfacesPersonalData: true`, truthfully: a
 name, an email address, a member id or a booking reference plus a set of nights is
 per-person information.
 
-**Nothing in the shipped code implements ADR-004's per-invocation operator opt-in.**
-The flag **records** that a row can identify a person; it does not gate the entry.
-That gate is a prerequisite recorded on #2378, and until it lands the flag **must
-not be described or relied on as a control**. The controls that actually run are
-the fixed `requiredAreas` check re-read on every invocation, the exact-identifier
-argument shape, the registry projection, the column grant, the row and byte
-ceilings, and the audit row.
+This pack shipped with that flag recording a fact and gating nothing, and said so.
+AID-7a (#2785) closed it. Each entry now also declares what consent is **about**:
+
+- the fourteen per-record entries name the record they read —
+  `consentRecordKind: "booking"` with `consentRecordArgKey: "bookingId"`, or
+  `"member"` with `"memberId"` — and the executor refuses the invocation unless the
+  operator included that record in this investigation. For the twelve that surface
+  personal data the refusal is `sensitive_consent_required` and the operator's
+  personal-details tick is required as well; for the two audit-history entries,
+  which surface none, it is `record_not_included` and the record scope is the whole
+  of it;
+- `booking_search` and `member_search` are declared `operatorOnly` instead. They
+  return bounded LISTS of bookings and people, which is how a model would otherwise
+  choose a subject for itself, so they run as the operator's own record-picker
+  action or — per the owner's 11 Aug 2026 decision on #2378 — as a model tool call
+  on a request where the operator ticked people-search. Unticked, they refuse with
+  `operator_action_required`;
+- eight entries in this pack declare `relatedRecordRefs`, the projected fields an
+  investigation may follow (ten registry-wide, the other two being
+  `payment_summary` and `booking_finance_state` in the finance pack). Five are on
+  the booking half: `booking_block_state` and `booking_diagnostic_summary` expose
+  `ownerMemberRef` (and the latter `parentBookingRef`), `booking_party_state`
+  exposes `guestMemberRef`, `booking_linked_state` the linked `bookingRef`, and
+  `booking_exception_request_state` the `requestedByMemberRef`. Three are on the
+  membership half: `member_summary` exposes both parent refs, `member_family_state`
+  the `relatedMemberRef`, and `member_booking_summary` the member's `bookingRef`.
+  `guestRef` is a BookingGuest row and `familyGroupRef` a group, so neither is
+  declared: consent is expressed in bookings, members and payments only. An entry
+  may only declare related refs if it declares `surfacesPersonalData` — widening the
+  investigation is a consent decision, so the entry making it has to be one that was
+  reviewed as a consent surface — and `registry.test.ts` holds the population to this
+  exact list;
+- `member_record_audit_history` surfaces no personal data and is still bound to the
+  investigation, because reading ONE named record's history is per-record evidence
+  whatever the row carries. Its record KIND is its `subject` argument, so it declares
+  `consentRecordKindByArg`: `member` maps to the member kind, and `family_request`,
+  `partner_link` and `cancellation_request` map to an explicit `null` — records an
+  operator cannot select, which therefore refuse with `record_not_included` rather
+  than running for any id the model can name.
+
+The controls that ran before are unchanged and still run first: the fixed
+`requiredAreas` check re-read on every invocation, the exact-identifier argument
+shape, the registry projection, the column grant, the row and byte ceilings, and the
+audit row — which now also records whether consent was granted or refused.
 
 ## Operator troubleshooting
 
@@ -1618,8 +1668,10 @@ Incident response is unchanged from AID-6A: the audit trail for tool use is
 `sensitive_access` (24 months), recording the acting administrator, the tool id,
 the areas checked, the allow/deny outcome, the stable failure reason,
 non-reversible hashes of the accepted arguments and of the result, row and byte
-counts, duration, round index and the observed-at instant — and never the
-arguments, the results, the question or the answer.
+counts, duration, round index and the observed-at instant — and, since AID-7a (#2785), the invocation channel, the ADR-004 §1
+inclusion decision, the KIND and provenance of the consented record, and the
+people-search tick — and never the arguments, the results, the question or the
+answer.
 
 ## Adding to this pack
 

@@ -8,8 +8,15 @@ import {
 } from "fs";
 import { tmpdir } from "os";
 import path from "path";
-import { spawnSync } from "child_process";
+import { execFile, spawnSync } from "child_process";
 import { describe, expect, it } from "vitest";
+
+// #2806 — the shell-out budgets for this file, and the measurements behind the
+// numbers, live in one place next door.
+import {
+  MIGRATION_GATE_TIMEOUT_MS,
+  MIGRATION_GATE_TREE_TIMEOUT_MS,
+} from "./helpers/migration-gate-timeouts";
 
 function readRepoFile(relativePath: string) {
   // Test helper: reads a fixed repo file under process.cwd(); relativePath is test-controlled, not user input.
@@ -210,6 +217,25 @@ function toShellEnv(env: Record<string, string>) {
   );
 }
 
+const MIGRATION_SAFETY_VALIDATOR_SCRIPT =
+  "scripts/validate-blue-green-migrations.sh";
+
+function migrationSafetyValidatorEnv(
+  ledgerPath: string,
+  env: Record<string, string>
+) {
+  return {
+    ...process.env,
+    MIGRATION_SAFETY_LEDGER: toShellPath(ledgerPath),
+    // Fixtures that already opt into a reviewed window model the operator's
+    // separate stopped-runtime acknowledgement too. Tests for a missing
+    // acknowledgement override this explicitly with "0".
+    BLUE_GREEN_OLD_APP_AND_WORKERS_STOPPED:
+      env.ALLOW_BREAKING_BLUE_GREEN_MIGRATIONS === "1" ? "1" : "0",
+    ...toShellEnv(env),
+  };
+}
+
 function runMigrationSafetyValidator(
   migrationPath: string,
   ledgerPath: string,
@@ -217,22 +243,71 @@ function runMigrationSafetyValidator(
 ) {
   return spawnSync(
     "bash",
-    ["scripts/validate-blue-green-migrations.sh", toShellPath(migrationPath)],
+    [MIGRATION_SAFETY_VALIDATOR_SCRIPT, toShellPath(migrationPath)],
     {
       cwd: process.cwd(),
-      env: {
-        ...process.env,
-        MIGRATION_SAFETY_LEDGER: toShellPath(ledgerPath),
-        // Fixtures that already opt into a reviewed window model the operator's
-        // separate stopped-runtime acknowledgement too. Tests for a missing
-        // acknowledgement override this explicitly with "0".
-        BLUE_GREEN_OLD_APP_AND_WORKERS_STOPPED:
-          env.ALLOW_BREAKING_BLUE_GREEN_MIGRATIONS === "1" ? "1" : "0",
-        ...toShellEnv(env),
-      },
+      env: migrationSafetyValidatorEnv(ledgerPath, env),
       encoding: "utf8",
     }
   );
+}
+
+type MigrationSafetyValidatorResult = {
+  status: number;
+  stdout: string;
+  stderr: string;
+};
+
+// #2806 — the same run as `runMigrationSafetyValidator`, started rather than
+// waited on, so a test that needs SEVERAL independent validator runs can have
+// them in flight at once instead of paying for them end to end. The runs within
+// a test are independent — each only reads its own temp fixture and writes
+// nothing — so overlapping them is safe, and it is worth 3.3x on a Windows
+// developer machine. See ./helpers/migration-gate-timeouts for the measurements
+// and why nothing inside a run can be hoisted or memoised away.
+//
+// Nothing about what is asserted changes. Each run still gets its own exit
+// status and its own stderr, and every existing expectation is still made
+// against the same result it was made against before.
+//
+// Failing to START the process (bash missing, ENOENT) rejects instead of
+// resolving. That is deliberately stricter than `spawnSync`, which reports the
+// same case as `status: null` — a value that quietly satisfies the many
+// `expect(status).not.toBe(0)` assertions here, so a test could go green
+// without the gate ever having run.
+function startMigrationSafetyValidator(
+  migrationPath: string,
+  ledgerPath: string,
+  env: Record<string, string> = {}
+): Promise<MigrationSafetyValidatorResult> {
+  return new Promise((resolve, reject) => {
+    execFile(
+      "bash",
+      [MIGRATION_SAFETY_VALIDATOR_SCRIPT, toShellPath(migrationPath)],
+      {
+        cwd: process.cwd(),
+        env: migrationSafetyValidatorEnv(ledgerPath, env),
+        encoding: "utf8",
+        // Fixtures against the committed tree print every matching SQL line;
+        // stay well clear of the 1 MB default so a truncated pipe can never
+        // look like a clean run.
+        maxBuffer: 16 * 1024 * 1024,
+      },
+      (error, stdout, stderr) => {
+        if (!error) {
+          resolve({ status: 0, stdout, stderr });
+          return;
+        }
+        if (typeof error.code === "number") {
+          resolve({ status: error.code, stdout, stderr });
+          return;
+        }
+        // Killed by a signal, or never spawned at all: there is no exit status
+        // to assert against, so fail loudly rather than invent one.
+        reject(error);
+      }
+    );
+  });
 }
 
 const LEDGER_HEADER =
@@ -1439,82 +1514,96 @@ describe("review finding source/schema contracts", () => {
     expect(ledger).toContain("yes, no, or windowed");
   });
 
-  it("requires lock-impact documentation for hot-table migrations", () => {
-    const fixture = createTempMigration(
-      'ALTER TABLE "Payment" ADD COLUMN "processorReference" TEXT;\n',
-      "# migration_name\tphase\tprevious_expand_release\told_code_compatible\tlock_impact_plan\n"
-    );
-
-    try {
-      const result = runMigrationSafetyValidator(
-        fixture.migrationPath,
-        fixture.ledgerPath
+  it(
+    "requires lock-impact documentation for hot-table migrations",
+    { timeout: MIGRATION_GATE_TIMEOUT_MS },
+    () => {
+      const fixture = createTempMigration(
+        'ALTER TABLE "Payment" ADD COLUMN "processorReference" TEXT;\n',
+        "# migration_name\tphase\tprevious_expand_release\told_code_compatible\tlock_impact_plan\n"
       );
 
-      expect(result.status).not.toBe(0);
-      expect(result.stderr).toContain("missing");
-      expect(result.stderr).toContain("blue/green migration safety review");
-    } finally {
-      rmSync(fixture.tempDir, { recursive: true, force: true });
+      try {
+        const result = runMigrationSafetyValidator(
+          fixture.migrationPath,
+          fixture.ledgerPath
+        );
+
+        expect(result.status).not.toBe(0);
+        expect(result.stderr).toContain("missing");
+        expect(result.stderr).toContain("blue/green migration safety review");
+      } finally {
+        rmSync(fixture.tempDir, { recursive: true, force: true });
+      }
     }
-  });
+  );
 
-  it("allows documented hot-table expand migrations without breaking-SQL override", () => {
-    const fixture = createTempMigration(
-      'ALTER TABLE "Payment" ADD COLUMN "processorReference" TEXT;\n',
-      [
-        "# migration_name\tphase\tprevious_expand_release\told_code_compatible\tlock_impact_plan",
-        "20990101000000_test_migration\texpand\tn/a\tyes\tAdds a nullable Payment column; run during low traffic and verify no long payment writes.",
-      ].join("\n")
-    );
-
-    try {
-      const result = runMigrationSafetyValidator(
-        fixture.migrationPath,
-        fixture.ledgerPath
+  it(
+    "allows documented hot-table expand migrations without breaking-SQL override",
+    { timeout: MIGRATION_GATE_TIMEOUT_MS },
+    () => {
+      const fixture = createTempMigration(
+        'ALTER TABLE "Payment" ADD COLUMN "processorReference" TEXT;\n',
+        [
+          "# migration_name\tphase\tprevious_expand_release\told_code_compatible\tlock_impact_plan",
+          "20990101000000_test_migration\texpand\tn/a\tyes\tAdds a nullable Payment column; run during low traffic and verify no long payment writes.",
+        ].join("\n")
       );
 
-      expect(result.status).toBe(0);
-    } finally {
-      rmSync(fixture.tempDir, { recursive: true, force: true });
+      try {
+        const result = runMigrationSafetyValidator(
+          fixture.migrationPath,
+          fixture.ledgerPath
+        );
+
+        expect(result.status).toBe(0);
+      } finally {
+        rmSync(fixture.tempDir, { recursive: true, force: true });
+      }
     }
-  });
+  );
 
-  it("requires operator acknowledgement for documented destructive contract migrations", () => {
-    const fixture = createTempMigration(
-      'ALTER TABLE "Member" DROP COLUMN "legacyPhone";\n',
-      [
-        "# migration_name\tphase\tprevious_expand_release\told_code_compatible\tlock_impact_plan",
-        "20990101000000_test_migration\tcontract\t20261201000000_member_phone_expand\tyes\tDrops a retired Member column after all runtime callers moved to structured phone fields.",
-      ].join("\n")
-    );
-
-    try {
-      const blocked = runMigrationSafetyValidator(
-        fixture.migrationPath,
-        fixture.ledgerPath
-      );
-      const allowed = runMigrationSafetyValidator(
-        fixture.migrationPath,
-        fixture.ledgerPath,
-        {
-          ALLOW_BREAKING_BLUE_GREEN_MIGRATIONS: "1",
-          BLUE_GREEN_MIGRATION_OVERRIDE_REASON:
-            "contract phase verified against previous deployed runtime",
-        }
+  it(
+    "requires operator acknowledgement for documented destructive contract migrations",
+    { timeout: MIGRATION_GATE_TIMEOUT_MS },
+    async () => {
+      const fixture = createTempMigration(
+        'ALTER TABLE "Member" DROP COLUMN "legacyPhone";\n',
+        [
+          "# migration_name\tphase\tprevious_expand_release\told_code_compatible\tlock_impact_plan",
+          "20990101000000_test_migration\tcontract\t20261201000000_member_phone_expand\tyes\tDrops a retired Member column after all runtime callers moved to structured phone fields.",
+        ].join("\n")
       );
 
-      expect(blocked.status).not.toBe(0);
-      expect(blocked.stderr).toContain("ALLOW_BREAKING_BLUE_GREEN_MIGRATIONS");
-      expect(allowed.status).toBe(0);
-    } finally {
-      rmSync(fixture.tempDir, { recursive: true, force: true });
+      try {
+        const [blocked, allowed] = await Promise.all([
+          startMigrationSafetyValidator(
+            fixture.migrationPath,
+            fixture.ledgerPath
+          ),
+          startMigrationSafetyValidator(
+            fixture.migrationPath,
+            fixture.ledgerPath,
+            {
+              ALLOW_BREAKING_BLUE_GREEN_MIGRATIONS: "1",
+              BLUE_GREEN_MIGRATION_OVERRIDE_REASON:
+                "contract phase verified against previous deployed runtime",
+            }
+          ),
+        ]);
+
+        expect(blocked.status).not.toBe(0);
+        expect(blocked.stderr).toContain("ALLOW_BREAKING_BLUE_GREEN_MIGRATIONS");
+        expect(allowed.status).toBe(0);
+      } finally {
+        rmSync(fixture.tempDir, { recursive: true, force: true });
+      }
     }
-  });
+  );
 
   it(
     "passes a SET NOT NULL paired with a same-column non-NULL SET DEFAULT without an override (H4)",
-    { timeout: 20000 },
+    { timeout: MIGRATION_GATE_TIMEOUT_MS },
     () => {
       // The multi-lodge contract migration (20260708001100) SET NOT NULL on
       // lodgeId while giving the same column a default_lodge_id() DEFAULT in the
@@ -1551,8 +1640,8 @@ describe("review finding source/schema contracts", () => {
 
   it(
     "requires an override for an unmatched SET NOT NULL with no same-column SET DEFAULT (H4)",
-    { timeout: 20000 },
-    () => {
+    { timeout: MIGRATION_GATE_TIMEOUT_MS },
+    async () => {
       const fixture = createTempMigration(
         'ALTER TABLE "LodgeRoom" ALTER COLUMN "lodgeId" SET NOT NULL;\n',
         [
@@ -1562,19 +1651,21 @@ describe("review finding source/schema contracts", () => {
       );
 
       try {
-        const blocked = runMigrationSafetyValidator(
-          fixture.migrationPath,
-          fixture.ledgerPath
-        );
-        const allowed = runMigrationSafetyValidator(
-          fixture.migrationPath,
-          fixture.ledgerPath,
-          {
-            ALLOW_BREAKING_BLUE_GREEN_MIGRATIONS: "1",
-            BLUE_GREEN_MIGRATION_OVERRIDE_REASON:
-              "unmatched NOT NULL verified old-code compatible out of band",
-          }
-        );
+        const [blocked, allowed] = await Promise.all([
+          startMigrationSafetyValidator(
+            fixture.migrationPath,
+            fixture.ledgerPath
+          ),
+          startMigrationSafetyValidator(
+            fixture.migrationPath,
+            fixture.ledgerPath,
+            {
+              ALLOW_BREAKING_BLUE_GREEN_MIGRATIONS: "1",
+              BLUE_GREEN_MIGRATION_OVERRIDE_REASON:
+                "unmatched NOT NULL verified old-code compatible out of band",
+            }
+          ),
+        ]);
 
         expect(blocked.status).not.toBe(0);
         expect(blocked.stderr).toContain("ALLOW_BREAKING_BLUE_GREEN_MIGRATIONS");
@@ -1588,8 +1679,8 @@ describe("review finding source/schema contracts", () => {
 
   it(
     "requires an override for a RENAME COLUMN (H4)",
-    { timeout: 20000 },
-    () => {
+    { timeout: MIGRATION_GATE_TIMEOUT_MS },
+    async () => {
       // RENAME hits the destructive-removal regex, so the ledger must record it
       // as phase=contract naming the previous expand release (mirrors the
       // DROP COLUMN fixture) before it can even reach the breaking-SQL gate.
@@ -1602,19 +1693,21 @@ describe("review finding source/schema contracts", () => {
       );
 
       try {
-        const blocked = runMigrationSafetyValidator(
-          fixture.migrationPath,
-          fixture.ledgerPath
-        );
-        const allowed = runMigrationSafetyValidator(
-          fixture.migrationPath,
-          fixture.ledgerPath,
-          {
-            ALLOW_BREAKING_BLUE_GREEN_MIGRATIONS: "1",
-            BLUE_GREEN_MIGRATION_OVERRIDE_REASON:
-              "rename verified against previous deployed runtime",
-          }
-        );
+        const [blocked, allowed] = await Promise.all([
+          startMigrationSafetyValidator(
+            fixture.migrationPath,
+            fixture.ledgerPath
+          ),
+          startMigrationSafetyValidator(
+            fixture.migrationPath,
+            fixture.ledgerPath,
+            {
+              ALLOW_BREAKING_BLUE_GREEN_MIGRATIONS: "1",
+              BLUE_GREEN_MIGRATION_OVERRIDE_REASON:
+                "rename verified against previous deployed runtime",
+            }
+          ),
+        ]);
 
         expect(blocked.status).not.toBe(0);
         expect(blocked.stderr).toContain("ALLOW_BREAKING_BLUE_GREEN_MIGRATIONS");
@@ -1627,8 +1720,8 @@ describe("review finding source/schema contracts", () => {
 
   it(
     "requires an override for an ALTER COLUMN ... TYPE change (H4)",
-    { timeout: 20000 },
-    () => {
+    { timeout: MIGRATION_GATE_TIMEOUT_MS },
+    async () => {
       const fixture = createTempMigration(
         'ALTER TABLE "LodgeRoom" ALTER COLUMN "sortOrder" TYPE BIGINT;\n',
         [
@@ -1638,19 +1731,21 @@ describe("review finding source/schema contracts", () => {
       );
 
       try {
-        const blocked = runMigrationSafetyValidator(
-          fixture.migrationPath,
-          fixture.ledgerPath
-        );
-        const allowed = runMigrationSafetyValidator(
-          fixture.migrationPath,
-          fixture.ledgerPath,
-          {
-            ALLOW_BREAKING_BLUE_GREEN_MIGRATIONS: "1",
-            BLUE_GREEN_MIGRATION_OVERRIDE_REASON:
-              "type change verified compatible with both colours",
-          }
-        );
+        const [blocked, allowed] = await Promise.all([
+          startMigrationSafetyValidator(
+            fixture.migrationPath,
+            fixture.ledgerPath
+          ),
+          startMigrationSafetyValidator(
+            fixture.migrationPath,
+            fixture.ledgerPath,
+            {
+              ALLOW_BREAKING_BLUE_GREEN_MIGRATIONS: "1",
+              BLUE_GREEN_MIGRATION_OVERRIDE_REASON:
+                "type change verified compatible with both colours",
+            }
+          ),
+        ]);
 
         expect(blocked.status).not.toBe(0);
         expect(blocked.stderr).toContain("ALLOW_BREAKING_BLUE_GREEN_MIGRATIONS");
@@ -1663,7 +1758,7 @@ describe("review finding source/schema contracts", () => {
 
   it(
     "refuses an enum-value rename that carries no ledger row (#2288)",
-    { timeout: 20000 },
+    { timeout: MIGRATION_GATE_TIMEOUT_MS },
     () => {
       // The gap this closes: BREAKING_SQL_REGEX matched DROP/RENAME COLUMN and
       // friends but never ALTER TYPE ... RENAME VALUE, so a migration whose ONLY
@@ -1696,7 +1791,7 @@ describe("review finding source/schema contracts", () => {
 
   it(
     "catches an enum-value rename split across lines (#2288)",
-    { timeout: 20000 },
+    { timeout: MIGRATION_GATE_TIMEOUT_MS },
     () => {
       // The scan is line-oriented, so "RENAME VALUE" is matched bare — exactly
       // like the sibling "RENAME COLUMN" alternative — rather than as
@@ -1730,8 +1825,8 @@ describe("review finding source/schema contracts", () => {
 
   it(
     "requires the override for a ledgered enum-value rename (#2288)",
-    { timeout: 20000 },
-    () => {
+    { timeout: MIGRATION_GATE_TIMEOUT_MS },
+    async () => {
       const fixture = createTempMigration(
         "ALTER TYPE \"BookingChangeRequestStatus\" RENAME VALUE 'PENDING' TO 'REQUESTED';\n",
         [
@@ -1741,19 +1836,21 @@ describe("review finding source/schema contracts", () => {
       );
 
       try {
-        const blocked = runMigrationSafetyValidator(
-          fixture.migrationPath,
-          fixture.ledgerPath
-        );
-        const allowed = runMigrationSafetyValidator(
-          fixture.migrationPath,
-          fixture.ledgerPath,
-          {
-            ALLOW_BREAKING_BLUE_GREEN_MIGRATIONS: "1",
-            BLUE_GREEN_MIGRATION_OVERRIDE_REASON:
-              "enum rename verified against the previous deployed runtime",
-          }
-        );
+        const [blocked, allowed] = await Promise.all([
+          startMigrationSafetyValidator(
+            fixture.migrationPath,
+            fixture.ledgerPath
+          ),
+          startMigrationSafetyValidator(
+            fixture.migrationPath,
+            fixture.ledgerPath,
+            {
+              ALLOW_BREAKING_BLUE_GREEN_MIGRATIONS: "1",
+              BLUE_GREEN_MIGRATION_OVERRIDE_REASON:
+                "enum rename verified against the previous deployed runtime",
+            }
+          ),
+        ]);
 
         expect(blocked.status, blocked.stderr).not.toBe(0);
         expect(blocked.stderr).toContain("ALLOW_BREAKING_BLUE_GREEN_MIGRATIONS");
@@ -1766,8 +1863,8 @@ describe("review finding source/schema contracts", () => {
 
   it(
     "accepts a windowed declaration for a deliberately breaking migration (#2288)",
-    { timeout: 20000 },
-    () => {
+    { timeout: MIGRATION_GATE_TIMEOUT_MS },
+    async () => {
       // `windowed` says plainly what `yes` used to have to lie about: this
       // migration is NOT old-code compatible, the previous colour will error
       // between migrate and cutover, and it is being deployed inside a
@@ -1784,19 +1881,21 @@ describe("review finding source/schema contracts", () => {
       writeRollbackScript(fixture.migrationPath);
 
       try {
-        const blocked = runMigrationSafetyValidator(
-          fixture.migrationPath,
-          fixture.ledgerPath
-        );
-        const allowed = runMigrationSafetyValidator(
-          fixture.migrationPath,
-          fixture.ledgerPath,
-          {
-            ALLOW_BREAKING_BLUE_GREEN_MIGRATIONS: "1",
-            BLUE_GREEN_MIGRATION_OVERRIDE_REASON:
-              "maintenance window agreed with the owner for the enum rename",
-          }
-        );
+        const [blocked, allowed] = await Promise.all([
+          startMigrationSafetyValidator(
+            fixture.migrationPath,
+            fixture.ledgerPath
+          ),
+          startMigrationSafetyValidator(
+            fixture.migrationPath,
+            fixture.ledgerPath,
+            {
+              ALLOW_BREAKING_BLUE_GREEN_MIGRATIONS: "1",
+              BLUE_GREEN_MIGRATION_OVERRIDE_REASON:
+                "maintenance window agreed with the owner for the enum rename",
+            }
+          ),
+        ]);
 
         // The ledger row itself is valid: no missing/malformed-documentation
         // failure, only the ordinary breaking-SQL override requirement.
@@ -1816,8 +1915,8 @@ describe("review finding source/schema contracts", () => {
 
   it(
     "rejects a windowed declaration with no lock impact plan, override or not (#2288)",
-    { timeout: 20000 },
-    () => {
+    { timeout: MIGRATION_GATE_TIMEOUT_MS },
+    async () => {
       // `windowed` asserts a planned outage, so it must be justified in writing
       // rather than become a quieter way to say `yes`. A missing plan is a
       // documentation failure, which the ALLOW_BREAKING override cannot rescue.
@@ -1830,19 +1929,21 @@ describe("review finding source/schema contracts", () => {
       );
 
       try {
-        const blocked = runMigrationSafetyValidator(
-          fixture.migrationPath,
-          fixture.ledgerPath
-        );
-        const stillBlocked = runMigrationSafetyValidator(
-          fixture.migrationPath,
-          fixture.ledgerPath,
-          {
-            ALLOW_BREAKING_BLUE_GREEN_MIGRATIONS: "1",
-            BLUE_GREEN_MIGRATION_OVERRIDE_REASON:
-              "the override must not rescue an undocumented window",
-          }
-        );
+        const [blocked, stillBlocked] = await Promise.all([
+          startMigrationSafetyValidator(
+            fixture.migrationPath,
+            fixture.ledgerPath
+          ),
+          startMigrationSafetyValidator(
+            fixture.migrationPath,
+            fixture.ledgerPath,
+            {
+              ALLOW_BREAKING_BLUE_GREEN_MIGRATIONS: "1",
+              BLUE_GREEN_MIGRATION_OVERRIDE_REASON:
+                "the override must not rescue an undocumented window",
+            }
+          ),
+        ]);
 
         expect(blocked.status, blocked.stderr).not.toBe(0);
         expect(blocked.stderr).toContain(
@@ -1857,7 +1958,7 @@ describe("review finding source/schema contracts", () => {
 
   it(
     "rejects old_code_compatible=no and unknown values on a breaking migration (#2288)",
-    { timeout: 20000 },
+    { timeout: MIGRATION_GATE_TIMEOUT_MS },
     () => {
       // `no` on a breaking migration is a contradiction, and the column was
       // previously unvalidated — a typo such as "Yes" silently read as "not
@@ -1920,8 +2021,8 @@ describe("review finding source/schema contracts", () => {
 
   it(
     "requires the override for a windowed migration with no breaking SQL at all (#2288)",
-    { timeout: 20000 },
-    () => {
+    { timeout: MIGRATION_GATE_TIMEOUT_MS },
+    async () => {
       // A data-only migration can break the draining colour with no breaking
       // DDL — the #1440 AgeTier backfill flipped rows to a value the previous
       // Prisma client could not deserialize. When the ledger declares that
@@ -1937,19 +2038,21 @@ describe("review finding source/schema contracts", () => {
       writeRollbackScript(fixture.migrationPath);
 
       try {
-        const blocked = runMigrationSafetyValidator(
-          fixture.migrationPath,
-          fixture.ledgerPath
-        );
-        const allowed = runMigrationSafetyValidator(
-          fixture.migrationPath,
-          fixture.ledgerPath,
-          {
-            ALLOW_BREAKING_BLUE_GREEN_MIGRATIONS: "1",
-            BLUE_GREEN_MIGRATION_OVERRIDE_REASON:
-              "maintenance window agreed for the declared windowed migration",
-          }
-        );
+        const [blocked, allowed] = await Promise.all([
+          startMigrationSafetyValidator(
+            fixture.migrationPath,
+            fixture.ledgerPath
+          ),
+          startMigrationSafetyValidator(
+            fixture.migrationPath,
+            fixture.ledgerPath,
+            {
+              ALLOW_BREAKING_BLUE_GREEN_MIGRATIONS: "1",
+              BLUE_GREEN_MIGRATION_OVERRIDE_REASON:
+                "maintenance window agreed for the declared windowed migration",
+            }
+          ),
+        ]);
 
         expect(blocked.status, blocked.stderr).not.toBe(0);
         expect(blocked.stderr).toContain(
@@ -1964,8 +2067,8 @@ describe("review finding source/schema contracts", () => {
 
   it(
     "consults a windowed row even when the SQL matches no pattern at all (#2288)",
-    { timeout: 20000 },
-    () => {
+    { timeout: MIGRATION_GATE_TIMEOUT_MS },
+    async () => {
       // The sharpest form of the case above: a plain data UPDATE on a cold table
       // trips neither the hot-table nor the breaking regex, so the validator used
       // to skip the migration before ever opening its ledger row. A windowed
@@ -1983,19 +2086,21 @@ describe("review finding source/schema contracts", () => {
       writeRollbackScript(declared.migrationPath);
 
       try {
-        const blocked = runMigrationSafetyValidator(
-          declared.migrationPath,
-          declared.ledgerPath
-        );
-        const allowed = runMigrationSafetyValidator(
-          declared.migrationPath,
-          declared.ledgerPath,
-          {
-            ALLOW_BREAKING_BLUE_GREEN_MIGRATIONS: "1",
-            BLUE_GREEN_MIGRATION_OVERRIDE_REASON:
-              "maintenance window agreed for the declared windowed data migration",
-          }
-        );
+        const [blocked, allowed] = await Promise.all([
+          startMigrationSafetyValidator(
+            declared.migrationPath,
+            declared.ledgerPath
+          ),
+          startMigrationSafetyValidator(
+            declared.migrationPath,
+            declared.ledgerPath,
+            {
+              ALLOW_BREAKING_BLUE_GREEN_MIGRATIONS: "1",
+              BLUE_GREEN_MIGRATION_OVERRIDE_REASON:
+                "maintenance window agreed for the declared windowed data migration",
+            }
+          ),
+        ]);
 
         expect(blocked.status, blocked.stderr).not.toBe(0);
         expect(blocked.stderr).toContain(
@@ -2030,7 +2135,7 @@ describe("review finding source/schema contracts", () => {
 
   it(
     "leaves additive enum values and index renames alone (#2288)",
-    { timeout: 20000 },
+    { timeout: MIGRATION_GATE_TIMEOUT_MS },
     () => {
       // The boundary of the new pattern. ALTER TYPE ... ADD VALUE is additive
       // (29 committed migrations do it, 44 statements) and ALTER INDEX ... RENAME TO is
@@ -2062,7 +2167,7 @@ describe("review finding source/schema contracts", () => {
 
   it(
     "surfaces the committed 20260525010000 enum renames against the real ledger (#2288)",
-    { timeout: 20000 },
+    { timeout: MIGRATION_GATE_TIMEOUT_MS },
     () => {
       // End-to-end on the real file: the migration that motivated the issue
       // renamed three enum values AND two columns. It only ever tripped the gate
@@ -2106,8 +2211,8 @@ describe("review finding source/schema contracts", () => {
 
   it(
     "enforces the closed vocabulary on a migration whose SQL matches nothing (#2288)",
-    { timeout: 20000 },
-    () => {
+    { timeout: MIGRATION_GATE_TIMEOUT_MS },
+    async () => {
       // The gap the vocabulary lint closes. Validating old_code_compatible inside
       // validate_ledger_entry only reaches rows the migration loop actually opens,
       // and the loop skips any migration whose SQL matches no hot-table/breaking
@@ -2119,40 +2224,46 @@ describe("review finding source/schema contracts", () => {
       // the maintenance window the operator wrote the row to demand.
       const nearMisses = ["Windowed", "WINDOWED", "windowed.", "maybe", "true", ""];
 
-      for (const value of nearMisses) {
-        const fixture = createTempMigration(
-          "UPDATE \"OrgAgeTier\" SET \"tier\" = 'NOT_APPLICABLE' WHERE \"tier\" IS NULL;\n",
-          [
-            LEDGER_HEADER,
-            `20990101000000_test_migration\texpand\tn/a\t${value}\tNOT old-code compatible: pre-#1440 clients cannot deserialize NOT_APPLICABLE. Announced maintenance window.`,
-          ].join("\n")
-        );
-
-        try {
-          // With the override set, so this proves the lint is a documentation
-          // failure the operator flag cannot rescue.
-          const result = runMigrationSafetyValidator(
-            fixture.migrationPath,
-            fixture.ledgerPath,
-            {
-              ALLOW_BREAKING_BLUE_GREEN_MIGRATIONS: "1",
-              BLUE_GREEN_MIGRATION_OVERRIDE_REASON:
-                "the override must not rescue an unrecognised value",
-            }
+      // #2806: every spelling is checked, exactly as before — they are simply
+      // checked at the same time. Each iteration owns its own temp fixture and
+      // asserts only on its own result, so nothing here depends on the order.
+      await Promise.all(
+        nearMisses.map(async (value) => {
+          const fixture = createTempMigration(
+            "UPDATE \"OrgAgeTier\" SET \"tier\" = 'NOT_APPLICABLE' WHERE \"tier\" IS NULL;\n",
+            [
+              LEDGER_HEADER,
+              `20990101000000_test_migration\texpand\tn/a\t${value}\tNOT old-code compatible: pre-#1440 clients cannot deserialize NOT_APPLICABLE. Announced maintenance window.`,
+            ].join("\n")
           );
 
-          expect(result.status, `${value || "(empty)"}: ${result.stderr}`).not.toBe(
-            0
-          );
-          expect(result.stderr).toContain(
-            "old_code_compatible must be yes, no, or windowed"
-          );
-          expect(result.stderr).toContain(`(found "${value}")`);
-          expect(result.stderr).not.toContain("safety check passed");
-        } finally {
-          rmSync(fixture.tempDir, { recursive: true, force: true });
-        }
-      }
+          try {
+            // With the override set, so this proves the lint is a documentation
+            // failure the operator flag cannot rescue.
+            const result = await startMigrationSafetyValidator(
+              fixture.migrationPath,
+              fixture.ledgerPath,
+              {
+                ALLOW_BREAKING_BLUE_GREEN_MIGRATIONS: "1",
+                BLUE_GREEN_MIGRATION_OVERRIDE_REASON:
+                  "the override must not rescue an unrecognised value",
+              }
+            );
+
+            expect(
+              result.status,
+              `${value || "(empty)"}: ${result.stderr}`
+            ).not.toBe(0);
+            expect(result.stderr).toContain(
+              "old_code_compatible must be yes, no, or windowed"
+            );
+            expect(result.stderr).toContain(`(found "${value}")`);
+            expect(result.stderr).not.toContain("safety check passed");
+          } finally {
+            rmSync(fixture.tempDir, { recursive: true, force: true });
+          }
+        })
+      );
 
       // The boundary: the three accepted values on the same clean SQL still pass
       // (or, for windowed, fail only for the reasons windowed is meant to).
@@ -2178,7 +2289,7 @@ describe("review finding source/schema contracts", () => {
 
   it(
     "fails the PR-time coverage gate on a near-miss old_code_compatible value (#2288)",
-    { timeout: 20000 },
+    { timeout: MIGRATION_GATE_TIMEOUT_MS },
     () => {
       // The lint has to bite at PR time, not only at deploy time — a mistyped
       // `windowed` that reaches a production host has already cost the operator
@@ -2219,8 +2330,8 @@ describe("review finding source/schema contracts", () => {
 
   it(
     "rejects a duplicate ledger row instead of silently shadowing it (#2288)",
-    { timeout: 20000 },
-    () => {
+    { timeout: MIGRATION_GATE_TIMEOUT_MS },
+    async () => {
       // First-row-wins matches ledger_entry_for_migration, but the consequence is
       // that a second row is discarded with no diagnostic — and the row a silent
       // discard is most likely to delete is a `windowed` declaration, because the
@@ -2233,41 +2344,48 @@ describe("review finding source/schema contracts", () => {
         ["windowed", "yes"],
       ];
 
-      for (const [first, second] of orders) {
-        const fixture = createTempMigration(
-          "UPDATE \"PageContent\" SET \"body\" = 'x' WHERE \"id\" = 'y';\n",
-          [
-            LEDGER_HEADER,
-            `20990101000000_test_migration\texpand\tn/a\t${first}\tPlan written by the first lane.`,
-            `20990101000000_test_migration\texpand\tn/a\t${second}\tPlan written by the second lane.`,
-          ].join("\n")
-        );
-
-        try {
-          const result = runMigrationSafetyValidator(
-            fixture.migrationPath,
-            fixture.ledgerPath,
-            {
-              ALLOW_BREAKING_BLUE_GREEN_MIGRATIONS: "1",
-              BLUE_GREEN_MIGRATION_OVERRIDE_REASON:
-                "the override must not rescue a shadowed declaration",
-            }
+      // #2806: both orders are still checked; they just run at the same time.
+      // Each owns its own temp fixture and asserts only on its own result.
+      await Promise.all(
+        orders.map(async ([first, second]) => {
+          const fixture = createTempMigration(
+            "UPDATE \"PageContent\" SET \"body\" = 'x' WHERE \"id\" = 'y';\n",
+            [
+              LEDGER_HEADER,
+              `20990101000000_test_migration\texpand\tn/a\t${first}\tPlan written by the first lane.`,
+              `20990101000000_test_migration\texpand\tn/a\t${second}\tPlan written by the second lane.`,
+            ].join("\n")
           );
 
-          expect(result.status, `${first}/${second}: ${result.stderr}`).not.toBe(0);
-          expect(result.stderr).toContain(
-            "duplicate safety ledger row for 20990101000000_test_migration"
-          );
-        } finally {
-          rmSync(fixture.tempDir, { recursive: true, force: true });
-        }
-      }
+          try {
+            const result = await startMigrationSafetyValidator(
+              fixture.migrationPath,
+              fixture.ledgerPath,
+              {
+                ALLOW_BREAKING_BLUE_GREEN_MIGRATIONS: "1",
+                BLUE_GREEN_MIGRATION_OVERRIDE_REASON:
+                  "the override must not rescue a shadowed declaration",
+              }
+            );
+
+            expect(
+              result.status,
+              `${first}/${second}: ${result.stderr}`
+            ).not.toBe(0);
+            expect(result.stderr).toContain(
+              "duplicate safety ledger row for 20990101000000_test_migration"
+            );
+          } finally {
+            rmSync(fixture.tempDir, { recursive: true, force: true });
+          }
+        })
+      );
     }
   );
 
   it(
     "catches a type rename wrapped after the verb, and a whole-type rename (#2288)",
-    { timeout: 20000 },
+    { timeout: MIGRATION_GATE_TIMEOUT_MS },
     () => {
       // "RENAME VALUE" is matched bare, so it cannot survive a wrap between the
       // two words. Its sibling "RENAME COLUMN" never had that problem because
@@ -2354,7 +2472,7 @@ describe("review finding source/schema contracts", () => {
 
   it(
     "requires a rollback.sql beside a windowed migration (#2288)",
-    { timeout: 20000 },
+    { timeout: MIGRATION_GATE_TIMEOUT_MS },
     () => {
       // The policy mandates the reverse script and the runbook offers it as one of
       // only three recovery paths once the migrate step commits — but nothing
@@ -2417,8 +2535,8 @@ describe("review finding source/schema contracts", () => {
 
   it(
     "rejects a SET NOT NULL paired only with SET DEFAULT NULL as vacuous (H4)",
-    { timeout: 20000 },
-    () => {
+    { timeout: MIGRATION_GATE_TIMEOUT_MS },
+    async () => {
       // A SET DEFAULT NULL fills nothing, so an old colour's omitted-column
       // INSERT still lands a null and the NOT NULL would abort mid-cutover. The
       // pairing is vacuous: the NOT NULL must stay breaking (override required),
@@ -2436,19 +2554,21 @@ describe("review finding source/schema contracts", () => {
       );
 
       try {
-        const blocked = runMigrationSafetyValidator(
-          fixture.migrationPath,
-          fixture.ledgerPath
-        );
-        const allowed = runMigrationSafetyValidator(
-          fixture.migrationPath,
-          fixture.ledgerPath,
-          {
-            ALLOW_BREAKING_BLUE_GREEN_MIGRATIONS: "1",
-            BLUE_GREEN_MIGRATION_OVERRIDE_REASON:
-              "NULL-default NOT NULL accepted after out-of-band verification",
-          }
-        );
+        const [blocked, allowed] = await Promise.all([
+          startMigrationSafetyValidator(
+            fixture.migrationPath,
+            fixture.ledgerPath
+          ),
+          startMigrationSafetyValidator(
+            fixture.migrationPath,
+            fixture.ledgerPath,
+            {
+              ALLOW_BREAKING_BLUE_GREEN_MIGRATIONS: "1",
+              BLUE_GREEN_MIGRATION_OVERRIDE_REASON:
+                "NULL-default NOT NULL accepted after out-of-band verification",
+            }
+          ),
+        ]);
 
         expect(blocked.status).not.toBe(0);
         expect(blocked.stderr).toContain("ALLOW_BREAKING_BLUE_GREEN_MIGRATIONS");
@@ -2462,8 +2582,8 @@ describe("review finding source/schema contracts", () => {
 
   it(
     "rejects a SET NOT NULL paired only with a cast-form SET DEFAULT NULL as vacuous (#1587 item 7)",
-    { timeout: 20000 },
-    () => {
+    { timeout: MIGRATION_GATE_TIMEOUT_MS },
+    async () => {
       // A cast-wrapped NULL default still fills nothing, exactly like a bare
       // SET DEFAULT NULL: an old colour's omitted-column INSERT lands a null and
       // the NOT NULL aborts mid-cutover. The validator must normalise the cast away
@@ -2472,49 +2592,60 @@ describe("review finding source/schema contracts", () => {
       // are pinned: the tight "NULL::text" and the spaced/parenthesised
       // "NULL :: varchar(10)".
       const castDefaults = ["NULL::text", "NULL :: varchar(10)"];
-      for (const castDefault of castDefaults) {
-        const fixture = createTempMigration(
-          [
-            `ALTER TABLE "LodgeRoom" ALTER COLUMN "lodgeId" SET DEFAULT ${castDefault};`,
-            'ALTER TABLE "LodgeRoom" ALTER COLUMN "lodgeId" SET NOT NULL;',
-            "",
-          ].join("\n"),
-          [
-            LEDGER_HEADER,
-            "20990101000000_test_migration\texpand\tn/a\tyes\tCast-form NULL default does not backfill; NOT NULL stays breaking.",
-          ].join("\n")
-        );
-
-        try {
-          const blocked = runMigrationSafetyValidator(
-            fixture.migrationPath,
-            fixture.ledgerPath
-          );
-          const allowed = runMigrationSafetyValidator(
-            fixture.migrationPath,
-            fixture.ledgerPath,
-            {
-              ALLOW_BREAKING_BLUE_GREEN_MIGRATIONS: "1",
-              BLUE_GREEN_MIGRATION_OVERRIDE_REASON:
-                "cast-NULL-default NOT NULL accepted after out-of-band verification",
-            }
+      // #2806: both spellings are still checked, at the same time rather than
+      // one after the other — each owns its own temp fixture and its own
+      // assertions, so no iteration can see another's state.
+      await Promise.all(
+        castDefaults.map(async (castDefault) => {
+          const fixture = createTempMigration(
+            [
+              `ALTER TABLE "LodgeRoom" ALTER COLUMN "lodgeId" SET DEFAULT ${castDefault};`,
+              'ALTER TABLE "LodgeRoom" ALTER COLUMN "lodgeId" SET NOT NULL;',
+              "",
+            ].join("\n"),
+            [
+              LEDGER_HEADER,
+              "20990101000000_test_migration\texpand\tn/a\tyes\tCast-form NULL default does not backfill; NOT NULL stays breaking.",
+            ].join("\n")
           );
 
-          expect(blocked.status, `${castDefault}: ${blocked.stderr}`).not.toBe(0);
-          expect(blocked.stderr).toContain("ALLOW_BREAKING_BLUE_GREEN_MIGRATIONS");
-          expect(blocked.stderr).not.toContain("Reviewed no-outage NOT NULL");
-          expect(allowed.status).toBe(0);
-        } finally {
-          rmSync(fixture.tempDir, { recursive: true, force: true });
-        }
-      }
+          try {
+            const [blocked, allowed] = await Promise.all([
+              startMigrationSafetyValidator(
+                fixture.migrationPath,
+                fixture.ledgerPath
+              ),
+              startMigrationSafetyValidator(
+                fixture.migrationPath,
+                fixture.ledgerPath,
+                {
+                  ALLOW_BREAKING_BLUE_GREEN_MIGRATIONS: "1",
+                  BLUE_GREEN_MIGRATION_OVERRIDE_REASON:
+                    "cast-NULL-default NOT NULL accepted after out-of-band verification",
+                }
+              ),
+            ]);
+
+            expect(blocked.status, `${castDefault}: ${blocked.stderr}`).not.toBe(
+              0
+            );
+            expect(blocked.stderr).toContain(
+              "ALLOW_BREAKING_BLUE_GREEN_MIGRATIONS"
+            );
+            expect(blocked.stderr).not.toContain("Reviewed no-outage NOT NULL");
+            expect(allowed.status).toBe(0);
+          } finally {
+            rmSync(fixture.tempDir, { recursive: true, force: true });
+          }
+        })
+      );
     }
   );
 
   it(
     "rejects a SET NOT NULL whose last same-column SET DEFAULT resets to NULL (last-wins, #1587 item 7)",
-    { timeout: 20000 },
-    () => {
+    { timeout: MIGRATION_GATE_TIMEOUT_MS },
+    async () => {
       // A non-null SET DEFAULT followed by a SET DEFAULT NULL on the same column
       // leaves the effective default NULL (last-wins). The earlier non-null value
       // must NOT waive the NOT NULL: an old colour's omitted-column INSERT still
@@ -2534,19 +2665,21 @@ describe("review finding source/schema contracts", () => {
       );
 
       try {
-        const blocked = runMigrationSafetyValidator(
-          fixture.migrationPath,
-          fixture.ledgerPath
-        );
-        const allowed = runMigrationSafetyValidator(
-          fixture.migrationPath,
-          fixture.ledgerPath,
-          {
-            ALLOW_BREAKING_BLUE_GREEN_MIGRATIONS: "1",
-            BLUE_GREEN_MIGRATION_OVERRIDE_REASON:
-              "last-wins-NULL NOT NULL accepted after out-of-band verification",
-          }
-        );
+        const [blocked, allowed] = await Promise.all([
+          startMigrationSafetyValidator(
+            fixture.migrationPath,
+            fixture.ledgerPath
+          ),
+          startMigrationSafetyValidator(
+            fixture.migrationPath,
+            fixture.ledgerPath,
+            {
+              ALLOW_BREAKING_BLUE_GREEN_MIGRATIONS: "1",
+              BLUE_GREEN_MIGRATION_OVERRIDE_REASON:
+                "last-wins-NULL NOT NULL accepted after out-of-band verification",
+            }
+          ),
+        ]);
 
         expect(blocked.status).not.toBe(0);
         expect(blocked.stderr).toContain("ALLOW_BREAKING_BLUE_GREEN_MIGRATIONS");
@@ -2560,7 +2693,7 @@ describe("review finding source/schema contracts", () => {
 
   it(
     "waives a SET NOT NULL whose last same-column SET DEFAULT is non-NULL (last-wins, #1587 item 7)",
-    { timeout: 20000 },
+    { timeout: MIGRATION_GATE_TIMEOUT_MS },
     () => {
       // A SET DEFAULT NULL followed by a non-null SET DEFAULT on the same column
       // leaves the effective default non-null (last-wins): an old colour's
@@ -2597,8 +2730,8 @@ describe("review finding source/schema contracts", () => {
 
   it(
     "rejects a SET NOT NULL whose default is cleared by a trailing DROP DEFAULT (#1602 gap 1)",
-    { timeout: 20000 },
-    () => {
+    { timeout: MIGRATION_GATE_TIMEOUT_MS },
+    async () => {
       // A non-null SET DEFAULT, then SET NOT NULL, then DROP DEFAULT on the same
       // column leaves the column with NO default: an old colour's omitted-column
       // INSERT lands a null and the NOT NULL aborts mid-cutover. The trailing DROP
@@ -2619,19 +2752,21 @@ describe("review finding source/schema contracts", () => {
       );
 
       try {
-        const blocked = runMigrationSafetyValidator(
-          fixture.migrationPath,
-          fixture.ledgerPath
-        );
-        const allowed = runMigrationSafetyValidator(
-          fixture.migrationPath,
-          fixture.ledgerPath,
-          {
-            ALLOW_BREAKING_BLUE_GREEN_MIGRATIONS: "1",
-            BLUE_GREEN_MIGRATION_OVERRIDE_REASON:
-              "dropped-default NOT NULL accepted after out-of-band verification",
-          }
-        );
+        const [blocked, allowed] = await Promise.all([
+          startMigrationSafetyValidator(
+            fixture.migrationPath,
+            fixture.ledgerPath
+          ),
+          startMigrationSafetyValidator(
+            fixture.migrationPath,
+            fixture.ledgerPath,
+            {
+              ALLOW_BREAKING_BLUE_GREEN_MIGRATIONS: "1",
+              BLUE_GREEN_MIGRATION_OVERRIDE_REASON:
+                "dropped-default NOT NULL accepted after out-of-band verification",
+            }
+          ),
+        ]);
 
         expect(blocked.status, blocked.stderr).not.toBe(0);
         expect(blocked.stderr).toContain("ALLOW_BREAKING_BLUE_GREEN_MIGRATIONS");
@@ -2645,7 +2780,7 @@ describe("review finding source/schema contracts", () => {
 
   it(
     "waives a SET NOT NULL whose DROP DEFAULT precedes a later non-NULL SET DEFAULT (#1602 gap 1)",
-    { timeout: 20000 },
+    { timeout: MIGRATION_GATE_TIMEOUT_MS },
     () => {
       // A DROP DEFAULT followed by a non-null SET DEFAULT on the same column leaves
       // the effective default non-null (last-wins): an old colour's omitted-column
@@ -2681,8 +2816,8 @@ describe("review finding source/schema contracts", () => {
 
   it(
     "rejects a SET NOT NULL whose SET DEFAULT NULL hides behind a trailing comment (#1602 gap 2)",
-    { timeout: 20000 },
-    () => {
+    { timeout: MIGRATION_GATE_TIMEOUT_MS },
+    async () => {
       // "SET DEFAULT NULL; -- reset" is a vacuous NULL default, but the trailing
       // comment defeats the end-anchored NULL check on the pre-#1602 script, so it
       // waived. The comment must be stripped before classification so the pairing
@@ -2700,19 +2835,21 @@ describe("review finding source/schema contracts", () => {
       );
 
       try {
-        const blocked = runMigrationSafetyValidator(
-          fixture.migrationPath,
-          fixture.ledgerPath
-        );
-        const allowed = runMigrationSafetyValidator(
-          fixture.migrationPath,
-          fixture.ledgerPath,
-          {
-            ALLOW_BREAKING_BLUE_GREEN_MIGRATIONS: "1",
-            BLUE_GREEN_MIGRATION_OVERRIDE_REASON:
-              "commented NULL-default NOT NULL accepted after out-of-band verification",
-          }
-        );
+        const [blocked, allowed] = await Promise.all([
+          startMigrationSafetyValidator(
+            fixture.migrationPath,
+            fixture.ledgerPath
+          ),
+          startMigrationSafetyValidator(
+            fixture.migrationPath,
+            fixture.ledgerPath,
+            {
+              ALLOW_BREAKING_BLUE_GREEN_MIGRATIONS: "1",
+              BLUE_GREEN_MIGRATION_OVERRIDE_REASON:
+                "commented NULL-default NOT NULL accepted after out-of-band verification",
+            }
+          ),
+        ]);
 
         expect(blocked.status, blocked.stderr).not.toBe(0);
         expect(blocked.stderr).toContain("ALLOW_BREAKING_BLUE_GREEN_MIGRATIONS");
@@ -2726,48 +2863,52 @@ describe("review finding source/schema contracts", () => {
 
   it(
     "waives a SET NOT NULL whose non-NULL default carries a trailing comment, with a quoted -- kept intact (#1602 gap 2)",
-    { timeout: 20000 },
-    () => {
+    { timeout: MIGRATION_GATE_TIMEOUT_MS },
+    async () => {
       // Comment stripping must not corrupt classification of a genuine non-null
       // default: "SET DEFAULT 'x'; -- note" still waives. It also must NOT strip a
       // "--" inside a single-quoted string literal ("SET DEFAULT 'a--b'"), which
       // stays a non-null default and waives — proving the common quoted-string case
       // the spec calls out.
-      for (const sql of [
-        'ALTER TABLE "LodgeRoom" ALTER COLUMN "lodgeId" SET DEFAULT \'seed-lodge\'; -- note',
-        "ALTER TABLE \"LodgeRoom\" ALTER COLUMN \"lodgeId\" SET DEFAULT 'a--b';",
-      ]) {
-        const fixture = createTempMigration(
-          [
-            sql,
-            'ALTER TABLE "LodgeRoom" ALTER COLUMN "lodgeId" SET NOT NULL;',
-            "",
-          ].join("\n"),
-          [
-            LEDGER_HEADER,
-            "20990101000000_test_migration\texpand\tn/a\tyes\tNon-null default with a comment / quoted dashes stays a real backfill.",
-          ].join("\n")
-        );
-
-        try {
-          const result = runMigrationSafetyValidator(
-            fixture.migrationPath,
-            fixture.ledgerPath
+      // #2806: both spellings are still checked, at the same time rather than
+      // one after the other — each owns its own temp fixture and assertions.
+      await Promise.all(
+        [
+          'ALTER TABLE "LodgeRoom" ALTER COLUMN "lodgeId" SET DEFAULT \'seed-lodge\'; -- note',
+          "ALTER TABLE \"LodgeRoom\" ALTER COLUMN \"lodgeId\" SET DEFAULT 'a--b';",
+        ].map(async (sql) => {
+          const fixture = createTempMigration(
+            [
+              sql,
+              'ALTER TABLE "LodgeRoom" ALTER COLUMN "lodgeId" SET NOT NULL;',
+              "",
+            ].join("\n"),
+            [
+              LEDGER_HEADER,
+              "20990101000000_test_migration\texpand\tn/a\tyes\tNon-null default with a comment / quoted dashes stays a real backfill.",
+            ].join("\n")
           );
 
-          expect(result.status, `${sql}: ${result.stderr}`).toBe(0);
-          expect(result.stderr).toContain("Reviewed no-outage NOT NULL");
-        } finally {
-          rmSync(fixture.tempDir, { recursive: true, force: true });
-        }
-      }
+          try {
+            const result = await startMigrationSafetyValidator(
+              fixture.migrationPath,
+              fixture.ledgerPath
+            );
+
+            expect(result.status, `${sql}: ${result.stderr}`).toBe(0);
+            expect(result.stderr).toContain("Reviewed no-outage NOT NULL");
+          } finally {
+            rmSync(fixture.tempDir, { recursive: true, force: true });
+          }
+        })
+      );
     }
   );
 
   it(
     "rejects a SET NOT NULL paired with a semantically-NULL default expression (#1602 gap 3)",
-    { timeout: 20000 },
-    () => {
+    { timeout: MIGRATION_GATE_TIMEOUT_MS },
+    async () => {
       // CAST(NULL AS <type>) and a parenthesised (NULL) are semantically NULL: they
       // fill nothing, so an old colour's omitted-column INSERT lands a null and the
       // NOT NULL aborts. The pre-#1602 script only recognised a bare NULL after
@@ -2781,48 +2922,60 @@ describe("review finding source/schema contracts", () => {
         "(NULL)::text",
         "( NULL )",
       ];
-      for (const spelling of nullSpellings) {
-        const fixture = createTempMigration(
-          [
-            `ALTER TABLE "LodgeRoom" ALTER COLUMN "lodgeId" SET DEFAULT ${spelling};`,
-            'ALTER TABLE "LodgeRoom" ALTER COLUMN "lodgeId" SET NOT NULL;',
-            "",
-          ].join("\n"),
-          [
-            LEDGER_HEADER,
-            "20990101000000_test_migration\texpand\tn/a\tyes\tSemantically-NULL default does not backfill; NOT NULL stays breaking.",
-          ].join("\n")
-        );
-
-        try {
-          const blocked = runMigrationSafetyValidator(
-            fixture.migrationPath,
-            fixture.ledgerPath
-          );
-          const allowed = runMigrationSafetyValidator(
-            fixture.migrationPath,
-            fixture.ledgerPath,
-            {
-              ALLOW_BREAKING_BLUE_GREEN_MIGRATIONS: "1",
-              BLUE_GREEN_MIGRATION_OVERRIDE_REASON:
-                "semantic-NULL-default NOT NULL accepted after out-of-band verification",
-            }
+      // #2806: this test is why the issue was filed — five spellings, each
+      // needing a blocked run and an override run, ran strictly one after the
+      // other and cost ten sequential validator invocations. All five spellings
+      // are still checked with the same two runs and the same assertions; they
+      // are simply in flight together. Each iteration builds its own temp
+      // fixture and asserts only on its own results, so nothing is shared.
+      await Promise.all(
+        nullSpellings.map(async (spelling) => {
+          const fixture = createTempMigration(
+            [
+              `ALTER TABLE "LodgeRoom" ALTER COLUMN "lodgeId" SET DEFAULT ${spelling};`,
+              'ALTER TABLE "LodgeRoom" ALTER COLUMN "lodgeId" SET NOT NULL;',
+              "",
+            ].join("\n"),
+            [
+              LEDGER_HEADER,
+              "20990101000000_test_migration\texpand\tn/a\tyes\tSemantically-NULL default does not backfill; NOT NULL stays breaking.",
+            ].join("\n")
           );
 
-          expect(blocked.status, `${spelling}: ${blocked.stderr}`).not.toBe(0);
-          expect(blocked.stderr).toContain("ALLOW_BREAKING_BLUE_GREEN_MIGRATIONS");
-          expect(blocked.stderr).not.toContain("Reviewed no-outage NOT NULL");
-          expect(allowed.status).toBe(0);
-        } finally {
-          rmSync(fixture.tempDir, { recursive: true, force: true });
-        }
-      }
+          try {
+            const [blocked, allowed] = await Promise.all([
+              startMigrationSafetyValidator(
+                fixture.migrationPath,
+                fixture.ledgerPath
+              ),
+              startMigrationSafetyValidator(
+                fixture.migrationPath,
+                fixture.ledgerPath,
+                {
+                  ALLOW_BREAKING_BLUE_GREEN_MIGRATIONS: "1",
+                  BLUE_GREEN_MIGRATION_OVERRIDE_REASON:
+                    "semantic-NULL-default NOT NULL accepted after out-of-band verification",
+                }
+              ),
+            ]);
+
+            expect(blocked.status, `${spelling}: ${blocked.stderr}`).not.toBe(0);
+            expect(blocked.stderr).toContain(
+              "ALLOW_BREAKING_BLUE_GREEN_MIGRATIONS"
+            );
+            expect(blocked.stderr).not.toContain("Reviewed no-outage NOT NULL");
+            expect(allowed.status).toBe(0);
+          } finally {
+            rmSync(fixture.tempDir, { recursive: true, force: true });
+          }
+        })
+      );
     }
   );
 
   it(
     "rejects a SET NOT NULL whose default is a same-argument NULLIF (#1602 gap 3)",
-    { timeout: 20000 },
+    { timeout: MIGRATION_GATE_TIMEOUT_MS },
     () => {
       // NULLIF(x, x) with identical literals evaluates to NULL, so it fills
       // nothing: an old colour's omitted-column INSERT still lands a null and
@@ -2859,7 +3012,7 @@ describe("review finding source/schema contracts", () => {
 
   it(
     "waives a SET NOT NULL whose default is a differing-argument NULLIF, kept non-NULL by design (#1602 gap 3)",
-    { timeout: 20000 },
+    { timeout: MIGRATION_GATE_TIMEOUT_MS },
     () => {
       // NULLIF('a', 'b') evaluates to 'a' — a real non-NULL default — and, like
       // every other SQL expression beyond the enumerated spellings, classifies
@@ -2893,7 +3046,7 @@ describe("review finding source/schema contracts", () => {
 
   it(
     "rejects an unpaired SET NOT NULL whose extraction target is retargeted by a trailing comment (#1602 review finding)",
-    { timeout: 20000 },
+    { timeout: MIGRATION_GATE_TIMEOUT_MS },
     () => {
       // A trailing '-- ALTER COLUMN "paired"' comment on the SET NOT NULL line
       // could retarget the greedy table/column capture at the column that DOES
@@ -2927,7 +3080,7 @@ describe("review finding source/schema contracts", () => {
 
   it(
     "waives a paired SET NOT NULL carrying a benign trailing comment (#1602 review finding)",
-    { timeout: 20000 },
+    { timeout: MIGRATION_GATE_TIMEOUT_MS },
     () => {
       // Comment-stripping before extraction must not break the legitimate case:
       // a genuine non-NULL pairing whose SET NOT NULL line ends in an ordinary
@@ -2960,7 +3113,7 @@ describe("review finding source/schema contracts", () => {
 
   it(
     "waives a lowercase SET NOT NULL paired with a lowercase non-NULL SET DEFAULT (#1602 gap 4)",
-    { timeout: 20000 },
+    { timeout: MIGRATION_GATE_TIMEOUT_MS },
     () => {
       // The table/column extraction is now case-insensitive on keywords, so a
       // lowercase safe pairing gets the same waiver as its uppercase form. On the
@@ -2995,8 +3148,8 @@ describe("review finding source/schema contracts", () => {
 
   it(
     "requires an override for a lowercase unmatched SET NOT NULL (#1602 gap 4)",
-    { timeout: 20000 },
-    () => {
+    { timeout: MIGRATION_GATE_TIMEOUT_MS },
+    async () => {
       // Case-insensitive extraction must not soften a genuinely breaking lowercase
       // NOT NULL: with no same-column SET DEFAULT it stays breaking (override
       // required), exactly like its uppercase counterpart. This blocks on both the
@@ -3012,19 +3165,21 @@ describe("review finding source/schema contracts", () => {
       );
 
       try {
-        const blocked = runMigrationSafetyValidator(
-          fixture.migrationPath,
-          fixture.ledgerPath
-        );
-        const allowed = runMigrationSafetyValidator(
-          fixture.migrationPath,
-          fixture.ledgerPath,
-          {
-            ALLOW_BREAKING_BLUE_GREEN_MIGRATIONS: "1",
-            BLUE_GREEN_MIGRATION_OVERRIDE_REASON:
-              "lowercase unmatched NOT NULL verified old-code compatible out of band",
-          }
-        );
+        const [blocked, allowed] = await Promise.all([
+          startMigrationSafetyValidator(
+            fixture.migrationPath,
+            fixture.ledgerPath
+          ),
+          startMigrationSafetyValidator(
+            fixture.migrationPath,
+            fixture.ledgerPath,
+            {
+              ALLOW_BREAKING_BLUE_GREEN_MIGRATIONS: "1",
+              BLUE_GREEN_MIGRATION_OVERRIDE_REASON:
+                "lowercase unmatched NOT NULL verified old-code compatible out of band",
+            }
+          ),
+        ]);
 
         expect(blocked.status, blocked.stderr).not.toBe(0);
         expect(blocked.stderr).toContain("ALLOW_BREAKING_BLUE_GREEN_MIGRATIONS");
@@ -3038,7 +3193,7 @@ describe("review finding source/schema contracts", () => {
 
   it(
     "passes the committed multi-lodge NOT NULL migration override-free against the real ledger (H4)",
-    { timeout: 20000 },
+    { timeout: MIGRATION_GATE_TIMEOUT_MS },
     () => {
       // Reviewer reproduction, CI-enforced: run the REAL file on disk (never a
       // copy) through the validator with the REAL ledger and NO override. The
@@ -3066,8 +3221,8 @@ describe("review finding source/schema contracts", () => {
 
   it(
     "blocks CURRENT_TIMESTAMP/now() in an INSERT or UPDATE payload, non-overridably (#1656 / #1627)",
-    { timeout: 20000 },
-    () => {
+    { timeout: MIGRATION_GATE_TIMEOUT_MS },
+    async () => {
       // Session (DB-local) time written into a naive timestamp column renders
       // local wall-clock on a non-UTC database and skews createdAt ordering —
       // the #1627 default-lodge inversion. The gate must flag the clock even
@@ -3089,19 +3244,21 @@ describe("review finding source/schema contracts", () => {
       );
 
       try {
-        const blocked = runMigrationSafetyValidator(
-          fixture.migrationPath,
-          fixture.ledgerPath
-        );
-        const stillBlocked = runMigrationSafetyValidator(
-          fixture.migrationPath,
-          fixture.ledgerPath,
-          {
-            ALLOW_BREAKING_BLUE_GREEN_MIGRATIONS: "1",
-            BLUE_GREEN_MIGRATION_OVERRIDE_REASON:
-              "session-clock DML is non-overridable; this must not rescue it",
-          }
-        );
+        const [blocked, stillBlocked] = await Promise.all([
+          startMigrationSafetyValidator(
+            fixture.migrationPath,
+            fixture.ledgerPath
+          ),
+          startMigrationSafetyValidator(
+            fixture.migrationPath,
+            fixture.ledgerPath,
+            {
+              ALLOW_BREAKING_BLUE_GREEN_MIGRATIONS: "1",
+              BLUE_GREEN_MIGRATION_OVERRIDE_REASON:
+                "session-clock DML is non-overridable; this must not rescue it",
+            }
+          ),
+        ]);
 
         expect(blocked.status, blocked.stderr).not.toBe(0);
         expect(blocked.stderr).toContain("Session-clock CURRENT_TIMESTAMP/now()");
@@ -3118,7 +3275,7 @@ describe("review finding source/schema contracts", () => {
 
   it(
     "allows DDL DEFAULT CURRENT_TIMESTAMP and INSERT/UPDATE with explicit values (#1656 / #1627)",
-    { timeout: 20000 },
+    { timeout: MIGRATION_GATE_TIMEOUT_MS },
     () => {
       // The ban is scoped to DML payloads. A column DEFAULT CURRENT_TIMESTAMP
       // (CREATE TABLE and ALTER COLUMN ... SET DEFAULT) is DDL, not an
@@ -3154,7 +3311,7 @@ describe("review finding source/schema contracts", () => {
 
   it(
     "exempts migrations before the session-clock baseline so committed history never retro-fails (#1656 / #1627)",
-    { timeout: 20000 },
+    { timeout: MIGRATION_GATE_TIMEOUT_MS },
     () => {
       // Existing committed migrations legitimately used CURRENT_TIMESTAMP/now()
       // in DML payloads before this gate existed (e.g. 20260708000000 seeds the
@@ -3183,8 +3340,8 @@ describe("review finding source/schema contracts", () => {
 
   it(
     "treats a dollar-quoted body with internal semicolons as one statement so its CURRENT_TIMESTAMP is still caught (#2038)",
-    { timeout: 20000 },
-    () => {
+    { timeout: MIGRATION_GATE_TIMEOUT_MS },
+    async () => {
       // #2038: a $cms$...$cms$ payload whose HTML entities embed literal ";"
       // (e.g. &mdash;) must not fragment before the session-clock gate. The whole
       // UPDATE — including "updatedAt" = CURRENT_TIMESTAMP after the closing $cms$
@@ -3204,19 +3361,21 @@ describe("review finding source/schema contracts", () => {
       );
 
       try {
-        const blocked = runMigrationSafetyValidator(
-          fixture.migrationPath,
-          fixture.ledgerPath
-        );
-        const stillBlocked = runMigrationSafetyValidator(
-          fixture.migrationPath,
-          fixture.ledgerPath,
-          {
-            ALLOW_BREAKING_BLUE_GREEN_MIGRATIONS: "1",
-            BLUE_GREEN_MIGRATION_OVERRIDE_REASON:
-              "session-clock DML stays non-overridable through dollar quotes",
-          }
-        );
+        const [blocked, stillBlocked] = await Promise.all([
+          startMigrationSafetyValidator(
+            fixture.migrationPath,
+            fixture.ledgerPath
+          ),
+          startMigrationSafetyValidator(
+            fixture.migrationPath,
+            fixture.ledgerPath,
+            {
+              ALLOW_BREAKING_BLUE_GREEN_MIGRATIONS: "1",
+              BLUE_GREEN_MIGRATION_OVERRIDE_REASON:
+                "session-clock DML stays non-overridable through dollar quotes",
+            }
+          ),
+        ]);
 
         expect(blocked.status, blocked.stderr).not.toBe(0);
         expect(blocked.stderr).toContain("Session-clock CURRENT_TIMESTAMP/now()");
@@ -3230,7 +3389,7 @@ describe("review finding source/schema contracts", () => {
 
   it(
     "still splits multi-statement files at real semicolons after a dollar-quoted body (#2038)",
-    { timeout: 20000 },
+    { timeout: MIGRATION_GATE_TIMEOUT_MS },
     () => {
       // The dollar-quote awareness must not swallow the real statement separator:
       // a benign explicit-UTC UPDATE with a $cms$ body (internal ";" included)
@@ -3270,7 +3429,7 @@ describe("review finding source/schema contracts", () => {
 
   it(
     "fails loudly on an unterminated dollar-quoted string instead of silently passing (#2038)",
-    { timeout: 20000 },
+    { timeout: MIGRATION_GATE_TIMEOUT_MS },
     () => {
       // An opening $cms$ with no closing $cms$ before EOF must not let the file
       // slip through unparsed: the splitter reports the unterminated body and the
@@ -3303,7 +3462,7 @@ describe("review finding source/schema contracts", () => {
 
   it(
     "acknowledges the committed 20260717180000 cold-table cosmetic session-clock UPDATE against the real ledger (#2038)",
-    { timeout: 20000 },
+    { timeout: MIGRATION_GATE_TIMEOUT_MS },
     () => {
       // End-to-end: the dollar-quote-aware splitter now SEES the CURRENT_TIMESTAMP
       // in the committed starter-copy UPDATEs (previously hidden by &mdash;
@@ -3332,43 +3491,47 @@ describe("review finding source/schema contracts", () => {
     }
   );
 
-  it("flags hot-table trigger operations in the blue/green validator", () => {
-    // #1359 (finding F8): 20260704100000 ran DROP TRIGGER / CREATE CONSTRAINT
-    // TRIGGER on hot tables Booking/BookingGuest, but the validator's hot-table
-    // regex did not cover TRIGGER operations, so it passed the deploy gate with
-    // no ledger entry. The regex must now require a ledger entry for them.
-    const missing = createTempMigration(
-      'DROP TRIGGER "Booking_dates_consistent_with_guests" ON "Booking";\n',
-      `${LEDGER_HEADER}\n`
-    );
-    try {
-      const result = runMigrationSafetyValidator(
-        missing.migrationPath,
-        missing.ledgerPath
+  it(
+    "flags hot-table trigger operations in the blue/green validator",
+    { timeout: MIGRATION_GATE_TIMEOUT_MS },
+    () => {
+      // #1359 (finding F8): 20260704100000 ran DROP TRIGGER / CREATE CONSTRAINT
+      // TRIGGER on hot tables Booking/BookingGuest, but the validator's hot-table
+      // regex did not cover TRIGGER operations, so it passed the deploy gate with
+      // no ledger entry. The regex must now require a ledger entry for them.
+      const missing = createTempMigration(
+        'DROP TRIGGER "Booking_dates_consistent_with_guests" ON "Booking";\n',
+        `${LEDGER_HEADER}\n`
       );
-      expect(result.status).not.toBe(0);
-      expect(result.stderr).toContain("blue/green migration safety review");
-    } finally {
-      rmSync(missing.tempDir, { recursive: true, force: true });
-    }
+      try {
+        const result = runMigrationSafetyValidator(
+          missing.migrationPath,
+          missing.ledgerPath
+        );
+        expect(result.status).not.toBe(0);
+        expect(result.stderr).toContain("blue/green migration safety review");
+      } finally {
+        rmSync(missing.tempDir, { recursive: true, force: true });
+      }
 
-    const documented = createTempMigration(
-      'DROP TRIGGER "Booking_dates_consistent_with_guests" ON "Booking";\n',
-      [
-        LEDGER_HEADER,
-        "20990101000000_test_migration\texpand\tn/a\tyes\tSwaps a Booking trigger for a deferred constraint trigger; brief lock, no row scan.",
-      ].join("\n")
-    );
-    try {
-      const result = runMigrationSafetyValidator(
-        documented.migrationPath,
-        documented.ledgerPath
+      const documented = createTempMigration(
+        'DROP TRIGGER "Booking_dates_consistent_with_guests" ON "Booking";\n',
+        [
+          LEDGER_HEADER,
+          "20990101000000_test_migration\texpand\tn/a\tyes\tSwaps a Booking trigger for a deferred constraint trigger; brief lock, no row scan.",
+        ].join("\n")
       );
-      expect(result.status).toBe(0);
-    } finally {
-      rmSync(documented.tempDir, { recursive: true, force: true });
+      try {
+        const result = runMigrationSafetyValidator(
+          documented.migrationPath,
+          documented.ledgerPath
+        );
+        expect(result.status).toBe(0);
+      } finally {
+        rmSync(documented.tempDir, { recursive: true, force: true });
+      }
     }
-  });
+  );
 
   it(
     "keeps the committed migration tree covered by the blue/green safety ledger",
@@ -3378,7 +3541,7 @@ describe("review finding source/schema contracts", () => {
     // which runs the suite under libfaketime — every subprocess spawn inherits
     // the LD_PRELOAD shim, and this is by far the shelliest test in the repo.
     // Measured at 34s there; 20s failed.
-    { timeout: 60000 },
+    { timeout: MIGRATION_GATE_TREE_TIMEOUT_MS },
     () => {
       // Regression guard for #1359: the real prisma/migrations tree + real ledger
       // must pass the PR-time coverage gate (both backfilled rows present, and no
@@ -3388,51 +3551,59 @@ describe("review finding source/schema contracts", () => {
     },
   );
 
-  it("fails ledger coverage when a hot-table migration at/after baseline is unledgered", () => {
-    const fixture = createTempMigrationsTree(
-      [
-        {
-          name: "20990101000000_unledgered_hot",
-          sql: 'ALTER TABLE "Payment" ADD COLUMN "processorRef" TEXT;\n',
-        },
-      ],
-      [LEDGER_HEADER, "20260507000000_base\texpand\tn/a\tyes\tbaseline row"].join(
-        "\n"
-      )
-    );
-    try {
-      const result = runMigrationSafetyCoverage({
-        MIGRATIONS_DIR: fixture.migrationsDir,
-        MIGRATION_SAFETY_LEDGER: fixture.ledgerPath,
-      });
-      expect(result.status).not.toBe(0);
-      expect(result.stderr).toContain("Ledger coverage check FAILED");
-    } finally {
-      rmSync(fixture.tempDir, { recursive: true, force: true });
+  it(
+    "fails ledger coverage when a hot-table migration at/after baseline is unledgered",
+    { timeout: MIGRATION_GATE_TIMEOUT_MS },
+    () => {
+      const fixture = createTempMigrationsTree(
+        [
+          {
+            name: "20990101000000_unledgered_hot",
+            sql: 'ALTER TABLE "Payment" ADD COLUMN "processorRef" TEXT;\n',
+          },
+        ],
+        [LEDGER_HEADER, "20260507000000_base\texpand\tn/a\tyes\tbaseline row"].join(
+          "\n"
+        )
+      );
+      try {
+        const result = runMigrationSafetyCoverage({
+          MIGRATIONS_DIR: fixture.migrationsDir,
+          MIGRATION_SAFETY_LEDGER: fixture.ledgerPath,
+        });
+        expect(result.status).not.toBe(0);
+        expect(result.stderr).toContain("Ledger coverage check FAILED");
+      } finally {
+        rmSync(fixture.tempDir, { recursive: true, force: true });
+      }
     }
-  });
+  );
 
-  it("fails the timestamp ratchet when a new migration reuses a timestamp prefix", () => {
-    const fixture = createTempMigrationsTree(
-      [
-        { name: "20990101000000_alpha", sql: 'CREATE TABLE "Foo" ("id" TEXT);\n' },
-        { name: "20990101000000_beta", sql: 'CREATE TABLE "Bar" ("id" TEXT);\n' },
-      ],
-      [LEDGER_HEADER, "20260507000000_base\texpand\tn/a\tyes\tbaseline row"].join(
-        "\n"
-      )
-    );
-    try {
-      const result = runMigrationSafetyCoverage({
-        MIGRATIONS_DIR: fixture.migrationsDir,
-        MIGRATION_SAFETY_LEDGER: fixture.ledgerPath,
-      });
-      expect(result.status).not.toBe(0);
-      expect(result.stderr).toContain("Timestamp hygiene check FAILED");
-    } finally {
-      rmSync(fixture.tempDir, { recursive: true, force: true });
+  it(
+    "fails the timestamp ratchet when a new migration reuses a timestamp prefix",
+    { timeout: MIGRATION_GATE_TIMEOUT_MS },
+    () => {
+      const fixture = createTempMigrationsTree(
+        [
+          { name: "20990101000000_alpha", sql: 'CREATE TABLE "Foo" ("id" TEXT);\n' },
+          { name: "20990101000000_beta", sql: 'CREATE TABLE "Bar" ("id" TEXT);\n' },
+        ],
+        [LEDGER_HEADER, "20260507000000_base\texpand\tn/a\tyes\tbaseline row"].join(
+          "\n"
+        )
+      );
+      try {
+        const result = runMigrationSafetyCoverage({
+          MIGRATIONS_DIR: fixture.migrationsDir,
+          MIGRATION_SAFETY_LEDGER: fixture.ledgerPath,
+        });
+        expect(result.status).not.toBe(0);
+        expect(result.stderr).toContain("Timestamp hygiene check FAILED");
+      } finally {
+        rmSync(fixture.tempDir, { recursive: true, force: true });
+      }
     }
-  });
+  );
 
   it("keeps the door code legible in dark mode via a source token, not a remap (F28)", () => {
     // #1371 F28 originally relied on the `.dark .app-theme-scope` neutral remap

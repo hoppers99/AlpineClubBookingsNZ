@@ -1930,13 +1930,45 @@ export default async function BookingDetailPage({
       {isBookingOwner && !isDeleted && isDraft && booking.finalPriceCents > 0 && (
         <Card>
           <CardHeader>
-            <CardTitle>Complete Booking</CardTitle>
+            {/* #2779 — real heading semantics on the pay door. `CardTitle`
+                renders a plain <div> (src/components/ui/card.tsx), so a member
+                navigating by headings never finds this card — and this is the
+                one card a subscription-locked member has to reach. Marked up
+                the way `roster-editor.tsx` already does it rather than as an
+                <h2>: `.app-theme-scope :is(h1,h2,h3,h4)` in globals.css swaps
+                real heading tags onto --font-heading, which would make this one
+                card title look unlike every other card title on the page. Level
+                2 sits directly under the page's single <h1> "Booking Details". */}
+            <CardTitle role="heading" aria-level={2}>
+              Complete Booking
+            </CardTitle>
           </CardHeader>
           <CardContent>
             <p className="text-sm text-muted-foreground mb-4">
-              This is a saved draft. Review the details above, then confirm when
-              you&apos;re ready to pay and finalise the booking.
+              {booking.createdBy
+                ? // #2779 — the pick-up-and-pay journey. An admin saved this
+                  // booking on the member's behalf; the member confirms it by
+                  // paying for it, and that works even while an unpaid
+                  // subscription blocks them from STARTING a booking
+                  // (INV-LOCKOUT-069). Say who it came from, so the member does
+                  // not read a booking they never made as somebody's mistake.
+                  "The club saved this booking for you. Review the details above, then pay to confirm it."
+                : "This is a saved draft. Review the details above, then confirm when you're ready to pay and finalise the booking."}
             </p>
+            {booking.draftExpiresAt ? (
+              // #2779 — the 72-hour draft clock. `draft-cleanup` DELETES an
+              // expired draft outright (instrumentation.node.ts), so a member
+              // who leaves it a week finds nothing at all. The dashboard card
+              // has always shown this deadline; the page where the money is
+              // actually taken did not.
+              <p
+                className="text-sm text-warning-11 mb-4"
+                data-testid="draft-expiry-notice"
+              >
+                Pay by {formatNZDateTime(booking.draftExpiresAt)} or this draft
+                is removed and the booking will need to be made again.
+              </p>
+            ) : null}
             <BookingPaymentSection
               bookingId={booking.id}
               amountCents={booking.finalPriceCents}
@@ -2083,7 +2115,14 @@ export default async function BookingDetailPage({
       {showCompletePaymentCard && (
         <Card id="payment" className="scroll-mt-20">
           <CardHeader>
-            <CardTitle>Complete Payment</CardTitle>
+            {/* Same heading semantics as the DRAFT "Complete Booking" card
+                above, and for the same reason: this is the other door a member
+                pays through, and the two are mutually exclusive (DRAFT is not a
+                payment-owed status), so only one level-2 heading of this kind
+                is ever on the page. */}
+            <CardTitle role="heading" aria-level={2}>
+              Complete Payment
+            </CardTitle>
           </CardHeader>
           <CardContent>
             <p className="text-sm text-muted-foreground mb-4">

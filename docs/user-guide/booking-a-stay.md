@@ -145,6 +145,29 @@ both the parent's and the guest's own status badges. Open the booking to see a
 count, and amount. Your dashboard's **Next Stay** card also shows a "how full for
 your dates" occupancy meter.
 
+### A booking the club saved for you
+
+Sometimes the booking is already made when you sign in. Someone at the club can
+make a booking **on your behalf** and leave the payment to you — you will see it
+in your **Draft Bookings** card on the dashboard, labelled **"Saved for you by
+the club"**, with a **Review & pay** button.
+
+Open it, check the dates and who is on it, and pay. **Paying is what confirms
+it** — nobody has to come back to the club. Two things to know:
+
+- **This still works when your subscription is unpaid.** If your club stops
+  members with an unpaid subscription from booking, that stops you *starting* a
+  booking of your own. It has never stopped you paying for one the club saved for
+  you — the hut fee for the stay and your subscription are two different debts,
+  and the subscription is still owed.
+- **Pay it within 72 hours.** An unpaid draft is **removed** three days after it
+  is saved — deleted rather than cancelled, so there is nothing left to open and
+  the booking has to be made again. Nothing is emailed about a draft, so if the
+  club told you one is waiting, do not leave it.
+
+If the booking comes to **$0** there is nothing for you to pay and no payment
+step appears — ask the club to confirm that one for you.
+
 ## Guests without a login
 
 **Whether the club hosts non-members, and on what terms, is set by the club — not
@@ -300,6 +323,8 @@ different party. Either way the officer's explanation is on your request in
 | The stay is blocked by a minimum-stay rule | That period has a minimum number of nights | Extend your stay to meet the minimum, or use **Request Booking Officer approval** to ask to be let past it (see [above](#asking-to-be-let-past-a-booking-rule)) |
 | You paid but the booking still says "Payment required" | The card step was closed before payment finished | Open the booking and use its **Complete Payment** card |
 | Your non-member guests show as provisional | Your club runs the *Members First* policy (a name you never see in the wizard) and a hold applies to your stay | This is expected — their bed is charged/confirmed around the hold deadline; see [Paying](paying-for-your-stay.md#split-charges-for-non-member-guests) |
+| **Book** refuses you because your subscription is unpaid, but you need a bed | The block stops you *starting* a booking; it does not stop you paying for one | Ask the club to make the booking for you and save it — it lands in your drafts and you pay it yourself (see [above](#a-booking-the-club-saved-for-you)) |
+| A draft the club saved for you has disappeared | Unpaid drafts are removed 72 hours after they are saved | Ask the club to make it again, and either pay within three days or ask them to confirm it for you |
 
 ## Related links
 

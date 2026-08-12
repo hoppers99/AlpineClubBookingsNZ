@@ -188,6 +188,52 @@ requirement was then widened once, by owner decision on 3 Aug 2026, to cover the
 member doing the booking as well as the members staying — see "The booking still
 needs a paid-up adult member on it" above.
 
+### Get a locked-out member into a bed: book on their behalf
+
+**Stopping them booking does not stop them paying.** That is deliberate, it is
+the design, and it is the answer to "a member owes their subscription but needs a
+bed on Saturday".
+
+Under **Stop them booking**, an unpaid member cannot start a booking of their
+own. What the block has never covered — and was never meant to — is *paying for a
+booking somebody else made for them*. Two different debts: the hut fee for this
+stay, and the subscription for the season. Refusing to take the hut fee would not
+collect a cent of the subscription; it would just cost the club a booking.
+
+So the supported route is:
+
+1. **You make the booking** on [Book on Behalf](book.md), choosing the member as
+   the owner. The lockout does not apply to an admin booking on somebody's
+   behalf, so it simply goes through.
+2. **You press Save as Draft** rather than Confirm. That leaves the money for the
+   member.
+3. **Tell them it is waiting.** Nothing is emailed automatically about a draft.
+4. **They sign in and pay it.** It is on their dashboard as a draft labelled
+   "Saved for you by the club", with a **Review & pay** button, and their
+   subscription banner tells them a saved booking can still be paid. Paying
+   confirms the booking exactly as it would for anyone else.
+
+Nothing about the lockout is loosened by this. The moment they try to make a
+booking of their own — or to add a guest, or to edit a booking — they are refused
+again, and their subscription is still owed and still chased.
+
+Two limits are worth knowing before you rely on it:
+
+- **Drafts are removed after 72 hours.** An unpaid draft is deleted, not
+  cancelled: after three days there is nothing left to pay and the booking must
+  be made again. If the member cannot pay that quickly, confirm the booking
+  yourself and collect the money the usual way.
+- **A $0 booking has nothing to pick up.** With nothing to pay there is no
+  payment step on the member's screen, and the **Confirm** button they are
+  offered instead refuses a member whose subscription is unpaid. Free bookings
+  are confirmed by an admin — press **Confirm Booking** instead of **Save as
+  Draft**, or confirm it from the booking's own page afterwards.
+
+If your club is on **Let them book, at non-member rates** instead, none of this
+is needed: the member books for themselves and their own nights are simply
+priced at the non-member rate. Under **Let them book normally** there is no block
+to work around at all.
+
 ### Review the age-tier rule
 
 1. The **Age tiers** card shows which age tiers require a paid subscription and
@@ -215,13 +261,16 @@ needs a paid-up adult member on it" above.
 | The detection codes are greyed out | Xero is not connected, or you lack finance edit | Connect Xero, or ask a finance-edit admin |
 | I can't see the detection or age-tier cards | Your role lacks finance/bookings access | Those sections are hidden for roles without the area; ask a full admin |
 | Changing the financial year re-based my seasons | The override recalculates every season | Only override when your membership year genuinely differs from Xero's; existing records are not migrated |
+| A blocked member paid for a booking — is that a bug? | No. The block stops them *starting* a booking, not paying for one an admin saved for them | This is the designed way to get a locked-out member into a bed — see "Get a locked-out member into a bed" above |
+| The draft I saved for a locked-out member has vanished | Unpaid drafts are removed 72 hours after they are saved | Make it again and confirm it yourself, or ask the member to pay within three days |
 
 ## Related links
 
 - Back to the [documentation hub](../README.md).
 - Sibling guides: [Membership & Members setup](membership-setup.md),
   [Membership Types](membership-types.md), [Subscriptions](subscriptions.md),
-  [Age Groups](age-tier-settings.md), [Xero Sync](xero.md).
+  [Age Groups](age-tier-settings.md), [Xero Sync](xero.md),
+  [Book on Behalf](book.md).
 - Reference: the
   [member subscription status transitions](../STATE_MACHINES.md#member-subscription-status-transitions)
   and

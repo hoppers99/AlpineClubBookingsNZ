@@ -19,12 +19,29 @@
  *
  * WHAT IT RECORDS (exhaustive, ADR-004 §4): tool id, the areas checked, the auth
  * outcome, the failure reason, non-reversible hashes of the accepted arguments
- * and of the result, row/byte counts, duration, round index, observed-at.
+ * and of the result, row/byte counts, duration, round index, observed-at, and —
+ * since AID-7a (#2785) — the consent state: which channel invoked it, whether
+ * ADR-004 §1's inclusion was granted or refused, the KIND of record consent was
+ * about, how that record entered the investigation (or that this investigation did
+ * not cover it), and the two per-request ticks, personal details and people search.
+ *
+ * WHY THE CONSENT FIELDS HAD TO BE ADDED. Without them a
+ * `surfacesPersonalData: true` read taken WITH the operator's consent was
+ * indistinguishable in the durable log from one taken without it — the same defect
+ * shape, one level up, that this whole substrate exists to avoid. ADR-004 §4 permits
+ * "auth outcome — allowed / denied, and the area/level checked"; consent is the
+ * second half of that authorisation, so recording its outcome is squarely inside the
+ * approved set rather than an extension of it.
  *
  * WHAT IT NEVER RECORDS: raw arguments, raw results, the operator's question, the
  * model's answer, provider payloads, credentials, or any unrestricted identifier
  * beyond the acting admin's own member id (which is the accountability field, and
  * is what every other admin audit row in the platform already carries).
+ *
+ * IN PARTICULAR IT STILL RECORDS NO SUBJECT RECORD ID. The consent fields carry the
+ * KIND of record and the ORIGIN of the operator's decision, never the id: `argsHash`
+ * already pins which record non-reversibly, and adding the identifier beside it
+ * would put an unrestricted personal identifier in a 24-month row.
  */
 
 import "server-only";
@@ -66,6 +83,15 @@ function auditMetadata(audit: DiagnosticsToolAudit): Record<string, unknown> {
     durationMs: audit.durationMs,
     roundIndex: audit.roundIndex,
     observedAt: audit.observedAt,
+    // The six consent fields (AID-7a, #2785). Every one of them is a closed enum or
+    // null — there is no free text and no identifier here, which is what keeps this
+    // object inside ADR-004 §4's approved set. See the module docblock.
+    invocationChannel: audit.invocationChannel,
+    sensitiveInclusion: audit.sensitiveInclusion,
+    consentRecordKind: audit.consentRecordKind,
+    consentRecordOrigin: audit.consentRecordOrigin,
+    recordConsentTick: audit.recordConsentTick,
+    peopleSearchTick: audit.peopleSearchTick,
   };
 }
 
@@ -81,10 +107,39 @@ export async function recordDiagnosticsToolAudit(
   input: DiagnosticsToolAuditInput,
 ): Promise<void> {
   const { audit } = input;
-  const denied = audit.authOutcome === "denied";
   const failed = audit.failureReason !== null;
 
-  const severity: AuditSeverity = denied ? "important" : "info";
+  /**
+   * An AUTHORIZATION denial — the only thing this row reports as a security block.
+   *
+   * `internal_error` is excluded, and that exclusion is the rule `invoke.ts` states
+   * for itself one level up (#2785 review). Every exit taken BEFORE the permission
+   * check records `authOutcome: "denied"`, because nothing had been allowed at that
+   * point; for an `internal_error` — a ledger that belongs to another question, a
+   * binding that disagrees with its own entry, a collaborator that threw where its
+   * contract says it returns — that combination used to produce a security-category,
+   * 24-month row at severity `important` with outcome `blocked`, "asserting a
+   * permission incident that never happened" (`invoke.ts`, the hoisted fault state).
+   * `invoke.ts` fixed it for the faults that happen after authorization by recording
+   * `allowed`; the ones that happen before it could not be fixed there without the
+   * row claiming an authorization that never ran. So the classification is fixed
+   * here, for the whole class: a defect is a `failure`, which is the outcome this
+   * function already has for it. The reason, the auth outcome and the consent state
+   * are all still recorded in the metadata, and `reportAiError` has already raised
+   * the fault where faults are read.
+   */
+  const deniedAuthorization =
+    audit.authOutcome === "denied" && audit.failureReason !== "internal_error";
+
+  // `important` is reserved for an AUTHORIZATION denial, and a consent refusal is
+  // deliberately not one (AID-7a, #2785). The caller passed every permission check;
+  // what was missing was the operator's own inclusion of a record, which is an
+  // ordinary and expected outcome of asking a question about a record you did not
+  // select. Raising it to `important` would fill the security-incident view with
+  // routine refusals and devalue the rows that are incidents. The refusal is still
+  // fully recorded: outcome `failure`, `failureReason`, and `sensitiveInclusion:
+  // "refused"` in the metadata.
+  const severity: AuditSeverity = deniedAuthorization ? "important" : "info";
 
   await createStructuredAuditLog({
     action: DIAGNOSTICS_TOOL_AUDIT_ACTION,
@@ -101,13 +156,13 @@ export async function recordDiagnosticsToolAudit(
     },
     category: "security",
     severity,
-    outcome: denied ? "blocked" : failed ? "failure" : "success",
+    outcome: deniedAuthorization ? "blocked" : failed ? "failure" : "success",
     // Fixed sentence plus the tool id above and a fixed enum. Nothing interpolated
     // here can come from the operator or from a database value, and the only
     // model-chosen part is a tool id already constrained to the registry key
     // pattern (see `entity.id`).
     summary: `Diagnostics tool ${audit.toolId} ${
-      denied ? "denied" : failed ? "failed" : "ran"
+      deniedAuthorization ? "denied" : failed ? "failed" : "ran"
     } on ${input.surface}`,
     metadata: auditMetadata(audit),
     // Diagnostics tool use IS sensitive access: an admin reading club data

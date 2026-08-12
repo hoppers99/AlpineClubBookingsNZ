@@ -214,6 +214,15 @@ const DISABLED_MODULE_FLAGS: FeatureFlags = Object.fromEntries(
  * `normalizeClubModuleSettings(null)`, because that is the platform's documented
  * default for a club that has never saved the panel — an observation, not a
  * fallback.
+ *
+ * ONE EVIDENCE CALLER REPORTS THE ABSENCE DIFFERENTLY, and it is not an exception to
+ * the rule above. `readDiagnosticsModuleFlag` (`ai-diagnostics-config.ts`) calls this
+ * strict loader and catches, because AI Diagnostics readiness must still return a row
+ * when the application database is unreachable — that is the one moment it exists for,
+ * so `evidence_unavailable` would be the wrong answer there. It still reports the
+ * absence AS an absence rather than as "off": `moduleEnabled: null` with a distinct
+ * `module_flags_unreadable` blocker (#2803). What is forbidden either way is the
+ * tolerant loader's answer — every flag `false`, indistinguishable from a real setting.
  */
 export async function loadEffectiveModuleFlagsStrict(
   db: Pick<PrismaClient, "clubModuleSettings"> = prisma,

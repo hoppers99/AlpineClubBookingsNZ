@@ -78,10 +78,22 @@ flowchart TD
 - **TB4 — Tools ↔ database.** Tools reach the database only through the dedicated
   SELECT-only role, on a declared allowlist that names relations **and, where the
   relation carries anything a tool should never read, the individual columns** — never
-  the superuser `DATABASE_URL` (ADR-007). A tool that reads a first-party calculation
-  instead of the database (AID-6A's `server_owned` source) crosses this boundary not
-  at all, and gains no privilege for it: it is read-only, first-party, and passes the
-  same authorization, projection, bound and audit gates.
+  the superuser `DATABASE_URL` (ADR-007). **A `server_owned` source is the exception, and it
+  is the one worth being precise about** (AID-6A, tightened by AID-7b #2786). It reads
+  a first-party calculation rather than issuing model-chosen SQL — so it crosses no
+  *allowlist* boundary, gains no privilege, and passes the same authorization,
+  projection, bound and audit gates. But it does reach the database, and it reaches it
+  on the **application's own full-privilege connection**, where the SELECT-only role's
+  grants are not the boundary. Saying it "does not cross TB4 at all" was an
+  overstatement, and an overstatement here is worse than a gap: it teaches the next
+  author that the SELECT-only guarantees already cover the entry they are about to
+  write. What bounds it instead is the shared read-only seam — every non-exempt
+  `server_owned` read runs inside a `REPEATABLE READ`, `SET TRANSACTION READ ONLY`
+  transaction with a transaction-scoped `statement_timeout`, so PostgreSQL refuses a
+  write (SQLSTATE `25006`) even where the connection's privileges would permit one.
+  The few reads that structurally cannot sit inside it are a closed, reviewed
+  exemption table, and every `server_owned` entry must declare which of them it relies
+  on or fail at definition time. See `tools.md` → "The read-only seam".
 - **TB5 — Substrate ↔ provider.** Only bounded, redacted, typed excerpts cross to
   Anthropic; raw tables, payloads, secrets, and un-opted-in PII never do
   (ADR-003, ADR-004, ADR-006).
