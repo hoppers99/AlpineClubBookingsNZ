@@ -8,7 +8,7 @@
  * statements at 34 tracked jobs, and issuing them through a single `Promise.all` put
  * 103 concurrent queries on the application pool per call. Survivable as an admin page
  * load; not survivable as a diagnostics tool, where a model may spend a whole
- * tool-call budget on job health and every expired 15-second deadline abandons its
+ * tool-call budget on job health and every expired executor deadline abandons its
  * queries without cancelling them.
  */
 import { beforeEach, describe, expect, it, vi } from "vitest";

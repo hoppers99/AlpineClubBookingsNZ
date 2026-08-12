@@ -206,9 +206,9 @@ describe("server-owned evidence: the gates that still apply (#2375)", () => {
         read: async () => {
           throw Object.assign(
             new Error(
-              "Timed out fetching a new connection from the connection pool",
+              "Unable to start a transaction in the given time",
             ),
-            { code: "P2024" },
+            { code: "P2028" },
           );
         },
       }),
@@ -230,8 +230,10 @@ describe("server-owned evidence: the gates that still apply (#2375)", () => {
     // answers" test below pins that the deadline still reports
     // `evidence_unavailable`, so this does not need a duplicate of it (and a
     // duplicate without fake timers would have cost CI 45 real seconds).
-    // Still fails closed, still audited as an allowed call that then failed.
-    expect(result.rows ?? []).toHaveLength(0);
+    // Still fails closed — the failure type carries no rows at all, which is the
+    // type system enforcing what the contract says — and still audited as an
+    // allowed call that then failed rather than as a permission block.
+    expect("rows" in result).toBe(false);
     expect(auditMock.mock.calls[0][0].audit.failureReason).toBe(
       "evidence_database_busy",
     );

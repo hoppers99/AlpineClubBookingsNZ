@@ -176,18 +176,21 @@ describe("the seam opens ONE bounded read-only transaction (#2786)", () => {
   });
 
   it("recognises a pool-wait timeout, and only that (#2804)", () => {
-    // P2024 is Prisma's "waited maxWait and no connection came free". It is the
+    // P2028 is Prisma's TransactionStartTimeoutError — `maxWait` expired. It is the
     // ONE failure on this path where nothing is broken, and at a twenty-second
     // wait an admin is owed that distinction rather than a generic fault.
-    expect(isDiagnosticsPoolWaitTimeout({ code: "P2024" })).toBe(true);
+    expect(isDiagnosticsPoolWaitTimeout({ code: "P2028" })).toBe(true);
     // Wrapped one level by the driver adapter, which is how it actually arrives.
     expect(
-      isDiagnosticsPoolWaitTimeout({ cause: { code: "P2024" } }),
+      isDiagnosticsPoolWaitTimeout({ cause: { code: "P2028" } }),
     ).toBe(true);
 
     // Everything else is a real fault and must NOT be softened into "just busy" —
     // that direction loses information an operator needs.
     expect(isDiagnosticsPoolWaitTimeout({ code: "P2010" })).toBe(false);
+    // P2024 was the RUST engine's pool error and does not exist in this runtime.
+    // The first draft matched it and therefore matched nothing, in production.
+    expect(isDiagnosticsPoolWaitTimeout({ code: "P2024" })).toBe(false);
     expect(isDiagnosticsPoolWaitTimeout(new Error("connection refused"))).toBe(
       false,
     );
@@ -204,7 +207,7 @@ describe("the seam opens ONE bounded read-only transaction (#2786)", () => {
     // And it does not reach arbitrarily deep, so it cannot start matching
     // something unrelated that happens to nest a code two levels down.
     expect(
-      isDiagnosticsPoolWaitTimeout({ cause: { cause: { code: "P2024" } } }),
+      isDiagnosticsPoolWaitTimeout({ cause: { cause: { code: "P2028" } } }),
     ).toBe(false);
   });
 
@@ -275,7 +278,7 @@ describe("the seam opens ONE bounded read-only transaction (#2786)", () => {
     // it is pinned on its own. Everything else follows from it; quietly restoring
     // 2_000 would silently undo an owner decision and every derived bound would
     // shrink with it, still "in order" and still green.
-    expect(DIAGNOSTICS_TOOL_BOUNDS.readOnlyMaxWaitMs).toBe(20_000);
+    expect(DIAGNOSTICS_TOOL_BOUNDS.readOnlyMaxWaitMs).toBe(8_000);
     // The statement timeout deliberately did NOT move. Waiting longer to start is
     // what was asked for; letting a running query run longer is the half that
     // actually loads the database.

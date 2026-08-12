@@ -44,38 +44,41 @@ import type { AdminPermissionArea } from "@/lib/admin-permissions";
 export const DIAGNOSTICS_TOOL_SCHEMA_VERSION = 1 as const;
 
 /**
- * Every ceiling the substrate enforces. They are deliberately small: a
- * diagnostics tool exists to answer "what does the deployed system currently say
- * about X", not to move data. A tool that wants more than this is a report, and
- * a report belongs in the admin UI where it is already governed.
- *
- * `maxRows`/`maxResultBytes` are HARD CEILINGS on top of each tool's own
- * declared limit — a registry entry may be stricter, never looser, and
- * `registry.ts`'s contract test refuses a looser one.
- */
-/**
  * THE SERVER-OWNED BOUND LADDER, IN ONE PLACE AND DERIVED (#2804).
  *
- * Four bounds govern one `server_owned` read, and they only work in order:
+ * Four bounds govern one `server_owned` read, and the relation between them is
+ * worth stating carefully, because the obvious shorthand is WRONG (#2804 review).
+ * The wait is not "smaller than" the transaction timeout — it comes BEFORE it, and
+ * the two ADD:
  *
- *   wait for a connection  <  the read once started  <  the whole evidence
- *   graph  <  the executor's outer race
+ *   statement < transaction      and      (wait + transaction) < graph < outer race
  *
- * Break the order and the operator gets a vague answer instead of a specific
- * one — the outer race fires while the database was about to say something
- * useful. #2786 found the failure mode that makes this worth deriving rather
+ * "wait < read < graph < outer race" was true while the wait was 2 000 and became
+ * false the moment it became 20 000 — a fair illustration of why the numbers below
+ * are derived rather than merely described.
+ *
+ * Break the relation and the operator gets a vague answer instead of a specific one:
+ * a graph deadline clearing only the transaction would kill a read for the time it
+ * spent queuing for a connection it then went on to get, and call it "took too
+ * long". #2786 found the failure mode that makes this worth deriving rather
  * than listing: two unlinked names for one bound, where narrowing one silently
  * left the other behind and every test still passed. So the three upper bounds
  * are COMPUTED from the two real choices below. There is no second literal to
  * keep in step, and no way to move one without moving what depends on it.
  *
  * OWNER DECISION 12 Aug 2026 (#2804): a diagnostics read should WAIT for a busy
- * database rather than give up. The wait went from 2 s to 20 s, which moves the
- * worst case before a refusal from 9 s to 27 s. The owner was shown that cost in
- * those terms and accepted it, on the condition that the UI shows a "still
- * working" state (#2378) — a 27-second wait with no feedback is worse than a
- * fast refusal, because an admin reloads, and a reload during contention adds
- * another queued reader and makes the cause worse.
+ * database rather than give up. The wait went from 2 s to 8 s, which moves the
+ * worst case before a refusal from 9 s to 15 s.
+ *
+ * IT IS 8 AND NOT THE 20 FIRST CHOSEN, and the reason is the rung below: pg's own
+ * pool ceiling is 10 000 in production, so a longer wait is simply not reachable
+ * without raising a limit that member traffic shares. That was put back to the owner
+ * with the measurement, and 8 s inside the existing ceiling was chosen over changing
+ * the whole application's pool behaviour for an admin tool.
+ *
+ * The owner's condition stands: the UI shows a "still working" state (#2378). A
+ * 15-second wait with no feedback is worse than a fast refusal, because an admin
+ * reloads, and a reload during contention adds another queued reader.
  *
  * THE STATEMENT TIMEOUT DELIBERATELY DID NOT MOVE. Waiting longer to START is
  * what was asked for. Letting an already-running query run longer is a different
@@ -83,8 +86,26 @@ export const DIAGNOSTICS_TOOL_SCHEMA_VERSION = 1 as const;
  */
 const READ_ONLY_STATEMENT_TIMEOUT_MS = 5_000;
 
-/** The owner's decision, and the only reason this ladder changed (#2804). */
-const READ_ONLY_MAX_WAIT_MS = 20_000;
+/**
+ * The owner's decision, and the only reason this ladder changed (#2804).
+ *
+ * IT IS BOUNDED BY SOMETHING THIS LADDER DOES NOT OWN, which is the whole story of
+ * how the first attempt got it wrong. pg's `connectionTimeoutMillis` — set from
+ * `pool_timeout` in `DATABASE_URL`, 10 000 in production — covers time spent QUEUED
+ * as well as time spent connecting. Ask Prisma to wait longer than that and pg
+ * rejects first, with a bare `Error` carrying no code: the longer wait never
+ * happens, the refusal cannot be classified, and every unit test still passes
+ * because they hand-build the error. A first draft of #2804 set this to 20 000
+ * against a 10 000 pool ceiling and claimed a 27-second worst case the code could
+ * not reach.
+ *
+ * So it sits deliberately BELOW the pool's own ceiling, which is what makes
+ * Prisma's own `maxWait` the thing that fires and `P2028` the error that arrives.
+ * `__tests__/pool-acquisition-ladder.test.ts` asserts that against the real
+ * production connection strings, so raising this without raising the pool — a
+ * whole-application decision, since that pool serves member traffic too — fails.
+ */
+const READ_ONLY_MAX_WAIT_MS = 8_000;
 
 /**
  * How much longer the whole transaction may run than any one statement in it.
@@ -106,8 +127,18 @@ const SERVER_EVIDENCE_MARGIN_MS = 5_000;
  * calculation that hangs on something with no deadline at all, never the thing
  * that normally fires.
  */
-const SERVER_EVIDENCE_EXECUTOR_MARGIN_MS = 13_000;
+const SERVER_EVIDENCE_EXECUTOR_MARGIN_MS = 5_000;
 
+/**
+ * Every ceiling the substrate enforces. They are deliberately small: a
+ * diagnostics tool exists to answer "what does the deployed system currently say
+ * about X", not to move data. A tool that wants more than this is a report, and
+ * a report belongs in the admin UI where it is already governed.
+ *
+ * `maxRows`/`maxResultBytes` are HARD CEILINGS on top of each tool's own
+ * declared limit — a registry entry may be stricter, never looser, and
+ * `registry.ts`'s contract test refuses a looser one.
+ */
 export const DIAGNOSTICS_TOOL_BOUNDS = {
   /** Registry key, e.g. `diagnostics.substrate_probe`. */
   toolIdMaxChars: 64,
@@ -125,8 +156,14 @@ export const DIAGNOSTICS_TOOL_BOUNDS = {
    * How long a `server_owned` read waits for a connection from the application
    * pool before refusing (Prisma's `maxWait`). Raised from 2 s by owner decision
    * #2804: an admin would rather wait for a busy database than be told to try
-   * again. It is finite because it must be — an unbounded queue of readers each
-   * holding a pool slot is how a read-only feature becomes a database incident.
+   * again.
+   *
+   * It is finite because it must be — but be precise about what it costs (#2804
+   * review). A WAITING read holds no pool connection; that is what waiting means.
+   * What grows is QUEUE DEPTH, not occupancy, and occupancy stays bounded by the
+   * unchanged 7 s transaction timeout. An unbounded wait would still be wrong — a
+   * queue nobody ever leaves is its own failure — but it is not the "every reader
+   * pins a connection" story that is easy to tell and wrong.
    */
   readOnlyMaxWaitMs: READ_ONLY_MAX_WAIT_MS,
   /**
@@ -197,9 +234,9 @@ export const DIAGNOSTICS_TOOL_BOUNDS = {
    * DERIVED from `serverEvidenceDeadlineMs` since #2804, not chosen. It is the
    * OUTER race, so it has to stay above the source's own deadline or it fires
    * first and replaces a specific refusal with a generic one. When the wait for a
-   * connection moved, this had to move with it; a hand-set 15 000 would now sit
-   * BELOW the source deadline and invert the ladder, and every existing test
-   * would still have passed. That is exactly the shape #2786 was filed about.
+   * connection moved, this had to move with it; a hand-set 15 000 would sit at or
+   * below the source deadline and invert the ladder, and every existing test would
+   * still have passed. That is exactly the shape #2786 was filed about.
    */
   serverEvidenceTimeoutMs:
     READ_ONLY_MAX_WAIT_MS +
@@ -334,7 +371,7 @@ export type DiagnosticsToolFailureReason =
    * it is just busy" sends them to look for a fault that does not exist.
    *
    * It exists at all because #2804 made the wait long. At two seconds a busy
-   * refusal was rare enough to leave folded in; at twenty seconds, an admin who
+   * refusal was rare enough to leave folded in; at eight seconds, an admin who
    * waited that long is owed an accurate reason for it.
    */
   | "evidence_database_busy"

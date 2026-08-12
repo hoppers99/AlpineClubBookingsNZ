@@ -134,7 +134,7 @@ import { withBoundedReadOnlyTransaction } from "../read-only-transaction";
 import { DIAGNOSTICS_TOOL_BOUNDS } from "../types";
 
 /**
- * This source's OWN deadline, below the executor's 15-second wait.
+ * This source's OWN deadline, below the executor's outer race.
  *
  * The executor's `Promise.race` does not cancel the loser and nothing propagates
  * a cancellation into Prisma, so a source that can be slow has to bound its own

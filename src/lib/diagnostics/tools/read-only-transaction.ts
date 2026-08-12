@@ -184,13 +184,17 @@ export const DIAGNOSTICS_READ_ONLY_TRANSACTION_TIMEOUT_MS =
  * sounds right and quietly assumed the queue is always pathological. Usually it
  * is not: it is a second admin looking at a page. Owner decision #2804 is that an
  * admin would rather wait for a busy database than be told to try again, so this
- * is now twenty seconds, and a read that gives up says `evidence_database_busy`
+ * is now eight seconds — as long as the shared application pool ceiling allows —
+ * and a read that gives up says `evidence_database_busy`
  * rather than being folded in with a genuine fault.
  *
  * It stays FINITE, and that is not a compromise on the decision — it is the
- * decision's own limit. An unbounded queue of readers each holding a pool slot is
- * precisely the incident this seam exists to prevent, and Prisma requires a number
- * regardless.
+ * decision's own limit. What an unbounded wait would actually grow is QUEUE DEPTH:
+ * a waiting read holds no connection, so pool OCCUPANCY is still bounded by the
+ * transaction timeout, not by this. A queue nobody ever leaves is its own failure
+ * and reason enough, and Prisma requires a number regardless — but the tempting
+ * "every waiting reader pins a connection" version of this sentence is wrong, and
+ * was in an earlier draft (#2804 review).
  */
 const READ_ONLY_TRANSACTION_MAX_WAIT_MS =
   DIAGNOSTICS_TOOL_BOUNDS.readOnlyMaxWaitMs;
@@ -221,37 +225,51 @@ export async function withBoundedReadOnlyTransaction<T>(
   );
 }
 
+/** Prisma's `TransactionStartTimeoutError` — `maxWait` expired. Named so the one
+ * place it is compared against says what it means. */
+const DIAGNOSTICS_TRANSACTION_START_TIMEOUT_CODE = "P2028";
+
 /**
  * Did this failure mean "the database was too busy to even start", as opposed to
  * "the read ran and something went wrong"? (#2804)
  *
- * Prisma raises `P2024` when `maxWait` expires without a free pool connection.
- * That is the ONE failure on this path where nothing is broken — the database is
- * reachable, the query is fine, every connection was simply in use — and it is
- * therefore the one an operator must not be sent to debug.
+ * `maxWait` expiring is the ONE failure on this path where nothing is broken — the
+ * database is reachable, the query is fine, every connection was simply in use — so
+ * it is the one an operator must not be sent to debug. At a two-second wait that was
+ * rare enough to fold into the generic refusal; at eight it is worth its own answer.
  *
- * IT MATTERS MORE NOW THAN IT DID. At a two-second wait this was a rare event
- * folded into the generic refusal without much cost. At twenty seconds, an admin
- * who has watched a spinner for twenty seconds is owed an accurate reason for it,
- * and "the system evidence could not be gathered" would send them looking for a
- * fault that does not exist.
+ * IT IS `P2028`, AND THE FIRST DRAFT SAID `P2024`. That was wrong, and only a real
+ * server showed it: `P2024` was the RUST engine's connection-pool error, and this
+ * application runs Prisma 7 with `@prisma/adapter-pg`, where there is no Prisma pool
+ * to raise it. `P2024` appears nowhere in the installed runtime. `maxWait` expiry
+ * surfaces as `TransactionStartTimeoutError`, which carries `P2028`. A predicate
+ * matching the old code returned false forever, so every busy refusal was reported
+ * as a fault — and every unit test passed, because they hand-build the error object.
  *
- * MATCHED ON THE CODE, NOT THE MESSAGE. `P2024`'s human text has been reworded
- * across Prisma releases and is not a contract; the code is. The `instanceof`
- * check is deliberately avoided in favour of a structural read, because a driver
- * adapter can wrap the error and `instanceof` then quietly stops matching — which
- * would silently reclassify every busy refusal as a fault, in the direction that
- * loses information rather than the direction that fails loudly.
+ * WHAT IS DELIBERATELY NOT MATCHED. If the wait were set above pg's own
+ * `connectionTimeoutMillis`, the POOL would reject first with a bare `Error` whose
+ * message is "timeout exceeded when trying to connect" and which carries no code at
+ * all. Matching that message would be worse than missing it: the identical error
+ * arises when the database is genuinely unreachable, so a real outage would be
+ * reported to an operator as "nothing is broken, try again shortly". The ladder
+ * keeps the wait BELOW the pool ceiling instead, so this case does not arise, and
+ * `pool-acquisition-ladder.test.ts` is what keeps it that way.
+ *
+ * MATCHED ON THE CODE, NOT THE MESSAGE — wording changes across releases and is not
+ * a contract — and one level into `cause`, because the driver adapter wraps. Not
+ * `instanceof`, which stops matching through a wrapper and would fail in the
+ * direction that loses information.
  */
 export function isDiagnosticsPoolWaitTimeout(error: unknown): boolean {
   if (typeof error !== "object" || error === null) return false;
   const code = (error as { code?: unknown }).code;
-  if (code === "P2024") return true;
-  // The adapter wraps the original; check one level down rather than reaching
-  // arbitrarily deep, so this cannot start matching something unrelated.
+  if (code === DIAGNOSTICS_TRANSACTION_START_TIMEOUT_CODE) return true;
   const cause = (error as { cause?: unknown }).cause;
   if (typeof cause !== "object" || cause === null) return false;
-  return (cause as { code?: unknown }).code === "P2024";
+  return (
+    (cause as { code?: unknown }).code ===
+    DIAGNOSTICS_TRANSACTION_START_TIMEOUT_CODE
+  );
 }
 
 /**

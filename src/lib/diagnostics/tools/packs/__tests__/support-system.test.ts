@@ -750,7 +750,7 @@ describe("AID-6A background job health (#2375)", () => {
 
   it("bounds its own read in TIME, and refuses rather than reporting a partial one", async () => {
     // The `server_owned` arm gets none of the SQL arm's `BEGIN READ ONLY`,
-    // `statement_timeout` or `lock_timeout`, and the executor's 15-second race abandons
+    // `statement_timeout` or `lock_timeout`, and the executor's outer race abandons
     // a slow read WITHOUT cancelling it. So this source carries its own deadline, set
     // below the executor's.
     cronRunsMock.mockResolvedValue([]);

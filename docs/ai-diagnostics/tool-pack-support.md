@@ -405,7 +405,7 @@ further is #2375's own: a future source that *could* be a column-granted `SELECT
 be one.
 
 Two bounds the SQL arm gets for free are supplied by hand here, because a first-party
-calculation gets no `statement_timeout` and the executor's 15-second race abandons a
+calculation gets no `statement_timeout` and the executor's outer race abandons a
 slow read without cancelling it:
 
 - **Bounded fan-out.** Job health reads three queries per tracked job. At 34 jobs that
@@ -492,7 +492,7 @@ deliberate friction ADR-007 asks for.
 | Job health rows | 18, **worst severity first**, with the registered job count on every row. |
 | Job health bytes | 16 384, measured the same way. |
 | Single-row tools | Readiness, deployment and usage health return exactly one row. |
-| Server-owned read | 15 s deadline on the **wait**; job health carries its own 10 s deadline on the **work**. Expiry and refusal are both `evidence_unavailable` with no rows. |
+| Server-owned read | The executor's outer race bounds the **wait**; job health carries its own deadline on the **work**, both derived from the one ladder in `types.ts` (#2804). Expiry and refusal are `evidence_unavailable`; a read that never got a connection is `evidence_database_busy`. |
 
 Three of those deserve their reasoning, and all three numbers are measured rather than
 estimated — an earlier revision of this page estimated them and got both ceilings

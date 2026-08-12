@@ -344,7 +344,7 @@ const NO_EVIDENCE: unique symbol = Symbol(
  *    unhandled rejection and, depending on the runtime, take the process with it.
  *    The `.catch` below is attached to the source promise itself, before the race.
  *  - THE TIMER IS ALWAYS CLEARED, so a fast read does not hold an open handle for
- *    fifteen seconds and keep a serverless invocation alive.
+ *    the whole outer deadline and keep a serverless invocation alive.
  *
  * It never throws: a source that throws SYNCHRONOUSLY (before returning a promise)
  * is caught here too, because the executor's contract is a typed refusal.
@@ -887,7 +887,7 @@ export async function invokeDiagnosticsTool(
       const serverRead = await readServerOwnedEvidence(tool.id, binding.read);
       if (!serverRead.ok) {
         // A busy pool is not a fault, and #2804 made the wait long enough that
-        // saying so matters: an admin who waited twenty seconds is owed the
+        // saying so matters: an admin who waited out the full wait is owed the
         // difference between "nothing is broken, try again" and "go and look".
         return await fail(serverRead.busy ? "evidence_database_busy" : "evidence_unavailable", {
           toolId: tool.id,

@@ -175,6 +175,14 @@ let statementTimeoutMs: number;
 
       // PostgreSQL normalises the milliseconds it was handed, so compare in
       // milliseconds rather than pinning whatever string form it chose ('5s').
+      //
+      // THIS ALSO COVERS #2804. The wait for a connection went 2 s -> 20 s and the
+      // statement timeout deliberately did not move; because this compares against
+      // the derived bound rather than a literal, raising the statement timeout by
+      // mistake fails here against the real server. An earlier draft added a second
+      // near-identical test to "prove" that separately — it proved nothing this one
+      // did not, and the literal 5_000 is pinned in the unit ladder test where the
+      // other decided numbers live.
       const applied = settings.statement_timeout;
       const appliedMs = applied.endsWith("ms")
         ? Number.parseInt(applied, 10)
@@ -211,27 +219,6 @@ let statementTimeoutMs: number;
         `SELECT count(*)::bigint AS count FROM ${PROBE_TABLE}`,
       );
       expect(Number(count)).toBe(0);
-    });
-
-    it("did NOT lengthen what a running query may do (#2804)", async () => {
-      // The owner's decision was to wait longer to START, and that distinction is
-      // the whole safety of it: the wait costs a queue slot, while the statement
-      // timeout is what bounds work the database is actually doing. Raising both
-      // would have been the easy misreading of "let it wait longer", and it is the
-      // half that turns a busy database into a worse one. Asked of the SERVER,
-      // because that is the only thing that settles what is really in force.
-      const [settings] = await withBoundedReadOnlyTransaction((tx) =>
-        tx.$queryRaw<
-          { statement_timeout: string }[]
-        >`SELECT current_setting('statement_timeout') AS statement_timeout`,
-      );
-      const applied = settings.statement_timeout;
-      const appliedMs = applied.endsWith("ms")
-        ? Number.parseInt(applied, 10)
-        : applied.endsWith("s")
-          ? Number.parseFloat(applied) * 1_000
-          : Number.parseInt(applied, 10);
-      expect(appliedMs).toBe(5_000);
     });
 
     it("RELEASES the timeout at commit rather than leaking it onto the pooled connection", async () => {

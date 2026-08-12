@@ -367,7 +367,7 @@ const CRON_SEVERITY_RANK: Record<string, number> = {
  * THE READ IS BOUNDED IN CONCURRENCY AND IN TIME, which the substrate cannot do for
  * it. `select_only_sql` entries get `BEGIN READ ONLY`, a 5-second `statement_timeout`
  * and a 2-second `lock_timeout` from the executor; a first-party calculation gets none
- * of that, and the executor's 15-second race abandons a slow read without cancelling
+ * of that, and the executor's outer race abandons a slow read without cancelling
  * it. So this passes `getCronRunsForAdminHealth` a batch width and a deadline of its
  * own, set below the executor's so the refusal comes from here — where it is a clean
  * throw the executor reports as `evidence_unavailable` — rather than from a race whose
