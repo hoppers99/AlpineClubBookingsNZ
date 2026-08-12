@@ -80,12 +80,32 @@ function executableCode(source: string): string {
     .replace(/^[ \t]*\/\/.*$/gm, "");
 }
 
+/**
+ * Source with TYPE-ONLY imports removed as well.
+ *
+ * This distinction was found by the census itself, on its first run: `answer/loop.ts`
+ * carries `import type Anthropic from "@anthropic-ai/sdk"` so it can name
+ * `Anthropic.MessageParam` in a signature, and the first version of this file reported
+ * it as a third SDK importer.
+ *
+ * It is not one, and the difference is exactly what this census is protecting. A
+ * `import type` is erased at compile time: it constructs no client, holds no key, sets
+ * no timeout and spends nothing. What the allowed list bounds is who can CALL the
+ * provider — and a module that only names its types cannot. Counting them would make
+ * the census noisy in the one way that gets a census deleted: failing for something
+ * that is not the risk it names.
+ */
+function valueImportingCode(source: string): string {
+  return executableCode(source)
+    .replace(/^import\s+type\s+[\s\S]*?from\s+["'][^"']+["'];?$/gm, "");
+}
+
 const SDK_IMPORT =
   /^\s*(?:import\s[\s\S]*?from\s*)?["']@anthropic-ai\/sdk["']|require\(\s*["']@anthropic-ai\/sdk["']\s*\)/m;
 
 function discoverImporters(): string[] {
   return discoverSourceFiles(SRC_DIR)
-    .filter((file) => SDK_IMPORT.test(executableCode(readFileSync(file, "utf8"))))
+    .filter((file) => SDK_IMPORT.test(valueImportingCode(readFileSync(file, "utf8"))))
     .map(repoRelative)
     .sort();
 }
@@ -108,7 +128,7 @@ describe("the Anthropic SDK has exactly the importers we decided on (#2378)", ()
     // it — it compares the discovered set, so a stale entry fails there too, but this
     // says WHICH one and why, which is what a reader needs at 2am.
     for (const allowed of ALLOWED_SDK_IMPORTERS) {
-      const source = executableCode(
+      const source = valueImportingCode(
         readFileSync(join(SRC_DIR, allowed), "utf8"),
       );
       expect(
@@ -124,7 +144,7 @@ describe("the Anthropic SDK has exactly the importers we decided on (#2378)", ()
     // three are how a paid call stays bounded, and all three default to something
     // permissive in the SDK if left unstated.
     for (const allowed of ALLOWED_SDK_IMPORTERS) {
-      const code = executableCode(readFileSync(join(SRC_DIR, allowed), "utf8"));
+      const code = valueImportingCode(readFileSync(join(SRC_DIR, allowed), "utf8"));
       expect(code, `${allowed} constructs a client with no timeout`).toContain(
         "timeout:",
       );

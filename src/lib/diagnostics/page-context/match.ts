@@ -40,7 +40,16 @@ const DYNAMIC_SEGMENT = /^\[.+\]$/;
 
 export interface MatchedDiagnosticsRoute {
   route: DiagnosticsPageContextRoute;
-  /** The value that filled the route's dynamic segment, when it has one. */
+  /**
+   * The value that filled the route's dynamic segment, when it has one.
+   *
+   * A LIST page has none, even though it declares a record kind — so asking from
+   * `/admin/bookings` selects no booking, and the per-record tools correctly refuse.
+   * The operator opens the booking and asks there. That is a deliberate scope
+   * boundary for #2378 rather than an oversight: the alternative is letting the
+   * browser name a record id, which the resolver could safely re-check but which adds
+   * a client-chosen identifier to a request that currently carries none.
+   */
   recordId?: string;
 }
 
@@ -97,11 +106,18 @@ export function matchDiagnosticsPageRoute(
     }
     if (!matched) continue;
 
-    // A route that takes no record must not report one, and a route that takes one
-    // must have found it. Either mismatch means this is not the row that describes
-    // this address.
+    // A route that takes NO record kind must not report a record id — a static page
+    // cannot be about a record, so an id there would seed the consent ledger with
+    // something the address never named.
+    //
+    // THE CONVERSE IS NOT TRUE, and assuming it was is how the first cut of this file
+    // failed its own census. A LIST route declares a `recordKind` and has no dynamic
+    // segment: `/admin/bookings` is `recordKind: "booking"` because a booking may be
+    // SELECTED there, not because the address names one. Requiring an id for every
+    // record-kinded route made every list page unmatchable, which would have surfaced
+    // to an operator as diagnostics silently knowing nothing about the screen they
+    // were on.
     if (route.recordKind === null && recordId !== undefined) continue;
-    if (route.recordKind !== null && recordId === undefined) continue;
 
     return recordId === undefined ? { route } : { route, recordId };
   }
