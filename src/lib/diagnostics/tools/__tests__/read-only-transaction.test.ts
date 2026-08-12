@@ -44,6 +44,7 @@ import {
   DIAGNOSTICS_READ_ONLY_STATEMENT_TIMEOUT_MS,
   DIAGNOSTICS_READ_ONLY_TRANSACTION_TIMEOUT_MS,
   isDiagnosticsPoolWaitTimeout,
+  resolveReadOnlyMaxWaitMs,
   withBoundedReadOnlyTransaction,
 } from "../read-only-transaction";
 
@@ -106,6 +107,7 @@ function strippedCode(source: string): string {
     .replace(/^[ \t]*\/\/.*$/gm, "");
 }
 
+
 describe("the seam opens ONE bounded read-only transaction (#2786)", () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -128,11 +130,59 @@ describe("the seam opens ONE bounded read-only transaction (#2786)", () => {
         // STATEMENT, so an evidence row assembled across several statements could
         // mix instants — which is exactly what these entries promise they do not.
         isolationLevel: "RepeatableRead",
-        // Derived, never a literal (#2804). See the ladder in `types.ts`.
-        maxWait: DIAGNOSTICS_TOOL_BOUNDS.readOnlyMaxWaitMs,
+        // CLAMPED to the pool, not merely derived (#2804 delta review). The test
+        // environment's DATABASE_URL declares no `pool_timeout`, so the adapter's
+        // 5 000 default applies and the decided 8 000 is shortened to 4 000 — which
+        // is the clamp doing its job, and is why this expectation computes the same
+        // way the code does instead of naming a number.
+        maxWait: resolveReadOnlyMaxWaitMs(),
         timeout: DIAGNOSTICS_READ_ONLY_TRANSACTION_TIMEOUT_MS,
       }),
     );
+  });
+
+
+  it("never asks the pool for longer than the pool allows (#2804 delta review)", async () => {
+    // THE BUG THIS EXISTS FOR, verbatim. A wait longer than pg's own
+    // `connectionTimeoutMillis` does not produce a longer wait — it produces an
+    // EARLIER refusal carrying no error code, so `evidence_database_busy` becomes
+    // unreachable and a busy database is reported as a fault. A test asserting the
+    // relation against `docker-compose.yml` was the first fix and missed
+    // `.env.example`, the CI workflow and the staging example, none of which declare
+    // `pool_timeout` at all.
+    const original = process.env.DATABASE_URL;
+    try {
+      // No `pool_timeout` — the adapter's 5 000 default applies.
+      process.env.DATABASE_URL = "postgresql://u:p@127.0.0.1:5432/db";
+      await withBoundedReadOnlyTransaction(async () => null);
+      const [, options] = transactionMock.mock.calls.at(-1) as [
+        unknown,
+        { maxWait: number },
+      ];
+      expect(options.maxWait).toBe(4_000);
+      expect(options.maxWait).toBeLessThan(5_000);
+
+      // And where the pool DOES allow it, the owner's decided bound is what is used —
+      // the clamp shortens, it never lengthens, so it cannot quietly overrule a
+      // decision in the other direction.
+      vi.clearAllMocks();
+      executeRawMock.mockResolvedValue(0);
+      transactionMock.mockImplementation(
+        async (run: (tx: unknown) => Promise<unknown>) =>
+          run({ $executeRaw: executeRawMock }),
+      );
+      process.env.DATABASE_URL =
+        "postgresql://u:p@127.0.0.1:5432/db?pool_timeout=30";
+      await withBoundedReadOnlyTransaction(async () => null);
+      const [, generous] = transactionMock.mock.calls.at(-1) as [
+        unknown,
+        { maxWait: number },
+      ];
+      expect(generous.maxWait).toBe(DIAGNOSTICS_TOOL_BOUNDS.readOnlyMaxWaitMs);
+    } finally {
+      if (original === undefined) delete process.env.DATABASE_URL;
+      else process.env.DATABASE_URL = original;
+    }
   });
 
   it("tells PostgreSQL READ ONLY before anything else, then sets the timeout", async () => {

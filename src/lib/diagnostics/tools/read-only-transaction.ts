@@ -119,6 +119,7 @@ import "server-only";
 import type { Prisma } from "@prisma/client";
 
 import { prisma } from "@/lib/prisma";
+import { resolvePoolAcquisitionTimeoutMillis } from "@/lib/prisma-adapter";
 
 import { DIAGNOSTICS_TOOL_BOUNDS } from "./types";
 
@@ -175,29 +176,68 @@ export const DIAGNOSTICS_READ_ONLY_TRANSACTION_TIMEOUT_MS =
   DIAGNOSTICS_TOOL_BOUNDS.readOnlyTransactionTimeoutMs;
 
 /**
- * How long Prisma may wait for a pool connection before giving up on opening the
- * transaction at all.
+ * The gap this keeps between the diagnostics wait and pg's own ceiling.
  *
- * WAS TWO SECONDS, AND THE REASONING FOR THAT WAS NEVER REALLY TESTED. It came
- * from #2376 as "a diagnostics read that cannot get a connection within two
- * seconds should refuse, not join the queue that is already the problem" — which
- * sounds right and quietly assumed the queue is always pathological. Usually it
- * is not: it is a second admin looking at a page. Owner decision #2804 is that an
- * admin would rather wait for a busy database than be told to try again, so this
- * is now eight seconds — as long as the shared application pool ceiling allows —
- * and a read that gives up says `evidence_database_busy`
- * rather than being folded in with a genuine fault.
- *
- * It stays FINITE, and that is not a compromise on the decision — it is the
- * decision's own limit. What an unbounded wait would actually grow is QUEUE DEPTH:
- * a waiting read holds no connection, so pool OCCUPANCY is still bounded by the
- * transaction timeout, not by this. A queue nobody ever leaves is its own failure
- * and reason enough, and Prisma requires a number regardless — but the tempting
- * "every waiting reader pins a connection" version of this sentence is wrong, and
- * was in an earlier draft (#2804 review).
+ * The two timers start together, so at equality it is a race — and the loser decides
+ * whether the operator gets a classifiable `P2028` or an anonymous pool error. A
+ * second is the smallest gap worth calling deliberate.
  */
-const READ_ONLY_TRANSACTION_MAX_WAIT_MS =
-  DIAGNOSTICS_TOOL_BOUNDS.readOnlyMaxWaitMs;
+const POOL_CEILING_MARGIN_MS = 1_000;
+
+/**
+ * How long Prisma may wait for a pool connection before giving up on opening the
+ * transaction at all — CLAMPED to what pg will actually allow.
+ *
+ * WAS TWO SECONDS, AND THE REASONING FOR THAT WAS NEVER REALLY TESTED. It came from
+ * #2376 as "a diagnostics read that cannot get a connection within two seconds should
+ * refuse, not join the queue that is already the problem" — which sounds right and
+ * quietly assumes the queue is always pathological. Usually it is not: it is a second
+ * admin looking at a page. Owner decision #2804 is that an admin would rather wait.
+ *
+ * WHY THIS IS COMPUTED AND NOT JUST READ. pg's `connectionTimeoutMillis` covers time
+ * spent QUEUED, so it caps this no matter what Prisma is asked for. Ask for more than
+ * the pool allows and pg rejects first with a bare `Error` carrying NO CODE: the
+ * longer wait never happens, and `evidence_database_busy` becomes unreachable because
+ * there is nothing to classify. A first draft of #2804 did exactly that — 20 000
+ * against a 10 000 ceiling — and every unit test passed, because they hand-build the
+ * error object.
+ *
+ * A test asserting the relation was the first fix and it was not enough: it reads
+ * `docker-compose.yml`, and `.env.example`, `.env.staging.example` and the CI workflow
+ * declare no `pool_timeout` at all, so the adapter's 5 000 default applies and 8 000
+ * was unreachable there — the same bug, one file over (#2804 delta review). An
+ * assertion catches the connection strings somebody remembered to check. Clamping
+ * catches the ones nobody did.
+ *
+ * EXPORTED so callers and tests ask the code what wait is in force rather than
+ * recomputing it — three places already assert on it, and a fourth copy of the
+ * arithmetic is a fourth thing that can drift.
+ *
+ * So the wait is whichever is smaller: the owner's decided bound, or a second under
+ * whatever the pool actually permits. The clamp can only ever SHORTEN it, so it
+ * cannot smuggle in a longer wait than was decided, and
+ * `pool-acquisition-ladder.test.ts` still fails loudly if a shipped connection string
+ * would force the shortening — a silently degraded wait is a worse outcome than a
+ * failing test, so both exist.
+ */
+export function resolveReadOnlyMaxWaitMs(): number {
+  const decided = DIAGNOSTICS_TOOL_BOUNDS.readOnlyMaxWaitMs;
+  const databaseUrl = process.env.DATABASE_URL;
+  if (!databaseUrl) return decided;
+  let poolCeilingMs: number;
+  try {
+    poolCeilingMs = resolvePoolAcquisitionTimeoutMillis(databaseUrl);
+  } catch {
+    // An unparseable URL is not this function's problem to report — the client
+    // itself will fail loudly on it. Fall back to the decided bound rather than
+    // inventing a number from a string nobody can read.
+    return decided;
+  }
+  // Never below the margin itself: a pathologically small pool timeout should not
+  // turn every diagnostics read into an instant refusal.
+  const allowed = Math.max(POOL_CEILING_MARGIN_MS, poolCeilingMs - POOL_CEILING_MARGIN_MS);
+  return Math.min(decided, allowed);
+}
 
 /**
  * Run one `server_owned` evidence read inside a `REPEATABLE READ`, READ ONLY,
@@ -219,7 +259,7 @@ export async function withBoundedReadOnlyTransaction<T>(
     },
     {
       isolationLevel: "RepeatableRead",
-      maxWait: READ_ONLY_TRANSACTION_MAX_WAIT_MS,
+      maxWait: resolveReadOnlyMaxWaitMs(),
       timeout: DIAGNOSTICS_READ_ONLY_TRANSACTION_TIMEOUT_MS,
     },
   );

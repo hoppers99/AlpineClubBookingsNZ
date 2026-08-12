@@ -639,8 +639,10 @@ never echoes caller input: `unknown_tool`, `invalid_args`,
 `evidence_unavailable`: that one means the first-party calculation ran and could not
 answer, so an operator should go and look for a fault; this one means the application
 database was reachable and every connection was simply in use, so nothing is broken and
-the answer is to try again shortly. Since the wait for a connection is now twenty
-seconds, an administrator who waited that long is owed the difference.
+the answer is to try again shortly. Since the wait for a connection is now several times
+longer than it was, an administrator who waited it out is owed the difference. The
+current value is in the ladder table above rather than restated here — restating it is
+how this very sentence came to say "twenty seconds" after the number became eight.
 
 The last three are AID-7a's (#2785). `sensitive_consent_required` stays distinct
 from `permission_denied` because the caller may hold every area the entry declares —

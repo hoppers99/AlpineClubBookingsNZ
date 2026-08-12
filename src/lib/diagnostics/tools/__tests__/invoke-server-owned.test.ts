@@ -195,7 +195,7 @@ describe("server-owned evidence: the gates that still apply (#2375)", () => {
   });
 
   it("reports a BUSY POOL as its own reason, not as a fault (#2804)", async () => {
-    // The owner raised the wait for a connection from 2 s to 20 s so an admin
+    // The owner raised the wait for a connection from 2 s to 8 s so an admin
     // waits for a busy database rather than being told to try again. An admin who
     // has waited that long is then owed an accurate reason: nothing is broken,
     // every connection was simply in use. Folding this into
@@ -224,12 +224,13 @@ describe("server-owned evidence: the gates that still apply (#2375)", () => {
     // the code is what the model sees, the sentence is what the human reads.
     expect(result.message).toMatch(/busy/i);
     expect(result.message).toMatch(/nothing is broken/i);
-    // The flag is set ONLY by the source's own P2024 rejection, never by the
+    // The flag is set ONLY by the source's own P2028 rejection, never by the
     // deadline arm — "we waited for a connection and gave up" and "the whole graph
     // overran" are different answers. The existing "gives up on a source that never
     // answers" test below pins that the deadline still reports
     // `evidence_unavailable`, so this does not need a duplicate of it (and a
-    // duplicate without fake timers would have cost CI 45 real seconds).
+    // duplicate without fake timers would have cost CI the whole outer deadline
+    // in real time).
     // Still fails closed — the failure type carries no rows at all, which is the
     // type system enforcing what the contract says — and still audited as an
     // allowed call that then failed rather than as a permission block.

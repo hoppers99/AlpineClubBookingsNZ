@@ -363,7 +363,7 @@ async function readServerOwnedEvidence(
   // the sentinel because the deadline arm resolves the same sentinel and must NOT
   // be reported as busy: "we waited for a connection and gave up" and "the whole
   // graph overran" are different answers, and the deadline is not evidence of
-  // which. It stays false unless the source itself rejected with P2024.
+  // which. It stays false unless the source itself rejected with P2028.
   let poolBusy = false;
 
   try {

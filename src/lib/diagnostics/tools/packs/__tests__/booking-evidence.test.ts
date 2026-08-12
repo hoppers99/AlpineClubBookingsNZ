@@ -220,6 +220,7 @@ vi.mock("@/lib/member-subscription-eligibility", async (importOriginal) => ({
 import {
   DIAGNOSTICS_READ_ONLY_STATEMENT_TIMEOUT_MS,
   DIAGNOSTICS_READ_ONLY_TRANSACTION_TIMEOUT_MS,
+  resolveReadOnlyMaxWaitMs,
 } from "../../read-only-transaction";
 import { DIAGNOSTICS_TOOL_BOUNDS } from "../../types";
 import {
@@ -2559,10 +2560,11 @@ describe("server-owned evidence is bounded at the database, not only in JS (#237
           // pair a party read at instant A with occupancy read at instant B, which
           // is exactly what the entry's own copy promises it cannot.
           isolationLevel: "RepeatableRead",
-          // Derived, never a literal (#2804): the owner raised the wait and a
-          // hardcoded 2_000 here would have gone on passing against a bound that
-          // had moved. The assertion follows the ladder or it is not an assertion.
-          maxWait: DIAGNOSTICS_TOOL_BOUNDS.readOnlyMaxWaitMs,
+          // Asked of the code, never a literal (#2804): the owner raised the wait,
+          // and it is then CLAMPED to whatever pg's own pool ceiling allows, so the
+          // right answer depends on the connection string this test runs against. A
+          // hardcoded 2_000 would have gone on passing against a bound that moved.
+          maxWait: resolveReadOnlyMaxWaitMs(),
           timeout: DIAGNOSTICS_READ_ONLY_TRANSACTION_TIMEOUT_MS,
         }),
       );
