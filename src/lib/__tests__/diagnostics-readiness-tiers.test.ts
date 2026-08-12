@@ -97,12 +97,14 @@ describe("readiness is tiered on the server, not in the markup (#2378 Q6)", () =
     // to turn on something that may already be on. That is the exact misreport
     // #2803 removes, and this tier sits directly above it.
     //
-    // Cast because that PR is not merged yet; the branch is written now so the
-    // tri-state cannot arrive and find a falsy test waiting for it.
-    const unreadable = {
+    // No cast: #2808 is merged, so `moduleEnabled` is genuinely `boolean | null`
+    // and this is the real shape rather than a rehearsal of it. The branch was
+    // written and tested before that merge precisely so the tri-state could not
+    // arrive and find a falsy check waiting for it.
+    const unreadable: DiagnosticsReadiness = {
       ...NOT_READY,
       moduleEnabled: null,
-    } as unknown as DiagnosticsReadiness;
+    };
 
     const tiered = readinessForAdmin(unreadable, matrixWith("none"));
     if (tiered.tier !== "coarse") throw new Error("expected the coarse tier");
