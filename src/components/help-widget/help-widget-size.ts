@@ -7,14 +7,19 @@
  * the evidence it read them from. Since the owner's decision put ALL asking in this
  * panel rather than on a page, the panel has to be able to grow.
  *
- * PRESETS, NOT A DRAG HANDLE — and that is the accessibility requirement, not a
- * preference. The owner asked whether it could be drag-expandable. It can, and drag
- * may be added on top of this, but a drag handle alone is reachable only with a
- * mouse: no keyboard path, nothing for a screen reader to announce, and a fine motor
- * gesture where a button would do. #2378 requires keyboard-only and screen-reader
- * operation as first-class. Presets are also simply better here — one key to "make
- * this big" beats a careful drag — so they are the primary control rather than a
- * fallback bolted beside one.
+ * BOTH A DRAG HANDLE AND PRESETS, which is what the owner asked for and also what
+ * the accessibility bar requires. Drag is the natural gesture for "a bit bigger than
+ * that" and no preset ladder replaces it. But a drag handle ALONE is reachable only
+ * with a mouse — no keyboard path, nothing for a screen reader to announce, and a
+ * fine motor gesture where a key press would do — and #2378 requires keyboard-only
+ * and screen-reader operation as first class. So there are two controls over one
+ * piece of state: a preset cycle button, and a corner handle that drags freely and
+ * ALSO responds to arrow keys.
+ *
+ * ONE PIECE OF STATE, TWO WAYS TO SET IT. A dragged size is remembered as exact
+ * pixels; a preset is remembered by name. Storing them as one tagged union rather
+ * than two fields means the panel can never be "custom AND tall" with a silent rule
+ * about which wins.
  *
  * THE SIZES ARE CSS CLASSES, NOT NUMBERS, because Tailwind needs the class names to
  * exist in the source to emit them; a computed `sm:w-[${n}rem]` produces a class
@@ -33,6 +38,84 @@ export type HelpPanelSize = (typeof HELP_PANEL_SIZES)[number];
 
 /** The size the panel opens at when the operator has never chosen one. */
 export const DEFAULT_HELP_PANEL_SIZE: HelpPanelSize = "comfortable";
+
+/** A size the operator dragged to, in pixels. Only meaningful at `sm:` and up. */
+export interface HelpPanelCustomSize {
+  kind: "custom";
+  widthPx: number;
+  heightPx: number;
+}
+
+/** A size the operator chose from the preset cycle. */
+export interface HelpPanelPresetSize {
+  kind: "preset";
+  size: HelpPanelSize;
+}
+
+export type HelpPanelSizeChoice = HelpPanelPresetSize | HelpPanelCustomSize;
+
+/**
+ * Bounds for a dragged size.
+ *
+ * The minimum is not cosmetic: below roughly 20rem the question box, the send
+ * control and a one-line evidence summary stop fitting side by side, so a panel
+ * dragged smaller than this is not a smaller panel, it is a broken one. The maximum
+ * is applied against the live viewport at drag time rather than stored, because a
+ * size dragged on a large monitor must not strand the panel off-screen on a laptop.
+ */
+export const HELP_PANEL_MIN_WIDTH_PX = 320;
+export const HELP_PANEL_MIN_HEIGHT_PX = 240;
+/** Kept clear of the viewport edges so browser chrome never overlaps the panel. */
+export const HELP_PANEL_VIEWPORT_MARGIN_PX = 24;
+
+/** How far one arrow-key press resizes. Coarse enough to be useful, fine enough to aim. */
+export const HELP_PANEL_KEYBOARD_STEP_PX = 32;
+
+/** Clamp a dragged size to something usable in the viewport it is being shown in. */
+export function clampHelpPanelSize(
+  size: { widthPx: number; heightPx: number },
+  viewport: { width: number; height: number },
+): HelpPanelCustomSize {
+  const maxWidth = Math.max(
+    HELP_PANEL_MIN_WIDTH_PX,
+    viewport.width - HELP_PANEL_VIEWPORT_MARGIN_PX * 2,
+  );
+  const maxHeight = Math.max(
+    HELP_PANEL_MIN_HEIGHT_PX,
+    viewport.height - HELP_PANEL_VIEWPORT_MARGIN_PX * 2,
+  );
+  return {
+    kind: "custom",
+    widthPx: Math.min(Math.max(size.widthPx, HELP_PANEL_MIN_WIDTH_PX), maxWidth),
+    heightPx: Math.min(
+      Math.max(size.heightPx, HELP_PANEL_MIN_HEIGHT_PX),
+      maxHeight,
+    ),
+  };
+}
+
+/** Is this a stored choice the panel knows how to render? */
+export function isHelpPanelSizeChoice(value: unknown): value is HelpPanelSizeChoice {
+  if (typeof value !== "object" || value === null) return false;
+  const choice = value as {
+    kind?: unknown;
+    size?: unknown;
+    widthPx?: unknown;
+    heightPx?: unknown;
+  };
+  if (choice.kind === "preset") return isHelpPanelSize(choice.size);
+  if (choice.kind === "custom") {
+    return (
+      typeof choice.widthPx === "number" &&
+      typeof choice.heightPx === "number" &&
+      Number.isFinite(choice.widthPx) &&
+      Number.isFinite(choice.heightPx) &&
+      choice.widthPx > 0 &&
+      choice.heightPx > 0
+    );
+  }
+  return false;
+}
 
 /**
  * Where the choice is remembered.
@@ -93,21 +176,35 @@ export function nextHelpPanelSize(current: HelpPanelSize): HelpPanelSize {
  * configured to block storage, and a help panel that cannot open because it could
  * not read a cosmetic preference would be a genuinely bad trade.
  */
-export function readStoredHelpPanelSize(): HelpPanelSize {
-  if (typeof window === "undefined") return DEFAULT_HELP_PANEL_SIZE;
+export function readStoredHelpPanelSize(): HelpPanelSizeChoice {
+  const fallback: HelpPanelSizeChoice = {
+    kind: "preset",
+    size: DEFAULT_HELP_PANEL_SIZE,
+  };
+  if (typeof window === "undefined") return fallback;
   try {
-    const stored = window.localStorage.getItem(HELP_PANEL_SIZE_STORAGE_KEY);
-    return isHelpPanelSize(stored) ? stored : DEFAULT_HELP_PANEL_SIZE;
+    const raw = window.localStorage.getItem(HELP_PANEL_SIZE_STORAGE_KEY);
+    if (!raw) return fallback;
+    // A bare preset name is what earlier builds wrote. Read it rather than
+    // discarding somebody's preference on upgrade.
+    if (isHelpPanelSize(raw)) return { kind: "preset", size: raw };
+    const parsed: unknown = JSON.parse(raw);
+    return isHelpPanelSizeChoice(parsed) ? parsed : fallback;
   } catch {
-    return DEFAULT_HELP_PANEL_SIZE;
+    // Unparseable, or storage blocked. Either way the panel opens at its default
+    // rather than not opening.
+    return fallback;
   }
 }
 
 /** Remember the size. Silent on failure, for the same reason as the read. */
-export function storeHelpPanelSize(size: HelpPanelSize): void {
+export function storeHelpPanelSize(choice: HelpPanelSizeChoice): void {
   if (typeof window === "undefined") return;
   try {
-    window.localStorage.setItem(HELP_PANEL_SIZE_STORAGE_KEY, size);
+    window.localStorage.setItem(
+      HELP_PANEL_SIZE_STORAGE_KEY,
+      JSON.stringify(choice),
+    );
   } catch {
     // Preference not remembered. The panel still works at the chosen size for
     // this session, which is the part that matters.

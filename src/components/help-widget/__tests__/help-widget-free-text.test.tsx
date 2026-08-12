@@ -88,6 +88,15 @@ async function ask(panel: HTMLElement, question: string) {
 
 beforeEach(() => {
   mocks.pathname = "/dashboard";
+  // The panel REMEMBERS its size across sessions (#2378 D8), which is the feature
+  // working — and it leaks between tests, which is that feature biting. A size
+  // dragged in one test would otherwise decide the panel's geometry in the next,
+  // so every test starts from "this operator has never chosen a size".
+  try {
+    window.localStorage.clear();
+  } catch {
+    // Storage unavailable; nothing to clear.
+  }
 });
 
 afterEach(() => {
@@ -466,6 +475,65 @@ describe("the panel can be resized, by keyboard (#2378 D8)", () => {
     expect(screen.getByTestId("help-widget-panel").className).toContain(
       "sm:w-[24rem]",
     );
+  });
+
+
+  it("offers a DRAG handle as well, which the owner asked for", () => {
+    const panel = renderWidget("admin");
+    const handle = within(panel).getByTestId("help-widget-resize-handle");
+
+    // Present and reachable — not a decoration, and not pointer-only.
+    expect(handle.getAttribute("role")).toBe("separator");
+    expect(handle.getAttribute("tabindex")).toBe("0");
+    expect(handle.getAttribute("aria-label")).toMatch(/drag/i);
+    expect(handle.getAttribute("aria-label")).toMatch(/arrow keys/i);
+  });
+
+  it("resizes by arrow key, so the drag gesture is not mouse-only", () => {
+    const panel = renderWidget("admin");
+    const handle = within(panel).getByTestId("help-widget-resize-handle");
+
+    // jsdom reports a zero-size rect, so the clamp floor is what lands — which is
+    // exactly the assertion worth making here: an arrow press produces a real,
+    // bounded custom size rather than doing nothing.
+    fireEvent.keyDown(handle, { key: "ArrowLeft" });
+
+    const resized = screen.getByTestId("help-widget-panel");
+    expect(resized.style.width).not.toBe("");
+    expect(resized.style.height).not.toBe("");
+    // And the preset button now reports that the panel is off the preset ladder.
+    expect(
+      within(resized).getByTestId("help-widget-resize").getAttribute(
+        "data-panel-size",
+      ),
+    ).toBe("custom");
+  });
+
+  it("ignores keys that are not arrows, so typing near it does nothing", () => {
+    const panel = renderWidget("admin");
+    const handle = within(panel).getByTestId("help-widget-resize-handle");
+
+    fireEvent.keyDown(handle, { key: "a" });
+    expect(screen.getByTestId("help-widget-panel").style.width).toBe("");
+  });
+
+  it("steps a dragged panel back onto the preset ladder", () => {
+    // An operator who dragged to something awkward needs a way back that does not
+    // involve dragging accurately. The preset button is that way.
+    const panel = renderWidget("admin");
+    fireEvent.keyDown(
+      within(panel).getByTestId("help-widget-resize-handle"),
+      { key: "ArrowLeft" },
+    );
+    fireEvent.click(within(panel).getByTestId("help-widget-resize"));
+
+    const after = screen.getByTestId("help-widget-panel");
+    expect(after.style.width).toBe("");
+    expect(
+      within(after).getByTestId("help-widget-resize").getAttribute(
+        "data-panel-size",
+      ),
+    ).toBe("tall");
   });
 
   it("opens at the size it always had, so a help reader sees no change", () => {

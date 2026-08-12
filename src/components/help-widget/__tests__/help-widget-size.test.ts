@@ -12,7 +12,10 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
+  clampHelpPanelSize,
   DEFAULT_HELP_PANEL_SIZE,
+  HELP_PANEL_MIN_HEIGHT_PX,
+  HELP_PANEL_MIN_WIDTH_PX,
   HELP_PANEL_SIZES,
   HELP_PANEL_SIZE_CLASSES,
   HELP_PANEL_SIZE_LABELS,
@@ -87,15 +90,94 @@ describe("the panel's sizes (#2378 D8)", () => {
   });
 });
 
+describe("a dragged size stays usable (#2378 D8)", () => {
+  const viewport = { width: 1400, height: 900 };
+
+  it("refuses to shrink below a size the panel still works at", () => {
+    // Below roughly 20rem the question box, the send control and a one-line
+    // evidence summary stop fitting. That is not a smaller panel, it is a broken
+    // one, so the drag stops rather than letting the operator ruin it.
+    const tiny = clampHelpPanelSize(
+      { widthPx: 40, heightPx: 10 },
+      viewport,
+    );
+    expect(tiny.widthPx).toBe(HELP_PANEL_MIN_WIDTH_PX);
+    expect(tiny.heightPx).toBe(HELP_PANEL_MIN_HEIGHT_PX);
+  });
+
+  it("keeps the panel inside the viewport it is actually being shown in", () => {
+    // A size dragged on a large monitor must not strand the panel off-screen on a
+    // laptop, so the ceiling is applied against the LIVE viewport, not stored.
+    const huge = clampHelpPanelSize(
+      { widthPx: 99_999, heightPx: 99_999 },
+      { width: 800, height: 600 },
+    );
+    expect(huge.widthPx).toBeLessThan(800);
+    expect(huge.heightPx).toBeLessThan(600);
+  });
+
+  it("leaves a size that is already sensible alone", () => {
+    const asked = { widthPx: 520, heightPx: 700 };
+    expect(clampHelpPanelSize(asked, viewport)).toEqual({
+      kind: "custom",
+      ...asked,
+    });
+  });
+
+  it("still returns something usable when the viewport is absurdly small", () => {
+    // A clamp whose max fell below its min would invert and produce a negative
+    // size. Min wins.
+    const clamped = clampHelpPanelSize(
+      { widthPx: 400, heightPx: 400 },
+      { width: 50, height: 50 },
+    );
+    expect(clamped.widthPx).toBe(HELP_PANEL_MIN_WIDTH_PX);
+    expect(clamped.heightPx).toBe(HELP_PANEL_MIN_HEIGHT_PX);
+  });
+});
+
 describe("remembering the choice (#2378 D8)", () => {
-  it("round-trips a chosen size", () => {
-    storeHelpPanelSize("tall");
-    expect(readStoredHelpPanelSize()).toBe("tall");
+  it("round-trips a chosen preset", () => {
+    storeHelpPanelSize({ kind: "preset", size: "tall" });
+    expect(readStoredHelpPanelSize()).toEqual({ kind: "preset", size: "tall" });
+  });
+
+  it("round-trips a DRAGGED size, which is the point of storing pixels", () => {
+    storeHelpPanelSize({ kind: "custom", widthPx: 512, heightPx: 640 });
+    expect(readStoredHelpPanelSize()).toEqual({
+      kind: "custom",
+      widthPx: 512,
+      heightPx: 640,
+    });
+  });
+
+  it("still reads a bare preset name written by an earlier build", () => {
+    // Upgrade path: the first version of this stored just "tall". Discarding a
+    // stored preference on upgrade is a small rudeness that is easy to avoid.
+    window.localStorage.setItem(HELP_PANEL_SIZE_STORAGE_KEY, "full");
+    expect(readStoredHelpPanelSize()).toEqual({ kind: "preset", size: "full" });
   });
 
   it("falls back to the default for anything it does not recognise", () => {
     window.localStorage.setItem(HELP_PANEL_SIZE_STORAGE_KEY, "enormous");
-    expect(readStoredHelpPanelSize()).toBe(DEFAULT_HELP_PANEL_SIZE);
+    expect(readStoredHelpPanelSize()).toEqual({
+      kind: "preset",
+      size: DEFAULT_HELP_PANEL_SIZE,
+    });
+    window.localStorage.setItem(HELP_PANEL_SIZE_STORAGE_KEY, "{not json");
+    expect(readStoredHelpPanelSize()).toEqual({
+      kind: "preset",
+      size: DEFAULT_HELP_PANEL_SIZE,
+    });
+    // A custom size with nonsense numbers is refused rather than rendered.
+    window.localStorage.setItem(
+      HELP_PANEL_SIZE_STORAGE_KEY,
+      JSON.stringify({ kind: "custom", widthPx: 0, heightPx: -5 }),
+    );
+    expect(readStoredHelpPanelSize()).toEqual({
+      kind: "preset",
+      size: DEFAULT_HELP_PANEL_SIZE,
+    });
     expect(isHelpPanelSize("enormous")).toBe(false);
     expect(isHelpPanelSize(null)).toBe(false);
   });
@@ -114,15 +196,27 @@ describe("remembering the choice (#2378 D8)", () => {
     });
 
     expect(() => readStoredHelpPanelSize()).not.toThrow();
-    expect(readStoredHelpPanelSize()).toBe(DEFAULT_HELP_PANEL_SIZE);
-    expect(() => storeHelpPanelSize("full")).not.toThrow();
+    expect(readStoredHelpPanelSize()).toEqual({
+      kind: "preset",
+      size: DEFAULT_HELP_PANEL_SIZE,
+    });
+    expect(() =>
+      storeHelpPanelSize({ kind: "preset", size: "full" }),
+    ).not.toThrow();
   });
 
   it("stores a preference and nothing else", () => {
     // The transcript is deliberately memory-only and this product reads personal
     // data. The one key it writes must stay a cosmetic preference.
-    storeHelpPanelSize("full");
-    expect(window.localStorage.getItem(HELP_PANEL_SIZE_STORAGE_KEY)).toBe("full");
+    storeHelpPanelSize({ kind: "custom", widthPx: 500, heightPx: 500 });
     expect(window.localStorage.length).toBe(1);
+    const raw = window.localStorage.getItem(HELP_PANEL_SIZE_STORAGE_KEY) ?? "";
+    // Geometry only. No question, no answer, no evidence, no identifier — the
+    // transcript is deliberately memory-only and this product reads personal data.
+    expect(JSON.parse(raw)).toEqual({
+      kind: "custom",
+      widthPx: 500,
+      heightPx: 500,
+    });
   });
 });

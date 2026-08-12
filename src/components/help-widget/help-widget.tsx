@@ -19,13 +19,15 @@ import { HelpFreeTextInput } from "./help-free-text-input";
 import { serializePageContext } from "./help-page-context";
 import { useHelpWidgetState } from "./help-widget-context";
 import {
+  clampHelpPanelSize,
   DEFAULT_HELP_PANEL_SIZE,
+  HELP_PANEL_KEYBOARD_STEP_PX,
   HELP_PANEL_SIZE_CLASSES,
   HELP_PANEL_SIZE_LABELS,
   nextHelpPanelSize,
   readStoredHelpPanelSize,
   storeHelpPanelSize,
-  type HelpPanelSize,
+  type HelpPanelSizeChoice,
 } from "./help-widget-size";
 import { useHelpChat, type HelpChatSurface } from "./use-help-chat";
 
@@ -109,26 +111,160 @@ export function HelpWidget({
    * is corrected after mount: reading `localStorage` during render would differ
    * between server and client and hydrate mismatched.
    */
-  const [panelSize, setPanelSize] = useState<HelpPanelSize>(
-    DEFAULT_HELP_PANEL_SIZE,
-  );
+  const [panelChoice, setPanelChoice] = useState<HelpPanelSizeChoice>({
+    kind: "preset",
+    size: DEFAULT_HELP_PANEL_SIZE,
+  });
   useEffect(() => {
-    setPanelSize(readStoredHelpPanelSize());
+    setPanelChoice(readStoredHelpPanelSize());
   }, []);
+
+  const commitChoice = useCallback((choice: HelpPanelSizeChoice) => {
+    setPanelChoice(choice);
+    storeHelpPanelSize(choice);
+  }, []);
+
+  /** The preset cycle. A dragged panel steps back onto the ladder at its next rung. */
   const cyclePanelSize = useCallback(() => {
-    setPanelSize((current) => {
-      const next = nextHelpPanelSize(current);
+    setPanelChoice((current) => {
+      const from =
+        current.kind === "preset" ? current.size : DEFAULT_HELP_PANEL_SIZE;
+      const next: HelpPanelSizeChoice = {
+        kind: "preset",
+        size: nextHelpPanelSize(from),
+      };
       storeHelpPanelSize(next);
       return next;
     });
   }, []);
+
+  const panelRef = useRef<HTMLDivElement | null>(null);
+
+  /**
+   * Resize by a delta, from wherever the panel currently is.
+   *
+   * Measured from the LIVE element rather than from stored state, so the first drag
+   * of a preset-sized panel starts from the size actually on screen instead of
+   * jumping to a remembered number.
+   */
+  const resizeBy = useCallback(
+    (deltaWidth: number, deltaHeight: number) => {
+      const rect = panelRef.current?.getBoundingClientRect();
+      if (!rect) return;
+      commitChoice(
+        clampHelpPanelSize(
+          {
+            widthPx: rect.width + deltaWidth,
+            heightPx: rect.height + deltaHeight,
+          },
+          { width: window.innerWidth, height: window.innerHeight },
+        ),
+      );
+    },
+    [commitChoice],
+  );
+
+  /**
+   * Pointer drag on the corner handle.
+   *
+   * The panel is anchored bottom-right, so dragging the top-left corner LEFT and UP
+   * makes it bigger — hence the negated deltas. Pointer capture is what makes the
+   * drag survive the cursor leaving the handle, which it does immediately.
+   */
+  const handleResizePointerDown = useCallback(
+    (event: React.PointerEvent<HTMLDivElement>) => {
+      // Only a primary-button drag. A right-click or a two-finger gesture should not
+      // start a resize the operator cannot see the end of.
+      if (event.button !== 0) return;
+      const rect = panelRef.current?.getBoundingClientRect();
+      if (!rect) return;
+      const startX = event.clientX;
+      const startY = event.clientY;
+      const startWidth = rect.width;
+      const startHeight = rect.height;
+      const handle = event.currentTarget;
+      handle.setPointerCapture(event.pointerId);
+      event.preventDefault();
+
+      const move = (moveEvent: PointerEvent) => {
+        commitChoice(
+          clampHelpPanelSize(
+            {
+              widthPx: startWidth - (moveEvent.clientX - startX),
+              heightPx: startHeight - (moveEvent.clientY - startY),
+            },
+            { width: window.innerWidth, height: window.innerHeight },
+          ),
+        );
+      };
+      const end = () => {
+        handle.removeEventListener("pointermove", move);
+        handle.removeEventListener("pointerup", end);
+        handle.removeEventListener("pointercancel", end);
+      };
+      handle.addEventListener("pointermove", move);
+      handle.addEventListener("pointerup", end);
+      handle.addEventListener("pointercancel", end);
+    },
+    [commitChoice],
+  );
+
+  /** Arrow keys on the same handle, so the gesture is not mouse-only. */
+  const handleResizeKeyDown = useCallback(
+    (event: KeyboardEvent<HTMLDivElement>) => {
+      const step = HELP_PANEL_KEYBOARD_STEP_PX;
+      const moves: Record<string, [number, number]> = {
+        ArrowLeft: [step, 0],
+        ArrowRight: [-step, 0],
+        ArrowUp: [0, step],
+        ArrowDown: [0, -step],
+      };
+      const move = moves[event.key];
+      if (!move) return;
+      event.preventDefault();
+      event.stopPropagation();
+      resizeBy(move[0], move[1]);
+    },
+    [resizeBy],
+  );
+
   const [tab, setTab] = useState<"ask" | "guide">("ask");
   const [viewportOffset, setViewportOffset] = useState(0);
+  /**
+   * Live viewport width, so a DRAGGED size applies only above the `sm:` breakpoint
+   * (640px) where the panel floats. Below it the panel is a bottom sheet and a pixel
+   * width would fight the layout rather than help it. Starts wide so the first
+   * server render matches the desktop default and does not hydrate mismatched.
+   */
+  const [viewportWidth, setViewportWidth] = useState(1024);
+  useEffect(() => {
+    const update = () => setViewportWidth(window.innerWidth);
+    update();
+    window.addEventListener("resize", update);
+    return () => window.removeEventListener("resize", update);
+  }, []);
 
   const launcherRef = useRef<HTMLButtonElement | null>(null);
   const headingRef = useRef<HTMLHeadingElement | null>(null);
   const wasOpen = useRef(false);
   const headingId = useId();
+
+  const currentPresetSize =
+    panelChoice.kind === "preset" ? panelChoice.size : DEFAULT_HELP_PANEL_SIZE;
+  const panelSizeClasses =
+    panelChoice.kind === "preset"
+      ? HELP_PANEL_SIZE_CLASSES[panelChoice.size]
+      : "";
+  /**
+   * A dragged size is inline, and only above the `sm:` breakpoint — below it the
+   * panel is a bottom sheet and a pixel width would fight the layout rather than
+   * help it. `sm:` is 640px, checked against the live viewport rather than a media
+   * query object so it re-evaluates on resize with everything else.
+   */
+  const panelSizeStyle =
+    panelChoice.kind === "custom" && viewportWidth >= 640
+      ? { width: panelChoice.widthPx, height: panelChoice.heightPx }
+      : undefined;
 
   const consentBannerVisible = useConsentBannerVisible(surface === "public");
 
@@ -244,12 +380,43 @@ export function HelpWidget({
           role="dialog"
           aria-modal="false"
           aria-labelledby={headingId}
+          ref={panelRef}
           data-testid="help-widget-panel"
           data-report-issue-ignore="true"
           onKeyDown={handleKeyDown}
-          style={viewportOffset > 0 ? { bottom: viewportOffset } : undefined}
-          className={`fixed inset-x-0 bottom-0 z-50 mx-auto flex max-h-[85dvh] w-full flex-col overflow-hidden rounded-t-xl border border-border bg-card text-foreground shadow-lg sm:inset-x-auto sm:bottom-20 sm:right-6 sm:rounded-xl print:hidden ${HELP_PANEL_SIZE_CLASSES[panelSize]}`}
+          style={{
+            ...(viewportOffset > 0 ? { bottom: viewportOffset } : {}),
+            ...(panelSizeStyle ?? {}),
+          }}
+          className={`fixed inset-x-0 bottom-0 z-50 mx-auto flex max-h-[85dvh] w-full flex-col overflow-hidden rounded-t-xl border border-border bg-card text-foreground shadow-lg sm:inset-x-auto sm:bottom-20 sm:right-6 sm:rounded-xl print:hidden ${panelSizeClasses}`}
         >
+          {/* THE DRAG HANDLE the owner asked for (#2378 D8).
+              The panel is anchored bottom-right, so its TOP-LEFT corner is the one
+              that grows it — drag left and up for bigger.
+
+              It is not pointer-only. `role="separator"` with a tabindex makes it a
+              real stop in the tab order, and the arrow keys resize in steps, so the
+              same gesture is available without a mouse. The preset button in the
+              header remains for "just make it big" in one press.
+
+              Hidden below `sm:` because the panel is a bottom sheet there, where a
+              corner grip would fight the layout instead of helping. */}
+          <div
+            role="separator"
+            aria-orientation="vertical"
+            aria-label="Resize help panel. Use the arrow keys, or drag."
+            tabIndex={0}
+            data-testid="help-widget-resize-handle"
+            onPointerDown={handleResizePointerDown}
+            onKeyDown={handleResizeKeyDown}
+            className="absolute left-0 top-0 hidden h-6 w-6 cursor-nwse-resize touch-none rounded-br-md focus:outline-none focus-visible:ring-2 focus-visible:ring-ring sm:block"
+          >
+            <span
+              aria-hidden="true"
+              className="pointer-events-none absolute left-1.5 top-1.5 h-2.5 w-2.5 border-l-2 border-t-2 border-muted-foreground/60"
+            />
+          </div>
+
           <header className="flex items-center justify-between border-b border-border px-4 py-3">
             <h2
               id={headingId}
@@ -267,9 +434,9 @@ export function HelpWidget({
               <button
                 type="button"
                 onClick={cyclePanelSize}
-                aria-label={`Resize help panel to ${HELP_PANEL_SIZE_LABELS[nextHelpPanelSize(panelSize)].toLowerCase()}`}
+                aria-label={`Resize help panel to ${HELP_PANEL_SIZE_LABELS[nextHelpPanelSize(currentPresetSize)].toLowerCase()}`}
                 data-testid="help-widget-resize"
-                data-panel-size={panelSize}
+                data-panel-size={panelChoice.kind === "preset" ? panelChoice.size : "custom"}
                 className="hidden h-11 w-11 items-center justify-center rounded-md text-muted-foreground hover:bg-muted focus:outline-none focus-visible:ring-2 focus-visible:ring-ring sm:flex"
               >
                 <Maximize2 aria-hidden="true" className="h-4 w-4" />
