@@ -812,6 +812,87 @@ describe("createXeroInvoiceForBooking", () => {
     );
   });
 
+  it("keeps the due date an already-issued invoice was issued with (#2697)", async () => {
+    // #2697 corrected the due date to the club's calendar day. That correction
+    // must reach NEW invoices only — the owner decision is that already-issued
+    // Xero invoices are untouched, with no write-back.
+    //
+    // Before that fix, recomputing the due date on update was value-stable, so
+    // nobody had to think about it. Afterwards it is not: this booking was made
+    // at 00:00 on 15 May NZST, which is still 14 May in UTC, so the old
+    // derivation issued "2026-05-14" and the new one would produce "2026-05-15".
+    // Recomputing here would silently move a live AUTHORISED invoice's due date
+    // the next time an unrelated edit synced.
+    mocks.prisma.booking.findUnique.mockResolvedValue({
+      id: "booking_1",
+      memberId: "mem_1",
+      member: { id: "mem_1" },
+      checkIn: "2026-08-03T00:00:00.000Z",
+      checkOut: "2026-08-05T00:00:00.000Z",
+      createdAt: "2026-05-14T12:00:00.000Z",
+      discountCents: 0,
+      guests: [
+        {
+          firstName: "Jordan",
+          lastName: "Hartley-Smith",
+          ageTier: "ADULT",
+          isMember: true,
+          priceCents: 10000,
+        },
+      ],
+      payment: {
+        id: "pay_1",
+        status: "SUCCEEDED",
+        amountCents: 10000,
+        stripePaymentIntentId: "pi_1",
+        xeroInvoiceId: "inv_1",
+        xeroInvoiceNumber: "INV-1",
+      },
+    });
+    mocks.xeroClientInstance.accountingApi.getInvoice.mockResolvedValue({
+      body: {
+        invoices: [
+          {
+            invoiceID: "inv_1",
+            invoiceNumber: "INV-1",
+            type: "ACCREC",
+            contact: { contactID: "contact_1" },
+            lineAmountTypes: "Inclusive",
+            reference: "Booking booking_",
+            // What Xero already holds: the pre-#2697 UTC-truncated day.
+            dueDate: "2026-05-14",
+            lineItems: [
+              {
+                lineItemID: "line_1",
+                description:
+                  "Jordan Hartley-Smith - (ADULT, Member) - 1 night - 2026-07-31 - 2026-08-01",
+                quantity: 1,
+                unitAmount: 100,
+                taxType: "OUTPUT2",
+                accountCode: "200",
+              },
+            ],
+          },
+        ],
+      },
+    });
+    mocks.xeroClientInstance.accountingApi.updateInvoice.mockResolvedValue({
+      body: { invoices: [{ invoiceID: "inv_1", invoiceNumber: "INV-1" }] },
+    });
+
+    await expect(updateXeroBookingInvoiceForBooking("booking_1")).resolves.toBe("inv_1");
+
+    expect(mocks.xeroClientInstance.accountingApi.updateInvoice).toHaveBeenCalledWith(
+      "tenant_1",
+      "inv_1",
+      {
+        invoices: [expect.objectContaining({ dueDate: "2026-05-14" })],
+      },
+      undefined,
+      "booking:booking_1:invoice-update:inv_1:2026-08-03:2026-08-05:v1"
+    );
+  });
+
   describe("promo code discount line coding", () => {
     function bookingWithPromo(promo: {
       code: string;

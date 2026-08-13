@@ -4,6 +4,7 @@ import {
   FINANCE_FORWARD_COMMITTED_BOOKING_STATUSES,
   FINANCE_REALIZED_BOOKING_STATUSES,
 } from "@/lib/finance-booking-metrics";
+import { formatDateOnlyForTimeZone } from "@/lib/date-only";
 import { prisma } from "@/lib/prisma";
 
 const ISO_DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
@@ -184,7 +185,14 @@ function toLegacyDashboardBookingRow(input: {
     booking_id: input.booking.id,
     start_date: toIsoDate(input.overlapStart),
     end_date: toIsoDate(input.overlapEndExclusive),
-    created_date: input.booking.createdAt.toISOString().slice(0, 10),
+    // `createdAt` is a `DateTime` instant, unlike every other date in this row.
+    // Truncating an instant to its UTC day is the pattern INV-DATE-019 forbids:
+    // it reported the booking as created a day early for every booking made
+    // before ~midday NZ, and mixed two definitions of "day" inside one payload
+    // (#2697). The other dates here are true `@db.Date` lodge nights, whose UTC
+    // midnight IS the encoding of a calendar day (INV-DATE-010), so they are
+    // correctly left on truncation.
+    created_date: formatDateOnlyForTimeZone(input.booking.createdAt),
     status: input.booking.status,
     guests: guestCount,
     nights: input.overlapNights,
