@@ -480,3 +480,92 @@ describe("a good answer carries its provenance (#2378, D10)", () => {
     expect(json.provenance.line.length).toBeGreaterThan(0);
   });
 });
+
+describe("the view is filtered to the matched route's own allowlists (#2816)", () => {
+  /**
+   * The client sends its live URL state RAW; this route narrows it to what the
+   * registry row explicitly permits, because the selector parser's rejection is
+   * TOTAL — one stray pagination key or uppercase enum spelling would otherwise
+   * cost the operator their whole page context. Same degrade-don't-reject
+   * reasoning as the ill-formed record id above.
+   */
+  it("keeps an allowlisted status, normalised from the page's enum casing", async () => {
+    await POST(
+      request(
+        body({
+          pathname: "/admin/bookings",
+          view: { status: "PAYMENT_PENDING" },
+        }),
+      ),
+    );
+    const selector = mocks.resolveContext.mock.calls[0][0].selector;
+    expect(selector.status).toBe("payment-pending");
+  });
+
+  it("keeps allowlisted filter keys and drops the rest, silently", async () => {
+    await POST(
+      request(
+        body({
+          pathname: "/admin/bookings",
+          view: {
+            filters: {
+              status: "confirmed",
+              from: "2026-08-01",
+              page: "3",
+              utm_source: "email",
+            },
+          },
+        }),
+      ),
+    );
+    const selector = mocks.resolveContext.mock.calls[0][0].selector;
+    expect(selector.filters).toEqual({ status: "confirmed", from: "2026-08-01" });
+    // The context itself survives the stray keys — that is the whole point.
+    expect(selector.routeKey).toBe("admin.bookings");
+  });
+
+  it("drops an unknown status token rather than losing the context", async () => {
+    await POST(
+      request(
+        body({ pathname: "/admin/bookings", view: { status: "definitely-not-real" } }),
+      ),
+    );
+    const selector = mocks.resolveContext.mock.calls[0][0].selector;
+    expect(selector.status).toBeUndefined();
+    expect(selector.routeKey).toBe("admin.bookings");
+  });
+
+  it("drops an overlong filter value outright, never truncated", async () => {
+    // A truncated filter value would tell the model the operator filtered by
+    // something they did not.
+    await POST(
+      request(
+        body({
+          pathname: "/admin/bookings",
+          view: {
+            filters: {
+              search: "x".repeat(200),
+              to: "2026-08-31",
+            },
+          },
+        }),
+      ),
+    );
+    const selector = mocks.resolveContext.mock.calls[0][0].selector;
+    expect(selector.filters).toEqual({ to: "2026-08-31" });
+  });
+
+  it("sends no view fields at all for a route that allowlists none", async () => {
+    await POST(
+      request(
+        body({
+          pathname: "/admin/health",
+          view: { tab: "anything", filters: { q: "x" } },
+        }),
+      ),
+    );
+    const selector = mocks.resolveContext.mock.calls[0][0].selector;
+    expect(selector.tab).toBeUndefined();
+    expect(selector.filters).toBeUndefined();
+  });
+});

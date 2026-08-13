@@ -41,10 +41,13 @@ which points at the page.
 
 What travels with a question is the **pathname**, the operator's chosen **record id**
 (a selector the server re-resolves; the kind always comes from the route the server
-matches), the replayed transcript, and the two ticks. The route also accepts an
-allowlisted **view state** (tab, status, filters) that the registry re-validates per
-page — the UI does not send it yet; wiring the pages' own view state through is
-#2816.
+matches), the replayed transcript, and the two ticks. The question also carries the
+operator's **view state** (#2816): these admin lists are server components whose
+filter state lives in the URL, so the bubble reads the query string at ask time and
+sends it raw; the route keeps only what the matched registry row's own allowlists
+permit (normalising the pages' enum casing to the registry tokens), drops the rest
+silently — one stray pagination key must never cost the whole context — and the
+selector parser re-validates whatever survives.
 
 ## The Diagnostics tab
 

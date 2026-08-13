@@ -343,3 +343,51 @@ describe("the conversation stays with the operator (#2378, D8)", () => {
     await waitFor(() => expect(screen.queryByTestId("diagnostics-pending")).toBeNull());
   });
 });
+
+describe("the question carries the operator's URL view state (#2816)", () => {
+  it("sends the live query string as the view, raw", async () => {
+    // These admin lists are server components whose filter state IS the query
+    // string, so the address bar is the publication channel — read at ask time,
+    // sent raw, narrowed to the registry row's allowlists SERVER-side.
+    window.history.pushState({}, "", "/admin/bookings?status=CONFIRMED&from=2026-08-01&page=3");
+    try {
+      renderWidget();
+      openDiagnostics();
+      fireEvent.change(screen.getByTestId("diagnostics-input"), {
+        target: { value: "why is this list so short?" },
+      });
+      fireEvent.click(screen.getByTestId("diagnostics-send"));
+      await waitFor(() => expect(fetch).toHaveBeenCalledTimes(1));
+      const sent = JSON.parse(
+        (fetch as unknown as { mock: { calls: [string, { body: string }][] } }).mock
+          .calls[0][1].body,
+      );
+      expect(sent.view).toEqual({
+        status: "CONFIRMED",
+        filters: { from: "2026-08-01", page: "3" },
+      });
+    } finally {
+      window.history.pushState({}, "", "/");
+    }
+  });
+
+  it("sends no view at all from a bare URL", async () => {
+    window.history.pushState({}, "", "/admin/bookings");
+    try {
+      renderWidget();
+      openDiagnostics();
+      fireEvent.change(screen.getByTestId("diagnostics-input"), {
+        target: { value: "anything" },
+      });
+      fireEvent.click(screen.getByTestId("diagnostics-send"));
+      await waitFor(() => expect(fetch).toHaveBeenCalledTimes(1));
+      const sent = JSON.parse(
+        (fetch as unknown as { mock: { calls: [string, { body: string }][] } }).mock
+          .calls[0][1].body,
+      );
+      expect(sent.view).toBeUndefined();
+    } finally {
+      window.history.pushState({}, "", "/");
+    }
+  });
+});

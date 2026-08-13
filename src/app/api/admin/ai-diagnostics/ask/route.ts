@@ -350,12 +350,80 @@ export async function POST(request: Request) {
   const selectedRecordId =
     wellFormed(matched?.recordId) ??
     (matched?.route.recordKind ? wellFormed(recordId) : undefined);
+  // THE VIEW IS FILTERED TO THE MATCHED ROUTE'S OWN ALLOWLISTS HERE (#2816),
+  // by the same degrade-don't-reject reasoning as the record id above: the
+  // selector parser's rejection is TOTAL, so one stray query parameter — a
+  // pagination key, an uppercase enum spelling, an unregistered filter — would
+  // cost the operator their whole page context. The browser sends its live URL
+  // state raw; this keeps what the row explicitly permits and silently drops
+  // the rest. Nothing here is trusted: whatever survives is re-validated by
+  // `parseDiagnosticsPageSelector` against the same allowlists, so this filter
+  // can only ever NARROW what reaches the resolver, never widen it.
+  //
+  // Status/tab spellings are normalised from the pages' own enum casing
+  // (`PAYMENT_PENDING`) to the registry's token vocabulary (`payment-pending`)
+  // before the allowlist test — a mapping, not a loosening: an unknown token
+  // still matches nothing and is dropped.
+  const allowlistedView = (() => {
+    if (!matched || !view) return {};
+    const token = (value: string | undefined): string | undefined => {
+      const normalised = value?.trim().toLowerCase().replace(/_/g, "-");
+      return normalised && /^[a-z0-9][a-z0-9._-]*$/.test(normalised)
+        ? normalised
+        : undefined;
+    };
+    const pick = (
+      value: string | undefined,
+      allowed: readonly string[],
+    ): string | undefined => {
+      const candidate = token(value);
+      return candidate && allowed.includes(candidate) ? candidate : undefined;
+    };
+    const out: {
+      tab?: string;
+      step?: string;
+      status?: string;
+      errorCode?: string;
+      filters?: Record<string, string>;
+    } = {};
+    const tab = pick(view.tab, matched.route.tabs);
+    if (tab) out.tab = tab;
+    const step = pick(view.step, matched.route.steps);
+    if (step) out.step = step;
+    const status = pick(view.status, matched.route.statuses);
+    if (status) out.status = status;
+    const errorCode = pick(view.errorCode, matched.route.errorCodes);
+    if (errorCode) out.errorCode = errorCode;
+    if (view.filters) {
+      const filters: Record<string, string> = {};
+      let kept = 0;
+      for (const [key, value] of Object.entries(view.filters)) {
+        if (kept >= 8) break; // the selector's own maxFilters
+        if (!matched.route.filterKeys.includes(key)) continue;
+        const trimmed = value.trim();
+        // An overlong or control-carrying value is DROPPED, not truncated: a
+        // truncated filter value would tell the model the operator filtered by
+        // something they did not.
+        if (
+          trimmed.length === 0 ||
+          trimmed.length > 120 ||
+          /[\u0000-\u001f\u007f]/.test(trimmed)
+        ) {
+          continue;
+        }
+        filters[key] = trimmed;
+        kept += 1;
+      }
+      if (kept > 0) out.filters = filters;
+    }
+    return out;
+  })();
   const pageContext = await resolveDiagnosticsPageContext({
     selector: matched
       ? {
           routeKey: matched.route.key,
           ...(selectedRecordId ? { recordId: selectedRecordId } : {}),
-          ...(view ?? {}),
+          ...allowlistedView,
           includeSensitiveRecord: allowRecordPersonalDetails,
         }
       : { routeKey: null },

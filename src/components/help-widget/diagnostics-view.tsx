@@ -4,7 +4,10 @@ import { useEffect, useId, useRef, useState, type FormEvent } from "react";
 import Link from "next/link";
 import { Stethoscope } from "lucide-react";
 
-import { DIAGNOSTICS_WIRE_BOUNDS } from "@/lib/diagnostics/answer/contract";
+import {
+  DIAGNOSTICS_WIRE_BOUNDS,
+  type DiagnosticsAskRequest,
+} from "@/lib/diagnostics/answer/contract";
 import { DIAGNOSTICS_TOOL_CONSENT_COPY } from "@/lib/diagnostics/tools/consent";
 
 import { DiagnosticsProvenance } from "./diagnostics-provenance";
@@ -38,6 +41,48 @@ import {
  * authority the gate does not give it. `useDiagnosticsChat` clears them after every
  * send, including a failed one.
  */
+
+/**
+ * The operator's live view state, read from the URL at ASK time (#2816).
+ *
+ * These admin lists are server components whose whole filter state lives in the
+ * query string — so the address bar IS the publication channel, and no per-page
+ * hook is needed. Read inside the submit handler rather than via useSearchParams:
+ * an event-time read is always current and adds no prerender/Suspense constraint
+ * to the public surfaces this widget also serves.
+ *
+ * SENT RAW, FILTERED SERVER-SIDE. The route matches the registry row and keeps
+ * only what that row's own allowlists permit (normalising the pages' enum casing
+ * to the registry's token vocabulary); everything else — pagination keys, unknown
+ * filters, other pages' parameters — is dropped there, where the allowlists live.
+ * The client caps count and value length only to bound the payload.
+ */
+function viewFromLocationSearch():
+  | NonNullable<DiagnosticsAskRequest["view"]>
+  | undefined {
+  if (typeof window === "undefined") return undefined;
+  const params = new URLSearchParams(window.location.search);
+  const view: NonNullable<DiagnosticsAskRequest["view"]> = {};
+  const filters: Record<string, string> = {};
+  let seen = 0;
+  let hasFilters = false;
+  for (const [key, rawValue] of params.entries()) {
+    if (seen >= 16) break;
+    const value = rawValue.trim().slice(0, 120);
+    if (!value || key.length > 32) continue;
+    seen += 1;
+    if (key === "tab") view.tab = value;
+    else if (key === "step") view.step = value;
+    else if (key === "status") view.status = value;
+    else if (key === "errorCode") view.errorCode = value;
+    else {
+      filters[key] = value;
+      hasFilters = true;
+    }
+  }
+  if (hasFilters) view.filters = filters;
+  return Object.keys(view).length > 0 ? view : undefined;
+}
 
 /**
  * The screen the conversation was MOST RECENTLY asked from, when it is not this one.
@@ -115,7 +160,12 @@ export function DiagnosticsView({
     const question = draft.trim();
     if (!question) return;
     setDraft("");
-    void chat.ask(question, { pathname, ...(recordId ? { recordId } : {}) });
+    const view = viewFromLocationSearch();
+    void chat.ask(question, {
+      pathname,
+      ...(recordId ? { recordId } : {}),
+      ...(view ? { view } : {}),
+    });
   };
 
   return (

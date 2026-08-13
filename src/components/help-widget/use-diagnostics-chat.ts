@@ -77,8 +77,10 @@ export interface DiagnosticsAskOptions {
    * The contract's own shape, not a loose `Record<string, string>` — the loose type
    * was assignable to the request while letting `{ filters: "oops" }` compile, which
    * defeated the "compiler catches the disagreement" property this hook claims
-   * (correctness review, 13 Aug 2026). Note nothing in the UI sends this yet; the
-   * server-side allowlisting is ready and the wiring is #2816.
+   * (correctness review, 13 Aug 2026). #2816 wires it: the view is read from the
+   * URL at ask time (these list pages are server components whose filter state IS
+   * the query string) and the route filters it to the matched registry row's own
+   * allowlists — sent raw here, narrowed there, re-validated by the parser after.
    */
   view?: DiagnosticsAskRequest["view"];
 }
