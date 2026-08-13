@@ -36,7 +36,7 @@ import {
   findOrCreateXeroContact,
   retryXeroWriteWithContactRepair,
 } from "./xero-contacts";
-import { formatDate } from "./xero-invoice-helpers";
+import { formatDateOnlyForTimeZone } from "@/lib/date-only";
 import logger from "@/lib/logger";
 import {
   assertNoAppliedCreditDeallocationFence,
@@ -266,10 +266,15 @@ async function mintAppliedCreditRemainderNote(params: {
     lineItem.accountCode = accountCode;
   }
 
+  // Club calendar day: the note's date decides its GST period, and the UTC day
+  // is still yesterday all New Zealand morning (INV-DATE-019, #2834). Read once,
+  // outside a closure that runs for the recorded payload and each repair attempt.
+  const remainderNoteDate = formatDateOnlyForTimeZone(new Date());
+
   const buildCreditNote = (resolvedContactId: string): CreditNote => ({
     type: CreditNote.TypeEnum.ACCRECCREDIT,
     contact: { contactID: resolvedContactId },
-    date: formatDate(new Date()),
+    date: remainderNoteDate,
     lineAmountTypes: LineAmountTypes.Inclusive,
     lineItems: [lineItem],
     reference: `Applied credit - Booking ${bookingId.slice(0, 8)}`,

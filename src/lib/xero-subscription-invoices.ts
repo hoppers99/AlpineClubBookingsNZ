@@ -8,6 +8,12 @@ import logger from "@/lib/logger";
 import { prisma } from "@/lib/prisma";
 import { callXeroApi, getAuthenticatedXeroClient } from "@/lib/xero-api-client";
 import { findOrCreateXeroContact } from "@/lib/xero-contacts";
+import {
+  addDaysDateOnly,
+  formatDateOnly,
+  formatDateOnlyForTimeZone,
+  parseDateOnly,
+} from "@/lib/date-only";
 import { buildXeroInvoiceUrl, stripXeroOrgShortCode } from "@/lib/xero-links";
 import { formatDate } from "@/lib/xero-invoice-helpers";
 import {
@@ -16,12 +22,6 @@ import {
   startXeroSyncOperation,
 } from "@/lib/xero-sync";
 import { XERO_OUTBOX_SUBSCRIPTION_INVOICE_TYPE } from "@/lib/xero-operation-outbox-payload";
-
-function addUtcDays(date: Date, days: number) {
-  const result = new Date(date);
-  result.setUTCDate(result.getUTCDate() + days);
-  return result;
-}
 
 function invoiceCents(invoice: Invoice) {
   if (typeof invoice.total === "number") return Math.round(invoice.total * 100);
@@ -302,7 +302,21 @@ export async function createXeroMembershipSubscriptionInvoice(input: {
       invoiceNumber = existing[0].invoiceNumber ?? null;
       adopted = true;
     } else {
-      const issueDate = new Date();
+      // The subscription invoice's issue date decides its GST period and
+      // financial year, so it is the CLUB's calendar day — the UTC day is still
+      // yesterday for roughly the first half of every New Zealand day
+      // (INV-DATE-019, #2834).
+      //
+      // The due date is then `dueDays` CALENDAR days later, stepped with
+      // date-only arithmetic. That also keeps the interval exactly `dueDays`,
+      // which `subscriptionInvoiceMatchesSnapshot` compares when it decides
+      // whether a pre-existing Xero invoice may be adopted against this
+      // immutable charge; adding `dueDays x 24h` to the instant instead would
+      // slip an hour across a daylight-saving transition and could move the day.
+      const issueDate = formatDateOnlyForTimeZone(new Date());
+      const dueDate = formatDateOnly(
+        addDaysDateOnly(parseDateOnly(issueDate), charge.dueDays),
+      );
       const built: Invoice = {
         type: Invoice.TypeEnum.ACCREC,
         contact: { contactID: contactId },
@@ -314,8 +328,8 @@ export async function createXeroMembershipSubscriptionInvoice(input: {
           description: line.description,
           taxType: "OUTPUT2",
         })),
-        date: formatDate(issueDate),
-        dueDate: formatDate(addUtcDays(issueDate, charge.dueDays)),
+        date: issueDate,
+        dueDate,
         reference: charge.invoiceReference,
         status: Invoice.StatusEnum.AUTHORISED,
         lineAmountTypes: LineAmountTypes.Inclusive,

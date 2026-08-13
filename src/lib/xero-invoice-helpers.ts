@@ -22,8 +22,16 @@ import { buildXeroIdempotencyKey } from "@/lib/xero-sync";
  * `updatedAt`, or `new Date()` — yields the UTC calendar day, which for roughly
  * the first half of every New Zealand day is the day before the club's
  * (INV-DATE-019). A calendar date derived from an instant belongs in
- * `formatDateOnlyForTimeZone` instead. #2834 tracks the sibling Xero document
- * dates in this codebase that still take an instant through here.
+ * `formatDateOnlyForTimeZone` instead.
+ *
+ * This wrapper is the reason that whole class stayed invisible: it hid
+ * `toISOString().split("T")[0]` from the regex census in
+ * `nz-today-date-only.test.tsx` and from MAD-A2 #2682's sweep, so twenty Xero
+ * document dates reached the forbidden pattern one indirection away from the
+ * spelling anyone was looking for. #2697 closed the two `Booking.createdAt`
+ * consumers and #2834 closed the rest. **Every remaining caller is a `@db.Date`
+ * receiver**, which is the only thing this function is for; if you are about to
+ * pass it an instant, you want `formatDateOnlyForTimeZone`.
  */
 export function formatDate(date: Date): string {
   return date.toISOString().split("T")[0];

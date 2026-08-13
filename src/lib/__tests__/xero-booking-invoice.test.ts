@@ -893,6 +893,87 @@ describe("createXeroInvoiceForBooking", () => {
     );
   });
 
+  // The Stripe payment recorded against a freshly raised invoice is
+  // bank-reconciliation input, and its date decides which GST period the cash
+  // falls in. It read the clock's UTC day, which is still yesterday for roughly
+  // the first half of every New Zealand day (#2834, INV-DATE-019). The instants
+  // below are chosen so a wrong zone fails them: the first is 00:00 NZST, which
+  // any zone shallower than UTC+12 gets wrong, and the second is 00:30 NZDT,
+  // which a fixed +12 zone with no daylight saving gets wrong.
+  describe.each([
+    {
+      label: "NZST (UTC+12), the first instant of a club day",
+      instant: new Date("2026-06-14T12:00:00.000Z"),
+      utcDay: "2026-06-14",
+      clubDay: "2026-06-15",
+    },
+    {
+      label: "NZDT (UTC+13), 00:30 on a club day",
+      instant: new Date("2026-01-14T11:30:00.000Z"),
+      utcDay: "2026-01-14",
+      clubDay: "2026-01-15",
+    },
+  ])("the recorded Stripe payment date — $label", ({ instant, utcDay, clubDay }) => {
+    it("is the club's calendar day, not the UTC one", async () => {
+      expect(instant.toISOString().slice(0, 10)).toBe(utcDay);
+      // The root freeze pins midday NZ, where the two calendars agree — the one
+      // window this defect does not live in. Pin the divergent instant here.
+      vi.setSystemTime(instant);
+
+      mocks.prisma.booking.findUnique.mockResolvedValue({
+        id: "booking_1",
+        memberId: "mem_1",
+        member: { id: "mem_1" },
+        checkIn: "2026-07-31T00:00:00.000Z",
+        checkOut: "2026-08-02T00:00:00.000Z",
+        createdAt: "2026-05-15T10:30:00.000Z",
+        discountCents: 0,
+        guests: [
+          {
+            firstName: "Jordan",
+            lastName: "Hartley-Smith",
+            ageTier: "ADULT",
+            isMember: true,
+            priceCents: 10000,
+          },
+        ],
+        payment: {
+          id: "pay_1",
+          status: "SUCCEEDED",
+          amountCents: 10000,
+          refundedAmountCents: 0,
+          creditAppliedCents: 0,
+          stripePaymentIntentId: "pi_1",
+          xeroInvoiceId: null,
+          xeroInvoiceNumber: null,
+          source: "STRIPE",
+        },
+      });
+      mocks.xeroClientInstance.accountingApi.createInvoices.mockResolvedValue({
+        body: {
+          invoices: [
+            {
+              invoiceID: "inv_1",
+              invoiceNumber: "INV-1",
+              total: 100,
+              status: "AUTHORISED",
+            },
+          ],
+        },
+      });
+      mocks.xeroClientInstance.accountingApi.createPayment.mockResolvedValue({
+        body: { paymentID: "xpay_1" },
+      });
+
+      await expect(createXeroInvoiceForBooking("booking_1")).resolves.toBe("inv_1");
+
+      const [, payment] =
+        mocks.xeroClientInstance.accountingApi.createPayment.mock.calls[0];
+      expect(payment.date).toBe(clubDay);
+      expect(payment.date).not.toBe(utcDay);
+    });
+  });
+
   describe("promo code discount line coding", () => {
     function bookingWithPromo(promo: {
       code: string;

@@ -297,6 +297,9 @@ describe("deallocateExcessAppliedCreditForBooking (#1887 F3)", () => {
       undefined,
       "credit-note:cn-1:invoice:inv-1:deallocation-recreate:4000:2500:op:op-1:v2",
     );
+    // #2834: the key is derived from the transition, never from a date, so this
+    // change cannot make a queued operation miss its dedupe.
+    expect(h.createCreditNoteAllocation.mock.calls[0][4]).not.toMatch(/\d{4}-\d{2}-\d{2}/);
     expect(h.allocationUpdate).toHaveBeenCalledWith({
       where: { id: "row-1" },
       data: { amountCents: 2500 },
@@ -352,6 +355,45 @@ describe("deallocateExcessAppliedCreditForBooking (#1887 F3)", () => {
         },
       }),
     );
+  });
+
+  // #2834: the recreated allocation carries a date, and it read the clock's UTC
+  // day — still yesterday for roughly the first half of every New Zealand day.
+  // Both instants below are chosen so a wrong zone fails them: 00:00 NZST, which
+  // any zone shallower than UTC+12 gets wrong, and 00:30 NZDT, which a fixed +12
+  // zone with no daylight saving gets wrong.
+  describe.each([
+    {
+      label: "NZST (UTC+12), the first instant of a club day",
+      instant: new Date("2026-06-14T12:00:00.000Z"),
+      utcDay: "2026-06-14",
+      clubDay: "2026-06-15",
+    },
+    {
+      label: "NZDT (UTC+13), 00:30 on a club day",
+      instant: new Date("2026-01-14T11:30:00.000Z"),
+      utcDay: "2026-01-14",
+      clubDay: "2026-01-15",
+    },
+  ])("the recreated allocation's date — $label", ({ instant, utcDay, clubDay }) => {
+    it("is the club's calendar day, not the UTC one", async () => {
+      expect(instant.toISOString().slice(0, 10)).toBe(utcDay);
+      // The root freeze pins midday NZ, where both calendars agree — the one
+      // window this defect does not live in.
+      vi.setSystemTime(instant);
+      h.linkFindMany.mockResolvedValue([regularAllocationLink()]);
+      h.getCreditNote
+        .mockResolvedValueOnce(providerNote(4000))
+        .mockResolvedValueOnce(providerNote(2500, "alloc-new"));
+
+      await deallocateExcessAppliedCreditForBooking("booking-1", {
+        syncOperationId: "op-1",
+      });
+
+      const [, , body] = h.createCreditNoteAllocation.mock.calls[0];
+      expect(body.allocations[0].date).toBe(clubDay);
+      expect(body.allocations[0].date).not.toBe(utcDay);
+    });
   });
 
   it("scopes the recreate idempotency key to the operation so distinct operations never collide, while a retried operation reuses its key (#1887)", async () => {

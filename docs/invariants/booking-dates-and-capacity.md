@@ -386,11 +386,26 @@ derivation).
     friends are real instants, so `booking.createdAt.toISOString().slice(0, 10)`
     is the clock one hop removed and lands on the previous NZ day all morning.
     #2697 closed the two `Booking.createdAt` sites (the Xero booking-invoice due
-    date and the legacy finance export's `created_date`); #2834 closes the
-    remaining Xero document dates, several of which reach this pattern through a
-    local `formatDate` wrapper rather than a literal `.slice(0, 10)`. #2684's
-    lint rule is where the whole class gets caught; until then it is a known
-    trap, not a permitted pattern.
+    date and the legacy finance export's `created_date`), and #2834 closed the
+    twenty Xero document dates that remained: every invoice, credit note,
+    payment and allocation date derived from the clock or from a stored
+    `DateTime`, across ten modules. Every one of them is now
+    `formatDateOnlyForTimeZone`. **Most of them were invisible to a grep**,
+    because they reached the pattern through the `formatDate` wrapper in
+    `src/lib/xero-invoice-helpers.ts` (which is `toISOString().split("T")[0]`)
+    or through a private clone of it in `membership-cancellation-xero.ts` — so
+    census that call graph, not the spelling. `formatDate` is still correct and
+    still used, but only for `@db.Date` receivers, and its docblock says so.
+    #2684's lint rule is where the whole class gets caught; until then it is a
+    known trap, not a permitted pattern.
+  - *A number of days added to a document date is added in CALENDAR days*, with
+    `addDaysDateOnly` over the date-only value — never as `days x 24h` on the
+    instant. The Xero entrance-fee invoice's 30-day due date and the
+    subscription invoice's `dueDays` both do it that way since #2834: adding
+    whole days to an instant slips an hour across a daylight-saving change,
+    which moves the day whenever the instant sits within an hour of club
+    midnight, and on the subscription invoice it would also break the frozen
+    `dueDays` interval that adoption matches on.
   - *The member booking calendar and the admin kiosk deliberately derive today
     from the BROWSER's calendar day* (`src/components/booking-calendar.tsx`,
     `src/app/(admin)/admin/book/page.tsx`, #2474 — see the next invariant), so

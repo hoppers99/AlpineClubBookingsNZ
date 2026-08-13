@@ -5,7 +5,7 @@ import {
   lockMemberCreditLedger,
 } from "./member-credit";
 import { callXeroApi, getAuthenticatedXeroClient } from "./xero-api-client";
-import { formatDate } from "./xero-invoice-helpers";
+import { formatDateOnlyForTimeZone } from "@/lib/date-only";
 import {
   buildXeroIdempotencyKey,
   completeXeroSyncOperation,
@@ -858,7 +858,9 @@ export async function deallocateExcessAppliedCreditForBooking(
             { allocations: [{
               invoice: { invoiceID: booking.payment!.xeroInvoiceId! },
               amount: group.targetCents / 100,
-              date: formatDate(new Date()),
+              // The recreated allocation is dated on the club's calendar, not
+              // the UTC day (INV-DATE-019, #2834).
+              date: formatDateOnlyForTimeZone(new Date()),
             }] },
             undefined,
             idempotencyKey
