@@ -48,9 +48,11 @@ export const KNOWLEDGE_BUNDLE_RELATIVE_PATH =
   ".artifacts/diagnostics/knowledge-bundle.json";
 
 /**
- * Sentinel commit SHA written by the build-time PLACEHOLDER (see
- * `scripts/diagnostics/ensure-knowledge-bundle.ts`) when no real bundle was
- * pre-generated. The loader treats it — like any non-40-hex or all-zero SHA —
+ * Sentinel commit SHA written by the build-time generator (see
+ * `scripts/diagnostics/generate-knowledge-bundle.ts`, whose `resolveCommitSha`
+ * returns this value) when no real bundle was pre-generated — i.e. when neither
+ * `GIT_COMMIT_SHA` nor a `.git` directory is present. The loader treats it — like
+ * any non-40-hex or all-zero SHA —
  * as UNVERIFIED and fails closed. It exists only so a bare `docker build` that
  * skipped pre-generation still produces a runnable image with diagnostics
  * disabled, never a broken build.
