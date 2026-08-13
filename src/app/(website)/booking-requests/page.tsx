@@ -14,7 +14,8 @@ import {
 
 /**
  * The public booking-request page, a database-backed built-in CMS page with the
- * same makeup as `/join/apply`: a code-backed `(website)` route that renders its
+ * same makeup as `/join/apply` and `/school-bookings`: a code-backed `(website)`
+ * route that renders its
  * `/booking-requests` PageContent row through the token pipeline. Its seeded body
  * is `{{booking-requests}}`, which renders the request-to-book form.
  *
