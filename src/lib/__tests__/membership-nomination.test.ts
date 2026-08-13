@@ -134,6 +134,7 @@ import {
 } from "@/lib/xero-operation-outbox";
 import { logAudit } from "@/lib/audit";
 import { hashActionToken } from "@/lib/action-tokens";
+import { FAMILY_LINK_GENERATION_LIMIT_ERROR } from "@/lib/member-family-link-depth";
 
 describe("membership nomination workflow", () => {
   beforeEach(() => {
@@ -619,19 +620,27 @@ describe("membership nomination workflow", () => {
         findFirst: vi.fn().mockResolvedValue(null),
         // #2255: the resolved source is validated before it is stored, which
         // reads the source row back on the same client.
+        //
+        // #2716: this same read now DECIDES the mailbox — the walk up the
+        // family is gone, so `resolveInheritedEmailSourceId` reads the chosen
+        // parent here and asks `isUsableEmailSource`, which disqualifies anyone
+        // with a non-NULL `inheritEmailChoiceId` as well as a non-NULL pointer.
+        // The column is part of `EMAIL_SOURCE_SELECT`, so a real row always has
+        // it; leaving it off the fixture made it `undefined`, which is not
+        // `null`, and the applicant read as somebody else's dependant.
         findUnique: vi.fn(async ({ where }: any) => ({
           id: where.id,
           email: "jane@test.com",
           ageTier: "ADULT",
           archivedAt: null,
           inheritEmailFromId: null,
+          inheritEmailChoiceId: null,
         })),
         // #2255: each family dependant created under the applicant is checked
-        // against the four-generation cap (a walk UP from the applicant) and
-        // its inherited mailbox is resolved the same way. The applicant is
-        // created in this same transaction, has no parents, and is an adult
-        // with a real address — so the depth walk stops immediately and the
-        // email walk stops on them.
+        // against the four-generation cap — a walk UP from the applicant, which
+        // #2716 left untouched because the cap governs LINKS, not the address
+        // hop. The applicant is created in this same transaction and has no
+        // parents, so the walk stops immediately.
         findMany: vi.fn(async ({ where }: any) =>
           where?.id?.in
             ? where.id.in.map((id: string) => ({
@@ -743,6 +752,10 @@ describe("membership nomination workflow", () => {
           canLogin: false,
           parentMemberId: "member-1",
           inheritEmailFromId: "member-1",
+          // #2716: the create records WHO WAS CHOSEN beside the mailbox that
+          // choice resolves to. One hop means both name the applicant — this
+          // dependant's direct parent — and nobody further up.
+          inheritEmailChoiceId: "member-1",
           phoneCountryCode: "64",
           phoneAreaCode: "21",
           phoneNumber: "5551234",
@@ -897,12 +910,20 @@ describe("membership nomination workflow", () => {
               }))
             : []
         ),
+        // #2716: `inheritEmailChoiceId` belongs on every fixture standing in
+        // for an `EMAIL_SOURCE_SELECT` row. This test's subject is the DEPTH
+        // CAP, which fires before the mailbox is resolved, so the omission did
+        // not fail it — but it would have made the applicant look like an
+        // inheritor, and the 422 could then have come from the inheritance
+        // refusal instead of the cap. The assertion below names the cap's own
+        // message for the same reason.
         findUnique: vi.fn(async ({ where }: any) => ({
           id: where.id,
           email: `${where.id}@test.com`,
           ageTier: "ADULT",
           archivedAt: null,
           inheritEmailFromId: null,
+          inheritEmailChoiceId: null,
         })),
         create: memberCreate,
         update: vi.fn().mockResolvedValue({ id: "member-1" }),
@@ -927,7 +948,14 @@ describe("membership nomination workflow", () => {
 
     await expect(
       approveMemberApplication("app-deep", "admin-1", "Welcome aboard")
-    ).rejects.toMatchObject({ status: 422 });
+    ).rejects.toMatchObject({
+      status: 422,
+      // #2716: pin the REASON, not just the status. Since the one-hop rule a
+      // parent with no usable address is also a 422, so a bare status check
+      // would let this test go on passing while the depth cap it exists to
+      // prove had stopped firing.
+      message: FAMILY_LINK_GENERATION_LIMIT_ERROR,
+    });
 
     // The applicant was created; the fifth-generation dependant was not.
     expect(memberCreate).toHaveBeenCalledTimes(1);

@@ -87,8 +87,18 @@ import {
  * STRIPE: the final card charge is skipped unless real test-mode keys are
  * configured, exactly as `stripe-payment.spec.ts` does. Everything that #2779 is
  * ABOUT — the refusal, the on-behalf create, the discovery, and the payment path
- * ADMITTING this member and moving the booking to PAYMENT_PENDING — runs
- * unconditionally, because none of it needs a provider.
+ * ADMITTING this member and moving the booking to PAYMENT_PENDING — still RUNS
+ * without a provider, and the admission is still proven without one. What a
+ * provider changes is the SHAPE of the pay step's response, not whether the
+ * member is let in: with keys the intent is minted and the route answers 200
+ * with a `clientSecret`; without them (any fork's CI, where GitHub never hands
+ * a `pull_request` run the repository secrets — #2820) the route's first
+ * provider call — the Stripe customer lookup that precedes the intent mint — is
+ * the only failure THIS fixture can still reach after admission, and it happens
+ * AFTER the pay transaction has committed, so the route answers 500 with the
+ * booking already moved to PAYMENT_PENDING. The fourth test asserts whichever of
+ * those two shapes matches the environment it is running in, and asserts the
+ * booking moved in both.
  */
 
 test.describe.configure({ mode: "serial" });
@@ -341,15 +351,71 @@ test("paying it is admitted while the subscription is still unpaid", async () =>
   const res = await member.post("/api/payments/create-payment-intent", {
     data: { bookingId: draftBookingId },
   });
-  expect(
-    res.status(),
-    `create-payment-intent for the locked-out owner (${res.status()}): ${await res.text()}`,
-  ).toBe(200);
-  const body = (await res.json()) as { clientSecret?: string };
-  expect(body.clientSecret).toBeTruthy();
+
+  // WHY THIS BRANCHES, AND WHY BOTH BRANCHES PROVE THE SAME THING. The route
+  // holds no subscription gate, so nothing about this member's arrears can
+  // change its answer — but the answer's SHAPE depends on whether the club has
+  // Stripe keys, because a priced booking's pay step ends in real Stripe calls:
+  // a customer lookup, and then the intent mint. The route's own ordering is
+  // what makes the unkeyed answer still probative: the pay transaction — the
+  // status-guarded DRAFT → PAYMENT_PENDING move, the capacity preflight, the
+  // credit election — runs and COMMITS first, and only then is the provider
+  // called, because external calls stay outside database transactions. So with
+  // keys the mint succeeds and we see 200 with a client secret; without keys
+  // (every fork's CI — GitHub never gives a fork's `pull_request` run the
+  // repository secrets, so `seed-stripe-credentials.ts` no-ops on the
+  // placeholder and `getStripe()` throws — #2820) that first provider call is
+  // the only failure THIS fixture can still reach after admission — a priced,
+  // first-attempt draft with no credit election and no prior intent pointer —
+  // and it fails after the member has already been admitted. Either way the
+  // tail below reads the booking back, and that is what the #2779 decision
+  // actually turns on (INV-LOCKOUT-069). The unkeyed pairing asserted here —
+  // unconfigured provider ⇒ 500 with the generic body, DRAFT → PAYMENT_PENDING
+  // already committed — is pinned as a unit test in
+  // `src/lib/__tests__/payment-intent-routes.test.ts`, so a route change that
+  // breaks it fails there first, readably, instead of turning fork CI red.
+  if (stripeTestModeConfigured()) {
+    expect(
+      res.status(),
+      `create-payment-intent for the locked-out owner (${res.status()}): ${await res.text()}`,
+    ).toBe(200);
+    const body = (await res.json()) as { clientSecret?: string };
+    expect(body.clientSecret).toBeTruthy();
+  } else {
+    // Deliberately exact, not "not 403". Without provider keys the one failure
+    // this fixture may accept is the route's first Stripe call, which happens
+    // after the pay transaction has committed. Any REFUSAL shape — 403
+    // SUBSCRIPTION_REQUIRED (the lockout gate having grown onto the payment
+    // path, which is the whole regression #2779 exists to catch), a 400, a 409
+    // — is a different failure that happens BEFORE admission, and must fail
+    // this test loudly rather than be waved through as "no keys configured".
+    //
+    // A 200 is the other skew worth naming, and it is an environment problem
+    // rather than a product one: `stripeTestModeConfigured()` reads THIS
+    // process's env, while the app answers from the DB credential store seeded
+    // at `scripts/e2e-stack.sh prepare`. Preparing a stack with real keys and
+    // then running the suite from an env file without them puts the two out of
+    // step, and the message below says so rather than leaving a bare 200 ≠ 500.
+    expect(
+      res.status(),
+      `without Stripe test-mode keys the only failure this fixture can reach ` +
+        `in create-payment-intent is the provider call, which happens after ` +
+        `the pay transaction has already committed the DRAFT → PAYMENT_PENDING ` +
+        `move; a refusal shape (403 SUBSCRIPTION_REQUIRED, 400, 409) here ` +
+        `almost certainly means the member was turned away before admission, ` +
+        `and the PAYMENT_PENDING assertion below is the arbiter; a 200 means ` +
+        `the app's credential store holds keys this Playwright process cannot ` +
+        `see — re-run \`scripts/e2e-stack.sh prepare\` from the same env file ` +
+        `(${res.status()}): ${await res.text()}`,
+    ).toBe(500);
+  }
 
   // And the booking really moved: the draft is now awaiting the member's money
-  // rather than sitting on its 72-hour deletion clock.
+  // rather than sitting on its 72-hour deletion clock. Asserted in BOTH modes,
+  // because in the unkeyed mode this is precisely what separates "the mint
+  // failed after the member was admitted" from "the route broke before
+  // admitting them" — anything that fails ahead of the pay transaction's commit
+  // leaves the booking sitting in DRAFT, and fails here.
   const listed = await admin.get(
     `/api/admin/bookings?calendarMonth=${WINDOW.checkIn.slice(0, 7)}&status=DRAFT,PAYMENT_PENDING`,
   );

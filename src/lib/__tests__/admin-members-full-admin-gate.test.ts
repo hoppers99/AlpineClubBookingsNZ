@@ -14,7 +14,11 @@ vi.mock("@/lib/prisma", () => ({
     member: {
       findUnique: vi.fn(),
       findFirst: vi.fn(),
-      findMany: vi.fn(),
+      // #2716: every admin member write now re-resolves email inheritance
+      // inside its own transaction, and that reads members with `findMany`.
+      // Defaulted to no rows so a fixture that says nothing about who inherits
+      // from whom means exactly that, rather than crashing the reconciliation.
+      findMany: vi.fn().mockResolvedValue([]),
       create: vi.fn(),
       update: vi.fn(),
       updateMany: vi.fn(),
@@ -129,7 +133,14 @@ function putMember(id: string, body: Record<string, unknown>) {
 function mockUpdateTransaction() {
   vi.mocked(prisma.$transaction).mockImplementation(async (operation: any) =>
     operation({
-      member: { update: prisma.member.update, updateMany: prisma.member.updateMany },
+      member: {
+        update: prisma.member.update,
+        updateMany: prisma.member.updateMany,
+        // #2716: the edit re-resolves email inheritance in the same
+        // transaction — the member's own pointer first, then everyone who
+        // inherits from them — and both halves read through `findMany`.
+        findMany: prisma.member.findMany,
+      },
       memberAccessRole: {
         createMany: prisma.memberAccessRole.createMany,
         deleteMany: prisma.memberAccessRole.deleteMany,

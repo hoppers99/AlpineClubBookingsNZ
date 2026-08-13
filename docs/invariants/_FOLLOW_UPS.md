@@ -211,17 +211,29 @@ what makes those links need no edit.
 These are rules whose own text says they are awaiting a decision. They moved
 verbatim and kept their flags. Somebody should schedule the confirmations.
 
-- **`INV-LIFE-044`** — "Two decisions here were taken by the delivering agent
-  under D9's remit rather than by the owner, and are **flagged for owner
-  confirmation** (2026-07-27, #2255): the depth number itself (four generations)
-  and transitive email inheritance as described below."
-- **`INV-LIFE-047`** — transitive email inheritance, "flagged for owner
-  confirmation alongside the depth number".
-- **`INV-LIFE-054`** — the age-up re-resolution sweep, which states plainly:
-  "**The general case is NOT handled**: if an ancestor's email address changes,
-  or a middle generation gains an address by some other route, existing pointers
-  keep naming whoever they named." Recorded there as a known limitation and
-  flagged for the owner, because the fix is a consent question.
+- **`INV-LIFE-044`, `INV-LIFE-047`, `INV-LIFE-054` — DECIDED and shipped
+  (#2716).** The owner walked all three on 9 August 2026 and the flags are gone
+  from the document, because they are no longer true of it. **Four generations
+  stands.** **Transitive email inheritance does not**: a member with no address
+  inherits from a direct parent or from nobody. And the general case the document
+  admitted it did not handle — an ancestor's address changing, or a middle
+  generation gaining one by another route, while existing pointers kept naming
+  whoever they named — is handled: pointers re-resolve on every address add,
+  change and remove, automatically, in the write's own transaction, with a daily
+  convergence sweep behind them.
+
+  The two decisions compose and the order was load-bearing. Narrowing to one hop
+  is what made prompt-free re-resolution safe: it turns re-resolution into a
+  direct parent-to-child lookup rather than a walk up a tree, so the consent
+  question that kept the general case open ("silently moving a family's contact
+  of record is not obviously better than leaving it where the admin put it") no
+  longer has anything to arbitrate. A confirm-each-re-point variant was offered
+  and declined for that reason.
+
+  The accepted cost is that where a middle generation has no address, the
+  descendant inherits nobody. That was accepted on the condition that it is
+  VISIBLE, so the admin surfaces listing members with no reachable address are
+  part of the rule (`INV-LIFE-048`) rather than a convenience beside it.
 - **`INV-PAY-023`** — "ACCOUNTING-POLICY flag (open): the minted remainder note
   posts to the shared `hutFeeRefunds` mapping; whether admin / goodwill credit
   should post to a distinct write-off account is an owner call."

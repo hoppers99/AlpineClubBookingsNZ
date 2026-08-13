@@ -51,6 +51,7 @@ export const emptyFilters: Filters = {
   xeroLinked: "",
   subscription: "",
   xeroContactGroup: "",
+  contactability: "",
 };
 
 export const filterLabelMap: Record<keyof Filters, string> = {
@@ -64,11 +65,17 @@ export const filterLabelMap: Record<keyof Filters, string> = {
   xeroLinked: "Xero",
   subscription: "Subscription",
   xeroContactGroup: "Xero Group",
+  contactability: "Contactable",
 };
 
 export const filterValueLabels: Partial<
   Record<keyof Filters, Record<string, string>>
 > = {
+  contactability: {
+    unreachable: "No reachable email",
+    "inheritance-unresolved": "Waiting on a parent's email",
+    "placeholder-address": "No email on record",
+  },
   lifecycleStatus: {
     active: "Active",
     inactive: "Inactive",

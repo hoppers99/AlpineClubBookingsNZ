@@ -75,6 +75,10 @@ vi.mock("@/lib/prisma", () => ({
       return (operation as (tx: unknown) => Promise<unknown>)({
         member: {
           create: vi.fn().mockResolvedValue({ id: "dep1", firstName: "Child", lastName: "Smith" }),
+          // #2716: a member write re-resolves email inheritance inside its own
+          // transaction, reading the subjects and then their chosen sources
+          // with `findMany`; no rows, so nothing is re-pointed.
+          findMany: vi.fn().mockResolvedValue([]),
         },
         familyGroupMember: { createMany: vi.fn() },
       });
@@ -161,6 +165,7 @@ import {
   NZ_COUNTRY_NAME,
 } from "@/lib/member-address";
 import { DEPENDENT_PARENT_CREATE_ERRORS } from "@/lib/dependent-link-eligibility";
+import { NO_INHERITABLE_EMAIL_SOURCE_MESSAGE } from "@/lib/member-parent-links";
 
 const adminSession = { user: { id: "admin1", role: "ADMIN", accessRoles: [{ role: "ADMIN" }] } } as any;
 const memberSession = { user: { id: "m1", role: "MEMBER", accessRoles: [{ role: "USER" }] } } as any;
@@ -194,6 +199,13 @@ function mockDefaultTransaction() {
       member: {
         create: vi.fn().mockResolvedValue({ id: "dep1", firstName: "Child", lastName: "Smith" }),
         update: prisma.member.update,
+        // #2716: an address edit can add, change or REMOVE the mailbox other
+        // members inherit, so the write re-resolves inheritance inside its own
+        // transaction — the member's own pointer, then everyone who inherits
+        // from them. Its own `findMany` rather than the outer one: the outer
+        // mock answers the family-link walk these fixtures set up, and the
+        // transaction's question is a different one with no rows here.
+        findMany: vi.fn().mockResolvedValue([]),
       },
       memberAccessRole: {
         createMany: vi.fn().mockResolvedValue({ count: 1 }),
@@ -451,22 +463,118 @@ describe("Admin: Create dependent member", () => {
     expect(res.status).toBe(201);
   });
 
-  it("defaults dependent email inheritance to the parent's existing email source", async () => {
+  // #2255: routed by the id asked for, not by call ORDER. The resolver makes
+  // more than one read, and an ordered `mockResolvedValueOnce` chain both
+  // answered the wrong question AND leaked its unconsumed entry into the next
+  // test, which then silently passed a non-adult parent as an adult.
+  function routeMemberReadsById(membersById: Record<string, any>) {
+    vi.mocked(prisma.member.findUnique).mockImplementation((async ({
+      where,
+    }: any) => membersById[where.id] ?? null) as never);
+    vi.mocked(prisma.member.findMany).mockImplementation((async ({
+      where,
+    }: any) =>
+      (where?.id?.in ?? [])
+        .map((id: string) => membersById[id])
+        .filter(Boolean)) as never);
+  }
+
+  it("defaults dependent email inheritance to the DIRECT parent", async () => {
+    // #2716 (owner decision on #2708, 9 Aug 2026): inheritance is ONE HOP, so
+    // the default an admin gets when they tick "inherit the parent's email" is
+    // the parent themselves and nobody else.
     vi.mocked(auth).mockResolvedValue(adminSession);
     vi.mocked(prisma.member.findFirst).mockResolvedValue(null);
-    // #2255: routed by the id asked for, not by call ORDER. The resolver now
-    // makes an extra read (it re-reads a stored pointer's target before
-    // trusting it), and an ordered `mockResolvedValueOnce` chain both answered
-    // the wrong question here AND leaked its unconsumed entry into the next
-    // test, which then silently passed a non-adult parent as an adult.
-    const membersById: Record<string, any> = {
+    routeMemberReadsById({
       parent1: {
         id: "parent1",
         ageTier: "ADULT",
         active: true,
         archivedAt: null,
         email: "parent@test.com",
+        parentMemberId: null,
+        secondaryParentId: null,
+        inheritEmailFromId: null,
+        inheritEmailChoiceId: null,
+      },
+    });
+
+    const txMemberCreate = vi.fn().mockResolvedValue({
+      id: "dep2",
+      firstName: "Child",
+      lastName: "Smith",
+      email: "parent@test.com",
+      role: "MEMBER",
+      ageTier: "CHILD",
+      active: true,
+      canLogin: false,
+      parentMemberId: "parent1",
+      inheritParentEmail: true,
+      inheritEmailFromId: "parent1",
+      xeroContactId: null,
+      joinedDate: null,
+      createdAt: new Date(),
+    });
+    vi.mocked(prisma.$transaction).mockImplementation(async (cb: any) => {
+      const tx = {
+        member: { create: txMemberCreate },
+        familyGroupMember: { createMany: vi.fn() },
+      };
+      return cb(tx);
+    });
+
+    const res = await createMember(makePostRequest({
+      email: "parent@test.com",
+      firstName: "Child",
+      lastName: "Smith",
+      dateOfBirth: "2020-06-15",
+      parentMemberId: "parent1",
+      inheritParentEmail: true,
+      canLogin: false,
+    }));
+
+    expect(res.status).toBe(201);
+    expect(txMemberCreate).toHaveBeenCalledWith(expect.objectContaining({
+      data: expect.objectContaining({
+        inheritEmailFromId: "parent1",
+        // #2716: the CHOICE is written beside the pointer on every create.
+        // Without it, the first time this parent's address is removed the
+        // dependant's pointer clears with no record of who was chosen, and no
+        // later address could ever bring it back.
+        inheritEmailChoiceId: "parent1",
+      }),
+    }));
+  });
+
+  it("refuses the create when the chosen parent themselves inherits, instead of walking up to their source", async () => {
+    // BEHAVIOUR CHANGED (#2716, owner decision on #2708, 9 Aug 2026). This test
+    // used to be "defaults to the parent's existing email source": the resolver
+    // walked UP the family tree from the chosen parent to the nearest ancestor
+    // who could receive mail, so a dependant of `parent1` inherited
+    // `lead-adult`'s mailbox. The owner narrowed inheritance to ONE HOP —
+    // an address that travels an arbitrary number of hops is unpredictable to
+    // the person whose address it is, and a grandparent who supplies an email
+    // for one grandchild does not thereby expect mail for a branch of the
+    // family they have no involvement with.
+    //
+    // A parent who is themselves inheriting is therefore not a source at all,
+    // and the accepted cost is visible refusal rather than a silent re-route:
+    // the admin is told to record an address for the parent. Mutation probe:
+    // restore the walk and this create 201s with `inheritEmailFromId:
+    // "lead-adult"` again.
+    vi.mocked(auth).mockResolvedValue(adminSession);
+    vi.mocked(prisma.member.findFirst).mockResolvedValue(null);
+    routeMemberReadsById({
+      parent1: {
+        id: "parent1",
+        ageTier: "ADULT",
+        active: true,
+        archivedAt: null,
+        email: "parent@test.com",
+        parentMemberId: "lead-adult",
+        secondaryParentId: null,
         inheritEmailFromId: "lead-adult",
+        inheritEmailChoiceId: "lead-adult",
       },
       "lead-adult": {
         id: "lead-adult",
@@ -477,34 +585,11 @@ describe("Admin: Create dependent member", () => {
         parentMemberId: null,
         secondaryParentId: null,
         inheritEmailFromId: null,
+        inheritEmailChoiceId: null,
       },
-    };
-    vi.mocked(prisma.member.findUnique).mockImplementation((async ({
-      where,
-    }: any) => membersById[where.id] ?? null) as never);
-    vi.mocked(prisma.member.findMany).mockImplementation((async ({
-      where,
-    }: any) =>
-      (where?.id?.in ?? [])
-        .map((id: string) => membersById[id])
-        .filter(Boolean)) as never);
-
-    const txMemberCreate = vi.fn().mockResolvedValue({
-      id: "dep2",
-      firstName: "Child",
-      lastName: "Smith",
-      email: "lead@test.com",
-      role: "MEMBER",
-      ageTier: "CHILD",
-      active: true,
-      canLogin: false,
-      parentMemberId: "parent1",
-      inheritParentEmail: true,
-      inheritEmailFromId: "lead-adult",
-      xeroContactId: null,
-      joinedDate: null,
-      createdAt: new Date(),
     });
+
+    const txMemberCreate = vi.fn();
     vi.mocked(prisma.$transaction).mockImplementation(async (cb: any) => {
       const tx = {
         member: { create: txMemberCreate },
@@ -523,12 +608,9 @@ describe("Admin: Create dependent member", () => {
       canLogin: false,
     }));
 
-    expect(res.status).toBe(201);
-    expect(txMemberCreate).toHaveBeenCalledWith(expect.objectContaining({
-      data: expect.objectContaining({
-        inheritEmailFromId: "lead-adult",
-      }),
-    }));
+    expect(res.status).toBe(422);
+    expect((await res.json()).error).toBe(NO_INHERITABLE_EMAIL_SOURCE_MESSAGE);
+    expect(txMemberCreate).not.toHaveBeenCalled();
   });
 
   /**
@@ -538,71 +620,103 @@ describe("Admin: Create dependent member", () => {
    * parent". That refusal is the bug the owner decision reverses: a 16 or 17
    * year old can genuinely be a parent, and the club could not record it. What
    * replaces it is a pair of assertions — the record IS created, and the child's
-   * club email still lands on an adult.
+   * club email never lands on the minor.
+   *
+   * #2716 changed the second half. It used to be "and mail routes to the adult
+   * ABOVE the young parent", by walking up the tree; inheritance is now ONE HOP,
+   * so a young parent with no usable mailbox of their own leaves the dependant
+   * inheriting NOBODY. The pair is therefore now: creating the record still
+   * works, and ASKING to inherit is refused in plain words rather than quietly
+   * re-routed to a grandparent who never agreed to receive it.
    *
    * Mutation probes: restore `parentMember.ageTier !== "ADULT"` and the first
    * test fails; delete `!parentMember.active` and the inactive test fails;
-   * delete `parentMember.archivedAt` and the archived test fails; delete the
-   * ADULT clause of `isUsableEmailSource` and the first test's inheritance
-   * expectation lands on the 16-year-old.
+   * delete `parentMember.archivedAt` and the archived test fails; restore the
+   * upward walk in `resolveInheritedEmailSourceId` and the second test 201s
+   * with `inheritEmailFromId: "gran1"` instead of refusing.
    */
-  it("creates a dependant under a YOUNG parent, routing mail to the adult above", async () => {
+  const youngParentFamily = () => ({
+    youth1: {
+      id: "youth1",
+      ageTier: "YOUTH",
+      active: true,
+      archivedAt: null,
+      email: "teen-parent@test.com",
+      inheritEmailFromId: null,
+      inheritEmailChoiceId: null,
+      parentMemberId: "gran1",
+      secondaryParentId: null,
+    },
+    gran1: {
+      id: "gran1",
+      ageTier: "ADULT",
+      active: true,
+      archivedAt: null,
+      email: "gran@test.com",
+      inheritEmailFromId: null,
+      inheritEmailChoiceId: null,
+      parentMemberId: null,
+      secondaryParentId: null,
+    },
+  });
+
+  it("creates a dependant under a YOUNG parent when no inheritance is asked for", async () => {
     vi.mocked(auth).mockResolvedValue(adminSession);
     vi.mocked(prisma.member.findFirst).mockResolvedValue(null);
-    const membersById: Record<string, any> = {
-      youth1: {
-        id: "youth1",
-        ageTier: "YOUTH",
-        active: true,
-        archivedAt: null,
-        email: "teen-parent@test.com",
-        inheritEmailFromId: null,
-        parentMemberId: "gran1",
-        secondaryParentId: null,
-      },
-      gran1: {
-        id: "gran1",
-        ageTier: "ADULT",
-        active: true,
-        archivedAt: null,
-        email: "gran@test.com",
-        inheritEmailFromId: null,
-        parentMemberId: null,
-        secondaryParentId: null,
-      },
-    };
-    vi.mocked(prisma.member.findUnique).mockImplementation((async ({
-      where,
-    }: any) => membersById[where.id] ?? null) as never);
-    vi.mocked(prisma.member.findMany).mockImplementation((async ({
-      where,
-    }: any) => {
-      // "these ids" (walking up / re-reading a level) answers from the fixture;
-      // "children of these ids" (the downward depth walk) has none here.
-      if (where?.id?.in) {
-        return (where.id.in as string[])
-          .map((id) => membersById[id])
-          .filter(Boolean);
-      }
-      return [];
-    }) as never);
+    routeMemberReadsById(youngParentFamily());
 
     const txMemberCreate = vi.fn().mockResolvedValue({
       id: "dep3",
       firstName: "Baby",
       lastName: "Doe",
-      email: "gran@test.com",
+      email: "baby@test.com",
       role: "MEMBER",
       ageTier: "INFANT",
       active: true,
       canLogin: false,
       parentMemberId: "youth1",
-      inheritParentEmail: true,
-      inheritEmailFromId: "gran1",
+      inheritParentEmail: false,
+      inheritEmailFromId: null,
       xeroContactId: null,
       joinedDate: null,
       createdAt: new Date(),
     });
+    vi.mocked(prisma.$transaction).mockImplementation(async (cb: any) =>
+      cb({
+        member: { create: txMemberCreate },
+        familyGroupMember: { createMany: vi.fn() },
+      }),
+    );
+
+    const res = await createMember(makePostRequest({
+      email: "baby@test.com",
+      firstName: "Baby",
+      lastName: "Doe",
+      dateOfBirth: "2025-06-15",
+      parentMemberId: "youth1",
+      canLogin: false,
+    }));
+
+    expect(res.status).toBe(201);
+    expect(txMemberCreate).toHaveBeenCalledWith(expect.objectContaining({
+      data: expect.objectContaining({
+        // Recording the parentage is a fact about the family and is allowed at
+        // any age; being the club's contact of record is a responsibility and
+        // stays adult-gated, so no inheritance is stored either way.
+        parentMemberId: "youth1",
+        inheritParentEmail: false,
+        inheritEmailFromId: null,
+        inheritEmailChoiceId: null,
+      }),
+    }));
+  });
+
+  it("refuses to route a dependant's mail past a YOUNG parent to the adult above", async () => {
+    vi.mocked(auth).mockResolvedValue(adminSession);
+    vi.mocked(prisma.member.findFirst).mockResolvedValue(null);
+    routeMemberReadsById(youngParentFamily());
+
+    const txMemberCreate = vi.fn();
     vi.mocked(prisma.$transaction).mockImplementation(async (cb: any) =>
       cb({
         member: { create: txMemberCreate },
@@ -620,15 +734,9 @@ describe("Admin: Create dependent member", () => {
       canLogin: false,
     }));
 
-    expect(res.status).toBe(201);
-    expect(txMemberCreate).toHaveBeenCalledWith(expect.objectContaining({
-      data: expect.objectContaining({
-        parentMemberId: "youth1",
-        // NOT "youth1": recording the parentage is a fact, being the club's
-        // contact of record is a responsibility, and only the first moved.
-        inheritEmailFromId: "gran1",
-      }),
-    }));
+    expect(res.status).toBe(422);
+    expect((await res.json()).error).toBe(NO_INHERITABLE_EMAIL_SOURCE_MESSAGE);
+    expect(txMemberCreate).not.toHaveBeenCalled();
   });
 
   it("rejects dependent creation under an inactive parent", async () => {

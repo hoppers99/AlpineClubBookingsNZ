@@ -12,6 +12,11 @@ const { mockPrisma, mockTx, mockRequireActiveSessionUser } = vi.hoisted(() => {
       update: vi.fn(),
       updateMany: vi.fn(),
       count: vi.fn(),
+      // #2716: the transfer rewrites the address on every member of the
+      // cluster, so it re-resolves email inheritance in the same transaction —
+      // the cluster's own pointers, then anyone outside it who inherits from a
+      // cluster member. Both halves read through `findMany`.
+      findMany: vi.fn(),
     },
     auditLog: {
       create: vi.fn(),
@@ -102,7 +107,19 @@ describe("POST /api/admin/family-groups/[id]/login-holder", () => {
       ageTier: "ADULT",
       parentMemberId: null,
       inheritEmailFromId: null,
+      // #2716: the source check reads the CHOICE column too — an adult whose
+      // chosen source went unreachable holds a live choice beside a NULL
+      // pointer, and must not be handed a cluster to receive mail for. The
+      // incoming holder has chosen nobody, which is what makes them usable.
+      inheritEmailChoiceId: null,
+      email: "shared@example.com",
+      archivedAt: null,
     });
+    // The reconciliation re-reads members through the transaction. These mocked
+    // writes update no store, so there is nothing coherent to read back: no
+    // rows is the only honest answer, and it keeps the assertions below about
+    // the writes the route makes rather than about a fake convergence.
+    mockTx.member.findMany.mockResolvedValue([]);
     // Last-admin end-state (#1604/#1622) counts active Full Admins AFTER the
     // transfer's writes; default to one surviving so the guard is a no-op.
     mockTx.member.count.mockResolvedValue(1);
@@ -133,12 +150,18 @@ describe("POST /api/admin/family-groups/[id]/login-holder", () => {
     });
 
     expect(res.status).toBe(200);
+    // #2716: both columns, on both sides of the swap. `inheritEmailFromId` is
+    // who receives the mail today; `inheritEmailChoiceId` is who was CHOSEN,
+    // and it is the only record that survives the holder's address being
+    // removed. A write that recorded the pointer alone would leave a cluster
+    // whose mailbox could never be restored once the address came back.
     expect(mockTx.member.update).toHaveBeenCalledWith({
       where: { id: "old-holder" },
       data: {
         canLogin: false,
         email: "shared@example.com",
         inheritEmailFromId: "new-holder",
+        inheritEmailChoiceId: "new-holder",
       },
     });
     expect(mockTx.member.update).toHaveBeenCalledWith({
@@ -146,6 +169,7 @@ describe("POST /api/admin/family-groups/[id]/login-holder", () => {
       data: {
         canLogin: true,
         inheritEmailFromId: null,
+        inheritEmailChoiceId: null,
         email: "shared@example.com",
       },
     });
@@ -240,6 +264,10 @@ describe("POST /api/admin/family-groups/[id]/login-holder", () => {
         canLogin: false,
         email: "shared@example.com",
         inheritEmailFromId: "new-holder",
+        // #2716: the rest of the cluster records the CHOICE beside the pointer
+        // for the same reason the holders above do — without it, removing the
+        // new holder's address would strand the whole cluster permanently.
+        inheritEmailChoiceId: "new-holder",
       },
     });
   });

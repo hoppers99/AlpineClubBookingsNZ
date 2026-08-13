@@ -16,6 +16,8 @@
  *  - delete the `inheritEmailFromId` clause → "refuses a chaining source" fails,
  *    and stored inheritance stops being flat;
  *  - delete the `archivedAt` clause → "refuses an archived source" fails;
+ *  - delete the `cancelledAt` clause → "refuses a source who has left the club"
+ *    fails, and a member who resigned can be made a family's contact of record;
  *  - delete the placeholder clause → "refuses a placeholder address" fails, and
  *    the family silently stops receiving anything;
  *  - delete the self-reference clause → "refuses the member themselves" fails.
@@ -31,7 +33,9 @@ type Row = {
   ageTier: string;
   email: string;
   inheritEmailFromId: string | null;
+  inheritEmailChoiceId: string | null;
   archivedAt: Date | null;
+  cancelledAt: Date | null;
 };
 
 function db(rows: Array<Partial<Row> & { id: string }>) {
@@ -42,7 +46,9 @@ function db(rows: Array<Partial<Row> & { id: string }>) {
         ageTier: "ADULT",
         email: `${row.id}@example.org`,
         inheritEmailFromId: null,
+        inheritEmailChoiceId: null,
         archivedAt: null,
+        cancelledAt: null,
         ...row,
       } as Row,
     ]),
@@ -94,6 +100,20 @@ describe("validateInheritEmailSource", () => {
       validateInheritEmailSource(
         { inheritEmailFromId: "middle" },
         db([{ id: "middle", inheritEmailFromId: "gran" }, { id: "gran" }]),
+      ),
+    ).resolves.toMatchObject({ ok: false, status: 422 });
+  });
+
+  // #2716 review. `archivedAt` was tested and `cancelledAt` was not, although
+  // they are separate states here: cancellation deactivates and de-logs a member
+  // while leaving `archivedAt` null. The member edit page's hand-picked source
+  // has no other lifecycle gate behind it, so a member who had left the club
+  // could be made somebody's contact of record.
+  it("refuses a source who has left the club", () => {
+    return expect(
+      validateInheritEmailSource(
+        { inheritEmailFromId: "left" },
+        db([{ id: "left", cancelledAt: new Date("2026-01-01") }]),
       ),
     ).resolves.toMatchObject({ ok: false, status: 422 });
   });

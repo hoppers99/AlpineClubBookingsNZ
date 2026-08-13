@@ -307,9 +307,17 @@ export async function POST(
 
           updateData.inheritParentEmail = true;
           updateData.inheritEmailFrom = { connect: { id: inheritEmailFromId } };
+          // #2716: the pointer and the CHOICE are written together. Under one
+          // hop they are the same member — the chosen parent IS the mailbox —
+          // but they are stored separately because they answer different
+          // questions later: the pointer is who receives mail today, the choice
+          // is who the admin picked, and only the choice survives that parent's
+          // address being removed and brought back.
+          updateData.inheritEmailChoice = { connect: { id: inheritEmailFromId } };
         } else {
           updateData.inheritParentEmail = false;
           updateData.inheritEmailFrom = { disconnect: true };
+          updateData.inheritEmailChoice = { disconnect: true };
         }
       }
 

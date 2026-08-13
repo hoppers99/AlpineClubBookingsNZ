@@ -133,6 +133,15 @@ function buildDeps(overrides?: Partial<StuckStateDashboardDependencies>) {
       .fn()
       .mockResolvedValue(emails.adminAlertDelivery),
     getTokenEmailRecoveryQueue: vi.fn().mockResolvedValue(emails.tokenRecovery),
+    // #2716: members the club has no way to reach — the admin-visible half of
+    // direct-parent-only email inheritance. Defaulted to "none", because the
+    // dashboard suppresses a zero-count item and every other test here would
+    // otherwise grow an extra row it says nothing about.
+    getUnreachableMemberSummary: vi.fn().mockResolvedValue({
+      total: 0,
+      inheritanceUnresolved: 0,
+      members: [],
+    }),
     getWaitlistOfferEmailDeliveries: vi.fn().mockResolvedValue(new Map()),
     countUnconfirmedSchoolAttendeeLists: vi.fn().mockResolvedValue(0),
     countBookingsWithUnnamedPlaceholderGuests: vi.fn().mockResolvedValue(0),
@@ -677,5 +686,65 @@ describe("getStuckStateDashboard", () => {
         take: 50,
       }),
     );
+  });
+
+  /**
+   * #2716. Narrowing email inheritance to the direct parent has an accepted
+   * cost: where a middle generation has no address, the descendant inherits
+   * nobody. The owner accepted that on the condition that it is VISIBLE — a gap
+   * somebody can see beats a message going somewhere nobody chose — so this item
+   * is part of the decision rather than a nicety beside it.
+   */
+  it("surfaces members with no reachable email address, and links to the filtered list", async () => {
+    const deps = buildDeps({
+      getUnreachableMemberSummary: vi.fn().mockResolvedValue({
+        total: 3,
+        inheritanceUnresolved: 2,
+        members: [
+          { id: "m-1", name: "Sam Young", reason: "inheritance-unresolved" },
+          { id: "m-2", name: "Ana Reid", reason: "placeholder-address" },
+        ],
+      }),
+    });
+
+    const dashboard = await getStuckStateDashboard({
+      deps,
+      now: new Date("2026-06-22T00:00:00.000Z"),
+    });
+
+    const item = dashboard.items.find(
+      (candidate) => candidate.id === "email-unreachable-members",
+    );
+    expect(item).toMatchObject({
+      domain: "email",
+      // WARNING, not critical: nothing is stuck or corrupt, the club simply has
+      // no way to reach these members, and the remedy is to ask a person for an
+      // address rather than to repair a record.
+      severity: "warning",
+      owner: "Admin",
+      count: 3,
+      href: "/admin/members?contactability=unreachable",
+    });
+    // The count splits by reason, because "waiting on a parent's address" and
+    // "we never had an address" are different jobs and an admin who cannot tell
+    // them apart works the wrong one first.
+    expect(item?.summary).toMatch(/2 of them waiting on a parent's address/);
+    expect(item?.details).toEqual([
+      expect.objectContaining({ id: "m-1", href: "/admin/members/m-1" }),
+      expect.objectContaining({ id: "m-2", href: "/admin/members/m-2" }),
+    ]);
+  });
+
+  it("says nothing when every member is reachable", async () => {
+    const dashboard = await getStuckStateDashboard({
+      deps: buildDeps(),
+      now: new Date("2026-06-22T00:00:00.000Z"),
+    });
+
+    expect(
+      dashboard.items.some(
+        (candidate) => candidate.id === "email-unreachable-members",
+      ),
+    ).toBe(false);
   });
 });

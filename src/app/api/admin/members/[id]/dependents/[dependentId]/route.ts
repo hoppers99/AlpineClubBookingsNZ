@@ -52,8 +52,9 @@ export async function DELETE(
           secondaryParentId: true,
           inheritParentEmail: true,
           inheritEmailFromId: true,
-          // Only the id is used — the transitive resolver reads the rest of the
-          // chain itself, from the transaction's own view.
+          inheritEmailChoiceId: true,
+          // Only the id is used — the resolver reads the parent's own row
+          // itself, from the transaction's own view.
           parent: { select: { id: true } },
           secondaryParent: { select: { id: true } },
         },
@@ -81,13 +82,37 @@ export async function DELETE(
       // the audit entry both said `clearedEmailInheritance: false`, as if that
       // were the correct outcome.
       //
-      // `inheritParentEmail` is the provenance flag: every pointer this system
-      // derives from a parent link sets it true, and a manually-chosen source
-      // sets it false. So a DERIVED pointer is re-resolved on unlink whatever
-      // it names, and a MANUAL one is left alone — the distinction the manual
-      // case in dependent-unlink.test.ts pins.
+      // WHAT DECIDES THIS IS WHO THE DECISION NAMED, not the provenance flag.
+      //
+      // The rule used to gate on `inheritParentEmail`, on the stated grounds
+      // that "a manually-chosen source sets it false". Review established that
+      // it does not: the admin member-edit hand-pick writes the pointer and
+      // choice WITHOUT touching the flag, which carries `@default(true)`, so a
+      // hand-picked guardian is indistinguishable from a derived pointer by that
+      // flag alone. This PR's own migration says so in as many words and uses an
+      // ancestry test instead. Gating on the flag therefore silently replaced an
+      // admin's hand-picked guardian with a parent on the next unlink — the
+      // consent question this feature must not answer by itself.
+      //
+      // #2716: the CHOICE counts, not just the pointer. A dependant whose chosen
+      // parent has temporarily lost their address holds a live choice beside a
+      // NULL pointer, and unlinking that parent has to retire the decision —
+      // testing the pointer alone would leave the choice naming a member who is
+      // no longer a parent, resolving to nobody forever while the audit entry
+      // reports nothing was cleared.
+      //
+      // So: retire the decision exactly when the decision named the parent being
+      // unlinked. A hand-picked guardian is never that member, so it survives. A
+      // pointer naming somebody who is neither parent is the retired transitive
+      // shape, which the migration re-seated and the daily sweep converges; it
+      // is deliberately not special-cased here.
+      const unlinkedParentId = isPrimaryParent
+        ? dependent.parentMemberId
+        : dependent.secondaryParentId;
+      const decisionSourceId =
+        dependent.inheritEmailChoiceId ?? dependent.inheritEmailFromId;
       const shouldClearEmailInheritance =
-        dependent.inheritParentEmail && dependent.inheritEmailFromId !== null;
+        decisionSourceId !== null && decisionSourceId === unlinkedParentId;
       const remainingParent = isPrimaryParent
         ? dependent.secondaryParent
         : dependent.parent;
@@ -110,15 +135,23 @@ export async function DELETE(
               }
             : { parent: { disconnect: true } }
           : { secondaryParent: { disconnect: true } }),
+        // #2716: the CHOICE moves with the pointer. Unlinking a parent retires
+        // the decision that named them, and the remaining parent — if there is
+        // one and they can receive mail — becomes the new choice. Where nobody
+        // remains, both columns clear: a derived choice must name a current
+        // parent, so keeping one that names the parent just removed would leave
+        // a decision that can never resolve.
         ...(shouldClearEmailInheritance
           ? nextEmailSourceId
             ? {
                 inheritParentEmail: true,
                 inheritEmailFrom: { connect: { id: nextEmailSourceId } },
+                inheritEmailChoice: { connect: { id: nextEmailSourceId } },
               }
             : {
                 inheritParentEmail: false,
                 inheritEmailFrom: { disconnect: true },
+                inheritEmailChoice: { disconnect: true },
               }
           : {}),
       };

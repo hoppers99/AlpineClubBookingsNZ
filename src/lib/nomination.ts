@@ -1617,6 +1617,11 @@ export async function approveMemberApplication(
         applicantUpdate.emailVerified = true;
         applicantUpdate.inheritParentEmail = false;
         applicantUpdate.inheritEmailFromId = null;
+        // #2716: the CHOICE clears with the pointer. A promoted applicant now
+        // has a login and an address of their own, so the decision that routed
+        // their mail elsewhere is spent — leaving it would have their pointer
+        // restored by the next reconciliation.
+        applicantUpdate.inheritEmailChoiceId = null;
       } else {
         // Keep-auth path: never touch passwordHash/canLogin/2FA/emailVerified.
         applicantKeptAuth = true;
@@ -1845,6 +1850,9 @@ export async function approveMemberApplication(
           dependentUpdate.parentMemberId = applicantMember.id;
           dependentUpdate.inheritParentEmail = true;
           dependentUpdate.inheritEmailFromId = resolvedSourceId;
+          // #2716: pointer and CHOICE written together. Under one hop the
+          // resolved mailbox IS the applicant, who is this dependant's parent.
+          dependentUpdate.inheritEmailChoiceId = resolvedSourceId;
         }
         await tx.member.update({
           where: { id: target.id },
@@ -1936,6 +1944,7 @@ export async function approveMemberApplication(
           parentMemberId: applicantMember.id,
           inheritParentEmail: true,
           inheritEmailFromId: createdDependentSourceId,
+          inheritEmailChoiceId: createdDependentSourceId,
           phoneCountryCode: applicantPhone.phoneCountryCode,
           phoneAreaCode: applicantPhone.phoneAreaCode,
           phoneNumber: applicantPhone.phoneNumber,

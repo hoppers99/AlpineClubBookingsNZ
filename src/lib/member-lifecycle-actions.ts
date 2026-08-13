@@ -27,6 +27,7 @@ import {
 } from "@/lib/email";
 import logger from "@/lib/logger";
 import { prisma } from "@/lib/prisma";
+import { retireInheritedEmailCopies } from "@/lib/member-email-inheritance";
 import {
   EMPTY_ORPHANED_FAMILY_LINKS,
   readFamilyLinkOrphans,
@@ -841,6 +842,8 @@ type ArchivedMemberLinkCleanupCounts = {
   nulledChildren: number;
   nulledSecondaryParents: number;
   nulledInheritance: number;
+  /** #2716: stale copies of this member's address stamped undeliverable. */
+  retiredInheritedEmailCopies: number;
   /** #2255: the same detached members the cancellation flow declares. */
   orphanedLinks: OrphanedFamilyLinks;
 };
@@ -867,9 +870,33 @@ async function cleanupArchivedMemberLinks(
     where: { secondaryParentId: memberId },
     data: { secondaryParentId: null },
   });
+  // #2716: retire the denormalised COPIES of this member's address BEFORE the
+  // pointers are cleared, because the pointers are what identify whose address
+  // it is. Clearing them alone left the copy behind, and every reader falls
+  // through to it — so the archived member kept receiving their dependants'
+  // mail, and those dependants looked perfectly reachable.
+  const departing = await tx.member.findUnique({
+    where: { id: memberId },
+    select: { email: true },
+  });
+  const retiredCopies = departing
+    ? await retireInheritedEmailCopies(tx, {
+        id: memberId,
+        email: departing.email,
+      })
+    : { retired: 0 };
+  // #2716: the CHOICE goes with the pointer here. Nothing in the product clears
+  // `archivedAt` — the archive state machine has no reverse edge — so a choice
+  // naming an archived member can never resolve again, and keeping it would
+  // report these dependants as waiting on an address that is never coming.
   const inheritance = await tx.member.updateMany({
-    where: { inheritEmailFromId: memberId },
-    data: { inheritEmailFromId: null },
+    where: {
+      OR: [
+        { inheritEmailFromId: memberId },
+        { inheritEmailChoiceId: memberId },
+      ],
+    },
+    data: { inheritEmailFromId: null, inheritEmailChoiceId: null },
   });
   // Billing-family removal sweep (#1932, E6): the archived member is leaving all
   // families in this transaction, so clear any billing-family selection they hold.
@@ -883,6 +910,7 @@ async function cleanupArchivedMemberLinks(
     nulledChildren: children.count,
     nulledSecondaryParents: secondaryParents.count,
     nulledInheritance: inheritance.count,
+    retiredInheritedEmailCopies: retiredCopies.retired,
     orphanedLinks,
   };
 }
@@ -1288,10 +1316,16 @@ export async function reviewMemberDeleteRequest({
     await tx.member.delete({ where: { id: request.memberId } });
 
     if (orphanedByDelete.emailInheritors.length > 0) {
+      // #2716: both self-relations carry `onDelete: SetNull`, so the deleted
+      // row takes the CHOICE with it as well as the pointer — which is why the
+      // stranded-flag repair is scoped on both being NULL. A member who kept a
+      // choice would still have a live decision and must keep the flag that
+      // records where it came from.
       await tx.member.updateMany({
         where: {
           id: { in: orphanedByDelete.emailInheritors.map((row) => row.id) },
           inheritEmailFromId: null,
+          inheritEmailChoiceId: null,
         },
         data: { inheritParentEmail: false },
       });

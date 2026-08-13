@@ -96,6 +96,62 @@ as a red flag and check the release notes before deploying.
 
 ## Unreleased
 
+### Family email inheritance becomes direct-parent only, and re-resolves itself (#2716)
+
+**Expect a list of members needing an email address on the first day, and expect
+some mail to change recipient at this deploy.** Both are intended.
+
+**What changes.** A member with no address of their own used to inherit one by
+walking UP the family until it found an adult with a real address — so a child
+could be receiving club mail at a grandparent's or great-grandparent's mailbox.
+That is retired. Inheritance is now **one hop: the direct parent, or nobody.**
+Pointers also re-resolve automatically whenever a parent's address is added,
+changed, or removed, which previously did not happen at all: an established
+pointer could keep naming somebody who was no longer the right recipient,
+indefinitely, with nobody finding out.
+
+**What the migration does to your data.** Every existing pointer that reached
+past a parent is re-seated onto that direct parent. Where the direct parent has
+no address the club can send to, the member inherits **nobody** and stops being
+reachable. Nothing is silently re-pointed to a stranger: the only members whose
+mail moves are those whose mail was already going somewhere the new rule does not
+allow.
+
+**The post-upgrade action, and it is the whole point.** Those newly-unreachable
+members are findable in two places:
+
+- **Admin → Stuck States → *Members with no reachable email address*.**
+- **Admin → Members → More filters → Contactable → Unreachable.**
+
+Work that list and record an address for each. The gap is deliberate — a gap
+somebody can see beats a message going somewhere nobody chose — but it is only
+the right trade if somebody actually looks.
+
+**A new daily job.** `email-inheritance-reconcile` runs at **06:45 NZT**, just
+after `age-up`, and converges every family's pointers. It is idempotent and
+re-runnable: if it fails part way, the next run finishes the job. Its log line
+reports `unresolved` over ALL members holding a choice, including archived and
+cancelled ones, while the Stuck States tile counts only active members the club
+should be reaching — so the two numbers legitimately differ, and the log's is the
+larger.
+
+**During the blue/green drain, avoid two admin actions.** The previously deployed
+code does not know the new "who was chosen" column, so between migrate and
+cutover it can clear an inheritance pointer while leaving the choice standing,
+and the new code then re-derives the pointer from that choice. In practice that
+means **unlinking a dependant**, or setting a member to **use their own address**,
+may not stick if it is done on the old colour during the drain. There is no way
+to tell that state apart from the ordinary "chosen parent's address is
+temporarily missing", so the code cannot correct it automatically. If either
+action is performed during a deploy, simply repeat it once cutover is complete
+and confirm the member on the Contactable filter. Outside the drain window this
+does not arise.
+
+**Rolling back.** The column can be dropped once every new-colour instance has
+drained. Pointer VALUES corrected by the migration are not restored, and should
+not be: restoring them would reinstate exactly the minor-notification routing
+this change removes.
+
 ### Google Analytics stops until an admin re-enters the measurement id (#2573)
 
 **Read this before you deploy if your club uses Google Analytics: analytics will

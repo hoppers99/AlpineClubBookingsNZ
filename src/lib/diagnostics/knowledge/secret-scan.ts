@@ -32,7 +32,11 @@
  * that gitleaks waves through because gitleaks ignores test keys. So the rules
  * that mirror Trivy's own no-exemption shapes carry `ignorePlaceholder` and
  * refuse to bundle the file rather than ship a string the image scan will fail
- * on (regression guard for the `sk_test_placeholder` doc example, #2531).
+ * on (regression guard for the `sk_test_…placeholder` doc example, #2531 — spelled
+ * with the ellipsis HERE because this very comment ships in the server bundle the
+ * moment anything routes through this module, and the contiguous spelling is
+ * itself the shape Trivy flags. The image scan finding that proved it:
+ * PR #2817's `docker-image-security`, 13 Aug 2026).
  */
 
 export interface SecretFinding {

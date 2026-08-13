@@ -52,9 +52,15 @@ Open **Profile** and find the **Family Group** section.
   browser is given is a name. Their address is not withheld from the club: an
   administrator still sees it.
   If a dependent has no email address of their own, club email for them goes to
-  the nearest **adult** above them in the family who does have one. That is why
-  it says "adult": the club's contact for a member always has to be one, so mail
-  for a child of a young parent goes on up to the nearest adult in the family.
+  **their own parent** — one step, and no further. It has to be an adult: the
+  club's contact for a member always is one.
+  If that parent has no address the club can send to, the dependent inherits
+  **nobody** rather than the mail travelling further up the family. That is
+  deliberate. An address that hops an unknown number of times is not predictable
+  to the person whose address it is, and a grandparent who supplies an email for
+  one grandchild should not quietly start receiving mail for a branch of the
+  family they have nothing to do with. Where it leaves a gap, the club can see
+  the gap and will ask you for an address.
 
 While a create-group request is pending, the Join/Create buttons are replaced by
 "Your family group request is awaiting admin review", showing the requested group

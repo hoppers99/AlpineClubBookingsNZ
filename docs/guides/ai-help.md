@@ -15,6 +15,16 @@ panel with two tabs:
 - **Page guide** — the full curated help for that page (what you can do, the
   fields, and any extra notes), shown as plain text.
 
+> **Administrators may see a third tab, *Diagnostics*.** That is a **different
+> product** sharing the same doorway — an admin-only, read-only investigation
+> assistant that answers "why is this booking stuck?" from live evidence, rather
+> than "what does this page do?" from the curated corpus. It has its own model, its
+> own budget, its own per-question consent, and its own settings page at
+> **Admin → AI Diagnostics**. Nothing on this page applies to it: see
+> [`../ai-diagnostics/ux.md`](../ai-diagnostics/ux.md) and its
+> [hub](../ai-diagnostics/README.md). The rest of this guide is about the help
+> assistant only.
+
 The chips and the Page guide are always available and cost nothing; they come
 from a **curated help corpus** shipped with the app (a fixed set of page write-ups
 keyed by surface and page — there is no database content and no external call).

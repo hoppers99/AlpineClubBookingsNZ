@@ -1,9 +1,7 @@
-import { headers } from "next/headers";
 import Link from "next/link";
 import { redirect } from "next/navigation";
 import { AppProviders } from "@/components/app-providers";
-import { auth } from "@/lib/auth";
-import { prisma } from "@/lib/prisma";
+import { guardAdminLayout } from "@/lib/admin-layout-guard";
 import { AdminSidebar } from "@/components/admin-sidebar";
 import { AdminCommandPalette } from "@/components/admin-command-palette";
 import { NavBar } from "@/components/nav-bar";
@@ -15,119 +13,35 @@ import { getCachedClubIdentity } from "@/lib/public-layout-config";
 import { clubThemeFontVariableClassName } from "@/lib/club-theme-fonts";
 import { loadEffectiveModuleFlags } from "@/lib/module-settings";
 import { getAiAssistantAvailability } from "@/lib/ai-assistant-config";
-import { isFullAdmin } from "@/lib/access-roles";
-import {
-  getAdminPermissionMatrix,
-  getAdminRouteRequirement,
-  getFirstAccessibleAdminHref,
-  hasAdminAreaAccess,
-  hasAdminPortalAccess,
-  hasFinanceViewerAccess,
-  isConsolidatedFeesPath,
-} from "@/lib/admin-permissions";
-import { CSP_NONCE_HEADER } from "@/lib/csp";
+import { hasAdminAreaAccess } from "@/lib/admin-permissions";
 import { getWebsiteThemeRenderState } from "@/lib/club-theme";
 import { getDefaultLodgeCapacity } from "@/lib/lodge-capacity";
-import {
-  MEMBER_ONBOARDING_GATE_SELECT,
-  shouldShowMemberOnboarding,
-} from "@/lib/member-onboarding";
-import { REQUEST_PATH_HEADER } from "@/lib/internal-return-path";
-import { recordAuthBounce } from "@/lib/auth-diagnostics";
-import { buildLoginPath } from "@/lib/auth-redirect";
-import {
-  buildTwoFactorGatePath,
-  isTwoFactorSessionBlocked,
-} from "@/lib/two-factor-gate";
 
 export default async function AdminLayout({
   children,
 }: {
   children: React.ReactNode;
 }) {
-  const session = await auth();
-  const requestHeaders = await headers();
+  // THE SECURITY PREAMBLE LIVES IN ONE PLACE (#2378). It used to be inline here, and
+  // #2378 was originally going to add a second admin-side layout for a Diagnostics
+  // workspace — so a copy of it would have been a second place for the `active` check,
+  // the forced password change or the two-factor gate to drift, silently, in the
+  // direction that admits somebody.
+  //
+  // The owner superseded that on 12 Aug 2026: Diagnostics is asked from the Help
+  // bubble, and its page lives under `/admin/*` like every other admin screen. The
+  // extraction stayed, and is now load-bearing for the opposite reason — that page
+  // INHERITS this one guard instead of carrying a second copy of it.
+  const guard = await guardAdminLayout();
+  if (guard.outcome === "redirect") redirect(guard.destination);
 
-  if (!session?.user) {
-    // recordAuthBounce (#1669) classifies WHY auth() nulled and returns a
-    // reference code for durable bounces; it never throws, and the extra
-    // .catch guarantees the redirect even if that contract ever regresses.
-    // Anonymous visits keep the historical bare /login target.
-    const bounceRequestedPath = requestHeaders.get(REQUEST_PATH_HEADER);
-    const authBounceRef = await recordAuthBounce({
-      layout: "admin",
-      requestedPath: bounceRequestedPath,
-    }).catch(() => null);
-    redirect(authBounceRef ? buildLoginPath(null, authBounceRef) : "/login");
-  }
-
-  // Check DB directly for force password change and active status (JWT may be stale)
-  const member = await prisma.member.findUnique({
-    where: { id: session.user.id },
-    select: MEMBER_ONBOARDING_GATE_SELECT,
-  });
-
-  if (!member || !member.active) {
-    redirect("/login");
-  }
-
-  if (member.forcePasswordChange) {
-    redirect("/change-password");
-  }
-
-  const requestedPath = requestHeaders.get(REQUEST_PATH_HEADER);
-  if (
-    isTwoFactorSessionBlocked({
-      sessionUser: session.user,
-      member,
-    })
-  ) {
-    redirect(
-      buildTwoFactorGatePath({
-        sessionUser: session.user,
-        member,
-        callbackPath: requestedPath,
-      }),
-    );
-  }
-
-  const requestedForGuard = requestedPath ?? "/admin/dashboard";
-  const adminRequirement =
-    getAdminRouteRequirement(requestedForGuard, "GET") ?? {
-      area: "overview" as const,
-      level: "view" as const,
-    };
-
-  // /admin/fees admits on view of EITHER bookings or finance (#1933, E7); its
-  // prefix resolves to bookings for the single-area drift guard, so the generic
-  // check would wrongly lock out a finance-only editor. Short-circuit here.
-  const admitted = isConsolidatedFeesPath(requestedForGuard)
-    ? hasAdminAreaAccess(member, { area: "bookings", level: "view" }) ||
-      hasAdminAreaAccess(member, { area: "finance", level: "view" })
-    : hasAdminAreaAccess(member, adminRequirement);
-
-  if (!admitted) {
-    redirect(getFirstAccessibleAdminHref(member) ?? "/dashboard");
-  }
-
-  const user = {
-    name: session.user.name ?? "Admin",
-    email: session.user.email ?? "",
-    role: member.role,
-    canAccessAdmin: hasAdminPortalAccess(member),
-    canAccessFinance: hasFinanceViewerAccess(member),
-    isHutLeader: false,
-    isStayingGuest: false,
-  };
-  // Precomputed server-side: the sidebar is a client component and cannot
-  // resolve database-backed role definitions itself.
-  const permissionMatrix = getAdminPermissionMatrix(member);
-  const actorIsFullAdmin = isFullAdmin(member);
+  const { member, user, permissionMatrix, isFullAdmin: actorIsFullAdmin, nonce } =
+    guard;
   const canManageContent = hasAdminAreaAccess(member, {
     area: "content",
     level: "edit",
   });
-  const showOnboardingWizard = shouldShowMemberOnboarding(member);
+  const showOnboardingWizard = guard.showOnboardingWizard;
   const [effectiveModules, theme, lodgeCapacity, clubIdentity] =
     await Promise.all([
       loadEffectiveModuleFlags(),
@@ -136,7 +50,6 @@ export default async function AdminLayout({
       getCachedClubIdentity(),
     ]);
   const liveClubIdentity = { ...clubIdentity, lodgeCapacity };
-  const nonce = requestHeaders.get(CSP_NONCE_HEADER) ?? undefined;
 
   // Paid AI free-text path: module on AND a usable Anthropic key stored. Budget
   // is deliberately not checked at render (runtime fallback handles it).
@@ -201,10 +114,18 @@ export default async function AdminLayout({
         </div>
         <MemberOnboardingWizard initialShouldShow={showOnboardingWizard} />
         <ReportIssueWidget avoidDesktopSidebar />
+        {/* AI Diagnostics rides in the Help bubble (AID-7, #2378; owner decision
+            12 Aug 2026 superseding Q4). The prop is passed HERE and only here: its
+            presence is what grants the tab, and this layout is the surface that has
+            already admitted an administrator through `guardAdminLayout`. Owner
+            decision Q6 — any admitted admin may open the shell, and the shell is not
+            itself a `support:view` permission; every tool re-checks its own area at
+            invocation. */}
         <HelpWidgetAdmin
           scope="admin"
           llmEnabled={llmEnabled}
           chatEndpoint="/api/help/chat"
+          diagnostics={{ moduleEnabled: effectiveModules.aiDiagnostics }}
         />
         </HelpWidgetProvider>
       </div>

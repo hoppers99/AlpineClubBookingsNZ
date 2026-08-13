@@ -7,6 +7,7 @@ import { AlertTriangle } from "lucide-react";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
+import { DiagnosticsRecordButton } from "@/components/help-widget/diagnostics-record-button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { AdminPageHeader } from "@/components/admin/admin-page-header";
@@ -815,6 +816,13 @@ export default function AdminWaitlistPage() {
                           {entry.adminReviewReason || "Admin review required"}
                         </p>
                       )}
+                      {/* #2378 D11 — beside the status, which is the thing the
+                          operator is asking about. Renders nothing unless the widget
+                          says Diagnostics is available to this admin. */}
+                      <DiagnosticsRecordButton
+                        recordId={entry.id}
+                        subject={`the waitlisted booking for ${entry.memberName}, ${entry.checkIn}`}
+                      />
                     </div>
                   </TableCell>
                   <TableCell>

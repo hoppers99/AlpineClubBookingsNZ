@@ -49,6 +49,7 @@ type MockMember = {
   parentMemberId: string | null;
   secondaryParentId: string | null;
   inheritEmailFromId: string | null;
+  inheritEmailChoiceId: string | null;
   canLogin: boolean;
   role: string;
   financeAccessLevel: string;
@@ -89,6 +90,7 @@ function makeParent(overrides: Partial<MockMember> = {}): MockMember {
     parentMemberId: null,
     secondaryParentId: null,
     inheritEmailFromId: null,
+    inheritEmailChoiceId: null,
     canLogin: true,
     role: "USER",
     financeAccessLevel: "NONE",
@@ -110,6 +112,7 @@ function makeMember(overrides: Partial<MockMember> = {}): MockMember {
     parentMemberId: null,
     secondaryParentId: null,
     inheritEmailFromId: null,
+    inheritEmailChoiceId: null,
     canLogin: true,
     role: "USER",
     financeAccessLevel: "NONE",
@@ -189,6 +192,8 @@ function setupTransaction(members: MockMember[]) {
           parentMemberId: data.parent?.connect?.id ?? member.parentMemberId,
           secondaryParentId: data.secondaryParent?.connect?.id ?? member.secondaryParentId,
           inheritEmailFromId: data.inheritEmailFrom?.connect?.id ?? member.inheritEmailFromId,
+          inheritEmailChoiceId:
+            data.inheritEmailChoice?.connect?.id ?? member.inheritEmailChoiceId,
           canLogin: data.canLogin ?? member.canLogin,
         };
       }),
@@ -803,7 +808,18 @@ describe("POST /api/admin/members/[id]/dependents/link", () => {
    * every reader keeps its single `inheritEmailFrom` join. "Can receive mail"
    * means adult, not archived, and not a walk-in placeholder address.
    */
-  describe("transitive email inheritance (#2255)", () => {
+  /**
+   * #2716 REPLACED THIS BLOCK. It was "transitive email inheritance (#2255)" and
+   * it pinned a walk up the family tree: past a middle generation with no
+   * address, past a second one up to the cap, nearest-first, primary edge
+   * winning a tie. The owner narrowed all of that to the direct parent, so what
+   * those cases described is now the behaviour this block proves ABSENT.
+   *
+   * The pointer and the CHOICE are asserted together on every write, because a
+   * write that recorded only the pointer would leave a member whose inheritance
+   * could never be restored once the parent's address was removed.
+   */
+  describe("direct-parent email inheritance (#2716)", () => {
     const placeholder = "walk-in-abc@no-email.invalid";
 
     it("uses the direct parent when they have a real address", async () => {
@@ -820,38 +836,43 @@ describe("POST /api/admin/members/[id]/dependents/link", () => {
         expect.objectContaining({
           data: expect.objectContaining({
             inheritEmailFrom: { connect: { id: "parent-1" } },
+            inheritEmailChoice: { connect: { id: "parent-1" } },
           }),
         })
       );
     });
 
-    it("stores the parent's OWN source rather than the parent (stays flat)", async () => {
+    it("refuses when the parent themselves inherits, rather than storing their source", async () => {
+      // This used to store the grandparent, on the reasoning that stored
+      // inheritance must stay flat. One hop makes the question different: a
+      // parent who inherits is not a mailbox at all, and their `email` column is
+      // a stale copy of the address they inherit. So there is nothing to store.
       const tx = setupTransaction([
-        makeParent({ inheritEmailFromId: "grandparent-1" }),
+        makeParent({
+          inheritEmailFromId: "grandparent-1",
+          inheritEmailChoiceId: "grandparent-1",
+        }),
         makeMember({ id: "grandparent-1", ageTier: "ADULT" }),
         makeMember(),
       ]);
 
-      await linkDependent({
+      const res = await linkDependent({
         memberId: "target-1",
         inheritEmail: true,
         disableLogin: false,
         addToFamilyGroupIds: [],
       });
 
-      expect(tx.member.update).toHaveBeenCalledWith(
-        expect.objectContaining({
-          data: expect.objectContaining({
-            inheritEmailFrom: { connect: { id: "grandparent-1" } },
-          }),
-        })
-      );
+      expect(res.status).toBe(422);
+      expect(tx.member.update).not.toHaveBeenCalled();
     });
 
-    it("walks past a middle generation with no address of their own", async () => {
-      // The case D9 exists for: a middle-generation parent whose only address
-      // is a club-internal placeholder. One-hop resolution would point the
-      // child's notifications at a mailbox that silently discards them.
+    it("refuses rather than reaching past a middle generation with no address", async () => {
+      // THE case the owner ruled on. The grandparent has a perfectly good
+      // mailbox and is one hop further up; the answer is still no. A grandparent
+      // who supplies an email for one grandchild does not thereby expect
+      // notifications for a branch of the family they may have no involvement
+      // with.
       const tx = setupTransaction([
         makeParent({ email: placeholder, parentMemberId: "grandparent-1" }),
         makeMember({
@@ -862,141 +883,60 @@ describe("POST /api/admin/members/[id]/dependents/link", () => {
         makeMember(),
       ]);
 
-      await linkDependent({
+      const res = await linkDependent({
         memberId: "target-1",
         inheritEmail: true,
         disableLogin: false,
         addToFamilyGroupIds: [],
       });
 
-      expect(tx.member.update).toHaveBeenCalledWith(
-        expect.objectContaining({
-          data: expect.objectContaining({
-            inheritEmailFrom: { connect: { id: "grandparent-1" } },
-          }),
-        })
-      );
+      expect(res.status).toBe(422);
+      expect(tx.member.update).not.toHaveBeenCalled();
     });
 
-    it("keeps walking past a second unusable generation, up to the cap", async () => {
-      const tx = setupTransaction([
+    it("names only the parent in the refusal, not an ancestor who cannot help", async () => {
+      // The message used to offer "no parent OR ANCESTOR in this family has a
+      // real email address", which described a walk that no longer happens and
+      // would send an admin to record an address on somebody it changes nothing
+      // for.
+      setupTransaction([
         makeParent({ email: placeholder, parentMemberId: "grandparent-1" }),
-        makeMember({
-          id: "grandparent-1",
-          ageTier: "ADULT",
-          email: "walk-in-def@no-email.invalid",
-          parentMemberId: "great-1",
-        }),
-        makeMember({ id: "great-1", ageTier: "ADULT", email: "great@example.com" }),
+        makeMember({ id: "grandparent-1", ageTier: "ADULT" }),
         makeMember(),
       ]);
 
-      await linkDependent({
+      const res = await linkDependent({
         memberId: "target-1",
         inheritEmail: true,
         disableLogin: false,
         addToFamilyGroupIds: [],
       });
 
-      expect(tx.member.update).toHaveBeenCalledWith(
-        expect.objectContaining({
-          data: expect.objectContaining({
-            inheritEmailFrom: { connect: { id: "great-1" } },
-          }),
-        })
-      );
+      const { error } = await res.json();
+      expect(error).toMatch(/This parent has no email address/i);
+      expect(error).not.toMatch(/ancestor/i);
     });
 
-    it("prefers the NEARER ancestor when both could receive mail", async () => {
-      // Nearest-first is what makes the result predictable: the grandparent is
-      // reachable and usable, but the parent is closer and usable too.
-      const tx = setupTransaction([
-        makeParent({ parentMemberId: "grandparent-1" }),
-        makeMember({
-          id: "grandparent-1",
-          ageTier: "ADULT",
-          email: "grandparent@example.com",
-        }),
-        makeMember(),
-      ]);
-
-      await linkDependent({
-        memberId: "target-1",
-        inheritEmail: true,
-        disableLogin: false,
-        addToFamilyGroupIds: [],
-      });
-
-      expect(tx.member.update).toHaveBeenCalledWith(
-        expect.objectContaining({
-          data: expect.objectContaining({
-            inheritEmailFrom: { connect: { id: "parent-1" } },
-          }),
-        })
-      );
-    });
-
-    it("breaks a tie towards the PRIMARY parent edge", async () => {
-      // Both of the unusable parent's own parents are usable and equally near.
-      // The documented tie-break is the primary-parent edge, so the answer is
-      // deterministic rather than whatever the database happened to return.
-      const tx = setupTransaction([
-        makeParent({
-          email: placeholder,
-          parentMemberId: "primary-gp",
-          secondaryParentId: "secondary-gp",
-        }),
-        makeMember({ id: "primary-gp", ageTier: "ADULT", email: "primary@example.com" }),
-        makeMember({ id: "secondary-gp", ageTier: "ADULT", email: "secondary@example.com" }),
-        makeMember(),
-      ]);
-
-      await linkDependent({
-        memberId: "target-1",
-        inheritEmail: true,
-        disableLogin: false,
-        addToFamilyGroupIds: [],
-      });
-
-      expect(tx.member.update).toHaveBeenCalledWith(
-        expect.objectContaining({
-          data: expect.objectContaining({
-            inheritEmailFrom: { connect: { id: "primary-gp" } },
-          }),
-        })
-      );
-    });
-
-    it("skips a non-adult ancestor even when their address is real", async () => {
+    it("refuses a non-adult parent rather than looking past them", async () => {
       // #2282 records that parentage may be stated at any age; being the club's
-      // contact of record for someone else is a responsibility function, and
-      // those stay adult-gated. So a teenage parent is walked past, not used.
+      // contact of record for someone else is a responsibility function and
+      // stays adult-gated. Under one hop the consequence is a refusal rather
+      // than a longer walk.
       const tx = setupTransaction([
-        makeParent({ email: placeholder, parentMemberId: "youth-gp" }),
-        makeMember({
-          id: "youth-gp",
-          ageTier: "YOUTH",
-          email: "youth@example.com",
-          parentMemberId: "great-1",
-        }),
+        makeParent({ ageTier: "YOUTH", parentMemberId: "great-1" }),
         makeMember({ id: "great-1", ageTier: "ADULT", email: "great@example.com" }),
         makeMember(),
       ]);
 
-      await linkDependent({
+      const res = await linkDependent({
         memberId: "target-1",
         inheritEmail: true,
         disableLogin: false,
         addToFamilyGroupIds: [],
       });
 
-      expect(tx.member.update).toHaveBeenCalledWith(
-        expect.objectContaining({
-          data: expect.objectContaining({
-            inheritEmailFrom: { connect: { id: "great-1" } },
-          }),
-        })
-      );
+      expect(res.status).toBe(422);
+      expect(tx.member.update).not.toHaveBeenCalled();
     });
 
     it("refuses the link rather than silently storing no inheritance", async () => {
@@ -1016,17 +956,13 @@ describe("POST /api/admin/members/[id]/dependents/link", () => {
       });
 
       expect(res.status).toBe(422);
-      expect((await res.json()).error).toMatch(/real email address/i);
+      expect((await res.json()).error).toMatch(/no email address the club can send to/i);
       expect(tx.member.update).not.toHaveBeenCalled();
     });
 
     it("refuses a pre-existing family loop before email resolution is reached", async () => {
       // Data predating the cap could contain a loop. On THIS route the depth
-      // walk sees it first and refuses, so the email walk never runs — which is
-      // why the cycle-safety of the resolver itself is pinned where it is
-      // reachable, as a unit, in member-parent-links.test.ts. Both matter: the
-      // resolver is also called from the unlink route and the family-group
-      // reviewer, neither of which runs a depth check first.
+      // walk sees it first and refuses, so email resolution never runs.
       const tx = setupTransaction([
         makeParent({ email: placeholder, parentMemberId: "loop-a" }),
         makeMember({
@@ -1066,8 +1002,9 @@ describe("POST /api/admin/members/[id]/dependents/link", () => {
    *  - drop `!parent.active` and "refuses an inactive parent" fails;
    *  - drop `parent.archivedAt` and "refuses an archived parent" fails.
    * A fourth lives on the adult gate itself: delete `ageTier === "ADULT"` from
-   * `isUsableEmailSource` and "routes the child's mail past the young parent"
-   * fails, because the source becomes the 16-year-old.
+   * `isUsableEmailSource` and "refuses rather than routing the child's mail past
+   * the young parent" fails, because the link is accepted with the 16-year-old
+   * as the source.
    */
   describe("young parents (#2282)", () => {
     it("records a YOUTH member as a parent", async () => {
@@ -1115,7 +1052,14 @@ describe("POST /api/admin/members/[id]/dependents/link", () => {
       expect(tx.member.update).toHaveBeenCalled();
     });
 
-    it("routes the child's mail PAST the young parent to the adult above", async () => {
+    it("refuses rather than routing the child's mail past the young parent (#2716)", async () => {
+      // This case USED to succeed, landing on the grandparent. #2716 removed
+      // that route: a grandparent who supplies an email for one grandchild does
+      // not thereby expect notifications for a branch of the family they may
+      // have no involvement with. So the responsibility gate still holds — a
+      // 16-year-old is not made the club's contact of record — but the remedy is
+      // now to record an address for the young parent rather than to reach past
+      // them, and the refusal says exactly that.
       const tx = setupTransaction([
         makeParent({
           ageTier: "YOUTH",
@@ -1137,15 +1081,11 @@ describe("POST /api/admin/members/[id]/dependents/link", () => {
         addToFamilyGroupIds: [],
       });
 
-      expect(res.status).toBe(200);
-      expect(tx.member.update).toHaveBeenCalledWith(
-        expect.objectContaining({
-          data: expect.objectContaining({
-            inheritParentEmail: true,
-            inheritEmailFrom: { connect: { id: "grandparent-1" } },
-          }),
-        })
+      expect(res.status).toBe(422);
+      expect((await res.json()).error).toMatch(
+        /no email address the club can send to/i
       );
+      expect(tx.member.update).not.toHaveBeenCalled();
     });
 
     it("refuses rather than making the young parent the contact of record", async () => {
@@ -1171,8 +1111,10 @@ describe("POST /api/admin/members/[id]/dependents/link", () => {
 
     it("refuses a young parent named EXPLICITLY as the notification recipient", async () => {
       // The picker offers the linked parents by name, so an admin can name the
-      // 16-year-old directly. That selection resolves through the same walk, so
-      // it lands on the grandparent rather than honouring the minor.
+      // 16-year-old directly. That selection resolves through the same rule as
+      // the default, and under #2716 the rule answers "this parent or nobody" —
+      // so naming the minor is refused rather than quietly redirected to the
+      // grandparent, which is a member the admin did not choose.
       const tx = setupTransaction([
         makeParent({
           ageTier: "YOUTH",
@@ -1195,14 +1137,8 @@ describe("POST /api/admin/members/[id]/dependents/link", () => {
         addToFamilyGroupIds: [],
       });
 
-      expect(res.status).toBe(200);
-      expect(tx.member.update).toHaveBeenCalledWith(
-        expect.objectContaining({
-          data: expect.objectContaining({
-            inheritEmailFrom: { connect: { id: "grandparent-1" } },
-          }),
-        })
-      );
+      expect(res.status).toBe(422);
+      expect(tx.member.update).not.toHaveBeenCalled();
     });
 
     it("refuses an inactive parent, naming the way out", async () => {
