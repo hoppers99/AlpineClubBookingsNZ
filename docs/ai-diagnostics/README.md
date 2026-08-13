@@ -146,7 +146,7 @@ child; the existing repository-wide documents they extend are linked.
 | **Page context** | [`page-context.md`](page-context.md) — the typed selector, the route registry, the permission-checked server re-fetch, the personal-detail opt-in, and the evidence block (AID-4 #2373, **delivered**) | [ADR-002](decisions/ADR-002-admission-and-per-tool-authorization-lattice.md), [ADR-003](decisions/ADR-003-untrusted-evidence-classes.md), [ADR-004](decisions/ADR-004-sensitive-context-retention-redaction-audit-metadata.md) |
 | **Security / privacy** | This hub's [threat model](threat-model.md) and [ADRs](decisions/) (AID-1, this issue); release hardening notes (AID-8 #2379) | [`SECURITY.md`](../SECURITY.md), [`SECURITY-ATTACK-SURFACE.md`](../SECURITY-ATTACK-SURFACE.md), [`agents/PROMPT_INJECTION_GUIDE.md`](../agents/PROMPT_INJECTION_GUIDE.md) |
 | **Deployment / operator** | [`deployment.md`](deployment.md) — setup order, provisioning and rotating the SELECT-only DB role, the credential, budget/limits, and reading readiness (AID-2 #2371 / AID-5 #2374, **delivered**); provider disclosure, zero-retention, and the private overlay still to come (AID-8 #2379) | [`../../DEPLOYMENT.md`](../../DEPLOYMENT.md), [`ONGOING_DEVELOPMENT_WORKFLOW.md`](../ONGOING_DEVELOPMENT_WORKFLOW.md) |
-| **UX** | [`ux.md`](ux.md) — the two surfaces, the Diagnostics tab, the per-question consent ticks, choosing the record under investigation, the eighteen failure states, and keyboard/screen-reader/narrow-viewport behaviour (AID-7 #2378, **delivered**) | [`UX_FLOW_MAP.md`](../UX_FLOW_MAP.md) |
+| **UX** | [`ux.md`](ux.md) — the two surfaces, the Diagnostics tab, the per-question consent ticks, choosing the record under investigation, the nineteen failure states, and keyboard/screen-reader/narrow-viewport behaviour (AID-7 #2378, **delivered**) | [`UX_FLOW_MAP.md`](../UX_FLOW_MAP.md) |
 | **E2E test matrix** | `docs/ai-diagnostics/e2e-matrix.md` — admission, per-tool auth, injection inertness, output-channel egress (inert render + CSP, ADR-008), budget/limit fail-closed, redaction (AID-8 #2379) | [`END_TO_END_TEST_MATRIX.md`](../END_TO_END_TEST_MATRIX.md) |
 | **Operator help** | Operator guidance for the Diagnostics surface (AID-7 #2378 / AID-8 #2379) | [`guides/ai-help.md`](../guides/ai-help.md) |
 
@@ -638,7 +638,7 @@ somebody is typing; a save re-reads rather than trusting what was typed.
 ### Asking, and what the operator sees
 
 Asking happens in the Help bubble. The surface itself — the tab, the two
-per-question consent ticks, the resizable panel, the eighteen failure states and the
+per-question consent ticks, the resizable panel, the nineteen failure states and the
 keyboard/screen-reader behaviour — is documented once, in [`ux.md`](ux.md). What
 follows here is the part that is a security argument rather than a screen.
 

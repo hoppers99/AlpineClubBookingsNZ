@@ -59,10 +59,21 @@ function isStaleState(state: DiagnosticsEvidenceState): boolean {
   return state === "stale";
 }
 
-/** Sources worth naming in the collapsed line: the ones that actually produced rows. */
+/**
+ * Sources worth naming in the collapsed line: the ones that actually produced rows.
+ *
+ * `provider_check_required` belongs here (#2815): its own contract opens "stored
+ * evidence WAS retrieved" — the state qualifies the evidence's liveness, never its
+ * retrieval. Leaving it out made a stored-finance answer open with "No live data
+ * could be read", which is wrong twice: data was read, and the actual caveat (it is
+ * what the platform last recorded, not the provider's live answer) went unsaid.
+ */
 function readSources(sources: readonly DiagnosticsAskSource[]): DiagnosticsAskSource[] {
   return sources.filter(
-    (source) => source.state === "ok" || source.state === "result_truncated",
+    (source) =>
+      source.state === "ok" ||
+      source.state === "result_truncated" ||
+      source.state === "provider_check_required",
   );
 }
 
@@ -116,6 +127,9 @@ export function buildDiagnosticsProvenance(
   const hasSearchWithheld = input.summary.hasSearchWithheld;
   const hasPartialEvidence = sources.some((source) => isPartialState(source.state));
   const hasStaleEvidence = sources.some((source) => isStaleState(source.state));
+  const hasProviderCheckRequired = sources.some(
+    (source) => source.state === "provider_check_required",
+  );
   // Anything withheld at all — including a locked-out actor, which
   // `summariseDiagnosticCase` counts in `hasWithheldEvidence` but in none of the three
   // specific flags, so testing only those three would drop it from the line.
@@ -175,6 +189,14 @@ export function buildDiagnosticsProvenance(
   if (hasStaleEvidence) {
     caveats.push("some of it was read earlier and may have changed");
   }
+  if (hasProviderCheckRequired) {
+    // #2815, and D10's rule applies in full: this is an honesty marker, so it lives
+    // in the COLLAPSED line. The remedy is specific — the provider's own console —
+    // because that is the one thing an operator can actually do about stored state.
+    caveats.push(
+      "provider values are as last recorded here — confirm against Stripe or Xero's own console before acting on them",
+    );
+  }
   // A withheld source that is none of the above — a locked-out actor, an unconfigured
   // deployment, a tool that failed. Named generically rather than left silent: D10's
   // rule is about the EXISTENCE of a caveat reaching the collapsed line.
@@ -195,6 +217,7 @@ export function buildDiagnosticsProvenance(
     hasSearchWithheld,
     hasPartialEvidence,
     hasStaleEvidence,
+    hasProviderCheckRequired,
     withheldAreas: [...input.summary.withheldAreas],
     sources,
     roundsUsed: input.roundsUsed,

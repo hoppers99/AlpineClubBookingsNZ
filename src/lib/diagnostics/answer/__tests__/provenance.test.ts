@@ -332,3 +332,38 @@ describe("every evidence state is placed deliberately (#2378 census)", () => {
     });
   }
 });
+
+describe("stored provider evidence carries its own collapsed caveat (#2815)", () => {
+  it("is NAMED as read, and tells the operator to confirm in the provider's console", () => {
+    // `provider_check_required` qualifies the evidence's LIVENESS, never its
+    // retrieval — rows were read. The first cut of `readSources` excluded it, so a
+    // stored-finance answer opened with "No live data could be read": wrong twice,
+    // and the actual caveat went unsaid.
+    const provenance = buildDiagnosticsProvenance({
+      sources: [source("provider_check_required", { label: "Payment summary" })],
+      summary: summariseDiagnosticCase(
+        caseWith([{ state: "provider_check_required" }]),
+      ),
+      roundsUsed: 1,
+      now: NOW,
+    });
+    expect(provenance.line).toContain("Read from Payment summary");
+    expect(provenance.line).not.toContain("No live data could be read");
+    expect(provenance.line).toContain(
+      "confirm against Stripe or Xero's own console",
+    );
+    expect(provenance.hasCaveat).toBe(true);
+    expect(provenance.hasProviderCheckRequired).toBe(true);
+  });
+
+  it("does not raise the flag when no stored-provider source contributed", () => {
+    const provenance = buildDiagnosticsProvenance({
+      sources: [source("ok", { label: "Booking blockers" })],
+      summary: summariseDiagnosticCase(caseWith([{ state: "ok" }])),
+      roundsUsed: 1,
+      now: NOW,
+    });
+    expect(provenance.hasProviderCheckRequired).toBe(false);
+    expect(provenance.line).not.toContain("console");
+  });
+});

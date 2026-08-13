@@ -92,13 +92,14 @@ says where the state is produced and what the operator is told to do next.
 | 9 | circuit breaker | route gate 6 (metering) | `metering_unavailable` — it cannot record what it spends, so it will not spend |
 | 10 | tool timeout | evidence state `temporarily_unavailable` | trying again shortly is reasonable |
 | 11 | bounded result / partial evidence | evidence state `result_truncated` | `hasPartialEvidence` on the collapsed line: only part of a longer result |
-| 12 | stale page context | the bubble's moved-screen notice (+ `hasStaleEvidence`, which nothing produces yet — #2815) | the LAST question was asked from another screen; answers from here on are about this one |
+| 12 | stale page context | the bubble's moved-screen notice (+ `hasStaleEvidence`, which the loop keeps wired but nothing produces — each question gathers its own evidence, so a retrieval is never itself stale) | the LAST question was asked from another screen; answers from here on are about this one |
 | 13 | record not found vs not authorised | evidence states `not_found` and `permission_denied`, kept separate | a denial names the missing AREA; an empty result says nothing matched. Neither is inferred from a source the caller does happen to hold |
 | 14 | people search not enabled | evidence state `search_consent_required` | `hasSearchWithheld` — tick the search box if you want it to look |
 | 15 | record / sensitive consent not granted | evidence state `consent_required` | `hasConsentWithheld` — names both controls and asserts neither cause, because four causes land here |
 | 16 | runtime evidence unavailable, deployed evidence available | evidence state `evidence_unavailable` beside `ok` sources | the answer still lands, with the gap named in the collapsed line |
 | 17 | session expired / access changed mid-conversation | the client, on a 401/403 | "your session no longer allows this — sign in again". Never rendered as a network fault |
 | 18 | transport failure | the client, when no response arrives at all | "check your connection" — the one state where that sentence is true |
+| 19 | stored provider evidence (#2815) | the answer loop folds `provider_check_required` onto any otherwise-clean read from a finance tool carrying the stored-provider disclosure | `hasProviderCheckRequired` on the collapsed line: "provider values are as last recorded here — confirm against Stripe or Xero's own console before acting on them". The evidence still counts as READ — the state qualifies its liveness, not its retrieval |
 
 Two properties hold across the whole table:
 

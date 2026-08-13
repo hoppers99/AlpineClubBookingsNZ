@@ -56,11 +56,13 @@ import {
 } from "../case/case";
 import {
   DIAGNOSTICS_EVIDENCE_STATE_DESCRIPTIONS,
+  worstEvidenceState,
   type DiagnosticsEvidenceState,
 } from "../case/states";
 import type { DiagnosticsConsentLedger } from "../tools/consent";
 import { listDiagnosticsToolDefinitions } from "../tools/definitions";
 import { invokeDiagnosticsTool } from "../tools/invoke";
+import { diagnosticsToolRequiresProviderCheck } from "../tools/registry";
 import { renderToolResultEvidence } from "../tools/render";
 import type { DiagnosticsToolSession } from "../tools/session";
 import {
@@ -338,10 +340,25 @@ export async function runDiagnosticsAnswer(
       // The state the BLOCK asserts, not the retrieval state — `render.ts` is explicit
       // that using the latter beside a clipped block is what produced
       // `evidence-state="ok"` above an incomplete listing.
+      //
+      // STORED PROVIDER EVIDENCE IS NEVER PRESENTED AS `ok` (#2815). A finance tool
+      // whose scope carries the stored-provider disclosure read what this platform
+      // last WROTE DOWN, not what Stripe or Xero believe right now — and `states.ts`
+      // names THIS surface as `provider_check_required`'s producer, folded with
+      // `worstEvidenceState`. The fold applies only where the block asserts `ok`:
+      // every other state already names a more specific problem (truncation, denial,
+      // nothing matched), and one state per source means the more actionable caveat
+      // must win. AID-7 shipped without this and its contract review caught stored
+      // `SUCCEEDED` rows presenting as live truth.
+      const presentedState =
+        evidence.evidenceState === "ok" &&
+        diagnosticsToolRequiresProviderCheck(result.toolId)
+          ? worstEvidenceState(evidence.evidenceState, "provider_check_required")
+          : evidence.evidenceState;
       const outcome = recordCaseEvidence(
         diagnosticCase,
         result,
-        evidence.evidenceState,
+        presentedState,
       );
       sources.push({
         toolId: result.toolId,

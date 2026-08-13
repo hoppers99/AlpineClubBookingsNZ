@@ -81,13 +81,14 @@ export const DIAGNOSTICS_EVIDENCE_STATES = [
    * WHO PRODUCES IT. Not `evidenceStateForToolResult` — the executor cannot know
    * whether a given question turns on live provider truth, and inventing a
    * heuristic there would be exactly the guessing this vocabulary exists to
-   * prevent. The intended producer is the surface that assembles a
-   * `DiagnosticCase`, when the finance pack's own scope disclosure applies to the
-   * question being answered, folded in with `worstEvidenceState` — which is why it
-   * sits here rather than in the pack. AID-7 (#2378) shipped that surface WITHOUT
-   * producing this state — its contract review found the gap — so today NOTHING
-   * raises it and stored-only finance evidence presents as `ok`; #2815 is the
-   * filed follow-up that makes the finance pack mark the reads this applies to.
+   * prevent. The producer is the answer loop (`answer/loop.ts`, #2815): where a
+   * tool whose `evidenceScope` carries the finance pack's own
+   * `STORED_EVIDENCE_DISCLOSURE` returns an otherwise-`ok` block, the loop folds
+   * this state in with `worstEvidenceState` — the disclosure text itself is the
+   * membership test (`diagnosticsToolRequiresProviderCheck`), so the marked set
+   * cannot drift from what the pack tells the model. Any non-`ok` state already
+   * names a more specific problem and wins the fold. The provenance line then
+   * carries the confirm-in-the-provider's-console caveat collapsed (D10).
    * Live provider reads themselves remain out of scope until an owner-approved
    * issue designs their security, rate-limit, credential and audit story.
    */

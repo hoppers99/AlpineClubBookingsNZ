@@ -85,6 +85,7 @@ import { DIAGNOSTICS_AID6B_STATE_TOOLS } from "./packs/booking-state";
 import { DIAGNOSTICS_AID6B_MEMBERSHIP_RECORD_TOOLS } from "./packs/membership-records";
 import { DIAGNOSTICS_FINANCE_RECORD_TOOLS } from "./packs/finance-records";
 import { DIAGNOSTICS_FINANCE_SEARCH_TOOLS } from "./packs/finance-search";
+import { STORED_EVIDENCE_DISCLOSURE } from "./packs/finance-shared";
 import { DIAGNOSTICS_FINANCE_STATE_TOOLS } from "./packs/finance-state";
 import { DIAGNOSTICS_SUPPORT_CORRELATION_TOOLS } from "./packs/support-correlation";
 import { DIAGNOSTICS_SUPPORT_SYSTEM_TOOLS } from "./packs/support-system";
@@ -176,4 +177,30 @@ export function findDiagnosticsTool(
   toolId: string,
 ): DiagnosticsToolEntry | undefined {
   return DIAGNOSTICS_TOOLS.find((tool) => tool.id === toolId);
+}
+
+/**
+ * Does this tool's evidence carry the finance pack's stored-provider disclosure —
+ * i.e. must an answer built on it fold in `provider_check_required` (#2815)?
+ *
+ * THE DISCLOSURE TEXT IS THE MARKER, deliberately. `states.ts` says the state is
+ * produced "when the finance pack's own scope disclosure applies to the question
+ * being answered", and the disclosure IS a sentence every such entry already
+ * carries in its `evidenceScope` (`STORED_EVIDENCE_DISCLOSURE`). Keying on that
+ * same sentence means the set cannot drift from the pack's own claims: an entry
+ * that tells the model "this is stored, not live" is exactly the entry whose
+ * answers must tell the OPERATOR the same thing, and one that stops saying it
+ * stops being marked in the same edit. A separate boolean would be a second list
+ * to forget.
+ */
+export function diagnosticsToolRequiresProviderCheck(toolId: string): boolean {
+  // An entry without an evidenceScope cannot carry the disclosure: false, which is
+  // the fail-closed direction — an unmarked read is presented as ok, never caveated
+  // by accident, and a finance entry that LOST its scope would fail the pack's own
+  // tests long before it lost this marker.
+  return (
+    findDiagnosticsTool(toolId)?.evidenceScope?.includes(
+      STORED_EVIDENCE_DISCLOSURE,
+    ) === true
+  );
 }

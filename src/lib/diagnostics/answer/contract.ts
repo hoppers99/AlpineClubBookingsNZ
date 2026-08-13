@@ -161,6 +161,12 @@ export interface DiagnosticsAskProvenance {
   hasPartialEvidence: boolean;
   /** Evidence was read earlier in this conversation and may have moved on. */
   hasStaleEvidence: boolean;
+  /**
+   * Stored provider evidence contributed to this answer (#2815): what the platform
+   * last recorded of Stripe/Xero state, never a live answer. The collapsed line
+   * tells the operator to confirm against the provider's own console before acting.
+   */
+  hasProviderCheckRequired: boolean;
   /** Areas that would complete the picture. Permission denials only. */
   withheldAreas: AdminPermissionArea[];
   sources: DiagnosticsAskSource[];
