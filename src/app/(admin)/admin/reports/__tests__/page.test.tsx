@@ -256,3 +256,63 @@ describe("ReportsPage quick ranges", () => {
     expect(csv).not.toContain("Booked Revenue Less Outstanding");
   });
 });
+
+describe("stale responses never own the screen (#2378 fix round)", () => {
+  /**
+   * Every filter change refires the report fetch while earlier requests are still
+   * in flight, and the figures used to belong to whichever response landed LAST —
+   * the mount-time default-range response overwriting a narrowed range's numbers a
+   * moment after they rendered. PR #2817's Playwright run caught it as a "wrong
+   * cash figure" failure; the fix is the fetch sequence guard in `fetchReports`.
+   * This stages exactly that inversion: the FIRST (default-range) response is held
+   * back and resolved AFTER the second (narrowed) one.
+   */
+  it("keeps the latest query's figures when an earlier response lands later", async () => {
+    const wideReport = {
+      ...EMPTY_REPORT,
+      summary: { ...EMPTY_REPORT.summary, totalBookings: 4 },
+    };
+    const narrowReport = {
+      ...EMPTY_REPORT,
+      summary: { ...EMPTY_REPORT.summary, totalBookings: 1 },
+    };
+    let releaseFirst: (() => void) | undefined;
+    let call = 0;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => {
+        call += 1;
+        if (call === 1) {
+          await new Promise<void>((resolve) => {
+            releaseFirst = resolve;
+          });
+          return new Response(JSON.stringify(wideReport), {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          });
+        }
+        return new Response(JSON.stringify(narrowReport), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        });
+      }),
+    );
+
+    render(<ReportsPage />);
+    const from = await screen.findByLabelText("From");
+    fireEvent.change(from, { target: { value: "2026-03-01" } });
+
+    // The narrowed query's response arrives first and renders its figure.
+    const bookingsCard = (await screen.findByText("Total Bookings")).closest(
+      ".reports-print-card",
+    );
+    await waitFor(() => expect(bookingsCard?.textContent).toContain("1"));
+
+    // Now the SUPERSEDED default-range response lands. It must change nothing.
+    releaseFirst?.();
+    await waitFor(() => expect(call).toBeGreaterThanOrEqual(2));
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(bookingsCard?.textContent).toContain("1");
+    expect(bookingsCard?.textContent).not.toContain("4");
+  });
+});

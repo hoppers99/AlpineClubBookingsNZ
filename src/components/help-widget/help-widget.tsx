@@ -409,10 +409,25 @@ export function HelpWidget({
     }
   };
 
-  // Keep a focused text control centred above the keyboard (C4 input).
+  // Keep a focused TEXT control centred above the keyboard (C4 input).
+  //
+  // TEXT-ENTRY CONTROLS ONLY, and the exclusion is load-bearing: a mouse click
+  // focuses on mousedown, so centring the control HERE scrolls it out from under
+  // the cursor before mouseup — the click then lands on whatever moved in, and a
+  // checkbox never toggles. That is not a tail risk; it made the Diagnostics
+  // consent ticks unclickable by mouse in every real browser (PR #2817's
+  // Playwright run; jsdom stubs scrollIntoView, so the component tests saw
+  // nothing). Text fields keep the behaviour because it exists for them — the
+  // virtual keyboard covers a bottom-anchored input mid-typing — and a caret
+  // lands on mousedown, so the moved click costs a text field nothing.
   const handleBodyFocus = (event: FocusEvent<HTMLDivElement>) => {
     const target = event.target as HTMLElement;
-    if (typeof target.matches === "function" && target.matches("input, textarea")) {
+    if (
+      typeof target.matches === "function" &&
+      target.matches(
+        "textarea, input:not([type=checkbox]):not([type=radio]):not([type=button])",
+      )
+    ) {
       target.scrollIntoView?.({ block: "center" });
     }
   };
