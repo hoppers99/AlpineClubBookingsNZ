@@ -188,7 +188,15 @@ const ROUTES: readonly DiagnosticsPageContextRoute[] = [
     requiredAreas: ["bookings"],
     recordKind: "booking",
     tabs: BOOKING_REQUESTS_TABS,
-    statuses: BOOKING_STATUS_TOKENS,
+    // NO status vocabulary, deliberately (review finding, 13 Aug 2026). The dead
+    // row carried BOOKING_STATUS_TOKENS, but this page's own `?status=` values are
+    // REVIEW filters (`PENDING`/`APPROVED`/`REJECTED`/`ALL`, plus `REQUESTED` on
+    // the exceptions deep link) — a different vocabulary, and the booking-status
+    // census forces any non-empty list here to equal the whole BookingStatus enum.
+    // Advertising tokens the page never uses would cost an operator their entire
+    // context the moment #2816 wires view state (rejection is total). Empty means
+    // refused, which is the registry's honest fail-closed default; widening it is
+    // a decision for whoever wires this page's view state.
     errorCodes: DIAGNOSTICS_PAGE_ERROR_CODES,
   }),
   route({

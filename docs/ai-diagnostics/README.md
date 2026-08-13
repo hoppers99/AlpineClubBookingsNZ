@@ -644,13 +644,13 @@ follows here is the part that is a security argument rather than a screen.
 
 ### Naming the record (owner decision D11)
 
-The page-context registry declares a `recordKind` on the bookings, waitlist and
-payments lists, but a list does not say WHICH row the operator means, and there is no
-`/admin/bookings/[id]` page in this codebase — admin rows link out to the
-member-facing `/bookings/{id}`, which is not an admin route and not in the registry.
-Only `/admin/members/[id]` names its record in the address.
+The page-context registry declares a `recordKind` on the bookings, booking-requests
+(#2812), waitlist and payments lists, but a list does not say WHICH row the operator
+means, and there is no `/admin/bookings/[id]` page in this codebase — admin rows link
+out to the member-facing `/bookings/{id}`, which is not an admin route and not in the
+registry. Only `/admin/members/[id]` names its record in the address.
 
-So each row on those three lists carries a stethoscope control that makes that row the
+So each row on those four lists carries a stethoscope control that makes that row the
 subject and opens the bubble on Diagnostics. It was chosen over a picker inside the
 panel because it adds **no new way to reach a record**: the operator picks something
 already on their screen, on a page whose own guard already checked `bookings:view` or

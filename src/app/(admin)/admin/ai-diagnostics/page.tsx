@@ -222,9 +222,10 @@ export default async function DiagnosticsPage() {
           member or payment already in front of you.
         </p>
         <p className="mt-2 text-sm text-muted-foreground">
-          On the bookings, waitlist and payments lists, the stethoscope beside a
-          row starts a question about that booking or payment. Every answer shows
-          where its evidence came from and when it was read.
+          On the bookings, booking requests, waitlist and payments lists, the
+          stethoscope beside a row starts a question about that booking or
+          payment. Every answer shows where its evidence came from and when it
+          was read.
         </p>
       </section>
     </div>

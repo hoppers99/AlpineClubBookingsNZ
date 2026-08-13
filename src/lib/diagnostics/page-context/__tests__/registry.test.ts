@@ -252,12 +252,25 @@ describe("every registry pathname is a page an operator can stand on (#2812)", (
         `${row.key} names ${row.pathname}, but ${pagePath} does not exist — the row can never match a live page`,
       ).toBe(true);
 
-      const source = fs.readFileSync(pagePath, "utf8");
-      const rendersJsx = /return\s*[(<]/.test(source);
-      const redirects = /\bredirect\(/.test(source);
+      // FAIL-CLOSED: every registered page must visibly render JSX. The first
+      // cut keyed on `redirect(` instead — "shim = calls redirect and never
+      // returns JSX" — and both review lenses broke it the same way: a shim
+      // using `permanentRedirect(` (capital R, never matched), `notFound()`, or
+      // a bare `return null` sailed through, and a helper function's `return (`
+      // anywhere in the file satisfied the JSX half. Comments are stripped and
+      // the requirement is a return whose expression OPENS AS JSX, which every
+      // current registry page satisfies; a legitimate page that renders through
+      // a helper call would fail here loudly and be adjudicated on purpose,
+      // which is the posture every census in this repo takes.
+      const source = fs
+        .readFileSync(pagePath, "utf8")
+        .replace(/\/\*[\s\S]*?\*\//g, "")
+        .replace(/^[ \t]*\/\/.*$/gm, "")
+        .replace(/\{\/\*[\s\S]*?\*\/\}/g, "");
+      const rendersJsx = /return\s*\(?\s*</.test(source);
       expect(
-        rendersJsx || !redirects,
-        `${row.key} names ${row.pathname}, whose page.tsx calls redirect() and never returns JSX — a redirect-only shim no operator is ever on (#2812's bug, generalised)`,
+        rendersJsx,
+        `${row.key} names ${row.pathname}, whose page.tsx never returns JSX — a redirect/notFound shim or null-only page no operator is ever on (#2812's bug, generalised)`,
       ).toBe(true);
     }
   });

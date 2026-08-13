@@ -31,8 +31,9 @@ which points at the page.
 
 1. An admin opens any admin screen. If their role and the module both allow it, the
    Help bubble carries a third tab, **Diagnostics**, beside Ask and Page guide.
-2. On the **bookings**, **waitlist** and **payments** lists, each row carries a
-   stethoscope. Pressing it makes that row the subject and opens the bubble on
+2. On the **bookings**, **booking requests**, **waitlist** and **payments** lists,
+   each row carries a stethoscope. Pressing it makes that row the subject and opens
+   the bubble on
    Diagnostics. On `/admin/members/[id]` the address already names the record, so no
    control is needed.
 3. They tick either, both or neither consent box, type a question, and send.
@@ -141,8 +142,9 @@ What an operator needs to know about it:
   question is about the screen in front of them. This is deliberate: the server works
   out what KIND of record you mean from the page you are on, so a booking carried onto
   the payments list could only ever ask about a payment that does not exist.
-- `/admin/booking-approvals` has no stethoscope, and that is a known gap rather than
-  an oversight — see #2812.
+- The approvals queue (a tab of `/admin/booking-requests`) carries the stethoscope
+  too — #2812 closed what used to be a documented gap here, retargeting its dead
+  registry row (which named a redirect-only address) at the real page.
 
 ## Accessibility
 
