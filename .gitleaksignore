@@ -1,10 +1,64 @@
-7922b5219515e863049bf2305f6055e6296ec854:src/lib/__tests__/member-credit.test.ts:generic-api-key:62
-7922b5219515e863049bf2305f6055e6296ec854:src/lib/__tests__/member-credit.test.ts:generic-api-key:272
-7922b5219515e863049bf2305f6055e6296ec854:src/lib/__tests__/admin-member-credit-routes.test.ts:generic-api-key:97
-7922b5219515e863049bf2305f6055e6296ec854:src/lib/__tests__/member-credit.test.ts:generic-api-key:653
-7922b5219515e863049bf2305f6055e6296ec854:src/lib/__tests__/member-credit.test.ts:generic-api-key:896
-7922b5219515e863049bf2305f6055e6296ec854:src/lib/__tests__/member-credit.test.ts:generic-api-key:901
-7922b5219515e863049bf2305f6055e6296ec854:src/lib/__tests__/member-credit.test.ts:generic-api-key:906
-1ec776ee3aa6db1e6196f75d262c09a73546da43:.github/workflows/ci.yml:generic-api-key:33
-81c6a66125a3ab51eba00f08b0c4246806925933:src/lib/__tests__/phase4-contact-sync-and-import.test.ts:generic-api-key:4
-321ac3277e02ed410b2d9a1cceb56f0cb507cede:src/lib/__tests__/xero.test.ts:generic-api-key:18
+# gitleaks fingerprints: `<commit>:<file>:<rule-id>:<line>`.
+#
+# A fingerprint is the narrowest suppression gitleaks offers — it names one
+# finding in one commit — so this is where a one-off historical false positive
+# goes. A recurring SHAPE (a placeholder value, a test-mode provider key) gets a
+# content-scoped allowlist in `.gitleaks.toml` instead, so the next test that
+# uses the same fixture does not turn the required check red.
+#
+# To add one: run the scan the `Secret scan (gitleaks)` job runs, take the
+# `Fingerprint` field from the JSON report, and paste it here with a comment
+# saying what the value is and why it is not a secret. `docs/SECURITY.md` →
+# "Secret scanning" has the full command.
+#
+# WHEN YOU WRITE THAT COMMENT, DESCRIBE THE VALUE — NEVER PASTE IT.
+# gitleaks scans this file like any other, so a comment that reproduces the
+# suppressed value in its original `NAME=value` or `key: "value"` shape becomes a
+# NEW finding, in a new commit, which this file then has to suppress as well. The
+# first draft of these annotations did exactly that and added four findings to a
+# branch whose whole purpose was to make the scan blocking; the branch was
+# rewritten before it was pushed rather than pinning the self-inflicted four.
+#
+# EVERY ENTRY BELOW WAS RE-VERIFIED FOR #2686 against gitleaks v8.28.0 on the
+# tree at 66448740c. The ten entries this file used to hold were all stale: they
+# named PRE-SQUASH pull-request commits (`7922b5219515…`, `1ec776ee3aa6…`,
+# `81c6a66125a3…`, `321ac3277e02…`), which exist only under `refs/pull/*/head`
+# on GitHub and are reachable from no branch or tag. Neither a normal clone nor
+# `actions/checkout` with `fetch-depth: 0` ever fetches them, so those
+# fingerprints suppressed nothing in any scan that has ever run. Where the same
+# content survived the squash onto `main`, it is re-pinned below at its real
+# commit — `.github/workflows/ci.yml` is now covered by the repeating-hex
+# allowlist, and the `member-credit` idempotency keys by the UUID allowlist.
+
+# A fixture database password in the measurement harness's own self-test, whose
+# value is a hyphenated English phrase naming the UTF-16 test material it exists
+# to exercise. It is a password to nothing.
+e093c620c15b206e5fe30c56ac96c748ddbcc4de:measurement/phase2/bin/self-test.mjs:generic-api-key:97
+
+# Prose, not a credential. The rule matches the entropy of a sentence listing
+# what the diagnostics tool returns — an auth outcome, then row, byte and timing
+# counts — written as a slash-separated list. Same sentence in the type doc
+# comment and in the ADR that introduced it.
+216ef6b020093ceceff8ed27320b9f8d659bdfa0:src/lib/diagnostics/tools/types.ts:generic-api-key:25
+eb877b5c9c43342c98837b0a3f4e34360f035505:docs/ai-diagnostics/decisions/ADR-001-separate-admin-only-diagnostics-product.md:generic-api-key:97
+
+# The Mirotalk JWT key line in the example env file, which has an EMPTY value;
+# the rule matched across the line break onto the neighbouring expiry setting.
+# There is no secret here at all.
+6ebf05128af424e78720b059cb8bc0ae0ef70529:.env.example:generic-api-key:111
+
+# A signed test JWT built by the mirotalk-token suite so it can assert the token
+# is verified and rejected on tamper. Signed with the suite's own throwaway key.
+07a0af181fce3b8aaa45abc61721ea20aab3c15b:src/lib/__tests__/mirotalk-token.test.ts:jwt:41
+
+# A readable snake_case fixture id used as the idempotency key in the
+# pending-charge confirmation tests. It is not a UUID, so the UUID allowlist in
+# `.gitleaks.toml` does not cover it.
+4c0f27e78e2361ae71e3946366d6c2a80f7b95bb:src/lib/__tests__/admin-confirm-pending-guests-route.test.ts:generic-api-key:118
+4c0f27e78e2361ae71e3946366d6c2a80f7b95bb:src/lib/__tests__/cron-confirm-pending.test.ts:generic-api-key:572
+
+# The fake Stripe PaymentIntent client secret the redaction suites assert gets
+# masked. The string has to be written down for the test to prove the redactor
+# removes it.
+1569701921175c36c00f0c614bc4752be190e1c2:src/lib/__tests__/redact-sensitive-json.test.ts:generic-api-key:157
+1569701921175c36c00f0c614bc4752be190e1c2:src/lib/__tests__/xero-inbound-reconciliation.test.ts:generic-api-key:311

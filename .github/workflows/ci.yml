@@ -53,6 +53,25 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@v7
 
+      # #2686: the repository's own rules in `.semgrep/rules/` carry must-fail
+      # and must-pass fixtures in `.semgrep/tests/`, and this runs them. It costs
+      # seconds and it is the only thing that notices a custom rule which has
+      # quietly stopped matching — a rule that matches nothing still scans clean,
+      # which reads exactly like a rule that found nothing.
+      - name: Test the repository's own Semgrep rules against their fixtures
+        run: |
+          docker run --rm \
+            -v "$PWD:/src:ro" \
+            -w /src \
+            "${SEMGREP_IMAGE}" \
+            semgrep --test --config .semgrep/rules .semgrep/tests --metrics=off
+
+      # The repository's own rules run in the SAME blocking scan as the registry
+      # packs, and the packs stay: `p/nextjs`, `p/typescript`, `p/javascript` and
+      # `p/react` are what cover the generic classes, and `.semgrep/rules` covers
+      # only the two boundaries no registry pack can know about (#2686).
+      # `.semgrep/tests` is excluded because every file in it is a deliberate
+      # violation.
       - name: Run Semgrep static analysis
         run: |
           mkdir -p "$RUNNER_TEMP/semgrep-output"
@@ -62,6 +81,7 @@ jobs:
             -w /src \
             "${SEMGREP_IMAGE}" \
             semgrep scan \
+              --config .semgrep/rules \
               --config p/nextjs \
               --config p/typescript \
               --config p/javascript \
@@ -70,6 +90,7 @@ jobs:
               --metrics=off \
               --exclude node_modules \
               --exclude .next \
+              --exclude .semgrep/tests \
               --sarif-output /out/semgrep-results.sarif
 
       - name: Upload Semgrep SARIF artifact
@@ -90,44 +111,82 @@ jobs:
           sarif_file: ${{ runner.temp }}/semgrep-output/semgrep-results.sarif
           category: semgrep
 
-  gitleaks-full-repo:
+  # #2686: ONE required secret-scanning gate, replacing the two jobs that used to
+  # sit here (`gitleaks-full-repo` and `gitleaks-pr-diff`). Three things were
+  # wrong with that pair and all three mattered once this became a required
+  # check:
+  #
+  # 1. `gitleaks-full-repo` did not scan the full repository. It used
+  #    `gitleaks/gitleaks-action`, which picks its scan range from the EVENT:
+  #    `--log-opts=--no-merges --first-parent <base>^..<head>` on both `push` and
+  #    `pull_request`, and scans everything only on `workflow_dispatch` and
+  #    `schedule`, neither of which this workflow fires. Its measured runtime of
+  #    11–13 seconds was the tell; a real history scan of this repository takes
+  #    about 75 seconds. So the two jobs were scanning the same commits twice —
+  #    and nothing has ever scanned the history.
+  # 2. They ran DIFFERENT gitleaks versions over those same commits: the action
+  #    installs 8.24.3 by default, while the diff job pinned the 8.28.0
+  #    container.
+  # 3. Neither one could be reproduced locally, which is what a blocking gate
+  #    most needs — you cannot fix what you cannot run.
+  #
+  # The pinned container does both scopes as two STEPS of one job. The PR-range
+  # step is step-level conditional, never job-level: a job-level `if` that skips
+  # produces no status, and a required check that produces no status leaves the
+  # branch permanently unmergeable. As steps, the context is produced on every
+  # pull request and every push, whatever the event.
+  secret-scan:
+    name: Secret scan (gitleaks)
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 20
     permissions:
       contents: read
-      pull-requests: read
+    env:
+      # Pinned, and the same binary for both scopes. `deployment-image-contracts`
+      # pins this string too.
+      GITLEAKS_IMAGE: ghcr.io/gitleaks/gitleaks:v8.28.0
     steps:
       - name: Check out repository
         uses: actions/checkout@v7
         with:
+          # Both scopes read history: the range scan needs the base commit, and
+          # the history scan needs all of it.
           fetch-depth: 0
 
-      - name: Scan repository history with gitleaks
-        uses: gitleaks/gitleaks-action@v3
+      # Runs first because it is the precise signal: a finding here was
+      # introduced by THIS pull request, which is a different conversation from
+      # a finding somewhere in five thousand commits of history.
+      #
+      # The two SHAs go through `env:` rather than straight into the script.
+      # `${{ }}` interpolated into a `run:` block is substituted before bash sees
+      # it, so the value becomes part of the program — the GitHub Actions script
+      # injection class that CodeQL's `actions` queries report. These two are
+      # commit SHAs and are not attacker-controlled, but the safe shape costs
+      # nothing and stops the pattern being copied to a field that is.
+      - name: Scan this pull request's own commits
+        if: github.event_name == 'pull_request'
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          GITLEAKS_ENABLE_COMMENTS: "false"
-          GITLEAKS_ENABLE_SUMMARY: "true"
-
-  gitleaks-pr-diff:
-    if: github.event_name == 'pull_request'
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
-    permissions:
-      contents: read
-    steps:
-      - name: Check out repository
-        uses: actions/checkout@v7
-        with:
-          fetch-depth: 0
-
-      - name: Scan pull request commit range with gitleaks
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
           docker run --rm \
             -v "$PWD:/repo:ro" \
-            ghcr.io/gitleaks/gitleaks:v8.28.0 \
+            "${GITLEAKS_IMAGE}" \
             git /repo \
-            --log-opts="${{ github.event.pull_request.base.sha }}..${{ github.event.pull_request.head.sha }}" \
+            --log-opts="${PR_BASE_SHA}..${PR_HEAD_SHA}" \
+            --exit-code=1 \
+            --redact
+
+      # The scan the old job's name promised and never performed. Measured at
+      # ~75s over 5,061 commits / 77 MB at 66448740c, and it is what makes the
+      # fingerprints in `.gitleaksignore` mean anything.
+      - name: Scan the full repository history
+        run: |
+          docker run --rm \
+            -v "$PWD:/repo:ro" \
+            "${GITLEAKS_IMAGE}" \
+            git /repo \
+            --log-opts=--all \
             --exit-code=1 \
             --redact
 
@@ -509,11 +568,25 @@ jobs:
           DATA_MIGRATION_VERIFICATION_DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:55443/data_migration_verification
         run: npx vitest run src/lib/__tests__/data-migration-verification.realdb.test.ts
 
+  # #2686: the CRITICAL half of this job is a REQUIRED status check, so the job
+  # carries an explicit `name:` — the required context is
+  # `Image security gate (Trivy CRITICAL)`, not the job id.
+  #
+  # `needs: verify` was removed here, deliberately. It existed to avoid paying
+  # for a Docker build when the code was already known bad, but it also meant the
+  # image scan could not start until `verify` finished — measured at 16m35s to
+  # 17m49s on `main`, which put the whole job's completion at ~22 minutes and
+  # would have made a REQUIRED image gate the new critical path. Unblocked, the
+  # job finishes about 5m20s after the run starts (4m01s of that is the Docker
+  # build), which is comfortably inside `Playwright E2E` at ~21m, so requiring it
+  # adds nothing to time-to-merge. The price is a Docker build burned on pull
+  # requests whose `verify` was going to fail anyway; the issue's own instruction
+  # is not to weaken a selected control for time, and this recovers the time
+  # instead of weakening anything.
   docker-image-security:
+    name: Image security gate (Trivy CRITICAL)
     runs-on: ubuntu-latest
     timeout-minutes: 45
-    needs:
-      - verify
     permissions:
       contents: read
     env:
@@ -559,7 +632,11 @@ jobs:
           fi
           echo "RELEASE_ID is readable in the image and matches the built commit."
 
-      - name: Fail on CRITICAL image vulnerabilities
+      # REQUIRED GATE. A CRITICAL finding fails this step, fails the job, and
+      # therefore blocks the merge (#2686, owner decision 9 Aug 2026). The step
+      # name says "required" so a reviewer reading the checks list can tell this
+      # apart from the advisory step below without opening the workflow.
+      - name: Trivy CRITICAL gate (REQUIRED — a finding here blocks the merge)
         uses: aquasecurity/trivy-action@v0.36.0
         with:
           image-ref: ${{ env.IMAGE_REF }}
@@ -567,7 +644,11 @@ jobs:
           exit-code: "1"
           severity: CRITICAL
 
-      - name: Warn on HIGH image vulnerabilities
+      # ADVISORY. HIGH findings stay warning-only under the same decision, so
+      # this step keeps `continue-on-error: true` and cannot fail the required
+      # job. Promoting HIGH to blocking is a separate policy change — see
+      # docs/MAINTENANCE.md → "Supply-Chain And Deployment Security Policy".
+      - name: Trivy HIGH report (ADVISORY — never blocks the merge)
         continue-on-error: true
         uses: aquasecurity/trivy-action@v0.36.0
         with:
@@ -592,7 +673,10 @@ jobs:
       # here — the same way migration-drift, its sibling schema gate, already is.
       - data-migration-verification
       - static-analysis
-      - gitleaks-full-repo
+      # #2686: renamed from `gitleaks-full-repo`, which scanned only the pushed
+      # commit range despite its name. `secret-scan` does the range AND the
+      # history.
+      - secret-scan
       - docker-image-security
     permissions:
       contents: read

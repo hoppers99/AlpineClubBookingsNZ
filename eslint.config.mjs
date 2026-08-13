@@ -330,6 +330,10 @@ const eslintConfig = defineConfig([
     "out/**",
     "build/**",
     "next-env.d.ts",
+    // #2686: Semgrep rule fixtures. Deliberately-broken sample code that exists
+    // to be reported by `.semgrep/rules/**`; linting it would report the same
+    // faults a second time, in a tool that cannot express why they are there.
+    ".semgrep/**",
   ]),
 ]);
 

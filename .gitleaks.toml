@@ -1,6 +1,49 @@
 title = "TACBookings Gitleaks config"
 
+# #2686 — this file MUST extend the default rule set.
+#
+# Before #2686 it did not, and that made every gitleaks job in CI vacuous. A
+# gitleaks config without `[extend] useDefault = true` REPLACES the built-in
+# rules rather than adding to them, and this file declares no `[[rules]]` of its
+# own — so the effective rule set was empty and the scan could not fail on
+# anything. Measured on the tree at 66448740c: a file containing an AWS access
+# key id, an AWS secret access key and a `sk_live_` Stripe key scanned clean
+# with this config and reported two findings without it. Never delete the
+# `[extend]` block below; a required check that cannot fail is worse than no
+# check, because it reads as covered.
+
+[extend]
+useDefault = true
+
+# Allowlists are deliberately CONTENT-scoped, never PATH-scoped.
+#
+# A global `[[allowlists]]` entry that carries `paths` suppresses EVERYTHING
+# under those paths in gitleaks 8.28.0, whatever else the entry says, and
+# `matchCondition = "AND"` does not change that — it is silently ignored at this
+# level. Measured: an entry with `paths = ['(^|/)__tests__/']` AND
+# `regexes = ['<uuid shape>']` suppressed a plain AWS access key sitting in a
+# `__tests__/` file. The pre-#2686 version of this file had exactly that shape
+# (`paths = ['^\.env\.example$']` plus a `sk_test_placeholder` regex), so it
+# allowlisted the whole of `.env.example` — every rule, every value — rather
+# than the placeholder its description named. Keep every allowlist here matched
+# on the SECRET, so it can only ever hide the one literal shape it describes.
+#
+# One-off historical findings are pinned in `.gitleaksignore` by fingerprint
+# instead, which is narrower still: it names the commit, the file, the rule and
+# the line.
+
 [[allowlists]]
-description = "Allow documented Stripe test placeholder in the example env file"
-paths = ['''^\.env\.example$''']
-regexes = ['''sk_test_placeholder''']
+description = "The repeating-hex placeholder used for AUTH_SECRET/NEXTAUTH_SECRET/XERO_ENCRYPTION_KEY in the example env files, in CI env blocks, and in the Xero encryption tests. 64 characters of `0123456789abcdef` repeated four times — a value no generator would ever produce."
+regexes = ['''^(?:0123456789abcdef){4}$''']
+
+[[allowlists]]
+description = "Stripe TEST-mode keys (`pk_test_…`, `sk_test_…`). Stripe test keys move no money and are safe to publish by design; live keys (`sk_live_…`, `pk_live_…`, `rk_live_…`) are NOT allowlisted and still fail the gate."
+regexes = ['''^(?:pk|sk)_test_[A-Za-z0-9_]+$''']
+
+[[allowlists]]
+description = "The two canonical fake `live` Stripe keys the redaction/diagnostics suites assert on: they exist to prove the redactor masks a live-looking key, so the scanner must not stop them being written down. Pinned as exact literals, not as a `sk_live_` shape."
+regexes = ['''^sk_live_ABCDEF1234567890$''', '''^sk-live-abcdef123456$''']
+
+[[allowlists]]
+description = "Canonical lowercase UUIDs. `generic-api-key` fires on them purely for entropy, and this codebase uses UUID fixtures heavily for idempotency keys and record ids. No credential this application actually holds is UUID-shaped: Stripe keys are prefixed, AWS keys are prefixed, and AUTH_SECRET/CRON_SECRET/XERO_ENCRYPTION_KEY are hex or base64."
+regexes = ['''^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$''']

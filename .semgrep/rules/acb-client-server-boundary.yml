@@ -1,0 +1,49 @@
+rules:
+  - id: acb-client-server-boundary
+    languages:
+      - typescript
+      - javascript
+    severity: ERROR
+    metadata:
+      category: security
+      confidence: HIGH
+      references:
+        - https://github.com/thatskiff33/AlpineClubBookingsNZ/issues/2686
+    message: >-
+      INV-OPS-013: a `"use client"` module is compiled into the browser bundle,
+      and so is everything it imports at runtime. This file imports a server-only
+      module, which ships database access, session/credential code or Node
+      built-ins to every visitor. Move the work behind an API route or a server
+      component and pass the RESULT to the client component, or — if you only
+      need the shape — make it `import type`, which is erased at compile time and
+      is not matched by this rule. See
+      docs/invariants/operations.md#inv-ops-013.
+    patterns:
+      # The `"use client"` directive must be the module's first statement for
+      # Next.js to honour it, so anchoring on it here is the same condition the
+      # bundler applies.
+      - pattern-inside: |
+          "use client"
+          ...
+      # Every runtime import form in one regex: default, named, namespace, and
+      # bare side-effect (`import "server-only"`). `import type ...` is excluded
+      # by the negative lookahead because a type-only import emits no runtime
+      # code and cannot pull anything into the bundle.
+      - pattern-regex: >-
+          (?m)^\s*import\s+(?!type\s)(?:[^;'"]*?\bfrom\s+)?["'](?P<MOD>[^"']+)["']
+      - metavariable-regex:
+          metavariable: $MOD
+          # `server-only` and `next/headers` fail the Next build already; they
+          # are here so the rule reports the boundary rather than leaving the
+          # author to decode a bundler stack trace. `@/lib/prisma` and
+          # `@/lib/auth` are the ones that DO NOT fail the build: neither imports
+          # `server-only`, so a client component importing either bundles the
+          # Prisma client and the credentials provider into browser JavaScript.
+          # Relative spellings are covered because `src/lib/**` imports its
+          # siblings as `./prisma` / `../prisma` (56 call sites at 66448740c).
+          regex: >-
+            ^(server-only|next/headers|(@/lib|\.{1,2}(/\.\.)*(/lib)?)/(prisma|auth)|(node:)?(fs|fs/promises|child_process|worker_threads|dns|net|tls|cluster))$
+    paths:
+      exclude:
+        # Fixtures for this rule are deliberate violations.
+        - .semgrep/tests/**

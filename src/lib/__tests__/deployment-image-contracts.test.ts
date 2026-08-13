@@ -54,6 +54,120 @@ describe("deployment image contracts", () => {
     expect(workflow).toContain("${{ runner.temp }}/semgrep-output/semgrep-results.sarif");
   });
 
+  // #2686. Each of the three gates below is a REQUIRED protected-branch check,
+  // and each has a specific way of going quiet without going red — which is the
+  // worst failure available to a security gate, because the checks list still
+  // reads green. The assertions pin the exact shape that makes each one real.
+  describe("required security gates (#2686)", () => {
+    it("runs the repository's own Semgrep rules in the blocking gate, without dropping the registry packs", () => {
+      const workflow = readRepoFile(".github/workflows/ci.yml");
+
+      // The custom rules must be IN the blocking scan...
+      expect(workflow).toContain("--config .semgrep/rules");
+      // ...and the four registry packs must still be there beside them. Wiring
+      // custom rules in by REPLACING the packs is the silent-coverage-loss the
+      // issue's review focus names.
+      expect(workflow).toContain("--config p/nextjs");
+      expect(workflow).toContain("--config p/typescript");
+      expect(workflow).toContain("--config p/javascript");
+      expect(workflow).toContain("--config p/react");
+      // The fixtures must run. A custom rule that has stopped matching anything
+      // scans clean, which is indistinguishable from a rule that found nothing.
+      expect(workflow).toContain(
+        "semgrep --test --config .semgrep/rules .semgrep/tests",
+      );
+      // The fixtures are deliberate violations, so the scan must not read them.
+      expect(workflow).toContain("--exclude .semgrep/tests");
+      // `--error` is what turns a finding into a non-zero exit.
+      expect(workflow).toContain("--error");
+    });
+
+    it("keeps the gitleaks gate on one pinned container, covering both the PR range and the full history", () => {
+      const workflow = readRepoFile(".github/workflows/ci.yml");
+
+      expect(workflow).toContain("name: Secret scan (gitleaks)");
+      expect(workflow).toContain("GITLEAKS_IMAGE: ghcr.io/gitleaks/gitleaks:v8.28.0");
+      // Both scopes. `--log-opts=--all` is the history scan the old
+      // `gitleaks-full-repo` job never actually performed: the marketplace
+      // action picks its range from the event and only scans everything on
+      // workflow_dispatch/schedule, neither of which this workflow fires.
+      expect(workflow).toContain("--log-opts=--all");
+      expect(workflow).toContain('--log-opts="${PR_BASE_SHA}..${PR_HEAD_SHA}"');
+      // Non-zero exit on a finding, and no secret echoed into a public log.
+      expect(workflow).toContain("--exit-code=1");
+      expect(workflow).toContain("--redact");
+      // The action is gone: it installed a DIFFERENT gitleaks (8.24.3 by
+      // default) than the pinned container, so the two jobs disagreed about
+      // which tool was enforcing the gate.
+      expect(workflow).not.toContain("gitleaks/gitleaks-action");
+      // The SHAs reach the script through `env:`, not through `${{ }}` spliced
+      // into the shell program.
+      expect(workflow).toContain("PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}");
+      expect(workflow).toContain("PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}");
+    });
+
+    it("never puts the required secret-scan job behind a job-level event condition", () => {
+      const workflow = readRepoFile(".github/workflows/ci.yml");
+      const job = workflow.slice(
+        workflow.indexOf("  secret-scan:"),
+        workflow.indexOf("  verify:"),
+      );
+
+      expect(job.length).toBeGreaterThan(0);
+      // A required check that SKIPS produces no status, and branch protection
+      // waits for a status that will never arrive — the branch becomes
+      // unmergeable. The PR-range scan is therefore conditional at STEP level,
+      // where a skip leaves the job (and so the check context) intact.
+      expect(job).not.toMatch(/^ {4}if:/m);
+      expect(job).toContain("    if: github.event_name == 'pull_request'");
+    });
+
+    it("names the Trivy gate for what it blocks and keeps it off the verify critical path", () => {
+      const workflow = readRepoFile(".github/workflows/ci.yml");
+      const job = workflow.slice(
+        workflow.indexOf("  docker-image-security:"),
+        workflow.indexOf("  publish-ghcr-images:"),
+      );
+
+      expect(job).toContain("name: Image security gate (Trivy CRITICAL)");
+      // CRITICAL blocks...
+      expect(job).toContain(
+        "name: Trivy CRITICAL gate (REQUIRED — a finding here blocks the merge)",
+      );
+      // ...HIGH does not, and must keep its escape hatch or it would start
+      // blocking merges under a policy nobody agreed to.
+      expect(job).toContain(
+        "name: Trivy HIGH report (ADVISORY — never blocks the merge)",
+      );
+      expect(job).toContain("continue-on-error: true");
+      // `needs: verify` here would put a REQUIRED image scan behind a ~17-minute
+      // job, making it the new critical path for every merge.
+      expect(job).not.toMatch(/needs:\s*\n\s*- verify/);
+    });
+
+    it("keeps the gitleaks config extending the default rule set", () => {
+      const config = readRepoFile(".gitleaks.toml");
+
+      // Without this, the config REPLACES the built-in rules with the empty set
+      // this file declares, and every gitleaks job in CI passes unconditionally.
+      // That is exactly what shipped before #2686.
+      expect(config).toContain("[extend]");
+      expect(config).toMatch(/useDefault\s*=\s*true/);
+      // Allowlists stay content-scoped: a global allowlist carrying `paths`
+      // suppresses EVERYTHING under those paths in gitleaks 8.28.0, whatever
+      // else the entry says.
+      expect(config).not.toMatch(/^\s*paths\s*=/m);
+    });
+
+    it("releases only behind the renamed secret-scan gate", () => {
+      const workflow = readRepoFile(".github/workflows/ci.yml");
+      const publish = workflow.slice(workflow.indexOf("  publish-ghcr-images:"));
+
+      expect(publish).toContain("- secret-scan");
+      expect(publish).not.toContain("- gitleaks-full-repo");
+    });
+  });
+
   it("deploys the resolved commit SHA image references from the production script", () => {
     const deployScript = readRepoFile("scripts/run-production-blue-green-deploy.sh");
 

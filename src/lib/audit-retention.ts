@@ -424,6 +424,15 @@ async function ensureAuditArchiveSchema(
   const columnDefinitions = AUDIT_ARCHIVE_COLUMN_NAMES.map(
     (name) => `      ${archiveColumnDefinition(name)}`
   ).join(",\n");
+  // The only interpolation into an `Unsafe` raw statement in non-test `src/`
+  // (#2686). It is a CREATE TABLE column list built entirely from
+  // AUDIT_ARCHIVE_COLUMN_NAMES — a committed const array in
+  // `audit-archive-columns.ts`, mapped through `archiveColumnDefinition`, which
+  // itself only ever returns text from that same manifest. No request value, no
+  // database value and no environment value can reach this string, and Prisma
+  // cannot express CREATE TABLE at all, so there is no parameterised form to
+  // move to. `audit-archive-columns.test.ts` pins the generated DDL.
+  // nosemgrep: acb-unsafe-raw-sql — DDL generated from the committed column manifest; no request-reachable input
   await archiveDb.$executeRawUnsafe(`
     CREATE TABLE IF NOT EXISTS "AuditLogArchive" (
 ${columnDefinitions}

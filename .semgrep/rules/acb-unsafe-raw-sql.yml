@@ -1,0 +1,56 @@
+rules:
+  - id: acb-unsafe-raw-sql
+    languages:
+      - typescript
+      - javascript
+    severity: ERROR
+    metadata:
+      category: security
+      confidence: HIGH
+      references:
+        - https://github.com/thatskiff33/AlpineClubBookingsNZ/issues/2686
+        - https://github.com/thatskiff33/AlpineClubBookingsNZ/issues/2289
+    message: >-
+      INV-OPS-014: `$queryRawUnsafe` / `$executeRawUnsafe` take a STRING, so
+      Prisma sends whatever that string says — there is no parameter binding left
+      to protect you. This call builds its SQL by interpolation or concatenation,
+      which is the shape SQL injection needs. Use `$queryRaw` / `$executeRaw` as
+      a tagged template (``$executeRaw`… ${value} …` ``), where every `${}`
+      becomes a bound parameter, or `Prisma.sql` composition, or `Prisma.raw()`
+      for an identifier you have validated against a fixed allowlist. If the
+      interpolated text is genuinely static — generated from a committed manifest
+      rather than from anything a request can reach — keep the call and put
+      `// nosemgrep: acb-unsafe-raw-sql — <why the value cannot be attacker
+      controlled>` on the line above, so the exemption is reviewed in the diff
+      that adds it. See docs/invariants/operations.md#inv-ops-014.
+    patterns:
+      - pattern-either:
+          - pattern: $DB.$queryRawUnsafe($SQL, ...)
+          - pattern: $DB.$executeRawUnsafe($SQL, ...)
+      - metavariable-pattern:
+          metavariable: $SQL
+          patterns:
+            - pattern-either:
+                # A template literal carrying an interpolation. Constant
+                # propagation has already run, so a template whose `${}` holds a
+                # literal-valued const is folded to a plain string and never
+                # reaches here — which is what keeps static maintenance SQL
+                # writable.
+                - pattern-regex: \$\{
+                # `"SELECT … " + name` and `"…".concat(name)`.
+                - pattern: $A + $B
+                - pattern: $A.concat(...)
+    paths:
+      exclude:
+        # Tests are exempt for the reason `eslint.config.mjs` gives for exempting
+        # them from RAW_SQL_RESTRICTIONS: a test's raw statement runs against a
+        # throwaway database that the test itself created, and its result is
+        # asserted on the spot. The real-Postgres suites build DDL against
+        # per-run schema names, which is exactly the interpolation this rule
+        # bans in production code.
+        - "**/__tests__/**"
+        - "**/*.test.ts"
+        - "**/*.test.tsx"
+        - e2e/**
+        # Fixtures for this rule are deliberate violations.
+        - .semgrep/tests/**
