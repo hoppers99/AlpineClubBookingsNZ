@@ -50,6 +50,18 @@ The page has no settings. What it shows:
 | Operator Queue | One row per signal: domain, description, severity, owner, count, and an **Open** link to the fix screen |
 | Generated timestamp | When the dashboard was last computed (shown in the header) |
 
+### Who sees the named rows
+
+A few signals expand into a short list naming the individual members or bookings
+behind the count — **Members with no reachable email address** lists the members,
+and **Bookings without required adult member cover** names each booking's owner.
+Those named rows are membership-roll detail, so they appear **only if you also
+have Membership view access**. An admin with Stuck States access but not
+Membership sees the same signal, the same count, and the same **Open** link to
+work it — just not the individual names and per-member deep links. This keeps
+the queue useful to support staff (they can see a problem exists and hand it on)
+without widening who can read the membership roll.
+
 ## Troubleshooting
 
 | Symptom | Likely cause | Fix |

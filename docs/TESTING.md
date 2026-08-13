@@ -130,6 +130,24 @@ generalised.
    read like product bugs. A suite that keeps the DEFAULT instant but hard-codes
    fixture dates against it should assert that too — `night-occupancy-parity.test.ts`
    (#2681) pins `getTodayDateOnly()` to `2026-07-01` for that reason.
+
+   The club-zone half of that is a shared helper, so every suite says the same
+   thing and says it before any date assertion runs:
+
+   ```ts
+   import { expectClubTimeZonePremise } from "@/lib/__tests__/helpers/club-time-zone";
+
+   beforeEach(() => {
+     expectClubTimeZonePremise();
+     vi.setSystemTime(divergentInstant);
+   });
+   ```
+
+   Calling it from the `beforeEach` that pins the instant is what makes the
+   explanation arrive first: a wrong `TZ` then fails the hook with one sentence
+   about the environment, instead of failing every test with a bare
+   `expected '2026-06-14' to be '2026-06-15'` that reads like the product bug
+   the suite exists to prove fixed (#2834).
 4. **Do not hand the clock back to the real calendar.** If your suite pins its
    own instant and wants to undo that, `vi.useRealTimers()` in an `afterEach` is
    safe — the root `beforeEach` re-freezes before the next test — but never rely

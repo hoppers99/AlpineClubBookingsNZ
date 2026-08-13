@@ -8,6 +8,12 @@ import logger from "@/lib/logger";
 import { prisma } from "@/lib/prisma";
 import { callXeroApi, getAuthenticatedXeroClient } from "@/lib/xero-api-client";
 import { findOrCreateXeroContact } from "@/lib/xero-contacts";
+import {
+  addDaysDateOnly,
+  formatDateOnly,
+  formatDateOnlyForTimeZone,
+  parseDateOnly,
+} from "@/lib/date-only";
 import { buildXeroInvoiceUrl, stripXeroOrgShortCode } from "@/lib/xero-links";
 import { formatDate } from "@/lib/xero-invoice-helpers";
 import {
@@ -17,18 +23,25 @@ import {
 } from "@/lib/xero-sync";
 import { XERO_OUTBOX_SUBSCRIPTION_INVOICE_TYPE } from "@/lib/xero-operation-outbox-payload";
 
-function addUtcDays(date: Date, days: number) {
-  const result = new Date(date);
-  result.setUTCDate(result.getUTCDate() + days);
-  return result;
-}
-
 function invoiceCents(invoice: Invoice) {
   if (typeof invoice.total === "number") return Math.round(invoice.total * 100);
   return Math.round((invoice.lineItems ?? []).reduce((sum, line) =>
     sum + (line.lineAmount ?? ((line.quantity ?? 1) * (line.unitAmount ?? 0))), 0) * 100);
 }
 
+/**
+ * Read a date back off a Xero invoice as the calendar day Xero holds.
+ *
+ * `formatDate` here is deliberate and must NOT become
+ * `formatDateOnlyForTimeZone` (#2834). This is not a clock read and not a
+ * `DateTime` column: `invoice.date` / `invoice.dueDate` are plain calendar dates
+ * on a document Xero already has, and whatever the SDK deserialised them into —
+ * a `Date` at midnight, an ISO prefix, a `/Date(…)/` string — encodes that day,
+ * so truncation reads it back and zone conversion would shift it. A shift here
+ * changes `invoiceDueIntervalDays`, so `subscriptionInvoiceMatchesSnapshot`
+ * stops matching, so a pre-existing invoice stops being adopted: the charge goes
+ * to `CONFLICT`/`PROVIDER_MISMATCH` and the member is left unbilled.
+ */
 function normalizeXeroDateOnly(value: unknown): string | null {
   if (value instanceof Date && !Number.isNaN(value.getTime())) {
     return formatDate(value);
@@ -302,7 +315,21 @@ export async function createXeroMembershipSubscriptionInvoice(input: {
       invoiceNumber = existing[0].invoiceNumber ?? null;
       adopted = true;
     } else {
-      const issueDate = new Date();
+      // The subscription invoice's issue date decides its GST period and
+      // financial year, so it is the CLUB's calendar day — the UTC day is still
+      // yesterday for roughly the first half of every New Zealand day
+      // (INV-DATE-019, #2834).
+      //
+      // The due date is then `dueDays` CALENDAR days later, stepped with
+      // date-only arithmetic. That also keeps the interval exactly `dueDays`,
+      // which `subscriptionInvoiceMatchesSnapshot` compares when it decides
+      // whether a pre-existing Xero invoice may be adopted against this
+      // immutable charge; adding `dueDays x 24h` to the instant instead would
+      // slip an hour across a daylight-saving transition and could move the day.
+      const issueDate = formatDateOnlyForTimeZone(new Date());
+      const dueDate = formatDateOnly(
+        addDaysDateOnly(parseDateOnly(issueDate), charge.dueDays),
+      );
       const built: Invoice = {
         type: Invoice.TypeEnum.ACCREC,
         contact: { contactID: contactId },
@@ -314,8 +341,8 @@ export async function createXeroMembershipSubscriptionInvoice(input: {
           description: line.description,
           taxType: "OUTPUT2",
         })),
-        date: formatDate(issueDate),
-        dueDate: formatDate(addUtcDays(issueDate, charge.dueDays)),
+        date: issueDate,
+        dueDate,
         reference: charge.invoiceReference,
         status: Invoice.StatusEnum.AUTHORISED,
         lineAmountTypes: LineAmountTypes.Inclusive,

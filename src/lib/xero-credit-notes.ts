@@ -43,6 +43,7 @@ import {
   retryXeroWriteWithContactRepair,
   type FindOrCreateXeroContactOptions,
 } from "./xero-contacts";
+import { formatDateOnlyForTimeZone } from "@/lib/date-only";
 import {
   buildSyntheticAllocationId,
   formatDate,
@@ -258,10 +259,17 @@ export async function createXeroCreditNote(
     refundLineItem.accountCode = accountCode;
   }
 
+  // The credit note's own date decides which GST period and financial year the
+  // refund lands in, so it is the club's calendar day (INV-DATE-019, #2834). The
+  // stay dates in the line description above are `@db.Date` lodge nights and are
+  // correctly left on truncation (INV-DATE-010). Read once, outside the closure,
+  // which runs for the recorded payload and again per contact-repair attempt.
+  const creditNoteDate = formatDateOnlyForTimeZone(new Date());
+
   const buildCreditNote = (resolvedContactId: string): CreditNote => ({
     type: CreditNote.TypeEnum.ACCRECCREDIT,
     contact: { contactID: resolvedContactId },
-    date: formatDate(new Date()),
+    date: creditNoteDate,
     lineAmountTypes: LineAmountTypes.Inclusive,
     lineItems: [refundLineItem],
     reference: `Refund - Booking ${payment.booking.id.slice(0, 8)}`,
@@ -638,10 +646,14 @@ export async function createUnappliedXeroCreditNote(
     creditLineItem.accountCode = accountCode;
   }
 
+  // Club calendar day, for the same reason as the refund note above
+  // (INV-DATE-019, #2834), read once outside the closure.
+  const creditNoteDate = formatDateOnlyForTimeZone(new Date());
+
   const buildCreditNote = (resolvedContactId: string): CreditNote => ({
     type: CreditNote.TypeEnum.ACCRECCREDIT,
     contact: { contactID: resolvedContactId },
-    date: formatDate(new Date()),
+    date: creditNoteDate,
     lineAmountTypes: LineAmountTypes.Inclusive,
     lineItems: [creditLineItem],
     reference: bookingModificationId
@@ -804,6 +816,10 @@ export async function allocateCreditNoteToInvoice(
   }
 ): Promise<void> {
   const { xero, tenantId } = await getAuthenticatedXeroClient();
+  // An allocation carries its own date, which is when the credit is applied to
+  // the invoice in the ledger. Club calendar day (INV-DATE-019, #2834), read
+  // once so a retried provider call sends the same date it first sent.
+  const allocationDate = formatDateOnlyForTimeZone(new Date());
   const idempotencyKey = buildXeroIdempotencyKey(
     "credit-note",
     creditNoteId,
@@ -856,7 +872,7 @@ export async function allocateCreditNoteToInvoice(
               {
                 invoice: { invoiceID: invoiceId },
                 amount: amountCents / 100,
-                date: formatDate(new Date()),
+                date: allocationDate,
               },
             ],
           },

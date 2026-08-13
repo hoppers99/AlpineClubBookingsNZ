@@ -44,6 +44,8 @@ import "server-only";
 
 import { z } from "zod";
 
+import { defuseRoleLabels, foldUntrustedText } from "../../untrusted-text";
+
 /**
  * The number of rows a SEARCH may return. Ten is #2377's recommended default; its
  * absolute ceiling is twenty, and nothing in this pack asks for more — the pack's
@@ -329,24 +331,40 @@ export function stableCodeOrNull(value: unknown): string | null {
 export const UNTRUSTED_TEXT_MAX_CHARS = 64;
 
 /**
- * Project a free-text untrusted value: control characters removed, whitespace
- * collapsed, quotes and angle brackets removed, hard-capped and marked when
+ * Project a free-text untrusted value: folded and role-label defused, quotes and
+ * angle brackets removed, whitespace collapsed, hard-capped and marked when
  * clipped.
+ *
+ * `foldUntrustedText(value, "flatten")` REPLACES the old narrow control class,
+ * which missed the C1 block — U+0085 (NEL) is not matched by JavaScript's `\s`,
+ * so it survived both that class and the `\s+` collapse below and could fake a
+ * new line in the rendered evidence (#2832). The fold maps every C0/DEL/C1
+ * control character and every line terminator to a space, drops every
+ * invisible/format code point, and folds compatibility colon and bracket
+ * spellings — the same primitive the page-context renderer uses after PR #2831,
+ * so this database-derived path is no weaker than that one.
+ *
+ * `defuseRoleLabels` — the ANYWHERE-in-span variant, NOT the line-anchored one —
+ * because the `\s+` collapse renders this value on ONE line inside a `key="…"`
+ * cell: there is no line start for a label to anchor to, so a forged
+ * `assistant:` turn is dangerous wherever it sits, exactly the choice `render.ts`
+ * made. The fold runs BEFORE the bracket strip so a folded `＜` (U+FF1C → `<`) is
+ * still stripped.
  *
  * The quote and angle-bracket strip duplicates what `render.ts` does, and stays
  * anyway: this pack's values also reach the audit `resultHash` and any consumer
- * that reads a result without rendering it, and a control character in a durable
- * hash input is worth removing at the source. Nothing here is source code, so the
- * strip costs no fidelity.
+ * that reads a result without rendering it — neither of which the renderer's own
+ * fold touches — so the defusal has to happen at the projection too, not only at
+ * the render boundary.
  */
 export function untrustedTextOrNull(value: unknown): string | null {
   if (value === null || value === undefined) return null;
-  const cleaned = String(value)
-    // eslint-disable-next-line no-control-regex -- stripping control characters is the point
-    .replace(/[ -]/g, " ")
-    .replace(/["<>]/g, "")
-    .replace(/\s+/g, " ")
-    .trim();
+  const cleaned = defuseRoleLabels(
+    foldUntrustedText(String(value), "flatten")
+      .replace(/["<>]/g, "")
+      .replace(/\s+/g, " ")
+      .trim(),
+  );
   if (cleaned.length === 0) return null;
   if (cleaned.length <= UNTRUSTED_TEXT_MAX_CHARS) return cleaned;
   return `${cleaned.slice(0, UNTRUSTED_TEXT_MAX_CHARS - 1)}…`;

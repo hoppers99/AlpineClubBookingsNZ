@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { Contact } from "xero-node";
 
 const mocks = vi.hoisted(() => ({
@@ -109,6 +109,8 @@ import {
   createXeroMembershipCancellationCreditNote,
   syncXeroMembershipCancellationContact,
 } from "@/lib/membership-cancellation-xero";
+import { frozenTestNow } from "@/lib/__tests__/helpers/clock";
+import { expectClubTimeZonePremise } from "@/lib/__tests__/helpers/club-time-zone";
 
 function xeroClient() {
   return {
@@ -253,6 +255,112 @@ describe("membership cancellation Xero operations", () => {
         ]),
       }),
     );
+  });
+
+  // #2834: this file used to date both documents by truncating the clock to its
+  // UTC day, through a private `formatDate` clone of its own — which no search
+  // for callers of the shared `xero-invoice-helpers` wrapper would have found.
+  // For roughly the first half of every New Zealand day the UTC day is still
+  // yesterday, and a credit note's date decides its GST period and, at 1 April,
+  // its financial year. Both instants below are chosen so a wrong zone fails
+  // them: 00:00 NZST, which any zone shallower than UTC+12 gets wrong, and 00:30
+  // NZDT, which a fixed +12 zone with no daylight saving gets wrong.
+  describe.each([
+    {
+      label: "NZST (UTC+12), the first instant of a club day",
+      instant: new Date("2026-06-14T12:00:00.000Z"),
+      utcDay: "2026-06-14",
+      clubDay: "2026-06-15",
+    },
+    {
+      label: "NZDT (UTC+13), 00:30 on a club day",
+      instant: new Date("2026-01-14T11:30:00.000Z"),
+      utcDay: "2026-01-14",
+      clubDay: "2026-01-15",
+    },
+  ])("the cancellation credit note and its allocation — $label", ({
+    instant,
+    utcDay,
+    clubDay,
+  }) => {
+    beforeEach(() => {
+      // Say what actually happened before any date assertion can turn an
+      // environment problem into what looks like the product bug.
+      expectClubTimeZonePremise();
+      // A fixture that drifted out of the divergence window would pass vacuously.
+      expect(instant.toISOString().slice(0, 10)).toBe(utcDay);
+      // The root freeze pins midday NZ, where both calendars agree — the one
+      // window this defect does not live in.
+      vi.setSystemTime(instant);
+    });
+
+    afterEach(() => {
+      // Hand the clock back so the root `beforeEach` re-freezes the DEFAULT
+      // instant for every test declared after this block: `ensureFrozenTestClock()`
+      // returns early whenever anything is already mocking `Date`, so it never
+      // overwrites — nor restores — a deliberate pin (docs/TESTING.md rule 4).
+      vi.useRealTimers();
+    });
+
+    it("are both dated on the club's calendar day", async () => {
+      mocks.memberSubscriptionFindUnique.mockResolvedValue({
+        id: "sub_1",
+        memberId: "member_1",
+        seasonYear: 2026,
+        status: "UNPAID",
+        xeroInvoiceId: "inv_sub_1",
+        member: {
+          id: "member_1",
+          firstName: "Alice",
+          lastName: "Smith",
+          xeroContactId: "contact_1",
+        },
+      });
+      mocks.getInvoice.mockResolvedValue({
+        body: {
+          invoices: [
+            {
+              invoiceID: "inv_sub_1",
+              invoiceNumber: "INV-1",
+              amountDue: 123.45,
+              contact: { contactID: "contact_1" },
+            },
+          ],
+        },
+      });
+      mocks.createCreditNotes.mockResolvedValue({
+        body: { creditNotes: [{ creditNoteID: "cn_1", creditNoteNumber: "CN-1" }] },
+      });
+      mocks.createCreditNoteAllocation.mockResolvedValue({
+        body: { allocations: [{ amount: 123.45 }] },
+      });
+
+      await expect(
+        createXeroMembershipCancellationCreditNote({
+          subscriptionId: "sub_1",
+          requestId: "request_1",
+          participantId: "participant_1",
+          syncOperationId: "op_1",
+        }),
+      ).resolves.toBe("cn_1");
+
+      const creditNote = mocks.createCreditNotes.mock.calls[0][1].creditNotes[0];
+      expect(creditNote.date).toBe(clubDay);
+      expect(creditNote.date).not.toBe(utcDay);
+
+      const [, , allocationBody] = mocks.createCreditNoteAllocation.mock.calls[0];
+      expect(allocationBody.allocations[0].date).toBe(clubDay);
+      expect(allocationBody.allocations[0].date).not.toBe(utcDay);
+    });
+  });
+
+  // The restore proof for the block above. Declared after it, so it runs after
+  // it, and it fails the moment that `afterEach` stops handing the clock back —
+  // which is all that keeps a scoped pin from silently re-dating every test
+  // below to 14 January 2026. `frozenTestNow()` rather than the literal so the
+  // rollover canary's `TEST_CLOCK_ISO` / `TEST_CLOCK_OFFSET_DAYS` runs agree.
+  it("hands the default frozen clock back to every test declared after the pinned block", () => {
+    expect(new Date().toISOString()).toBe(frozenTestNow().toISOString());
   });
 
   it("alerts admins instead of silently skipping when a paid subscription is cancelled", async () => {

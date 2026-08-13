@@ -100,6 +100,25 @@ Imported from its own module rather than the barrel above, like `clock.ts`: it
 pulls in `@testing-library/react`, which has no business being loaded by the
 node-environment suites that use the barrel for factories and Prisma mocks.
 
+## Club time zone premise
+
+```ts
+import { expectClubTimeZonePremise } from "@/lib/__tests__/helpers/club-time-zone";
+
+beforeEach(() => {
+  expectClubTimeZonePremise();
+  vi.setSystemTime(instantWhoseUtcDayIsYesterday);
+});
+```
+
+For a suite whose subject is "the club's calendar day is not the UTC day".
+`APP_TIME_ZONE` follows `process.env.TZ`, so a runner with `TZ=UTC` moves the
+club's zone too and every date assertion in such a suite goes red reading like
+the product bug it proves fixed. Call it from the `beforeEach` that pins the
+divergent instant, so the environment failure arrives before any date assertion.
+See [`../../../../docs/TESTING.md`](../../../../docs/TESTING.md) rules 3 and 6.
+Import it directly rather than through the barrel, like `clock.ts`.
+
 ## Diagnostics statement column reads
 
 ```ts

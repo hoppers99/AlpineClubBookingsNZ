@@ -1,4 +1,4 @@
-import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => {
   const tx = {
@@ -212,6 +212,8 @@ import {
   resetXeroRateLimitStateForTests,
   updateXeroBookingInvoiceForBooking,
 } from "@/lib/xero";
+import { frozenTestNow } from "@/lib/__tests__/helpers/clock";
+import { expectClubTimeZonePremise } from "@/lib/__tests__/helpers/club-time-zone";
 
 // encryptToken is async (#2079); precompute the fixture ciphertexts once so the
 // synchronous mock-setup blocks below need no await. The stubbed token key
@@ -891,6 +893,114 @@ describe("createXeroInvoiceForBooking", () => {
       undefined,
       "booking:booking_1:invoice-update:inv_1:2026-08-03:2026-08-05:v1"
     );
+  });
+
+  // The Stripe payment recorded against a freshly raised invoice is
+  // bank-reconciliation input, and its date decides which GST period the cash
+  // falls in. It read the clock's UTC day, which is still yesterday for roughly
+  // the first half of every New Zealand day (#2834, INV-DATE-019). The instants
+  // below are chosen so a wrong zone fails them: the first is 00:00 NZST, which
+  // any zone shallower than UTC+12 gets wrong, and the second is 00:30 NZDT,
+  // which a fixed +12 zone with no daylight saving gets wrong.
+  describe.each([
+    {
+      label: "NZST (UTC+12), the first instant of a club day",
+      instant: new Date("2026-06-14T12:00:00.000Z"),
+      utcDay: "2026-06-14",
+      clubDay: "2026-06-15",
+    },
+    {
+      label: "NZDT (UTC+13), 00:30 on a club day",
+      instant: new Date("2026-01-14T11:30:00.000Z"),
+      utcDay: "2026-01-14",
+      clubDay: "2026-01-15",
+    },
+  ])("the recorded Stripe payment date — $label", ({ instant, utcDay, clubDay }) => {
+    beforeEach(() => {
+      // Say what actually happened before any date assertion can turn an
+      // environment problem into what looks like the product bug.
+      expectClubTimeZonePremise();
+      // A fixture that drifted out of the divergence window would pass vacuously.
+      expect(instant.toISOString().slice(0, 10)).toBe(utcDay);
+      // The root freeze pins midday NZ, where the two calendars agree — the one
+      // window this defect does not live in. Pin the divergent instant here.
+      vi.setSystemTime(instant);
+    });
+
+    afterEach(() => {
+      // Hand the clock back so the root `beforeEach` re-freezes the DEFAULT
+      // instant for every test declared after this block. Without this the pin
+      // leaks: `ensureFrozenTestClock()` returns early whenever anything is
+      // already mocking `Date`, so it would never overwrite — nor restore — a
+      // deliberate pin, and the rest of this file would silently run six months
+      // earlier than 1 July 2026 (docs/TESTING.md rule 4).
+      vi.useRealTimers();
+    });
+
+    it("is the club's calendar day, not the UTC one", async () => {
+      mocks.prisma.booking.findUnique.mockResolvedValue({
+        id: "booking_1",
+        memberId: "mem_1",
+        member: { id: "mem_1" },
+        checkIn: "2026-07-31T00:00:00.000Z",
+        checkOut: "2026-08-02T00:00:00.000Z",
+        createdAt: "2026-05-15T10:30:00.000Z",
+        discountCents: 0,
+        guests: [
+          {
+            firstName: "Jordan",
+            lastName: "Hartley-Smith",
+            ageTier: "ADULT",
+            isMember: true,
+            priceCents: 10000,
+          },
+        ],
+        payment: {
+          id: "pay_1",
+          status: "SUCCEEDED",
+          amountCents: 10000,
+          refundedAmountCents: 0,
+          creditAppliedCents: 0,
+          stripePaymentIntentId: "pi_1",
+          xeroInvoiceId: null,
+          xeroInvoiceNumber: null,
+          source: "STRIPE",
+        },
+      });
+      mocks.xeroClientInstance.accountingApi.createInvoices.mockResolvedValue({
+        body: {
+          invoices: [
+            {
+              invoiceID: "inv_1",
+              invoiceNumber: "INV-1",
+              total: 100,
+              status: "AUTHORISED",
+            },
+          ],
+        },
+      });
+      mocks.xeroClientInstance.accountingApi.createPayment.mockResolvedValue({
+        body: { paymentID: "xpay_1" },
+      });
+
+      await expect(createXeroInvoiceForBooking("booking_1")).resolves.toBe("inv_1");
+
+      const [, payment] =
+        mocks.xeroClientInstance.accountingApi.createPayment.mock.calls[0];
+      expect(payment.date).toBe(clubDay);
+      expect(payment.date).not.toBe(utcDay);
+    });
+  });
+
+  // The restore proof for the block above. It is declared AFTER it, so it runs
+  // after it, and it fails the moment that `afterEach` stops handing the clock
+  // back — which is the only thing standing between a scoped pin and roughly
+  // 2,300 lines of later tests silently running on 14 January 2026 instead of
+  // 1 July 2026, flipping past and future for every `2026-07-31` fixture in this
+  // file. `frozenTestNow()` rather than the literal so the rollover canary's
+  // `TEST_CLOCK_ISO` / `TEST_CLOCK_OFFSET_DAYS` runs still agree with it.
+  it("hands the default frozen clock back to every test declared after the pinned block", () => {
+    expect(new Date().toISOString()).toBe(frozenTestNow().toISOString());
   });
 
   describe("promo code discount line coding", () => {

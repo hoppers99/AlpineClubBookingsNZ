@@ -51,6 +51,7 @@ import {
   retryXeroWriteWithContactRepair,
   type FindOrCreateXeroContactOptions,
 } from "./xero-contacts";
+import { formatDateOnlyForTimeZone } from "@/lib/date-only";
 import {
   formatDate,
   getBookingInvoiceDueDate,
@@ -689,7 +690,11 @@ export async function createXeroInvoiceForBooking(
         invoice: { invoiceID: createdInvoice.invoiceID },
         account: { code: bankCode },
         amount: invoicePaymentCents / 100,
-        date: formatDate(new Date()),
+        // Bank-reconciliation input, so the club's calendar day rather than the
+        // UTC one (INV-DATE-019, #2834). The invoice's own `date`/`dueDate`
+        // above are derived from `checkIn` and `createdAt` and were settled on
+        // #2697; this payment was the remaining instant in this file.
+        date: formatDateOnlyForTimeZone(new Date()),
         reference: `Stripe ${booking.payment.stripePaymentIntentId ?? "payment"}`,
       };
       const paymentIdempotencyKey = buildXeroIdempotencyKey(
