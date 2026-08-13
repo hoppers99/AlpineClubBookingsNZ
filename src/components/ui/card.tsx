@@ -44,21 +44,16 @@ type CardTitleProps = React.HTMLAttributes<HTMLDivElement> & {
    * Opt in to heading semantics at this exact level, so the title appears in a
    * screen reader's heading list and `getByRole("heading", …)` can find it.
    *
-   * Omit it and `CardTitle` renders exactly what it has always rendered: a
-   * plain `<div>` with no `role`, no `aria-level`, and the same classes. That
-   * default is pinned byte-for-byte by
-   * `src/components/ui/__tests__/card-title-heading.test.tsx`.
+   * Omit it and `CardTitle` renders exactly what it always has: a plain `<div>`
+   * with no `role`, no `aria-level`, and the same classes. That default is
+   * pinned by `__tests__/card-title-heading.test.tsx`.
    *
-   * This is the ARIA form (`role="heading" aria-level={n}`) rather than a
-   * native `<h2>` on purpose: `.app-theme-scope :is(h1, h2, h3, h4)` in
-   * `src/app/globals.css` puts real heading tags on `--font-heading`, and that
-   * rule is unlayered, so a native heading inside a card would restyle the
-   * title. A `<div>` carrying the role is identical to look at and identical
-   * to assistive technology. See `docs/STAGING_ACCESSIBILITY.md` →
-   * "#2796 Card Heading Semantics".
-   *
-   * Pick the level from the page's real outline: find the page `<h1>`, do not
-   * skip a level, and go one deeper for a card nested inside another card.
+   * **There is deliberately no default level, and how to choose one is not
+   * repeated here.** The convention — why this is ARIA rather than a native
+   * `<h2>`, how to pick the level from the page's outline, and why a global
+   * default is the owner's decision rather than a developer's — lives in ONE
+   * place: `docs/ARCHITECTURE.md` → "Card titles and heading semantics (#2796)".
+   * Restating it beside the code is how the two drift apart.
    */
   headingLevel?: CardTitleHeadingLevel
 }

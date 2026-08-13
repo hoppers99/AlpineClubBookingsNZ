@@ -1939,7 +1939,7 @@ export default async function BookingDetailPage({
                 real heading tags onto --font-heading, which would make this one
                 card title look unlike every other card title on the page. Level
                 2 sits directly under the page's single <h1> "Booking Details". */}
-            <CardTitle role="heading" aria-level={2}>
+            <CardTitle headingLevel={2}>
               Complete Booking
             </CardTitle>
           </CardHeader>
@@ -2120,7 +2120,7 @@ export default async function BookingDetailPage({
                 pays through, and the two are mutually exclusive (DRAFT is not a
                 payment-owed status), so only one level-2 heading of this kind
                 is ever on the page. */}
-            <CardTitle role="heading" aria-level={2}>
+            <CardTitle headingLevel={2}>
               Complete Payment
             </CardTitle>
           </CardHeader>
