@@ -209,10 +209,29 @@ Wired so far, each publishing only what its own row allowlists:
 
 | page | what diverges from the address |
 | --- | --- |
-| `/admin/bookings` | the query schema's `safeParse` is total, so one malformed value drops **every** filter to defaults while the URL still shows them; the applied date window is whichever of the legacy aliases, the named `checkIn*`/`checkOut*` bounds, `?month=` or `?upcoming=` won, and `?upcoming=` also pins a status set that is nowhere in the address; the consent *attention* queue replaces the table with an exceptions list no booking filter touches |
+| `/admin/bookings` | the query schema's `safeParse` is total, so one malformed value drops **every** filter to defaults while the URL still shows them; each applied date bound is whichever of the legacy aliases, the named `checkIn*`/`checkOut*` bounds, `?month=` or `?upcoming=` won, published under the column it bounded (below), and `?upcoming=` also pins a status set that is nowhere in the address; the consent *attention* queue replaces the table with an exceptions list no booking filter touches |
 | `/admin/payments` | the activity window defaults to the last three club-timezone months in **React state**, so it is applied before the address names it and the page's own `router.replace` sync effect only writes it afterwards; the address also carries sort, pagination and leftover keys the query did not apply, and an out-of-vocabulary value there (`?status=succeeded`) 400s the whole request while the previous rows stay on screen |
 | `/admin/waitlist` | the `from`/`to` inputs are a draft until *Apply* writes them to the URL, and a malformed window is refused by the API with a 400, so the rows are then not a filtered list at all |
 | `/admin/members` | `q` is the **debounced** search, 300 ms behind the box; the draft has filtered nothing. `ageTier` is applied only when it is a real tier — the service ignores anything else silently, with no 400 |
+
+**A filter key must mean one thing, so a date key names its column.** The bookings row
+allowlists `checkInFrom`, `checkInTo`, `checkOutFrom` and `checkOutTo`, and deliberately
+**not** the legacy `from`/`to` pair the page still accepts in its URL. `buildBookingWhere`
+is asymmetric about that pair — legacy `from` feeds `checkIn.gte` while legacy `to` feeds
+`checkOut.lte` — and the page has four bounds to describe, so publishing under two keys
+meant `?month=2026-08` reported a check-**in** upper bound under the key that this page's
+own source defines as a check-**out** bound. A model reading that source excerpt then
+names the wrong bookings for "why isn't this booking showing?" (evidence review of
+PR #2831, 14 Aug 2026). A page that cannot describe a bound honestly withholds it and
+lets the header's partial-list caveat stand.
+
+**An over-long value is dropped, not published and not truncated.** The ask route drops a
+filter value over `filterValueMaxChars`, so publishing one tells the model nothing about a
+filter that is genuinely narrowing the list — worse than the caveat it would otherwise
+fall to. Each publisher therefore length-checks against the same bound it is publishing
+into: the bookings list because `lodgeId` is bounded only to non-empty by its query schema,
+and `/admin/payments` because `search` over 100 characters 400s the whole request while the
+previous rows stay on screen.
 
 **A failed load publishes its error code, not `{}`.** A page that could not load has no
 list to be filtered, and `{}` asserts "I applied no filters" — which sends a model

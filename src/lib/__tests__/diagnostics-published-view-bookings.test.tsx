@@ -144,8 +144,12 @@ describe("the bookings list publishes its APPLIED filters (#2816)", () => {
       // whether a status arrives in the token field or in the status filter.
       status: "confirmed",
       filters: {
-        from: "2026-08-01",
-        to: "2026-08-31",
+        // EACH BOUND UNDER THE COLUMN IT NARROWED. The legacy pair is asymmetric
+        // in `buildBookingWhere` — `from` feeds `checkIn.gte` and `to` feeds
+        // `checkOut.lte` — so publishing both under `from`/`to` told the model a
+        // check-in bound was a check-out one (evidence review, 14 Aug 2026).
+        checkInFrom: "2026-08-01",
+        checkOutTo: "2026-08-31",
         // Post-trim, because the trim is what the query used.
         search: "ngata",
         lodgeId: "lodge-1",
@@ -153,6 +157,52 @@ describe("the bookings list publishes its APPLIED filters (#2816)", () => {
       // `page` is pagination: not in the row's allowlist, and it says nothing
       // about why the page shows what it shows.
     });
+  });
+
+  it("publishes each date bound under the column `buildBookingWhere` applied it to", async () => {
+    // THE ASYMMETRY, pinned end to end. All four bounds in one URL, and the
+    // clause the page actually queried with, read back from the mock: whatever
+    // key a bound is published under has to be the column it appears on here.
+    const view = await publishedViewFor({
+      from: "2026-08-01",
+      to: "2026-08-31",
+      checkOutFrom: "2026-08-10",
+    });
+    expect(view).toEqual({
+      filters: {
+        checkInFrom: "2026-08-01",
+        checkOutFrom: "2026-08-10",
+        checkOutTo: "2026-08-31",
+      },
+    });
+    const call = vi.mocked(prisma.booking.findMany).mock
+      .calls[0][0] as unknown as {
+      where: {
+        checkIn?: { gte?: Date; lte?: Date };
+        checkOut?: { gte?: Date; lte?: Date };
+      };
+    };
+    // Legacy `from` is a check-IN lower bound; legacy `to` is a check-OUT upper
+    // one. The published keys say exactly that.
+    expect(call.where.checkIn?.gte).toBeDefined();
+    expect(call.where.checkIn?.lte).toBeUndefined();
+    expect(call.where.checkOut?.gte).toBeDefined();
+    expect(call.where.checkOut?.lte).toBeDefined();
+  });
+
+  it("never publishes an over-long value the ask route would drop anyway", async () => {
+    // `adminBookingsQuerySchema` bounds `search` to 100 characters and fails the
+    // whole parse above that, but it bounds `lodgeId` only to non-empty — so this
+    // is applied, narrows the list to a lodge that does not exist, and used to be
+    // published for a route that drops it. Being told nothing about a filter that
+    // IS narrowing is worse than being told nothing at all (review, 14 Aug 2026).
+    expect(
+      await publishedViewFor({ lodgeId: "x".repeat(200), status: "CONFIRMED" }),
+    ).toEqual({ status: "confirmed" });
+    // And it really was applied to the query.
+    const call = vi.mocked(prisma.booking.findMany).mock
+      .calls[0][0] as unknown as { where: Record<string, unknown> };
+    expect(JSON.stringify(call.where)).toContain("x".repeat(200));
   });
 
   it("publishes `PAYMENT_PENDING` in the registry's spelling, not the enum's", async () => {
@@ -200,7 +250,9 @@ describe("the bookings list publishes its APPLIED filters (#2816)", () => {
         to: "2026-08-31",
         checkInTo: "2026-09-30",
       }),
-    ).toEqual({ filters: { from: "2026-09-01", to: "2026-09-30" } });
+    ).toEqual({
+      filters: { checkInFrom: "2026-09-01", checkInTo: "2026-09-30" },
+    });
   });
 
   it("publishes a check-out bound, which is the only window two dashboard cards send", async () => {
@@ -213,14 +265,14 @@ describe("the bookings list publishes its APPLIED filters (#2816)", () => {
     );
     expect(await publishedViewFor(params)).toEqual({
       status: "payment-pending",
-      filters: { to: "2026-07-01" },
+      filters: { checkOutTo: "2026-07-01" },
     });
     expect(
       await publishedViewFor({
         additionalOwed: "owed",
         checkOutTo: "2026-07-01",
       }),
-    ).toEqual({ filters: { to: "2026-07-01" } });
+    ).toEqual({ filters: { checkOutTo: "2026-07-01" } });
   });
 
   it("publishes the computed window and pinned statuses of `?upcoming=`", async () => {
@@ -231,8 +283,9 @@ describe("the bookings list publishes its APPLIED filters (#2816)", () => {
     expect(await publishedViewFor({ upcoming: "7" })).toEqual({
       filters: {
         status: "payment-pending,confirmed,paid,pending",
-        from: "2026-07-01",
-        to: "2026-07-08",
+        // `?upcoming=` bounds CHECK-IN at both ends.
+        checkInFrom: "2026-07-01",
+        checkInTo: "2026-07-08",
       },
     });
   });
@@ -243,7 +296,7 @@ describe("the bookings list publishes its APPLIED filters (#2816)", () => {
       await publishedViewFor({ upcoming: "7", status: "CONFIRMED" }),
     ).toEqual({
       status: "confirmed",
-      filters: { from: "2026-07-01", to: "2026-07-08" },
+      filters: { checkInFrom: "2026-07-01", checkInTo: "2026-07-08" },
     });
   });
 
@@ -253,7 +306,7 @@ describe("the bookings list publishes its APPLIED filters (#2816)", () => {
     // guard as "no real status was applied" would report a status set the list is
     // not using.
     expect(await publishedViewFor({ upcoming: "7", status: "all" })).toEqual({
-      filters: { from: "2026-07-01", to: "2026-07-08" },
+      filters: { checkInFrom: "2026-07-01", checkInTo: "2026-07-08" },
     });
     // And the where-builder really did leave the default standing.
     const where = vi.mocked(prisma.booking.findMany).mock
@@ -263,7 +316,7 @@ describe("the bookings list publishes its APPLIED filters (#2816)", () => {
 
   it("publishes the month window `?month=` applied, which is nowhere in the address as dates", async () => {
     expect(await publishedViewFor({ month: "2026-09" })).toEqual({
-      filters: { from: "2026-09-01", to: "2026-09-30" },
+      filters: { checkInFrom: "2026-09-01", checkInTo: "2026-09-30" },
     });
   });
 

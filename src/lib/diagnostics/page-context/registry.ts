@@ -175,7 +175,26 @@ const ROUTES: readonly DiagnosticsPageContextRoute[] = [
     recordKind: "booking",
     statuses: BOOKING_STATUS_TOKENS,
     errorCodes: DIAGNOSTICS_PAGE_ERROR_CODES,
-    filterKeys: ["lodgeId", "status", "from", "to", "search"],
+    // THE FOUR PRECISE DATE KEYS, and deliberately NOT the legacy `from`/`to`
+    // pair this page also accepts (evidence review of PR #2831, 14 Aug 2026).
+    // `buildBookingWhere` is ASYMMETRIC about that pair — legacy `from` feeds
+    // `checkIn.gte` while legacy `to` feeds `checkOut.lte` — and the page has
+    // four date bounds to describe with them. So a bound published under `to`
+    // meant "check-out upper bound" in this page's URL and in its deployed
+    // source, while `?month=2026-08` put a check-IN upper bound there: a model
+    // reading the source excerpt then names the wrong bookings for the flagship
+    // "why isn't this booking showing?" question. A filter key has to have ONE
+    // meaning, so the ambiguous pair is retired from this row's vocabulary and
+    // `appliedBookingViewFilters` publishes under the column it actually bounded.
+    filterKeys: [
+      "lodgeId",
+      "status",
+      "checkInFrom",
+      "checkInTo",
+      "checkOutFrom",
+      "checkOutTo",
+      "search",
+    ],
   }),
   route({
     // #2812: this row used to be `admin.booking-approvals` at
