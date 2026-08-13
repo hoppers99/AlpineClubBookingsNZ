@@ -4,7 +4,12 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-import { formatDateOnly, getTodayDateOnly, parseDateOnly } from "@/lib/date-only";
+import {
+  formatDateOnly,
+  formatMonthOnly,
+  getTodayDateOnly,
+  parseDateOnly,
+} from "@/lib/date-only";
 import { APP_LOCALE, APP_TIME_ZONE } from "@/config/operational";
 import { CalendarDays, ChevronLeft, ChevronRight, Users } from "lucide-react";
 
@@ -117,8 +122,15 @@ type OccupancyCalendarProps = {
 
 const DAY_LABELS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
 
+// Every receiver here is a `getMonthStart` result — `parseDateOnly` of a
+// `yyyy-MM-01` string, so UTC midnight and a date-only value by construction —
+// which is why the canonical month encoder reads back the month it encodes
+// (INV-DATE-010) and why this must NOT become the club-timezone helper: see the
+// "Deliberately UTC, NOT club time" note on `visibleMonth` below. It assembled
+// the key from UTC parts until #2684, which is the truncation in a fourth
+// spelling and invisible to a census that looks for the ISO ones.
 function monthKey(date: Date) {
-  return `${date.getUTCFullYear()}-${String(date.getUTCMonth() + 1).padStart(2, "0")}`;
+  return formatMonthOnly(date);
 }
 
 function getMonthStart(date: Date) {
