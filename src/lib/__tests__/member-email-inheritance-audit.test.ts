@@ -12,8 +12,12 @@
  *    "writes no audit row when the pointer update fails" fails (a success event
  *    is recorded for a change that never committed).
  *  - drop the `pointerChanged` guard on the audit write (audit every update) →
- *    "writes zero rows for a no-op reconciliation" and "audits only the rows the
- *    sweep changed" fail (D1: only actual effective-source changes).
+ *    "adopts an unaccompanied pointer's choice without auditing a same-source
+ *    no-op" fails (D1: a choice-only adoption fills the choice column but the
+ *    effective source does not move, so it must emit no event; without the guard
+ *    it writes a spurious previousSource === newSource row). The two no-op sweep
+ *    tests do NOT pin this — they short-circuit at the earlier `choiceChanged` /
+ *    `continue` before the audit line is ever reached.
  *  - route the event through the module `prisma` instead of the passed `db` →
  *    "couples the event to the caller's own client" fails (atomicity: the event
  *    must ride the pointer's transaction).
@@ -291,6 +295,47 @@ describe("the effective-source change event (#2822)", () => {
     });
 
     expect(updateCount).toBe(0);
+    expect(auditRows).toHaveLength(0);
+  });
+
+  it("adopts an unaccompanied pointer's choice without auditing a same-source no-op", async () => {
+    // A legacy / drain-window row: the pointer already names the correct,
+    // settled source (the direct parent), but the choice column beside it was
+    // never written. Reconciliation ADOPTS the choice (so the update path really
+    // runs and the choice column is filled), yet the EFFECTIVE source does not
+    // move — the pointer stays on the same parent. It must therefore emit NO
+    // audit event: a spurious row here would carry
+    // previousSourceMemberId === newSourceMemberId, the D1-forbidden
+    // same-effective-source no-op.
+    //
+    // This is the ONLY scenario that pins the `pointerChanged` audit guard. Every
+    // other no-op short-circuits at the earlier `choiceChanged` / `continue`
+    // before it ever reaches the audit line, so dropping the guard leaves those
+    // tests green; only a choice-only adoption reaches the guard with the pointer
+    // unchanged.
+    seed([
+      { id: "parent", email: "parent@example.org" },
+      {
+        id: "child",
+        ageTier: "YOUTH",
+        email: PLACEHOLDER,
+        parentMemberId: "parent",
+        inheritEmailChoiceId: null,
+        inheritEmailFromId: "parent",
+      },
+    ]);
+
+    await reconcileEmailInheritanceForMemberChange(db, ["child"], {
+      trigger: "source-member-change",
+      actorMemberId: "m-1",
+    });
+
+    // The update path really ran: the choice column was adopted from the pointer.
+    expect(updateCount).toBe(1);
+    expect(store.get("child")!.inheritEmailChoiceId).toBe("parent");
+    // ...and it left the effective source (the pointer) exactly where it was.
+    expect(store.get("child")!.inheritEmailFromId).toBe("parent");
+    // The effective source never moved, so nothing may be audited.
     expect(auditRows).toHaveLength(0);
   });
 

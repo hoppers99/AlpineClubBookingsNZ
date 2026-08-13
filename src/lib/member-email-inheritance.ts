@@ -546,7 +546,9 @@ async function convergeSubjects(
       // exists as read, and the next run recomputes it from whatever is there.
       logger.warn(
         { err: error, memberId: subject.id },
-        "email inheritance: skipped a member whose row moved during the sweep",
+        "email inheritance: sweep swallowed an error for a member — either its " +
+          "row moved during the sweep, or its audit write failed after the " +
+          "pointer update had already committed",
       );
       continue;
     }
