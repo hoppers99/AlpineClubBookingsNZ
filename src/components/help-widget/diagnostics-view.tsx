@@ -104,7 +104,7 @@ export function DiagnosticsView({
 
   return (
     <div className="flex flex-col gap-3">
-      <div className="flex items-start gap-2 rounded-md bg-muted/50 p-2 text-xs text-muted-foreground">
+      <div className="flex items-start gap-2 rounded-md bg-muted p-2 text-xs text-muted-foreground">
         <Stethoscope aria-hidden="true" className="mt-0.5 h-3.5 w-3.5 shrink-0" />
         <p>
           Ask why something is in the state it is in — this booking, this member,
@@ -119,7 +119,7 @@ export function DiagnosticsView({
         // them that the conversation above began somewhere else, which is the honest
         // version of the issue's "stale page context" state for a bubble that follows
         // the operator around the admin panel.
-        <p className="rounded-md bg-muted/50 p-2 text-xs text-muted-foreground">
+        <p className="rounded-md bg-muted p-2 text-xs text-muted-foreground">
           {moved}
         </p>
       ) : null}
