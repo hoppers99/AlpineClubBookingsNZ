@@ -38,6 +38,13 @@ which points at the page.
 3. They tick either, both or neither consent box, type a question, and send.
 4. The answer arrives with a one-line provenance summary under it, which expands.
 
+What travels with a question is the **pathname**, the operator's chosen **record id**
+(a selector the server re-resolves; the kind always comes from the route the server
+matches), the replayed transcript, and the two ticks. The route also accepts an
+allowlisted **view state** (tab, status, filters) that the registry re-validates per
+page — the UI does not send it yet; wiring the pages' own view state through is
+#2816.
+
 ## The Diagnostics tab
 
 A third tab beside Ask and Page guide, present only for an administrator the layout
@@ -74,31 +81,37 @@ says where the state is produced and what the operator is told to do next.
 
 | # | state | where it comes from | what the operator gets |
 |---|---|---|---|
-| 1 | module disabled | route gate 4 + the bubble's own module-off panel | "AI Diagnostics is switched off", link to Feature modules. The route's 404 is byte-identical to the feature gate's |
-| 2 | configuration incomplete | route gate 8 (dedicated credential) | `not_configured` — someone with support access can add the key |
-| 3 | coarse readiness blocked | route gate 7 | `not_ready` — open the page to see what is needed |
+| 1 | module disabled | route gate 3 + the bubble's own module-off panel | "AI Diagnostics is switched off", link to Feature modules. The route's 404 is byte-identical to the feature gate's |
+| 2 | configuration incomplete | route gate 9 (dedicated credential) | `not_configured` for a caller with `support:view` — someone with support access can add the key. Anyone else gets the coarse `not_ready`, because the stored-credential state is itself support-only detail |
+| 3 | coarse readiness blocked | route gate 8 | `not_ready` — open the page to see what is needed |
 | 4 | detailed readiness permission denied | `readinessForAdmin` | the coarse tier plus "who can resolve this" — never a blocker list with fields blanked |
 | 5 | missing / under-provisioned database evidence | evidence states `not_configured` / `not_ready` | which part is not set up, versus set up and drifted |
 | 6 | budget exhausted / reservation refused | `reserveDiagnosticsBudget` | `budget_exhausted`, and the input disables for the rest of the session |
-| 7 | rate limit | route gate 2, before the body is read | `rate_limited` — wait a minute or two |
+| 7 | rate limit | route gate 2, before the body is read | wait a minute or two. The per-admin limiter's 429 gets the client's own copy of that sentence (a 429 carries no diagnostics body); the global backstop's `rate_limited` is server copy. Never "check your connection" |
 | 8 | tool-loop limit | the loop's round ceiling | `round_limit_reached` — ask about one booking, member or payment at a time |
 | 9 | circuit breaker | route gate 6 (metering) | `metering_unavailable` — it cannot record what it spends, so it will not spend |
 | 10 | tool timeout | evidence state `temporarily_unavailable` | trying again shortly is reasonable |
 | 11 | bounded result / partial evidence | evidence state `result_truncated` | `hasPartialEvidence` on the collapsed line: only part of a longer result |
-| 12 | stale page context | the bubble's moved-screen notice + `hasStaleEvidence` | the conversation began on another screen; answers from here are about this one |
+| 12 | stale page context | the bubble's moved-screen notice (+ `hasStaleEvidence`, which nothing produces yet — #2815) | the LAST question was asked from another screen; answers from here on are about this one |
 | 13 | record not found vs not authorised | evidence states `not_found` and `permission_denied`, kept separate | a denial names the missing AREA; an empty result says nothing matched. Neither is inferred from a source the caller does happen to hold |
 | 14 | people search not enabled | evidence state `search_consent_required` | `hasSearchWithheld` — tick the search box if you want it to look |
 | 15 | record / sensitive consent not granted | evidence state `consent_required` | `hasConsentWithheld` — names both controls and asserts neither cause, because four causes land here |
 | 16 | runtime evidence unavailable, deployed evidence available | evidence state `evidence_unavailable` beside `ok` sources | the answer still lands, with the gap named in the collapsed line |
+| 17 | session expired / access changed mid-conversation | the client, on a 401/403 | "your session no longer allows this — sign in again". Never rendered as a network fault |
+| 18 | transport failure | the client, when no response arrives at all | "check your connection" — the one state where that sentence is true |
 
 Two properties hold across the whole table:
 
-- **Every blocked reason has server-owned copy**, as a total record, so a new reason
-  cannot ship without an operator sentence. The UI renders it verbatim and composes no
-  wording of its own.
+- **Every blocked REASON has server-owned copy**, as a total record, so a new reason
+  cannot ship without an operator sentence, and the UI renders it verbatim. The
+  client owns exactly the sentences no server copy can exist for — the 429 (no
+  diagnostics body), the 401/403, and the transport failure.
 - **None of them invites a reload** (#2804). A reload during database contention adds
-  another queued reader and makes the cause worse. "Try again shortly" is a deliberate,
-  different instruction from "refresh the page".
+  another queued reader and makes the cause worse — and the conversation lives only
+  in the browser, so a reload also costs the whole investigation. "Try again
+  shortly" is a deliberate, different instruction from "refresh the page". A census
+  (`answer/__tests__/contract.test.ts`) walks every entry of the blocked-copy table
+  and the client's own sentences and fails any that invites one.
 
 A census test iterates `DIAGNOSTICS_EVIDENCE_STATES` itself and requires every state to
 be placed deliberately on one side of "does this raise a caveat". It is fail-closed:

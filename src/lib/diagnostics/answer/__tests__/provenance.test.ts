@@ -115,6 +115,33 @@ describe("a clean answer says where it came from (#2378, D10)", () => {
 });
 
 describe("the caveat is never dropped from the collapsed line (#2378, D10)", () => {
+  it("never claims anything was READ when every source was withheld or failed", () => {
+    // The clause separating "we read this" from "we could not read this" is
+    // readSources' ok-filter, and the contract review (13 Aug 2026) found it
+    // unpinned: widening the filter to every source made a denied-only answer open
+    // with "Read from Booking blockers, just now" — claiming evidence was read that
+    // was withheld — while every then-existing assertion still passed, because each
+    // caveat case included an ok source and only checked its caveat phrase.
+    const provenance = buildDiagnosticsProvenance({
+      sources: [
+        source("permission_denied", { label: "Booking blockers", missingAreas: ["finance"] }),
+        source("tool_failed", { label: "Payment state" }),
+      ],
+      summary: summariseDiagnosticCase(
+        caseWith([
+          { state: "permission_denied", missingAreas: ["finance"] },
+          { state: "tool_failed" },
+        ]),
+      ),
+      roundsUsed: 1,
+      now: NOW,
+    });
+    expect(provenance.line).not.toContain("Read from");
+    expect(provenance.line).toContain("No live data could be read for this answer");
+    // The caveats still ride along — nothing-read is not nothing-to-say.
+    expect(provenance.hasCaveat).toBe(true);
+  });
+
   it("names the missing AREA for a permission denial", () => {
     const provenance = buildDiagnosticsProvenance({
       sources: [source("ok"), source("permission_denied", { missingAreas: ["finance"] })],

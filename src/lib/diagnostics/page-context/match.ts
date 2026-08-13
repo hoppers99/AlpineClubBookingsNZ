@@ -16,11 +16,15 @@
  * the rest.
  *
  * IT IS AN EXACT MATCH, DELIBERATELY. `getDiagnosticsPageContextRoute` refuses prefix
- * matching, normalisation and fallbacks because "every one of those is a way for an
- * unlisted page to acquire a context it was never reviewed for". This module keeps that
- * rule: same segment count, literals equal, exactly one dynamic segment filled, or no
- * match at all. An unmatched pathname is not an error — it is a page with no registered
- * context, which the resolver reports honestly.
+ * matching and fallbacks because "every one of those is a way for an unlisted page to
+ * acquire a context it was never reviewed for". This module keeps that rule: same
+ * non-empty segment count, literals equal byte for byte, at most one dynamic segment
+ * filled, or no match at all. The ONE normalisation it performs is collapsing empty
+ * segments — `/admin/bookings/` and `/admin//bookings` are the bookings list, which
+ * selects the same route and the same (absent) record as the canonical spelling, so
+ * no access differs; anything beyond that (case folding, percent-decoding, prefix
+ * fallback) stays refused. An unmatched pathname is not an error — it is a page with
+ * no registered context, which the resolver reports honestly.
  *
  * NOTHING HERE READS A DATABASE OR CHECKS A PERMISSION. It turns an address into a
  * selector; `resolveDiagnosticsPageContext` then re-validates that selector, re-reads
@@ -43,12 +47,12 @@ export interface MatchedDiagnosticsRoute {
   /**
    * The value that filled the route's dynamic segment, when it has one.
    *
-   * A LIST page has none, even though it declares a record kind — so asking from
-   * `/admin/bookings` selects no booking, and the per-record tools correctly refuse.
-   * The operator opens the booking and asks there. That is a deliberate scope
-   * boundary for #2378 rather than an oversight: the alternative is letting the
-   * browser name a record id, which the resolver could safely re-check but which adds
-   * a client-chosen identifier to a request that currently carries none.
+   * A LIST page has none, even though it declares a record kind — the ADDRESS names
+   * no record there. Owner decision D11 later added the other channel: the operator
+   * chooses a row, and the route passes that id as a selector where the matched
+   * route declares a kind for it. This module stays URL-only on purpose — it answers
+   * "what does the address say", and the address's own id always wins over a
+   * registered one precisely because this function reported it.
    */
   recordId?: string;
 }
@@ -92,10 +96,11 @@ export function matchDiagnosticsPageRoute(
           matched = false;
           break;
         }
-        if (actual.length === 0) {
-          matched = false;
-          break;
-        }
+        // No empty-id guard is needed here, and one used to sit here claiming to be:
+        // `segments()` filters zero-length segments, so `actual` can never be `""` —
+        // a pathname missing its id has FEWER segments and fails the count check
+        // above. The "empty dynamic segment never resolves to a record" property is
+        // enforced by that count, and pinned by the match test from the other side.
         recordId = actual;
         continue;
       }

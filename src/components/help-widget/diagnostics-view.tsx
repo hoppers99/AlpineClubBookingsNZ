@@ -39,14 +39,24 @@ import {
  * send, including a failed one.
  */
 
-/** The screen the operator's conversation began on, when it is not this one. */
+/**
+ * The screen the conversation was MOST RECENTLY asked from, when it is not this one.
+ *
+ * The last operator turn, not the first: ask on bookings, move to payments, ask
+ * again, move back to bookings — the first-turn version showed no notice there,
+ * even though the immediately preceding answer was about payments. What the
+ * sentence claims ("answers from here on are about this screen") is a statement
+ * about the previous QUESTION's screen, so that is what it keys on.
+ */
 function movedScreenNotice(
   messages: UseDiagnosticsChat["messages"],
   pathname: string,
 ): string | null {
-  const first = messages.find((message) => message.role === "operator");
-  if (!first?.pathname || first.pathname === pathname) return null;
-  return `This conversation started on ${first.pathname}. Answers from here on are about the screen you are on now.`;
+  const last = [...messages]
+    .reverse()
+    .find((message) => message.role === "operator");
+  if (!last?.pathname || last.pathname === pathname) return null;
+  return `Your last question was asked from ${last.pathname}. Answers from here on are about the screen you are on now.`;
 }
 
 export function DiagnosticsView({

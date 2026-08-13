@@ -22,16 +22,23 @@ import {
  * value is whatever the last server response said, and a save replaces it with the
  * server's own echo rather than with what was typed.
  *
- * IT HAS THREE HONEST REFUSALS, and none of them is silence. #2378 requires that the
- * UI "represent permission denial honestly rather than hiding tools as if the
- * evidence did not exist", so:
+ * EVERY NON-EDITABLE STATE IS AN HONEST REFUSAL, and none of them is silence. #2378
+ * requires that the UI "represent permission denial honestly rather than hiding
+ * tools as if the evidence did not exist". The states are the `BudgetState` union
+ * below — a hand-written count here drifted inside its own PR ("three", with four
+ * shipped; contract review, 13 Aug 2026), so the union is the census and this list
+ * just says what each refusal tells the operator:
  *
  *   - module off  -> the budget cannot be read or changed; link to Feature modules.
  *     (`/api/admin/ai-diagnostics/settings` is hard-gated on the flag and 404s.)
+ *   - module flag UNREADABLE (`null`, #2803) -> could not be established; explicitly
+ *     not the same as off, and explicitly do not go switch the module on.
  *   - no `support:view`  -> say the budget is not shown and who can see it, rather
  *     than render an empty card that reads as "there is no budget".
  *   - `support:view` but not `support:edit` -> the figure, read-only, with the
  *     standard view-only reason.
+ *   - read failed -> the budget could not be read; NEVER a zero, because zero is a
+ *     real setting that hard-offs every paid call.
  *
  * THE CLIENT-SIDE EDIT CHECK IS A COURTESY, NOT THE GATE. `useAdminAreaEditAccess`
  * decides whether the control is enabled so a view-only admin is not invited to type

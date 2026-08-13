@@ -151,9 +151,12 @@ describe("remembering the choice (#2378 D8)", () => {
     });
   });
 
-  it("still reads a bare preset name written by an earlier build", () => {
-    // Upgrade path: the first version of this stored just "tall". Discarding a
-    // stored preference on upgrade is a small rudeness that is easy to avoid.
+  it("reads a bare preset name as that preset", () => {
+    // No earlier build ever wrote one — the key is new in #2378, and this test's
+    // first title claimed an upgrade path that never existed (contract review,
+    // 13 Aug 2026). The behaviour stays: it is forward-compatibility, so a
+    // simplified writer or a hand-edited value degrades to the named preset
+    // rather than to the fallback.
     window.localStorage.setItem(HELP_PANEL_SIZE_STORAGE_KEY, "full");
     expect(readStoredHelpPanelSize()).toEqual({ kind: "preset", size: "full" });
   });

@@ -300,6 +300,18 @@ export function HelpWidget({
       ? HELP_PANEL_SIZE_CLASSES[panelChoice.size]
       : "";
   /**
+   * The corner anchors are DROPPED for the `full` preset rather than fought with.
+   * Its `sm:inset-4` is the shorthand and these are the longhands; Tailwind emits
+   * longhands after shorthands, so with both present the panel stays pinned at
+   * `bottom-20 right-6` and "Full screen" only ever applies its top edge
+   * (correctness review, 13 Aug 2026). Omitting the anchors when the preset owns
+   * all four sides is deterministic where out-emitting the shorthand is not.
+   */
+  const panelAnchorClasses =
+    panelChoice.kind === "preset" && panelChoice.size === "full"
+      ? ""
+      : "sm:inset-x-auto sm:bottom-20 sm:right-6";
+  /**
    * A dragged size is inline, and only above the `sm:` breakpoint — below it the
    * panel is a bottom sheet and a pixel width would fight the layout rather than
    * help it. `sm:` is 640px, checked against the live viewport rather than a media
@@ -466,7 +478,7 @@ export function HelpWidget({
             ...(viewportOffset > 0 ? { bottom: viewportOffset } : {}),
             ...(panelSizeStyle ?? {}),
           }}
-          className={`fixed inset-x-0 bottom-0 z-50 mx-auto flex max-h-[85dvh] w-full flex-col overflow-hidden rounded-t-xl border border-border bg-card text-foreground shadow-lg sm:inset-x-auto sm:bottom-20 sm:right-6 sm:rounded-xl print:hidden ${panelSizeClasses}`}
+          className={`fixed inset-x-0 bottom-0 z-50 mx-auto flex max-h-[85dvh] w-full flex-col overflow-hidden rounded-t-xl border border-border bg-card text-foreground shadow-lg sm:rounded-xl print:hidden ${panelAnchorClasses} ${panelSizeClasses}`}
         >
           {/* THE DRAG HANDLE the owner asked for (#2378 D8).
               The panel is anchored bottom-right, so its TOP-LEFT corner is the one

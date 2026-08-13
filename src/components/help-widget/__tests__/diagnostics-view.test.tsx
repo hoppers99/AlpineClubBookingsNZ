@@ -169,6 +169,44 @@ describe("the consent ticks are per question (#2378, D9)", () => {
     );
   });
 
+  it("tells a THROTTLED operator to wait, never to check their connection", async () => {
+    // The per-admin limiter (15 questions / 10 minutes) is the refusal an operator
+    // working a batch of stuck bookings actually hits, and the first cut rendered
+    // its 429 as the network-failure sentence — wrong guidance that invites the
+    // retry storm the limiter exists to stop (correctness review, 13 Aug 2026).
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue({ ok: false, status: 429, json: async () => ({}) }),
+    );
+    renderWidget();
+    openDiagnostics();
+    fireEvent.change(screen.getByTestId("diagnostics-input"), {
+      target: { value: "why is this pending?" },
+    });
+    fireEvent.click(screen.getByTestId("diagnostics-send"));
+    await waitFor(() =>
+      expect(screen.getByText(/lot of questions in a short time/)).toBeTruthy(),
+    );
+    expect(screen.queryByText(/Check your connection/)).toBeNull();
+  });
+
+  it("says the SESSION changed on a 401/403, never that the network failed", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue({ ok: false, status: 403, json: async () => ({}) }),
+    );
+    renderWidget();
+    openDiagnostics();
+    fireEvent.change(screen.getByTestId("diagnostics-input"), {
+      target: { value: "why is this pending?" },
+    });
+    fireEvent.click(screen.getByTestId("diagnostics-send"));
+    await waitFor(() =>
+      expect(screen.getByText(/session no longer allows this/)).toBeTruthy(),
+    );
+    expect(screen.queryByText(/Check your connection/)).toBeNull();
+  });
+
   it("resets the ticks even when the question was REFUSED", async () => {
     // The worst version of getting this wrong: the operator retries, and a permission
     // they granted for a question that never ran is silently reused for the next one.

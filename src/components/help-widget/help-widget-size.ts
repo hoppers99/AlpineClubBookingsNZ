@@ -185,8 +185,11 @@ export function readStoredHelpPanelSize(): HelpPanelSizeChoice {
   try {
     const raw = window.localStorage.getItem(HELP_PANEL_SIZE_STORAGE_KEY);
     if (!raw) return fallback;
-    // A bare preset name is what earlier builds wrote. Read it rather than
-    // discarding somebody's preference on upgrade.
+    // A bare preset name is accepted alongside the JSON shape — not because any
+    // earlier build wrote one (this key is new in #2378; nothing ever did), but as
+    // deliberate forward-compatibility: it keeps the stored value's simplest
+    // spelling readable, so a future simplification of what gets written — or a
+    // hand-edited value — degrades to the preset instead of to the fallback.
     if (isHelpPanelSize(raw)) return { kind: "preset", size: raw };
     const parsed: unknown = JSON.parse(raw);
     return isHelpPanelSizeChoice(parsed) ? parsed : fallback;
