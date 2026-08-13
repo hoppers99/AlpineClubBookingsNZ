@@ -53,6 +53,16 @@ the full environment and club config contract.
   failure for a test failure.
 - Keep booking dates as New Zealand date-only values unless a feature explicitly
   requires time-of-day semantics.
+- Never hand-write a date-only encoding. `formatDateOnly`, `formatMonthOnly` and
+  `dateOnlyFromIsoString` in `src/lib/date-only.ts` are the only place in `src/`
+  that may write `toISOString().slice(0, 10)` or any of its spellings, and an
+  `eslint` rule refuses the rest (#2684). Pick the helper that matches what the
+  value MEANS: `formatDateOnly` for a `@db.Date` calendar day (INV-DATE-010),
+  `formatDateOnlyForTimeZone` for a real instant such as `createdAt`, whose UTC
+  day is the previous New Zealand day all morning, and
+  `todayDateOnlyForTimeZone` / `getTodayDateOnly` for "today" (INV-DATE-019).
+  Do not wrap an encoder in an exported one-line rename — that is how a whole
+  class of these went unaudited.
 - Keep external payment, accounting, and email calls outside long database
   transactions where possible.
 - Never type a raw-SQL result and read it. `$queryRaw<SomeRow[]>` is an
