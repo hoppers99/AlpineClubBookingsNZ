@@ -141,12 +141,39 @@ export function DiagnosticsView({
   const viewDisclosureId = useId();
   const recordTickId = useId();
   const threadEndRef = useRef<HTMLDivElement | null>(null);
+  const inputRef = useRef<HTMLTextAreaElement | null>(null);
+  const resetButtonRef = useRef<HTMLButtonElement | null>(null);
+  const wasPendingRef = useRef(false);
 
   // Keep the newest turn in view as the conversation grows. `block: "nearest"` so it
   // scrolls the panel's own overflow container and never the page behind it.
   useEffect(() => {
     threadEndRef.current?.scrollIntoView?.({ block: "nearest" });
   }, [chat.messages.length, chat.pending]);
+
+  // KEYBOARD FOCUS IS NOT STRANDED WHEN AN ANSWER ARRIVES (WCAG 2.4.3 / 4.1.3).
+  //
+  // The Ask button self-disables the instant the draft clears on submit, so the
+  // browser drops focus to <body> and a keyboard/screen-reader operator is left
+  // nowhere — mid-conversation, with no way back to the thread except re-tabbing
+  // from the top. So on the settle edge (a question just finished) we put focus on
+  // a control, not on the answer: the question box when it is still usable, or the
+  // "Start again" button when a `budget_exhausted` refusal has disabled the box.
+  //
+  // Deliberately NOT the answer bubble itself. The thread below is a polite live
+  // region that has already announced the arriving answer or refusal; focusing the
+  // bubble would make the screen reader read that same text a second time, which is
+  // the double-announcement this file is careful to avoid.
+  useEffect(() => {
+    const settled = wasPendingRef.current && !chat.pending;
+    wasPendingRef.current = chat.pending;
+    if (!settled) return;
+    if (chat.budgetExhausted) {
+      resetButtonRef.current?.focus();
+    } else {
+      inputRef.current?.focus();
+    }
+  }, [chat.pending, chat.budgetExhausted]);
 
   const stillWorking =
     chat.pending && chat.elapsedMs >= DIAGNOSTICS_STILL_WORKING_AFTER_MS;
@@ -229,27 +256,51 @@ export function DiagnosticsView({
       ) : null}
 
       <div className="flex flex-col gap-3">
-        {chat.messages.map((message) => (
-          <div
-            key={message.id}
-            data-testid={`diagnostics-message-${message.role}`}
-            className={
-              message.role === "operator"
-                ? "self-end rounded-lg bg-primary px-3 py-2 text-sm text-primary-foreground"
-                : "rounded-lg bg-muted px-3 py-2 text-sm text-foreground"
-            }
-          >
-            <p className="whitespace-pre-wrap">{message.text}</p>
-            {message.truncated ? (
-              <p className="mt-1 text-xs text-muted-foreground">
-                That answer was shortened. Ask a follow-up if you need the rest.
-              </p>
-            ) : null}
-            {message.provenance ? (
-              <DiagnosticsProvenance provenance={message.provenance} />
-            ) : null}
-          </div>
-        ))}
+        {/* THE ANSWERED THREAD IS A POLITE LIVE REGION (WCAG 4.1.3 Status Messages).
+            Before this, only the pending status below was live: a screen-reader or
+            keyboard operator submitted, heard "Looking into that…", then silence —
+            the arriving answer, a refusal bubble (including the `budget_exhausted`
+            refusal that then disables the box), and the input-disabled change were
+            all unannounced. `role="log"` is the right shape for a transcript whose
+            order matters and which only grows; its implicit `aria-live="polite"` is
+            stated explicitly for older assistive tech.
+
+            IT IS A SEPARATE REGION FROM THE PENDING STATUS BELOW, and that separation
+            is the whole reason the pending node sits OUTSIDE this element rather than
+            inside it. Two live regions must never read the same content: with the
+            status nested here, "Looking into that…" would be announced by this log's
+            additions AND by the status region. Kept apart, this log announces only
+            messages and the status region announces only progress — never the same
+            words twice. */}
+        <div
+          role="log"
+          aria-live="polite"
+          aria-label="Diagnostics answers"
+          data-testid="diagnostics-thread"
+          className="flex flex-col gap-3"
+        >
+          {chat.messages.map((message) => (
+            <div
+              key={message.id}
+              data-testid={`diagnostics-message-${message.role}`}
+              className={
+                message.role === "operator"
+                  ? "self-end rounded-lg bg-primary px-3 py-2 text-sm text-primary-foreground"
+                  : "rounded-lg bg-muted px-3 py-2 text-sm text-foreground"
+              }
+            >
+              <p className="whitespace-pre-wrap">{message.text}</p>
+              {message.truncated ? (
+                <p className="mt-1 text-xs text-muted-foreground">
+                  That answer was shortened. Ask a follow-up if you need the rest.
+                </p>
+              ) : null}
+              {message.provenance ? (
+                <DiagnosticsProvenance provenance={message.provenance} />
+              ) : null}
+            </div>
+          ))}
+        </div>
 
         {/* THE "STILL WORKING" STATE (#2804, owner decision 12 Aug 2026).
             A diagnostics read may wait ~15 s for a busy database, and the owner
@@ -372,6 +423,7 @@ export function DiagnosticsView({
         </label>
         <textarea
           id="diagnostics-question"
+          ref={inputRef}
           aria-describedby={viewDisclosureId}
           value={draft}
           onChange={(event) => setDraft(event.target.value)}
@@ -385,6 +437,7 @@ export function DiagnosticsView({
         <div className="flex items-center justify-between gap-2">
           <button
             type="button"
+            ref={resetButtonRef}
             onClick={chat.reset}
             disabled={chat.messages.length === 0 || chat.pending}
             className="rounded-md px-2 py-1.5 text-xs text-muted-foreground hover:text-foreground focus:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50"
