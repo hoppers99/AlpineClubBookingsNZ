@@ -8,6 +8,7 @@ import {
   DIAGNOSTICS_WIRE_BOUNDS,
   type DiagnosticsAskRequest,
 } from "@/lib/diagnostics/answer/contract";
+import { DIAGNOSTICS_PAGE_CONTEXT_BOUNDS } from "@/lib/diagnostics/page-context/types";
 import { DIAGNOSTICS_TOOL_CONSENT_COPY } from "@/lib/diagnostics/tools/consent";
 
 import { DiagnosticsProvenance } from "./diagnostics-provenance";
@@ -43,19 +44,21 @@ import {
  */
 
 /**
- * The operator's live view state, read from the URL at ASK time (#2816).
+ * FALLBACK view state, read from the URL at ask time (#2816).
  *
- * These admin lists are server components whose whole filter state lives in the
- * query string — so the address bar IS the publication channel, and no per-page
- * hook is needed. Read inside the submit handler rather than via useSearchParams:
- * an event-time read is always current and adds no prerender/Suspense constraint
- * to the public surfaces this widget also serves.
+ * The primary channel is the page's own PUBLISHED APPLIED state (owner decision
+ * 13 Aug 2026) — post-parse values, defaults included — via
+ * `usePublishDiagnosticsViewState`. This URL read covers only pages that publish
+ * nothing: better than no context, but it is the operator's ADDRESS, not
+ * necessarily what the page applied, which is exactly why publication wins.
  *
- * SENT RAW, FILTERED SERVER-SIDE. The route matches the registry row and keeps
- * only what that row's own allowlists permit (normalising the pages' enum casing
- * to the registry's token vocabulary); everything else — pagination keys, unknown
- * filters, other pages' parameters — is dropped there, where the allowlists live.
- * The client caps count and value length only to bound the payload.
+ * SENT RAW, FILTERED SERVER-SIDE (registry-row allowlists; enum casing
+ * normalised there). Client-side rules mirror the server where silence would
+ * misrepresent: an overlong value is DROPPED, never truncated — a truncated
+ * filter value would tell the model the operator filtered by something they did
+ * not — and on a repeated key the FIRST value wins, matching how every page
+ * reads its own params (`.get()`), because pages given a repeated key either
+ * take the first or reject the lot.
  */
 function viewFromLocationSearch():
   | NonNullable<DiagnosticsAskRequest["view"]>
@@ -63,24 +66,37 @@ function viewFromLocationSearch():
   if (typeof window === "undefined") return undefined;
   const params = new URLSearchParams(window.location.search);
   const view: NonNullable<DiagnosticsAskRequest["view"]> = {};
-  const filters: Record<string, string> = {};
-  let seen = 0;
+  const filters: Record<string, string> = Object.create(null) as Record<
+    string,
+    string
+  >;
+  let kept = 0;
   let hasFilters = false;
   for (const [key, rawValue] of params.entries()) {
-    if (seen >= 16) break;
-    const value = rawValue.trim().slice(0, 120);
-    if (!value || key.length > 32) continue;
-    seen += 1;
-    if (key === "tab") view.tab = value;
-    else if (key === "step") view.step = value;
-    else if (key === "status") view.status = value;
-    else if (key === "errorCode") view.errorCode = value;
-    else {
+    if (kept >= DIAGNOSTICS_PAGE_CONTEXT_BOUNDS.maxFilters * 2) break;
+    const value = rawValue.trim();
+    if (
+      !value ||
+      value.length > DIAGNOSTICS_PAGE_CONTEXT_BOUNDS.filterValueMaxChars ||
+      key.length > DIAGNOSTICS_PAGE_CONTEXT_BOUNDS.filterKeyMaxChars
+    ) {
+      continue;
+    }
+    if (key === "tab") {
+      if (view.tab === undefined) view.tab = value;
+    } else if (key === "step") {
+      if (view.step === undefined) view.step = value;
+    } else if (key === "status") {
+      if (view.status === undefined) view.status = value;
+    } else if (key === "errorCode") {
+      if (view.errorCode === undefined) view.errorCode = value;
+    } else if (!(key in filters)) {
       filters[key] = value;
       hasFilters = true;
+      kept += 1;
     }
   }
-  if (hasFilters) view.filters = filters;
+  if (hasFilters) view.filters = { ...filters };
   return Object.keys(view).length > 0 ? view : undefined;
 }
 
@@ -109,12 +125,15 @@ export function DiagnosticsView({
   pathname,
   moduleEnabled,
   recordId,
+  publishedView,
 }: {
   chat: UseDiagnosticsChat;
   pathname: string;
   moduleEnabled: boolean;
   /** The record the page registered as open, when the address does not name one. */
   recordId?: string;
+  /** The page's PUBLISHED applied view state (#2816). Wins over the URL fallback. */
+  publishedView?: DiagnosticsAskRequest["view"];
 }) {
   const [draft, setDraft] = useState("");
   const searchTickId = useId();
@@ -160,7 +179,9 @@ export function DiagnosticsView({
     const question = draft.trim();
     if (!question) return;
     setDraft("");
-    const view = viewFromLocationSearch();
+    // Published APPLIED state wins; the raw URL is only the fallback for pages
+    // that publish nothing (owner decision, 13 Aug 2026).
+    const view = publishedView ?? viewFromLocationSearch();
     void chat.ask(question, {
       pathname,
       ...(recordId ? { recordId } : {}),
@@ -302,6 +323,19 @@ export function DiagnosticsView({
             </label>
           </div>
         </fieldset>
+
+        {/* THE DISCLOSURE (owner decision, 13 Aug 2026): the operator's current
+            page filters — including a typed search — travel with every question,
+            with no tick gating them. The decision was to always send and SAY SO,
+            so the sentence sits beside the input where the sending happens, not
+            in a doc nobody re-reads. */}
+        <p
+          data-testid="diagnostics-view-disclosure"
+          className="px-1 text-xs text-muted-foreground"
+        >
+          Your current page filters and search travel with the question, so it can
+          reason about what you are looking at.
+        </p>
 
         <label htmlFor="diagnostics-question" className="sr-only">
           Ask diagnostics a question

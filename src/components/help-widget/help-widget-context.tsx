@@ -48,6 +48,23 @@ type Registration = { id: number; extras: HelpWidgetExtras };
  */
 export type DiagnosticsRecordSelection = { id: string; nonce: number };
 
+/**
+ * The filter state a registered admin list ACTUALLY APPLIED (#2816, owner decision
+ * 13 Aug 2026: published applied state, not the raw address bar). Shape matches the
+ * wire contract's `view`; the page publishes post-parse values, defaults included —
+ * the payments activity window that never reaches the URL, the bookings parse that
+ * silently dropped every filter — so the model is told what the page DID, not what
+ * the address claimed. The server still narrows whatever arrives to the registry
+ * row's own allowlists.
+ */
+export type DiagnosticsViewState = {
+  tab?: string;
+  step?: string;
+  status?: string;
+  errorCode?: string;
+  filters?: Record<string, string>;
+};
+
 type HelpWidgetContextValue = {
   /** Merged extras from every live registration (registration order). */
   extras: HelpWidgetExtras;
@@ -63,6 +80,9 @@ type HelpWidgetContextValue = {
   /** Whether this admin may use Diagnostics at all, published by the widget. */
   diagnosticsAvailable: boolean;
   setDiagnosticsAvailable: (available: boolean) => void;
+  /** The current page's published APPLIED view state, or null (#2816). */
+  diagnosticsViewState: DiagnosticsViewState | null;
+  setDiagnosticsViewState: (view: DiagnosticsViewState | null) => void;
 };
 
 const HelpWidgetContext = createContext<HelpWidgetContextValue | null>(null);
@@ -87,6 +107,8 @@ export function HelpWidgetProvider({ children }: { children: ReactNode }) {
   const [diagnosticsRecord, setDiagnosticsRecord] =
     useState<DiagnosticsRecordSelection | null>(null);
   const [diagnosticsAvailable, setDiagnosticsAvailable] = useState(false);
+  const [diagnosticsViewState, setDiagnosticsViewState] =
+    useState<DiagnosticsViewState | null>(null);
   const nextId = useRef(0);
   const nextNonce = useRef(0);
 
@@ -125,6 +147,8 @@ export function HelpWidgetProvider({ children }: { children: ReactNode }) {
       clearDiagnosticsRecord,
       diagnosticsAvailable,
       setDiagnosticsAvailable,
+      diagnosticsViewState,
+      setDiagnosticsViewState,
     }),
     [
       extras,
@@ -135,6 +159,7 @@ export function HelpWidgetProvider({ children }: { children: ReactNode }) {
       selectDiagnosticsRecord,
       clearDiagnosticsRecord,
       diagnosticsAvailable,
+      diagnosticsViewState,
     ],
   );
 
@@ -232,6 +257,39 @@ export function usePublishDiagnosticsAvailable(available: boolean): void {
     publish(available);
     return () => publish(false);
   }, [publish, available]);
+}
+
+/**
+ * Publish the filter state this page ACTUALLY APPLIED, for AI Diagnostics (#2816).
+ *
+ * Call it with post-parse values, defaults included — publishing the raw address
+ * would re-create exactly the divergences the owner decision rejected: a default
+ * window that never reaches the URL, a malformed URL whose filters the page
+ * silently dropped while still displaying them. Clears on unmount. No-op without
+ * a provider, so a page renders fine on surfaces without the widget.
+ *
+ * THE DEP IS THE SERIALISED VALUE, deliberately: pages build the view object in
+ * render, so an object dep would republish every render and loop through the
+ * provider. Serialising means the effect re-fires only when the CONTENT changes.
+ */
+export function usePublishDiagnosticsViewState(
+  view: DiagnosticsViewState | undefined,
+): void {
+  const ctx = useContext(HelpWidgetContext);
+  const publish = ctx?.setDiagnosticsViewState;
+  const serialised = view === undefined ? null : JSON.stringify(view);
+
+  useEffect(() => {
+    if (!publish) return;
+    publish(serialised === null ? null : (JSON.parse(serialised) as DiagnosticsViewState));
+    return () => publish(null);
+  }, [publish, serialised]);
+}
+
+/** Read the current page's published view state, or null. Widget-side consumer. */
+export function useDiagnosticsViewState(): DiagnosticsViewState | null {
+  const ctx = useContext(HelpWidgetContext);
+  return ctx?.diagnosticsViewState ?? null;
 }
 
 /**

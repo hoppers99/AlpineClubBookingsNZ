@@ -19,6 +19,7 @@ import { HelpFreeTextInput } from "./help-free-text-input";
 import { serializePageContext } from "./help-page-context";
 import {
   useDiagnosticsRecord,
+  useDiagnosticsViewState,
   useHelpWidgetState,
   usePublishDiagnosticsAvailable,
 } from "./help-widget-context";
@@ -130,6 +131,7 @@ export function HelpWidget({
   const { extras, hintGroup } = useHelpWidgetState();
   const { record: diagnosticsRecord, clear: clearDiagnosticsRecord } =
     useDiagnosticsRecord();
+  const diagnosticsViewState = useDiagnosticsViewState();
   /**
    * Tell the rest of the admin tree whether a row control should exist at all
    * (#2378 D11). Both halves of the answer live in the `diagnostics` prop: its
@@ -596,6 +598,7 @@ export function HelpWidget({
                 pathname={pathname}
                 moduleEnabled={diagnostics.moduleEnabled}
                 recordId={diagnosticsRecord?.id}
+                publishedView={diagnosticsViewState ?? undefined}
               />
             ) : tab === "ask" ? (
               <div className="flex flex-col gap-4">
