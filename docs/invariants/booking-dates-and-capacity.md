@@ -421,14 +421,23 @@ derivation).
     them is now `formatDateOnlyForTimeZone`. **Most of them were invisible to a
     grep**, because they reached the pattern through that `formatDate` wrapper
     or through a private clone of it in `membership-cancellation-xero.ts` — so
-    census the call graph, not the spelling. One site the guard surfaced is
-    still open, **#2839** (`Member.detailsConfirmedAt` rendered as a UTC day on
-    the profile page); it is the single entry left in
-    `KNOWN_INSTANT_ENCODING_DEFECTS` in the guard test, and the guard's
-    staleness assertion empties that list for you — the moment a site stops
-    encoding an instant, its entry fails as stale. **#2838** (the three
+    census the call graph, not the spelling. **#2839** closed the
+    member-facing one: the "Details last confirmed by X on date" line built from
+    `Member.detailsConfirmedAt`, which reached the pattern through that file's
+    own `toDateInputValue` wrapper. That wrapper stays, and stays correct, for
+    the date-only receivers beside it — with the caveat recorded on it that
+    `Member.dateOfBirth` is only *intended* to be one, and the Xero import
+    parser breaks that intent (**#2859**).
+
+    The list is **not empty**. A review of #2839 found a second site the census
+    had missed: the member-merge comparison screen renders every value through
+    one generic formatter that decides by runtime type, so the instants among
+    those rows show the previous day on the screen an admin reads immediately
+    before an irreversible merge (**#2860**). The guard's staleness assertion
+    empties the list as sites are fixed — the moment one stops encoding an
+    instant, its entry fails as stale rather than lingering. **#2838** (the
     `setHours(0, 0, 0, 0)` "today" comparisons against `@db.Date` lodge nights)
-    is filed separately.
+    is a different mechanism and is filed separately.
   - *A number of days added to a document date is added in CALENDAR days*, with
     `addDaysDateOnly` over the date-only value — never by adding `days x 24h` to
     an instant and then reading the result on the club's calendar. The Xero

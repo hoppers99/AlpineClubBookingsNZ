@@ -11,7 +11,7 @@ import {
   buildParentLinks,
 } from "@/lib/member-parent-links";
 import type { BookingGuestProfileAction } from "@/lib/booking-guests";
-import { formatDateOnly } from "@/lib/date-only";
+import { formatDateOnly, formatDateOnlyForTimeZone } from "@/lib/date-only";
 
 type JsonRouteResult = {
   body: unknown;
@@ -176,12 +176,45 @@ function getDisplayName(member: { firstName?: string | null; lastName?: string |
   return [member.firstName, member.lastName].filter(Boolean).join(" ").trim() || "this member";
 }
 
+/**
+ * Truncate a **date-only** value to its `yyyy-MM-dd` day for a date input.
+ *
+ * This is the UTC day, so it is correct only for a receiver that already holds
+ * a calendar day pinned to UTC midnight. All three remaining callers are that:
+ * `Member.dateOfBirth` and the two join-request dates of birth
+ * (`requestedDateOfBirth`, `childDateOfBirth`), each written from a validated
+ * `yyyy-MM-dd` through `parseDateOnly`.
+ *
+ * **Never pass it a real instant.** A `DateTime` stamped with `now` truncates
+ * to a UTC day that is still *yesterday* in New Zealand for roughly the first
+ * half of every club day — use `toClubCalendarDay` below (#2839,
+ * `INV-DATE-019`). The rule is about the VALUE, not the shape: the same trap
+ * hid behind `formatDate` in `src/lib/xero-invoice-helpers.ts` for twenty Xero
+ * document dates until #2834, because a wrapper makes it invisible to a grep.
+ */
 function toDateInputValue(value: Date | string | null | undefined) {
   if (!value) return null;
   if (value instanceof Date) {
     return Number.isNaN(value.getTime()) ? null : formatDateOnly(value);
   }
   return value.substring(0, 10);
+}
+
+/**
+ * The **club's** calendar day for a real instant (#2839, `INV-DATE-019`).
+ *
+ * `Member.detailsConfirmedAt` is a `DateTime` stamped with `now`, not a
+ * date-only column, so reading it with `toDateInputValue` above showed the
+ * previous day for roughly the first half of every New Zealand day: a member
+ * who confirmed their details at 9am read "Details last confirmed by ... on"
+ * yesterday's date. `formatDateOnlyForTimeZone` is the one canonical
+ * derivation (`src/lib/date-only.ts`); this wrapper only handles the
+ * null/invalid cases the payload allows.
+ */
+function toClubCalendarDay(value: Date | string | null | undefined) {
+  if (!value) return null;
+  const instant = value instanceof Date ? value : new Date(value);
+  return Number.isNaN(instant.getTime()) ? null : formatDateOnlyForTimeZone(instant);
 }
 
 function getFamilyMemberAction(params: {
@@ -512,7 +545,9 @@ export async function getMemberFamily(memberId: string): Promise<JsonRouteResult
     }
     const name = `${confirmer.firstName} ${confirmer.lastName}`.trim();
     if (!name) return null;
-    return { name, at: toDateInputValue(member.detailsConfirmedAt) };
+    // #2839: `detailsConfirmedAt` is an instant, so the day shown is the CLUB's
+    // calendar day, never the UTC one (`INV-DATE-019`).
+    return { name, at: toClubCalendarDay(member.detailsConfirmedAt) };
   }
 
   function addMember(member: FamilyMemberRecord, relationship: FamilyMemberRelationship) {
