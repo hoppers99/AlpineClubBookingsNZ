@@ -150,6 +150,10 @@ const mockPrisma = prisma as unknown as {
   booking: {
     findUnique: ReturnType<typeof vi.fn>;
     update: ReturnType<typeof vi.fn>;
+    // #2820 — the pay transaction's status-guarded DRAFT -> PAYMENT_PENDING
+    // claim goes through updateMany, and the DRAFT-arm case at the foot of this
+    // file asserts on it directly.
+    updateMany: ReturnType<typeof vi.fn>;
   };
   payment: {
     findUnique: ReturnType<typeof vi.fn>;
@@ -1511,5 +1515,91 @@ describe("generic-catch error-message leak (F31 #1888)", () => {
       error:
         "Not enough beds available for your dates. Please choose different dates.",
     });
+  });
+
+  // #2820 — the DRAFT arm's unconfigured-provider contract, pinned here because
+  // an E2E now depends on it. `e2e/locked-out-pickup-and-pay.spec.ts` runs its
+  // pay step in BOTH provider modes, and the required `Playwright E2E` check on
+  // a FORK's pull request always runs without the repository's Stripe secrets —
+  // so on every fork run that spec asserts exactly this pairing: a priced DRAFT
+  // whose provider call fails answers 500 with the fixed generic body, AND the
+  // status-guarded DRAFT -> PAYMENT_PENDING move has already COMMITTED, because
+  // the pay transaction closes before the first Stripe call (the transaction at
+  // route L209-393; `findOrCreateCustomer` at L663, one call before the mint at
+  // L679). Mapping the unconfigured-provider error to a different status, or
+  // reordering a provider call ahead of the pay transaction, must fail HERE
+  // first — with a readable diagnosis — instead of turning fork CI red inside a
+  // browser journey.
+  it("create-payment-intent: an unconfigured provider fails a priced DRAFT generically, after the PAYMENT_PENDING transition has committed (#2820)", async () => {
+    // Outer route read: a priced DRAFT owned by the caller, carrying no credit
+    // election, no Payment row and no intent pointer — the shape of the
+    // on-behalf draft the E2E's locked-out member picks up and pays.
+    mockPrisma.booking.findUnique.mockResolvedValueOnce({
+      id: "booking-1",
+      memberId: "member-1",
+      status: "DRAFT",
+      hasNonMembers: false,
+      organiserSettled: false,
+      finalPriceCents: 12500,
+      creditElectionCents: null,
+      lodgeId: "lodge-1",
+      member: {
+        id: "member-1",
+        email: "member@example.com",
+        firstName: "Test",
+        lastName: "Member",
+      },
+      guests: [],
+      payment: null,
+    });
+    // In-transaction re-read under the two-tier locks: still DRAFT, no pending
+    // review, and the beds are there.
+    mockPrisma.booking.findUnique.mockResolvedValueOnce({
+      id: "booking-1",
+      status: "DRAFT",
+      checkIn: new Date("2026-08-15"),
+      checkOut: new Date("2026-08-17"),
+      finalPriceCents: 12500,
+      requiresAdminReview: false,
+      guests: [],
+    });
+    mockPrisma.$transaction.mockImplementation(
+      async (fn: (tx: typeof mockPrisma) => Promise<unknown>) => fn(mockPrisma)
+    );
+    mocks.checkCapacityForGuestRanges.mockResolvedValue({ available: true });
+    // The real `getStripe()` throw when the credential store resolves no secret
+    // key (src/lib/stripe.ts) — surfacing at the route's FIRST provider call,
+    // the customer lookup that precedes the intent mint.
+    mockFindOrCreateCustomer.mockRejectedValue(
+      new Error("Stripe secret key is not configured"),
+    );
+
+    const res = await createPaymentIntentRoute(
+      new NextRequest("http://localhost/api/payments/create-payment-intent", {
+        method: "POST",
+        body: JSON.stringify({ bookingId: "booking-1" }),
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+    const body = await res.json();
+
+    expect(res.status).toBe(500);
+    expect(body).toEqual({ error: "Failed to create payment intent" });
+    // The provider's own words never reach the client (#1888).
+    expect(JSON.stringify(body)).not.toContain("Stripe secret key");
+
+    // And the member WAS admitted before that failure: the status-guarded
+    // transition ran, and it ran ahead of the provider call.
+    expect(mockPrisma.booking.updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({ id: "booking-1", status: "DRAFT" }),
+        data: expect.objectContaining({ status: "PAYMENT_PENDING" }),
+      }),
+    );
+    expect(
+      mockPrisma.booking.updateMany.mock.invocationCallOrder[0],
+    ).toBeLessThan(mockFindOrCreateCustomer.mock.invocationCallOrder[0]);
+    // The mint is never reached — the customer lookup fails one call earlier.
+    expect(mockStripeCreatePaymentIntent).not.toHaveBeenCalled();
   });
 });
