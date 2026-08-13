@@ -603,22 +603,31 @@ menu title and menu order; pages with an empty menu title stay out of the
 menu.
 
 - Seeding creates starter pages (`home`, `about`, `join`, `join/apply`,
-  `rules`, `contact`, `committee`, `privacy`, `terms`, `faq`) only when they
-  do not already exist, so re-running the seed never overwrites edited
-  content. The seeded copy is fully club-agnostic: the starter privacy policy,
+  `rules`, `contact`, `committee`, `privacy`, `terms`, `faq`,
+  `booking-requests`, `school-bookings`) only when they do not already exist, so
+  re-running the seed never overwrites edited content. The two form pages seed an
+  EMPTY menu title, so a fresh install keeps them unlisted until a club opts in
+  (see "Booking-request and school-booking pages" below). The seeded copy is fully club-agnostic: the starter privacy policy,
   booking terms, and FAQ carry no club-specific lodge name or geography and
   instead resolve the installing club's own identity through the text tokens
   below (`{{club-name}}`, `{{lodge-name}}`, `{{lodge-capacity}}`). Each club
   edits the wording in Admin > Page Content.
 - The home route (`/`) renders the `home` page record. `/contact`, `/join`,
   and `/join/apply` are code-backed routes that render their matching record;
-  all other records, including `/privacy`, `/terms`, and `/faq`, are served by
-  the dynamic catch-all route.
+  `/booking-requests` and `/school-bookings` are also code-backed routes (in the
+  `(website-dynamic)` group, so they render per request and are never stored),
+  each rendering its matching record around the booking form; all other records,
+  including `/privacy`, `/terms`, and `/faq`, are served by the dynamic catch-all
+  route.
 - Admin-created pages can be hidden from the public site with the
   **Hide**/**Publish** toggle in Admin > Page Content (no permanent delete):
   hidden pages drop out of the menu and return a 404 on the catch-all route.
   System pages (`home`, `404`) and the built-in starter pages above cannot be
-  hidden, because code routes, the footer, and the sitemap link to them.
+  hidden. For most of them that is because code routes, the footer, and the
+  sitemap link to them; `booking-requests` and `school-bookings` are the
+  exception — they are neither footer- nor sitemap-linked (they are unlisted and
+  noindex until a club opts in), but they still cannot be hidden because their
+  code routes would 404 without the record.
 - Slugs use lowercase letters, numbers, and hyphens, with optional forward
   slashes between segments (`trip-reports`, `trips/2026`). Application
   route names (`admin`, `api`, `book`, `dashboard`, `login`, and similar)
@@ -731,9 +740,15 @@ menu.
   PageContent-backed public routes, including code-backed starter routes.
   Supported tokens are `{{committee-members-cards}}`,
   `{{member-application-form}}`, `{{join-apply-form}}`, `{{contact-form}}`,
-  `{{skifield-whakapapa}}`, `{{skifield-conditions:dataHash}}`,
-  `{{photo-gallery}}`, `{{photo-gallery:path}}`, `{{photo-slideshow}}`, and
-  `{{photo-slideshow:path}}`. Authoritative fee embeds are `{{hut-fees}}`,
+  `{{booking-requests}}`, `{{school-bookings}}`, `{{skifield-whakapapa}}`,
+  `{{skifield-conditions:dataHash}}`, `{{photo-gallery}}`,
+  `{{photo-gallery:path}}`, `{{photo-slideshow}}`, and `{{photo-slideshow:path}}`.
+  `{{booking-requests}}` and `{{school-bookings}}` render the public booking-request
+  and school-booking forms; they seed the `/booking-requests` and `/school-bookings`
+  pages, but you can also drop either onto a page of your own. A page that carries
+  one is served under that page's CSP nonce and analytics posture — the dedicated
+  `/booking-requests` and `/school-bookings` pages are the canonical
+  per-request-nonce, analytics-free entry points. Authoritative fee embeds are `{{hut-fees}}`,
   `{{joining-fees}}`, and `{{annual-fees}}` (with `{{entrance-fees}}` and
   `{{membership-types}}` retained as deprecated aliases of `{{joining-fees}}`
   and `{{annual-fees}}` respectively); the policy embeds are

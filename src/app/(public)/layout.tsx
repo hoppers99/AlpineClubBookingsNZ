@@ -19,16 +19,19 @@ import {
  * fails.
  *
  * This group is out of #2352's scope by decision — `/login` permanently (D7), and
- * the rest are token-bearing screens (`/pay/[token]`, `/chores/[token]`, the
- * booking-request and school-booking confirmations) that must never be stored. It
- * used to be dynamic by ACCIDENT: the `auth()` call this layout no longer makes was
- * a dynamic API read, and removing it left the group's build-time behaviour resting
- * on the `headers()` read below — which happens only AFTER the layout's four
- * database reads have resolved (five until #2573 removed the module-flag read with
- * the analytics runtime it fed). During `docker build` there is no database
- * (`Dockerfile` points `DATABASE_URL` at an unreachable host), so a page's own
- * unguarded query rejected before the bailout was reached, and the build stopped on
- * "Error occurred prerendering page /booking-requests".
+ * the rest are token-bearing or recovery screens (`/pay/[token]`, `/chores/[token]`,
+ * `/family-invite/[token]`, `/membership-cancellation/[token]`, and the recovery
+ * flows) that must never be stored. (The booking-request and school-booking pages
+ * and their token confirmations moved OUT of this group to `(website-dynamic)` in
+ * #2818 — they are no longer here.) It used to be dynamic by ACCIDENT: the `auth()`
+ * call this layout no longer makes was a dynamic API read, and removing it left the
+ * group's build-time behaviour resting on the `headers()` read below — which
+ * happens only AFTER the layout's four database reads have resolved (five until
+ * #2573 removed the module-flag read with the analytics runtime it fed). During
+ * `docker build` there is no database (`Dockerfile` points `DATABASE_URL` at an
+ * unreachable host), so a page's own unguarded query rejected before the bailout
+ * was reached, and the build stopped on an "Error occurred prerendering page" for
+ * one of this group's routes.
  *
  * Declaring it on the LAYOUT covers every route in the group, including any added
  * later, which is what a per-page line would not. The `(website)` group states its

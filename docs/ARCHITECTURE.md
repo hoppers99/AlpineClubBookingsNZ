@@ -2274,12 +2274,17 @@ only difference between them is where the CSP nonce comes from:
 - `src/app/(website)` holds exactly the five addresses owner decision D1 approved
   (`/`, the `[...slug]` CMS catch-all, `/join`, `/contact`, `/join/apply`) and
   carries the **fixed per-release** nonce;
-- `src/app/(website-dynamic)` holds `/hut-leader-instructions`, `/join/[code]` and
-  `/join/verify/[token]`, which are `force-dynamic` for permanent reasons of their
-  own and therefore keep a **freshly minted per-request** nonce, like every member
-  and admin page. The owner narrowed D1 back to the five on 3 Aug 2026: a fixed
-  nonce is a real, if small, loss of defence, and it buys nothing on a page that is
-  never stored.
+- `src/app/(website-dynamic)` holds eight routes — `/hut-leader-instructions`,
+  `/join/[code]`, `/join/verify/[token]`, and the two public form pages
+  `/booking-requests` and `/school-bookings` with their token flows
+  (`/booking-requests/respond/[token]`, `/booking-requests/verify/[token]`,
+  `/school-bookings/confirm/[token]`), moved here in #2818 (decision 2). They are
+  `force-dynamic` for permanent reasons of their own and therefore keep a **freshly
+  minted per-request** nonce, like every member and admin page. The owner narrowed
+  D1 back to the five on 3 Aug 2026: a fixed nonce is a real, if small, loss of
+  defence, and it buys nothing on a page that is never stored — and the two form
+  pages, where an anonymous visitor types the most personal information, are exactly
+  where the unguessable per-request nonce is worth keeping.
 
 Both groups' layouts are three lines around `src/components/website/website-chrome.tsx`
 — header, footer, banners, help widget, analytics consent, theme class, skip link and
@@ -2326,10 +2331,10 @@ With those reads gone, each route states its own mode:
   page.
 - `/`, `/join`, `/contact` and `/join/apply` declare
   `export const dynamic = "force-dynamic"` as a hold pending #2352 slices 2 and 3.
-- The three `(website-dynamic)` routes declare it permanently, and their group layout
+- The eight `(website-dynamic)` routes declare it permanently, and their group layout
   declares it as well so a page added there is per-request by default rather than by
-  remembering: a per-assignment PIN-gated page and two token-bearing screens must
-  never be stored.
+  remembering: a per-assignment PIN-gated page, the token-bearing screens, and the
+  two anonymous public form pages must never be stored.
 
 Two things replaced the chrome's request reads. The CSP nonce arrives as a **prop**,
 which is what lets one component serve two nonce territories: `(website)/layout.tsx`
@@ -2348,24 +2353,29 @@ cache".
 One predicate used to answer three questions, and the narrowing separated them
 (`src/lib/public-website-paths.ts`). They are not the same question and the
 difference is load-bearing: `isPublicWebsitePath()` answers the #2420 setup gate and
-still claims BOTH public groups, so the three moved pages are answered with the
-pre-setup 503 holding screen exactly as the five are (verified on a real container:
-`completedAt` NULL gives 503 on all three); `isFixedNonceWebsitePath()` answers the
-nonce; `isCmsServablePageSlug()` answers the catch-all's territory. The Stripe
-tightening in the policy deliberately follows the WIDE predicate — Stripe.js has no
-business on a PIN-gated instructions page either, and following the nonce there would
-have handed those three pages a looser policy as a side effect of tightening their
-nonce.
+still claims BOTH public groups, so all eight `(website-dynamic)` routes are answered
+with the pre-setup 503 holding screen exactly as the five are (verified on a real
+container for the original three: `completedAt` NULL gives 503 on all three, and the
+five routes #2818 added carry the same treatment by the same predicate);
+`isFixedNonceWebsitePath()` answers the nonce; `isCmsServablePageSlug()` answers the
+catch-all's territory. The Stripe tightening in the policy deliberately follows the
+WIDE predicate — Stripe.js has no business on a PIN-gated instructions page either,
+and following the nonce there would have handed those eight pages a looser policy as
+a side effect of tightening their nonce.
 
 `src/app/(public)/layout.tsx` declares `export const dynamic = "force-dynamic"` for
 its whole group, and that line is measured rather than tidy: the `auth()` call it no
 longer makes was what kept those routes out of build-time prerendering, and without
-a replacement `npm run build` fails on `Error occurred prerendering page
-/booking-requests` — a build has no database, and the layout's `headers()` read
+a replacement `npm run build` fails on an `Error occurred prerendering page` for one
+of the group's routes — a build has no database, and the layout's `headers()` read
 happens only after its own database reads have resolved, too late to bail out first.
-Login is out of scope permanently (D7) and the rest are token-bearing screens, so a
-group-level declaration is the right shape there; `(website)` states its modes per
-route because exactly one of them is deliberately different.
+(The build error used to name `/booking-requests`; that page and `/school-bookings`
+moved to `(website-dynamic)` in #2818 and are no longer in this group — its members
+now are login, the recovery flows, and the `/pay`, `/chores`, `/family-invite` and
+`/membership-cancellation` token screens.) Login is out of scope permanently (D7)
+and the rest are token-bearing screens, so a group-level declaration is the right
+shape there; `(website)` states its modes per route because exactly one of them is
+deliberately different.
 
 Two CI gates keep all of this from drifting, and they answer different questions.
 `scripts/ci/check-website-render-modes.mjs` reads the source: every route in either
@@ -2404,10 +2414,14 @@ failure it catches is silent — any component in the shared chrome or under
 the cache with a green build, a green test suite, and no symptom but the returning
 CPU cost.
 
-Measured on a real `docker build` of this branch: the route table reported
-`● /[...slug]` (SSG) with `ƒ /hut-leader-instructions`, `ƒ /join/[code]`,
-`ƒ /join/verify/[token]`, `ƒ /_not-found` and every other app route Dynamic, and both
-gates plus `check-prerendered-script-nonces.mjs` passed inside the image.
+Measured on a real `docker build` when the three original routes moved: the route
+table reported `● /[...slug]` (SSG) with `ƒ /hut-leader-instructions`,
+`ƒ /join/[code]`, `ƒ /join/verify/[token]`, `ƒ /_not-found` and every other app route
+Dynamic, and both gates plus `check-prerendered-script-nonces.mjs` passed inside the
+image. #2818 adds the two form pages and their three token flows to
+`(website-dynamic)`; being `force-dynamic` by the same group declaration, they report
+`ƒ` too, and the prerender-manifest gate's `MUST_STAY_DYNAMIC` allowlist lists all of
+them so a regression that made one storable fails the gate.
 
 The rules read a **canonicalised** pathname (`normaliseForRules` in
 `src/config/feature-routes.ts`): one trailing slash and one Next data suffix

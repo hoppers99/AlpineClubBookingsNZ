@@ -117,6 +117,16 @@ public website only. It never runs on admin pages, on signed-in member pages, or
 on any address carrying a token, PIN or personal identifier, and the addresses it
 reports carry no query strings or fragments.
 
+The public **booking-request** and **school-booking** pages
+(`/booking-requests`, `/school-bookings`) are also excluded, on purpose. They
+carry no token or PIN in their address, so the general rule above would not catch
+them, but they are where an anonymous visitor types the most personal information,
+so they are served per request and analytics does not load on them. If you embed
+the `{{booking-requests}}` or `{{school-bookings}}` form on a page of your own
+instead, that page keeps its own analytics posture — so the dedicated
+`/booking-requests` and `/school-bookings` pages are the analytics-free entry
+points, and an ordinary page you drop the form onto is not.
+
 ## Settings reference
 
 | Card | What it opens | Requires |
