@@ -801,8 +801,8 @@ describe("the rendered evidence survives hostile database content", () => {
       filters: {
         lodgeId: "x".repeat(120),
         status: "y".repeat(120),
-        from: "z".repeat(120),
-        to: "w".repeat(120),
+        checkInFrom: "z".repeat(120),
+        checkOutTo: "w".repeat(120),
         search: "v".repeat(120),
       },
     });
