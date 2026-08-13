@@ -31,6 +31,7 @@ import {
   ViewOnlyActionButton,
 } from "@/components/admin/view-only-action";
 import type { AdminPermissionMatrix } from "@/lib/admin-permissions";
+import { parseDecimalDollarsToCents } from "@/lib/money-input";
 import { PromoRedemptionsPanel } from "./promo-redemptions-panel";
 
 interface RedemptionsPromoSummary {
@@ -488,12 +489,33 @@ export function PromoCodesPageClient({
       ...(multiLodge ? { lodgeIds: restrictedLodgeIds } : {}),
     };
 
+    /*
+      #2685: every dollar box on this form is parsed exactly, and a malformed
+      amount stops the save with a message. It used to be
+      `Math.round(parseFloat(x) * 100)`, which produced `NaN` — and
+      `JSON.stringify` writes `NaN` as `null`, so a typo reached the API as
+      "this promo has no value" rather than as an error.
+    */
+    const amountField = (raw: string, label: string): number | null => {
+      const cents = parseDecimalDollarsToCents(raw);
+      if (cents === null) {
+        setError(`Enter ${label} in dollars and cents, for example 25.00.`);
+        // The caller returns straight away, so release the Save button here.
+        setSaving(false);
+      }
+      return cents;
+    };
+
     if (type === "PERCENTAGE") {
       payload.percentOff = percentOff ? parseInt(percentOff) : null;
     } else if (type === "FIXED_AMOUNT") {
-      payload.valueCents = valueDollars
-        ? Math.round(parseFloat(valueDollars) * 100)
-        : null;
+      if (valueDollars) {
+        const cents = amountField(valueDollars, "the discount amount");
+        if (cents === null) return;
+        payload.valueCents = cents;
+      } else {
+        payload.valueCents = null;
+      }
     } else if (type === "FREE_NIGHTS") {
       payload.freeNightsPerIndividual = freeNightsPerIndividual
         ? parseInt(freeNightsPerIndividual)
@@ -502,16 +524,30 @@ export function PromoCodesPageClient({
         ? parseInt(lifetimeFreeNightsCap)
         : null;
     } else if (type === "FIXED_NIGHTLY_PRICE") {
-      payload.fixedNightlyPriceCents = fixedNightlyPriceDollars
-        ? Math.round(parseFloat(fixedNightlyPriceDollars) * 100)
-        : null;
+      if (fixedNightlyPriceDollars) {
+        const cents = amountField(
+          fixedNightlyPriceDollars,
+          "the fixed nightly price",
+        );
+        if (cents === null) return;
+        payload.fixedNightlyPriceCents = cents;
+      } else {
+        payload.fixedNightlyPriceCents = null;
+      }
       payload.fixedNightlyMode = fixedNightlyMode;
     }
 
     if (type !== "FIXED_AMOUNT" && type !== "FIXED_NIGHTLY_PRICE") {
-      payload.maxNightlyValueCents = maxNightlyValueDollars
-        ? Math.round(parseFloat(maxNightlyValueDollars) * 100)
-        : null;
+      if (maxNightlyValueDollars) {
+        const cents = amountField(
+          maxNightlyValueDollars,
+          "the maximum nightly value",
+        );
+        if (cents === null) return;
+        payload.maxNightlyValueCents = cents;
+      } else {
+        payload.maxNightlyValueCents = null;
+      }
     }
 
     try {

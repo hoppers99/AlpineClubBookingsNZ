@@ -10,6 +10,7 @@ import { Label } from "@/components/ui/label"
 import { Input } from "@/components/ui/input"
 import { Badge } from "@/components/ui/badge"
 import { formatNZDate } from "@/lib/nzst-date"
+import { parseDecimalDollarsToCents } from "@/lib/money-input"
 
 interface RefundAppealButtonProps {
   bookingId: string
@@ -65,8 +66,19 @@ export function RefundAppealButton({
     setError("")
     try {
       const body: Record<string, unknown> = { reason }
-      if (requestedAmount) {
-        body.requestedAmountCents = Math.round(parseFloat(requestedAmount) * 100)
+      if (requestedAmount.trim()) {
+        /*
+          #2685: an amount this parser refuses is now REFUSED. It used to become
+          `NaN`, and `JSON.stringify` writes `NaN` as `null` — so a mistyped
+          amount was silently dropped from the request and the appeal was filed
+          as though no amount had been asked for at all.
+        */
+        const cents = parseDecimalDollarsToCents(requestedAmount)
+        if (cents === null) {
+          setError("Enter an amount in dollars and cents, for example 45.00.")
+          return
+        }
+        body.requestedAmountCents = cents
       }
 
       const res = await fetch(`/api/bookings/${bookingId}/refund-request`, {

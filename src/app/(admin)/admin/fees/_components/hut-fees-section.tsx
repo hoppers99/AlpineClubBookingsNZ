@@ -12,6 +12,7 @@ import { Badge } from "@/components/ui/badge";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { APP_CURRENCY } from "@/config/operational";
 import { formatCents } from "@/lib/pricing";
+import { parseDecimalDollarsToCents } from "@/lib/money-input";
 import { formatNZDate } from "@/lib/nzst-date";
 import {
   AdminViewOnlyNotice,
@@ -91,6 +92,30 @@ function rateHintId(membershipTypeId: string): string {
   return `rate-hint-${membershipTypeId}`;
 }
 
+function rateErrorId(key: string): string {
+  return `rate-error-${key}`;
+}
+
+/** What every refused amount box on this form says (#2685). */
+const AMOUNT_FIELD_ERROR =
+  "Enter an amount in dollars and cents, for example 45.00.";
+
+function withoutKey(
+  errors: Record<string, string>,
+  key: string,
+): Record<string, string> {
+  if (!(key in errors)) return errors;
+  const next = { ...errors };
+  delete next[key];
+  return next;
+}
+
+/** The text an amount box shows: what was typed, else the stored cents. */
+function amountFieldValue(draft: string | undefined, cents: number | undefined): string {
+  if (draft !== undefined) return draft;
+  return cents ? (cents / 100).toFixed(2) : "";
+}
+
 function cellsForType(type: RateType, tiers: AgeTierSetting[]): Array<AgeTier | typeof FLAT_KEY> {
   return type.ageGroupsApply ? tiers.map((t) => t.tier) : [FLAT_KEY];
 }
@@ -141,6 +166,20 @@ export function HutFeesSection({ canEdit }: { canEdit: boolean }) {
   const [endDate, setEndDate] = useState("");
   const [active, setActive] = useState(true);
   const [rates, setRates] = useState<Record<string, number>>({});
+  /*
+    #2685: what the admin has actually TYPED into each amount box, and the
+    complaint for any box whose text is not a dollar amount.
+
+    `rates` holds cents and is what gets saved, so it cannot also hold a
+    half-typed or malformed entry. Keeping the raw text beside it is what lets
+    the box show "45.0x" with an error under it instead of silently snapping
+    back — and, before this issue, instead of silently saving a nightly rate of
+    $0.00 for the whole season.
+  */
+  const [rateDrafts, setRateDrafts] = useState<Record<string, string>>({});
+  const [rateErrors, setRateErrors] = useState<Record<string, string>>({});
+  const [flatWholeLodgeDraft, setFlatWholeLodgeDraft] = useState<string | null>(null);
+  const [flatWholeLodgeError, setFlatWholeLodgeError] = useState("");
   // #2338: the season's flat whole-lodge night rate in integer cents, or null
   // when the club does not charge a flat whole-lodge rate for this season.
   const [flatWholeLodgeCents, setFlatWholeLodgeCents] = useState<number | null>(null);
@@ -226,6 +265,7 @@ export function HutFeesSection({ canEdit }: { canEdit: boolean }) {
     setEndDate("");
     setActive(true);
     setRates(emptyRates(rateTypes, ageTiers));
+    clearAmountDrafts();
     setFlatWholeLodgeCents(null);
     setEditingId(null);
     setShowForm(false);
@@ -240,20 +280,38 @@ export function HutFeesSection({ canEdit }: { canEdit: boolean }) {
     setEndDate(season.endDate.split("T")[0]);
     setActive(season.active);
     setRates(seasonToRatesMap(season.membershipTypeRates, rateTypes, ageTiers));
+    clearAmountDrafts();
     setFlatWholeLodgeCents(season.flatWholeLodgeNightCents);
     setShowForm(true);
   }
 
   function startCreate() {
     setRates(emptyRates(rateTypes, ageTiers));
+    clearAmountDrafts();
     setFlatWholeLodgeCents(null);
     setShowForm(true);
   }
 
+  /** Drop every typed-but-unsaved amount and its complaint. */
+  function clearAmountDrafts() {
+    setRateDrafts({});
+    setRateErrors({});
+    setFlatWholeLodgeDraft(null);
+    setFlatWholeLodgeError("");
+  }
+
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
-    setSaving(true);
     setError("");
+
+    // #2685: never save around an amount the parser refused — the stored cents
+    // for that field are the PREVIOUS value, which is not what the admin typed.
+    if (Object.keys(rateErrors).length > 0 || flatWholeLodgeError) {
+      setError("Fix the highlighted amounts before saving.");
+      return;
+    }
+
+    setSaving(true);
 
     const membershipTypeRates: MembershipTypeRate[] = Object.entries(rates).map(
       ([key, price]) => {
@@ -338,25 +396,57 @@ export function HutFeesSection({ canEdit }: { canEdit: boolean }) {
     }
   }
 
+  /*
+    #2685: a nightly rate the parser refuses is REFUSED, not rounded and not
+    zeroed. It used to be `parseFloat`, and anything it could not read — a stray
+    character, a third decimal place, an amount past the storable maximum —
+    became `0`, which saved as "this membership type stays here for free" with
+    nothing on screen to say so.
+
+    An empty box is still a deliberate clear, not an error: it means no rate.
+  */
   function handleRateChange(key: string, value: string) {
-    const dollars = parseFloat(value);
-    if (isNaN(dollars)) {
+    setRateDrafts((prev) => ({ ...prev, [key]: value }));
+
+    if (value.trim() === "") {
       setRates((prev) => ({ ...prev, [key]: 0 }));
-    } else {
-      setRates((prev) => ({ ...prev, [key]: Math.round(dollars * 100) }));
+      setRateErrors((prev) => withoutKey(prev, key));
+      return;
     }
+
+    const cents = parseDecimalDollarsToCents(value);
+    if (cents === null) {
+      setRateErrors((prev) => ({ ...prev, [key]: AMOUNT_FIELD_ERROR }));
+      return;
+    }
+
+    setRates((prev) => ({ ...prev, [key]: cents }));
+    setRateErrors((prev) => withoutKey(prev, key));
   }
 
   // #2338: an EMPTY flat whole-lodge field means "no flat rate" (null), NOT $0 —
   // clearing it must switch the season back to per-guest whole-lodge pricing,
   // never charge nothing for the building. A typed dollar amount stores cents.
   function handleFlatWholeLodgeChange(value: string) {
+    setFlatWholeLodgeDraft(value);
+
     if (value.trim() === "") {
       setFlatWholeLodgeCents(null);
+      setFlatWholeLodgeError("");
       return;
     }
-    const dollars = parseFloat(value);
-    setFlatWholeLodgeCents(isNaN(dollars) ? null : Math.round(dollars * 100));
+
+    // #2685: an amount the parser refuses used to land here as `null`, which is
+    // the same value as an empty box — so a typo silently switched the season
+    // back to per-guest whole-lodge pricing. It now complains instead.
+    const cents = parseDecimalDollarsToCents(value);
+    if (cents === null) {
+      setFlatWholeLodgeError(AMOUNT_FIELD_ERROR);
+      return;
+    }
+
+    setFlatWholeLodgeCents(cents);
+    setFlatWholeLodgeError("");
   }
 
   /*
@@ -484,11 +574,25 @@ export function HutFeesSection({ canEdit }: { canEdit: boolean }) {
                                             step="0.01"
                                             min="0"
                                             className="pl-7"
-                                            value={rates[key] ? (rates[key] / 100).toFixed(2) : ""}
+                                            value={amountFieldValue(rateDrafts[key], rates[key])}
                                             onChange={(e) => handleRateChange(key, e.target.value)}
-                                            aria-describedby={describedByFieldHint(rateHintId(rt.id))}
+                                            aria-invalid={rateErrors[key] ? true : undefined}
+                                            aria-describedby={
+                                              rateErrors[key]
+                                                ? rateErrorId(key)
+                                                : describedByFieldHint(rateHintId(rt.id))
+                                            }
                                           />
                                         </div>
+                                        {rateErrors[key] && (
+                                          <p
+                                            id={rateErrorId(key)}
+                                            role="alert"
+                                            className="text-destructive text-sm"
+                                          >
+                                            {rateErrors[key]}
+                                          </p>
+                                        )}
                                       </div>
                                     );
                                   })}
@@ -504,11 +608,28 @@ export function HutFeesSection({ canEdit }: { canEdit: boolean }) {
                                       step="0.01"
                                       min="0"
                                       className="pl-7"
-                                      value={rates[rateKey(rt.id, FLAT_KEY)] ? (rates[rateKey(rt.id, FLAT_KEY)] / 100).toFixed(2) : ""}
+                                      value={amountFieldValue(
+                                        rateDrafts[rateKey(rt.id, FLAT_KEY)],
+                                        rates[rateKey(rt.id, FLAT_KEY)],
+                                      )}
                                       onChange={(e) => handleRateChange(rateKey(rt.id, FLAT_KEY), e.target.value)}
-                                      aria-describedby={describedByFieldHint(rateHintId(rt.id))}
+                                      aria-invalid={rateErrors[rateKey(rt.id, FLAT_KEY)] ? true : undefined}
+                                      aria-describedby={
+                                        rateErrors[rateKey(rt.id, FLAT_KEY)]
+                                          ? rateErrorId(rateKey(rt.id, FLAT_KEY))
+                                          : describedByFieldHint(rateHintId(rt.id))
+                                      }
                                     />
                                   </div>
+                                  {rateErrors[rateKey(rt.id, FLAT_KEY)] && (
+                                    <p
+                                      id={rateErrorId(rateKey(rt.id, FLAT_KEY))}
+                                      role="alert"
+                                      className="text-destructive text-sm"
+                                    >
+                                      {rateErrors[rateKey(rt.id, FLAT_KEY)]}
+                                    </p>
+                                  )}
                                 </div>
                               )}
                               <FieldHint id={rateHintId(rt.id)} className="mt-1">
@@ -546,11 +667,30 @@ export function HutFeesSection({ canEdit }: { canEdit: boolean }) {
                           step="0.01"
                           min="0"
                           className="pl-7"
-                          value={flatWholeLodgeCents != null ? (flatWholeLodgeCents / 100).toFixed(2) : ""}
+                          value={
+                            flatWholeLodgeDraft ??
+                            (flatWholeLodgeCents != null
+                              ? (flatWholeLodgeCents / 100).toFixed(2)
+                              : "")
+                          }
                           onChange={(e) => handleFlatWholeLodgeChange(e.target.value)}
-                          aria-describedby="flat-whole-lodge-rate-hint"
+                          aria-invalid={flatWholeLodgeError ? true : undefined}
+                          aria-describedby={
+                            flatWholeLodgeError
+                              ? "flat-whole-lodge-rate-error"
+                              : "flat-whole-lodge-rate-hint"
+                          }
                         />
                       </div>
+                      {flatWholeLodgeError && (
+                        <p
+                          id="flat-whole-lodge-rate-error"
+                          role="alert"
+                          className="text-destructive text-sm"
+                        >
+                          {flatWholeLodgeError}
+                        </p>
+                      )}
                       <FieldHint id="flat-whole-lodge-rate-hint" className="mt-1">
                         Example: 600.00 per night for the whole lodge
                       </FieldHint>

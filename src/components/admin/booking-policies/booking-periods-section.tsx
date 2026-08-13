@@ -138,6 +138,9 @@ function PeriodForm({
   })
 
   const { draft, saving, dirty, valid, error } = section
+  // #2685: a fixed-fee box holding something that is not an amount blocks Save,
+  // because the draft still carries the previous cents for that field.
+  const [hasInvalidRuleAmounts, setHasInvalidRuleAmounts] = useState(false)
 
   // The hook owns the save-failure message; this section presents every message
   // in one place above the list, so mirror it up rather than rendering twice.
@@ -224,6 +227,7 @@ function PeriodForm({
           <CancellationRulesEditor
             rules={draft.rules}
             onChange={(rules) => section.setDraft({ rules })}
+            onInvalidAmountsChange={setHasInvalidRuleAmounts}
           />
         </div>
 
@@ -237,7 +241,7 @@ function PeriodForm({
             canEdit={canEdit}
             describeReason={false}
             onClick={() => void section.save()}
-            disabled={saving || !valid || !dirty}
+            disabled={saving || !valid || !dirty || hasInvalidRuleAmounts}
           >
             {saving ? "Saving..." : periodId ? "Update Period" : "Create Period"}
           </ViewOnlyActionButton>
