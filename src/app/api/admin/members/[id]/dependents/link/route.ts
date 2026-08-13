@@ -368,7 +368,10 @@ export async function POST(
       // `reconcileEmailInheritanceForMemberChange` documents: settle the
       // member's own pointer first, then judge everyone who depends on them.
       // One call does both.
-      await reconcileEmailInheritanceForMemberChange(tx, [target.id]);
+      await reconcileEmailInheritanceForMemberChange(tx, [target.id], {
+        trigger: "family-link-change",
+        actorMemberId: session.user.id,
+      });
 
       await Promise.all(
         addToFamilyGroupIds.map((familyGroupId) =>

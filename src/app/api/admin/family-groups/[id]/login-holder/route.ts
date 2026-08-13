@@ -328,7 +328,10 @@ export async function POST(
           where: { id: { in: parentedIds } },
           data: { canLogin: false, email: requestedEmail },
         });
-        await reconcileEmailInheritanceForMemberChange(tx, parentedIds);
+        await reconcileEmailInheritanceForMemberChange(tx, parentedIds, {
+          trigger: "family-link-change",
+          actorMemberId: session.user.id,
+        });
       }
 
       // #2716: this transfer rewrites the ADDRESS on every member of the
@@ -338,7 +341,10 @@ export async function POST(
       // what proves the writes above are self-consistent rather than assumed to
       // be: if the new holder were not a usable source, the cluster would be
       // cleared here rather than left pointing at a mailbox nobody reads.
-      await reconcileEmailInheritanceForMemberChange(tx, clusterIds);
+      await reconcileEmailInheritanceForMemberChange(tx, clusterIds, {
+        trigger: "family-link-change",
+        actorMemberId: session.user.id,
+      });
 
       // Last-admin end-state guard (issue #1604/#1622). Counted after the
       // writes above so the read view already reflects both changes this

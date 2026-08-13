@@ -1642,7 +1642,10 @@ export async function approveMemberApplication(
       // is cleared just above. Anyone who already holds a choice naming them was
       // resolving to nobody while they were inheriting, and should now resolve
       // to them. Nothing re-pointed those dependants until the daily sweep.
-      await reconcileEmailInheritanceForMemberChange(tx, [target.id]);
+      await reconcileEmailInheritanceForMemberChange(tx, [target.id], {
+        trigger: "nomination-promotion",
+        actorMemberId: adminMemberId,
+      });
       mappedMemberIds.push(target.id);
       if (outcome.skipSeasonalAssignment) {
         skipBillingIds.add(target.id);

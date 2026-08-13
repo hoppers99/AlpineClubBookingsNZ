@@ -2818,7 +2818,10 @@ export async function executeMemberMerge(params: {
     // committed state. And the master's own fields are final as of the patch
     // above, so whether the master is a usable source is now settled: reconciling
     // before it could read an ageTier or address the merge was about to change.
-    await reconcileEmailInheritanceForMemberChange(tx, [masterId]);
+    await reconcileEmailInheritanceForMemberChange(tx, [masterId], {
+      trigger: "member-merge",
+      actorMemberId,
+    });
 
     // 5b) Member-photo reconciliation (MP1, #189). The master's final photo is
     // its own when it had one, else the loser's absorbed one (in the patch). Any

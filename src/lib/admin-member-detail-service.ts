@@ -1404,7 +1404,10 @@ export async function updateAdminMember(params: {
       // one cannot commit without it. Unconditional rather than gated on which
       // fields changed — the function recomputes what should be true instead of
       // asking what happened, and a gate is one more thing that can be wrong.
-      await reconcileEmailInheritanceForMemberChange(tx, [id]);
+      await reconcileEmailInheritanceForMemberChange(tx, [id], {
+        trigger: "source-member-change",
+        actorMemberId: currentAdminMemberId,
+      });
 
       // #1756: sweep the member's future shared-double placements in the same
       // transaction as the deactivate / tier change; the removed second
